@@ -1,15 +1,19 @@
 {
-  "name": "ui",
+  "name": "atoll-web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "mock": "node mock/server.mjs",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "vite": "^8.0.13"
+    "vite": "^8.0.13",
+    "vitest": "^4.1.10",
+    "ws": "^8.21.3"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.2",

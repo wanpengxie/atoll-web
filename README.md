@@ -1,180 +1,81 @@
-# coagent UI
+# atoll-web
 
-Vite + vanilla-JS SPA for the coagent demo console. M1.6-T5 upgraded
-the renderer to the **v4 Layer 3 chat-as-UI** contract (visibility/kind
-matrix, correlation_id story grouping, parent_id thread folding, inline
-media, browser notifications, unread badges, error reason mapping).
+Atoll 的独立 React + Vite 浏览器客户端。它不由 server 托管，也不使用工作区、频道消息 REST 接口或其他 UI 专用旁路。
 
-## Layout
+## 客户端契约
 
-```
-ui/
-├── index.html          # vite root entry
-├── src/
-│   ├── main.js         # SPA wiring: auth, ws, composer, mount points
-│   ├── api.js          # fetch wrapper (cookie-auth, JSON)
-│   ├── ws.js           # native WebSocket client for /ws
-│   ├── protocol.js     # v4 envelope closed enums + predicates
-│   ├── threading.js    # correlation_id + parent_id story/thread grouping
-│   ├── renderer.js     # envelope → DOM (bubbles / folds / threads)
-│   ├── media.js        # doc_refs inline image/video/markdown/file render
-│   ├── unread.js       # cursor (localStorage) + sidebar badge calc
-│   ├── notify.js       # browser Notification API (mention / response)
-│   ├── errors.js       # L1 §10.3 reason → composer / system-event map
-│   └── styles.css
-├── public/
-│   └── favicon.svg     # static assets copied verbatim to dist/
-├── package.json
-└── vite.config.js
-```
+客户端只使用三张面：
 
-## Development
+- 身份 HTTP：`POST /api/identity/register`、`login`、`logout`
+- WebSocket：`GET /ws`，帧信封版本 `v: 2`
+- 只读观察：`GET /obs/space/*` 与 `GET /obs/channel/{id}/*`
+
+连接打开后第一帧是且只能是 `attach { since }`。历史回放和实时消息都来自下行 `feed`；写消息、审批和频道管理糖衣分别使用 `submit`、`resolve` 等 v2 上行帧。人发给 agent 的文本请求使用 `human.text`。每个频道的最大 `feed.seq` 与已读位置保存在浏览器 `localStorage`。
+
+## 本地启动
+
+要求 Node.js 22+。先启动监听 `8832` 的 Atoll server，然后：
 
 ```bash
-# from repo root
-pnpm install
-pnpm --filter ui dev
+npm install
+npm run dev
 ```
 
-Vite dev proxies `/api/*`, `/healthz`, and `/ws` to
-`http://localhost:8832` by default. Override with
-`VITE_SERVER_URL=https://stage.example pnpm --filter ui dev`.
+打开 Vite 输出的本地地址。开发服务器会把 `/api`、`/ws` 和 `/obs` 代理到 `http://localhost:8832`。
 
-## Production build
+如 server 使用其他地址：
 
 ```bash
-pnpm --filter ui build
-# → ui/dist/{index.html, assets/*, favicon.svg}
+ATOLL_SERVER_URL=http://127.0.0.1:9000 npm run dev
 ```
 
-`cmd/server` will serve `ui/dist/` as the static asset root in a future
-milestone; today the build artifact is consumed as a tarball.
+`ATOLL_SERVER_URL` 只用于 Vite 开发代理，不会进入浏览器 bundle；浏览器始终使用同源路径和 cookie 鉴权。
 
-## Server API surface
+## 用 mock 跑通
 
-The SPA targets the Go gateway routes documented in
-`server/gateway/handlers.go`:
+本地 mock 默认监听 `127.0.0.1:8832`，不需要 Atoll server。安装依赖后开两个终端：
 
-| Action            | Method + path                                  |
-| ----------------- | ---------------------------------------------- |
-| Issue email code  | `POST /api/identity/verification/issue`        |
-| Register          | `POST /api/identity/register`                  |
-| Login             | `POST /api/identity/login`                     |
-| Logout            | `POST /api/identity/logout`                    |
-| Me                | `GET  /api/identity/me`                        |
-| List workspaces   | `GET  /api/workspaces`                         |
-| Create workspace  | `POST /api/workspaces`                         |
-| List channels     | `GET  /api/workspaces/:wsID/channels`          |
-| Create channel    | `POST /api/workspaces/:wsID/channels`          |
-| List messages     | `GET  /api/channels/:chID/messages?after=&limit=` |
-| Write message     | `POST /api/channels/:chID/messages`            |
-| Live updates      | `GET  /ws` (native WebSocket; subscribe frames) |
-| Get placement     | `GET  /api/placements/:chID`                   |
-| Register proxy daemon | `POST /api/channels/:chID/daemons`          |
-| List proxy daemons | `GET  /api/channels/:chID/daemons`           |
-| Revoke proxy daemon | `DELETE /api/channels/:chID/daemons/:daemonID` |
+```bash
+# 终端一
+npm run mock
 
-Auth is by cookie (`coagent_session`, `HttpOnly`, `SameSite=Lax`) —
-all fetches set `credentials: 'include'`.
-
-## Bind Chrome extension through coagent-proxy
-
-The chat header links the extension download and points users at the
-local `coagent-proxy` flow. The xhs extension connects to the local
-proxy daemon endpoint; server-side device actor token binding is retired.
-
-Pre-reqs:
-
-1. Install the unpacked extension from
-   `adapters/device/xhs/extension/app/chrome-extension` (or the Chrome
-   Web Store build for prod).
-2. Copy its id from `chrome://extensions` into `ui/.env.local`:
-
-   ```
-   VITE_COAGENT_EXTENSION_ID=ngghjmpccpgmfgblbifmlmjnnpfknhka
-   ```
-
-3. The extension's manifest `externally_connectable.matches` must include
-   the origin you serve the UI from. Set `COAGENT_WEB_ORIGINS` at
-   extension build time (comma-separated Chrome match patterns) — e.g.
-   `COAGENT_WEB_ORIGINS=https://*.coagent.dev/*,http://localhost:*/*`.
-
-If the button is disabled the status line below it explains why
-(`no_extension_id`, `extension_not_installed`, etc.).
-
-## Wire protocol — WS `/ws`
-
-```
-client → server   {"type":"subscribe",   "channel_id":"…"}
-client → server   {"type":"unsubscribe", "channel_id":"…"}
-server → client   {"type":"message", "channel_id":"…",
-                   "seq": <int>, "envelope": { … kernel/message.Envelope … }}
+# 终端二
+npm run dev
 ```
 
-The legacy `socket.io` transport is gone — no `cdn.socket.io` script
-is loaded and no `socket.io` traffic is visible in dev tools.
+打开 Vite 地址，以 `root@atoll.local` / `root` 登录。可用 `ATOLL_ROOT_PASSWORD` 改 mock 密码；测试或并行启动时可用 `ATOLL_MOCK_PORT` 改端口，并把同一地址传给 Vite 的 `ATOLL_SERVER_URL`。
 
-## Render pipeline — v4 Layer 3 contract
+逐条对照 spec §7.2：
 
-1. `ws.js` / `api.js` produce **envelope-shaped** message rows. Every
-   envelope carries the L0 §2.1 17 fields verbatim — UI does not drop or
-   reinterpret any field.
-2. `main.js#normalizeStoredMessage` projects each row into the
-   renderer-friendly shape (defaulting missing fields).
-3. `threading.groupTimeline` builds the entries:
-   - **story group** (level 1): all envelopes sharing one
-     `correlation_id` collapse into one logical block.
-   - **request-response thread** (level 2): each `kind=request` pairs
-     to at most one terminal `kind=response` via `parent_id`.
-   - **system fold**: `visibility=system` messages route to the system
-     events drawer (default collapsed); intermediate `agent.text +
-     visibility=system` collapses under the public reply.
-4. `renderer.buildEntryNode` emits the DOM. Bubble shapes branch on
-   `sender.kind`; alignment branches on self-vs-other; mention border
-   from `audience` membership; inactive tag from `actor_registry.
-   deregistered_at`.
-5. `media.appendInlineMedia` walks `doc_refs` and inlines image / video
-   / markdown / pdf (proxy URL = `/api/channels/:id/files/:path`).
-6. `unread` tracks `last_consumed_seq` per channel in `localStorage`;
-   badge calc obeys the §7.1 ACL (system never counts; private only when
-   sender = self).
-7. `notify.classifyNotification` decides whether an incoming envelope
-   warrants a browser notification — `kind=request` to self, `kind=response`
-   whose parent was sent by self, `kind=event` audience-containing self.
-   Permission is requested on first login.
-8. `errors.classifyReason` maps L1 §10.3 reason strings to one of 5
-   classes (user_input / identity / protocol_system / failed_terminal /
-   install_system) and drives where the message appears (composer red
-   bar vs system events drawer vs thread status row).
+1. 登录后频道栏先出现根频道 `c0`，再从它展开出 `lobby`（频道 id 是 `c0.lobby`）。
+2. 切到 `c0`，可看到 27 条预置账目折叠成历史回合、系统事件和一张待审批卡；连接状态最终为 open。
+3. 输入 `@steward 只回复 PONG` 并从补全菜单选中 steward：回合依次入账 queued、processing、工具 started/ended，终态为 `PONG`。正文包含 `fail` 时终态改为 failed。
+4. 浏览器另开同源地址 `/mock/drop`：mock 主动断开所有 WebSocket；壳显示 reconnecting，随后用最新 `since` 恢复且不重复历史。
+5. 名册含 root（第一次发送回显后识别为“我”）、steward、system、registrar、svcactor。打开 `/mock/introduce` 会新增 agent 并推 `system.actor.registered`，名册在事件后刷新。
+6. 直接批准预置审批，或先打开 `/mock/approve?channel=c0` 推一张新审批卡；批准/拒绝后卡片进入终态。
+7. 在编辑器输入 `/channels`：mock 刻意拒绝该 registrar capability，发送占位显示中文错误、`forbidden` code 和可展开的 detail。向原始 v2 socket 提交不存在的 audience/channel 时则分别返回 `not_in_audience` / `channel_not_found`。
 
-## Manual e2e checklist — v4 Layer 3 acceptance
+`/mock/approve`、`/mock/introduce`、`/mock/drop` 已由 Vite 代理，因此既可在当前站点直接打开，也可访问 `http://127.0.0.1:8832`。mock 历史只在本进程内存中保存，重启会恢复预置状态。
 
-Run a fresh server+daemon (`make build && bin/coagent-server` +
-`bin/coagent-daemon`) and walk through:
+## 验证
 
-| # | Step | Expected |
-|---|------|----------|
-| 1 | Open `/`, register → login | Sidebar shows workspaces; chat pane shows "Select a channel" |
-| 2 | Create workspace + channel (type=`group`) | Channel appears, badge 0 |
-| 3 | Send `human.text` message in composer | Right-aligned green bubble |
-| 4 | Trigger an agent reply (mock bridge) | Left-aligned bubble, agent avatar circular |
-| 5 | Trigger an agent turn with `visibility=system` intermediate steps | "▸ 思考过程 (N 步)" fold under the public reply; click to expand |
-| 6 | Send `xhs.publish` request (via xhs CLI or `coagent ask`) | "▸ 工具调用 (1: xhs.publish)" fold; status shows ⏳ 工具处理中, then ✓ 已响应 |
-| 7 | Publish a message with `audience=[<self-actor>]` | Border-left red @ highlight; sidebar badge +1 if channel not active |
-| 8 | Background tab + receive @ mention | Browser notification fires (after permission grant) |
-| 9 | Attach `.png` via doc_refs | Inline image preview, click to open original |
-| 10 | Receive a `core.system_event` | Bottom-of-chat "显示系统事件" toggle appears; expanding shows the event |
-| 11 | Receive a `failed terminal` (status=failed) | Thread status row shows "✗ 失败：<中文 reason>" |
-| 12 | Deregister an actor + send a new message | Sender name shows "(inactive)" grey tag |
+```bash
+npm test
+npm run build
+```
 
-Acceptance bullets A1-A7 from `.dalek/pm/m1.6-tickets.md` (T5 ticket)
-map onto this checklist 1:1.
+测试覆盖 v2 帧构造/解析、信封状态代数、feed fold、游标单调性、带回执/错误/重连的 WebSocket 行为，以及真实启动本地 mock 后的登录、回放、submit、审批和 `since` 续传。
 
-## Testing
+## 目录
 
-Pure-function modules (`protocol.js` / `threading.js` / `unread.js` /
-`errors.js` / `notify.js#classifyNotification`) are written to be
-unit-testable. A vitest + jsdom test target is **not yet wired** — the
-follow-up is to add `vitest` + `jsdom` as dev deps and a `pnpm --filter
-ui test` script. The modules already export every function the tests
-need.
+```text
+src/
+├── protocol/   # v2 帧、消息信封与 type 词表
+├── net/        # 身份、obs、原生 WebSocket
+├── model/      # 游标、feed fold、名册与自我识别
+├── ui/         # 登录、频道、时间线、编辑器、名册
+├── App.jsx
+└── styles.css
+tests/          # vitest 纯函数与假 WebSocket 测试
+mock/           # Node + ws 的本地契约 mock
+```
