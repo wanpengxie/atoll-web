@@ -5,6 +5,9 @@ const serverURL = process.env.ATOLL_SERVER_URL || 'http://localhost:8832';
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    exclude: ['tests/browser/**', '**/node_modules/**', '**/dist/**'],
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
@@ -17,6 +20,7 @@ export default defineConfig({
       '/ws': { target: serverURL, ws: true, changeOrigin: true },
       '/obs': { target: serverURL, changeOrigin: true },
       '/mock': { target: serverURL, changeOrigin: true },
+      '/files': { target: serverURL, changeOrigin: true },
     },
   },
 });

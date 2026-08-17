@@ -1,6 +1,18 @@
 import { apply, createChannelState } from './fold.js';
 
-const FEED_PREFIX = 'atoll.feed.v3.';
+// v4 separates the membership-aware, per-channel feed from the former mock
+// that broadcast lobby and every channel into one authenticated connection.
+const FEED_PREFIX = 'atoll.feed.v4.';
+const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
+
+export function redactFeedSecrets(value, key = '') {
+  if (key && SENSITIVE_FIELD.test(key)) return '已隐藏';
+  if (Array.isArray(value)) return value.map((item) => redactFeedSecrets(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactFeedSecrets(item, name)]));
+  }
+  return value;
+}
 
 function storageKeys(storage) {
   const result = [];
@@ -45,7 +57,7 @@ export function createFeedCache(storage = globalThis.localStorage) {
       if (!storage || !state?.channelId) return false;
       const rows = [...state.rows]
         .sort(([left], [right]) => left - right)
-        .map(([seq, envelope]) => ({ seq, envelope }));
+        .map(([seq, envelope]) => ({ seq, envelope: redactFeedSecrets(envelope) }));
       try {
         storage.setItem(`${FEED_PREFIX}${state.channelId}`, JSON.stringify(rows));
         return true;

@@ -53,7 +53,78 @@ afterEach(async () => {
 });
 
 describe('local mock end-to-end', () => {
-  it('emits alternating live demo events when explicitly enabled', async () => {
+  it('selects, inspects and advances deterministic scenarios through the control plane', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', scenario: 'first-login', seed: 3 });
+    const baseURL = await listen(server);
+
+    const catalog = await fetch(`${baseURL}/mock/control/catalog`).then((response) => response.json());
+    expect(catalog.scenarios).toEqual(expect.arrayContaining(['first-login', 'multi-channel', 'permission-revoked', 'channel-retired']));
+
+    const initial = await fetch(`${baseURL}/mock/control/state`).then((response) => response.json());
+    expect(initial).toMatchObject({ scenario: 'first-login', seed: 3, memberships: [] });
+    expect(initial.channels.find((channel) => channel.id === 'c0.lobby')).toMatchObject({ internal: true });
+
+    const reset = await fetch(`${baseURL}/mock/control/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scenario: 'permission-revoked', seed: 11 }),
+    }).then((response) => response.json());
+    expect(reset.memberships.find((membership) => membership.channel_id === 'c0.project').status).toBe('active');
+
+    await fetch(`${baseURL}/mock/control/advance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ms: 5_000 }),
+    });
+    const advanced = await fetch(`${baseURL}/mock/control/state`).then((response) => response.json());
+    expect(advanced.memberships.find((membership) => membership.channel_id === 'c0.project').status).toBe('revoked');
+
+    const faultResponse = await fetch(`${baseURL}/mock/control/fault`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: 'submit', mode: 'reject', code: 'unavailable', count: 1 }),
+    });
+    expect(faultResponse.status).toBe(200);
+    const faultState = await fetch(`${baseURL}/mock/control/state`).then((response) => response.json());
+    expect(faultState.faults).toEqual([{ target: 'submit', mode: 'reject', code: 'unavailable', count: 1, delay_ms: 0 }]);
+
+    await closeServer(server);
+  });
+
+  it('keeps receipt acceptance separate from delayed feed landing', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', scenario: 'projection-delay' });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    await createIdentityClient(fetchWithSession).login('root@atoll.local', 'test-root');
+    class SessionWebSocket extends WebSocket {
+      constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+    }
+    const landed = [];
+    let attached = false;
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws',
+      WebSocketImpl: SessionWebSocket,
+      since: () => ({}),
+      onState: (state) => { if (state === 'attached') attached = true; },
+      onFeed: (_channelId, _seq, envelope) => landed.push(envelope.id),
+    });
+    await waitFor(() => attached, 'projection-delay attach');
+    const receipt = await wire.submit({ channel_id: 'c0', msg_type: 'human.text', kind: 'request', payload: { text: 'delayed landing' }, audience: ['steward'] });
+    expect(landed).not.toContain(receipt.message_id);
+    await waitFor(() => landed.includes(receipt.message_id), 'delayed request feed', 2_000);
+    wire.close();
+    await closeServer(server);
+  });
+
+  it('emits isolated live demo events in both member channels when explicitly enabled', async () => {
     const server = createMockServer({ rootPassword: 'test-root', liveIntervalMs: 20 });
     const baseURL = await listen(server);
     let cookie = '';
@@ -89,7 +160,8 @@ describe('local mock end-to-end', () => {
       'live events in both channels',
     );
     expect(pulses.some((item) => item.value.payload.text.includes('steward 在线'))).toBe(true);
-    expect(pulses.some((item) => item.value.payload.text.includes('coreactor 正在同步'))).toBe(true);
+    expect(pulses.some((item) => item.value.payload.text.includes('project-agent 正在整理'))).toBe(true);
+    expect(pulses.some((item) => item.channelId === 'c0.lobby')).toBe(false);
 
     wire.close();
     await closeServer(server);
@@ -153,7 +225,7 @@ describe('local mock end-to-end', () => {
     });
 
     await waitFor(
-      () => attachCount === 1 && states.get('c0')?.lastSeq === 28 && states.get('c0.lobby')?.lastSeq === 28,
+      () => attachCount === 1 && states.get('c0')?.lastSeq === 28 && states.get('c0.project')?.lastSeq === 28,
       'attach and seeded replay',
     );
 
@@ -164,7 +236,8 @@ describe('local mock end-to-end', () => {
     expect(replay.narration).toHaveLength(2);
     expect(replay.approvals).toHaveLength(1);
     expect(states.get('c0').standalone.at(-1).envelope.payload.text).toContain('c0 独立账本');
-    expect(states.get('c0.lobby').standalone.at(-1).envelope.payload.text).toContain('Lobby 独立账本');
+    expect(states.get('c0.project').standalone.at(-1).envelope.payload.text).toContain('c0.project 独立账本');
+    expect(states.has('c0.lobby')).toBe(false);
 
     const accepted = await wire.submit({
       channel_id: 'c0',
@@ -181,8 +254,8 @@ describe('local mock end-to-end', () => {
         && states.get('c0').turns.get(accepted.message_id),
       'live completed PONG turn',
     );
-    expect(liveTurn.provisional.map((value) => value.payload.status)).toEqual(['queued', 'processing']);
-    expect(liveTurn.activity.map((value) => value.type)).toEqual(['activity.tool.started', 'activity.tool.ended']);
+    expect(liveTurn.provisional.map((value) => value.status)).toEqual(['queued', 'processing']);
+    expect(liveTurn.activity.map((value) => value.envelope.type)).toEqual(['activity.tool.started', 'activity.tool.ended']);
     expect(liveTurn.text).toBe('PONG');
 
     const approvalId = [...states.get('c0').approvals.keys()][0];

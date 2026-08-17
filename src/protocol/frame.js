@@ -84,7 +84,7 @@ const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
   cancel: ['channel_id', 'req_id'],
   after: ['channel_id', 'duration_ms', 'msg_type'],
   cancel_timer: ['channel_id', 'timer_id'],
-  resource: ['channel_id', 'op', 'resource_id'],
+  resource: ['channel_id', 'op'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
 });
@@ -118,6 +118,29 @@ export function validateUpstreamPayload(type, payload) {
   const missing = REQUIRED_PAYLOAD_FIELDS[type].filter((key) => payload[key] == null);
   if (missing.length) {
     throw new FrameValidationError(`${type} payload is missing: ${missing.join(', ')}`);
+  }
+  if (type === UP.after && (!Number.isSafeInteger(payload.duration_ms) || payload.duration_ms <= 0)) {
+    throw new FrameValidationError('after duration_ms must be a positive safe integer');
+  }
+  if (type === UP.resource) validateResourcePayload(payload);
+}
+
+const RESOURCE_OPS = Object.freeze(['create', 'read', 'write', 'delete', 'stat', 'list']);
+
+function validateResourcePayload(payload) {
+  if (!RESOURCE_OPS.includes(payload.op)) {
+    throw new FrameValidationError(`resource op must be one of: ${RESOURCE_OPS.join(', ')}`);
+  }
+  const hasResourceId = typeof payload.resource_id === 'string' && payload.resource_id.length > 0;
+  const hasAddress = typeof payload.address === 'string' && payload.address.length > 0;
+  if (payload.op === 'create' && !hasResourceId && !hasAddress) {
+    throw new FrameValidationError('resource create requires resource_id or address');
+  }
+  if (['read', 'write', 'delete', 'stat'].includes(payload.op) && !hasResourceId) {
+    throw new FrameValidationError(`resource ${payload.op} requires resource_id`);
+  }
+  if (payload.with_content != null && typeof payload.with_content !== 'boolean') {
+    throw new FrameValidationError('resource with_content must be a boolean');
   }
 }
 

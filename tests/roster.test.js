@@ -39,7 +39,8 @@ describe('roster self fallback', () => {
     roster.recordSubmission('c0', 'message-1');
     expect(roster.observeFeed('c0', {
       id: 'message-1',
-      sender: { id: 'human:root' },
+      kind: 'request',
+      sender: { kind: 'human', id: 'human:root' },
     })).toBe('human:root');
     expect(roster.self('c0')).toBe('human:root');
     roster.close();

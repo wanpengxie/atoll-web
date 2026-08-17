@@ -2,6 +2,7 @@ const STANDARD_ACTOR_IDS = new Set(['system']);
 const STANDARD_ACTOR_DECL_IDS = new Set([
   'atoll-internal:registrar-seat',
   'atoll-internal:svcactor',
+  'coreactor',
 ]);
 
 export function visibleRosterRows(rows = []) {

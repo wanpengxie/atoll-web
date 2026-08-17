@@ -1,0 +1,29 @@
+{
+  "source_baseline": {
+    "frame": "../atoll/platform/subjectgate/frame.go",
+    "obs": "../atoll/platform/obs/plane_test.go",
+    "registrar": "../atoll/platform/lagoon/contracts.go",
+    "describe": "../atoll/lib/introspect/introspect.go"
+  },
+  "downstream": {
+    "attach_receipt": {"v": 2, "frame_type": "receipt", "ref": "attach-1", "payload": {"contract_version": "atoll-test"}},
+    "submit_receipt": {"v": 2, "frame_type": "receipt", "ref": "submit-2", "payload": {"message_id": "m-1"}},
+    "feed": {"v": 2, "frame_type": "feed", "payload": {"channel_id": "c0", "seq": 1, "envelope": {"id": "m-1", "ts": 1723974400000, "channel_id": "c0", "sender": {"kind": "human", "id": "root"}, "kind": "request", "type": "human.text", "payload": {"text": "ping"}, "visibility": "public", "audience": ["steward"]}}},
+    "error": {"v": 2, "frame_type": "error", "ref": "submit-3", "payload": {"frame": "submit", "code": "forbidden", "detail": "principal is not eligible"}},
+    "observe_ended": {"v": 2, "frame_type": "observe_ended", "payload": {"channel_id": "c0.public", "reason": "channel_retired"}},
+    "resource_receipt": {"v": 2, "frame_type": "receipt", "ref": "resource-4", "payload": {"status": "accepted", "ticket": "fixture-redacted", "redeem": "/files/daemon%3A%2F%2Fmock%2Fc0%2Fdocs%2Fa.txt"}}
+  },
+  "observations": {
+    "channels": {"subject": "space/channels", "kind": "channels", "complete": true, "items": [{"key": "c0", "declared": {"id": "c0", "name": "home", "qualified_name": "c0", "type": "group", "status": "present", "owner_principal": "root", "description": "", "serving": 1, "spec": {}, "created_at": 1723974400000}, "actual": {"measures": [{"name": "open", "value": true, "unknown": false, "observed_at": 1723974400000, "since": null}]}}]},
+    "profile": {"subject": "channel/c0/profile", "kind": "profile", "complete": true, "items": [{"declared": {"id": "c0", "qualified_name": "c0"}, "actual": {"measures": [{"name": "open", "value": true, "unknown": false, "observed_at": 1723974400000, "since": null}]}}]},
+    "actors": {"subject": "channel/c0/actors", "kind": "actors", "complete": true, "items": [{"key": "steward", "declared": {"id": "steward", "kind": "agent", "decl_id": "mock:steward", "name": "Steward"}, "actual": {"measures": [{"name": "bound", "value": true, "unknown": false, "observed_at": 1723974400000, "since": null}, {"name": "device_online", "value": null, "unknown": true, "reason": "no_testimony", "observed_at": 1723974400000, "since": null}]}}]},
+    "principals": {"subject": "space/principals", "kind": "principals", "complete": true, "items": [{"key": "root", "declared": {"id": "root", "kind": "human", "email": "root@atoll.local", "display_name": "Root", "status": "present", "created_at": 1723974400000}, "actual": null}]},
+    "daemons": {"subject": "space/daemons", "kind": "daemons", "complete": true, "items": [{"key": "device-1", "declared": {"id": "device-1", "owner_principal": "root", "name": "Local", "status": "present", "created_at": 1723974400000}, "actual": {"measures": [{"name": "online", "value": true, "unknown": false, "observed_at": 1723974400000, "since": null}]}}]},
+    "decls": {"subject": "space/decls", "kind": "decls", "complete": true, "items": [{"key": "mock:steward", "declared": {"id": "mock:steward", "name": "Steward", "owner": "root", "default_class": "codex", "status": "present", "visibility": "private", "created_at": 1723974400000, "updated_at": 1723974400000}, "actual": null}]}
+  },
+  "structured": {
+    "registrar_reply": {"word": "channel.create", "value": {"id": "c0.project", "name": "project", "qualified_name": "c0.project", "status": "present"}, "source": {"channel_id": "c0", "request_id": "m-create"}},
+    "registrar_error": {"code": "permission_denied", "detail": "operation is not allowed"},
+    "actor_describe": {"actor_id": "steward", "name": "Steward", "description": "Mock agent", "types": {"human.text": {"description": "Answer a text request", "allowed_kinds": ["request"], "max_pending_ms": 30000, "payload_fields": [{"name": "text", "required": true, "description": "Request text"}], "error_codes": [{"code": "invalid_args", "description": "Invalid input", "recovery": "Correct the fields"}]}}}
+  }
+}

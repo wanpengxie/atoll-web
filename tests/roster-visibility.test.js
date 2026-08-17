@@ -9,6 +9,7 @@ describe('roster visibility', () => {
       { id: 'system', kind: 'system' },
       { id: 'registrar', kind: 'tool', decl_id: 'atoll-internal:registrar-seat' },
       { id: 'svcactor', kind: 'tool', decl_id: 'atoll-internal:svcactor' },
+      { id: 'generated-core', kind: 'tool', decl_id: 'coreactor' },
     ];
 
     expect(visibleRosterRows(rows).map((row) => row.id)).toEqual(['root', 'steward']);

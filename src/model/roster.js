@@ -1,6 +1,6 @@
 import { isSystemNarration } from '../protocol/vocab.js';
 
-const SELF_PREFIX = 'atoll.self.';
+const SELF_PREFIX = 'atoll.self.v2.';
 
 function measure(actual, name) {
   return actual?.measures?.find((item) => item.name === name);
@@ -22,17 +22,28 @@ function project(item) {
   };
 }
 
-export function createRoster({ obs, me = '', storage = globalThis.localStorage, debounceMs = 500 } = {}) {
+export function createRoster({ obs, me = '', storage = globalThis.localStorage, debounceMs = 500, contractVersion = 2 } = {}) {
   const cache = new Map();
   const pendingSubmissions = new Map();
   const timers = new Map();
 
   function savedSelf(channelId) {
-    return storage?.getItem(`${SELF_PREFIX}${channelId}`) || '';
+    try {
+      const value = JSON.parse(storage?.getItem(`${SELF_PREFIX}${me}.${channelId}`) || 'null');
+      return value?.principal === me && value?.contractVersion === contractVersion ? value.actorId || '' : '';
+    } catch {
+      return '';
+    }
   }
 
   function saveSelf(channelId, actorId) {
-    if (channelId && actorId) storage?.setItem(`${SELF_PREFIX}${channelId}`, actorId);
+    if (channelId && actorId && me) storage?.setItem(`${SELF_PREFIX}${me}.${channelId}`, JSON.stringify({
+      principal: me,
+      channelId,
+      actorId,
+      contractVersion,
+      observedAt: Date.now(),
+    }));
   }
 
   async function refresh(channelId) {
@@ -69,12 +80,15 @@ export function createRoster({ obs, me = '', storage = globalThis.localStorage, 
     },
     observeFeed(channelId, envelope) {
       const expectedChannel = envelope?.id ? pendingSubmissions.get(envelope.id) : '';
-      if (expectedChannel === channelId && envelope?.sender?.id) {
+      if (expectedChannel === channelId && envelope?.kind === 'request' && envelope?.sender?.kind === 'human' && envelope?.sender?.id) {
         saveSelf(channelId, envelope.sender.id);
         pendingSubmissions.delete(envelope.id);
         return envelope.sender.id;
       }
       return '';
+    },
+    clearSelf(channelId) {
+      if (channelId && me) storage?.removeItem?.(`${SELF_PREFIX}${me}.${channelId}`);
     },
     handleEnvelope(channelId, envelope, onRefresh) {
       if (!isSystemNarration(envelope?.type) || !envelope.type.startsWith('system.actor.')) return;

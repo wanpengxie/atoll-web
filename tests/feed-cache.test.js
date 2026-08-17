@@ -47,4 +47,18 @@ describe('feed cache', () => {
     expect(restored.size).toBe(0);
     expect(resumeSnapshot(restored)).toEqual({});
   });
+
+  it('never persists device keys or nested credentials from feed payloads', () => {
+    const storage = new MemoryStorage();
+    const state = createChannelState('c0');
+    const row = envelope('mint', 'mint');
+    row.kind = 'response';
+    row.payload = { status: 'completed', value: { device_id: 'd1', key: 'one-time-key', nested: { token: 'token-value' } } };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: row });
+    createFeedCache(storage).save(state);
+    const saved = storage.getItem('atoll.feed.v4.c0');
+    expect(saved).not.toContain('one-time-key');
+    expect(saved).not.toContain('token-value');
+    expect(saved).toContain('已隐藏');
+  });
 });

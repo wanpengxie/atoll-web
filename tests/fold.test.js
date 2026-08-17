@@ -38,11 +38,12 @@ describe('feed fold', () => {
     expect(state.narration).toHaveLength(2);
     expect(state.approvals.has('approve-1')).toBe(true);
 
-    const first = state.turns.get('turn-1');
+    const first = state.turns.get('req-1');
     expect(first.provisional).toHaveLength(2);
     expect(first.activity).toHaveLength(2);
     expect(first.status).toBe('completed');
     expect(first.text).toBe('PONG');
+    expect(first.provisional.map((item) => item.status)).toEqual(['queued', 'processing']);
 
     const failed = state.turns.get('req-2');
     expect(failed.status).toBe('failed');

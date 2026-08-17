@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { REGISTRAR_DECL_ID, SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
+import { resolveManagementActors } from '../model/management-actors.js';
+import { TYPES } from '../protocol/vocab.js';
 import { resolveMentionRecipients } from './mentions.js';
 
 function mentionQuery(text) {
@@ -7,7 +8,7 @@ function mentionQuery(text) {
   return match ? match[1].toLowerCase() : null;
 }
 
-export function Composer({ channelId, roster, selfId, disabled, onSend }) {
+export function Composer({ channelId, roster, selfId, attachments = [], disabled, disabledReason = '等待连接…', onSend, onRemoveAttachment, onClearAttachments }) {
   const [text, setText] = useState('');
   const [mentions, setMentions] = useState([]);
   const [error, setError] = useState('');
@@ -26,7 +27,7 @@ export function Composer({ channelId, roster, selfId, disabled, onSend }) {
 
   async function submit() {
     const value = text.trim();
-    if (!value || !channelId || disabled) return;
+    if ((!value && !attachments.length) || !channelId || disabled) return;
     setError('');
 
     if (value.startsWith('/introduce')) {
@@ -39,7 +40,7 @@ export function Composer({ channelId, roster, selfId, disabled, onSend }) {
         setError('tool 的 introduce payload 不允许 principal');
         return;
       }
-      const sysactor = roster.find((row) => row.id === SYSTEM_ACTOR_ID || row.kind === 'system');
+      const sysactor = resolveManagementActors(roster).system;
       if (!sysactor) {
         setError('名册中未找到频道 system actor');
         return;
@@ -53,12 +54,12 @@ export function Composer({ channelId, roster, selfId, disabled, onSend }) {
     }
 
     if (value === '/channels') {
-      const registrar = roster.find((row) => row.kind === 'tool' && row.decl_id === REGISTRAR_DECL_ID);
-      if (!registrar) {
-        setError('名册中未找到 registrar 席位');
+      const registry = resolveManagementActors(roster).channelRegistry;
+      if (!registry) {
+        setError('名册中未找到 registrar 或 coreactor');
         return;
       }
-      await onSend({ text: value, msgType: TYPES.registrar.channelList, audience: [registrar.id], targetLabel: registrar.name || registrar.id, payload: {} });
+      await onSend({ text: value, msgType: TYPES.registrar.channelList, audience: [registry.id], targetLabel: registry.name || registry.id, payload: {} });
       setText('');
       setMentions([]);
       return;
@@ -85,13 +86,15 @@ export function Composer({ channelId, roster, selfId, disabled, onSend }) {
     }
     const msgType = kinds.has('human') ? TYPES.humanMessage : TYPES.agentText;
     await onSend({
-      text: value,
+      text: value || `发送 ${attachments.length} 个附件`,
       msgType,
       audience: recipients.map((row) => row.id),
       targetLabel: recipients.map((row) => row.name || row.id).join('、'),
+      payload: attachments.length ? { text: value, attachments } : undefined,
     });
     setText('');
     setMentions([]);
+    onClearAttachments?.();
   }
 
   function onKeyDown(event) {
@@ -103,6 +106,7 @@ export function Composer({ channelId, roster, selfId, disabled, onSend }) {
 
   return (
     <section className="composer-wrap">
+      {attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{attachments.map((row) => <div key={row.resource_id}><span>附件</span><strong>{row.name}</strong><small>{row.size} bytes</small><button type="button" aria-label={`移除附件 ${row.name}`} onClick={() => onRemoveAttachment?.(row.resource_id)}>×</button></div>)}</div>}
       {mentions.length > 0 && (
         <div className="mention-chips">{mentions.map((row) => (
           <button type="button" key={row.id} onClick={() => setMentions((current) => current.filter((item) => item.id !== row.id))}>@{row.name || row.id} ×</button>
@@ -111,14 +115,14 @@ export function Composer({ channelId, roster, selfId, disabled, onSend }) {
       <div className="composer-box">
         <textarea
           aria-label="消息"
-          placeholder={disabled ? '等待连接…' : '输入 @ 选择成员，Enter 发送'}
+          placeholder={disabled ? disabledReason : '输入 @ 选择成员，Enter 发送'}
           value={text}
           disabled={!channelId || disabled}
           onChange={(event) => { setText(event.target.value); setError(''); }}
           onKeyDown={onKeyDown}
           rows={2}
         />
-        <button type="button" className="send-button" onClick={submit} disabled={!text.trim() || !channelId || disabled}>发送 <span>↵</span></button>
+        <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled}>发送 <span>↵</span></button>
       </div>
       {query != null && candidates.length > 0 && (
         <div className="mention-menu" role="listbox">

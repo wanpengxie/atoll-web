@@ -3,7 +3,10 @@ export const TYPES = Object.freeze({
   agentText: 'human.text',
   agentSteer: 'agent.steer',
   agentInterrupt: 'agent.interrupt',
+  agentQueue: 'agent.queue',
   agentStop: 'agent.stop',
+  agentTerminate: 'agent.terminate',
+  agentRestart: 'agent.restart',
   humanMessage: 'human.message',
   humanApprove: 'human.approve',
   activity: Object.freeze({

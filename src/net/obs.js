@@ -28,6 +28,11 @@ export function createObsClient({ fetchImpl = fetch, onUnauthorized } = {}) {
     spacePrincipals() {
       return read('/obs/space/principals', fetchImpl, onUnauthorized);
     },
+    // Mock-only product-gap projection. Real atoll currently returns 404;
+    // callers must degrade rather than treating the space tree as membership.
+    spaceMemberships() {
+      return read('/obs/space/memberships', fetchImpl, onUnauthorized);
+    },
     spaceDaemons() {
       return read('/obs/space/daemons', fetchImpl, onUnauthorized);
     },
