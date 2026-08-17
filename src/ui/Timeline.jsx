@@ -73,6 +73,12 @@ function ApprovalCard({ turn, state, onResolve, names }) {
         <button type="button" className="reject" disabled={busy || settled} onClick={() => onResolve(request.id, DECISIONS.reject)}>拒绝</button>
         {settled && <span>已回执</span>}
       </div>
+      {turn.final && (
+        <footer className={turn.status === 'failed' ? 'final-answer failed' : 'final-answer'}>
+          <p className="answer-label">RESPONSE · {String(turn.final.payload?.status || '').toUpperCase()}</p>
+          <MarkdownLite text={turn.text || JSON.stringify(turn.final.payload || {})} />
+        </footer>
+      )}
       {error && <WireErrorLine error={error} />}
     </article>
   );

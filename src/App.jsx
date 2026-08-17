@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createCursors, unreadCount } from './model/cursors.js';
+import { createFeedCache, resumeSnapshot } from './model/feed-cache.js';
 import { apply, createChannelState, reconcileApprovals } from './model/fold.js';
 import { createRoster } from './model/roster.js';
 import { createIdentityClient } from './net/identity.js';
@@ -65,8 +66,15 @@ export default function App() {
   const wireRef = useRef(null);
   const rosterRef = useRef(null);
   const cursorsRef = useRef(createCursors());
-  const channelStatesRef = useRef(new Map());
+  const feedCacheRef = useRef(null);
+  if (feedCacheRef.current === null) feedCacheRef.current = createFeedCache();
+  const channelStatesRef = useRef(null);
+  if (channelStatesRef.current === null) {
+    channelStatesRef.current = feedCacheRef.current.restore();
+    cursorsRef.current.reconcile(resumeSnapshot(channelStatesRef.current));
+  }
   const feedQueueRef = useRef([]);
+  const feedDirtyRef = useRef(new Set());
   const feedTaskRef = useRef(null);
   const activeChannelRef = useRef('');
   const pendingTimersRef = useRef(new Map());
@@ -133,6 +141,7 @@ export default function App() {
       const roster = rosterRef.current;
       const selfId = roster?.self(row.channel_id) || '';
       apply(state, row, selfId);
+      feedDirtyRef.current.add(row.channel_id);
       cursorsRef.current.advance(row.channel_id, row.seq);
       if (activeChannelRef.current === row.channel_id) {
         cursorsRef.current.markRead(row.channel_id, row.seq);
@@ -178,6 +187,11 @@ export default function App() {
       feedTaskRef.current = 'requestIdleCallback' in window
         ? window.requestIdleCallback(run, { timeout: 100 })
         : setTimeout(run, 0);
+    } else {
+      for (const channelId of feedDirtyRef.current) {
+        feedCacheRef.current.save(channelStatesRef.current.get(channelId));
+      }
+      feedDirtyRef.current.clear();
     }
   }, []);
 
@@ -208,7 +222,7 @@ export default function App() {
 
     setWireState('connecting');
     const wire = createWire({
-      since: () => cursorsRef.current.snapshot(),
+      since: () => resumeSnapshot(channelStatesRef.current),
       onFeed: enqueueFeed,
       onError: (error) => setTopError(`${error.code}: ${displayError(error)}`),
       onObserveEnded: (channelId, reason) => setTopError(`${channelId} 旁听已结束：${reason}`),

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { REGISTRAR_DECL_ID, SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
+import { resolveMentionRecipients } from './mentions.js';
 
 function mentionQuery(text) {
   const match = text.match(/(?:^|\s)@([^\s@]*)$/);
@@ -63,7 +64,12 @@ export function Composer({ channelId, roster, selfId, disabled, onSend }) {
       return;
     }
 
-    let recipients = mentions;
+    const resolved = resolveMentionRecipients(value, roster, mentions);
+    if (resolved.unknown.length) {
+      setError(`未找到成员：${resolved.unknown.map((name) => `@${name}`).join('、')}`);
+      return;
+    }
+    let recipients = resolved.recipients;
     if (!recipients.length) {
       const agents = roster.filter((row) => row.kind === 'agent');
       if (agents.length === 1) recipients = agents;

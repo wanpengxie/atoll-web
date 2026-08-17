@@ -53,6 +53,48 @@ afterEach(async () => {
 });
 
 describe('local mock end-to-end', () => {
+  it('emits alternating live demo events when explicitly enabled', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', liveIntervalMs: 20 });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    const identity = createIdentityClient(fetchWithSession);
+    await identity.login('root@atoll.local', 'test-root');
+
+    class SessionWebSocket extends WebSocket {
+      constructor(url) {
+        super(url, { headers: { Cookie: cookie } });
+      }
+    }
+
+    const pulses = [];
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws',
+      WebSocketImpl: SessionWebSocket,
+      since: () => ({}),
+      onFeed: (channelId, seq, value) => {
+        if (value.type === 'mock.channel.pulse') pulses.push({ channelId, seq, value });
+      },
+    });
+
+    await waitFor(
+      () => new Set(pulses.map((item) => item.channelId)).size === 2,
+      'live events in both channels',
+    );
+    expect(pulses.some((item) => item.value.payload.text.includes('steward 在线'))).toBe(true);
+    expect(pulses.some((item) => item.value.payload.text.includes('coreactor 正在同步'))).toBe(true);
+
+    wire.close();
+    await closeServer(server);
+  });
+
   it('logs in, folds replay and live turns, resolves approval, and resumes from since without duplicates', async () => {
     const server = createMockServer({ rootPassword: 'test-root' });
     const baseURL = await listen(server);
@@ -111,7 +153,7 @@ describe('local mock end-to-end', () => {
     });
 
     await waitFor(
-      () => attachCount === 1 && states.get('c0')?.lastSeq === 27 && states.get('c0.lobby')?.lastSeq === 27,
+      () => attachCount === 1 && states.get('c0')?.lastSeq === 28 && states.get('c0.lobby')?.lastSeq === 28,
       'attach and seeded replay',
     );
 
@@ -121,6 +163,8 @@ describe('local mock end-to-end', () => {
     expect([...replay.turns.values()].filter((turn) => turn.status === 'completed')).toHaveLength(3);
     expect(replay.narration).toHaveLength(2);
     expect(replay.approvals).toHaveLength(1);
+    expect(states.get('c0').standalone.at(-1).envelope.payload.text).toContain('c0 独立账本');
+    expect(states.get('c0.lobby').standalone.at(-1).envelope.payload.text).toContain('Lobby 独立账本');
 
     const accepted = await wire.submit({
       channel_id: 'c0',

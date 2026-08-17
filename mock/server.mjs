@@ -158,24 +158,32 @@ function seededHistory(channelId) {
   const rows = [];
   const add = (value) => rows.push({ channel_id: channelId, seq: rows.length + 1, envelope: value });
   const root = { kind: 'human', id: ROOT_ACTOR_ID };
-  const steward = { kind: 'agent', id: STEWARD_ACTOR_ID };
+  const isLobby = channelId === 'c0.lobby';
+  const responderId = isLobby ? 'coreactor' : STEWARD_ACTOR_ID;
+  const responder = { kind: isLobby ? 'tool' : 'agent', id: responderId };
   const system = { kind: 'system', id: SYSTEM_ACTOR_ID };
   const base = 1_723_974_400_000;
 
   for (let index = 1; index <= 3; index += 1) {
     const requestId = `${channelId}-history-request-${index}`;
     const at = base + index * 10_000;
-    add(envelope({ id: requestId, channelId, sender: root, kind: 'request', type: 'human.text', payload: { text: `History request ${index}` }, audience: [STEWARD_ACTOR_ID], ts: at }));
-    add(envelope({ id: `${requestId}-queued`, channelId, sender: steward, kind: 'response', type: 'human.text', payload: { status: 'queued', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 1 }));
-    add(envelope({ id: `${requestId}-processing`, channelId, sender: steward, kind: 'response', type: 'human.text', payload: { status: 'processing', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 2 }));
-    add(envelope({ id: `${requestId}-turn-started`, channelId, sender: steward, kind: 'event', type: 'activity.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 3 }));
-    add(envelope({ id: `${requestId}-tool-started`, channelId, sender: steward, kind: 'event', type: 'activity.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: 'mock.echo', status: 'started' }, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 4 }));
-    add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: steward, kind: 'event', type: 'activity.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: 'mock.echo', status: 'completed' }, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 5 }));
-    add(envelope({ id: `${requestId}-turn-ended`, channelId, sender: steward, kind: 'event', type: 'activity.turn.ended', payload: { turn_index: index, status: 'ok' }, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 6 }));
-    add(envelope({ id: `${requestId}-completed`, channelId, sender: steward, kind: 'response', type: 'human.text', payload: { status: 'completed', turn_index: index, text: 'PONG' }, parentId: requestId, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 7 }));
+    const requestText = isLobby
+      ? `Lobby history ${index}: inspect channel coordination`
+      : `c0 history ${index}: ask steward for PONG`;
+    const responseText = isLobby ? `Lobby coordination check ${index} complete` : `PONG ${index}`;
+    const toolName = isLobby ? 'mock.lobby.status' : 'mock.echo';
+    add(envelope({ id: requestId, channelId, sender: root, kind: 'request', type: 'human.text', payload: { text: requestText }, audience: [responderId], ts: at }));
+    add(envelope({ id: `${requestId}-queued`, channelId, sender: responder, kind: 'response', type: 'human.text', payload: { status: 'queued', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 1 }));
+    add(envelope({ id: `${requestId}-processing`, channelId, sender: responder, kind: 'response', type: 'human.text', payload: { status: 'processing', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 2 }));
+    add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'event', type: 'activity.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 3 }));
+    add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'event', type: 'activity.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'started' }, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 4 }));
+    add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'event', type: 'activity.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'completed' }, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 5 }));
+    add(envelope({ id: `${requestId}-turn-ended`, channelId, sender: responder, kind: 'event', type: 'activity.turn.ended', payload: { turn_index: index, status: 'ok' }, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 6 }));
+    add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'human.text', payload: { status: 'completed', turn_index: index, text: responseText }, parentId: requestId, correlationId: requestId, audience: [ROOT_ACTOR_ID], ts: at + 7 }));
   }
 
-  for (const [index, actorId] of ['steward', 'svcactor'].entries()) {
+  const registeredActors = isLobby ? ['coreactor', 'svcactor'] : ['steward', 'svcactor'];
+  for (const [index, actorId] of registeredActors.entries()) {
     add(envelope({
       id: `${channelId}-registered-${actorId}`,
       channelId,
@@ -191,12 +199,26 @@ function seededHistory(channelId) {
   add(envelope({
     id: `${channelId}-approval-1`,
     channelId,
-    sender: steward,
+    sender: responder,
     kind: 'request',
     type: 'human.approve',
     payload: { title: 'Approve mock action', detail: `Approval fixture for ${channelId}` },
     audience: [ROOT_ACTOR_ID],
     ts: base + 60_000,
+  }));
+  add(envelope({
+    id: `${channelId}-summary`,
+    channelId,
+    sender: responder,
+    kind: 'event',
+    type: 'mock.channel.summary',
+    payload: {
+      text: isLobby
+        ? 'Lobby 独立账本：负责频道协调与成员接入。'
+        : 'c0 独立账本：负责 steward 的任务回合。',
+    },
+    audience: [ROOT_ACTOR_ID],
+    ts: base + 70_000,
   }));
   return rows;
 }
@@ -219,11 +241,15 @@ function validatePayload(type, payload) {
   return '';
 }
 
-export function createMockServer({ rootPassword = process.env.ATOLL_ROOT_PASSWORD || 'root' } = {}) {
+export function createMockServer({
+  rootPassword = process.env.ATOLL_ROOT_PASSWORD || 'root',
+  liveIntervalMs = 0,
+} = {}) {
   const sessions = new Map();
   const sockets = new Set();
   const attached = new WeakSet();
   const scheduled = new Set();
+  const recurring = new Set();
   const rosters = new Map([
     ['c0', [
       rosterItem({ id: ROOT_ACTOR_ID, kind: 'human', name: 'root', online: true, description: 'Root human member' }),
@@ -306,6 +332,29 @@ export function createMockServer({ rootPassword = process.env.ATOLL_ROOT_PASSWOR
       audience: [ROOT_ACTOR_ID],
     }));
     return id;
+  }
+
+  let liveTick = 0;
+  function pushLiveDemo() {
+    liveTick += 1;
+    const channelId = liveTick % 2 === 1 ? 'c0' : 'c0.lobby';
+    const isLobby = channelId === 'c0.lobby';
+    append(channelId, envelope({
+      id: `${channelId}-live-${randomUUID()}`,
+      channelId,
+      sender: isLobby
+        ? { kind: 'tool', id: 'coreactor' }
+        : { kind: 'agent', id: STEWARD_ACTOR_ID },
+      kind: 'event',
+      type: 'mock.channel.pulse',
+      payload: {
+        text: isLobby
+          ? `Lobby 动态 #${liveTick}：coreactor 正在同步频道状态。`
+          : `c0 动态 #${liveTick}：steward 在线，等待新任务。`,
+        tick: liveTick,
+      },
+      audience: [ROOT_ACTOR_ID],
+    }));
   }
 
   function handleSubmit(socket, ref, payload) {
@@ -712,9 +761,17 @@ export function createMockServer({ rootPassword = process.env.ATOLL_ROOT_PASSWOR
     socket.on('message', (data, isBinary) => handleWSMessage(socket, data, isBinary));
     socket.on('close', () => sockets.delete(socket));
   });
+  if (Number.isFinite(liveIntervalMs) && liveIntervalMs > 0) {
+    const timer = setInterval(() => {
+      if ([...sockets].some((socket) => attached.has(socket))) pushLiveDemo();
+    }, liveIntervalMs);
+    recurring.add(timer);
+  }
   server.on('close', () => {
     for (const timer of scheduled) clearTimeout(timer);
     scheduled.clear();
+    for (const timer of recurring) clearInterval(timer);
+    recurring.clear();
     for (const socket of sockets) socket.terminate();
     webSockets.close();
   });
@@ -722,8 +779,13 @@ export function createMockServer({ rootPassword = process.env.ATOLL_ROOT_PASSWOR
   return server;
 }
 
-export async function startMockServer({ port = Number(process.env.ATOLL_MOCK_PORT || process.env.PORT || 8832), host = process.env.ATOLL_MOCK_HOST || '127.0.0.1', rootPassword } = {}) {
-  const server = createMockServer({ rootPassword });
+export async function startMockServer({
+  port = Number(process.env.ATOLL_MOCK_PORT || process.env.PORT || 8832),
+  host = process.env.ATOLL_MOCK_HOST || '127.0.0.1',
+  rootPassword,
+  liveIntervalMs = Number(process.env.ATOLL_MOCK_LIVE_INTERVAL_MS || 8_000),
+} = {}) {
+  const server = createMockServer({ rootPassword, liveIntervalMs });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, resolve);

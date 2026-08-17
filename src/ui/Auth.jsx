@@ -36,6 +36,11 @@ export function Auth({ identity, onAuthed }) {
         </div>
       </section>
       <section className="auth-panel">
+        <div className="auth-brand">
+          <span className="auth-brand-mark">↯</span>
+          <strong>ATOLL</strong>
+          <small>// collaboration ledger · ws v2</small>
+        </div>
         <div className="auth-tabs" role="tablist" aria-label="账号操作">
           <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>登录</button>
           <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>注册</button>

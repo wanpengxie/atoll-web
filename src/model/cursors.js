@@ -30,6 +30,18 @@ export function createCursors(storage = globalThis.localStorage) {
   }
 
   return {
+    reconcile(available = {}) {
+      for (const key of keys()) {
+        const prefix = key.startsWith(CURSOR_PREFIX)
+          ? CURSOR_PREFIX
+          : key.startsWith(READ_PREFIX) ? READ_PREFIX : '';
+        if (!prefix) continue;
+        const channelId = key.slice(prefix.length);
+        const maximum = safeNumber(available[channelId]);
+        const current = safeNumber(get(key));
+        if (current > maximum) set(key, maximum);
+      }
+    },
     snapshot() {
       const result = {};
       for (const key of keys()) {

@@ -31,4 +31,19 @@ describe('channel cursors', () => {
     ]) };
     expect(unreadCount(state, cursors.read('c0'), 'me')).toBe(1);
   });
+
+  it('caps stale persisted cursors at the last locally restorable sequence', () => {
+    const storage = new MemoryStorage();
+    const cursors = createCursors(storage);
+    cursors.advance('c0', 48);
+    cursors.markRead('c0', 48);
+    cursors.advance('missing-cache', 99);
+    cursors.markRead('missing-cache', 99);
+
+    cursors.reconcile({ c0: 33 });
+
+    expect(cursors.snapshot()).toEqual({ c0: 33, 'missing-cache': 0 });
+    expect(cursors.read('c0')).toBe(33);
+    expect(cursors.read('missing-cache')).toBe(0);
+  });
 });

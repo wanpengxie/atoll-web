@@ -1,4 +1,5 @@
 import React from 'react';
+import { visibleRosterRows } from './roster-visibility.js';
 
 function Presence({ row }) {
   if (row.bound === true && row.deviceOnline === true) return <span className="presence online">在线</span>;
@@ -8,6 +9,7 @@ function Presence({ row }) {
 }
 
 export function Roster({ rows, selfId, busy, onRefresh }) {
+  const visibleRows = visibleRosterRows(rows);
   return (
     <aside className="roster-panel">
       <header>
@@ -15,7 +17,7 @@ export function Roster({ rows, selfId, busy, onRefresh }) {
         <button type="button" className="icon-button" onClick={onRefresh} disabled={busy} aria-label="刷新名册">{busy ? '…' : '↻'}</button>
       </header>
       <div className="roster-list">
-        {rows.map((row) => (
+        {visibleRows.map((row) => (
           <article className="roster-row" key={row.id}>
             <span className={`actor-icon kind-${row.kind}`}>{row.kind?.slice(0, 1).toUpperCase()}</span>
             <div>
@@ -25,7 +27,7 @@ export function Roster({ rows, selfId, busy, onRefresh }) {
             <Presence row={row} />
           </article>
         ))}
-        {!rows.length && <p className="roster-empty">尚未读取名册</p>}
+        {!visibleRows.length && <p className="roster-empty">暂无业务成员</p>}
       </div>
       <footer><span className="legend-dot online" />设备在线 <span className="legend-dot bound" />仅绑定</footer>
     </aside>
