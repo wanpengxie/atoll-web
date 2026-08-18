@@ -4,6 +4,7 @@ import { orderedTimeline } from '../model/fold.js';
 import { taskControlContext } from '../model/task-controls.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
+import { DynamicFields, initialFieldValues } from './DynamicFields.jsx';
 
 const ERROR_LABELS = {
   bad_payload: '请求格式不正确',
@@ -86,10 +87,6 @@ function ProvisionalRow({ item }) {
   );
 }
 
-function approvalInitial(spec) {
-  return Object.fromEntries(spec.fields.map((field) => [field.name, spec.initial?.[field.name] ?? (field.type === 'boolean' ? false : '')]));
-}
-
 function ApprovalCard({ turn, state, onResolve, names }) {
   const request = turn.request;
   const busy = state === 'sending';
@@ -97,7 +94,7 @@ function ApprovalCard({ turn, state, onResolve, names }) {
   const error = typeof state === 'object' ? state.error : null;
   const expired = Number(request.expires_at || 0) > 0 && Number(request.expires_at) <= Date.now();
   const spec = useMemo(() => approvalFormSpec(request.payload || {}), [request.payload]);
-  const [values, setValues] = useState(() => approvalInitial(spec));
+  const [values, setValues] = useState(() => initialFieldValues(spec));
   const [rawJSON, setRawJSON] = useState(() => JSON.stringify(spec.initial || {}, null, 2));
   const [formError, setFormError] = useState('');
 
@@ -114,15 +111,7 @@ function ApprovalCard({ turn, state, onResolve, names }) {
     <article className={`approval-card ${settled ? 'settled' : ''}`}>
       <header><span>需要你的决定</span><small>{nameOf(request.sender?.id, names)} · {timeLabel(request.ts)}</small></header>
       <div className="approval-summary"><strong>{request.payload?.title || request.type}</strong>{request.payload?.detail && <p>{request.payload.detail}</p>}{request.payload?.impact && <p><b>影响：</b>{request.payload.impact}</p>}</div>
-      {spec.mode === 'fields' ? <div className="approval-fields">{spec.fields.map((field) => (
-        <label key={field.name}><span>{field.name}{field.required && <em>必填</em>}</span>{field.description && <small>{field.description}</small>}{field.enum ? (
-          <select value={values[field.name] ?? ''} onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))}><option value="">请选择</option>{field.enum.map((item) => <option value={String(item)} key={String(item)}>{String(item)}</option>)}</select>
-        ) : field.type === 'boolean' ? (
-          <input type="checkbox" checked={Boolean(values[field.name])} onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.checked }))} />
-        ) : (
-          <input value={values[field.name] ?? ''} onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))} />
-        )}</label>
-      ))}</div> : <label className="approval-json"><span>附加 JSON（可选）</span><textarea rows={4} value={rawJSON} onChange={(event) => setRawJSON(event.target.value)} /></label>}
+      {spec.mode === 'fields' ? <DynamicFields className="approval-fields" spec={spec} values={values} onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))} /> : <label className="approval-json"><span>附加 JSON（可选）</span><textarea rows={4} value={rawJSON} onChange={(event) => setRawJSON(event.target.value)} /></label>}
       {request.expires_at && <p className={expired ? 'approval-expired' : 'approval-deadline'}>{expired ? '已过期，不能再处理' : `截止：${new Date(request.expires_at).toLocaleString('zh-CN')}`}</p>}
       <div className="approval-actions">
         <button type="button" className="approve" disabled={busy || settled || expired} onClick={() => decide(DECISIONS.approve)}>批准</button>

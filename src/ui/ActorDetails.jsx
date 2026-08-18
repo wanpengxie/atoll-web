@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { capabilityRisk, typeSupportsRequest } from '../model/capabilities.js';
 import { buildFormSpec, valuesToPayload } from '../model/dynamic-form.js';
+import { DynamicFields, initialFieldValues } from './DynamicFields.jsx';
 
 const RISK_LABEL = { normal: '普通', medium: '任务控制', high: '高风险', critical: '极高风险' };
 const CONTROL_LABEL = {
@@ -12,24 +13,9 @@ const CONTROL_LABEL = {
   'agent.restart': '重启 Agent 运行时',
 };
 
-function initialValues(spec) {
-  return Object.fromEntries(spec.fields.map((field) => [field.name, spec.initial?.[field.name] ?? (field.type === 'boolean' ? false : '')]));
-}
-
-function FieldInput({ field, value, onChange }) {
-  if (field.enum) {
-    return <select value={value ?? ''} onChange={(event) => onChange(event.target.value)}><option value="">请选择</option>{field.enum.map((item) => <option key={String(item)} value={String(item)}>{String(item)}</option>)}</select>;
-  }
-  if (field.type === 'boolean') return <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />;
-  if (field.type === 'object' || field.type === 'array' || field.multiline) {
-    return <textarea rows={field.type === 'string' ? 3 : 5} value={value ?? ''} onChange={(event) => onChange(event.target.value)} placeholder={field.type === 'string' ? '' : field.type === 'array' ? '[]' : '{}'} />;
-  }
-  return <input type={field.type === 'number' || field.type === 'integer' ? 'number' : 'text'} step={field.type === 'integer' ? '1' : 'any'} value={value ?? ''} onChange={(event) => onChange(event.target.value)} />;
-}
-
 function CapabilityForm({ actor, type, meta, disabled, onInvoke, onClose }) {
   const spec = useMemo(() => buildFormSpec(type, meta), [meta, type]);
-  const [values, setValues] = useState(() => initialValues(spec));
+  const [values, setValues] = useState(() => initialFieldValues(spec));
   const [rawJSON, setRawJSON] = useState(() => JSON.stringify(spec.initial || {}, null, 2));
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -38,7 +24,7 @@ function CapabilityForm({ actor, type, meta, disabled, onInvoke, onClose }) {
   const risk = capabilityRisk(type);
 
   useEffect(() => {
-    setValues(initialValues(spec));
+    setValues(initialFieldValues(spec));
     setRawJSON(JSON.stringify(spec.initial || {}, null, 2));
     setError('');
     setConfirmed(false);
@@ -66,9 +52,7 @@ function CapabilityForm({ actor, type, meta, disabled, onInvoke, onClose }) {
   return (
     <section className={`capability-form risk-${risk}`} aria-label={`${CONTROL_LABEL[type] || type} 参数`}>
       <header><div><strong>{CONTROL_LABEL[type] || type}</strong><span>{meta.description || '该能力没有文字说明'}</span></div><button type="button" onClick={onClose} aria-label="关闭能力表单">×</button></header>
-      {spec.mode === 'fields' ? <div className="capability-fields">{spec.fields.map((field) => (
-        <label key={field.name}><span>{field.name}{field.required && <em>必填</em>}</span>{field.description && <small>{field.description}</small>}<FieldInput field={field} value={values[field.name]} onChange={(value) => { setValues((current) => ({ ...current, [field.name]: value })); setError(''); }} /></label>
-      ))}{!spec.fields.length && <p className="empty-parameters">此操作不需要参数。</p>}</div> : (
+      {spec.mode === 'fields' ? <DynamicFields className="capability-fields" spec={spec} values={values} onChange={(name, value) => { setValues((current) => ({ ...current, [name]: value })); setError(''); }} /> : (
         <label className="raw-payload-field"><span>JSON 参数</span><small>{spec.reason}</small><textarea rows={8} value={rawJSON} onChange={(event) => { setRawJSON(event.target.value); setError(''); }} /></label>
       )}
       {risk === 'high' && <label className="risk-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />我理解此操作会中断或重置 Agent 的当前工作</label>}
@@ -91,24 +75,26 @@ export function ActorDetails({ actor, capability, disabled = false, onDescribe, 
   return (
     <section className="actor-details" aria-label={`Actor 详情 ${actor.name || actor.id}`}>
       <header className="actor-details-header"><div><p className="eyebrow">ACTOR CAPABILITIES</p><h3>{actor.name || actor.id}</h3><code>{actor.id}</code></div><button type="button" onClick={onClose} aria-label="关闭 Actor 详情">×</button></header>
-      <p className="actor-details-description">{describe?.description || actor.description || '尚未读取 Actor 自述能力。'}</p>
-      {describe?.skillDoc && <details className="skill-doc"><summary>使用说明</summary><pre>{describe.skillDoc}</pre></details>}
-      <div className="describe-toolbar"><span>{capability?.loading ? '正在读取能力…' : describe ? `${types.length} 项能力` : '能力未知'}</span><button type="button" onClick={onDescribe} disabled={disabled || capability?.loading}>{describe ? '刷新能力' : '读取能力'}</button></div>
-      {capability?.error && <p className="describe-error" role="alert"><strong>{capability.error.code}</strong>{capability.error.detail}</p>}
-      <div className="capability-list">{types.map((meta) => {
-        const risk = capabilityRisk(meta.type);
-        const supported = typeSupportsRequest(meta);
-        return (
-          <article className={`capability-row risk-${risk}`} key={meta.type}>
-            <div><strong>{CONTROL_LABEL[meta.type] || meta.type}</strong><code>{meta.type}</code><p>{meta.description || '无描述'}</p></div>
-            <div className="capability-meta"><span>{RISK_LABEL[risk]}</span>{meta.maxPendingMs > 0 && <span>预计 ≤ {Math.ceil(meta.maxPendingMs / 1000)} 秒</span>}</div>
-            {meta.payloadFields.length > 0 && <p className="payload-summary">参数：{meta.payloadFields.map((field) => `${field.name}${field.required ? '*' : ''}`).join('、')}</p>}
-            {meta.notes && <p className="capability-notes">说明：{meta.notes}</p>}
-            {meta.errorCodes.length > 0 && <details><summary>错误与恢复</summary>{meta.errorCodes.map((item) => <p key={item.code}><code>{item.code}</code> {item.description}{item.recovery && <small>恢复：{item.recovery}</small>}</p>)}</details>}
-            <button type="button" onClick={() => setActiveType(meta.type)} disabled={disabled || !supported || meta.type === 'actor.describe'}>{supported ? '调用' : '仅事件能力'}</button>
-          </article>
-        );
-      })}{describe && !types.length && <p className="roster-empty">该 Actor 未声明可调用类型</p>}</div>
+      <div className="actor-details-scroll">
+        <p className="actor-details-description">{describe?.description || actor.description || '尚未读取 Actor 自述能力。'}</p>
+        {describe?.skillDoc && <details className="skill-doc"><summary>使用说明</summary><pre>{describe.skillDoc}</pre></details>}
+        <div className="describe-toolbar"><span>{capability?.loading ? '正在读取能力…' : describe ? `${types.length} 项能力` : '能力未知'}</span><button type="button" onClick={onDescribe} disabled={disabled || capability?.loading}>{describe ? '刷新能力' : '读取能力'}</button></div>
+        {capability?.error && <p className="describe-error" role="alert"><strong>{capability.error.code}</strong>{capability.error.detail}</p>}
+        <div className="capability-list">{types.map((meta) => {
+          const risk = capabilityRisk(meta.type);
+          const supported = typeSupportsRequest(meta);
+          return (
+            <article className={`capability-row risk-${risk}`} key={meta.type}>
+              <div><strong>{CONTROL_LABEL[meta.type] || meta.type}</strong><code>{meta.type}</code><p>{meta.description || '无描述'}</p></div>
+              <div className="capability-meta"><span>{RISK_LABEL[risk]}</span>{meta.maxPendingMs > 0 && <span>预计 ≤ {Math.ceil(meta.maxPendingMs / 1000)} 秒</span>}</div>
+              {meta.payloadFields.length > 0 && <p className="payload-summary">参数：{meta.payloadFields.map((field) => `${field.name}${field.required ? '*' : ''}`).join('、')}</p>}
+              {meta.notes && <p className="capability-notes">说明：{meta.notes}</p>}
+              {meta.errorCodes.length > 0 && <details><summary>错误与恢复</summary>{meta.errorCodes.map((item) => <p key={item.code}><code>{item.code}</code> {item.description}{item.recovery && <small>恢复：{item.recovery}</small>}</p>)}</details>}
+              <button type="button" onClick={() => setActiveType(meta.type)} disabled={disabled || !supported || meta.type === 'actor.describe'}>{supported ? '调用' : '仅事件能力'}</button>
+            </article>
+          );
+        })}{describe && !types.length && <p className="roster-empty">该 Actor 未声明可调用类型</p>}</div>
+      </div>
       {activeType && activeMeta && <CapabilityForm actor={actor} type={activeType} meta={activeMeta} disabled={disabled} onInvoke={onInvoke} onClose={() => setActiveType('')} />}
     </section>
   );

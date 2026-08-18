@@ -1,0 +1,103 @@
+/* Phase B: access truth, full progress, and structured terminals */
+.label-member_stale, .label-observer_stale { color: #d7b87a; }
+.label-member_unavailable, .label-access_denied { color: #ff9cae; }
+.label-observer_active { color: #8ac6da; }
+.channel-notice, .access-banner { margin: 8px 22px 0; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; background: var(--surface-2); color: var(--text-muted); font-size: 12px; }
+.status-stack > :last-child { margin-bottom: 8px; }
+.channel-notice { display: flex; align-items: center; justify-content: space-between; color: var(--text); }
+.channel-notice button { border: 0; background: transparent; color: inherit; cursor: pointer; }
+.access-member_unavailable, .access-access_denied { border-color: rgba(228, 0, 43, .28); color: var(--danger); }
+.access-member_stale, .access-observer_stale { border-color: #d7b87a; color: #85550c; }
+.provisional-row { display: grid; grid-template-columns: minmax(90px, auto) auto 1fr; gap: 8px; align-items: baseline; padding: 5px 0; border-top: 1px dashed var(--border); font-size: 12px; }
+.provisional-row small { color: var(--text-muted); overflow-wrap: anywhere; }
+.provisional-business code { color: #6750a4; }
+.structured-result, .failure-result { display: grid; gap: 9px; }
+.structured-object { display: grid; gap: 5px; margin: 0; }
+.structured-object > div { display: grid; grid-template-columns: minmax(90px, .35fr) 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.structured-object dt { color: var(--text-muted); font: 9px var(--mono); }
+.structured-object dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.structured-array { display: grid; gap: 6px; }
+.structured-array > p { margin: 0; color: var(--text-muted); font-size: 11px; }
+.structured-array-item { display: grid; grid-template-columns: 30px 1fr; gap: 8px; align-items: start; }
+.structured-null { color: var(--text-muted); font-style: italic; }
+.structured-table-wrap { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 7px; }
+.structured-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.structured-table th, .structured-table td { padding: 7px 9px; border-bottom: 1px solid var(--border); text-align: left; }
+.structured-table th { position: sticky; top: 0; background: var(--surface); color: var(--text-muted); }
+.raw-json { font-size: 11px; }
+.raw-json button, .pending-retry { margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 4px 8px; cursor: pointer; font-size: 11px; }
+.raw-json pre { max-height: 280px; overflow: auto; }
+.failure-result > code { width: fit-content; color: var(--danger); }
+.failure-result p, .empty-result, .completion-ack { margin: 0; }
+.completion-ack { color: var(--online); }
+.roster-identity-pending { margin: 10px 14px; padding: 8px; border-radius: 6px; background: #f6efe0; color: #76551a; font-size: 11px; }
+
+/* Phase C: capabilities, controls, and structured approvals */
+.actor-details { position: relative; z-index: 5; display: grid; min-width: 0; min-height: 0; grid-column: 1; grid-row: 2 / 4; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; background: var(--surface-2); box-shadow: -8px 0 24px var(--shadow); }
+.actor-details-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-height: 66px; padding: 14px; border-bottom: 1px solid var(--border); }
+.actor-details-scroll { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 0 14px 14px; }
+.actor-details-header h3 { margin: 0 0 4px; font: 700 18px var(--serif); }
+.actor-details-header code { color: var(--text-muted); font-size: 9px; overflow-wrap: anywhere; }
+.actor-details-header > button, .capability-form > header > button { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 18px; }
+.actor-details-description { margin: 13px 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.skill-doc { margin: 10px 0; font-size: 11px; }
+.skill-doc pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }
+.describe-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 10px; }
+.describe-toolbar button, .capability-row > button { border: 1px solid var(--border-2); border-radius: 6px; background: var(--surface); padding: 5px 8px; cursor: pointer; font-size: 10px; }
+.describe-toolbar button:disabled, .capability-row > button:disabled { opacity: .45; cursor: not-allowed; }
+.describe-error, .capability-error { padding: 8px; border-left: 2px solid var(--danger); background: var(--accent-bg); color: var(--danger); font-size: 10px; }
+.describe-error strong { margin-right: 5px; }
+.capability-list { display: grid; gap: 8px; padding: 10px 0; }
+.capability-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.capability-row > div:first-child { min-width: 0; display: grid; gap: 3px; }
+.capability-row strong { font-size: 11px; }
+.capability-row code { color: var(--agent); font-size: 8px; overflow-wrap: anywhere; }
+.capability-row p { grid-column: 1 / -1; margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.capability-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; color: var(--text-dim); font-size: 8px; }
+.capability-row.risk-high, .capability-row.risk-critical { border-color: rgba(228, 0, 43, .3); }
+.capability-row details { grid-column: 1 / -1; color: var(--text-muted); font-size: 9px; }
+.capability-row details p { display: grid; gap: 2px; padding: 4px 0; }
+.capability-row details small { color: var(--online); }
+.capability-form { z-index: 2; display: grid; max-height: min(60vh, 480px); gap: 10px; overflow-x: hidden; overflow-y: auto; margin: 0 8px 8px; padding: 12px; border: 1px solid var(--border-2); border-radius: 10px; background: var(--surface); box-shadow: 0 -10px 32px var(--shadow-2); }
+.capability-form.risk-high, .capability-form.risk-critical { border-color: var(--accent-glow); }
+.capability-form > header { display: flex; justify-content: space-between; gap: 8px; }
+.capability-form > header > div { display: grid; gap: 3px; }
+.capability-form > header strong { font-size: 12px; }
+.capability-form > header span { color: var(--text-muted); font-size: 9px; }
+.capability-fields { display: grid; gap: 9px; }
+.capability-fields label, .raw-payload-field, .risk-confirm { display: grid; gap: 4px; color: var(--text-muted); font-size: 9px; }
+.capability-fields label > span, .raw-payload-field > span { color: var(--text); font: 9px var(--mono); }
+.capability-fields em, .approval-fields em { margin-left: 4px; color: var(--danger); font-size: 8px; font-style: normal; }
+.capability-fields input:not([type="checkbox"]), .capability-fields textarea, .raw-payload-field textarea, .risk-confirm input, .approval-fields input:not([type="checkbox"]), .approval-json textarea { width: 100%; padding: 7px 8px; border: 1px solid var(--border-2); border-radius: 6px; background: white; color: var(--text); font-size: 11px; }
+.capability-fields .select-menu-trigger, .approval-fields .select-menu-trigger { min-height: 0; padding: 7px 8px; font-size: 11px; }
+.empty-parameters { margin: 0; color: var(--text-muted); font-size: 10px; }
+.risk-confirm { padding: 8px; border-radius: 6px; background: var(--accent-bg); color: var(--danger); }
+.risk-confirm code { overflow-wrap: anywhere; }
+.capability-form-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.capability-form-actions button { padding: 6px 9px; border: 1px solid var(--border-2); border-radius: 6px; background: var(--surface-2); cursor: pointer; font-size: 10px; }
+.capability-form-actions button.primary { border-color: var(--accent); background: var(--accent); color: white; }
+.capability-form-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.approval-summary { display: grid; gap: 5px; padding: 12px 13px 6px; }
+.approval-summary strong { font-size: 13px; }
+.approval-summary p { margin: 0; color: var(--text-muted); font-size: 11px; }
+.approval-fields { display: grid; gap: 8px; padding: 8px 13px 12px; }
+.approval-fields label, .approval-json { display: grid; gap: 4px; color: var(--text-muted); font-size: 9px; }
+.approval-fields label > span, .approval-json > span { color: var(--text); font: 9px var(--mono); }
+.approval-json { padding: 8px 13px 12px; }
+.approval-expired, .approval-deadline { margin: 0 13px 10px; color: var(--text-muted); font-size: 10px; }
+.approval-expired { color: var(--danger); font-weight: 650; }
+.approval-form-error { margin: -5px 13px 10px; color: var(--danger); font-size: 10px; }
+.approval-resolver { color: var(--text-muted); font-size: 10px; }
+.task-controls { display: grid; gap: 7px; margin: 5px 10px 10px; padding: 9px; border-top: 1px solid var(--border); }
+.task-control-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-control-buttons button, .steer-form button { padding: 5px 8px; border: 1px solid var(--border-2); border-radius: 6px; background: var(--surface); cursor: pointer; font-size: 10px; }
+.task-control-buttons button:first-child, .task-control-buttons .interrupt { border-color: var(--accent-glow); color: var(--danger); }
+.task-control-buttons button:disabled { opacity: .45; cursor: wait; }
+.control-status, .wait-hint { margin: 0; color: var(--text-muted); font-size: 9px; }
+.control-status.uncertain { color: var(--warning); }
+.steer-form { display: grid; gap: 6px; }
+.steer-form textarea { width: 100%; resize: vertical; padding: 7px; border: 1px solid var(--border-2); border-radius: 6px; background: white; }
+.steer-form > div { display: flex; justify-content: flex-end; gap: 5px; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.86); } }

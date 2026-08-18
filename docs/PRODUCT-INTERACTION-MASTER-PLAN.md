@@ -33,6 +33,10 @@
 - [频道访问状态](interaction-specs/channel-access-state.md)：定义频道存在性、运行状态、用户关系、最终 UI 模式、Mock 场景和浏览器验收。
 - [普通消息与结构化终态](interaction-specs/message-and-structured-terminal.md)：定义提交与账本两层状态、receipt/feed 对账、回合 fold、结构化结果渲染、异常场景和验收。
 
+独立工程重构轨道：
+
+- [UI 组件层重构设计与施工计划](UI-COMPONENT-REFACTOR-PLAN.md)：在不改变产品视觉与用户旅程的前提下，统一基础组件、右侧面板、动态表单、App 编排、CSS 和视觉回归。该轨道使用 DG/R 编号，不属于产品阶段 A–E。
+
 ## 1. 当前结论
 
 当前 atoll-web 已经是一个“核心频道访问与消息结果可信、可恢复的账本客户端”，但还不是完整的 Atoll 交互客户端。

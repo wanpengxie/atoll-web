@@ -46,7 +46,7 @@ export function ChannelList({ channels, activeChannelId, unread, wireState, me, 
       </header>
       <nav aria-label="频道">
         <p className="rail-caption">我的频道 <span>{mine.length}</span></p>
-        <button type="button" className="rail-create-button" onClick={onCreate}><span>＋</span> 新建频道</button>
+        <button type="button" className="rail-create-button" onClick={onCreate} aria-label="新建频道" title="新建频道"><span>＋</span> 新建频道</button>
         {group(mine, '还没有加入频道')}
         <p className="rail-caption space-caption">空间 <span>{space.length}</span></p>
         {group(space, '没有可发现频道')}
@@ -54,7 +54,7 @@ export function ChannelList({ channels, activeChannelId, unread, wireState, me, 
       <footer className="account-card">
         <span className="avatar">{(me.display_name || me.email || me.id || '?').slice(0, 1).toUpperCase()}</span>
         <span><strong>{me.display_name || me.email || '已登录用户'}</strong><small>{me.id || 'principal 未知'}</small></span>
-        <span className="account-actions"><button type="button" onClick={onSpaceManage}>空间管理</button><button type="button" onClick={onLogout}>退出</button></span>
+        <span className="account-actions"><button type="button" onClick={onSpaceManage} aria-label="空间管理" title="空间管理">空间管理</button><button type="button" onClick={onLogout} aria-label="退出" title="退出">退出</button></span>
       </footer>
     </aside>
   );

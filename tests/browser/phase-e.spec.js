@@ -22,7 +22,7 @@ async function openSpace(page, tab = 'Actor 模板') {
   await page.getByRole('button', { name: '空间管理' }).click();
   const panel = page.getByRole('complementary', { name: '空间管理' });
   await expect(panel).toBeVisible();
-  if (tab !== 'Actor 模板') await panel.getByRole('button', { name: tab, exact: true }).click();
+  if (tab !== 'Actor 模板') await panel.getByRole('tab', { name: tab, exact: true }).click();
   return panel;
 }
 
@@ -30,7 +30,7 @@ async function openResources(page, tab = 'KV') {
   await page.getByRole('button', { name: '资源', exact: true }).click();
   const panel = page.getByRole('complementary', { name: '频道资源' });
   await expect(panel).toBeVisible();
-  if (tab !== 'KV') await panel.getByRole('button', { name: tab, exact: true }).click();
+  if (tab !== 'KV') await panel.getByRole('tab', { name: tab, exact: true }).click();
   return panel;
 }
 
@@ -112,14 +112,14 @@ test('E-BR-05/E-BR-06 设备使用安全 OBS，一次性密钥不进时间线和
   const row = panel.locator('.device-row').filter({ hasText: 'Browser Device' });
   await expect(row).toBeVisible();
   await row.getByRole('button', { name: '绑定当前频道' }).click();
-  await expect(panel.getByRole('alertdialog', { name: '确认设备操作' })).toContainText('最终运行状态');
+  await expect(panel.locator('.inline-confirmation')).toContainText('最终运行状态');
   await panel.getByRole('button', { name: '确认操作' }).click();
   await expect(page.locator('.turn-card[data-request-type="device.attach"]')).toContainText('attached');
   await row.getByRole('button', { name: '解绑' }).click();
   await panel.getByRole('button', { name: '确认操作' }).click();
   await expect(page.locator('.turn-card[data-request-type="device.detach"]')).toContainText('attached');
   await row.getByRole('button', { name: '退役' }).click();
-  await expect(panel.getByRole('alertdialog', { name: '确认设备操作' })).toContainText('不可由前端恢复');
+  await expect(panel.locator('.inline-confirmation')).toContainText('不可由前端恢复');
   await panel.getByRole('button', { name: '确认操作' }).click();
   await expect(page.locator('.turn-card[data-request-type="device.retire"]')).toContainText('retired');
 });
@@ -147,7 +147,8 @@ test('E-BR-07 KV create/read/write/stat/list/delete 完整闭环', async ({ page
 test('E-BR-08/E-BR-10 文件上传、附件消息卡和下载闭环', async ({ page, request }) => {
   await reset(request, 'resource-workflow', 306); await login(page);
   const panel = await openResources(page, '文件与附件');
-  await panel.getByLabel('文件目标设备').selectOption('local-device');
+  await panel.getByRole('combobox', { name: '文件目标设备' }).click();
+  await panel.getByRole('option', { name: /Mock local device/ }).click();
   await panel.getByLabel('文件资源路径').fill('uploads/phase-e-upload.txt');
   await panel.getByLabel('选择上传文件').setInputFiles(UPLOAD);
   await panel.getByRole('button', { name: '上传', exact: true }).click();
@@ -175,7 +176,8 @@ test('E-BR-09 ticket 过期保留上下文并可重新获取，不复用旧 PUT'
     await route.continue();
   });
   const panel = await openResources(page, '文件与附件');
-  await panel.getByLabel('文件目标设备').selectOption('local-device');
+  await panel.getByRole('combobox', { name: '文件目标设备' }).click();
+  await panel.getByRole('option', { name: /Mock local device/ }).click();
   await panel.getByLabel('文件资源路径').fill('uploads/expired.txt');
   await panel.getByLabel('选择上传文件').setInputFiles(UPLOAD);
   await panel.getByRole('button', { name: '上传', exact: true }).click();

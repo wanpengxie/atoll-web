@@ -26,6 +26,8 @@ npm run test:all
 2. Playwright 启动真实 Chromium，连接 Vite 与 Mock 完成产品 E2E；
 3. Vite 生产构建。
 
+Playwright 套件同时包含 11 条 UI 视觉/边界用例（含“新建频道”独立任务基线），以及 `layout-responsive.spec.js` 的 3 条结构布局门禁：1280px Actor 详情、320px 核心导航/四标签面板、320px @成员浮层。截图位于 `tests/browser/ui-visual.spec.js-snapshots/`；只有人工审查并登记过的视觉变化才允许更新。
+
 任何一步失败都视为当前产品基线回归。阶段 B 完成审计还必须执行第 9 节的静态检查。
 
 ## 2. 测试分层
@@ -42,7 +44,8 @@ npm run test:all
 | Mock 治理 | `tests/mock-governance.test.js` | system/coreactor/registrar 改变状态并收敛 OBS |
 | 契约漂移 | `tests/contract-fixtures.test.js` | atoll WS、OBS、registrar、describe、ticket JSON fixture |
 | 协议 E2E | `tests/e2e.mock.test.js` | 登录、回放、消息、审批、延迟、故障和重连 |
-| 浏览器 E2E | `tests/browser/phase-a.spec.js`、`tests/browser/phase-b.spec.js`、`tests/browser/phase-c.spec.js`、`tests/browser/phase-d.spec.js` | 阶段 A–C 回归及 D-BR-01..10 的频道与 Actor 治理验收 |
+| UI primitives | `tests/ui-primitives.test.jsx` | tabs、选择菜单、确认和焦点的 DOM/键盘行为 |
+| 浏览器 E2E | `tests/browser/phase-a.spec.js`～`phase-e.spec.js`、`tests/browser/ui-visual.spec.js`、`tests/browser/layout-responsive.spec.js` | 阶段 A–E 产品闭环、四档视口边界、结构布局门禁和视觉基线 |
 
 只运行快速测试：
 

@@ -1,0 +1,20 @@
+/* Composer */
+.composer-wrap { grid-row: 4; position: relative; z-index: 3; padding: 13px 22px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.composer-input-area { position: relative; min-width: 0; }
+.composer-box { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.composer-box textarea { min-height: 43px; max-height: 150px; resize: vertical; padding: 10px 13px; border: 1px solid var(--border-2); border-radius: 8px; outline: 0; background: white; color: var(--text); font-size: 14px; line-height: 1.5; transition: border-color .15s, box-shadow .15s; }
+.composer-box textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.composer-box textarea::placeholder { color: var(--text-dim); }
+.send-button { align-self: stretch; min-width: 76px; padding: 9px 18px; border: 0; border-radius: 8px; background: var(--accent); color: white; cursor: pointer; font-size: 13px; font-weight: 600; }
+.send-button:hover { opacity: .9; }
+.send-button:disabled { opacity: .42; cursor: not-allowed; }
+.send-button span { font-family: var(--mono); }
+.composer-help { display: flex; justify-content: space-between; padding: 6px 2px 0; color: var(--text-dim); font: 8px var(--mono); }
+.composer-error { padding-top: 6px; }
+.mention-chips { display: flex; gap: 6px; padding-bottom: 7px; }
+.mention-chips button { padding: 4px 7px; border: 1px solid var(--accent-glow); border-radius: 99px; background: var(--accent-bg); color: var(--accent); cursor: pointer; font: 9px var(--mono); }
+.mention-menu { position: absolute; z-index: 1; right: 0; bottom: calc(100% + 5px); left: 0; max-height: min(250px, 40vh); overflow-y: auto; border: 1px solid var(--border-2); border-radius: 10px; background: var(--surface); box-shadow: 0 14px 32px var(--shadow-2); }
+.mention-menu button { display: grid; grid-template-columns: 30px auto 1fr; width: 100%; align-items: center; gap: 8px; padding: 8px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; text-align: left; cursor: pointer; }
+.mention-menu button:hover { background: var(--accent-bg); }
+.mention-menu strong { font-size: 11px; }
+.mention-menu small { color: var(--text-dim); font: 9px var(--mono); }

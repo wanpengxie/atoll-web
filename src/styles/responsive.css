@@ -1,0 +1,50 @@
+
+@media (max-width: 1050px) {
+  .shell { grid-template-columns: 220px minmax(0, 1fr) 280px; }
+  .timeline-inner { padding: 16px; }
+  .turn-card, .approval-card, .standalone-row, .pending-row { width: 90%; }
+}
+
+@media (max-width: 900px) {
+  .shell { position: relative; grid-template-columns: 210px minmax(0, 1fr); }
+  .roster-panel { display: none; }
+  .side-panel {
+    position: absolute;
+    z-index: 20;
+    inset: 0 0 0 auto;
+    width: min(320px, calc(100% - 210px));
+    max-width: 100%;
+    box-shadow: -10px 0 28px rgba(43, 33, 24, .14);
+  }
+}
+
+@media (max-width: 640px) {
+  .shell { grid-template-columns: 68px minmax(0, 1fr); }
+  .side-panel { width: min(320px, calc(100% - 68px)); }
+  .rail-header { justify-content: center; padding: 14px 8px; }
+  .rail-header .brand-lockup { font-size: 0; }
+  .connection-state { display: none; }
+  .channel-rail nav { padding: 10px 7px; }
+  .rail-caption, .channel-name, .channel-access-label, .account-card > span:nth-child(2) { display: none; }
+  .rail-create-button { width: 44px; justify-content: center; margin: 0 auto 9px; padding: 8px 0; font-size: 0; }
+  .channel-item { position: relative; grid-template-columns: 1fr; justify-items: center; padding: 7px 0; }
+  .channel-glyph { font-size: 15px; }
+  .unread-badge { position: absolute; top: 2px; right: 1px; min-width: 16px; padding: 1px 4px; }
+  .account-card { display: flex; flex-direction: column; justify-items: center; gap: 6px; padding: 9px 6px; }
+  .account-actions { flex-direction: row; gap: 2px; }
+  .account-card button { display: grid; width: 24px; height: 24px; place-content: center; padding: 0; border-radius: 5px; font-size: 0; }
+  .account-card button:hover { background: rgba(245, 240, 232, .08); }
+  .account-card button:first-child::before { content: '⚙'; font-size: 13px; }
+  .account-card button:last-child::before { content: '↪'; font-size: 14px; }
+  .channel-header { padding: 11px 14px; }
+  .channel-header { align-items: stretch; flex-direction: column; gap: 8px; }
+  .channel-header > div:first-child { min-width: 0; }
+  .channel-header-actions { display: grid; width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+  .channel-header-actions .manage-button { min-width: 0; padding: 6px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .seq-label { display: none; }
+  .timeline-inner { padding: 12px 10px; }
+  .turn-card, .approval-card, .standalone-row, .pending-row { width: 96%; }
+  .composer-wrap { padding: 10px; }
+  .send-button { min-width: 58px; padding: 8px 12px; }
+  .send-button span, .composer-help span:first-child { display: none; }
+}

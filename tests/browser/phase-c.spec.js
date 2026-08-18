@@ -94,7 +94,8 @@ test('C-BR-02/03/04 Schema 表单跨 OBS 刷新保留输入并原样调用', asy
   await page.getByRole('button', { name: '刷新名册' }).click();
   await expect(form.getByRole('textbox', { name: /name/ })).toHaveValue('阶段C结构化订单');
   await expect(form.getByRole('spinbutton', { name: /count/ })).toHaveValue('7');
-  await form.getByRole('combobox', { name: /priority/ }).selectOption('urgent');
+  await form.getByRole('combobox', { name: /priority/ }).click();
+  await form.getByRole('option', { name: 'urgent' }).click();
   await form.getByRole('checkbox', { name: /notify/ }).check();
   await form.getByRole('button', { name: '提交操作' }).click();
 
@@ -211,7 +212,8 @@ test('C-BR-08/11 Schema 审批携带结构化 payload 并由终态恢复处理�
   const approval = page.locator('.approval-card').first();
   await expect(approval.getByText(/影响：/)).toBeVisible();
   await approval.getByRole('textbox', { name: /note/ }).fill('同意按灰度方案执行');
-  await approval.getByRole('combobox', { name: /severity/ }).selectOption('high');
+  await approval.getByRole('combobox', { name: /severity/ }).click();
+  await approval.getByRole('option', { name: 'high' }).click();
   await approval.getByRole('checkbox', { name: /notify/ }).check();
   await approval.getByRole('button', { name: '批准' }).click();
   await expect(approval.getByText(/处理者：root.*approved/)).toBeVisible();

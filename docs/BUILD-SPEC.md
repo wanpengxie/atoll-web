@@ -46,7 +46,9 @@ src/ui/Composer.jsx           @、稳定 submit、兼容管理命令
 src/ui/Roster.jsx             业务名册与 self 确认状态
 ```
 
-`App.jsx` 只负责编排网络生命周期、批量 feed、模型事件和组件数据，不在 JSX 内重新推导权限或回合语义。
+`App.jsx` 是控制器组合入口，不再直接渲染具体产品面板。页面结构由 `app/AppShell.jsx` 组合，右栏路由由 `app/RightPanelHost.jsx` 负责；身份恢复、频道目录、feed 批处理/缓存、提交状态机和本地定时器分别位于 `app/hooks/`。App 不在 JSX 内重新推导权限或回合语义。
+
+样式入口仍为 `src/styles.css`，它只按固定顺序聚合 `src/styles/` 下的 tokens、base、auth、app-shell、timeline、composer、roster、primitives、features、runtime 与 responsive 文件；搬迁未改变原有视觉值。
 
 ## 3. 协议层
 

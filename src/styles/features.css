@@ -1,0 +1,49 @@
+/* Phase E: space administration, resources, attachments and local timers */
+.form-actions, .resource-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.form-actions button, .resource-actions button { min-height: 30px; padding: 6px 8px; border: 1px solid var(--border-2); border-radius: 6px; background: var(--surface-2); cursor: pointer; font-size: 9px; }
+.form-actions .primary-button, .resource-actions .primary-button { border-color: var(--accent); background: var(--accent); color: white; }
+.template-row { position: relative; display: grid; width: 100%; gap: 2px; padding: 8px 0; border: 0; border-top: 1px solid var(--border); background: transparent; text-align: left; cursor: pointer; }
+.template-row strong { font-size: 10px; }
+.template-row small { color: var(--text-muted); font: 8px var(--mono); overflow-wrap: anywhere; }
+.template-row > span { position: absolute; top: 8px; right: 0; color: var(--danger); font: 8px var(--mono); }
+.operation-state, .upload-state { margin: 0 0 9px; padding: 7px 9px; border-radius: 6px; background: var(--agent-bg); color: var(--agent); font-size: 10px; }
+.operation-state.state-completed, .upload-state.state-completed { background: rgba(0, 166, 81, .1); color: var(--online); }
+.operation-state.state-failed, .upload-state.state-error { background: var(--accent-bg); color: var(--danger); }
+.secret-card { display: grid; gap: 8px; margin-bottom: 10px; padding: 12px; border: 2px solid var(--danger); border-radius: 9px; background: #fff6f6; }
+.secret-card strong { color: var(--danger); font-size: 12px; }
+.secret-card code { padding: 9px; overflow-wrap: anywhere; border-radius: 5px; background: var(--brown); color: white; font: 11px var(--mono); user-select: all; }
+.secret-card p { margin: 0; color: var(--text-muted); font-size: 10px; }
+.secret-card button { justify-self: end; border: 0; background: transparent; color: var(--danger); cursor: pointer; font-size: 10px; }
+.device-row, .timer-row, .file-row { display: grid; gap: 7px; padding: 9px 0; border-top: 1px solid var(--border); }
+.device-row > div:first-child, .timer-row > div:first-child, .file-row > div:first-child { min-width: 0; display: grid; gap: 3px; }
+.device-row strong, .timer-row strong, .file-row strong { font-size: 10px; }
+.device-row small, .timer-row small, .file-row small { color: var(--text-muted); font: 8px var(--mono); }
+.device-row > div:last-child, .file-row > div:last-child { display: flex; flex-wrap: wrap; gap: 5px; }
+.device-row button, .timer-row button, .file-row button { padding: 5px 6px; border: 1px solid var(--border-2); border-radius: 5px; background: var(--surface-2); cursor: pointer; font-size: 9px; }
+.observed-runtime { display: flex; align-items: center; justify-content: space-between; padding: 7px 8px; border-radius: 6px; background: var(--surface-2); font-size: 9px; }
+.observed-runtime span { color: var(--text-muted); font-family: var(--mono); }
+.observed-runtime.online strong { color: var(--online); }
+.observed-runtime.waiting strong { color: var(--warning); }
+.resource-result pre { max-height: 280px; overflow: auto; margin: 0; white-space: pre-wrap; font: 9px/1.5 var(--mono); }
+.file-picker > span { color: var(--text); font-family: var(--sans); }
+.file-row code { overflow-wrap: anywhere; color: var(--agent); font: 8px var(--mono); }
+.local-fact { margin-bottom: 10px; padding: 10px; border: 1px solid #d7b87a; border-radius: 8px; background: #f6efe0; }
+.local-fact strong { color: #76551a; font-size: 10px; }
+.local-fact p { margin: 4px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.timer-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.timer-row button { grid-column: 1 / -1; }
+.timer-state { font: 8px var(--mono); }
+.timer-state.state-scheduled { color: var(--online); }
+.timer-state.state-cancelled { color: var(--text-dim); }
+.attachment-drafts { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 7px; }
+.attachment-drafts > div { display: grid; grid-template-columns: auto auto auto auto; align-items: center; gap: 6px; min-width: max-content; padding: 5px 7px; border: 1px solid var(--agent); border-radius: 7px; background: var(--agent-bg); }
+.attachment-drafts span, .attachment-drafts small { color: var(--agent); font: 8px var(--mono); }
+.attachment-drafts strong { font-size: 10px; }
+.attachment-drafts button { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; }
+.message-attachments { display: grid; gap: 6px; padding: 3px 14px 11px; }
+.message-attachments article { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 7px; background: rgba(255, 255, 255, .5); }
+.attachment-icon { display: grid; width: 27px; height: 27px; place-content: center; border-radius: 6px; background: var(--agent-bg); color: var(--agent); }
+.message-attachments article > div { min-width: 0; display: grid; gap: 2px; }
+.message-attachments strong { font-size: 10px; }
+.message-attachments small, .message-attachments code { overflow: hidden; color: var(--text-muted); font: 8px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.message-attachments button { padding: 5px 7px; border: 1px solid var(--border-2); border-radius: 5px; background: var(--surface); cursor: pointer; font-size: 9px; }

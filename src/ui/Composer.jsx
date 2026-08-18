@@ -112,28 +112,30 @@ export function Composer({ channelId, roster, selfId, attachments = [], disabled
           <button type="button" key={row.id} onClick={() => setMentions((current) => current.filter((item) => item.id !== row.id))}>@{row.name || row.id} ×</button>
         ))}</div>
       )}
-      <div className="composer-box">
-        <textarea
-          aria-label="消息"
-          placeholder={disabled ? disabledReason : '输入 @ 选择成员，Enter 发送'}
-          value={text}
-          disabled={!channelId || disabled}
-          onChange={(event) => { setText(event.target.value); setError(''); }}
-          onKeyDown={onKeyDown}
-          rows={2}
-        />
-        <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled}>发送 <span>↵</span></button>
-      </div>
-      {query != null && candidates.length > 0 && (
-        <div className="mention-menu" role="listbox">
-          {candidates.slice(0, 8).map((row) => (
-            <button type="button" role="option" aria-selected="false" key={row.id} onClick={() => pick(row)}>
-              <span className={`actor-icon kind-${row.kind}`}>{row.kind.slice(0, 1).toUpperCase()}</span>
-              <strong>{row.name || row.id}</strong><small>{row.kind} · {row.decl_id || row.id}</small>
-            </button>
-          ))}
+      <div className="composer-input-area">
+        <div className="composer-box">
+          <textarea
+            aria-label="消息"
+            placeholder={disabled ? disabledReason : '输入 @ 选择成员，Enter 发送'}
+            value={text}
+            disabled={!channelId || disabled}
+            onChange={(event) => { setText(event.target.value); setError(''); }}
+            onKeyDown={onKeyDown}
+            rows={2}
+          />
+          <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled}>发送 <span>↵</span></button>
         </div>
-      )}
+        {query != null && candidates.length > 0 && (
+          <div className="mention-menu" role="listbox">
+            {candidates.slice(0, 8).map((row) => (
+              <button type="button" role="option" aria-selected="false" key={row.id} onClick={() => pick(row)}>
+                <span className={`actor-icon kind-${row.kind}`}>{row.kind.slice(0, 1).toUpperCase()}</span>
+                <strong>{row.name || row.id}</strong><small>{row.kind} · {row.decl_id || row.id}</small>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="composer-help"><span>Shift + Enter 换行</span><span>/introduce · /channels</span></div>
       {error && <p className="composer-error" role="alert">{error}</p>}
     </section>

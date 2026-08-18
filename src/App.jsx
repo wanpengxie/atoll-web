@@ -1,38 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
-import { createControlState, restoreControlStates, saveControlStates } from './model/control-actions.js';
-import { createCursors, unreadCount } from './model/cursors.js';
-import { canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
-import { createFeedCache, resumeSnapshot } from './model/feed-cache.js';
-import { apply, createChannelState, reconcileApprovals } from './model/fold.js';
+import { unreadCount } from './model/cursors.js';
+import { CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
+import { resumeSnapshot } from './model/feed-cache.js';
+import { createChannelState, reconcileApprovals } from './model/fold.js';
 import { createRoster } from './model/roster.js';
 import { readFileTicket } from './model/resources.js';
 import { safeDaemonRows } from './model/space-administration.js';
-import { createSubmission, isUncertainWireError, reconcileLanded, restoreSubmissions, saveSubmissions, transitionSubmission } from './model/submissions.js';
-import { cancelTimerRecord, restoreTimers, saveTimers, timerRecord } from './model/timers.js';
-import { createIdentityClient } from './net/identity.js';
 import { createObsClient, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
 import { Auth } from './ui/Auth.jsx';
-import { ChannelList } from './ui/ChannelList.jsx';
-import { ChannelGovernance } from './ui/ChannelGovernance.jsx';
-import { ChannelAutomation } from './ui/ChannelAutomation.jsx';
-import { ChannelResources } from './ui/ChannelResources.jsx';
-import { Composer } from './ui/Composer.jsx';
-import { Roster } from './ui/Roster.jsx';
-import { SpaceAdministration } from './ui/SpaceAdministration.jsx';
-import { Timeline } from './ui/Timeline.jsx';
-
-const PRINCIPAL_KEY = 'atoll.principal';
-const FEED_BATCH_SIZE = 250;
-
-function savedPrincipal() {
-  try {
-    return JSON.parse(localStorage.getItem(PRINCIPAL_KEY) || 'null');
-  } catch {
-    return null;
-  }
-}
+import { AppShell } from './app/AppShell.jsx';
+import { useLocalAutomation } from './app/hooks/useLocalAutomation.js';
+import { useSubmissions } from './app/hooks/useSubmissions.js';
+import { useAtollSession } from './app/hooks/useAtollSession.js';
+import { useChannelDirectory } from './app/hooks/useChannelDirectory.js';
+import { useChannelFeed } from './app/hooks/useChannelFeed.js';
 
 function displayError(error) {
   if (error instanceof ObsError && error.status === 503) return '频道未在服务';
@@ -62,58 +45,49 @@ async function loadChannelTree(obs) {
   return { channels: found, complete };
 }
 
-const ACCESS_MESSAGE = {
-  member_stale: '连接已中断，当前显示本地缓存；恢复连接前不能发送。',
-  member_unavailable: '频道暂不可用，历史记录仍可查看。',
-  observer_active: '正在只读旁观此频道。',
-  observer_stale: '旁观连接已中断，当前显示本地缓存。',
-  discoverable: '这是空间中的可发现频道，你当前没有成员访问关系。',
-  access_denied: '你的频道访问权限已被撤销，历史缓存仅供本地查看。',
-  loading: '正在确认频道访问状态。',
-};
-
 export default function App() {
-  const [booting, setBooting] = useState(true);
-  const [me, setMe] = useState(null);
-  const [channels, setChannels] = useState(new Map());
-  const [accessVersion, setAccessVersion] = useState(0);
-  const [activeChannelId, setActiveChannelId] = useState('');
   const [wireState, setWireState] = useState('closed');
   const [topError, setTopError] = useState('');
-  const [feedVersion, setFeedVersion] = useState(0);
   const [rosters, setRosters] = useState(new Map());
   const [rosterBusy, setRosterBusy] = useState(false);
-  const [pending, setPending] = useState([]);
-  const [approvalStates, setApprovalStates] = useState({});
   const [channelNotice, setChannelNotice] = useState('');
   const [selectedActor, setSelectedActor] = useState(null);
-  const [controlStates, setControlStates] = useState({});
   const [rightPanel, setRightPanel] = useState('roster');
   const [spacePrincipals, setSpacePrincipals] = useState([]);
   const [spaceDeclarations, setSpaceDeclarations] = useState([]);
   const [spaceDaemons, setSpaceDaemons] = useState([]);
-  const [timerRecords, setTimerRecords] = useState([]);
   const [draftAttachments, setDraftAttachments] = useState({});
-  const governanceOpen = rightPanel === 'governance';
 
-  const identityRef = useRef(createIdentityClient());
   const obsRef = useRef(null);
   const wireRef = useRef(null);
   const rosterRef = useRef(null);
   const accessRef = useRef(null);
-  const cursorsRef = useRef(createCursors());
-  const feedCacheRef = useRef(null);
-  if (feedCacheRef.current === null) feedCacheRef.current = createFeedCache();
-  const channelStatesRef = useRef(null);
-  if (channelStatesRef.current === null) {
-    channelStatesRef.current = feedCacheRef.current.restore();
-    cursorsRef.current.reconcile(resumeSnapshot(channelStatesRef.current));
-  }
-  const feedQueueRef = useRef([]);
-  const feedDirtyRef = useRef(new Set());
-  const feedTaskRef = useRef(null);
   const activeChannelRef = useRef('');
-  const pendingTimersRef = useRef(new Map());
+  const showSessionError = useCallback((error) => setTopError(displayError(error)), []);
+  const { booting, principal: me, identity, accept: handleAuthed, clear: clearSession, logoutRemote } = useAtollSession({ onError: showSessionError });
+  const { records: timerRecords, markFired: markTimerFired, after: handleAfter, cancel: handleCancelTimer, clear: clearTimers } = useLocalAutomation({ principalId: me?.id, wireRef, activeChannelRef });
+  const directoryActionsRef = useRef({});
+  const submissionActionsRef = useRef({});
+  const receiveRoster = useCallback((channelId, rows) => setRosters((current) => new Map(current).set(channelId, rows)), []);
+  const receiveFeedError = useCallback((error) => setTopError(displayError(error)), []);
+  const forwardChannels = useCallback((channelIds) => directoryActionsRef.current.discover?.(channelIds), []);
+  const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
+  const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
+  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed } = useChannelFeed({ rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
+  const channelChanged = useCallback(() => { setSelectedActor(null); setRightPanel('roster'); }, []);
+  const directory = useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
+  const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
+  const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireRef, rosterRef, accessRef, channelStatesRef, onError: setTopError, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
+  const { pending, approvalStates, controlStates, send: handleSend, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions } = submissions;
+  directoryActionsRef.current.bump = bumpAccess;
+  directoryActionsRef.current.discover = (channelIds) => setChannels((current) => {
+    const missing = [...channelIds].filter((channelId) => !current.has(channelId));
+    if (!missing.length) return current;
+    const next = new Map(current);
+    for (const channelId of missing) next.set(channelId, { id: channelId, name: channelId.slice(0, 8), status: 'present' });
+    return next;
+  });
+  submissionActionsRef.current.reconcile = reconcileSubmissionFeed;
 
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
@@ -122,151 +96,22 @@ export default function App() {
   const expireSession = useCallback(() => {
     wireRef.current?.close();
     wireRef.current = null;
-    channelStatesRef.current = new Map();
-    feedQueueRef.current = [];
-    setChannels(new Map());
+    clearFeed();
+    clearDirectory();
     accessRef.current = null;
-    setActiveChannelId('');
-    setPending([]);
     setRosters(new Map());
     setChannelNotice('');
     setSelectedActor(null);
-    setControlStates({});
+    clearSubmissions();
     setRightPanel('roster');
     setSpacePrincipals([]);
     setSpaceDeclarations([]);
     setSpaceDaemons([]);
-    setTimerRecords([]);
+    clearTimers();
     setDraftAttachments({});
-    setMe(null);
-    setBooting(false);
+    clearSession();
     setWireState('closed');
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    const obs = createObsClient();
-    (async () => {
-      try {
-        const principals = await obs.spacePrincipals();
-        if (!alive) return;
-        const saved = savedPrincipal();
-        const row = (principals.items || [])
-          .map((item) => item.declared || {})
-          .find((item) => item.id === saved?.id);
-        setMe(saved ? { ...saved, ...row } : { id: '', display_name: '已登录用户' });
-      } catch (error) {
-        if (alive && error?.status !== 401) setTopError(displayError(error));
-      } finally {
-        if (alive) setBooting(false);
-      }
-    })();
-    return () => { alive = false; };
-  }, []);
-
-  const cancelFeedTask = useCallback(() => {
-    if (feedTaskRef.current == null) return;
-    if ('cancelIdleCallback' in window) window.cancelIdleCallback(feedTaskRef.current);
-    else clearTimeout(feedTaskRef.current);
-    feedTaskRef.current = null;
-  }, []);
-
-  const processFeed = useCallback(() => {
-    feedTaskRef.current = null;
-    const batch = feedQueueRef.current.splice(0, FEED_BATCH_SIZE);
-    if (!batch.length) return;
-    let rosterChanged = false;
-    const unseenChannels = new Set();
-    const landedMessageIds = new Set();
-    const closedRequestIds = new Set();
-    for (const row of batch) {
-      let state = channelStatesRef.current.get(row.channel_id);
-      if (!state) {
-        state = createChannelState(row.channel_id);
-        channelStatesRef.current.set(row.channel_id, state);
-      }
-      const roster = rosterRef.current;
-      const selfId = roster?.self(row.channel_id) || '';
-      apply(state, row, selfId);
-      accessRef.current?.feed(row.channel_id);
-      feedDirtyRef.current.add(row.channel_id);
-      cursorsRef.current.advance(row.channel_id, row.seq);
-      if (activeChannelRef.current === row.channel_id) {
-        cursorsRef.current.markRead(row.channel_id, row.seq);
-      }
-
-      const learnedSelf = roster?.observeFeed(row.channel_id, row.envelope);
-      if (learnedSelf) {
-        reconcileApprovals(state, learnedSelf);
-        accessRef.current?.self(row.channel_id, learnedSelf);
-        rosterChanged = true;
-      }
-      roster?.handleEnvelope(row.channel_id, row.envelope, (rows, error) => {
-        if (rows) setRosters((current) => new Map(current).set(row.channel_id, rows));
-        if (error) setTopError(displayError(error));
-      });
-
-      unseenChannels.add(row.channel_id);
-      if (row.envelope?.id) landedMessageIds.add(row.envelope.id);
-      if (row.envelope?.id) {
-        setTimerRecords((current) => current.some((timer) => timer.timerId === row.envelope.id && timer.state === 'scheduled')
-          ? current.map((timer) => timer.timerId === row.envelope.id ? { ...timer, state: 'fired', firedAt: row.envelope.ts || Date.now() } : timer)
-          : current);
-      }
-      if (row.envelope?.kind === 'response' && ['completed', 'failed'].includes(row.envelope?.payload?.status) && row.envelope?.parent_id) {
-        closedRequestIds.add(`${row.channel_id}:${row.envelope.parent_id}:cancel`);
-      }
-    }
-    setChannels((current) => {
-      const missing = [...unseenChannels].filter((channelId) => !current.has(channelId));
-      if (!missing.length) return current;
-      const next = new Map(current);
-      for (const channelId of missing) {
-        next.set(channelId, { id: channelId, name: channelId.slice(0, 8), status: 'present' });
-      }
-      return next;
-    });
-    if (landedMessageIds.size) {
-      setPending((current) => {
-        const landed = current.filter((item) => item.messageId && landedMessageIds.has(item.messageId));
-        if (!landed.length) return current;
-        if (landed.some((item) => item.state === 'uncertain')) {
-          setChannelNotice('此前发送结果待确认，现已通过频道账本确认。');
-        }
-        for (const item of landed) {
-          const timer = pendingTimersRef.current.get(item.key);
-          if (timer) clearTimeout(timer);
-          pendingTimersRef.current.delete(item.key);
-        }
-        return reconcileLanded(current, landedMessageIds);
-      });
-    }
-    if (closedRequestIds.size) {
-      setControlStates((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !closedRequestIds.has(key))));
-    }
-    setAccessVersion((value) => value + 1);
-    setFeedVersion((value) => value + 1 + Number(rosterChanged));
-    if (feedQueueRef.current.length) {
-      const run = () => processFeed();
-      feedTaskRef.current = 'requestIdleCallback' in window
-        ? window.requestIdleCallback(run, { timeout: 100 })
-        : setTimeout(run, 0);
-    } else {
-      for (const channelId of feedDirtyRef.current) {
-        feedCacheRef.current.save(channelStatesRef.current.get(channelId));
-      }
-      feedDirtyRef.current.clear();
-    }
-  }, []);
-
-  const enqueueFeed = useCallback((channelId, seq, envelope) => {
-    feedQueueRef.current.push({ channel_id: channelId, seq, envelope });
-    if (feedTaskRef.current != null) return;
-    const run = () => processFeed();
-    feedTaskRef.current = 'requestIdleCallback' in window
-      ? window.requestIdleCallback(run, { timeout: 100 })
-      : setTimeout(run, 0);
-  }, [processFeed]);
+  }, [clearDirectory, clearFeed, clearSession, clearSubmissions, clearTimers]);
 
   useEffect(() => {
     if (!me) return undefined;
@@ -277,8 +122,6 @@ export default function App() {
     obsRef.current = obs;
     rosterRef.current = roster;
     accessRef.current = access;
-    setPending(restoreSubmissions(me.id));
-    setControlStates(restoreControlStates(me.id));
 
     let alive = true;
     const refreshAccess = () => Promise.all([
@@ -298,7 +141,7 @@ export default function App() {
       });
       for (const membership of membershipRows.filter((row) => row.status === 'revoked')) roster.clearSelf(membership.channel_id);
       setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
-      setAccessVersion((value) => value + 1);
+      bumpAccess();
     }).catch((error) => { if (alive && error?.status !== 401) setTopError(displayError(error)); });
     refreshAccess();
     const accessTimer = setInterval(refreshAccess, 1_500);
@@ -313,7 +156,7 @@ export default function App() {
       onObserveEnded: (channelId, reason) => {
         if (reason === 'channel_retired') access.retire(channelId, reason);
         setTopError(`${channelId} 旁听已结束：${reason}`);
-        setAccessVersion((value) => value + 1);
+        bumpAccess();
       },
       onState: (state) => {
         if (state === 'attached') {
@@ -327,7 +170,7 @@ export default function App() {
           setWireState('closed');
         }
         else if (state === 'open') setWireState((current) => current === 'open' ? current : 'connecting');
-        setAccessVersion((value) => value + 1);
+        bumpAccess();
       },
     });
     wireRef.current = wire;
@@ -343,29 +186,7 @@ export default function App() {
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [cancelFeedTask, enqueueFeed, expireSession, me]);
-
-  const channelList = useMemo(
-    () => (accessRef.current?.rows() || []).sort((left, right) => {
-      if (left.id === 'c0') return -1;
-      if (right.id === 'c0') return 1;
-      return (left.qualified_name || left.name || left.id).localeCompare(right.qualified_name || right.name || right.id);
-    }),
-    [accessVersion],
-  );
-
-  useEffect(() => {
-    if (!activeChannelId && channelList.length) {
-      const initial = channelList.find((channel) => channel.access === CHANNEL_ACCESS.memberActive);
-      setActiveChannelId(initial?.id || channelList[0].id);
-    }
-    if (activeChannelId && !channelList.some((channel) => channel.id === activeChannelId)) {
-      const retired = accessRef.current?.state(activeChannelId)?.existence === 'retired';
-      if (retired) setChannelNotice(`${activeChannelId} 已退役，已切换到其他可用频道。`);
-      const next = channelList.find((channel) => channel.access === CHANNEL_ACCESS.memberActive) || channelList[0];
-      setActiveChannelId(next?.id || '');
-    }
-  }, [activeChannelId, channelList]);
+  }, [bumpAccess, cancelFeedTask, enqueueFeed, expireSession, me]);
 
   const refreshRoster = useCallback(async (channelId, force = false) => {
     if (!channelId || !rosterRef.current) return;
@@ -379,14 +200,14 @@ export default function App() {
       const state = channelStatesRef.current.get(channelId);
       if (state && selfId) {
         reconcileApprovals(state, selfId);
-        setFeedVersion((value) => value + 1);
+        bumpFeed();
       }
     } catch (error) {
       if (error?.status !== 401) setTopError(displayError(error));
     } finally {
       setRosterBusy(false);
     }
-  }, []);
+  }, [bumpFeed]);
 
   useEffect(() => {
     if (!activeChannelId || !me) return;
@@ -404,94 +225,10 @@ export default function App() {
     cursorsRef.current.markRead(activeChannelId, lastSeq);
   }, [activeChannelId, feedVersion]);
 
-  const selectChannel = useCallback((channelId) => {
-    setActiveChannelId(channelId);
-    setSelectedActor(null);
-    setRightPanel('roster');
-    const lastSeq = channelStatesRef.current.get(channelId)?.lastSeq || 0;
-    cursorsRef.current.markRead(channelId, lastSeq);
-  }, []);
-
-  const handleAuthed = useCallback((principal) => {
-    const value = { id: principal.id, display_name: principal.display_name || '' };
-    localStorage.setItem(PRINCIPAL_KEY, JSON.stringify(value));
-    setMe(value);
-  }, []);
-
   const handleLogout = useCallback(async () => {
-    try { await identityRef.current.logout(); } catch { /* local logout still wins */ }
+    await logoutRemote();
     expireSession();
-  }, [expireSession]);
-
-  const transmitSubmission = useCallback(async (submission) => {
-    const { channelId, messageId, key } = submission;
-    rosterRef.current?.recordSubmission(channelId, messageId);
-    try {
-      const receipt = await wireRef.current.submit(submission.frame);
-      accessRef.current?.receipt(channelId);
-      if (receipt.message_id !== messageId) {
-        setTopError(`协议异常：回执消息编号 ${receipt.message_id} 与客户端编号 ${messageId} 不一致`);
-      }
-      const state = channelStatesRef.current.get(channelId);
-      const landedEnvelope = state
-        ? [...state.rows.values()].find((envelope) => envelope.id === messageId)
-        : null;
-      if (landedEnvelope) {
-        const learnedSelf = rosterRef.current?.observeFeed(channelId, landedEnvelope);
-        if (learnedSelf) {
-          reconcileApprovals(state, learnedSelf);
-          accessRef.current?.self(channelId, learnedSelf);
-        }
-        setPending((current) => current.filter((item) => item.key !== key));
-        setFeedVersion((value) => value + 1);
-        setAccessVersion((value) => value + 1);
-        return;
-      }
-      setPending((current) => current.map((item) => item.key === key
-        ? transitionSubmission(item, 'accepted')
-        : item));
-      const timer = setTimeout(() => {
-        setPending((current) => current.map((item) => item.key === key && item.state === 'accepted'
-          ? transitionSubmission(item, 'delayed')
-          : item));
-      }, 10_000);
-      pendingTimersRef.current.set(key, timer);
-    } catch (error) {
-      if (error?.code === 'forbidden') {
-        accessRef.current?.forbidden(channelId);
-        rosterRef.current?.clearSelf(channelId);
-      } else if (['unavailable', 'channel_unavailable', 'channel_not_found'].includes(error?.code)) {
-        accessRef.current?.unavailable(channelId, error.code);
-      }
-      const uncertain = isUncertainWireError(error);
-      if (uncertain) setChannelNotice('发送结果待确认，正在通过重连账本核对。');
-      setPending((current) => current.map((item) => item.key === key
-        ? transitionSubmission(item, uncertain ? 'uncertain' : 'rejected', error)
-        : item));
-      setAccessVersion((value) => value + 1);
-    }
-  }, []);
-
-  const handleSend = useCallback(async ({ channelId: requestedChannelId, text, msgType, audience, targetLabel, payload, parentId = '', expiresAtMs }) => {
-    const channelId = requestedChannelId || activeChannelId;
-    if (!channelId || !wireRef.current) return '';
-    const messageId = crypto.randomUUID();
-    const frame = {
-      channel_id: channelId,
-      id: messageId,
-      msg_type: msgType,
-      kind: 'request',
-      payload: payload || { text },
-      audience,
-      visibility: 'public',
-      ...(parentId ? { parent_id: parentId } : {}),
-      ...(expiresAtMs ? { expires_at_ms: expiresAtMs } : {}),
-    };
-    const submission = createSubmission({ id: messageId, channelId, text, targetLabel, frame });
-    setPending((current) => [...current, submission]);
-    await transmitSubmission(submission);
-    return messageId;
-  }, [activeChannelId, transmitSubmission]);
+  }, [expireSession, logoutRemote]);
 
   const refreshGovernanceData = useCallback(async () => {
     if (!obsRef.current) return;
@@ -511,27 +248,13 @@ export default function App() {
   }, [refreshRoster]);
 
   useEffect(() => {
-    if (!['governance', 'space', 'resources'].includes(rightPanel)) return;
+    if (!['create-channel', 'governance', 'space', 'resources'].includes(rightPanel)) return;
     refreshGovernanceData();
   }, [rightPanel, activeChannelId, refreshGovernanceData]);
 
   const handleResource = useCallback(async (payload) => {
     if (!wireRef.current) throw new TypeError('连接尚未就绪');
     return wireRef.current.resource(payload);
-  }, []);
-
-  const handleAfter = useCallback(async (payload) => {
-    if (!wireRef.current) throw new TypeError('连接尚未就绪');
-    const receipt = await wireRef.current.after(payload);
-    if (!receipt?.timer_id) throw new TypeError('服务端没有返回 timer_id');
-    setTimerRecords((current) => [timerRecord({ timerId: receipt.timer_id, channelId: payload.channel_id, durationMs: payload.duration_ms, msgType: payload.msg_type, payload: payload.payload }), ...current.filter((row) => row.timerId !== receipt.timer_id)]);
-    return receipt;
-  }, []);
-
-  const handleCancelTimer = useCallback(async (timerId) => {
-    if (!wireRef.current || !activeChannelRef.current) throw new TypeError('连接尚未就绪');
-    await wireRef.current.cancelTimer({ channel_id: activeChannelRef.current, timer_id: timerId });
-    setTimerRecords((current) => cancelTimerRecord(current, timerId));
   }, []);
 
   const handleDownloadResource = useCallback(async (channelId, attachment) => {
@@ -547,47 +270,6 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (error) { setTopError(displayError(error)); }
   }, [handleResource]);
-
-  const handleRetry = useCallback(async (submission) => {
-    const timer = pendingTimersRef.current.get(submission.key);
-    if (timer) clearTimeout(timer);
-    pendingTimersRef.current.delete(submission.key);
-    const retry = transitionSubmission(submission, 'retry');
-    setPending((current) => current.map((item) => item.key === retry.key ? retry : item));
-    await transmitSubmission(retry);
-  }, [transmitSubmission]);
-
-  const handleResolve = useCallback(async (channelId, reqId, decision, payload) => {
-    setApprovalStates((current) => ({ ...current, [reqId]: 'sending' }));
-    try {
-      await wireRef.current.resolve({ channel_id: channelId, req_id: reqId, decision, ...(payload && Object.keys(payload).length ? { payload } : {}) });
-      setApprovalStates((current) => ({ ...current, [reqId]: 'resolved' }));
-    } catch (error) {
-      setApprovalStates((current) => ({ ...current, [reqId]: { error } }));
-      setAccessVersion((value) => value + 1);
-    }
-  }, []);
-
-  const handleCancel = useCallback(async (channelId, reqId) => {
-    const key = `${channelId}:${reqId}:cancel`;
-    setControlStates((current) => ({ ...current, [key]: createControlState('sending') }));
-    try {
-      await wireRef.current.cancel({ channel_id: channelId, req_id: reqId });
-      const terminal = channelStatesRef.current.get(channelId)?.turns.get(reqId)?.terminal;
-      setControlStates((current) => {
-        if (terminal) {
-          const next = { ...current };
-          delete next[key];
-          return next;
-        }
-        return { ...current, [key]: createControlState('accepted') };
-      });
-    } catch (error) {
-      const uncertain = isUncertainWireError(error);
-      setControlStates((current) => ({ ...current, [key]: createControlState(uncertain ? 'uncertain' : 'error', error) }));
-      setAccessVersion((value) => value + 1);
-    }
-  }, []);
 
   const handleTaskControl = useCallback(async ({ channelId, turn, actorId, type, payload }) => {
     if (!channelId || !turn || !actorId) return;
@@ -633,28 +315,8 @@ export default function App() {
     });
   }, [activeChannelId, handleSend, selectedActor]);
 
-  useEffect(() => () => {
-    for (const timer of pendingTimersRef.current.values()) clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    if (me?.id) saveSubmissions(me.id, pending);
-  }, [me?.id, pending]);
-
-  useEffect(() => {
-    if (me?.id) saveControlStates(me.id, controlStates);
-  }, [controlStates, me?.id]);
-
-  useEffect(() => {
-    if (me?.id) setTimerRecords(restoreTimers(me.id));
-  }, [me?.id]);
-
-  useEffect(() => {
-    if (me?.id) saveTimers(me.id, timerRecords);
-  }, [me?.id, timerRecords]);
-
   if (booting) return <div className="boot-screen"><span className="brand-dot" />正在恢复会话…</div>;
-  if (!me) return <Auth identity={identityRef.current} onAuthed={handleAuthed} />;
+  if (!me) return <Auth identity={identity} onAuthed={handleAuthed} />;
 
   const activeState = channelStatesRef.current.get(activeChannelId) || createChannelState(activeChannelId);
   const activeRow = channelList.find((channel) => channel.id === activeChannelId);
@@ -673,137 +335,22 @@ export default function App() {
   const capabilityIndex = capabilityIndexFromState(activeState);
   const selectedCapability = selectedActor ? capabilityIndex.get(selectedActor.id) : null;
 
-  return (
-    <div className="shell">
-      <ChannelList
-        channels={channelList}
-        activeChannelId={activeChannelId}
-        unread={unread}
-        wireState={wireState}
-        me={me}
-        onSelect={selectChannel}
-        onCreate={() => { setSelectedActor(null); setRightPanel('governance'); }}
-        onSpaceManage={() => { setSelectedActor(null); setRightPanel('space'); }}
-        onLogout={handleLogout}
-      />
-      <main className="workspace">
-        <header className="channel-header">
-          <div>
-            <p className="eyebrow">频道账本</p>
-            <h1>{activeChannel?.qualified_name || activeChannel?.name || activeChannelId || '选择频道'}</h1>
-          </div>
-          <div className="channel-header-actions">
-            <span className="seq-label">SEQ {activeState.lastSeq}</span>
-            <button type="button" className={rightPanel === 'resources' ? 'manage-button active' : 'manage-button'} disabled={!activeChannel} onClick={() => { setSelectedActor(null); setRightPanel((value) => value === 'resources' ? 'roster' : 'resources'); }}>资源</button>
-            <button type="button" className={rightPanel === 'automation' ? 'manage-button active' : 'manage-button'} disabled={!activeChannel} onClick={() => { setSelectedActor(null); setRightPanel((value) => value === 'automation' ? 'roster' : 'automation'); }}>定时动作</button>
-            <button type="button" className={governanceOpen ? 'manage-button active' : 'manage-button'} disabled={!activeChannel} onClick={() => { setSelectedActor(null); setRightPanel((value) => value === 'governance' ? 'roster' : 'governance'); }}>管理频道</button>
-          </div>
-        </header>
-        <div className="status-stack">
-          {topError && (
-            <div className="top-error" role="alert">
-              <span>{topError}</span>
-              <button type="button" onClick={() => setTopError('')} aria-label="关闭错误">×</button>
-            </div>
-          )}
-          {channelNotice && (
-            <div className="channel-notice" role="status">
-              <span>{channelNotice}</span>
-              <button type="button" onClick={() => setChannelNotice('')} aria-label="关闭频道提示">×</button>
-            </div>
-          )}
-          {ACCESS_MESSAGE[activeAccess] && (
-            <div className={`access-banner access-${activeAccess}`} role="status">
-              {ACCESS_MESSAGE[activeAccess]}
-              {isMemberAccess(activeAccess) && !selfId && <span> 当前频道中的“我”仍在确认，首次发送入账后会自动识别。</span>}
-            </div>
-          )}
-        </div>
-        <Timeline
-          state={activeState}
-          roster={activeRoster}
-          selfId={selfId}
-          pending={pending.filter((item) => item.channelId === activeChannelId)}
-          approvalStates={approvalStates}
-          controlStates={controlStates}
-          capabilityIndex={capabilityIndex}
-          access={activeAccess}
-          onResolve={handleResolve}
-          onRetry={handleRetry}
-          onCancel={handleCancel}
-          onTaskControl={handleTaskControl}
-          onDownloadResource={handleDownloadResource}
-        />
-        <Composer
-          channelId={activeChannelId}
-          roster={activeRoster}
-          selfId={selfId}
-          disabled={wireState !== 'open' || !canWriteChannel(activeAccess)}
-          disabledReason={wireState !== 'open'
-            ? '等待连接…'
-            : activeAccess === CHANNEL_ACCESS.discoverable || activeAccess === CHANNEL_ACCESS.accessDenied
-              ? '加入频道后才能发送消息'
-              : activeAccess === CHANNEL_ACCESS.memberUnavailable
-                ? '频道暂不可用'
-                : '当前频道不可写'}
-          onSend={handleSend}
-          attachments={draftAttachments[activeChannelId] || []}
-          onRemoveAttachment={(resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) }))}
-          onClearAttachments={() => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] }))}
-        />
-      </main>
-      {rightPanel === 'governance' && activeChannel ? <ChannelGovernance
-        channel={activeChannel}
-        channels={channelList}
-        roster={activeRoster}
-        state={activeState}
-        principals={spacePrincipals}
-        declarations={spaceDeclarations}
-        disabled={!canWriteChannel(activeAccess)}
-        onSubmit={handleSend}
-        onRefresh={refreshGovernanceData}
-        onClose={() => setRightPanel('roster')}
-      /> : rightPanel === 'space' && activeChannel ? <SpaceAdministration
-        channel={activeChannel}
-        channels={channelList}
-        roster={activeRoster}
-        registrarRoster={rosters.get('c0') || (activeChannelId === 'c0' ? activeRoster : [])}
-        state={activeState}
-        rootState={channelStatesRef.current.get('c0') || createChannelState('c0')}
-        version={feedVersion}
-        daemons={spaceDaemons}
-        disabled={wireState !== 'open'}
-        onSubmit={handleSend}
-        onRefresh={refreshGovernanceData}
-        onClose={() => setRightPanel('roster')}
-      /> : rightPanel === 'resources' && activeChannel ? <ChannelResources
-        channel={activeChannel}
-        daemons={spaceDaemons}
-        disabled={wireState !== 'open' || !canWriteChannel(activeAccess)}
-        onResource={handleResource}
-        onAttach={(attachment) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [...(current[activeChannelId] || []).filter((row) => row.resource_id !== attachment.resource_id), attachment] }))}
-        onClose={() => setRightPanel('roster')}
-      /> : rightPanel === 'automation' && activeChannel ? <ChannelAutomation
-        channel={activeChannel}
-        records={timerRecords}
-        disabled={wireState !== 'open' || !canWriteChannel(activeAccess)}
-        onAfter={handleAfter}
-        onCancel={handleCancelTimer}
-        onClose={() => setRightPanel('roster')}
-      /> : <Roster
-        rows={activeRoster}
-        selfId={selfId}
-        identityPending={isMemberAccess(activeAccess) && !selfId}
-        busy={rosterBusy}
-        onRefresh={() => refreshRoster(activeChannelId, true)}
-        selectedActor={selectedActor}
-        capability={selectedCapability}
-        disabled={!canWriteChannel(activeAccess)}
-        onSelectActor={handleSelectActor}
-        onCloseActor={() => setSelectedActor(null)}
-        onDescribe={() => describeActor(selectedActor, activeChannelId)}
-        onInvoke={handleInvokeActor}
-      />}
-    </div>
-  );
+  const setPanel = (value) => { setSelectedActor(null); setRightPanel(value); };
+  const togglePanel = (value) => setPanel(rightPanel === value ? 'roster' : value);
+  const host = {
+    panel: { value: rightPanel, set: setRightPanel },
+    active: { channel: activeChannel, state: activeState, roster: activeRoster, access: activeAccess, selfId, wireState },
+    directory: { channels: channelList },
+    governance: { principals: spacePrincipals, declarations: spaceDeclarations, daemons: spaceDaemons, registrarRoster: rosters.get('c0') || (activeChannelId === 'c0' ? activeRoster : []), rootState: channelStatesRef.current.get('c0'), version: feedVersion, onSubmit: handleSend, onRefresh: refreshGovernanceData },
+    resources: { onResource: handleResource, onAttach: (attachment) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [...(current[activeChannelId] || []).filter((row) => row.resource_id !== attachment.resource_id), attachment] })) },
+    automation: { records: timerRecords, onAfter: handleAfter, onCancel: handleCancelTimer },
+    roster: { busy: rosterBusy, onRefresh: () => refreshRoster(activeChannelId, true), selectedActor, capability: selectedCapability, onSelectActor: handleSelectActor, onCloseActor: () => setSelectedActor(null), onDescribe: () => describeActor(selectedActor, activeChannelId), onInvoke: handleInvokeActor },
+  };
+  return <AppShell
+    session={{ me, wireState, onLogout: handleLogout }}
+    navigation={{ channels: channelList, activeChannelId, unread, onSelect: selectChannel, onCreate: () => setPanel('create-channel'), onSpaceManage: () => setPanel('space') }}
+    workspace={{ channel: activeChannel, state: activeState, access: activeAccess, roster: activeRoster, selfId, pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onSend: handleSend, attachments: draftAttachments[activeChannelId] || [], onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })) }}
+    notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
+    panel={{ value: rightPanel, toggle: togglePanel, host }}
+  />;
 }

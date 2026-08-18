@@ -1,0 +1,33 @@
+:root {
+  color-scheme: light;
+  --bg: #d4c5a9;
+  --surface: #f5f0e8;
+  --surface-2: #ede6d8;
+  --surface-3: #e5dccc;
+  --border: rgba(58, 50, 38, .12);
+  --border-2: rgba(58, 50, 38, .22);
+  --text: #2e2419;
+  --text-muted: #7a6e5e;
+  --text-dim: #a89e8e;
+  --accent: #e4002b;
+  --accent-bg: rgba(228, 0, 43, .09);
+  --accent-glow: rgba(228, 0, 43, .24);
+  --agent: #0072ce;
+  --agent-bg: rgba(0, 114, 206, .09);
+  --online: #00a651;
+  --warning: #e59600;
+  --danger: #e4002b;
+  --brown: #3a3226;
+  --brown-mid: #6b5e4f;
+  --brown-light: #9b8d7c;
+  --text-light: #f5f0e8;
+  --shadow: rgba(58, 50, 38, .08);
+  --shadow-2: rgba(58, 50, 38, .16);
+  --rainbow: linear-gradient(90deg, #e4002b 0 20%, #ff6900 20% 40%, #ffd100 40% 60%, #00a651 60% 80%, #0072ce 80% 100%);
+  --sans: "Avenir Next", Avenir, "Segoe UI", "PingFang SC", sans-serif;
+  --serif: Georgia, "Songti SC", serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: var(--sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
