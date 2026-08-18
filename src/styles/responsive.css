@@ -1,50 +1,54 @@
 
 @media (max-width: 1050px) {
-  .shell { grid-template-columns: 220px minmax(0, 1fr) 280px; }
+  .shell { grid-template-columns: 220px minmax(0, 1fr); }
+  .shell.has-context { grid-template-columns: 220px minmax(0, 1fr) 320px; }
   .timeline-inner { padding: 16px; }
   .turn-card, .approval-card, .standalone-row, .pending-row { width: 90%; }
 }
 
 @media (max-width: 900px) {
   .shell { position: relative; grid-template-columns: 210px minmax(0, 1fr); }
-  .roster-panel { display: none; }
-  .side-panel {
+  .shell.has-context { grid-template-columns: 210px minmax(0, 1fr); }
+  .context-host {
     position: absolute;
+    display: grid;
     z-index: 20;
-    inset: 0 0 0 auto;
-    width: min(320px, calc(100% - 210px));
+    inset: 0 0 0 210px;
+    width: auto;
     max-width: 100%;
-    box-shadow: -10px 0 28px rgba(43, 33, 24, .14);
+    box-shadow: var(--shadow-context);
   }
+  .context-host .side-panel, .context-host .roster-panel { position: static; display: grid; width: 100%; box-shadow: none; }
 }
 
 @media (max-width: 640px) {
-  .shell { grid-template-columns: 68px minmax(0, 1fr); }
-  .side-panel { width: min(320px, calc(100% - 68px)); }
-  .rail-header { justify-content: center; padding: 14px 8px; }
-  .rail-header .brand-lockup { font-size: 0; }
-  .connection-state { display: none; }
-  .channel-rail nav { padding: 10px 7px; }
-  .rail-caption, .channel-name, .channel-access-label, .account-card > span:nth-child(2) { display: none; }
-  .rail-create-button { width: 44px; justify-content: center; margin: 0 auto 9px; padding: 8px 0; font-size: 0; }
-  .channel-item { position: relative; grid-template-columns: 1fr; justify-items: center; padding: 7px 0; }
-  .channel-glyph { font-size: 15px; }
-  .unread-badge { position: absolute; top: 2px; right: 1px; min-width: 16px; padding: 1px 4px; }
-  .account-card { display: flex; flex-direction: column; justify-items: center; gap: 6px; padding: 9px 6px; }
-  .account-actions { flex-direction: row; gap: 2px; }
-  .account-card button { display: grid; width: 24px; height: 24px; place-content: center; padding: 0; border-radius: 5px; font-size: 0; }
-  .account-card button:hover { background: rgba(245, 240, 232, .08); }
-  .account-card button:first-child::before { content: '⚙'; font-size: 13px; }
-  .account-card button:last-child::before { content: '↪'; font-size: 14px; }
-  .channel-header { padding: 11px 14px; }
-  .channel-header { align-items: stretch; flex-direction: column; gap: 8px; }
+  .shell, .shell.has-context { grid-template-columns: minmax(0, 1fr); }
+  .channel-rail { display: none; }
+  .shell.mobile-channels-open .channel-rail { display: flex; grid-column: 1; grid-row: 1; }
+  .shell.mobile-channels-open .mobile-rail-close { display: grid; }
+  .shell.mobile-channels-open .workspace, .shell.mobile-channels-open .context-host { display: none; }
+  .context-host { inset: 0; width: 100%; }
+  .mobile-channel-toggle { display: grid; width: 44px; height: 44px; }
+  .channel-header { min-height: 54px; padding: 8px 10px; }
   .channel-header > div:first-child { min-width: 0; }
-  .channel-header-actions { display: grid; width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
-  .channel-header-actions .manage-button { min-width: 0; padding: 6px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .channel-header-actions { flex: 0 0 auto; gap: 2px; }
+  .header-action { min-width: 44px; min-height: 44px; padding: 5px 7px; }
+  .channel-view-tabs { min-height: 44px; gap: 20px; padding: 0 10px; }
+  .channel-view-tabs button { min-width: 44px; }
+  .channel-view-tabs button, .send-button, .task-create-modal > header button, .task-create-modal footer button,
+  .global-search > header button, .tasks-header-actions button, .artifact-upload { min-height: 44px; }
+  .task-create-modal > header button, .global-search > header button { min-width: 44px; }
   .seq-label { display: none; }
-  .timeline-inner { padding: 12px 10px; }
-  .turn-card, .approval-card, .standalone-row, .pending-row { width: 96%; }
+  .timeline-inner { padding: 8px 7px 18px; }
+  .turn-card, .approval-card, .standalone-row, .pending-row { width: 100%; }
+  .request-text, .audience-line, .message-attachments, .turn-process, .turn-process-summary, .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .composer-wrap { padding: 10px; }
   .send-button { min-width: 58px; padding: 8px 12px; }
   .send-button span, .composer-help span:first-child { display: none; }
+  .workspace-view-header { display: block; min-height: auto; padding: 12px; }
+  .workspace-view-header > p { margin-top: 4px; text-align: left; }
+  .workspace-view .panel-tabs { padding-right: 10px; padding-left: 10px; }
+  .workspace-view .panel-tabs button { min-width: max-content; }
+  .workspace-view-scroll { padding: 10px; }
+  .rail-global-actions button, .rail-create-button, .channel-item { min-height: 44px; }
 }

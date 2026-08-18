@@ -82,7 +82,14 @@ function publicRow(state, connected) {
 }
 
 function isReserved(profile) {
+  // c0 是空间根频道。后端可以把根频道标成 systemReserved，但这不代表它
+  // 是内部 lobby；产品必须始终保留它。只有真正的 lobby/内部占位频道隐藏。
+  if (profile?.id === 'c0') return false;
   return profile?.id === 'c0.lobby' || profile?.name === 'lobby' || profile?.systemReserved === true;
+}
+
+function isRootOwner(state, principalId) {
+  return state?.channelId === 'c0' && state.profile?.owner_principal === principalId;
 }
 
 export function channelAccessRows(channels, memberships = [], options = {}) {
@@ -108,6 +115,7 @@ export const isMemberAccess = (access) => [
 
 export const canWriteChannel = (access) => access === CHANNEL_ACCESS.memberActive;
 export const canReadLiveChannel = (access) => [CHANNEL_ACCESS.memberActive, CHANNEL_ACCESS.observerActive].includes(access);
+export const canViewChannelContent = (access) => isMemberAccess(access) || [CHANNEL_ACCESS.observerActive, CHANNEL_ACCESS.observerStale].includes(access);
 
 function safeStoredState(raw, principalId) {
   if (!raw || raw.principalId !== principalId || !Array.isArray(raw.channels)) return [];
@@ -190,9 +198,18 @@ export function createChannelAccessTracker({
       state.profile = profile;
       state.existence = profile.status === 'retired' ? 'retired' : 'present';
       state.runtime = profile.open === true ? 'open' : profile.open === false ? 'closed' : 'unknown';
-      if (state.relationship === 'unknown') state.relationship = 'discoverable';
-      // owner_principal 是频道属性，不是当前 membership 证明。
-      stamp(state, 'obs');
+      if (profile.id === 'c0' && profile.owner_principal === principalId) {
+        // Atoll 的 c0 是节点 owner 的既定 home/root 频道。这里仅承认这一个
+        // 启动不变式，不把普通频道的 owner_principal 泛化成 membership。
+        state.relationship = 'member';
+        state.freshness = connected ? 'fresh' : 'stale';
+        state.unavailable = false;
+        stamp(state, 'root_owner');
+      } else {
+        if (state.relationship === 'unknown') state.relationship = 'discoverable';
+        // 普通频道的 owner_principal 仍不是当前 membership 证明。
+        stamp(state, 'obs');
+      }
     }
     if (complete) {
       for (const state of states.values()) {
@@ -223,6 +240,7 @@ export function createChannelAccessTracker({
         if (row.actor_id) state.selfActorId = row.actor_id;
         stamp(state, 'membership');
       } else if (row.status === 'revoked') {
+        if (isRootOwner(state, principalId)) continue;
         state.relationship = 'denied';
         state.freshness = 'fresh';
         state.selfActorId = '';
@@ -232,7 +250,7 @@ export function createChannelAccessTracker({
     }
     if (complete) {
       for (const state of states.values()) {
-        if (state.relationship === 'member' && !active.has(state.channelId)) {
+        if (state.relationship === 'member' && !active.has(state.channelId) && !isRootOwner(state, principalId)) {
           state.relationship = 'denied';
           state.freshness = 'fresh';
           state.selfActorId = '';
@@ -290,7 +308,7 @@ export function createChannelAccessTracker({
       if (connected) {
         sessionEpoch = epoch || `${now()}`;
         for (const value of states.values()) {
-          if (['membership', 'feed', 'receipt'].includes(value.source)) value.freshness = 'fresh';
+          if (['membership', 'feed', 'receipt', 'root_owner'].includes(value.source)) value.freshness = 'fresh';
         }
       } else {
         for (const value of states.values()) {

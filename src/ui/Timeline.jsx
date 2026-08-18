@@ -1,7 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { approvalFormSpec, valuesToPayload } from '../model/dynamic-form.js';
+import { formatArtifactSize } from '../model/artifacts.js';
 import { orderedTimeline } from '../model/fold.js';
+import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
+import { messagePresentation } from '../model/message-presentation.js';
 import { taskControlContext } from '../model/task-controls.js';
+import { latestHumanProgress, systemEventDetail, systemEventLabel, systemEventTier, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
 import { DynamicFields, initialFieldValues } from './DynamicFields.jsx';
@@ -37,54 +41,29 @@ function nameOf(id, names) {
   return names.get(id) || id || '未知成员';
 }
 
-function LinkText({ text }) {
-  const parts = String(text).split(/(https?:\/\/[^\s]+)/g);
-  return parts.map((part, index) => /^https?:\/\//.test(part)
-    ? <a key={`${part}-${index}`} href={part} target="_blank" rel="noreferrer">{part}</a>
-    : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>);
+function InlineText({ text }) {
+  const parts = String(text).split(/(https?:\/\/[^\s]+|\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.filter(Boolean).map((part, index) => {
+    if (/^https?:\/\//.test(part)) return <a key={`${part}-${index}`} href={part} target="_blank" rel="noreferrer">{part}</a>;
+    if (part.startsWith('**') && part.endsWith('**')) return <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith('`') && part.endsWith('`')) return <code key={`${part}-${index}`}>{part.slice(1, -1)}</code>;
+    return <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>;
+  });
 }
 
 function MarkdownLite({ text }) {
   const blocks = String(text || '').split(/```/);
   return blocks.map((block, index) => index % 2 === 1
     ? <pre key={index}><code>{block.replace(/^\w+\n/, '')}</code></pre>
-    : block.split(/\n{2,}/).filter(Boolean).map((paragraph, paragraphIndex) => (
-      <p key={`${index}-${paragraphIndex}`}><LinkText text={paragraph} /></p>
-    )));
-}
-
-function ActivityRow({ envelope }) {
-  const payload = envelope.payload || {};
-  const isTool = envelope.type === TYPES.activity.toolStarted || envelope.type === TYPES.activity.toolEnded;
-  const ended = envelope.type.endsWith('.ended');
-  return (
-    <div className="activity-row">
-      <span className={ended ? 'activity-mark done' : 'activity-mark'}>{ended ? '✓' : '·'}</span>
-      <span>{isTool ? `工具 · ${payload.tool || 'unknown'}` : envelope.type.replace('activity.', '')}</span>
-      <code>{payload.status || ''}</code>
-      {payload.detail && <small>{payload.detail}</small>}
-    </div>
-  );
-}
-
-const PROVISIONAL_LABELS = {
-  received: '已收到',
-  queued: '排队中',
-  processing: '处理中',
-  deferred: '等待后续条件',
-  unavailable: '暂时不可处理',
-};
-
-function ProvisionalRow({ item }) {
-  const payload = item.envelope.payload || {};
-  const extra = Object.fromEntries(Object.entries(payload).filter(([key]) => key !== 'status'));
-  return (
-    <div className={`provisional-row provisional-${item.core ? item.status : 'business'}`}>
-      <span>{PROVISIONAL_LABELS[item.status] || item.status}</span>
-      {!item.core && <code>{item.status}</code>}
-      {Object.keys(extra).length > 0 && <small>{JSON.stringify(extra)}</small>}
-    </div>
-  );
+    : block.split(/\n{2,}/).filter(Boolean).map((paragraph, paragraphIndex) => {
+      const lines = paragraph.split('\n').filter(Boolean);
+      if (lines.every((line) => /^\s*[-*]\s+/.test(line))) return <ul key={`${index}-${paragraphIndex}`}>{lines.map((line, lineIndex) => <li key={lineIndex}><InlineText text={line.replace(/^\s*[-*]\s+/, '')} /></li>)}</ul>;
+      if (lines.every((line) => /^\s*\d+[.)]\s+/.test(line))) return <ol key={`${index}-${paragraphIndex}`}>{lines.map((line, lineIndex) => <li key={lineIndex}><InlineText text={line.replace(/^\s*\d+[.)]\s+/, '')} /></li>)}</ol>;
+      if (lines.every((line) => /^\s*>\s?/.test(line))) return <blockquote key={`${index}-${paragraphIndex}`}><InlineText text={lines.map((line) => line.replace(/^\s*>\s?/, '')).join('\n')} /></blockquote>;
+      const heading = lines.length === 1 && lines[0].match(/^(#{1,3})\s+(.+)$/);
+      if (heading) return <h3 key={`${index}-${paragraphIndex}`}><InlineText text={heading[2]} /></h3>;
+      return <p key={`${index}-${paragraphIndex}`}>{lines.map((line, lineIndex) => <React.Fragment key={lineIndex}>{lineIndex > 0 && <br />}<InlineText text={line} /></React.Fragment>)}</p>;
+    }));
 }
 
 function ApprovalCard({ turn, state, onResolve, names }) {
@@ -111,7 +90,7 @@ function ApprovalCard({ turn, state, onResolve, names }) {
     <article className={`approval-card ${settled ? 'settled' : ''}`}>
       <header><span>需要你的决定</span><small>{nameOf(request.sender?.id, names)} · {timeLabel(request.ts)}</small></header>
       <div className="approval-summary"><strong>{request.payload?.title || request.type}</strong>{request.payload?.detail && <p>{request.payload.detail}</p>}{request.payload?.impact && <p><b>影响：</b>{request.payload.impact}</p>}</div>
-      {spec.mode === 'fields' ? <DynamicFields className="approval-fields" spec={spec} values={values} onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))} /> : <label className="approval-json"><span>附加 JSON（可选）</span><textarea rows={4} value={rawJSON} onChange={(event) => setRawJSON(event.target.value)} /></label>}
+      {spec.mode === 'fields' ? <DynamicFields className="approval-fields" spec={spec} values={values} onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))} /> : <details className="approval-advanced"><summary>高级选项</summary><label className="approval-json"><span>附加 JSON（可选）</span><textarea rows={3} value={rawJSON} onChange={(event) => setRawJSON(event.target.value)} /></label></details>}
       {request.expires_at && <p className={expired ? 'approval-expired' : 'approval-deadline'}>{expired ? '已过期，不能再处理' : `截止：${new Date(request.expires_at).toLocaleString('zh-CN')}`}</p>}
       <div className="approval-actions">
         <button type="button" className="approve" disabled={busy || settled || expired} onClick={() => decide(DECISIONS.approve)}>批准</button>
@@ -151,60 +130,85 @@ function TaskControls({ context, state = {}, onCancel, onControl }) {
   );
 }
 
-function AttachmentCards({ attachments = [], onDownload }) {
+function AttachmentCards({ attachments = [], onDownload, onPreview }) {
   if (!attachments.length) return null;
-  return <section className="message-attachments" aria-label="消息附件">{attachments.map((row) => <article key={row.resource_id}><span className="attachment-icon">↗</span><div><strong>{row.name || row.resource_id}</strong><small>{row.media_type || 'application/octet-stream'} · {Number(row.size || 0)} bytes</small><code>{row.resource_id}</code></div><button type="button" onClick={() => onDownload?.(row)}>下载</button></article>)}</section>;
+  return <section className="message-attachments" aria-label="消息附件">{attachments.map((row) => {
+    const mediaType = row.media_type || 'application/octet-stream';
+    const typeLabel = mediaType.startsWith('image/') ? '图片' : mediaType === 'application/pdf' ? 'PDF' : mediaType.startsWith('audio/') ? '音频' : mediaType.startsWith('video/') ? '视频' : mediaType.startsWith('text/') ? '文本' : '文件';
+    const name = row.name || row.resource_id;
+    return <article className="message-attachment" key={row.resource_id}><button type="button" className="message-attachment-open" onClick={() => onPreview?.(row)} aria-label={`预览 ${name}`}><span className="attachment-icon" aria-hidden="true">{mediaType === 'application/pdf' ? 'PDF' : mediaType.startsWith('image/') ? '▧' : '◇'}</span><span><strong>{name}</strong><small>{typeLabel} · {formatArtifactSize(Number(row.size || 0))}</small></span></button><button type="button" className="message-attachment-download" onClick={() => onDownload?.(row)} aria-label={`下载 ${name}`}>↓</button></article>;
+  })}</section>;
 }
 
-function TurnCard({ turn, names, selfId, access, capability, controlState, onCancel, onControl, onDownload }) {
+function MessageActions({ onOpen, onCreateTask }) {
+  return <div className="message-actions" aria-label="条目操作">
+    {onOpen && <button type="button" onClick={onOpen}>打开详情</button>}
+    {onCreateTask && <button type="button" onClick={onCreateTask}>创建任务</button>}
+  </div>;
+}
+
+function TurnCard({ turn, names, selfId, access, capability, controlState, continuation = false, onCancel, onControl, onDownload, onPreview, onOpen, onCreateTask }) {
   const request = turn.request;
+  const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
-  const latest = turn.latestStatus;
   const controlContext = taskControlContext(turn, { selfId, access, capability });
   return (
-    <article className={`turn-card ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type}>
-      <header>
-        <div><span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span><strong>{nameOf(request.sender?.id, names)}</strong></div>
-        <span>{timeLabel(request.ts)} · {request.type}</span>
-      </header>
-      <div className="request-text"><MarkdownLite text={Object.prototype.hasOwnProperty.call(request.payload || {}, 'text') ? (request.payload.text || '附件消息') : JSON.stringify(request.payload || {})} /></div>
-      <AttachmentCards attachments={request.payload?.attachments} onDownload={onDownload} />
-      {request.audience?.length > 0 && <div className="audience-line">→ {request.audience.map((id) => nameOf(id, names)).join('、')}</div>}
-      {(turn.provisional.length > 0 || turn.activity.length > 0) && (
-        <section className="turn-process">
-          <div className="process-heading"><span className={turn.terminal ? 'pulse done' : 'pulse'} />{turn.terminal ? '过程记录' : '正在处理'}{latest && <code>{latest}</code>}</div>
-          {turn.provisional.map((item) => <ProvisionalRow key={`${item.seq}-${item.envelope.id}`} item={item} />)}
-          {turn.activity.map((item) => <ActivityRow key={`${item.seq}-${item.envelope.id}`} envelope={item.envelope} />)}
-        </section>
-      )}
+    <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
+      <article className="message-row request-message" tabIndex="0">
+        <MessageActions onOpen={onOpen} onCreateTask={onCreateTask} />
+        <span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>
+        <div className="message-body">
+          <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
+          <div className="request-text"><MarkdownLite text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
+          <AttachmentCards attachments={request.payload?.attachments} onDownload={onDownload} onPreview={onPreview} />
+        </div>
+      </article>
       {turn.terminal && (
-        <footer className={turn.status === 'failed' ? 'final-answer failed' : 'final-answer'}>
-          <p className="answer-label">{turn.status === 'failed' ? 'FAILED' : 'ANSWER'}</p>
-          <StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownLite text={text} />} />
-        </footer>
+        <article className={turn.status === 'failed' ? 'message-row final-answer turn-response failed' : 'message-row final-answer turn-response'} tabIndex="0">
+          <span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>
+          <div className="message-body response-body"><header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownLite text={text} />} /></div></div>
+        </article>
       )}
+      {(turn.provisional.length > 0 || turn.activity.length > 0) && <button type="button" className={`turn-process-summary ${turn.terminal ? 'completed' : 'active'}`} onClick={onOpen}>
+        <span className={turn.terminal ? 'pulse done' : 'pulse'} />
+        <span>{turn.terminal ? turnStatusLabel(turn) : (latestHumanProgress(turn) || '正在处理')}</span>
+        <small>{turnProcessSummary(turn)}</small>
+        <span aria-hidden="true">查看过程 ›</span>
+      </button>}
       {!turn.terminal && <TaskControls context={controlContext} state={controlState} onCancel={onCancel} onControl={onControl} />}
-    </article>
-  );
-}
-
-function Narration({ rows }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <section className="narration">
-      <button type="button" onClick={() => setOpen((value) => !value)}><span>{open ? '−' : '+'}</span>系统事件 {rows.length} 条<small>{open ? '收起' : '展开'}</small></button>
-      {open && <div>{rows.map(({ seq, envelope }) => (
-        <article key={`${seq}-${envelope.id}`}><code>{String(seq).padStart(4, '0')}</code><strong>{envelope.type}</strong><span>{JSON.stringify(envelope.payload || {})}</span></article>
-      ))}</div>}
     </section>
   );
 }
 
-function Standalone({ envelope, names }) {
+function SystemEventRow({ envelope, names, important = false }) {
+  const detail = systemEventDetail(envelope);
+  return <article className={important ? 'system-event-row important' : 'system-event-row'}>
+    <span className="system-event-mark" aria-hidden="true">{important ? '!' : '✓'}</span>
+    <div><strong>{systemEventLabel(envelope)}</strong>{detail && <p>{detail}</p>}<small>{nameOf(envelope.sender?.id, names)} · {timeLabel(envelope.ts)}</small></div>
+  </article>;
+}
+
+function Narration({ rows, names }) {
+  const [open, setOpen] = useState(false);
+  const important = rows.filter((row) => systemEventTier(row.envelope) === 'important');
+  const diagnostic = rows.filter((row) => systemEventTier(row.envelope) !== 'important');
+  const visibleDiagnostic = diagnostic.slice(-LIST_WINDOW_SIZE);
   return (
-    <article className="standalone-row">
-      <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>
-      <div><header><strong>{nameOf(envelope.sender?.id, names)}</strong><code>{envelope.type}</code></header><MarkdownLite text={envelope.payload?.text || JSON.stringify(envelope.payload || {})} /></div>
+    <section className="narration">
+      {important.map(({ seq, envelope }) => <SystemEventRow key={`${seq}-${envelope.id}`} envelope={envelope} names={names} important />)}
+      {diagnostic.length > 0 && <button className="narration-toggle" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className="narration-icon" aria-hidden="true">◷</span><span><strong>后台活动</strong><small>{diagnostic.length} 条状态更新</small></span><span className="narration-action">{open ? '收起' : '查看'} {open ? '⌃' : '⌄'}</span></button>}
+      {open && <div className="system-event-list">{diagnostic.length > visibleDiagnostic.length && <p className="bounded-list-note">这里只显示最近 {visibleDiagnostic.length} 条；完整技术事实保留在审计记录中。</p>}{visibleDiagnostic.map(({ seq, envelope }) => <SystemEventRow key={`${seq}-${envelope.id}`} envelope={envelope} names={names} />)}</div>}
+    </section>
+  );
+}
+
+function Standalone({ envelope, names, continuation = false, onCreateTask }) {
+  const view = messagePresentation(envelope);
+  return (
+    <article className={`standalone-row ${continuation ? 'continuation' : ''}`} tabIndex="0">
+      <MessageActions onCreateTask={onCreateTask} />
+      {continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}
+      <div>{!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownLite text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}</div>
     </article>
   );
 }
@@ -239,41 +243,142 @@ function PendingRow({ item, onRetry }) {
   );
 }
 
-export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onRetry, onCancel, onTaskControl, onDownloadResource }) {
-  const endRef = useRef(null);
+function isTransientEntry(entry) {
+  return entry.kind === 'standalone'
+    && (entry.envelope.payload?.transient === true || entry.envelope.type === 'mock.channel.pulse');
+}
+
+function entryAuthor(entry) {
+  return entry.kind === 'turn' ? entry.turn.request?.sender?.id : entry.kind === 'standalone' ? entry.envelope.sender?.id : '';
+}
+
+function entryEndAuthor(entry) {
+  if (entry.kind === 'turn') return entry.turn.terminal?.sender?.id || entry.turn.request?.sender?.id;
+  return entry.kind === 'standalone' ? entry.envelope.sender?.id : '';
+}
+
+function entryTimestamp(entry) {
+  return Number(entry.kind === 'turn' ? entry.turn.request?.ts : entry.kind === 'standalone' ? entry.envelope.ts : 0) || 0;
+}
+
+function isContinuation(entries, index) {
+  if (index <= 0 || !['turn', 'standalone'].includes(entries[index]?.kind) || !['turn', 'standalone'].includes(entries[index - 1]?.kind)) return false;
+  const current = entries[index];
+  const previous = entries[index - 1];
+  const delta = entryTimestamp(current) - entryTimestamp(previous);
+  return entryAuthor(current) && entryAuthor(current) === entryEndAuthor(previous) && delta >= 0 && delta <= 5 * 60_000;
+}
+
+function dayKey(ts) {
+  if (!ts) return '';
+  const date = new Date(ts);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function dayLabel(ts) {
+  const date = new Date(ts);
+  const now = new Date();
+  if (dayKey(ts) === dayKey(now.getTime())) return '今天';
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime();
+  if (dayKey(ts) === dayKey(yesterday)) return '昨天';
+  return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
+}
+
+export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onRetry, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask }) {
+  const timelineRef = useRef(null);
+  const stickToBottomRef = useRef(true);
+  const previousSeqRef = useRef(state.lastSeq);
+  const [page, setPage] = useState(0);
+  const [unseenCount, setUnseenCount] = useState(0);
   const names = useMemo(() => new Map(roster.map((row) => [row.id, row.name || row.id])), [roster]);
-  const entries = orderedTimeline(state);
+  const entries = useMemo(() => orderedTimeline(state), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
+  const latestTransient = new Map();
+  for (const entry of entries) {
+    if (isTransientEntry(entry)) {
+      latestTransient.set(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`, entry);
+    }
+  }
+  const visibleEntries = entries.filter((entry) => (
+    !isTransientEntry(entry)
+    || latestTransient.get(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`) === entry
+  ));
   const narrationSeq = state.narration[0]?.seq ?? Number.POSITIVE_INFINITY;
-  const withNarration = [...entries, ...(state.narration.length ? [{ kind: 'narration', seq: narrationSeq }] : [])]
+  const withNarration = [...visibleEntries, ...(state.narration.length ? [{ kind: 'narration', seq: narrationSeq }] : [])]
     .sort((left, right) => left.seq - right.seq);
+  const windowed = boundedPage(withNarration, page);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' });
-  }, [state.lastSeq, pending.length]);
+    setPage(0);
+    setUnseenCount(0);
+    previousSeqRef.current = state.lastSeq;
+    stickToBottomRef.current = true;
+  }, [state.channelId]);
+
+  useEffect(() => {
+    const previous = previousSeqRef.current;
+    if (state.lastSeq > previous && !stickToBottomRef.current) setUnseenCount((value) => value + Math.max(1, state.lastSeq - previous));
+    previousSeqRef.current = state.lastSeq;
+  }, [state.lastSeq]);
+
+  useEffect(() => {
+    if (page !== windowed.page) setPage(windowed.page);
+  }, [page, windowed.page]);
+
+  useLayoutEffect(() => {
+    const node = timelineRef.current;
+    if (node && page === 0 && stickToBottomRef.current) node.scrollTop = node.scrollHeight;
+  }, [page, state.lastSeq, pending.length]);
+
+  function observeScroll(event) {
+    const node = event.currentTarget;
+    stickToBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+    if (stickToBottomRef.current) setUnseenCount(0);
+  }
+
+  function jumpToLatest() {
+    setPage(0);
+    setUnseenCount(0);
+    stickToBottomRef.current = true;
+    requestAnimationFrame(() => { if (timelineRef.current) timelineRef.current.scrollTop = timelineRef.current.scrollHeight; });
+  }
 
   return (
-    <section className="timeline" aria-live="polite">
+    <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={timelineRef} onScroll={observeScroll}>
       <div className="timeline-inner">
         {!state.rows.size && !pending.length && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
-        {withNarration.map((entry) => {
-          if (entry.kind === 'narration') return <Narration key="narration" rows={state.narration} />;
+        {windowed.hasOlder && <button type="button" className="bounded-list-control" onClick={() => { stickToBottomRef.current = false; setPage((value) => value + 1); }}>查看更早动态（当前 {windowed.start + 1}–{windowed.end} / {windowed.total}）</button>}
+        {windowed.items.map((entry, index) => {
+          const continuation = isContinuation(windowed.items, index);
+          const timestamp = entryTimestamp(entry);
+          const previousTimestamp = windowed.items.slice(0, index).reverse().map(entryTimestamp).find(Boolean) || 0;
+          const showDay = timestamp > 0 && (!previousTimestamp || dayKey(timestamp) !== dayKey(previousTimestamp));
+          let content;
+          if (entry.kind === 'narration') content = <Narration rows={state.narration} names={names} />;
           if (
             entry.kind === 'turn'
             && entry.turn.request.type === TYPES.humanApprove
             && selfId
             && entry.turn.request.audience?.includes(selfId)
           ) {
-            return <ApprovalCard key={entry.turn.request.id} turn={entry.turn} state={approvalStates[entry.turn.request.id]} onResolve={(reqId, decision, payload) => onResolve(state.channelId, reqId, decision, payload)} names={names} />;
+            content = <ApprovalCard turn={entry.turn} state={approvalStates[entry.turn.request.id]} onResolve={(reqId, decision, payload) => onResolve(state.channelId, reqId, decision, payload)} names={names} />;
           }
-          if (entry.kind === 'turn') {
+          if (!content && entry.kind === 'turn') {
             const actorId = entry.turn.request.audience?.length === 1 ? entry.turn.request.audience[0] : '';
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
-            return <TurnCard key={entry.turn.requestId} turn={entry.turn} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} />;
+            const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => onOpenTurn?.(entry.turn)} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
           }
-          return <Standalone key={`${entry.kind}-${entry.envelope.id}`} envelope={entry.envelope} names={names} />;
+          if (!content) {
+            const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} continuation={continuation} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
+          }
+          const key = entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`;
+          return <React.Fragment key={key}>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</React.Fragment>;
         })}
-        {pending.map((item) => <PendingRow key={item.key} item={item} onRetry={onRetry} />)}
-        <div ref={endRef} />
+        {windowed.hasNewer && <button type="button" className="bounded-list-control" onClick={() => setPage((value) => Math.max(0, value - 1))}>查看更新动态（{windowed.end + 1}–{Math.min(windowed.total, windowed.end + LIST_WINDOW_SIZE)}）</button>}
+        {pending.slice(-50).map((item) => <PendingRow key={item.key} item={item} onRetry={onRetry} />)}
+        {pending.length > 50 && <p className="bounded-list-note">仅显示最近 50 个本地提交状态。</p>}
+        {unseenCount > 0 && page === 0 && <button type="button" className="timeline-jump-latest" onClick={jumpToLatest}>↓ {unseenCount} 条新动态</button>}
       </div>
     </section>
   );

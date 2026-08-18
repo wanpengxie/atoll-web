@@ -43,6 +43,20 @@ describe('mock scenario and domain layers', () => {
     expect(domain.canWrite('root', 'c0.project')).toBe(true);
   });
 
+  it('seeds channel-isolated daemon files for the interactive multi-channel demo', () => {
+    const domain = createMockDomain(loadScenario('multi-channel'));
+    const projectPrefix = 'daemon://local-device/c0.project/';
+    const projectFiles = domain.resource('c0.project', { op: 'list', query: { prefix: projectPrefix } }).items.map((row) => row.id);
+    expect(projectFiles).toEqual(expect.arrayContaining([
+      `${projectPrefix}${encodeURIComponent('项目说明.md')}`,
+      `${projectPrefix}docs/${encodeURIComponent('交互设计.md')}`,
+      `${projectPrefix}reports/F6-${encodeURIComponent('验收记录.txt')}`,
+      `${projectPrefix}data/demo.json`,
+    ]));
+    expect(projectFiles.every((address) => address.startsWith(projectPrefix))).toBe(true);
+    expect(domain.resource('c0', { op: 'list', query: { prefix: 'daemon://local-device/c0/' } }).items.map((row) => row.id)).not.toContain(projectFiles[0]);
+  });
+
   it('is deterministic for the same scenario, seed and clock actions', () => {
     const left = createMockDomain(loadScenario('permission-revoked', 9));
     const right = createMockDomain(loadScenario('permission-revoked', 9));

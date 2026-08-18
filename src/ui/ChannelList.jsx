@@ -8,7 +8,7 @@ const STATE_LABEL = {
   closed: 'CLOSED',
 };
 
-export function ChannelList({ channels, activeChannelId, unread, wireState, me, onSelect, onCreate, onSpaceManage, onLogout }) {
+export function ChannelList({ channels, activeChannelId, unread, wireState, me, onSelect, onCreate, onSearch, onActivity, onSpaceManage, onLogout, onCloseMobile }) {
   const mine = channels.filter((channel) => isMemberAccess(channel.access));
   const space = channels.filter((channel) => !isMemberAccess(channel.access));
   const accessLabel = (access) => ({
@@ -42,9 +42,14 @@ export function ChannelList({ channels, activeChannelId, unread, wireState, me, 
     <aside className="channel-rail">
       <header className="rail-header">
         <div className="brand-lockup"><span className="brand-dot" />ATOLL</div>
-        <div className={`connection-state state-${wireState}`}><span />{STATE_LABEL[wireState] || wireState}</div>
+        <div className={`connection-state state-${wireState}`}><span aria-hidden="true" />{STATE_LABEL[wireState] || wireState}</div>
+        {onCloseMobile && <button type="button" className="mobile-rail-close" onClick={onCloseMobile} aria-label="关闭频道列表">×</button>}
       </header>
       <nav aria-label="频道">
+        <div className="rail-global-actions" aria-label="全局工具">
+          <button type="button" onClick={onSearch} aria-label="全局搜索"><span>⌕</span> 搜索</button>
+          <button type="button" onClick={onActivity} aria-label="打开活动中心"><span>◷</span> 活动</button>
+        </div>
         <p className="rail-caption">我的频道 <span>{mine.length}</span></p>
         <button type="button" className="rail-create-button" onClick={onCreate} aria-label="新建频道" title="新建频道"><span>＋</span> 新建频道</button>
         {group(mine, '还没有加入频道')}

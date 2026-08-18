@@ -1,16 +1,27 @@
 /* Composer */
-.composer-wrap { grid-row: 4; position: relative; z-index: 3; padding: 13px 22px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.composer-wrap { grid-row: 5; position: relative; z-index: 3; padding: 10px 26px 16px; border-top: 1px solid var(--line-subtle); background: var(--workspace); }
+.composer-surface { width: min(100%, 860px); margin: 0 auto; padding: 9px 11px 8px; border: 1px solid var(--line-control); border-radius: 12px; background: var(--input); box-shadow: 0 1px 3px var(--shadow); transition: border-color .15s, box-shadow .15s; }
+.composer-surface:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.composer-target { display: flex; min-width: 0; align-items: center; gap: 5px; padding: 0; color: var(--text-muted); font-size: 10px; }
+.composer-target strong { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .composer-input-area { position: relative; min-width: 0; }
-.composer-box { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-.composer-box textarea { min-height: 43px; max-height: 150px; resize: vertical; padding: 10px 13px; border: 1px solid var(--border-2); border-radius: 8px; outline: 0; background: white; color: var(--text); font-size: 14px; line-height: 1.5; transition: border-color .15s, box-shadow .15s; }
-.composer-box textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.composer-box { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.composer-box textarea { min-height: 62px; max-height: 180px; resize: none; overflow-y: auto; padding: 8px 5px; border: 0; border-radius: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; line-height: 1.55; }
 .composer-box textarea::placeholder { color: var(--text-dim); }
-.send-button { align-self: stretch; min-width: 76px; padding: 9px 18px; border: 0; border-radius: 8px; background: var(--accent); color: white; cursor: pointer; font-size: 13px; font-weight: 600; }
+.send-button { display: grid; width: 36px; min-width: 36px; height: 36px; align-self: end; place-content: center; padding: 0; border: 0; border-radius: 9px; background: var(--accent); color: var(--white); cursor: pointer; font-size: 18px; font-weight: 700; }
 .send-button:hover { opacity: .9; }
-.send-button:disabled { opacity: .42; cursor: not-allowed; }
+.send-button:disabled { opacity: .46; cursor: not-allowed; }
 .send-button span { font-family: var(--mono); }
-.composer-help { display: flex; justify-content: space-between; padding: 6px 2px 0; color: var(--text-dim); font: 8px var(--mono); }
+.composer-toolbar { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding-top: 3px; }
+.composer-tools { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.composer-tools > button { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-content: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 17px; }
+.composer-tools > button:hover { background: var(--surface-muted); color: var(--text); }
+.composer-tools > button:disabled { opacity: .45; cursor: not-allowed; }
+.composer-help { display: flex; flex: 1; justify-content: flex-end; gap: 14px; padding: 0 2px; color: var(--text-dim); font: 8px var(--mono); }
 .composer-error { padding-top: 6px; }
+.composer-status, .composer-disabled-reason { width: min(100%, 860px); margin: 6px auto 0; color: var(--online); font-size: 10px; }
+.composer-status.state-delayed, .composer-status.state-uncertain { color: var(--warning); }
+.composer-disabled-reason { color: var(--text-muted); }
 .mention-chips { display: flex; gap: 6px; padding-bottom: 7px; }
 .mention-chips button { padding: 4px 7px; border: 1px solid var(--accent-glow); border-radius: 99px; background: var(--accent-bg); color: var(--accent); cursor: pointer; font: 9px var(--mono); }
 .mention-menu { position: absolute; z-index: 1; right: 0; bottom: calc(100% + 5px); left: 0; max-height: min(250px, 40vh); overflow-y: auto; border: 1px solid var(--border-2); border-radius: 10px; background: var(--surface); box-shadow: 0 14px 32px var(--shadow-2); }

@@ -33,7 +33,7 @@ async function clearProductCache(page) {
   });
 }
 
-test('B-BR-01 频道事实分组、lobby 与内部 Actor 隔离', async ({ page, request }) => {
+test('B-BR-01 c0 根频道、内部 lobby 与标准 Actor 分别处理', async ({ page, request }) => {
   await reset(request);
   await login(page);
   const rail = page.locator('.channel-rail');
@@ -96,20 +96,27 @@ test('B-BR-03 unavailable、partial OBS、权限撤销和退役分别收敛', as
 test('B-BR-04 真实后端形态下不猜 self，发送 feed 后自动识别', async ({ page, request }) => {
   await reset(request, 'real-backend-shape');
   await login(page);
+  await page.getByRole('button', { name: '成员', exact: true }).click();
   await expect(page.getByText(/正在确认你在本频道中的 Actor 身份/)).toBeVisible();
-  await expect(page.locator('.roster-panel').getByText('我', { exact: true })).toHaveCount(0);
+  const members = page.getByRole('complementary', { name: /频道管理/ });
+  await expect(members.getByText('我', { exact: true })).toHaveCount(0);
   const message = `self-map-${Date.now()}`;
   await send(page, message);
   await expect(page.getByText(message, { exact: true })).toBeVisible();
-  await expect(page.locator('.roster-panel').getByText('我', { exact: true })).toBeVisible();
+  await expect(members.getByText('我', { exact: true })).toBeVisible();
   await expect(page.getByText(/正在确认你在本频道中的 Actor 身份/)).toHaveCount(0);
 });
 
 test('B-BR-05 完整 provisional、命名空间状态和第一终态权威性', async ({ page, request }) => {
   await reset(request, 'business-provisional');
   await login(page);
-  await send(page, `business-status-${Date.now()}`);
-  await expect(page.locator('.provisional-business code').filter({ hasText: 'provider.waiting' })).toBeVisible();
+  const businessText = `business-status-${Date.now()}`;
+  await send(page, businessText);
+  const businessTurn = page.locator('.turn-card').filter({ hasText: businessText });
+  await businessTurn.hover();
+  await businessTurn.getByRole('button', { name: '打开详情' }).click();
+  await expect(page.getByRole('region', { name: '回合详情' })).toContainText('provider.waiting');
+  await page.getByRole('button', { name: /返回动态/ }).click();
   await expect(page.getByText('PONG', { exact: true })).toBeVisible();
 
   await reset(request, 'terminal-conflict');

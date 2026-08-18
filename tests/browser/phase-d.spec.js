@@ -16,17 +16,18 @@ async function login(page) {
   await expect(page.locator('main h1')).toHaveText('c0');
 }
 
-async function openManagement(page, section = '概览') {
-  await page.getByRole('button', { name: '管理频道' }).click();
+async function openManagement(page, section = '成员') {
+  await page.getByRole('button', { name: '频道操作' }).click();
+  await page.getByRole('menuitem', { name: '频道详情' }).click();
   const panel = page.getByRole('complementary', { name: /频道管理/ });
   await expect(panel).toBeVisible();
-  if (section !== '概览') await panel.getByRole('tab', { name: section, exact: true }).click();
+  if (section !== '成员') await panel.getByRole('tab', { name: section, exact: true }).click();
   return panel;
 }
 
 async function openChannelCreation(page) {
   await page.getByRole('button', { name: '新建频道' }).click();
-  const panel = page.getByRole('complementary', { name: '新建频道' });
+  const panel = page.getByRole('dialog', { name: '新建频道' });
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -40,9 +41,9 @@ test('D-BR-00 新建频道与管理频道是两个独立任务入口', async ({ 
   await expect(panel.getByRole('button', { name: '读取完整详情到账本' })).toHaveCount(0);
   await panel.getByRole('button', { name: '关闭新建频道' }).click();
 
-  panel = await openManagement(page);
+  panel = await openManagement(page, '信息');
   await expect(panel.getByRole('tablist')).toBeVisible();
-  await expect(panel.getByRole('tab', { name: '成员' })).toBeVisible();
+  await expect(panel.getByRole('tab', { name: '成员' })).toHaveAttribute('aria-selected', 'false');
   await expect(panel.getByLabel('新频道名称')).toHaveCount(0);
   await expect(panel.getByRole('button', { name: '读取完整详情到账本' })).toBeVisible();
 });
@@ -51,7 +52,7 @@ test('D-BR-01/02/04 c0 经 registrar 创建子频道并展示完整收敛与详�
   await reset(request);
   await login(page);
   let panel = await openChannelCreation(page);
-  await expect(panel.getByText(/将在.*c0.*下创建子频道/)).toBeVisible();
+  await expect(panel.getByText(/在.*c0.*下创建子频道/)).toBeVisible();
   await panel.getByLabel('新频道名称').fill('design-room');
   await panel.getByLabel('频道用途').fill('集中讨论产品设计');
   await expect(panel.getByLabel('频道模板 ID')).toBeVisible();
@@ -60,7 +61,7 @@ test('D-BR-01/02/04 c0 经 registrar 创建子频道并展示完整收敛与详�
   const progress = panel.getByRole('region', { name: '频道创建进度' });
   await expect(progress.getByText('账本确认')).toBeVisible();
   await expect(progress.getByText('频道可观察')).toBeVisible();
-  await expect(progress.getByText('成员关系')).toBeVisible();
+  await expect(progress.getByText('成员关系', { exact: true })).toBeVisible();
   await expect(progress.getByText('服务就绪')).toBeVisible();
   await expect(progress.getByText('已确认')).toHaveCount(4);
   await expect(progress.getByText('频道已经可以打开和协作。')).toBeVisible();
@@ -69,7 +70,7 @@ test('D-BR-01/02/04 c0 经 registrar 创建子频道并展示完整收敛与详�
   await expect(page.locator('.channel-rail').getByText('c0.design-room', { exact: true })).toBeVisible();
 
   await panel.getByRole('button', { name: '关闭新建频道' }).click();
-  panel = await openManagement(page);
+  panel = await openManagement(page, '信息');
   await panel.getByRole('button', { name: '读取完整详情到账本' }).click();
   await expect(page.locator('.turn-card[data-request-type="channel.get"]')).toContainText('owner_principal');
 });
@@ -105,16 +106,17 @@ test('D-BR-06 human 候选来自 OBS，添加后 roster 与 membership 收敛', 
   await reset(request, 'actor-governance', 204);
   await login(page);
   const panel = await openManagement(page, '成员');
-  const principal = panel.getByRole('combobox', { name: '选择 Principal' });
+  const principal = panel.getByRole('combobox', { name: '选择参与者' });
   await principal.click();
-  const principalOptions = panel.getByRole('listbox', { name: '选择 Principal选项' });
-  await expect(principalOptions.getByRole('option', { name: 'Alice' })).toHaveCount(1);
-  await expect(principalOptions.getByRole('option', { name: 'Root' })).toHaveCount(0);
-  await principalOptions.getByRole('option', { name: 'Alice' }).click();
+  const principalOptions = panel.getByRole('listbox', { name: '选择参与者选项' });
+  await expect(principalOptions.getByRole('option', { name: /Alice · 用户/ })).toHaveCount(1);
+  await expect(principalOptions.getByRole('option', { name: /Root · 用户/ })).toHaveCount(0);
+  await principalOptions.getByRole('option', { name: /Alice · 用户/ }).click();
   await panel.getByRole('button', { name: '添加到频道' }).click();
   await expect(panel.getByText('alice-home', { exact: true })).toBeVisible();
   await expect(panel.getByRole('region', { name: '成员操作进度' }).getByText('已收敛')).toBeVisible();
-  await expect(page.locator('.turn-card[data-request-type="channel.introduce_actor"]')).toContainText('"principal":"alice"');
+  await expect(page.locator('.turn-card[data-request-type="channel.introduce_actor"]')).toContainText('添加参与者');
+  await expect(page.locator('.turn-card[data-request-type="channel.introduce_actor"]')).toContainText('alice');
 });
 
 test('D-BR-07/08/09 agent/tool 添加、重启和 instance_id 移除形成账本闭环', async ({ page, request }) => {
@@ -122,8 +124,7 @@ test('D-BR-07/08/09 agent/tool 添加、重启和 instance_id 移除形成账本
   await login(page);
   const panel = await openManagement(page, '成员');
 
-  await panel.getByRole('button', { name: 'agent', exact: true }).click();
-  await panel.getByRole('combobox', { name: '选择 Actor 声明' }).click();
+  await panel.getByRole('combobox', { name: '选择参与者' }).click();
   await panel.getByRole('option', { name: 'Analyst Agent' }).click();
   await panel.getByRole('button', { name: '添加到频道' }).click();
   const agentRow = panel.locator('.managed-actor').filter({ hasText: 'agent-' }).last();
@@ -132,22 +133,21 @@ test('D-BR-07/08/09 agent/tool 添加、重启和 instance_id 移除形成账本
   await agentRow.getByRole('button', { name: '重启' }).click();
   await panel.getByRole('button', { name: '确认操作' }).click();
   const restartTurn = page.locator('.turn-card[data-request-type="channel.restart_actor"]');
-  await expect(restartTurn).toContainText('instance_id');
+  await expect(restartTurn).toContainText('重启参与者');
   await expect(restartTurn).toContainText('restarted');
   await expect(panel.getByRole('region', { name: '成员操作进度' }).getByText('已收敛')).toBeVisible();
 
   await agentRow.getByRole('button', { name: '移除' }).click();
   await panel.getByRole('button', { name: '确认操作' }).click();
   const removeTurn = page.locator('.turn-card[data-request-type="channel.remove_actor"]');
-  await expect(removeTurn).toContainText('instance_id');
+  await expect(removeTurn).toContainText('移除参与者');
   await expect(removeTurn).toContainText('removed');
   await expect(agentRow).toHaveCount(0);
 
-  await panel.getByRole('button', { name: 'tool', exact: true }).click();
-  await panel.getByRole('combobox', { name: '选择 Actor 声明' }).click();
-  const declarationOptions = panel.getByRole('listbox', { name: '选择 Actor 声明选项' });
-  await expect(declarationOptions.getByRole('option', { name: 'Search Tool' })).toHaveCount(1);
-  await expect(declarationOptions.getByRole('option', { name: 'Analyst Agent' })).toHaveCount(0);
+  await panel.getByRole('combobox', { name: '选择参与者' }).click();
+  const declarationOptions = panel.getByRole('listbox', { name: '选择参与者选项' });
+  await expect(declarationOptions.getByRole('option', { name: /Search Tool · 工具/ })).toHaveCount(1);
+  await expect(declarationOptions.getByRole('option', { name: /Analyst Agent · Agent/ })).toHaveCount(1);
 });
 
 test('D-BR-10 受保护入口与权限失败可理解且不丢失管理上下文', async ({ page, request }) => {
@@ -157,7 +157,7 @@ test('D-BR-10 受保护入口与权限失败可理解且不丢失管理上下文
   await expect(panel.getByText(/标准系统 Actor.*已隐藏/)).toBeVisible();
   const ownerRow = panel.locator('.managed-actor').filter({ hasText: 'root' });
   await expect(ownerRow.getByRole('button', { name: 'Owner' })).toBeDisabled();
-  await panel.getByRole('button', { name: '关闭频道管理' }).click();
+  await panel.getByRole('button', { name: '关闭频道详情' }).click();
   const creation = await openChannelCreation(page);
   await creation.getByLabel('新频道名称').fill('denied-room');
   await creation.getByRole('button', { name: '创建频道' }).click();
@@ -195,12 +195,12 @@ test('D-BR-11 窄窗口中的成员管理以站内抽屉展示且控件不越界
   await assertPanelInsideViewport();
   await page.setViewportSize({ width: 600, height: 720 });
   await assertPanelInsideViewport();
-  const principal = panel.getByRole('combobox', { name: '选择 Principal' });
+  const principal = panel.getByRole('combobox', { name: '选择参与者' });
   const submit = panel.getByRole('button', { name: '添加到频道' });
   await expect(principal).toBeVisible();
   const submitTopBefore = (await submit.boundingBox()).y;
   await principal.click();
-  const menu = panel.getByRole('listbox', { name: '选择 Principal选项' });
+  const menu = panel.getByRole('listbox', { name: '选择参与者选项' });
   await expect(menu).toBeVisible();
   const menuGeometry = await menu.evaluate((element) => {
     const rect = element.getBoundingClientRect();

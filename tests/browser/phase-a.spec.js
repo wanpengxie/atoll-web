@@ -14,7 +14,7 @@ async function login(page) {
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
 }
 
-test('A-BR-01/02/03 登录恢复、频道分组和 lobby 隐藏', async ({ page, request }) => {
+test('A-BR-01/02/03 登录恢复、c0 根频道保留和内部 lobby 隐藏', async ({ page, request }) => {
   await reset(request);
   await login(page);
 
@@ -40,7 +40,8 @@ test('A-BR-04/05/06/07 多频道隔离、消息终态、审批与系统 Actor �
   await expect(page.getByText(/c0\.project history 1/)).toBeVisible();
   await expect(page.locator('main').getByText(/^c0 history 1/)).toHaveCount(0);
 
-  const roster = page.locator('.roster-panel');
+  await page.getByRole('button', { name: '成员', exact: true }).click();
+  const roster = page.getByRole('complementary', { name: /频道管理/ });
   await expect(roster.getByText('project-agent', { exact: true })).toBeVisible();
   await expect(roster.getByText('system', { exact: true })).toHaveCount(0);
   await expect(roster.getByText('registrar', { exact: true })).toHaveCount(0);
@@ -87,13 +88,15 @@ test('A-BR-08/09 断线、权限撤销和频道退役后界面收敛', async ({ 
   await expect(page.locator('.channel-rail').getByText('c0.project', { exact: true })).toHaveCount(0);
 });
 
-test('A-BR-10 首次登录场景不伪造成员频道', async ({ page, request }) => {
+test('A-BR-10 首次登录仍保留 owner 的 c0 根频道，不伪造普通子频道 membership', async ({ page, request }) => {
   await reset(request, 'first-login', 32);
   await login(page);
 
   const rail = page.locator('.channel-rail');
-  await expect(rail.getByText('还没有加入频道', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('消息')).toBeDisabled();
-  await expect(page.getByLabel('消息')).toHaveAttribute('placeholder', '加入频道后才能发送消息');
+  await expect(rail.getByText('c0', { exact: true })).toBeVisible();
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.getByLabel('消息')).toBeEnabled();
+  await expect(rail.getByText('c0.project', { exact: true })).toBeVisible();
+  await expect(rail.getByText('c0.public', { exact: true })).toBeVisible();
   await expect(page.getByText(/lobby/i)).toHaveCount(0);
 });

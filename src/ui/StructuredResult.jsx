@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 const META_FIELDS = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
 const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
@@ -87,18 +87,6 @@ function ChannelTable({ rows }) {
   );
 }
 
-function JsonActions({ value }) {
-  const [copied, setCopied] = useState(false);
-  const json = JSON.stringify(redactSensitive(value), null, 2);
-  return (
-    <details className="raw-json"><summary>查看脱敏 JSON</summary><button type="button" onClick={async () => {
-      await navigator.clipboard?.writeText(json);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    }}>{copied ? '已复制' : '复制 JSON'}</button><pre>{json}</pre></details>
-  );
-}
-
 export function StructuredResult({ requestType = '', payload = {}, renderText }) {
   const view = terminalPresentation(requestType, payload);
   if (view.kind === 'text') {
@@ -107,16 +95,16 @@ export function StructuredResult({ requestType = '', payload = {}, renderText })
   }
   if (view.kind === 'ack') return <p className="completion-ack">✓ {view.title}</p>;
   if (view.kind === 'failed') {
-    return <div className="failure-result"><strong>{view.title}</strong>{view.code && <code>{view.code}</code>}{view.detail && <p>{view.detail}</p>}{Object.keys(view.value || {}).length > 0 && <><StructuredTree value={view.value} /><JsonActions value={payload} /></>}</div>;
+    return <div className="failure-result"><strong>{view.title}</strong>{view.code && <code>{view.code}</code>}{view.detail && <p>{view.detail}</p>}{Object.keys(view.value || {}).length > 0 && <StructuredTree value={view.value} />}</div>;
   }
   if (view.kind === 'registrar') {
     const channelRows = Array.isArray(view.value)
       && view.value.length > 0
       && view.value.every((row) => row && typeof row === 'object' && ('id' in row || 'channel_id' in row));
-    return <div className="structured-result"><strong>{view.title}</strong>{channelRows ? <ChannelTable rows={view.value} /> : <StructuredTree value={view.value} />}<JsonActions value={payload} /></div>;
+    return <div className="structured-result"><strong>{view.title}</strong>{channelRows ? <ChannelTable rows={view.value} /> : <StructuredTree value={view.value} />}</div>;
   }
   if (view.kind === 'describe') {
-    return <div className="structured-result actor-describe-result"><strong>{view.title}</strong><StructuredTree value={view.value} /><JsonActions value={payload} /></div>;
+    return <div className="structured-result actor-describe-result"><strong>{view.title}</strong><StructuredTree value={view.value} /></div>;
   }
-  return <div className="structured-result"><strong>{view.title}</strong><StructuredTree value={view.value} /><JsonActions value={payload} /></div>;
+  return <div className="structured-result"><strong>{view.title}</strong><StructuredTree value={view.value} /></div>;
 }

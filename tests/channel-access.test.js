@@ -30,6 +30,21 @@ describe('channel access model', () => {
     expect(canWriteChannel(rows[1].access)).toBe(false);
   });
 
+  it('never hides c0 and activates the root owner without a membership projection', () => {
+    const tracker = createChannelAccessTracker({ principalId: 'root', storage: new MemoryStorage() });
+    tracker.channelsObserved([
+      { id: 'c0', name: 'home', status: 'present', open: true, systemReserved: true, owner_principal: 'root' },
+      { id: 'c0.lobby', name: 'lobby', status: 'present', open: true, systemReserved: true, owner_principal: 'root' },
+      { id: 'c0.project', name: 'project', status: 'present', open: true, owner_principal: 'root' },
+    ]);
+    tracker.membershipsObserved([], { supported: false, complete: false });
+    tracker.wire('attached', 'epoch-root');
+
+    expect(tracker.rows().map((row) => row.id)).toEqual(['c0', 'c0.project']);
+    expect(tracker.rows().find((row) => row.id === 'c0').access).toBe('member_active');
+    expect(tracker.rows().find((row) => row.id === 'c0.project').access).toBe('discoverable');
+  });
+
   it('keeps access dimensions distinct through disconnect, unavailable, revoke, partial OBS and retire', () => {
     const storage = new MemoryStorage();
     const tracker = createChannelAccessTracker({ principalId: 'root', storage, now: () => 10 });

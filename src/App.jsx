@@ -1,16 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
+import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
 import { unreadCount } from './model/cursors.js';
-import { CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
+import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
 import { resumeSnapshot } from './model/feed-cache.js';
 import { createChannelState, reconcileApprovals } from './model/fold.js';
 import { createRoster } from './model/roster.js';
 import { readFileTicket } from './model/resources.js';
 import { safeDaemonRows } from './model/space-administration.js';
-import { createObsClient, ObsError } from './net/obs.js';
+import { buildWorkItemIndex, taskProviders } from './model/work-items.js';
+import { parseWorkspaceHash, writeWorkspaceRoute } from './model/workspace-route.js';
+import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
+import { createObsClient, isUnsupportedMembershipObservation, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
 import { Auth } from './ui/Auth.jsx';
 import { AppShell } from './app/AppShell.jsx';
+import { TaskCreateModal } from './ui/TaskCreateModal.jsx';
+import { ChannelCreateModal } from './ui/ChannelCreateModal.jsx';
+import { GlobalSearch } from './ui/GlobalSearch.jsx';
+import { FilePreviewModal } from './ui/FilePreviewModal.jsx';
+import { visibleRosterRows } from './ui/roster-visibility.js';
 import { useLocalAutomation } from './app/hooks/useLocalAutomation.js';
 import { useSubmissions } from './app/hooks/useSubmissions.js';
 import { useAtollSession } from './app/hooks/useAtollSession.js';
@@ -45,18 +54,72 @@ async function loadChannelTree(obs) {
   return { channels: found, complete };
 }
 
+const GOVERNANCE_OPERATION_TYPES = new Set([
+  'channel.create', 'channel.introduce_actor', 'channel.remove_actor', 'channel.restart_actor', 'channel.retire',
+  'actor.template.register', 'actor.template.remove', 'channel.template.register', 'channel.template.remove',
+  'channel.overlay.apply', 'channel.profile.apply', 'device.attach', 'device.detach', 'device.retire',
+]);
+
+function governanceOperationTitle(turn) {
+  const type = turn.request?.type || '';
+  const payload = turn.request?.payload || {};
+  if (type === 'channel.create') return `创建频道 ${payload.name || ''}`.trim();
+  if (type === 'channel.introduce_actor') return `添加参与者 ${payload.principal || payload.decl_id || ''}`.trim();
+  if (type === 'channel.remove_actor') return `移除参与者 ${payload.instance_id || ''}`.trim();
+  if (type === 'channel.restart_actor') return `重启参与者 ${payload.instance_id || ''}`.trim();
+  if (type === 'channel.retire') return '退役频道';
+  return turn.request?.payload?.title || type;
+}
+
+function governanceOperation(channel, turn, channelRows) {
+  const terminal = turn.terminal?.payload;
+  let state = terminal?.status === 'failed' ? 'failed' : terminal?.status === 'cancelled' ? 'cancelled' : terminal?.status === 'completed' ? 'completed' : 'waiting_ledger';
+  let detail = terminal ? '账本已确认' : '等待账本确认';
+  if (turn.request?.type === 'channel.create' && terminal?.status === 'completed') {
+    const expected = `${channel.qualified_name || channel.name || channel.id}.${turn.request.payload?.name || ''}`;
+    const created = channelRows.find((row) => row.id === terminal.value?.id || row.qualified_name === expected);
+    if (!created) { state = 'waiting_projection'; detail = '等待频道可观察'; }
+    else if (!isMemberAccess(created.access)) { state = 'waiting_projection'; detail = '等待成员关系'; }
+    else if (created.open !== true) { state = 'waiting_projection'; detail = '等待服务就绪'; }
+    else detail = '四步已经收敛';
+  }
+  return {
+    key: turn.requestId,
+    operationId: turn.requestId,
+    requestId: turn.requestId,
+    channelId: channel.id,
+    kind: 'governance',
+    title: governanceOperationTitle(turn),
+    detail,
+    state,
+    startedAt: turn.request?.ts || turn.requestSeq,
+    updatedAt: turn.terminal?.ts || turn.lastSeq || turn.requestSeq,
+    source: { channelId: channel.id, view: 'dynamic', objectType: 'turn', objectId: turn.requestId, requestId: turn.requestId },
+  };
+}
+
 export default function App() {
+  const initialRouteRef = useRef(parseWorkspaceHash(window.location.hash));
+  const routeInitializedRef = useRef(false);
   const [wireState, setWireState] = useState('closed');
   const [topError, setTopError] = useState('');
   const [rosters, setRosters] = useState(new Map());
   const [rosterBusy, setRosterBusy] = useState(false);
   const [channelNotice, setChannelNotice] = useState('');
   const [selectedActor, setSelectedActor] = useState(null);
-  const [rightPanel, setRightPanel] = useState('roster');
+  const [rightPanel, setRightPanel] = useState('');
+  const [contextFocus, setContextFocus] = useState(null);
+  const [workspaceView, setWorkspaceView] = useState(initialRouteRef.current.view);
+  const workspaceViewsRef = useRef(new Map());
   const [spacePrincipals, setSpacePrincipals] = useState([]);
   const [spaceDeclarations, setSpaceDeclarations] = useState([]);
   const [spaceDaemons, setSpaceDaemons] = useState([]);
   const [draftAttachments, setDraftAttachments] = useState({});
+  const [draftTexts, setDraftTexts] = useState({});
+  const [taskCreateSource, setTaskCreateSource] = useState(undefined);
+  const [channelCreateOpen, setChannelCreateOpen] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [mountedFilePreview, setMountedFilePreview] = useState(null);
 
   const obsRef = useRef(null);
   const wireRef = useRef(null);
@@ -74,9 +137,57 @@ export default function App() {
   const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
   const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed } = useChannelFeed({ rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
-  const channelChanged = useCallback(() => { setSelectedActor(null); setRightPanel('roster'); }, []);
+  const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(null); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
+
+  useEffect(() => {
+    const applyRoute = () => {
+      const route = parseWorkspaceHash(window.location.hash);
+      if (!route.valid || !channelList.some((channel) => channel.id === route.channelId)) return;
+      routeInitializedRef.current = true;
+      setActiveChannelId(route.channelId);
+      setWorkspaceView(route.view);
+      workspaceViewsRef.current.set(route.channelId, route.view);
+      if (route.focus?.type === 'channel') {
+        setContextFocus(route.focus);
+        setRightPanel('governance');
+      } else if (route.focus?.type === 'participant') {
+        setContextFocus(route.focus);
+        setRightPanel('roster-focus');
+      } else if (route.focus?.type === 'artifact') {
+        setContextFocus(route.focus);
+        setRightPanel('artifact-focus');
+      } else if (route.focus?.type === 'turn') {
+        setContextFocus(route.focus);
+        setRightPanel('');
+      } else if (route.focus?.type === 'work_item') {
+        setContextFocus(route.focus);
+        setRightPanel('work-item-focus');
+      } else {
+        setContextFocus(null);
+        setRightPanel((current) => !route.focus && ['space', 'activity'].includes(current) ? current : '');
+        if (route.focus) setChannelNotice('对象暂不可用，已保留当前主视图。');
+      }
+    };
+    if (!routeInitializedRef.current) applyRoute();
+    window.addEventListener('hashchange', applyRoute);
+    window.addEventListener('popstate', applyRoute);
+    return () => {
+      window.removeEventListener('hashchange', applyRoute);
+      window.removeEventListener('popstate', applyRoute);
+    };
+  }, [channelList, setActiveChannelId]);
+
+  useEffect(() => {
+    if (!activeChannelId) return;
+    const route = parseWorkspaceHash(window.location.hash);
+    if (!route.valid) {
+      const view = workspaceViewsRef.current.get(activeChannelId) || workspaceView;
+      setWorkspaceView(view);
+      writeWorkspaceRoute({ channelId: activeChannelId, view }, { replace: true });
+    }
+  }, [activeChannelId, workspaceView]);
   const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireRef, rosterRef, accessRef, channelStatesRef, onError: setTopError, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
   const { pending, approvalStates, controlStates, send: handleSend, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions } = submissions;
   directoryActionsRef.current.bump = bumpAccess;
@@ -102,13 +213,19 @@ export default function App() {
     setRosters(new Map());
     setChannelNotice('');
     setSelectedActor(null);
+    setContextFocus(null);
+    setMountedFilePreview(null);
     clearSubmissions();
-    setRightPanel('roster');
+    setRightPanel('');
     setSpacePrincipals([]);
     setSpaceDeclarations([]);
     setSpaceDaemons([]);
     clearTimers();
     setDraftAttachments({});
+    setDraftTexts({});
+    setTaskCreateSource(undefined);
+    setChannelCreateOpen(false);
+    setGlobalSearchOpen(false);
     clearSession();
     setWireState('closed');
   }, [clearDirectory, clearFeed, clearSession, clearSubmissions, clearTimers]);
@@ -124,12 +241,20 @@ export default function App() {
     accessRef.current = access;
 
     let alive = true;
+    let membershipObservationSupported = true;
+    const readMemberships = () => {
+      if (!membershipObservationSupported) return Promise.resolve({ items: [], complete: false, unsupported: true });
+      return obs.spaceMemberships().catch((error) => {
+        if (isUnsupportedMembershipObservation(error)) {
+          membershipObservationSupported = false;
+          return { items: [], complete: false, unsupported: true };
+        }
+        throw error;
+      });
+    };
     const refreshAccess = () => Promise.all([
       loadChannelTree(obs),
-      obs.spaceMemberships().catch((error) => {
-        if (error?.status === 404) return { items: [], complete: false, unsupported: true };
-        throw error;
-      }),
+      readMemberships(),
     ]).then(([result, membershipObservation]) => {
       if (!alive) return;
       const profiles = [...result.channels.values()];
@@ -220,6 +345,26 @@ export default function App() {
   }, [activeChannelId, channelList, me, refreshRoster]);
 
   useEffect(() => {
+    const access = channelList.find((channel) => channel.id === activeChannelId)?.access;
+    if (!access || canViewChannelContent(access)) return;
+    if (['governance', 'roster-focus', 'artifact-focus', 'work-item-focus', 'automation'].includes(rightPanel) || contextFocus?.type === 'turn') {
+      setSelectedActor(null);
+      setContextFocus(null);
+      setRightPanel('');
+      writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView }, { replace: true });
+    }
+    setTaskCreateSource(undefined);
+    setChannelCreateOpen(false);
+  }, [activeChannelId, channelList, contextFocus, rightPanel, workspaceView]);
+
+  useEffect(() => {
+    if (contextFocus?.type !== 'participant' || !activeChannelId) return;
+    const actor = (rosters.get(activeChannelId) || []).find((row) => row.id === contextFocus.key);
+    if (actor) setSelectedActor(actor);
+    else if (rosters.has(activeChannelId)) setChannelNotice('对象暂不可用，已保留当前主视图。');
+  }, [activeChannelId, contextFocus, rosters]);
+
+  useEffect(() => {
     if (!activeChannelId) return;
     const lastSeq = channelStatesRef.current.get(activeChannelId)?.lastSeq || 0;
     cursorsRef.current.markRead(activeChannelId, lastSeq);
@@ -248,9 +393,9 @@ export default function App() {
   }, [refreshRoster]);
 
   useEffect(() => {
-    if (!['create-channel', 'governance', 'space', 'resources'].includes(rightPanel)) return;
+    if (!['governance', 'space'].includes(rightPanel) && workspaceView !== 'artifacts') return;
     refreshGovernanceData();
-  }, [rightPanel, activeChannelId, refreshGovernanceData]);
+  }, [rightPanel, workspaceView, activeChannelId, refreshGovernanceData]);
 
   const handleResource = useCallback(async (payload) => {
     if (!wireRef.current) throw new TypeError('连接尚未就绪');
@@ -284,6 +429,47 @@ export default function App() {
     });
   }, [handleSend]);
 
+  const changeWorkspaceView = useCallback((view) => {
+    if (!activeChannelId) return;
+    workspaceViewsRef.current.set(activeChannelId, view);
+    setWorkspaceView(view);
+    setSelectedActor(null);
+    setContextFocus(null);
+    setMountedFilePreview(null);
+    setRightPanel('');
+    writeWorkspaceRoute({ channelId: activeChannelId, view });
+  }, [activeChannelId]);
+
+  const selectWorkspaceChannel = useCallback((channelId) => {
+    const view = workspaceViewsRef.current.get(channelId) || 'dynamic';
+    selectChannel(channelId);
+    setWorkspaceView(view);
+    writeWorkspaceRoute({ channelId, view });
+  }, [selectChannel]);
+
+  const openContext = useCallback((value, focus = null) => {
+    setSelectedActor(null);
+    setMountedFilePreview(null);
+    setRightPanel(value);
+    setContextFocus(focus);
+    if (focus && activeChannelId) {
+      writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView, focus }, { contextEntry: true });
+    }
+  }, [activeChannelId, workspaceView]);
+
+  const closeContext = useCallback(() => {
+    setSelectedActor(null);
+    setContextFocus(null);
+    setMountedFilePreview(null);
+    setRightPanel('');
+    if (window.history.state?.atollContextEntry) window.history.back();
+    else if (activeChannelId) writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView }, { replace: true });
+  }, [activeChannelId, workspaceView]);
+
+  const openTurnDetail = useCallback((requestId) => {
+    if (requestId) openContext('', { type: 'turn', key: requestId });
+  }, [openContext]);
+
   const describeActor = useCallback(async (actor, channelId = activeChannelId) => {
     if (!actor || !channelId) return;
     await handleSend({
@@ -298,10 +484,14 @@ export default function App() {
 
   const handleSelectActor = useCallback((actor) => {
     setSelectedActor(actor);
+    setRightPanel('roster-focus');
+    const focus = { type: 'participant', key: actor.id };
+    setContextFocus(focus);
+    if (activeChannelId) writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView, focus }, { contextEntry: true });
     const state = channelStatesRef.current.get(activeChannelId);
     const capability = capabilityIndexFromState(state).get(actor.id);
     if (!capability?.describe && !capability?.loading) describeActor(actor, activeChannelId);
-  }, [activeChannelId, describeActor]);
+  }, [activeChannelId, describeActor, workspaceView]);
 
   const handleInvokeActor = useCallback(async (type, payload) => {
     if (!selectedActor || !activeChannelId) return;
@@ -314,6 +504,44 @@ export default function App() {
       payload,
     });
   }, [activeChannelId, handleSend, selectedActor]);
+
+  const activeArtifactIndex = useMemo(
+    () => buildArtifactIndex(channelStatesRef.current.get(activeChannelId)),
+    [activeChannelId, feedVersion],
+  );
+
+  const globalData = useMemo(() => {
+    const channelData = channelList.map((channel) => {
+      const state = channelStatesRef.current.get(channel.id) || createChannelState(channel.id);
+      const roster = visibleRosterRows(rosters.get(channel.id) || []);
+      const capabilityIndex = capabilityIndexFromState(state);
+      const selfId = channel.selfActorId || rosterRef.current?.self(channel.id) || '';
+      const workItems = buildWorkItemIndex({ state, pending, timers: timerRecords, selfId, access: channel.access, capabilityIndex });
+      return { ...channel, state, roster, participants: roster, artifacts: buildArtifactIndex(state), workItems };
+    });
+    const governanceOperations = channelData.flatMap((channel) => [...channel.state.turns.values()]
+      .filter((turn) => GOVERNANCE_OPERATION_TYPES.has(turn.request?.type))
+      .map((turn) => governanceOperation(channel, turn, channelList)));
+    const submissionOperations = pending.map((item) => ({
+      key: item.key,
+      operationId: item.messageId,
+      channelId: item.channelId,
+      kind: 'submission',
+      title: item.text || item.frame?.msg_type || '发送消息',
+      detail: item.error?.detail || (item.state === 'uncertain' ? '等待账本核对' : '等待消息入账'),
+      state: item.state === 'transmitting' ? 'submitting' : ['accepted', 'delayed'].includes(item.state) ? 'waiting_ledger' : item.state === 'rejected' ? 'failed' : item.state,
+      startedAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      source: { channelId: item.channelId, view: 'dynamic', objectType: 'entry', objectId: item.messageId, envelopeId: item.messageId },
+    }));
+    const rawOperations = [...submissionOperations, ...governanceOperations];
+    const names = new Map(channelList.map((channel) => [channel.id, channel.qualified_name || channel.name || channel.id]));
+    const activities = [...buildActivityIndex({ channels: channelData, operations: rawOperations }).values()]
+      .map((item) => ({ ...item, channelName: names.get(item.channelId), detail: item.summary }));
+    const operations = activeOperations(buildOperationIndex({ channels: channelData, operations: rawOperations }))
+      .map((item) => ({ ...item, channelName: names.get(item.channelId) }));
+    return { channelData, activities, operations, searchIndex: buildGlobalSearchIndex({ channels: channelData, operations: rawOperations }) };
+  }, [channelList, feedVersion, pending, rosters, timerRecords]);
 
   if (booting) return <div className="boot-screen"><span className="brand-dot" />正在恢复会话…</div>;
   if (!me) return <Auth identity={identity} onAuthed={handleAuthed} />;
@@ -333,24 +561,150 @@ export default function App() {
   const activeChannel = activeRow || channels.get(activeChannelId);
   const activeAccess = activeRow?.access || CHANNEL_ACCESS.loading;
   const capabilityIndex = capabilityIndexFromState(activeState);
+  const providers = taskProviders(capabilityIndex, activeRoster);
+  const workItemIndex = buildWorkItemIndex({ state: activeState, pending, timers: timerRecords, selfId, access: activeAccess, capabilityIndex });
+  const artifactIndex = activeArtifactIndex;
   const selectedCapability = selectedActor ? capabilityIndex.get(selectedActor.id) : null;
+  const selectedArtifact = contextFocus?.type === 'artifact' ? artifactIndex.get(contextFocus.key) : null;
+  const previewArtifact = mountedFilePreview?.channelId === activeChannelId ? mountedFilePreview : null;
+  const selectedTurn = contextFocus?.type === 'turn' ? activeState.turns.get(contextFocus.key) : null;
+  const selectedWorkItem = contextFocus?.type === 'work_item' ? workItemIndex.get(contextFocus.key) : null;
 
-  const setPanel = (value) => { setSelectedActor(null); setRightPanel(value); };
-  const togglePanel = (value) => setPanel(rightPanel === value ? 'roster' : value);
+  const attachToDraft = (attachment) => {
+    setDraftAttachments((current) => ({ ...current, [activeChannelId]: [...(current[activeChannelId] || []).filter((row) => row.resource_id !== attachment.resource_id), attachment] }));
+    changeWorkspaceView('dynamic');
+  };
+
+  const previewMessageAttachment = (channelId, attachment) => {
+    const resourceId = attachment?.resource_id;
+    if (!channelId || !resourceId) return;
+    const mediaType = attachment.media_type || 'application/octet-stream';
+    const artifact = artifactIndex.get(`artifact:${channelId}:${resourceId}`) || {
+      key: `message-file:${channelId}:${resourceId}`,
+      channelId,
+      resourceId,
+      name: attachment.name || resourceId,
+      mediaType,
+      size: Number.isFinite(Number(attachment.size)) ? Number(attachment.size) : undefined,
+      kind: artifactKindForMediaType(mediaType),
+      preview: previewForMediaType(mediaType),
+      state: 'available',
+      provenance: { source: 'feed' },
+    };
+    setSelectedActor(null);
+    setContextFocus(null);
+    setRightPanel('');
+    setMountedFilePreview(artifact);
+  };
+
+  const openArtifactSource = (source) => {
+    setSelectedActor(null);
+    setContextFocus(null);
+    setRightPanel('');
+    workspaceViewsRef.current.set(activeChannelId, 'dynamic');
+    setWorkspaceView('dynamic');
+    writeWorkspaceRoute({ channelId: activeChannelId, view: 'dynamic' }, { replace: true });
+    window.setTimeout(() => document.querySelector(`[data-entry-id="${CSS.escape(source.objectId || '')}"]`)?.scrollIntoView({ block: 'center' }), 0);
+  };
+
+  const openDynamicSource = (source) => {
+    setSelectedActor(null);
+    setContextFocus(null);
+    setRightPanel('');
+    workspaceViewsRef.current.set(activeChannelId, 'dynamic');
+    setWorkspaceView('dynamic');
+    writeWorkspaceRoute({ channelId: activeChannelId, view: 'dynamic' }, { replace: true });
+    window.setTimeout(() => document.querySelector(`[data-entry-id="${CSS.escape(source.objectId || '')}"]`)?.scrollIntoView({ block: 'center' }), 0);
+  };
+
+  const openWorkItemSource = (source) => {
+    if (source?.view !== 'tasks') { openDynamicSource(source); return; }
+    setSelectedActor(null);
+    setContextFocus(null);
+    setRightPanel('');
+    workspaceViewsRef.current.set(activeChannelId, 'tasks');
+    setWorkspaceView('tasks');
+    writeWorkspaceRoute({ channelId: activeChannelId, view: 'tasks' }, { replace: true });
+  };
+
+  const createTaskFromSource = providers.length ? (source) => setTaskCreateSource(source || null) : null;
+
+  const submitTask = async ({ title, description, providerId, dueAt, source }) => {
+    const provider = providers.find((row) => row.actorId === providerId);
+    if (!provider) throw new TypeError('所选成员不再提供正式任务能力');
+    await handleSend({
+      channelId: activeChannelId,
+      text: title,
+      msgType: 'task.create',
+      audience: [provider.actorId],
+      targetLabel: provider.name,
+      payload: { title, ...(description ? { description } : {}), ...(dueAt ? { due_at: dueAt } : {}), ...(source ? { source: { ...source, channelId: activeChannelId } } : {}) },
+    });
+    changeWorkspaceView('tasks');
+    setChannelNotice('任务创建请求已提交；正式任务会在 provider 返回稳定任务编号后进入列表。');
+  };
+
+  const selectedTurnActorId = selectedTurn?.request?.audience?.length === 1 ? selectedTurn.request.audience[0] : '';
+  const selectedTurnControlKey = selectedTurn ? `${activeChannelId}:${selectedTurn.requestId}:cancel` : '';
+
+  const navigateToSource = (source) => {
+    const channel = channelList.find((row) => row.id === source?.channelId);
+    if (!channel || (!isMemberAccess(channel.access) && !String(channel.access || '').startsWith('observer_'))) {
+      setChannelNotice('来源频道当前不可访问，未打开缓存内容。');
+      setGlobalSearchOpen(false);
+      setRightPanel('');
+      return;
+    }
+    const view = ['dynamic', 'artifacts', 'tasks'].includes(source.view) ? source.view : 'dynamic';
+    const focusType = source.objectType === 'entry' ? '' : source.objectType;
+    const focus = ['channel', 'participant', 'artifact', 'turn', 'work_item'].includes(focusType) && source.objectId
+      ? { type: focusType, key: source.objectId }
+      : null;
+    selectChannel(channel.id);
+    workspaceViewsRef.current.set(channel.id, view);
+    setWorkspaceView(view);
+    setSelectedActor(null);
+    setContextFocus(focus);
+    setRightPanel(focusType === 'channel' ? 'governance'
+      : focusType === 'participant' ? 'roster-focus'
+        : focusType === 'artifact' ? 'artifact-focus'
+          : focusType === 'turn' ? ''
+            : focusType === 'work_item' ? 'work-item-focus' : '');
+    setGlobalSearchOpen(false);
+    writeWorkspaceRoute({ channelId: channel.id, view, focus }, { contextEntry: Boolean(focus) });
+    if (!focus && source.objectId) window.setTimeout(() => {
+      const row = document.querySelector(`[data-entry-id="${CSS.escape(source.objectId)}"]`);
+      if (row) row.scrollIntoView({ block: 'center' });
+      else setChannelNotice('来源对象暂不可用，已返回所属频道。');
+    }, 0);
+  };
+
   const host = {
-    panel: { value: rightPanel, set: setRightPanel },
-    active: { channel: activeChannel, state: activeState, roster: activeRoster, access: activeAccess, selfId, wireState },
+    panel: { value: rightPanel, focus: contextFocus, close: closeContext, turn: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource } },
+    active: { channel: activeChannel, state: activeState, roster: activeRoster, access: activeAccess, selfId, wireState, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } },
     directory: { channels: channelList },
     governance: { principals: spacePrincipals, declarations: spaceDeclarations, daemons: spaceDaemons, registrarRoster: rosters.get('c0') || (activeChannelId === 'c0' ? activeRoster : []), rootState: channelStatesRef.current.get('c0'), version: feedVersion, onSubmit: handleSend, onRefresh: refreshGovernanceData },
-    resources: { onResource: handleResource, onAttach: (attachment) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [...(current[activeChannelId] || []).filter((row) => row.resource_id !== attachment.resource_id), attachment] })) },
-    automation: { records: timerRecords, onAfter: handleAfter, onCancel: handleCancelTimer },
-    roster: { busy: rosterBusy, onRefresh: () => refreshRoster(activeChannelId, true), selectedActor, capability: selectedCapability, onSelectActor: handleSelectActor, onCloseActor: () => setSelectedActor(null), onDescribe: () => describeActor(selectedActor, activeChannelId), onInvoke: handleInvokeActor },
+    artifacts: { selected: selectedArtifact, authorName: activeRoster.find((row) => row.id === selectedArtifact?.authorActorId)?.name, onResource: handleResource, onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onAttach: attachToDraft, onSource: openArtifactSource },
+    workItems: { selected: selectedWorkItem, roster: activeRoster, onSource: openWorkItemSource, onResolve: (item, decision) => handleResolve(activeChannelId, item.nativeId, decision, {}), onOpenTurn: openTurnDetail, onRetry: (item) => { const submission = pending.find((row) => row.key === item.diagnostic?.submissionKey); if (submission) handleRetry(submission); }, onCancelAutomation: handleCancelTimer },
+    roster: { busy: rosterBusy, onRefresh: () => refreshRoster(activeChannelId, true), selectedActor, capability: selectedCapability, onSelectActor: handleSelectActor, onCloseActor: () => {
+      setSelectedActor(null);
+      const focus = { type: 'channel', key: activeChannelId };
+      setContextFocus(focus);
+      writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView, focus }, { replace: true, contextEntry: true });
+    }, onDescribe: () => describeActor(selectedActor, activeChannelId), onInvoke: handleInvokeActor },
+    activity: { activities: globalData.activities, operations: globalData.operations, onOpen: navigateToSource },
   };
-  return <AppShell
+  return <>
+  <AppShell
     session={{ me, wireState, onLogout: handleLogout }}
-    navigation={{ channels: channelList, activeChannelId, unread, onSelect: selectChannel, onCreate: () => setPanel('create-channel'), onSpaceManage: () => setPanel('space') }}
-    workspace={{ channel: activeChannel, state: activeState, access: activeAccess, roster: activeRoster, selfId, pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onSend: handleSend, attachments: draftAttachments[activeChannelId] || [], onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })) }}
+    navigation={{ channels: channelList, activeChannelId, unread, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, access: activeAccess, roster: activeRoster, selfId, pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onSend: handleSend, draft: draftTexts[activeChannelId] || '', onDraftChange: (value) => setDraftTexts((current) => ({ ...current, [activeChannelId]: value })), attachments: draftAttachments[activeChannelId] || [], onChooseAttachment: () => changeWorkspaceView('artifacts'), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { daemons: spaceDaemons, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setRightPanel(''); setMountedFilePreview(artifact); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
-    panel={{ value: rightPanel, toggle: togglePanel, host }}
-  />;
+    panel={{ value: rightPanel, open: openContext, host }}
+  />
+  {taskCreateSource !== undefined && <TaskCreateModal providers={providers} source={taskCreateSource} onSubmit={submitTask} onClose={() => setTaskCreateSource(undefined)} />}
+  {channelCreateOpen && activeChannel && <ChannelCreateModal channel={activeChannel} channels={channelList} roster={activeRoster} state={activeState} disabled={wireState !== 'open' || !canWriteChannel(activeAccess)} onSubmit={handleSend} onClose={() => setChannelCreateOpen(false)} onEnterChannel={(channel) => { setChannelCreateOpen(false); selectWorkspaceChannel(channel.id); }} />}
+  {globalSearchOpen && <GlobalSearch index={globalData.searchIndex} onOpen={navigateToSource} onClose={() => setGlobalSearchOpen(false)} />}
+  {previewArtifact && <FilePreviewModal artifact={previewArtifact} onResource={handleResource} onAttach={(attachment) => { setMountedFilePreview(null); attachToDraft(attachment); }} onDownload={(attachment) => handleDownloadResource(activeChannelId, attachment)} onClose={() => setMountedFilePreview(null)} />}
+  </>;
 }

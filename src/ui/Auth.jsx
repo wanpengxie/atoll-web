@@ -8,6 +8,14 @@ export function Auth({ identity, onAuthed }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  function switchModeByKey(event) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'ArrowLeft' || event.key === 'Home' ? 'login' : 'register';
+    setMode(next);
+    event.currentTarget.parentElement?.querySelector(`[data-auth-mode="${next}"]`)?.focus();
+  }
+
   async function submit(event) {
     event.preventDefault();
     setBusy(true);
@@ -42,8 +50,8 @@ export function Auth({ identity, onAuthed }) {
           <small>// collaboration ledger · ws v2</small>
         </div>
         <div className="auth-tabs" role="tablist" aria-label="账号操作">
-          <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>登录</button>
-          <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>注册</button>
+          <button type="button" role="tab" data-auth-mode="login" aria-selected={mode === 'login'} tabIndex={mode === 'login' ? 0 : -1} className={mode === 'login' ? 'active' : ''} onKeyDown={switchModeByKey} onClick={() => setMode('login')}>登录</button>
+          <button type="button" role="tab" data-auth-mode="register" aria-selected={mode === 'register'} tabIndex={mode === 'register' ? 0 : -1} className={mode === 'register' ? 'active' : ''} onKeyDown={switchModeByKey} onClick={() => setMode('register')}>注册</button>
         </div>
         <form onSubmit={submit}>
           <label>邮箱<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>

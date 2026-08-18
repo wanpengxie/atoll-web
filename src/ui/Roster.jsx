@@ -9,13 +9,13 @@ function Presence({ row }) {
   return <span className="presence unknown">未知</span>;
 }
 
-export function Roster({ rows, selfId, identityPending = false, busy, onRefresh, selectedActor, capability, disabled, onSelectActor, onCloseActor, onDescribe, onInvoke }) {
+export function Roster({ rows, selfId, identityPending = false, busy, focused = false, onClosePanel, onRefresh, selectedActor, capability, disabled, onSelectActor, onCloseActor, onDescribe, onInvoke }) {
   const visibleRows = visibleRosterRows(rows);
   return (
-    <aside className="roster-panel">
+    <aside className={focused ? 'roster-panel focused' : 'roster-panel'} aria-label="频道成员">
       <header>
-        <div><p className="eyebrow">LIVE DIRECTORY</p><h2>频道名册</h2></div>
-        <button type="button" className="icon-button" onClick={onRefresh} disabled={busy} aria-label="刷新名册">{busy ? '…' : '↻'}</button>
+        <div><p className="eyebrow">MEMBERS</p><h2>成员 <small>{visibleRows.length}</small></h2></div>
+        <div className="roster-header-actions"><button type="button" className="icon-button" onClick={onRefresh} disabled={busy} aria-label="刷新名册">{busy ? '…' : '↻'}</button>{onClosePanel && <button type="button" className="icon-button" onClick={onClosePanel} aria-label="关闭成员面板">×</button>}</div>
       </header>
       <div className="roster-list">
         {visibleRows.map((row) => (

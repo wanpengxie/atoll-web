@@ -2,7 +2,7 @@ export const RESOURCE_OPS = Object.freeze(['create', 'read', 'write', 'delete', 
 
 export function resourceId(value) {
   const id = String(value || '').trim();
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,254}$/.test(id)) throw new TypeError('资源 ID 格式无效');
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/%~-]{0,4094}$/.test(id)) throw new TypeError('资源 ID 格式无效');
   return id;
 }
 
@@ -24,7 +24,8 @@ export function fileAddress({ daemonId, qualifiedChannel, path }) {
   const cleanPath = String(path || '').trim().replace(/^\/+/, '');
   if (!daemon || !channel || !cleanPath) throw new TypeError('daemon、频道和文件路径不能为空');
   if (cleanPath.split('/').some((part) => !part || part === '.' || part === '..')) throw new TypeError('文件路径不能包含空段、. 或 ..');
-  return `daemon://${daemon}/${channel}/${cleanPath}`;
+  const encodedPath = cleanPath.split('/').map((part) => encodeURIComponent(part)).join('/');
+  return `daemon://${daemon}/${channel}/${encodedPath}`;
 }
 
 export function createFileTicket({ channelId, address }) {

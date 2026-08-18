@@ -44,6 +44,10 @@ Web 不建立 `/api/channels` 一类旁路管理 API。频道和 Actor 管理仍
 
 `GET /obs/space/channels` 提供频道结构、生命周期声明和 `open` measure。它不能证明当前 principal 是成员，也不能证明当前连接可写。
 
+节点 owner 与 well-known `c0` 是 Atoll 启动时共同装配的 root/home 不变式。前端仅对
+`profile.id === "c0" && profile.owner_principal === me` 使用这条启动事实，使 c0 首次登录即可进入和写入；
+不得把该例外推广到普通子频道。
+
 `GET /obs/channel/{id}/actors` 提供 Actor id、kind、decl_id、展示属性及 bound/device measures。最新真实 atoll 的 human 行不包含 principal，因此不能把第一位 human 或名字相同者猜成自己。
 
 OBS 的 `complete=false` 表示结果不完整。此时缺失不能推导成 retired。

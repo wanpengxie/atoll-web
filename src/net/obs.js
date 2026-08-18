@@ -8,6 +8,15 @@ export class ObsError extends Error {
   }
 }
 
+// Membership 是 Mock 提供的可选投影。真实 Atoll 版本可能用 404，或用
+// invalid_args/unknown kind 明确表示该观察面不存在；两者都不是产品错误。
+export function isUnsupportedMembershipObservation(error) {
+  return error?.status === 404
+    || (error?.status === 400
+      && error?.code === 'invalid_args'
+      && /unknown space observation kind/i.test(error?.detail || ''));
+}
+
 async function read(path, fetchImpl, onUnauthorized) {
   const response = await fetchImpl(path, { credentials: 'include' });
   const body = await response.json().catch(() => ({}));

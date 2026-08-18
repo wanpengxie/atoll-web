@@ -1,0 +1,171 @@
+=== Atoll Web F1-F5 - Progress Log ===
+
+Project: atoll-web
+Branch: current working branch
+Started: 2026-08-18
+
+=== Build and Test Commands ===
+
+Build: npm run build
+Unit Test: npm test
+Browser Test: npm run test:browser
+Full Test: npm run test:all
+Run: npm run dev + npm run mock
+Dependencies: local mock server; real Atoll only for final smoke
+
+=== 2026-08-18 Initialization ===
+Status: Completed
+Changes:
+- Reused completed D0-D2 product, object/navigation, and visual specifications.
+- Created persistent F1-F5 feature and execution tracking.
+Next: F1 main workspace semantics.
+
+=== 2026-08-18 F1 Main Workspace Semantics ===
+Status: Completed
+Changes:
+- Dynamic, Artifacts, and Tasks now replace the primary workspace instead of opening right-column feature panels.
+- Composer renders only in Dynamic and keeps draft text and attachments isolated by channel.
+- Added an independent Context Host with channel/participant focus descriptors and Hash URL recovery.
+- Added wide, medium, narrow, and 320px single-surface behavior; mobile channel list is explicitly reachable from the workspace.
+- Preserved member, channel governance, space administration, KV/file, upload, download, and local automation capabilities through transitional entries.
+Verification:
+- npm test: 103 passed.
+- tests/browser/f1-workspace.spec.js: 3 passed.
+- Browser regression excluding visual snapshots reached 34 consecutive passes through phase C; phase E rerun: 9 passed.
+- npm run build: passed.
+Known regression follow-up:
+- phase-d D-BR-01 and D-BR-03 remain unstable around the legacy create-channel side-panel convergence lifecycle after channel directory growth; F1 workspace gates are unaffected, but the main task must resolve before the final full-suite gate.
+- UI visual snapshots for the workspace/resources/automation surfaces require intentional refresh after the remaining F2-F5 construction, not piecemeal during F1.
+Review:
+- Design consistency: F1-001 through F1-006 match D1/D2 contracts.
+- Base component consistency: reused ChannelResources, ChannelAutomation, PanelTabs, SidePanel, Roster, and existing CSS tokens.
+- No blocking F1-specific correctness, security, or accessibility issues found.
+Next: F2 artifact model and file experience.
+
+=== 2026-08-18 F2 Artifact Model and File Experience ===
+Status: Completed
+Changes:
+- Added a replay-derived, channel-isolated Artifact index with strict attachment/formal-adapter admission and stable SourceRef navigation.
+- Preserved explicit version/derivation facts without inferring relations from names, text, timing, tickets, registrar values, or arbitrary JSON.
+- Replaced the default KV/file console with an Artifact collection supporting search plus type, author, state, and time filters; advanced resource tools remain reachable but collapsed.
+- Added Artifact Context preview, metadata, source return, download, attach-to-draft, unsupported-preview fallback, and long-name behavior.
+- Upload now selects a local file without ordinary daemon/path/ticket fields, transfers it, and returns to the channel-scoped Dynamic draft; only the sent feed attachment becomes a shared Artifact.
+Verification:
+- npm test: 107 passed.
+- tests/browser/f1-workspace.spec.js + tests/browser/f2-artifacts.spec.js: 5 passed, including URL reload recovery and 320px overflow.
+- phase E resource regression E-BR-07 through E-BR-10: 3 passed.
+- npm run build: passed.
+Known regression follow-up:
+- Full phase E first run reproduced unrelated E-BR-02 channel-template read instability once; F2 resource cases passed after the intentional locator update.
+- Existing phase D create-channel instability remains outside F2 and must still be resolved before the final full-suite gate.
+Review:
+- Design consistency: F2-001 through F2-006 match D1 Artifact/SourceRef and D2 F2 gates.
+- Base component consistency: reused feed fold state, resource ticket helpers, Context Host, SidePanel, PanelTabs, Composer drafts, and Atoll CSS tokens.
+- Code quality: no blocking F2 correctness, sensitive-data exposure, accessibility, responsive, or recovery issue remains.
+Next: F3 Dynamic, Turn Context, and Composer experience.
+
+=== 2026-08-18 F3 Dynamic, Turn Context, and Composer ===
+Status: Completed
+Changes:
+- Kept ordinary human and Agent business entries on a flat reading axis; hover, focus, and touch expose contextual actions without changing row height.
+- Reduced WorkTurn main-line process noise to current human-readable progress, final state, and evidence counts; provisional, activity, anomalies, raw identifiers, and controls remain available in Turn Context.
+- Added refresh-restorable Turn Context routing, source return, redacted diagnostics, associated attachments, and cancel/steer/interrupt controls using the existing task-control contracts.
+- Added the message-to-task source entry required by F4 without inventing reply or Thread semantics; existing parent/correlation remains request-response correlation only.
+- Composer now exposes its target, multiline auto-growth, attachment entry, channel-scoped drafts, submit/accepted/error states, read-only explanation, and keyboard behavior.
+- System narration is split into compact important events and collapsed diagnostic records.
+Verification:
+- npm test: 112 passed across 35 files.
+- F1 + F2 + F3 browser gates: 7 passed, including focus actions, URL reload/source return, 320px single-surface Context, draft retention, and control reachability.
+- Phase B/C regression: 20 cases exercised; 18 passed in the combined run and the two legacy main-line assertions were updated to the F3 Context boundary, then passed on rerun.
+- npm run build: passed after final review cleanup; git diff --check also passed.
+Known regression follow-up:
+- Existing phase D create-channel convergence instability remains for F5, where channel creation becomes a dedicated Modal.
+- Visual snapshots are intentionally deferred to the F5/F6 unified baseline instead of preserving obsolete expanded-process screenshots.
+Review:
+- Design consistency: F3-001 through F3-006 match D1 Dynamic/Turn/SourceRef and D2 F3 gates; no social Thread was inferred.
+- Base component consistency: reused feed fold state, taskControlContext, Context Host, SidePanel, StructuredResult redaction, workspace routing, and existing CSS tokens.
+- Code quality: fixed Composer accepted-state staleness and legacy accessible-name collision; no blocking correctness, XSS, sensitive-data, keyboard, or responsive issue remains.
+Next: F4 WorkItem model, Tasks view, and source-backed task creation.
+
+=== 2026-08-18 F4 WorkItem and Tasks Experience ===
+Status: Completed
+Changes:
+- Added a deterministic WorkItem index for task, approval, agent_run, recovery, and automation without inventing shared browser-only tasks.
+- Added responsibility, status, and kind filters plus semantic grouping in the Tasks primary workspace.
+- Added kind-specific WorkItem Context actions, source return, and refresh-restorable work_item focus routes.
+- Made task creation strictly capability-driven: only current roster members whose describe declares task.create can open the source-prefilled Modal; a stable provider task_id is required before a formal task appears.
+- Added a dedicated task-capability Mock scenario so existing Actor capability scenarios and exact capability regressions remain unchanged.
+- Classified timers as Automation with an explicit THIS DEVICE boundary while preserving the existing scheduling/cancel surface.
+Verification:
+- npm test: 119 passed across 37 files.
+- Isolated fresh Mock browser gate tests/browser/f4-tasks.spec.js: 3 passed, covering no-provider truthfulness, approval Context/URL restore, task.create/source restore, timer scope, and 320px overflow.
+- F1 browser gate: 3 passed; F2+F3 browser gates: 4 passed.
+- Phase B/C regression: 20 passed. Phase E regression: 27 passed in combined run; the timer journey was updated for the F4 Tasks surface and passed together with the once-flaky channel-template case on focused rerun (2 passed).
+- npm run build and git diff --check: passed.
+Environment note:
+- The shared 8832 Mock process predated the new task-capability scenario, so F4 capability proof used isolated fresh services on 8844/5184. This is process reuse, not an application failure.
+Review:
+- Design consistency: F4-001 through F4-006 match D1 WorkItem/Tasks/Context and D2 F4 gates.
+- Base component consistency: reused the ledger fold, capability index, pending submissions, local timer records, Context Host, SidePanel, workspace route, and Atoll visual tokens.
+- Code quality: provider membership and source-channel validation prevent stale/cross-channel capability use; no blocking correctness, shared-state fabrication, responsive, accessibility, or security issue remains.
+Next: F5 participant-first governance, creation Modal, Activity/Operation Center, and global search.
+
+=== 2026-08-18 F5 Management and Global Activity ===
+Status: Completed
+Changes:
+- Reorganized Channel Context around members first, with participant-first selection, explicit Agent owner selection, and protected standard Actors hidden at both UI and index boundaries.
+- Replaced the legacy create-channel side panel with an independent keyboard-safe Modal that preserves input on failure and exposes ledger, observable, membership, and serving convergence before entry.
+- Added a visible-channel-only Activity/Operation index with business-fact deduplication, sanitized SourceRefs, and source return.
+- Added global search across visible channels, turns, entries, artifacts, WorkItems, participants, and operations; navigation restores channel, primary view, object focus, and source entry.
+- Kept space governance independent from channel details and closed or suppressed cached sensitive content immediately after channel access becomes unreadable.
+Verification:
+- npm test: 131 passed across 40 files.
+- Full non-visual browser regression: 62 passed, covering phase A–E and F1–F5.
+- Phase D create/manage regression: 8 passed; D-BR-01 and D-BR-03 are stable with the independent Modal and explicit four-step convergence.
+- F5 browser gate: 6 passed; phase E regression: 9 passed.
+- Full visual suite: 14 passed after intentional baseline refresh and manual inspection of the key wide, medium, and narrow surfaces.
+- npm run build and git diff --check: passed.
+Resolved:
+- Eliminated the legacy create-channel side-panel lifecycle that caused D-BR-01/D-BR-03 instability.
+- Removed duplicate Activity/search rows for the same request while preserving same-request facts in different channels.
+- Prevented unauthorized or stale channels from contributing names, facts, cached timelines, or focused objects to global surfaces.
+- Corrected Artifact and WorkItem SourceRefs so source return opens the owning product context rather than an incidental origin row.
+Review:
+- Design consistency: F5-001 through F5-006 match D1 Channel Context, SourceRef, URL/focus and D2 F5 gates.
+- Base component consistency: the new global surfaces and Modal reuse existing Atoll tokens, Context routing, convergence model, focus handling, and side-panel primitives.
+- Code quality: no blocking F5 correctness, information disclosure, keyboard, responsive, or visual regression remains.
+Next: F6 visual, responsive, performance, accessibility, transition cleanup, and real-backend smoke closure.
+
+=== 2026-08-18 F6 Visual, Responsive, Performance, Accessibility, and Release Closure ===
+Status: Completed
+Changes:
+- Consolidated Atoll's warm surfaces, brand red, Agent blue, lines, states, shadows, and radii into shared tokens without copying GenSpark colors; the product remains explicitly Light-only.
+- Matured the Dynamic reading axis with consecutive-message identity grouping, constrained reading width, compact auditable process summaries, attachment cards, hover/focus actions, scroll preservation, new-feed affordance, and ledger-confirmed Composer feedback.
+- Added keyboard navigation, Modal focus trap/background inert/Escape/focus restoration, Context focus restoration, live semantics, global focus-visible, forced-colors, reduced-motion, and 44px mobile critical targets.
+- Added fixed 120-row DOM windows for Dynamic, Tasks, channel directory files, and message references; capped local pending at 50 and expanded diagnostics at 120; cached repeated timeline/artifact projections.
+- Added preview cancellation and three-layer size gates: text 512 KiB, image 20 MiB, PDF 25 MiB, audio/video 50 MiB, with Object URL release and safe download-only degradation.
+- Corrected product facts discovered against the real backend: c0 is root's always-visible root/home channel; lobby/internal channels remain hidden; the Files main view is the current channel's daemon mount, with ledger references as an additional source-backed section.
+- Added compatibility for the current real Atoll membership OBS 400 invalid_args/unknown kind response and preserved the original WebSocket Host through Vite proxying.
+Verification:
+- Vitest: 151/151 passed; F6 token/performance/accessibility focused suite: 12/12 passed after final contrast/touch-target audit.
+- Playwright: 80/80 passed on the final worktree: 65/65 non-visual and 15/15 visual, including the current-channel mounted Files primary view after the final contrast/touch-target adjustment.
+- npm run build and git diff --check: passed after the final F6 adjustments.
+- Real sibling Atoll final smoke: a fresh single-node space exposed its `c0`/`c0.lobby` bootstrap facts; root logged in, the browser restored and selected visible default channel `c0`, reached `OPEN`, enabled the Composer textbox, and showed `local-device` with channel mount `daemon://local-device/c0/`.
+Boundaries:
+- This final single-node smoke did not send a message and therefore does not prove real submission, ledger landing, progress, or terminal response. It also does not prove multi-node concurrency, restart persistence, cross-process/one-shot tickets and disk writes, cross-device timer semantics, device-key lifecycle, or production TLS/reverse-proxy behavior.
+Review:
+- F6-001 through F6-008 match D1/D2 and the master plan. Static reference, color-literal, hygiene, JSON, and diff review found no remaining blocking issue.
+- `completed_features` is 38/38. No new frontend construction phase is implied; next is release review and environment-specific runtime validation.
+
+=== 2026-08-19 Mounted File Preview and Conversation Layout Follow-up ===
+Status: Completed
+Changes:
+- Seeded the interactive multi-channel Mock daemon with channel-isolated root and nested sample files.
+- Made mounted directory files directly previewable in the existing File Context with the same text/image/media/PDF limits, cancellation, attachment, and download behavior; ledger provenance is shown only for actual message references.
+- Reframed each WorkTurn as a readable request and Actor response on one conversation axis, with compact secondary process access instead of a technical ANSWER card.
+- Consolidated recipient, textarea, file action, send action, and keyboard hints into one Composer surface while retaining Atoll colors and Turn Context auditability.
+Verification:
+- Vitest: 152/152 passed.
+- F2/F3/layout browser gates: 9/9 passed across the final relevant code paths.
+- Visual Playwright: 16/16 passed, including the new mounted-file preview Context baseline.
+- Production build and `git diff --check`: passed.

@@ -103,6 +103,19 @@ export class MockDomain {
     this.bindings = new Set();
     this.resources = new Map([...this.channels.keys()].map((id) => [id, new Map()]));
     this.files = new Map();
+    for (const [index, seed] of (config.files || []).entries()) {
+      const channel = this.channels.get(seed.channel_id);
+      const store = this.resources.get(seed.channel_id);
+      const segments = String(seed.path || '').split('/').filter(Boolean);
+      if (!channel || !store || segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) continue;
+      const encodedPath = segments.map((segment) => encodeURIComponent(segment)).join('/');
+      const address = `daemon://local-device/${channel.qualified_name}/${encodedPath}`;
+      const content = Buffer.from(String(seed.content || ''), 'utf8');
+      const mediaType = seed.media_type || 'application/octet-stream';
+      const resourceId = `file:seed:${seed.channel_id}:${index + 1}`;
+      store.set(resourceId, { id: resourceId, resource_id: resourceId, kind: 'file', address, meta: { size: content.length, media_type: mediaType, available: true } });
+      this.files.set(address, { content, mediaType, size: content.length });
+    }
     this.tickets = new Map();
   }
 
@@ -378,7 +391,19 @@ export class MockDomain {
   resource(channelId, payload) {
     const store = this.resources.get(channelId); if (!store) throw new TypeError('channel does not exist');
     const { op, resource_id: id, args } = payload;
-    if (op === 'list') return { items: [...store.values()].map((row) => structuredClone(row)), next: null };
+    if (op === 'list') {
+      const prefix = String(payload.query?.prefix || '');
+      const rows = [...store.values()];
+      if (prefix.startsWith('daemon://')) {
+        return {
+          items: rows
+            .filter((row) => row.kind === 'file' && String(row.address || '').startsWith(prefix))
+            .map((row) => ({ id: row.address, kind: 'file', ops: ['read', 'write', 'delete'], meta: structuredClone(row.meta || {}) })),
+          next: null,
+        };
+      }
+      return { items: rows.map((row) => structuredClone(row)), next: null };
+    }
     if (op === 'create' && payload.address) {
       const resourceId = `file:${this.nextId('resource')}`;
       const row = { id: resourceId, resource_id: resourceId, kind: 'file', address: payload.address, meta: {} };
@@ -390,13 +415,13 @@ export class MockDomain {
       if (store.has(id)) throw new TypeError('resource already exists');
       const row = { id, resource_id: id, kind: 'kv', value: structuredClone(args ?? {}) }; store.set(id, row); return { status: 'ok', resource_id: id, value: row.value };
     }
-    const row = store.get(id);
+    const row = store.get(id) || [...store.values()].find((entry) => entry.address === id);
     if (op === 'stat') return { exists: Boolean(row), ...(row ? { meta: { kind: row.kind, ...(row.meta || {}) } } : {}) };
     if (!row) throw new TypeError('resource does not exist');
     if (op === 'read' && row.kind === 'file' && payload.with_content) return { status: 'ok', ticket: this.issueTicket('get', row.address, id), redeem: 'http', resource_id: id, address: row.address };
     if (op === 'read') return { status: 'ok', resource_id: id, value: structuredClone(row.value) };
     if (op === 'write') { row.value = structuredClone(args ?? {}); return { status: 'ok', resource_id: id, value: row.value }; }
-    if (op === 'delete') { store.delete(id); if (row.address) this.files.delete(row.address); return { status: 'ok', resource_id: id, deleted: true }; }
+    if (op === 'delete') { store.delete(row.id || id); if (row.address) this.files.delete(row.address); return { status: 'ok', resource_id: id, deleted: true }; }
     throw new TypeError('unsupported resource operation');
   }
 

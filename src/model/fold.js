@@ -2,6 +2,7 @@ import { correlationOf, FINAL, PROVISIONAL } from '../protocol/envelope.js';
 import { isActivity, isSystemNarration, TYPES } from '../protocol/vocab.js';
 
 const BUSINESS_PROVISIONAL = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*$/;
+const timelineCache = new WeakMap();
 
 export function createChannelState(channelId = '') {
   return {
@@ -250,11 +251,16 @@ export function fold(rows, selfId = '') {
 }
 
 export function orderedTimeline(state) {
+  const signature = `${state.turns.size}:${state.standalone.length}:${state.orphans.length}`;
+  const cached = timelineCache.get(state);
+  if (cached?.signature === signature) return cached.entries;
   const entries = [];
   for (const turn of state.turns.values()) entries.push({ kind: 'turn', seq: turn.requestSeq, turn });
   for (const item of state.standalone) entries.push({ kind: 'standalone', ...item });
   for (const item of state.orphans) entries.push({ kind: 'orphan', ...item });
-  return entries.sort((left, right) => left.seq - right.seq);
+  entries.sort((left, right) => left.seq - right.seq);
+  timelineCache.set(state, { signature, entries });
+  return entries;
 }
 
 export function structuredBusinessPayload(payload = {}) {

@@ -27,10 +27,11 @@ async function openSpace(page, tab = 'Actor 模板') {
 }
 
 async function openResources(page, tab = 'KV') {
-  await page.getByRole('button', { name: '资源', exact: true }).click();
-  const panel = page.getByRole('complementary', { name: '频道资源' });
+  await page.getByRole('tab', { name: '文件', exact: true }).click();
+  const panel = page.getByRole('tabpanel', { name: '文件' });
   await expect(panel).toBeVisible();
-  if (tab !== 'KV') await panel.getByRole('tab', { name: tab, exact: true }).click();
+  await panel.getByText('高级资源工具', { exact: true }).click();
+  await panel.getByRole('tab', { name: tab, exact: true }).click();
   return panel;
 }
 
@@ -146,7 +147,7 @@ test('E-BR-07 KV create/read/write/stat/list/delete 完整闭环', async ({ page
 
 test('E-BR-08/E-BR-10 文件上传、附件消息卡和下载闭环', async ({ page, request }) => {
   await reset(request, 'resource-workflow', 306); await login(page);
-  const panel = await openResources(page, '文件与附件');
+  const panel = await openResources(page, '文件');
   await panel.getByRole('combobox', { name: '文件目标设备' }).click();
   await panel.getByRole('option', { name: /Mock local device/ }).click();
   await panel.getByLabel('文件资源路径').fill('uploads/phase-e-upload.txt');
@@ -175,7 +176,7 @@ test('E-BR-09 ticket 过期保留上下文并可重新获取，不复用旧 PUT'
     }
     await route.continue();
   });
-  const panel = await openResources(page, '文件与附件');
+  const panel = await openResources(page, '文件');
   await panel.getByRole('combobox', { name: '文件目标设备' }).click();
   await panel.getByRole('option', { name: /Mock local device/ }).click();
   await panel.getByLabel('文件资源路径').fill('uploads/expired.txt');
@@ -189,8 +190,9 @@ test('E-BR-09 ticket 过期保留上下文并可重新获取，不复用旧 PUT'
 
 test('E-BR-11/E-BR-12 定时动作是本设备记录，可触发入账并可靠取消', async ({ page, request }) => {
   await reset(request, 'scheduled-action', 308); await login(page);
-  await page.getByRole('button', { name: '定时动作', exact: true }).click();
-  const panel = page.getByRole('complementary', { name: '定时动作' });
+  await page.getByRole('tab', { name: '任务', exact: true }).click();
+  await page.getByRole('button', { name: '安排自动动作' }).click();
+  let panel = page.getByRole('complementary', { name: '定时动作' });
   await expect(panel).toContainText('本设备记录');
   await panel.getByLabel('定时延迟毫秒').fill('1000');
   await panel.getByLabel('定时消息类型').fill('browser.timer.notice');
@@ -199,7 +201,11 @@ test('E-BR-11/E-BR-12 定时动作是本设备记录，可触发入账并可靠�
   await expect(panel.getByText('已安排', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem('atoll.timers.root'))).toContain('browser.timer.notice');
   await request.post(`${MOCK}/mock/control/advance`, { data: { ms: 1000 } });
+  await page.getByRole('tab', { name: '动态', exact: true }).click();
   await expect(page.getByText('浏览器定时消息', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: '任务', exact: true }).click();
+  await page.getByRole('button', { name: '安排自动动作' }).click();
+  panel = page.getByRole('complementary', { name: '定时动作' });
   await expect(panel.getByText('已触发', { exact: true })).toBeVisible();
   await panel.getByLabel('定时延迟毫秒').fill('2000');
   await panel.getByLabel('定时消息类型').fill('browser.timer.cancelled');

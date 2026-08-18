@@ -1,0 +1,58 @@
+{
+  "project": "atoll-web-f1-f6",
+  "created_at": "2026-08-18T20:30:00+08:00",
+  "last_updated": "2026-08-18T23:55:00+08:00",
+  "total_features": 38,
+  "completed_features": 38,
+  "build_commands": {
+    "build": "npm run build",
+    "test": "npm test",
+    "browser": "npm run test:browser",
+    "run": "npm run dev + npm run mock"
+  },
+  "features": [
+    {"id":"F1-001","category":"f1","priority":"P0","name":"三主视图容器","description":"Dynamic、Artifacts、Tasks 是互斥主视图而非右栏面板。","dependencies":[],"files":["src/app/AppShell.jsx"],"verification":"相关组件测试和浏览器导航测试","passes":true,"completed_at":"2026-08-18T20:48:04+08:00"},
+    {"id":"F1-002","category":"f1","priority":"P0","name":"Composer 归属 Dynamic","description":"Composer 仅在 Dynamic 可见且频道草稿不丢失。","dependencies":["F1-001"],"files":["src/app/AppShell.jsx","src/ui/Composer.jsx"],"verification":"浏览器切换主视图验证","passes":true,"completed_at":"2026-08-18T20:48:04+08:00"},
+    {"id":"F1-003","category":"f1","priority":"P0","name":"Context Host 分离","description":"详情表面独立于主视图导航。","dependencies":["F1-001"],"files":["src/app/RightPanelHost.jsx"],"verification":"宽中窄屏详情测试","passes":true,"completed_at":"2026-08-18T20:48:04+08:00"},
+    {"id":"F1-004","category":"f1","priority":"P0","name":"Hash route 恢复","description":"频道、主视图和稳定 focus 可刷新恢复。","dependencies":["F1-001"],"files":["src/model/workspace-route.js","src/App.jsx"],"verification":"路由单元与浏览器前进后退测试","passes":true,"completed_at":"2026-08-18T20:48:04+08:00"},
+    {"id":"F1-005","category":"f1","priority":"P1","name":"响应式表面状态","description":"宽屏并列 Context，中窄屏替换主区。","dependencies":["F1-003"],"files":["src/styles/responsive.css"],"verification":"1280/800/600/320 浏览器测试","passes":true,"completed_at":"2026-08-18T20:48:04+08:00"},
+    {"id":"F1-006","category":"f1","priority":"P0","name":"旧能力过渡可达","description":"成员、管理、文件与自动动作现有能力不丢失。","dependencies":["F1-001"],"files":["src/app/AppShell.jsx","src/app/RightPanelHost.jsx"],"verification":"阶段 A-E 浏览器回归","passes":true,"completed_at":"2026-08-18T20:48:04+08:00"},
+
+    {"id":"F2-001","category":"f2","priority":"P0","name":"Artifact 模型","description":"从可信附件和结构化结果建立频道隔离索引。","dependencies":["F1-001"],"files":["src/model/artifacts.js"],"verification":"Artifact 模型单元测试","passes":true,"completed_at":"2026-08-18T20:59:15+08:00"},
+    {"id":"F2-002","category":"f2","priority":"P0","name":"Artifact 来源","description":"每个产物保留 SourceRef 并可返回来源。","dependencies":["F2-001","F1-004"],"files":["src/model/artifacts.js"],"verification":"来源与频道隔离测试","passes":true,"completed_at":"2026-08-18T20:59:15+08:00"},
+    {"id":"F2-003","category":"f2","priority":"P0","name":"产物主视图","description":"列表、搜索、类型、作者、状态和时间过滤。","dependencies":["F2-001"],"files":["src/ui/ArtifactsView.jsx"],"verification":"产物视图浏览器测试","passes":true,"completed_at":"2026-08-18T20:59:15+08:00"},
+    {"id":"F2-004","category":"f2","priority":"P0","name":"Artifact Context","description":"预览、元数据、来源、下载和附加动作。","dependencies":["F2-002","F1-003"],"files":["src/ui/context/ArtifactContext.jsx"],"verification":"预览与来源浏览器测试","passes":true,"completed_at":"2026-08-18T20:59:15+08:00"},
+    {"id":"F2-005","category":"f2","priority":"P0","name":"上传进入 Composer","description":"产物页选择文件后回到 Dynamic 草稿。","dependencies":["F2-003","F1-002"],"files":["src/ui/ArtifactsView.jsx"],"verification":"上传用户旅程","passes":true,"completed_at":"2026-08-18T20:59:15+08:00"},
+    {"id":"F2-006","category":"f2","priority":"P1","name":"文件降级与版本","description":"不支持预览、长文件名和显式版本关系安全展示。","dependencies":["F2-004"],"files":["src/ui/context/ArtifactContext.jsx"],"verification":"边界状态测试","passes":true,"completed_at":"2026-08-18T20:59:15+08:00"},
+
+    {"id":"F3-001","category":"f3","priority":"P0","name":"平面动态条目","description":"业务消息脱离大卡片，保留清晰阅读轴。","dependencies":["F1-001"],"files":["src/ui/Timeline.jsx"],"verification":"动态视觉与浏览器测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
+    {"id":"F3-002","category":"f3","priority":"P0","name":"WorkTurn 主线分层","description":"主线显示阶段与终态，技术过程进入详情。","dependencies":["F3-001","F1-003"],"files":["src/ui/Timeline.jsx"],"verification":"回合状态测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
+    {"id":"F3-003","category":"f3","priority":"P0","name":"回合 Context","description":"完整 provisional/activity/anomaly 和控制可审计。","dependencies":["F3-002"],"files":["src/ui/context/TurnContext.jsx"],"verification":"回合详情浏览器测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
+    {"id":"F3-004","category":"f3","priority":"P1","name":"消息操作","description":"Hover/Focus 可打开详情、创建任务和返回来源。","dependencies":["F3-001"],"files":["src/ui/Timeline.jsx"],"verification":"键盘与鼠标测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
+    {"id":"F3-005","category":"f3","priority":"P0","name":"Composer 完整交互","description":"多行、附件、目标和发送状态保持。","dependencies":["F1-002","F2-005"],"files":["src/ui/Composer.jsx"],"verification":"Composer 单元与浏览器测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
+    {"id":"F3-006","category":"f3","priority":"P0","name":"系统事件分级","description":"系统叙事压缩、诊断信息折叠且保持审计。","dependencies":["F3-002"],"files":["src/ui/Timeline.jsx"],"verification":"事件分级测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
+
+    {"id":"F4-001","category":"f4","priority":"P0","name":"WorkItem 模型","description":"统一 task、approval、agent_run、recovery、automation。","dependencies":["F2-001","F3-002"],"files":["src/model/work-items.js"],"verification":"WorkItem 单元测试","passes":true,"completed_at":"2026-08-18T22:43:54+08:00"},
+    {"id":"F4-002","category":"f4","priority":"P0","name":"Tasks 主视图","description":"按责任、状态和类型分组过滤。","dependencies":["F4-001"],"files":["src/ui/TasksView.jsx"],"verification":"任务视图浏览器测试","passes":true,"completed_at":"2026-08-18T22:43:54+08:00"},
+    {"id":"F4-003","category":"f4","priority":"P0","name":"WorkItem Context","description":"不同 kind 展示正确详情与安全动作。","dependencies":["F4-001","F1-003"],"files":["src/ui/context/WorkItemContext.jsx"],"verification":"各 kind 详情测试","passes":true,"completed_at":"2026-08-18T22:43:54+08:00"},
+    {"id":"F4-004","category":"f4","priority":"P1","name":"从消息创建任务","description":"消息/终态可以预填来源并选择真实 provider。","dependencies":["F3-004","F4-001"],"files":["src/ui/TaskCreateModal.jsx"],"verification":"创建任务用户旅程","passes":true,"completed_at":"2026-08-18T22:43:54+08:00"},
+    {"id":"F4-005","category":"f4","priority":"P0","name":"任务能力空态","description":"无 provider 时不伪造正式任务能力。","dependencies":["F4-002"],"files":["src/ui/TasksView.jsx"],"verification":"能力有无两类场景测试","passes":true,"completed_at":"2026-08-18T22:43:54+08:00"},
+    {"id":"F4-006","category":"f4","priority":"P0","name":"自动动作归类","description":"本设备 timer 进入 Automation 分组并保留来源声明。","dependencies":["F4-001"],"files":["src/model/work-items.js"],"verification":"timer 分类测试","passes":true,"completed_at":"2026-08-18T22:43:54+08:00"},
+
+    {"id":"F5-001","category":"f5","priority":"P0","name":"成员优先 Channel Context","description":"频道详情按成员、信息、权限、技术、危险顺序组织。","dependencies":["F1-003"],"files":["src/ui/ChannelGovernance.jsx"],"verification":"频道详情浏览器测试","passes":true,"completed_at":"2026-08-18T23:05:00+08:00"},
+    {"id":"F5-002","category":"f5","priority":"P0","name":"参与者添加流程","description":"先选参与者再按类型处理，标准 Actor 隐藏。","dependencies":["F5-001"],"files":["src/ui/channel/ChannelMembersPanel.jsx"],"verification":"成员添加与 Select 布局测试","passes":true,"completed_at":"2026-08-18T23:05:00+08:00"},
+    {"id":"F5-003","category":"f5","priority":"P0","name":"新建频道 Modal","description":"新建与管理频道分离，创建使用 Modal。","dependencies":["F1-003"],"files":["src/ui/ChannelCreateModal.jsx"],"verification":"创建频道用户旅程","passes":true,"completed_at":"2026-08-18T23:05:00+08:00"},
+    {"id":"F5-004","category":"f5","priority":"P0","name":"Activity 与 Operation Center","description":"汇总跨频道待办和进行中操作并去重。","dependencies":["F4-001","F2-002"],"files":["src/model/activity.js","src/ui/ActivityCenter.jsx"],"verification":"活动索引和浏览器测试","passes":true,"completed_at":"2026-08-18T23:05:00+08:00"},
+    {"id":"F5-005","category":"f5","priority":"P1","name":"搜索与返回来源","description":"搜索跨当前可见对象且结果恢复频道、视图和 focus。","dependencies":["F1-004","F2-002","F4-001"],"files":["src/ui/GlobalSearch.jsx"],"verification":"搜索返回来源旅程","passes":true,"completed_at":"2026-08-18T23:05:00+08:00"},
+    {"id":"F5-006","category":"f5","priority":"P0","name":"空间治理独立","description":"空间配置不混入频道详情并保持既有治理能力。","dependencies":["F5-001"],"files":["src/ui/SpaceAdministration.jsx"],"verification":"阶段 D/E 管理回归","passes":true,"completed_at":"2026-08-18T23:05:00+08:00"},
+
+    {"id":"F6-001","category":"f6","priority":"P0","name":"视觉 Token 收口","description":"沿用 Atoll 现有配色，将同义颜色、线条、圆角、阴影与间距收敛到统一 Token。","dependencies":["F5-006"],"files":["src/styles/tokens.css","src/styles/*.css"],"verification":"Token 审计与视觉基线","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
+    {"id":"F6-002","category":"f6","priority":"P0","name":"组件状态一致性","description":"统一 hover、focus、selected、disabled、loading、stale、uncertain、failed、partial、denied 与 retired 状态。","dependencies":["F6-001"],"files":["src/styles/primitives.css","src/styles/features.css"],"verification":"状态矩阵组件与浏览器测试","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
+    {"id":"F6-003","category":"f6","priority":"P0","name":"响应式与 200% 缩放","description":"1280、800、600、320 和 200% 下使用明确表面替换且无页面横向溢出。","dependencies":["F6-001"],"files":["src/styles/responsive.css"],"verification":"多断点与缩放浏览器测试","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
+    {"id":"F6-004","category":"f6","priority":"P0","name":"无障碍与 reduced motion","description":"键盘、焦点恢复、语义名称、live region、对比度和 reduced motion 完整。","dependencies":["F6-002"],"files":["src/styles/base.css","src/ui"],"verification":"键盘、焦点和媒体特性浏览器测试","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
+    {"id":"F6-005","category":"f6","priority":"P0","name":"大历史与流式性能","description":"大历史、长列表、连续 feed 更新避免明显卡顿、重复重算和无界 DOM。","dependencies":["F5-004"],"files":["src/ui/Timeline.jsx","src/ui/ArtifactsView.jsx","src/ui/TasksView.jsx"],"verification":"确定性压力场景与性能预算测试","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
+    {"id":"F6-006","category":"f6","priority":"P1","name":"预览资源生命周期","description":"文本、图片、媒体和 PDF 预览有尺寸上限、取消与 Object URL 释放，失败安全降级。","dependencies":["F2-004"],"files":["src/ui/context/ArtifactContext.jsx"],"verification":"预览生命周期与失败浏览器测试","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
+    {"id":"F6-007","category":"f6","priority":"P0","name":"过渡实现清理","description":"删除旧右栏资源/定时器主入口、重复 CSS 和已经没有调用方的过渡代码。","dependencies":["F6-001","F6-003"],"files":["src/app","src/ui","src/styles"],"verification":"引用审计、构建与阶段 A–E 回归","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
+    {"id":"F6-008","category":"f6","priority":"P0","name":"发布门禁与真实后端 Smoke","description":"全量单元、浏览器、视觉、构建通过，并用真实 Atoll 验证可启动范围；无法本地证明的 daemon/并发/timer 事实明确保留发布前边界。","dependencies":["F6-001","F6-002","F6-003","F6-004","F6-005","F6-006","F6-007"],"files":["docs/TESTING.md","docs/FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md"],"verification":"npm run test:all + 真实后端 smoke 记录","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"}
+  ]
+}

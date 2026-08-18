@@ -1,11 +1,11 @@
 # atoll-web 测试指南
 
-日期：2026-08-17
-阶段基线：[PHASE-A.md](PHASE-A.md)、[PHASE-B.md](PHASE-B.md)、[PHASE-C.md](PHASE-C.md)、[PHASE-D.md](PHASE-D.md)
+日期：2026-08-18
+阶段基线：[PHASE-A.md](PHASE-A.md)、[PHASE-B.md](PHASE-B.md)、[PHASE-C.md](PHASE-C.md)、[PHASE-D.md](PHASE-D.md)、[PHASE-E.md](PHASE-E.md)、[FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md](FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md)
 
 atoll-web 的产品代码只访问身份 HTTP、WS v2、OBS 和文件数据面。日常开发使用分层 Mock；真实 atoll 只验证 Mock 无法证明的部署、并发、持久化和安全契约。
 
-## 1. 一条命令完成阶段 A–E 验证
+## 1. 一条命令完成阶段 A–E 与 F1–F6 验证
 
 首次运行真实浏览器测试前安装 Chromium：
 
@@ -26,7 +26,7 @@ npm run test:all
 2. Playwright 启动真实 Chromium，连接 Vite 与 Mock 完成产品 E2E；
 3. Vite 生产构建。
 
-Playwright 套件同时包含 11 条 UI 视觉/边界用例（含“新建频道”独立任务基线），以及 `layout-responsive.spec.js` 的 3 条结构布局门禁：1280px Actor 详情、320px 核心导航/四标签面板、320px @成员浮层。截图位于 `tests/browser/ui-visual.spec.js-snapshots/`；只有人工审查并登记过的视觉变化才允许更新。
+Playwright 套件同时包含 UI 视觉/边界用例（含“新建频道”独立 Modal、“全局活动”“全局搜索”“平面账本条目”和频道挂载目录基线），以及 `layout-responsive.spec.js` 的结构布局门禁：Actor 详情、320px 核心导航、@成员浮层、过程收纳、800/600px 上下文接管。`f6-accessibility-responsive.spec.js` 另验证 1280/800/640/600/320px 无页面横向溢出、键盘路径、Modal 焦点恢复和 reduced motion。截图位于 `tests/browser/ui-visual.spec.js-snapshots/`；只有人工审查并登记过的视觉变化才允许更新。
 
 任何一步失败都视为当前产品基线回归。阶段 B 完成审计还必须执行第 9 节的静态检查。
 
@@ -36,7 +36,7 @@ Playwright 套件同时包含 11 条 UI 视觉/边界用例（含“新建频道
 |---|---|---|
 | 产品契约 | `tests/capabilities.test.js` | Manifest ID、阶段、场景引用和完成证据完整 |
 | 前端协议 | `frame/envelope/wire` tests | WS v2 帧闭集、receipt/error 对账、重连 |
-| 前端模型 | `fold/roster/cursors/feed-cache/channel-access/submissions/capabilities/dynamic-form/task-controls/control-actions/channel-governance` tests | request-id fold、频道访问、能力表单、任务控制、治理路由和投影收敛 |
+| 前端模型 | `fold/roster/cursors/feed-cache/channel-access/submissions/capabilities/dynamic-form/task-controls/control-actions/channel-governance/workspace-route/artifacts/channel-files/work-items/activity/list-window` tests | request-id fold、频道访问、能力表单、任务控制、频道文件、来源引用、工作项、全局活动、路由和投影收敛 |
 | 终态渲染 | `tests/structured-result.test.js` | 文本、空成功、失败、registrar、describe、脱敏与大数组摘要 |
 | 管理路由 | `tests/management-actors.test.js` | c0 registrar、普通频道 coreactor 和 system 精确解析 |
 | Mock 协议 | `tests/mock-protocol.test.js` | Mock 上行字段闭集和下行帧形状 |
@@ -45,7 +45,10 @@ Playwright 套件同时包含 11 条 UI 视觉/边界用例（含“新建频道
 | 契约漂移 | `tests/contract-fixtures.test.js` | atoll WS、OBS、registrar、describe、ticket JSON fixture |
 | 协议 E2E | `tests/e2e.mock.test.js` | 登录、回放、消息、审批、延迟、故障和重连 |
 | UI primitives | `tests/ui-primitives.test.jsx` | tabs、选择菜单、确认和焦点的 DOM/键盘行为 |
-| 浏览器 E2E | `tests/browser/phase-a.spec.js`～`phase-e.spec.js`、`tests/browser/ui-visual.spec.js`、`tests/browser/layout-responsive.spec.js` | 阶段 A–E 产品闭环、四档视口边界、结构布局门禁和视觉基线 |
+| F6 专项 | `tests/f6-tokens.test.js`、`tests/f6-performance.test.jsx`、`tests/f6-accessibility.test.jsx` | Token/对比度、长列表 DOM 预算、预览取消与释放、Modal 焦点契约 |
+| 浏览器 E2E | `tests/browser/phase-a.spec.js`～`phase-e.spec.js`、`tests/browser/f1-workspace.spec.js`～`f6-accessibility-responsive.spec.js`、`tests/browser/ui-visual.spec.js`、`tests/browser/layout-responsive.spec.js` | 阶段 A–E、F1–F6 产品闭环、多档视口/缩放、键盘/焦点/reduced motion、结构布局门禁和视觉基线 |
+
+工作台交互还必须符合 [UI-INTERACTION-ARCHITECTURE.md](UI-INTERACTION-ARCHITECTURE.md)：普通账本条目保持平面、完成过程默认折叠、800px 上下文接管工作区、600/320px 上下文占满视口。
 
 只运行快速测试：
 
@@ -196,7 +199,7 @@ curl -X POST http://127.0.0.1:8832/mock/control/fault \
 人工点验与自动化使用同一组断言：
 
 1. 登录后左栏分成“我的频道”和“空间”；
-2. root 的成员频道是 `c0`、`c0.project`，`c0.public` 只可发现；
+2. root 的默认根频道 `c0` 必须始终可见、可进入；成员频道还包含 `c0.project`，`c0.public` 只可发现；
 3. 页面任何位置都不出现 `c0.lobby`；
 4. system、registrar、svcactor 不出现在业务名册；
 5. 切换 c0/project 后标题、历史、输入目标和名册同时改变；
@@ -206,6 +209,9 @@ curl -X POST http://127.0.0.1:8832/mock/control/fault \
 9. 可发现、权限撤销和退役频道不能继续写入；
 10. 断线后恢复 OPEN，账本没有重复项；
 11. 刷新页面恢复会话和 cursor。
+12. “文件”主视图先展示当前频道在所选设备上的默认挂载目录；消息引用是附加的来源区，不是跨频道全局产物库；
+13. 动态连续消息保持独立可审计条目但合并重复身份，过程默认收纳，阅读历史时新消息不抢滚动位置；
+14. 1280/800/600/320px 与浏览器 200% 等价窄视口没有页面级横向溢出，键盘可完成主 Tab、菜单、Modal 与关闭后焦点恢复。
 
 阶段 B 的 `tests/browser/phase-b.spec.js` 继续证明：
 
@@ -253,6 +259,10 @@ curl -X POST http://127.0.0.1:8832/mock/control/fault \
 
 Mock 无法证明的内容仍需真实 atoll 冒烟：数据库持久化、并发裁决、真实 Actor/daemon 启动、文件 ticket 跨进程兑换、安全权限和生产 Observer 配置。
 
+2026-08-18 的 F6 最终真实 smoke 已用相邻 `../atoll` 当前工作树取得以下最小证据：全新空间启动日志明确 `c0`/`c0.lobby`；浏览器使用 root identity 登录后，默认 `c0` 在左栏可见、已选中且 URL 恢复到 `#/channels/c0/dynamic`，连接显示 `OPEN`，Composer 文本框可用；文件主视图显示 `local-device` 与 `daemon://local-device/c0/`。本次没有先 `@` 选择成员并实际提交，因此不把真实入账、进展或终态列为已证明；healthz、bearer OBS、WS receipt/contract version 等也没有在本次最终浏览器 smoke 中重新取证。详细命令和边界见 [F6-RELEASE-GATE.md](F6-RELEASE-GATE.md)。
+
+真实 Atoll 当前对可选 `/obs/space/memberships` 返回 `400 invalid_args` / `unknown space observation kind`；前端只探测一次并降级为“不支持”。Vite `/ws` 代理保留原始 Host，以满足真实 Atoll 的 Origin/Host 同源检查。root 对 well-known `c0` 的启动访问是唯一 bootstrap 特例，不能推导其他频道 membership。
+
 阶段 E 发布前还必须验证：真实 daemon 地址路由与磁盘落盘；ticket 过期/一次性/跨进程兑换；设备 key 不进入日志和普通投影；安全 binding 投影或 attach/detach 的真实收敛；真实 class/config 校验；timer 在重启、跨端和权限变化时的语义。Mock 只证明产品流程和错误恢复，不替代这些运行时事实。
 
 阶段 B 日常开发不要求启动真实服务端。`real-backend-shape` 场景刻意关闭 Mock membership 扩展并移除 human principal，用来防止前端依赖虚假字段；源码核对和 fixture 只证明 JSON 形态。真实运行时的 membership 撤销时序、幂等并发、大历史性能与生产装配仍是发布前 smoke，不得写成“Mock 已证明”。
@@ -270,11 +280,13 @@ npx vitest run tests/channel-governance.test.js tests/mock-governance.test.js
 npx playwright test tests/browser/phase-d.spec.js
 npx vitest run tests/space-administration.test.js tests/resources.test.js tests/timers.test.js tests/mock-phase-e.test.js
 npx playwright test tests/browser/phase-e.spec.js
+npx vitest run tests/f6-tokens.test.js tests/f6-performance.test.jsx tests/f6-accessibility.test.jsx
+npx playwright test tests/browser/f6-accessibility-responsive.spec.js
 ```
 
 浏览器用例由 Playwright 自动启动 Mock 和 Vite；若端口已被人工服务占用，先停止对应进程，避免测试连接到旧代码。
 
-## 9. 代码卫生与阶段 A–E 完成门槛
+## 9. 代码卫生与阶段 A–E、F1–F6 完成门槛
 
 ```bash
 rg '/api/workspaces|/api/channels|/api/daemons|subscribe|fonts.googleapis' src index.html
@@ -283,4 +295,4 @@ node -e "JSON.parse(require('fs').readFileSync('contracts/product-capabilities.j
 npm run test:all
 ```
 
-第一条应无结果。全部命令通过后，再按 [PHASE-E.md](PHASE-E.md) 第 5–6 节逐项登记当前测试输出；不能用阶段 A–D 的历史结果替代阶段 E 当前工作树证据。
+第一条应无结果。全部命令通过后，再按 [PHASE-E.md](PHASE-E.md) 第 5–6 节和 [F6-RELEASE-GATE.md](F6-RELEASE-GATE.md) 登记当前测试输出；不能用旧阶段历史结果替代当前工作树证据。性能阈值和复现方式见 [F6-PERFORMANCE-BUDGET.md](F6-PERFORMANCE-BUDGET.md)。当前产品保持 Light-only，暗色主题不属于 F1–F6 门禁。

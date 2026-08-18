@@ -1,16 +1,16 @@
 /* Phase B: access truth, full progress, and structured terminals */
-.label-member_stale, .label-observer_stale { color: #d7b87a; }
-.label-member_unavailable, .label-access_denied { color: #ff9cae; }
-.label-observer_active { color: #8ac6da; }
+.label-member_stale, .label-observer_stale { color: var(--warning-text); }
+.label-member_unavailable, .label-access_denied { color: var(--danger); }
+.label-observer_active { color: var(--observer); }
 .channel-notice, .access-banner { margin: 8px 22px 0; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; background: var(--surface-2); color: var(--text-muted); font-size: 12px; }
 .status-stack > :last-child { margin-bottom: 8px; }
 .channel-notice { display: flex; align-items: center; justify-content: space-between; color: var(--text); }
 .channel-notice button { border: 0; background: transparent; color: inherit; cursor: pointer; }
-.access-member_unavailable, .access-access_denied { border-color: rgba(228, 0, 43, .28); color: var(--danger); }
-.access-member_stale, .access-observer_stale { border-color: #d7b87a; color: #85550c; }
+.access-member_unavailable, .access-access_denied { border-color: var(--danger-line); color: var(--danger); }
+.access-member_stale, .access-observer_stale { border-color: var(--line-warning); color: var(--warning-text-strong); }
 .provisional-row { display: grid; grid-template-columns: minmax(90px, auto) auto 1fr; gap: 8px; align-items: baseline; padding: 5px 0; border-top: 1px dashed var(--border); font-size: 12px; }
 .provisional-row small { color: var(--text-muted); overflow-wrap: anywhere; }
-.provisional-business code { color: #6750a4; }
+.provisional-business code { color: var(--business); }
 .structured-result, .failure-result { display: grid; gap: 9px; }
 .structured-object { display: grid; gap: 5px; margin: 0; }
 .structured-object > div { display: grid; grid-template-columns: minmax(90px, .35fr) 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); }
@@ -30,7 +30,7 @@
 .failure-result > code { width: fit-content; color: var(--danger); }
 .failure-result p, .empty-result, .completion-ack { margin: 0; }
 .completion-ack { color: var(--online); }
-.roster-identity-pending { margin: 10px 14px; padding: 8px; border-radius: 6px; background: #f6efe0; color: #76551a; font-size: 11px; }
+.roster-identity-pending { margin: 10px 14px; padding: 8px; border-radius: var(--radius-control); background: var(--surface-local); color: var(--warning-text-strong); font-size: 11px; }
 
 /* Phase C: capabilities, controls, and structured approvals */
 .actor-details { position: relative; z-index: 5; display: grid; min-width: 0; min-height: 0; grid-column: 1; grid-row: 2 / 4; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; background: var(--surface-2); box-shadow: -8px 0 24px var(--shadow); }
@@ -54,7 +54,7 @@
 .capability-row code { color: var(--agent); font-size: 8px; overflow-wrap: anywhere; }
 .capability-row p { grid-column: 1 / -1; margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
 .capability-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; color: var(--text-dim); font-size: 8px; }
-.capability-row.risk-high, .capability-row.risk-critical { border-color: rgba(228, 0, 43, .3); }
+.capability-row.risk-high, .capability-row.risk-critical { border-color: var(--danger-line); }
 .capability-row details { grid-column: 1 / -1; color: var(--text-muted); font-size: 9px; }
 .capability-row details p { display: grid; gap: 2px; padding: 4px 0; }
 .capability-row details small { color: var(--online); }

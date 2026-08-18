@@ -1,9 +1,9 @@
 # Atoll Web 构建规格
 
-状态：阶段 C 实现基线
-日期：2026-08-17
-对应设计：[DESIGN.md](DESIGN.md)
-阶段验收：[PHASE-C.md](PHASE-C.md)
+状态：阶段 A–E 与前端施工 F1–F6 实现基线
+日期：2026-08-18
+对应设计：[DESIGN.md](DESIGN.md)、[FRONTEND-D1-OBJECT-NAVIGATION-SPEC.md](FRONTEND-D1-OBJECT-NAVIGATION-SPEC.md)、[FRONTEND-D2-VISUAL-INTERACTION-SPEC.md](FRONTEND-D2-VISUAL-INTERACTION-SPEC.md)
+阶段验收：[PHASE-E.md](PHASE-E.md)、[F6-RELEASE-GATE.md](F6-RELEASE-GATE.md)
 
 ## 1. 运行与命令
 
@@ -37,6 +37,12 @@ src/model/submissions.js      本地提交状态与持久化
 src/model/fold.js             request-id 账本 fold 与 anomaly
 src/model/feed-cache.js       feed rows 缓存与恢复
 src/model/cursors.js          feed/read cursor 与未读
+src/model/workspace-route.js  频道、主视图与稳定对象焦点路由
+src/model/artifacts.js        消息附件/派生文件引用与 SourceRef
+src/model/channel-files.js    当前频道默认挂载目录与路径投影
+src/model/work-items.js       task/approval/agent_run/recovery/automation 索引
+src/model/activity.js         可见频道活动、操作与搜索索引
+src/model/list-window.js      动态、文件、任务固定 DOM 窗口
 
 src/ui/ChannelList.jsx        我的频道/空间及 mode 标签
 src/ui/Timeline.jsx           回合、provisional、activity、terminal、pending
@@ -44,11 +50,15 @@ src/ui/StructuredResult.jsx   结构化终态与敏感字段遮蔽
 src/ui/ActorDetails.jsx       Actor 能力、动态调用与风险确认
 src/ui/Composer.jsx           @、稳定 submit、兼容管理命令
 src/ui/Roster.jsx             业务名册与 self 确认状态
+src/ui/ArtifactsView.jsx      当前频道挂载目录主视图与消息引用区
+src/ui/TasksView.jsx          WorkItem 主视图与固定窗口
+src/ui/context/*              文件、回合、任务详情 Context
+src/ui/primitives/*           Modal、焦点、选择菜单等共享交互
 ```
 
 `App.jsx` 是控制器组合入口，不再直接渲染具体产品面板。页面结构由 `app/AppShell.jsx` 组合，右栏路由由 `app/RightPanelHost.jsx` 负责；身份恢复、频道目录、feed 批处理/缓存、提交状态机和本地定时器分别位于 `app/hooks/`。App 不在 JSX 内重新推导权限或回合语义。
 
-样式入口仍为 `src/styles.css`，它只按固定顺序聚合 `src/styles/` 下的 tokens、base、auth、app-shell、timeline、composer、roster、primitives、features、runtime 与 responsive 文件；搬迁未改变原有视觉值。
+样式入口仍为 `src/styles.css`，它只按固定顺序聚合 `src/styles/` 下的 tokens、base、auth、app-shell、timeline、composer、roster、primitives、features、runtime 与 responsive 文件。F6 将表面、线条、状态、阴影和圆角集中到 `tokens.css`，继续使用 Atoll 暖色、品牌红与 Agent 蓝。当前产品是 Light-only；暗色主题不属于 F1–F6。
 
 ## 3. 协议层
 
@@ -101,11 +111,11 @@ snapshot()
 约束：
 
 - complete=false 不将缺失频道置 retired；
-- owner_principal 不是 membership 证据；
+- 普通频道的 owner_principal 不是 membership 证据；唯一例外是节点 owner 对 well-known `c0` 的启动不变式，`c0` 必须作为 root/home 频道显示并可写；
 - membership 扩展 404 时 `supported=false`，不清空 feed 推导的 member；
 - disconnected 只把 member/observer 变 stale；
 - canWrite 仅对 member_active 为真；
-- lobby/systemReserved 在 tracker 出口过滤；
+- lobby/内部 systemReserved 在 tracker 出口过滤，但 `c0` 即使带 systemReserved 标记也绝不能过滤；
 - 持久化恢复的 member 一律 stale。
 
 ## 5. self Actor
@@ -216,6 +226,10 @@ UI 可以隐藏内置 Actor，但 Composer 必须使用完整名册解析。缺�
 - retired active channel 自动选择下一 member_active，并展示退役提示；
 - discoverable/denied 不请求或展示业务名册，不显示可写编辑器；
 - closed/timeout 的发送结果展示待确认，并在 replay 对账后展示确认提示。
+- 动态、任务、目录文件和消息引用的当前 DOM 投影均不得超过 120 个业务行；翻页不删除账本或目录事实；本地待提交只挂载最近 50 行，诊断只挂载最近 120 行；
+- 用户阅读历史时新 feed 不强制滚到底部，而以“新动态”入口恢复最新窗口；
+- 文件主视图表示当前频道在所选 daemon 上的默认挂载目录。消息引用/派生文件只作为有 SourceRef 的附加区域，不得解释成跨频道全局产物库；
+- 预览在切换或关闭时必须取消请求并释放 Object URL，且按文本 512 KiB、图片 20 MiB、PDF 25 MiB、音视频 50 MiB 做已知大小、Content-Length 和实际数据三层门禁。
 
 ## 11. Actor 能力索引与动态表单
 
@@ -269,10 +283,10 @@ Mock 必须支持：
 `npm run test:all` 顺序执行：
 
 1. Vitest：协议、access、roster、submission、fold、renderer、Mock、契约 fixture；
-2. Playwright：阶段 A/B/C 回归和阶段 D D-BR-01..10；
+2. Playwright：阶段 A–E、F1–F6、1280/800/600/320、200% 等价窄视口、键盘/焦点/reduced motion 与人工审查后的视觉基线；
 3. Vite production build。
 
-阶段 D 还必须通过：
+发布前还必须通过：
 
 ```bash
 git diff --check
@@ -280,7 +294,7 @@ node -e "JSON.parse(require('fs').readFileSync('contracts/product-capabilities.j
 rg '/api/workspaces|/api/channels|/api/daemons|subscribe' src
 ```
 
-最后一条应无结果。`human.text` 当前是后端已知兼容决策，直到正式 agent 文本 type 在 atoll 闭集归位前不作为卫生失败项。
+最后一条应无结果。F6 专项预算与发布证据分别见 [F6-PERFORMANCE-BUDGET.md](F6-PERFORMANCE-BUDGET.md) 和 [F6-RELEASE-GATE.md](F6-RELEASE-GATE.md)。`human.text` 当前是后端已知兼容决策，直到正式 agent 文本 type 在 atoll 闭集归位前不作为卫生失败项。
 
 ## 16. 真实服务端最小验证
 
@@ -300,7 +314,11 @@ Mock 不能证明以下真实事实，发布前仍需最小 smoke：
 - 设备 key 的后端日志与存储生命周期、安全 binding 投影及 attach/detach 收敛；
 - 真实 Actor class/config 校验、并发治理权限和 timer 跨端/重启语义。
 
-membership/self 两个服务端缺口在 [PHASE-B.md](PHASE-B.md) 第 5 节明确保留，不以 Mock 通过冒充后端已补齐。
+本地最终真实 Atoll smoke 已证明：全新空间声明 `c0`/`c0.lobby`；浏览器可用 root identity 登录，看到并选中 root 默认频道 `c0`，恢复对应 URL、达到 `OPEN`、启用 Composer 文本框，并在文件主视图看到 `local-device` 与 `daemon://local-device/c0/`。本次没有先 `@` 选择成员并实际提交，因此真实入账、进展和终态闭环仍属于未证明边界；healthz、bearer OBS、WS receipt/contract version 等也没有在这次最终浏览器 smoke 中重新取证。Vite 的 `/ws` 代理必须保留原始 Host，才能通过真实 Atoll 的 Origin/Host 同源检查。
+
+当前真实后端对可选 `/obs/space/memberships` 返回 `400 invalid_args` 且 detail 为 unknown observation kind；前端将该结果与旧版 404 一样识别为“能力不支持”，每个会话只探测一次。root 对 well-known `c0` 的访问来自后端启动不变式，不得泛化为其他频道的 membership。
+
+membership/self 的一般服务端缺口仍在 [PHASE-B.md](PHASE-B.md) 第 5 节明确保留，不以 Mock 通过冒充后端已补齐。单节点 smoke 也不能证明多进程并发、重启持久化、ticket 跨进程/一次性、timer 跨端、真实磁盘、设备 key 生命周期或生产 TLS/反向代理事实。
 
 ## 17. 阶段 E：空间、资源与自动化
 

@@ -13,16 +13,47 @@ body::after {
 }
 #root { position: relative; padding-top: 5px; }
 #root::before { content: ""; position: absolute; z-index: 100; top: 0; right: 0; left: 0; height: 5px; background: var(--rainbow); }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button { color: inherit; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:where(button, input, textarea, select):disabled { opacity: .45; cursor: not-allowed; }
+[aria-busy="true"] { cursor: progress; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { border-radius: 10px; background: var(--border-2); }
 
 /* Shared brand */
 .brand-lockup { display: flex; align-items: center; gap: 10px; font-family: var(--serif); font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
-.brand-dot { display: inline-grid; width: 30px; height: 30px; place-content: center; border-radius: 9px; background: var(--surface); box-shadow: 0 2px 8px rgba(0, 0, 0, .2), inset 0 1px 0 rgba(255, 255, 255, .4); }
+.brand-dot { display: inline-grid; width: 30px; height: 30px; place-content: center; border-radius: 9px; background: var(--surface); box-shadow: var(--shadow-brand); }
 .brand-dot::after { content: "↯"; color: var(--accent); font-family: var(--serif); font-size: 19px; font-weight: 700; line-height: 1; }
 .eyebrow { margin: 0 0 6px; color: var(--accent); font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
 .boot-screen { display: grid; height: 100%; place-content: center; grid-auto-flow: column; gap: 12px; color: var(--text-muted); font: 12px var(--mono); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+    outline-color: Highlight;
+  }
+  .channel-item.active, .work-item-row.state-uncertain, .work-item-row.state-blocked, .work-item-row.state-failed {
+    border-left: 2px solid Highlight;
+  }
+}

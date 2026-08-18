@@ -126,7 +126,7 @@ function envelope({
   };
 }
 
-function mockDescribe(actorId) {
+function mockDescribe(actorId, { taskCapability = false } = {}) {
   return {
     actor_id: actorId,
     description: 'Mock 协作 Agent',
@@ -153,6 +153,19 @@ function mockDescribe(actorId) {
         error_codes: [{ code: 'payload_invalid', description: '订单参数无效', recovery: '检查必填字段和数量' }],
         notes: '这是用于浏览器验收的结构化能力。',
       },
+      ...(taskCapability ? { 'task.create': {
+        description: '创建可重放的正式任务', allowed_kinds: ['request'], max_pending_ms: 10_000,
+        input_schema: {
+          type: 'object', required: ['title'], additionalProperties: false,
+          properties: {
+            title: { type: 'string', description: '任务标题' },
+            description: { type: 'string', description: '补充说明' },
+            due_at: { type: 'string', description: '截止时间' },
+            source: { type: 'object', description: '来源引用' },
+          },
+        },
+        output_schema: { type: 'object', required: ['task_id', 'status'], properties: { task_id: { type: 'string' }, status: { type: 'string' }, title: { type: 'string' } } },
+      } } : {}),
       'agent.steer': { description: '调整当前回合方向', allowed_kinds: ['request'], payload_fields: [{ name: 'text', required: true, description: '新方向' }, { name: 'expected_turn_id', description: '当前 turn_id，用于并发保护' }], error_codes: [{ code: 'cas_mismatch', description: '目标回合已经变化', recovery: '刷新账本后重新选择当前任务' }] },
       'agent.interrupt': { description: '打断当前回合', allowed_kinds: ['request'] },
       'agent.queue': { description: '排队一个新任务', allowed_kinds: ['request'], payload_fields: [{ name: 'text', required: true, description: '排队任务内容' }] },
@@ -182,7 +195,10 @@ function seededHistory(channelId, behavior = {}) {
       : `${channelId} history ${index}: ask ${responderId} for PONG`;
     const responseText = isLobby ? `Lobby coordination check ${index} complete` : `${channelId} PONG ${index}`;
     const toolName = isLobby ? 'mock.lobby.status' : 'mock.echo';
-    add(envelope({ id: requestId, channelId, sender: root, kind: 'request', type: 'human.text', payload: { text: requestText }, audience: [responderId], ts: at }));
+    const demoAttachments = behavior.demo_attachments && channelId === 'c0.project' && index === 3
+      ? [{ resource_id: 'file:seed:c0.project:3', name: '项目说明.md', media_type: 'text/markdown', size: 47 }]
+      : [];
+    add(envelope({ id: requestId, channelId, sender: root, kind: 'request', type: 'human.text', payload: { text: requestText, ...(demoAttachments.length ? { attachments: demoAttachments } : {}) }, audience: [responderId], ts: at }));
     add(envelope({ id: `${requestId}-queued`, channelId, sender: responder, kind: 'response', type: 'human.text', payload: { status: 'queued', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 1 }));
     add(envelope({ id: `${requestId}-processing`, channelId, sender: responder, kind: 'response', type: 'human.text', payload: { status: 'processing', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 2 }));
     add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'event', type: 'activity.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
@@ -264,7 +280,7 @@ function seededHistory(channelId, behavior = {}) {
       sender: responder,
       kind: 'response',
       type: 'actor.describe',
-      payload: { status: 'completed', value: mockDescribe(STEWARD_ACTOR_ID) },
+      payload: { status: 'completed', value: mockDescribe(STEWARD_ACTOR_ID, { taskCapability: behavior.task_capability }) },
       parentId: requestId,
       correlationId: requestId,
       audience: [selfActorId],
@@ -402,6 +418,7 @@ export function createMockServer({
           ? `project 动态 #${liveTick}：project-agent 正在整理项目进度。`
           : `c0 动态 #${liveTick}：steward 在线，等待新任务。`,
         tick: liveTick,
+        transient: true,
       },
       audience: [ROOT_ACTOR_ID],
     }));
@@ -537,7 +554,7 @@ export function createMockServer({
     })));
 
     if (payload.msg_type === 'actor.describe' && target) {
-      const describe = target.kind === 'agent' ? mockDescribe(target.id) : { actor_id: target.id, description: target.description || '', types: {} };
+      const describe = target.kind === 'agent' ? mockDescribe(target.id, { taskCapability: domain.behavior.task_capability }) : { actor_id: target.id, description: target.description || '', types: {} };
       const selector = payload.payload?.type;
       if (selector) {
         const meta = describe.types?.[selector];
@@ -709,6 +726,13 @@ export function createMockServer({
       const count = payload.payload?.count;
       if (!payload.payload?.name || !Number.isInteger(count) || count < 1) fail('payload_invalid', 'name and a positive integer count are required');
       else complete({ order_id: domain.nextId('order'), accepted: true, ...payload.payload });
+      return;
+    }
+
+    if (payload.msg_type === 'task.create') {
+      const title = String(payload.payload?.title || '').trim();
+      if (!title) fail('payload_invalid', 'title is required');
+      else complete({ task_id: domain.nextId('task'), status: 'active', title, assignee: respondingAgent.id, due_at: payload.payload?.due_at || '' });
       return;
     }
 

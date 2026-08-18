@@ -4,6 +4,8 @@
 日期：2026-08-17
 关联文档：[产品交互总任务](PRODUCT-INTERACTION-MASTER-PLAN.md)
 
+阶段 A–E 完成后的目标对象模型、三主视图和体验升级路线以[前端产品体验改进总计划](FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md)为准。本文第 2、13、14 节记录的是已经交付的 A–E 基线，不再作为新一轮主视图布局的最终目标。
+
 ## 0. 规格定位
 
 本文是 atoll-web 唯一的总用户交互规格，按完整用户旅程定义产品，而不是按后端 verb 拆分页面和按钮。

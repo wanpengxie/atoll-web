@@ -7,6 +7,8 @@
 
 ## 0. 文档目的
 
+阶段 A–E 完成后的前端产品体验改进统一由 [FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md](FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md) 管理。UI 表面、容器决策和响应式状态机由 [UI-INTERACTION-ARCHITECTURE.md](UI-INTERACTION-ARCHITECTURE.md) 定义；GenSpark 的分层产品研究、主交互区设计和 atoll-web 差距由 [GENSPARK-DESIGN-BENCHMARK.md](GENSPARK-DESIGN-BENCHMARK.md) 定义；基础组件实现边界由 [UI-COMPONENT-REFACTOR-PLAN.md](UI-COMPONENT-REFACTOR-PLAN.md) 定义。
+
 这份文档是 atoll-web 产品交互建设的总入口，用来解决两个问题：
 
 1. atoll 后端入口已经规范化，但产品能力仍散落在 WS 帧、OBS 投影、系统 actor、registrar、资源和文件数据面中，缺少按用户任务组织的产品模型。
@@ -820,6 +822,8 @@ principal
 
 ## 14. 下一步
 
-阶段 A–E 的设计、施工、Mock、单元测试、真实 Chromium 回归和文档审计已经完成。后续仅剩发布前真实 atoll smoke：真实 daemon 路由/磁盘、设备 key 生命周期与 binding 投影、真实 class config、并发权限和 timer 跨端可观测性；这些不属于用 Mock 冒充完成的范围。
+阶段 A–E 的能力施工、Mock、单元测试、真实 Chromium 回归和文档审计已经完成。协议/能力轨道后续仍保留发布前真实 atoll smoke：真实 daemon 路由/磁盘、设备 key 生命周期与 binding 投影、真实 class config、并发权限和 timer 跨端可观测性；这些不属于用 Mock 冒充完成的范围。
+
+前端产品体验进入独立改进轨道，状态、设计阶段 D0–D2、施工波次 F1–F6 和唯一下一步以[前端产品体验改进总计划](FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md)为准。阶段 A–E 完成不代表新一轮前端体验设计和施工已经完成。
 
 阶段内不再为每个小动作暂停确认；只有产品范围、安全边界或不可逆业务决策才升级给用户决定。

@@ -17,7 +17,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': { target: serverURL, changeOrigin: true },
-      '/ws': { target: serverURL, ws: true, changeOrigin: true },
+      // 保留浏览器原始 Host，使 Atoll 的同源 WebSocket 校验看到的
+      // Origin 与 Host 一致；HTTP 代理仍可对 OBS/identity 改写 Host。
+      '/ws': { target: serverURL, ws: true, changeOrigin: false },
       '/obs': { target: serverURL, changeOrigin: true },
       '/mock': { target: serverURL, changeOrigin: true },
       '/files': { target: serverURL, changeOrigin: true },
