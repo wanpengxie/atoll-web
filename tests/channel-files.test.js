@@ -27,4 +27,11 @@ describe('channel mounted files', () => {
     expect(parentDirectory('docs/design/')).toBe('docs/');
     expect(() => normalizeDirectory('docs/../secret')).toThrow();
   });
+
+  it('keeps backend file metadata for Finder columns without inventing values', () => {
+    const prefix = 'daemon://local-device/c0/';
+    expect(directoryEntries([{ id: `${prefix}report.pdf`, meta: { size: 2048, media_type: 'application/pdf', modified_at: '2026-08-20T00:00:00Z' } }], prefix)[0]).toMatchObject({
+      name: 'report.pdf', size: 2048, mediaType: 'application/pdf', modifiedAt: '2026-08-20T00:00:00Z',
+    });
+  });
 });

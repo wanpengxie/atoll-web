@@ -1,4 +1,5 @@
-import { systemEventLabel, systemEventTier, turnStatusLabel } from './turn-presentation.js';
+import { systemEventPresentation } from './system-event-presentation.js';
+import { turnStatusLabel } from './turn-presentation.js';
 
 const READABLE_ACCESS = new Set([
   'member_active',
@@ -161,7 +162,8 @@ function workItemActivity(channelId, item) {
 
 function narrationActivity(channelId, item) {
   const envelope = item?.envelope;
-  if (!envelope || systemEventTier(envelope) !== 'important') return null;
+  const presentation = envelope ? systemEventPresentation(envelope) : null;
+  if (!presentation || presentation.hidden || presentation.tier !== 'important') return null;
   const source = sourceRef(null, {
     channelId,
     view: 'dynamic',
@@ -175,7 +177,7 @@ function narrationActivity(channelId, item) {
     factKey: factKey(source),
     channelId,
     kind: 'membership',
-    title: systemEventLabel(envelope),
+    title: presentation.title,
     summary: string(envelope.type),
     severity: envelope.payload?.severity === 'critical' ? 'critical' : 'warning',
     actionableBySelf: false,

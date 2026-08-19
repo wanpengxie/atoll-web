@@ -352,7 +352,7 @@ export default function App() {
   useEffect(() => {
     const access = channelList.find((channel) => channel.id === activeChannelId)?.access;
     if (!access || canViewChannelContent(access)) return;
-    if (['governance', 'roster-focus', 'artifact-focus', 'work-item-focus', 'automation'].includes(rightPanel) || contextFocus?.type === 'turn') {
+    if (['governance', 'resources', 'roster-focus', 'artifact-focus', 'work-item-focus', 'automation'].includes(rightPanel) || contextFocus?.type === 'turn') {
       setSelectedActor(null);
       setContextFocus(null);
       setRightPanel('');
@@ -398,7 +398,7 @@ export default function App() {
   }, [refreshRoster]);
 
   useEffect(() => {
-    if (!['governance', 'space'].includes(rightPanel) && workspaceView !== 'artifacts') return;
+    if (!['governance', 'space', 'resources'].includes(rightPanel) && workspaceView !== 'artifacts') return;
     refreshGovernanceData();
   }, [rightPanel, workspaceView, activeChannelId, refreshGovernanceData]);
 

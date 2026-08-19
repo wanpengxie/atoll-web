@@ -27,10 +27,10 @@ async function openSpace(page, tab = 'Actor 模板') {
 }
 
 async function openResources(page, tab = 'KV') {
-  await page.getByRole('tab', { name: '文件', exact: true }).click();
-  const panel = page.getByRole('tabpanel', { name: '文件' });
+  await page.getByRole('button', { name: '频道操作' }).click();
+  await page.getByRole('menuitem', { name: '高级资源工具' }).click();
+  const panel = page.getByRole('complementary', { name: '频道资源' });
   await expect(panel).toBeVisible();
-  await panel.getByText('高级资源工具', { exact: true }).click();
   await panel.getByRole('tab', { name: tab, exact: true }).click();
   return panel;
 }

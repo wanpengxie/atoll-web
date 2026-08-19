@@ -80,6 +80,7 @@
   --radius-object: 8px;
   --radius-modal: 12px;
   --pill: 999px;
+  --timeline-track: 1080px;
   --white: #ffffff;
   --rainbow: linear-gradient(90deg, #e4002b 0 20%, #ff6900 20% 40%, #ffd100 40% 60%, #00a651 60% 80%, #0072ce 80% 100%);
   --sans: "Avenir Next", Avenir, "Segoe UI", "PingFang SC", sans-serif;

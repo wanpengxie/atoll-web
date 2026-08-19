@@ -11,4 +11,10 @@ describe('message presentation adapters', () => {
   it('never serializes unknown payload objects or leaks sensitive hints', () => {
     expect(messagePresentation({ type: 'vendor.custom', payload: { nested: { value: 1 }, token: 'secret' } })).toEqual({ text: '提交了一项操作', detail: '' });
   });
+
+  it('conversation words always prefer the real message body over protocol labels', () => {
+    expect(messagePresentation({ type: 'agent.ask', payload: { text: '帮我检查这份设计' } })).toEqual({ text: '帮我检查这份设计', detail: '' });
+    expect(messagePresentation({ type: 'agent.ask', payload: { content: [{ type: 'text', text: '来自内容块的真实消息' }] } })).toEqual({ text: '来自内容块的真实消息', detail: '' });
+    expect(messagePresentation({ type: 'agent.ask', payload: {} })).toEqual({ text: '没有可显示的消息正文', detail: '' });
+  });
 });

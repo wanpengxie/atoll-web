@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { TYPES } from '../protocol/vocab.js';
 
 const META_FIELDS = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
@@ -86,24 +86,52 @@ function ChannelTable({ rows }) {
   );
 }
 
+function parseJSONText(text) {
+  const source = String(text || '').trim();
+  if (!source || !['{', '['].includes(source[0])) return undefined;
+  try {
+    const parsed = JSON.parse(source);
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function valueSummary(value) {
+  if (Array.isArray(value)) return `${value.length} 项`;
+  if (value && typeof value === 'object') return `${Object.keys(value).length} 个字段`;
+  return '';
+}
+
+function CollapsibleResult({ title, value, children }) {
+  const [open, setOpen] = useState(false);
+  return <details className="structured-result-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary><span>{title}</span><small>{valueSummary(value)}</small><span className="structured-result-action">{open ? '收起' : '展开'}</span></summary>
+    <div className="structured-result-scroll">{children || <StructuredTree value={value} />}</div>
+  </details>;
+}
+
 export function StructuredResult({ requestType = '', payload = {}, renderText }) {
   const view = terminalPresentation(requestType, payload);
   if (view.kind === 'text') {
     if (view.empty) return <p className="empty-result">返回了空文本</p>;
+    const json = parseJSONText(view.text);
+    if (json !== undefined) return <CollapsibleResult title="JSON 结果" value={json} />;
     return renderText ? renderText(view.text) : <p>{view.text}</p>;
   }
   if (view.kind === 'ack') return <p className="completion-ack">✓ {view.title}</p>;
   if (view.kind === 'failed') {
-    return <div className="failure-result"><strong>{view.title}</strong>{view.code && <code>{view.code}</code>}{view.detail && <p>{view.detail}</p>}{Object.keys(view.value || {}).length > 0 && <StructuredTree value={view.value} />}</div>;
+    return <div className="failure-result"><strong>{view.title}</strong>{view.code && <code>{view.code}</code>}{view.detail && <p>{view.detail}</p>}{Object.keys(view.value || {}).length > 0 && <CollapsibleResult title="错误数据" value={view.value} />}</div>;
   }
   if (view.kind === 'registrar') {
     const channelRows = Array.isArray(view.value)
       && view.value.length > 0
       && view.value.every((row) => row && typeof row === 'object' && ('id' in row || 'channel_id' in row));
-    return <div className="structured-result"><strong>{view.title}</strong>{channelRows ? <ChannelTable rows={view.value} /> : <StructuredTree value={view.value} />}</div>;
+    if (!view.value || typeof view.value !== 'object') return <div className="structured-result"><strong>{view.title}</strong><Scalar value={view.value} /></div>;
+    return <div className="structured-result"><CollapsibleResult title={view.title} value={view.value}>{channelRows ? <ChannelTable rows={view.value} /> : <StructuredTree value={view.value} />}</CollapsibleResult></div>;
   }
   if (view.kind === 'describe') {
-    return <div className="structured-result actor-describe-result"><strong>{view.title}</strong><StructuredTree value={view.value} /></div>;
+    return <div className="structured-result actor-describe-result"><CollapsibleResult title={view.title} value={view.value} /></div>;
   }
-  return <div className="structured-result"><strong>{view.title}</strong><StructuredTree value={view.value} /></div>;
+  return <div className="structured-result"><CollapsibleResult title={view.title} value={view.value} /></div>;
 }

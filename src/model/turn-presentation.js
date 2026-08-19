@@ -1,13 +1,3 @@
-import { TYPES } from '../protocol/vocab.js';
-
-const IMPORTANT_SYSTEM_EVENT = /(member|membership|access|permission|channel\.(?:retired|closed|opened))/i;
-
-const SYSTEM_EVENT_TITLES = {
-  [TYPES.narration.memberCreated]: '成员已加入频道',
-  [TYPES.narration.memberDeleted]: '成员已离开频道',
-  [TYPES.narration.channelInbound]: '收到来自其他频道的请求',
-};
-
 export const TURN_STATUS_LABELS = {
   open: '等待处理',
   received: '已收到',
@@ -41,21 +31,4 @@ export function latestHumanProgress(turn) {
   if (!latest) return '';
   const payload = latest.envelope?.payload || {};
   return payload.detail || payload.message || payload.text || TURN_STATUS_LABELS[latest.status] || latest.status || '';
-}
-
-export function systemEventTier(envelope) {
-  if (envelope?.payload?.severity === 'critical' || envelope?.payload?.severity === 'warning') return 'important';
-  return IMPORTANT_SYSTEM_EVENT.test(envelope?.type || '') ? 'important' : 'diagnostic';
-}
-
-export function systemEventLabel(envelope) {
-  const payload = envelope?.payload || {};
-  return payload.text || payload.detail || payload.message || SYSTEM_EVENT_TITLES[envelope?.type] || '后台状态已更新';
-}
-
-export function systemEventDetail(envelope) {
-  const payload = envelope?.payload || {};
-  const subject = payload.actor_name || payload.actor_id || payload.principal_name || payload.principal_id || payload.channel_name || payload.channel_id;
-  if (subject && ![payload.text, payload.detail, payload.message].includes(subject)) return String(subject);
-  return '';
 }

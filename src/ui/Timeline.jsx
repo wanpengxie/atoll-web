@@ -1,13 +1,17 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { orderedTimeline } from '../model/fold.js';
 import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
+import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { taskControlContext } from '../model/task-controls.js';
-import { latestHumanProgress, systemEventDetail, systemEventLabel, systemEventTier, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
+import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
+import { TurnInlineDetail } from './context/TurnContext.jsx';
+import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
+import { useStableTimelineScroll } from './timeline/useStableTimelineScroll.js';
 
 const ERROR_LABELS = {
   bad_payload: '请求格式不正确',
@@ -138,7 +142,7 @@ function TaskControls({ context, state = {}, onCancel, onControl }) {
 
 function AttachmentCards({ attachments = [], onDownload, onPreview }) {
   if (!attachments.length) return null;
-  return <section className="message-attachments" aria-label="消息附件">{attachments.map((row) => {
+  return <section className="message-attachments" aria-label="附件列表">{attachments.map((row) => {
     const mediaType = row.media_type || 'application/octet-stream';
     const typeLabel = mediaType.startsWith('image/') ? '图片' : mediaType === 'application/pdf' ? 'PDF' : mediaType.startsWith('audio/') ? '音频' : mediaType.startsWith('video/') ? '视频' : mediaType.startsWith('text/') ? '文本' : '文件';
     const name = row.name || row.resource_id;
@@ -146,64 +150,63 @@ function AttachmentCards({ attachments = [], onDownload, onPreview }) {
   })}</section>;
 }
 
-function MessageActions({ onOpen, onCreateTask }) {
+function MessageActions({ onOpen, onCreateTask, detailsOpen = false }) {
   return <div className="message-actions" aria-label="条目操作">
-    {onOpen && <button type="button" onClick={onOpen}>打开详情</button>}
+    {onOpen && <button type="button" onClick={onOpen}>{detailsOpen ? '收起详情' : '查看详情'}</button>}
     {onCreateTask && <button type="button" onClick={onCreateTask}>创建任务</button>}
   </div>;
 }
 
-function TurnCard({ turn, names, selfId, access, capability, controlState, continuation = false, onCancel, onControl, onDownload, onPreview, onOpen, onCreateTask }) {
+function TurnCard({ turn, roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, onCancel, onControl, onDownload, onPreview, onOpen, onCreateTask, onCloseDetail }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
   const controlContext = taskControlContext(turn, { selfId, access, capability });
   return (
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
-      <article className="message-row request-message" tabIndex="0">
-        <MessageActions onOpen={onOpen} onCreateTask={onCreateTask} />
-        <span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>
-        <div className="message-body">
+      <MessageFrame className="request-message" actions={<MessageActions onOpen={onOpen} onCreateTask={onCreateTask} detailsOpen={detailsOpen} />} identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
           <div className="request-text"><MarkdownLite text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={request.payload?.attachments} onDownload={onDownload} onPreview={onPreview} />
-        </div>
-      </article>
+      </MessageFrame>
+      {(turn.provisional.length > 0 || turn.activity.length > 0) && <ContentFrame contained><button type="button" className={`turn-process-summary ${turn.terminal ? 'completed' : 'active'}`} onClick={onOpen} aria-expanded={detailsOpen}>
+          <span className={turn.terminal ? 'pulse done' : 'pulse'} />
+          <span>{turn.terminal ? turnStatusLabel(turn) : (latestHumanProgress(turn) || '正在处理')}</span>
+          <small>{turnProcessSummary(turn)}</small>
+          <span aria-hidden="true">查看过程 ›</span>
+        </button></ContentFrame>}
+      {detailsOpen && <ContentFrame contained><TurnInlineDetail turn={turn} roster={roster} selfId={selfId} access={access} capability={capability} controlState={controlState} onCancel={onCancel} onControl={onControl} onDownload={onDownload} onCreateTask={onCreateTask} onClose={onCloseDetail} /></ContentFrame>}
+      {!turn.terminal && !detailsOpen && <ContentFrame contained><TaskControls context={controlContext} state={controlState} onCancel={onCancel} onControl={onControl} /></ContentFrame>}
       {turn.terminal && (
-        <article className={turn.status === 'failed' ? 'message-row final-answer turn-response failed' : 'message-row final-answer turn-response'} tabIndex="0">
-          <span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>
-          <div className="message-body response-body"><header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownLite text={text} />} /></div></div>
-        </article>
+        <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
+          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownLite text={text} />} /></div>
+        </MessageFrame>
       )}
-      {(turn.provisional.length > 0 || turn.activity.length > 0) && <button type="button" className={`turn-process-summary ${turn.terminal ? 'completed' : 'active'}`} onClick={onOpen}>
-        <span className={turn.terminal ? 'pulse done' : 'pulse'} />
-        <span>{turn.terminal ? turnStatusLabel(turn) : (latestHumanProgress(turn) || '正在处理')}</span>
-        <small>{turnProcessSummary(turn)}</small>
-        <span aria-hidden="true">查看过程 ›</span>
-      </button>}
-      {!turn.terminal && <TaskControls context={controlContext} state={controlState} onCancel={onCancel} onControl={onControl} />}
     </section>
   );
 }
 
-function SystemEventRow({ envelope, names, important = false }) {
-  const detail = systemEventDetail(envelope);
+function SystemEventRow({ envelope, presentation, names }) {
+  const important = presentation.tier === 'important';
   return <article className={important ? 'system-event-row important' : 'system-event-row'}>
     <span className="system-event-mark" aria-hidden="true">{important ? '!' : '✓'}</span>
-    <div><strong>{systemEventLabel(envelope)}</strong>{detail && <p>{detail}</p>}<small>{nameOf(envelope.sender?.id, names)} · {timeLabel(envelope.ts)}</small></div>
+    <div><strong>{presentation.title}</strong>{presentation.detail && <p>{presentation.detail}</p>}<small>{nameOf(envelope.sender?.id, names)} · {timeLabel(envelope.ts)}</small></div>
   </article>;
 }
 
 function Narration({ rows, names }) {
   const [open, setOpen] = useState(false);
-  const important = rows.filter((row) => systemEventTier(row.envelope) === 'important');
-  const diagnostic = rows.filter((row) => systemEventTier(row.envelope) !== 'important');
-  const visibleDiagnostic = diagnostic.slice(-LIST_WINDOW_SIZE);
+  const presentedRows = rows
+    .map((row) => ({ ...row, presentation: systemEventPresentation(row.envelope, names) }))
+    .filter((row) => !row.presentation.hidden);
+  const visibleRows = presentedRows
+    .sort((left, right) => left.seq - right.seq)
+    .slice(-LIST_WINDOW_SIZE);
+  if (!presentedRows.length) return null;
   return (
     <section className="narration">
-      {important.map(({ seq, envelope }) => <SystemEventRow key={`${seq}-${envelope.id}`} envelope={envelope} names={names} important />)}
-      {diagnostic.length > 0 && <button className="narration-toggle" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className="narration-icon" aria-hidden="true">◷</span><span><strong>后台活动</strong><small>{diagnostic.length} 条状态更新</small></span><span className="narration-action">{open ? '收起' : '查看'} {open ? '⌃' : '⌄'}</span></button>}
-      {open && <div className="system-event-list">{diagnostic.length > visibleDiagnostic.length && <p className="bounded-list-note">这里只显示最近 {visibleDiagnostic.length} 条；完整技术事实保留在审计记录中。</p>}{visibleDiagnostic.map(({ seq, envelope }) => <SystemEventRow key={`${seq}-${envelope.id}`} envelope={envelope} names={names} />)}</div>}
+      <button className="narration-toggle" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span className="narration-icon" aria-hidden="true">◷</span><span><strong>频道活动</strong><small>{presentedRows.length} 条成员与状态更新</small></span><span className="narration-action">{open ? '收起' : '查看'} {open ? '⌃' : '⌄'}</span></button>
+      {open && <div className="system-event-list">{presentedRows.length > visibleRows.length && <p className="bounded-list-note">这里只显示最近 {visibleRows.length} 条；完整技术事实保留在审计记录中。</p>}{visibleRows.map(({ seq, envelope, presentation }) => <SystemEventRow key={`${seq}-${envelope.id}`} envelope={envelope} presentation={presentation} names={names} />)}</div>}
     </section>
   );
 }
@@ -211,11 +214,9 @@ function Narration({ rows, names }) {
 function Standalone({ envelope, names, continuation = false, onCreateTask }) {
   const view = messagePresentation(envelope);
   return (
-    <article className={`standalone-row ${continuation ? 'continuation' : ''}`} tabIndex="0">
-      <MessageActions onCreateTask={onCreateTask} />
-      {continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}
-      <div>{!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownLite text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}</div>
-    </article>
+    <MessageFrame className={`standalone-row ${continuation ? 'continuation' : ''}`} actions={<MessageActions onCreateTask={onCreateTask} />} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
+      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownLite text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}
+    </MessageFrame>
   );
 }
 
@@ -268,7 +269,9 @@ function entryTimestamp(entry) {
 }
 
 function isContinuation(entries, index) {
-  if (index <= 0 || !['turn', 'standalone'].includes(entries[index]?.kind) || !['turn', 'standalone'].includes(entries[index - 1]?.kind)) return false;
+  const isConversational = (entry) => entry?.kind === 'standalone'
+    || (entry?.kind === 'turn' && ![TYPES.humanAsk, TYPES.humanApprove].includes(entry.turn.request.type));
+  if (index <= 0 || !isConversational(entries[index]) || !isConversational(entries[index - 1])) return false;
   const current = entries[index];
   const previous = entries[index - 1];
   const delta = entryTimestamp(current) - entryTimestamp(previous);
@@ -290,12 +293,8 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onRetry, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask }) {
-  const timelineRef = useRef(null);
-  const stickToBottomRef = useRef(true);
-  const previousSeqRef = useRef(state.lastSeq);
+export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onRetry, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, turnDetail }) {
   const [page, setPage] = useState(0);
-  const [unseenCount, setUnseenCount] = useState(0);
   const names = useMemo(() => new Map(roster.map((row) => [row.id, row.name || row.id])), [roster]);
   const entries = useMemo(() => orderedTimeline(state), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
   const latestTransient = new Map();
@@ -312,67 +311,54 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   const withNarration = [...visibleEntries, ...(state.narration.length ? [{ kind: 'narration', seq: narrationSeq }] : [])]
     .sort((left, right) => left.seq - right.seq);
   const windowed = boundedPage(withNarration, page);
+  const { viewportRef, contentRef, unseenCount, observeScroll, jumpToLatest, leaveLatest } = useStableTimelineScroll({
+    channelId: state.channelId,
+    lastSeq: state.lastSeq,
+    page,
+    pendingCount: pending.length,
+  });
 
-  useEffect(() => {
-    setPage(0);
-    setUnseenCount(0);
-    previousSeqRef.current = state.lastSeq;
-    stickToBottomRef.current = true;
-  }, [state.channelId]);
-
-  useEffect(() => {
-    const previous = previousSeqRef.current;
-    if (state.lastSeq > previous && !stickToBottomRef.current) setUnseenCount((value) => value + Math.max(1, state.lastSeq - previous));
-    previousSeqRef.current = state.lastSeq;
-  }, [state.lastSeq]);
+  useEffect(() => setPage(0), [state.channelId]);
 
   useEffect(() => {
     if (page !== windowed.page) setPage(windowed.page);
   }, [page, windowed.page]);
 
-  useLayoutEffect(() => {
-    const node = timelineRef.current;
-    if (node && page === 0 && stickToBottomRef.current) node.scrollTop = node.scrollHeight;
-  }, [page, state.lastSeq, pending.length]);
-
-  function observeScroll(event) {
-    const node = event.currentTarget;
-    stickToBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
-    if (stickToBottomRef.current) setUnseenCount(0);
-  }
-
-  function jumpToLatest() {
-    setPage(0);
-    setUnseenCount(0);
-    stickToBottomRef.current = true;
-    requestAnimationFrame(() => { if (timelineRef.current) timelineRef.current.scrollTop = timelineRef.current.scrollHeight; });
-  }
-
   return (
-    <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={timelineRef} onScroll={observeScroll}>
-      <div className="timeline-inner">
+    <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={observeScroll}>
+      <div className="timeline-inner" ref={contentRef}>
         {!state.rows.size && !pending.length && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
-        {windowed.hasOlder && <button type="button" className="bounded-list-control" onClick={() => { stickToBottomRef.current = false; setPage((value) => value + 1); }}>查看更早动态（当前 {windowed.start + 1}–{windowed.end} / {windowed.total}）</button>}
+        {windowed.hasOlder && <button type="button" className="bounded-list-control" onClick={() => { leaveLatest(); setPage((value) => value + 1); }}>查看更早动态（当前 {windowed.start + 1}–{windowed.end} / {windowed.total}）</button>}
         {windowed.items.map((entry, index) => {
           const continuation = isContinuation(windowed.items, index);
           const timestamp = entryTimestamp(entry);
           const previousTimestamp = windowed.items.slice(0, index).reverse().map(entryTimestamp).find(Boolean) || 0;
           const showDay = timestamp > 0 && (!previousTimestamp || dayKey(timestamp) !== dayKey(previousTimestamp));
           let content;
-          if (entry.kind === 'narration') content = <Narration rows={state.narration} names={names} />;
+          if (entry.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
           if (
             entry.kind === 'turn'
             && [TYPES.humanAsk, TYPES.humanApprove].includes(entry.turn.request.type)
             && selfId
             && entry.turn.request.audience?.includes(selfId)
           ) {
-            content = <ApprovalCard turn={entry.turn} state={approvalStates[entry.turn.request.id]} onResolve={(reqId, decision, payload) => onResolve(state.channelId, reqId, decision, payload)} names={names} />;
+            content = <ContentFrame><ApprovalCard turn={entry.turn} state={approvalStates[entry.turn.request.id]} onResolve={(reqId, decision, payload) => onResolve(state.channelId, reqId, decision, payload)} names={names} /></ContentFrame>;
           }
           if (!content && entry.kind === 'turn') {
             const actorId = entry.turn.request.audience?.length === 1 ? entry.turn.request.audience[0] : '';
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => onOpenTurn?.(entry.turn)} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
+            const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => {
+              if (detailsOpen) turnDetail?.onClose?.();
+              else {
+                // Expanding is a local reading action, not a new ledger entry. Stop the
+                // bottom pin before the panel changes height so the clicked message does
+                // not jump out of the viewport and appear attached to another turn.
+                leaveLatest();
+                onOpenTurn?.(entry.turn);
+              }
+            }} onCloseDetail={turnDetail?.onClose} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
@@ -382,9 +368,9 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
           return <React.Fragment key={key}>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</React.Fragment>;
         })}
         {windowed.hasNewer && <button type="button" className="bounded-list-control" onClick={() => setPage((value) => Math.max(0, value - 1))}>查看更新动态（{windowed.end + 1}–{Math.min(windowed.total, windowed.end + LIST_WINDOW_SIZE)}）</button>}
-        {pending.slice(-50).map((item) => <PendingRow key={item.key} item={item} onRetry={onRetry} />)}
+        {pending.slice(-50).map((item) => <ContentFrame key={item.key}><PendingRow item={item} onRetry={onRetry} /></ContentFrame>)}
         {pending.length > 50 && <p className="bounded-list-note">仅显示最近 50 个本地提交状态。</p>}
-        {unseenCount > 0 && page === 0 && <button type="button" className="timeline-jump-latest" onClick={jumpToLatest}>↓ {unseenCount} 条新动态</button>}
+        {unseenCount > 0 && page === 0 && <button type="button" className="timeline-jump-latest" onClick={() => { setPage(0); jumpToLatest(); }}>↓ {unseenCount} 条新动态</button>}
       </div>
     </section>
   );

@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { artifactKindForMediaType, artifactList, previewForMediaType } from '../model/artifacts.js';
+import { artifactKindForMediaType, previewForMediaType } from '../model/artifacts.js';
 import { channelMountRoot, directoryEntries, fileListCommand, normalizeDirectory, parentDirectory } from '../model/channel-files.js';
 import { LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { attachmentFromResource, createFileTicket, fileAddress, readFileTicket } from '../model/resources.js';
-import { ChannelResources } from './ChannelResources.jsx';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 
 function fileURL(address, ticket) {
@@ -25,7 +24,35 @@ function mediaTypeFromName(name, declared = '') {
   return ({ md: 'text/markdown', txt: 'text/plain', json: 'application/json', csv: 'text/csv', pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', mp3: 'audio/mpeg', mp4: 'video/mp4' })[extension] || 'application/octet-stream';
 }
 
-export function ArtifactsView({ channel, state, roster, daemons, disabled, onResource, onAttach, onOpen, onPreview }) {
+function formatSize(size) {
+  if (!Number.isFinite(Number(size))) return '—';
+  const value = Number(size);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${Math.round(value / 1024)} KB`;
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(value < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+  return `${(value / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function formatModified(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+}
+
+function fileKind(name, mediaType = '') {
+  const type = mediaTypeFromName(name, mediaType);
+  if (type === 'application/pdf') return ['PDF', 'PDF 文稿'];
+  if (type === 'text/markdown') return ['MD', 'Markdown 文稿'];
+  if (type === 'application/json') return ['JSON', 'JSON 文稿'];
+  if (type === 'text/csv') return ['CSV', 'CSV 文稿'];
+  if (type.startsWith('text/')) return ['TXT', '文稿'];
+  if (type.startsWith('image/')) return ['IMG', `${type.split('/')[1].toUpperCase()} 图像`];
+  if (type.startsWith('audio/')) return ['AUDIO', '音频'];
+  if (type.startsWith('video/')) return ['VIDEO', '视频'];
+  return ['FILE', '文件'];
+}
+
+export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach, onPreview }) {
   const [daemonId, setDaemonId] = useState(daemons[0]?.id || '');
   const [directory, setDirectory] = useState('');
   const [items, setItems] = useState([]);
@@ -34,20 +61,13 @@ export function ArtifactsView({ channel, state, roster, daemons, disabled, onRes
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [filePage, setFilePage] = useState(0);
-  const [referencePage, setReferencePage] = useState(0);
   const inputRef = useRef(null);
-  const artifacts = useMemo(() => artifactList(state), [state, state?.lastSeq]);
-  const artifactByResource = useMemo(() => new Map(artifacts.flatMap((artifact) => [
-    [artifact.resourceId, artifact],
-    ...(artifact.diagnostic?.address ? [[artifact.diagnostic.address, artifact]] : []),
-  ])), [artifacts]);
   const activeDaemon = daemons.find((row) => row.id === daemonId);
   const qualifiedChannel = channel.qualified_name || channel.id;
   const mountRoot = daemonId ? channelMountRoot({ daemonId, qualifiedChannel }) : '';
   const prefix = `${mountRoot}${normalizeDirectory(directory)}`;
   const entries = useMemo(() => directoryEntries(items, prefix), [items, prefix]);
   const visibleEntries = entries.slice(filePage * LIST_WINDOW_SIZE, (filePage + 1) * LIST_WINDOW_SIZE);
-  const visibleArtifacts = artifacts.slice(referencePage * LIST_WINDOW_SIZE, (referencePage + 1) * LIST_WINDOW_SIZE);
 
   useEffect(() => {
     if (!daemons.some((row) => row.id === daemonId)) setDaemonId(daemons[0]?.id || '');
@@ -57,7 +77,6 @@ export function ArtifactsView({ channel, state, roster, daemons, disabled, onRes
     setDirectory('');
     setItems([]);
     setFilePage(0);
-    setReferencePage(0);
   }, [channel.id, daemonId]);
 
   useEffect(() => { setFilePage(0); }, [directory]);
@@ -139,39 +158,49 @@ export function ArtifactsView({ channel, state, roster, daemons, disabled, onRes
     });
   }
 
+  function attachFile(entry) {
+    const meta = uploadedMeta.get(entry.resourceId);
+    onAttach(attachmentFromResource({
+      resourceId: entry.resourceId,
+      address: entry.resourceId,
+      file: { name: meta?.name || entry.name, type: mediaTypeFromName(entry.name, meta?.type || entry.mediaType), size: meta?.size ?? entry.size ?? 0 },
+    }));
+  }
+
   return <section id="workspace-panel-artifacts" className="workspace-view artifacts-view channel-files-view" role="tabpanel" aria-labelledby="workspace-tab-artifacts" aria-label="频道文件">
-    <header className="workspace-view-header artifacts-header channel-files-header">
-      <div><p className="eyebrow">CHANNEL FILES</p><h2>文件</h2><p>当前频道在设备上的默认挂载目录</p></div>
-      <input ref={inputRef} className="visually-hidden" aria-label="选择要上传到当前目录的文件" type="file" onChange={chooseFile} />
-      <button type="button" className="primary-button artifact-upload" disabled={disabled || !daemonId || status === 'uploading'} onClick={() => inputRef.current?.click()}>{status === 'uploading' ? '上传中…' : '上传到此目录'}</button>
-    </header>
-
-    <div className="file-mount-toolbar">
-      <label><span>挂载设备</span><SelectMenu ariaLabel="文件挂载设备" value={daemonId} placeholder="没有可用设备" options={daemons.map((row) => ({ value: row.id, label: row.name || row.id, description: row.id }))} onChange={setDaemonId} /></label>
-      <div className="mount-location"><span>频道目录</span><code>{mountRoot || `尚未给 ${qualifiedChannel} 提供文件设备`}</code></div>
-      <button type="button" aria-label="刷新文件目录" disabled={disabled || !daemonId || status === 'loading'} onClick={() => setRefreshVersion((value) => value + 1)}>刷新</button>
+    <input ref={inputRef} className="visually-hidden" aria-label="选择要上传到当前目录的文件" type="file" onChange={chooseFile} />
+    <div className="finder-toolbar">
+      <button type="button" className="finder-nav-button" aria-label="返回上一级" disabled={!directory} onClick={() => setDirectory(parentDirectory(directory))}>‹</button>
+      <nav className="file-breadcrumbs" aria-label="文件路径">
+        {crumbs(directory).map((crumb, index, rows) => <React.Fragment key={crumb.directory || 'root'}><button type="button" aria-current={index === rows.length - 1 ? 'page' : undefined} onClick={() => setDirectory(crumb.directory)}>{index === 0 ? qualifiedChannel : crumb.name}</button>{index < rows.length - 1 && <span aria-hidden="true">›</span>}</React.Fragment>)}
+      </nav>
+      <div className="finder-tools">
+        {daemons.length > 1
+          ? <SelectMenu ariaLabel="文件挂载设备" value={daemonId} placeholder="没有可用设备" options={daemons.map((row) => ({ value: row.id, label: row.name || row.id, description: row.id }))} onChange={setDaemonId} />
+          : activeDaemon && <span className="finder-device" title={activeDaemon.id}>{activeDaemon.name || activeDaemon.id}</span>}
+        <button type="button" className="finder-tool-button" aria-label="刷新文件目录" disabled={disabled || !daemonId || status === 'loading'} onClick={() => setRefreshVersion((value) => value + 1)}>↻</button>
+        <button type="button" className="finder-upload" disabled={disabled || !daemonId || status === 'uploading'} onClick={() => inputRef.current?.click()}>{status === 'uploading' ? '上传中…' : '＋ 上传'}</button>
+      </div>
     </div>
-
-    <nav className="file-breadcrumbs" aria-label="文件路径">
-      {crumbs(directory).map((crumb, index, rows) => <React.Fragment key={crumb.directory || 'root'}><button type="button" aria-current={index === rows.length - 1 ? 'page' : undefined} onClick={() => setDirectory(crumb.directory)}>{crumb.name}</button>{index < rows.length - 1 && <span aria-hidden="true">/</span>}</React.Fragment>)}
-    </nav>
 
     <div className="workspace-view-scroll channel-files-scroll">
       {error && <p className="governance-error" role="alert">{error}</p>}
-      {!daemonId && <div className="artifact-empty"><strong>这个频道还没有可用的文件挂载</strong><p>先在空间管理中连接设备；每个设备会为频道提供独立的默认目录。</p></div>}
-      {daemonId && <div className="channel-file-list" aria-label="当前目录内容" aria-busy={status === 'loading'}>
-        {directory && <button type="button" className="channel-file-row directory-row" onClick={() => setDirectory(parentDirectory(directory))}><span className="file-kind-icon">↰</span><span><strong>上一级</strong><small>返回父目录</small></span></button>}
+      {!daemonId && <div className="artifact-empty"><strong>这个频道还没有可用的文件挂载</strong><p>连接设备后，这里会显示频道的默认目录。</p></div>}
+      {daemonId && <div className="channel-file-list" role="table" aria-label="当前目录内容" aria-busy={status === 'loading'}>
+        <div className="finder-list-header" role="row"><span role="columnheader">名称</span><span role="columnheader">修改日期</span><span role="columnheader">大小</span><span role="columnheader">种类</span><span aria-hidden="true" /></div>
         {filePage > 0 && <button type="button" className="bounded-list-control" onClick={() => setFilePage((value) => Math.max(0, value - 1))}>上一页文件</button>}
-        {visibleEntries.map((entry) => entry.kind === 'directory'
-          ? <button type="button" className="channel-file-row directory-row" key={entry.key} onClick={() => setDirectory(`${normalizeDirectory(directory)}${entry.directory}`)}><span className="file-kind-icon">▰</span><span><strong>{entry.name}</strong><small>文件夹</small></span><span>打开</span></button>
-          : <div className="channel-file-row" key={entry.key}><span className="file-kind-icon">◇</span><button type="button" className="channel-file-open" onClick={() => previewFile(entry)}><strong>{entry.name}</strong><small>{artifactByResource.has(entry.resourceId) ? '已在频道动态中引用' : '频道文件'} · 点击预览</small></button><div className="channel-file-actions"><button type="button" onClick={() => previewFile(entry)}>预览</button><button type="button" onClick={() => { const meta = uploadedMeta.get(entry.resourceId); onAttach(attachmentFromResource({ resourceId: entry.resourceId, address: entry.resourceId, file: { name: meta?.name || entry.name, type: mediaTypeFromName(entry.name, meta?.type || entry.mediaType), size: meta?.size ?? entry.size ?? 0 } })); }}>附加到消息</button>{artifactByResource.has(entry.resourceId) && <button type="button" onClick={() => onOpen(artifactByResource.get(entry.resourceId))}>查看引用</button>}<button type="button" onClick={() => download(entry.resourceId, entry.name)}>下载</button></div></div>)}
-        {status === 'loading' && <div className="artifact-empty"><strong>正在读取挂载目录…</strong></div>}
+        {visibleEntries.map((entry, index) => {
+          const rowClass = `channel-file-row ${index % 2 === 1 ? 'row-tinted' : 'row-light'}`;
+          if (entry.kind === 'directory') return <button type="button" className={`${rowClass} directory-row`} role="row" key={entry.key} onClick={() => setDirectory(`${normalizeDirectory(directory)}${entry.directory}`)}><span className="finder-name-cell" role="cell"><span className="file-kind-icon folder-icon" aria-hidden="true" /><strong>{entry.name}</strong></span><span className="finder-date-cell" role="cell">{formatModified(entry.modifiedAt)}</span><span className="finder-size-cell" role="cell">—</span><span className="finder-type-cell" role="cell">文件夹</span><span className="finder-row-disclosure" aria-hidden="true">›</span></button>;
+          const meta = uploadedMeta.get(entry.resourceId);
+          const mediaType = mediaTypeFromName(entry.name, meta?.type || entry.mediaType);
+          const [icon, typeLabel] = fileKind(entry.name, mediaType);
+          return <div className={rowClass} role="row" key={entry.key}><button type="button" className="channel-file-open finder-name-cell" role="cell" onClick={() => previewFile(entry)}><span className={`file-kind-icon type-${artifactKindForMediaType(mediaType)}`} aria-hidden="true">{icon}</span><strong>{entry.name}</strong></button><span className="finder-date-cell" role="cell">{formatModified(entry.modifiedAt)}</span><span className="finder-size-cell" role="cell">{formatSize(meta?.size ?? entry.size)}</span><span className="finder-type-cell" role="cell">{typeLabel}</span><div className="channel-file-actions" role="cell"><button type="button" onClick={() => previewFile(entry)}>预览</button><button type="button" onClick={() => attachFile(entry)}>附加</button><button type="button" onClick={() => download(entry.resourceId, entry.name)}>下载</button></div></div>;
+        })}
+        {status === 'loading' && <div className="artifact-empty"><strong>正在读取目录…</strong></div>}
         {(filePage + 1) * LIST_WINDOW_SIZE < entries.length && <button type="button" className="bounded-list-control" onClick={() => setFilePage((value) => value + 1)}>下一页文件</button>}
-        {status === 'ready' && !entries.length && <div className="artifact-empty"><strong>当前目录为空</strong><p>上传文件，或返回其他目录继续浏览。</p></div>}
+        {status === 'ready' && !entries.length && <div className="artifact-empty"><strong>当前目录为空</strong><p>可以上传文件，或返回其他目录。</p></div>}
       </div>}
-
-      {artifacts.length > 0 && <section className="referenced-artifacts" aria-label="消息引用的文件"><header><div><p className="eyebrow">LEDGER REFERENCES</p><h3>消息引用</h3></div><span>{artifacts.length}</span></header><p>这些文件或结果在频道动态中有可追溯来源。</p><div className="artifact-list">{referencePage > 0 && <button type="button" className="bounded-list-control" onClick={() => setReferencePage((value) => Math.max(0, value - 1))}>上一页引用</button>}{visibleArtifacts.map((artifact) => <button type="button" className="artifact-row" key={artifact.key} onClick={() => onOpen(artifact)}><span className={`artifact-preview kind-${artifact.kind}`}>{artifact.kind === 'image' ? 'IMG' : artifact.kind === 'document' ? 'DOC' : 'FILE'}</span><span className="artifact-row-body"><strong>{artifact.name}</strong><small>动态 #{artifact.source.seq} · {roster.find((row) => row.id === artifact.authorActorId)?.name || '未知作者'}</small></span><span className="artifact-state">查看来源</span></button>)}{(referencePage + 1) * LIST_WINDOW_SIZE < artifacts.length && <button type="button" className="bounded-list-control" onClick={() => setReferencePage((value) => value + 1)}>下一页引用</button>}</div></section>}
-      <details className="advanced-resources"><summary>高级资源工具</summary><p>KV 与手工路径操作保留给调试和管理场景，不是频道文件的默认入口。</p><ChannelResources surface="embedded" channel={channel} daemons={daemons} disabled={disabled} onResource={onResource} onAttach={onAttach} /></details>
     </div>
   </section>;
 }

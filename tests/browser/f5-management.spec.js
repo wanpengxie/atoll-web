@@ -78,7 +78,7 @@ test('F5-004 创建操作进入 Operation Center 并可回到原频道回合', a
   const operation = center.getByRole('button', { name: /创建频道 operation-room/ });
   await expect(operation).toHaveCount(1);
   await operation.click();
-  await expect(page.getByRole('region', { name: '回合详情' })).toContainText('创建子频道');
+  await expect(page.locator('.turn-card').filter({ hasText: '创建子频道' })).toBeVisible();
   await expect(page.getByRole('region', { name: '回合详情' })).toContainText('operation-room');
   await expect(page.locator('main h1')).toHaveText('c0');
 });

@@ -3,7 +3,7 @@
   .shell { grid-template-columns: 220px minmax(0, 1fr); }
   .shell.has-context { grid-template-columns: 220px minmax(0, 1fr) 320px; }
   .timeline-inner { padding: 16px; }
-  .turn-card, .approval-card, .standalone-row, .pending-row { width: 90%; }
+  .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 90%; }
 }
 
 @media (max-width: 900px) {
@@ -40,8 +40,8 @@
   .task-create-modal > header button, .global-search > header button { min-width: 44px; }
   .seq-label { display: none; }
   .timeline-inner { padding: 8px 7px 18px; }
-  .turn-card, .approval-card, .standalone-row, .pending-row { width: 100%; }
-  .request-text, .audience-line, .message-attachments, .turn-process, .turn-process-summary, .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
+  .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 100%; }
+  .request-text, .audience-line, .message-attachments, .turn-process, .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .composer-wrap { padding: 10px; }
   .send-button { min-width: 58px; padding: 8px 12px; }
   .send-button span, .composer-help span:first-child { display: none; }

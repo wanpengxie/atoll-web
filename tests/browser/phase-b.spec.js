@@ -114,9 +114,9 @@ test('B-BR-05 完整 provisional、命名空间状态和第一终态权威性', 
   await send(page, businessText);
   const businessTurn = page.locator('.turn-card').filter({ hasText: businessText });
   await businessTurn.hover();
-  await businessTurn.getByRole('button', { name: '打开详情' }).click();
+  await businessTurn.getByRole('button', { name: '查看详情' }).click();
   await expect(page.getByRole('region', { name: '回合详情' })).toContainText('provider.waiting');
-  await page.getByRole('button', { name: /返回动态/ }).click();
+  await page.getByRole('button', { name: '收起回合详情' }).click();
   await expect(page.getByText('PONG', { exact: true })).toBeVisible();
 
   await reset(request, 'terminal-conflict');
@@ -193,6 +193,8 @@ test('B-BR-09 结构化、空成功、失败与敏感字段都有可理解结果
   await login(page);
   await send(page, `structured-${Date.now()}`);
   await expect(page.getByText('结构化结果', { exact: true })).toBeVisible();
+  await expect(page.getByText('instance_id', { exact: true })).toBeHidden();
+  await page.locator('.structured-result-details').filter({ hasText: '结构化结果' }).first().locator(':scope > summary').click();
   await expect(page.getByText('instance_id', { exact: true })).toBeVisible();
   await expect(page.getByText('已隐藏', { exact: true })).toBeVisible();
   await expect(page.getByText('25 项，先显示 20 项', { exact: true })).toBeVisible();
@@ -218,16 +220,18 @@ test('B-BR-09 结构化、空成功、失败与敏感字段都有可理解结果
   await page.reload();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
   const describe = page.locator('.actor-describe-result');
-  await expect(describe.getByRole('strong').filter({ hasText: 'Mock 协作 Agent' })).toBeVisible();
+  await expect(describe.getByText('codex 的能力', { exact: true })).toBeVisible();
+  await describe.locator(':scope > .structured-result-details > summary').click();
   await expect(describe.getByText('agent.ask', { exact: true }).first()).toBeVisible();
 });
 
-test('B-BR-10 普通频道通过 decl_id 解析 coreactor 并展示 channel.list', async ({ page, request }) => {
+test('B-BR-10 普通频道通过 system actor 展示 channel.list', async ({ page, request }) => {
   await reset(request);
   await login(page);
   await page.getByRole('button', { name: /c0\.project/ }).click();
   await page.getByLabel('消息').fill('/channels');
   await page.getByRole('button', { name: /发送/ }).click();
-  await expect(page.getByText('channel.list', { exact: true })).toBeVisible();
+  await expect(page.getByText(/channel\.list$/, { exact: true })).toBeVisible();
+  await page.locator('.structured-result-details').filter({ hasText: /channel\.list/ }).last().locator(':scope > summary').click();
   await expect(page.locator('.structured-table').getByText('c0.public', { exact: true }).first()).toBeVisible();
 });

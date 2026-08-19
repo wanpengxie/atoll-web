@@ -1,6 +1,7 @@
 import { TYPES } from '../protocol/vocab.js';
 
 const SENSITIVE_FIELD = /password|secret|token|credential|private_key|\bkey\b/i;
+const CONVERSATION_TYPES = new Set([TYPES.agentAsk, TYPES.humanAsk, TYPES.humanMessage]);
 
 function value(payload, ...keys) {
   for (const key of keys) {
@@ -71,11 +72,29 @@ function safeHint(payload) {
   return '';
 }
 
+function textContent(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  for (const candidate of [payload.text, payload.message, payload.content, payload.prompt, payload.input?.text]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  if (Array.isArray(payload.content)) {
+    return payload.content
+      .filter((item) => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
+      .map((item) => item.text.trim())
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  return '';
+}
+
 export function messagePresentation(envelope = {}) {
   const payload = envelope.payload || {};
-  if (Object.prototype.hasOwnProperty.call(payload, 'text')) {
-    const text = String(payload.text || '').trim();
-    return { text: text || (payload.attachments?.length ? `发送了 ${payload.attachments.length} 个文件` : '空消息'), detail: '' };
+  const conversation = textContent(payload);
+  if (conversation || CONVERSATION_TYPES.has(envelope.type)) {
+    return {
+      text: conversation || (payload.attachments?.length ? `发送了 ${payload.attachments.length} 个文件` : '没有可显示的消息正文'),
+      detail: '',
+    };
   }
   const known = action(String(envelope.type || ''), payload);
   if (known) return { text: known[0], detail: known[1] || '' };

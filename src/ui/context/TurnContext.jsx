@@ -3,6 +3,7 @@ import { taskControlContext } from '../../model/task-controls.js';
 import { messagePresentation } from '../../model/message-presentation.js';
 import { turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
 import { SidePanel } from '../primitives/SidePanel.jsx';
+import { StructuredResult } from '../StructuredResult.jsx';
 
 function timeLabel(value) {
   if (!value) return '时间未知';
@@ -27,6 +28,13 @@ function RecordRow({ label, envelope, names }) {
   </article>;
 }
 
+function technicalLabel(envelope) {
+  if (envelope?.type === 'agent.turn.started') return '开始处理';
+  if (envelope?.type === 'agent.turn.ended') return '处理结束';
+  if (envelope?.type?.startsWith('agent.tool.')) return `工具 · ${envelope.payload?.tool || '未知工具'}`;
+  return '运行记录';
+}
+
 function ContextControls({ context, state = {}, onCancel, onControl }) {
   const [steering, setSteering] = useState(false);
   const [text, setText] = useState('');
@@ -46,23 +54,23 @@ function ContextControls({ context, state = {}, onCancel, onControl }) {
   </section>;
 }
 
-function TurnDetailBody({ turn, roster = [], selfId, access, capability, controlState, onCancel, onControl, onDownload, onSource, onCreateTask, showSource = true }) {
+function TurnDetailBody({ turn, roster = [], selfId, access, capability, controlState, onCancel, onControl, onDownload, onSource, onCreateTask, showSource = true, showRequest = true }) {
   const names = useMemo(() => new Map(roster.map((row) => [row.id, row.name || row.id])), [roster]);
   if (!turn) return null;
   const request = turn.request;
   const context = taskControlContext(turn, { selfId, access, capability });
   return <>
-    <div className="turn-context-source">
+    {showRequest && <div className="turn-context-source">
       <span>{actorName(request.sender?.id, names)} · {timeLabel(request.ts)}</span>
       <p>{requestSummary(request)}</p>
       {showSource && onSource && <button type="button" onClick={() => onSource({ view: 'dynamic', objectType: 'turn', objectId: turn.requestId, seq: turn.requestSeq })}>在动态中查看</button>}
-    </div>
+    </div>}
     <section className={`turn-context-status status-${turn.status}`}><span className="turn-status-dot" /><div><strong>{turnStatusLabel(turn)}</strong><small>{turnProcessSummary(turn)}</small></div></section>
-    {turn.terminal && <section className="turn-context-terminal"><h3>最终结果</h3><p>{turn.terminal.payload?.text || turn.terminal.payload?.detail || turn.terminal.payload?.reason || '回合已经结束。'}</p></section>}
-    <section className="turn-context-section"><h3>业务进展</h3>{turn.provisional.length ? turn.provisional.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.payload?.detail || item.envelope.payload?.message || item.status} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有业务进展记录</p>}</section>
+    {turn.terminal && <section className="turn-context-terminal"><h3>最终结果</h3><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <p>{text}</p>} /></section>}
+    <section className="turn-context-section"><h3>业务进展</h3><div className="turn-context-process-scroll">{turn.provisional.length ? turn.provisional.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.payload?.detail || item.envelope.payload?.message || turnStatusLabel({ status: item.status })} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有业务进展记录</p>}</div></section>
     <details className="turn-context-section turn-context-technical" open={!turn.terminal}>
       <summary>技术过程 <span>{turn.activity.length}</span></summary>
-      {turn.activity.length ? turn.activity.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.type.startsWith('agent.tool.') ? `工具 · ${item.envelope.payload?.tool || 'unknown'}` : item.envelope.type} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有工具或运行时活动</p>}
+      <div className="turn-context-process-scroll">{turn.activity.length ? turn.activity.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={technicalLabel(item.envelope)} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有工具或运行时活动</p>}</div>
     </details>
     <ContextControls context={context} state={controlState} onCancel={onCancel} onControl={onControl} />
     {request.payload?.attachments?.length > 0 && <section className="turn-context-section"><h3>关联文件</h3>{request.payload.attachments.map((row) => <button type="button" className="turn-context-attachment" key={row.resource_id} onClick={() => onDownload(row)}><span>{row.name || row.resource_id}</span><small>{row.media_type || '文件'} · 下载</small></button>)}</section>}
@@ -71,11 +79,11 @@ function TurnDetailBody({ turn, roster = [], selfId, access, capability, control
   </>;
 }
 
-export function TurnDetailPage(props) {
+export function TurnInlineDetail(props) {
   if (!props.turn) return null;
-  return <section id="workspace-panel-dynamic" className="turn-detail-page" role="region" aria-label="回合详情">
-    <header className="turn-detail-header"><button type="button" onClick={props.onClose}>← 返回动态</button><div><p className="eyebrow">WORK TURN</p><h2>回合详情</h2></div></header>
-    <div className="turn-detail-scroll"><div className="turn-detail-content"><TurnDetailBody {...props} showSource={false} /></div></div>
+  return <section className="turn-inline-detail" role="region" aria-label="回合详情">
+    <header className="turn-inline-header"><div><strong>回合详情</strong><small>结果、过程与控制</small></div><button type="button" onClick={props.onClose} aria-label="收起回合详情">收起</button></header>
+    <div className="turn-inline-body"><TurnDetailBody {...props} showSource={false} showRequest={false} /></div>
   </section>;
 }
 

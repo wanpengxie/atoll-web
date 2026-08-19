@@ -8,6 +8,7 @@ import { ArtifactContext } from '../ui/context/ArtifactContext.jsx';
 import { WorkItemContext } from '../ui/context/WorkItemContext.jsx';
 import { ChannelAutomation } from '../ui/ChannelAutomation.jsx';
 import { ActivityCenter } from '../ui/ActivityCenter.jsx';
+import { ChannelResources } from '../ui/ChannelResources.jsx';
 
 function ContextHost({ type, focusKey, children }) {
   const hostRef = useRef(null);
@@ -43,6 +44,9 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
   }
   else if (panel.value === 'automation' && active.channel) {
     content = <ChannelAutomation channel={active.channel} records={active.automation.records} disabled={active.automation.disabled} onAfter={active.automation.onAfter} onCancel={active.automation.onCancel} onClose={close} />;
+  }
+  else if (panel.value === 'resources' && active.channel) {
+    content = <ChannelResources channel={active.channel} daemons={governance.daemons} disabled={!canWriteChannel(active.access)} onResource={artifacts.onResource} onAttach={artifacts.onAttach} onClose={close} />;
   }
   else if (panel.value === 'activity') {
     content = <ActivityCenter activities={activity.activities} operations={activity.operations} onOpen={activity.onOpen} onClose={close} />;

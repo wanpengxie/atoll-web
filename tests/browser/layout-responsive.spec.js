@@ -129,7 +129,7 @@ test('LAYOUT-05 Context 在 800px 接管工作区，在 600px 接管全屏', asy
   await page.setViewportSize({ width: 800, height: 720 });
   await reset(request, 'resource-workflow', 955);
   await login(page);
-  await page.getByRole('button', { name: '成员' }).click();
+  await page.getByRole('button', { name: '成员', exact: true }).click();
   const panel = page.getByRole('complementary', { name: /频道管理/ });
   let geometry = await panel.evaluate((element) => {
     const rect = element.getBoundingClientRect();

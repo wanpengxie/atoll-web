@@ -1,6 +1,6 @@
 /* Composer */
 .composer-wrap { grid-row: 5; position: relative; z-index: 3; padding: 10px 26px 16px; border-top: 1px solid var(--line-subtle); background: var(--workspace); }
-.composer-surface { width: min(100%, 860px); margin: 0 auto; padding: 9px 11px 8px; border: 1px solid var(--line-control); border-radius: 12px; background: var(--input); box-shadow: 0 1px 3px var(--shadow); transition: border-color .15s, box-shadow .15s; }
+.composer-surface { width: min(100%, var(--timeline-track)); margin: 0 auto; padding: 9px 11px 8px; border: 1px solid var(--line-control); border-radius: 12px; background: var(--input); box-shadow: 0 1px 3px var(--shadow); transition: border-color .15s, box-shadow .15s; }
 .composer-surface:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
 .composer-target { display: flex; min-width: 0; align-items: center; gap: 5px; padding: 0; color: var(--text-muted); font-size: 10px; }
 .composer-target strong { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -19,7 +19,7 @@
 .composer-tools > button:disabled { opacity: .45; cursor: not-allowed; }
 .composer-help { display: flex; flex: 1; justify-content: flex-end; gap: 14px; padding: 0 2px; color: var(--text-dim); font: 8px var(--mono); }
 .composer-error { padding-top: 6px; }
-.composer-status, .composer-disabled-reason { width: min(100%, 860px); margin: 6px auto 0; color: var(--online); font-size: 10px; }
+.composer-status, .composer-disabled-reason { width: min(100%, var(--timeline-track)); margin: 6px auto 0; color: var(--online); font-size: 10px; }
 .composer-status.state-delayed, .composer-status.state-uncertain { color: var(--warning); }
 .composer-disabled-reason { color: var(--text-muted); }
 .mention-chips { display: flex; gap: 6px; padding-bottom: 7px; }

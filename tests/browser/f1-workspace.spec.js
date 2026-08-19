@@ -87,10 +87,12 @@ test('F1-006 旧成员、频道管理、文件和自动动作能力仍可达', a
   await expect(page.getByRole('complementary', { name: /频道管理/ })).toBeVisible();
   await page.getByRole('button', { name: '关闭频道详情' }).click();
 
-  await page.getByRole('tab', { name: '文件' }).click();
-  await page.getByText('高级资源工具', { exact: true }).click();
-  await expect(page.getByRole('tab', { name: 'KV' })).toBeVisible();
-  await expect(page.locator('.embedded-resources').getByRole('tab', { name: '文件', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '频道操作' }).click();
+  await page.getByRole('menuitem', { name: '高级资源工具' }).click();
+  const resources = page.getByRole('complementary', { name: '频道资源' });
+  await expect(resources.getByRole('tab', { name: 'KV' })).toBeVisible();
+  await expect(resources.getByRole('tab', { name: '文件', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭频道资源' }).click();
   await page.getByRole('tab', { name: '任务' }).click();
   await page.getByRole('button', { name: '安排自动动作' }).click();
   await expect(page.getByRole('button', { name: '创建定时动作' })).toBeVisible();

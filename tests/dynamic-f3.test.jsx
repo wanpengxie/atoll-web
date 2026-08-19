@@ -10,10 +10,10 @@ import { TurnContext } from '../src/ui/context/TurnContext.jsx';
 afterEach(cleanup);
 
 function runningTurn() {
-  const request = { id: 'req-1', type: 'agent.text', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { text: '整理研究报告', token: 'secret' } };
+  const request = { id: 'req-1', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { text: '整理研究报告', token: 'secret' } };
   return {
     requestId: request.id, request, requestSeq: 1, status: 'processing', latestStatus: 'processing', terminal: null,
-    provisional: [{ seq: 2, status: 'processing', core: true, envelope: { id: 'p-1', type: 'agent.text', ts: 110, sender: { id: 'agent-1' }, payload: { status: 'processing', detail: '正在整理资料' } } }],
+    provisional: [{ seq: 2, status: 'processing', core: true, envelope: { id: 'p-1', type: 'agent.ask', ts: 110, sender: { id: 'agent-1' }, payload: { status: 'processing', detail: '正在整理资料' } } }],
     activity: [{ seq: 3, envelope: { id: 'a-1', type: 'agent.tool.started', ts: 120, sender: { id: 'agent-1' }, payload: { tool: 'search', status: 'started' } } }],
     anomalies: [{ code: 'sample', seq: 4 }],
   };
@@ -29,15 +29,28 @@ it('main Dynamic exposes message actions but keeps tool activity in Turn Context
   expect(screen.queryByText(/工具 · search/)).toBeNull();
   await user.tab();
   await user.tab();
-  await user.click(screen.getByRole('button', { name: '打开详情' }));
+  await user.click(screen.getByRole('button', { name: '查看详情' }));
   expect(onOpenTurn).toHaveBeenCalledWith(turn);
   expect(screen.getByRole('button', { name: '创建任务' })).toBeTruthy();
+});
+
+it('expanded turn detail stays between its request and terminal response', () => {
+  const turn = runningTurn();
+  turn.status = 'completed';
+  turn.terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '最终答复' } };
+  const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 4 };
+  const view = render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" turnDetail={{ selected: turn, onClose: () => {} }} />);
+  const card = view.container.querySelector('.turn-card');
+  const children = [...card.children];
+  expect(children.indexOf(card.querySelector('.request-message'))).toBeLessThan(children.indexOf(card.querySelector('.turn-inline-detail').closest('.information-flow-row')));
+  expect(children.indexOf(card.querySelector('.turn-inline-detail').closest('.information-flow-row'))).toBeLessThan(children.indexOf(card.querySelector('.turn-response')));
 });
 
 it('Turn detail exposes audit identifiers without serializing payload JSON', () => {
   render(<TurnContext turn={runningTurn()} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" access="member_active" capability={null} controlState={{}} onCancel={() => {}} onControl={() => {}} onDownload={() => {}} onSource={() => {}} onClose={() => {}} />);
   expect(screen.getByRole('complementary', { name: '回合详情' })).toBeTruthy();
   expect(screen.getByText('工具 · search')).toBeTruthy();
+  expect(document.querySelectorAll('.turn-context-process-scroll')).toHaveLength(2);
   expect(screen.getByText(/^技术审计/)).toBeTruthy();
   expect(document.querySelector('.turn-context-diagnostics pre')).toBeNull();
   expect(screen.getAllByText('req-1').length).toBeGreaterThan(0);
@@ -54,6 +67,20 @@ it('同作者五分钟内的连续消息合并身份，但保留每条可聚焦�
   expect(screen.getAllByText('我')).toHaveLength(1);
   expect(screen.getByText('第一条')).toBeTruthy();
   expect(screen.getByText('第二条')).toBeTruthy();
+});
+
+it('频道活动使用类型化事件语义，并过滤标准 Actor', async () => {
+  const user = userEvent.setup();
+  const narration = [
+    { seq: 1, envelope: { id: 'joined-steward', type: 'system.member.created', ts: 1_000, sender: { id: 'system', kind: 'system' }, payload: { member: 'steward', decl_id: 'mock:steward' } } },
+    { seq: 2, envelope: { id: 'joined-service', type: 'system.member.created', ts: 2_000, sender: { id: 'system', kind: 'system' }, payload: { member: 'svcactor', decl_id: 'svcactor' } } },
+  ];
+  const state = { channelId: 'c0', rows: new Map(), turns: new Map(), standalone: [], orphans: [], narration, lastSeq: 2 };
+  render(<Timeline state={state} roster={[{ id: 'steward', name: 'Steward' }]} selfId="me" pending={[]} approvalStates={{}} />);
+  expect(screen.getByText('1 条成员与状态更新')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: /频道活动/ }));
+  expect(screen.getByText('Steward 已加入频道')).toBeTruthy();
+  expect(document.body.textContent).not.toContain('svcactor');
 });
 
 it('消息附件只显示产品摘要，点击整卡进入统一预览', async () => {

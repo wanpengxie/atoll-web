@@ -34,9 +34,16 @@ export function directoryEntries(items, prefix) {
     const slash = relative.indexOf('/');
     if (slash >= 0) {
       const rawName = relative.slice(0, slash);
-      if (rawName && !rows.has(`dir:${rawName}`)) rows.set(`dir:${rawName}`, { key: `dir:${rawName}`, kind: 'directory', name: displaySegment(rawName), directory: `${rawName}/` });
+      const modifiedAt = item.meta?.modified_at || item.meta?.mtime || item.updated_at;
+      const key = `dir:${rawName}`;
+      if (rawName && !rows.has(key)) rows.set(key, { key, kind: 'directory', name: displaySegment(rawName), directory: `${rawName}/`, ...(modifiedAt ? { modifiedAt } : {}) });
+      else if (modifiedAt && rows.has(key)) {
+        const current = rows.get(key);
+        if (!current.modifiedAt || new Date(modifiedAt) > new Date(current.modifiedAt)) rows.set(key, { ...current, modifiedAt });
+      }
       continue;
     }
+    const modifiedAt = item.meta?.modified_at || item.meta?.mtime || item.updated_at;
     rows.set(`file:${id}`, {
       key: `file:${id}`,
       kind: 'file',
@@ -45,6 +52,7 @@ export function directoryEntries(items, prefix) {
       ops: Array.isArray(item.ops) ? item.ops : [],
       ...(item.meta?.media_type ? { mediaType: String(item.meta.media_type) } : {}),
       ...(Number.isFinite(Number(item.meta?.size)) ? { size: Number(item.meta.size) } : {}),
+      ...(modifiedAt ? { modifiedAt } : {}),
     });
   }
   return [...rows.values()].sort((left, right) => {
