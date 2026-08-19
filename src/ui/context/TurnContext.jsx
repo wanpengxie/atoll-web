@@ -62,7 +62,7 @@ function TurnDetailBody({ turn, roster = [], selfId, access, capability, control
     <section className="turn-context-section"><h3>业务进展</h3>{turn.provisional.length ? turn.provisional.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.payload?.detail || item.envelope.payload?.message || item.status} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有业务进展记录</p>}</section>
     <details className="turn-context-section turn-context-technical" open={!turn.terminal}>
       <summary>技术过程 <span>{turn.activity.length}</span></summary>
-      {turn.activity.length ? turn.activity.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.type.startsWith('activity.tool.') ? `工具 · ${item.envelope.payload?.tool || 'unknown'}` : item.envelope.type} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有工具或运行时活动</p>}
+      {turn.activity.length ? turn.activity.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.type.startsWith('agent.tool.') ? `工具 · ${item.envelope.payload?.tool || 'unknown'}` : item.envelope.type} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有工具或运行时活动</p>}
     </details>
     <ContextControls context={context} state={controlState} onCancel={onCancel} onControl={onControl} />
     {request.payload?.attachments?.length > 0 && <section className="turn-context-section"><h3>关联文件</h3>{request.payload.attachments.map((row) => <button type="button" className="turn-context-attachment" key={row.resource_id} onClick={() => onDownload(row)}><span>{row.name || row.resource_id}</span><small>{row.media_type || '文件'} · 下载</small></button>)}</section>}

@@ -36,7 +36,7 @@ describe('frame ABI', () => {
   it('blocks unknown upstream fields before serialization', () => {
     expect(() => frame('submit', 'submit-1', {
       channel_id: 'c0',
-      msg_type: 'human.text',
+      msg_type: 'agent.ask',
       payload: { text: 'hello' },
       channelId: 'wrong',
     })).toThrow(FrameValidationError);

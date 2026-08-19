@@ -34,9 +34,8 @@ function waitFor(predicate, timeoutMs = 5_000) {
   });
 }
 
-afterEach(async () => Promise.all([...servers].map(close)));
 
-describe('mock system, core and registrar actors', () => {
+describe('mock system actor governance', () => {
   it('drives structured results and converges roster/channel OBS', async () => {
     const server = createMockServer({ rootPassword: 'test-root', scenario: 'multi-channel', seed: 5 });
     const baseURL = await listen(server);
@@ -64,46 +63,42 @@ describe('mock system, core and registrar actors', () => {
     });
     await waitFor(() => attached);
 
-    const listReceipt = await wire.submit({ channel_id: 'c0', msg_type: 'channel.list', kind: 'request', payload: {}, audience: ['registrar'] });
-    const listTerminal = await waitFor(() => envelopes.find((entry) => entry.parent_id === listReceipt.message_id && entry.payload?.status === 'completed'));
-    expect(listTerminal.payload.value.map((channel) => channel.id)).toEqual(expect.arrayContaining(['c0', 'c0.project', 'c0.public']));
-    expect(listTerminal.payload.value.some((channel) => channel.id === 'c0.lobby')).toBe(false);
+    // 所有治理词都发给本频道的 system actor；空间词由它转交 registrar。
+    const call = async (channelId, msgType, payload = {}, id = undefined) => {
+      const receipt = await wire.submit({ channel_id: channelId, ...(id ? { id } : {}), msg_type: msgType, kind: 'request', payload, audience: ['system'] });
+      return waitFor(() => envelopes.find((entry) => entry.parent_id === receipt.message_id && ['completed', 'failed'].includes(entry.payload?.status)));
+    };
 
-    const peerListReceipt = await wire.submit({ channel_id: 'c0.project', id: 'peer-list', msg_type: 'channel.list', kind: 'request', payload: {}, audience: ['coreactor'] });
-    const peerListTerminal = await waitFor(() => envelopes.find((entry) => entry.parent_id === peerListReceipt.message_id && entry.payload?.status === 'completed'));
-    expect(peerListTerminal.payload).toMatchObject({ word: 'channel.list', source: { channel_id: 'c0.project', request_id: 'peer-list' } });
+    const list = await call('c0', 'system.channel.list');
+    expect(list.payload.value.map((channel) => channel.id)).toEqual(expect.arrayContaining(['c0', 'c0.project', 'c0.public']));
+    expect(list.payload.value.some((channel) => channel.id === 'c0.lobby')).toBe(false);
 
-    const introduceReceipt = await wire.submit({
-      channel_id: 'c0',
-      msg_type: 'channel.introduce_actor',
-      kind: 'request',
-      payload: { kind: 'agent', decl_id: 'mock:reviewer' },
-      audience: ['system'],
-    });
-    const introduceTerminal = await waitFor(() => envelopes.find((entry) => entry.parent_id === introduceReceipt.message_id && entry.payload?.status === 'completed'));
+    // 子频道里同样只认识 system actor。
+    const peerList = await call('c0.project', 'system.channel.list', {}, 'peer-list');
+    expect(peerList.payload.status).toBe('completed');
+
+    const created = await call('c0', 'system.member.create', { decl_id: 'mock:analyst' });
+    const memberId = created.payload.member;
+    expect(memberId).toBeTruthy();
     const roster = await fetchWithSession('/obs/channel/c0/actors').then((response) => response.json());
-    expect(roster.items.map((entry) => entry.declared.id)).toContain(introduceTerminal.payload.value.instance_id);
+    expect(roster.items.map((entry) => entry.declared.id)).toContain(memberId);
+    // system.member.list 不列自己，OBS 名册里也没有已退休的 coreactor。
     expect(roster.items.map((entry) => entry.declared.id)).not.toContain('coreactor');
 
-    const restartReceipt = await wire.submit({ channel_id: 'c0', msg_type: 'channel.restart_actor', kind: 'request', payload: { instance_id: introduceTerminal.payload.value.instance_id }, audience: ['system'] });
-    const restartTerminal = await waitFor(() => envelopes.find((entry) => entry.parent_id === restartReceipt.message_id && entry.payload?.status === 'completed'));
-    expect(restartTerminal.payload.value).toEqual({ restarted: introduceTerminal.payload.value.instance_id });
+    const restarted = await call('c0', 'system.member.restart', { member: memberId });
+    expect(restarted.payload.member).toBe(memberId);
 
-    const invalidReceipt = await wire.submit({ channel_id: 'c0', msg_type: 'channel.restart_actor', kind: 'request', payload: { instance_id: introduceTerminal.payload.value.instance_id, actor_id: 'legacy' }, audience: ['system'] });
-    const invalidTerminal = await waitFor(() => envelopes.find((entry) => entry.parent_id === invalidReceipt.message_id && entry.payload?.status === 'failed'));
-    expect(invalidTerminal.payload).toMatchObject({ error_code: 'bad_payload' });
+    const invalid = await call('c0', 'system.member.restart', { member: memberId, actor_id: 'legacy' });
+    expect(invalid.payload).toMatchObject({ status: 'failed', error_code: 'bad_payload' });
 
-    const protectedReceipt = await wire.submit({ channel_id: 'c0', msg_type: 'channel.restart_actor', kind: 'request', payload: { instance_id: 'system' }, audience: ['system'] });
-    const protectedTerminal = await waitFor(() => envelopes.find((entry) => entry.parent_id === protectedReceipt.message_id && entry.payload?.status === 'failed'));
-    expect(protectedTerminal.payload).toMatchObject({ error_code: 'protected_actor' });
+    const guarded = await call('c0', 'system.member.restart', { member: 'system' });
+    expect(guarded.payload).toMatchObject({ status: 'failed', error_code: 'protected_actor' });
 
-    const removeReceipt = await wire.submit({ channel_id: 'c0', msg_type: 'channel.remove_actor', kind: 'request', payload: { instance_id: introduceTerminal.payload.value.instance_id }, audience: ['system'] });
-    const removeTerminal = await waitFor(() => envelopes.find((entry) => entry.parent_id === removeReceipt.message_id && entry.payload?.status === 'completed'));
-    expect(removeTerminal.payload.value).toEqual({ removed: true });
+    const removed = await call('c0', 'system.member.delete', { member: memberId });
+    expect(removed.payload.removed).toEqual([memberId]);
 
-    const createReceipt = await wire.submit({ channel_id: 'c0', msg_type: 'channel.create', kind: 'request', payload: { name: 'design' }, audience: ['registrar'] });
-    const createTerminal = await waitFor(() => envelopes.find((entry) => entry.parent_id === createReceipt.message_id && entry.payload?.status === 'completed'));
-    expect(createTerminal.payload.value).toMatchObject({ id: 'c0.design', parent_id: 'c0', status: 'present' });
+    const design = await call('c0', 'system.channel.create', { name: 'design', recipe: { declarations: [] } });
+    expect(design.payload.value).toMatchObject({ channel_id: 'c0.design' });
     const children = await fetchWithSession('/obs/space/channels?parent_id=c0').then((response) => response.json());
     expect(children.items.map((entry) => entry.declared.id)).toContain('c0.design');
 

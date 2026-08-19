@@ -6,7 +6,7 @@ export const CONTRACT_VERSION = 'mock-v2';
 export const PAYLOAD_FIELDS = Object.freeze({
   attach: ['since'],
   submit: ['channel_id', 'id', 'msg_type', 'kind', 'payload', 'audience', 'visibility', 'parent_id', 'expires_at_ms'],
-  resolve: ['channel_id', 'req_id', 'decision', 'payload'],
+  resolve: ['channel_id', 'req_id', 'text', 'decision', 'note'],
   cancel: ['channel_id', 'req_id'],
   after: ['channel_id', 'duration_ms', 'msg_type', 'payload'],
   cancel_timer: ['channel_id', 'timer_id'],
@@ -18,7 +18,7 @@ export const PAYLOAD_FIELDS = Object.freeze({
 export const REQUIRED_FIELDS = Object.freeze({
   attach: [],
   submit: ['channel_id', 'msg_type'],
-  resolve: ['channel_id', 'req_id', 'decision'],
+  resolve: ['channel_id', 'req_id'],
   cancel: ['channel_id', 'req_id'],
   after: ['channel_id', 'duration_ms', 'msg_type'],
   cancel_timer: ['channel_id', 'timer_id'],

@@ -1,47 +1,112 @@
+// 消息类型闭集。每一条都对齐 coagent 后端的当前定义：
+//   agent.*            drivers/agents/base/base.go
+//   agent.turn/tool.*  registry/activity.go
+//   system.*           protocol/message/system.go
+//   human.*            platform/subjectgate/frame.go
+//   actor.describe     lib/introspect/introspect.go
 export const TYPES = Object.freeze({
-  // TODO(P1): coagent 把 agent.text 纳入 base 闭集后改回 agent.text；只改本处
-  agentText: 'human.text',
+  // 人向 agent 提问：agent 基座的标准请求词。
+  agentAsk: 'agent.ask',
+  // agent 控制词（都由 agent 基座直接受理）。
   agentSteer: 'agent.steer',
-  agentInterrupt: 'agent.interrupt',
   agentQueue: 'agent.queue',
+  agentInterrupt: 'agent.interrupt',
   agentStop: 'agent.stop',
-  agentTerminate: 'agent.terminate',
-  agentRestart: 'agent.restart',
+  agentFork: 'agent.fork',
+  agentCompact: 'agent.compact',
+  agentSelect: 'agent.select',
+  agentContext: 'agent.context',
+
+  // 人对人：humancell 的三个词。
   humanMessage: 'human.message',
+  humanAsk: 'human.ask',
   humanApprove: 'human.approve',
+
+  // 回合与工具的过程事件（kind=event，挂在请求的 parent/correlation 上）。
   activity: Object.freeze({
-    turnStarted: 'activity.turn.started',
-    turnEnded: 'activity.turn.ended',
-    toolStarted: 'activity.tool.started',
-    toolEnded: 'activity.tool.ended',
+    turnStarted: 'agent.turn.started',
+    turnEnded: 'agent.turn.ended',
+    toolStarted: 'agent.tool.started',
+    toolEnded: 'agent.tool.ended',
   }),
-  system: Object.freeze({
-    registered: 'system.actor.registered',
-    deregistered: 'system.actor.deregistered',
-    forked: 'system.actor.forked',
-    ended: 'system.actor.ended',
+
+  // 平台叙事事件（kind=event，visibility=system）。
+  narration: Object.freeze({
+    memberCreated: 'system.member.created',
+    memberDeleted: 'system.member.deleted',
+    channelInbound: 'system.channel.inbound',
   }),
-  sysactor: Object.freeze({
-    introduce: 'channel.introduce_actor',
-    remove: 'channel.remove_actor',
-    restart: 'channel.restart_actor',
+
+  // 频道面：由本频道的 system actor 直接受理。
+  member: Object.freeze({
+    create: 'system.member.create',
+    admit: 'system.member.admit',
+    list: 'system.member.list',
+    get: 'system.member.get',
+    remove: 'system.member.delete',
+    restart: 'system.member.restart',
   }),
-  registrar: Object.freeze({
-    channelCreate: 'channel.create',
-    channelList: 'channel.list',
+  log: Object.freeze({ recent: 'system.log.recent' }),
+
+  // 空间面：同样发给 system actor，由它转交 c0 的 registrar。
+  channel: Object.freeze({
+    create: 'system.channel.create',
+    get: 'system.channel.get',
+    list: 'system.channel.list',
+    set: 'system.channel.set',
+    remove: 'system.channel.delete',
   }),
+  channelTemplate: Object.freeze({
+    create: 'system.channel.template.create',
+    get: 'system.channel.template.get',
+    list: 'system.channel.template.list',
+    set: 'system.channel.template.set',
+    remove: 'system.channel.template.delete',
+  }),
+  actorTemplate: Object.freeze({
+    create: 'system.actor.template.create',
+    get: 'system.actor.template.get',
+    list: 'system.actor.template.list',
+    set: 'system.actor.template.set',
+    remove: 'system.actor.template.delete',
+  }),
+  actorOverlay: Object.freeze({
+    set: 'system.actor.overlay.set',
+    clear: 'system.actor.overlay.delete',
+  }),
+  principal: Object.freeze({
+    create: 'system.principal.create',
+    login: 'system.principal.login',
+    remove: 'system.principal.delete',
+    get: 'system.principal.get',
+    list: 'system.principal.list',
+  }),
+  credential: Object.freeze({ set: 'system.credential.set' }),
+  device: Object.freeze({
+    create: 'system.device.create',
+    attach: 'system.device.attach',
+    detach: 'system.device.detach',
+    list: 'system.device.list',
+    remove: 'system.device.delete',
+  }),
+
   describe: 'actor.describe',
 });
 
-// platform/internal/humancell accepts these exact resolve-frame words.
-export const DECISIONS = Object.freeze({ approve: 'approved', reject: 'rejected' });
+// platform/internal/humancell 只认这两个 resolve 决定词。
+export const DECISIONS = Object.freeze({ approve: 'approve', reject: 'reject' });
 
-// platform/home/opentry.go strictly decodes this field set. Agent/tool use
-// kind+decl_id; an optional principal is legal for agent and forbidden for tool.
-export const INTRODUCE_FIELDS = Object.freeze(['kind', 'decl_id', 'principal']);
-
+// 频道内唯一的不动面：system actor。频道面的词它自己答，空间面的词它转交
+// c0 的 registrar，所以客户端只需要认识这一个收件人。
 export const SYSTEM_ACTOR_ID = 'system';
-export const REGISTRAR_DECL_ID = 'atoll-internal:registrar-seat';
 
-export const isActivity = (type = '') => type.startsWith('activity.');
-export const isSystemNarration = (type = '') => type.startsWith('system.');
+// 由 genesis 铸出、不可由人增删的声明 id（platform/lagoon/contracts.go）。
+export const SYSTEM_DECL_IDS = Object.freeze(['registrar', 'svcactor']);
+
+export const isActivity = (type = '') => type.startsWith('agent.turn.') || type.startsWith('agent.tool.');
+
+// 叙事的判据是 visibility，不是词的前缀：system.* 里既有 visibility=system 的
+// 事件，也有 visibility=public 的治理请求/回复——后者是正经的 turn。
+export const isNarrationEnvelope = (envelope) => envelope?.visibility === 'system';
+
+export const isSystemWord = (type = '') => type.startsWith('system.');

@@ -2,7 +2,7 @@ import { apply, createChannelState } from './fold.js';
 
 // v4 separates the membership-aware, per-channel feed from the former mock
 // that broadcast lobby and every channel into one authenticated connection.
-const FEED_PREFIX = 'atoll.feed.v4.';
+const FEED_PREFIX = 'atoll.feed.v5.';
 const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
 
 export function redactFeedSecrets(value, key = '') {

@@ -8,9 +8,9 @@ const rows = (envelopes) => envelopes.map((envelope, index) => ({ channel_id: 'c
 describe('Phase B request fold', () => {
   it('uses request id as the key and allows multiple requests in one correlation', () => {
     const state = fold(rows([
-      env('req-1', 'request', 'human.text', { correlation_id: 'work' }),
+      env('req-1', 'request', 'agent.ask', { correlation_id: 'work' }),
       env('req-2', 'request', 'agent.steer', { correlation_id: 'work' }),
-      env('done-1', 'response', 'human.text', { parent_id: 'req-1', correlation_id: 'work', payload: { status: 'completed', text: 'one' } }),
+      env('done-1', 'response', 'agent.ask', { parent_id: 'req-1', correlation_id: 'work', payload: { status: 'completed', text: 'one' } }),
       env('done-2', 'response', 'agent.steer', { parent_id: 'req-2', correlation_id: 'work', payload: { status: 'completed', merged: true } }),
     ]));
     expect([...state.turns.keys()]).toEqual(['req-1', 'req-2']);
@@ -21,10 +21,10 @@ describe('Phase B request fold', () => {
 
   it('reconciles response and activity that arrive before their request', () => {
     const state = fold(rows([
-      env('progress', 'response', 'human.text', { parent_id: 'req', payload: { status: 'queued' }, sender: { kind: 'agent', id: 'agent' } }),
-      env('tool', 'event', 'activity.tool.ended', { parent_id: 'req', payload: { tool_call_id: 'tool-1', status: 'completed' }, sender: { kind: 'agent', id: 'agent' } }),
-      env('req', 'request', 'human.text'),
-      env('done', 'response', 'human.text', { parent_id: 'req', payload: { status: 'completed' }, sender: { kind: 'agent', id: 'agent' } }),
+      env('progress', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'queued' }, sender: { kind: 'agent', id: 'agent' } }),
+      env('tool', 'event', 'agent.tool.ended', { parent_id: 'req', payload: { tool_call_id: 'tool-1', status: 'completed' }, sender: { kind: 'agent', id: 'agent' } }),
+      env('req', 'request', 'agent.ask'),
+      env('done', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'completed' }, sender: { kind: 'agent', id: 'agent' } }),
     ]));
     const turn = state.turns.get('req');
     expect(turn.provisional.map((item) => item.status)).toEqual(['queued']);
@@ -35,16 +35,16 @@ describe('Phase B request fold', () => {
 
   it('preserves core and namespaced provisional and never reopens after the first terminal', () => {
     const state = fold(rows([
-      env('req', 'request', 'human.text'),
-      env('received', 'response', 'human.text', { parent_id: 'req', payload: { status: 'received' } }),
-      env('queued', 'response', 'human.text', { parent_id: 'req', payload: { status: 'queued', position: 2 } }),
-      env('processing', 'response', 'human.text', { parent_id: 'req', payload: { status: 'processing', step: 1 } }),
-      env('deferred', 'response', 'human.text', { parent_id: 'req', payload: { status: 'deferred', retry_after_ms: 500 } }),
-      env('unavailable', 'response', 'human.text', { parent_id: 'req', payload: { status: 'unavailable', reason: 'capacity' } }),
-      env('business', 'response', 'human.text', { parent_id: 'req', payload: { status: 'provider.waiting', queue: 2 } }),
-      env('done', 'response', 'human.text', { parent_id: 'req', payload: { status: 'completed', value: { ok: true } } }),
-      env('late', 'response', 'human.text', { parent_id: 'req', payload: { status: 'processing', late: true } }),
-      env('conflict', 'response', 'human.text', { parent_id: 'req', payload: { status: 'failed', reason: 'receiver_internal_error' } }),
+      env('req', 'request', 'agent.ask'),
+      env('received', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'received' } }),
+      env('queued', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'queued', position: 2 } }),
+      env('processing', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'processing', step: 1 } }),
+      env('deferred', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'deferred', retry_after_ms: 500 } }),
+      env('unavailable', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'unavailable', reason: 'capacity' } }),
+      env('business', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'provider.waiting', queue: 2 } }),
+      env('done', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'completed', value: { ok: true } } }),
+      env('late', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'processing', late: true } }),
+      env('conflict', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'failed', reason: 'receiver_internal_error' } }),
     ]));
     const turn = state.turns.get('req');
     expect(turn.provisional.map((item) => [item.status, item.core])).toEqual([

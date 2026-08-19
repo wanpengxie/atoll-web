@@ -10,7 +10,7 @@ function actorLabel(row) {
 
 export function ChannelMembersPanel({ channel, roster, state, principals, declarations, selfId = '', identityPending = false, disabled, onSubmit, onRefresh, onSelectActor }) {
   const [candidateKey, setCandidateKey] = useState('');
-  const [agentPrincipal, setAgentPrincipal] = useState('');
+
   const [confirmAction, setConfirmAction] = useState(null);
   const [error, setError] = useState('');
   const [actorRequest, setActorRequest] = useState(null);
@@ -33,21 +33,22 @@ export function ChannelMembersPanel({ channel, roster, state, principals, declar
     }
   }
 
+  // 加人和加 Actor 是两个词：system.member.admit 收 principal，
+  // system.member.create 收 decl_id。两者的 payload 都是单字段闭集。
   async function introduce(event) {
     event.preventDefault();
     if (!candidate) { setError('请先选择要添加的参与者'); return; }
-    const payload = candidate.kind === 'human'
-      ? { kind: 'human', principal: candidate.row.id }
-      : { kind: candidate.kind, decl_id: candidate.row.id, ...(candidate.kind === 'agent' && agentPrincipal ? { principal: agentPrincipal } : {}) };
-    await run(actorCommand({ channelId: channel.id, type: GOVERNANCE_TYPES.introduce, payload, roster }), (id) => {
-      setActorRequest({ id, type: GOVERNANCE_TYPES.introduce, actorId: '' });
-      setCandidateKey(''); setAgentPrincipal('');
+    const type = candidate.kind === 'human' ? GOVERNANCE_TYPES.admit : GOVERNANCE_TYPES.introduce;
+    const payload = candidate.kind === 'human' ? { principal: candidate.row.id } : { decl_id: candidate.row.id };
+    await run(actorCommand({ channelId: channel.id, type, payload, roster }), (id) => {
+      setActorRequest({ id, type, actorId: '' });
+      setCandidateKey('');
     });
   }
 
   async function performConfirmed() {
     if (!confirmAction) return;
-    const command = actorCommand({ channelId: channel.id, type: confirmAction.type, payload: { instance_id: confirmAction.actor.id }, roster });
+    const command = actorCommand({ channelId: channel.id, type: confirmAction.type, payload: { member: confirmAction.actor.id }, roster });
     await run(command, (id) => { setActorRequest({ id, type: confirmAction.type, actorId: confirmAction.actor.id }); setConfirmAction(null); });
   }
 
@@ -70,9 +71,9 @@ export function ChannelMembersPanel({ channel, roster, state, principals, declar
     </PanelCard>
     <PanelCard as="form" className="governance-form" title="添加参与者" onSubmit={introduce}>
       <p>先选择业务参与者；系统会根据对象类型显示必要配置。标准 Actor 不会出现在候选项中。</p>
-      <label>参与者<SelectMenu ariaLabel="选择参与者" value={candidateKey} placeholder="搜索用户、Agent 或工具" options={candidates} onChange={(value) => { setCandidateKey(value); setAgentPrincipal(''); setError(''); }} /></label>
+      <label>参与者<SelectMenu ariaLabel="选择参与者" value={candidateKey} placeholder="搜索用户、Agent 或工具" options={candidates} onChange={(value) => { setCandidateKey(value); setError(''); }} /></label>
       {candidate && <div className="participant-selection" role="status"><span>{candidate.kind === 'human' ? '用户' : candidate.kind === 'agent' ? 'Agent' : '工具'}</span><strong>{candidate.row.display_name || candidate.row.email || candidate.row.name || candidate.row.id}</strong><small>{candidate.row.id}</small></div>}
-      {candidate?.kind === 'agent' && <label>归属 Principal（可选）<SelectMenu ariaLabel="Agent Principal" value={agentPrincipal} placeholder="使用声明 owner" options={principals.map((item) => item.declared || item).filter((row) => row.status === 'present').map((row) => ({ value: row.id, label: row.display_name || row.email || row.id }))} onChange={setAgentPrincipal} /></label>}
+      {candidate && candidate.kind !== 'human' && <p className="field-hint">Actor 的归属 principal 由声明本身决定；要改归属请编辑声明。</p>}
       <button className="primary-button" type="submit" disabled={disabled || !candidate}>添加到频道</button>
     </PanelCard>
     {actorProgress && <PanelCard className="convergence" aria-label="成员操作进度" title="成员操作进度">

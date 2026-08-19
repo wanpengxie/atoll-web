@@ -1,6 +1,8 @@
 import { correlationOf, FINAL, PROVISIONAL } from '../protocol/envelope.js';
-import { isActivity, isSystemNarration, TYPES } from '../protocol/vocab.js';
+import { isActivity, isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
 
+// subjectgate 只让这两个词走 resolve 帧（platform/internal/humancell）。
+const RESOLVABLE = new Set([TYPES.humanAsk, TYPES.humanApprove]);
 const BUSINESS_PROVISIONAL = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*$/;
 const timelineCache = new WeakMap();
 
@@ -179,7 +181,7 @@ export function apply(state, row, selfId = '') {
   }
   state.rows.set(seq, envelope);
 
-  if (isSystemNarration(envelope.type) || envelope.visibility === 'system') {
+  if (isNarrationEnvelope(envelope)) {
     state.narration.push({ seq, envelope });
     return state;
   }
@@ -195,7 +197,7 @@ export function apply(state, row, selfId = '') {
     const correlationRequests = state.correlations.get(turn.correlationId) || [];
     correlationRequests.push(envelope.id);
     state.correlations.set(turn.correlationId, correlationRequests);
-    if (envelope.type === TYPES.humanApprove && selfId && envelope.audience?.includes(selfId)) {
+    if (RESOLVABLE.has(envelope.type) && selfId && envelope.audience?.includes(selfId)) {
       state.approvals.set(envelope.id, envelope);
     }
     drainRequestMatches(state, turn);
@@ -236,7 +238,7 @@ export function reconcileApprovals(state, selfId) {
   for (const turn of state.turns.values()) {
     const request = turn.request;
     if (
-      request.type === TYPES.humanApprove
+      RESOLVABLE.has(request.type)
       && request.audience?.includes(selfId)
       && !turn.terminal
     ) state.approvals.set(request.id, request);

@@ -24,6 +24,9 @@ const ROOT_EMAIL = 'root@atoll.local';
 const ROOT_ACTOR_ID = 'root';
 const STEWARD_ACTOR_ID = 'steward';
 const SYSTEM_ACTOR_ID = 'system';
+// agent 基座的控制词闭集（drivers/agents/base/base.go）。agent.ask 不在其中——
+// 它是“交办一件活”，不是控制。
+const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.queue', 'agent.stop', 'agent.compact', 'agent.select', 'agent.context', 'agent.fork'];
 
 const now = () => Date.now();
 
@@ -126,20 +129,22 @@ function envelope({
   };
 }
 
-function mockDescribe(actorId, { taskCapability = false } = {}) {
+// actor.describe 的回答形状 = lib/introspect.Describe：
+// {class, interfaces, capabilities, words}，words 的每一项是 WordSpec。
+function mockDescribe(_actorId, { taskCapability = false } = {}) {
   return {
-    actor_id: actorId,
-    description: 'Mock 协作 Agent',
-    skill_doc: '可接收文本任务、结构化订单，并支持标准 Agent 控制。所有控制结果以账本终态为准。',
-    types: {
-      'human.text': {
-        description: '执行普通文本任务', allowed_kinds: ['request'], max_pending_ms: 120_000,
-        payload_fields: [{ name: 'text', required: true, description: '任务内容', example: '整理本周进展' }],
-        error_codes: [{ code: 'provider_timeout', description: '服务端处理超时', recovery: '检查账本后使用原任务重新提交' }],
+    class: 'codex',
+    interfaces: ['actor', 'agent'],
+    capabilities: { steer: true, interrupt: true, resume: true },
+    words: {
+      'agent.ask': {
+        description: '执行普通文本任务',
+        input_schema: { type: 'object', required: ['text'], additionalProperties: false, properties: { text: { type: 'string', description: '任务内容' } } },
+        error_codes: ['provider_timeout'],
       },
       'mock.order.create': {
-        description: '创建一个 Mock 订单', allowed_kinds: ['request'], max_pending_ms: 5_000,
-        payload_example: { name: '演示订单', count: 1, priority: 'normal', notify: false },
+        description: '创建一个 Mock 订单',
+        examples: [{ name: '演示订单', count: 1, priority: 'normal', notify: false }],
         input_schema: {
           type: 'object', required: ['name', 'count'], additionalProperties: false,
           properties: {
@@ -150,11 +155,10 @@ function mockDescribe(actorId, { taskCapability = false } = {}) {
           },
         },
         output_schema: { type: 'object', properties: { order_id: { type: 'string' }, accepted: { type: 'boolean' } } },
-        error_codes: [{ code: 'payload_invalid', description: '订单参数无效', recovery: '检查必填字段和数量' }],
-        notes: '这是用于浏览器验收的结构化能力。',
+        error_codes: ['payload_invalid'],
       },
       ...(taskCapability ? { 'task.create': {
-        description: '创建可重放的正式任务', allowed_kinds: ['request'], max_pending_ms: 10_000,
+        description: '创建可重放的正式任务',
         input_schema: {
           type: 'object', required: ['title'], additionalProperties: false,
           properties: {
@@ -166,12 +170,14 @@ function mockDescribe(actorId, { taskCapability = false } = {}) {
         },
         output_schema: { type: 'object', required: ['task_id', 'status'], properties: { task_id: { type: 'string' }, status: { type: 'string' }, title: { type: 'string' } } },
       } } : {}),
-      'agent.steer': { description: '调整当前回合方向', allowed_kinds: ['request'], payload_fields: [{ name: 'text', required: true, description: '新方向' }, { name: 'expected_turn_id', description: '当前 turn_id，用于并发保护' }], error_codes: [{ code: 'cas_mismatch', description: '目标回合已经变化', recovery: '刷新账本后重新选择当前任务' }] },
-      'agent.interrupt': { description: '打断当前回合', allowed_kinds: ['request'] },
-      'agent.queue': { description: '排队一个新任务', allowed_kinds: ['request'], payload_fields: [{ name: 'text', required: true, description: '排队任务内容' }] },
-      'agent.stop': { description: '停止当前工作并清空队列', allowed_kinds: ['request'] },
-      'agent.terminate': { description: '终止 Agent 运行时', allowed_kinds: ['request'] },
-      'agent.restart': { description: '重启 Agent 运行时', allowed_kinds: ['request'] },
+      'agent.steer': { description: '调整当前回合方向', error_codes: ['cas_mismatch'] },
+      'agent.interrupt': { description: '打断当前回合' },
+      'agent.queue': { description: '排队一个新任务' },
+      'agent.stop': { description: '停止当前工作并清空队列' },
+      'agent.compact': { description: '压缩上下文' },
+      'agent.select': { description: '切换模型与算力' },
+      'agent.context': { description: '查看上下文用量' },
+      'agent.fork': { description: '分叉出新 Agent' },
     },
   };
 }
@@ -182,7 +188,7 @@ function seededHistory(channelId, behavior = {}) {
   const isLobby = channelId === 'c0.lobby';
   const selfActorId = channelId === 'c0' || isLobby ? ROOT_ACTOR_ID : `root-${channelId.split('.').at(-1)}`;
   const root = { kind: 'human', id: selfActorId };
-  const responderId = isLobby ? 'coreactor' : channelId === 'c0' ? STEWARD_ACTOR_ID : `${channelId.split('.').at(-1)}-agent`;
+  const responderId = isLobby ? 'svcactor' : channelId === 'c0' ? STEWARD_ACTOR_ID : `${channelId.split('.').at(-1)}-agent`;
   const responder = { kind: isLobby ? 'tool' : 'agent', id: responderId };
   const system = { kind: 'system', id: SYSTEM_ACTOR_ID };
   const base = 1_723_974_400_000;
@@ -198,25 +204,25 @@ function seededHistory(channelId, behavior = {}) {
     const demoAttachments = behavior.demo_attachments && channelId === 'c0.project' && index === 3
       ? [{ resource_id: 'file:seed:c0.project:3', name: '项目说明.md', media_type: 'text/markdown', size: 47 }]
       : [];
-    add(envelope({ id: requestId, channelId, sender: root, kind: 'request', type: 'human.text', payload: { text: requestText, ...(demoAttachments.length ? { attachments: demoAttachments } : {}) }, audience: [responderId], ts: at }));
-    add(envelope({ id: `${requestId}-queued`, channelId, sender: responder, kind: 'response', type: 'human.text', payload: { status: 'queued', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 1 }));
-    add(envelope({ id: `${requestId}-processing`, channelId, sender: responder, kind: 'response', type: 'human.text', payload: { status: 'processing', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 2 }));
-    add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'event', type: 'activity.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
-    add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'event', type: 'activity.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
-    add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'event', type: 'activity.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'completed' }, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
-    add(envelope({ id: `${requestId}-turn-ended`, channelId, sender: responder, kind: 'event', type: 'activity.turn.ended', payload: { turn_index: index, status: 'ok' }, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
-    add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'human.text', payload: { status: 'completed', turn_index: index, text: responseText }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 7 }));
+    add(envelope({ id: requestId, channelId, sender: root, kind: 'request', type: 'agent.ask', payload: { text: requestText, ...(demoAttachments.length ? { attachments: demoAttachments } : {}) }, audience: [responderId], ts: at }));
+    add(envelope({ id: `${requestId}-queued`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'queued', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 1 }));
+    add(envelope({ id: `${requestId}-processing`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 2 }));
+    add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'event', type: 'agent.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
+    add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'event', type: 'agent.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
+    add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'completed' }, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
+    add(envelope({ id: `${requestId}-turn-ended`, channelId, sender: responder, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: index, status: 'ok' }, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
+    add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'completed', turn_index: index, text: responseText }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 7 }));
   }
 
-  const registeredActors = isLobby ? ['coreactor', 'svcactor'] : ['steward', 'svcactor'];
+  const registeredActors = isLobby ? ['svcactor'] : ['steward', 'svcactor'];
   for (const [index, actorId] of registeredActors.entries()) {
     add(envelope({
       id: `${channelId}-registered-${actorId}`,
       channelId,
       sender: system,
       kind: 'event',
-      type: 'system.actor.registered',
-      payload: { actor_id: actorId, actor_kind: actorId === 'steward' ? 'agent' : 'tool', registered_at: base + 50_000 + index },
+      type: 'system.member.created',
+      payload: { member: actorId, decl_id: actorId === 'steward' ? 'mock:steward' : 'svcactor', by: { caller: { channel: channelId, actor: selfActorId } } },
       visibility: 'system',
       ts: base + 50_000 + index,
     }));
@@ -280,7 +286,7 @@ function seededHistory(channelId, behavior = {}) {
       sender: responder,
       kind: 'response',
       type: 'actor.describe',
-      payload: { status: 'completed', value: mockDescribe(STEWARD_ACTOR_ID, { taskCapability: behavior.task_capability }) },
+      payload: { status: 'completed', ...mockDescribe(STEWARD_ACTOR_ID, { taskCapability: behavior.task_capability }) },
       parentId: requestId,
       correlationId: requestId,
       audience: [selfActorId],
@@ -436,8 +442,10 @@ export function createMockServer({
       && value.kind === 'request'
       && value.sender?.kind === 'human'
       && value.audience?.includes(actorId)
-      && !value.type.startsWith('agent.')
+      // 可被控制的是“正在办的活”本身；控制词与自省词不算活。
+      && !AGENT_CONTROL_WORDS.includes(value.type)
       && value.type !== 'actor.describe'
+      && !value.type.startsWith('system.')
       && !hasTerminal(channelId, value.id)
     )) || null;
   }
@@ -472,8 +480,11 @@ export function createMockServer({
       sendError(socket, { ref, frame: 'submit', code: 'bad_payload', detail: 'kind must be request or event and msg_type must be non-empty' });
       return;
     }
-    if (payload.msg_type.startsWith('system.')) {
-      sendError(socket, { ref, frame: 'submit', code: 'forbidden', detail: 'system.* types are reserved to the channel system actor' });
+    // 保留命名空间的权威只落在 system.* 的“事件”上：只有频道 system actor 能发。
+    // system.* 的“请求”任何成员都能发——这正是治理面的走法。
+    // （runtime/harness/step_type_registered.go）
+    if (payload.msg_type.startsWith('system.') && kind === 'event') {
+      sendError(socket, { ref, frame: 'submit', code: 'forbidden', detail: 'system events may only be emitted by the channel system actor' });
       return;
     }
     const audience = payload.audience || [];
@@ -553,164 +564,221 @@ export function createMockServer({
       payload: { status: 'failed', reason: code, error_code: code, detail },
     })));
 
+    // sys.Reply 把回复对象平铺到 status 旁边；registrar 的回复本身就是 {value}。
+    const completeFlat = (fields) => later(25, () => append(channelId, envelope({
+      ...responseBase,
+      id: `${messageId}-terminal`,
+      kind: 'response',
+      type: payload.msg_type,
+      payload: { status: 'completed', ...fields },
+    })));
+
     if (payload.msg_type === 'actor.describe' && target) {
-      const describe = target.kind === 'agent' ? mockDescribe(target.id, { taskCapability: domain.behavior.task_capability }) : { actor_id: target.id, description: target.description || '', types: {} };
+      const describe = target.kind === 'agent'
+        ? mockDescribe(target.id, { taskCapability: domain.behavior.task_capability })
+        : { class: target.kind || 'tool', interfaces: ['actor'], capabilities: {}, words: {} };
       const selector = payload.payload?.type;
       if (selector) {
-        const meta = describe.types?.[selector];
+        const meta = describe.words?.[selector];
         if (!meta) fail('type_unsupported', `actor has no type ${selector}`);
-        else complete({ actor_id: target.id, type: selector, ...meta });
-      } else complete(describe);
+        else completeFlat({ ...describe, words: { [selector]: meta } });
+      } else completeFlat(describe);
       return;
     }
 
-    if (target?.id === SYSTEM_ACTOR_ID && ['channel.introduce_actor', 'channel.remove_actor', 'channel.restart_actor'].includes(payload.msg_type)) {
+    // 频道面与空间面都只有一个收件人：本频道的 system actor。
+    if (target?.id === SYSTEM_ACTOR_ID && String(payload.msg_type).startsWith('system.')) {
       if (domain.behavior.governance_denied) { fail('unauthorized_sender', 'sender is not an active channel member'); return; }
+      const body = payload.payload || {};
+      const narrate = (type, value) => append(channelId, envelope({
+        id: domain.nextId(`${channelId}-system-event`),
+        channelId,
+        sender: { kind: 'system', id: SYSTEM_ACTOR_ID },
+        kind: 'event',
+        type,
+        payload: value,
+        visibility: 'system',
+        ts: domain.now(),
+      }));
+      const channelReply = (value) => ({
+        ...value,
+        owner_principal: ROOT_ID,
+        serving: value.open ? 1 : 0,
+        profile: { serving: value.open ? 1 : 0, endpoints: {} },
+      });
       try {
-        let value;
-        let eventType;
-        if (payload.msg_type === 'channel.introduce_actor') {
-          assertClosedPayload(payload.payload || {}, ['kind', 'decl_id', 'principal']);
-          value = domain.introduceActor(channelId, payload.payload || {});
-          eventType = 'system.actor.registered';
-        } else if (payload.msg_type === 'channel.remove_actor') {
-          assertClosedPayload(payload.payload || {}, ['instance_id', 'decl_id']);
-          value = domain.removeActor(channelId, payload.payload?.instance_id);
-          eventType = 'system.actor.deregistered';
-        } else {
-          assertClosedPayload(payload.payload || {}, ['instance_id']);
-          value = domain.restartActor(channelId, payload.payload?.instance_id);
-          eventType = 'system.actor.ended';
-        }
-        append(channelId, envelope({
-          id: domain.nextId(`${channelId}-system-event`),
-          channelId,
-          sender: { kind: 'system', id: SYSTEM_ACTOR_ID },
-          kind: 'event',
-          type: eventType,
-          payload: value,
-          visibility: 'system',
-          ts: domain.now(),
-        }));
-        complete(value);
-      } catch (error) {
-        fail(error.code || 'bad_payload', error.message);
-      }
-      return;
-    }
+        switch (payload.msg_type) {
+          // ---- 频道面（system actor 自己答）----
+          case 'system.member.list': {
+            assertClosedPayload(body, []);
+            const actors = (rosters.get(channelId) || [])
+              .map((entry) => entry.declared)
+              .filter((row) => row.id !== SYSTEM_ACTOR_ID)
+              .map((row) => ({ id: row.id, kind: row.kind, ...(row.name ? { name: row.name } : {}), present: true }));
+            completeFlat({ actors });
+            return;
+          }
+          case 'system.member.get': {
+            assertClosedPayload(body, ['member']);
+            const row = (rosters.get(channelId) || []).map((entry) => entry.declared).find((entry) => entry.id === body.member);
+            if (!row) throw new TypeError('member does not exist');
+            completeFlat({ actor_id: row.id, member: true, present: true });
+            return;
+          }
+          case 'system.member.create': {
+            assertClosedPayload(body, ['decl_id']);
+            const value = domain.createMember(channelId, body.decl_id);
+            narrate('system.member.created', { member: value.member, decl_id: body.decl_id });
+            completeFlat(value);
+            return;
+          }
+          case 'system.member.admit': {
+            assertClosedPayload(body, ['principal']);
+            const value = domain.admitMember(channelId, body.principal);
+            narrate('system.member.created', { member: value.member, principal: body.principal });
+            completeFlat(value);
+            return;
+          }
+          case 'system.member.delete': {
+            assertClosedPayload(body, ['member']);
+            const value = domain.removeActor(channelId, body.member);
+            narrate('system.member.deleted', { member: body.member, reason: 'removed' });
+            completeFlat(value);
+            return;
+          }
+          case 'system.member.restart': {
+            assertClosedPayload(body, ['member']);
+            completeFlat(domain.restartActor(channelId, body.member));
+            return;
+          }
+          case 'system.log.recent': {
+            assertClosedPayload(body, ['limit']);
+            const limit = Math.min(Math.max(Number(body.limit) || 5, 1), 5);
+            const rows = (domain.histories.get(channelId) || []).slice(-limit);
+            completeFlat({ messages: rows });
+            return;
+          }
 
-    if (target?.decl_id === 'coreactor' || target?.id === 'coreactor') {
-      if (domain.behavior.governance_denied) { fail('permission_denied', 'channel owner or core required'); return; }
-      try {
-        if (payload.msg_type === 'actor.overlay.set' || payload.msg_type === 'actor.overlay.clear') {
-          assertClosedPayload(payload.payload || {}, payload.msg_type.endsWith('.set') ? ['decl_id', 'channel_id', 'config'] : ['decl_id', 'channel_id']);
-          if (payload.payload?.channel_id !== channelId) throw new TypeError('overlay must target the source channel');
-          complete(payload.msg_type.endsWith('.set') ? domain.setOverlay(channelId, payload.payload.decl_id, payload.payload.config) : domain.clearOverlay(channelId, payload.payload.decl_id));
-          return;
-        }
-        if (payload.msg_type === 'channel.profile.set') {
-          assertClosedPayload(payload.payload || {}, ['channel_id', 'description', 'serving', 'endpoints']);
-          if (payload.payload?.channel_id !== channelId) throw new TypeError('profile must target the source channel');
-          complete(domain.setProfile(channelId, payload.payload));
-          return;
-        }
-        if (payload.msg_type === 'channel.create') {
-          assertClosedPayload(payload.payload || {}, ['name', 'template', 'overrides']);
-          complete(domain.createChannel(channelId, payload.payload?.name, principal), { word: 'channel.create', source: { channel_id: channelId, request_id: messageId } });
-          return;
-        }
-        if (payload.msg_type === 'channel.list') {
-          complete([...domain.channels.values()].filter((channel) => !channel.internal).map((channel) => ({ ...channel })), { word: 'channel.list', source: { channel_id: channelId, request_id: messageId } });
-          return;
-        }
-        if (payload.msg_type === 'channel.get' || payload.msg_type === 'channel.describe') {
-          assertClosedPayload(payload.payload || {}, payload.msg_type === 'channel.describe' ? ['channel_id', 'channel'] : ['channel_id']);
-          const value = domain.channel(payload.payload?.channel_id || payload.payload?.channel);
-          if (!value) throw new TypeError('channel does not exist');
-          complete({ ...value, owner_principal: ROOT_ID, serving: value.open ? 1 : 0, profile: { serving: value.open ? 1 : 0, endpoints: {} } }, { word: payload.msg_type, source: { channel_id: channelId, request_id: messageId } });
-          return;
-        }
-        if (payload.msg_type === 'channel.retire') {
-          assertClosedPayload(payload.payload || {}, ['channel_id']);
-          const targetChannelId = payload.payload?.channel_id;
-          if (targetChannelId === 'c0') { fail('reserved', 'c0 cannot be retired'); return; }
-          if (!domain.channel(targetChannelId) || domain.channel(targetChannelId).status !== 'present') throw new TypeError('channel does not exist or is already retired');
-          const activeChild = [...domain.channels.values()].some((row) => row.parent_id === targetChannelId && row.status === 'present');
-          if (activeChild) { fail('conflict_exists', 'channel has active child channels'); return; }
-          complete({ ...domain.channel(targetChannelId), status: 'retired', removed: { core: 'ok', parent: 'ok', members: [] } }, { word: 'channel.retire', source: { channel_id: channelId, request_id: messageId } });
-          later(80, () => domain.retireChannel(targetChannelId));
-          return;
+          // ---- 空间面（system actor 转交 registrar）----
+          case 'system.channel.create': {
+            assertClosedPayload(body, ['name', 'recipe']);
+            const created = domain.createChannel(channelId, body.name, principal);
+            complete({ channel_id: created.id });
+            return;
+          }
+          case 'system.channel.list': {
+            assertClosedPayload(body, ['parent_id']);
+            complete([...domain.channels.values()]
+              .filter((channel) => !channel.internal && (!body.parent_id || channel.parent_id === body.parent_id))
+              .map((channel) => ({ ...channel })));
+            return;
+          }
+          case 'system.channel.get': {
+            assertClosedPayload(body, ['channel_id']);
+            const value = domain.channel(body.channel_id);
+            if (!value) throw new TypeError('channel does not exist');
+            complete(channelReply(value));
+            return;
+          }
+          case 'system.channel.set': {
+            assertClosedPayload(body, ['channel_id', 'description', 'serving']);
+            if (body.channel_id !== channelId) throw new TypeError('profile must target the source channel');
+            complete(domain.setProfile(channelId, body));
+            return;
+          }
+          case 'system.channel.delete': {
+            assertClosedPayload(body, ['channel_id']);
+            const targetChannelId = body.channel_id;
+            if (targetChannelId === 'c0') { fail('reserved', 'c0 cannot be retired'); return; }
+            const row = domain.channel(targetChannelId);
+            if (!row || row.status !== 'present') throw new TypeError('channel does not exist or is already retired');
+            const activeChild = [...domain.channels.values()].some((item) => item.parent_id === targetChannelId && item.status === 'present');
+            if (activeChild) { fail('conflict_exists', 'channel has active child channels'); return; }
+            complete({ ...row, status: 'retired' });
+            later(80, () => domain.retireChannel(targetChannelId));
+            return;
+          }
+          case 'system.actor.overlay.set': {
+            assertClosedPayload(body, ['decl_id', 'channel_id', 'config']);
+            if (body.channel_id !== channelId) throw new TypeError('overlay must target the source channel');
+            complete(domain.setOverlay(channelId, body.decl_id, body.config));
+            return;
+          }
+          case 'system.actor.overlay.delete': {
+            assertClosedPayload(body, ['decl_id', 'channel_id']);
+            if (body.channel_id !== channelId) throw new TypeError('overlay must target the source channel');
+            complete(domain.clearOverlay(channelId, body.decl_id));
+            return;
+          }
+          case 'system.actor.template.list':
+            assertClosedPayload(body, []);
+            complete([...domain.declarations.values()].filter((row) => row.status === 'present').map((row) => ({ ...row })));
+            return;
+          case 'system.actor.template.get': {
+            assertClosedPayload(body, ['id']);
+            const row = domain.declarations.get(body.id);
+            if (!row || row.status !== 'present') throw new TypeError('declaration does not exist');
+            complete({ ...row });
+            return;
+          }
+          case 'system.actor.template.create':
+            assertClosedPayload(body, ['id', 'name', 'description', 'class', 'config', 'visibility', 'singleton']);
+            complete(domain.registerActorTemplate(body));
+            return;
+          case 'system.actor.template.set':
+            assertClosedPayload(body, ['id', 'name', 'description', 'class', 'config', 'visibility', 'singleton']);
+            complete(domain.editActorTemplate(body));
+            return;
+          case 'system.actor.template.delete':
+            assertClosedPayload(body, ['id']);
+            complete(domain.revokeActorTemplate(body.id));
+            return;
+          case 'system.channel.template.list':
+            assertClosedPayload(body, []);
+            complete([...domain.channelTemplates.values()].filter((row) => row.status === 'present').map((row) => ({ ...row })));
+            return;
+          case 'system.channel.template.get': {
+            assertClosedPayload(body, ['id']);
+            const row = domain.channelTemplates.get(body.id);
+            if (!row || row.status !== 'present') throw new TypeError('channel template does not exist');
+            complete({ ...row });
+            return;
+          }
+          case 'system.channel.template.create':
+            assertClosedPayload(body, ['id', 'name', 'description', 'visibility', 'body']);
+            complete(domain.registerChannelTemplate(body));
+            return;
+          case 'system.channel.template.set':
+            assertClosedPayload(body, ['id', 'name', 'description', 'visibility', 'body']);
+            complete(domain.editChannelTemplate(body));
+            return;
+          case 'system.channel.template.delete':
+            assertClosedPayload(body, ['id']);
+            complete(domain.revokeChannelTemplate(body.id));
+            return;
+          case 'system.device.create':
+            assertClosedPayload(body, ['name']);
+            complete(domain.mintDevice(body.name));
+            return;
+          case 'system.device.delete':
+            assertClosedPayload(body, ['device_id']);
+            complete(domain.retireDevice(body.device_id));
+            return;
+          case 'system.device.attach':
+          case 'system.device.detach':
+            assertClosedPayload(body, ['channel_id', 'device_id']);
+            complete(domain.bindDevice(body.channel_id, body.device_id, payload.msg_type.endsWith('.attach')));
+            return;
+          case 'system.device.list':
+            assertClosedPayload(body, []);
+            complete([...domain.devices.values()].filter((row) => row.status === 'present').map(({ key: _key, ...row }) => row));
+            return;
+          default:
+            fail('type_unsupported', `system actor does not support ${payload.msg_type}`);
+            return;
         }
       } catch (error) {
-        fail('invalid_args', error.message);
-        return;
-      }
-    }
-
-    if (target?.id === 'registrar') {
-      if (domain.behavior.governance_denied) { fail('permission_denied', 'channel owner or core required'); return; }
-      try {
-        if (payload.msg_type.startsWith('actor.template.')) {
-          const action = payload.msg_type.slice('actor.template.'.length);
-          if (action === 'list') { assertClosedPayload(payload.payload || {}, []); complete([...domain.declarations.values()].filter((row) => row.status === 'present').map((row) => ({ ...row }))); return; }
-          if (action === 'register') { assertClosedPayload(payload.payload || {}, ['id', 'name', 'description', 'class', 'config', 'visibility']); complete(domain.registerActorTemplate(payload.payload)); return; }
-          if (action === 'edit') { assertClosedPayload(payload.payload || {}, ['id', 'name', 'description', 'class', 'config', 'visibility']); complete(domain.editActorTemplate(payload.payload)); return; }
-          if (action === 'revoke') { assertClosedPayload(payload.payload || {}, ['id']); complete(domain.revokeActorTemplate(payload.payload?.id)); return; }
-        }
-        if (payload.msg_type.startsWith('channel.template.')) {
-          const action = payload.msg_type.slice('channel.template.'.length);
-          if (action === 'list') { assertClosedPayload(payload.payload || {}, []); complete([...domain.channelTemplates.values()].filter((row) => row.status === 'present').map((row) => ({ ...row }))); return; }
-          if (action === 'get') { assertClosedPayload(payload.payload || {}, ['id']); const row = domain.channelTemplates.get(payload.payload?.id); if (!row || row.status !== 'present') throw new TypeError('channel template does not exist'); complete({ ...row }); return; }
-          if (action === 'register') { assertClosedPayload(payload.payload || {}, ['id', 'name', 'description', 'visibility', 'body']); complete(domain.registerChannelTemplate(payload.payload)); return; }
-          if (action === 'edit') { assertClosedPayload(payload.payload || {}, ['id', 'name', 'description', 'visibility', 'body']); complete(domain.editChannelTemplate(payload.payload)); return; }
-          if (action === 'revoke') { assertClosedPayload(payload.payload || {}, ['id']); complete(domain.revokeChannelTemplate(payload.payload?.id)); return; }
-        }
-        if (payload.msg_type === 'actor.overlay.set' || payload.msg_type === 'actor.overlay.clear') {
-          assertClosedPayload(payload.payload || {}, payload.msg_type.endsWith('.set') ? ['decl_id', 'channel_id', 'config'] : ['decl_id', 'channel_id']);
-          if (payload.payload?.channel_id !== channelId) throw new TypeError('overlay must target the source channel');
-          complete(payload.msg_type.endsWith('.set') ? domain.setOverlay(channelId, payload.payload.decl_id, payload.payload.config) : domain.clearOverlay(channelId, payload.payload.decl_id));
-          return;
-        }
-        if (payload.msg_type === 'channel.profile.set') {
-          assertClosedPayload(payload.payload || {}, ['channel_id', 'description', 'serving', 'endpoints']);
-          if (payload.payload?.channel_id !== channelId) throw new TypeError('profile must target the source channel');
-          complete(domain.setProfile(channelId, payload.payload)); return;
-        }
-        if (payload.msg_type.startsWith('device.')) {
-          const action = payload.msg_type.slice('device.'.length);
-          if (action === 'mint') { assertClosedPayload(payload.payload || {}, ['name']); complete(domain.mintDevice(payload.payload?.name)); return; }
-          if (action === 'claim') { assertClosedPayload(payload.payload || {}, ['device_id', 'name']); complete(domain.mintDevice(payload.payload?.name, payload.payload?.device_id)); return; }
-          if (action === 'retire') { assertClosedPayload(payload.payload || {}, ['device_id']); complete(domain.retireDevice(payload.payload?.device_id)); return; }
-          if (action === 'attach' || action === 'detach') { assertClosedPayload(payload.payload || {}, ['channel_id', 'device_id']); complete(domain.bindDevice(payload.payload?.channel_id, payload.payload?.device_id, action === 'attach')); return; }
-        }
-        if (payload.msg_type === 'channel.list') {
-          complete([...domain.channels.values()].filter((channel) => !channel.internal).map((channel) => ({ ...channel })), { word: 'channel.list', source: { channel_id: channelId, request_id: messageId } });
-          return;
-        }
-        if (payload.msg_type === 'channel.get' || payload.msg_type === 'channel.describe') {
-          assertClosedPayload(payload.payload || {}, payload.msg_type === 'channel.describe' ? ['channel_id', 'channel'] : ['channel_id']);
-          const value = domain.channel(payload.payload?.channel_id || payload.payload?.channel);
-          if (!value) throw new TypeError('channel does not exist');
-          complete({ ...value, owner_principal: ROOT_ID, serving: value.open ? 1 : 0, profile: { serving: value.open ? 1 : 0, endpoints: {} } }, { word: payload.msg_type, source: { channel_id: channelId, request_id: messageId } });
-          return;
-        }
-        if (payload.msg_type === 'channel.create') {
-          assertClosedPayload(payload.payload || {}, ['name', 'template', 'overrides']);
-          complete(domain.createChannel('c0', payload.payload?.name, principal));
-          return;
-        }
-        if (payload.msg_type === 'channel.retire') {
-          assertClosedPayload(payload.payload || {}, ['channel_id']);
-          const targetChannelId = payload.payload?.channel_id;
-          if (targetChannelId === 'c0') { fail('reserved', 'c0 cannot be retired'); return; }
-          const activeChild = [...domain.channels.values()].some((row) => row.parent_id === targetChannelId && row.status === 'present');
-          if (activeChild) { fail('conflict_exists', 'channel has active child channels'); return; }
-          if (!domain.retireChannel(targetChannelId)) throw new TypeError('channel does not exist or is already retired');
-          complete({ ...domain.channel(targetChannelId), status: 'retired', removed: { core: 'ok', parent: 'ok', members: [] } });
-          return;
-        }
-      } catch (error) {
-        fail('invalid_args', error.message);
+        fail(error.code || 'invalid_args', error.message);
         return;
       }
     }
@@ -736,7 +804,7 @@ export function createMockServer({
       return;
     }
 
-    if (['agent.steer', 'agent.interrupt', 'agent.queue', 'agent.stop', 'agent.terminate', 'agent.restart'].includes(payload.msg_type)) {
+    if (AGENT_CONTROL_WORDS.includes(payload.msg_type)) {
       const active = activeAgentTask(channelId, respondingAgent.id, messageId);
       const turnId = active ? `turn-${active.id}` : '';
       if (payload.msg_type === 'agent.steer') {
@@ -763,7 +831,7 @@ export function createMockServer({
         later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { queued: true, text } } })));
         return;
       }
-      const key = { 'agent.stop': 'stopped', 'agent.terminate': 'terminated', 'agent.restart': 'restarted' }[payload.msg_type];
+      const key = { 'agent.stop': 'stopped', 'agent.compact': 'compacted', 'agent.select': 'selected', 'agent.context': 'context', 'agent.fork': 'forked' }[payload.msg_type];
       later(30, () => {
         closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'cancelled', error_code: 'cancelled', detail: payload.msg_type });
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { [key]: true } } }));
@@ -774,8 +842,8 @@ export function createMockServer({
     later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', turn_index: 1 } })));
     const mode = domain.behavior.message || '';
     later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: mode === 'business-provisional' ? { status: 'provider.waiting', queue: 'external' } : { status: 'processing', turn_index: 1, ...(mode === 'long-running' ? { turn_id: `turn-${messageId}` } : {}) } })));
-    later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'event', type: 'activity.tool.started', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'started' } })));
-    later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'event', type: 'activity.tool.ended', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'completed' } })));
+    later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'started' } })));
+    later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'completed' } })));
     if (mode === 'long-running') return;
     const terminalDelay = mode === 'business-provisional' ? 500 : 100;
     later(terminalDelay, () => append(channelId, envelope({
@@ -813,17 +881,18 @@ export function createMockServer({
       sendError(socket, { ref, frame: 'resolve', code: 'channel_not_found', detail: 'channel does not exist' });
       return;
     }
-    if (!['approved', 'rejected'].includes(payload.decision)) {
-      sendError(socket, { ref, frame: 'resolve', code: 'invalid_decision', detail: 'decision must be approved or rejected' });
-      return;
-    }
-    if (payload.payload != null && !isObject(payload.payload)) {
-      sendError(socket, { ref, frame: 'resolve', code: 'bad_payload', detail: 'resolve payload must be a JSON object' });
-      return;
-    }
     const request = history.find((row) => row.envelope.id === payload.req_id)?.envelope;
-    if (!request || request.kind !== 'request' || request.type !== 'human.approve') {
-      sendError(socket, { ref, frame: 'resolve', code: 'request_not_found', detail: 'no such approval request' });
+    if (!request || request.kind !== 'request' || !['human.ask', 'human.approve'].includes(request.type)) {
+      sendError(socket, { ref, frame: 'resolve', code: 'request_not_found', detail: 'no such resolvable request' });
+      return;
+    }
+    // 字段闭集：human.ask 只收 text；human.approve 只收 decision + 可选 note。
+    if (request.type === 'human.ask' && (typeof payload.text !== 'string' || payload.decision || payload.note != null)) {
+      sendError(socket, { ref, frame: 'resolve', code: 'bad_payload', detail: 'human.ask resolve requires only text' });
+      return;
+    }
+    if (request.type === 'human.approve' && (payload.text != null || !['approve', 'reject'].includes(payload.decision))) {
+      sendError(socket, { ref, frame: 'resolve', code: 'invalid_decision', detail: 'human.approve decision must be approve or reject' });
       return;
     }
     const principal = socketPrincipals.get(socket) || '';
@@ -844,7 +913,9 @@ export function createMockServer({
       sender: { kind: 'human', id: selfActorId },
       kind: 'response',
       type: request.type,
-      payload: { status: 'completed', ...(payload.payload || {}), decision: payload.decision },
+      payload: request.type === 'human.ask'
+        ? { status: 'completed', text: payload.text }
+        : { status: 'completed', decision: payload.decision, ...(payload.note != null ? { note: payload.note } : {}) },
       parentId: payload.req_id,
       correlationId: request.correlation_id || request.id,
       audience: [request.sender.id],
@@ -1199,8 +1270,8 @@ export function createMockServer({
         channelId: 'c0',
         sender: { kind: 'system', id: SYSTEM_ACTOR_ID },
         kind: 'event',
-        type: 'system.actor.registered',
-        payload: { actor_id: actorId, actor_kind: 'agent', registered_at: now() },
+        type: 'system.member.created',
+        payload: { member: actorId, decl_id: `mock:${actorId}` },
         visibility: 'system',
       }));
       json(response, 200, { actor_id: actorId });

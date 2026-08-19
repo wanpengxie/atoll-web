@@ -7,7 +7,7 @@ describe('F3 turn presentation', () => {
       status: 'processing',
       latestStatus: 'processing',
       provisional: [{ status: 'processing', envelope: { payload: { detail: '正在整理报告' } } }],
-      activity: [{ envelope: { type: 'activity.tool.started' } }, { envelope: { type: 'activity.tool.ended' } }],
+      activity: [{ envelope: { type: 'agent.tool.started' } }, { envelope: { type: 'agent.tool.ended' } }],
       anomalies: [{ code: 'terminal_conflict' }],
     };
     expect(turnStatusLabel(turn)).toBe('处理中');
@@ -22,8 +22,8 @@ describe('F3 turn presentation', () => {
   });
 
   it('presents system narration as product language instead of protocol JSON', () => {
-    const event = { type: 'system.actor.registered', payload: { actor_id: 'steward' } };
-    expect(systemEventLabel(event)).toBe('成员已连接到频道');
+    const event = { type: 'system.member.created', payload: { actor_id: 'steward' } };
+    expect(systemEventLabel(event)).toBe('成员已加入频道');
     expect(systemEventDetail(event)).toBe('steward');
     expect(systemEventLabel({ type: 'unknown.internal.event', payload: { raw: { secret: true } } })).toBe('后台状态已更新');
   });

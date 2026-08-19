@@ -34,16 +34,16 @@ function channel(id, access, extra = {}) {
 describe('F5 Activity 与跨频道索引', () => {
   it('只读取当前可见频道，denied、discoverable、retired 与 loading 缓存不会泄漏', () => {
     const visibleState = state('visible', [
-      [1, envelope('visible-turn', 'request', 'human.text', { text: '公开项目灯塔' })],
-      [2, envelope('visible-done', 'response', 'human.text', { status: 'completed', text: '完成' }, { parent_id: 'visible-turn', sender: { kind: 'agent', id: 'agent' } })],
+      [1, envelope('visible-turn', 'request', 'agent.ask', { text: '公开项目灯塔' })],
+      [2, envelope('visible-done', 'response', 'agent.ask', { status: 'completed', text: '完成' }, { parent_id: 'visible-turn', sender: { kind: 'agent', id: 'agent' } })],
     ]);
     const secretState = state('denied', [
-      [1, envelope('secret-turn', 'request', 'human.text', { text: '绝密海鸥计划' })],
-      [2, envelope('secret-failed', 'response', 'human.text', { status: 'failed', detail: '绝密错误' }, { parent_id: 'secret-turn' })],
+      [1, envelope('secret-turn', 'request', 'agent.ask', { text: '绝密海鸥计划' })],
+      [2, envelope('secret-failed', 'response', 'agent.ask', { status: 'failed', detail: '绝密错误' }, { parent_id: 'secret-turn' })],
     ]);
     const channels = [
       channel('visible', 'member_active', { state: visibleState }),
-      channel('observer', 'observer_stale', { state: state('observer', [[1, envelope('observer-turn', 'request', 'human.text', { text: '观察记录' })]]) }),
+      channel('observer', 'observer_stale', { state: state('observer', [[1, envelope('observer-turn', 'request', 'agent.ask', { text: '观察记录' })]]) }),
       channel('denied', 'access_denied', { name: '绝密频道', state: secretState, participants: [{ id: 'secret-person', name: '绝密成员' }] }),
       channel('discoverable', 'discoverable', { state: secretState }),
       channel('retired', 'retired', { state: secretState }),
@@ -116,8 +116,8 @@ describe('F5 Activity 与跨频道索引', () => {
 
   it('全局搜索覆盖频道、回合、产物、任务、成员和操作，支持分词、过滤、排序与 SourceRef', () => {
     const ledger = state('c1', [
-      [1, envelope('turn-1', 'request', 'human.text', { text: '整理 夏季 预算' }, { ts: 10 })],
-      [2, envelope('turn-result', 'response', 'human.text', { status: 'completed', text: '预算已整理' }, { parent_id: 'turn-1', ts: 11 })],
+      [1, envelope('turn-1', 'request', 'agent.ask', { text: '整理 夏季 预算' }, { ts: 10 })],
+      [2, envelope('turn-result', 'response', 'agent.ask', { status: 'completed', text: '预算已整理' }, { parent_id: 'turn-1', ts: 11 })],
       [3, envelope('event-1', 'event', 'project.notice', { text: '预算复核提醒' }, { ts: 12 })],
     ]);
     const channels = [channel('c1', 'member_unavailable', {
@@ -162,8 +162,8 @@ describe('F5 Activity 与跨频道索引', () => {
   });
 
   it('同频道同 request 的搜索事实优先保留 WorkItem，不与其他频道的同名 request 合并', () => {
-    const firstState = state('c1', [[1, envelope('history-1', 'request', 'human.text', { text: '重名历史任务' })]]);
-    const secondState = state('c2', [[1, envelope('history-1', 'request', 'human.text', { text: '重名历史任务' })]]);
+    const firstState = state('c1', [[1, envelope('history-1', 'request', 'agent.ask', { text: '重名历史任务' })]]);
+    const secondState = state('c2', [[1, envelope('history-1', 'request', 'agent.ask', { text: '重名历史任务' })]]);
     const channels = [
       channel('c1', 'member_active', {
         state: firstState,

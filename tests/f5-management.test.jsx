@@ -20,8 +20,8 @@ describe('F5 成员与全局表面', () => {
       roster={[
         { id: 'root', name: 'Root', kind: 'human', principal: 'root' },
         { id: 'system', name: 'system', kind: 'system' },
-        { id: 'registrar', name: 'registrar', kind: 'tool', decl_id: 'atoll-internal:registrar-seat' },
-        { id: 'svcactor', name: 'svcactor', kind: 'tool', decl_id: 'atoll-internal:svcactor' },
+        { id: 'registrar', name: 'registrar', kind: 'system', decl_id: 'registrar' },
+        { id: 'svcactor', name: 'svcactor', kind: 'peer', decl_id: 'svcactor' },
       ]}
       state={state}
       principals={[]}
@@ -47,17 +47,19 @@ describe('F5 成员与全局表面', () => {
       principals={[{ declared: { id: 'alice', display_name: 'Alice', status: 'present' } }]}
       declarations={[
         { declared: { id: 'demo:agent', name: 'Analyst', default_class: 'codex', status: 'present' } },
-        { declared: { id: 'atoll-internal:svcactor', name: 'svcactor', status: 'present' } },
+        { declared: { id: 'svcactor', name: 'svcactor', status: 'present' } },
       ]}
       onSubmit={vi.fn()}
       onRefresh={vi.fn()}
       onClose={vi.fn()}
     />);
-    expect(screen.queryByRole('combobox', { name: 'Agent Principal' })).toBeNull();
     await user.click(screen.getByRole('combobox', { name: '选择参与者' }));
+    // genesis 铸出的系统声明不出现在候选里。
     expect(screen.queryByRole('option', { name: /svcactor/ })).toBeNull();
     await user.click(screen.getByRole('option', { name: /Analyst · Agent/ }));
-    expect(screen.getByRole('combobox', { name: 'Agent Principal' })).toBeTruthy();
+    expect(screen.getByText('demo:agent')).toBeTruthy();
+    // system.member.create 只收 decl_id，归属 principal 不是这个词的参数。
+    expect(screen.getByText(/归属 principal 由声明本身决定/)).toBeTruthy();
   });
 
   it('Activity 与搜索都返回规范 SourceRef', async () => {

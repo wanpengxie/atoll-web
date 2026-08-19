@@ -117,7 +117,7 @@ describe('local mock end-to-end', () => {
       onFeed: (_channelId, _seq, envelope) => landed.push(envelope.id),
     });
     await waitFor(() => attached, 'projection-delay attach');
-    const receipt = await wire.submit({ channel_id: 'c0', msg_type: 'human.text', kind: 'request', payload: { text: 'delayed landing' }, audience: ['steward'] });
+    const receipt = await wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'delayed landing' }, audience: ['steward'] });
     expect(landed).not.toContain(receipt.message_id);
     await waitFor(() => landed.includes(receipt.message_id), 'delayed request feed', 2_000);
     wire.close();
@@ -231,7 +231,7 @@ describe('local mock end-to-end', () => {
 
     const replay = fold(rows.filter((row) => row.channel_id === 'c0'), 'root');
     expect(replay.turns).toHaveLength(4);
-    expect([...replay.turns.values()].filter((turn) => turn.request.type === 'human.text')).toHaveLength(3);
+    expect([...replay.turns.values()].filter((turn) => turn.request.type === 'agent.ask')).toHaveLength(3);
     expect([...replay.turns.values()].filter((turn) => turn.status === 'completed')).toHaveLength(3);
     expect(replay.narration).toHaveLength(2);
     expect(replay.approvals).toHaveLength(1);
@@ -241,7 +241,7 @@ describe('local mock end-to-end', () => {
 
     const accepted = await wire.submit({
       channel_id: 'c0',
-      msg_type: 'human.text',
+      msg_type: 'agent.ask',
       kind: 'request',
       payload: { text: '@steward only reply PONG' },
       audience: ['steward'],
@@ -255,17 +255,17 @@ describe('local mock end-to-end', () => {
       'live completed PONG turn',
     );
     expect(liveTurn.provisional.map((value) => value.status)).toEqual(['queued', 'processing']);
-    expect(liveTurn.activity.map((value) => value.envelope.type)).toEqual(['activity.tool.started', 'activity.tool.ended']);
+    expect(liveTurn.activity.map((value) => value.envelope.type)).toEqual(['agent.tool.started', 'agent.tool.ended']);
     expect(liveTurn.text).toBe('PONG');
 
     const approvalId = [...states.get('c0').approvals.keys()][0];
     expect(approvalId).toBe('c0-approval-1');
-    await expect(wire.resolve({ channel_id: 'c0', req_id: approvalId, decision: 'approved' }))
+    await expect(wire.resolve({ channel_id: 'c0', req_id: approvalId, decision: 'approve' }))
       .resolves.toEqual({ req_id: approvalId });
     await waitFor(() => !states.get('c0').approvals.has(approvalId), 'approval terminal response');
     expect(states.get('c0').turns.get(approvalId).final.payload).toMatchObject({
       status: 'completed',
-      decision: 'approved',
+      decision: 'approve',
     });
 
     const beforeDropRows = states.get('c0').rows.size;

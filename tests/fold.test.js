@@ -17,18 +17,18 @@ function env(id, kind, type, extra = {}) {
 describe('feed fold', () => {
   it('folds a 12-row mixed stream into turns, narration, and approvals', () => {
     const rows = [
-      env('req-1', 'request', 'human.text', { payload: { text: 'ping' }, correlation_id: 'turn-1' }),
-      env('p-1', 'response', 'human.text', { parent_id: 'req-1', payload: { status: 'queued' }, sender: { kind: 'agent', id: 'agent' } }),
-      env('p-2', 'response', 'human.text', { parent_id: 'req-1', payload: { status: 'processing' }, sender: { kind: 'agent', id: 'agent' } }),
-      env('a-1', 'event', 'activity.tool.started', { correlation_id: 'turn-1', payload: { tool: 'shell', status: 'started' } }),
-      env('a-2', 'event', 'activity.tool.ended', { correlation_id: 'turn-1', payload: { tool: 'shell', status: 'completed' } }),
-      env('f-1', 'response', 'human.text', { parent_id: 'req-1', payload: { status: 'completed', text: 'PONG' }, sender: { kind: 'agent', id: 'agent' } }),
-      env('req-2', 'request', 'human.text', { payload: { text: 'fail' } }),
-      env('f-2', 'response', 'human.text', { parent_id: 'req-2', payload: { status: 'failed', reason: 'tool_error', detail: 'boom' }, sender: { kind: 'agent', id: 'agent' } }),
+      env('req-1', 'request', 'agent.ask', { payload: { text: 'ping' }, correlation_id: 'turn-1' }),
+      env('p-1', 'response', 'agent.ask', { parent_id: 'req-1', payload: { status: 'queued' }, sender: { kind: 'agent', id: 'agent' } }),
+      env('p-2', 'response', 'agent.ask', { parent_id: 'req-1', payload: { status: 'processing' }, sender: { kind: 'agent', id: 'agent' } }),
+      env('a-1', 'event', 'agent.tool.started', { correlation_id: 'turn-1', payload: { tool: 'shell', status: 'started' } }),
+      env('a-2', 'event', 'agent.tool.ended', { correlation_id: 'turn-1', payload: { tool: 'shell', status: 'completed' } }),
+      env('f-1', 'response', 'agent.ask', { parent_id: 'req-1', payload: { status: 'completed', text: 'PONG' }, sender: { kind: 'agent', id: 'agent' } }),
+      env('req-2', 'request', 'agent.ask', { payload: { text: 'fail' } }),
+      env('f-2', 'response', 'agent.ask', { parent_id: 'req-2', payload: { status: 'failed', reason: 'tool_error', detail: 'boom' }, sender: { kind: 'agent', id: 'agent' } }),
       env('approve-1', 'request', 'human.approve', { audience: ['me'], sender: { kind: 'agent', id: 'agent' }, payload: { action: 'deploy' } }),
-      env('sys-1', 'event', 'system.actor.registered', { visibility: 'system', sender: { kind: 'system', id: 'system' } }),
-      env('sys-2', 'event', 'system.actor.deregistered', { visibility: 'system', sender: { kind: 'system', id: 'system' } }),
-      env('sys-2', 'event', 'system.actor.deregistered', { visibility: 'system', sender: { kind: 'system', id: 'system' } }),
+      env('sys-1', 'event', 'system.member.created', { visibility: 'system', sender: { kind: 'system', id: 'system' } }),
+      env('sys-2', 'event', 'system.member.deleted', { visibility: 'system', sender: { kind: 'system', id: 'system' } }),
+      env('sys-2', 'event', 'system.member.deleted', { visibility: 'system', sender: { kind: 'system', id: 'system' } }),
     ].map((envelope, index) => ({ channel_id: 'c0', seq: index + 1, envelope }));
 
     const state = fold(rows, 'me');

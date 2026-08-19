@@ -17,7 +17,7 @@ function envelope(id, text) {
     channel_id: 'c0',
     sender: { kind: 'human', id: 'root' },
     kind: 'request',
-    type: 'human.text',
+    type: 'agent.ask',
     payload: { text },
     visibility: 'public',
     audience: ['steward'],
@@ -42,7 +42,7 @@ describe('feed cache', () => {
 
   it('ignores a damaged cache so the channel can be replayed from zero', () => {
     const storage = new MemoryStorage();
-    storage.setItem('atoll.feed.v3.c0', '{bad json');
+    storage.setItem('atoll.feed.v4.c0', '{bad json');
     const restored = createFeedCache(storage).restore();
     expect(restored.size).toBe(0);
     expect(resumeSnapshot(restored)).toEqual({});
@@ -56,7 +56,7 @@ describe('feed cache', () => {
     row.payload = { status: 'completed', value: { device_id: 'd1', key: 'one-time-key', nested: { token: 'token-value' } } };
     apply(state, { channel_id: 'c0', seq: 1, envelope: row });
     createFeedCache(storage).save(state);
-    const saved = storage.getItem('atoll.feed.v4.c0');
+    const saved = storage.getItem('atoll.feed.v5.c0');
     expect(saved).not.toContain('one-time-key');
     expect(saved).not.toContain('token-value');
     expect(saved).toContain('已隐藏');

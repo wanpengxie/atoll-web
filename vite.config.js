@@ -15,6 +15,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    allowedHosts: ['tardis', 'tardis.tail6bc2a1.ts.net'],
     proxy: {
       '/api': { target: serverURL, changeOrigin: true },
       // 保留浏览器原始 Host，使 Atoll 的同源 WebSocket 校验看到的

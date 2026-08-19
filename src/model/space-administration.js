@@ -1,30 +1,27 @@
 import { registryCommand } from './channel-governance.js';
+import { isSystemDeclaration } from './management-actors.js';
+import { TYPES } from '../protocol/vocab.js';
 
 export const SPACE_TYPES = Object.freeze({
-  actorRegister: 'actor.template.register',
-  actorEdit: 'actor.template.edit',
-  actorRevoke: 'actor.template.revoke',
-  actorList: 'actor.template.list',
-  channelRegister: 'channel.template.register',
-  channelEdit: 'channel.template.edit',
-  channelRevoke: 'channel.template.revoke',
-  channelList: 'channel.template.list',
-  channelGet: 'channel.template.get',
-  overlaySet: 'actor.overlay.set',
-  overlayClear: 'actor.overlay.clear',
-  profileSet: 'channel.profile.set',
-  deviceMint: 'device.mint',
-  deviceClaim: 'device.claim',
-  deviceRetire: 'device.retire',
-  deviceAttach: 'device.attach',
-  deviceDetach: 'device.detach',
+  actorRegister: TYPES.actorTemplate.create,
+  actorEdit: TYPES.actorTemplate.set,
+  actorRevoke: TYPES.actorTemplate.remove,
+  actorList: TYPES.actorTemplate.list,
+  actorGet: TYPES.actorTemplate.get,
+  channelRegister: TYPES.channelTemplate.create,
+  channelEdit: TYPES.channelTemplate.set,
+  channelRevoke: TYPES.channelTemplate.remove,
+  channelList: TYPES.channelTemplate.list,
+  channelGet: TYPES.channelTemplate.get,
+  overlaySet: TYPES.actorOverlay.set,
+  overlayClear: TYPES.actorOverlay.clear,
+  profileSet: TYPES.channel.set,
+  deviceCreate: TYPES.device.create,
+  deviceRetire: TYPES.device.remove,
+  deviceAttach: TYPES.device.attach,
+  deviceDetach: TYPES.device.detach,
+  deviceList: TYPES.device.list,
 });
-
-const PROTECTED_DECLARATIONS = new Set([
-  'atoll-internal:coreactor',
-  'atoll-internal:registrar-seat',
-  'atoll-internal:svcactor',
-]);
 
 export function parseJSONObject(text, label = 'JSON') {
   const source = String(text ?? '').trim();
@@ -36,7 +33,7 @@ export function parseJSONObject(text, label = 'JSON') {
 }
 
 export function isProtectedDeclaration(id) {
-  return PROTECTED_DECLARATIONS.has(id) || String(id || '').startsWith('peer:');
+  return isSystemDeclaration(id);
 }
 
 export function safeDaemonRows(observation) {
@@ -80,7 +77,7 @@ export function actorTemplateCommand(action, values, roster) {
     ...(values.config ? { config: values.config } : {}),
   };
   if (action === 'edit') payload = { id, ...pickDefined(values, ['name', 'description', 'class', 'config', 'visibility']) };
-  if (action === 'revoke') payload = { id };
+  if (['revoke', 'get'].includes(action)) payload = { id };
   return command({ type, payload, roster, label: `${type} → ${id || 'all'}` });
 }
 
@@ -90,7 +87,7 @@ export function channelTemplateCommand(action, values, roster) {
   const id = String(values?.id || '').trim();
   if (!['list'].includes(action) && !id) throw new TypeError('模板 ID 不能为空');
   let payload = {};
-  if (action === 'register') payload = { id, name: String(values.name || '').trim(), visibility: values.visibility || 'private', body: values.body || {}, ...(values.description ? { description: String(values.description).trim() } : {}) };
+  if (action === 'register') payload = { id, name: String(values.name || '').trim(), visibility: values.visibility || 'private', body: values.body || { declarations: [] }, ...(values.description ? { description: String(values.description).trim() } : {}) };
   if (action === 'edit') payload = { id, ...pickDefined(values, ['name', 'description', 'visibility', 'body']) };
   if (action === 'revoke' || action === 'get') payload = { id };
   return command({ type, payload, roster, label: `${type} → ${id || 'all'}` });
@@ -103,23 +100,26 @@ export function overlayCommand({ channelId, declId, config, clear = false, roste
   return command({ channelId, type, payload, roster, label: `${type} → ${declId}` });
 }
 
-export function profileCommand({ channelId, description = '', serving = 0, endpoints = {}, roster }) {
+// system.channel.set 的字段闭集是 {channel_id, description, serving}；endpoints
+// 只能在建频道时随 recipe.profile 一起给，不是这个词的参数。
+export function profileCommand({ channelId, description = '', serving = 0, roster }) {
   if (!channelId) throw new TypeError('频道不能为空');
   const value = Number(serving);
-  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError('serving 必须是非负整数');
-  return command({ channelId, type: SPACE_TYPES.profileSet, payload: { channel_id: channelId, description: String(description), serving: value, endpoints }, roster, label: `${SPACE_TYPES.profileSet} → ${channelId}` });
+  if (!Number.isSafeInteger(value) || value < 0 || value > 1) throw new TypeError('serving 必须是 0 或 1');
+  return command({ channelId, type: SPACE_TYPES.profileSet, payload: { channel_id: channelId, description: String(description), serving: value }, roster, label: `${SPACE_TYPES.profileSet} → ${channelId}` });
 }
 
 export function deviceCommand(action, values, roster) {
   const type = SPACE_TYPES[`device${action[0].toUpperCase()}${action.slice(1)}`];
   if (!type) throw new TypeError('未知设备操作');
   let payload;
-  if (action === 'mint') payload = { name: String(values.name || '').trim() };
-  if (action === 'claim') payload = { device_id: String(values.deviceId || '').trim(), name: String(values.name || '').trim() };
+  if (action === 'create') payload = { name: String(values.name || '').trim() };
   if (action === 'retire') payload = { device_id: String(values.deviceId || '').trim() };
   if (action === 'attach' || action === 'detach') payload = { channel_id: String(values.channelId || '').trim(), device_id: String(values.deviceId || '').trim() };
+  if (action === 'list') payload = {};
+  if (!payload) throw new TypeError('未知设备操作');
   if (Object.values(payload).some((value) => !value)) throw new TypeError('设备操作字段不能为空');
-  return command({ type, payload, roster, label: `${type} → ${payload.device_id || payload.name}` });
+  return command({ type, payload, roster, label: `${type} → ${payload.device_id || payload.name || ''}` });
 }
 
 function pickDefined(source, keys) {

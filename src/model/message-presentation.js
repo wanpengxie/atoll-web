@@ -1,3 +1,5 @@
+import { TYPES } from '../protocol/vocab.js';
+
 const SENSITIVE_FIELD = /password|secret|token|credential|private_key|\bkey\b/i;
 
 function value(payload, ...keys) {
@@ -9,40 +11,53 @@ function value(payload, ...keys) {
 }
 
 function action(type, payload) {
-  const target = value(payload, 'name', 'title', 'principal', 'instance_id', 'decl_id', 'id', 'channel_id', 'device_id');
+  const target = value(payload, 'name', 'title', 'principal', 'member', 'decl_id', 'id', 'channel_id', 'device_id');
   const exact = {
-    'channel.create': ['创建子频道', [value(payload, 'name'), value(payload?.overrides?.profile, 'description')].filter(Boolean).join(' · ')],
-    'channel.get': ['查看频道信息', value(payload, 'channel_id', 'id')],
-    'channel.describe': ['查看频道能力', value(payload, 'channel_id', 'id')],
-    'channel.retire': ['退役频道', value(payload, 'channel_id', 'id')],
-    'channel.introduce_actor': ['添加参与者', value(payload, 'principal', 'decl_id')],
-    'channel.remove_actor': ['移除参与者', value(payload, 'instance_id', 'principal')],
-    'channel.restart_actor': ['重启参与者', value(payload, 'instance_id')],
-    'actor.describe': ['查看 Actor 能力', value(payload, 'actor_id', 'id')],
-    'actor.overlay.set': ['设置 Actor 频道配置', value(payload, 'decl_id')],
-    'actor.overlay.clear': ['清除 Actor 频道配置', value(payload, 'decl_id')],
-    'channel.profile.set': ['更新频道配置', value(payload, 'channel_id')],
+    [TYPES.channel.create]: ['创建子频道', [value(payload, 'name'), value(payload?.recipe?.profile, 'description')].filter(Boolean).join(' · ')],
+    [TYPES.channel.get]: ['查看频道信息', value(payload, 'channel_id', 'id')],
+    [TYPES.channel.list]: ['列出频道', value(payload, 'parent_id')],
+    [TYPES.channel.remove]: ['退役频道', value(payload, 'channel_id', 'id')],
+    [TYPES.channel.set]: ['更新频道配置', value(payload, 'channel_id')],
+    [TYPES.member.create]: ['添加参与者', value(payload, 'decl_id')],
+    [TYPES.member.admit]: ['邀请成员加入', value(payload, 'principal')],
+    [TYPES.member.list]: ['查看频道成员', ''],
+    [TYPES.member.get]: ['查看成员状态', value(payload, 'member')],
+    [TYPES.member.remove]: ['移除参与者', value(payload, 'member')],
+    [TYPES.member.restart]: ['重启参与者', value(payload, 'member')],
+    [TYPES.log.recent]: ['读取最近账本', ''],
+    [TYPES.describe]: ['查看 Actor 能力', value(payload, 'type')],
+    [TYPES.actorOverlay.set]: ['设置 Actor 频道配置', value(payload, 'decl_id')],
+    [TYPES.actorOverlay.clear]: ['清除 Actor 频道配置', value(payload, 'decl_id')],
     'task.create': ['创建任务', value(payload, 'title', 'description')],
-    'agent.steer': ['调整任务方向', value(payload, 'text')],
-    'agent.interrupt': ['打断当前回合', ''],
-    'agent.queue': ['加入待办任务', value(payload, 'text')],
-    'agent.stop': ['停止当前工作', ''],
-    'agent.terminate': ['终止 Agent', ''],
-    'agent.restart': ['重启 Agent', ''],
+    [TYPES.agentAsk]: ['向 Agent 提问', value(payload, 'text')],
+    [TYPES.agentSteer]: ['调整任务方向', value(payload, 'text')],
+    [TYPES.agentInterrupt]: ['打断当前回合', ''],
+    [TYPES.agentQueue]: ['加入待办任务', value(payload, 'text')],
+    [TYPES.agentStop]: ['停止当前工作', ''],
+    [TYPES.agentFork]: ['分叉出新 Agent', ''],
+    [TYPES.agentCompact]: ['压缩上下文', ''],
+    [TYPES.agentSelect]: ['切换模型与算力', value(payload, 'model', 'effort')],
+    [TYPES.agentContext]: ['查看上下文用量', ''],
   }[type];
   if (exact) return exact;
 
-  const template = type.match(/^(actor|channel)\.template\.(register|edit|revoke|list|get)$/);
+  const template = type.match(/^system\.(actor|channel)\.template\.(create|set|delete|list|get)$/);
   if (template) {
     const subject = template[1] === 'actor' ? 'Actor 模板' : '频道模板';
-    const verb = { register: '创建', edit: '编辑', revoke: '撤销', list: '查看', get: '查看' }[template[2]];
+    const verb = { create: '创建', set: '编辑', delete: '撤销', list: '查看', get: '查看' }[template[2]];
     return [`${verb}${subject}`, target];
   }
 
-  const device = type.match(/^device\.(mint|claim|retire|attach|detach)$/);
+  const device = type.match(/^system\.device\.(create|delete|attach|detach|list)$/);
   if (device) {
-    const verb = { mint: '创建设备凭据', claim: '认领设备', retire: '停用设备', attach: '挂载设备到频道', detach: '从频道卸载设备' }[device[1]];
+    const verb = { create: '创建设备凭据', delete: '停用设备', attach: '挂载设备到频道', detach: '从频道卸载设备', list: '查看设备' }[device[1]];
     return [verb, value(payload, 'name', 'device_id')];
+  }
+
+  const principal = type.match(/^system\.(principal|credential)\.(create|login|delete|get|list|set)$/);
+  if (principal) {
+    const verb = { create: '创建账户', login: '登录', delete: '停用账户', get: '查看账户', list: '查看账户列表', set: '重设凭据' }[principal[2]];
+    return [verb, value(payload, 'email', 'principal_id', 'id')];
   }
   return null;
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createControlState, restoreControlStates, saveControlStates } from '../../model/control-actions.js';
 import { reconcileApprovals } from '../../model/fold.js';
 import { createSubmission, isUncertainWireError, reconcileLanded, restoreSubmissions, saveSubmissions, transitionSubmission } from '../../model/submissions.js';
+import { newId } from '../../util/id.js';
 
 export function useSubmissions({ principalId, activeChannelId, wireRef, rosterRef, accessRef, channelStatesRef, onError, onNotice, onFeedChanged, onAccessChanged }) {
   const [pending, setPending] = useState([]);
@@ -67,7 +68,7 @@ export function useSubmissions({ principalId, activeChannelId, wireRef, rosterRe
   const send = useCallback(async ({ channelId: requestedChannelId, text, msgType, audience, targetLabel, payload, parentId = '', expiresAtMs }) => {
     const channelId = requestedChannelId || activeChannelId;
     if (!channelId || !wireRef.current) return '';
-    const messageId = crypto.randomUUID();
+    const messageId = newId();
     const frame = { channel_id: channelId, id: messageId, msg_type: msgType, kind: 'request', payload: payload || { text }, audience, visibility: 'public', ...(parentId ? { parent_id: parentId } : {}), ...(expiresAtMs ? { expires_at_ms: expiresAtMs } : {}) };
     const submission = createSubmission({ id: messageId, channelId, text, targetLabel, frame });
     setPending((current) => [...current, submission]);
@@ -87,7 +88,13 @@ export function useSubmissions({ principalId, activeChannelId, wireRef, rosterRe
   const resolve = useCallback(async (channelId, reqId, decision, payload) => {
     setApprovalStates((current) => ({ ...current, [reqId]: 'sending' }));
     try {
-      await wireRef.current.resolve({ channel_id: channelId, req_id: reqId, decision, ...(payload && Object.keys(payload).length ? { payload } : {}) });
+      // resolve 帧的字段闭集：human.ask 只带 text，human.approve 只带 decision
+      // 加可选 note（platform/subjectgate/frame.go ResolvePayload，严格解码）。
+      const frame = { channel_id: channelId, req_id: reqId };
+      if (decision) frame.decision = decision;
+      if (typeof payload?.text === 'string') frame.text = payload.text;
+      if (typeof payload?.note === 'string' && payload.note) frame.note = payload.note;
+      await wireRef.current.resolve(frame);
       setApprovalStates((current) => ({ ...current, [reqId]: 'resolved' }));
     } catch (error) {
       setApprovalStates((current) => ({ ...current, [reqId]: { error } }));

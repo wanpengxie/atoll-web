@@ -48,26 +48,30 @@ const envelope = (id, kind, type, payload, extra = {}) => ({
 });
 
 describe('actor capabilities', () => {
-  it('normalizes the full TypeMeta surface without treating presence as capability', () => {
+  it('normalizes the Describe surface (class / interfaces / capabilities / words)', () => {
     const value = normalizeDescribe({
-      actor_id: 'agent', description: 'Agent', skill_doc: '# Use',
-      types: { run: { allowed_kinds: ['request'], max_pending_ms: 5000, input_schema: { type: 'object', properties: { text: { type: 'string' } } }, error_codes: [{ code: 'busy', description: '忙', recovery: '稍后重试' }] } },
+      class: 'codex', interfaces: ['actor', 'agent'], capabilities: { steer: true },
+      words: { run: { description: '跑一次', input_schema: { type: 'object', properties: { text: { type: 'string' } } }, error_codes: ['busy'] } },
     });
-    expect(value.actorId).toBe('agent');
-    expect(value.types.get('run')).toMatchObject({ allowedKinds: ['request'], maxPendingMs: 5000, errorCodes: [{ code: 'busy', recovery: '稍后重试' }] });
+    expect(value.className).toBe('codex');
+    expect(value.interfaces).toEqual(['actor', 'agent']);
+    expect(value.capabilities.steer).toBe(true);
+    expect(value.types.get('run')).toMatchObject({ description: '跑一次', errorCodes: [{ code: 'busy' }] });
     expect(supportsType({ describe: value }, 'run')).toBe(true);
-    expect(capabilityRisk('agent.terminate')).toBe('critical');
+    expect(supportsType({ describe: value }, 'missing')).toBe(false);
+    expect(capabilityRisk('agent.stop')).toBe('high');
+    expect(capabilityRisk('agent.steer')).toBe('medium');
   });
 
-  it('rebuilds and merges full/single-type Describe from ledger turns', () => {
+  it('rebuilds and merges full/single-word Describe from ledger turns', () => {
     const rows = [
       envelope('d1', 'request', 'actor.describe', {}, {}),
-      envelope('d1-done', 'response', 'actor.describe', { status: 'completed', value: { actor_id: 'agent', description: 'Agent', types: { 'human.text': { description: 'text' } } } }, { parent_id: 'd1' }),
+      envelope('d1-done', 'response', 'actor.describe', { status: 'completed', class: 'codex', interfaces: ['actor'], capabilities: {}, words: { 'agent.ask': { description: 'text' } } }, { parent_id: 'd1' }),
       envelope('d2', 'request', 'actor.describe', { type: 'agent.steer' }),
-      envelope('d2-done', 'response', 'actor.describe', { status: 'completed', value: { actor_id: 'agent', type: 'agent.steer', description: 'steer', allowed_kinds: ['request'] } }, { parent_id: 'd2' }),
+      envelope('d2-done', 'response', 'actor.describe', { status: 'completed', class: 'codex', interfaces: ['actor'], capabilities: {}, words: { 'agent.steer': { description: 'steer' } } }, { parent_id: 'd2' }),
     ].map((value, index) => ({ channel_id: 'c0', seq: index + 1, envelope: value }));
     const entry = capabilityIndexFromState(fold(rows)).get('agent');
-    expect([...entry.describe.types.keys()]).toEqual(['human.text', 'agent.steer']);
+    expect([...entry.describe.types.keys()]).toEqual(['agent.ask', 'agent.steer']);
     expect(entry.loading).toBe(false);
   });
 });

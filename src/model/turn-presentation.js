@@ -1,11 +1,11 @@
-const IMPORTANT_SYSTEM_EVENT = /(member|membership|access|permission|channel\.(?:retired|closed|opened)|actor\.(?:joined|left))/i;
+import { TYPES } from '../protocol/vocab.js';
+
+const IMPORTANT_SYSTEM_EVENT = /(member|membership|access|permission|channel\.(?:retired|closed|opened))/i;
 
 const SYSTEM_EVENT_TITLES = {
-  'system.actor.registered': '成员已连接到频道',
-  'system.actor.deregistered': '成员已离开频道',
-  'system.actor.ended': '成员会话已经结束',
-  'mock.channel.pulse': '频道状态已同步',
-  'runtime.trace': '运行状态已经记录',
+  [TYPES.narration.memberCreated]: '成员已加入频道',
+  [TYPES.narration.memberDeleted]: '成员已离开频道',
+  [TYPES.narration.channelInbound]: '收到来自其他频道的请求',
 };
 
 export const TURN_STATUS_LABELS = {

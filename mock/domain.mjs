@@ -49,14 +49,13 @@ export function envelope({ id, channelId, sender, kind, type, payload = {}, pare
 }
 
 function createRoster(channel, memberships, clock) {
+  // 与真实后端一致：每个频道都有 system 与 svcactor(peer)，registrar 只在 c0。
   const rows = [
     rosterItem({ id: 'system', kind: 'system', name: 'system', description: 'Channel system actor' }, clock),
-    rosterItem({ id: 'svcactor', kind: 'tool', declId: 'atoll-internal:svcactor', name: 'svcactor', description: 'Service actor tool' }, clock),
+    rosterItem({ id: 'svcactor', kind: 'peer', declId: 'svcactor', name: 'Service Actor', description: 'Service actor' }, clock),
   ];
   if (channel.id === 'c0') {
-    rows.push(rosterItem({ id: 'registrar', kind: 'tool', declId: 'atoll-internal:registrar-seat', name: 'registrar', description: 'Registrar seat tool' }, clock));
-  } else {
-    rows.push(rosterItem({ id: 'coreactor', kind: 'tool', declId: 'coreactor', name: 'coreactor', description: 'Channel core actor' }, clock));
+    rows.push(rosterItem({ id: 'registrar', kind: 'system', declId: 'registrar', name: 'Registrar Seat', description: 'Registrar seat' }, clock));
   }
   if (!channel.internal) {
     rows.push(rosterItem({ id: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, kind: 'agent', declId: 'mock:steward', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
@@ -91,8 +90,8 @@ export class MockDomain {
       ['mock:steward', { id: 'mock:steward', name: 'Steward', description: 'Mock steward declaration', owner: ROOT_ID, class: 'codex', default_class: 'codex', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
       ['mock:analyst', { id: 'mock:analyst', name: 'Analyst Agent', description: 'Mock agent declaration', owner: ROOT_ID, class: 'codex-agent', default_class: 'codex-agent', kind: 'agent', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
       ['mock:search', { id: 'mock:search', name: 'Search Tool', description: 'Mock tool declaration', owner: ROOT_ID, class: 'mcp-tool', default_class: 'mcp-tool', kind: 'tool', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
-      ['atoll-internal:registrar-seat', { id: 'atoll-internal:registrar-seat', name: 'Registrar Seat', owner: ROOT_ID, class: 'atoll-internal:registrar', default_class: 'atoll-internal:registrar', status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
-      ['atoll-internal:svcactor', { id: 'atoll-internal:svcactor', name: 'Service Actor', owner: ROOT_ID, class: 'svcactor', default_class: 'svcactor', status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
+      ['registrar', { id: 'registrar', name: 'Registrar Seat', owner: ROOT_ID, class: 'registrar', default_class: 'registrar', status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
+      ['svcactor', { id: 'svcactor', name: 'Service Actor', owner: ROOT_ID, class: 'svcactor', default_class: 'svcactor', status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
     ]);
     this.channelTemplates = new Map([
       ['mock:team', { id: 'mock:team', name: 'Team channel', description: 'Mock team template', visibility: 'private', body: { declarations: [{ decl_id: 'mock:steward' }] }, status: 'present' }],
@@ -241,37 +240,38 @@ export class MockDomain {
     return { ...channel };
   }
 
-  introduceActor(channelId, spec) {
+  // system.member.create：只收 decl_id，actor kind 由声明本身决定。
+  createMember(channelId, declId) {
     const channel = this.channel(channelId);
     if (!channel || channel.status !== 'present') throw new TypeError('channel does not exist');
-    if (!['human', 'agent', 'tool'].includes(spec?.kind)) throw new TypeError('actor kind must be human, agent or tool');
-    let id;
-    if (spec.kind === 'human') {
-      if (!spec.principal || spec.decl_id) throw new TypeError('human requires principal and forbids decl_id');
-      id = `${spec.principal}-${channel.name}`;
-      if (!this.activeMembership(spec.principal, channelId)) {
-        this.memberships.push({ principal_id: spec.principal, channel_id: channelId, actor_id: id, role: 'member', status: 'active' });
-      }
-    } else {
-      if (!spec.decl_id || (spec.kind === 'tool' && spec.principal)) throw new TypeError('agent/tool requires decl_id; tool forbids principal');
-      const knownKind = spec.decl_id === 'mock:search' ? 'tool'
-        : ['mock:steward', 'mock:analyst', 'mock:reviewer'].includes(spec.decl_id) ? 'agent' : '';
-      if (knownKind && knownKind !== spec.kind) {
-        const error = new TypeError(`asserted kind ${spec.kind} does not match declaration kind ${knownKind}`);
-        error.code = 'bad_payload';
-        throw error;
-      }
-      id = `${spec.kind}-${this.nextId('actor')}`;
+    if (!declId) throw new TypeError('decl_id required');
+    const declaration = this.declarations.get(declId);
+    if (!declaration || declaration.status !== 'present') throw new TypeError('declaration does not exist');
+    const kind = declaration.kind || (String(declaration.default_class || '').includes('codex') ? 'agent' : 'tool');
+    const id = `${kind}-${this.nextId('actor')}`;
+    const rows = this.rosters.get(channelId) || [];
+    rows.push(rosterItem({ id, kind, declId, name: declaration.name || id, description: 'Introduced by mock system actor' }, this.clock));
+    return { member: id };
+  }
+
+  // system.member.admit：只收 principal。
+  admitMember(channelId, principal) {
+    const channel = this.channel(channelId);
+    if (!channel || channel.status !== 'present') throw new TypeError('channel does not exist');
+    if (!principal) throw new TypeError('principal required');
+    const id = `${principal}-${channel.name}`;
+    if (!this.activeMembership(principal, channelId)) {
+      this.memberships.push({ principal_id: principal, channel_id: channelId, actor_id: id, role: 'member', status: 'active' });
     }
     const rows = this.rosters.get(channelId) || [];
     if (!rows.some((entry) => entry.declared.id === id)) {
-      rows.push(rosterItem({ id, kind: spec.kind, declId: spec.decl_id || '', name: spec.name || id, principal: spec.principal || '', description: 'Introduced by mock system actor' }, this.clock));
+      rows.push(rosterItem({ id, kind: 'human', name: principal, principal, description: 'Admitted by mock system actor' }, this.clock));
     }
-    return { instance_id: id, created: true };
+    return { member: id };
   }
 
   removeActor(channelId, actorId) {
-    if (['system', 'coreactor', 'svcactor', 'registrar'].includes(actorId)) {
+    if (['system', 'svcactor', 'registrar'].includes(actorId)) {
       const error = new TypeError('protected system actor cannot be removed');
       error.code = 'protected_actor';
       throw error;
@@ -280,21 +280,21 @@ export class MockDomain {
     if (!rows) throw new TypeError('channel does not exist');
     const index = rows.findIndex((entry) => entry.declared.id === actorId);
     if (index < 0) throw new TypeError('actor does not exist');
-    const [removed] = rows.splice(index, 1);
+    rows.splice(index, 1);
     const membership = this.memberships.find((entry) => entry.channel_id === channelId && entry.actor_id === actorId && entry.status === 'active');
     if (membership) membership.status = 'revoked';
-    return { removed: true };
+    return { removed: [actorId] };
   }
 
   restartActor(channelId, actorId) {
     const row = (this.rosters.get(channelId) || []).find((entry) => entry.declared.id === actorId);
     if (!row) throw new TypeError('actor does not exist');
-    if (['system', 'coreactor', 'svcactor', 'registrar'].includes(actorId) || String(row.declared.decl_id || '').startsWith('peer:')) {
+    if (['system', 'svcactor', 'registrar'].includes(actorId) || String(row.declared.decl_id || '').startsWith('peer:')) {
       const error = new TypeError('protected system actor cannot be restarted');
       error.code = 'protected_actor';
       throw error;
     }
-    return { restarted: actorId };
+    return { member: actorId };
   }
 
   declarationRows() {

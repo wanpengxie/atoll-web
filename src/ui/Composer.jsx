@@ -8,6 +8,31 @@ function mentionQuery(text) {
   return match ? match[1].toLowerCase() : null;
 }
 
+// 频道面的斜杠命令。收件人恒是本频道的 system actor：成员类的词它自己答，
+// 空间类的词它转交 c0 的 registrar。
+export function slashCommand(value) {
+  const [verb, ...rest] = value.trim().split(/\s+/);
+  if (verb === '/introduce') {
+    const declId = rest[0];
+    if (!declId || rest.length > 1) throw new TypeError('用法：/introduce <decl_id>');
+    return { msgType: TYPES.member.create, payload: { decl_id: declId } };
+  }
+  if (verb === '/admit') {
+    const principal = rest[0];
+    if (!principal || rest.length > 1) throw new TypeError('用法：/admit <principal>');
+    return { msgType: TYPES.member.admit, payload: { principal } };
+  }
+  if (verb === '/members') {
+    if (rest.length) throw new TypeError('用法：/members');
+    return { msgType: TYPES.member.list, payload: {} };
+  }
+  if (verb === '/channels') {
+    if (rest.length > 1) throw new TypeError('用法：/channels [parent_id]');
+    return { msgType: TYPES.channel.list, payload: rest[0] ? { parent_id: rest[0] } : {} };
+  }
+  return null;
+}
+
 export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRemoveAttachment, onClearAttachments, onChooseAttachment }) {
   const [mentions, setMentions] = useState([]);
   const [error, setError] = useState('');
@@ -70,26 +95,10 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     setSendState('sending');
 
     try {
-      if (value.startsWith('/introduce')) {
-        const [, kind, declId, principal] = value.split(/\s+/);
-        if (!['agent', 'tool'].includes(kind) || !declId) throw new TypeError('用法：/introduce <agent|tool> <decl_id> [principal]');
-        if (kind === 'tool' && principal) throw new TypeError('tool 的 introduce payload 不允许 principal');
+      const slash = slashCommand(value);
+      if (slash) {
         const sysactor = resolveManagementActors(roster).system;
-        if (!sysactor) throw new TypeError('名册中未找到频道 system actor');
-        const payload = { kind, decl_id: declId };
-        if (principal) payload.principal = principal;
-        const messageId = await onSend({ text: value, msgType: TYPES.sysactor.introduce, audience: [sysactor.id], targetLabel: sysactor.name || sysactor.id, payload });
-        setSentMessageId(messageId || '');
-        setText('');
-        setMentions([]);
-        setSendState('accepted');
-        return;
-      }
-
-      if (value === '/channels') {
-        const registry = resolveManagementActors(roster).channelRegistry;
-        if (!registry) throw new TypeError('名册中未找到 registrar 或 coreactor');
-        const messageId = await onSend({ text: value, msgType: TYPES.registrar.channelList, audience: [registry.id], targetLabel: registry.name || registry.id, payload: {} });
+        const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [sysactor.id], targetLabel: sysactor.name || sysactor.id, payload: slash.payload });
         setSentMessageId(messageId || '');
         setText('');
         setMentions([]);
@@ -107,13 +116,15 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       }
       const kinds = new Set(recipients.map((row) => row.kind));
       if (kinds.size !== 1 || !['agent', 'human'].includes([...kinds][0])) throw new TypeError('暂不支持混合收件人广播');
-      const msgType = kinds.has('human') ? TYPES.humanMessage : TYPES.agentText;
+      const msgType = kinds.has('human') ? TYPES.humanMessage : TYPES.agentAsk;
+      // agent.ask 的 text 是必填且不能为空白，所以纯附件消息也要带上一句正文。
+      const body = value || `发送 ${attachments.length} 个附件`;
       const messageId = await onSend({
-        text: value || `发送 ${attachments.length} 个附件`,
+        text: body,
         msgType,
         audience: recipients.map((row) => row.id),
         targetLabel: recipients.map((row) => row.name || row.id).join('、'),
-        payload: attachments.length ? { text: value, attachments } : undefined,
+        payload: attachments.length ? { text: body, attachments } : undefined,
       });
       setSentMessageId(messageId || '');
       setText('');

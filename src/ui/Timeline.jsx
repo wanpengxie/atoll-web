@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { approvalFormSpec, valuesToPayload } from '../model/dynamic-form.js';
+import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { orderedTimeline } from '../model/fold.js';
 import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
@@ -8,7 +8,6 @@ import { taskControlContext } from '../model/task-controls.js';
 import { latestHumanProgress, systemEventDetail, systemEventLabel, systemEventTier, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
-import { DynamicFields, initialFieldValues } from './DynamicFields.jsx';
 
 const ERROR_LABELS = {
   bad_payload: '请求格式不正确',
@@ -72,29 +71,36 @@ function ApprovalCard({ turn, state, onResolve, names }) {
   const settled = state === 'resolved' || Boolean(turn.terminal);
   const error = typeof state === 'object' ? state.error : null;
   const expired = Number(request.expires_at || 0) > 0 && Number(request.expires_at) <= Date.now();
-  const spec = useMemo(() => approvalFormSpec(request.payload || {}), [request.payload]);
-  const [values, setValues] = useState(() => initialFieldValues(spec));
-  const [rawJSON, setRawJSON] = useState(() => JSON.stringify(spec.initial || {}, null, 2));
+  const spec = useMemo(() => resolveFormSpec(request.type), [request.type]);
+  const [answer, setAnswer] = useState('');
   const [formError, setFormError] = useState('');
+
+  // resolve 帧的字段闭集由 subjectgate 定死：human.ask 只带 text，human.approve
+  // 只带 decision（approve / reject）+ 可选 note。
+  function submitAnswer() {
+    setFormError('');
+    if (!answer.trim()) { setFormError('回答不能为空'); return; }
+    onResolve(request.id, '', { text: answer });
+  }
 
   function decide(decision) {
     setFormError('');
-    try {
-      onResolve(request.id, decision, valuesToPayload(spec, values, rawJSON));
-    } catch (failure) {
-      setFormError(failure.message || String(failure));
-    }
+    onResolve(request.id, decision, answer.trim() ? { note: answer.trim() } : {});
   }
 
   return (
     <article className={`approval-card ${settled ? 'settled' : ''}`}>
-      <header><span>需要你的决定</span><small>{nameOf(request.sender?.id, names)} · {timeLabel(request.ts)}</small></header>
-      <div className="approval-summary"><strong>{request.payload?.title || request.type}</strong>{request.payload?.detail && <p>{request.payload.detail}</p>}{request.payload?.impact && <p><b>影响：</b>{request.payload.impact}</p>}</div>
-      {spec.mode === 'fields' ? <DynamicFields className="approval-fields" spec={spec} values={values} onChange={(name, value) => setValues((current) => ({ ...current, [name]: value }))} /> : <details className="approval-advanced"><summary>高级选项</summary><label className="approval-json"><span>附加 JSON（可选）</span><textarea rows={3} value={rawJSON} onChange={(event) => setRawJSON(event.target.value)} /></label></details>}
+      <header><span>{spec.mode === 'text' ? '需要你的回答' : '需要你的决定'}</span><small>{nameOf(request.sender?.id, names)} · {timeLabel(request.ts)}</small></header>
+      <div className="approval-summary"><strong>{request.payload?.title || request.payload?.text || request.type}</strong>{request.payload?.detail && <p>{request.payload.detail}</p>}{request.payload?.impact && <p><b>影响：</b>{request.payload.impact}</p>}</div>
+      <label className="approval-answer"><span>{spec.label}</span><textarea rows={spec.mode === 'text' ? 4 : 2} value={answer} disabled={busy || settled || expired} onChange={(event) => { setAnswer(event.target.value); setFormError(''); }} /></label>
       {request.expires_at && <p className={expired ? 'approval-expired' : 'approval-deadline'}>{expired ? '已过期，不能再处理' : `截止：${new Date(request.expires_at).toLocaleString('zh-CN')}`}</p>}
       <div className="approval-actions">
-        <button type="button" className="approve" disabled={busy || settled || expired} onClick={() => decide(DECISIONS.approve)}>批准</button>
-        <button type="button" className="reject" disabled={busy || settled || expired} onClick={() => decide(DECISIONS.reject)}>拒绝</button>
+        {spec.mode === 'text'
+          ? <button type="button" className="approve" disabled={busy || settled || expired} onClick={submitAnswer}>提交回答</button>
+          : (<>
+            <button type="button" className="approve" disabled={busy || settled || expired} onClick={() => decide(DECISIONS.approve)}>批准</button>
+            <button type="button" className="reject" disabled={busy || settled || expired} onClick={() => decide(DECISIONS.reject)}>拒绝</button>
+          </>)}
         {settled && <span>已回执</span>}
       </div>
       {formError && <p className="approval-form-error" role="alert">{formError}</p>}
@@ -119,13 +125,13 @@ function TaskControls({ context, state = {}, onCancel, onControl }) {
       <div className="task-control-buttons">
         {context.canCancel && <button type="button" onClick={onCancel} disabled={['sending', 'accepted', 'uncertain'].includes(state.status)}>{state.status === 'sending' ? '正在取消…' : '取消任务'}</button>}
         {context.canSteer && <button type="button" onClick={() => setSteering((value) => !value)}>调整方向</button>}
-        {context.canInterrupt && <button type="button" className="interrupt" onClick={() => onControl('agent.interrupt', {})}>打断回合</button>}
+        {context.canInterrupt && <button type="button" className="interrupt" onClick={() => onControl(TYPES.agentInterrupt, {})}>打断回合</button>}
       </div>
       {state.status === 'accepted' && <p className="control-status">取消请求已受理，等待原任务终态。</p>}
       {state.status === 'uncertain' && <p className="control-status uncertain">取消结果待确认，将以重连后的账本为准。</p>}
       {state.error && <WireErrorLine error={state.error} />}
-      {steering && <div className="steer-form"><textarea aria-label="新方向" rows={3} value={steerText} onChange={(event) => setSteerText(event.target.value)} placeholder="输入新的任务方向" /><div><button type="button" onClick={() => setSteering(false)}>取消</button><button type="button" disabled={!steerText.trim()} onClick={() => { onControl('agent.steer', { text: steerText.trim(), expected_turn_id: context.turnId }); setSteering(false); setSteerText(''); }}>提交方向</button></div></div>}
-      {context.maxPendingMs > 0 && <small className="wait-hint">Actor 建议等待时间约 {Math.ceil(context.maxPendingMs / 1000)} 秒；超过后仍以账本终态为准。</small>}
+      {steering && <div className="steer-form"><textarea aria-label="新方向" rows={3} value={steerText} onChange={(event) => setSteerText(event.target.value)} placeholder="输入新的任务方向" /><div><button type="button" onClick={() => setSteering(false)}>取消</button><button type="button" disabled={!steerText.trim()} onClick={() => { onControl(TYPES.agentSteer, { text: steerText.trim(), expected_turn_id: context.turnId }); setSteering(false); setSteerText(''); }}>提交方向</button></div></div>}
+      {context.expiresAt > 0 && !context.expired && <small className="wait-hint">截止时间 {new Date(context.expiresAt).toLocaleString("zh-CN")}；超过后仍以账本终态为准。</small>}
     </section>
   );
 }
@@ -356,7 +362,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
           if (entry.kind === 'narration') content = <Narration rows={state.narration} names={names} />;
           if (
             entry.kind === 'turn'
-            && entry.turn.request.type === TYPES.humanApprove
+            && [TYPES.humanAsk, TYPES.humanApprove].includes(entry.turn.request.type)
             && selfId
             && entry.turn.request.audience?.includes(selfId)
           ) {

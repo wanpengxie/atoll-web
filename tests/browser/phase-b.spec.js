@@ -219,7 +219,7 @@ test('B-BR-09 结构化、空成功、失败与敏感字段都有可理解结果
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
   const describe = page.locator('.actor-describe-result');
   await expect(describe.getByRole('strong').filter({ hasText: 'Mock 协作 Agent' })).toBeVisible();
-  await expect(describe.getByText('human.text', { exact: true }).first()).toBeVisible();
+  await expect(describe.getByText('agent.ask', { exact: true }).first()).toBeVisible();
 });
 
 test('B-BR-10 普通频道通过 decl_id 解析 coreactor 并展示 channel.list', async ({ page, request }) => {

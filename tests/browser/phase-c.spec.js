@@ -73,7 +73,7 @@ test('C-BR-01/02 Actor Describe 从账本加载并展示能力元数据', async 
   await expect(details.getByText('Mock 协作 Agent', { exact: true })).toBeVisible();
   await details.getByText('使用说明', { exact: true }).click();
   await expect(details.getByText(/所有控制结果以账本终态为准/)).toBeVisible();
-  const textCapability = capability(details, 'human.text');
+  const textCapability = capability(details, 'agent.ask');
   await expect(textCapability.getByText('预计 ≤ 120 秒', { exact: true })).toBeVisible();
   await textCapability.getByText('错误与恢复', { exact: true }).click();
   await expect(textCapability.getByText('provider_timeout', { exact: true })).toBeVisible();

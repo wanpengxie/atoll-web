@@ -1,6 +1,6 @@
-import { isSystemNarration } from '../protocol/vocab.js';
+import { TYPES } from '../protocol/vocab.js';
 
-const SELF_PREFIX = 'atoll.self.v2.';
+const SELF_PREFIX = 'atoll.self.v3.';
 
 function measure(actual, name) {
   return actual?.measures?.find((item) => item.name === name);
@@ -91,7 +91,7 @@ export function createRoster({ obs, me = '', storage = globalThis.localStorage, 
       if (channelId && me) storage?.removeItem?.(`${SELF_PREFIX}${me}.${channelId}`);
     },
     handleEnvelope(channelId, envelope, onRefresh) {
-      if (!isSystemNarration(envelope?.type) || !envelope.type.startsWith('system.actor.')) return;
+      if (![TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)) return;
       if (timers.has(channelId)) clearTimeout(timers.get(channelId));
       timers.set(channelId, setTimeout(async () => {
         timers.delete(channelId);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approvalFormSpec, buildFormSpec, valuesToPayload } from '../src/model/dynamic-form.js';
+import { buildFormSpec, resolveFormSpec, valuesToPayload } from '../src/model/dynamic-form.js';
 
 describe('dynamic capability form', () => {
   it('builds and validates JSON Schema fields with typed values', () => {
@@ -12,12 +12,15 @@ describe('dynamic capability form', () => {
     expect(() => valuesToPayload(spec, { name: 'A', count: '2.5' })).toThrow('count 必须是整数');
   });
 
-  it('uses standard control payloads and preserves unknown approvals through JSON fallback', () => {
+  it('uses standard control payloads for the agent words the base advertises', () => {
     const steer = buildFormSpec('agent.steer', {});
     expect(valuesToPayload(steer, { text: '换个方向' })).toEqual({ text: '换个方向' });
+    expect(valuesToPayload(steer, { text: '换个方向', expected_turn_id: 't1' })).toEqual({ text: '换个方向', expected_turn_id: 't1' });
     expect(() => valuesToPayload(steer, { text: '' })).toThrow('text 为必填项');
-    const approval = approvalFormSpec({ title: 'Approve' });
-    expect(approval.mode).toBe('json');
-    expect(valuesToPayload(approval, {}, '{"note":"保留","n":7}')).toEqual({ note: '保留', n: 7 });
+  });
+
+  it('resolve 帧的字段闭集由后端定死，没有动态表单空间', () => {
+    expect(resolveFormSpec('human.ask')).toMatchObject({ mode: 'text', field: 'text', required: true });
+    expect(resolveFormSpec('human.approve')).toMatchObject({ mode: 'decision', field: 'note', required: false });
   });
 });

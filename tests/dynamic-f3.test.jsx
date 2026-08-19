@@ -14,7 +14,7 @@ function runningTurn() {
   return {
     requestId: request.id, request, requestSeq: 1, status: 'processing', latestStatus: 'processing', terminal: null,
     provisional: [{ seq: 2, status: 'processing', core: true, envelope: { id: 'p-1', type: 'agent.text', ts: 110, sender: { id: 'agent-1' }, payload: { status: 'processing', detail: '正在整理资料' } } }],
-    activity: [{ seq: 3, envelope: { id: 'a-1', type: 'activity.tool.started', ts: 120, sender: { id: 'agent-1' }, payload: { tool: 'search', status: 'started' } } }],
+    activity: [{ seq: 3, envelope: { id: 'a-1', type: 'agent.tool.started', ts: 120, sender: { id: 'agent-1' }, payload: { tool: 'search', status: 'started' } } }],
     anomalies: [{ code: 'sample', seq: 4 }],
   };
 }

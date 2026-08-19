@@ -1,19 +1,16 @@
-import { CORE_ACTOR_DECL_ID, resolveManagementActors } from './management-actors.js';
-
-const SYSTEM_DECLS = new Set([
-  CORE_ACTOR_DECL_ID,
-  'atoll-internal:svcactor',
-  'atoll-internal:registrar-seat',
-]);
+import { isSystemDeclaration, SYSTEM_ACTOR } from './management-actors.js';
+import { TYPES } from '../protocol/vocab.js';
 
 export const GOVERNANCE_TYPES = Object.freeze({
-  create: 'channel.create',
-  get: 'channel.get',
-  describe: 'channel.describe',
-  retire: 'channel.retire',
-  introduce: 'channel.introduce_actor',
-  remove: 'channel.remove_actor',
-  restart: 'channel.restart_actor',
+  create: TYPES.channel.create,
+  get: TYPES.channel.get,
+  list: TYPES.channel.list,
+  retire: TYPES.channel.remove,
+  profileSet: TYPES.channel.set,
+  introduce: TYPES.member.create,
+  admit: TYPES.member.admit,
+  remove: TYPES.member.remove,
+  restart: TYPES.member.restart,
 });
 
 export function validateChannelName(value) {
@@ -24,44 +21,42 @@ export function validateChannelName(value) {
   return '';
 }
 
-export function createChannelCommand({ parentId, name, purpose = '', template = '', roster = [] }) {
+// system.channel.create 的 payload 是 {name, recipe}，recipe 就是频道模板的
+// body（declarations + profile）。UI 只提供“空配方 + 可选简介”的形态；从模板
+// 建频道时由调用方先取回模板 body 再作为 recipe 传进来。
+export function createChannelCommand({ parentId, name, purpose = '', recipe = null, roster = [] }) {
   const error = validateChannelName(name);
   if (error) throw new TypeError(error);
-  const actors = resolveManagementActors(roster);
-  const target = parentId === 'c0' ? actors.registrar : actors.coreactor;
-  if (!target) throw new TypeError(parentId === 'c0' ? '当前频道没有 registrar seat' : '当前频道没有 coreactor');
+  const body = recipe && typeof recipe === 'object' && !Array.isArray(recipe)
+    ? { declarations: Array.isArray(recipe.declarations) ? recipe.declarations : [], ...(recipe.profile ? { profile: recipe.profile } : {}) }
+    : { declarations: [] };
+  if (purpose.trim()) body.profile = { ...(body.profile || {}), description: purpose.trim() };
   return {
-    channelId: parentId,
+    ...target(parentId, roster),
     msgType: GOVERNANCE_TYPES.create,
-    audience: [target.id],
-    targetLabel: target.name || target.id,
     text: `创建子频道 ${name}`,
-    payload: {
-      name: String(name).trim(),
-      ...(String(template).trim() ? { template: String(template).trim() } : {}),
-      ...(purpose.trim() ? { overrides: { profile: { description: purpose.trim() } } } : {}),
-    },
+    payload: { name: String(name).trim(), recipe: body },
   };
 }
 
+function target(channelId, roster = []) {
+  const system = roster.find((row) => row.id === SYSTEM_ACTOR.id) || SYSTEM_ACTOR;
+  return { channelId, audience: [system.id], targetLabel: system.name || system.id };
+}
+
+// 空间面和频道面共用一个收件人，registryCommand / actorCommand 的区别只剩语义。
 export function registryCommand({ channelId, type, payload, roster = [] }) {
-  const actors = resolveManagementActors(roster);
-  const target = channelId === 'c0' ? actors.registrar : actors.coreactor;
-  if (!target) throw new TypeError(channelId === 'c0' ? '当前频道没有 registrar seat' : '当前频道没有 coreactor');
-  return { channelId, msgType: type, audience: [target.id], targetLabel: target.name || target.id, payload, text: `${type} → ${payload?.channel_id || channelId}` };
+  return { ...target(channelId, roster), msgType: type, payload, text: `${type} → ${payload?.channel_id || payload?.id || channelId}` };
 }
 
 export function actorCommand({ channelId, type, payload, roster = [] }) {
-  const system = resolveManagementActors(roster).system;
-  if (!system) throw new TypeError('当前频道没有 system actor');
-  return { channelId, msgType: type, audience: [system.id], targetLabel: 'system', payload, text: `${type} → ${payload?.instance_id || payload?.principal || payload?.decl_id || ''}` };
+  return { ...target(channelId, roster), msgType: type, payload, text: `${type} → ${payload?.member || payload?.principal || payload?.decl_id || ''}` };
 }
 
 export function isProtectedActor(row) {
   return row?.kind === 'system'
-    || row?.id === 'system'
-    || SYSTEM_DECLS.has(row?.decl_id)
-    || String(row?.decl_id || '').startsWith('peer:');
+    || row?.id === SYSTEM_ACTOR.id
+    || isSystemDeclaration(row?.decl_id);
 }
 
 export function usablePrincipals(items = [], roster = []) {
@@ -72,7 +67,7 @@ export function usablePrincipals(items = [], roster = []) {
 
 export function usableDeclarations(items = [], kind = '') {
   return items.map((item) => item.declared || item).filter((row) => (
-    row.id && row.status === 'present' && !SYSTEM_DECLS.has(row.id) && !String(row.id).startsWith('peer:')
+    row.id && row.status === 'present' && !isSystemDeclaration(row.id)
     && (!kind || declarationKind(row) === kind)
   )).sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
 }
@@ -81,14 +76,15 @@ export function declarationKind(row) {
   const explicit = row.kind || row.actor_kind;
   if (explicit === 'agent' || explicit === 'tool') return explicit;
   const value = String(row.default_class || '').toLowerCase();
-  if (value.includes('agent') || value.includes('codex')) return 'agent';
+  if (value.includes('agent') || value.includes('codex') || value.includes('claude')) return 'agent';
   return 'tool';
 }
 
 export function creationConvergence({ turn, expectedQualifiedName, channels = [], membership = null }) {
   const terminal = turn?.terminal?.payload;
   const failed = terminal?.status === 'failed';
-  const channel = channels.find((row) => row.qualified_name === expectedQualifiedName || row.id === terminal?.value?.id) || null;
+  const createdId = terminal?.value?.channel_id || '';
+  const channel = channels.find((row) => row.qualified_name === expectedQualifiedName || row.id === createdId) || null;
   return {
     accepted: Boolean(turn),
     ledger: terminal?.status === 'completed',
@@ -104,7 +100,8 @@ export function creationConvergence({ turn, expectedQualifiedName, channels = []
 
 export function actorConvergence({ turn, type, actorId = '', roster = [] }) {
   const terminal = turn?.terminal?.payload;
-  const targetId = terminal?.value?.instance_id || actorId;
+  // system.member.* 的回复是平铺的：create/admit/restart 回 {member}，delete 回 {removed:[…]}。
+  const targetId = terminal?.member || actorId;
   const actor = roster.find((row) => row.id === targetId) || null;
   const ledger = terminal?.status === 'completed';
   const failed = terminal?.status === 'failed';

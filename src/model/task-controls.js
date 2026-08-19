@@ -1,4 +1,5 @@
 import { supportsType } from './capabilities.js';
+import { TYPES } from '../protocol/vocab.js';
 
 function processingTurnId(turn) {
   return [...(turn?.provisional || [])]
@@ -15,8 +16,6 @@ export function taskControlContext(turn, { selfId = '', access = '', capability 
   const writable = access === 'member_active';
   const turnId = processingTurnId(turn);
   const expiresAt = Number(request?.expires_at || 0);
-  const typeMeta = capability?.describe?.types?.get(request?.type);
-  const maxPendingMs = Number(typeMeta?.maxPendingMs || 0);
   return {
     actorId,
     open,
@@ -25,9 +24,8 @@ export function taskControlContext(turn, { selfId = '', access = '', capability 
     turnId,
     expiresAt,
     expired: expiresAt > 0 && expiresAt <= now,
-    maxPendingMs,
     canCancel: open && owned && writable,
-    canSteer: open && owned && writable && Boolean(turnId) && supportsType(capability, 'agent.steer'),
-    canInterrupt: open && owned && writable && supportsType(capability, 'agent.interrupt'),
+    canSteer: open && owned && writable && Boolean(turnId) && supportsType(capability, TYPES.agentSteer),
+    canInterrupt: open && owned && writable && supportsType(capability, TYPES.agentInterrupt),
   };
 }

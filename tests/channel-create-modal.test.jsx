@@ -8,11 +8,11 @@ import { ChannelCreateModal } from '../src/ui/ChannelCreateModal.jsx';
 afterEach(cleanup);
 
 const channel = { id: 'c0', name: 'c0', qualified_name: 'c0' };
-const roster = [{ id: 'registrar', name: 'registrar', decl_id: 'atoll-internal:registrar-seat' }];
+const roster = [{ id: 'system', name: 'system', kind: 'system' }];
 const emptyState = () => ({ turns: new Map() });
 
 function completedTurn(channelId = 'new-id') {
-  return { terminal: { payload: { status: 'completed', value: { id: channelId } } } };
+  return { terminal: { payload: { status: 'completed', value: { channel_id: channelId } } } };
 }
 
 describe('ChannelCreateModal', () => {
@@ -29,9 +29,9 @@ describe('ChannelCreateModal', () => {
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       channelId: 'c0',
-      msgType: 'channel.create',
-      audience: ['registrar'],
-      payload: { name: 'research', overrides: { profile: { description: '分析资料' } } },
+      msgType: 'system.channel.create',
+      audience: ['system'],
+      payload: { name: 'research', recipe: { declarations: [], profile: { description: '分析资料' } } },
     }));
     expect(await screen.findByRole('region', { name: '频道创建进度' })).toBeTruthy();
   });

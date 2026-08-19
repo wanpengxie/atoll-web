@@ -12,7 +12,7 @@ describe('timer model', () => {
     };
   });
   it('uses the real after field set', () => {
-    expect(timerPayload({ channelId: 'c0', durationMs: 1000, msgType: 'human.text', payload: { text: 'hi' } })).toEqual({ channel_id: 'c0', duration_ms: 1000, msg_type: 'human.text', payload: { text: 'hi' } });
+    expect(timerPayload({ channelId: 'c0', durationMs: 1000, msgType: 'agent.ask', payload: { text: 'hi' } })).toEqual({ channel_id: 'c0', duration_ms: 1000, msg_type: 'agent.ask', payload: { text: 'hi' } });
     expect(() => timerPayload({ channelId: 'c0', durationMs: 0, msgType: 'x' })).toThrow('正整数');
   });
   it('persists only browser-local timer records and transitions cancellation', () => {

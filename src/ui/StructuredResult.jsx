@@ -1,4 +1,5 @@
 import React from 'react';
+import { TYPES } from '../protocol/vocab.js';
 
 const META_FIELDS = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
 const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
@@ -39,13 +40,11 @@ export function terminalPresentation(requestType, payload = {}) {
   if (Object.prototype.hasOwnProperty.call(payload, 'text')) {
     return { kind: 'text', text: String(payload.text ?? ''), empty: payload.text === '' };
   }
-  const described = requestType === 'actor.describe' && payload.value && typeof payload.value === 'object' && !Array.isArray(payload.value)
-    ? payload.value
-    : payload;
-  if (requestType === 'actor.describe' || (described.actor_id && (described.types || described.type))) {
-    const safeDescribe = redactSensitive(described);
-    const value = Object.fromEntries(Object.entries(safeDescribe).filter(([key]) => !META_FIELDS.has(key)));
-    return { kind: 'describe', title: described.description || described.actor_id || 'Actor 能力', value };
+  // actor.describe 的终态就是 Describe 平铺在 status 旁边：{class, interfaces,
+  // capabilities, words}。
+  if (requestType === TYPES.describe || (payload.words && payload.class)) {
+    const value = Object.fromEntries(Object.entries(business).filter(([key]) => !META_FIELDS.has(key)));
+    return { kind: 'describe', title: payload.class ? `${payload.class} 的能力` : 'Actor 能力', value };
   }
   if (payload.word || Object.prototype.hasOwnProperty.call(payload, 'value')) {
     return { kind: 'registrar', title: payload.word || requestType || '操作结果', value: safe.value, meta: business };

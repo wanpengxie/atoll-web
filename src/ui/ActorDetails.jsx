@@ -1,16 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { capabilityRisk, typeSupportsRequest } from '../model/capabilities.js';
+import { TYPES } from '../protocol/vocab.js';
 import { buildFormSpec, valuesToPayload } from '../model/dynamic-form.js';
 import { DynamicFields, initialFieldValues } from './DynamicFields.jsx';
 
 const RISK_LABEL = { normal: '普通', medium: '任务控制', high: '高风险', critical: '极高风险' };
 const CONTROL_LABEL = {
-  'agent.steer': '调整方向',
-  'agent.interrupt': '打断当前回合',
-  'agent.queue': '排队新任务',
-  'agent.stop': '停止 Agent 工作',
-  'agent.terminate': '终止 Agent 运行时',
-  'agent.restart': '重启 Agent 运行时',
+  [TYPES.agentAsk]: '提问',
+  [TYPES.agentSteer]: '调整方向',
+  [TYPES.agentInterrupt]: '打断当前回合',
+  [TYPES.agentQueue]: '排队新任务',
+  [TYPES.agentStop]: '停止 Agent 工作',
+  [TYPES.agentFork]: '分叉出新 Agent',
+  [TYPES.agentCompact]: '压缩上下文',
+  [TYPES.agentSelect]: '切换模型与算力',
+  [TYPES.agentContext]: '查看上下文用量',
 };
 
 function CapabilityForm({ actor, type, meta, disabled, onInvoke, onClose }) {
@@ -76,8 +80,10 @@ export function ActorDetails({ actor, capability, disabled = false, onDescribe, 
     <section className="actor-details" aria-label={`Actor 详情 ${actor.name || actor.id}`}>
       <header className="actor-details-header"><div><p className="eyebrow">ACTOR CAPABILITIES</p><h3>{actor.name || actor.id}</h3><code>{actor.id}</code></div><button type="button" onClick={onClose} aria-label="关闭 Actor 详情">×</button></header>
       <div className="actor-details-scroll">
-        <p className="actor-details-description">{describe?.description || actor.description || '尚未读取 Actor 自述能力。'}</p>
-        {describe?.skillDoc && <details className="skill-doc"><summary>使用说明</summary><pre>{describe.skillDoc}</pre></details>}
+        <p className="actor-details-description">{actor.description || (describe ? `${describe.className}（${describe.interfaces.join(' / ')}）` : '尚未读取 Actor 自述能力。')}</p>
+        {describe && Object.keys(describe.capabilities).length > 0 && (
+          <p className="actor-capability-flags">运行时能力：{Object.entries(describe.capabilities).filter(([, on]) => on).map(([name]) => name).join('、') || '无'}</p>
+        )}
         <div className="describe-toolbar"><span>{capability?.loading ? '正在读取能力…' : describe ? `${types.length} 项能力` : '能力未知'}</span><button type="button" onClick={onDescribe} disabled={disabled || capability?.loading}>{describe ? '刷新能力' : '读取能力'}</button></div>
         {capability?.error && <p className="describe-error" role="alert"><strong>{capability.error.code}</strong>{capability.error.detail}</p>}
         <div className="capability-list">{types.map((meta) => {
@@ -86,11 +92,9 @@ export function ActorDetails({ actor, capability, disabled = false, onDescribe, 
           return (
             <article className={`capability-row risk-${risk}`} key={meta.type}>
               <div><strong>{CONTROL_LABEL[meta.type] || meta.type}</strong><code>{meta.type}</code><p>{meta.description || '无描述'}</p></div>
-              <div className="capability-meta"><span>{RISK_LABEL[risk]}</span>{meta.maxPendingMs > 0 && <span>预计 ≤ {Math.ceil(meta.maxPendingMs / 1000)} 秒</span>}</div>
-              {meta.payloadFields.length > 0 && <p className="payload-summary">参数：{meta.payloadFields.map((field) => `${field.name}${field.required ? '*' : ''}`).join('、')}</p>}
-              {meta.notes && <p className="capability-notes">说明：{meta.notes}</p>}
-              {meta.errorCodes.length > 0 && <details><summary>错误与恢复</summary>{meta.errorCodes.map((item) => <p key={item.code}><code>{item.code}</code> {item.description}{item.recovery && <small>恢复：{item.recovery}</small>}</p>)}</details>}
-              <button type="button" onClick={() => setActiveType(meta.type)} disabled={disabled || !supported || meta.type === 'actor.describe'}>{supported ? '调用' : '仅事件能力'}</button>
+              <div className="capability-meta"><span>{RISK_LABEL[risk]}</span></div>
+              {meta.errorCodes.length > 0 && <details><summary>可能的错误</summary>{meta.errorCodes.map((item) => <p key={item.code}><code>{item.code}</code></p>)}</details>}
+              <button type="button" onClick={() => setActiveType(meta.type)} disabled={disabled || !supported || meta.type === TYPES.describe}>{supported ? '调用' : '仅事件能力'}</button>
             </article>
           );
         })}{describe && !types.length && <p className="roster-empty">该 Actor 未声明可调用类型</p>}</div>

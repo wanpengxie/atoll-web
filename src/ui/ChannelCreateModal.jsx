@@ -25,7 +25,7 @@ export function ChannelCreateModal({
 }) {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
-  const [template, setTemplate] = useState('');
+
   const [createRequest, setCreateRequest] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -53,7 +53,7 @@ export function ChannelCreateModal({
     setError('');
     setSubmitting(true);
     try {
-      const id = await onSubmit(createChannelCommand({ parentId: channel.id, name, purpose, template, roster }));
+      const id = await onSubmit(createChannelCommand({ parentId: channel.id, name, purpose, roster }));
       setCreateRequest({ id, name: name.trim() });
     } catch (failure) {
       setError(failure?.message || String(failure));
@@ -79,7 +79,6 @@ export function ChannelCreateModal({
         <label><span>频道名称</span><input ref={nameRef} aria-label="新频道名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 backend" disabled={locked} aria-invalid={Boolean(name && validation)} required /></label>
         {name && validation && <small className="field-error">{validation}</small>}
         <label><span>用途</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>
-        <label><span>模板 ID（可选）</span><input aria-label="频道模板 ID" value={template} onChange={(event) => setTemplate(event.target.value)} placeholder="已登记的 channel template ID" disabled={locked} /></label>
 
         {error && <p className="governance-error" role="alert">{error}</p>}
         {convergence && <section className="convergence channel-create-progress" aria-label="频道创建进度" aria-live="polite">

@@ -80,7 +80,7 @@ describe('wire client', () => {
     socket.open();
     receipt(socket, socket.sent[0], { contract_version: 'v4' });
 
-    const accepted = wire.submit({ channel_id: 'c0', msg_type: 'human.text' });
+    const accepted = wire.submit({ channel_id: 'c0', msg_type: 'agent.ask' });
     const submit = socket.sent.at(-1);
     receipt(socket, submit, { message_id: 'm1' });
     await expect(accepted).resolves.toEqual({ message_id: 'm1' });
@@ -117,7 +117,7 @@ describe('wire client', () => {
     const socket = FakeWebSocket.instances[0];
     socket.open();
     receipt(socket, socket.sent[0]);
-    const request = wire.submit({ channel_id: 'c0', msg_type: 'human.text' });
+    const request = wire.submit({ channel_id: 'c0', msg_type: 'agent.ask' });
     socket.close();
     await expect(request).rejects.toEqual(expect.objectContaining({ code: 'closed' }));
     await expect(Promise.reject(new WireError({ code: 'closed' }))).rejects.toBeInstanceOf(WireError);

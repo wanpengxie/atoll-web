@@ -80,9 +80,12 @@ afterEach(async () => Promise.all([...servers].map(close)));
 describe('Phase C mock contract', () => {
   it('returns real Describe metadata and preserves typed capability payload/result', async () => {
     const { server, wire, feeds } = await connect('actor-capability');
-    const describe = feeds.find((row) => row.envelope.id === 'c0-actor-describe-completed')?.envelope;
-    expect(describe?.payload.value.types['mock.order.create']).toMatchObject({
-      allowed_kinds: ['request'], max_pending_ms: 5_000,
+    const describe = await waitFor(
+      () => feeds.find((row) => row.envelope.id === 'c0-actor-describe-completed')?.envelope,
+      'seeded actor.describe replay',
+    );
+    expect(describe.payload).toMatchObject({ class: 'codex', interfaces: ['actor', 'agent'] });
+    expect(describe.payload.words['mock.order.create']).toMatchObject({
       input_schema: { type: 'object', required: ['name', 'count'] },
     });
 
@@ -98,7 +101,7 @@ describe('Phase C mock contract', () => {
 
   it('separates cancel receipt from the original cancelled terminal and keeps stable errors', async () => {
     const { server, wire, feeds } = await connect('long-running');
-    await wire.submit(request('long-cancel', 'human.text', { text: '持续运行' }));
+    await wire.submit(request('long-cancel', 'agent.ask', { text: '持续运行' }));
     await waitFor(() => feeds.some((row) => row.envelope.parent_id === 'long-cancel' && row.envelope.payload?.turn_id), 'processing turn id');
     await expect(wire.cancel({ channel_id: 'c0', req_id: 'long-cancel' })).resolves.toEqual({ req_id: 'long-cancel' });
     expect(terminal(feeds, 'long-cancel')).toBeUndefined();
@@ -118,7 +121,7 @@ describe('Phase C mock contract', () => {
 
   it('uses turn CAS for steer and returns independent control terminals', async () => {
     const { server, wire, feeds } = await connect('long-running');
-    await wire.submit(request('long-steer', 'human.text', { text: '原任务' }));
+    await wire.submit(request('long-steer', 'agent.ask', { text: '原任务' }));
     const processing = await waitFor(
       () => feeds.find((row) => row.envelope.parent_id === 'long-steer' && row.envelope.payload?.turn_id)?.envelope,
       'steerable processing',

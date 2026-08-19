@@ -24,7 +24,7 @@ describe('mock protocol layer', () => {
 
   it('rejects missing and unknown upstream fields', () => {
     expect(validatePayload('submit', { channel_id: 'c0' })).toContain('msg_type');
-    expect(validatePayload('submit', { channel_id: 'c0', msg_type: 'human.text', extra: true }))
+    expect(validatePayload('submit', { channel_id: 'c0', msg_type: 'agent.ask', extra: true }))
       .toContain('unknown field: extra');
     expect(validatePayload('missing', {})).toContain('unknown upstream frame_type');
   });
@@ -32,10 +32,10 @@ describe('mock protocol layer', () => {
   it('accepts every minimal closed-set payload', () => {
     const values = {
       attach: {},
-      submit: { channel_id: 'c0', msg_type: 'human.text' },
+      submit: { channel_id: 'c0', msg_type: 'agent.ask' },
       resolve: { channel_id: 'c0', req_id: 'r', decision: 'approved' },
       cancel: { channel_id: 'c0', req_id: 'r' },
-      after: { channel_id: 'c0', duration_ms: 1, msg_type: 'human.text' },
+      after: { channel_id: 'c0', duration_ms: 1, msg_type: 'agent.ask' },
       cancel_timer: { channel_id: 'c0', timer_id: 't' },
       resource: { channel_id: 'c0', op: 'list' },
       observe: { channel_id: 'c1' },
@@ -53,6 +53,6 @@ describe('mock protocol layer', () => {
   });
 
   it('rejects invalid timer durations', () => {
-    expect(validatePayload('after', { channel_id: 'c0', duration_ms: 0, msg_type: 'human.text' })).toContain('positive');
+    expect(validatePayload('after', { channel_id: 'c0', duration_ms: 0, msg_type: 'agent.ask' })).toContain('positive');
   });
 });

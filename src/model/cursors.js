@@ -1,5 +1,5 @@
-const CURSOR_PREFIX = 'atoll.cursor.v2.';
-const READ_PREFIX = 'atoll.read.v2.';
+const CURSOR_PREFIX = 'atoll.cursor.v3.';
+const READ_PREFIX = 'atoll.read.v3.';
 
 function safeNumber(value) {
   const number = Number(value);

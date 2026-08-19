@@ -36,7 +36,7 @@ it('任务 Modal 保留来源并只提交所选真实 provider', async () => {
 
 it('自动动作详情明确本设备范围并提供取消', async () => {
   const user = userEvent.setup(); const onCancel = vi.fn();
-  render(<WorkItemContext item={{ key: 'automation:c1:t1', kind: 'automation', nativeId: 't1', title: '周报提醒', state: 'waiting', assigneeActorIds: [], requesterActorId: 'me', dueAt: 1000, actionableBySelf: true, provenance: 'local_durable', localScope: 'this_device', diagnostic: { msgType: 'human.text', payload: { text: '周报' } }, source: { view: 'tasks' } }} roster={[{ id: 'me', name: '我' }]} onCancelAutomation={onCancel} onSource={() => {}} onClose={() => {}} />);
+  render(<WorkItemContext item={{ key: 'automation:c1:t1', kind: 'automation', nativeId: 't1', title: '周报提醒', state: 'waiting', assigneeActorIds: [], requesterActorId: 'me', dueAt: 1000, actionableBySelf: true, provenance: 'local_durable', localScope: 'this_device', diagnostic: { msgType: 'agent.ask', payload: { text: '周报' } }, source: { view: 'tasks' } }} roster={[{ id: 'me', name: '我' }]} onCancelAutomation={onCancel} onSource={() => {}} onClose={() => {}} />);
   expect(screen.getByText('本设备记录')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: '取消本设备自动动作' }));
   expect(onCancel).toHaveBeenCalledWith('t1');

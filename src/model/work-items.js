@@ -1,9 +1,13 @@
-import { supportsType } from './capabilities.js';
+import { isAgentControl, supportsType } from './capabilities.js';
+import { TYPES, isSystemWord } from '../protocol/vocab.js';
 
 export const WORK_ITEM_KINDS = ['task', 'approval', 'agent_run', 'recovery', 'automation'];
 export const ACTIVE_WORK_ITEM_STATES = new Set(['active', 'waiting', 'blocked', 'uncertain']);
 
-const CONTROL_TYPES = new Set(['actor.describe', 'agent.steer', 'agent.interrupt', 'agent.queue', 'agent.stop', 'agent.terminate', 'agent.restart']);
+// 控制词与治理词都不是“一件正在进行的工作”，不进工作项索引。
+function isControlRequest(type = '') {
+  return type === TYPES.describe || isAgentControl(type) || isSystemWord(type);
+}
 
 function source(channelId, objectType, objectId, seq) {
   return { channelId, view: 'dynamic', objectType, objectId, seq };
@@ -84,7 +88,7 @@ export function buildWorkItemIndex({ state, pending = [], timers = [], selfId = 
       });
       continue;
     }
-    if (request.type === 'human.approve') {
+    if (request.type === TYPES.humanApprove || request.type === TYPES.humanAsk) {
       const itemState = approvalState(turn, now);
       const assignees = request.audience || [];
       index.set(`approval:${channelId}:${turn.requestId}`, {
@@ -97,7 +101,7 @@ export function buildWorkItemIndex({ state, pending = [], timers = [], selfId = 
       });
       continue;
     }
-    if (!CONTROL_TYPES.has(request.type)) {
+    if (!isControlRequest(request.type)) {
       index.set(`agent_run:${channelId}:${turn.requestId}`, {
         key: `agent_run:${channelId}:${turn.requestId}`, channelId, kind: 'agent_run', nativeId: turn.requestId,
         title: titleOfTurn(turn), state: stateOfTurn(turn), assigneeActorIds: request.audience || [], requesterActorId: request.sender?.id,

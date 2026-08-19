@@ -1,16 +1,28 @@
 import { parseJSONDocument } from './capabilities.js';
+import { TYPES } from '../protocol/vocab.js';
 
+// agent 基座的控制词没有 input_schema（Manifest 只给一行描述），所以这里补一张
+// 客户端表单表。字段名对齐 drivers/agents/base/loop.go 的解码结构。
 const KNOWN_CONTROL_FIELDS = Object.freeze({
-  'agent.steer': [
-    { name: 'text', required: true, description: '补充或调整当前任务方向', type: 'string', multiline: true },
+  [TYPES.agentAsk]: [
+    { name: 'text', required: true, description: '要问 Agent 的内容', type: 'string', multiline: true },
   ],
-  'agent.queue': [
+  [TYPES.agentSteer]: [
+    { name: 'text', required: true, description: '补充或调整当前任务方向', type: 'string', multiline: true },
+    { name: 'expected_turn_id', required: false, description: '只在这一回合仍在进行时生效', type: 'string' },
+  ],
+  [TYPES.agentQueue]: [
     { name: 'text', required: true, description: '排队的新任务内容', type: 'string', multiline: true },
   ],
-  'agent.interrupt': [],
-  'agent.stop': [],
-  'agent.terminate': [],
-  'agent.restart': [],
+  [TYPES.agentSelect]: [
+    { name: 'model', required: false, description: '切换到的模型', type: 'string' },
+    { name: 'effort', required: false, description: '推理力度', type: 'string' },
+  ],
+  [TYPES.agentInterrupt]: [],
+  [TYPES.agentStop]: [],
+  [TYPES.agentCompact]: [],
+  [TYPES.agentContext]: [],
+  [TYPES.agentFork]: [],
 });
 
 function inferredType(value) {
@@ -52,19 +64,6 @@ export function buildFormSpec(type, meta = {}) {
       fields: Object.entries(schema.properties).map(([name, field]) => fieldFromSchema(name, field, required.has(name))),
       initial: meta.payloadExample || {},
       additionalProperties: schema.additionalProperties !== false,
-    };
-  }
-  if (Array.isArray(meta.payloadFields) && meta.payloadFields.length) {
-    return {
-      mode: 'fields',
-      fields: meta.payloadFields.map((field) => ({
-        ...field,
-        type: field.type || inferredType(field.example),
-        enum: field.enum || null,
-        multiline: field.multiline || false,
-      })),
-      initial: meta.payloadExample || {},
-      additionalProperties: true,
     };
   }
   if (Object.prototype.hasOwnProperty.call(KNOWN_CONTROL_FIELDS, type)) {
@@ -110,8 +109,11 @@ export function valuesToPayload(spec, values = {}, rawJSON = '') {
   return payload;
 }
 
-export function approvalFormSpec(payload = {}) {
-  const schema = payload.response_schema || payload.resolve_schema;
-  if (schema) return buildFormSpec('human.approve.resolve', { inputSchema: schema, payloadExample: payload.response_example || null });
-  return { mode: 'json', fields: [], initial: {}, reason: '该审批没有声明响应字段，请输入可选 JSON object' };
+// resolve 帧的字段闭集由 platform/subjectgate 定死：human.ask 只收 text，
+// human.approve 只收 decision + 可选 note。所以这里没有“动态表单”的余地。
+export function resolveFormSpec(requestType) {
+  if (requestType === TYPES.humanAsk) {
+    return { mode: 'text', field: 'text', label: '你的回答', required: true };
+  }
+  return { mode: 'decision', field: 'note', label: '备注（可选）', required: false };
 }

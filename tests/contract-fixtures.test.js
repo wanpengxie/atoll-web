@@ -30,10 +30,16 @@ describe('atoll contract v2 fixtures', () => {
     }
   });
 
-  it('pins registrar, actor.describe and resource ticket result carriers', () => {
-    expect(fixtures.structured.registrar_reply).toMatchObject({ word: 'channel.create', source: { channel_id: 'c0' } });
-    expect(fixtures.structured.registrar_error.code).toBe('permission_denied');
-    expect(fixtures.structured.actor_describe.types['human.text'].payload_fields[0]).toMatchObject({ name: 'text', required: true });
+  it('pins the real terminal payload carriers', () => {
+    // registrar 类的词回 {status, value}；system actor 自己答的词把回复平铺在 status 旁边。
+    expect(fixtures.structured.registrar_reply).toMatchObject({ status: 'completed', value: { channel_id: 'c0.project' } });
+    expect(fixtures.structured.registrar_error.error_code).toBe('permission_denied');
+    expect(fixtures.structured.member_list_reply.actors[0]).toMatchObject({ id: expect.any(String), kind: 'agent', present: true });
+    expect(fixtures.structured.member_create_reply.member).toBeTruthy();
+    expect(fixtures.structured.agent_ask_reply).toMatchObject({ status: 'completed', text: expect.any(String) });
+    // actor.describe = Describe 平铺：class / interfaces / capabilities / words。
+    expect(fixtures.structured.actor_describe).toMatchObject({ class: 'codex', interfaces: ['actor', 'agent'] });
+    expect(fixtures.structured.actor_describe.words['agent.ask'].description).toBeTruthy();
     expect(fixtures.downstream.resource_receipt.payload).toHaveProperty('ticket');
     expect(fixtures.downstream.resource_receipt.payload).toHaveProperty('redeem');
   });

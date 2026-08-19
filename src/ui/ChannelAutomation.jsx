@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { TYPES } from '../protocol/vocab.js';
 import { parseJSONObject } from '../model/space-administration.js';
 import { timerPayload } from '../model/timers.js';
 import { PanelCard } from './primitives/PanelCard.jsx';
@@ -6,7 +7,7 @@ import { SidePanel } from './primitives/SidePanel.jsx';
 
 export function ChannelAutomation({ channel, records, disabled, onAfter, onCancel, onClose, surface = 'context' }) {
   const [duration, setDuration] = useState('5000');
-  const [msgType, setMsgType] = useState('human.text');
+  const [msgType, setMsgType] = useState(TYPES.agentAsk);
   const [payload, setPayload] = useState('{"text":"定时消息"}');
   const [error, setError] = useState('');
   async function create() {

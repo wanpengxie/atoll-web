@@ -1,19 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { actorTemplateCommand, deviceCommand, isProtectedDeclaration, overlayCommand, parseJSONObject, profileCommand, safeDaemonRows, terminalValue } from '../src/model/space-administration.js';
 
-const registrarRoster = [{ id: 'registrar', kind: 'tool', decl_id: 'atoll-internal:registrar-seat' }];
-const channelRoster = [{ id: 'coreactor', kind: 'tool', decl_id: 'coreactor' }];
+const roster = [{ id: 'system', kind: 'system', name: 'system' }];
 
 describe('space administration model', () => {
-  it('builds registrar actor template commands and protects system declarations', () => {
-    expect(actorTemplateCommand('register', { id: 'demo:agent', name: 'Demo', class: 'agent', visibility: 'private', config: { a: 1 } }, registrarRoster).payload).toEqual({ id: 'demo:agent', name: 'Demo', class: 'agent', visibility: 'private', config: { a: 1 } });
-    expect(isProtectedDeclaration('atoll-internal:svcactor')).toBe(true);
-    expect(() => actorTemplateCommand('revoke', { id: 'atoll-internal:svcactor' }, registrarRoster)).toThrow('受保护');
+  it('builds actor template commands and protects system declarations', () => {
+    const command = actorTemplateCommand('register', { id: 'demo:agent', name: 'Demo', class: 'agent', visibility: 'private', config: { a: 1 } }, roster);
+    expect(command.msgType).toBe('system.actor.template.create');
+    expect(command.payload).toEqual({ id: 'demo:agent', name: 'Demo', class: 'agent', visibility: 'private', config: { a: 1 } });
+    expect(isProtectedDeclaration('svcactor')).toBe(true);
+    expect(() => actorTemplateCommand('revoke', { id: 'svcactor' }, roster)).toThrow('受保护');
   });
 
-  it('targets overlay/profile at the source channel coreactor', () => {
-    expect(overlayCommand({ channelId: 'c0.work', declId: 'demo:agent', config: { model: 'x' }, roster: channelRoster })).toMatchObject({ channelId: 'c0.work', audience: ['coreactor'], payload: { channel_id: 'c0.work', decl_id: 'demo:agent', config: { model: 'x' } } });
-    expect(profileCommand({ channelId: 'c0.work', description: 'Work', serving: 2, endpoints: {}, roster: channelRoster }).payload.serving).toBe(2);
+  it('targets overlay/profile at the source channel system actor', () => {
+    expect(overlayCommand({ channelId: 'c0.work', declId: 'demo:agent', config: { model: 'x' }, roster }))
+      .toMatchObject({ channelId: 'c0.work', audience: ['system'], msgType: 'system.actor.overlay.set', payload: { channel_id: 'c0.work', decl_id: 'demo:agent', config: { model: 'x' } } });
+    // system.channel.set 的 serving 是 0/1 闭集，且不接受 endpoints。
+    expect(profileCommand({ channelId: 'c0.work', description: 'Work', serving: 1, roster }).payload)
+      .toEqual({ channel_id: 'c0.work', description: 'Work', serving: 1 });
+    expect(() => profileCommand({ channelId: 'c0.work', serving: 2, roster })).toThrow('serving');
   });
 
   it('projects daemon observations without secret fields', () => {
@@ -30,6 +35,10 @@ describe('space administration model', () => {
   });
 
   it('builds device actions with closed real fields', () => {
-    expect(deviceCommand('attach', { channelId: 'c0.work', deviceId: 'd1' }, registrarRoster).payload).toEqual({ channel_id: 'c0.work', device_id: 'd1' });
+    const attach = deviceCommand('attach', { channelId: 'c0.work', deviceId: 'd1' }, roster);
+    expect(attach.msgType).toBe('system.device.attach');
+    expect(attach.payload).toEqual({ channel_id: 'c0.work', device_id: 'd1' });
+    // 后端没有 device.claim 这个词。
+    expect(() => deviceCommand('claim', { deviceId: 'd1', name: 'x' }, roster)).toThrow('未知设备操作');
   });
 });

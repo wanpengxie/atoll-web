@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { resolveManagementActors } from '../src/model/management-actors.js';
+import { isSystemDeclaration, resolveManagementActors, SYSTEM_ACTOR } from '../src/model/management-actors.js';
 
 describe('management actor resolver', () => {
-  it('uses registrar in c0 and a decl-based coreactor in ordinary channels', () => {
-    const c0 = resolveManagementActors([{ id: 'random-registrar', decl_id: 'atoll-internal:registrar-seat' }, { id: 'system' }]);
-    expect(c0.channelRegistry.id).toBe('random-registrar');
-    expect(c0.system.id).toBe('system');
-    const ordinary = resolveManagementActors([{ id: 'generated-peer-id', decl_id: 'coreactor' }, { id: 'some-tool', kind: 'tool' }]);
-    expect(ordinary.channelRegistry.id).toBe('generated-peer-id');
-    expect(ordinary.registrar).toBeNull();
+  it('总是解析到本频道的 system actor，名册里没有它时用恒定描述兜底', () => {
+    const listed = resolveManagementActors([{ id: 'system', kind: 'system', name: 'system' }, { id: 'some-tool', kind: 'tool' }]);
+    expect(listed.system.id).toBe('system');
+    // system.member.list 不列自己，所以名册里通常看不到 system actor。
+    const absent = resolveManagementActors([{ id: 'some-tool', kind: 'tool' }]);
+    expect(absent.system).toEqual(SYSTEM_ACTOR);
+  });
+
+  it('识别 genesis 铸出的系统声明', () => {
+    expect(isSystemDeclaration('registrar')).toBe(true);
+    expect(isSystemDeclaration('svcactor')).toBe(true);
+    expect(isSystemDeclaration('peer:c0.lobby')).toBe(true);
+    expect(isSystemDeclaration('mock:steward')).toBe(false);
   });
 });

@@ -10,6 +10,9 @@ import { readFileTicket } from './model/resources.js';
 import { safeDaemonRows } from './model/space-administration.js';
 import { buildWorkItemIndex, taskProviders } from './model/work-items.js';
 import { parseWorkspaceHash, writeWorkspaceRoute } from './model/workspace-route.js';
+import { messagePresentation } from './model/message-presentation.js';
+import { isSystemWord, TYPES } from './protocol/vocab.js';
+import { newId } from './util/id.js';
 import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
 import { createObsClient, isUnsupportedMembershipObservation, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
@@ -54,30 +57,32 @@ async function loadChannelTree(obs) {
   return { channels: found, complete };
 }
 
-const GOVERNANCE_OPERATION_TYPES = new Set([
-  'channel.create', 'channel.introduce_actor', 'channel.remove_actor', 'channel.restart_actor', 'channel.retire',
-  'actor.template.register', 'actor.template.remove', 'channel.template.register', 'channel.template.remove',
-  'channel.overlay.apply', 'channel.profile.apply', 'device.attach', 'device.detach', 'device.retire',
+// 治理操作 = 写入类的 system 词。读取类（list / get / describe）不进操作台。
+const GOVERNANCE_READ_TYPES = new Set([
+  TYPES.channel.get, TYPES.channel.list, TYPES.channelTemplate.get, TYPES.channelTemplate.list,
+  TYPES.actorTemplate.get, TYPES.actorTemplate.list, TYPES.principal.get, TYPES.principal.list,
+  TYPES.device.list, TYPES.member.list, TYPES.member.get, TYPES.log.recent,
 ]);
+
+function isGovernanceOperation(type = '') {
+  return isSystemWord(type) && !GOVERNANCE_READ_TYPES.has(type);
+}
 
 function governanceOperationTitle(turn) {
   const type = turn.request?.type || '';
   const payload = turn.request?.payload || {};
-  if (type === 'channel.create') return `创建频道 ${payload.name || ''}`.trim();
-  if (type === 'channel.introduce_actor') return `添加参与者 ${payload.principal || payload.decl_id || ''}`.trim();
-  if (type === 'channel.remove_actor') return `移除参与者 ${payload.instance_id || ''}`.trim();
-  if (type === 'channel.restart_actor') return `重启参与者 ${payload.instance_id || ''}`.trim();
-  if (type === 'channel.retire') return '退役频道';
-  return turn.request?.payload?.title || type;
+  const known = messagePresentation(turn.request || {});
+  if (type === TYPES.channel.create) return `创建频道 ${payload.name || ''}`.trim();
+  return known.detail ? `${known.text} ${known.detail}`.trim() : known.text || payload.title || type;
 }
 
 function governanceOperation(channel, turn, channelRows) {
   const terminal = turn.terminal?.payload;
   let state = terminal?.status === 'failed' ? 'failed' : terminal?.status === 'cancelled' ? 'cancelled' : terminal?.status === 'completed' ? 'completed' : 'waiting_ledger';
   let detail = terminal ? '账本已确认' : '等待账本确认';
-  if (turn.request?.type === 'channel.create' && terminal?.status === 'completed') {
+  if (turn.request?.type === TYPES.channel.create && terminal?.status === 'completed') {
     const expected = `${channel.qualified_name || channel.name || channel.id}.${turn.request.payload?.name || ''}`;
-    const created = channelRows.find((row) => row.id === terminal.value?.id || row.qualified_name === expected);
+    const created = channelRows.find((row) => row.id === terminal.value?.channel_id || row.qualified_name === expected);
     if (!created) { state = 'waiting_projection'; detail = '等待频道可观察'; }
     else if (!isMemberAccess(created.access)) { state = 'waiting_projection'; detail = '等待成员关系'; }
     else if (created.open !== true) { state = 'waiting_projection'; detail = '等待服务就绪'; }
@@ -285,7 +290,7 @@ export default function App() {
       },
       onState: (state) => {
         if (state === 'attached') {
-          access.wire('attached', crypto.randomUUID());
+          access.wire('attached', newId());
           setWireState('open');
         } else if (state === 'reconnecting') {
           access.wire('disconnected');
@@ -475,7 +480,7 @@ export default function App() {
     await handleSend({
       channelId,
       text: `读取 ${actor.name || actor.id} 的能力`,
-      msgType: 'actor.describe',
+      msgType: TYPES.describe,
       audience: [actor.id],
       targetLabel: actor.name || actor.id,
       payload: {},
@@ -520,7 +525,7 @@ export default function App() {
       return { ...channel, state, roster, participants: roster, artifacts: buildArtifactIndex(state), workItems };
     });
     const governanceOperations = channelData.flatMap((channel) => [...channel.state.turns.values()]
-      .filter((turn) => GOVERNANCE_OPERATION_TYPES.has(turn.request?.type))
+      .filter((turn) => isGovernanceOperation(turn.request?.type))
       .map((turn) => governanceOperation(channel, turn, channelList)));
     const submissionOperations = pending.map((item) => ({
       key: item.key,

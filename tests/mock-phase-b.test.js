@@ -76,7 +76,7 @@ describe('Phase B mock contract', () => {
       onFeed: (_channelId, _seq, envelope) => feeds.push(envelope),
     });
     await waitFor(() => attached);
-    const frame = { channel_id: 'c0', id: 'client-stable-id', msg_type: 'human.text', kind: 'request', payload: { text: 'same' }, audience: ['steward'], visibility: 'public' };
+    const frame = { channel_id: 'c0', id: 'client-stable-id', msg_type: 'agent.ask', kind: 'request', payload: { text: 'same' }, audience: ['steward'], visibility: 'public' };
     await expect(wire.submit(frame)).resolves.toMatchObject({ message_id: 'client-stable-id' });
     await waitFor(() => feeds.some((envelope) => envelope.id === 'client-stable-id'));
     await expect(wire.submit(frame)).resolves.toMatchObject({ message_id: 'client-stable-id' });

@@ -22,8 +22,11 @@
     "decls": {"subject": "space/decls", "kind": "decls", "complete": true, "items": [{"key": "mock:steward", "declared": {"id": "mock:steward", "name": "Steward", "owner": "root", "default_class": "codex", "status": "present", "visibility": "private", "created_at": 1723974400000, "updated_at": 1723974400000}, "actual": null}]}
   },
   "structured": {
-    "registrar_reply": {"word": "channel.create", "value": {"id": "c0.project", "name": "project", "qualified_name": "c0.project", "status": "present"}, "source": {"channel_id": "c0", "request_id": "m-create"}},
-    "registrar_error": {"code": "permission_denied", "detail": "operation is not allowed"},
-    "actor_describe": {"actor_id": "steward", "name": "Steward", "description": "Mock agent", "types": {"human.text": {"description": "Answer a text request", "allowed_kinds": ["request"], "max_pending_ms": 30000, "payload_fields": [{"name": "text", "required": true, "description": "Request text"}], "error_codes": [{"code": "invalid_args", "description": "Invalid input", "recovery": "Correct the fields"}]}}}
+    "registrar_reply": {"status": "completed", "value": {"channel_id": "c0.project"}},
+    "registrar_error": {"status": "failed", "reason": "receiver_internal_error", "error_code": "permission_denied", "detail": "operation is not allowed"},
+    "member_list_reply": {"status": "completed", "actors": [{"id": "agent:5d3fb46c:1787128257816", "kind": "agent", "name": "Steward", "present": true, "uptime_ms": 720724}]},
+    "member_create_reply": {"status": "completed", "member": "agent:5d3fb46c:1787128257816"},
+    "agent_ask_reply": {"status": "completed", "text": "你好", "turn_index": 1, "usage": {"context_tokens": 16089, "context_window": 258400, "effort": "", "model": ""}},
+    "actor_describe": {"status": "completed", "class": "codex", "interfaces": ["actor", "agent"], "capabilities": {"interrupt": true, "resume": true, "steer": true}, "words": {"agent.ask": {"description": "standard agent request"}, "agent.steer": {"description": "standard agent request"}}}
   }
 }
