@@ -74,10 +74,10 @@ test('F2-006 长文件名与不支持预览安全降级，窄屏无横向溢出'
 
 test('Composer 直接区分本机上传与 daemon 频道文件选择', async ({ page, request }) => {
   await reset(request, 1203); await login(page);
-  await expect(page.getByRole('button', { name: '上传本机文件到频道' })).toBeVisible();
+  await expect(page.getByLabel('上传本机文件到频道')).toBeVisible();
   await expect(page.getByRole('button', { name: '从频道文件选择' })).toBeVisible();
 
-  await page.getByLabel('选择要上传到当前频道的本机文件').setInputFiles({ name: '直接上传.txt', mimeType: 'text/plain', buffer: Buffer.from('由当前用户上传') });
+  await page.getByLabel('上传本机文件到频道').setInputFiles({ name: '直接上传.txt', mimeType: 'text/plain', buffer: Buffer.from('由当前用户上传') });
   await expect(page.getByLabel('待发送附件')).toContainText('直接上传.txt');
   await page.getByRole('button', { name: '预览文件 直接上传.txt' }).click();
   const draftPreview = page.getByRole('dialog', { name: '文件预览：直接上传.txt' });
@@ -93,6 +93,19 @@ test('Composer 直接区分本机上传与 daemon 频道文件选择', async ({ 
   await expect(picker).toBeHidden();
   await expect(page.getByLabel('待发送附件')).toContainText('直接上传.txt');
   await expect(page.getByRole('tab', { name: '动态' })).toHaveAttribute('aria-selected', 'true');
+
+  await page.setViewportSize({ width: 360, height: 760 });
+  const uploadBounds = await page.getByLabel('上传本机文件到频道').boundingBox();
+  const daemonPickerBounds = await page.getByRole('button', { name: '从频道文件选择' }).boundingBox();
+  expect(uploadBounds?.width).toBeGreaterThanOrEqual(44);
+  expect(uploadBounds?.height).toBeGreaterThanOrEqual(44);
+  expect(daemonPickerBounds?.width).toBeGreaterThanOrEqual(44);
+  expect(daemonPickerBounds?.height).toBeGreaterThanOrEqual(44);
+
+  await page.getByRole('tab', { name: '文件', exact: true }).click();
+  const mountedUploadBounds = await page.getByLabel('选择要上传到当前目录的文件').boundingBox();
+  expect(mountedUploadBounds?.width).toBeGreaterThanOrEqual(44);
+  expect(mountedUploadBounds?.height).toBeGreaterThanOrEqual(44);
 });
 
 test('Composer 支持粘贴与鼠标拖入本机文件', async ({ page, request }) => {

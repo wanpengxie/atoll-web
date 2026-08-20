@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createCursors } from '../../model/cursors.js';
 import { createFeedCache, resumeSnapshot } from '../../model/feed-cache.js';
 import { apply, createChannelState, reconcileApprovals } from '../../model/fold.js';
+import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
 
 const BATCH_SIZE = 250;
 
-export function useChannelFeed({ rosterRef, accessRef, activeChannelRef, onRoster, onError, onChannelsDiscovered, onTimerFired, onSubmissionFeed, onAccessChanged }) {
+export function useChannelFeed({ rosterRef, accessRef, activeChannelRef, onRoster, onError, onChannelsDiscovered, onDirectoryInvalidated, onTimerFired, onSubmissionFeed, onAccessChanged }) {
   const [version, setVersion] = useState(0);
   const cursorsRef = useRef(createCursors());
   const cacheRef = useRef(null);
@@ -57,6 +58,7 @@ export function useChannelFeed({ rosterRef, accessRef, activeChannelRef, onRoste
         if (rows) onRoster(row.channel_id, rows);
         if (error) onError(error);
       });
+      if (invalidatesChannelDirectory(row.envelope)) onDirectoryInvalidated(row.envelope);
       unseenChannels.add(row.channel_id);
       if (row.envelope?.id) {
         landedMessageIds.add(row.envelope.id);
@@ -75,7 +77,7 @@ export function useChannelFeed({ rosterRef, accessRef, activeChannelRef, onRoste
       for (const channelId of dirtyRef.current) cacheRef.current.save(statesRef.current.get(channelId));
       dirtyRef.current.clear();
     }
-  }, [accessRef, activeChannelRef, onAccessChanged, onChannelsDiscovered, onError, onRoster, onSubmissionFeed, onTimerFired, rosterRef]);
+  }, [accessRef, activeChannelRef, onAccessChanged, onChannelsDiscovered, onDirectoryInvalidated, onError, onRoster, onSubmissionFeed, onTimerFired, rosterRef]);
 
   const enqueue = useCallback((channelId, seq, envelope) => {
     queueRef.current.push({ channel_id: channelId, seq, envelope });

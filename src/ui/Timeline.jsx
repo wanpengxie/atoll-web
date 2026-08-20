@@ -133,11 +133,9 @@ function AttachmentCards({ attachments = [], onDownload, onPreview }) {
   })}</section>;
 }
 
-function MessageActions({ onOpen, onCreateTask, detailsOpen = false }) {
-  return <div className="message-actions" aria-label="条目操作">
-    {onOpen && <button type="button" onClick={onOpen}>{detailsOpen ? '收起详情' : '查看详情'}</button>}
-    {onCreateTask && <button type="button" onClick={onCreateTask}>创建任务</button>}
-  </div>;
+function MessageActions({ onCreateTask }) {
+  if (!onCreateTask) return null;
+  return <div className="message-actions" aria-label="条目操作"><button type="button" onClick={onCreateTask}>创建任务</button></div>;
 }
 
 // 一次被叫出来的调用。行本身就是它的开关：点开看它自己的结果，就地展开，不劫持
@@ -188,7 +186,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
   const controlContext = taskControlContext(turn, { selfId, access, capability });
   return (
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
-      <MessageFrame className="request-message" actions={<MessageActions onOpen={onOpen} onCreateTask={onCreateTask} detailsOpen={detailsOpen} />} identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
+      <MessageFrame className="request-message" actions={<MessageActions onCreateTask={onCreateTask} />} identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
           <div className="request-text"><MarkdownContent text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />

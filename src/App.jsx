@@ -141,12 +141,14 @@ export default function App() {
   const { records: timerRecords, markFired: markTimerFired, after: handleAfter, cancel: handleCancelTimer, clear: clearTimers } = useLocalAutomation({ principalId: me?.id, wireRef, activeChannelRef });
   const directoryActionsRef = useRef({});
   const submissionActionsRef = useRef({});
+  const accessRefreshActionsRef = useRef({});
   const receiveRoster = useCallback((channelId, rows) => setRosters((current) => new Map(current).set(channelId, rows)), []);
   const receiveFeedError = useCallback((error) => setTopError(displayError(error)), []);
   const forwardChannels = useCallback((channelIds) => directoryActionsRef.current.discover?.(channelIds), []);
+  const forwardDirectoryInvalidated = useCallback(() => accessRefreshActionsRef.current.schedule?.(), []);
   const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
-  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed } = useChannelFeed({ rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
+  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed } = useChannelFeed({ rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(null); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
@@ -206,6 +208,7 @@ export default function App() {
     if (!missing.length) return current;
     const next = new Map(current);
     for (const channelId of missing) next.set(channelId, { id: channelId, name: channelId.slice(0, 8), status: 'present' });
+    accessRefreshActionsRef.current.schedule?.();
     return next;
   });
   submissionActionsRef.current.reconcile = reconcileSubmissionFeed;
@@ -262,10 +265,16 @@ export default function App() {
         throw error;
       });
     };
-    const refreshAccess = () => Promise.all([
-      loadChannelTree(obs),
-      readMemberships(),
-    ]).then(([result, membershipObservation]) => {
+    let refreshTimer = null;
+    let refreshInFlight = null;
+    let refreshQueued = false;
+    let attachedOnce = false;
+    const refreshAccess = () => {
+      if (refreshInFlight) {
+        refreshQueued = true;
+        return refreshInFlight;
+      }
+      refreshInFlight = Promise.all([loadChannelTree(obs), readMemberships()]).then(([result, membershipObservation]) => {
       if (!alive) return;
       const profiles = [...result.channels.values()];
       access.channelsObserved(profiles, { complete: result.complete });
@@ -277,9 +286,25 @@ export default function App() {
       for (const membership of membershipRows.filter((row) => row.status === 'revoked')) roster.clearSelf(membership.channel_id);
       setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
       bumpAccess();
-    }).catch((error) => { if (alive && error?.status !== 401) setTopError(displayError(error)); });
+      }).catch((error) => { if (alive && error?.status !== 401) setTopError(displayError(error)); }).finally(() => {
+        refreshInFlight = null;
+        if (alive && refreshQueued) {
+          refreshQueued = false;
+          scheduleAccessRefresh();
+        }
+      });
+      return refreshInFlight;
+    };
+    const scheduleAccessRefresh = () => {
+      if (!alive || refreshTimer != null) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        refreshAccess();
+      }, 250);
+    };
+    accessRefreshActionsRef.current.schedule = scheduleAccessRefresh;
+    accessRefreshActionsRef.current.refresh = refreshAccess;
     refreshAccess();
-    const accessTimer = setInterval(refreshAccess, 1_500);
 
     setWireState('connecting');
     const wire = createWire({
@@ -297,6 +322,9 @@ export default function App() {
         if (state === 'attached') {
           access.wire('attached', newId());
           setWireState('open');
+          // 首次 attach 已有登录初始化 OBS；之后每次重连完成才重新对齐投影。
+          if (attachedOnce) scheduleAccessRefresh();
+          attachedOnce = true;
         } else if (state === 'reconnecting') {
           access.wire('disconnected');
           setWireState('reconnecting');
@@ -312,7 +340,8 @@ export default function App() {
 
     return () => {
       alive = false;
-      clearInterval(accessTimer);
+      if (refreshTimer != null) clearTimeout(refreshTimer);
+      accessRefreshActionsRef.current = {};
       wire.close();
       roster.close();
       cancelFeedTask();

@@ -116,7 +116,7 @@ test('B-BR-05 完整 provisional、命名空间状态和第一终态权威性', 
   await send(page, businessText);
   const businessTurn = page.locator('.turn-card').filter({ hasText: businessText });
   await businessTurn.hover();
-  await businessTurn.getByRole('button', { name: '查看详情' }).click();
+  await businessTurn.locator('.turn-process-summary').click();
   await expect(page.getByRole('region', { name: '回合详情' })).toContainText('provider.waiting');
   await page.getByRole('button', { name: '收起回合详情' }).click();
   await expect(page.getByText('PONG', { exact: true })).toBeVisible();

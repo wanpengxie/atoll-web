@@ -267,7 +267,7 @@ test('C-BR-10/13 刷新重放后长任务、turn_id 和控制资格只保留一�
   turn = page.locator('.turn-card').filter({ hasText: taskText });
   await expect(turn).toHaveCount(1);
   await turn.hover();
-  await turn.getByRole('button', { name: '查看详情' }).click();
+  await turn.locator('.turn-process-summary').click();
   await expect(page.getByRole('region', { name: '回合详情' })).toContainText(/turn-/);
   await page.getByRole('button', { name: '收起回合详情' }).click();
   await expect(turn.getByRole('button', { name: '取消任务' })).toBeVisible();

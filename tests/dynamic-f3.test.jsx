@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React, { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Composer } from '../src/ui/Composer.jsx';
 import { Timeline } from '../src/ui/Timeline.jsx';
@@ -27,9 +27,8 @@ it('main Dynamic exposes message actions but keeps tool activity in Turn Context
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" onOpenTurn={onOpenTurn} onCreateTask={() => {}} />);
   expect(screen.getByText('正在整理资料')).toBeTruthy();
   expect(screen.queryByText(/工具 · search/)).toBeNull();
-  await user.tab();
-  await user.tab();
-  await user.click(screen.getByRole('button', { name: '查看详情' }));
+  expect(screen.queryByRole('button', { name: '查看详情' })).toBeNull();
+  await user.click(document.querySelector('.turn-process-summary'));
   expect(onOpenTurn).toHaveBeenCalledWith(turn);
   expect(screen.getByRole('button', { name: '创建任务' })).toBeTruthy();
 });
@@ -176,7 +175,7 @@ describe('F3 Composer', () => {
     }
     render(<Harness />);
     expect(screen.getByRole('textbox', { name: '消息' })).toBeTruthy();
-    await user.upload(screen.getByLabelText('选择要上传到当前频道的本机文件'), new File(['test'], '本机文件.txt', { type: 'text/plain' }));
+    await user.upload(screen.getByLabelText('上传本机文件到频道'), new File(['test'], '本机文件.txt', { type: 'text/plain' }));
     expect(onUploadAttachments).toHaveBeenCalledOnce();
     await user.click(screen.getByRole('button', { name: '从频道文件选择' }));
     expect(onOpenChannelFiles).toHaveBeenCalledOnce();
@@ -209,7 +208,7 @@ describe('F3 Composer', () => {
     const pasteResult = fireEvent.paste(input, { clipboardData: { files: [pasted], getData: () => '' } });
     expect(pasteResult).toBe(false);
     expect(onUploadAttachments).toHaveBeenLastCalledWith([pasted]);
-    await waitFor(() => expect(screen.getByRole('button', { name: '上传本机文件到频道' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('上传本机文件到频道')).toBeTruthy());
 
     const dragged = new File(['report'], '拖入报告.pdf', { type: 'application/pdf' });
     const surface = document.querySelector('.composer-surface');
@@ -222,6 +221,31 @@ describe('F3 Composer', () => {
     const textPasteResult = fireEvent.paste(input, { clipboardData: { files: [], getData: () => '' } });
     expect(textPasteResult).toBe(true);
     expect(onUploadAttachments).toHaveBeenCalledTimes(2);
+  });
+
+  it('中文合成期间的临时高度不会重排消息区', () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    let notifyResize = () => {};
+    class TestResizeObserver {
+      constructor(callback) { notifyResize = callback; }
+      observe() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = TestResizeObserver;
+    let height = 116;
+    const { container, unmount } = render(<main className="workspace"><section className="timeline" /><Composer channelId="c0" roster={[{ id: 'agent-1', kind: 'agent', name: '研究员' }]} onSend={() => {}} /></main>);
+    const wrap = container.querySelector('.composer-wrap');
+    wrap.getBoundingClientRect = () => ({ width: 800, height, top: 0, right: 800, bottom: height, left: 0, x: 0, y: 0, toJSON: () => ({}) });
+    act(() => notifyResize([]));
+    expect(container.querySelector('.workspace').style.getPropertyValue('--composer-overlay-height')).toBe('116px');
+
+    fireEvent.compositionStart(screen.getByRole('textbox', { name: '消息' }), { data: '中' });
+    height = 138;
+    act(() => notifyResize([]));
+    expect(container.querySelector('.workspace').style.getPropertyValue('--composer-overlay-height')).toBe('116px');
+
+    unmount();
+    globalThis.ResizeObserver = originalResizeObserver;
   });
 
   it('发送反馈在请求从 pending 消失后收敛为已入账', async () => {

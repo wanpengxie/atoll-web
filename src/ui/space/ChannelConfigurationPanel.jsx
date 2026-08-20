@@ -42,7 +42,7 @@ export function ChannelConfigurationPanel({ channel, roster, states, disabled, o
       <label>Serving 数量<input aria-label="Profile Serving" type="number" min="0" value={profile.serving} onChange={(event) => setProfile({ ...profile, serving: event.target.value })} /></label>
       <label>Endpoints JSON<textarea aria-label="Profile Endpoints JSON" rows="8" value={profile.endpoints} onChange={(event) => setProfile({ ...profile, endpoints: event.target.value })} /></label>
       <button type="button" className="primary-button" disabled={disabled} onClick={configureProfile}>保存 Profile</button>
-      <p className="protected-note">“账本已完成”表示配置请求落账；上方状态是独立轮询的 OBS 应用证据。</p>
+      <p className="protected-note">“账本已完成”表示配置请求落账；上方状态是由 WS 失效信号刷新得到的独立 OBS 应用证据。</p>
     </PanelCard>
   </>;
 }

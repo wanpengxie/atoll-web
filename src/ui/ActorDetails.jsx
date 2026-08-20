@@ -34,7 +34,7 @@ function CapabilityForm({ actor, type, meta, disabled, onInvoke, onClose }) {
     setError('');
     setConfirmed(false);
     setConfirmId('');
-    // OBS 会周期刷新并重建 capability 对象；编辑中的表单不能因此被 payload_example 覆盖。
+    // OBS 会在 WS 失效事件或手动刷新后重建 capability 对象；编辑中的表单不能因此被 payload_example 覆盖。
     // 只有切换 Actor 或能力类型时才重置用户输入。
   }, [actor.id, type]);
 

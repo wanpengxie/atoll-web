@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { artifactKindForMediaType, previewForMediaType } from '../model/artifacts.js';
 import { channelMountRoot, directoryEntries, fileListCommand, normalizeDirectory, parentDirectory } from '../model/channel-files.js';
 import { fileTransferURL, mediaTypeFromFileName, uploadChannelFile } from '../model/channel-file-transfer.js';
@@ -48,7 +48,6 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [filePage, setFilePage] = useState(0);
-  const inputRef = useRef(null);
   const activeDaemon = daemons.find((row) => row.id === daemonId);
   const qualifiedChannel = channel.qualified_name || channel.id;
   const mountRoot = daemonId ? channelMountRoot({ daemonId, qualifiedChannel }) : '';
@@ -150,7 +149,6 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
   }
 
   return <section id="workspace-panel-artifacts" className="workspace-view artifacts-view channel-files-view" role="tabpanel" aria-labelledby="workspace-tab-artifacts" aria-label="频道文件">
-    <input ref={inputRef} className="visually-hidden" aria-label="选择要上传到当前目录的文件" type="file" onChange={chooseFile} />
     <div className="finder-toolbar">
       <button type="button" className="finder-nav-button" aria-label="返回上一级" disabled={!directory} onClick={() => setDirectory(parentDirectory(directory))}>‹</button>
       <nav className="file-breadcrumbs" aria-label="文件路径">
@@ -161,7 +159,10 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
           ? <SelectMenu ariaLabel="文件挂载设备" value={daemonId} placeholder="没有可用设备" options={daemons.map((row) => ({ value: row.id, label: row.name || row.id, description: row.id }))} onChange={setDaemonId} />
           : activeDaemon && <span className="finder-device" title={activeDaemon.id}>{activeDaemon.name || activeDaemon.id}</span>}
         <button type="button" className="finder-tool-button" aria-label="刷新文件目录" disabled={disabled || !daemonId || status === 'loading'} onClick={() => setRefreshVersion((value) => value + 1)}>↻</button>
-        <button type="button" className="finder-upload" disabled={disabled || !daemonId || status === 'uploading'} onClick={() => inputRef.current?.click()}>{status === 'uploading' ? '上传中…' : '＋ 上传'}</button>
+        <span className={`finder-upload finder-native-upload${disabled || !daemonId || status === 'uploading' ? ' is-disabled' : ''}`}>
+          <input aria-label="选择要上传到当前目录的文件" type="file" disabled={disabled || !daemonId || status === 'uploading'} onChange={chooseFile} />
+          <span aria-hidden="true">{status === 'uploading' ? '上传中…' : '＋ 上传'}</span>
+        </span>
       </div>
     </div>
 

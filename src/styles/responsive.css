@@ -37,6 +37,7 @@
   .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 100%; }
   .request-text, .audience-line, .message-attachments, .turn-process, .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .composer-wrap { padding: 10px; }
+  .composer-tools > button, .composer-file-control { width: 44px; height: 44px; }
   .send-button { min-width: 58px; padding: 8px 12px; }
   .send-button span, .composer-help span:first-child { display: none; }
   .workspace-view-header { display: block; min-height: auto; padding: 12px; }

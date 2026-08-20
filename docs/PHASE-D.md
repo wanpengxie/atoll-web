@@ -38,7 +38,7 @@
 
 ## 4. 状态与恢复
 
-治理动作仍是普通 RequestTurn，receipt 只表示 transport 接受，terminal 才是业务操作结果。页面刷新后以频道账本重新构建 terminal；频道列表、membership 和 roster 轮询继续证明投影收敛。
+治理动作仍是普通 RequestTurn，receipt 只表示 transport 接受，terminal 才是业务操作结果。页面刷新后以频道账本重新构建 terminal；登录初始化、WS 重连以及频道/成员/设备治理事件会使频道目录、membership 和 roster 的 OBS 投影失效并触发合并刷新。前端不再周期扫描整个频道树。
 
 创建流程状态：
 

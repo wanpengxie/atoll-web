@@ -29,7 +29,7 @@ test('F3-001..004/006 动态保持业务主线，回合详情完整且来源可�
   const timeline = page.locator('.timeline');
   const composer = page.locator('.composer-wrap');
   const requestTopBefore = await turn.locator('.request-message').evaluate((node) => node.getBoundingClientRect().top);
-  await turn.getByRole('button', { name: '查看详情' }).click();
+  await turn.locator('.turn-process-summary').click();
   const context = page.getByRole('region', { name: '回合详情' });
   await expect(context).toBeVisible();
   await expect(timeline).toBeVisible();
@@ -81,7 +81,7 @@ test('F3-003..005 键盘、多行草稿、附件入口与 320px 单表面可达'
   await expect(turn).toBeVisible();
   await page.setViewportSize({ width: 320, height: 720 });
   await turn.focus();
-  await turn.getByRole('button', { name: '查看详情' }).click();
+  await turn.locator('.turn-process-summary').click();
   const context = page.getByRole('region', { name: '回合详情' });
   await expect(context).toBeVisible();
   const geometry = await page.evaluate(() => ({ viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth, context: document.querySelector('.turn-inline-detail').getBoundingClientRect().width }));
