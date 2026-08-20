@@ -110,7 +110,7 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
     try {
       const receipt = await onResource(readFileTicket({ channelId: channel.id, resourceId }));
       if (!receipt?.ticket) throw new TypeError('服务端没有返回下载凭据');
-      const response = await fetch(fileTransferURL(receipt.ticket), { credentials: 'include' });
+      const response = await fetch(fileTransferURL(channel.id, receipt.ticket), { credentials: 'include' });
       if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
       const url = URL.createObjectURL(await response.blob());
       const anchor = document.createElement('a');

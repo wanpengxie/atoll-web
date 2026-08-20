@@ -11,12 +11,13 @@ export function mediaTypeFromFileName(name, declared = '') {
   return ({ md: 'text/markdown', txt: 'text/plain', json: 'application/json', csv: 'text/csv', pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', mp3: 'audio/mpeg', mp4: 'video/mp4' })[extension] || 'application/octet-stream';
 }
 
-// 传输只带 ticket。文件在哪台机器、哪个频道、哪个路径、读还是写，都是发票那一刻
-// 由 access 门定死的，服务端从票里读；地址写在 URL 上只是客户端复述一个它改不动的
-// 决定，而复述就要约定转义写法——浏览器的 encodeURIComponent 和 Go 的 PathEscape
-// 对冒号处理不同，曾让所有上传下载一律 400。
-export function fileTransferURL(ticket) {
-  return `/files?t=${encodeURIComponent(ticket)}`;
+// 传输带频道和票，仅此两样。票的作用域就是（频道, actor）：频道由请求写明，跟其他
+// 每一条业务帧一样；actor 由服务端从会话解析出来，客户端说了不算。文件在哪台机器、
+// 哪个路径、读还是写，都是发票那一刻由 access 门定死的，服务端从票里读——地址写在
+// URL 上只是复述一个客户端改不动的决定，而复述就要约定转义写法，浏览器的
+// encodeURIComponent 和 Go 的 PathEscape 对冒号处理不同，曾让上传下载一律 400。
+export function fileTransferURL(channelId, ticket) {
+  return `/files?channel_id=${encodeURIComponent(channelId)}&t=${encodeURIComponent(ticket)}`;
 }
 
 // resource create 由当前登录会话发送，因此账本中的上传主体是用户，而不是 agent。
@@ -28,11 +29,12 @@ export async function uploadChannelFile({ file, channel, daemonName, directory =
   const address = fileAddress({ daemonName, qualifiedChannel, path });
   const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
   if (!ticket?.ticket) throw new TypeError('服务端没有返回上传凭据');
-  const response = await fetchImpl(fileTransferURL(ticket.ticket), { method: 'PUT', credentials: 'include', body: file });
+  const response = await fetchImpl(fileTransferURL(channel.id, ticket.ticket), { method: 'PUT', credentials: 'include', body: file });
   if (!response.ok) throw new TypeError(`上传失败 (${response.status})`);
   return attachmentFromResource({
+    // 文件资源的 id 就是它的地址；服务端在回执里把它回述一遍，对不上就以服务端为准。
     resourceId: ticket.resource_id || address,
-    address: ticket.address || address,
+    address,
     file: { name: file.name, type: file.type || mediaTypeFromFileName(file.name), size: file.size },
   });
 }

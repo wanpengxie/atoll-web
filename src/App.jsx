@@ -463,7 +463,7 @@ export default function App() {
     try {
       const receipt = await handleResource(readFileTicket({ channelId, resourceId: attachment.resource_id }));
       if (!receipt.ticket) throw new TypeError('服务端没有返回可下载票据');
-      const response = await fetch(fileTransferURL(receipt.ticket), { credentials: 'include' });
+      const response = await fetch(fileTransferURL(channelId, receipt.ticket), { credentials: 'include' });
       if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);

@@ -1,11 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { artifactAttachment, formatArtifactSize } from '../../model/artifacts.js';
+import { fileTransferURL } from '../../model/channel-file-transfer.js';
 import { readFileTicket } from '../../model/resources.js';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 
-function resourceURL(ticket) {
-  return `/files?t=${encodeURIComponent(ticket)}`;
-}
 
 export const PREVIEW_LIMITS = Object.freeze({
   text: 512 * 1024,
@@ -68,8 +66,9 @@ export function useArtifactPreview(artifact, onResource) {
     setPreview({ phase: 'loading', url: '', text: '', error: '' });
     onResource(readFileTicket({ channelId: artifact.channelId, resourceId: artifact.resourceId })).then(async (receipt) => {
       if (!alive) return;
-      if (!receipt?.ticket || !receipt?.address) throw new TypeError('服务端没有返回可读凭据');
-      const response = await fetch(resourceURL(receipt.ticket), { credentials: 'include', signal: controller.signal });
+      // 只需要票。地址是调用方自己带来的（消息里存的就是路径），回执不必再说一遍。
+      if (!receipt?.ticket) throw new TypeError('服务端没有返回可读凭据');
+      const response = await fetch(fileTransferURL(artifact.channelId, receipt.ticket), { credentials: 'include', signal: controller.signal });
       if (!response.ok) throw new TypeError(`预览读取失败 (${response.status})`);
       const declared = Number(response.headers?.get?.('content-length') || 0);
       if (declared > limit) throw new RangeError(sizeError(limit));

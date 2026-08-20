@@ -1135,8 +1135,10 @@ export function createMockServer({
 
     if (path === '/files') {
       if (!authenticated(request)) { httpError(response, 401, 'not_authenticated', 'invalid session'); return; }
+      // 票的作用域是（频道, actor）：频道由请求写明，actor 由服务端从会话解析。
+      const channelId = url.searchParams.get('channel_id') || '';
       const ticket = url.searchParams.get('t') || '';
-      if (!ticket || url.searchParams.size !== 1) { httpError(response, 400, 'bad_payload', 'exactly one ticket is required'); return; }
+      if (!channelId || !ticket || url.searchParams.size !== 2) { httpError(response, 400, 'bad_payload', 'channel_id and exactly one ticket are required'); return; }
       if (request.method === 'PUT') {
         const grant = domain.redeemTicket(ticket, 'put');
         const address = grant?.address;

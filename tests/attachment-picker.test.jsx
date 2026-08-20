@@ -16,7 +16,7 @@ describe('Composer 附件来源', () => {
     const attachment = await uploadChannelFile({ file, channel: { id: 'c0', qualified_name: 'c0' }, daemonName: 'local-device', onResource, fetchImpl });
     expect(onResource).toHaveBeenCalledWith(expect.objectContaining({ channel_id: 'c0', op: 'create', address: 'daemon://local-device/c0/%E7%A0%94%E7%A9%B6-%E6%96%87%E6%A1%A3.md' }));
     // 传输只带票：URL 上没有地址，也就没有一个双方要各自拼写的编码。
-    expect(fetchImpl).toHaveBeenCalledWith('/files?t=put-once', expect.objectContaining({ method: 'PUT', body: file, credentials: 'include' }));
+    expect(fetchImpl).toHaveBeenCalledWith('/files?channel_id=c0&t=put-once', expect.objectContaining({ method: 'PUT', body: file, credentials: 'include' }));
     expect(attachment).toEqual(expect.objectContaining({ resource_id: 'file:uploaded:1', name: '研究 文档.md', media_type: 'text/markdown' }));
   });
 

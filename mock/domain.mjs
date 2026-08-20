@@ -409,7 +409,9 @@ export class MockDomain {
       const row = { id: resourceId, resource_id: resourceId, kind: 'file', address: payload.address, meta: {} };
       store.set(resourceId, row);
       const ticket = this.issueTicket('put', payload.address, resourceId);
-      return { status: 'ok', ticket, redeem: 'http', resource_id: resourceId, address: payload.address };
+      // 回执不带 address：真实服务端只回述 resource_id，mock 多给一个字段就会让
+      // 前端写出依赖它的代码，而那份代码到了真节点上必然失败。
+      return { status: 'ok', ticket, redeem: 'http', resource_id: resourceId };
     }
     if (op === 'create') {
       if (store.has(id)) throw new TypeError('resource already exists');
@@ -418,7 +420,7 @@ export class MockDomain {
     const row = store.get(id) || [...store.values()].find((entry) => entry.address === id);
     if (op === 'stat') return { exists: Boolean(row), ...(row ? { meta: { kind: row.kind, ...(row.meta || {}) } } : {}) };
     if (!row) throw new TypeError('resource does not exist');
-    if (op === 'read' && row.kind === 'file' && payload.with_content) return { status: 'ok', ticket: this.issueTicket('get', row.address, id), redeem: 'http', resource_id: id, address: row.address };
+    if (op === 'read' && row.kind === 'file' && payload.with_content) return { status: 'ok', ticket: this.issueTicket('get', row.address, id), redeem: 'http', resource_id: id };
     if (op === 'read') return { status: 'ok', resource_id: id, value: structuredClone(row.value) };
     if (op === 'write') { row.value = structuredClone(args ?? {}); return { status: 'ok', resource_id: id, value: row.value }; }
     if (op === 'delete') { store.delete(row.id || id); if (row.address) this.files.delete(row.address); return { status: 'ok', resource_id: id, deleted: true }; }
