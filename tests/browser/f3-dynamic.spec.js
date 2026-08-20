@@ -67,11 +67,13 @@ test('F3-003..005 键盘、多行草稿、附件入口与 320px 单表面可达'
   await reset(request, 'long-running', 1302); await login(page);
   const editor = page.getByLabel('消息');
   await editor.fill('第一行\n第二行');
-  await expect(editor).toHaveValue('第一行\n第二行');
+  await expect(editor).toContainText('第一行');
+  await expect(editor).toContainText('第二行');
   await page.getByRole('button', { name: '＋ 附件' }).click();
   await expect(page.getByRole('tab', { name: '文件' })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: '动态' }).click();
-  await expect(editor).toHaveValue('第一行\n第二行');
+  await expect(editor).toContainText('第一行');
+  await expect(editor).toContainText('第二行');
   await editor.fill('检查窄屏回合');
   await page.getByRole('button', { name: /发送/ }).click();
   const turn = page.locator('.turn-card').filter({ hasText: '检查窄屏回合' });
@@ -87,31 +89,43 @@ test('F3-003..005 键盘、多行草稿、附件入口与 320px 单表面可达'
   await expect(context.getByRole('button', { name: /取消任务|调整方向|打断回合/ }).first()).toBeVisible();
 });
 
-test('审批与后台活动使用正文列，不占用头像列', async ({ page, request }) => {
+test('Composer 的 @成员是可恢复的 Mention Node，不靠正文猜收件人', async ({ page, request }) => {
+  await reset(request, 'message-flow', 1305); await login(page);
+  const editor = page.getByLabel('消息');
+  await editor.fill('@st');
+  await page.getByRole('option', { name: /steward/ }).click();
+  await expect(editor.locator('[data-type="mention"][data-id="steward"]')).toHaveCount(1);
+
+  await page.getByRole('tab', { name: '文件' }).click();
+  await page.getByRole('tab', { name: '动态' }).click();
+  const restored = page.getByLabel('消息');
+  await expect(restored.locator('[data-type="mention"][data-id="steward"]')).toHaveCount(1);
+  await restored.press('End');
+  await restored.pressSequentially('检查结构化收件人');
+  await page.getByRole('button', { name: /发送/ }).click();
+  await expect(page.locator('.turn-card').filter({ hasText: '检查结构化收件人' })).toBeVisible();
+});
+
+test('审批使用正文列，后台活动不污染消息主线', async ({ page, request }) => {
   await reset(request, 'multi-channel', 1303); await login(page);
   await expect(page.locator('.approval-card')).toBeAttached();
-  await expect(page.locator('.narration')).toBeAttached();
+  await expect(page.locator('.narration')).toHaveCount(0);
   await expect(page.locator('.information-flow-row > .information-flow-content > .approval-card')).toHaveCount(1);
-  await expect(page.locator('.information-flow-row > .information-flow-content > .narration')).toHaveCount(1);
 
   async function alignment() {
     return page.evaluate(() => {
       const row = document.querySelector('.message-row');
       const body = row?.querySelector('.message-body');
       const approval = document.querySelector('.approval-card');
-      const narration = document.querySelector('.narration');
       const edges = (node) => node ? { left: node.getBoundingClientRect().left, right: node.getBoundingClientRect().right } : null;
-      return { body: edges(body), approval: edges(approval), narration: edges(narration), viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth };
+      return { body: edges(body), approval: edges(approval), viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth };
     });
   }
 
   const desktop = await alignment();
   expect(desktop.approval).not.toBeNull();
-  expect(desktop.narration).not.toBeNull();
   expect(Math.abs(desktop.approval.left - desktop.body.left)).toBeLessThanOrEqual(1);
   expect(desktop.approval.right).toBeLessThanOrEqual(desktop.body.right + 1);
-  expect(Math.abs(desktop.narration.left - desktop.body.left)).toBeLessThanOrEqual(1);
-  expect(desktop.narration.right).toBeLessThanOrEqual(desktop.body.right + 1);
 
   await page.setViewportSize({ width: 320, height: 720 });
   const mobile = await alignment();

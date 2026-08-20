@@ -1,11 +1,57 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { EditorContent, useEditor } from '@tiptap/react';
+import Mention from '@tiptap/extension-mention';
+import StarterKit from '@tiptap/starter-kit';
+import Placeholder from '@tiptap/extension-placeholder';
 import { resolveManagementActors } from '../model/management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
-import { resolveMentionRecipients } from './mentions.js';
 
 function mentionQuery(text) {
   const match = text.match(/(?:^|\s)@([^\s@]*)$/);
   return match ? match[1].toLowerCase() : null;
+}
+
+function editorDocument(text = '') {
+  return {
+    type: 'doc',
+    content: String(text).split('\n').map((line) => ({
+      type: 'paragraph',
+      ...(line ? { content: [{ type: 'text', text: line }] } : {}),
+    })),
+  };
+}
+
+function normalizedDraft(draft) {
+  if (draft && typeof draft === 'object') {
+    return {
+      text: String(draft.text || ''),
+      doc: draft.doc?.type === 'doc' ? draft.doc : editorDocument(draft.text),
+    };
+  }
+  return { text: String(draft || ''), doc: editorDocument(draft) };
+}
+
+function mentionIdsOf(document) {
+  const ids = [];
+  function visit(node) {
+    if (node?.type === 'mention' && node.attrs?.id && !ids.includes(node.attrs.id)) ids.push(node.attrs.id);
+    node?.content?.forEach(visit);
+  }
+  visit(document);
+  return ids;
+}
+
+function unresolvedMentions(editor) {
+  const tokens = [];
+  editor?.state.doc.descendants((node) => {
+    if (!node.isText) return;
+    for (const match of node.text.matchAll(/(?:^|\s)@([^\s@]+)/g)) tokens.push(match[1]);
+  });
+  return tokens;
+}
+
+function editorText(editor) {
+  return editor?.getText({ blockSeparator: '\n' }) || '';
 }
 
 // 频道面的斜杠命令。收件人恒是本频道的 system actor：成员类的词它自己答，
@@ -34,13 +80,56 @@ export function slashCommand(value) {
 }
 
 export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRemoveAttachment, onClearAttachments, onChooseAttachment }) {
-  const [mentions, setMentions] = useState([]);
+  const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
+  const [mentionIds, setMentionIds] = useState(() => mentionIdsOf(initialDraft.doc));
   const [error, setError] = useState('');
   const [sendState, setSendState] = useState('idle');
   const [sentMessageId, setSentMessageId] = useState('');
-  const textareaRef = useRef(null);
-  const text = draft;
-  const setText = (value) => onDraftChange?.(typeof value === 'function' ? value(text) : value);
+  const [activeCandidate, setActiveCandidate] = useState(0);
+  // 编辑内容归 Composer 自己所有。App 只接收一份无渲染副作用的草稿快照，
+  // 所以每次按键不会重新渲染 Timeline、详情区或整个工作区。
+  const [text, setText] = useState(initialDraft.text);
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        blockquote: false,
+        bulletList: false,
+        codeBlock: false,
+        heading: false,
+        horizontalRule: false,
+        listItem: false,
+        orderedList: false,
+      }),
+      Mention.configure({
+        HTMLAttributes: { class: 'composer-mention' },
+        renderText: ({ node }) => `@${node.attrs.label || node.attrs.id}`,
+        suggestion: { items: () => [] },
+      }),
+      Placeholder.configure({ placeholder: '输入消息，使用 @ 选择频道成员' }),
+    ],
+    content: initialDraft.doc,
+    editable: Boolean(channelId) && !disabled,
+    immediatelyRender: false,
+    editorProps: {
+      attributes: {
+        'aria-label': '消息',
+        'aria-multiline': 'true',
+        'data-testid': 'composer-input',
+        class: 'composer-editor',
+        role: 'textbox',
+      },
+    },
+    onUpdate: ({ editor: current }) => {
+      const value = editorText(current);
+      const document = current.getJSON();
+      setText(value);
+      setMentionIds(mentionIdsOf(document));
+      onDraftChange?.({ text: value, doc: document });
+      setError('');
+      setSendState('idle');
+    },
+  }, [channelId]);
+  const mentions = useMemo(() => mentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean), [mentionIds, roster]);
   const query = mentionQuery(text);
   const candidates = useMemo(() => roster.filter((row) => (
     row.id !== selfId
@@ -49,12 +138,21 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     && (query == null || `${row.name} ${row.id}`.toLowerCase().includes(query))
   )), [mentions, query, roster, selfId]);
 
+  useEffect(() => { setActiveCandidate(0); }, [query]);
+
   useEffect(() => {
-    setMentions([]);
+    setMentionIds(mentionIdsOf(initialDraft.doc));
     setError('');
     setSendState('idle');
     setSentMessageId('');
   }, [channelId]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const editable = Boolean(channelId) && !disabled;
+    editor.setEditable(editable);
+    editor.view.dom.setAttribute('aria-disabled', String(!editable));
+  }, [channelId, disabled, editor]);
 
   useEffect(() => {
     if (!sentMessageId) return undefined;
@@ -76,16 +174,31 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     return undefined;
   }, [pending, sendState, sentMessageId]);
 
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = 'auto';
-    textarea.style.height = `${Math.min(160, Math.max(58, textarea.scrollHeight))}px`;
-  }, [text]);
-
   function pick(row) {
-    setMentions((current) => [...current, row]);
-    setText((current) => current.replace(/@[^\s@]*$/, `@${row.name || row.id} `));
+    if (!editor) return;
+    const { from } = editor.state.selection;
+    const before = editor.state.doc.textBetween(Math.max(0, from - 120), from, '\n', '\0');
+    const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+    if (!match) return;
+    const start = from - match[1].length - 1;
+    editor.chain().focus().deleteRange({ from: start, to: from }).insertContent([
+      { type: 'mention', attrs: { id: row.id, label: row.name || row.id } },
+      { type: 'text', text: ' ' },
+    ]).run();
+  }
+
+  function removeMention(id) {
+    if (!editor) return;
+    editor.commands.command(({ tr, state, dispatch }) => {
+      const ranges = [];
+      state.doc.descendants((node, pos) => {
+        if (node.type.name === 'mention' && node.attrs.id === id) ranges.push({ from: pos, to: pos + node.nodeSize });
+      });
+      ranges.reverse().forEach((range) => tr.delete(range.from, range.to));
+      dispatch?.(tr);
+      return true;
+    });
+    editor.commands.focus();
   }
 
   async function submit() {
@@ -100,15 +213,14 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         const sysactor = resolveManagementActors(roster).system;
         const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [sysactor.id], targetLabel: sysactor.name || sysactor.id, payload: slash.payload });
         setSentMessageId(messageId || '');
-        setText('');
-        setMentions([]);
+        editor?.commands.clearContent(true);
         setSendState('accepted');
         return;
       }
 
-      const resolved = resolveMentionRecipients(value, roster, mentions);
-      if (resolved.unknown.length) throw new TypeError(`未找到成员：${resolved.unknown.map((name) => `@${name}`).join('、')}`);
-      let recipients = resolved.recipients;
+      const unresolved = unresolvedMentions(editor);
+      if (unresolved.length) throw new TypeError(`请从候选列表选择成员：${unresolved.map((name) => `@${name}`).join('、')}`);
+      let recipients = mentions;
       if (!recipients.length) {
         const agents = roster.filter((row) => row.kind === 'agent');
         if (agents.length === 1) recipients = agents;
@@ -127,8 +239,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         payload: attachments.length ? { text: body, attachments } : undefined,
       });
       setSentMessageId(messageId || '');
-      setText('');
-      setMentions([]);
+      editor?.commands.clearContent(true);
       onClearAttachments?.();
       setSendState('accepted');
     } catch (failure) {
@@ -138,6 +249,19 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   }
 
   function onKeyDown(event) {
+    if (query != null && candidates.length) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        setActiveCandidate((current) => (current + direction + Math.min(candidates.length, 8)) % Math.min(candidates.length, 8));
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        pick(candidates[activeCandidate] || candidates[0]);
+        return;
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       submit();
@@ -150,27 +274,17 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         {attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{attachments.map((row) => <div key={row.resource_id}><span>附件</span><strong>{row.name}</strong><small>{row.size} bytes</small><button type="button" aria-label={`移除附件 ${row.name}`} onClick={() => onRemoveAttachment?.(row.resource_id)}>×</button></div>)}</div>}
         {mentions.length > 0 && (
           <div className="mention-chips">{mentions.map((row) => (
-            <button type="button" key={row.id} onClick={() => setMentions((current) => current.filter((item) => item.id !== row.id))}>@{row.name || row.id} ×</button>
+            <button type="button" key={row.id} onClick={() => removeMention(row.id)}>@{row.name || row.id} ×</button>
           ))}</div>
         )}
         <div className="composer-input-area">
           <div className="composer-box">
-            <textarea
-              ref={textareaRef}
-              aria-label="消息"
-              placeholder={disabled ? disabledReason : '输入消息，使用 @ 选择频道成员'}
-              value={text}
-              disabled={!channelId || disabled}
-              onChange={(event) => { setText(event.target.value); setError(''); setSendState('idle'); }}
-              onKeyDown={onKeyDown}
-              rows={2}
-            />
-            <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
+            <EditorContent editor={editor} className="composer-richtext" onKeyDown={onKeyDown} />
           </div>
           {query != null && candidates.length > 0 && (
             <div className="mention-menu" role="listbox">
-              {candidates.slice(0, 8).map((row) => (
-                <button type="button" role="option" aria-selected="false" key={row.id} onClick={() => pick(row)}>
+              {candidates.slice(0, 8).map((row, index) => (
+                <button type="button" role="option" aria-selected={index === activeCandidate} key={row.id} onMouseDown={(event) => event.preventDefault()} onClick={() => pick(row)}>
                   <span className={`actor-icon kind-${row.kind}`}>{row.kind.slice(0, 1).toUpperCase()}</span>
                   <strong>{row.name || row.id}</strong><small>{row.kind} · {row.decl_id || row.id}</small>
                 </button>
@@ -179,8 +293,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
           )}
         </div>
         <div className="composer-toolbar">
-          <div className="composer-tools"><button type="button" aria-label="＋ 附件" disabled={disabled} onClick={onChooseAttachment}>＋</button><div className="composer-target"><span>发送给</span><strong>{mentions.length ? mentions.map((row) => row.name || row.id).join('、') : '使用 @ 选择频道成员'}</strong></div></div>
-          <div className="composer-help"><span>Shift + Enter 换行</span><span>Enter 发送</span></div>
+          <div className="composer-tools"><button type="button" aria-label="＋ 附件" disabled={disabled} onClick={onChooseAttachment}>＋</button>{mentions.length > 0 && <div className="composer-target"><strong>{mentions.map((row) => `@${row.name || row.id}`).join('、')}</strong></div>}</div>
+          <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
         </div>
       </div>
       {['accepted', 'delayed', 'uncertain', 'landed'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ accepted: '已提交，等待频道入账', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对', landed: '已写入频道账本' }[sendState]}</p>}

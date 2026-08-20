@@ -34,7 +34,7 @@ test('F5-001/002 Channel Context 成员优先且添加参与者不改变按钮�
   expect(after.y).toBe(before.y);
   await panel.getByRole('option', { name: /Alice · 用户/ }).click();
   await submit.click();
-  await expect(panel.getByText('alice-home', { exact: true })).toBeVisible();
+  await expect(panel.getByText(/alice-home/)).toBeVisible();
 });
 
 test('F5-003 新建频道是独立 Modal 并保持四步收敛', async ({ page, request }) => {

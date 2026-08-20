@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     exclude: ['tests/browser/**', '**/node_modules/**', '**/dist/**'],
+    setupFiles: ['tests/setup.js'],
   },
   build: {
     outDir: 'dist',

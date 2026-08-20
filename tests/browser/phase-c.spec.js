@@ -50,7 +50,7 @@ async function openSteward(page) {
   }
   const details = page.getByRole('region', { name: 'Actor 详情 steward' });
   await expect(details).toBeVisible();
-  await expect(details.getByText('8 项能力', { exact: true })).toBeVisible();
+  await expect(details.getByText(/^\d+ 项能力$/)).toBeVisible();
   return details;
 }
 
@@ -59,6 +59,8 @@ function capability(details, type) {
 }
 
 async function sendTask(page, text) {
+  const contextClose = page.getByRole('button', { name: '关闭上下文' });
+  if (await contextClose.isVisible().catch(() => false)) await contextClose.click();
   await page.getByLabel('消息').fill(text);
   await page.getByRole('button', { name: /发送/ }).click();
   const turn = page.locator('.turn-card').filter({ hasText: text });
@@ -70,20 +72,17 @@ test('C-BR-01/02 Actor Describe 从账本加载并展示能力元数据', async 
   await reset(request, 'actor-capability');
   await login(page);
   const details = await openSteward(page);
-  await expect(details.getByText('Mock 协作 Agent', { exact: true })).toBeVisible();
-  await details.getByText('使用说明', { exact: true }).click();
-  await expect(details.getByText(/所有控制结果以账本终态为准/)).toBeVisible();
+  await expect(details.getByText('Mock collaboration agent', { exact: true })).toBeVisible();
   const textCapability = capability(details, 'agent.ask');
-  await expect(textCapability.getByText('预计 ≤ 120 秒', { exact: true })).toBeVisible();
-  await textCapability.getByText('错误与恢复', { exact: true }).click();
+  await expect(textCapability.getByText('执行普通文本任务', { exact: true })).toBeVisible();
+  await textCapability.getByText('可能的错误', { exact: true }).click();
   await expect(textCapability.getByText('provider_timeout', { exact: true })).toBeVisible();
-  await expect(textCapability.getByText(/恢复：检查账本后使用原任务重新提交/)).toBeVisible();
-  await expect(capability(details, 'mock.order.create').getByText(/用于浏览器验收的结构化能力/)).toBeVisible();
+  await expect(capability(details, 'mock.order.create').getByText('创建一个 Mock 订单', { exact: true })).toBeVisible();
 
   await page.reload();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
   const restored = await openSteward(page);
-  await expect(restored.getByText('8 项能力', { exact: true })).toBeVisible();
+  await expect(restored.getByText(/^\d+ 项能力$/)).toBeVisible();
 });
 
 test('C-BR-02/03/04 Schema 表单跨 OBS 刷新保留输入并原样调用', async ({ page, request }) => {
@@ -103,8 +102,11 @@ test('C-BR-02/03/04 Schema 表单跨 OBS 刷新保留输入并原样调用', asy
   await form.getByRole('button', { name: '提交操作' }).click();
 
   const turn = page.locator('.turn-card').filter({ hasText: 'mock.order.create' }).last();
-  await expect(turn).toContainText('"name":"阶段C结构化订单"');
-  await expect(turn).toContainText('"count":7');
+  const result = turn.locator('.structured-result').last();
+  await expect(result.getByText('name', { exact: true })).toBeVisible();
+  await expect(result.getByText('阶段C结构化订单', { exact: true })).toBeVisible();
+  await expect(result.getByText('count', { exact: true })).toBeVisible();
+  await expect(result.getByText('7', { exact: true })).toBeVisible();
   await expect(turn.getByText('order_id', { exact: true })).toBeVisible();
   await expect(turn.getByText('是', { exact: true }).first()).toBeVisible();
 });

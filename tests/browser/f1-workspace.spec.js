@@ -37,14 +37,14 @@ test('F1-001/F1-002/F1-004 三主视图互斥，Composer 按频道保留且历�
   await expect(tabs.getByRole('tab', { name: '文件' })).toHaveAttribute('aria-selected', 'true');
   await page.goBack();
   await expect(tabs.getByRole('tab', { name: '动态' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByLabel('消息')).toHaveValue('只属于 c0 的草稿');
+  await expect(page.getByLabel('消息')).toContainText('只属于 c0 的草稿');
 
   const other = page.locator('.channel-item').filter({ hasNot: page.locator('.active') }).nth(1);
   if (await other.count()) {
     await other.click();
-    await expect(page.getByLabel('消息')).toHaveValue('');
+    await expect(page.getByLabel('消息')).toBeEmpty();
     await page.getByRole('button', { name: '# c0', exact: true }).click();
-    await expect(page.getByLabel('消息')).toHaveValue('只属于 c0 的草稿');
+    await expect(page.getByLabel('消息')).toContainText('只属于 c0 的草稿');
   }
 });
 
@@ -60,11 +60,14 @@ test('F1-003/F1-005 Context 与主 Tab 分离并按断点改变表面组合', as
     await expect(page).toHaveURL(/focus=channel%3Ac0$/);
     const geometry = await page.evaluate(() => {
       const workspace = document.querySelector('.workspace').getBoundingClientRect();
-      const context = document.querySelector('.context-host').getBoundingClientRect();
-      return { workspace: { left: workspace.left, right: workspace.right }, context: { left: context.left, right: context.right }, viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth };
+      const context = document.querySelector('.context-pane').getBoundingClientRect();
+      return { workspace: { left: workspace.left, right: workspace.right, width: workspace.width }, context: { left: context.left, right: context.right }, viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth };
     });
     expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.viewport);
-    if (width > 900) expect(geometry.context.left).toBeGreaterThanOrEqual(geometry.workspace.right);
+    if (width > 900) {
+      expect(geometry.context.right).toBe(width);
+      expect(geometry.context.left).toBeLessThan(geometry.workspace.right);
+    }
     else if (width > 640) expect(geometry.context.left).toBe(geometry.workspace.left);
     else {
       expect(geometry.context.left).toBe(0);

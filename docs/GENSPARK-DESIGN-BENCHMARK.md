@@ -1,7 +1,7 @@
 # GenSpark GenTeam 分层设计基准与 atoll-web 差距
 
-状态：设计研究完成，尚未按本文施工
-日期：2026-08-18
+状态：2026-08-20 复核；F1–F6 主结构已施工，Composer 第二轮整改进行中
+日期：2026-08-20
 研究对象：已登录的 GenSpark GenTeam 工作区、三个官方 SAMPLE 频道及普通频道
 上位规范：[PRODUCT-INTERACTION-MASTER-PLAN.md](PRODUCT-INTERACTION-MASTER-PLAN.md)
 现有 UI 规范：[UI-INTERACTION-ARCHITECTURE.md](UI-INTERACTION-ARCHITECTURE.md)
@@ -291,3 +291,90 @@ Atoll 不必照抄 321px，但必须采用“表面替换状态机”，而不�
 3. 对象来源模型：统一 `channel_id + request_id/turn_id + entry_id + resource_id` 的导航和恢复语义。
 
 完成这三项后再改页面，否则只会再次得到一组外观相似、内部仍然碎片化的组件。
+
+## 11. 2026-08-20 真实页面复核
+
+本轮不是根据截图推测，而是检查已登录 GenTeam 普通频道的运行时 DOM、ARIA 树和容器几何。其桌面页面实际层级是：
+
+```text
+gt-shell（固定视口，禁止整页滚动）
+└─ gt-app
+   ├─ GenTeam rail（全局目的地）
+   └─ gt-workspace
+      └─ gt-body
+         ├─ Channels rail（频道与私信）
+         └─ gt-main
+            └─ gt-channel（纵向 flex）
+               ├─ Channel header
+               ├─ Chat / Files / Tasks tabs
+               ├─ gt-timeline（唯一滚动区，flex: 1）
+               │  └─ gt-message（article）
+               │     ├─ hover actions（绝对定位，不参与消息高度）
+               │     ├─ avatar（固定 30px）
+               │     └─ body（flex: 1）
+               │        ├─ meta
+               │        ├─ content
+               │        └─ attachments
+               └─ gt-composer（form，Timeline 的同级兄弟）
+                  ├─ gt-rich-text-input
+                  │  └─ Tiptap / ProseMirror contenteditable
+                  └─ footer
+                     ├─ attachment controls
+                     ├─ flexible spacer
+                     └─ send controls
+```
+
+1242×994 实测中，主区宽 868px；Timeline 高 744px、独立 `overflow:auto`；Composer 位于其下方，高 100px、宽 836px。普通消息是 `display:flex`，头像与内容间距 12px。消息操作是绝对定位悬浮层，不改变消息正文的排版或高度。
+
+Files 和 Tasks 不是右栏工具：它们替换 Timeline/Composer 所在的主工作区。Files 的列表容器独立滚动并占满主区；Tasks 在同一主区内提供创建、For you / All 和状态筛选。Channel details 则采用全视口覆盖层加 360px 右侧 `aside`，不会改变主工作区的网格宽度。
+
+## 12. Composer 技术事实与本轮整改
+
+GenTeam 的输入器不是原生 `textarea`：运行时节点明确带有 `tiptap ProseMirror gt-composer-input`，框架侧使用 Vue 单文件组件作用域标记。成熟感来自两个边界同时成立：
+
+1. Tiptap / ProseMirror 负责编辑器内部状态、选区、输入法和结构化内容；
+2. Composer 是 Timeline 的同级组件，逐字输入不应成为 Workspace 的状态更新。
+
+Atoll 旧实现同时违反两条：自己测量 `textarea.scrollHeight`，并把每次 `onChange` 写入 `App.draftTexts`，导致 App、AppShell、Timeline 和最多 120 条消息逐字重渲染。
+
+2026-08-20 已改为：
+
+- React 侧采用 Tiptap / ProseMirror；
+- 编辑内容由 Composer 本地持有；
+- App 仅用 ref 保存按频道草稿快照，不把草稿作为渲染状态；
+- 频道或主视图切换时从快照恢复；
+- 编辑器自身限制高度并滚动，不再手工逐字读取 `scrollHeight`；
+- 工具与发送动作进入 Composer footer，默认不再展示“发送给 / 使用 @ 选择频道成员”和快捷键说明；只有已选择收件人时才显示目标；
+- 长动态测试必须证明输入不会重新渲染 Timeline。
+
+## 13. 当前 Atoll 页面层级审计
+
+### 已经合理
+
+- Workspace 使用固定 Header、Tabs、唯一主内容区和 Dynamic 专属 Composer；
+- Dynamic / Files / Tasks 已是真正互斥的主视图；
+- Timeline 是独立滚动区，Composer 不在滚动内容中；
+- 消息已使用 `MessageFrame → avatar slot + content slot`，审批和过程块使用空头像槽与内容列对齐；
+- 普通消息无卡片外框，实体对象才有边界；
+- 文件以频道挂载目录为第一事实，占满文件页面；
+- 回合详情就地隶属于对应 Turn，不再跳转页面或误挂到相邻消息。
+- Context 已在本轮改为覆盖式右侧层，打开频道/对象详情不再改变 Workspace 宽度。
+
+### 仍有问题
+
+| 优先级 | 问题 | 影响 | 后续方向 |
+|---|---|---|---|
+| P0 | 消息正文仍使用自制 `MarkdownLite` | Markdown、代码块、表格、链接边界不完整，维护成本高 | 采用成熟 Markdown AST 渲染器，并对超长代码/JSON统一折叠和滚动预算 |
+| P0 | 审批卡当前只消费回答/备注这一层通用字段，没有完整渲染后端 Schema 的业务字段 | `severity`、`notify` 等垂直审批知识可能不可操作，旧 Phase C 结构化审批用例已暴露该缺口 | 把审批表单恢复为 Schema 驱动组件，但继续保持“头像列 + 内容列”和紧凑卡片布局 |
+| P1 | 消息悬浮操作仍是文字按钮，操作集合过少 | 静态噪音低了，但效率和层级不如成熟协作产品 | 建立统一 Action Bar primitive，图标 + tooltip + 键盘名称；动作由消息状态决定 |
+| P1 | Composer 当前只启用 Tiptap 基础段落能力 | 已解决性能和输入法边界，但 @ mention 仍是外围字符串匹配 | 下一步改为 Tiptap Mention node 和 suggestion plugin，目标成为文档中的结构化节点 |
+| P1 | 初始 JS 包因编辑器进入主包而增大 | 首次加载成本上升 | 在稳定后拆分编辑器扩展或按动态视图加载，不以牺牲输入稳定性换体积 |
+| P1 | `aria-live` 覆盖整个 Timeline | 高频账本更新可能重复朗读大量内容 | 使用独立、短文本 live region，只播报新增状态 |
+| P2 | 尚无全局目的地 Rail | Activity、空间管理和频道导航仍混在同一 Rail | 能力规模足够后再拆全局 Rail；不为外观强行增加空入口 |
+
+## 14. 不照抄的边界
+
+- Atoll Files 必须继续以频道默认挂载目录为主，而不是复制 GenTeam 的附件聚合库；消息引用和版本关系只作为叠加信息。
+- Atoll 的 Turn、progress、terminal 和可控动作比普通 Thread 更强。回合详情可以就地展开，技术审计可进入 Context，但不能把真实回合伪装成普通聊天 Thread。
+- 不复制 GenTeam 配色；只采用其空间、组件和状态边界。
+- 不因为 GenTeam 有 reaction、Saved 或 Direct Message 就提前伪造后端没有的能力。

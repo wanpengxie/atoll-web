@@ -46,6 +46,7 @@ test('A-BR-04/05/06/07 多频道隔离、消息终态、审批与系统 Actor �
   await expect(roster.getByText('system', { exact: true })).toHaveCount(0);
   await expect(roster.getByText('registrar', { exact: true })).toHaveCount(0);
   await expect(roster.getByText('svcactor', { exact: true })).toHaveCount(0);
+  await roster.getByRole('button', { name: '关闭频道详情' }).click();
 
   const message = `阶段A浏览器自动化-${Date.now()}`;
   await page.getByLabel('消息').fill(message);
@@ -78,7 +79,7 @@ test('A-BR-08/09 断线、权限撤销和频道退役后界面收敛', async ({ 
   await request.post('http://127.0.0.1:8832/mock/control/action', {
     data: { type: 'revoke_membership', channel_id: 'c0.project' },
   });
-  await expect(page.getByPlaceholder('加入频道后才能发送消息')).toBeDisabled();
+  await expect(page.getByLabel('消息')).toBeDisabled();
   await expect(page.locator('.channel-rail').getByText('c0.project', { exact: true })).toBeVisible();
 
   await request.post('http://127.0.0.1:8832/mock/control/action', {

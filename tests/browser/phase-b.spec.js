@@ -88,7 +88,7 @@ test('B-BR-03 unavailable、partial OBS、权限撤销和退役分别收敛', as
   await action(request, { type: 'revoke_membership', channel_id: 'c0.project' });
   await expect(page.getByText(/频道访问权限已被撤销/)).toBeVisible({ timeout: 5_000 });
   await expect(page.locator('.channel-rail').getByText('无权访问', { exact: true })).toBeVisible();
-  await expect(page.getByPlaceholder('加入频道后才能发送消息')).toBeDisabled();
+  await expect(page.getByLabel('消息')).toBeDisabled();
 
   await reset(request);
 });
@@ -100,10 +100,12 @@ test('B-BR-04 真实后端形态下不猜 self，发送 feed 后自动识别', a
   await expect(page.getByText(/正在确认你在本频道中的 Actor 身份/)).toBeVisible();
   const members = page.getByRole('complementary', { name: /频道管理/ });
   await expect(members.getByText('我', { exact: true })).toHaveCount(0);
+  await members.getByRole('button', { name: '关闭频道详情' }).click();
   const message = `self-map-${Date.now()}`;
   await send(page, message);
   await expect(page.getByText(message, { exact: true })).toBeVisible();
-  await expect(members.getByText('我', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '成员', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: /频道管理/ }).getByText('我', { exact: true })).toBeVisible();
   await expect(page.getByText(/正在确认你在本频道中的 Actor 身份/)).toHaveCount(0);
 });
 

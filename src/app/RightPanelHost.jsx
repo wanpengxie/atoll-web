@@ -10,18 +10,21 @@ import { ChannelAutomation } from '../ui/ChannelAutomation.jsx';
 import { ActivityCenter } from '../ui/ActivityCenter.jsx';
 import { ChannelResources } from '../ui/ChannelResources.jsx';
 
-function ContextHost({ type, focusKey, children }) {
+function ContextHost({ type, focusKey, onClose, children }) {
   const hostRef = useRef(null);
   const openerRef = useRef(null);
   useLayoutEffect(() => {
     openerRef.current = document.activeElement;
-    hostRef.current?.querySelector('button[aria-label^="关闭"]')?.focus();
+    hostRef.current?.querySelector('.context-pane button[aria-label^="关闭"]')?.focus();
     return () => {
       const opener = openerRef.current;
       if (opener?.isConnected && !opener.disabled) opener.focus();
     };
   }, []);
-  return <div ref={hostRef} className="context-host" data-context-type={type || 'transitional'} data-context-key={focusKey || ''}>{children}</div>;
+  return <div ref={hostRef} className="context-host" data-context-type={type || 'transitional'} data-context-key={focusKey || ''}>
+    <button type="button" className="context-backdrop" aria-label="关闭上下文" tabIndex={-1} onClick={onClose} />
+    <div className="context-pane">{children}</div>
+  </div>;
 }
 
 export function RightPanelHost({ panel, active, directory, governance, roster, artifacts, workItems, activity }) {
@@ -52,5 +55,5 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
     content = <ActivityCenter activities={activity.activities} operations={activity.operations} onOpen={activity.onOpen} onClose={close} />;
   }
   if (!content) return null;
-  return <ContextHost type={panel.focus?.type} focusKey={panel.focus?.key}>{content}</ContextHost>;
+  return <ContextHost type={panel.focus?.type} focusKey={panel.focus?.key} onClose={close}>{content}</ContextHost>;
 }

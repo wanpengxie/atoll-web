@@ -1,7 +1,7 @@
 
 @media (max-width: 1050px) {
   .shell { grid-template-columns: 220px minmax(0, 1fr); }
-  .shell.has-context { grid-template-columns: 220px minmax(0, 1fr) 320px; }
+  .shell.has-context { grid-template-columns: 220px minmax(0, 1fr); }
   .timeline-inner { padding: 16px; }
   .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 90%; }
 }
@@ -9,15 +9,8 @@
 @media (max-width: 900px) {
   .shell { position: relative; grid-template-columns: 210px minmax(0, 1fr); }
   .shell.has-context { grid-template-columns: 210px minmax(0, 1fr); }
-  .context-host {
-    position: absolute;
-    display: grid;
-    z-index: 20;
-    inset: 0 0 0 210px;
-    width: auto;
-    max-width: 100%;
-    box-shadow: var(--shadow-context);
-  }
+  .context-host { grid-template-columns: 210px minmax(0, 1fr); }
+  .context-pane { grid-column: 2; }
   .context-host .side-panel, .context-host .roster-panel { position: static; display: grid; width: 100%; box-shadow: none; }
 }
 
@@ -27,7 +20,8 @@
   .shell.mobile-channels-open .channel-rail { display: flex; grid-column: 1; grid-row: 1; }
   .shell.mobile-channels-open .mobile-rail-close { display: grid; }
   .shell.mobile-channels-open .workspace, .shell.mobile-channels-open .context-host { display: none; }
-  .context-host { inset: 0; width: 100%; }
+  .context-host { inset: 0; width: 100%; grid-template-columns: minmax(0, 1fr); }
+  .context-pane { grid-column: 1; }
   .mobile-channel-toggle { display: grid; width: 44px; height: 44px; }
   .channel-header { min-height: 54px; padding: 8px 10px; }
   .channel-header > div:first-child { min-width: 0; }

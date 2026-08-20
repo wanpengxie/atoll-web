@@ -129,7 +129,35 @@ it('agent 回合中调用的其它 actor 聚在这一问底下，默认收起', 
 });
 
 describe('F3 Composer', () => {
-  it('supports multiline, visible target, attachment entry and accepted state', async () => {
+  it('把候选成员写成 Mention Node，并只按节点路由', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue('message-mention');
+    const onDraftChange = vi.fn();
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" onDraftChange={onDraftChange} onSend={onSend} />);
+
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '@研');
+    await user.click(screen.getByRole('option', { name: /研究员/ }));
+
+    const mention = document.querySelector('[data-type="mention"][data-id="agent-1"]');
+    expect(mention).toBeTruthy();
+    const snapshot = onDraftChange.mock.calls.at(-1)[0];
+    expect(snapshot.doc.content[0].content.some((node) => node.type === 'mention' && node.attrs.id === 'agent-1')).toBe(true);
+
+    await user.type(input, '请处理{Enter}');
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['agent-1'] }));
+  });
+
+  it('不会把普通文本里的 @ 名称猜成收件人', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }, { id: 'agent-2', kind: 'agent', name: '执行员' }]} selfId="me" onSend={onSend} />);
+    await user.type(screen.getByRole('textbox', { name: '消息' }), '正文里的 @研究员 不是节点{Enter}');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toContain('请从候选列表选择成员');
+  });
+
+  it('supports multiline, attachment entry and accepted state', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn().mockResolvedValue(undefined);
     const onChooseAttachment = vi.fn();
@@ -138,7 +166,7 @@ describe('F3 Composer', () => {
       return <Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" draft={draft} onDraftChange={setDraft} onSend={onSend} onChooseAttachment={onChooseAttachment} />;
     }
     render(<Harness />);
-    expect(screen.getByText('使用 @ 选择频道成员')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: '消息' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: '＋ 附件' }));
     expect(onChooseAttachment).toHaveBeenCalledOnce();
     const input = screen.getByLabelText('消息');

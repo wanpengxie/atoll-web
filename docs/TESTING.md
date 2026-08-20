@@ -45,7 +45,7 @@ Playwright 套件同时包含 UI 视觉/边界用例（含“新建频道”独�
 | 契约漂移 | `tests/contract-fixtures.test.js` | atoll WS、OBS、registrar、describe、ticket JSON fixture |
 | 协议 E2E | `tests/e2e.mock.test.js` | 登录、回放、消息、审批、延迟、故障和重连 |
 | UI primitives | `tests/ui-primitives.test.jsx` | tabs、选择菜单、确认和焦点的 DOM/键盘行为 |
-| F6 专项 | `tests/f6-tokens.test.js`、`tests/f6-performance.test.jsx`、`tests/f6-accessibility.test.jsx` | Token/对比度、长列表 DOM 预算、预览取消与释放、Modal 焦点契约 |
+| F6 专项 | `tests/f6-tokens.test.js`、`tests/f6-performance.test.jsx`、`tests/f6-accessibility.test.jsx` | Token/对比度、长列表 DOM 预算、长动态输入不重渲染 Timeline、预览取消与释放、Modal 焦点契约 |
 | 浏览器 E2E | `tests/browser/phase-a.spec.js`～`phase-e.spec.js`、`tests/browser/f1-workspace.spec.js`～`f6-accessibility-responsive.spec.js`、`tests/browser/ui-visual.spec.js`、`tests/browser/layout-responsive.spec.js` | 阶段 A–E、F1–F6 产品闭环、多档视口/缩放、键盘/焦点/reduced motion、结构布局门禁和视觉基线 |
 
 工作台交互还必须符合 [UI-INTERACTION-ARCHITECTURE.md](UI-INTERACTION-ARCHITECTURE.md)：普通账本条目保持平面、完成过程默认折叠、800px 上下文接管工作区、600/320px 上下文占满视口。

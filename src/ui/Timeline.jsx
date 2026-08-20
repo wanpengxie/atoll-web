@@ -10,6 +10,7 @@ import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../mod
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
+import { MarkdownContent } from './MarkdownContent.jsx';
 import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { useStableTimelineScroll } from './timeline/useStableTimelineScroll.js';
@@ -48,31 +49,6 @@ function timeLabel(ts) {
 
 function nameOf(id, names) {
   return names.get(id) || id || '未知成员';
-}
-
-function InlineText({ text }) {
-  const parts = String(text).split(/(https?:\/\/[^\s]+|\*\*[^*]+\*\*|`[^`]+`)/g);
-  return parts.filter(Boolean).map((part, index) => {
-    if (/^https?:\/\//.test(part)) return <a key={`${part}-${index}`} href={part} target="_blank" rel="noreferrer">{part}</a>;
-    if (part.startsWith('**') && part.endsWith('**')) return <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong>;
-    if (part.startsWith('`') && part.endsWith('`')) return <code key={`${part}-${index}`}>{part.slice(1, -1)}</code>;
-    return <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>;
-  });
-}
-
-function MarkdownLite({ text }) {
-  const blocks = String(text || '').split(/```/);
-  return blocks.map((block, index) => index % 2 === 1
-    ? <pre key={index}><code>{block.replace(/^\w+\n/, '')}</code></pre>
-    : block.split(/\n{2,}/).filter(Boolean).map((paragraph, paragraphIndex) => {
-      const lines = paragraph.split('\n').filter(Boolean);
-      if (lines.every((line) => /^\s*[-*]\s+/.test(line))) return <ul key={`${index}-${paragraphIndex}`}>{lines.map((line, lineIndex) => <li key={lineIndex}><InlineText text={line.replace(/^\s*[-*]\s+/, '')} /></li>)}</ul>;
-      if (lines.every((line) => /^\s*\d+[.)]\s+/.test(line))) return <ol key={`${index}-${paragraphIndex}`}>{lines.map((line, lineIndex) => <li key={lineIndex}><InlineText text={line.replace(/^\s*\d+[.)]\s+/, '')} /></li>)}</ol>;
-      if (lines.every((line) => /^\s*>\s?/.test(line))) return <blockquote key={`${index}-${paragraphIndex}`}><InlineText text={lines.map((line) => line.replace(/^\s*>\s?/, '')).join('\n')} /></blockquote>;
-      const heading = lines.length === 1 && lines[0].match(/^(#{1,3})\s+(.+)$/);
-      if (heading) return <h3 key={`${index}-${paragraphIndex}`}><InlineText text={heading[2]} /></h3>;
-      return <p key={`${index}-${paragraphIndex}`}>{lines.map((line, lineIndex) => <React.Fragment key={lineIndex}>{lineIndex > 0 && <br />}<InlineText text={line} /></React.Fragment>)}</p>;
-    }));
 }
 
 function ApprovalCard({ turn, state, onResolve, names }) {
@@ -118,7 +94,7 @@ function ApprovalCard({ turn, state, onResolve, names }) {
         <footer className={turn.status === 'failed' ? 'final-answer failed' : 'final-answer'}>
           <p className="answer-label">RESPONSE · {String(turn.terminal.payload?.status || '').toUpperCase()}</p>
           <p className="approval-resolver">处理者：{nameOf(turn.terminal.sender?.id, names)}{turn.terminal.payload?.decision && ` · ${turn.terminal.payload.decision}`}</p>
-          <StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownLite text={text} />} />
+          <StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownContent text={text} />} />
         </footer>
       )}
       {error && <WireErrorLine error={error} />}
@@ -178,7 +154,7 @@ function ThreadCall({ item, names }) {
         <small>{nameOf(child.request.sender?.id, names)} → {receivers || '—'} · {turnStatusLabel(child)} · {timeLabel(child.request.ts)}</small>
       </button>
       {open && (child.terminal
-        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={child.terminal.payload} renderText={(text) => <MarkdownLite text={text} />} /></div>
+        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={child.terminal.payload} renderText={(text) => <MarkdownContent text={text} />} /></div>
         : <p className="turn-thread-result empty">还没有终态。</p>)}
     </li>
   );
@@ -213,7 +189,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
       <MessageFrame className="request-message" actions={<MessageActions onOpen={onOpen} onCreateTask={onCreateTask} detailsOpen={detailsOpen} />} identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
-          <div className="request-text"><MarkdownLite text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
+          <div className="request-text"><MarkdownContent text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
       </MessageFrame>
       <ThreadCalls thread={thread} names={names} />
@@ -227,7 +203,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
       {!turn.terminal && !detailsOpen && <ContentFrame contained><TaskControls context={controlContext} state={controlState} onCancel={onCancel} onControl={onControl} /></ContentFrame>}
       {turn.terminal && (
         <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
-          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownLite text={text} />} /></div>
+          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownContent text={text} />} /></div>
         </MessageFrame>
       )}
     </section>
@@ -263,7 +239,7 @@ function Standalone({ envelope, names, continuation = false, onCreateTask }) {
   const view = messagePresentation(envelope);
   return (
     <MessageFrame className={`standalone-row ${continuation ? 'continuation' : ''}`} actions={<MessageActions onCreateTask={onCreateTask} />} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
-      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownLite text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}
+      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownContent text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}
     </MessageFrame>
   );
 }

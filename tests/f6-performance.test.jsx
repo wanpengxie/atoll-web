@@ -8,6 +8,7 @@ import { buildArtifactIndex } from '../src/model/artifacts.js';
 import { orderedTimeline } from '../src/model/fold.js';
 import { TasksView } from '../src/ui/TasksView.jsx';
 import { Timeline } from '../src/ui/Timeline.jsx';
+import { Composer } from '../src/ui/Composer.jsx';
 import { ArtifactContext, PREVIEW_LIMITS, readBoundedText } from '../src/ui/context/ArtifactContext.jsx';
 
 afterEach(() => {
@@ -55,6 +56,24 @@ describe('F6 长列表预算', () => {
     await user.click(screen.getByRole('button', { name: /查看更早动态/ }));
     expect(view.container.querySelectorAll('.standalone-row')).toHaveLength(LIST_WINDOW_SIZE);
     expect(screen.getByText('动态 4880')).toBeTruthy();
+  });
+
+  it('长动态下逐字输入不会重新渲染 Timeline', async () => {
+    const user = userEvent.setup();
+    const standalone = Array.from({ length: 5_000 }, (_, index) => ({ seq: index + 1, envelope: envelope(`m-${index}`, index + 1) }));
+    const state = { channelId: 'c0', rows: new Map(standalone.map((row) => [row.seq, row.envelope])), turns: new Map(), standalone, orphans: [], narration: [], lastSeq: 5_000 };
+    let timelineRenders = 0;
+    let draft = '';
+    function TrackedTimeline() {
+      timelineRenders += 1;
+      return <Timeline state={state} roster={[{ id: 'alice', name: 'Alice' }]} pending={[]} approvalStates={{}} />;
+    }
+    render(<><TrackedTimeline /><Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" onDraftChange={(value) => { draft = value; }} onSend={() => Promise.resolve('message-1')} /></>);
+    const before = timelineRenders;
+    await user.type(screen.getByRole('textbox', { name: '消息' }), '这段输入不应驱动五千条动态重新渲染');
+    expect(draft.text).toBe('这段输入不应驱动五千条动态重新渲染');
+    expect(draft.doc.type).toBe('doc');
+    expect(timelineRenders).toBe(before);
   });
 
   it('任务集合不超过一个 DOM 窗口', () => {

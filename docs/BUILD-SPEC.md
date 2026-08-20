@@ -48,7 +48,7 @@ src/ui/ChannelList.jsx        我的频道/空间及 mode 标签
 src/ui/Timeline.jsx           回合、provisional、activity、terminal、pending
 src/ui/StructuredResult.jsx   结构化终态与敏感字段遮蔽
 src/ui/ActorDetails.jsx       Actor 能力、动态调用与风险确认
-src/ui/Composer.jsx           @、稳定 submit、兼容管理命令
+src/ui/Composer.jsx           Tiptap/ProseMirror、本地编辑状态、@、稳定 submit、兼容管理命令
 src/ui/Roster.jsx             业务名册与 self 确认状态
 src/ui/ArtifactsView.jsx      当前频道挂载目录主视图与消息引用区
 src/ui/TasksView.jsx          WorkItem 主视图与固定窗口
@@ -56,7 +56,7 @@ src/ui/context/*              文件、回合、任务详情 Context
 src/ui/primitives/*           Modal、焦点、选择菜单等共享交互
 ```
 
-`App.jsx` 是控制器组合入口，不再直接渲染具体产品面板。页面结构由 `app/AppShell.jsx` 组合，右栏路由由 `app/RightPanelHost.jsx` 负责；身份恢复、频道目录、feed 批处理/缓存、提交状态机和本地定时器分别位于 `app/hooks/`。App 不在 JSX 内重新推导权限或回合语义。
+`App.jsx` 是控制器组合入口，不再直接渲染具体产品面板。页面结构由 `app/AppShell.jsx` 组合，覆盖式 Context 路由由 `app/RightPanelHost.jsx` 负责；身份恢复、频道目录、feed 批处理/缓存、提交状态机和本地定时器分别位于 `app/hooks/`。App 不在 JSX 内重新推导权限或回合语义。Composer 的逐字输入不得进入 App state；App 只通过 ref 保存按频道草稿快照，避免驱动 Workspace/Timeline 重渲染。
 
 样式入口仍为 `src/styles.css`，它只按固定顺序聚合 `src/styles/` 下的 tokens、base、auth、app-shell、timeline、composer、roster、primitives、features、runtime 与 responsive 文件。F6 将表面、线条、状态、阴影和圆角集中到 `tokens.css`，继续使用 Atoll 暖色、品牌红与 Agent 蓝。当前产品是 Light-only；暗色主题不属于 F1–F6。
 
