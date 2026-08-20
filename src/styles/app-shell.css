@@ -46,7 +46,7 @@
 .account-actions { display: flex; align-items: flex-end; flex-direction: column; }
 
 /* Main channel */
-.workspace { min-width: 0; min-height: 0; display: grid; height: 100%; grid-template-rows: auto auto auto minmax(0, 1fr) auto; overflow: hidden; background: var(--workspace); }
+.workspace { position: relative; min-width: 0; min-height: 0; display: grid; height: 100%; grid-template-rows: auto auto auto minmax(0, 1fr) auto; overflow: hidden; background: var(--workspace); }
 .channel-header { grid-row: 1; display: flex; min-height: 58px; align-items: center; justify-content: space-between; padding: 9px 18px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
 .channel-header .eyebrow { color: var(--text-dim); }
 .channel-identity { min-width: 0; display: flex; align-items: center; gap: 8px; }

@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
+import { actorDisplayName } from '../../model/actor-display.js';
 import { actorCommand, actorConvergence, declarationKind, GOVERNANCE_TYPES, isProtectedActor, usableDeclarations, usablePrincipals } from '../../model/channel-governance.js';
 import { InlineConfirmation } from '../primitives/InlineConfirmation.jsx';
 import { PanelCard } from '../primitives/PanelCard.jsx';
 import { SelectMenu } from '../primitives/SelectMenu.jsx';
 
 function actorLabel(row) {
-  return row.name || row.principal || row.id;
+  return actorDisplayName(row) || row.principal;
 }
 
 export function ChannelMembersPanel({ channel, roster, state, principals, declarations, selfId = '', identityPending = false, disabled, onSubmit, onRefresh, onSelectActor }) {

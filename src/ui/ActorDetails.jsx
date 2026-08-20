@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { actorDisplayName } from '../model/actor-display.js';
 import { capabilityRisk, typeSupportsRequest } from '../model/capabilities.js';
 import { TYPES } from '../protocol/vocab.js';
 import { buildFormSpec, valuesToPayload } from '../model/dynamic-form.js';
@@ -77,8 +78,8 @@ export function ActorDetails({ actor, capability, disabled = false, onDescribe, 
   if (!actor) return null;
 
   return (
-    <section className="actor-details" aria-label={`Actor 详情 ${actor.name || actor.id}`}>
-      <header className="actor-details-header"><div><p className="eyebrow">ACTOR CAPABILITIES</p><h3>{actor.name || actor.id}</h3><code>{actor.id}</code></div><button type="button" onClick={onClose} aria-label="关闭 Actor 详情">×</button></header>
+    <section className="actor-details" aria-label={`Actor 详情 ${actorDisplayName(actor)}`}>
+      <header className="actor-details-header"><div><p className="eyebrow">ACTOR CAPABILITIES</p><h3>{actorDisplayName(actor)}</h3><code>{actor.id}</code></div><button type="button" onClick={onClose} aria-label="关闭 Actor 详情">×</button></header>
       <div className="actor-details-scroll">
         <p className="actor-details-description">{actor.description || (describe ? `${describe.className}（${describe.interfaces.join(' / ')}）` : '尚未读取 Actor 自述能力。')}</p>
         {describe && Object.keys(describe.capabilities).length > 0 && (

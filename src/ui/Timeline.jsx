@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { orderedTimeline } from '../model/fold.js';
@@ -48,7 +49,7 @@ function timeLabel(ts) {
 }
 
 function nameOf(id, names) {
-  return names.get(id) || id || '未知成员';
+  return actorNameFromMap(id, names);
 }
 
 function ApprovalCard({ turn, state, onResolve, names }) {
@@ -319,7 +320,7 @@ function dayLabel(ts) {
 
 export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onRetry, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, turnDetail }) {
   const [page, setPage] = useState(0);
-  const names = useMemo(() => new Map(roster.map((row) => [row.id, row.name || row.id])), [roster]);
+  const names = useMemo(() => actorNameMap(roster), [roster]);
   const entries = useMemo(() => orderedTimeline(state), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
   const latestTransient = new Map();
   for (const entry of entries) {

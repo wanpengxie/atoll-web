@@ -71,3 +71,59 @@ test('F2-006 长文件名与不支持预览安全降级，窄屏无横向溢出'
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
   await expect(preview.getByRole('button', { name: '下载' })).toBeVisible();
 });
+
+test('Composer 直接区分本机上传与 daemon 频道文件选择', async ({ page, request }) => {
+  await reset(request, 1203); await login(page);
+  await expect(page.getByRole('button', { name: '上传本机文件到频道' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '从频道文件选择' })).toBeVisible();
+
+  await page.getByLabel('选择要上传到当前频道的本机文件').setInputFiles({ name: '直接上传.txt', mimeType: 'text/plain', buffer: Buffer.from('由当前用户上传') });
+  await expect(page.getByLabel('待发送附件')).toContainText('直接上传.txt');
+  await page.getByRole('button', { name: '预览文件 直接上传.txt' }).click();
+  const draftPreview = page.getByRole('dialog', { name: '文件预览：直接上传.txt' });
+  await expect(draftPreview).toContainText('由当前用户上传');
+  await draftPreview.getByRole('button', { name: '关闭文件预览' }).click();
+  await expect(page.getByLabel('待发送附件')).toContainText('直接上传.txt');
+  await page.getByRole('button', { name: '移除附件 直接上传.txt' }).click();
+
+  await page.getByRole('button', { name: '从频道文件选择' }).click();
+  const picker = page.getByRole('dialog', { name: '从频道文件选择' });
+  await expect(picker).toBeVisible();
+  await picker.getByRole('button', { name: /直接上传.txt/ }).click();
+  await expect(picker).toBeHidden();
+  await expect(page.getByLabel('待发送附件')).toContainText('直接上传.txt');
+  await expect(page.getByRole('tab', { name: '动态' })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('Composer 支持粘贴与鼠标拖入本机文件', async ({ page, request }) => {
+  await reset(request, 1204); await login(page);
+  const input = page.getByRole('textbox', { name: '消息' });
+  await input.evaluate((node) => {
+    const transfer = { files: [new File(['clipboard image'], '剪贴板截图.png', { type: 'image/png' })], types: ['Files'], getData: () => '' };
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: transfer });
+    node.dispatchEvent(event);
+  });
+  await expect(page.getByLabel('待发送附件')).toContainText('剪贴板截图.png');
+
+  const surface = page.locator('.composer-surface');
+  await surface.evaluate((node) => {
+    const transfer = { files: [new File(['dragged report'], '拖入报告.pdf', { type: 'application/pdf' })], types: ['Files'], dropEffect: 'none' };
+    const dragEnter = new Event('dragenter', { bubbles: true, cancelable: true });
+    const dragOver = new Event('dragover', { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnter, 'dataTransfer', { value: transfer });
+    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer });
+    node.dispatchEvent(dragEnter);
+    node.dispatchEvent(dragOver);
+    window.__composerDragTransfer = transfer;
+  });
+  await expect(page.getByText('松开以上传到当前频道')).toBeVisible();
+  await surface.evaluate((node) => {
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: window.__composerDragTransfer });
+    node.dispatchEvent(drop);
+    delete window.__composerDragTransfer;
+  });
+  await expect(page.getByLabel('待发送附件')).toContainText('拖入报告.pdf');
+  await expect(page.getByText('松开以上传到当前频道')).toBeHidden();
+});

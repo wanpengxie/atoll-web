@@ -1,4 +1,5 @@
 import { TYPES } from '../protocol/vocab.js';
+import { actorDisplayName } from './actor-display.js';
 
 const SELF_PREFIX = 'atoll.self.v3.';
 
@@ -8,12 +9,13 @@ function measure(actual, name) {
 
 function project(item) {
   const declared = item.declared || {};
+  const id = declared.id || item.key;
   const bound = measure(item.actual, 'bound');
   const device = measure(item.actual, 'device_online');
   return {
-    id: declared.id || item.key,
+    id,
     kind: declared.kind,
-    name: declared.name || declared.id || item.key,
+    name: actorDisplayName({ id, name: declared.name }),
     decl_id: declared.decl_id || '',
     description: declared.description || '',
     principal: declared.principal || '',

@@ -2,7 +2,7 @@
 @media (max-width: 1050px) {
   .shell { grid-template-columns: 220px minmax(0, 1fr); }
   .shell.has-context { grid-template-columns: 220px minmax(0, 1fr); }
-  .timeline-inner { padding: 16px; }
+  .timeline-inner { padding: 16px 16px calc(16px + var(--composer-overlay-height, 115px)); }
   .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 90%; }
 }
 
@@ -33,7 +33,7 @@
   .global-search > header button, .tasks-header-actions button, .artifact-upload { min-height: 44px; }
   .task-create-modal > header button, .global-search > header button { min-width: 44px; }
   .seq-label { display: none; }
-  .timeline-inner { padding: 8px 7px 18px; }
+  .timeline-inner { padding: 8px 7px calc(18px + var(--composer-overlay-height, 115px)); }
   .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 100%; }
   .request-text, .audience-line, .message-attachments, .turn-process, .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .composer-wrap { padding: 10px; }

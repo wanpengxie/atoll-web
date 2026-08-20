@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
+import { uploadChannelFile } from './model/channel-file-transfer.js';
 import { unreadCount } from './model/cursors.js';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
 import { resumeSnapshot } from './model/feed-cache.js';
@@ -22,6 +23,7 @@ import { TaskCreateModal } from './ui/TaskCreateModal.jsx';
 import { ChannelCreateModal } from './ui/ChannelCreateModal.jsx';
 import { GlobalSearch } from './ui/GlobalSearch.jsx';
 import { FilePreviewModal } from './ui/FilePreviewModal.jsx';
+import { ChannelFilePickerModal } from './ui/ChannelFilePickerModal.jsx';
 import { visibleRosterRows } from './ui/roster-visibility.js';
 import { useLocalAutomation } from './app/hooks/useLocalAutomation.js';
 import { useSubmissions } from './app/hooks/useSubmissions.js';
@@ -127,6 +129,7 @@ export default function App() {
   const [channelCreateOpen, setChannelCreateOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [mountedFilePreview, setMountedFilePreview] = useState(null);
+  const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
 
   const obsRef = useRef(null);
   const wireRef = useRef(null);
@@ -399,6 +402,24 @@ export default function App() {
     }
   }, [refreshRoster]);
 
+  const refreshDaemonData = useCallback(async () => {
+    if (!obsRef.current) return [];
+    try {
+      const observation = await obsRef.current.spaceDaemons();
+      const rows = safeDaemonRows(observation);
+      setSpaceDaemons(rows);
+      return rows;
+    } catch (error) {
+      if (error?.status !== 401) setTopError(displayError(error));
+      return [];
+    }
+  }, []);
+
+  useEffect(() => {
+    if (wireState !== 'open') return;
+    refreshDaemonData();
+  }, [wireState, refreshDaemonData]);
+
   useEffect(() => {
     if (!['governance', 'space', 'resources'].includes(rightPanel) && workspaceView !== 'artifacts') return;
     refreshGovernanceData();
@@ -582,6 +603,28 @@ export default function App() {
     changeWorkspaceView('dynamic');
   };
 
+  const uploadComposerAttachments = async (files) => {
+    const channel = activeChannel;
+    if (!channel?.id) throw new TypeError('请先选择频道');
+    // OPEN 只代表消息通道已就绪，daemon OBS 可能仍在路上。粘贴/拖入不应
+    // 因这个短暂竞态失败，所以首次上传可就地等待一次 daemon observation。
+    const daemons = spaceDaemons.length ? spaceDaemons : await refreshDaemonData();
+    const daemon = daemons[0];
+    if (!daemon?.id) throw new TypeError('当前频道没有可用的 daemon 挂载');
+    const uploaded = [];
+    for (const file of files) uploaded.push(await uploadChannelFile({ file, channel, daemonId: daemon.id, onResource: handleResource }));
+    setDraftAttachments((current) => {
+      const rows = [...(current[channel.id] || [])];
+      for (const attachment of uploaded) {
+        const index = rows.findIndex((row) => row.resource_id === attachment.resource_id);
+        if (index >= 0) rows[index] = attachment;
+        else rows.push(attachment);
+      }
+      return { ...current, [channel.id]: rows };
+    });
+    return uploaded;
+  };
+
   const previewMessageAttachment = (channelId, attachment) => {
     const resourceId = attachment?.resource_id;
     if (!channelId || !resourceId) return;
@@ -705,13 +748,14 @@ export default function App() {
   <AppShell
     session={{ me, wireState, onLogout: handleLogout }}
     navigation={{ channels: channelList, activeChannelId, unread, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
-    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, access: activeAccess, roster: activeRoster, selfId, pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onSend: handleSend, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onChooseAttachment: () => changeWorkspaceView('artifacts'), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { daemons: spaceDaemons, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setRightPanel(''); setMountedFilePreview(artifact); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, access: activeAccess, roster: activeRoster, selfId, pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onSend: handleSend, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { daemons: spaceDaemons, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setRightPanel(''); setMountedFilePreview(artifact); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     panel={{ value: rightPanel, open: openContext, host }}
   />
   {taskCreateSource !== undefined && <TaskCreateModal providers={providers} source={taskCreateSource} onSubmit={submitTask} onClose={() => setTaskCreateSource(undefined)} />}
   {channelCreateOpen && activeChannel && <ChannelCreateModal channel={activeChannel} channels={channelList} roster={activeRoster} state={activeState} disabled={wireState !== 'open' || !canWriteChannel(activeAccess)} onSubmit={handleSend} onClose={() => setChannelCreateOpen(false)} onEnterChannel={(channel) => { setChannelCreateOpen(false); selectWorkspaceChannel(channel.id); }} />}
   {globalSearchOpen && <GlobalSearch index={globalData.searchIndex} onOpen={navigateToSource} onClose={() => setGlobalSearchOpen(false)} />}
+  {attachmentPickerOpen && activeChannel && <ChannelFilePickerModal channel={activeChannel} daemons={spaceDaemons} disabled={wireState !== 'open' || !canWriteChannel(activeAccess)} onResource={handleResource} onChoose={attachToDraft} onClose={() => setAttachmentPickerOpen(false)} />}
   {previewArtifact && <FilePreviewModal artifact={previewArtifact} onResource={handleResource} onAttach={(attachment) => { setMountedFilePreview(null); attachToDraft(attachment); }} onDownload={(attachment) => handleDownloadResource(activeChannelId, attachment)} onClose={() => setMountedFilePreview(null)} />}
   </>;
 }

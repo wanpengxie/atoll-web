@@ -1,8 +1,9 @@
 import { decodeSystemEvent } from '../protocol/system-events.js';
 import { isStandardActorIdentity } from './actor-visibility.js';
+import { actorNameFromMap } from './actor-display.js';
 
 function actorName(names, id) {
-  return names?.get?.(id) || id || '未知成员';
+  return actorNameFromMap(id, names);
 }
 
 export function systemEventPresentation(envelope, names) {

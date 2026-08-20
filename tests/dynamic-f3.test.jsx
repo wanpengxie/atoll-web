@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React, { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Composer } from '../src/ui/Composer.jsx';
 import { Timeline } from '../src/ui/Timeline.jsx';
@@ -67,6 +67,14 @@ it('同作者五分钟内的连续消息合并身份，但保留每条可聚焦�
   expect(screen.getAllByText('我')).toHaveLength(1);
   expect(screen.getByText('第一条')).toBeTruthy();
   expect(screen.getByText('第二条')).toBeTruthy();
+});
+
+it('sender 尚未进入 roster 时按 actor_id 中间段显示名称', () => {
+  const envelope = { id: 'm-actor-id', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'human:root:1787128257816', kind: 'human' }, payload: { text: '名称降级测试' } };
+  const state = { channelId: 'c0', rows: new Map([[1, envelope]]), turns: new Map(), standalone: [{ seq: 1, envelope }], orphans: [], narration: [], lastSeq: 1 };
+  render(<Timeline state={state} roster={[]} selfId="another-actor" pending={[]} approvalStates={{}} />);
+  expect(screen.getByText('root')).toBeTruthy();
+  expect(document.body.textContent).not.toContain('human:root:1787128257816');
 });
 
 // 平台叙事暂时不进时间线（Timeline 的 SHOW_CHANNEL_NARRATION）：它与真正的往来
@@ -160,20 +168,60 @@ describe('F3 Composer', () => {
   it('supports multiline, attachment entry and accepted state', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn().mockResolvedValue(undefined);
-    const onChooseAttachment = vi.fn();
+    const onUploadAttachments = vi.fn().mockResolvedValue([]);
+    const onOpenChannelFiles = vi.fn();
     function Harness() {
       const [draft, setDraft] = useState('');
-      return <Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" draft={draft} onDraftChange={setDraft} onSend={onSend} onChooseAttachment={onChooseAttachment} />;
+      return <Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" draft={draft} onDraftChange={setDraft} onSend={onSend} onUploadAttachments={onUploadAttachments} onOpenChannelFiles={onOpenChannelFiles} />;
     }
     render(<Harness />);
     expect(screen.getByRole('textbox', { name: '消息' })).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: '＋ 附件' }));
-    expect(onChooseAttachment).toHaveBeenCalledOnce();
+    await user.upload(screen.getByLabelText('选择要上传到当前频道的本机文件'), new File(['test'], '本机文件.txt', { type: 'text/plain' }));
+    expect(onUploadAttachments).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole('button', { name: '从频道文件选择' }));
+    expect(onOpenChannelFiles).toHaveBeenCalledOnce();
     const input = screen.getByLabelText('消息');
     await user.type(input, '第一行{Shift>}{Enter}{/Shift}第二行');
     expect(onSend).not.toHaveBeenCalled();
     await user.type(input, '{Enter}');
     expect(onSend).toHaveBeenCalledOnce();
+  });
+
+  it('待发送附件的主体打开预览，删除是独立操作', async () => {
+    const user = userEvent.setup();
+    const attachment = { resource_id: 'file:draft', name: '草稿报告.pdf', media_type: 'application/pdf', size: 4096 };
+    const onPreviewAttachment = vi.fn();
+    const onRemoveAttachment = vi.fn();
+    render(<Composer channelId="c0" roster={[{ id: 'agent-1', kind: 'agent', name: '研究员' }]} attachments={[attachment]} onSend={() => {}} onPreviewAttachment={onPreviewAttachment} onRemoveAttachment={onRemoveAttachment} />);
+    await user.click(screen.getByRole('button', { name: '预览文件 草稿报告.pdf' }));
+    expect(onPreviewAttachment).toHaveBeenCalledWith(attachment);
+    expect(onRemoveAttachment).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '移除附件 草稿报告.pdf' }));
+    expect(onRemoveAttachment).toHaveBeenCalledWith('file:draft');
+    expect(onPreviewAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it('粘贴与拖入文件复用频道上传链路，普通文本粘贴不被接管', async () => {
+    const onUploadAttachments = vi.fn().mockResolvedValue([]);
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" onSend={() => {}} onUploadAttachments={onUploadAttachments} />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    const pasted = new File(['image'], '剪贴板截图.png', { type: 'image/png' });
+    const pasteResult = fireEvent.paste(input, { clipboardData: { files: [pasted], getData: () => '' } });
+    expect(pasteResult).toBe(false);
+    expect(onUploadAttachments).toHaveBeenLastCalledWith([pasted]);
+    await waitFor(() => expect(screen.getByRole('button', { name: '上传本机文件到频道' })).toBeTruthy());
+
+    const dragged = new File(['report'], '拖入报告.pdf', { type: 'application/pdf' });
+    const surface = document.querySelector('.composer-surface');
+    fireEvent.dragEnter(surface, { dataTransfer: { types: ['Files'], files: [dragged] } });
+    expect(screen.getByText('松开以上传到当前频道')).toBeTruthy();
+    fireEvent.drop(surface, { dataTransfer: { types: ['Files'], files: [dragged], dropEffect: 'none' } });
+    expect(onUploadAttachments).toHaveBeenLastCalledWith([dragged]);
+    expect(screen.queryByText('松开以上传到当前频道')).toBeNull();
+
+    const textPasteResult = fireEvent.paste(input, { clipboardData: { files: [], getData: () => '' } });
+    expect(textPasteResult).toBe(true);
+    expect(onUploadAttachments).toHaveBeenCalledTimes(2);
   });
 
   it('发送反馈在请求从 pending 消失后收敛为已入账', async () => {

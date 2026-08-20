@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { actorNameFromMap, actorNameMap } from '../../model/actor-display.js';
 import { taskControlContext } from '../../model/task-controls.js';
 import { messagePresentation } from '../../model/message-presentation.js';
 import { turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
@@ -12,7 +13,7 @@ function timeLabel(value) {
 }
 
 function actorName(id, names) {
-  return names.get(id) || id || '未知成员';
+  return actorNameFromMap(id, names);
 }
 
 function requestSummary(request) {
@@ -56,7 +57,7 @@ function ContextControls({ context, state = {}, onCancel, onControl }) {
 }
 
 function TurnDetailBody({ turn, roster = [], selfId, access, capability, controlState, onCancel, onControl, onDownload, onSource, onCreateTask, showSource = true, showRequest = true }) {
-  const names = useMemo(() => new Map(roster.map((row) => [row.id, row.name || row.id])), [roster]);
+  const names = useMemo(() => actorNameMap(roster), [roster]);
   if (!turn) return null;
   const request = turn.request;
   const context = taskControlContext(turn, { selfId, access, capability });

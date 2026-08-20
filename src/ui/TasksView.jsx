@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { filterWorkItems, workItemGroup } from '../model/work-items.js';
 import { boundedPage } from '../model/list-window.js';
 
@@ -7,7 +8,7 @@ const STATE_LABELS = { active: '进行中', waiting: '等待中', blocked: '受�
 const GROUP_LABELS = { needs_you: '需要你处理', active: '进行中', recovery: '恢复事项', automation: '自动动作 · 本设备', history: '历史' };
 
 function WorkItemRow({ item, names, onOpen }) {
-  const assignees = item.assigneeActorIds.map((id) => names.get(id) || id).join('、');
+  const assignees = item.assigneeActorIds.map((id) => actorNameFromMap(id, names)).join('、');
   return <button type="button" className={`work-item-row kind-${item.kind} state-${item.state}`} onClick={() => onOpen(item)}>
     <span className="work-item-kind">{KIND_LABELS[item.kind]}</span>
     <span className="work-item-copy"><strong>{item.title}</strong><small>{assignees || (item.kind === 'automation' ? '本设备' : '未指定负责人')} · {STATE_LABELS[item.state] || item.state}</small>{item.waitingFor && <small>{item.waitingFor}</small>}</span>
@@ -20,7 +21,7 @@ export function TasksView({ items, roster = [], selfId = '', providers = [], can
   const [status, setStatus] = useState('active');
   const [kind, setKind] = useState('all');
   const [page, setPage] = useState(0);
-  const names = useMemo(() => new Map(roster.map((row) => [row.id, row.name || row.id])), [roster]);
+  const names = useMemo(() => actorNameMap(roster), [roster]);
   const visible = filterWorkItems(items, { scope, status, kind, selfId });
   const windowed = boundedPage(visible, page);
   useEffect(() => {

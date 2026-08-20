@@ -1,27 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { artifactKindForMediaType, previewForMediaType } from '../model/artifacts.js';
 import { channelMountRoot, directoryEntries, fileListCommand, normalizeDirectory, parentDirectory } from '../model/channel-files.js';
+import { fileTransferURL, mediaTypeFromFileName, uploadChannelFile } from '../model/channel-file-transfer.js';
 import { LIST_WINDOW_SIZE } from '../model/list-window.js';
-import { attachmentFromResource, createFileTicket, fileAddress, readFileTicket } from '../model/resources.js';
+import { attachmentFromResource, readFileTicket } from '../model/resources.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
-
-function fileURL(address, ticket) {
-  return `/files/${encodeURIComponent(address)}?t=${encodeURIComponent(ticket)}`;
-}
-
-function safePath(name) {
-  return String(name || 'upload').replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+/, '') || 'upload';
-}
 
 function crumbs(directory) {
   const parts = normalizeDirectory(directory).split('/').filter(Boolean);
   return [{ name: '根目录', directory: '' }, ...parts.map((name, index) => ({ name, directory: `${parts.slice(0, index + 1).join('/')}/` }))];
-}
-
-function mediaTypeFromName(name, declared = '') {
-  if (declared) return declared;
-  const extension = String(name).split('.').pop()?.toLowerCase();
-  return ({ md: 'text/markdown', txt: 'text/plain', json: 'application/json', csv: 'text/csv', pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', mp3: 'audio/mpeg', mp4: 'video/mp4' })[extension] || 'application/octet-stream';
 }
 
 function formatSize(size) {
@@ -40,7 +27,7 @@ function formatModified(value) {
 }
 
 function fileKind(name, mediaType = '') {
-  const type = mediaTypeFromName(name, mediaType);
+  const type = mediaTypeFromFileName(name, mediaType);
   if (type === 'application/pdf') return ['PDF', 'PDF 文稿'];
   if (type === 'text/markdown') return ['MD', 'Markdown 文稿'];
   if (type === 'application/json') return ['JSON', 'JSON 文稿'];
@@ -107,13 +94,8 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
     setError('');
     setStatus('uploading');
     try {
-      const path = `${normalizeDirectory(directory)}${safePath(file.name)}`;
-      const address = fileAddress({ daemonId, qualifiedChannel, path });
-      const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
-      if (!ticket?.ticket) throw new TypeError('服务端没有返回上传凭据');
-      const response = await fetch(fileURL(address, ticket.ticket), { method: 'PUT', credentials: 'include', body: file });
-      if (!response.ok) throw new TypeError(`上传失败 (${response.status})`);
-      setUploadedMeta((current) => new Map(current).set(address, { name: file.name, type: file.type || 'application/octet-stream', size: file.size }));
+      const attachment = await uploadChannelFile({ file, channel, daemonId, directory, onResource });
+      setUploadedMeta((current) => new Map(current).set(attachment.address, { name: file.name, type: attachment.media_type, size: file.size }));
       setStatus('ready');
       setRefreshVersion((value) => value + 1);
     } catch (failure) {
@@ -127,7 +109,7 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
     try {
       const receipt = await onResource(readFileTicket({ channelId: channel.id, resourceId }));
       if (!receipt?.ticket) throw new TypeError('服务端没有返回下载凭据');
-      const response = await fetch(fileURL(receipt.address || resourceId, receipt.ticket), { credentials: 'include' });
+      const response = await fetch(fileTransferURL(receipt.address || resourceId, receipt.ticket), { credentials: 'include' });
       if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
       const url = URL.createObjectURL(await response.blob());
       const anchor = document.createElement('a');
@@ -142,7 +124,7 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
 
   function previewFile(entry) {
     const meta = uploadedMeta.get(entry.resourceId);
-    const mediaType = mediaTypeFromName(entry.name, meta?.type || entry.mediaType);
+    const mediaType = mediaTypeFromFileName(entry.name, meta?.type || entry.mediaType);
     onPreview?.({
       key: `mounted-file:${channel.id}:${entry.resourceId}`,
       channelId: channel.id,
@@ -163,7 +145,7 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
     onAttach(attachmentFromResource({
       resourceId: entry.resourceId,
       address: entry.resourceId,
-      file: { name: meta?.name || entry.name, type: mediaTypeFromName(entry.name, meta?.type || entry.mediaType), size: meta?.size ?? entry.size ?? 0 },
+      file: { name: meta?.name || entry.name, type: mediaTypeFromFileName(entry.name, meta?.type || entry.mediaType), size: meta?.size ?? entry.size ?? 0 },
     }));
   }
 
@@ -193,7 +175,7 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
           const rowClass = `channel-file-row ${index % 2 === 1 ? 'row-tinted' : 'row-light'}`;
           if (entry.kind === 'directory') return <button type="button" className={`${rowClass} directory-row`} role="row" key={entry.key} onClick={() => setDirectory(`${normalizeDirectory(directory)}${entry.directory}`)}><span className="finder-name-cell" role="cell"><span className="file-kind-icon folder-icon" aria-hidden="true" /><strong>{entry.name}</strong></span><span className="finder-date-cell" role="cell">{formatModified(entry.modifiedAt)}</span><span className="finder-size-cell" role="cell">—</span><span className="finder-type-cell" role="cell">文件夹</span><span className="finder-row-disclosure" aria-hidden="true">›</span></button>;
           const meta = uploadedMeta.get(entry.resourceId);
-          const mediaType = mediaTypeFromName(entry.name, meta?.type || entry.mediaType);
+          const mediaType = mediaTypeFromFileName(entry.name, meta?.type || entry.mediaType);
           const [icon, typeLabel] = fileKind(entry.name, mediaType);
           return <div className={rowClass} role="row" key={entry.key}><button type="button" className="channel-file-open finder-name-cell" role="cell" onClick={() => previewFile(entry)}><span className={`file-kind-icon type-${artifactKindForMediaType(mediaType)}`} aria-hidden="true">{icon}</span><strong>{entry.name}</strong></button><span className="finder-date-cell" role="cell">{formatModified(entry.modifiedAt)}</span><span className="finder-size-cell" role="cell">{formatSize(meta?.size ?? entry.size)}</span><span className="finder-type-cell" role="cell">{typeLabel}</span><div className="channel-file-actions" role="cell"><button type="button" onClick={() => previewFile(entry)}>预览</button><button type="button" onClick={() => attachFile(entry)}>附加</button><button type="button" onClick={() => download(entry.resourceId, entry.name)}>下载</button></div></div>;
         })}

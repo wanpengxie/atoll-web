@@ -1,4 +1,5 @@
 import React from 'react';
+import { actorDisplayName } from '../model/actor-display.js';
 import { ActorDetails } from './ActorDetails.jsx';
 import { visibleRosterRows } from './roster-visibility.js';
 
@@ -22,7 +23,7 @@ export function Roster({ rows, selfId, identityPending = false, busy, focused = 
           <button type="button" className={selectedActor?.id === row.id ? 'roster-row selected' : 'roster-row'} key={row.id} onClick={() => onSelectActor?.(row)}>
             <span className={`actor-icon kind-${row.kind}`}>{row.kind?.slice(0, 1).toUpperCase()}</span>
             <div>
-              <strong>{row.name || row.id}{row.id === selfId && <em>我</em>}</strong>
+              <strong title={row.id}>{actorDisplayName(row)}{row.id === selfId && <em>我</em>}</strong>
               <span>{row.kind} · {row.decl_id || 'channel member'}</span>
             </div>
             <Presence row={row} />

@@ -69,9 +69,10 @@ test('F3-003..005 键盘、多行草稿、附件入口与 320px 单表面可达'
   await editor.fill('第一行\n第二行');
   await expect(editor).toContainText('第一行');
   await expect(editor).toContainText('第二行');
-  await page.getByRole('button', { name: '＋ 附件' }).click();
-  await expect(page.getByRole('tab', { name: '文件' })).toHaveAttribute('aria-selected', 'true');
-  await page.getByRole('tab', { name: '动态' }).click();
+  await page.getByRole('button', { name: '从频道文件选择' }).click();
+  await expect(page.getByRole('dialog', { name: '从频道文件选择' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭频道文件选择' }).click();
+  await expect(page.getByRole('tab', { name: '动态' })).toHaveAttribute('aria-selected', 'true');
   await expect(editor).toContainText('第一行');
   await expect(editor).toContainText('第二行');
   await editor.fill('检查窄屏回合');
@@ -104,6 +105,59 @@ test('Composer 的 @成员是可恢复的 Mention Node，不靠正文猜收件�
   await restored.pressSequentially('检查结构化收件人');
   await page.getByRole('button', { name: /发送/ }).click();
   await expect(page.locator('.turn-card').filter({ hasText: '检查结构化收件人' })).toBeVisible();
+});
+
+test('Composer 聚焦时只有一个紧凑的外层焦点表面', async ({ page, request }) => {
+  await reset(request, 'message-flow', 1306); await login(page);
+  const geometry = await page.evaluate(() => {
+    const node = document.querySelector('.composer-editor');
+    const surface = document.querySelector('.composer-surface');
+    node.focus();
+    const editorStyle = getComputedStyle(node);
+    const surfaceStyle = getComputedStyle(surface);
+    return {
+      editorOutline: editorStyle.outlineStyle,
+      editorHeight: node.getBoundingClientRect().height,
+      surfaceHeight: surface.getBoundingClientRect().height,
+      surfaceRadius: Number.parseFloat(surfaceStyle.borderRadius),
+    };
+  });
+  expect(geometry.editorOutline).toBe('none');
+  expect(geometry.editorHeight).toBeLessThanOrEqual(50);
+  expect(geometry.surfaceHeight).toBeLessThanOrEqual(96);
+  expect(geometry.surfaceRadius).toBeGreaterThanOrEqual(12);
+});
+
+test('连续中文输入不改变 Composer 与消息区的布局尺寸', async ({ page, request }) => {
+  await reset(request, 'message-flow', 1307); await login(page);
+  const editor = page.getByLabel('消息');
+  const timeline = page.getByRole('tabpanel', { name: '动态' });
+  const composer = page.locator('.composer-surface');
+  const measure = async () => {
+    const composerRect = await composer.evaluate((node) => node.getBoundingClientRect().toJSON());
+    const timelineRect = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
+    return { composerHeight: composerRect.height, timelineTop: timelineRect.top, timelineBottom: timelineRect.bottom };
+  };
+  await editor.focus();
+  const before = await measure();
+  await editor.pressSequentially('这是一段连续输入的中文内容，用来确认消息区不会随着输入过程上下抖动。', { delay: 10 });
+  const after = await measure();
+  expect(Math.abs(after.timelineTop - before.timelineTop)).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.timelineBottom - before.timelineBottom)).toBeLessThanOrEqual(1);
+});
+
+test('Composer 随多行内容向上增高，但不挤压消息区 viewport', async ({ page, request }) => {
+  await reset(request, 'message-flow', 1308); await login(page);
+  const editor = page.getByLabel('消息');
+  const timeline = page.getByRole('tabpanel', { name: '动态' });
+  const beforeSurface = await page.locator('.composer-surface').evaluate((node) => node.getBoundingClientRect().height);
+  const beforeTimeline = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
+  await editor.fill('第一行\n第二行\n第三行\n第四行');
+  const afterSurface = await page.locator('.composer-surface').evaluate((node) => node.getBoundingClientRect().height);
+  const afterTimeline = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
+  expect(afterSurface).toBeGreaterThan(beforeSurface);
+  expect(Math.abs(afterTimeline.top - beforeTimeline.top)).toBeLessThanOrEqual(1);
+  expect(Math.abs(afterTimeline.bottom - beforeTimeline.bottom)).toBeLessThanOrEqual(1);
 });
 
 test('审批使用正文列，后台活动不污染消息主线', async ({ page, request }) => {

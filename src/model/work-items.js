@@ -1,5 +1,6 @@
 import { isAgentControl, supportsType } from './capabilities.js';
 import { TYPES, isSystemWord } from '../protocol/vocab.js';
+import { actorNameMap } from './actor-display.js';
 
 export const WORK_ITEM_KINDS = ['task', 'approval', 'agent_run', 'recovery', 'automation'];
 export const ACTIVE_WORK_ITEM_STATES = new Set(['active', 'waiting', 'blocked', 'uncertain']);
@@ -56,7 +57,7 @@ function taskState(value) {
 }
 
 export function taskProviders(capabilityIndex = new Map(), roster = []) {
-  const names = new Map(roster.map((row) => [row.id, row.name || row.id]));
+  const names = actorNameMap(roster);
   return [...capabilityIndex.values()]
     .filter((entry) => names.has(entry.actorId) && supportsType(entry, 'task.create'))
     .map((entry) => ({ actorId: entry.actorId, name: names.get(entry.actorId) || entry.actorId, capability: entry }))

@@ -1,6 +1,6 @@
 /* Flat collaborative ledger: identity first, cards only for structured objects */
 .timeline { grid-row: 4; min-height: 0; overflow-y: auto; overflow-anchor: none; background: var(--workspace); }
-.timeline-inner { display: flex; width: 100%; min-height: 100%; flex-direction: column; gap: 0; padding: 24px 26px 34px; }
+.timeline-inner { display: flex; width: 100%; min-height: 100%; flex-direction: column; gap: 0; padding: 24px 26px calc(34px + var(--composer-overlay-height, 115px)); }
 .timeline-entry { width: 100%; }
 .empty-ledger { display: grid; min-height: 52vh; place-content: center; justify-items: center; color: var(--text-muted); text-align: center; }
 .empty-ledger > span { display: grid; width: 48px; height: 48px; margin-bottom: 15px; place-content: center; border-radius: 12px; background: var(--surface-2); color: var(--accent); font: 500 22px var(--mono); }
