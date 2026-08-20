@@ -49,8 +49,10 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [filePage, setFilePage] = useState(0);
   const activeDaemon = daemons.find((row) => row.id === daemonId);
+  // 设备在菜单里按 id 选（稳定的键），但地址按名字拼——服务端按名字解析。
+  const daemonName = activeDaemon?.name || '';
   const qualifiedChannel = channel.qualified_name || channel.id;
-  const mountRoot = daemonId ? channelMountRoot({ daemonId, qualifiedChannel }) : '';
+  const mountRoot = daemonName ? channelMountRoot({ daemonName, qualifiedChannel }) : '';
   const prefix = `${mountRoot}${normalizeDirectory(directory)}`;
   const entries = useMemo(() => directoryEntries(items, prefix), [items, prefix]);
   const visibleEntries = entries.slice(filePage * LIST_WINDOW_SIZE, (filePage + 1) * LIST_WINDOW_SIZE);
@@ -68,11 +70,11 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
   useEffect(() => { setFilePage(0); }, [directory]);
 
   useEffect(() => {
-    if (!daemonId || disabled) return undefined;
+    if (!daemonName || disabled) return undefined;
     let alive = true;
     setStatus('loading');
     setError('');
-    onResource(fileListCommand({ channelId: channel.id, daemonId, qualifiedChannel, directory }))
+    onResource(fileListCommand({ channelId: channel.id, daemonName, qualifiedChannel, directory }))
       .then((page) => {
         if (!alive) return;
         setItems(Array.isArray(page?.items) ? page.items : []);
@@ -84,16 +86,16 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
         setError(failure.message || String(failure));
       });
     return () => { alive = false; };
-  }, [channel.id, daemonId, directory, disabled, onResource, qualifiedChannel, refreshVersion]);
+  }, [channel.id, daemonName, directory, disabled, onResource, qualifiedChannel, refreshVersion]);
 
   async function chooseFile(event) {
     const file = event.target.files?.[0];
     event.target.value = '';
-    if (!file || !daemonId) return;
+    if (!file || !daemonName) return;
     setError('');
     setStatus('uploading');
     try {
-      const attachment = await uploadChannelFile({ file, channel, daemonId, directory, onResource });
+      const attachment = await uploadChannelFile({ file, channel, daemonName, directory, onResource });
       setUploadedMeta((current) => new Map(current).set(attachment.address, { name: file.name, type: attachment.media_type, size: file.size }));
       setStatus('ready');
       setRefreshVersion((value) => value + 1);
@@ -108,7 +110,7 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
     try {
       const receipt = await onResource(readFileTicket({ channelId: channel.id, resourceId }));
       if (!receipt?.ticket) throw new TypeError('服务端没有返回下载凭据');
-      const response = await fetch(fileTransferURL(receipt.address || resourceId, receipt.ticket), { credentials: 'include' });
+      const response = await fetch(fileTransferURL(receipt.ticket), { credentials: 'include' });
       if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
       const url = URL.createObjectURL(await response.blob());
       const anchor = document.createElement('a');

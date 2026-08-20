@@ -18,8 +18,9 @@ export function kvResource({ channelId, op, id = '', args, query, target, ops })
   return payload;
 }
 
-export function fileAddress({ daemonId, qualifiedChannel, path }) {
-  const daemon = String(daemonId || '').trim();
+// daemon 段是设备的名字，不是设备 id——服务端用 ResolveDeviceName 按名字查。
+export function fileAddress({ daemonName, qualifiedChannel, path }) {
+  const daemon = String(daemonName || '').trim();
   const channel = String(qualifiedChannel || '').trim();
   const cleanPath = String(path || '').trim().replace(/^\/+/, '');
   if (!daemon || !channel || !cleanPath) throw new TypeError('daemon、频道和文件路径不能为空');

@@ -1133,14 +1133,13 @@ export function createMockServer({
       return;
     }
 
-    if (path.startsWith('/files/')) {
+    if (path === '/files') {
       if (!authenticated(request)) { httpError(response, 401, 'not_authenticated', 'invalid session'); return; }
-      let address;
-      try { address = decodeURIComponent(path.slice('/files/'.length)); } catch { httpError(response, 400, 'bad_payload', 'invalid file address'); return; }
       const ticket = url.searchParams.get('t') || '';
-      if (!address || !ticket || url.searchParams.size !== 1) { httpError(response, 400, 'bad_payload', 'file address and one ticket are required'); return; }
+      if (!ticket || url.searchParams.size !== 1) { httpError(response, 400, 'bad_payload', 'exactly one ticket is required'); return; }
       if (request.method === 'PUT') {
-        const grant = domain.redeemTicket(ticket, 'put', address);
+        const grant = domain.redeemTicket(ticket, 'put');
+        const address = grant?.address;
         if (!grant) { httpError(response, 403, 'ticket_invalid', 'upload ticket is invalid, expired or already used'); return; }
         const chunks = []; let size = 0;
         try {
@@ -1161,9 +1160,9 @@ export function createMockServer({
         return;
       }
       if (request.method === 'GET') {
-        const grant = domain.redeemTicket(ticket, 'get', address);
-        const file = domain.files.get(address);
+        const grant = domain.redeemTicket(ticket, 'get');
         if (!grant) { httpError(response, 403, 'ticket_invalid', 'download ticket is invalid or expired'); return; }
+        const file = domain.files.get(grant.address);
         if (!file) { httpError(response, 404, 'resource_not_found', 'file bytes are not available'); return; }
         response.writeHead(200, { 'Content-Type': file.mediaType, 'Content-Length': file.content.length, 'Content-Disposition': 'attachment' });
         response.end(file.content);

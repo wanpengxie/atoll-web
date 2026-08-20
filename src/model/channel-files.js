@@ -6,8 +6,9 @@ function displaySegment(value) {
   try { return decodeURIComponent(value); } catch { return value; }
 }
 
-export function channelMountRoot({ daemonId, qualifiedChannel }) {
-  const daemon = cleanSegment(daemonId);
+// daemon 段是设备名字，不是设备 id——服务端按名字解析（ResolveDeviceName）。
+export function channelMountRoot({ daemonName, qualifiedChannel }) {
+  const daemon = cleanSegment(daemonName);
   const channel = cleanSegment(qualifiedChannel);
   if (!daemon || !channel) throw new TypeError('设备和频道不能为空');
   return `daemon://${daemon}/${channel}/`;
@@ -19,8 +20,8 @@ export function normalizeDirectory(value = '') {
   return parts.length ? `${parts.join('/')}/` : '';
 }
 
-export function fileListCommand({ channelId, daemonId, qualifiedChannel, directory = '' }) {
-  const prefix = `${channelMountRoot({ daemonId, qualifiedChannel })}${normalizeDirectory(directory)}`;
+export function fileListCommand({ channelId, daemonName, qualifiedChannel, directory = '' }) {
+  const prefix = `${channelMountRoot({ daemonName, qualifiedChannel })}${normalizeDirectory(directory)}`;
   return { channel_id: channelId, op: 'list', query: { prefix } };
 }
 

@@ -3,8 +3,8 @@ import { artifactAttachment, formatArtifactSize } from '../../model/artifacts.js
 import { readFileTicket } from '../../model/resources.js';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 
-function resourceURL(address, ticket) {
-  return `/files/${encodeURIComponent(address)}?t=${encodeURIComponent(ticket)}`;
+function resourceURL(ticket) {
+  return `/files?t=${encodeURIComponent(ticket)}`;
 }
 
 export const PREVIEW_LIMITS = Object.freeze({
@@ -69,7 +69,7 @@ export function useArtifactPreview(artifact, onResource) {
     onResource(readFileTicket({ channelId: artifact.channelId, resourceId: artifact.resourceId })).then(async (receipt) => {
       if (!alive) return;
       if (!receipt?.ticket || !receipt?.address) throw new TypeError('服务端没有返回可读凭据');
-      const response = await fetch(resourceURL(receipt.address, receipt.ticket), { credentials: 'include', signal: controller.signal });
+      const response = await fetch(resourceURL(receipt.ticket), { credentials: 'include', signal: controller.signal });
       if (!response.ok) throw new TypeError(`预览读取失败 (${response.status})`);
       const declared = Number(response.headers?.get?.('content-length') || 0);
       if (declared > limit) throw new RangeError(sizeError(limit));

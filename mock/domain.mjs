@@ -431,9 +431,10 @@ export class MockDomain {
     return ticket;
   }
 
-  redeemTicket(ticket, method, address) {
+  // 票是这一步的全部输入：地址、方向、资源都在发票时定死，兑的时候从票里读。
+  redeemTicket(ticket, method) {
     const row = this.tickets.get(ticket);
-    if (!row || row.method !== method || row.address !== address || row.expiresAt <= this.clock || (method === 'put' && row.used)) return null;
+    if (!row || row.method !== method || row.expiresAt <= this.clock || (method === 'put' && row.used)) return null;
     if (method === 'put') row.used = true;
     return row;
   }

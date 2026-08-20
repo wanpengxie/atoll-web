@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
-import { uploadChannelFile } from './model/channel-file-transfer.js';
+import { fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
 import { unreadCount } from './model/cursors.js';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
 import { resumeSnapshot } from './model/feed-cache.js';
@@ -462,9 +462,8 @@ export default function App() {
   const handleDownloadResource = useCallback(async (channelId, attachment) => {
     try {
       const receipt = await handleResource(readFileTicket({ channelId, resourceId: attachment.resource_id }));
-      const address = receipt.address || attachment.address;
-      if (!receipt.ticket || !address) throw new TypeError('服务端没有返回可下载票据');
-      const response = await fetch(`/files/${encodeURIComponent(address)}?t=${encodeURIComponent(receipt.ticket)}`, { credentials: 'include' });
+      if (!receipt.ticket) throw new TypeError('服务端没有返回可下载票据');
+      const response = await fetch(fileTransferURL(receipt.ticket), { credentials: 'include' });
       if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -639,9 +638,9 @@ export default function App() {
     // 因这个短暂竞态失败，所以首次上传可就地等待一次 daemon observation。
     const daemons = spaceDaemons.length ? spaceDaemons : await refreshDaemonData();
     const daemon = daemons[0];
-    if (!daemon?.id) throw new TypeError('当前频道没有可用的 daemon 挂载');
+    if (!daemon?.name) throw new TypeError('当前频道没有可用的 daemon 挂载');
     const uploaded = [];
-    for (const file of files) uploaded.push(await uploadChannelFile({ file, channel, daemonId: daemon.id, onResource: handleResource }));
+    for (const file of files) uploaded.push(await uploadChannelFile({ file, channel, daemonName: daemon.name, onResource: handleResource }));
     setDraftAttachments((current) => {
       const rows = [...(current[channel.id] || [])];
       for (const attachment of uploaded) {

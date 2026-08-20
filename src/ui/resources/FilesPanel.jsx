@@ -3,8 +3,8 @@ import { attachmentFromResource, createFileTicket, fileAddress, readFileTicket }
 import { PanelCard } from '../primitives/PanelCard.jsx';
 import { SelectMenu } from '../primitives/SelectMenu.jsx';
 
-function fileURL(address, ticket) {
-  return `/files/${encodeURIComponent(address)}?t=${encodeURIComponent(ticket)}`;
+function fileURL(ticket) {
+  return `/files?t=${encodeURIComponent(ticket)}`;
 }
 
 export function FilesPanel({ channel, daemons, disabled, onResource, onAttach }) {
@@ -24,11 +24,12 @@ export function FilesPanel({ channel, daemons, disabled, onResource, onAttach })
     setError('');
     setUploadState('ticket');
     try {
-      const address = fileAddress({ daemonId, qualifiedChannel: channel.qualified_name || channel.id, path });
+      const daemonName = daemons.find((row) => row.id === daemonId)?.name;
+      const address = fileAddress({ daemonName, qualifiedChannel: channel.qualified_name || channel.id, path });
       const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
       if (!ticket?.ticket) throw new TypeError('服务端没有返回上传 ticket');
       setUploadState('uploading');
-      const response = await fetch(fileURL(address, ticket.ticket), { method: 'PUT', credentials: 'include', body: file });
+      const response = await fetch(fileURL(ticket.ticket), { method: 'PUT', credentials: 'include', body: file });
       if (!response.ok) { const body = await response.json().catch(() => ({})); throw new TypeError(body.detail || `上传失败 (${response.status})`); }
       setUploadState('confirming');
       const id = ticket.resource_id || ticket.id || address;
@@ -48,7 +49,7 @@ export function FilesPanel({ channel, daemons, disabled, onResource, onAttach })
     try {
       const ticket = await onResource(readFileTicket({ channelId: channel.id, resourceId: row.resourceId }));
       if (!ticket?.ticket) throw new TypeError('服务端没有返回下载 ticket');
-      const response = await fetch(fileURL(ticket.address || row.address, ticket.ticket), { credentials: 'include' });
+      const response = await fetch(fileURL(ticket.ticket), { credentials: 'include' });
       if (!response.ok) { const body = await response.json().catch(() => ({})); throw new TypeError(body.detail || `下载失败 (${response.status})`); }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);

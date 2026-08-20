@@ -28,7 +28,9 @@ export function ChannelFilePickerModal({ channel, daemons = [], disabled = false
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
   const qualifiedChannel = channel?.qualified_name || channel?.id || '';
-  const prefix = daemonId && qualifiedChannel ? `${channelMountRoot({ daemonId, qualifiedChannel })}${normalizeDirectory(directory)}` : '';
+  // 设备在菜单里按 id 选（稳定的键），但地址按名字拼——服务端按名字解析。
+  const daemonName = daemons.find((row) => row.id === daemonId)?.name || '';
+  const prefix = daemonName && qualifiedChannel ? `${channelMountRoot({ daemonName, qualifiedChannel })}${normalizeDirectory(directory)}` : '';
   const entries = useMemo(() => directoryEntries(items, prefix).slice(0, LIST_WINDOW_SIZE), [items, prefix]);
   useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
 
@@ -39,11 +41,11 @@ export function ChannelFilePickerModal({ channel, daemons = [], disabled = false
   useEffect(() => { setDirectory(''); }, [daemonId]);
 
   useEffect(() => {
-    if (!channel?.id || !daemonId || disabled) { setItems([]); setStatus('ready'); return undefined; }
+    if (!channel?.id || !daemonName || disabled) { setItems([]); setStatus('ready'); return undefined; }
     let alive = true;
     setStatus('loading');
     setError('');
-    onResource(fileListCommand({ channelId: channel.id, daemonId, qualifiedChannel, directory }))
+    onResource(fileListCommand({ channelId: channel.id, daemonName, qualifiedChannel, directory }))
       .then((page) => {
         if (!alive) return;
         setItems(Array.isArray(page?.items) ? page.items : []);
@@ -55,7 +57,7 @@ export function ChannelFilePickerModal({ channel, daemons = [], disabled = false
         setError(failure.message || String(failure));
       });
     return () => { alive = false; };
-  }, [channel?.id, daemonId, directory, disabled, onResource, qualifiedChannel]);
+  }, [channel?.id, daemonName, directory, disabled, onResource, qualifiedChannel]);
 
   function choose(entry) {
     const mediaType = mediaTypeFromFileName(entry.name, entry.mediaType);

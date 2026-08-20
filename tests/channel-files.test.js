@@ -3,8 +3,8 @@ import { channelMountRoot, directoryEntries, fileListCommand, normalizeDirectory
 
 describe('channel mounted files', () => {
   it('builds the real Atoll file-list prefix for the active channel mount', () => {
-    expect(channelMountRoot({ daemonId: 'local-device', qualifiedChannel: 'c0.project' })).toBe('daemon://local-device/c0.project/');
-    expect(fileListCommand({ channelId: 'project-id', daemonId: 'local-device', qualifiedChannel: 'c0.project', directory: 'docs/design/' })).toEqual({
+    expect(channelMountRoot({ daemonName: 'local-device', qualifiedChannel: 'c0.project' })).toBe('daemon://local-device/c0.project/');
+    expect(fileListCommand({ channelId: 'project-id', daemonName: 'local-device', qualifiedChannel: 'c0.project', directory: 'docs/design/' })).toEqual({
       channel_id: 'project-id', op: 'list', query: { prefix: 'daemon://local-device/c0.project/docs/design/' },
     });
   });

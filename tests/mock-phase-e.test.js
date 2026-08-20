@@ -56,10 +56,10 @@ describe('phase E stateful mock', () => {
     expect(await h.wire.resource({ channel_id: 'c0', op: 'stat', resource_id: 'kv:demo' })).toMatchObject({ exists: true, meta: { kind: 'kv' } });
     const address = 'daemon://local-device/c0/report.txt';
     const create = await h.wire.resource({ channel_id: 'c0', op: 'create', address, with_content: true });
-    const put = await h.fetchSession(`/files/${encodeURIComponent(address)}?t=${encodeURIComponent(create.ticket)}`, { method: 'PUT', body: 'hello', headers: { 'Content-Type': 'text/plain' } });
+    const put = await h.fetchSession(`/files?t=${encodeURIComponent(create.ticket)}`, { method: 'PUT', body: 'hello', headers: { 'Content-Type': 'text/plain' } });
     expect(put.status).toBe(200);
     const read = await h.wire.resource({ channel_id: 'c0', op: 'read', resource_id: create.resource_id, with_content: true });
-    const get = await h.fetchSession(`/files/${encodeURIComponent(address)}?t=${encodeURIComponent(read.ticket)}`);
+    const get = await h.fetchSession(`/files?t=${encodeURIComponent(read.ticket)}`);
     expect(await get.text()).toBe('hello');
     expect(await h.wire.resource({ channel_id: 'c0', op: 'delete', resource_id: 'kv:demo' })).toMatchObject({ deleted: true });
     h.wire.close(); await close(h.server);
@@ -70,12 +70,12 @@ describe('phase E stateful mock', () => {
     const address = 'daemon://local-device/c0/expired.txt';
     const first = await h.wire.resource({ channel_id: 'c0', op: 'create', address, with_content: true });
     await h.fetchSession('/mock/control/advance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms: 60_000 }) });
-    const expired = await h.fetchSession(`/files/${encodeURIComponent(address)}?t=${encodeURIComponent(first.ticket)}`, { method: 'PUT', body: 'old' });
+    const expired = await h.fetchSession(`/files?t=${encodeURIComponent(first.ticket)}`, { method: 'PUT', body: 'old' });
     expect(expired.status).toBe(403);
     const fresh = await h.wire.resource({ channel_id: 'c0', op: 'create', address, with_content: true });
-    const uploaded = await h.fetchSession(`/files/${encodeURIComponent(address)}?t=${encodeURIComponent(fresh.ticket)}`, { method: 'PUT', body: 'fresh' });
+    const uploaded = await h.fetchSession(`/files?t=${encodeURIComponent(fresh.ticket)}`, { method: 'PUT', body: 'fresh' });
     expect(uploaded.status).toBe(200);
-    const repeated = await h.fetchSession(`/files/${encodeURIComponent(address)}?t=${encodeURIComponent(fresh.ticket)}`, { method: 'PUT', body: 'duplicate' });
+    const repeated = await h.fetchSession(`/files?t=${encodeURIComponent(fresh.ticket)}`, { method: 'PUT', body: 'duplicate' });
     expect(repeated.status).toBe(403);
     h.wire.close(); await close(h.server);
   });
