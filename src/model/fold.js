@@ -252,12 +252,41 @@ export function fold(rows, selfId = '') {
   return state;
 }
 
+// 一个 agent 在回合中调用别的 actor，发出的是它自己的 request，`parent_id` 指着
+// 那条把它叫起来的请求。所以账本本来就是棵树，只是过去被摊平成同一层：人问的一句
+// 和 agent 顺手查的六次成员列表挤在一起，读的人分不出哪句是主线。
+//
+// 这里按 parent_id 把树收回来：只有根请求进时间线，被叫出来的那些挂在它的 thread 上
+// （深度优先、按账本序号，孙代也在同一条 thread 里，带 depth 供缩进）。判据用
+// parent_id 而不是 correlation_id —— 同一个 correlation 里的请求是平级还是父子，
+// 只有 parent_id 说得清。
+function threadOf(turn, childrenByParent, depth = 1, out = []) {
+  for (const child of childrenByParent.get(turn.requestId) || []) {
+    out.push({ turn: child, depth });
+    threadOf(child, childrenByParent, depth + 1, out);
+  }
+  return out;
+}
+
 export function orderedTimeline(state) {
   const signature = `${state.turns.size}:${state.standalone.length}:${state.orphans.length}`;
   const cached = timelineCache.get(state);
   if (cached?.signature === signature) return cached.entries;
+
+  const childrenByParent = new Map();
+  const roots = [];
+  for (const turn of state.turns.values()) {
+    const parentId = turn.request?.parent_id;
+    // 父必须是本频道见过的另一个请求；父不在（跨频道来的、还没回放到）就按根处理，
+    // 宁可平铺也不让它消失。
+    if (parentId && parentId !== turn.requestId && state.turns.has(parentId)) {
+      pushMap(childrenByParent, parentId, turn);
+    } else roots.push(turn);
+  }
+  for (const values of childrenByParent.values()) values.sort((left, right) => left.requestSeq - right.requestSeq);
+
   const entries = [];
-  for (const turn of state.turns.values()) entries.push({ kind: 'turn', seq: turn.requestSeq, turn });
+  for (const turn of roots) entries.push({ kind: 'turn', seq: turn.requestSeq, turn, thread: threadOf(turn, childrenByParent) });
   for (const item of state.standalone) entries.push({ kind: 'standalone', ...item });
   for (const item of state.orphans) entries.push({ kind: 'orphan', ...item });
   entries.sort((left, right) => left.seq - right.seq);

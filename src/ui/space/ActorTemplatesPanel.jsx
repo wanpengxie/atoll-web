@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { actorTemplateCommand, isProtectedDeclaration, parseJSONObject } from '../../model/space-administration.js';
+import { actorTemplateCommand, isProtectedDeclaration, isValidName, NAME_RULE, parseJSONObject } from '../../model/space-administration.js';
 import { PanelCard } from '../primitives/PanelCard.jsx';
 import { SelectMenu } from '../primitives/SelectMenu.jsx';
 import { OperationState, resultRows } from './space-panel-state.jsx';
@@ -32,9 +32,10 @@ export function ActorTemplatesPanel({ states, registrarRoster, disabled, onSubmi
     </PanelCard>
     <PanelCard className="governance-form" title="登记或编辑 Actor 模板">
       <label>声明 ID<input aria-label="Actor 声明 ID" value={actor.id} onChange={(event) => setActor({ ...actor, id: event.target.value })} placeholder="team:assistant" /></label>
-      <label>名称<input aria-label="Actor 模板名称" value={actor.name} onChange={(event) => setActor({ ...actor, name: event.target.value })} /></label>
+      <label>名称<input aria-label="Actor 模板名称" value={actor.name} onChange={(event) => setActor({ ...actor, name: event.target.value.trim() })} placeholder="reviewer" aria-describedby="actor-name-rule" aria-invalid={actor.name !== '' && !isValidName(actor.name) ? 'true' : undefined} /></label>
+      <p className="field-hint" id="actor-name-rule">成员被叫的名字，会成为它 actor id 的中间段（<code>agent:reviewer:…</code>）。{NAME_RULE}</p>
       <label>Class<input aria-label="Actor Class" value={actor.class} onChange={(event) => setActor({ ...actor, class: event.target.value })} /></label>
-      <label>说明<input aria-label="Actor 模板说明" value={actor.description} onChange={(event) => setActor({ ...actor, description: event.target.value })} /></label>
+      <label>说明<input aria-label="Actor 模板说明" value={actor.description} onChange={(event) => setActor({ ...actor, description: event.target.value })} placeholder="这个 agent 做什么，给人看的" /></label>
       <label>可见性<SelectMenu ariaLabel="Actor 模板可见性" value={actor.visibility} options={[{ value: 'private', label: 'private' }, { value: 'public', label: 'public' }]} onChange={(value) => setActor({ ...actor, visibility: value })} /></label>
       <label>Config JSON<textarea aria-label="Actor Config JSON" rows="5" value={actor.config} onChange={(event) => setActor({ ...actor, config: event.target.value })} /></label>
       <div className="form-actions"><button type="button" className="primary-button" disabled={disabled} onClick={() => act('register')}>登记</button><button type="button" disabled={disabled || isProtectedDeclaration(actor.id)} onClick={() => act('edit')}>保存编辑</button><button type="button" className="danger-text" disabled={disabled || isProtectedDeclaration(actor.id)} onClick={() => act('revoke')}>撤销</button></div>

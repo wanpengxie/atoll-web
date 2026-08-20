@@ -5,11 +5,23 @@ const roster = [{ id: 'system', kind: 'system', name: 'system' }];
 
 describe('space administration model', () => {
   it('builds actor template commands and protects system declarations', () => {
-    const command = actorTemplateCommand('register', { id: 'demo:agent', name: 'Demo', class: 'agent', visibility: 'private', config: { a: 1 } }, roster);
+    const command = actorTemplateCommand('register', { id: 'demo:agent', name: 'demo', class: 'agent', visibility: 'private', config: { a: 1 } }, roster);
     expect(command.msgType).toBe('system.actor.template.create');
-    expect(command.payload).toEqual({ id: 'demo:agent', name: 'Demo', class: 'agent', visibility: 'private', config: { a: 1 } });
+    expect(command.payload).toEqual({ id: 'demo:agent', name: 'demo', class: 'agent', visibility: 'private', config: { a: 1 } });
     expect(isProtectedDeclaration('svcactor')).toBe(true);
     expect(() => actorTemplateCommand('revoke', { id: 'svcactor' }, roster)).toThrow('受保护');
+  });
+
+  // 声明的 name 会成为它坐出来的成员 actor id 的中间段，所以它守的是名字的规矩，
+  // 不是标题的规矩。这里当场拦住，而不是把 "Demo Agent" 送出去换一句远端拒绝。
+  it('refuses a declaration name that could not be an actor id segment', () => {
+    for (const name of ['Demo Agent', '评审助手', '-lead', 'lead-', 'a:b', '']) {
+      expect(() => actorTemplateCommand('register', { id: 'demo', name, class: 'agent' }, roster)).toThrow('名称是成员的名字');
+    }
+    expect(actorTemplateCommand('register', { id: 'demo', name: 'demo-agent-1', class: 'agent' }, roster).payload.name).toBe('demo-agent-1');
+    // 编辑也守同一条，否则改个名就能绕过去。
+    expect(() => actorTemplateCommand('edit', { id: 'demo', name: 'Demo Agent' }, roster)).toThrow('名称是成员的名字');
+    expect(actorTemplateCommand('edit', { id: 'demo', description: '随便写的说明' }, roster).payload).toEqual({ id: 'demo', description: '随便写的说明' });
   });
 
   it('targets overlay/profile at the source channel system actor', () => {

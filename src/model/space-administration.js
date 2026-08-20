@@ -36,6 +36,24 @@ export function isProtectedDeclaration(id) {
   return isSystemDeclaration(id);
 }
 
+// 声明的 name 不是给人看的标题，是坐进频道的那个成员被叫的名字 —— 它会成为成员
+// actor id 的中间段（`agent:reviewer:<ts>`），别人靠它指名道姓。所以它守的是名字的
+// 规矩：一个小写 DNS 标签。想写的那句话放 description。
+//
+// 这里先拦一道，是为了当场说清楚，而不是把"My Agent"送出去换一句远端拒绝。
+// 规矩本身由 registrar 执法，这里只是把它照抄到人眼前。
+export const NAME_RULE = '名称是成员的名字：1-63 个字符，只能用小写 a-z、0-9 和 -，首尾必须是字母或数字。想写的说明放到"说明"里。';
+
+export function isValidName(value) {
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(value ?? ''));
+}
+
+function requireName(value) {
+  const name = String(value ?? '').trim();
+  if (!isValidName(name)) throw new TypeError(NAME_RULE);
+  return name;
+}
+
 export function safeDaemonRows(observation) {
   return (observation?.items || []).map((item) => {
     const declared = item.declared || {};
@@ -71,12 +89,16 @@ export function actorTemplateCommand(action, values, roster) {
   if (['edit', 'revoke'].includes(action) && isProtectedDeclaration(id)) throw new TypeError('标准系统声明受保护');
   let payload = {};
   if (action === 'register') payload = {
-    id, name: String(values.name || '').trim(), class: String(values.class || '').trim(),
+    id, name: requireName(values.name), class: String(values.class || '').trim(),
     visibility: values.visibility || 'private',
     ...(String(values.description || '').trim() ? { description: String(values.description).trim() } : {}),
     ...(values.config ? { config: values.config } : {}),
   };
-  if (action === 'edit') payload = { id, ...pickDefined(values, ['name', 'description', 'class', 'config', 'visibility']) };
+  if (action === 'edit') {
+    const edited = pickDefined(values, ['name', 'description', 'class', 'config', 'visibility']);
+    if (edited.name !== undefined) edited.name = requireName(edited.name);
+    payload = { id, ...edited };
+  }
   if (['revoke', 'get'].includes(action)) payload = { id };
   return command({ type, payload, roster, label: `${type} → ${id || 'all'}` });
 }

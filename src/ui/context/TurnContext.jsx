@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { taskControlContext } from '../../model/task-controls.js';
 import { messagePresentation } from '../../model/message-presentation.js';
 import { turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
+import { argsOf } from '../../protocol/envelope.js';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 import { StructuredResult } from '../StructuredResult.jsx';
 
@@ -73,7 +74,7 @@ function TurnDetailBody({ turn, roster = [], selfId, access, capability, control
       <div className="turn-context-process-scroll">{turn.activity.length ? turn.activity.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={technicalLabel(item.envelope)} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有工具或运行时活动</p>}</div>
     </details>
     <ContextControls context={context} state={controlState} onCancel={onCancel} onControl={onControl} />
-    {request.payload?.attachments?.length > 0 && <section className="turn-context-section"><h3>关联文件</h3>{request.payload.attachments.map((row) => <button type="button" className="turn-context-attachment" key={row.resource_id} onClick={() => onDownload(row)}><span>{row.name || row.resource_id}</span><small>{row.media_type || '文件'} · 下载</small></button>)}</section>}
+    {argsOf(request).attachments?.length > 0 && <section className="turn-context-section"><h3>关联文件</h3>{argsOf(request).attachments.map((row) => <button type="button" className="turn-context-attachment" key={row.resource_id} onClick={() => onDownload(row)}><span>{row.name || row.resource_id}</span><small>{row.media_type || '文件'} · 下载</small></button>)}</section>}
     {onCreateTask && <div className="turn-context-business-actions"><button type="button" onClick={() => onCreateTask({ view: 'dynamic', objectType: 'turn', objectId: turn.requestId, seq: turn.requestSeq })}>从这个回合创建任务</button></div>}
     <details className="turn-context-diagnostics"><summary>技术审计{turn.anomalies.length ? ` · ${turn.anomalies.length} 个异常` : ''}</summary><dl className="turn-audit-facts"><div><dt>消息编号</dt><dd>{turn.requestId}</dd></div><div><dt>协议类型</dt><dd>{request.type}</dd></div><div><dt>账本序号</dt><dd>{turn.requestSeq}</dd></div>{turn.terminal?.id && <div><dt>终态编号</dt><dd>{turn.terminal.id}</dd></div>}</dl>{turn.anomalies.length > 0 && <div className="turn-anomaly-list">{turn.anomalies.map((item, index) => <p key={`${item.code}-${index}`}>{item.code || '未知异常'}{item.seq ? ` · 序号 ${item.seq}` : ''}</p>)}</div>}</details>
   </>;

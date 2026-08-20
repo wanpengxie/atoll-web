@@ -69,18 +69,18 @@ it('同作者五分钟内的连续消息合并身份，但保留每条可聚焦�
   expect(screen.getByText('第二条')).toBeTruthy();
 });
 
-it('频道活动使用类型化事件语义，并过滤标准 Actor', async () => {
-  const user = userEvent.setup();
+// 平台叙事暂时不进时间线（Timeline 的 SHOW_CHANNEL_NARRATION）：它与真正的往来
+// 平铺在一条流里，agent 每干一次活就刷出一串，把人要读的东西淹掉。这条钉的是
+// "不出现"，而不是它长什么样——等它有了合适的落位，连同这条一起重写。
+it('频道活动不铺进时间线', () => {
   const narration = [
     { seq: 1, envelope: { id: 'joined-steward', type: 'system.member.created', ts: 1_000, sender: { id: 'system', kind: 'system' }, payload: { member: 'steward', decl_id: 'mock:steward' } } },
     { seq: 2, envelope: { id: 'joined-service', type: 'system.member.created', ts: 2_000, sender: { id: 'system', kind: 'system' }, payload: { member: 'svcactor', decl_id: 'svcactor' } } },
   ];
   const state = { channelId: 'c0', rows: new Map(), turns: new Map(), standalone: [], orphans: [], narration, lastSeq: 2 };
   render(<Timeline state={state} roster={[{ id: 'steward', name: 'Steward' }]} selfId="me" pending={[]} approvalStates={{}} />);
-  expect(screen.getByText('1 条成员与状态更新')).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: /频道活动/ }));
-  expect(screen.getByText('Steward 已加入频道')).toBeTruthy();
-  expect(document.body.textContent).not.toContain('svcactor');
+  expect(screen.queryByRole('button', { name: /频道活动/ })).toBeNull();
+  expect(document.body.textContent).not.toContain('已加入频道');
 });
 
 it('消息附件只显示产品摘要，点击整卡进入统一预览', async () => {
@@ -95,6 +95,37 @@ it('消息附件只显示产品摘要，点击整卡进入统一预览', async (
   expect(screen.queryByText('application/pdf')).toBeNull();
   await user.click(screen.getByRole('button', { name: '预览 研究报告.pdf' }));
   expect(onPreviewResource).toHaveBeenCalledWith('c0', turn.request.payload.attachments[0]);
+});
+
+// agent 为了答一句话调用别的 actor，那些调用过去和人问的那句平铺在同一层。这里钉的是
+// 它们聚在这一问底下、默认收起，展开才看得到细节——人先读到主线，需要时才读过程。
+it('agent 回合中调用的其它 actor 聚在这一问底下，默认收起', async () => {
+  const user = userEvent.setup();
+  const ask = { id: 'ask', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { body: { text: '把 root 拉进来' } } };
+  const askTurn = {
+    requestId: 'ask', request: ask, requestSeq: 1, status: 'completed', provisional: [], activity: [], anomalies: [],
+    terminal: { id: 'ask-r', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '已加入' } },
+  };
+  const admit = { id: 'admit', type: 'system.member.admit', kind: 'request', ts: 110, parent_id: 'ask', sender: { id: 'agent-1', kind: 'agent' }, audience: ['system'], payload: { body: { principal: 'root' } } };
+  const admitTurn = {
+    requestId: 'admit', request: admit, requestSeq: 2, status: 'completed', provisional: [], activity: [], anomalies: [],
+    terminal: { id: 'admit-r', type: 'system.member.admit', ts: 115, sender: { id: 'system', kind: 'system' }, payload: { status: 'completed', member: 'human:root:1' } },
+  };
+  const state = {
+    channelId: 'c0', rows: new Map([[1, ask], [2, admit]]),
+    turns: new Map([['ask', askTurn], ['admit', admitTurn]]),
+    standalone: [], orphans: [], narration: [], lastSeq: 3,
+  };
+  render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} />);
+
+  // 人问的那句读得出正文（载荷带 body 包装），被叫出来的调用不占一张卡。
+  expect(screen.getByText('把 root 拉进来')).toBeTruthy();
+  expect(document.querySelectorAll('.turn-card')).toHaveLength(1);
+  expect(screen.queryByText('邀请成员加入')).toBeNull();
+
+  await user.click(screen.getByRole('button', { name: /1 次关联调用/ }));
+  expect(screen.getByText('邀请成员加入')).toBeTruthy();
+  expect(screen.getByText('root')).toBeTruthy();
 });
 
 describe('F3 Composer', () => {

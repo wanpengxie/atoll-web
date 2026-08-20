@@ -1,3 +1,5 @@
+import { argsOf } from '../protocol/envelope.js';
+
 const ARTIFACT_KINDS = new Set(['file', 'document', 'image', 'audio', 'video', 'table', 'list', 'report', 'structured']);
 const artifactIndexCache = new WeakMap();
 
@@ -65,7 +67,9 @@ function factsFromEnvelope(envelope, adapters) {
   if (!payload || typeof payload !== 'object') return [];
   const facts = [];
   const terminal = envelope.kind === 'response' && ['completed', 'failed', 'cancelled'].includes(payload.status);
-  if ((envelope.kind === 'request' || terminal) && Array.isArray(payload.attachments)) facts.push(...payload.attachments.map(attachmentFact).filter(Boolean));
+  // 请求的附件在 `body` 里，响应的在顶层；argsOf 把这个差别吃掉。
+  const args = argsOf(envelope);
+  if ((envelope.kind === 'request' || terminal) && Array.isArray(args.attachments)) facts.push(...args.attachments.map(attachmentFact).filter(Boolean));
   if (terminal) {
     const single = attachmentFact(payload.attachment);
     if (single) facts.push(single);

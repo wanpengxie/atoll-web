@@ -52,6 +52,24 @@
 .turn-process-summary > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .turn-process-summary small { color: var(--text-dim); font-size: 9px; }
 .turn-process-summary > span:last-child { color: var(--text-dim); font-size: 9px; white-space: nowrap; }
+/* 回合里被叫出来的调用：收起时一枚同 turn-process-summary 同族的小药丸，
+   展开后按 --thread-depth 缩进，缩进量就是"谁叫出了谁"。 */
+.turn-thread-toggle { display: inline-grid; width: fit-content; max-width: 100%; grid-template-columns: auto minmax(0, auto) auto auto; align-items: center; gap: 7px; margin: 0 0 2px; padding: 4px 7px; border: 0; border-radius: var(--pill); background: var(--surface-muted); color: var(--text-muted); text-align: left; cursor: pointer; }
+.turn-thread-toggle:hover, .turn-thread-toggle:focus-visible { background: var(--surface-soft); }
+.turn-thread-toggle > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.turn-thread-toggle small { color: var(--text-dim); font-size: 9px; }
+.turn-thread-toggle > span:last-child { color: var(--text-dim); font-size: 9px; }
+.turn-thread-toggle.has-failure small { color: var(--warning); }
+.turn-thread-list { margin: 4px 0 6px; padding: 0; border-left: 1px solid var(--line-process); list-style: none; }
+.turn-thread-item { padding-left: calc(9px + (var(--thread-depth, 1) - 1) * 14px); }
+.turn-thread-row { display: grid; width: 100%; gap: 2px; padding: 5px 7px; border: 0; background: transparent; color: var(--text-muted); text-align: left; cursor: pointer; }
+.turn-thread-row:hover, .turn-thread-row:focus-visible { background: var(--surface-muted); }
+.turn-thread-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 500; }
+.turn-thread-detail { overflow: hidden; color: var(--text-dim); text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.turn-thread-row small { color: var(--text-dim); font-size: 9px; }
+.turn-thread-item.status-failed .turn-thread-row strong { color: var(--warning); }
+.turn-thread-result { margin: 0 0 6px; padding: 0 7px 0 calc(9px + (var(--thread-depth, 1) - 1) * 14px); color: var(--text-muted); font-size: 10px; }
+.turn-thread-result.empty { color: var(--text-dim); font-size: 9px; }
 .turn-process { margin: 6px 6px 6px 35px; overflow: hidden; border: 1px solid var(--line-process); border-radius: 7px; background: var(--surface-quieter); }
 .process-heading { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 0; color: var(--text-muted); font-size: 10px; list-style: none; cursor: pointer; }
 .process-heading::-webkit-details-marker { display: none; }

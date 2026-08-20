@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
 const SENSITIVE_FIELD = /password|secret|token|credential|private_key|\bkey\b/i;
@@ -88,7 +89,7 @@ function textContent(payload) {
 }
 
 export function messagePresentation(envelope = {}) {
-  const payload = envelope.payload || {};
+  const payload = argsOf(envelope);
   const conversation = textContent(payload);
   if (conversation || CONVERSATION_TYPES.has(envelope.type)) {
     return {

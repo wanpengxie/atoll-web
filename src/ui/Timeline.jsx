@@ -7,11 +7,17 @@ import { messagePresentation } from '../model/message-presentation.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { taskControlContext } from '../model/task-controls.js';
 import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
+import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
 import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { useStableTimelineScroll } from './timeline/useStableTimelineScroll.js';
+
+// 平台叙事（成员进出、跨频道入站）暂时不进时间线。它和真正的往来平铺在同一条流里，
+// 每次 agent 干活就刷出一串，把人要读的东西淹掉。数据仍然在 state.narration 里，
+// 什么都没丢——等它有了合适的落位（侧栏或频道信息页）再接回来。
+const SHOW_CHANNEL_NARRATION = false;
 
 const ERROR_LABELS = {
   bad_payload: '请求格式不正确',
@@ -157,7 +163,48 @@ function MessageActions({ onOpen, onCreateTask, detailsOpen = false }) {
   </div>;
 }
 
-function TurnCard({ turn, roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, onCancel, onControl, onDownload, onPreview, onOpen, onCreateTask, onCloseDetail }) {
+// 一次被叫出来的调用。行本身就是它的开关：点开看它自己的结果，就地展开，不劫持
+// 整页的选中态——否则点一下什么都不发生，那比不能点更糟。
+function ThreadCall({ item, names }) {
+  const [open, setOpen] = useState(false);
+  const child = item.turn;
+  const view = messagePresentation(child.request);
+  const receivers = (child.request.audience || []).map((id) => nameOf(id, names)).join('、');
+  return (
+    <li className={`turn-thread-item status-${child.status}`} style={{ '--thread-depth': item.depth }}>
+      <button type="button" className="turn-thread-row" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <strong>{view.text}</strong>
+        {view.detail && <span className="turn-thread-detail">{view.detail}</span>}
+        <small>{nameOf(child.request.sender?.id, names)} → {receivers || '—'} · {turnStatusLabel(child)} · {timeLabel(child.request.ts)}</small>
+      </button>
+      {open && (child.terminal
+        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={child.terminal.payload} renderText={(text) => <MarkdownLite text={text} />} /></div>
+        : <p className="turn-thread-result empty">还没有终态。</p>)}
+    </li>
+  );
+}
+
+// 回合里被叫出来的那些调用。默认收起：读的人先看到"这一问的答案"，需要时才展开
+// "为了答它做了什么"。展开后按深度缩进，孙代看得出是谁叫出来的。
+function ThreadCalls({ thread, names }) {
+  const [open, setOpen] = useState(false);
+  if (!thread?.length) return null;
+  const failed = thread.filter((item) => item.turn.status === 'failed').length;
+  const running = thread.filter((item) => !item.turn.terminal).length;
+  return (
+    <ContentFrame contained>
+      <button type="button" className={`turn-thread-toggle${failed ? ' has-failure' : ''}`} onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span aria-hidden="true">⤷</span>
+        <span>{thread.length} 次关联调用</span>
+        <small>{[failed ? `${failed} 个失败` : '', running ? `${running} 个进行中` : ''].filter(Boolean).join(' · ') || '全部完成'}</small>
+        <span aria-hidden="true">{open ? '⌃' : '⌄'}</span>
+      </button>
+      {open && <ol className="turn-thread-list">{thread.map((item) => <ThreadCall key={item.turn.requestId} item={item} names={names} />)}</ol>}
+    </ContentFrame>
+  );
+}
+
+function TurnCard({ turn, thread = [], roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, onCancel, onControl, onDownload, onPreview, onOpen, onCreateTask, onCloseDetail }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
@@ -167,8 +214,9 @@ function TurnCard({ turn, roster, names, selfId, access, capability, controlStat
       <MessageFrame className="request-message" actions={<MessageActions onOpen={onOpen} onCreateTask={onCreateTask} detailsOpen={detailsOpen} />} identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
           <div className="request-text"><MarkdownLite text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
-          <AttachmentCards attachments={request.payload?.attachments} onDownload={onDownload} onPreview={onPreview} />
+          <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
       </MessageFrame>
+      <ThreadCalls thread={thread} names={names} />
       {(turn.provisional.length > 0 || turn.activity.length > 0) && <ContentFrame contained><button type="button" className={`turn-process-summary ${turn.terminal ? 'completed' : 'active'}`} onClick={onOpen} aria-expanded={detailsOpen}>
           <span className={turn.terminal ? 'pulse done' : 'pulse'} />
           <span>{turn.terminal ? turnStatusLabel(turn) : (latestHumanProgress(turn) || '正在处理')}</span>
@@ -308,7 +356,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     || latestTransient.get(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`) === entry
   ));
   const narrationSeq = state.narration[0]?.seq ?? Number.POSITIVE_INFINITY;
-  const withNarration = [...visibleEntries, ...(state.narration.length ? [{ kind: 'narration', seq: narrationSeq }] : [])]
+  const withNarration = [...visibleEntries, ...(SHOW_CHANNEL_NARRATION && state.narration.length ? [{ kind: 'narration', seq: narrationSeq }] : [])]
     .sort((left, right) => left.seq - right.seq);
   const windowed = boundedPage(withNarration, page);
   const { viewportRef, contentRef, unseenCount, observeScroll, jumpToLatest, leaveLatest } = useStableTimelineScroll({
@@ -349,7 +397,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => {
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => {
               if (detailsOpen) turnDetail?.onClose?.();
               else {
                 // Expanding is a local reading action, not a new ledger entry. Stop the
