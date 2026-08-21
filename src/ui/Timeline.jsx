@@ -235,10 +235,11 @@ function Narration({ rows, names }) {
   );
 }
 
-function Standalone({ envelope, names, continuation = false, onCreateTask }) {
+function Standalone({ envelope, names, selfId, continuation = false, onCreateTask }) {
   const view = messagePresentation(envelope);
+  const self = envelope.sender?.id === selfId;
   return (
-    <MessageFrame className={`standalone-row ${continuation ? 'continuation' : ''}`} actions={<MessageActions onCreateTask={onCreateTask} />} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
+    <MessageFrame className={`standalone-row ${continuation ? 'continuation' : ''} ${self ? 'self' : ''}`} actions={<MessageActions onCreateTask={onCreateTask} />} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
       {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownContent text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}
     </MessageFrame>
   );
@@ -323,7 +324,6 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   const names = useMemo(() => actorNameMap(roster), [roster]);
   const allEntries = useMemo(() => orderedTimeline(state), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
   const entries = useMemo(() => scopeEntries(allEntries, { scope, state, selfId }), [allEntries, scope, state, state.lastSeq, selfId]);
-  const scopedAway = allEntries.length - entries.length;
   const latestTransient = new Map();
   for (const entry of entries) {
     if (isTransientEntry(entry)) {
@@ -345,7 +345,10 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     pendingCount: pending.length,
   });
 
-  useEffect(() => setPage(0), [state.channelId]);
+  useEffect(() => {
+    setPage(0);
+    setScope(TIMELINE_SCOPE.all);
+  }, [state.channelId]);
   // Narrowing the scope shortens the list, so the page the reader is on may no
   // longer exist. Going back to the newest is the only landing that is always
   // there, and it is where a reader who just changed the filter is looking.
@@ -358,18 +361,17 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   return (
     <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={observeScroll}>
       <div className="timeline-inner" ref={contentRef}>
-        {selfId && Boolean(state.rows.size) && (
-          <button
-            type="button"
-            className="timeline-scope"
-            aria-pressed={scope === TIMELINE_SCOPE.mine}
-            title={scope === TIMELINE_SCOPE.mine ? '正在只看与你相关的往来，点击看全部' : '正在看频道全部往来，点击只看与你相关的'}
-            onClick={() => { leaveLatest(); setScope(scope === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine); }}
-          >
-            {TIMELINE_SCOPE_LABELS[scope]}
-            {scope === TIMELINE_SCOPE.mine && scopedAway > 0 && <small>−{scopedAway}</small>}
-          </button>
-        )}
+        {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
+          <div className="timeline-scope" role="group" aria-label="动态范围">
+            {Object.values(TIMELINE_SCOPE).map((value) => <button
+              key={value}
+              type="button"
+              className={scope === value ? 'active' : ''}
+              aria-pressed={scope === value}
+              onClick={() => { leaveLatest(); setScope(value); }}
+            >{TIMELINE_SCOPE_LABELS[value]}</button>)}
+          </div>
+        </div>}
         {!state.rows.size && !pending.length && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
         {Boolean(state.rows.size) && !entries.length && !pending.length && (
           // Saying the channel is empty here would be a lie the reader can act
@@ -411,7 +413,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} continuation={continuation} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} selfId={selfId} continuation={continuation} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
           }
           const key = entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`;
           return <React.Fragment key={key}>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</React.Fragment>;

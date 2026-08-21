@@ -32,6 +32,13 @@
 .actor-icon.kind-agent { border-radius: 50%; background: var(--agent-bg); color: var(--agent); }
 .actor-icon.kind-human { background: var(--accent-bg); color: var(--accent); }
 .actor-icon.kind-tool { background: var(--tool-bg); color: var(--tool); }
+.turn-card.self > .request-message, .standalone-row.self { grid-template-columns: minmax(0, 1fr) 34px; }
+.turn-card.self > .request-message > .information-flow-avatar-slot, .standalone-row.self > .information-flow-avatar-slot { grid-column: 2; }
+.turn-card.self > .request-message > .information-flow-content, .standalone-row.self > .information-flow-content { grid-column: 1; width: fit-content; max-width: min(74ch, 100%); justify-self: end; }
+.turn-card.self > .request-message .message-body > header, .standalone-row.self .message-body > header { justify-content: flex-end; padding: 0 4px 3px; }
+.turn-card.self > .request-message .request-text, .standalone-row.self .message-body > .markdown-content { padding: 8px 12px; border: 1px solid var(--accent-glow); border-radius: 14px 4px 14px 14px; background: var(--accent-bg); }
+.turn-card.self > .request-message:hover, .turn-card.self > .request-message:focus-within, .standalone-row.self:hover, .standalone-row.self:focus-within, .standalone-row.self:focus-visible { background: transparent; }
+.turn-card.self > .request-message .message-actions, .standalone-row.self > .message-actions { right: 48px; }
 .request-text, .response-content { max-width: 74ch; color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
@@ -227,12 +234,8 @@
 .wire-error summary { cursor: pointer; }
 
 
-/* Scope switch: one small button, floating in the top-right corner of the
-   scroll viewport. Sticky rather than absolute so it stays put while the ledger
-   scrolls — the answer to "why is this list short" has to remain reachable
-   without scrolling back up. The negative margin keeps it out of the flow, so
-   turning it on does not shift the first entry down. */
-.timeline-scope { position: sticky; z-index: 3; top: 6px; align-self: flex-end; display: inline-flex; align-items: center; gap: 5px; min-height: 24px; margin-bottom: -24px; padding: 3px 9px; border: 1px solid var(--line-control); border-radius: 999px; background: var(--surface); color: var(--text-muted); box-shadow: 0 2px 8px var(--shadow); cursor: pointer; font-size: 11px; }
-.timeline-scope:hover, .timeline-scope:focus-visible { border-color: var(--accent); color: var(--text); }
-.timeline-scope[aria-pressed="true"] { border-color: var(--accent-glow); color: var(--accent); font-weight: 650; }
-.timeline-scope small { color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.timeline-scope-bar { position: sticky; z-index: 3; top: 0; display: flex; width: min(100%, var(--timeline-track)); justify-content: flex-end; margin: -8px auto 8px; padding: 4px 10px; background: var(--workspace); }
+.timeline-scope { display: inline-grid; grid-template-columns: auto auto; gap: 2px; padding: 2px; border: 1px solid var(--line-subtle); border-radius: 9px; background: var(--raised); box-shadow: 0 3px 12px var(--shadow); pointer-events: auto; }
+.timeline-scope button { min-height: 28px; padding: 4px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 11px; }
+.timeline-scope button:hover, .timeline-scope button:focus-visible { color: var(--text); }
+.timeline-scope button.active { background: var(--surface-selected); color: var(--text); box-shadow: 0 1px 2px var(--shadow); font-weight: 650; }
