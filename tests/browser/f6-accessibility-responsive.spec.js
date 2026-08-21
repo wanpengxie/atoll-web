@@ -58,7 +58,7 @@ test('F6-004 reduced motion 停止持续动画', async ({ page, request }) => {
   await login(page, request, 1605);
   const animation = await page.evaluate(() => {
     const node = document.createElement('span');
-    node.className = 'pending-spinner';
+    node.className = 'attachment-tool-busy';
     document.body.append(node);
     const style = getComputedStyle(node);
     const result = { duration: style.animationDuration, iterations: style.animationIterationCount };

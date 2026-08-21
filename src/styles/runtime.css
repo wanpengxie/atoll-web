@@ -33,7 +33,7 @@
 .structured-table th, .structured-table td { padding: 7px 9px; border-bottom: 1px solid var(--border); text-align: left; }
 .structured-table th { position: sticky; top: 0; background: var(--surface); color: var(--text-muted); }
 .raw-json { font-size: 11px; }
-.raw-json button, .pending-retry { margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 4px 8px; cursor: pointer; font-size: 11px; }
+.raw-json button { margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 4px 8px; cursor: pointer; font-size: 11px; }
 .raw-json pre { max-height: 280px; overflow: auto; }
 .failure-result > code { width: fit-content; color: var(--danger); }
 .failure-result p, .empty-result, .completion-ack { margin: 0; }

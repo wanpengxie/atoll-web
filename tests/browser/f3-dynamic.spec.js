@@ -15,51 +15,20 @@ async function login(page) {
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
 }
 
-test('F3-001..004/006 动态保持业务主线，回合详情完整且来源可返回', async ({ page, request }) => {
+test('F3-001..004/006 动态只保留用户消息与原地定格的 Agent 气泡', async ({ page, request }) => {
   await reset(request); await login(page);
   await page.getByLabel('消息').fill('浏览器验收一条回合');
   await page.getByRole('button', { name: /发送/ }).click();
   const turn = page.locator('.turn-card').filter({ hasText: '浏览器验收一条回合' });
   await expect(turn).toBeVisible();
   await expect(turn).not.toContainText('向 Agent 提问');
-  await expect(turn.locator('.turn-process-summary')).toContainText(/已完成|处理中/);
-  await expect(turn).not.toContainText('工具 · mock.ping');
-
-  await turn.locator('.request-message').hover();
-  const timeline = page.locator('.timeline');
-  const composer = page.locator('.composer-wrap');
-  const requestTopBefore = await turn.locator('.request-message').evaluate((node) => node.getBoundingClientRect().top);
-  await turn.locator('.turn-process-summary').click();
-  const context = page.getByRole('region', { name: '回合详情' });
-  await expect(context).toBeVisible();
-  await expect(timeline).toBeVisible();
-  await expect(composer).toBeVisible();
-  await expect(turn.locator('.turn-inline-detail')).toBeVisible();
-  const placement = await turn.evaluate((node) => {
-    const request = node.querySelector('.request-message');
-    const process = node.querySelector('.turn-process-summary')?.closest('.information-flow-row');
-    const detail = node.querySelector('.turn-inline-detail')?.closest('.information-flow-row');
-    const response = node.querySelector('.turn-response');
-    return {
-      requestTop: request.getBoundingClientRect().top,
-      ordered: request.compareDocumentPosition(process) & Node.DOCUMENT_POSITION_FOLLOWING
-        && process.compareDocumentPosition(detail) & Node.DOCUMENT_POSITION_FOLLOWING
-        && detail.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING,
-    };
-  });
-  expect(Math.abs(placement.requestTop - requestTopBefore)).toBeLessThanOrEqual(2);
-  expect(Boolean(placement.ordered)).toBe(true);
-  await expect(context).toContainText('工具 · mock.ping');
-  await expect(context).toContainText('技术审计');
-  const processSurfaces = await context.locator('.turn-context-process-scroll').evaluateAll((nodes) => nodes.map((node) => ({ maxHeight: Number.parseFloat(getComputedStyle(node).maxHeight), overflowY: getComputedStyle(node).overflowY })));
-  expect(processSurfaces.length).toBeGreaterThan(0);
-  expect(processSurfaces.every((item) => item.maxHeight <= 240 && item.overflowY === 'auto')).toBe(true);
-  await expect(page).toHaveURL(/focus=turn%3A/);
+  const bubble = turn.locator('.agent-turn-bubble');
+  await expect(bubble).toBeVisible();
+  await expect(bubble.locator('button')).toHaveCount(0);
+  await expect(bubble).not.toContainText(/turn-\d|回合 \d/);
+  await expect(turn.locator('.turn-process-summary')).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole('region', { name: '回合详情' })).toBeVisible();
   await expect(turn).toContainText('浏览器验收一条回合');
-  await context.getByRole('button', { name: '收起回合详情' }).click();
-  await expect(page).toHaveURL(/#\/channels\/c0\/dynamic$/);
   await expect(turn).toBeInViewport();
 });
 
@@ -81,13 +50,10 @@ test('F3-003..005 键盘、多行草稿、附件入口与 320px 单表面可达'
   await expect(turn).toBeVisible();
   await page.setViewportSize({ width: 320, height: 720 });
   await turn.focus();
-  await turn.locator('.turn-process-summary').click();
-  const context = page.getByRole('region', { name: '回合详情' });
-  await expect(context).toBeVisible();
-  const geometry = await page.evaluate(() => ({ viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth, context: document.querySelector('.turn-inline-detail').getBoundingClientRect().width }));
+  const geometry = await page.evaluate(() => ({ viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth, bubble: document.querySelector('.agent-turn-bubble').getBoundingClientRect().width }));
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.viewport);
-  expect(geometry.context).toBeLessThanOrEqual(320);
-  await expect(context.getByRole('button', { name: /取消任务|调整方向|打断回合/ }).first()).toBeVisible();
+  expect(geometry.bubble).toBeLessThanOrEqual(320);
+  await expect(turn.locator('.agent-turn-bubble button')).toHaveCount(0);
 });
 
 test('Composer 的 @成员是可恢复的 Mention Node，不靠正文猜收件人', async ({ page, request }) => {

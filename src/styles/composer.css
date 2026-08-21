@@ -35,6 +35,7 @@
 .composer-error { padding-top: 6px; }
 .composer-status, .composer-disabled-reason { width: min(100%, var(--timeline-track)); margin: 6px auto 0; color: var(--online); font-size: 10px; }
 .composer-status.state-delayed, .composer-status.state-uncertain { color: var(--warning); }
+.composer-retry { margin-left: 8px; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-decoration: underline; }
 .composer-disabled-reason { color: var(--text-muted); }
 .mention-chips { display: flex; gap: 6px; padding-bottom: 7px; }
 .mention-chips button { padding: 4px 7px; border: 1px solid var(--accent-glow); border-radius: 99px; background: var(--accent-bg); color: var(--accent); cursor: pointer; font: 9px var(--mono); }

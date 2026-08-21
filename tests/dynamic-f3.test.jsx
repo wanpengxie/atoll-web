@@ -19,21 +19,16 @@ function runningTurn() {
   };
 }
 
-it('main Dynamic exposes message actions but keeps tool activity in Turn Context', async () => {
-  const user = userEvent.setup();
+it('main Dynamic keeps one rolling activity line inside the processing agent bubble', () => {
   const turn = runningTurn();
-  const onOpenTurn = vi.fn();
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 3 };
-  render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" onOpenTurn={onOpenTurn} onCreateTask={() => {}} />);
-  expect(screen.getByText('正在整理资料')).toBeTruthy();
-  expect(screen.queryByText(/工具 · search/)).toBeNull();
-  expect(screen.queryByRole('button', { name: '查看详情' })).toBeNull();
-  await user.click(document.querySelector('.turn-process-summary'));
-  expect(onOpenTurn).toHaveBeenCalledWith(turn);
-  expect(screen.getByRole('button', { name: '创建任务' })).toBeTruthy();
+  render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+  expect(screen.getByText('⋯ tool: search …')).toBeTruthy();
+  expect(document.querySelectorAll('.agent-turn-bubble')).toHaveLength(1);
+  expect(document.querySelector('.agent-turn-bubble button')).toBeNull();
 });
 
-it('expanded turn detail stays between its request and terminal response', () => {
+it('completed answer stays in the agent bubble immediately after its user message', () => {
   const turn = runningTurn();
   turn.status = 'completed';
   turn.terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '最终答复' } };
@@ -41,8 +36,9 @@ it('expanded turn detail stays between its request and terminal response', () =>
   const view = render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" turnDetail={{ selected: turn, onClose: () => {} }} />);
   const card = view.container.querySelector('.turn-card');
   const children = [...card.children];
-  expect(children.indexOf(card.querySelector('.request-message'))).toBeLessThan(children.indexOf(card.querySelector('.turn-inline-detail').closest('.information-flow-row')));
-  expect(children.indexOf(card.querySelector('.turn-inline-detail').closest('.information-flow-row'))).toBeLessThan(children.indexOf(card.querySelector('.turn-response')));
+  expect(children.indexOf(card.querySelector('.request-message'))).toBeLessThan(children.indexOf(card.querySelector('.agent-turn-bubble')));
+  expect(screen.getByText('最终答复')).toBeTruthy();
+  expect(card.querySelector('.turn-inline-detail')).toBeNull();
 });
 
 it('Turn detail exposes audit identifiers without serializing payload JSON', () => {
@@ -106,11 +102,10 @@ it('消息附件只显示产品摘要，点击整卡进入统一预览', async (
 
 // agent 为了答一句话调用别的 actor，那些调用过去和人问的那句平铺在同一层。这里钉的是
 // 它们聚在这一问底下、默认收起，展开才看得到细节——人先读到主线，需要时才读过程。
-it('agent 回合中调用的其它 actor 聚在这一问底下，默认收起', async () => {
-  const user = userEvent.setup();
+it('agent 回合中调用的其它 actor 不铺进对话时间线', () => {
   const ask = { id: 'ask', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { body: { text: '把 root 拉进来' } } };
   const askTurn = {
-    requestId: 'ask', request: ask, requestSeq: 1, status: 'completed', provisional: [], activity: [], anomalies: [],
+    requestId: 'ask', request: ask, requestSeq: 1, status: 'completed', provisional: [{ seq: 3, status: 'processing', envelope: { payload: { status: 'processing' } } }], activity: [], anomalies: [],
     terminal: { id: 'ask-r', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '已加入' } },
   };
   const admit = { id: 'admit', type: 'system.member.admit', kind: 'request', ts: 110, parent_id: 'ask', sender: { id: 'agent-1', kind: 'agent' }, audience: ['system'], payload: { body: { principal: 'root' } } };
@@ -125,14 +120,10 @@ it('agent 回合中调用的其它 actor 聚在这一问底下，默认收起', 
   };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} />);
 
-  // 人问的那句读得出正文（载荷带 body 包装），被叫出来的调用不占一张卡。
   expect(screen.getByText('把 root 拉进来')).toBeTruthy();
   expect(document.querySelectorAll('.turn-card')).toHaveLength(1);
   expect(screen.queryByText('邀请成员加入')).toBeNull();
-
-  await user.click(screen.getByRole('button', { name: /1 次关联调用/ }));
-  expect(screen.getByText('邀请成员加入')).toBeTruthy();
-  expect(screen.getByText('root')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /关联调用/ })).toBeNull();
 });
 
 describe('F3 Composer', () => {

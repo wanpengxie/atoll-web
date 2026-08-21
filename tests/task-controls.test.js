@@ -10,14 +10,15 @@ describe('task control eligibility', () => {
   };
 
   it('requires ownership, a writable channel and an advertised control', () => {
-    expect(taskControlContext(turn, { selfId: 'me', access: 'member_active', capability, now: 1000 })).toMatchObject({ canCancel: false, canSteer: true, canEdit: true, location: 'processing', turnId: 'turn-7', expired: false });
+    expect(taskControlContext(turn, { selfId: 'me', access: 'member_active', capability, now: 1000 })).toMatchObject({ canCancel: false, canInsert: false, canEdit: true, canStop: true, location: 'processing', turnId: 'turn-7', expired: false });
     expect(taskControlContext(turn, { selfId: 'other', access: 'member_active', capability }).canCancel).toBe(false);
-    expect(taskControlContext(turn, { selfId: 'me', access: 'member_stale', capability }).canSteer).toBe(false);
+    expect(taskControlContext(turn, { selfId: 'me', access: 'member_stale', capability }).canInsert).toBe(false);
     expect(taskControlContext({ ...turn, terminal: { payload: { status: 'completed' } } }, { selfId: 'me', access: 'member_active', capability }).canCancel).toBe(false);
   });
 
   it('30 reads the steer capability bit even when the fixed word exists', () => {
     const fixedWordOnly = { describe: normalizeDescribe({ class: 'codex', capabilities: { steer: false }, words: { 'agent.steer': {}, 'agent.hold': {} } }) };
-    expect(taskControlContext(turn, { selfId: 'me', access: 'member_active', capability: fixedWordOnly }).canSteer).toBe(false);
+    const queued = { ...turn, provisional: [{ envelope: { payload: { status: 'queued' } } }] };
+    expect(taskControlContext(queued, { selfId: 'me', access: 'member_active', capability: fixedWordOnly }).canInsert).toBe(false);
   });
 });

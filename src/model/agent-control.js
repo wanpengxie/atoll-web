@@ -11,6 +11,34 @@ const CONTENT_TYPES = new Set([
   TYPES.agentSteer,
 ]);
 
+function terminalValue(turn, key) {
+  return turn?.terminal?.payload?.[key] ?? turn?.terminal?.payload?.value?.[key];
+}
+
+export function isAgentMessageTurn(turn) {
+  return CONTENT_TYPES.has(turn?.request?.type);
+}
+
+// A user message moves between the wait layer and the conversation from its
+// own position facts only. A terminal merged_into is itself the acceptance
+// fact for a batched message; all other terminals retain the last position.
+export function agentMessageStage(turn) {
+  if (!isAgentMessageTurn(turn)) return '';
+  const location = taskLocation(turn);
+  if (location === 'processing') return 'timeline';
+  if (terminalValue(turn, 'merged_into')) return 'timeline';
+  if (!turn?.terminal && location === 'queued') return 'queued';
+  return '';
+}
+
+export function mergedInto(turn) {
+  return String(terminalValue(turn, 'merged_into') || '');
+}
+
+export function preemptedBy(turn) {
+  return String(terminalValue(turn, 'preempted_by') || '');
+}
+
 function terminalCompleted(turn) {
   return turn?.terminal?.payload?.status === 'completed';
 }

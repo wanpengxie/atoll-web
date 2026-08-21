@@ -115,10 +115,8 @@ test('B-BR-05 完整 provisional、命名空间状态和第一终态权威性', 
   const businessText = `business-status-${Date.now()}`;
   await send(page, businessText);
   const businessTurn = page.locator('.turn-card').filter({ hasText: businessText });
-  await businessTurn.hover();
-  await businessTurn.locator('.turn-process-summary').click();
-  await expect(page.getByRole('region', { name: '回合详情' })).toContainText('provider.waiting');
-  await page.getByRole('button', { name: '收起回合详情' }).click();
+  await expect(businessTurn.locator('.agent-turn-bubble')).toBeVisible();
+  await expect(businessTurn.locator('.agent-turn-bubble button')).toHaveCount(0);
   await expect(page.getByText('PONG', { exact: true })).toBeVisible();
 
   await reset(request, 'terminal-conflict');
@@ -138,7 +136,7 @@ test('B-BR-06 receipt 先到与 feed 先到都只产生一个请求', async ({ p
   await login(page);
   const delayed = `feed-delayed-${Date.now()}`;
   await send(page, delayed);
-  await expect(page.getByText('已受理，等待入账', { exact: true })).toBeVisible();
+  await expect(page.getByText('已提交，等待频道入账', { exact: true })).toBeVisible();
   await expect(page.getByText(delayed, { exact: true })).toHaveCount(1);
   await expect(page.getByText('PONG', { exact: true })).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText(delayed, { exact: true })).toHaveCount(1);

@@ -2,7 +2,7 @@ import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
 const SENSITIVE_FIELD = /password|secret|token|credential|private_key|\bkey\b/i;
-const CONVERSATION_TYPES = new Set([TYPES.agentAsk, TYPES.humanAsk, TYPES.humanMessage]);
+const CONVERSATION_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue, TYPES.agentReplace, TYPES.agentSteer, TYPES.humanAsk, TYPES.humanMessage]);
 
 function value(payload, ...keys) {
   for (const key of keys) {
@@ -32,8 +32,8 @@ function action(type, payload) {
     [TYPES.actorOverlay.clear]: ['清除 Actor 频道配置', value(payload, 'decl_id')],
     'task.create': ['创建任务', value(payload, 'title', 'description')],
     [TYPES.agentAsk]: ['向 Agent 提问', value(payload, 'text')],
-    [TYPES.agentSteer]: ['调整任务方向', value(payload, 'text')],
-    [TYPES.agentInterrupt]: ['打断当前回合', ''],
+    [TYPES.agentSteer]: ['插入到当前回合', value(payload, 'text')],
+    [TYPES.agentInterrupt]: ['停止', ''],
     [TYPES.agentHold]: ['暂停等待区', value(payload, 'target')],
     [TYPES.agentUnhold]: ['继续等待区', ''],
     [TYPES.agentReplace]: ['修改任务内容', value(payload, 'new_text')],
@@ -77,7 +77,7 @@ function safeHint(payload) {
 
 function textContent(payload) {
   if (!payload || typeof payload !== 'object') return '';
-  for (const candidate of [payload.text, payload.message, payload.content, payload.prompt, payload.input?.text]) {
+  for (const candidate of [payload.new_text, payload.text, payload.message, payload.content, payload.prompt, payload.input?.text]) {
     if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
   }
   if (Array.isArray(payload.content)) {

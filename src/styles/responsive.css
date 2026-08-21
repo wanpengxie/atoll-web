@@ -3,6 +3,7 @@
   .shell { grid-template-columns: 220px minmax(0, 1fr); }
   .shell.has-context { grid-template-columns: 220px minmax(0, 1fr); }
   .timeline-inner { padding: 16px 16px calc(16px + var(--composer-overlay-height, 115px)); }
+  .agent-wait-layer { right: 16px; left: 16px; width: calc(100% - 32px); }
   .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 90%; }
 }
 
@@ -34,6 +35,9 @@
   .task-create-modal > header button, .global-search > header button { min-width: 44px; }
   .seq-label { display: none; }
   .timeline-inner { padding: 8px 7px calc(18px + var(--composer-overlay-height, 115px)); }
+  .agent-wait-layer { right: 10px; left: 10px; width: calc(100% - 20px); }
+  .agent-wait-item { grid-template-columns: 1fr; }
+  .agent-wait-actions { justify-content: flex-end; }
   .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 100%; }
   .request-text, .audience-line, .message-attachments, .turn-process, .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .composer-wrap { padding: 10px; }

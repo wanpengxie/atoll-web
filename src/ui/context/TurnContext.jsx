@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { actorNameFromMap, actorNameMap } from '../../model/actor-display.js';
 import { taskControlContext } from '../../model/task-controls.js';
 import { messagePresentation } from '../../model/message-presentation.js';
@@ -38,17 +38,14 @@ function technicalLabel(envelope) {
 }
 
 function ContextControls({ context, state = {}, onCancel, onControl }) {
-  const [steering, setSteering] = useState(false);
-  const [text, setText] = useState('');
-  if (!context.canCancel && !context.canSteer && !state.status) return null;
+  if (!context.canCancel && !context.canStop && !state.status) return null;
   const busy = ['sending', 'accepted', 'uncertain'].includes(state.status);
   return <section className="turn-context-controls" aria-label="回合控制">
     <h3>控制</h3>
     <div>
       {context.canCancel && <button type="button" disabled={busy} onClick={onCancel}>{state.status === 'sending' ? '正在取消…' : '取消任务'}</button>}
-      {context.canSteer && <button type="button" onClick={() => setSteering((value) => !value)}>调整方向</button>}
+      {context.canStop && <button type="button" disabled={busy} onClick={() => onControl('agent.interrupt', {})}>停止</button>}
     </div>
-    {steering && <div className="turn-context-steer"><textarea aria-label="回合的新方向" rows={4} value={text} onChange={(event) => setText(event.target.value)} /><div><button type="button" onClick={() => setSteering(false)}>取消</button><button type="button" disabled={!text.trim()} onClick={() => { onControl('agent.steer', { text: text.trim(), expected_turn_id: context.turnId }); setText(''); setSteering(false); }}>提交方向</button></div></div>}
     {state.status === 'accepted' && <p>控制请求已受理，最终状态仍以频道账本为准。</p>}
     {state.status === 'uncertain' && <p className="uncertain">结果待确认；重连后会按账本事实恢复。</p>}
     {state.error && <p className="error">{state.error.detail || state.error.code}</p>}

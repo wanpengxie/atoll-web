@@ -439,7 +439,8 @@ export function createMockServer({
   }
 
   function activeAgentTask(channelId, actorId, excludedId = '') {
-    return [...(histories.get(channelId) || [])].reverse().map((row) => row.envelope).find((value) => (
+    const rows = histories.get(channelId) || [];
+    return [...rows].reverse().map((row) => row.envelope).find((value) => (
       value.id !== excludedId
       && value.kind === 'request'
       && value.sender?.kind === 'human'
@@ -449,6 +450,7 @@ export function createMockServer({
       && value.type !== 'actor.describe'
       && !value.type.startsWith('system.')
       && !hasTerminal(channelId, value.id)
+      && [...rows].reverse().map((row) => row.envelope).find((reply) => reply.kind === 'response' && reply.parent_id === value.id)?.payload?.status === 'processing'
     )) || null;
   }
 
@@ -810,6 +812,21 @@ export function createMockServer({
       const active = activeAgentTask(channelId, respondingAgent.id, messageId);
       const turnId = active ? `turn-${active.id}` : '';
       if (payload.msg_type === 'agent.steer') {
+        const targetId = String(payload.payload?.target || '');
+        if (targetId) {
+          if (text.trim() || Object.keys(payload.payload || {}).length !== 1) { fail('invalid_args', 'target form only accepts target'); return; }
+          const targetRequest = history.find((row) => row.envelope.id === targetId)?.envelope;
+          const targetPosition = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === targetId)?.payload?.status;
+          if (!targetRequest || targetPosition !== 'queued') { fail('cas_mismatch', 'steer target is not buffered'); return; }
+          if (targetRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'steer target belongs to another sender'); return; }
+          complete({});
+          if (!active) return;
+          later(20, () => {
+            closeTask(channelId, active, respondingAgent.id, { status: 'completed', value: { preempted_by: targetId } });
+            append(channelId, envelope({ ...responseBase, id: `${targetId}-inserted`, parentId: targetId, correlationId: targetId, kind: 'response', type: targetRequest.type, payload: { status: 'processing', turn_id: turnId } }));
+          });
+          return;
+        }
         if (!text.trim()) { fail('empty_input', 'steer requires text input'); return; }
         if (payload.payload?.expected_turn_id && payload.payload.expected_turn_id !== turnId) { fail('cas_mismatch', 'steer target is no longer active'); return; }
         if (!active) { fail('cas_mismatch', 'no steerable turn'); return; }
@@ -850,9 +867,12 @@ export function createMockServer({
       return;
     }
 
+    const busy = activeAgentTask(channelId, respondingAgent.id, messageId);
     later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', turn_index: 1 } })));
+    if (busy) return;
     const mode = domain.behavior.message || '';
-    later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: mode === 'business-provisional' ? { status: 'provider.waiting', queue: 'external' } : { status: 'processing', turn_index: 1, ...(mode === 'long-running' ? { turn_id: `turn-${messageId}` } : {}) } })));
+    later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, ...(mode === 'long-running' ? { turn_id: `turn-${messageId}` } : {}) } })));
+    if (mode === 'business-provisional') later(50, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-business`, kind: 'response', type: payload.msg_type, payload: { status: 'provider.waiting', queue: 'external' } })));
     later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'started' } })));
     later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'completed' } })));
     if (mode === 'long-running') return;

@@ -110,19 +110,14 @@ test('LAYOUT-03 @成员菜单以输入区为边界且不改变输入区位置', 
   expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
 });
 
-test('LAYOUT-04 已完成任务折叠技术过程但保留终态', async ({ page, request }) => {
+test('LAYOUT-04 已完成任务原地定格答案且 Agent 气泡无按钮', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'actor-capability', 954);
   await login(page);
-  const turn = page.locator('.turn-card.status-completed').filter({ has: page.locator('.turn-process-summary') }).first();
-  const process = turn.locator('.turn-process-summary');
-  await expect(process).toBeVisible();
-  await expect(process).toContainText('已完成');
-  await expect(turn.locator('.final-answer')).toBeVisible();
-  await process.click();
-  const context = page.getByRole('region', { name: '回合详情' });
-  await expect(context).toContainText('业务进展');
-  await expect(context).toContainText('技术过程');
+  const turn = page.locator('.agent-conversation-turn.status-completed').first();
+  await expect(turn.locator('.agent-turn-bubble')).toBeVisible();
+  await expect(turn.locator('.agent-turn-bubble button')).toHaveCount(0);
+  await expect(turn.locator('.turn-process-summary')).toHaveCount(0);
 });
 
 test('LAYOUT-05 Context 在 800px 接管工作区，在 600px 接管全屏', async ({ page, request }) => {

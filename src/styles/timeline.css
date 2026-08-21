@@ -1,6 +1,21 @@
 /* Flat collaborative ledger: identity first, cards only for structured objects */
 .timeline { grid-row: 4; min-height: 0; overflow-y: auto; overflow-anchor: none; background: var(--workspace); }
 .timeline-inner { display: flex; width: 100%; min-height: 100%; flex-direction: column; gap: 0; padding: 24px 26px calc(34px + var(--composer-overlay-height, 115px)); }
+.agent-wait-layer { position: absolute; z-index: 4; right: 26px; bottom: calc(var(--composer-overlay-height, 115px) + 8px); left: 26px; width: min(calc(100% - 52px), var(--timeline-track)); max-height: min(42vh, 360px); margin: 0 auto; overflow: auto; border: 1px solid var(--line-control-strong); border-radius: 12px; background: color-mix(in srgb, var(--raised) 96%, transparent); box-shadow: 0 12px 32px var(--shadow-2); }
+.agent-wait-layer > header { position: sticky; z-index: 1; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 11px; border-bottom: 1px solid var(--line-subtle); background: var(--raised); }
+.agent-wait-layer > header strong { font-size: 11px; }
+.agent-wait-layer > header small { color: var(--text-muted); font-size: 9px; }
+.agent-wait-layer > ol { margin: 0; padding: 0; list-style: none; }
+.agent-wait-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 9px 11px; }
+.agent-wait-item + .agent-wait-item { border-top: 1px solid var(--line-subtle); }
+.agent-wait-summary { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.agent-wait-summary strong { overflow: hidden; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.agent-wait-position { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-content: center; border-radius: 50%; background: var(--surface-muted); color: var(--text-muted); font-size: 9px; }
+.agent-wait-actions { display: flex; gap: 5px; }
+.agent-wait-actions button, .task-control-buttons button, .task-editor button { min-height: 30px; padding: 5px 8px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--text); cursor: pointer; font-size: 10px; }
+.agent-wait-actions button:disabled, .task-control-buttons button:disabled { opacity: .45; cursor: not-allowed; }
+.agent-wait-locking { grid-column: 1 / -1; margin: 0; color: var(--text-muted); font-size: 10px; }
+.agent-wait-item > .task-editor { grid-column: 1 / -1; }
 .timeline-entry { width: 100%; }
 .empty-ledger { display: grid; min-height: 52vh; place-content: center; justify-items: center; color: var(--text-muted); text-align: center; }
 .empty-ledger > span { display: grid; width: 48px; height: 48px; margin-bottom: 15px; place-content: center; border-radius: 12px; background: var(--surface-2); color: var(--accent); font: 500 22px var(--mono); }
@@ -12,7 +27,7 @@
 .information-flow-row:not(.contained) { margin-top: 7px; margin-bottom: 2px; }
 .information-flow-avatar-slot { grid-column: 1; min-width: 0; }
 .information-flow-content { grid-column: 2; min-width: 0; }
-.approval-card, .pending-row { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); box-shadow: 0 1px 2px var(--shadow); }
+.approval-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); box-shadow: 0 1px 2px var(--shadow); }
 .turn-card { align-self: stretch; overflow: visible; padding: 0; border: 0; outline: 0; background: transparent; box-shadow: none; }
 .timeline-entry + .timeline-entry { margin-top: 3px; }
 .timeline-entry:has(+ .timeline-entry[data-continuation="true"]) .turn-card,
@@ -20,6 +35,14 @@
 .turn-card.continuation { padding-top: 0; }
 .turn-card.self { align-self: stretch; background: transparent; }
 .turn-card.status-failed .turn-response { background: var(--surface-danger); }
+.agent-conversation-turn > .request-message + .information-flow-row { margin-top: -3px; }
+.agent-turn-bubble { margin-top: 2px; }
+.agent-turn-bubble.processing { color: var(--text-muted); }
+.agent-processing-content { display: grid; max-width: 74ch; gap: 4px; padding: 5px 0 7px; }
+.agent-processing-content > strong { color: var(--text); font-size: 13px; font-weight: 600; }
+.agent-processing-content > p { overflow: hidden; margin: 0; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-stopped { margin: 2px 0 6px; color: var(--text-muted); font-size: 13px; }
+.agent-answer-check { margin-left: auto; color: var(--online); font-size: 11px; }
 .message-row { position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 10px; padding: 6px 10px; border-radius: var(--radius-object); outline: 0; }
 .message-row:hover, .message-row:focus-within, .message-row:focus-visible { background: var(--surface-quieter); }
 .message-body { min-width: 0; padding-top: 1px; }
@@ -222,12 +245,6 @@
 .approval-actions .approve { border-color: var(--success-line); color: var(--online); }
 .approval-actions .reject { border-color: var(--accent-glow); color: var(--danger); }
 .approval-actions span { margin-left: auto; color: var(--text-muted); font-size: 10px; }
-.pending-row { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 9px; padding: 11px 12px; border-style: dashed; background: var(--accent-bg); }
-.pending-row > div:not(.wire-error) { display: grid; gap: 3px; }
-.pending-row strong { font-size: 12px; font-weight: 500; }
-.pending-row span, .pending-row small { color: var(--text-muted); font-size: 9px; }
-.pending-spinner { width: 12px; height: 12px; border: 1px solid var(--text-dim); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite; }
-.pending-error .pending-spinner { border-radius: 0; border-color: var(--danger); animation: none; transform: rotate(45deg); }
 .wire-error { grid-column: 1 / -1; margin-top: 6px; padding: 8px 10px; border-left: 2px solid var(--danger); background: var(--accent-bg); color: var(--danger); font-size: 10px; }
 .wire-error code { color: var(--danger); }
 .wire-error details { margin-top: 5px; color: var(--text-muted); }

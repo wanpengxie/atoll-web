@@ -94,7 +94,7 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles }) {
+export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
@@ -196,6 +196,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     && !mentions.some((item) => item.id === row.id)
     && (query == null || `${row.name} ${row.id}`.toLowerCase().includes(query))
   )), [mentions, query, roster, selfId]);
+  const activeSubmission = sentMessageId ? pending.find((item) => item.messageId === sentMessageId) : null;
 
   useEffect(() => { setActiveCandidate(0); }, [query]);
 
@@ -502,7 +503,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             : <button type="button" className="send-button interrupt" onClick={interrupt} disabled={!channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '停止中' : '停止'}>{sendState === 'sending' ? '…' : '■'}</button>}
         </div>
       </div>
-      {['accepted', 'delayed', 'uncertain', 'landed'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ accepted: '已提交，等待频道入账', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对', landed: '已写入频道账本' }[sendState]}</p>}
+      {['accepted', 'delayed', 'uncertain', 'landed'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ accepted: '已提交，等待频道入账', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对', landed: '已写入频道账本' }[sendState]}{sendState === 'uncertain' && activeSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(activeSubmission)}>使用原编号重试</button>}</p>}
       {disabled && <p className="composer-disabled-reason">{disabledReason}；草稿仍保留在当前设备。</p>}
       {error && <p className="composer-error" role="alert">{error}</p>}
     </section>

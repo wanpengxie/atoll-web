@@ -35,8 +35,9 @@ export function taskControlContext(turn, { selfId = '', access = '', capability 
     expired: expiresAt > 0 && expiresAt <= now,
     location,
     canCancel: open && owned && writable && location === 'queued',
-    canSteer: open && owned && writable && Boolean(turnId) && hasCapability(capability, 'steer'),
+    canInsert: open && owned && writable && editableContent && location === 'queued' && hasCapability(capability, 'steer'),
     canEdit: open && owned && writable && editableContent && supportsType(capability, TYPES.agentHold)
       && (location === 'queued' || hasCapability(capability, 'interrupt')),
+    canStop: open && owned && writable && location === 'processing',
   };
 }

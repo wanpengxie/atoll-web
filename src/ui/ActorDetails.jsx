@@ -8,8 +8,8 @@ import { DynamicFields, initialFieldValues } from './DynamicFields.jsx';
 const RISK_LABEL = { normal: '普通', medium: '任务控制', high: '高风险', critical: '极高风险' };
 const CONTROL_LABEL = {
   [TYPES.agentAsk]: '提问',
-  [TYPES.agentSteer]: '调整方向',
-  [TYPES.agentInterrupt]: '打断当前回合',
+  [TYPES.agentSteer]: '插入',
+  [TYPES.agentInterrupt]: '停止',
   [TYPES.agentHold]: '暂停等待区',
   [TYPES.agentUnhold]: '继续等待区',
   [TYPES.agentReplace]: '修改排队任务',
@@ -92,12 +92,13 @@ export function ActorDetails({ actor, capability, disabled = false, onDescribe, 
         <div className="capability-list">{types.map((meta) => {
           const risk = capabilityRisk(meta.type);
           const supported = typeSupportsRequest(meta);
+          const conversationAction = Object.prototype.hasOwnProperty.call(CONTROL_LABEL, meta.type);
           return (
             <article className={`capability-row risk-${risk}`} key={meta.type}>
               <div><strong>{CONTROL_LABEL[meta.type] || meta.type}</strong><code>{meta.type}</code><p>{meta.description || '无描述'}</p></div>
               <div className="capability-meta"><span>{RISK_LABEL[risk]}</span></div>
               {meta.errorCodes.length > 0 && <details><summary>可能的错误</summary>{meta.errorCodes.map((item) => <p key={item.code}><code>{item.code}</code></p>)}</details>}
-              <button type="button" onClick={() => setActiveType(meta.type)} disabled={disabled || !supported || meta.type === TYPES.describe}>{supported ? '调用' : '仅事件能力'}</button>
+              <button type="button" onClick={() => setActiveType(meta.type)} disabled={disabled || !supported || conversationAction || meta.type === TYPES.describe}>{conversationAction ? '使用对话操作' : supported ? '调用' : '仅事件能力'}</button>
             </article>
           );
         })}{describe && !types.length && <p className="roster-empty">该 Actor 未声明可调用类型</p>}</div>

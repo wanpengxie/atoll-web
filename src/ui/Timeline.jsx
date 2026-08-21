@@ -7,9 +7,9 @@ import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { taskControlContext } from '../model/task-controls.js';
-import { agentFrozenState, editAdmission, editableText, lockFromContext } from '../model/agent-control.js';
+import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
-import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
+import { turnStatusLabel } from '../model/turn-presentation.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
@@ -105,23 +105,14 @@ function ApprovalCard({ turn, state, onResolve, names }) {
   );
 }
 
-function TaskControls({ context, state = {}, editActive = false, queuePosition = 0, onCancel, onControl, onEdit }) {
-  const [steering, setSteering] = useState(false);
-  const [steerText, setSteerText] = useState('');
-  if (!context.canCancel && !context.canSteer && !context.canEdit && !state.status) return null;
+function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) {
+  if (!context.canEdit && !context.canStop) return null;
   return (
     <section className="task-controls" aria-label="任务控制">
       <div className="task-control-buttons">
-        {context.canCancel && <button type="button" onClick={onCancel} disabled={['sending', 'accepted', 'uncertain'].includes(state.status)}>{state.status === 'sending' ? '正在取消…' : '取消任务'}</button>}
         {context.canEdit && <button type="button" onClick={onEdit} disabled={editActive}>编辑</button>}
-        {context.canSteer && <button type="button" onClick={() => setSteering((value) => !value)}>调整方向</button>}
+        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, {})}>停止</button>}
       </div>
-      {state.status === 'accepted' && <p className="control-status">取消请求已受理，等待原任务终态。</p>}
-      {state.status === 'uncertain' && <p className="control-status uncertain">取消结果待确认，将以重连后的账本为准。</p>}
-      {state.error && <WireErrorLine error={state.error} />}
-      {steering && <div className="steer-form"><textarea aria-label="新方向" rows={3} value={steerText} onChange={(event) => setSteerText(event.target.value)} placeholder="输入新的任务方向" /><div><button type="button" onClick={() => setSteering(false)}>取消</button><button type="button" disabled={!steerText.trim()} onClick={() => { onControl(TYPES.agentSteer, { text: steerText.trim(), expected_turn_id: context.turnId }); setSteering(false); setSteerText(''); }}>提交方向</button></div></div>}
-      {context.expiresAt > 0 && !context.expired && <small className="wait-hint">截止时间 {new Date(context.expiresAt).toLocaleString("zh-CN")}；超过后仍以账本终态为准。</small>}
-      {context.location === 'queued' && queuePosition > 0 && <small className="wait-hint">排队中 · 第 {queuePosition} 位</small>}
     </section>
   );
 }
@@ -134,6 +125,30 @@ function TaskEditor({ session, onText, onSave, onAbandon }) {
     {label && <p role="status">{label}</p>}
     {session.error && <p role="alert">{session.error}</p>}
     <div><button type="button" disabled={waiting} onClick={onAbandon}>放弃</button><button type="button" disabled={waiting} onClick={onSave}>保存</button></div>
+  </section>;
+}
+
+function WaitingLayer({ turns, state, selfId, access, capabilityIndex, editing, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon }) {
+  if (!turns.length) return null;
+  const paused = turns.some((turn) => agentFrozenState(state, turn.request.audience?.[0] || ''));
+  return <section className="agent-wait-layer" aria-label="等待区">
+    <header><strong>等待中{paused ? '（已暂停）' : ''}</strong><small>{turns.length} 条</small></header>
+    <ol>{turns.map((turn, index) => {
+      const actorId = turn.request.audience?.[0] || '';
+      const context = taskControlContext(turn, { selfId, access, capability: capabilityIndex.get(actorId) });
+      const view = messagePresentation(turn.request);
+      const session = editing?.targetId === turn.requestId ? editing : null;
+      return <li key={turn.requestId} className="agent-wait-item" data-request-id={turn.requestId}>
+        <div className="agent-wait-summary"><span className="agent-wait-position">{index + 1}</span><strong>{view.text}</strong></div>
+        {!session && <div className="agent-wait-actions">
+          {context.canInsert && <button type="button" onClick={() => onControl(turn, actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
+          {context.canEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, actorId)}>编辑</button>}
+          {context.canCancel && <button type="button" onClick={() => onCancel?.(state.channelId, turn.requestId)}>取消</button>}
+        </div>}
+        {session?.phase === 'locking' && <p className="agent-wait-locking" role="status">正在暂停并锁定…</p>}
+        {session && session.phase !== 'locking' && <TaskEditor session={session} onText={onEditText} onSave={onEditSave} onAbandon={onEditAbandon} />}
+      </li>;
+    })}</ol>
   </section>;
 }
 
@@ -193,6 +208,50 @@ function ThreadCalls({ thread, names }) {
   );
 }
 
+function activityLine(turn) {
+  const activity = turn.activity?.at(-1)?.envelope;
+  if (activity?.type === TYPES.activity.toolStarted) return `tool: ${activity.payload?.tool || '工具'} …`;
+  if (activity?.type === TYPES.activity.toolEnded) return `tool: ${activity.payload?.tool || '工具'} 完成`;
+  if (activity?.type === TYPES.activity.turnStarted) return 'turn started · 正在生成…';
+  if (activity?.type === TYPES.activity.turnEnded) return 'turn ended';
+  const progress = turn.provisional?.at(-1)?.envelope?.payload || {};
+  return progress.detail || progress.message || progress.text || '正在生成…';
+}
+
+function conversationPayload(payload = {}) {
+  const { turn_index: _turnIndex, ...visible } = payload;
+  return visible;
+}
+
+function AgentBubble({ turn, title, mergedCount = 0 }) {
+  const request = turn.request;
+  const terminal = turn.terminal;
+  const stopped = terminal?.payload?.status === 'failed' && terminal.payload?.error_code === 'interrupted';
+  return <MessageFrame className={`agent-turn-bubble${terminal ? ' settled' : ' processing'}`} contentClassName="response-body" identity={<span className="actor-icon kind-agent">A</span>}>
+    {!terminal && <div className="agent-processing-content"><strong>● 处理中: {title}{mergedCount ? `（含合并 ${mergedCount} 条）` : ''}</strong><p>⋯ {activityLine(turn)}</p></div>}
+    {stopped && <p className="agent-stopped">✗ 已停止 · 发消息即继续</p>}
+    {terminal && !stopped && <div className="response-content"><span className="agent-answer-check" aria-label="已完成">✓</span><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
+  </MessageFrame>;
+}
+
+function AgentConversationTurn({ turn, leadTurns = [], mergedCount = 0, names, selfId, access, capability, editActive, onControl, onEdit, onDownload, onPreview }) {
+  const request = turn.request;
+  const requestView = messagePresentation(request);
+  const controlContext = taskControlContext(turn, { selfId, access, capability });
+  const lead = leadTurns.map((item) => messagePresentation(item.request).text);
+  const processingTitle = [...lead, requestView.text].join(' ＋ ');
+  const suppressAgentBubble = Boolean(mergedInto(turn) || preemptedBy(turn));
+  return <section className={`turn-card agent-conversation-turn self status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
+    <MessageFrame className="request-message" identity={<span className="actor-icon kind-human">H</span>}>
+      <header><strong>{nameOf(request.sender?.id, names)}</strong><time>{timeLabel(request.ts)}</time></header>
+      <div className="request-text"><MarkdownContent text={requestView.text} /></div>
+      <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
+    </MessageFrame>
+    {!turn.terminal && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
+    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} />}
+  </section>;
+}
+
 function TurnCard({ turn, thread = [], roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, editSession = null, editActive = false, queuePosition = 0, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview, onOpen, onCreateTask, onCloseDetail }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
@@ -213,7 +272,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
           <span aria-hidden="true">查看过程 ›</span>
         </button></ContentFrame>}
       {detailsOpen && <ContentFrame contained><TurnInlineDetail turn={turn} roster={roster} selfId={selfId} access={access} capability={capability} controlState={controlState} onCancel={onCancel} onControl={onControl} onDownload={onDownload} onCreateTask={onCreateTask} onClose={onCloseDetail} /></ContentFrame>}
-      {!turn.terminal && !detailsOpen && <ContentFrame contained><TaskControls context={controlContext} state={controlState} editActive={editActive} queuePosition={queuePosition} onCancel={onCancel} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
+      {!turn.terminal && !detailsOpen && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
       {editSession && <ContentFrame contained><TaskEditor session={editSession} onText={onEditText} onSave={onEditSave} onAbandon={onEditAbandon} /></ContentFrame>}
       {turn.terminal && (
         <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
@@ -268,27 +327,6 @@ function WireErrorLine({ error }) {
   );
 }
 
-function PendingRow({ item, onRetry }) {
-  const stateLabel = {
-    transmitting: '发送中',
-    accepted: '已受理，等待入账',
-    delayed: '已受理但尚未入账',
-    uncertain: '发送结果待确认',
-    rejected: '发送被拒绝',
-    sending: '发送中',
-    error: '发送失败',
-  }[item.state] || item.state;
-  return (
-    <article className={`pending-row pending-${item.state}`}>
-      <span className="pending-spinner" />
-      <div><strong>{item.text}</strong><span>→ {item.targetLabel || '收件人'}</span></div>
-      <small>{stateLabel}</small>
-      {item.state === 'uncertain' && onRetry && <button type="button" className="pending-retry" onClick={() => onRetry(item)}>使用原编号重试</button>}
-      {item.error && <WireErrorLine error={item.error} />}
-    </article>
-  );
-}
-
 function isTransientEntry(entry) {
   return entry.kind === 'standalone'
     && (entry.envelope.payload?.transient === true || entry.envelope.type === 'mock.channel.pulse');
@@ -332,13 +370,18 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onRetry, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, turnDetail }) {
+export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, turnDetail }) {
   const [page, setPage] = useState(0);
   const [scope, setScope] = useState(TIMELINE_SCOPE.all);
   const [editing, setEditing] = useState(null);
   const previousAccess = useRef(access);
   const names = useMemo(() => actorNameMap(roster), [roster]);
-  const allEntries = useMemo(() => orderedTimeline(state).filter((entry) => !(entry.kind === 'turn' && [TYPES.agentHold, TYPES.agentUnhold, TYPES.agentInterrupt, TYPES.agentContext, TYPES.agentFork, TYPES.describe].includes(entry.turn.request.type))), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
+  const allEntries = useMemo(() => orderedTimeline(state).filter((entry) => {
+    if (entry.kind !== 'turn') return true;
+    if ([TYPES.agentHold, TYPES.agentUnhold, TYPES.agentInterrupt, TYPES.agentContext, TYPES.agentFork, TYPES.describe].includes(entry.turn.request.type)) return false;
+    if (isAgentMessageTurn(entry.turn)) return agentMessageStage(entry.turn) === 'timeline';
+    return true;
+  }), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
   const entries = useMemo(() => scopeEntries(allEntries, { scope, state, selfId }), [allEntries, scope, state, state.lastSeq, selfId]);
   const latestTransient = new Map();
   for (const entry of entries) {
@@ -355,10 +398,22 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     .sort((left, right) => left.seq - right.seq);
   const windowed = boundedPage(withNarration, page);
   const queuedTurns = [...state.turns.values()]
-    .filter((turn) => !turn.terminal && [...turn.provisional].reverse().find((item) => ['queued', 'processing'].includes(item.envelope?.payload?.status))?.envelope?.payload?.status === 'queued')
-    .sort((left, right) => left.lastSeq - right.lastSeq);
-  const queuePositions = new Map(queuedTurns.map((turn, index) => [turn.requestId, index + 1]));
-  const frozenAgents = roster.filter((row) => row.kind === 'agent').map((actor) => ({ actor, frozen: agentFrozenState(state, actor.id) })).filter((row) => row.frozen);
+    .filter((turn) => agentMessageStage(turn) === 'queued')
+    .sort((left, right) => {
+      const leftTarget = argsOf(left.request).target;
+      const rightTarget = argsOf(right.request).target;
+      const leftSeq = left.request.type === TYPES.agentReplace ? state.turns.get(leftTarget)?.requestSeq || left.requestSeq : left.requestSeq;
+      const rightSeq = right.request.type === TYPES.agentReplace ? state.turns.get(rightTarget)?.requestSeq || right.requestSeq : right.requestSeq;
+      return leftSeq - rightSeq;
+    });
+  const preemptedSources = new Map();
+  const mergedCounts = new Map();
+  for (const turn of state.turns.values()) {
+    const replacement = preemptedBy(turn);
+    if (replacement) preemptedSources.set(replacement, [...(preemptedSources.get(replacement) || []), turn]);
+    const owner = mergedInto(turn);
+    if (owner) mergedCounts.set(owner, (mergedCounts.get(owner) || 0) + 1);
+  }
   const { viewportRef, contentRef, unseenCount, observeScroll, jumpToLatest, leaveLatest } = useStableTimelineScroll({
     channelId: state.channelId,
     lastSeq: state.lastSeq,
@@ -448,10 +503,9 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     if (page !== windowed.page) setPage(windowed.page);
   }, [page, windowed.page]);
 
-  return (
+  return <>
     <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={observeScroll}>
       <div className="timeline-inner" ref={contentRef}>
-        {frozenAgents.map(({ actor, frozen }) => <div className="agent-frozen-banner" role="status" key={actor.id}><span>⏸ 已暂停 · 队列暂停</span><button type="button" onClick={() => onTaskControl?.({ channelId: state.channelId, actorId: actor.id, type: TYPES.agentUnhold, payload: {} })}>继续</button><small>{frozen.held_by}</small></div>)}
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">
             {Object.values(TIMELINE_SCOPE).map((value) => <button
@@ -463,8 +517,8 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
             >{TIMELINE_SCOPE_LABELS[value]}</button>)}
           </div>
         </div>}
-        {!state.rows.size && !pending.length && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
-        {Boolean(state.rows.size) && !entries.length && !pending.length && (
+        {!state.rows.size && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
+        {Boolean(state.rows.size) && !entries.length && !queuedTurns.length && (
           // Saying the channel is empty here would be a lie the reader can act
           // on — they would go looking for what they wrote. The channel is full;
           // none of it is theirs.
@@ -491,7 +545,10 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} queuePosition={queuePositions.get(entry.turn.requestId) || 0} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => {
+            const common = { turn: entry.turn, names, selfId, access, capability: capabilityIndex.get(actorId), editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment) };
+            if (isAgentMessageTurn(entry.turn)) {
+              content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
+            } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => {
               if (detailsOpen) turnDetail?.onClose?.();
               else {
                 // Expanding is a local reading action, not a new ledger entry. Stop the
@@ -510,10 +567,9 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
           return <React.Fragment key={key}>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</React.Fragment>;
         })}
         {windowed.hasNewer && <button type="button" className="bounded-list-control" onClick={() => setPage((value) => Math.max(0, value - 1))}>查看更新动态（{windowed.end + 1}–{Math.min(windowed.total, windowed.end + LIST_WINDOW_SIZE)}）</button>}
-        {pending.slice(-50).map((item) => <ContentFrame key={item.key}><PendingRow item={item} onRetry={onRetry} /></ContentFrame>)}
-        {pending.length > 50 && <p className="bounded-list-note">仅显示最近 50 个本地提交状态。</p>}
         {unseenCount > 0 && page === 0 && <button type="button" className="timeline-jump-latest" onClick={() => { setPage(0); jumpToLatest(); }}>↓ {unseenCount} 条新动态</button>}
       </div>
     </section>
-  );
+    <WaitingLayer turns={queuedTurns} state={state} selfId={selfId} access={access} capabilityIndex={capabilityIndex} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
+  </>;
 }

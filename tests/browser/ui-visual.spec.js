@@ -109,11 +109,11 @@ test('UI-VIS-08 600px 选择用户菜单视觉基线', async ({ page, request })
   await expect(page).toHaveScreenshot('channel-members-select-600.png', SCREENSHOT_OPTIONS);
 });
 
-test('UI-VIS-09 平面账本条目与折叠过程视觉基线', async ({ page, request }) => {
+test('UI-VIS-09 用户消息与 Agent 答案气泡视觉基线', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'actor-capability', 908);
   await login(page);
-  const turn = page.locator('.turn-card.status-completed').filter({ has: page.locator('.turn-process-summary') }).first();
+  const turn = page.locator('.agent-conversation-turn.status-completed').first();
   await expect(turn).toBeVisible();
   await expect(turn).toHaveScreenshot('flat-ledger-turn.png', SCREENSHOT_OPTIONS);
 });
