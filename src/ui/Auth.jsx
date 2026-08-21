@@ -54,7 +54,14 @@ export function Auth({ identity, onAuthed }) {
           <button type="button" role="tab" data-auth-mode="register" aria-selected={mode === 'register'} tabIndex={mode === 'register' ? 0 : -1} className={mode === 'register' ? 'active' : ''} onKeyDown={switchModeByKey} onClick={() => setMode('register')}>注册</button>
         </div>
         <form onSubmit={submit}>
-          <label>邮箱<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+          {/* 登录用 type="text"：节点自带的账号可以只写名字（root），域由节点补上，
+              而 type="email" 会让浏览器在提交前就拦下这种写法。注册仍是 "email"——
+              新账号必须给真地址，节点的域不归它认领。 */}
+          {mode === 'login' ? (
+            <label>账号<input type="text" autoComplete="username" placeholder="root 或 you@example.com" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+          ) : (
+            <label>邮箱<input type="email" autoComplete="email" placeholder="you@example.com" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+          )}
           {mode === 'register' && (
             <label>显示名 <small>可选</small><input type="text" autoComplete="name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
           )}
