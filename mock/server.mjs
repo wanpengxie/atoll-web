@@ -814,14 +814,20 @@ export function createMockServer({
       && [...history].reverse().map((row) => row.envelope).find((reply) => reply.kind === 'response' && reply.parent_id === value.id)?.payload?.status === 'queued'
     ));
 
-    // 解冻/停止后续跑恒走 FIFO：没有活动 turn 时，turn 一次带走整个缓冲——
-    // 队列头 processing，其余合并进同一 turn（终态 merged_into = 头的请求 id）。
+    // 队首行是否带 Resumed 标记（最新 queued 帧 resumed:true；replace 帧继承）。
+    const isResumedRow = (requestId) => [...history].reverse().map((row) => row.envelope)
+      .find((value) => value.kind === 'response' && value.parent_id === requestId && value.payload?.status === 'queued')?.payload?.resumed === true;
+
+    // 解冻/停止后续跑恒走 FIFO。组批判据照协议 §4.4.5：**Resumed 件恒单独成批**
+    // ——被打断退回的那条独跑，其余继续 queued；队首是普通件才整批带走
+    // （lead processing，其余终态 merged_into = lead 的请求 id）。
     const resumeQueueHead = (delay) => later(delay, () => {
       if (activeAgentTask(channelId, respondingAgent.id, messageId)) return;
-      const [head, ...merged] = bufferedConversation();
+      const [head, ...rest] = bufferedConversation();
       if (!head) return;
       append(channelId, envelope({ ...responseBase, id: `${messageId}-resume-processing`, parentId: head.id, correlationId: head.id, kind: 'response', type: head.type, payload: { status: 'processing', turn_id: `turn-${head.id}`, controls: PROCESSING_CONTROLS } }));
-      for (const row of merged) {
+      if (isResumedRow(head.id)) return;
+      for (const row of rest) {
         append(channelId, envelope({ ...responseBase, id: `${messageId}-merged-${row.id}`, parentId: row.id, correlationId: row.id, kind: 'response', type: row.type, payload: { status: 'completed', merged_into: head.id } }));
       }
     });
@@ -927,7 +933,10 @@ export function createMockServer({
         later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', controls: [] } })));
         later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', text: payload.payload?.new_text || '' } })));
         // 替换生效 = 目标消息自己的账上多一帧新文本（呈现恒吃账，前端不拼 replace turn）。
-        later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-replaced`, parentId: replaceTarget, correlationId: replaceTarget, kind: 'response', type: replaceRequest.type, payload: { status: 'queued', text: payload.payload?.new_text || '', controls: QUEUED_CONTROLS } })));
+        // Resumed 标记从被替换行继承（协议 §4.4.5）——修正后的行仍恒单独成批。
+        const targetResumed = [...history].reverse().map((row) => row.envelope)
+          .find((value) => value.kind === 'response' && value.parent_id === replaceTarget && value.payload?.status === 'queued')?.payload?.resumed === true;
+        later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-replaced`, parentId: replaceTarget, correlationId: replaceTarget, kind: 'response', type: replaceRequest.type, payload: { status: 'queued', text: payload.payload?.new_text || '', ...(targetResumed ? { resumed: true } : {}), controls: QUEUED_CONTROLS } })));
         return;
       }
       if (payload.msg_type === 'agent.queue') {
