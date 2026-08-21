@@ -125,7 +125,7 @@ test('C-BR-03/05 处理中只暴露编辑与停止，停止后按钮随 turn 消
   await expect(turn.getByRole('region', { name: '任务控制' })).toHaveCount(0);
 });
 
-test('C-BR-04 停止冻结等待区但恒无继续按钮，发消息恢复', async ({ page, request }) => {
+test('C-BR-04 interrupt 冻结只在 Agent 气泡呈现，恒无继续按钮', async ({ page, request }) => {
   await reset(request, 'long-running', 104);
   await login(page);
   const turn = await sendTask(page, '阶段C停止并冻结');
@@ -133,7 +133,7 @@ test('C-BR-04 停止冻结等待区但恒无继续按钮，发消息恢复', asy
   await page.getByRole('button', { name: /发送/ }).click();
   await expect(page.getByRole('region', { name: '等待区' })).toContainText('等待中的后续任务');
   await turn.getByRole('button', { name: '停止' }).click();
-  await expect(page.getByRole('region', { name: '等待区' })).toContainText('已暂停');
+  await expect(page.getByRole('region', { name: '等待区' })).not.toContainText('已暂停');
   await expect(page.getByRole('button', { name: '继续' })).toHaveCount(0);
   await page.getByLabel('消息').fill('直接发消息恢复');
   await page.getByRole('button', { name: /发送/ }).click();
@@ -167,7 +167,7 @@ test('C-BR-06/08 queued 恒住等待浮层，interrupt 定格 Agent 气泡', asy
   await expect(page.locator('.timeline')).not.toContainText('队列中的后续任务');
   await original.getByRole('button', { name: '停止' }).click();
   await expect(original).toContainText('✗ 已停止 · 发消息即继续');
-  await expect(waiting).toContainText('已暂停');
+  await expect(waiting).not.toContainText('已暂停');
   await expect(page.getByRole('button', { name: '继续' })).toHaveCount(0);
 });
 

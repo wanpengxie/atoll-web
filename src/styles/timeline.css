@@ -5,7 +5,13 @@
 .agent-wait-layer > header { position: sticky; z-index: 1; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 11px; border-bottom: 1px solid var(--line-subtle); background: var(--raised); }
 .agent-wait-layer > header strong { font-size: 11px; }
 .agent-wait-layer > header small { color: var(--text-muted); font-size: 9px; }
-.agent-wait-layer > ol { margin: 0; padding: 0; list-style: none; }
+.agent-wait-group + .agent-wait-group { border-top: 1px solid var(--line-control-strong); }
+.agent-wait-group > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 11px; background: var(--surface-muted); }
+.agent-wait-group > header strong { font-size: 10px; }
+.agent-wait-group > header button { min-height: 28px; padding: 4px 8px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--danger); cursor: pointer; font-size: 10px; }
+.agent-wait-group > header button:disabled { opacity: .45; cursor: not-allowed; }
+.agent-wait-group > ol { margin: 0; padding: 0; list-style: none; }
+.agent-wait-error, .agent-edit-error { margin: 8px 11px; color: var(--danger); font-size: 11px; }
 .agent-wait-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 9px 11px; }
 .agent-wait-item + .agent-wait-item { border-top: 1px solid var(--line-subtle); }
 .agent-wait-summary { display: flex; min-width: 0; align-items: center; gap: 8px; }

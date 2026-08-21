@@ -27,7 +27,31 @@ describe('agent control v7 presentation', () => {
     expect(editAdmission(before, session)).toEqual({ ready: true, error: '' });
   });
 
-  it('32 treats a reconnect context without frozen as an expired editing lock', () => {
+  it('32 derives freeze from causal order, wall clock, and queue advancement', () => {
+    const lateTerminal = stateOf([
+      envelope('h1', 'request', 'agent.hold', { duration_ms: 1000 }),
+      envelope('r1', 'request', 'agent.ask', { text: 'new work' }),
+      envelope('r1-q', 'response', 'agent.ask', { status: 'queued' }, { parent_id: 'r1' }),
+      envelope('h1-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'h1' }),
+    ]);
+    expect(agentFrozenState(lateTerminal, 'agent', 100)).toBeNull();
+
+    const expiring = stateOf([
+      envelope('h2', 'request', 'agent.hold', { duration_ms: 1000 }),
+      envelope('h2-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'h2' }),
+    ]);
+    expect(agentFrozenState(expiring, 'agent', 1000)).toMatchObject({ held_by: 'h2', until: 1001, source: 'agent.hold' });
+    expect(agentFrozenState(expiring, 'agent', 1001)).toBeNull();
+
+    const advanced = stateOf([
+      envelope('queued', 'request', 'agent.ask', { text: 'old work' }),
+      envelope('queued-q', 'response', 'agent.ask', { status: 'queued' }, { parent_id: 'queued' }),
+      envelope('h3', 'request', 'agent.hold', {}),
+      envelope('h3-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'h3' }),
+      envelope('queued-p', 'response', 'agent.ask', { status: 'processing' }, { parent_id: 'queued' }),
+    ]);
+    expect(agentFrozenState(advanced, 'agent', 100)).toBeNull();
+
     expect(lockFromContext({ status: 'completed' }, 'h1')).toEqual({ valid: false, error: '编辑锁已失效' });
     expect(lockFromContext({ status: 'completed', frozen: { held_by: 'h1', until: 9 } }, 'h1').valid).toBe(true);
   });
@@ -38,8 +62,8 @@ describe('agent control v7 presentation', () => {
       envelope('h2-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'h2' }),
       envelope('fire-old', 'event', 'agent.hold_expired', { hold_id: 'h1' }, { sender: { kind: 'agent', id: 'agent' }, audience: ['agent'] }),
     ]);
-    expect(agentFrozenState(state, 'agent')).toEqual({ held_by: 'h2', until: 0 });
+    expect(agentFrozenState(state, 'agent', 100)).toEqual({ held_by: 'h2', until: 1800001, source: 'agent.hold', target_id: '' });
     apply(state, { channel_id: 'c0', seq: 4, envelope: envelope('fire-current', 'event', 'agent.hold_expired', { hold_id: 'h2' }, { sender: { kind: 'agent', id: 'agent' }, audience: ['agent'] }) });
-    expect(agentFrozenState(state, 'agent')).toBeNull();
+    expect(agentFrozenState(state, 'agent', 100)).toBeNull();
   });
 });
