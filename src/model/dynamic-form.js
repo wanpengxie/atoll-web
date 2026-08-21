@@ -1,8 +1,8 @@
 import { parseJSONDocument } from './capabilities.js';
 import { TYPES } from '../protocol/vocab.js';
 
-// agent 基座的控制词没有 input_schema（Manifest 只给一行描述），所以这里补一张
-// 客户端表单表。字段名对齐 drivers/agents/base/loop.go 的解码结构。
+// 固定词的表单兜底；有 input_schema 时始终以 actor.describe 的机器可读声明为准。
+// 字段名对齐 drivers/agents/base/loop.go 的解码结构。
 const KNOWN_CONTROL_FIELDS = Object.freeze({
   [TYPES.agentAsk]: [
     { name: 'text', required: true, description: '要问 Agent 的内容', type: 'string', multiline: true },
@@ -19,7 +19,17 @@ const KNOWN_CONTROL_FIELDS = Object.freeze({
     { name: 'effort', required: false, description: '推理力度', type: 'string' },
   ],
   [TYPES.agentInterrupt]: [],
-  [TYPES.agentStop]: [],
+  [TYPES.agentHold]: [
+    { name: 'target', required: false, description: '要冻结并编辑的请求编号', type: 'string' },
+    { name: 'duration_ms', required: false, description: '冻结时长（最多 1800000 毫秒）', type: 'integer' },
+  ],
+  [TYPES.agentUnhold]: [],
+  [TYPES.agentReplace]: [
+    { name: 'target', required: true, description: '被替换的请求编号', type: 'string' },
+    { name: 'old_text', required: true, description: '编辑前全文', type: 'string', multiline: true },
+    { name: 'new_text', required: true, description: '编辑后全文', type: 'string', multiline: true },
+    { name: 'attachments', required: false, description: '更新后的附件', type: 'array' },
+  ],
   [TYPES.agentCompact]: [],
   [TYPES.agentContext]: [],
   [TYPES.agentFork]: [],

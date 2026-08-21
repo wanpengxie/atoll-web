@@ -6,14 +6,16 @@ const CONTROL_TYPES = new Set([
   TYPES.agentSteer,
   TYPES.agentQueue,
   TYPES.agentInterrupt,
-  TYPES.agentStop,
+  TYPES.agentHold,
+  TYPES.agentUnhold,
+  TYPES.agentReplace,
   TYPES.agentFork,
   TYPES.agentCompact,
   TYPES.agentSelect,
   TYPES.agentContext,
 ]);
 
-const HIGH_RISK_TYPES = new Set([TYPES.agentStop, TYPES.agentFork]);
+const HIGH_RISK_TYPES = new Set([TYPES.agentFork]);
 
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -108,7 +110,8 @@ export function capabilityIndexFromState(state) {
   return index;
 }
 
-// 词表里出现即可请求：Describe.words 只收录这个 actor 真的受理的请求词。
+// 词表声明固定请求接口；provider 的动态效果强弱由 capabilities 单独声明。
+// supportsType 只回答“这个词能否请求”，不能替代能力位判断。
 export function typeSupportsRequest(meta) {
   return Boolean(meta);
 }

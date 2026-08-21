@@ -26,7 +26,7 @@ const STEWARD_ACTOR_ID = 'steward';
 const SYSTEM_ACTOR_ID = 'system';
 // agent 基座的控制词闭集（drivers/agents/base/base.go）。agent.ask 不在其中——
 // 它是“交办一件活”，不是控制。
-const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.queue', 'agent.stop', 'agent.compact', 'agent.select', 'agent.context', 'agent.fork'];
+const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'agent.unhold', 'agent.replace', 'agent.queue', 'agent.compact', 'agent.select', 'agent.context', 'agent.fork'];
 
 const now = () => Date.now();
 
@@ -172,8 +172,10 @@ function mockDescribe(_actorId, { taskCapability = false } = {}) {
       } } : {}),
       'agent.steer': { description: '调整当前回合方向', error_codes: ['cas_mismatch'] },
       'agent.interrupt': { description: '打断当前回合' },
+      'agent.hold': { description: '暂停等待区' },
+      'agent.unhold': { description: '继续等待区' },
+      'agent.replace': { description: '修改排队任务' },
       'agent.queue': { description: '排队一个新任务' },
-      'agent.stop': { description: '停止当前工作并清空队列' },
       'agent.compact': { description: '压缩上下文' },
       'agent.select': { description: '切换模型与算力' },
       'agent.context': { description: '查看上下文用量' },
@@ -819,10 +821,19 @@ export function createMockServer({
         return;
       }
       if (payload.msg_type === 'agent.interrupt') {
+        append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed' } }));
         later(25, () => {
           closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'interrupted', error_code: 'interrupted', detail: 'interrupted by user control' });
-          append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { interrupted: Boolean(active) } } }));
         });
+        return;
+      }
+      if (payload.msg_type === 'agent.hold' || payload.msg_type === 'agent.unhold') {
+        append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed' } }));
+        return;
+      }
+      if (payload.msg_type === 'agent.replace') {
+        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued' } })));
+        later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', text: payload.payload?.new_text || '' } })));
         return;
       }
       if (payload.msg_type === 'agent.queue') {
@@ -831,7 +842,7 @@ export function createMockServer({
         later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { queued: true, text } } })));
         return;
       }
-      const key = { 'agent.stop': 'stopped', 'agent.compact': 'compacted', 'agent.select': 'selected', 'agent.context': 'context', 'agent.fork': 'forked' }[payload.msg_type];
+      const key = { 'agent.compact': 'compacted', 'agent.select': 'selected', 'agent.context': 'context', 'agent.fork': 'forked' }[payload.msg_type];
       later(30, () => {
         closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'cancelled', error_code: 'cancelled', detail: payload.msg_type });
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { [key]: true } } }));

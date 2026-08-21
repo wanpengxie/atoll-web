@@ -174,27 +174,19 @@ test('C-BR-06/08 queue、interrupt 与 cancel 保持独立语义', async ({ page
   await expect(queued).toContainText('队列中的后续任务');
 
   const original = await sendTask(page, '阶段C待打断长任务');
-  await original.getByRole('button', { name: '打断回合' }).click();
+  await page.getByRole('button', { name: '停止' }).click();
   await expect(original.getByText('interrupted', { exact: true })).toBeVisible();
-  const interrupt = page.locator('.turn-card[data-request-type="agent.interrupt"]');
-  await expect(interrupt.getByText('interrupted', { exact: true })).toBeVisible();
-  await expect(interrupt.getByText('是', { exact: true })).toBeVisible();
+  await expect(page.getByText('已暂停 · 队列暂停')).toBeVisible();
+  await page.getByRole('button', { name: '继续' }).click();
 });
 
-test('C-BR-07/09/10 高风险控制只能从 Actor 详情确认后提交', async ({ page, request }) => {
+test('C-BR-07/09/10 生命周期高风险控制只能从 Actor 详情确认后提交', async ({ page, request }) => {
   await reset(request, 'actor-lifecycle', 108);
   await login(page);
   const details = await openSteward(page);
 
-  await capability(details, 'agent.stop').getByRole('button', { name: '调用' }).click();
-  let form = details.getByRole('region', { name: '停止 Agent 工作 参数' });
-  await expect(form.getByRole('button', { name: '提交操作' })).toBeDisabled();
-  await form.getByRole('checkbox').check();
-  await form.getByRole('button', { name: '提交操作' }).click();
-  await expect(page.locator('.turn-card[data-request-type="agent.stop"]').getByText('stopped', { exact: true })).toBeVisible();
-
   await capability(details, 'agent.restart').getByRole('button', { name: '调用' }).click();
-  form = details.getByRole('region', { name: '重启 Agent 运行时 参数' });
+  let form = details.getByRole('region', { name: '重启 Agent 运行时 参数' });
   await expect(form.getByRole('button', { name: '提交操作' })).toBeDisabled();
   await form.getByRole('checkbox').check();
   await form.getByRole('button', { name: '提交操作' }).click();

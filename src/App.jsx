@@ -473,15 +473,15 @@ export default function App() {
   }, [handleResource]);
 
   const handleTaskControl = useCallback(async ({ channelId, turn, actorId, type, payload }) => {
-    if (!channelId || !turn || !actorId) return;
-    await handleSend({
+    if (!channelId || !actorId) return '';
+    return handleSend({
       channelId,
       text: payload?.text || `${type} → ${actorId}`,
       msgType: type,
       audience: [actorId],
       targetLabel: actorId,
       payload,
-      parentId: turn.requestId,
+      parentId: turn?.requestId || '',
     });
   }, [handleSend]);
 

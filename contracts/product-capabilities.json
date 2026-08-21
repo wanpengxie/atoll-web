@@ -294,9 +294,9 @@
     {
       "id": "actor.lifecycle-control",
       "stage": "C",
-      "user_task": "在确认风险后 interrupt、queue、stop、terminate 或 restart Actor",
+      "user_task": "使用 interrupt、hold、unhold、replace、queue 控制 Agent，并管理 terminate 或 restart Actor",
       "ui_region": "Actor 管理详情",
-      "backend": [{"surface": "ws-submit", "operation": "agent.interrupt|agent.queue|agent.stop|agent.terminate|agent.restart"}],
+      "backend": [{"surface": "ws-submit", "operation": "agent.interrupt|agent.hold|agent.unhold|agent.replace|agent.queue|agent.terminate|agent.restart"}],
       "preconditions": ["Actor describe 声明支持", "用户确认高风险动作"],
       "accepted_evidence": "submit receipt.message_id",
       "completed_evidence": "动作结构化终态入账；OBS presence 仅作为辅助事实",

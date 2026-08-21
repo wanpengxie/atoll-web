@@ -214,7 +214,7 @@ Mock 不应只返回 `{ok:true}`。例如创建频道必须同时产生：
 - `agent.steer`；
 - `agent.interrupt`；
 - `agent.queue`；
-- `agent.stop`；
+- `agent.hold` / `agent.unhold` / `agent.replace`；
 - `agent.terminate`；
 - `agent.restart`；
 - WS cancel；

@@ -59,7 +59,7 @@ describe('actor capabilities', () => {
     expect(value.types.get('run')).toMatchObject({ description: '跑一次', errorCodes: [{ code: 'busy' }] });
     expect(supportsType({ describe: value }, 'run')).toBe(true);
     expect(supportsType({ describe: value }, 'missing')).toBe(false);
-    expect(capabilityRisk('agent.stop')).toBe('high');
+    expect(capabilityRisk('agent.fork')).toBe('high');
     expect(capabilityRisk('agent.steer')).toBe('medium');
   });
 

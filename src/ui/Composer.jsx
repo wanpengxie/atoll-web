@@ -61,6 +61,18 @@ function editorText(editor) {
 // 空间类的词它转交 c0 的 registrar。
 export function slashCommand(value) {
   const [verb, ...rest] = value.trim().split(/\s+/);
+  if (verb === '/compact') {
+    if (rest.length) throw new TypeError('用法：/compact');
+    return { msgType: TYPES.agentCompact, payload: {}, target: 'agent' };
+  }
+  if (verb === '/model') {
+    if (rest.length > 2) throw new TypeError('用法：/model [model] [effort]');
+    return { msgType: TYPES.agentSelect, payload: { ...(rest[0] ? { model: rest[0] } : {}), ...(rest[1] ? { effort: rest[1] } : {}) }, target: 'agent' };
+  }
+  if (verb === '/fork' || verb === '/context' || verb === '/status') {
+    if (rest.length) throw new TypeError(`用法：${verb}`);
+    return { msgType: verb === '/fork' ? TYPES.agentFork : verb === '/context' ? TYPES.agentContext : TYPES.describe, payload: {}, target: 'agent' };
+  }
   if (verb === '/introduce') {
     const declId = rest[0];
     if (!declId || rest.length > 1) throw new TypeError('用法：/introduce <decl_id>');
@@ -82,7 +94,7 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles }) {
+export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
@@ -290,8 +302,14 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     try {
       const slash = slashCommand(value);
       if (slash) {
-        const sysactor = resolveManagementActors(roster).system;
-        const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [sysactor.id], targetLabel: sysactor.name || sysactor.id, payload: slash.payload });
+        let recipient;
+        if (slash.target === 'agent') {
+          const selectedAgents = mentions.filter((row) => row.kind === 'agent');
+          const agents = roster.filter((row) => row.kind === 'agent');
+          recipient = selectedAgents.length === 1 ? selectedAgents[0] : agents.length === 1 ? agents[0] : null;
+          if (!recipient) throw new TypeError('请 @ 一个 Agent 执行此命令');
+        } else recipient = resolveManagementActors(roster).system;
+        const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload: slash.payload });
         setSentMessageId(messageId || '');
         editor?.commands.clearContent(true);
         setSendState('accepted');
@@ -321,6 +339,21 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       setSentMessageId(messageId || '');
       editor?.commands.clearContent(true);
       onClearAttachments?.();
+      setSendState('accepted');
+    } catch (failure) {
+      setError(failure.message || String(failure));
+      setSendState('error');
+    }
+  }
+
+  async function interrupt() {
+    if (!activeAgentTurn || disabled || sendState === 'sending') return;
+    setError('');
+    setSendState('sending');
+    try {
+      const actorId = activeAgentTurn.request?.audience?.[0] || '';
+      const messageId = await onTaskControl?.({ channelId, turn: activeAgentTurn, actorId, type: TYPES.agentInterrupt, payload: {} });
+      setSentMessageId(messageId || '');
       setSendState('accepted');
     } catch (failure) {
       setError(failure.message || String(failure));
@@ -464,7 +497,9 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             <button type="button" aria-label="从频道文件选择" title="从频道文件选择" disabled={disabled || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
             {mentions.length > 0 && <div className="composer-target"><strong>{mentions.map((row) => `@${actorDisplayName(row)}`).join('、')}</strong></div>}
           </div>
-          <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
+          {(text.trim() || attachments.length || !activeAgentTurn)
+            ? <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
+            : <button type="button" className="send-button interrupt" onClick={interrupt} disabled={!channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '停止中' : '停止'}>{sendState === 'sending' ? '…' : '■'}</button>}
         </div>
       </div>
       {['accepted', 'delayed', 'uncertain', 'landed'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ accepted: '已提交，等待频道入账', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对', landed: '已写入频道账本' }[sendState]}</p>}

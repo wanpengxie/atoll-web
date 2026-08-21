@@ -27,7 +27,7 @@
 - Agent 只有在 Describe 中声明某个控制类型时才展示入口；
 - `agent.steer` payload 使用 `text`，可附 `expected_turn_id` 做 CAS；该 turn id 来自 processing provisional；
 - `agent.queue` payload 使用 `text`；
-- `agent.interrupt`、`agent.stop`、`agent.terminate`、`agent.restart` 使用普通 request 和结构化 terminal；
+- `agent.interrupt`、`agent.hold`、`agent.unhold`、`agent.replace` 使用普通 request 和结构化 terminal；
 - steer 可能合并、抢占、排队或以 `cas_mismatch` 失败，不允许前端预先宣称结果；
 - stop、terminate、restart 是高风险动作，只能从 Actor 详情进入并二次确认。
 
