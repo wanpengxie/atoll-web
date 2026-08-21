@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
+import { ensureServerBoot } from './model/server-boot.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
 import { fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
 import { unreadCount } from './model/cursors.js';
@@ -318,8 +319,10 @@ export default function App() {
         setTopError(`${channelId} 旁听已结束：${reason}`);
         bumpAccess();
       },
-      onState: (state) => {
+      onState: (state, detail) => {
         if (state === 'attached') {
+          // 服务器世代变了：本地缓存整体作废后重载一次，恒不要求用户手清。
+          if (!ensureServerBoot(detail?.boot)) { window.location.reload(); return; }
           access.wire('attached', newId());
           setWireState('open');
           // 首次 attach 已有登录初始化 OBS；之后每次重连完成才重新对齐投影。

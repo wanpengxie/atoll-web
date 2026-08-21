@@ -6,8 +6,8 @@ import { orderedTimeline } from '../model/fold.js';
 import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
-import { taskControlContext } from '../model/task-controls.js';
-import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
+import { controlLabel, extraControls, taskControlContext } from '../model/task-controls.js';
+import { accountText, agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { turnStatusLabel } from '../model/turn-presentation.js';
 import { argsOf } from '../protocol/envelope.js';
@@ -106,29 +106,33 @@ function ApprovalCard({ turn, state, onResolve, names }) {
 }
 
 function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) {
-  if (!context.canEdit && !context.canStop) return null;
+  const extras = extraControls(context);
+  if (!context.canEdit && !context.canStop && !extras.length) return null;
   return (
     <section className="task-controls" aria-label="任务控制">
       <div className="task-control-buttons">
         {context.canEdit && <button type="button" onClick={onEdit} disabled={editActive}>编辑</button>}
         {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, {})}>停止</button>}
+        {extras.map((entry) => <button key={entry.word} type="button" onClick={() => onControl(entry.word, { target: context.requestId })}>{controlLabel(entry)}</button>)}
       </div>
     </section>
   );
 }
 
+// 编辑 = 消息原地变可编辑：textarea 直接顶替消息文本的位置、贴消息的样式，
+// 不弹独立面板。放弃/保存行内收在文本下方。
 function TaskEditor({ session, onText, onSave, onAbandon }) {
   const waiting = ['locking', 'checking', 'submitting', 'saving'].includes(session.phase);
-  const label = { locking: '正在暂停并锁定…', checking: '正在核对编辑锁…', submitting: '正在提交修改…', saving: '正在等待替换终态…' }[session.phase];
-  return <section className="task-editor" aria-label="编辑排队任务">
-    <textarea aria-label="修改后的任务内容" rows={4} value={session.text} disabled={waiting} onChange={(event) => onText(event.target.value)} />
+  const label = { locking: '正在暂停并锁定…', checking: '正在核对编辑锁…', submitting: '正在提交修改…', saving: '正在等待替换生效…' }[session.phase];
+  return <div className="task-editor" aria-label="编辑任务内容">
+    <textarea aria-label="修改后的任务内容" rows={Math.min(8, Math.max(2, session.text.split('\n').length))} value={session.text} disabled={waiting} onChange={(event) => onText(event.target.value)} />
     {label && <p role="status">{label}</p>}
     {session.error && <p role="alert">{session.error}</p>}
     <div><button type="button" disabled={waiting} onClick={onAbandon}>放弃</button><button type="button" disabled={waiting} onClick={onSave}>保存</button></div>
-  </section>;
+  </div>;
 }
 
-function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, frozenByActor, editing, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon }) {
+function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, editing, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon }) {
   const [bulk, setBulk] = useState({ actorId: '', error: '' });
   if (!turns.length) return null;
   const groups = [];
@@ -145,7 +149,7 @@ function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, fr
 
   async function cancelAll(group) {
     if (bulk.actorId) return;
-    const cancellable = group.turns.filter((turn) => taskControlContext(turn, { selfId, access, capability: capabilityIndex.get(group.actorId) }).canCancel);
+    const cancellable = group.turns.filter((turn) => taskControlContext(turn, { selfId, access }).canCancel);
     if (!cancellable.length) return;
     setBulk({ actorId: group.actorId, error: '' });
     let held = false;
@@ -175,26 +179,32 @@ function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, fr
     }
   }
 
+  const soleGroup = groups.length === 1 ? groups[0] : null;
+  const solePaused = soleGroup && frozenByActor.get(soleGroup.actorId)?.source === TYPES.agentHold;
+  const soleCanCancel = soleGroup && soleGroup.turns.some((turn) => taskControlContext(turn, { selfId, access }).canCancel);
   return <section className="agent-wait-layer" aria-label="等待区">
-    <header><strong>等待中</strong><small>{turns.length} 条</small></header>
+    <header><strong>等待中{solePaused ? '（已暂停）' : ''}</strong><small>{turns.length} 条</small>{soleGroup && <button type="button" disabled={!soleCanCancel || Boolean(bulk.actorId)} onClick={() => cancelAll(soleGroup)}>{bulk.actorId === soleGroup.actorId ? '正在取消…' : '全部取消'}</button>}</header>
     {groups.map((group) => {
       const paused = frozenByActor.get(group.actorId)?.source === TYPES.agentHold;
-      const canCancelAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access, capability: capabilityIndex.get(group.actorId) }).canCancel);
+      const canCancelAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access }).canCancel);
       return <section className="agent-wait-group" key={group.actorId} data-agent-id={group.actorId}>
-        <header><strong>{nameOf(group.actorId, names)}{paused ? '（已暂停）' : ''}</strong><button type="button" disabled={!canCancelAll || Boolean(bulk.actorId)} onClick={() => cancelAll(group)}>{bulk.actorId === group.actorId ? '正在取消…' : '全部取消'}</button></header>
+        {!soleGroup && <header><strong>{nameOf(group.actorId, names)}{paused ? '（已暂停）' : ''}</strong><button type="button" disabled={!canCancelAll || Boolean(bulk.actorId)} onClick={() => cancelAll(group)}>{bulk.actorId === group.actorId ? '正在取消…' : '全部取消'}</button></header>}
         <ol>{group.turns.map((turn, index) => {
-          const context = taskControlContext(turn, { selfId, access, capability: capabilityIndex.get(group.actorId) });
+          const context = taskControlContext(turn, { selfId, access });
           const view = messagePresentation(turn.request);
           const session = editing?.targetId === turn.requestId ? editing : null;
           return <li key={turn.requestId} className="agent-wait-item" data-request-id={turn.requestId}>
-            <div className="agent-wait-summary"><span className="agent-wait-position">{index + 1}</span><strong>{view.text}</strong></div>
-            {!session && <div className="agent-wait-actions">
-              {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
-              {context.canEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
-              {context.canCancel && <button type="button" onClick={() => onCancel?.(state.channelId, turn.requestId)}>取消</button>}
-            </div>}
-            {session?.phase === 'locking' && <p className="agent-wait-locking" role="status">正在暂停并锁定…</p>}
-            {session && session.phase !== 'locking' && <TaskEditor session={session} onText={onEditText} onSave={onEditSave} onAbandon={onEditAbandon} />}
+            {session
+              ? <TaskEditor session={session} onText={onEditText} onSave={onEditSave} onAbandon={onEditAbandon} />
+              : <>
+                <div className="agent-wait-summary"><span className="agent-wait-position">{index + 1}</span><strong>{accountText(turn) || view.text}</strong></div>
+                <div className="agent-wait-actions">
+                  {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
+                  {context.canEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
+                  {context.canCancel && <button type="button" onClick={() => onCancel?.(state.channelId, turn.requestId)}>取消</button>}
+                  {extraControls(context).map((entry) => <button key={entry.word} type="button" onClick={() => onControl(turn, group.actorId, entry.word, { target: turn.requestId })}>{controlLabel(entry)}</button>)}
+                </div>
+              </>}
           </li>;
         })}</ol>
       </section>;
@@ -274,33 +284,38 @@ function conversationPayload(payload = {}) {
   return visible;
 }
 
-function AgentBubble({ turn, title, mergedCount = 0, frozen = null }) {
+function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names }) {
   const request = turn.request;
   const terminal = turn.terminal;
   const stopped = terminal?.payload?.status === 'failed' && terminal.payload?.error_code === 'interrupted';
   const resumable = stopped && frozen?.source === TYPES.agentInterrupt && (!frozen.target_id || frozen.target_id === turn.requestId);
+  const liveEnvelope = turn.activity?.at(-1)?.envelope || turn.provisional?.at(-1)?.envelope;
+  const agentId = terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0];
+  const bubbleTs = terminal?.ts || liveEnvelope?.ts;
   return <MessageFrame className={`agent-turn-bubble${terminal ? ' settled' : ' processing'}`} contentClassName="response-body" identity={<span className="actor-icon kind-agent">A</span>}>
+    <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>
     {!terminal && <div className="agent-processing-content"><strong>● 处理中: {title}{mergedCount ? `（含合并 ${mergedCount} 条）` : ''}</strong><p>⋯ {activityLine(turn)}</p></div>}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
-    {terminal && !stopped && <div className="response-content"><span className="agent-answer-check" aria-label="已完成">✓</span><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
+    {terminal && !stopped && <div className="response-content"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
   </MessageFrame>;
 }
 
-function AgentConversationTurn({ turn, leadTurns = [], mergedCount = 0, names, selfId, access, capability, frozen, editActive, onControl, onEdit, onDownload, onPreview }) {
+function AgentConversationTurn({ turn, leadTurns = [], mergedCount = 0, names, selfId, access, frozen, editActive, editSession = null, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
-  const controlContext = taskControlContext(turn, { selfId, access, capability });
-  const lead = leadTurns.map((item) => messagePresentation(item.request).text);
-  const processingTitle = [...lead, requestView.text].join(' ＋ ');
+  const requestText = accountText(turn) || requestView.text;
+  const controlContext = taskControlContext(turn, { selfId, access });
+  const lead = leadTurns.map((item) => accountText(item) || messagePresentation(item.request).text);
+  const processingTitle = [...lead, requestText].join(' ＋ ');
   const suppressAgentBubble = Boolean(mergedInto(turn) || preemptedBy(turn));
   return <section className={`turn-card agent-conversation-turn self status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
     <MessageFrame className="request-message" identity={<span className="actor-icon kind-human">H</span>}>
       <header><strong>{nameOf(request.sender?.id, names)}</strong><time>{timeLabel(request.ts)}</time></header>
-      <div className="request-text"><MarkdownContent text={requestView.text} /></div>
+      <div className="request-text">{editSession ? <TaskEditor session={editSession} onText={onEditText} onSave={onEditSave} onAbandon={onEditAbandon} /> : <MarkdownContent text={requestText} />}</div>
       <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
     </MessageFrame>
-    {!turn.terminal && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
-    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} />}
+    {!turn.terminal && !editSession && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
+    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} />}
   </section>;
 }
 
@@ -308,7 +323,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
   const request = turn.request;
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
-  const controlContext = taskControlContext(turn, { selfId, access, capability });
+  const controlContext = taskControlContext(turn, { selfId, access });
   return (
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
       <MessageFrame className="request-message" actions={<MessageActions onCreateTask={onCreateTask} />} identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
@@ -427,15 +442,23 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   const [scope, setScope] = useState(TIMELINE_SCOPE.all);
   const [editing, setEditing] = useState(null);
   const [editNotice, setEditNotice] = useState('');
+  const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
   const previousAccess = useRef(access);
   const names = useMemo(() => actorNameMap(roster), [roster]);
+  // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
+  // 但呈现上必须留在用户点下"编辑"的位置原地变可编辑——恒不在编辑中途瞬移。
+  // 只钉"从处理中进入编辑"的：等待区消息的编辑本来就发生在等待区原地。
+  // 保存/放弃后钉住不放（resumePin），直到账上真正回到处理中——否则解冻帧到达前
+  // 的空窗里消息会闪跳进等待区。
+  const editingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
   const allEntries = useMemo(() => orderedTimeline(state).filter((entry) => {
     if (entry.kind !== 'turn') return true;
     if ([TYPES.agentHold, TYPES.agentUnhold, TYPES.agentInterrupt, TYPES.agentContext, TYPES.agentFork, TYPES.describe].includes(entry.turn.request.type)) return false;
+    if (entry.turn.requestId === editingTargetId) return true;
     if (isAgentMessageTurn(entry.turn)) return agentMessageStage(entry.turn) === 'timeline';
     return true;
-  }), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
+  }), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length, editingTargetId]);
   const entries = useMemo(() => scopeEntries(allEntries, { scope, state, selfId }), [allEntries, scope, state, state.lastSeq, selfId]);
   const latestTransient = new Map();
   for (const entry of entries) {
@@ -452,7 +475,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     .sort((left, right) => left.seq - right.seq);
   const windowed = boundedPage(withNarration, page);
   const queuedTurns = [...state.turns.values()]
-    .filter((turn) => agentMessageStage(turn) === 'queued')
+    .filter((turn) => agentMessageStage(turn) === 'queued' && turn.requestId !== editingTargetId)
     .sort((left, right) => {
       const leftTarget = argsOf(left.request).target;
       const rightTarget = argsOf(right.request).target;
@@ -530,10 +553,22 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     if (editing.phase === 'saving' && editing.replacementId) {
       const replacement = state.turns.get(editing.replacementId);
       if (!replacement?.terminal) return;
-      if (replacement.terminal.payload?.status === 'completed') setEditing(null);
+      if (replacement.terminal.payload?.status === 'completed') {
+        // 替换已生效，立即解冻让队列续跑——编辑收尾恒不把消息留在暂停的等待区。
+        const targetTurn = state.turns.get(editing.targetId);
+        Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentUnhold, payload: {} })).catch(() => {});
+        if (editing.location === 'processing') setResumePin(editing.targetId);
+        setEditing(null);
+      }
       else setEditing((current) => current && ({ ...current, phase: 'editing', error: replacement.terminal.payload?.detail || replacement.terminal.payload?.error_code || '修改失败' }));
     }
   }, [state.lastSeq, editing?.phase, editing?.contextId, editing?.replacementId]);
+
+  useEffect(() => {
+    if (!resumePin) return;
+    const turn = state.turns.get(resumePin);
+    if (!turn || turn.terminal || agentMessageStage(turn) === 'timeline') setResumePin('');
+  }, [state.lastSeq, resumePin]);
 
   useEffect(() => {
     const reconnected = previousAccess.current !== 'member_active' && access === 'member_active';
@@ -550,7 +585,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     if (editing) return;
     setEditNotice('');
     try {
-      const location = taskControlContext(turn, { selfId, access, capability: capabilityIndex.get(actorId) }).location;
+      const location = taskControlContext(turn, { selfId, access }).location;
       const holdId = await onTaskControl?.({ channelId: state.channelId, turn, actorId, type: TYPES.agentHold, payload: { target: turn.requestId } });
       if (!holdId) {
         setEditNotice('无法锁定这条任务');
@@ -574,8 +609,9 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   async function abandonEditing() {
     if (!editing) return;
     const targetTurn = state.turns.get(editing.targetId);
-    await onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentUnhold, payload: {} });
+    if (editing.location === 'processing') setResumePin(editing.targetId);
     setEditing(null);
+    await onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentUnhold, payload: {} });
   }
 
   useEffect(() => {
@@ -624,7 +660,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const common = { turn: entry.turn, names, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment) };
+            const common = { turn: entry.turn, names, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment) };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
             } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => {
@@ -650,6 +686,6 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
       </div>
     </section>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
-    <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
+    <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
   </>;
 }

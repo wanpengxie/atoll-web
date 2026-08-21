@@ -13,9 +13,16 @@ const request = (id, text, actorId = 'agent') => ({
   audience: [actorId], visibility: 'public', payload: { text },
 });
 
+// progress 契约：凡带 status 的进度帧必带 controls（受理方全量宣告可用控制词）。
+const CONTRACT_CONTROLS = {
+  queued: [{ word: 'agent.replace' }, { word: 'agent.steer' }],
+  processing: [{ word: 'agent.interrupt' }, { word: 'agent.replace' }],
+};
+
 const response = (id, parentId, payload) => ({
   id, parent_id: parentId, kind: 'response', type: 'agent.ask', ts: Date.now(),
-  sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload,
+  sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public',
+  payload: CONTRACT_CONTROLS[payload.status] && !payload.controls ? { controls: CONTRACT_CONTROLS[payload.status], ...payload } : payload,
 });
 
 function add(state, seq, envelope) {
@@ -86,11 +93,12 @@ describe('agent control v7 information architecture', () => {
     const settled = document.querySelector('.agent-turn-bubble');
     expect(settled).toBe(bubble);
     expect(within(settled).getByText('重构完成')).toBeTruthy();
-    expect(within(settled).getByLabelText('已完成')).toBeTruthy();
+    expect(settled.textContent).not.toContain('✓');
     expect(within(card).queryByRole('button', { name: '编辑' })).toBeNull();
     expect(within(card).queryByRole('button', { name: '停止' })).toBeNull();
     expect(settled.querySelectorAll('button')).toHaveLength(0);
-    expect(settled.textContent).not.toContain('7');
+    // turn_index 恒不上屏——只查答案区，头部时间戳里的数字与此无关。
+    expect(settled.querySelector('.response-content').textContent).not.toContain('7');
   });
 
   it('groups queue positions per agent and cancels a group through hold, cancels, unhold', async () => {

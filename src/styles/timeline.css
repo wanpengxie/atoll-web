@@ -8,8 +8,8 @@
 .agent-wait-group + .agent-wait-group { border-top: 1px solid var(--line-control-strong); }
 .agent-wait-group > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 11px; background: var(--surface-muted); }
 .agent-wait-group > header strong { font-size: 10px; }
-.agent-wait-group > header button { min-height: 28px; padding: 4px 8px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--danger); cursor: pointer; font-size: 10px; }
-.agent-wait-group > header button:disabled { opacity: .45; cursor: not-allowed; }
+.agent-wait-group > header button, .agent-wait-layer > header button { min-height: 28px; margin-left: auto; padding: 4px 8px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--danger); cursor: pointer; font-size: 10px; }
+.agent-wait-group > header button:disabled, .agent-wait-layer > header button:disabled { opacity: .45; cursor: not-allowed; }
 .agent-wait-group > ol { margin: 0; padding: 0; list-style: none; }
 .agent-wait-error, .agent-edit-error { margin: 8px 11px; color: var(--danger); font-size: 11px; }
 .agent-wait-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 9px 11px; }
@@ -48,7 +48,6 @@
 .agent-processing-content > strong { color: var(--text); font-size: 13px; font-weight: 600; }
 .agent-processing-content > p { overflow: hidden; margin: 0; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .agent-stopped { margin: 2px 0 6px; color: var(--text-muted); font-size: 13px; }
-.agent-answer-check { margin-left: auto; color: var(--online); font-size: 11px; }
 .message-row { position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 10px; padding: 6px 10px; border-radius: var(--radius-object); outline: 0; }
 .message-row:hover, .message-row:focus-within, .message-row:focus-visible { background: var(--surface-quieter); }
 .message-body { min-width: 0; padding-top: 1px; }
@@ -62,8 +61,12 @@
 .actor-icon.kind-human { background: var(--accent-bg); color: var(--accent); }
 .actor-icon.kind-tool { background: var(--tool-bg); color: var(--tool); }
 .turn-card.self > .request-message, .standalone-row.self { grid-template-columns: minmax(0, 1fr) 34px; }
-.turn-card.self > .request-message > .information-flow-avatar-slot, .standalone-row.self > .information-flow-avatar-slot { grid-column: 2; }
-.turn-card.self > .request-message > .information-flow-content, .standalone-row.self > .information-flow-content { grid-column: 1; width: fit-content; max-width: min(74ch, 100%); justify-self: end; }
+.turn-card.self > .request-message > .information-flow-avatar-slot, .standalone-row.self > .information-flow-avatar-slot { grid-row: 1; grid-column: 2; }
+.turn-card.self > .information-flow-row { grid-template-columns: minmax(0, 1fr) 34px; }
+.turn-card.self > .information-flow-row > .information-flow-avatar-slot { grid-row: 1; grid-column: 2; }
+.turn-card.self > .information-flow-row > .information-flow-content { grid-row: 1; grid-column: 1; }
+.turn-card.self .task-control-buttons { justify-content: flex-end; }
+.turn-card.self > .request-message > .information-flow-content, .standalone-row.self > .information-flow-content { grid-row: 1; grid-column: 1; width: fit-content; max-width: min(74ch, 100%); justify-self: end; }
 .turn-card.self > .request-message .message-body > header, .standalone-row.self .message-body > header { justify-content: flex-end; padding: 0 4px 3px; }
 .turn-card.self > .request-message .request-text, .standalone-row.self .message-body > .markdown-content { padding: 8px 12px; border: 1px solid var(--accent-glow); border-radius: 14px 4px 14px 14px; background: var(--accent-bg); }
 .turn-card.self > .request-message:hover, .turn-card.self > .request-message:focus-within, .standalone-row.self:hover, .standalone-row.self:focus-within, .standalone-row.self:focus-visible { background: transparent; }

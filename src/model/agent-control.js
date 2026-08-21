@@ -2,12 +2,13 @@ import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 import { taskLocation } from './task-controls.js';
 
+// 会以"一条消息"身份出现在时间线/等待区的词。replace 恒不在此列：它是控制请求，
+// 呈现效果只能是"目标消息的文本更新"，自己短暂的 queued 窗口恒不得闪进等待区。
 const CONTENT_TYPES = new Set([
   TYPES.agentAsk,
   TYPES.agentQueue,
   TYPES.agentCompact,
   TYPES.agentSelect,
-  TYPES.agentReplace,
   TYPES.agentSteer,
 ]);
 const DEFAULT_HOLD_DURATION_MS = 30 * 60 * 1000;
@@ -142,6 +143,14 @@ export function activeAgentTurn(state, roster = [], selfId = '') {
 }
 
 export function editableText(turn) {
-  const payload = argsOf(turn?.request || {});
-  return String(payload?.new_text ?? payload?.text ?? '');
+  return accountText(turn) || String(argsOf(turn?.request || {})?.new_text ?? argsOf(turn?.request || {})?.text ?? '');
+}
+
+// 替换（replace）生效后，受理方把新文本打在目标消息自己的账上（status 帧带 text）。
+// 呈现恒优先吃账——与 controls 同一原则：影响这条消息的事实由受理方宣告在它的账上。
+export function accountText(turn) {
+  return [...(turn?.provisional || [])]
+    .reverse()
+    .map((item) => item.envelope?.payload)
+    .find((payload) => (payload?.status === 'queued' || payload?.status === 'processing') && typeof payload?.text === 'string' && payload.text)?.text || '';
 }

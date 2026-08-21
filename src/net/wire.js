@@ -109,7 +109,7 @@ export function createWire({
       if (incoming.ref === attachRef) {
         attached = true;
         reconnectAttempt = 0;
-        onState('attached', { contract_version: payload.contract_version });
+        onState('attached', { contract_version: payload.contract_version, boot: payload.boot });
       }
       return;
     }

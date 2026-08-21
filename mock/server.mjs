@@ -28,6 +28,12 @@ const SYSTEM_ACTOR_ID = 'system';
 // 它是“交办一件活”，不是控制。
 const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'agent.unhold', 'agent.replace', 'agent.queue', 'agent.compact', 'agent.select', 'agent.context', 'agent.fork'];
 
+// progress 契约：凡带 status（queued/processing）的进度帧必带 controls——受理方在
+// 这条消息自己的账上宣告"此刻可以对它用哪些控制词"。全量快照，后帧覆盖前帧；
+// 控制词消息自身的进度帧恒为空集；终态帧恒不带。前端据此画按钮，不查任何表。
+const QUEUED_CONTROLS = Object.freeze([{ word: 'agent.replace' }, { word: 'agent.steer' }]);
+const PROCESSING_CONTROLS = Object.freeze([{ word: 'agent.interrupt' }, { word: 'agent.replace' }]);
+
 const now = () => Date.now();
 
 function assertClosedPayload(payload, allowed) {
@@ -207,8 +213,8 @@ function seededHistory(channelId, behavior = {}) {
       ? [{ resource_id: 'file:seed:c0.project:3', name: '项目说明.md', media_type: 'text/markdown', size: 47 }]
       : [];
     add(envelope({ id: requestId, channelId, sender: root, kind: 'request', type: 'agent.ask', payload: { text: requestText, ...(demoAttachments.length ? { attachments: demoAttachments } : {}) }, audience: [responderId], ts: at }));
-    add(envelope({ id: `${requestId}-queued`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'queued', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 1 }));
-    add(envelope({ id: `${requestId}-processing`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 2 }));
+    add(envelope({ id: `${requestId}-queued`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'queued', turn_index: index, controls: QUEUED_CONTROLS }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 1 }));
+    add(envelope({ id: `${requestId}-processing`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 2 }));
     add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'event', type: 'agent.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
     add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'event', type: 'agent.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
     add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'completed' }, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
@@ -306,12 +312,17 @@ export function createMockServer({
 } = {}) {
   let domain = createMockDomain(loadScenario(scenario, seed));
   const sessions = new Map();
+  // 服务器世代号：进程重启或账本 reset 都是"新世界"，随 attach 回执告知前端，
+  // 前端据此整体作废本地缓存——手测者恒不该被要求手清 cookie/localStorage。
+  let bootId = randomUUID();
   const sockets = new Set();
   const attached = new WeakSet();
   const socketPrincipals = new WeakMap();
   const socketObserved = new WeakMap();
   const scheduled = new Set();
   const recurring = new Set();
+  // agent 的冻结真相：hold 受理即记 holder，unhold 清除；agent.context 如实回报。
+  const agentHolds = new Map();
   let rosters = domain.rosters;
   let histories = domain.histories;
   if (loadScenario(scenario, seed).history) {
@@ -325,8 +336,9 @@ export function createMockServer({
   if (domain.behavior.drop_receipt) domain.configureFault({ target: 'receipt', mode: 'drop', count: 1 });
 
   function authenticated(request) {
-    const token = cookieValue(request, SESSION_COOKIE);
-    return sessions.get(token) === ROOT_ID;
+    // 单主体 mock：凡持有 cookie 即视为 root——会话表在内存里，mock 进程重启
+    // 不该迫使手测者重新登录。登出走"清 cookie"，无 cookie 仍然 401。
+    return Boolean(cookieValue(request, SESSION_COOKIE));
   }
 
   function setSession(response) {
@@ -794,6 +806,26 @@ export function createMockServer({
     const text = String(payload.payload?.text || '');
     responseBase.sender = { kind: 'agent', id: respondingAgent.id };
 
+    // 队列里的会话消息（FIFO，未终态且最新位置为 queued）。
+    const bufferedConversation = () => history.map((row) => row.envelope).filter((value) => (
+      value.kind === 'request' && value.sender?.kind === 'human' && value.audience?.includes(respondingAgent.id)
+      && !AGENT_CONTROL_WORDS.includes(value.type) && value.type !== 'actor.describe' && !value.type.startsWith('system.')
+      && !hasTerminal(channelId, value.id)
+      && [...history].reverse().map((row) => row.envelope).find((reply) => reply.kind === 'response' && reply.parent_id === value.id)?.payload?.status === 'queued'
+    ));
+
+    // 解冻/停止后续跑恒走 FIFO：没有活动 turn 时，turn 一次带走整个缓冲——
+    // 队列头 processing，其余合并进同一 turn（终态 merged_into = 头的请求 id）。
+    const resumeQueueHead = (delay) => later(delay, () => {
+      if (activeAgentTask(channelId, respondingAgent.id, messageId)) return;
+      const [head, ...merged] = bufferedConversation();
+      if (!head) return;
+      append(channelId, envelope({ ...responseBase, id: `${messageId}-resume-processing`, parentId: head.id, correlationId: head.id, kind: 'response', type: head.type, payload: { status: 'processing', turn_id: `turn-${head.id}`, controls: PROCESSING_CONTROLS } }));
+      for (const row of merged) {
+        append(channelId, envelope({ ...responseBase, id: `${messageId}-merged-${row.id}`, parentId: row.id, correlationId: row.id, kind: 'response', type: row.type, payload: { status: 'completed', merged_into: head.id } }));
+      }
+    });
+
     if (payload.msg_type === 'mock.order.create') {
       const count = payload.payload?.count;
       if (!payload.payload?.name || !Number.isInteger(count) || count < 1) fail('payload_invalid', 'name and a positive integer count are required');
@@ -823,14 +855,14 @@ export function createMockServer({
           if (!active) return;
           later(20, () => {
             closeTask(channelId, active, respondingAgent.id, { status: 'completed', value: { preempted_by: targetId } });
-            append(channelId, envelope({ ...responseBase, id: `${targetId}-inserted`, parentId: targetId, correlationId: targetId, kind: 'response', type: targetRequest.type, payload: { status: 'processing', turn_id: turnId } }));
+            append(channelId, envelope({ ...responseBase, id: `${messageId}-target-inserted`, parentId: targetId, correlationId: targetId, kind: 'response', type: targetRequest.type, payload: { status: 'processing', turn_id: turnId, controls: PROCESSING_CONTROLS } }));
           });
           return;
         }
         if (!text.trim()) { fail('empty_input', 'steer requires text input'); return; }
         if (payload.payload?.expected_turn_id && payload.payload.expected_turn_id !== turnId) { fail('cas_mismatch', 'steer target is no longer active'); return; }
         if (!active) { fail('cas_mismatch', 'no steerable turn'); return; }
-        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_id: turnId } })));
+        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_id: turnId, controls: [] } })));
         later(45, () => {
           closeTask(channelId, active, respondingAgent.id, { status: 'completed', value: { preempted_by: messageId } });
           append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { merged_into: turnId, direction: text } } }));
@@ -838,6 +870,8 @@ export function createMockServer({
         return;
       }
       if (payload.msg_type === 'agent.interrupt') {
+        // 停止 = 打断当前 turn + 冻结队列；恢复 = 再发消息（消息路径解除此冻结）。
+        agentHolds.set(`${channelId}:${respondingAgent.id}`, { holdId: messageId, source: 'interrupt' });
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed' } }));
         later(25, () => {
           closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'interrupted', error_code: 'interrupted', detail: 'interrupted by user control' });
@@ -845,21 +879,70 @@ export function createMockServer({
         return;
       }
       if (payload.msg_type === 'agent.hold' || payload.msg_type === 'agent.unhold') {
+        const holdKey = `${channelId}:${respondingAgent.id}`;
+        const holdArgs = payload.payload || {};
+        if (payload.msg_type === 'agent.hold') {
+          // schema 闭集：{target?, duration_ms?: 1..1800000}
+          const unknownKeys = Object.keys(holdArgs).filter((key) => !['target', 'duration_ms'].includes(key));
+          const duration = holdArgs.duration_ms;
+          if (unknownKeys.length || (duration != null && (!Number.isInteger(duration) || duration < 1 || duration > 1_800_000))) { fail('invalid_args', 'hold accepts only target and duration_ms (1..1800000)'); return; }
+        } else if (Object.keys(holdArgs).length) { fail('invalid_args', 'unhold takes no arguments'); return; }
+        const holdTarget = payload.msg_type === 'agent.hold' ? String(holdArgs.target || '') : '';
+        const targetRequest = holdTarget ? history.find((row) => row.envelope.id === holdTarget)?.envelope : null;
+        if (holdTarget && targetRequest && targetRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'hold target belongs to another sender'); return; }
+        if (payload.msg_type === 'agent.hold') {
+          const effectiveDuration = holdArgs.duration_ms ?? 1_800_000;
+          agentHolds.set(holdKey, { holdId: messageId, source: 'hold', until: domain.now() + effectiveDuration });
+          // 到期自动解冻（后写覆盖：仅当此 hold 仍是现任时生效），解冻即 FIFO 续跑。
+          later(effectiveDuration, () => {
+            if (agentHolds.get(holdKey)?.holdId !== messageId) return;
+            agentHolds.delete(holdKey);
+            resumeQueueHead(10);
+          });
+        } else agentHolds.delete(holdKey);
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed' } }));
+        if (payload.msg_type === 'agent.unhold') resumeQueueHead(30);
+        // hold 带 target 且目标正在处理：打断当前 turn，目标消息回到队列头（Resumed）。
+        if (targetRequest) {
+          const targetPosition = [...history].reverse().map((value) => value.envelope).find((value) => value.kind === 'response' && value.parent_id === holdTarget)?.payload?.status;
+          if (targetPosition === 'processing') {
+            // 只发 Resumed 帧：消息回队列头，不打终态（活动判定本就从账推，最新帧
+            // 变 queued 即不再是活动 turn）。
+            later(25, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-resumed`, parentId: holdTarget, correlationId: holdTarget, kind: 'response', type: targetRequest.type, payload: { status: 'queued', resumed: true, controls: QUEUED_CONTROLS } })));
+          }
+        }
         return;
       }
       if (payload.msg_type === 'agent.replace') {
-        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued' } })));
+        // 协议校验：目标存在且在队列中、归属发起人、old_text 与当前缓冲内容 CAS。
+        const replaceTarget = String(payload.payload?.target || '');
+        const replaceRequest = history.find((row) => row.envelope.id === replaceTarget)?.envelope;
+        if (!replaceRequest) { fail('cas_mismatch', 'replace target not found'); return; }
+        if (replaceRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'replace target belongs to another sender'); return; }
+        const replacePosition = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === replaceTarget)?.payload?.status;
+        if (replacePosition !== 'queued') { fail('cas_mismatch', 'replace target is not buffered'); return; }
+        const currentText = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === replaceTarget && typeof value.payload?.text === 'string')?.payload?.text
+          ?? String(replaceRequest.payload?.text || '');
+        if (String(payload.payload?.old_text ?? '') !== currentText) { fail('cas_mismatch', 'old_text does not match the buffered content'); return; }
+        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', controls: [] } })));
         later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', text: payload.payload?.new_text || '' } })));
+        // 替换生效 = 目标消息自己的账上多一帧新文本（呈现恒吃账，前端不拼 replace turn）。
+        later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-replaced`, parentId: replaceTarget, correlationId: replaceTarget, kind: 'response', type: replaceRequest.type, payload: { status: 'queued', text: payload.payload?.new_text || '', controls: QUEUED_CONTROLS } })));
         return;
       }
       if (payload.msg_type === 'agent.queue') {
         if (!text.trim()) { fail('empty_input', 'queue requires text input'); return; }
-        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued' } })));
+        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', controls: QUEUED_CONTROLS } })));
         later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { queued: true, text } } })));
         return;
       }
-      const key = { 'agent.compact': 'compacted', 'agent.select': 'selected', 'agent.context': 'context', 'agent.fork': 'forked' }[payload.msg_type];
+      if (payload.msg_type === 'agent.context') {
+        // 只读自省：如实回报冻结状态，绝不动活动 turn。
+        const holdEntry = agentHolds.get(`${channelId}:${respondingAgent.id}`);
+        later(15, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', ...(holdEntry ? { frozen: { held_by: holdEntry.holdId, until: holdEntry.until || domain.now() + 1_800_000 } } : {}) } })));
+        return;
+      }
+      const key = { 'agent.compact': 'compacted', 'agent.select': 'selected', 'agent.fork': 'forked' }[payload.msg_type];
       later(30, () => {
         closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'cancelled', error_code: 'cancelled', detail: payload.msg_type });
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { [key]: true } } }));
@@ -867,11 +950,21 @@ export function createMockServer({
       return;
     }
 
+    // 容量门：缓冲满（RequestMaxCount=8）时新的占格请求整体拒绝。
+    if (bufferedConversation().length >= 8) { fail('base_capacity', 'agent request buffer is full'); return; }
     const busy = activeAgentTask(channelId, respondingAgent.id, messageId);
-    later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', turn_index: 1 } })));
+    later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', turn_index: 1, controls: QUEUED_CONTROLS } })));
+    const freezeEntry = agentHolds.get(`${channelId}:${respondingAgent.id}`);
+    if (freezeEntry?.source === 'interrupt') {
+      // 停止后的恢复 = 发内容：解除冻结，从队列头 FIFO 续跑（新消息排在队尾）。
+      agentHolds.delete(`${channelId}:${respondingAgent.id}`);
+      resumeQueueHead(45);
+      return;
+    }
+    if (freezeEntry) return; // hold 冻结：只入队，恒不开跑。
     if (busy) return;
     const mode = domain.behavior.message || '';
-    later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, ...(mode === 'long-running' ? { turn_id: `turn-${messageId}` } : {}) } })));
+    later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, ...(mode === 'long-running' ? { turn_id: `turn-${messageId}` } : {}) } })));
     if (mode === 'business-provisional') later(50, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-business`, kind: 'response', type: payload.msg_type, payload: { status: 'provider.waiting', queue: 'external' } })));
     later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'started' } })));
     later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'completed' } })));
@@ -899,7 +992,7 @@ export function createMockServer({
             : { status: 'completed', turn_index: 1, text: 'PONG' },
     })));
     if (mode === 'provisional-after-terminal') {
-      later(220, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-late-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', late: true } })));
+      later(220, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-late-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', late: true, controls: [] } })));
     }
     if (mode === 'terminal-conflict') {
       later(220, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal-conflict`, kind: 'response', type: payload.msg_type, payload: { status: 'failed', reason: 'receiver_internal_error', detail: 'conflicting mock terminal' } })));
@@ -1103,7 +1196,7 @@ export function createMockServer({
         return;
       }
       attached.add(socket);
-      sendReceipt(socket, ref, { contract_version: CONTRACT_VERSION });
+      sendReceipt(socket, ref, { contract_version: CONTRACT_VERSION, boot: bootId });
       const since = payload.since || {};
       const replay = () => {
         for (const [channelId, history] of histories) {
@@ -1453,6 +1546,8 @@ export function createMockServer({
           }
         }
         closedRequests.clear();
+        agentHolds.clear();
+        bootId = randomUUID();
         submittedFrames.clear();
         introduced = 0;
         liveTick = 0;
@@ -1504,7 +1599,7 @@ export function createMockServer({
   });
   webSockets.on('connection', (socket, request) => {
     sockets.add(socket);
-    socketPrincipals.set(socket, sessions.get(cookieValue(request, SESSION_COOKIE)) || '');
+    socketPrincipals.set(socket, cookieValue(request, SESSION_COOKIE) ? ROOT_ID : '');
     socketObserved.set(socket, new Set());
     socket.on('message', (data, isBinary) => handleWSMessage(socket, data, isBinary));
     socket.on('close', () => sockets.delete(socket));

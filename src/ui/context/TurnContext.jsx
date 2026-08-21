@@ -52,11 +52,11 @@ function ContextControls({ context, state = {}, onCancel, onControl }) {
   </section>;
 }
 
-function TurnDetailBody({ turn, roster = [], selfId, access, capability, controlState, onCancel, onControl, onDownload, onSource, onCreateTask, showSource = true, showRequest = true }) {
+function TurnDetailBody({ turn, roster = [], selfId, access, controlState, onCancel, onControl, onDownload, onSource, onCreateTask, showSource = true, showRequest = true }) {
   const names = useMemo(() => actorNameMap(roster), [roster]);
   if (!turn) return null;
   const request = turn.request;
-  const context = taskControlContext(turn, { selfId, access, capability });
+  const context = taskControlContext(turn, { selfId, access });
   return <>
     {showRequest && <div className="turn-context-source">
       <span>{actorName(request.sender?.id, names)} · {timeLabel(request.ts)}</span>
