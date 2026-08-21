@@ -7,6 +7,7 @@ import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { taskControlContext } from '../model/task-controls.js';
+import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
@@ -318,8 +319,11 @@ function dayLabel(ts) {
 
 export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onRetry, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, turnDetail }) {
   const [page, setPage] = useState(0);
+  const [scope, setScope] = useState(TIMELINE_SCOPE.all);
   const names = useMemo(() => actorNameMap(roster), [roster]);
-  const entries = useMemo(() => orderedTimeline(state), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
+  const allEntries = useMemo(() => orderedTimeline(state), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length]);
+  const entries = useMemo(() => scopeEntries(allEntries, { scope, state, selfId }), [allEntries, scope, state, state.lastSeq, selfId]);
+  const scopedAway = allEntries.length - entries.length;
   const latestTransient = new Map();
   for (const entry of entries) {
     if (isTransientEntry(entry)) {
@@ -342,6 +346,10 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   });
 
   useEffect(() => setPage(0), [state.channelId]);
+  // Narrowing the scope shortens the list, so the page the reader is on may no
+  // longer exist. Going back to the newest is the only landing that is always
+  // there, and it is where a reader who just changed the filter is looking.
+  useEffect(() => setPage(0), [scope]);
 
   useEffect(() => {
     if (page !== windowed.page) setPage(windowed.page);
@@ -350,7 +358,25 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   return (
     <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={observeScroll}>
       <div className="timeline-inner" ref={contentRef}>
+        {selfId && Boolean(state.rows.size) && (
+          <button
+            type="button"
+            className="timeline-scope"
+            aria-pressed={scope === TIMELINE_SCOPE.mine}
+            title={scope === TIMELINE_SCOPE.mine ? '正在只看与你相关的往来，点击看全部' : '正在看频道全部往来，点击只看与你相关的'}
+            onClick={() => { leaveLatest(); setScope(scope === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine); }}
+          >
+            {TIMELINE_SCOPE_LABELS[scope]}
+            {scope === TIMELINE_SCOPE.mine && scopedAway > 0 && <small>−{scopedAway}</small>}
+          </button>
+        )}
         {!state.rows.size && !pending.length && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
+        {Boolean(state.rows.size) && !entries.length && !pending.length && (
+          // Saying the channel is empty here would be a lie the reader can act
+          // on — they would go looking for what they wrote. The channel is full;
+          // none of it is theirs.
+          <div className="empty-ledger"><span>@</span><h2>这个频道里还没有与你相关的往来</h2><p>切回「全部」可以看到频道里其他人的动态。</p></div>
+        )}
         {windowed.hasOlder && <button type="button" className="bounded-list-control" onClick={() => { leaveLatest(); setPage((value) => value + 1); }}>查看更早动态（当前 {windowed.start + 1}–{windowed.end} / {windowed.total}）</button>}
         {windowed.items.map((entry, index) => {
           const continuation = isContinuation(windowed.items, index);

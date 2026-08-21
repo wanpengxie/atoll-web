@@ -225,3 +225,14 @@
 .wire-error code { color: var(--danger); }
 .wire-error details { margin-top: 5px; color: var(--text-muted); }
 .wire-error summary { cursor: pointer; }
+
+
+/* Scope switch: one small button, floating in the top-right corner of the
+   scroll viewport. Sticky rather than absolute so it stays put while the ledger
+   scrolls — the answer to "why is this list short" has to remain reachable
+   without scrolling back up. The negative margin keeps it out of the flow, so
+   turning it on does not shift the first entry down. */
+.timeline-scope { position: sticky; z-index: 3; top: 6px; align-self: flex-end; display: inline-flex; align-items: center; gap: 5px; min-height: 24px; margin-bottom: -24px; padding: 3px 9px; border: 1px solid var(--line-control); border-radius: 999px; background: var(--surface); color: var(--text-muted); box-shadow: 0 2px 8px var(--shadow); cursor: pointer; font-size: 11px; }
+.timeline-scope:hover, .timeline-scope:focus-visible { border-color: var(--accent); color: var(--text); }
+.timeline-scope[aria-pressed="true"] { border-color: var(--accent-glow); color: var(--accent); font-weight: 650; }
+.timeline-scope small { color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
