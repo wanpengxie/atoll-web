@@ -102,18 +102,22 @@ reset / mock 重启都会换"服务器世代号"（attach 回执里的 `boot`）
 
 ### 2.4 编辑链（最容易坏的路径，逐帧背下来）
 
-对处理中消息点编辑，wire 上依次发生：
+对处理中消息点编辑，wire 上依次发生（协议 §4.6，与 loop.go 一致）：
 
 1. `agent.hold {target}` → completed；
-2. 目标消息账上出现 `{status:"queued", resumed:true}`（被打断、回队列头）；
+2. 目标消息账上出现 `{status:"queued", resumed:true}`（被打断、回队首原下标）；
 3. （断线重连时）`agent.context` 验锁：`frozen.held_by` 必须等于第 1 步 hold 的请求 id；
-4. `agent.replace {target, old_text, new_text}` → completed；
-5. **目标消息账上出现 `{status:"queued", text:<新文本>}`**——替换生效 = 新文本打在目标
-   消息自己的账上，前端呈现恒吃账（`accountText`），不拼 replace turn；
-6. `agent.unhold {}` → completed（保存成功后前端自动发）；
-7. 目标消息账上出现 `{status:"processing"}`——续跑。
+4. `agent.replace {target, old_text, new_text}`——**替换生效的账面事实是原行终态
+   `{status:"completed", replaced_by:<replace请求id>}`**；replace 请求**自身就是新行**：
+   以原下标入队（`{status:"queued", resumed:true}`，继承 Resumed），呈现文本 = 其
+   payload 的 `new_text`。原行终态后从呈现中消失，新行原地接替。校验失败（cas_mismatch
+   / target_not_owned）落在 replace 请求自己的 failed 终态上；
+5. `agent.unhold {}` → completed（保存成功后前端自动发）；
+6. 新行账上出现 `{status:"processing"}`——Resumed 单件成批，独跑续起。
 
-对等待区消息编辑：跳过 2（本来就 queued）、7 变为继续排队（有活动 turn 时）。
+**再次编辑的目标是新行**（replace 请求），其"当前文本"= `new_text`——old_text CAS
+按这个比。前端提交 replace 时**不带 parent_id**（它是根消息；挂父会被时间线折成
+目标卡的子调用）。对等待区消息编辑：跳过 2（本来就 queued）、6 变为继续排队。
 
 ### 2.5 呈现的三层信息架构
 
@@ -174,5 +178,8 @@ reset / mock 重启都会换"服务器世代号"（attach 回执里的 `boot`）
 - mock 未实现：steer 文本形的输入入口（前端无此按钮，协议在）、hold 到期的
   `agent.hold_expired` 事件帧（mock 只做了到期解冻续跑）。
 - 冻结期间等待区的"插入"按钮仍可点，点了按协议降级不动作（协议已拍；置灰属呈现增强，未做）。
-- 真后端（coagent）尚未打 controls 字段——**连真后端测按钮会全部不出现，这是预期**，
-  后端补齐前控制面测试一律走 mock。
+- 真后端 controls 已实现（loop.go 五个进度发射点）；attach 回执的 `boot` 世代号
+  真后端暂缺（世代守卫在真后端不生效——账本持久化，重装才换世界，影响小；
+  正确形需要"安装世代"进 substrate，待 owner 拍）。
+- 插入（steer target）后旧 owner 终态是 `merged_into: target`（同 loop.go:1415），
+  呈现为 target 气泡"（含合并 N 条）"；合并批的 owner 恒是 **tail**（批内最后一条）。

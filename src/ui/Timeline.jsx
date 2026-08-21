@@ -7,7 +7,7 @@ import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { controlLabel, extraControls, taskControlContext } from '../model/task-controls.js';
-import { accountText, agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
+import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { turnStatusLabel } from '../model/turn-presentation.js';
 import { argsOf } from '../protocol/envelope.js';
@@ -197,7 +197,7 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
             {session
               ? <TaskEditor session={session} onText={onEditText} onSave={onEditSave} onAbandon={onEditAbandon} />
               : <>
-                <div className="agent-wait-summary"><span className="agent-wait-position">{index + 1}</span><strong>{accountText(turn) || view.text}</strong></div>
+                <div className="agent-wait-summary"><span className="agent-wait-position">{index + 1}</span><strong>{view.text}</strong></div>
                 <div className="agent-wait-actions">
                   {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
                   {context.canEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
@@ -303,9 +303,9 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names }) {
 function AgentConversationTurn({ turn, leadTurns = [], mergedCount = 0, names, selfId, access, frozen, editActive, editSession = null, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
-  const requestText = accountText(turn) || requestView.text;
+  const requestText = requestView.text;
   const controlContext = taskControlContext(turn, { selfId, access });
-  const lead = leadTurns.map((item) => accountText(item) || messagePresentation(item.request).text);
+  const lead = leadTurns.map((item) => messagePresentation(item.request).text);
   const processingTitle = [...lead, requestText].join(' ＋ ');
   const suppressAgentBubble = Boolean(mergedInto(turn) || preemptedBy(turn));
   return <section className={`turn-card agent-conversation-turn self status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
@@ -551,16 +551,20 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
       return;
     }
     if (editing.phase === 'saving' && editing.replacementId) {
+      // 协议形（§4.6）：替换生效的账面事实 = 原行终态 replaced_by 指向 replace 请求；
+      // replace 请求自身即新行（入队，不立刻终态）。失败才落在 replace 请求的终态上。
       const replacement = state.turns.get(editing.replacementId);
-      if (!replacement?.terminal) return;
-      if (replacement.terminal.payload?.status === 'completed') {
-        // 替换已生效，立即解冻让队列续跑——编辑收尾恒不把消息留在暂停的等待区。
-        const targetTurn = state.turns.get(editing.targetId);
-        Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentUnhold, payload: {} })).catch(() => {});
-        if (editing.location === 'processing') setResumePin(editing.targetId);
-        setEditing(null);
+      if (replacement?.terminal?.payload?.status === 'failed') {
+        setEditing((current) => current && ({ ...current, phase: 'editing', error: replacement.terminal.payload?.detail || replacement.terminal.payload?.error_code || '修改失败' }));
+        return;
       }
-      else setEditing((current) => current && ({ ...current, phase: 'editing', error: replacement.terminal.payload?.detail || replacement.terminal.payload?.error_code || '修改失败' }));
+      const target = state.turns.get(editing.targetId);
+      const replacedBy = target?.terminal?.payload?.replaced_by ?? target?.terminal?.payload?.value?.replaced_by;
+      if (replacedBy !== editing.replacementId) return;
+      // 替换已生效，立即解冻让队列续跑——编辑收尾恒不把消息留在暂停的等待区。
+      Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: target, actorId: editing.actorId, type: TYPES.agentUnhold, payload: {} })).catch(() => {});
+      if (editing.location === 'processing') setResumePin(editing.replacementId);
+      setEditing(null);
     }
   }, [state.lastSeq, editing?.phase, editing?.contextId, editing?.replacementId]);
 

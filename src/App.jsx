@@ -484,7 +484,9 @@ export default function App() {
       audience: [actorId],
       targetLabel: actorId,
       payload,
-      parentId: turn?.requestId || '',
+      // replace 请求受理后自身就是队列新行（协议 §4.6）——它是根消息，恒不挂父；
+      // 挂父会被时间线折成目标卡的子调用，随原行终态一起消失。其余控制词照旧归属目标。
+      parentId: type === TYPES.agentReplace ? '' : (turn?.requestId || ''),
     });
   }, [handleSend]);
 

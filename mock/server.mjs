@@ -458,7 +458,7 @@ export function createMockServer({
       && value.sender?.kind === 'human'
       && value.audience?.includes(actorId)
       // 可被控制的是“正在办的活”本身；控制词与自省词不算活。
-      && !AGENT_CONTROL_WORDS.includes(value.type)
+      && (!AGENT_CONTROL_WORDS.includes(value.type) || value.type === 'agent.replace')
       && value.type !== 'actor.describe'
       && !value.type.startsWith('system.')
       && !hasTerminal(channelId, value.id)
@@ -807,28 +807,39 @@ export function createMockServer({
     responseBase.sender = { kind: 'agent', id: respondingAgent.id };
 
     // 队列里的会话消息（FIFO，未终态且最新位置为 queued）。
-    const bufferedConversation = () => history.map((row) => row.envelope).filter((value) => (
-      value.kind === 'request' && value.sender?.kind === 'human' && value.audience?.includes(respondingAgent.id)
-      && !AGENT_CONTROL_WORDS.includes(value.type) && value.type !== 'actor.describe' && !value.type.startsWith('system.')
-      && !hasTerminal(channelId, value.id)
-      && [...history].reverse().map((row) => row.envelope).find((reply) => reply.kind === 'response' && reply.parent_id === value.id)?.payload?.status === 'queued'
-    ));
-
+    // agent.replace 请求成功后自身就是新行（协议 §4.6：admitBufferedAt），算内容行。
+    const isContentRow = (value) => value.kind === 'request' && value.sender?.kind === 'human' && value.audience?.includes(respondingAgent.id)
+      && (!AGENT_CONTROL_WORDS.includes(value.type) || value.type === 'agent.replace')
+      && value.type !== 'actor.describe' && !value.type.startsWith('system.');
     // 队首行是否带 Resumed 标记（最新 queued 帧 resumed:true；replace 帧继承）。
     const isResumedRow = (requestId) => [...history].reverse().map((row) => row.envelope)
       .find((value) => value.kind === 'response' && value.parent_id === requestId && value.payload?.status === 'queued')?.payload?.resumed === true;
 
+    const bufferedConversation = () => history.map((row) => row.envelope).filter((value) => (
+      isContentRow(value)
+      && !hasTerminal(channelId, value.id)
+      && [...history].reverse().map((row) => row.envelope).find((reply) => reply.kind === 'response' && reply.parent_id === value.id)?.payload?.status === 'queued'
+    // Resumed 件恒在队首（协议：打断退回原下标；replace 新行继承）。mock 无下标，
+    // 显式前置；其余保持 FIFO（稳定排序）。
+    )).sort((left, right) => Number(isResumedRow(right.id)) - Number(isResumedRow(left.id)));
+
     // 解冻/停止后续跑恒走 FIFO。组批判据照协议 §4.4.5：**Resumed 件恒单独成批**
-    // ——被打断退回的那条独跑，其余继续 queued；队首是普通件才整批带走
-    // （lead processing，其余终态 merged_into = lead 的请求 id）。
+    // ——被打断退回的队首独跑，其余继续 queued；队首是普通件才整批带走。
+    // 批的 owner 是 **tail**（批内最后一条，同 loop.go:1009/1024）：tail processing，
+    // 其余终态 merged_into = tail 的请求 id。
     const resumeQueueHead = (delay) => later(delay, () => {
       if (activeAgentTask(channelId, respondingAgent.id, messageId)) return;
-      const [head, ...rest] = bufferedConversation();
-      if (!head) return;
-      append(channelId, envelope({ ...responseBase, id: `${messageId}-resume-processing`, parentId: head.id, correlationId: head.id, kind: 'response', type: head.type, payload: { status: 'processing', turn_id: `turn-${head.id}`, controls: PROCESSING_CONTROLS } }));
-      if (isResumedRow(head.id)) return;
-      for (const row of rest) {
-        append(channelId, envelope({ ...responseBase, id: `${messageId}-merged-${row.id}`, parentId: row.id, correlationId: row.id, kind: 'response', type: row.type, payload: { status: 'completed', merged_into: head.id } }));
+      const rows = bufferedConversation();
+      if (!rows.length) return;
+      if (isResumedRow(rows[0].id)) {
+        const head = rows[0];
+        append(channelId, envelope({ ...responseBase, id: `${messageId}-resume-processing`, parentId: head.id, correlationId: head.id, kind: 'response', type: head.type, payload: { status: 'processing', turn_id: `turn-${head.id}`, controls: PROCESSING_CONTROLS } }));
+        return;
+      }
+      const tail = rows[rows.length - 1];
+      append(channelId, envelope({ ...responseBase, id: `${messageId}-resume-processing`, parentId: tail.id, correlationId: tail.id, kind: 'response', type: tail.type, payload: { status: 'processing', turn_id: `turn-${tail.id}`, controls: PROCESSING_CONTROLS } }));
+      for (const row of rows.slice(0, -1)) {
+        append(channelId, envelope({ ...responseBase, id: `${messageId}-merged-${row.id}`, parentId: row.id, correlationId: row.id, kind: 'response', type: row.type, payload: { status: 'completed', merged_into: tail.id } }));
       }
     });
 
@@ -860,7 +871,8 @@ export function createMockServer({
           complete({});
           if (!active) return;
           later(20, () => {
-            closeTask(channelId, active, respondingAgent.id, { status: 'completed', value: { preempted_by: targetId } });
+            // 插入后旧 owner 并入新 turn：终态 merged_into = target（同 loop.go:1415）。
+            closeTask(channelId, active, respondingAgent.id, { status: 'completed', merged_into: targetId });
             append(channelId, envelope({ ...responseBase, id: `${messageId}-target-inserted`, parentId: targetId, correlationId: targetId, kind: 'response', type: targetRequest.type, payload: { status: 'processing', turn_id: turnId, controls: PROCESSING_CONTROLS } }));
           });
           return;
@@ -927,16 +939,15 @@ export function createMockServer({
         if (replaceRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'replace target belongs to another sender'); return; }
         const replacePosition = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === replaceTarget)?.payload?.status;
         if (replacePosition !== 'queued') { fail('cas_mismatch', 'replace target is not buffered'); return; }
-        const currentText = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === replaceTarget && typeof value.payload?.text === 'string')?.payload?.text
-          ?? String(replaceRequest.payload?.text || '');
+        // 当前缓冲文本 = 目标行自己的正文：普通消息在 text，replace 行（新行）在 new_text。
+        const currentText = String(replaceRequest.payload?.new_text ?? replaceRequest.payload?.text ?? '');
         if (String(payload.payload?.old_text ?? '') !== currentText) { fail('cas_mismatch', 'old_text does not match the buffered content'); return; }
-        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', controls: [] } })));
-        later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', text: payload.payload?.new_text || '' } })));
-        // 替换生效 = 目标消息自己的账上多一帧新文本（呈现恒吃账，前端不拼 replace turn）。
-        // Resumed 标记从被替换行继承（协议 §4.4.5）——修正后的行仍恒单独成批。
+        // 协议形（§4.6 / loop.go TypeReplace 分支）：原行终态 replaced_by = replace
+        // 请求 id；replace 请求自身以原下标入队成为新行，继承 Resumed 标记。
         const targetResumed = [...history].reverse().map((row) => row.envelope)
           .find((value) => value.kind === 'response' && value.parent_id === replaceTarget && value.payload?.status === 'queued')?.payload?.resumed === true;
-        later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-replaced`, parentId: replaceTarget, correlationId: replaceTarget, kind: 'response', type: replaceRequest.type, payload: { status: 'queued', text: payload.payload?.new_text || '', ...(targetResumed ? { resumed: true } : {}), controls: QUEUED_CONTROLS } })));
+        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-terminal`, parentId: replaceTarget, correlationId: replaceTarget, kind: 'response', type: replaceRequest.type, payload: { status: 'completed', replaced_by: messageId } })));
+        later(30, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', ...(targetResumed ? { resumed: true } : {}), controls: QUEUED_CONTROLS } })));
         return;
       }
       if (payload.msg_type === 'agent.queue') {
