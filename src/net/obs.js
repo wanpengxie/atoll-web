@@ -54,6 +54,11 @@ export function createObsClient({ fetchImpl = fetch, onUnauthorized } = {}) {
     channelActors(id) {
       return read(`/obs/channel/${encodeURIComponent(id)}/actors`, fetchImpl, onUnauthorized);
     },
+    // 临时观察面：后端返回当前频道主 Agent 的 Model/Effort 及可选项。
+    // 正式 Actor OBS 确定后，保持这个方法签名即可替换底层路径。
+    channelAgentSelection(id) {
+      return read(`/obs/channel/${encodeURIComponent(id)}/agent-selection`, fetchImpl, onUnauthorized);
+    },
   };
 }
 
@@ -64,3 +69,4 @@ export const spaceDaemons = obs.spaceDaemons;
 export const spaceDecls = obs.spaceDecls;
 export const channelProfile = obs.channelProfile;
 export const channelActors = obs.channelActors;
+export const channelAgentSelection = obs.channelAgentSelection;

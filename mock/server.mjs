@@ -33,6 +33,18 @@ const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'ag
 // 控制词消息自身的进度帧恒为空集；终态帧恒不带。前端据此画按钮，不查任何表。
 const QUEUED_CONTROLS = Object.freeze([{ word: 'agent.replace' }, { word: 'agent.steer' }]);
 const PROCESSING_CONTROLS = Object.freeze([{ word: 'agent.interrupt' }, { word: 'agent.replace' }]);
+const MOCK_MODELS = Object.freeze([
+  { id: 'gpt-5.6-sol', label: '5.6 Sol' },
+  { id: 'gpt-5.6-terra', label: '5.6 Terra' },
+  { id: 'gpt-5.4', label: '5.4' },
+]);
+const MOCK_EFFORTS = Object.freeze([
+  { id: 'light', label: '轻量' },
+  { id: 'medium', label: '中等' },
+  { id: 'high', label: '高' },
+  { id: 'xhigh', label: '超高' },
+  { id: 'ultra', label: '极高', description: '会更快消耗用量额度' },
+]);
 
 const now = () => Date.now();
 
@@ -323,6 +335,7 @@ export function createMockServer({
   const recurring = new Set();
   // agent 的冻结真相：hold 受理即记 holder，unhold 清除；agent.context 如实回报。
   const agentHolds = new Map();
+  const agentSelections = new Map();
   let rosters = domain.rosters;
   let histories = domain.histories;
   if (loadScenario(scenario, seed).history) {
@@ -1106,9 +1119,18 @@ export function createMockServer({
         later(15, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', ...(holdEntry ? { frozen: { held_by: holdEntry.holdId, until: holdEntry.until || domain.now() + 1_800_000 } } : {}) } })));
         return;
       }
+      if (payload.msg_type === 'agent.select') {
+        const selection = payload.payload || {};
+        try { assertClosedPayload(selection, ['model', 'effort']); } catch (error) { fail(error.code || 'invalid_args', error.message); return; }
+        const current = agentSelections.get(`${channelId}:${respondingAgent.id}`) || { model: MOCK_MODELS[0].id, effort: MOCK_EFFORTS[1].id };
+        const model = String(selection.model || current.model);
+        const effort = String(selection.effort || current.effort);
+        if (!MOCK_MODELS.some((row) => row.id === model) || !MOCK_EFFORTS.some((row) => row.id === effort)) { fail('invalid_args', 'unknown model or effort'); return; }
+        agentSelections.set(`${channelId}:${respondingAgent.id}`, { model, effort });
+      }
       const key = { 'agent.compact': 'compacted', 'agent.select': 'selected', 'agent.fork': 'forked' }[payload.msg_type];
       later(30, () => {
-        closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'cancelled', error_code: 'cancelled', detail: payload.msg_type });
+        if (payload.msg_type !== 'agent.select') closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'cancelled', error_code: 'cancelled', detail: payload.msg_type });
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { [key]: true } } }));
       });
       return;
@@ -1511,6 +1533,18 @@ export function createMockServer({
         json(response, 200, observation('space', 'decls', domain.declarationRows()));
         return;
       }
+      const agentSelectionMatch = path.match(/^\/obs\/channel\/([^/]+)\/agent-selection$/);
+      if (agentSelectionMatch) {
+        const channelId = decodeURIComponent(agentSelectionMatch[1]);
+        const actor = (rosters.get(channelId) || []).map((row) => row.declared).find((row) => row.kind === 'agent');
+        if (!actor) {
+          json(response, 200, observation(channelId, 'agent-selection', []));
+          return;
+        }
+        const current = agentSelections.get(`${channelId}:${actor.id}`) || { model: MOCK_MODELS[0].id, effort: MOCK_EFFORTS[1].id };
+        json(response, 200, observation(channelId, 'agent-selection', [item({ actor_id: actor.id, current, models: MOCK_MODELS, efforts: MOCK_EFFORTS }, null, actor.id)]));
+        return;
+      }
       const match = path.match(/^\/obs\/channel\/([^/]+)\/(profile|actors)$/);
       if (match) {
         const channelId = decodeURIComponent(match[1]);
@@ -1712,6 +1746,7 @@ export function createMockServer({
         }
         closedRequests.clear();
         agentHolds.clear();
+        agentSelections.clear();
         bootId = randomUUID();
         submittedFrames.clear();
         introduced = 0;

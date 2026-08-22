@@ -8,6 +8,7 @@ import { actorDisplayName } from '../model/actor-display.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { resolveManagementActors } from '../model/management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
+import { ModelSelector } from './ModelSelector.jsx';
 
 function mentionQuery(text) {
   const match = text.match(/(?:^|\s)@([^\s@]*)$/);
@@ -94,7 +95,7 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, editMode = null }) {
+export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, modelSelection = null, modelSelectionBusy = false, onModelSelectionChange, editMode = null }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
@@ -603,6 +604,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             {mentions.length > 0 && <div className="composer-target"><strong>{mentions.map((row) => `@${actorDisplayName(row)}`).join('、')}</strong></div>}
           </div>
           <div className="composer-submit-actions">
+            <ModelSelector value={modelSelection} busy={modelSelectionBusy} disabled={disabled || sendState === 'sending'} onChange={onModelSelectionChange} />
             {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={() => { beginEditLayoutTransition(); editMode.onAbandon(); }}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
             {editMode
               ? <button type="button" className="send-button" onClick={submit} disabled={!text.trim() || !channelId || disabled || editBusy || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>

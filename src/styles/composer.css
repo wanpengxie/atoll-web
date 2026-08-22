@@ -24,6 +24,31 @@
 .send-button span { font-family: var(--mono); }
 .composer-toolbar { display: flex; min-width: 0; min-height: 30px; align-items: center; justify-content: space-between; gap: 10px; padding-top: 1px; }
 .composer-submit-actions { display: flex; align-items: center; gap: 4px; }
+.model-selector { position: relative; }
+.model-selector-trigger { display: flex; min-width: 0; height: 30px; align-items: center; gap: 6px; padding: 0 8px; border: 0; border-radius: var(--pill); background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; }
+.model-selector-trigger:hover, .model-selector-trigger[aria-expanded="true"] { background: var(--surface-muted); color: var(--text); }
+.model-selector-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.model-selector-trigger:disabled { opacity: .48; cursor: not-allowed; }
+.model-selector-trigger > svg:first-child { color: var(--text); }
+.model-selector-current { display: flex; min-width: 0; align-items: baseline; gap: 5px; font-size: 11px; white-space: nowrap; }
+.model-selector-current strong { overflow: hidden; max-width: 110px; color: var(--text); font-weight: 650; text-overflow: ellipsis; }
+.model-selector-current span { color: var(--text-muted); }
+.model-selector-popover { position: absolute; z-index: 8; right: 0; bottom: calc(100% + 9px); display: flex; align-items: flex-end; gap: 7px; filter: drop-shadow(0 12px 24px var(--shadow-2)); }
+.model-selector-menu, .model-selector-options { overflow: hidden; border: 1px solid var(--line-control); border-radius: 13px; background: var(--raised); }
+.model-selector-menu { order: 2; width: 228px; padding: 7px; }
+.model-selector-menu > button { display: grid; width: 100%; grid-template-columns: minmax(72px, 1fr) minmax(0, auto) 18px; align-items: center; gap: 5px; padding: 9px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font: inherit; text-align: left; }
+.model-selector-menu > button:hover, .model-selector-menu > button.active { background: var(--surface-muted); }
+.model-selector-menu-value { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.model-selector-menu > button > svg { color: var(--text-dim); }
+.model-selector-options { order: 1; width: 246px; padding: 6px; }
+.model-selector-options-title { display: flex; min-height: 34px; align-items: center; gap: 5px; padding: 0 7px 4px; color: var(--text-muted); font-size: 11px; font-weight: 650; }
+.model-selector-options-title button { display: none; width: 30px; height: 30px; place-content: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.model-selector-options > button { display: flex; width: 100%; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+.model-selector-options > button:hover { background: var(--surface-muted); }
+.model-selector-options > button > span { display: grid; min-width: 0; gap: 1px; }
+.model-selector-options strong { font-size: 13px; font-weight: 550; }
+.model-selector-options small { color: var(--text-muted); font-size: 10px; line-height: 1.35; }
+.model-selector-options > button > svg { flex: 0 0 auto; color: var(--online); }
 .composer-cancel-edit { display: grid; width: 28px; height: 28px; place-content: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; }
 .composer-cancel-edit:hover, .composer-cancel-edit:focus-visible { background: var(--surface-muted); color: var(--text); }
 .composer-cancel-edit:disabled { opacity: .45; cursor: not-allowed; }
@@ -49,3 +74,14 @@
 .mention-menu button:hover, .mention-menu button[aria-selected="true"] { background: var(--accent-bg); }
 .mention-menu strong { font-size: 11px; }
 .mention-menu small { color: var(--text-dim); font: 9px var(--mono); }
+
+@media (max-width: 640px) {
+  .model-selector-trigger { min-width: 44px; height: 44px; padding: 0 9px; }
+  .model-selector-current span { display: none; }
+  .model-selector-current strong { max-width: 76px; }
+  .model-selector-popover { right: -40px; display: block; width: min(280px, calc(100vw - 32px)); }
+  .model-selector-menu, .model-selector-options { width: 100%; }
+  .model-selector-popover.has-section .model-selector-menu { display: none; }
+  .model-selector-options-title button { display: grid; }
+  .model-selector-options > button { min-height: 44px; }
+}
