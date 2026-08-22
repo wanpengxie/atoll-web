@@ -1,40 +1,126 @@
-function option(row) {
-  if (typeof row === 'string') return { id: row, label: row };
-  const id = String(row?.id || row?.value || '');
-  if (!id) return null;
-  return {
-    id,
-    label: String(row.label || row.name || id),
-    ...(row.description ? { description: String(row.description) } : {}),
-  };
+import { TYPES } from '../protocol/vocab.js';
+
+// 协议正形（agent-model-params-design.md §4）：
+// - 值域 = actor.describe 的 agent.select 词条 input_schema——oneOf 每支一个合法
+//   (model, effort) 组合对，const 旁的 title 是展示元数据（无则显裸值）。
+// - 当前值 = 账本保鲜（最后一个带非空 model/effort 的 agent.turn.ended usage）
+//   + agent.context 冷启动兜底。
+// 本文件是协议的唯一适配点：Composer 和选择器恒不感知帧的具体形状。
+
+// —— 值域：describe → 组合对列表 ——————————————————————————————
+
+export function selectionsFromDescribe(describe) {
+  // capabilities.js 的归一形（types Map / inputSchema）优先；原始 wire 形
+  // （words / input_schema）兜底，供直接拿 describe payload 的调用方与测试。
+  const word = describe?.types?.get?.(TYPES.agentSelect) || describe?.words?.[TYPES.agentSelect];
+  const schema = word?.inputSchema || word?.input_schema;
+  const branches = Array.isArray(schema?.oneOf) ? schema.oneOf : [];
+  return branches.map((branch) => {
+    const model = branch?.properties?.model || {};
+    const effort = branch?.properties?.effort || {};
+    if (typeof model.const !== 'string' || !model.const || typeof effort.const !== 'string' || !effort.const) return null;
+    return {
+      model: model.const,
+      effort: effort.const,
+      modelLabel: String(model.title || model.const),
+      effortLabel: String(effort.title || effort.const),
+    };
+  }).filter(Boolean);
 }
 
-function optionsOf(rows) {
+// 换 model 的落点：命中 (model, preferredEffort) 或该 model 的第一个合法组合。
+// 组合对不是笛卡尔积——切换恒提交目录里存在的一支（§4.4）。
+export function selectionFor(selections, model, preferredEffort = '') {
+  const rows = selections.filter((row) => row.model === model);
+  if (!rows.length) return null;
+  const match = preferredEffort ? rows.find((row) => row.effort === preferredEffort) : null;
+  const chosen = match || rows[0];
+  return { model: chosen.model, effort: chosen.effort };
+}
+
+// —— 当前值：账本推导 ——————————————————————————————————————
+
+function usableUsage(payload) {
+  const usage = payload?.usage || null;
+  if (!usage || typeof usage.model !== 'string' || !usage.model || typeof usage.effort !== 'string' || !usage.effort) return null;
+  return { model: usage.model, effort: usage.effort, contextTokens: usage.context_tokens ?? null, contextWindow: usage.context_window ?? null };
+}
+
+// 该 agent 最后一次可信参数：恒取最后一个 usage 带非空 model/effort 的 turn.ended
+// （失败/中断的 turn.ended 可能缺 usage，provider lost 干脆没有——缺字段的帧跳过，
+// 不得把显示清空）；agent.context 的终态同样是可信来源（usage 平铺在 status 旁）。
+export function latestAgentUsage(state, actorId) {
+  if (!state?.rows || !actorId) return null;
+  let found = null;
+  for (const row of state.rows.values()) {
+    if (row.sender?.id !== actorId) continue;
+    if (row.kind === 'event' && row.type === 'agent.turn.ended') {
+      const usage = usableUsage(row.payload);
+      if (usage) found = usage;
+      continue;
+    }
+    if (row.kind === 'response' && row.type === TYPES.agentContext && row.payload?.status === 'completed') {
+      const flat = row.payload;
+      if (typeof flat.model === 'string' && flat.model && typeof flat.effort === 'string' && flat.effort) {
+        found = { model: flat.model, effort: flat.effort, contextTokens: flat.context_tokens ?? null, contextWindow: flat.context_window ?? null };
+      }
+    }
+  }
+  return found;
+}
+
+// —— 参数面板视图（ModelSelector 的消费形）—————————————————————
+
+// 两级菜单是组合对的投影：模型段 = 去重 model；强度段 = 当前 model 名下的合法
+// effort（逐 model 不同）。current 恒来自账本真相（usage/context），无真值时为
+// null——恒不拿 selections[0] 冒充当前值（decl 的 default 可以不是第一条，
+// 冒充会长期显示错误参数；§4.1 要求无真值只显示角色名）。
+export function agentSelectionView({ actorId, describe, usage }) {
+  const selections = selectionsFromDescribe(describe);
+  if (!selections.length) return null;
+  const current = usage?.model ? { model: usage.model, effort: usage.effort } : null;
   const seen = new Set();
-  return (Array.isArray(rows) ? rows : []).map(option).filter((row) => {
-    if (!row || seen.has(row.id)) return false;
-    seen.add(row.id);
-    return true;
-  });
-}
-
-// 临时后端观察契约的唯一适配点。正式 Actor OBS 落地后只需要改这里，
-// Composer 和选择器都不感知后端 JSON 的具体形状。
-export function normalizeAgentSelection(value) {
-  const source = value?.declared || value || {};
-  const current = source.current || {};
-  const models = optionsOf(source.models);
-  const efforts = optionsOf(source.efforts);
-  const model = String(current.model || source.model || models[0]?.id || '');
-  const effort = String(current.effort || source.effort || efforts[0]?.id || '');
-  return {
-    actorId: String(source.actor_id || source.actorId || ''),
-    current: { model, effort },
-    models,
-    efforts,
-  };
+  const models = selections.filter((row) => !seen.has(row.model) && seen.add(row.model))
+    .map((row) => ({ id: row.model, label: row.modelLabel }));
+  return { actorId, current, models, selections, confirmed: Boolean(current) };
 }
 
 export function selectedOption(rows, id) {
   return rows?.find((row) => row.id === id) || (id ? { id, label: id } : null);
+}
+
+// —— 参数面板目标判据链（§2.1，从上往下第一个命中即止）————————————
+
+// mentionAgents：编辑框里 @ 生效的 agent（顺序即出现序）。返回：
+// { kind: 'single', agent } | { kind: 'multi', count } | { kind: 'none' }。
+// mention 里只有 human → none（不显示"最近 agent"误导）。
+export function resolveParameterAgent({ mentions = [], manualAgentId = '', roster = [], state = null, selfId = '' }) {
+  const agents = roster.filter((row) => row.kind === 'agent');
+  const mentionAgents = mentions.filter((row) => row.kind === 'agent');
+  if (mentionAgents.length === 1) return { kind: 'single', agent: mentionAgents[0], source: 'mention' };
+  if (mentionAgents.length > 1) return { kind: 'multi', count: mentionAgents.length };
+  if (mentions.length > 0) return { kind: 'none' };
+  const manual = manualAgentId ? agents.find((row) => row.id === manualAgentId) : null;
+  if (manual) return { kind: 'single', agent: manual, source: 'manual' };
+  const recentId = latestInteractedAgentId(state, selfId, new Set(agents.map((row) => row.id)));
+  const recent = recentId ? agents.find((row) => row.id === recentId) : null;
+  if (recent) return { kind: 'single', agent: recent, source: 'recent' };
+  if (agents.length === 1) return { kind: 'single', agent: agents[0], source: 'only' };
+  return { kind: 'none' };
+}
+
+// 最近交互（§2.1.3）：我自己发的 + agent.ask（用户真实内容，恒不是 describe/
+// context/select 这类自省控制词）+ audience 恰一个 agent + 该 agent 仍在 roster。
+// 从账本推导，不另设持久状态。
+export function latestInteractedAgentId(state, selfId, agentIds) {
+  if (!state?.rows || !selfId) return '';
+  let found = '';
+  for (const row of state.rows.values()) {
+    if (row.kind !== 'request' || row.type !== TYPES.agentAsk) continue;
+    if (row.sender?.id !== selfId) continue;
+    const audience = Array.isArray(row.audience) ? row.audience : [];
+    if (audience.length !== 1 || !agentIds.has(audience[0])) continue;
+    found = audience[0];
+  }
+  return found;
 }

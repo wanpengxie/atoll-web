@@ -14,10 +14,8 @@ describe('真实 Atoll 的可选 membership OBS', () => {
 });
 
 describe('Agent 模型选择观察面', () => {
-  it('按频道读取临时 Model/Effort 契约', async () => {
-    const fetchImpl = async (path) => ({ ok: true, json: async () => ({ path }) });
-    const obs = createObsClient({ fetchImpl });
-    await expect(obs.channelAgentSelection('c0.project')).resolves.toEqual({ path: '/obs/channel/c0.project/agent-selection' });
-    await expect(obs.channelAgentSelection('c0', 'claude')).resolves.toEqual({ path: '/obs/channel/c0/agent-selection?actor_id=claude' });
+  it('临时 agent-selection 端点已退役（值域走 describe，当前值走账本）', () => {
+    const obs = createObsClient({ fetchImpl: async () => ({ ok: true, json: async () => ({}) }) });
+    expect(obs.channelAgentSelection).toBeUndefined();
   });
 });

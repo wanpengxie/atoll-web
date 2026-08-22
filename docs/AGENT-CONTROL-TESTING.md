@@ -191,7 +191,44 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
   `agent.hold_expired` 事件帧（mock 只做了到期解冻续跑）。
 - 冻结期间等待区的"插入"按钮仍可点，点了按协议降级不动作（协议已拍；置灰属呈现增强，未做）。
 - 真后端 controls 已实现（loop.go 五个进度发射点）；attach 回执的 `boot` 世代号
-  真后端暂缺（世代守卫在真后端不生效——账本持久化，重装才换世界，影响小；
-  正确形需要"安装世代"进 substrate，待 owner 拍）。
+  真后端已实现（c0 genesis 身份，coagent `a5fc4073`）。
 - 插入（steer target）后旧 owner 终态是 `merged_into: target`（同 loop.go:1415），
   呈现为 target 气泡"（含合并 N 条）"；合并批的 owner 恒是 **tail**（批内最后一条）。
+
+---
+
+## 4. 模型参数（agent-model-params-design.md，08-22）
+
+协议三通道，恒不混用：**值域走 describe，当前值走账本，可用性走 controls**。
+
+- 值域：`actor.describe` 的 `agent.select` 词条 `input_schema.oneOf`——每支一个合法
+  (model, effort) 组合对（**不是笛卡尔积**），每支 `required` 完整对，const 旁可带
+  `title`（源头 decl `model_label`/`effort_label`）。无 selections 的 agent 无 oneOf，
+  前端不渲染切换菜单。
+- 当前值：该 agent 最后一个 **usage 带非空 model/effort** 的 `agent.turn.ended`
+  （failed/lost 可能缺 usage，缺则跳过恒不清显示）；无任何 usage 时冷启动静默发一次
+  `agent.context`（终态平铺 `model/effort/context_tokens/context_window`）。
+- 设置：`agent.select {model, effort}` 是**排队 turn**——终态 completed 才 sticky；
+  UI 三态 confirmed / pending（"切换中"，busy 到账本终态）/ failed（回落旧值+报错）。
+  失败观察走账本终态，恒不走 Promise（提交层吞错 + 终态异步）。
+- 目标判据链（参数区显示谁 = 无 @ 回车发给谁）：@ 唯一 agent > 手选 > 最近交互
+  （**我发的 agent.ask**，describe/context/select 恒不算）> 频道唯一 agent > 拦截手选。
+- 多 @：**前端拆发 N 条单收件人消息**（request 帧 gate 强制 audience 基数 1，
+  多 audience 是非法帧整条被拒——mock 已忠实此门）。参数区多 @ 时显示"N 个目标"。
+
+### 4.1 走查场景（scratchpad/paramwalk.mjs，13 断言全过 08-22）
+
+| # | 场景 | 期望 |
+|---|---|---|
+| W1 | 进 c0（有种子历史） | 右下角 pill = `steward · 5.6 Sol · 中等`（label 化；账本 usage 保鲜，不发 context） |
+| W2 | 菜单换 model 到 5.4 | 两级菜单（模型/推理强度）；effort 自动落 5.4 首组合（轻量） |
+| W3 | 5.4 名下强度段 | 只列该 model 的合法 effort（投影，非全局表） |
+| W5 | @Claude | 参数区切 `Claude · Claude Opus · 中等`（per-agent 目录不串值） |
+| W6 | @Claude @steward 发送 | 参数区"2 个目标"；时间线两条独立消息、各自回执 |
+| W7 | 发送后无 @ | 目标回落最近交互（拆发最后一条 ask 的收件人） |
+| W8 | message-flow（无历史双 agent） | "选择 Agent ▾" 手选态；手选后可发送 |
+
+后端对应单测：`drivers/agents/base/select_manifest_test.go`（describe 织入）、
+`select_sequence_test.go`（context→select→context 前端序列）、
+`registry/registry_test.go`（Build 尊重实例 manifest——registry.Build 曾无条件用类级
+覆盖实例投影，修于本期）、provider config_test（label 透传 + 重复/空组合拒装）。
