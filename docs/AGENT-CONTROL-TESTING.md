@@ -88,6 +88,7 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
 | 编辑 | `agent.hold`+`agent.replace`+`agent.unhold` | 见 2.4 编辑链 |
 | 插入 | `agent.steer`（target 形 `{target}`） | 把等待区一条并进当前 turn；无 turn 则降级 completed 不动作 |
 | （无按钮） | `agent.steer`（文本形 `{text, expected_turn_id?}`） | 文本并入当前 turn，终态 `merged_into` |
+| 全部插入 | `agent.steer`（all 形 `{all:true}`） | 把等待区里**发起人自己的**消息全部并入：有 turn 整批卷入（owner=tail），无 turn 解冻整批续跑，空 buffer 不动作 |
 | 取消 | channel 层消息撤回（cancel 帧） | 不是 agent 词，只对 queued 可用 |
 | （内部） | `agent.hold`/`agent.unhold` | 冻结/解冻队列；hold 可带 `target`（打断该消息回队）与 `duration_ms`(1..1800000，默认30min，到期自动解冻)；unhold 幂等 |
 | （内部） | `agent.context` | 只读自省，终态带 `frozen: {held_by, until}` |
@@ -105,6 +106,11 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
   `old_text` 必须与当前缓冲文本一致（`cas_mismatch`，编辑竞态保护）。可反复编辑同一条。
 - **容量**：缓冲满 8 条，新的占格请求整体拒绝 `base_capacity`；replace 不占新格。
 - **打断恒不排队**：turn 启动窗口内 interrupt 直接 `busy` 失败零效果，不留待发槽。
+- **停止态动词表（协议 §4.4.16）**：内容动作（发消息 / 插入 / 全体插入）恒解除停止、
+  恢复推进（FIFO，插入的 target 提队首领批）；管理动作（编辑、取消、全部取消）恒不
+  惊动停止——hold 记住前任 interrupt 冻结，unhold/到期恢复之而不续跑。
+  测试要点：停止态下编辑等候区消息保存后 agent 必须仍停着、队列恒不开跑；
+  停止态下点插入/全体插入必须解冻续跑。
 
 ### 2.4 编辑链（最容易坏的路径，逐帧背下来）
 
