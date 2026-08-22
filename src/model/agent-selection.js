@@ -89,6 +89,18 @@ export function selectedOption(rows, id) {
   return rows?.find((row) => row.id === id) || (id ? { id, label: id } : null);
 }
 
+// select 成功回执的系统行文案（§8：切换不是"说了句话"，是一次配置变更——
+// 请求恒不显示为用户消息，成功终态收成一条系统消息）。label 自 describe 值域
+// 查得，无缓存时显裸值。
+export function selectSystemNote({ usage = {}, describe = null, agentName = '' }) {
+  if (!usage.model) return '';
+  const selections = selectionsFromDescribe(describe);
+  const row = selections.find((item) => item.model === usage.model && item.effort === usage.effort);
+  const model = row?.modelLabel || usage.model;
+  const effort = row?.effortLabel || usage.effort;
+  return `${agentName} 切换为 ${model} 模型，effort=${effort}`;
+}
+
 // —— 参数面板目标判据链（§2.1，从上往下第一个命中即止）————————————
 
 // mentionAgents：编辑框里 @ 生效的 agent（顺序即出现序）。返回：

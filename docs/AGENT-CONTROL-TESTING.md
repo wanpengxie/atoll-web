@@ -208,9 +208,16 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
 - 当前值：该 agent 最后一个 **usage 带非空 model/effort** 的 `agent.turn.ended`
   （failed/lost 可能缺 usage，缺则跳过恒不清显示）；无任何 usage 时冷启动静默发一次
   `agent.context`（终态平铺 `model/effort/context_tokens/context_window`）。
-- 设置：`agent.select {model, effort}` 是**排队 turn**——终态 completed 才 sticky；
+- 设置：`agent.select {model, effort}` 走**旁路独占槽**（协议 §8，08-22 改判）：
+  恒不进等待区、不占容量、不受 hold/interrupt 冻结——空闲（含停止态）立即执行且
+  恒不唤醒队列；忙时挂槽，当前 turn 收口后、任何续跑之前插队执行；新 select 顶掉
+  在槽的旧 select（被顶者终态 `failed/superseded`）。终态 completed 才 sticky；
   UI 三态 confirmed / pending（"切换中"，busy 到账本终态）/ failed（回落旧值+报错）。
   失败观察走账本终态，恒不走 Promise（提交层吞错 + 终态异步）。
+  插入/全体插入/编辑对指令件（select/compact）结构上够不着或被拒。
+- 呈现（§8）：select 请求恒不显示为用户消息、恒不进等待区；成功终态收成一条
+  居中系统行「{agent} 切换为 {model} 模型，effort={effort}」（label 化）；
+  pending/failed/superseded 的状态全在参数区，时间线零痕迹。
 - 目标判据链（参数区显示谁 = 无 @ 回车发给谁）：@ 唯一 agent > 手选 > 最近交互
   （**我发的 agent.ask**，describe/context/select 恒不算）> 频道唯一 agent > 拦截手选。
 - 多 @：**前端拆发 N 条单收件人消息**（request 帧 gate 强制 audience 基数 1，

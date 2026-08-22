@@ -474,4 +474,58 @@ describe('local mock end-to-end', () => {
     wire.close();
     await closeServer(server);
   }, 10_000);
+
+  it('select 旁路独占槽：忙时挂起、新覆盖旧（superseded）、turn 收口后插队生效', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', scenario: 'long-running', seed: 77 });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    const identity = createIdentityClient(fetchWithSession);
+    await identity.login('root@atoll.local', 'test-root');
+    class SessionWebSocket extends WebSocket {
+      constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+    }
+    const rows = [];
+    let attached = false;
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws',
+      WebSocketImpl: SessionWebSocket,
+      since: () => ({}),
+      onError: () => {},
+      onState: (state) => { if (state === 'attached') attached = true; },
+      onFeed: (channelId, seq, value) => { if (channelId === 'c0') rows.push({ channel_id: channelId, seq, envelope: value }); },
+    });
+    await waitFor(() => attached, 'slot test attach');
+    const terminalOf = (id) => rows.map((row) => row.envelope)
+      .find((value) => value.kind === 'response' && value.parent_id === id && ['completed', 'failed'].includes(value.payload?.status));
+
+    const busy = await wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'long task' }, audience: ['steward'] });
+    await waitFor(() => rows.some((row) => row.envelope.parent_id === busy.message_id && row.envelope.payload?.status === 'processing'), 'busy turn processing');
+
+    const held = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'light' }, audience: ['steward'] });
+    await waitFor(() => rows.some((row) => row.envelope.parent_id === held.message_id && row.envelope.payload?.status === 'queued'), 'slot registration receipt');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(terminalOf(held.message_id)).toBeUndefined(); // 忙时挂槽，恒不提前生效
+
+    const winner = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.6-terra', effort: 'medium' }, audience: ['steward'] });
+    await waitFor(() => terminalOf(held.message_id), 'superseded terminal');
+    expect(terminalOf(held.message_id).payload).toMatchObject({ status: 'failed', error_code: 'superseded' });
+
+    const advance = () => fetchWithSession('/mock/control/advance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms: 0, compute: { channel_id: 'c0' } }) }).then((response) => response.json());
+    await advance();
+    await advance();
+    await advance(); // 第三次步进收口当前 turn → 槽插队执行
+    await waitFor(() => terminalOf(winner.message_id)?.payload?.status === 'completed', 'slot ran after turn close');
+    expect(terminalOf(winner.message_id).payload.usage).toMatchObject({ model: 'gpt-5.6-terra', effort: 'medium' });
+
+    wire.close();
+    await closeServer(server);
+  }, 10_000);
 });
