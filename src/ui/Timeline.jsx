@@ -198,7 +198,10 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
       {collapsed && <div className="agent-wait-collapsed"><span aria-hidden="true">↳</span><strong>{turns.length} 条等待消息</strong><button type="button" aria-expanded="false" onClick={() => setCollapsed(false)}>展开</button></div>}
       {!collapsed && <header className="agent-wait-header" aria-label="等待区操作">
         <div>
-          <button type="button" className="agent-wait-insert-all" title="等待后端批量插入协议" disabled>全部插入</button>
+          {renderedGroups.map((group) => {
+            const canInsertAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access }).canInsert);
+            return canInsertAll && <button type="button" className="agent-wait-insert-all" key={`insert-${group.actorId}`} onClick={() => onControl(group.turns[0], group.actorId, TYPES.agentSteer, { all: true })}>{soleGroup ? '全部插入' : `插入 ${nameOf(group.actorId, names)} 全部`}</button>;
+          })}
           {renderedGroups.map((group) => {
             const canCancelAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access }).canCancel);
             return canCancelAll && <button type="button" className="agent-wait-cancel-all" key={group.actorId} disabled={Boolean(bulk.actorId)} onClick={() => cancelAll(group)}>{bulk.actorId === group.actorId ? '正在取消…' : soleGroup ? '全部取消' : `取消 ${nameOf(group.actorId, names)} 全部`}</button>;

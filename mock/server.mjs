@@ -924,11 +924,13 @@ export function createMockServer({
     // ——被打断退回的队首独跑，其余继续 queued；队首是普通件才整批带走。
     // 批的 owner 是 **tail**（批内最后一条，同 loop.go:1009/1024）：tail processing，
     // 其余终态 merged_into = tail 的请求 id。
-    const resumeQueueHead = (delay) => later(delay, () => {
+    const resumeQueueHead = (delay, leadId = '') => later(delay, () => {
       if (activeAgentTask(channelId, respondingAgent.id, messageId)) return;
-      const rows = bufferedConversation();
+      let rows = bufferedConversation();
+      // 插入指定的 target 领批（08-22 改判）：提到队首，优先于 Resumed 排序。
+      if (leadId) rows = [...rows.filter((row) => row.id === leadId), ...rows.filter((row) => row.id !== leadId)];
       if (!rows.length) return;
-      if (isResumedRow(rows[0].id)) {
+      if (!leadId && isResumedRow(rows[0].id)) {
         const head = rows[0];
         append(channelId, envelope({ ...responseBase, id: `${messageId}-resume-processing`, parentId: head.id, correlationId: head.id, kind: 'response', type: head.type, payload: { status: 'processing', turn_id: `turn-${head.id}`, controls: PROCESSING_CONTROLS } }));
         return;
@@ -960,6 +962,30 @@ export function createMockServer({
       const active = activeAgentTask(channelId, respondingAgent.id, messageId);
       const turnId = active ? `turn-${active.id}` : '';
       if (payload.msg_type === 'agent.steer') {
+        // 全体插入（协议 §4.4.15）：{all:true} 单字段闭集，把等待区里发起人自己的
+        // 消息全部并入；他人的留下。
+        if ('all' in (payload.payload || {})) {
+          if (payload.payload.all !== true || Object.keys(payload.payload).length !== 1) { fail('invalid_args', 'all form must be exactly {all:true}'); return; }
+          const own = bufferedConversation().filter((row) => row.sender?.id === selfActorId);
+          if (!own.length) { complete({}); return; }
+          complete({});
+          if (!active) {
+            // 内容动作恒解除停止：清冻结 + 整批续跑（owner=tail）。
+            agentHolds.delete(`${channelId}:${respondingAgent.id}`);
+            resumeQueueHead(20);
+            return;
+          }
+          // 有 turn：own 全部卷进当前 turn，tail 上位 owner，其余（含旧 owner）merged_into tail。
+          const tail = own[own.length - 1];
+          later(20, () => {
+            closeTask(channelId, active, respondingAgent.id, { status: 'completed', merged_into: tail.id });
+            for (const row of own.slice(0, -1)) {
+              append(channelId, envelope({ ...responseBase, id: `${messageId}-all-merged-${row.id}`, parentId: row.id, correlationId: row.id, kind: 'response', type: row.type, payload: { status: 'completed', merged_into: tail.id } }));
+            }
+            append(channelId, envelope({ ...responseBase, id: `${messageId}-all-lead`, parentId: tail.id, correlationId: tail.id, kind: 'response', type: tail.type, payload: { status: 'processing', turn_id: turnId, controls: PROCESSING_CONTROLS } }));
+          });
+          return;
+        }
         const targetId = String(payload.payload?.target || '');
         if (targetId) {
           if (text.trim() || Object.keys(payload.payload || {}).length !== 1) { fail('invalid_args', 'target form only accepts target'); return; }
@@ -968,7 +994,12 @@ export function createMockServer({
           if (!targetRequest || targetPosition !== 'queued') { fail('cas_mismatch', 'steer target is not buffered'); return; }
           if (targetRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'steer target belongs to another sender'); return; }
           complete({});
-          if (!active) return;
+          if (!active) {
+            // 08-22 改判：插入是内容动作——清除冻结、target 提队首领批、恢复推进。
+            agentHolds.delete(`${channelId}:${respondingAgent.id}`);
+            resumeQueueHead(20, targetId);
+            return;
+          }
           later(20, () => {
             // 插入后旧 owner 并入新 turn：终态 merged_into = target（同 loop.go:1415）。
             closeTask(channelId, active, respondingAgent.id, { status: 'completed', merged_into: targetId });
@@ -1008,19 +1039,29 @@ export function createMockServer({
         const targetRequest = holdTarget ? history.find((row) => row.envelope.id === holdTarget)?.envelope : null;
         if (holdTarget && targetRequest && targetRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'hold target belongs to another sender'); return; }
         if (payload.msg_type === 'agent.hold') {
+          const previous = agentHolds.get(holdKey);
+          // hold 恢复前任冻结（协议 §4.4.16）：前任是停止冻结则记标记，后写覆盖继承。
+          const restoreInterrupt = previous?.source === 'interrupt' || previous?.restoreInterrupt === true;
           const effectiveDuration = holdArgs.duration_ms ?? 1_800_000;
-          agentHolds.set(holdKey, { holdId: messageId, source: 'hold', targetId: holdTarget, until: domain.now() + effectiveDuration });
-          // 到期自动解冻（后写覆盖：仅当此 hold 仍是现任时生效），解冻即 FIFO 续跑。
+          agentHolds.set(holdKey, { holdId: messageId, source: 'hold', targetId: holdTarget, restoreInterrupt, until: domain.now() + effectiveDuration });
+          // 到期与 unhold 同语义：恢复前任停止冻结，或清锁续跑。
           later(effectiveDuration, () => {
             if (agentHolds.get(holdKey)?.holdId !== messageId) return;
+            if (restoreInterrupt) { agentHolds.set(holdKey, { holdId: messageId, source: 'interrupt' }); return; }
             agentHolds.delete(holdKey);
             resumeQueueHead(10);
           });
-        } else agentHolds.delete(holdKey);
+        } else {
+          const released = agentHolds.get(holdKey);
+          agentHolds.delete(holdKey);
+          if (released?.restoreInterrupt) {
+            // 管理动作收尾恒不惊动停止状态：恢复 interrupt 冻结、恒不续跑。
+            agentHolds.set(holdKey, { holdId: released.holdId, source: 'interrupt' });
+          }
+        }
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed' } }));
-        if (payload.msg_type === 'agent.unhold') {
-          // unhold 无目标参数；真正的续跑对象由 Resumed/FIFO 队首决定。replace 后
-          // 原 target 已终态，新 replace 行继承 Resumed，定向旧 id 会让队列永久卡住。
+        if (payload.msg_type === 'agent.unhold' && agentHolds.get(holdKey)?.source !== 'interrupt') {
+          // unhold 无目标参数；真正的续跑对象由 Resumed/FIFO 队首决定。
           resumeQueueHead(30);
         }
         // hold 带 target 且目标正在处理：打断当前 turn，目标消息回到队列头（Resumed）。
