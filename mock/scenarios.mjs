@@ -68,7 +68,7 @@ export const SCENARIOS = Object.freeze({
   'feed-delayed': standard({ history: false, delays: { receipt_ms: 0, feed_ms: 800, obs_ms: 0 } }),
   'receipt-lost-feed-landed': standard({ history: false, delays: { receipt_ms: 1_500, feed_ms: 0, obs_ms: 0 }, behavior: { drop_receipt: true } }),
   'obs-partial': standard({ obs_complete: false }),
-  'real-backend-shape': standard({ behavior: { membership_extension: false, roster_principal: false } }),
+  'real-backend-shape': standard({ behavior: { roster_principal: false } }),
   'long-running': standard({ history: false, behavior: { capabilities: true, message: 'long-running' } }),
   'control-conflict': standard({ history: false, behavior: { capabilities: true, message: 'long-running' } }),
   'actor-lifecycle': standard({ history: false, behavior: { capabilities: true } }),

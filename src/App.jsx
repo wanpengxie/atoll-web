@@ -17,7 +17,7 @@ import { isSystemWord, TYPES } from './protocol/vocab.js';
 import { newId } from './util/id.js';
 import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
 import { agentSelectionView, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from './model/agent-selection.js';
-import { createObsClient, isUnsupportedMembershipObservation, ObsError } from './net/obs.js';
+import { createObsClient, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
 import { Auth } from './ui/Auth.jsx';
 import { AppShell } from './app/AppShell.jsx';
@@ -279,17 +279,6 @@ export default function App() {
     accessRef.current = access;
 
     let alive = true;
-    let membershipObservationSupported = true;
-    const readMemberships = () => {
-      if (!membershipObservationSupported) return Promise.resolve({ items: [], complete: false, unsupported: true });
-      return obs.spaceMemberships().catch((error) => {
-        if (isUnsupportedMembershipObservation(error)) {
-          membershipObservationSupported = false;
-          return { items: [], complete: false, unsupported: true };
-        }
-        throw error;
-      });
-    };
     let refreshTimer = null;
     let refreshInFlight = null;
     let refreshQueued = false;
@@ -299,16 +288,12 @@ export default function App() {
         refreshQueued = true;
         return refreshInFlight;
       }
-      refreshInFlight = Promise.all([loadChannelTree(obs), readMemberships()]).then(([result, membershipObservation]) => {
+      // 成员身份不再走 obs 轮询：它是 attach 回执直接携带的一等事实
+      // （网关资格账快照），这里只对齐频道树投影。
+      refreshInFlight = loadChannelTree(obs).then((result) => {
       if (!alive) return;
       const profiles = [...result.channels.values()];
       access.channelsObserved(profiles, { complete: result.complete });
-      const membershipRows = (membershipObservation.items || []).map((item) => item.declared || {}).filter((row) => row.channel_id);
-      access.membershipsObserved(membershipRows, {
-        complete: membershipObservation.complete !== false,
-        supported: !membershipObservation.unsupported,
-      });
-      for (const membership of membershipRows.filter((row) => row.status === 'revoked')) roster.clearSelf(membership.channel_id);
       setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
       bumpAccess();
       }).catch((error) => { if (alive && error?.status !== 401) setTopError(displayError(error)); }).finally(() => {
@@ -348,6 +333,19 @@ export default function App() {
           // 服务器世代变了：本地缓存整体作废后重载一次，恒不要求用户手清。
           if (!ensureServerBoot(detail?.boot)) { window.location.reload(); return; }
           access.wire('attached', newId());
+          // attach 回执携带的成员清单是权威来源：连上即得，重连即刷新。
+          // memberships_complete=false 表示服务器这一轮没查成（清单不可信为
+          // 全量），只做增量承认，恒不据此判谁被踢出。
+          if (Array.isArray(detail?.memberships)) {
+            const rows = detail.memberships
+              .filter((entry) => entry?.channel_id)
+              .map((entry) => ({ channel_id: entry.channel_id, status: 'active', actor_id: entry.actor_id || '' }));
+            const memberedBefore = access.rows().filter((row) => row.accessState?.relationship === 'member').map((row) => row.id);
+            access.membershipsObserved(rows, { complete: detail.memberships_complete === true, supported: true });
+            for (const channelId of memberedBefore) {
+              if (access.state(channelId)?.relationship !== 'member') roster.clearSelf(channelId);
+            }
+          }
           setWireState('open');
           // 首次 attach 已有登录初始化 OBS；之后每次重连完成才重新对齐投影。
           if (attachedOnce) scheduleAccessRefresh();

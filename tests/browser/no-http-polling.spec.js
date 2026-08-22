@@ -6,7 +6,7 @@ test('WebSocket OPEN 后不会周期轮询频道与成员 OBS', async ({ page, r
   const observationRequests = [];
   page.on('request', (entry) => {
     const path = new URL(entry.url()).pathname;
-    if (path.startsWith('/obs/space/channels') || path === '/obs/space/memberships' || /\/obs\/channel\/[^/]+\/actors$/.test(path)) {
+    if (path.startsWith('/obs/space/channels') || /\/obs\/channel\/[^/]+\/actors$/.test(path)) {
       observationRequests.push({ path, at: Date.now() });
     }
   });

@@ -1,15 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createObsClient, isUnsupportedMembershipObservation, ObsError } from '../src/net/obs.js';
+import { createObsClient } from '../src/net/obs.js';
 
-describe('真实 Atoll 的可选 membership OBS', () => {
-  it('兼容旧版 404 与当前 invalid_args/unknown kind 响应', () => {
-    expect(isUnsupportedMembershipObservation(new ObsError(404, 'not_found', 'not found'))).toBe(true);
-    expect(isUnsupportedMembershipObservation(new ObsError(400, 'invalid_args', 'unknown space observation kind'))).toBe(true);
-  });
-
-  it('不会吞掉其他 400 或服务故障', () => {
-    expect(isUnsupportedMembershipObservation(new ObsError(400, 'invalid_args', 'missing parent_id'))).toBe(false);
-    expect(isUnsupportedMembershipObservation(new ObsError(503, 'unavailable', 'temporarily unavailable'))).toBe(false);
+describe('membership 读路径', () => {
+  it('memberships 观察面已退役（成员清单随 attach 回执直接交付）', () => {
+    const obs = createObsClient({ fetchImpl: async () => ({ ok: true, json: async () => ({}) }) });
+    expect(obs.spaceMemberships).toBeUndefined();
   });
 });
 

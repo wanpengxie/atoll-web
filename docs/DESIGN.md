@@ -58,9 +58,9 @@ attach 后真实 gateway 自动回放当前 principal 的成员频道，并持�
 
 成功业务 receipt 是成员可写的强证据，但 receipt 不带 seq，也不是账本 cursor。只有 feed.seq 推进读取位置。
 
-### 3.3 Mock-only membership
+### 3.3 Membership 随 attach 回执交付
 
-Mock 暴露 `/obs/space/memberships`，并明确携带 `mock_extension:true`。前端将其作为显式测试证据；真实服务端返回 404 时正常降级到 feed/receipt/self 对账，不报告产品错误。
+成员清单是 attach 回执的一部分（`memberships` + `memberships_complete`），mock 与真实后端同形。前端在每次 attach（含重连）时用它作为权威成员来源；feed/receipt/self 对账只做会话内增量证据。曾经的 mock-only `/obs/space/memberships` 扩展已整删。
 
 ### 3.4 Lobby
 

@@ -67,10 +67,19 @@ describe('wire client', () => {
       ref: 'attach-1',
       payload: { since: { c0: 7 } },
     }]);
-    receipt(socket, socket.sent[0], { contract_version: 'v4' });
+    receipt(socket, socket.sent[0], {
+      contract_version: 'v4',
+      memberships: [{ channel_id: 'c0', actor_id: 'root' }],
+      memberships_complete: true,
+    });
     await Promise.resolve();
     expect(socket.sent.filter((item) => item.frame_type === 'attach')).toHaveLength(1);
-    expect(states).toContainEqual(['attached', { contract_version: 'v4' }]);
+    // attach 回执携带的成员清单原样透传给 onState 消费方。
+    expect(states).toContainEqual(['attached', {
+      contract_version: 'v4',
+      memberships: [{ channel_id: 'c0', actor_id: 'root' }],
+      memberships_complete: true,
+    }]);
     wire.close();
   });
 

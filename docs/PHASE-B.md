@@ -96,11 +96,9 @@
 
 ## 5. 后端缺口下的产品裁决
 
-真实 atoll 当前没有 `/obs/space/memberships`，channel actors 的 human 行也没有 principal。阶段 B 不伪造这两个事实：
+membership 缺口已由协议补齐：attach 回执携带 `memberships`（网关资格账快照）+ `memberships_complete`，连上（含重连）即得权威清单；`/obs/space/memberships` mock 扩展随之整删。channel actors 的 human 行仍没有 principal，阶段 B 不伪造这个事实：
 
-- Mock 的 membership OBS 是带 `mock_extension:true` 的测试扩展；
-- 真实后端用当前会话 feed、成功业务 receipt 和本地 stale 证据逐步确认普通频道 member；普通频道的 `owner_principal` 不能单独当作 membership。节点 owner 对 well-known `c0` 是唯一启动不变式，c0 必须始终作为 root/home 频道显示并可写；
-- 没有历史、不是 owner、也从未发送过消息的成员频道，在后端补显式 membership 前无法被完整发现，作为已确认的服务端能力缺口保留；
+- feed、成功业务 receipt 和本地 stale 证据仍作为会话内的增量成员证据（如运行中被拉进新频道）；普通频道的 `owner_principal` 不能单独当作 membership；
 - self Actor 使用“客户端 id → request feed sender.id”对账学习；在第一次本人 request feed 前保持未知；
 - UI 明确显示“正在确认频道身份”，不得把任一 human 行猜成当前用户。
 

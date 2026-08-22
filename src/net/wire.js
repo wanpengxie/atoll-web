@@ -109,7 +109,14 @@ export function createWire({
       if (incoming.ref === attachRef) {
         attached = true;
         reconnectAttempt = 0;
-        onState('attached', { contract_version: payload.contract_version, boot: payload.boot });
+        onState('attached', {
+          contract_version: payload.contract_version,
+          boot: payload.boot,
+          // attach 回执自带成员清单（网关资格账快照）：连上即知道"我在哪些频道、
+          // 以什么 actor 身份"，恒不再靠 feed 副作用反推。
+          memberships: payload.memberships,
+          memberships_complete: payload.memberships_complete,
+        });
       }
       return;
     }

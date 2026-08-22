@@ -373,6 +373,26 @@ export function createMockServer({
     return { model, effort };
   };
   const usageOf = (channelId, actorId) => ({ context_tokens: 42_000, context_window: MOCK_CONTEXT_WINDOW, ...agentOptions(channelId, actorId) });
+  // select 旁路独占槽（协议 §8）：0 或 1 个占位，忙时挂起，当前 turn 终态后、
+  // 任何续跑之前插队执行；恒不进等待区、不占容量、不受 hold/interrupt 冻结。
+  const agentSelectSlots = new Map(); // `${channelId}:${actorId}` -> {messageId, chosen, base}
+  const runSelectSlotEntry = (channelId, actorId, entry, delayBase = 5) => {
+    const { messageId, chosen, base } = entry;
+    later(delayBase, () => append(channelId, envelope({ ...base, id: `${messageId}-processing`, kind: 'response', type: 'agent.select', payload: { status: 'processing', turn_index: 1, turn_id: `turn-${messageId}`, controls: [] } })));
+    later(delayBase + 10, () => append(channelId, envelope({ ...base, parentId: '', id: `${messageId}-turn-started`, kind: 'event', type: 'agent.turn.started', payload: { turn_index: 1, status: 'started' } })));
+    later(delayBase + 20, () => {
+      agentSelections.set(`${channelId}:${actorId}`, { model: chosen.model, effort: chosen.effort });
+      append(channelId, envelope({ ...base, parentId: '', id: `${messageId}-turn-ended`, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: 1, status: 'ok', usage: usageOf(channelId, actorId) } }));
+    });
+    later(delayBase + 30, () => append(channelId, envelope({ ...base, id: `${messageId}-terminal`, kind: 'response', type: 'agent.select', payload: { status: 'completed', turn_index: 1, usage: usageOf(channelId, actorId) } })));
+  };
+  const runSelectSlot = (channelId, actorId) => {
+    const key = `${channelId}:${actorId}`;
+    const entry = agentSelectSlots.get(key);
+    if (!entry) return;
+    agentSelectSlots.delete(key);
+    runSelectSlotEntry(channelId, actorId, entry, 5);
+  };
   let rosters = domain.rosters;
   let histories = domain.histories;
   if (loadScenario(scenario, seed).history) {
@@ -590,6 +610,8 @@ export function createMockServer({
       id: domain.nextId(`${active.id}-manual-terminal`),
       payload: { status: 'completed', text: `已完成：${requestText || '当前任务'}` },
     }));
+    // turn 终态后、续跑批之前：select 槽插队（协议 §8"任何指令之前"）。
+    runSelectSlot(channelId, agent.id);
 
     // 完成后按协议（§4.4.5）恢复：队首为 Resumed 件则单独成批；否则整批带走，
     // 批的 owner 恒是 tail（批内最后一条，同 loop.go:1009），其余 merged_into tail。
@@ -629,6 +651,8 @@ export function createMockServer({
       payload, parentId: request.id, correlationId: request.correlation_id || request.id,
       audience: [request.sender.id],
     }));
+    // turn 被收口（打断等）后：select 槽插队（协议 §8）。
+    runSelectSlot(channelId, actorId);
   }
 
   function handleSubmit(socket, ref, payload) {
@@ -1168,10 +1192,8 @@ export function createMockServer({
         return;
       }
       if (payload.msg_type === 'agent.select') {
-        // select 是排队的 command turn（协议 §4.3）：校验入队 → 完整 turn 周期 →
-        // 成功终态才 sticky。宽松形对齐 loop.go validateSelection：只给 effort
-        // 沿用当前 model；只给 model 时匹配该 model 第一条；完整对必须命中目录。
-        // mock 简化：恒立即执行，不模拟排队等待（pending 态窗口即下面的时序）。
+        // select 走旁路独占槽（协议 §8）：不进等待区、不占容量、不受冻结控制。
+        // 空闲立即执行；忙时挂槽，当前 turn 终态后、任何续跑之前插队执行。
         const catalog = selectionCatalog(respondingAgent.id);
         // 宽松形对齐 loop.go validateSelection：未知字段被忽略（恒不闭集拒）；
         // {} 两字段全空 → 匹配循环全不中 → invalid_args；只给 effort 沿用当前
@@ -1183,15 +1205,21 @@ export function createMockServer({
         const model = rawModel || (rawEffort ? currentOptions.model : '');
         const chosen = catalog.find((row) => row.model === model && (!rawEffort || row.effort === rawEffort));
         if (!chosen) { fail('invalid_args', 'selection is not in provider selections'); return; }
-        // 控制词消息自身的进度帧恒为空集 controls；终态帧恒不带。
-        later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', turn_index: 1, controls: [] } })));
-        later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, turn_id: `turn-${messageId}`, controls: [] } })));
-        later(55, () => append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-started`, kind: 'event', type: 'agent.turn.started', payload: { turn_index: 1, status: 'started' } })));
-        later(70, () => {
-          agentSelections.set(`${channelId}:${respondingAgent.id}`, { model: chosen.model, effort: chosen.effort });
-          append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-ended`, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: 1, status: 'ok', usage: usageOf(channelId, respondingAgent.id) } }));
-        });
-        later(85, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', turn_index: 1, usage: usageOf(channelId, respondingAgent.id) } })));
+        const slotKey = `${channelId}:${respondingAgent.id}`;
+        // 独占覆盖：被顶掉的占位者终态 failed/superseded（它从没生效过）。
+        const held = agentSelectSlots.get(slotKey);
+        if (held) {
+          agentSelectSlots.delete(slotKey);
+          append(channelId, envelope({ ...held.base, id: `${held.messageId}-terminal`, kind: 'response', type: 'agent.select', payload: { status: 'failed', reason: 'superseded', error_code: 'superseded', detail: 'superseded by a newer agent.select' } }));
+        }
+        // 槽登记回执（controls 空集：槽在等待区之外，插入/编辑恒够不着）。
+        later(15, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', turn_index: 1, controls: [] } })));
+        const entry = { messageId, chosen, base: { ...responseBase } };
+        if (activeAgentTask(channelId, respondingAgent.id, messageId)) {
+          agentSelectSlots.set(slotKey, entry);
+          return;
+        }
+        runSelectSlotEntry(channelId, respondingAgent.id, entry, 25);
         return;
       }
       const key = { 'agent.compact': 'compacted', 'agent.fork': 'forked' }[payload.msg_type];
@@ -1246,6 +1274,8 @@ export function createMockServer({
             ? { status: 'failed', reason: 'receiver_internal_error', error_code: 'type_unsupported', detail: 'mock failure requested by message text', diagnostic: { attempt: 1 } }
             : { status: 'completed', turn_index: 1, text: 'PONG' },
     })));
+    // turn 终态后、任何续跑之前：先跑挂着的 select 槽。
+    later(terminalDelay + 3, () => runSelectSlot(channelId, respondingAgent.id));
     if (mode === 'provisional-after-terminal') {
       later(220, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-late-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', late: true, controls: [] } })));
     }
@@ -1451,7 +1481,14 @@ export function createMockServer({
         return;
       }
       attached.add(socket);
-      sendReceipt(socket, ref, { contract_version: CONTRACT_VERSION, boot: bootId });
+      // 对齐真后端 AttachReceipt：成员清单随回执直接交付（资格账快照），
+      // 前端连上即知道自己在哪些频道，恒不靠 feed 副作用反推。
+      sendReceipt(socket, ref, {
+        contract_version: CONTRACT_VERSION,
+        boot: bootId,
+        memberships: domain.attachMemberships(socketPrincipals.get(socket) || ''),
+        memberships_complete: true,
+      });
       const since = payload.since || {};
       const replay = () => {
         for (const [channelId, history] of histories) {
@@ -1576,14 +1613,6 @@ export function createMockServer({
         }
         const rows = domain.channelRows(parentId);
         json(response, 200, observation('space', 'channels', rows, domain.obsComplete));
-        return;
-      }
-      if (path === '/obs/space/memberships') {
-        if (domain.behavior.membership_extension === false) {
-          httpError(response, 404, 'not_found', 'membership projection is not available on the real backend');
-          return;
-        }
-        json(response, 200, observation('space', 'memberships', domain.membershipRows(ROOT_ID), domain.obsComplete, { mock_extension: true }));
         return;
       }
       if (path === '/obs/space/principals') {
@@ -1804,6 +1833,7 @@ export function createMockServer({
         closedRequests.clear();
         agentHolds.clear();
         agentSelections.clear();
+        agentSelectSlots.clear();
         bootId = randomUUID();
         submittedFrames.clear();
         introduced = 0;

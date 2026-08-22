@@ -261,7 +261,7 @@ Mock 无法证明的内容仍需真实 atoll 冒烟：数据库持久化、并�
 
 2026-08-18 的 F6 最终真实 smoke 已用相邻 `../atoll` 当前工作树取得以下最小证据：全新空间启动日志明确 `c0`/`c0.lobby`；浏览器使用 root identity 登录后，默认 `c0` 在左栏可见、已选中且 URL 恢复到 `#/channels/c0/dynamic`，连接显示 `OPEN`，Composer 文本框可用；文件主视图显示 `local-device` 与 `daemon://local-device/c0/`。本次没有先 `@` 选择成员并实际提交，因此不把真实入账、进展或终态列为已证明；healthz、bearer OBS、WS receipt/contract version 等也没有在本次最终浏览器 smoke 中重新取证。详细命令和边界见 [F6-RELEASE-GATE.md](F6-RELEASE-GATE.md)。
 
-真实 Atoll 当前对可选 `/obs/space/memberships` 返回 `400 invalid_args` / `unknown space observation kind`；前端只探测一次并降级为“不支持”。Vite `/ws` 代理保留原始 Host，以满足真实 Atoll 的 Origin/Host 同源检查。root 对 well-known `c0` 的启动访问是唯一 bootstrap 特例，不能推导其他频道 membership。
+成员清单随 attach 回执直接交付（`memberships` + `memberships_complete`，mock 与真实后端同形），`/obs/space/memberships` 已整删。Vite `/ws` 代理保留原始 Host，以满足真实 Atoll 的 Origin/Host 同源检查。
 
 阶段 E 发布前还必须验证：真实 daemon 地址路由与磁盘落盘；ticket 过期/一次性/跨进程兑换；设备 key 不进入日志和普通投影；安全 binding 投影或 attach/detach 的真实收敛；真实 class/config 校验；timer 在重启、跨端和权限变化时的语义。Mock 只证明产品流程和错误恢复，不替代这些运行时事实。
 
