@@ -58,6 +58,7 @@
 .header-action { min-height: 36px; padding: 5px 9px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 11px; }
 .header-action:hover, .header-action.active { border-color: var(--line-control-strong); background: var(--surface-soft); color: var(--text); }
 .header-action:disabled { opacity: .4; cursor: not-allowed; }
+.mock-advance-action { border-color: var(--line-control-strong); background: var(--surface-soft); color: var(--accent); font-weight: 650; }
 .channel-menu { position: relative; }
 .channel-menu-popover { position: absolute; z-index: 40; top: calc(100% + 6px); right: 0; display: grid; width: 170px; padding: 5px; border: 1px solid var(--line-control-strong); border-radius: var(--radius-object); background: var(--raised); box-shadow: var(--shadow-popover); }
 .channel-menu-popover button { padding: 8px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer; font-size: 11px; }

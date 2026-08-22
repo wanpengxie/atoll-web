@@ -23,7 +23,7 @@ it('main Dynamic keeps one rolling activity line inside the processing agent bub
   const turn = runningTurn();
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 3 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-  expect(screen.getByText('⋯ tool: search …')).toBeTruthy();
+  expect(document.querySelector('.agent-processing-status').textContent).toContain('tool: search …');
   expect(document.querySelectorAll('.agent-turn-bubble')).toHaveLength(1);
   expect(document.querySelector('.agent-turn-bubble button')).toBeNull();
 });
@@ -247,6 +247,6 @@ describe('F3 Composer', () => {
     }
     render(<Harness />);
     await user.click(screen.getByRole('button', { name: /发送/ }));
-    expect(await screen.findByText('已写入频道账本')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('已写入频道账本')).toBeNull());
   });
 });

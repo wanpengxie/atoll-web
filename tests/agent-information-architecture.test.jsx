@@ -57,6 +57,14 @@ describe('agent control v7 information architecture', () => {
 
     const timeline = document.querySelector('.timeline');
     const waiting = screen.getByRole('region', { name: '等待区' });
+    const waitingActions = screen.getByLabelText('等待区操作');
+    expect(waiting.style.getPropertyValue('--agent-wait-height')).toBe('32px');
+    expect(within(waiting).getByText('还在等待')).toBeTruthy();
+    expect(waiting.contains(waitingActions)).toBe(true);
+    fireEvent.click(within(waitingActions).getByRole('button', { name: '收起' }));
+    expect(within(waiting).queryByText('还在等待')).toBeNull();
+    expect(within(waiting).getByText('1 条等待消息')).toBeTruthy();
+    fireEvent.click(within(waiting).getByRole('button', { name: '展开' }));
     expect(within(waiting).getByText('还在等待')).toBeTruthy();
     expect(within(timeline).queryByText('还在等待')).toBeNull();
     expect(within(timeline).getByText('已经处理')).toBeTruthy();
@@ -82,7 +90,7 @@ describe('agent control v7 information architecture', () => {
     const card = document.querySelector('.agent-conversation-turn');
     const bubble = card.querySelector('.agent-turn-bubble');
     expect(within(bubble).getByText('● 处理中: 重构 loop.go')).toBeTruthy();
-    expect(within(bubble).getByText('⋯ tool: read_file …')).toBeTruthy();
+    expect(bubble.querySelector('.agent-processing-status').textContent).toContain('tool: read_file …');
     expect(within(card).getByRole('button', { name: '编辑' })).toBeTruthy();
     expect(within(card).getByRole('button', { name: '停止' })).toBeTruthy();
     expect(bubble.querySelectorAll('button')).toHaveLength(0);
@@ -116,9 +124,13 @@ describe('agent control v7 information architecture', () => {
 
     const groupA = document.querySelector('[data-agent-id="agent"]');
     const groupB = document.querySelector('[data-agent-id="agent-2"]');
-    expect([...groupA.querySelectorAll('.agent-wait-position')].map((node) => node.textContent)).toEqual(['1', '2']);
-    expect([...groupB.querySelectorAll('.agent-wait-position')].map((node) => node.textContent)).toEqual(['1']);
-    fireEvent.click(within(groupA).getByRole('button', { name: '全部取消' }));
+    expect(screen.getByRole('region', { name: '等待区' }).style.getPropertyValue('--agent-wait-height')).toBe('96px');
+    expect(groupA.querySelectorAll('.agent-wait-position')).toHaveLength(2);
+    expect(groupB.querySelectorAll('.agent-wait-position')).toHaveLength(1);
+    const waitingActions = screen.getByLabelText('等待区操作');
+    expect(within(groupA).queryByRole('button', { name: /全部/ })).toBeNull();
+    expect(screen.getByRole('region', { name: '等待区' }).contains(waitingActions)).toBe(true);
+    fireEvent.click(within(waitingActions).getByRole('button', { name: '取消 Agent 全部' }));
     await waitFor(() => expect(calls).toEqual(['agent.hold', 'cancel:a1', 'cancel:a2', 'agent.unhold']));
   });
 
@@ -127,16 +139,40 @@ describe('agent control v7 information architecture', () => {
     add(state, 1, request('queued', 'edit me'));
     add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
     const onTaskControl = vi.fn(async () => 'h1');
-    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex: capabilities(), onTaskControl };
+    const onComposerEditChange = vi.fn();
+    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex: capabilities(), onTaskControl, onComposerEditChange };
     const view = render(<Timeline {...props} />);
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    expect(screen.getByText('正在编辑')).toBeTruthy();
+    expect(screen.getByRole('region', { name: '等待区' }).style.getPropertyValue('--agent-wait-height')).toBe('32px');
+    expect(document.querySelector('.agent-wait-item.is-editing')).toBeTruthy();
+    expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ targetId: 'queued', text: 'edit me' }) }));
+    expect(screen.getByRole('region', { name: '等待区' }).textContent).not.toMatch(/锁定|核对|提交修改|替换生效/);
     await waitFor(() => expect(onTaskControl).toHaveBeenCalled());
     add(state, 3, { id: 'h1', kind: 'request', type: 'agent.hold', ts: Date.now(), sender: { kind: 'human', id: 'me' }, audience: ['agent'], visibility: 'public', payload: { target: 'queued' } });
     add(state, 4, { id: 'h1-d', parent_id: 'h1', kind: 'response', type: 'agent.hold', ts: Date.now(), sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { status: 'failed', error_code: 'busy', detail: '稍后重试' } });
     view.rerender(<Timeline {...props} />);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('稍后重试'));
-    expect(screen.queryByLabelText('修改后的任务内容')).toBeNull();
+    expect(screen.queryByText('正在编辑')).toBeNull();
     expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy();
+  });
+
+  it('switches the wait layer to one editor state without pushing later queued rows down', () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued-1', 'first queued'));
+    add(state, 2, response('queued-1-q', 'queued-1', { status: 'queued' }));
+    add(state, 3, request('queued-2', 'second queued'));
+    add(state, 4, response('queued-2-q', 'queued-2', { status: 'queued' }));
+    const onTaskControl = vi.fn(() => new Promise(() => {}));
+    const onComposerEditChange = vi.fn();
+    render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} onTaskControl={onTaskControl} onComposerEditChange={onComposerEditChange} />);
+
+    const waiting = screen.getByRole('region', { name: '等待区' });
+    fireEvent.click(within(waiting).getAllByRole('button', { name: '编辑' })[0]);
+    expect(within(waiting).getByText('正在编辑')).toBeTruthy();
+    expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ targetId: 'queued-1', text: 'first queued' }) }));
+    expect(within(waiting).getByText('second queued')).toBeTruthy();
+    expect(waiting.style.getPropertyValue('--agent-wait-height')).toBe('64px');
   });
 
   it('shows interrupt freeze only on the stopped agent bubble, never as hold pause', () => {

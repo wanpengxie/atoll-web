@@ -4,7 +4,7 @@ function bottomOf(node) {
   return Math.max(0, node.scrollHeight - node.clientHeight);
 }
 
-export function useStableTimelineScroll({ channelId, lastSeq, page, pendingCount }) {
+export function useStableTimelineScroll({ channelId, lastSeq, page }) {
   const viewportRef = useRef(null);
   const contentRef = useRef(null);
   const pinnedRef = useRef(true);
@@ -39,9 +39,15 @@ export function useStableTimelineScroll({ channelId, lastSeq, page, pendingCount
   useLayoutEffect(() => {
     if (page !== 0 || !pinnedRef.current) return undefined;
     const node = viewportRef.current;
-    if (node) node.scrollTop = bottomOf(node);
+    if (node) {
+      const target = bottomOf(node);
+      // A progress frame commonly replaces text without changing geometry.
+      // Avoid writing the same scrollTop on every frame: repeated no-op writes
+      // still interrupt browser momentum/composition painting on some devices.
+      if (Math.abs(node.scrollTop - target) > 1) node.scrollTop = target;
+    }
     return undefined;
-  }, [page, lastSeq, pendingCount]);
+  }, [page, lastSeq]);
 
   useEffect(() => {
     const content = contentRef.current;

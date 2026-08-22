@@ -1,7 +1,8 @@
 /* Composer */
-.composer-wrap { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; padding: 8px 26px 12px; overflow-anchor: none; border-top: 1px solid var(--line-subtle); background: var(--workspace); }
-.composer-surface { position: relative; width: min(100%, var(--timeline-track)); margin: 0 auto; padding: 7px 9px 6px; border: 1px solid var(--line-control); border-radius: 14px; background: var(--input); box-shadow: 0 1px 3px var(--shadow); transition: border-color .15s, box-shadow .15s, background .15s; }
+.composer-wrap { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; padding: 7px 26px 10px; overflow-anchor: none; pointer-events: none; }
+.composer-surface { position: relative; width: min(100%, var(--timeline-track)); margin: 0 auto; padding: 6px 8px 5px; border: 1px solid var(--line-control); border-radius: 16px; background: var(--input); box-shadow: 0 7px 26px var(--shadow-2), 0 1px 3px var(--shadow); transition: border-color .15s, box-shadow .15s, background .15s; pointer-events: auto; }
 .composer-surface:focus-within { border-color: var(--line-control-strong); box-shadow: 0 1px 3px var(--shadow), 0 0 0 2px var(--accent-bg); }
+.composer-surface.is-editing-message { border-color: var(--line-control-strong); background: var(--raised); box-shadow: 0 4px 18px var(--shadow-2); }
 .composer-surface.is-file-dragging { border-color: var(--accent); background: var(--accent-bg); box-shadow: 0 0 0 2px var(--accent-bg); }
 .composer-drop-hint { position: absolute; z-index: 3; inset: 5px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px dashed var(--accent); border-radius: 10px; background: var(--input); color: var(--accent); pointer-events: none; }
 .composer-drop-hint strong { font-size: 12px; font-weight: 650; }
@@ -10,7 +11,7 @@
 .composer-input-area { position: relative; min-width: 0; }
 .composer-box { min-width: 0; }
 .composer-richtext { min-width: 0; }
-.composer-editor { min-height: 46px; max-height: 180px; overflow-y: auto; overflow-anchor: none; padding: 5px 4px 3px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.composer-editor { min-height: 30px; max-height: 160px; overflow-y: auto; overflow-anchor: none; padding: 4px 5px 2px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .composer-editor[tabindex]:focus, .composer-editor[tabindex]:focus-visible { outline: 0; outline-offset: 0; }
 .composer-editor p { margin: 0; }
 .composer-editor p + p { margin-top: 2px; }
@@ -21,7 +22,11 @@
 .send-button:hover { opacity: .9; }
 .send-button:disabled { opacity: .46; cursor: not-allowed; }
 .send-button span { font-family: var(--mono); }
-.composer-toolbar { display: flex; min-width: 0; min-height: 32px; align-items: center; justify-content: space-between; gap: 10px; padding-top: 2px; }
+.composer-toolbar { display: flex; min-width: 0; min-height: 30px; align-items: center; justify-content: space-between; gap: 10px; padding-top: 1px; }
+.composer-submit-actions { display: flex; align-items: center; gap: 4px; }
+.composer-cancel-edit { display: grid; width: 28px; height: 28px; place-content: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.composer-cancel-edit:hover, .composer-cancel-edit:focus-visible { background: var(--surface-muted); color: var(--text); }
+.composer-cancel-edit:disabled { opacity: .45; cursor: not-allowed; }
 .composer-tools { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .composer-tools > button, .composer-file-control { display: grid; position: relative; width: 32px; height: 32px; flex: 0 0 auto; place-content: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; }
 .composer-tools > button:hover, .composer-file-control:hover { background: var(--surface-muted); color: var(--text); }

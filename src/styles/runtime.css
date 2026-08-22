@@ -100,10 +100,14 @@
 .agent-frozen-banner { display: flex; align-items: center; gap: 10px; margin: 0 10px 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--warning) 9%, var(--surface)); color: var(--text); }
 .agent-frozen-banner small { margin-left: auto; color: var(--text-muted); font-family: var(--mono); }
 /* 编辑态原地顶替消息文本：textarea 继承消息的字体与底色，不做独立面板。 */
-.task-editor { display: grid; gap: 5px; }
-.task-editor textarea { width: 100%; max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: inherit; outline: none; resize: none; field-sizing: content; }
-.task-editor > div { display: flex; justify-content: flex-end; gap: 6px; }
-.task-editor p { margin: 0; color: var(--warning); font-size: 11px; }
+.task-editor { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: 3px; }
+.task-editor textarea { width: 100%; min-height: 29px; max-width: 100%; padding: 3px 6px; border: 1px solid var(--line-control-strong); border-radius: 6px; background: var(--input); color: inherit; font: inherit; line-height: inherit; outline: none; resize: none; field-sizing: content; }
+.task-editor textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-bg); }
+.task-editor textarea:disabled { opacity: .72; }
+.task-editor > div { display: flex; justify-content: flex-end; gap: 5px; }
+.task-editor p { margin: 0; color: var(--danger); font-size: 10px; }
+.task-editor button { min-width: 48px; min-height: 25px; padding-top: 2px; padding-bottom: 2px; }
+.task-editor .task-editor-save { border-color: var(--accent-glow); color: var(--accent); }
 .task-control-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
 .task-control-buttons button, .steer-form button { padding: 5px 8px; border: 1px solid var(--border-2); border-radius: 6px; background: var(--surface); cursor: pointer; font-size: 10px; }
 .task-control-buttons button:first-child, .task-control-buttons .interrupt { border-color: var(--accent-glow); color: var(--danger); }

@@ -1,27 +1,42 @@
 /* Flat collaborative ledger: identity first, cards only for structured objects */
-.timeline { grid-row: 4; min-height: 0; overflow-y: auto; overflow-anchor: none; background: var(--workspace); }
-.timeline-inner { display: flex; width: 100%; min-height: 100%; flex-direction: column; gap: 0; padding: 24px 26px calc(34px + var(--composer-overlay-height, 115px)); }
-.agent-wait-layer { position: absolute; z-index: 4; right: 26px; bottom: calc(var(--composer-overlay-height, 115px) + 8px); left: 26px; width: min(calc(100% - 52px), var(--timeline-track)); max-height: min(42vh, 360px); margin: 0 auto; overflow: auto; border: 1px solid var(--line-control-strong); border-radius: 12px; background: color-mix(in srgb, var(--raised) 96%, transparent); box-shadow: 0 12px 32px var(--shadow-2); }
-.agent-wait-layer > header { position: sticky; z-index: 1; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 11px; border-bottom: 1px solid var(--line-subtle); background: var(--raised); }
-.agent-wait-layer > header strong { font-size: 11px; }
-.agent-wait-layer > header small { color: var(--text-muted); font-size: 9px; }
-.agent-wait-group + .agent-wait-group { border-top: 1px solid var(--line-control-strong); }
+.timeline { grid-row: 4; min-height: 0; margin-bottom: calc(var(--composer-overlay-height, 88px) + var(--agent-wait-dock-height, 0px)); overflow-y: auto; overflow-anchor: none; scrollbar-gutter: stable; background: var(--workspace); }
+.workspace.is-composer-layout-transitioning .timeline { transition: margin-bottom 180ms cubic-bezier(.22, 1, .36, 1); }
+.timeline-inner { display: flex; width: 100%; min-height: 100%; flex-direction: column; gap: 0; padding: 24px 26px; }
+.agent-wait-dock { position: absolute; z-index: 2; right: 46px; bottom: calc(var(--composer-overlay-height, 88px) - 8px); left: 46px; display: block; width: min(calc(100% - 92px), calc(var(--timeline-track) - 40px)); margin: 0 auto; }
+.workspace.is-composer-layout-transitioning .agent-wait-dock { transition: bottom 180ms cubic-bezier(.22, 1, .36, 1); }
+.agent-wait-layer { position: relative; width: 100%; height: auto; overflow: hidden; border: 1px solid var(--line-control); border-radius: 15px 15px 0 0; background: var(--raised); box-shadow: 0 -4px 18px var(--shadow); contain: layout paint; }
+.agent-wait-header { display: flex; min-height: 28px; align-items: center; justify-content: flex-end; padding: 2px 8px; border-bottom: 1px solid var(--line-subtle); background: var(--raised); }
+.agent-wait-header > div { display: flex; align-items: center; gap: 4px; }
+.agent-wait-header button { min-height: 24px; padding: 2px 7px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
+.agent-wait-header .agent-wait-cancel-all { color: var(--danger); }
+.agent-wait-header button:hover, .agent-wait-header button:focus-visible { background: var(--surface-muted); color: var(--text); }
+.agent-wait-header button:disabled { opacity: .45; cursor: not-allowed; }
+.agent-wait-layer.is-collapsed { height: auto; overflow: hidden; }
+.agent-wait-layer.is-editing { overflow: hidden; }
+.agent-wait-group + .agent-wait-group { border-top: 0; }
 .agent-wait-group > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 11px; background: var(--surface-muted); }
 .agent-wait-group > header strong { font-size: 10px; }
-.agent-wait-group > header button, .agent-wait-layer > header button { min-height: 28px; margin-left: auto; padding: 4px 8px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--danger); cursor: pointer; font-size: 10px; }
-.agent-wait-group > header button:disabled, .agent-wait-layer > header button:disabled { opacity: .45; cursor: not-allowed; }
 .agent-wait-group > ol { margin: 0; padding: 0; list-style: none; }
 .agent-wait-error, .agent-edit-error { margin: 8px 11px; color: var(--danger); font-size: 11px; }
-.agent-wait-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 9px 11px; }
-.agent-wait-item + .agent-wait-item { border-top: 1px solid var(--line-subtle); }
+.agent-wait-item { display: grid; height: 32px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; padding: 1px 13px; overflow: hidden; background: var(--raised); }
+.agent-wait-item + .agent-wait-item { border-top: 0; }
 .agent-wait-summary { display: flex; min-width: 0; align-items: center; gap: 8px; }
-.agent-wait-summary strong { overflow: hidden; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-.agent-wait-position { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-content: center; border-radius: 50%; background: var(--surface-muted); color: var(--text-muted); font-size: 9px; }
+.agent-wait-summary strong { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.agent-wait-position { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-content: center; color: var(--text-dim); font-size: 16px; }
 .agent-wait-actions { display: flex; gap: 5px; }
+.agent-wait-paused { align-self: center; color: var(--warning); font-size: 10px; }
 .agent-wait-actions button, .task-control-buttons button, .task-editor button { min-height: 30px; padding: 5px 8px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--text); cursor: pointer; font-size: 10px; }
+.agent-wait-actions button { border-color: transparent; background: transparent; color: var(--text-muted); font-size: 11px; }
+.agent-wait-actions button:hover, .agent-wait-actions button:focus-visible { background: var(--surface-muted); color: var(--text); }
+.agent-wait-collapsed { display: grid; min-height: 38px; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 4px 10px; }
+.agent-wait-collapsed > span { color: var(--text-dim); font-size: 16px; }
+.agent-wait-collapsed strong { font-size: 11px; }
+.agent-wait-collapsed button { min-height: 28px; padding: 3px 7px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
 .agent-wait-actions button:disabled, .task-control-buttons button:disabled { opacity: .45; cursor: not-allowed; }
 .agent-wait-locking { grid-column: 1 / -1; margin: 0; color: var(--text-muted); font-size: 10px; }
-.agent-wait-item > .task-editor { grid-column: 1 / -1; }
+.agent-wait-item.is-editing { height: 32px; background: var(--surface-soft); }
+.agent-wait-editing-label { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.message-editing-state { display: block; width: fit-content; margin-top: 4px; color: var(--text-muted); font-size: 10px; }
 .timeline-entry { width: 100%; }
 .empty-ledger { display: grid; min-height: 52vh; place-content: center; justify-items: center; color: var(--text-muted); text-align: center; }
 .empty-ledger > span { display: grid; width: 48px; height: 48px; margin-bottom: 15px; place-content: center; border-radius: 12px; background: var(--surface-2); color: var(--accent); font: 500 22px var(--mono); }
@@ -44,9 +59,13 @@
 .agent-conversation-turn > .request-message + .information-flow-row { margin-top: -3px; }
 .agent-turn-bubble { margin-top: 2px; }
 .agent-turn-bubble.processing { color: var(--text-muted); }
-.agent-processing-content { display: grid; max-width: 74ch; gap: 4px; padding: 5px 0 7px; }
-.agent-processing-content > strong { color: var(--text); font-size: 13px; font-weight: 600; }
-.agent-processing-content > p { overflow: hidden; margin: 0; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-processing-content { display: grid; width: min(100%, 74ch); gap: 5px; padding: 5px 0 7px; }
+.agent-processing-content > strong { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+/* Codex-style live line: readable body-level status, not another card. Its fixed
+   block height lets consecutive progress frames replace text without reflow. */
+.agent-processing-status { display: grid; width: 100%; height: 42px; grid-template-columns: 22px minmax(0, 1fr); align-items: center; overflow: hidden; color: var(--text); }
+.agent-processing-status > span { display: grid; width: 18px; height: 18px; place-content: center; color: var(--agent); font-size: 18px; line-height: 1; }
+.agent-processing-status > p { display: -webkit-box; overflow: hidden; margin: 0; font-size: 14px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .agent-stopped { margin: 2px 0 6px; color: var(--text-muted); font-size: 13px; }
 .message-row { position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 10px; padding: 6px 10px; border-radius: var(--radius-object); outline: 0; }
 .message-row:hover, .message-row:focus-within, .message-row:focus-visible { background: var(--surface-quieter); }
@@ -58,7 +77,7 @@
 .ai-label { padding: 1px 4px; border-radius: 4px; background: var(--agent-bg); color: var(--agent); font: 700 8px var(--mono); }
 .actor-icon { display: inline-grid; width: 32px; height: 32px; flex: 0 0 auto; place-content: center; border-radius: 9px; background: var(--surface-3); color: var(--brown-mid); font: 700 10px var(--mono); }
 .actor-icon.kind-agent { border-radius: 50%; background: var(--agent-bg); color: var(--agent); }
-.actor-icon.kind-human { background: var(--accent-bg); color: var(--accent); }
+.actor-icon.kind-human { background: var(--surface-control); color: var(--brown-mid); }
 .actor-icon.kind-tool { background: var(--tool-bg); color: var(--tool); }
 .turn-card.self > .request-message, .standalone-row.self { grid-template-columns: minmax(0, 1fr) 34px; }
 .turn-card.self > .request-message > .information-flow-avatar-slot, .standalone-row.self > .information-flow-avatar-slot { grid-row: 1; grid-column: 2; }
@@ -68,7 +87,8 @@
 .turn-card.self .task-control-buttons { justify-content: flex-end; }
 .turn-card.self > .request-message > .information-flow-content, .standalone-row.self > .information-flow-content { grid-row: 1; grid-column: 1; width: fit-content; max-width: min(74ch, 100%); justify-self: end; }
 .turn-card.self > .request-message .message-body > header, .standalone-row.self .message-body > header { justify-content: flex-end; padding: 0 4px 3px; }
-.turn-card.self > .request-message .request-text, .standalone-row.self .message-body > .markdown-content { padding: 8px 12px; border: 1px solid var(--accent-glow); border-radius: 14px 4px 14px 14px; background: var(--accent-bg); }
+.turn-card.self > .request-message .request-text, .standalone-row.self .message-body > .markdown-content { padding: 8px 12px; border: 1px solid var(--line-control); border-radius: 14px 4px 14px 14px; background: var(--surface-muted); }
+.turn-card.self .task-control-buttons button:first-child { border-color: var(--line-control); color: var(--text-muted); }
 .turn-card.self > .request-message:hover, .turn-card.self > .request-message:focus-within, .standalone-row.self:hover, .standalone-row.self:focus-within, .standalone-row.self:focus-visible { background: transparent; }
 .turn-card.self > .request-message .message-actions, .standalone-row.self > .message-actions { right: 48px; }
 .request-text, .response-content { max-width: 74ch; color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }

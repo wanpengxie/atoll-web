@@ -466,6 +466,91 @@ export function createMockServer({
     )) || null;
   }
 
+  function latestTaskStatus(channelId, requestId) {
+    return [...(histories.get(channelId) || [])].reverse()
+      .map((row) => row.envelope)
+      .find((value) => value.kind === 'response' && value.parent_id === requestId)?.payload?.status || '';
+  }
+
+  function bufferedAgentTasks(channelId, actorId) {
+    return (histories.get(channelId) || []).map((row) => row.envelope).filter((value) => (
+      value.kind === 'request'
+      && value.sender?.kind === 'human'
+      && value.audience?.includes(actorId)
+      && !AGENT_CONTROL_WORDS.includes(value.type)
+      && value.type !== 'actor.describe'
+      && !value.type.startsWith('system.')
+      && !hasTerminal(channelId, value.id)
+      && latestTaskStatus(channelId, value.id) === 'queued'
+    ));
+  }
+
+  // 手工演示用的确定性计算步进。它不绕过账本：每次点击仍然只追加标准
+  // progress / terminal 帧，前端继续完全从账推导状态。
+  function advanceAgentComputation(channelId) {
+    const agent = (rosters.get(channelId) || []).map((entry) => entry.declared).find((entry) => entry.kind === 'agent');
+    if (!agent) return { status: 'idle', detail: '频道中没有 Agent' };
+    const active = activeAgentTask(channelId, agent.id);
+    if (!active) return { status: 'idle', detail: '当前没有正在计算的任务' };
+    const history = histories.get(channelId) || [];
+    const previousStep = history
+      .filter((row) => row.envelope.kind === 'response' && row.envelope.parent_id === active.id)
+      .map((row) => Number(row.envelope.payload?.mock_compute_step || 0))
+      .reduce((maximum, value) => Math.max(maximum, value), 0);
+    const selfActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
+    const base = {
+      channelId,
+      sender: { kind: 'agent', id: agent.id },
+      kind: 'response',
+      type: active.type,
+      parentId: active.id,
+      correlationId: active.correlation_id || active.id,
+      audience: [selfActorId],
+      ts: domain.now(),
+    };
+    if (previousStep < 2) {
+      const step = previousStep + 1;
+      const message = step === 1 ? '正在分析请求并整理上下文…' : '正在生成并校验结果…';
+      append(channelId, envelope({
+        ...base,
+        id: domain.nextId(`${active.id}-manual-progress`),
+        payload: { status: 'processing', turn_id: `turn-${active.id}`, controls: PROCESSING_CONTROLS, mock_compute_step: step, message },
+      }));
+      return { status: 'processing', request_id: active.id, step, message };
+    }
+
+    const requestText = String(active.payload?.text || '').trim();
+    append(channelId, envelope({
+      ...base,
+      id: domain.nextId(`${active.id}-manual-terminal`),
+      payload: { status: 'completed', text: `已完成：${requestText || '当前任务'}` },
+    }));
+
+    // 完成后按协议恢复 FIFO：队首 processing，其余一次合并进同一 turn。
+    const [head, ...merged] = bufferedAgentTasks(channelId, agent.id);
+    if (head) {
+      append(channelId, envelope({
+        ...base,
+        id: domain.nextId(`${head.id}-manual-resume`),
+        type: head.type,
+        parentId: head.id,
+        correlationId: head.id,
+        payload: { status: 'processing', turn_id: `turn-${head.id}`, controls: PROCESSING_CONTROLS },
+      }));
+      for (const item of merged) {
+        append(channelId, envelope({
+          ...base,
+          id: domain.nextId(`${item.id}-manual-merged`),
+          type: item.type,
+          parentId: item.id,
+          correlationId: item.id,
+          payload: { status: 'completed', merged_into: head.id },
+        }));
+      }
+    }
+    return { status: 'completed', request_id: active.id, resumed_request_id: head?.id || '', merged_request_ids: merged.map((item) => item.id) };
+  }
+
   function closeTask(channelId, request, actorId, payload) {
     if (!request || hasTerminal(channelId, request.id)) return;
     append(channelId, envelope({
@@ -843,6 +928,8 @@ export function createMockServer({
       }
     });
 
+    // 定向 hold 用于编辑某一条消息。解冻时只能让该目标恢复 processing，不能把
+    // 它后面的等待消息顺手 merged_into；否则“编辑 A”会隐式发射 B/C。
     if (payload.msg_type === 'mock.order.create') {
       const count = payload.payload?.count;
       if (!payload.payload?.name || !Number.isInteger(count) || count < 1) fail('payload_invalid', 'name and a positive integer count are required');
@@ -910,7 +997,7 @@ export function createMockServer({
         if (holdTarget && targetRequest && targetRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'hold target belongs to another sender'); return; }
         if (payload.msg_type === 'agent.hold') {
           const effectiveDuration = holdArgs.duration_ms ?? 1_800_000;
-          agentHolds.set(holdKey, { holdId: messageId, source: 'hold', until: domain.now() + effectiveDuration });
+          agentHolds.set(holdKey, { holdId: messageId, source: 'hold', targetId: holdTarget, until: domain.now() + effectiveDuration });
           // 到期自动解冻（后写覆盖：仅当此 hold 仍是现任时生效），解冻即 FIFO 续跑。
           later(effectiveDuration, () => {
             if (agentHolds.get(holdKey)?.holdId !== messageId) return;
@@ -919,7 +1006,11 @@ export function createMockServer({
           });
         } else agentHolds.delete(holdKey);
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed' } }));
-        if (payload.msg_type === 'agent.unhold') resumeQueueHead(30);
+        if (payload.msg_type === 'agent.unhold') {
+          // unhold 无目标参数；真正的续跑对象由 Resumed/FIFO 队首决定。replace 后
+          // 原 target 已终态，新 replace 行继承 Resumed，定向旧 id 会让队列永久卡住。
+          resumeQueueHead(30);
+        }
         // hold 带 target 且目标正在处理：打断当前 turn，目标消息回到队列头（Resumed）。
         if (targetRequest) {
           const targetPosition = [...history].reverse().map((value) => value.envelope).find((value) => value.kind === 'response' && value.parent_id === holdTarget)?.payload?.status;
@@ -1433,7 +1524,7 @@ export function createMockServer({
     }
 
     if (request.method === 'GET' && path === '/mock/control/catalog') {
-      json(response, 200, { scenarios: scenarioIds(), actions: ['drop', 'approval', 'revoke_membership', 'grant_membership', 'retire_channel', 'set_channel_open', 'set_obs_complete', 'pulse', 'push_provisional', 'push_terminal', 'replay_envelope', 'terminal_conflict', 'resolve_approval'] });
+      json(response, 200, { scenarios: scenarioIds(), agent_advance: true, actions: ['drop', 'approval', 'revoke_membership', 'grant_membership', 'retire_channel', 'set_channel_open', 'set_obs_complete', 'pulse', 'push_provisional', 'push_terminal', 'replay_envelope', 'terminal_conflict', 'resolve_approval'] });
       return;
     }
 
@@ -1458,7 +1549,8 @@ export function createMockServer({
             ts: domain.now(),
           }));
         }
-        json(response, 200, { clock: domain.now(), applied: due });
+        const computation = body.compute?.channel_id ? advanceAgentComputation(String(body.compute.channel_id)) : null;
+        json(response, 200, { clock: domain.now(), applied: due, ...(computation ? { computation } : {}) });
       } catch (error) {
         httpError(response, 400, 'invalid_args', error.message);
       }

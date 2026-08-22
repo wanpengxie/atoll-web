@@ -91,6 +91,107 @@ describe('local mock end-to-end', () => {
     await closeServer(server);
   });
 
+  it('manually advances long-running agent computation through progress, terminal, and FIFO resume', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', scenario: 'long-running', seed: 23 });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    await createIdentityClient(fetchWithSession).login('root@atoll.local', 'test-root');
+    class SessionWebSocket extends WebSocket {
+      constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+    }
+    const rows = [];
+    let attached = false;
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws', WebSocketImpl: SessionWebSocket, since: () => ({}),
+      onState: (state) => { if (state === 'attached') attached = true; },
+      onFeed: (channelId, seq, value) => { if (channelId === 'c0') rows.push({ channel_id: channelId, seq, envelope: value }); },
+    });
+    await waitFor(() => attached, 'manual-advance attach');
+    const first = await wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'first' }, audience: ['steward'] });
+    await waitFor(() => fold(rows, 'root').turns.get(first.message_id)?.latestStatus === 'processing', 'first task processing');
+    const second = await wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'second' }, audience: ['steward'] });
+    const third = await wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'third' }, audience: ['steward'] });
+    await waitFor(() => fold(rows, 'root').turns.get(first.message_id)?.latestStatus === 'processing' && fold(rows, 'root').turns.get(third.message_id)?.latestStatus === 'queued', 'active and buffered tasks');
+
+    const advance = () => fetchWithSession('/mock/control/advance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms: 0, compute: { channel_id: 'c0' } }) }).then((response) => response.json());
+    await expect(advance()).resolves.toMatchObject({ computation: { status: 'processing', request_id: first.message_id, step: 1 } });
+    await expect(advance()).resolves.toMatchObject({ computation: { status: 'processing', request_id: first.message_id, step: 2 } });
+    await expect(advance()).resolves.toMatchObject({ computation: { status: 'completed', request_id: first.message_id, resumed_request_id: second.message_id, merged_request_ids: [third.message_id] } });
+    await waitFor(() => {
+      const state = fold(rows, 'root');
+      return state.turns.get(first.message_id)?.terminal?.payload?.status === 'completed'
+        && state.turns.get(second.message_id)?.latestStatus === 'processing'
+        && state.turns.get(third.message_id)?.terminal?.payload?.merged_into === second.message_id;
+    }, 'manual terminal and FIFO resume');
+    wire.close();
+    await closeServer(server);
+  });
+
+  it('resumes only the targeted message after editing and keeps later messages queued', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', scenario: 'long-running', seed: 24 });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    await createIdentityClient(fetchWithSession).login('root@atoll.local', 'test-root');
+    class SessionWebSocket extends WebSocket {
+      constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+    }
+    const rows = [];
+    let attached = false;
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws', WebSocketImpl: SessionWebSocket, since: () => ({}),
+      onState: (state) => { if (state === 'attached') attached = true; },
+      onFeed: (channelId, seq, value) => { if (channelId === 'c0') rows.push({ channel_id: channelId, seq, envelope: value }); },
+    });
+    await waitFor(() => attached, 'targeted-edit attach');
+    const submit = (msgType, payload) => wire.submit({ channel_id: 'c0', msg_type: msgType, kind: 'request', payload, audience: ['steward'] });
+    const a = await submit('agent.ask', { text: 'A original' });
+    await waitFor(() => fold(rows, 'root').turns.get(a.message_id)?.latestStatus === 'processing', 'A processing');
+    const b = await submit('agent.ask', { text: 'B queued' });
+    const c = await submit('agent.ask', { text: 'C queued' });
+    await waitFor(() => fold(rows, 'root').turns.get(c.message_id)?.latestStatus === 'queued', 'B/C queued');
+
+    const hold = await submit('agent.hold', { target: a.message_id });
+    await waitFor(() => {
+      const state = fold(rows, 'root');
+      return state.turns.get(hold.message_id)?.terminal?.payload?.status === 'completed'
+        && state.turns.get(a.message_id)?.latestStatus === 'queued';
+    }, 'A held and resumed to queue');
+    const replace = await submit('agent.replace', { target: a.message_id, old_text: 'A original', new_text: 'A edited' });
+    await waitFor(() => {
+      const state = fold(rows, 'root');
+      return state.turns.get(a.message_id)?.terminal?.payload?.replaced_by === replace.message_id
+        && state.turns.get(replace.message_id)?.latestStatus === 'queued';
+    }, 'A replaced by the replacement row');
+    const unhold = await submit('agent.unhold', {});
+    await waitFor(() => {
+      const state = fold(rows, 'root');
+      return state.turns.get(unhold.message_id)?.terminal?.payload?.status === 'completed'
+        && state.turns.get(replace.message_id)?.latestStatus === 'processing';
+    }, 'replacement row resumed processing');
+
+    const final = fold(rows, 'root');
+    expect(final.turns.get(b.message_id)).toMatchObject({ latestStatus: 'queued', terminal: null });
+    expect(final.turns.get(c.message_id)).toMatchObject({ latestStatus: 'queued', terminal: null });
+    wire.close();
+    await closeServer(server);
+  });
+
   it('keeps receipt acceptance separate from delayed feed landing', async () => {
     const server = createMockServer({ rootPassword: 'test-root', scenario: 'projection-delay' });
     const baseURL = await listen(server);

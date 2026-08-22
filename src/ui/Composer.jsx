@@ -3,7 +3,7 @@ import { EditorContent, useEditor } from '@tiptap/react';
 import Mention from '@tiptap/extension-mention';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
-import { FolderOpen, Upload } from 'lucide-react';
+import { FolderOpen, Upload, X } from 'lucide-react';
 import { actorDisplayName } from '../model/actor-display.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { resolveManagementActors } from '../model/management-actors.js';
@@ -94,14 +94,20 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles }) {
+export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, editMode = null }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
   const composingRef = useRef(false);
   const compositionFrameRef = useRef(0);
   const commitComposerHeightRef = useRef(() => {});
+  const editTransitionStartRectRef = useRef(null);
+  const lastEditActiveRef = useRef(null);
+  const layoutAnimationRef = useRef(null);
+  const layoutTransitionTimerRef = useRef(0);
   const lastDraftFingerprintRef = useRef(JSON.stringify(initialDraft.doc));
+  const editModeRef = useRef(editMode);
+  const normalDraftRef = useRef(null);
   const [mentionIds, setMentionIds] = useState(() => mentionIdsOf(initialDraft.doc));
   const [error, setError] = useState('');
   const [sendState, setSendState] = useState('idle');
@@ -127,7 +133,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         ? existing
         : nextMentionIds
     ));
-    onDraftChange?.({ text: value, doc: document });
+    if (!editModeRef.current) onDraftChange?.({ text: value, doc: document });
     setError('');
     setSendState('idle');
   }
@@ -188,8 +194,9 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       syncEditorSnapshot(current);
     },
   }, [channelId]);
+  editModeRef.current = editMode;
   const mentions = useMemo(() => mentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean), [mentionIds, roster]);
-  const query = mentionQuery(text);
+  const query = editMode ? null : mentionQuery(text);
   const candidates = useMemo(() => roster.filter((row) => (
     row.id !== selfId
     && (row.kind === 'agent' || row.kind === 'human')
@@ -199,6 +206,40 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const activeSubmission = sentMessageId ? pending.find((item) => item.messageId === sentMessageId) : null;
 
   useEffect(() => { setActiveCandidate(0); }, [query]);
+
+  const editTargetId = editMode?.session?.targetId || '';
+  const editBusy = Boolean(editMode && editMode.session?.phase !== 'editing');
+
+  useEffect(() => {
+    if (!editor) return;
+    if (editTargetId) {
+      if (!normalDraftRef.current) normalDraftRef.current = { doc: editor.getJSON(), text: editorText(editor), mentionIds: mentionIdsOf(editor.getJSON()) };
+      const next = editorDocument(editMode.session.text);
+      lastDraftFingerprintRef.current = JSON.stringify(next);
+      editor.commands.setContent(next, { emitUpdate: false });
+      setText(editMode.session.text);
+      setMentionIds([]);
+      setError('');
+      setSendState(editMode.session.phase === 'editing' ? 'idle' : 'sending');
+      requestAnimationFrame(() => editor.commands.focus('end'));
+      return;
+    }
+    if (normalDraftRef.current) {
+      const saved = normalDraftRef.current;
+      normalDraftRef.current = null;
+      lastDraftFingerprintRef.current = JSON.stringify(saved.doc);
+      editor.commands.setContent(saved.doc, { emitUpdate: false });
+      setText(saved.text);
+      setMentionIds(saved.mentionIds);
+      setError('');
+      setSendState('idle');
+    }
+  }, [editor, editTargetId]);
+
+  useEffect(() => {
+    if (!editMode) return;
+    setSendState(editMode.session.phase === 'editing' ? 'idle' : 'sending');
+  }, [editMode?.session?.phase]);
 
   useEffect(() => {
     cancelAnimationFrame(compositionFrameRef.current);
@@ -210,14 +251,18 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     setSentMessageId('');
   }, [channelId]);
 
-  useEffect(() => () => cancelAnimationFrame(compositionFrameRef.current), []);
+  useEffect(() => () => {
+    cancelAnimationFrame(compositionFrameRef.current);
+    clearTimeout(layoutTransitionTimerRef.current);
+    layoutAnimationRef.current?.cancel?.();
+  }, []);
 
   useEffect(() => {
     if (!editor) return;
-    const editable = Boolean(channelId) && !disabled;
+    const editable = Boolean(channelId) && !disabled && (!editMode || !editBusy);
     editor.setEditable(editable);
     editor.view.dom.setAttribute('aria-disabled', String(!editable));
-  }, [channelId, disabled, editor]);
+  }, [channelId, disabled, editor, editMode, editBusy]);
 
   // Composer 浮在时间线上方，自身增高不能改变时间线 viewport。高度只用于给
   // 账本末尾留出安全空间；用户本来就在底部时，再把滚动位置贴回最新消息。
@@ -227,7 +272,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     if (!wrap || !workspace || typeof ResizeObserver === 'undefined') return undefined;
     let committedHeight = 0;
     const commitHeight = () => {
-      const height = Math.ceil(wrap.getBoundingClientRect().height);
+      const rect = wrap.getBoundingClientRect();
+      const height = Math.ceil(rect.height);
       if (!height || height === committedHeight) return;
       // 中文输入法确认时，字体 fallback/composition DOM 可能短暂产生 1–2px 的
       // 高度波动。这不是一次真实换行，不能据此重排 Timeline。
@@ -246,6 +292,37 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       workspace.style.removeProperty('--composer-overlay-height');
     };
   }, [channelId]);
+
+  // 编辑提交后，普通 Composer 的工具栏会重新出现，容器高度随之改变。只在
+  // 编辑态边界做一次 FLIP，让 Composer、等待区和时间线共同移动；输入和输入法
+  // 引起的日常高度变化不进入这条动画路径。
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    const workspace = wrap?.closest('.workspace');
+    if (!wrap || !workspace) return;
+    const editActive = Boolean(editMode);
+    const previousActive = lastEditActiveRef.current;
+    const previousRect = editTransitionStartRectRef.current;
+    const nextRect = wrap.getBoundingClientRect();
+    lastEditActiveRef.current = editActive;
+    if (previousActive == null || previousActive === editActive || !previousRect) return;
+    editTransitionStartRectRef.current = null;
+    const deltaY = previousRect.top - nextRect.top;
+    if (Math.abs(deltaY) < 1 || globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    clearTimeout(layoutTransitionTimerRef.current);
+    layoutAnimationRef.current?.cancel?.();
+    workspace.classList.add('is-composer-layout-transitioning');
+    if (typeof wrap.animate === 'function') {
+      layoutAnimationRef.current = wrap.animate(
+        [{ transform: `translateY(${deltaY}px)` }, { transform: 'translateY(0)' }],
+        { duration: 180, easing: 'cubic-bezier(.22, 1, .36, 1)' },
+      );
+    }
+    layoutTransitionTimerRef.current = setTimeout(() => {
+      workspace.classList.remove('is-composer-layout-transitioning');
+      layoutAnimationRef.current = null;
+    }, 210);
+  }, [Boolean(editMode)]);
 
   useEffect(() => {
     if (!sentMessageId) return undefined;
@@ -294,8 +371,35 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     editor.commands.focus();
   }
 
+  function beginEditLayoutTransition() {
+    const wrap = wrapRef.current;
+    const workspace = wrap?.closest('.workspace');
+    if (!wrap || !workspace) return null;
+    editTransitionStartRectRef.current = wrap.getBoundingClientRect();
+    clearTimeout(layoutTransitionTimerRef.current);
+    workspace.classList.add('is-composer-layout-transitioning');
+    // 协议失败或后端长时间没有退出编辑态时，安全移除临时动效状态。
+    layoutTransitionTimerRef.current = setTimeout(() => workspace.classList.remove('is-composer-layout-transitioning'), 1200);
+    return workspace;
+  }
+
   async function submit() {
     const value = text.trim();
+    if (editMode) {
+      if (!value || !channelId || disabled || editBusy || sendState === 'sending') return;
+      const workspace = beginEditLayoutTransition();
+      setError('');
+      setSendState('sending');
+      try {
+        await editMode.onSave(value);
+      } catch (failure) {
+        workspace?.classList.remove('is-composer-layout-transitioning');
+        editTransitionStartRectRef.current = null;
+        setError(failure.message || String(failure));
+        setSendState('error');
+      }
+      return;
+    }
     if ((!value && !attachments.length) || !channelId || disabled || sendState === 'sending') return;
     setError('');
     setSendState('sending');
@@ -443,17 +547,17 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   }
 
   return (
-    <section className="composer-wrap" ref={wrapRef}>
+    <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}`} ref={wrapRef}>
       <div
-        className={`composer-surface${fileDragActive ? ' is-file-dragging' : ''}`}
+        className={`composer-surface${fileDragActive ? ' is-file-dragging' : ''}${editMode ? ' is-editing-message' : ''}`}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
         {fileDragActive && <div className="composer-drop-hint" role="status"><Upload size={18} strokeWidth={1.8} aria-hidden="true" /><strong>松开以上传到当前频道</strong></div>}
-        {attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{attachments.map((row) => <article key={row.resource_id}><button type="button" className="attachment-draft-preview" aria-label={`预览文件 ${row.name}`} onClick={() => onPreviewAttachment?.(row)}><span aria-hidden="true">◇</span><span><strong>{row.name}</strong><small>{formatArtifactSize(Number(row.size || 0))} · 点击预览</small></span></button><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name}`} onClick={() => onRemoveAttachment?.(row.resource_id)}>×</button></article>)}</div>}
-        {mentions.length > 0 && (
+        {!editMode && attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{attachments.map((row) => <article key={row.resource_id}><button type="button" className="attachment-draft-preview" aria-label={`预览文件 ${row.name}`} onClick={() => onPreviewAttachment?.(row)}><span aria-hidden="true">◇</span><span><strong>{row.name}</strong><small>{formatArtifactSize(Number(row.size || 0))} · 点击预览</small></span></button><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name}`} onClick={() => onRemoveAttachment?.(row.resource_id)}>×</button></article>)}</div>}
+        {!editMode && mentions.length > 0 && (
           <div className="mention-chips">{mentions.map((row) => (
             <button type="button" key={row.id} onClick={() => removeMention(row.id)}>@{actorDisplayName(row)} ×</button>
           ))}</div>
@@ -498,14 +602,19 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             <button type="button" aria-label="从频道文件选择" title="从频道文件选择" disabled={disabled || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
             {mentions.length > 0 && <div className="composer-target"><strong>{mentions.map((row) => `@${actorDisplayName(row)}`).join('、')}</strong></div>}
           </div>
-          {(text.trim() || attachments.length || !activeAgentTurn)
-            ? <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
-            : <button type="button" className="send-button interrupt" onClick={interrupt} disabled={!channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '停止中' : '停止'}>{sendState === 'sending' ? '…' : '■'}</button>}
+          <div className="composer-submit-actions">
+            {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={() => { beginEditLayoutTransition(); editMode.onAbandon(); }}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
+            {editMode
+              ? <button type="button" className="send-button" onClick={submit} disabled={!text.trim() || !channelId || disabled || editBusy || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
+              : (text.trim() || attachments.length || !activeAgentTurn)
+              ? <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
+              : <button type="button" className="send-button interrupt" onClick={interrupt} disabled={!channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '停止中' : '停止'}>{sendState === 'sending' ? '…' : '■'}</button>}
+          </div>
         </div>
       </div>
-      {['accepted', 'delayed', 'uncertain', 'landed'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ accepted: '已提交，等待频道入账', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对', landed: '已写入频道账本' }[sendState]}{sendState === 'uncertain' && activeSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(activeSubmission)}>使用原编号重试</button>}</p>}
+      {['delayed', 'uncertain'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对' }[sendState]}{sendState === 'uncertain' && activeSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(activeSubmission)}>使用原编号重试</button>}</p>}
       {disabled && <p className="composer-disabled-reason">{disabledReason}；草稿仍保留在当前设备。</p>}
-      {error && <p className="composer-error" role="alert">{error}</p>}
+      {(error || editMode?.session?.error) && <p className="composer-error" role="alert">{error || editMode.session.error}</p>}
     </section>
   );
 }
