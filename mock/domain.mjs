@@ -59,6 +59,7 @@ function createRoster(channel, memberships, clock) {
   }
   if (!channel.internal) {
     rows.push(rosterItem({ id: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, kind: 'agent', declId: 'mock:steward', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
+    if (channel.id === 'c0') rows.push(rosterItem({ id: 'claude', kind: 'agent', declId: 'mock:claude', name: 'Claude', description: 'Mock Claude collaboration agent' }, clock));
   }
   for (const membership of memberships.filter((entry) => entry.channel_id === channel.id && entry.status === 'active')) {
     rows.push(rosterItem({ id: membership.actor_id, kind: 'human', name: membership.principal_id, principal: membership.principal_id, online: true, description: 'Human channel member' }, clock));
@@ -88,6 +89,7 @@ export class MockDomain {
     const stamp = STAMP;
     this.declarations = new Map([
       ['mock:steward', { id: 'mock:steward', name: 'Steward', description: 'Mock steward declaration', owner: ROOT_ID, class: 'codex', default_class: 'codex', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
+      ['mock:claude', { id: 'mock:claude', name: 'Claude', description: 'Mock Claude agent declaration', owner: ROOT_ID, class: 'claude', default_class: 'claude', kind: 'agent', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
       ['mock:analyst', { id: 'mock:analyst', name: 'Analyst Agent', description: 'Mock agent declaration', owner: ROOT_ID, class: 'codex-agent', default_class: 'codex-agent', kind: 'agent', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
       ['mock:search', { id: 'mock:search', name: 'Search Tool', description: 'Mock tool declaration', owner: ROOT_ID, class: 'mcp-tool', default_class: 'mcp-tool', kind: 'tool', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
       ['registrar', { id: 'registrar', name: 'Registrar Seat', owner: ROOT_ID, class: 'registrar', default_class: 'registrar', status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],

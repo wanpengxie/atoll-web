@@ -58,6 +58,15 @@ function editorText(editor) {
   return editor?.getText({ blockSeparator: '\n' }) || '';
 }
 
+function mentionCandidates(rows, selfId, selectedIds, query) {
+  return rows.filter((row) => (
+    row.id !== selfId
+    && (row.kind === 'agent' || row.kind === 'human')
+    && !selectedIds.includes(row.id)
+    && `${row.name || ''} ${row.id}`.toLowerCase().includes(query)
+  ));
+}
+
 // 频道面的斜杠命令。收件人恒是本频道的 system actor：成员类的词它自己答，
 // 空间类的词它转交 c0 的 registrar。
 export function slashCommand(value) {
@@ -95,7 +104,7 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, modelSelection = null, modelSelectionBusy = false, onModelSelectionChange, editMode = null }) {
+export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, modelSelection = null, modelSelectionBusy = false, onLoadModelSelection, onModelSelectionChange, editMode = null }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
@@ -108,6 +117,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const layoutTransitionTimerRef = useRef(0);
   const lastDraftFingerprintRef = useRef(JSON.stringify(initialDraft.doc));
   const editModeRef = useRef(editMode);
+  const mentionContextRef = useRef({ roster: [], selfId: '', selectedIds: [], activeCandidate: 0, editing: false });
+  const submitRef = useRef(() => {});
   const normalDraftRef = useRef(null);
   const [mentionIds, setMentionIds] = useState(() => mentionIdsOf(initialDraft.doc));
   const [error, setError] = useState('');
@@ -187,6 +198,29 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         class: 'composer-editor',
         role: 'textbox',
       },
+      handleKeyDown: (view, event) => {
+        if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return false;
+        const context = mentionContextRef.current;
+        const { from } = view.state.selection;
+        const before = view.state.doc.textBetween(Math.max(0, from - 120), from, '\n', '\0');
+        const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+        event.preventDefault();
+        event.stopPropagation();
+        if (!match || context.editing) {
+          submitRef.current();
+          return true;
+        }
+        const rows = mentionCandidates(context.roster, context.selfId, context.selectedIds, match[1].toLowerCase());
+        const row = rows[context.activeCandidate] || rows[0];
+        if (!row) return true;
+        const mentionType = view.state.schema.nodes.mention;
+        if (!mentionType) return true;
+        const start = from - match[1].length - 1;
+        const node = mentionType.create({ id: row.id, label: actorDisplayName(row) });
+        const transaction = view.state.tr.replaceWith(start, from, node).insertText(' ', start + node.nodeSize).scrollIntoView();
+        view.dispatch(transaction);
+        return true;
+      },
     },
     onUpdate: ({ editor: current }) => {
       // 输入法合成期间的文字只是临时态。此时同步 React 会重绘候选菜单和
@@ -197,13 +231,13 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   }, [channelId]);
   editModeRef.current = editMode;
   const mentions = useMemo(() => mentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean), [mentionIds, roster]);
+  const mentionedAgents = useMemo(() => mentions.filter((row) => row.kind === 'agent'), [mentions]);
+  const primaryAgent = useMemo(() => roster.find((row) => row.id === modelSelection?.actorId && row.kind === 'agent') || null, [modelSelection?.actorId, roster]);
+  const parameterAgent = mentionedAgents.at(-1) || primaryAgent;
   const query = editMode ? null : mentionQuery(text);
-  const candidates = useMemo(() => roster.filter((row) => (
-    row.id !== selfId
-    && (row.kind === 'agent' || row.kind === 'human')
-    && !mentions.some((item) => item.id === row.id)
-    && (query == null || `${row.name} ${row.id}`.toLowerCase().includes(query))
-  )), [mentions, query, roster, selfId]);
+  const matchingCandidates = (searchQuery) => mentionCandidates(roster, selfId, mentions.map((row) => row.id), searchQuery || '');
+  const candidates = useMemo(() => matchingCandidates(query), [mentions, query, roster, selfId]);
+  mentionContextRef.current = { roster, selfId, selectedIds: mentions.map((row) => row.id), activeCandidate, editing: Boolean(editMode) };
   const activeSubmission = sentMessageId ? pending.find((item) => item.messageId === sentMessageId) : null;
 
   useEffect(() => { setActiveCandidate(0); }, [query]);
@@ -412,7 +446,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         if (slash.target === 'agent') {
           const selectedAgents = mentions.filter((row) => row.kind === 'agent');
           const agents = roster.filter((row) => row.kind === 'agent');
-          recipient = selectedAgents.length === 1 ? selectedAgents[0] : agents.length === 1 ? agents[0] : null;
+          recipient = selectedAgents.length === 1 ? selectedAgents[0] : primaryAgent || (agents.length === 1 ? agents[0] : null);
           if (!recipient) throw new TypeError('请 @ 一个 Agent 执行此命令');
         } else recipient = resolveManagementActors(roster).system;
         const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload: slash.payload });
@@ -427,7 +461,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       let recipients = mentions;
       if (!recipients.length) {
         const agents = roster.filter((row) => row.kind === 'agent');
-        if (agents.length === 1) recipients = agents;
+        if (primaryAgent) recipients = [primaryAgent];
+        else if (agents.length === 1) recipients = agents;
         else throw new TypeError('请 @ 一个成员');
       }
       const kinds = new Set(recipients.map((row) => row.kind));
@@ -467,23 +502,23 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     }
   }
 
+  submitRef.current = submit;
+
   function onKeyDown(event) {
-    if (query != null && candidates.length) {
+    // React 的 text 快照可能比 ProseMirror 当前按键慢一帧。Enter 是否属于
+    // Mention 菜单必须读取编辑器真相，否则快速输入“@Cl↵”会落入发送分支。
+    const liveText = event.currentTarget?.textContent || editorText(editor);
+    const liveQuery = editMode ? null : mentionQuery(liveText);
+    const liveCandidates = liveQuery == null ? [] : matchingCandidates(liveQuery);
+    if (liveQuery != null) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
+        if (!liveCandidates.length) return;
         const direction = event.key === 'ArrowDown' ? 1 : -1;
-        setActiveCandidate((current) => (current + direction + Math.min(candidates.length, 8)) % Math.min(candidates.length, 8));
+        setActiveCandidate((current) => (current + direction + Math.min(liveCandidates.length, 8)) % Math.min(liveCandidates.length, 8));
         return;
       }
-      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-        event.preventDefault();
-        pick(candidates[activeCandidate] || candidates[0]);
-        return;
-      }
-    }
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      submit();
+      // Enter 由 ProseMirror 的同步 handleKeyDown 在 React 之前处理。
     }
   }
 
@@ -601,10 +636,9 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
               {attachmentBusy ? <span className="attachment-tool-busy" aria-hidden="true" /> : <Upload size={17} strokeWidth={1.8} aria-hidden="true" />}
             </span>
             <button type="button" aria-label="从频道文件选择" title="从频道文件选择" disabled={disabled || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
-            {mentions.length > 0 && <div className="composer-target"><strong>{mentions.map((row) => `@${actorDisplayName(row)}`).join('、')}</strong></div>}
           </div>
           <div className="composer-submit-actions">
-            <ModelSelector value={modelSelection} busy={modelSelectionBusy} disabled={disabled || sendState === 'sending'} onChange={onModelSelectionChange} />
+            <ModelSelector value={modelSelection} actorId={parameterAgent?.id} actorName={parameterAgent ? actorDisplayName(parameterAgent) : ''} busy={modelSelectionBusy} disabled={disabled || sendState === 'sending'} onLoad={onLoadModelSelection} onChange={onModelSelectionChange} />
             {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={() => { beginEditLayoutTransition(); editMode.onAbandon(); }}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
             {editMode
               ? <button type="button" className="send-button" onClick={submit} disabled={!text.trim() || !channelId || disabled || editBusy || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>

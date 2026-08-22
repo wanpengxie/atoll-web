@@ -18,5 +18,6 @@ describe('Agent 模型选择观察面', () => {
     const fetchImpl = async (path) => ({ ok: true, json: async () => ({ path }) });
     const obs = createObsClient({ fetchImpl });
     await expect(obs.channelAgentSelection('c0.project')).resolves.toEqual({ path: '/obs/channel/c0.project/agent-selection' });
+    await expect(obs.channelAgentSelection('c0', 'claude')).resolves.toEqual({ path: '/obs/channel/c0/agent-selection?actor_id=claude' });
   });
 });

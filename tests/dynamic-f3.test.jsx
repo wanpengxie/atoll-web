@@ -146,6 +146,18 @@ describe('F3 Composer', () => {
     expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['agent-1'] }));
   });
 
+  it('用 Enter 选中 @候选时不会把选择动作继续当成发送', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }, { id: 'claude', kind: 'agent', name: 'Claude' }]} selfId="me" onSend={onSend} />);
+
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '@Cl{Enter}');
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-type="mention"][data-id="claude"]')).toBeTruthy();
+  });
+
   it('不会把普通文本里的 @ 名称猜成收件人', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();

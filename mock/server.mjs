@@ -38,6 +38,10 @@ const MOCK_MODELS = Object.freeze([
   { id: 'gpt-5.6-terra', label: '5.6 Terra' },
   { id: 'gpt-5.4', label: '5.4' },
 ]);
+const MOCK_CLAUDE_MODELS = Object.freeze([
+  { id: 'claude-sonnet', label: 'Claude Sonnet' },
+  { id: 'claude-opus', label: 'Claude Opus' },
+]);
 const MOCK_EFFORTS = Object.freeze([
   { id: 'light', label: '轻量' },
   { id: 'medium', label: '中等' },
@@ -45,6 +49,14 @@ const MOCK_EFFORTS = Object.freeze([
   { id: 'xhigh', label: '超高' },
   { id: 'ultra', label: '极高', description: '会更快消耗用量额度' },
 ]);
+
+function modelCatalog(actorId) {
+  return actorId === 'claude' ? MOCK_CLAUDE_MODELS : MOCK_MODELS;
+}
+
+function defaultAgentSelection(actorId) {
+  return { model: modelCatalog(actorId)[0].id, effort: MOCK_EFFORTS[1].id };
+}
 
 const now = () => Date.now();
 
@@ -1122,10 +1134,11 @@ export function createMockServer({
       if (payload.msg_type === 'agent.select') {
         const selection = payload.payload || {};
         try { assertClosedPayload(selection, ['model', 'effort']); } catch (error) { fail(error.code || 'invalid_args', error.message); return; }
-        const current = agentSelections.get(`${channelId}:${respondingAgent.id}`) || { model: MOCK_MODELS[0].id, effort: MOCK_EFFORTS[1].id };
+        const models = modelCatalog(respondingAgent.id);
+        const current = agentSelections.get(`${channelId}:${respondingAgent.id}`) || defaultAgentSelection(respondingAgent.id);
         const model = String(selection.model || current.model);
         const effort = String(selection.effort || current.effort);
-        if (!MOCK_MODELS.some((row) => row.id === model) || !MOCK_EFFORTS.some((row) => row.id === effort)) { fail('invalid_args', 'unknown model or effort'); return; }
+        if (!models.some((row) => row.id === model) || !MOCK_EFFORTS.some((row) => row.id === effort)) { fail('invalid_args', 'unknown model or effort'); return; }
         agentSelections.set(`${channelId}:${respondingAgent.id}`, { model, effort });
       }
       const key = { 'agent.compact': 'compacted', 'agent.select': 'selected', 'agent.fork': 'forked' }[payload.msg_type];
@@ -1536,13 +1549,20 @@ export function createMockServer({
       const agentSelectionMatch = path.match(/^\/obs\/channel\/([^/]+)\/agent-selection$/);
       if (agentSelectionMatch) {
         const channelId = decodeURIComponent(agentSelectionMatch[1]);
-        const actor = (rosters.get(channelId) || []).map((row) => row.declared).find((row) => row.kind === 'agent');
+        const requestedActorId = url.searchParams.get('actor_id') || '';
+        if (url.searchParams.size > (requestedActorId ? 1 : 0)) {
+          httpError(response, 400, 'invalid_args', 'only actor_id is supported');
+          return;
+        }
+        const agents = (rosters.get(channelId) || []).map((row) => row.declared).filter((row) => row.kind === 'agent');
+        const actor = requestedActorId ? agents.find((row) => row.id === requestedActorId) : agents[0];
         if (!actor) {
           json(response, 200, observation(channelId, 'agent-selection', []));
           return;
         }
-        const current = agentSelections.get(`${channelId}:${actor.id}`) || { model: MOCK_MODELS[0].id, effort: MOCK_EFFORTS[1].id };
-        json(response, 200, observation(channelId, 'agent-selection', [item({ actor_id: actor.id, current, models: MOCK_MODELS, efforts: MOCK_EFFORTS }, null, actor.id)]));
+        const models = modelCatalog(actor.id);
+        const current = agentSelections.get(`${channelId}:${actor.id}`) || defaultAgentSelection(actor.id);
+        json(response, 200, observation(channelId, 'agent-selection', [item({ actor_id: actor.id, current, models, efforts: MOCK_EFFORTS }, null, actor.id)]));
         return;
       }
       const match = path.match(/^\/obs\/channel\/([^/]+)\/(profile|actors)$/);

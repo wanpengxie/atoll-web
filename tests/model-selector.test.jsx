@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
@@ -36,5 +36,19 @@ describe('Model/Effort 选择器', () => {
     await user.click(screen.getByRole('menuitem', { name: /推理强度/ }));
     await user.click(screen.getByRole('menuitemradio', { name: '高' }));
     expect(onChange).toHaveBeenCalledWith({ actorId: 'steward', model: 'gpt-5.6-sol', effort: 'high' });
+  });
+
+  it('目标 Actor 改变时读取该 Actor 的独立参数', async () => {
+    const claude = {
+      actorId: 'claude', current: { model: 'claude-sonnet', effort: 'medium' },
+      models: [{ id: 'claude-sonnet', label: 'Claude Sonnet' }], efforts: value.efforts,
+    };
+    const onLoad = vi.fn().mockResolvedValue(claude);
+    const { rerender } = render(<ModelSelector value={value} actorId="steward" actorName="Steward" onLoad={onLoad} />);
+    expect(screen.getByRole('button', { name: /Steward，模型 5.6 Sol/ })).toBeTruthy();
+
+    rerender(<ModelSelector value={value} actorId="claude" actorName="Claude" onLoad={onLoad} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /Claude，模型 Claude Sonnet/ })).toBeTruthy());
+    expect(onLoad).toHaveBeenCalledWith('claude');
   });
 });
