@@ -12,7 +12,6 @@ export const CHANNEL_ACCESS = Object.freeze({
   observer: 'observer_active',
 });
 
-const ACCESS_PREFIX = 'atoll.channel-access.v1.';
 
 function initialState(channelId, profile = null) {
   return {
@@ -117,35 +116,17 @@ export const canWriteChannel = (access) => access === CHANNEL_ACCESS.memberActiv
 export const canReadLiveChannel = (access) => [CHANNEL_ACCESS.memberActive, CHANNEL_ACCESS.observerActive].includes(access);
 export const canViewChannelContent = (access) => isMemberAccess(access) || [CHANNEL_ACCESS.observerActive, CHANNEL_ACCESS.observerStale].includes(access);
 
-function safeStoredState(raw, principalId) {
-  if (!raw || raw.principalId !== principalId || !Array.isArray(raw.channels)) return [];
-  return raw.channels.filter((row) => row && typeof row.channelId === 'string').map((row) => ({
-    ...initialState(row.channelId, row.profile || null),
-    ...row,
-    freshness: 'stale',
-    sessionEpoch: '',
-    unavailable: false,
-  }));
-}
-
+// 访问关系是活状态读数，恒只活在内存：attach 回执每次连接权威交付成员清单，
+// 页面刷新即全量重取。恒不落 localStorage——持久化只会让上一个生命期的旧
+// 关系还魂（正是"重启后端后前端不知道自己在 c0"一族病的温床）。
 export function createChannelAccessTracker({
   principalId = '',
-  storage = globalThis.localStorage,
   now = () => Date.now(),
-  contractVersion = 2,
 } = {}) {
   const states = new Map();
-  const storageKey = `${ACCESS_PREFIX}${principalId || 'anonymous'}`;
   let connected = false;
   let sessionEpoch = '';
   let membershipSupported = false;
-
-  try {
-    const saved = JSON.parse(storage?.getItem(storageKey) || 'null');
-    for (const row of safeStoredState(saved, principalId)) states.set(row.channelId, row);
-  } catch {
-    // 损坏缓存只影响启动占位，不影响权威 OBS/feed 收敛。
-  }
 
   function ensure(channelId, profile = null) {
     let state = states.get(channelId);
@@ -166,28 +147,6 @@ export function createChannelAccessTracker({
     return state;
   }
 
-  function persist() {
-    if (!storage || !principalId) return;
-    const channels = [...states.values()]
-      .filter((state) => state.relationship === 'member' || state.selfActorId || state.existence === 'retired')
-      .map((state) => ({
-        channelId: state.channelId,
-        profile: state.profile,
-        existence: state.existence,
-        runtime: state.runtime,
-        relationship: state.relationship,
-        selfActorId: state.selfActorId,
-        source: state.source,
-        reason: state.reason,
-        observedAt: state.observedAt,
-        contractVersion,
-      }));
-    try {
-      storage.setItem(storageKey, JSON.stringify({ principalId, contractVersion, channels }));
-    } catch {
-      // localStorage 满额时保留内存状态。
-    }
-  }
 
   function channelsObserved(channels, { complete = true } = {}) {
     const seen = new Set();
@@ -222,7 +181,6 @@ export function createChannelAccessTracker({
         }
       }
     }
-    persist();
   }
 
   function membershipsObserved(rows, { complete = true, supported = true } = {}) {
@@ -259,7 +217,6 @@ export function createChannelAccessTracker({
         }
       }
     }
-    persist();
   }
 
   function memberEvidence(channelId, source, selfActorId = '') {
@@ -270,7 +227,6 @@ export function createChannelAccessTracker({
     state.unavailable = false;
     if (selfActorId) state.selfActorId = selfActorId;
     stamp(state, source);
-    persist();
   }
 
   return {
@@ -286,7 +242,6 @@ export function createChannelAccessTracker({
       state.selfActorId = '';
       state.unavailable = false;
       stamp(state, 'error', 'forbidden');
-      persist();
     },
     unavailable(channelId, reason = 'unavailable') {
       const state = ensure(channelId);
@@ -301,7 +256,6 @@ export function createChannelAccessTracker({
       state.freshness = 'fresh';
       state.unavailable = false;
       stamp(state, 'event', reason);
-      persist();
     },
     wire(state, epoch = '') {
       connected = state === 'attached';
@@ -319,7 +273,6 @@ export function createChannelAccessTracker({
     clearSelf(channelId) {
       const state = states.get(channelId);
       if (state) state.selfActorId = '';
-      persist();
     },
     state(channelId) { return states.get(channelId) || null; },
     rows({ includeRetired = false } = {}) {

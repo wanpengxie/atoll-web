@@ -46,24 +46,28 @@ function usableUsage(payload) {
   return { model: usage.model, effort: usage.effort, contextTokens: usage.context_tokens ?? null, contextWindow: usage.context_window ?? null };
 }
 
-// 该 agent 最后一次可信参数：恒取最后一个 usage 带非空 model/effort 的 turn.ended
-// （失败/中断的 turn.ended 可能缺 usage，provider lost 干脆没有——缺字段的帧跳过，
-// 不得把显示清空）；agent.context 的终态同样是可信来源（usage 平铺在 status 旁）。
-export function latestAgentUsage(state, actorId) {
-  if (!state?.rows || !actorId) return null;
+// 该 agent 的当前参数。当前值是活状态读数，恒只认本连接的证据——账本历史
+// usage 是上一个生命期的读数（服务重启可能换过配置），恒不当"当前值"，也
+// 恒不挡本连接的 context 探测。证据链：本连接 agent.context 探测（liveRequestId）
+// 的 completed 响应起算，其后新完成的 turn.ended（usage 带非空 model/effort；
+// 缺字段的帧跳过，不得把显示清空）逐步覆盖。无本连接证据恒返回 null。
+export function latestAgentUsage(state, actorId, liveRequestId = '') {
+  if (!state?.rows || !actorId || !liveRequestId) return null;
+  let live = false;
   let found = null;
   for (const row of state.rows.values()) {
-    if (row.sender?.id !== actorId) continue;
-    if (row.kind === 'event' && row.type === 'agent.turn.ended') {
-      const usage = usableUsage(row.payload);
-      if (usage) found = usage;
-      continue;
-    }
-    if (row.kind === 'response' && row.type === TYPES.agentContext && row.payload?.status === 'completed') {
+    if (row.kind === 'response' && row.type === TYPES.agentContext && row.parent_id === liveRequestId && row.payload?.status === 'completed') {
+      live = true;
       const flat = row.payload;
       if (typeof flat.model === 'string' && flat.model && typeof flat.effort === 'string' && flat.effort) {
         found = { model: flat.model, effort: flat.effort, contextTokens: flat.context_tokens ?? null, contextWindow: flat.context_window ?? null };
       }
+      continue;
+    }
+    if (!live || row.sender?.id !== actorId) continue;
+    if (row.kind === 'event' && row.type === 'agent.turn.ended') {
+      const usage = usableUsage(row.payload);
+      if (usage) found = usage;
     }
   }
   return found;

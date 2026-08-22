@@ -139,6 +139,10 @@ export default function App() {
   const [pendingSelect, setPendingSelect] = useState(null); // {channelId, actorId, requestId, value:{model,effort}}
   const manualAgentsRef = useRef(new Map()); // channelId -> 手选 agent id（首条 ask 入账即清）
   const contextProbedRef = useRef(new Map()); // `${channelId}:${actorId}` -> {requestId, failed}，重连时清
+  // 本连接内发出的 describe requestId 集合。capability 是活状态读数，恒现场
+  // 拉：只有这个集合里的响应才算数，账本历史帧恒不当缓存。集合易失——
+  // 刷新/重连即清，活状态自然重新现问。
+  const liveDescribesRef = useRef(new Set());
   const [manualAgentVersion, setManualAgentVersion] = useState(0);
 
   const obsRef = useRef(null);
@@ -587,7 +591,10 @@ export default function App() {
   }, [feedVersion, rosters]);
 
   useEffect(() => {
-    if (wireState === 'open') contextProbedRef.current.clear();
+    if (wireState === 'open') {
+      contextProbedRef.current.clear();
+      liveDescribesRef.current.clear();
+    }
   }, [wireState]);
 
   const handleComposerAgentChange = useCallback((actorId) => {
@@ -641,7 +648,7 @@ export default function App() {
 
   const describeActor = useCallback(async (actor, channelId = activeChannelId) => {
     if (!actor || !channelId) return;
-    await handleSend({
+    const requestId = await handleSend({
       channelId,
       text: `读取 ${actor.name || actor.id} 的能力`,
       msgType: TYPES.describe,
@@ -649,6 +656,7 @@ export default function App() {
       targetLabel: actor.name || actor.id,
       payload: {},
     });
+    if (requestId) liveDescribesRef.current.add(requestId);
   }, [activeChannelId, handleSend]);
 
   // 参数目标的值域/当前值冷启动：目标无 describe 缓存则描述一次；有值域、无账本
@@ -663,7 +671,8 @@ export default function App() {
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId);
     if (!actor) return;
     const state = channelStatesRef.current.get(channelId);
-    const capability = capabilityIndexFromState(state).get(actorId);
+    const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actorId);
+    const probeKey = `${channelId}:${actorId}`;
     if (!capability?.describe && !capability?.loading) {
       describeActor(actor, channelId);
       return;
@@ -671,8 +680,8 @@ export default function App() {
     if (!capability?.describe) return;
     const view = agentSelectionView({ actorId, describe: capability.describe, usage: null });
     if (!view) return; // 无 selections 的 agent：不渲染切换菜单，也不探测
-    if (latestAgentUsage(state, actorId)) return;
-    const probeKey = `${channelId}:${actorId}`;
+    // 当前值恒来自本连接的 context 探测（历史 usage 是旧生命期读数，恒不挡
+    // 探测）：每连接对每目标恒探测一次，probe 记录本身即防重。
     const probe = contextProbedRef.current.get(probeKey);
     if (probe) {
       if (!probe.failed && probe.requestId) {
@@ -694,10 +703,20 @@ export default function App() {
     const { channelId, actorId } = composerAgent;
     if (!channelId || !actorId) return;
     const probeKey = `${channelId}:${actorId}`;
+    let retry = false;
     if (contextProbedRef.current.get(probeKey)?.failed) {
       contextProbedRef.current.delete(probeKey);
-      setManualAgentVersion((current) => current + 1);
+      retry = true;
     }
+    // describe 本连接已发但失败时，展开参数区 = 显式重试：把失败那次从
+    // 本连接集合剔除，capability 归零后冷启动 effect 自动重新自省。
+    const state = channelStatesRef.current.get(channelId);
+    const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actorId);
+    if (capability?.error && !capability?.loading && capability.requestId) {
+      liveDescribesRef.current.delete(capability.requestId);
+      retry = true;
+    }
+    if (retry) setManualAgentVersion((current) => current + 1);
   }, [composerAgent]);
 
   const handleSelectActor = useCallback((actor) => {
@@ -707,7 +726,7 @@ export default function App() {
     setContextFocus(focus);
     if (activeChannelId) writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView, focus }, { contextEntry: true });
     const state = channelStatesRef.current.get(activeChannelId);
-    const capability = capabilityIndexFromState(state).get(actor.id);
+    const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actor.id);
     if (!capability?.describe && !capability?.loading) describeActor(actor, activeChannelId);
   }, [activeChannelId, describeActor, workspaceView]);
 
@@ -732,7 +751,7 @@ export default function App() {
     const channelData = channelList.map((channel) => {
       const state = channelStatesRef.current.get(channel.id) || createChannelState(channel.id);
       const roster = visibleRosterRows(rosters.get(channel.id) || []);
-      const capabilityIndex = capabilityIndexFromState(state);
+      const capabilityIndex = capabilityIndexFromState(state, liveDescribesRef.current);
       const selfId = channel.selfActorId || rosterRef.current?.self(channel.id) || '';
       const workItems = buildWorkItemIndex({ state, pending, timers: timerRecords, selfId, access: channel.access, capabilityIndex });
       return { ...channel, state, roster, participants: roster, artifacts: buildArtifactIndex(state), workItems };
@@ -778,12 +797,14 @@ export default function App() {
   ]));
   const activeChannel = activeRow || channels.get(activeChannelId);
   const activeAccess = activeRow?.access || CHANNEL_ACCESS.loading;
-  const capabilityIndex = capabilityIndexFromState(activeState);
-  // 参数面板数据（协议 §4）：值域自 describe、当前值自账本 usage；pending 覆盖显示。
+  const capabilityIndex = capabilityIndexFromState(activeState, liveDescribesRef.current);
+  // 参数面板数据（协议 §4）：值域与当前值都是活状态读数，恒只认本连接证据
+  // （describe = liveDescribesRef；usage = 本连接 context 探测起算）。
   // manualAgentVersion 只为触发重渲染（手选存 ref）。
   void manualAgentVersion;
   const composerAgentId = composerAgent.channelId === activeChannelId ? composerAgent.actorId : '';
-  const composerAgentUsage = composerAgentId ? latestAgentUsage(activeState, composerAgentId) : null;
+  const composerProbeId = composerAgentId ? (contextProbedRef.current.get(`${activeChannelId}:${composerAgentId}`)?.requestId || '') : '';
+  const composerAgentUsage = composerAgentId ? latestAgentUsage(activeState, composerAgentId, composerProbeId) : null;
   const composerSelectionView = composerAgentId
     ? agentSelectionView({ actorId: composerAgentId, describe: capabilityIndex.get(composerAgentId)?.describe, usage: composerAgentUsage })
     : null;
