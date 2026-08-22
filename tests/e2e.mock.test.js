@@ -124,12 +124,14 @@ describe('local mock end-to-end', () => {
     const advance = () => fetchWithSession('/mock/control/advance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms: 0, compute: { channel_id: 'c0' } }) }).then((response) => response.json());
     await expect(advance()).resolves.toMatchObject({ computation: { status: 'processing', request_id: first.message_id, step: 1 } });
     await expect(advance()).resolves.toMatchObject({ computation: { status: 'processing', request_id: first.message_id, step: 2 } });
-    await expect(advance()).resolves.toMatchObject({ computation: { status: 'completed', request_id: first.message_id, resumed_request_id: second.message_id, merged_request_ids: [third.message_id] } });
+    // 组批 owner 恒是 tail（协议 §4.4.5 / loop.go:1009）：批 [second, third] 的
+    // 代表是 third，second 合并进它。
+    await expect(advance()).resolves.toMatchObject({ computation: { status: 'completed', request_id: first.message_id, resumed_request_id: third.message_id, merged_request_ids: [second.message_id] } });
     await waitFor(() => {
       const state = fold(rows, 'root');
       return state.turns.get(first.message_id)?.terminal?.payload?.status === 'completed'
-        && state.turns.get(second.message_id)?.latestStatus === 'processing'
-        && state.turns.get(third.message_id)?.terminal?.payload?.merged_into === second.message_id;
+        && state.turns.get(third.message_id)?.latestStatus === 'processing'
+        && state.turns.get(second.message_id)?.terminal?.payload?.merged_into === third.message_id;
     }, 'manual terminal and FIFO resume');
     wire.close();
     await closeServer(server);

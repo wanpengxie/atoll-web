@@ -472,17 +472,24 @@ export function createMockServer({
       .find((value) => value.kind === 'response' && value.parent_id === requestId)?.payload?.status || '';
   }
 
+  function isResumedTask(channelId, requestId) {
+    return [...(histories.get(channelId) || [])].reverse().map((row) => row.envelope)
+      .find((value) => value.kind === 'response' && value.parent_id === requestId && value.payload?.status === 'queued')?.payload?.resumed === true;
+  }
+
   function bufferedAgentTasks(channelId, actorId) {
     return (histories.get(channelId) || []).map((row) => row.envelope).filter((value) => (
       value.kind === 'request'
       && value.sender?.kind === 'human'
       && value.audience?.includes(actorId)
-      && !AGENT_CONTROL_WORDS.includes(value.type)
+      // replace 请求受理后自身就是新行（协议 §4.6），算队列成员。
+      && (!AGENT_CONTROL_WORDS.includes(value.type) || value.type === 'agent.replace')
       && value.type !== 'actor.describe'
       && !value.type.startsWith('system.')
       && !hasTerminal(channelId, value.id)
       && latestTaskStatus(channelId, value.id) === 'queued'
-    ));
+    // Resumed 件恒在队首（协议：打断退回原下标）。
+    )).sort((left, right) => Number(isResumedTask(channelId, right.id)) - Number(isResumedTask(channelId, left.id)));
   }
 
   // 手工演示用的确定性计算步进。它不绕过账本：每次点击仍然只追加标准
@@ -526,16 +533,21 @@ export function createMockServer({
       payload: { status: 'completed', text: `已完成：${requestText || '当前任务'}` },
     }));
 
-    // 完成后按协议恢复 FIFO：队首 processing，其余一次合并进同一 turn。
-    const [head, ...merged] = bufferedAgentTasks(channelId, agent.id);
-    if (head) {
+    // 完成后按协议（§4.4.5）恢复：队首为 Resumed 件则单独成批；否则整批带走，
+    // 批的 owner 恒是 tail（批内最后一条，同 loop.go:1009），其余 merged_into tail。
+    const buffered = bufferedAgentTasks(channelId, agent.id);
+    let resumedOwner = null;
+    let merged = [];
+    if (buffered.length) {
+      if (isResumedTask(channelId, buffered[0].id)) resumedOwner = buffered[0];
+      else { resumedOwner = buffered[buffered.length - 1]; merged = buffered.slice(0, -1); }
       append(channelId, envelope({
         ...base,
-        id: domain.nextId(`${head.id}-manual-resume`),
-        type: head.type,
-        parentId: head.id,
-        correlationId: head.id,
-        payload: { status: 'processing', turn_id: `turn-${head.id}`, controls: PROCESSING_CONTROLS },
+        id: domain.nextId(`${resumedOwner.id}-manual-resume`),
+        type: resumedOwner.type,
+        parentId: resumedOwner.id,
+        correlationId: resumedOwner.id,
+        payload: { status: 'processing', turn_id: `turn-${resumedOwner.id}`, controls: PROCESSING_CONTROLS },
       }));
       for (const item of merged) {
         append(channelId, envelope({
@@ -544,11 +556,11 @@ export function createMockServer({
           type: item.type,
           parentId: item.id,
           correlationId: item.id,
-          payload: { status: 'completed', merged_into: head.id },
+          payload: { status: 'completed', merged_into: resumedOwner.id },
         }));
       }
     }
-    return { status: 'completed', request_id: active.id, resumed_request_id: head?.id || '', merged_request_ids: merged.map((item) => item.id) };
+    return { status: 'completed', request_id: active.id, resumed_request_id: resumedOwner?.id || '', merged_request_ids: merged.map((item) => item.id) };
   }
 
   function closeTask(channelId, request, actorId, payload) {

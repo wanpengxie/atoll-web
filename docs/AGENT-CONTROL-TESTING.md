@@ -53,7 +53,8 @@ reset / mock 重启都会换"服务器世代号"（attach 回执里的 `boot`）
 
 开发模式连接到支持 `agent_advance` 的 mock 时，频道标题栏会临时显示“推进计算”。
 `long-running` 场景下连续点击会依次追加“分析中”progress、“生成中”progress、completed
-terminal；若有等待消息，完成时按 FIFO 让队首进入 processing，其余消息合并进该 turn。
+terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首为 Resumed 件则单独续跑，
+否则整批带走——批的代表（owner）恒是**批内最后一条（tail）**，其余 `merged_into` tail。
 这个按钮只追加协议帧，不在前端直接修改任务状态；真实后端和生产构建均不显示。
 
 ---
