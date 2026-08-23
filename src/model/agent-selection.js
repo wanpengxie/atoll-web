@@ -42,8 +42,8 @@ export function selectionFor(selections, model, preferredEffort = '') {
 
 function usableUsage(payload) {
   const usage = payload?.usage || null;
-  if (!usage || typeof usage.model !== 'string' || !usage.model || typeof usage.effort !== 'string' || !usage.effort) return null;
-  return { model: usage.model, effort: usage.effort, contextTokens: usage.context_tokens ?? null, contextWindow: usage.context_window ?? null };
+  if (!usage || typeof usage.model !== 'string' || !usage.model) return null;
+  return { model: usage.model, effort: typeof usage.effort === 'string' ? usage.effort : '', contextTokens: usage.context_tokens ?? null, contextWindow: usage.context_window ?? null };
 }
 
 // 该 agent 的当前参数。当前值是活状态读数，恒只认本连接的证据——账本历史
@@ -59,8 +59,8 @@ export function latestAgentUsage(state, actorId, liveRequestId = '') {
     if (row.kind === 'response' && row.type === TYPES.agentContext && row.parent_id === liveRequestId && row.payload?.status === 'completed') {
       live = true;
       const flat = row.payload;
-      if (typeof flat.model === 'string' && flat.model && typeof flat.effort === 'string' && flat.effort) {
-        found = { model: flat.model, effort: flat.effort, contextTokens: flat.context_tokens ?? null, contextWindow: flat.context_window ?? null };
+      if (typeof flat.model === 'string' && flat.model) {
+        found = { model: flat.model, effort: typeof flat.effort === 'string' ? flat.effort : '', contextTokens: flat.context_tokens ?? null, contextWindow: flat.context_window ?? null };
       }
       continue;
     }
@@ -81,12 +81,14 @@ export function latestAgentUsage(state, actorId, liveRequestId = '') {
 // 冒充会长期显示错误参数；§4.1 要求无真值只显示角色名）。
 export function agentSelectionView({ actorId, describe, usage }) {
   const selections = selectionsFromDescribe(describe);
-  if (!selections.length) return null;
   const current = usage?.model ? { model: usage.model, effort: usage.effort } : null;
+  // 没有 selections 只表示不可切换，不表示没有当前配置。agent.context 仍可能
+  // 返回真实 model（有些 provider 没有 effort），此时生成只读视图。
+  if (!selections.length && !current) return null;
   const seen = new Set();
   const models = selections.filter((row) => !seen.has(row.model) && seen.add(row.model))
     .map((row) => ({ id: row.model, label: row.modelLabel }));
-  return { actorId, current, models, selections, confirmed: Boolean(current) };
+  return { actorId, current, models, selections, confirmed: Boolean(current), configurable: selections.length > 0 };
 }
 
 export function selectedOption(rows, id) {

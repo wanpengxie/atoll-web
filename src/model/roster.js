@@ -22,6 +22,23 @@ function project(item) {
   };
 }
 
+const ROSTER_MUTATION_WORDS = new Set([
+  TYPES.member.create,
+  TYPES.member.admit,
+  TYPES.member.remove,
+  TYPES.member.restart,
+]);
+
+// 浏览器可见 feed 会过滤 visibility=system 的叙事事件，所以真实客户端不能
+// 只等 system.member.created/deleted。成员治理的公开 completed 终态同样是权威
+// 失效信号：收到后重取 Actor OBS，不从响应 payload 拼装名册。
+export function invalidatesRoster(envelope) {
+  if ([TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)) return true;
+  return envelope?.kind === 'response'
+    && ROSTER_MUTATION_WORDS.has(envelope?.type)
+    && envelope?.payload?.status === 'completed';
+}
+
 export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
   const cache = new Map();
   const pendingSubmissions = new Map();
@@ -84,7 +101,7 @@ export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
       selves.delete(channelId);
     },
     handleEnvelope(channelId, envelope, onRefresh) {
-      if (![TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)) return;
+      if (!invalidatesRoster(envelope)) return;
       if (timers.has(channelId)) clearTimeout(timers.get(channelId));
       timers.set(channelId, setTimeout(async () => {
         timers.delete(channelId);

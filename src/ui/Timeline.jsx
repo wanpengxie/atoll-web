@@ -297,23 +297,6 @@ function ThreadCalls({ thread, names }) {
   );
 }
 
-// 后端只负责把回合内已完成的中间产物（note：{kind, text}）原样发成
-// provisional 进度；当前状态文案与轨迹展示全是前端自己的事。
-const NOTE_CURRENT = Object.freeze({ thinking: '思考中…', plan: '在列计划…', text: '正在写回复…' });
-
-function activityLine(turn) {
-  const latestActivity = turn.activity?.at(-1);
-  const latestProgress = turn.provisional?.at(-1);
-  const activity = Number(latestActivity?.seq || 0) > Number(latestProgress?.seq || 0) ? latestActivity?.envelope : null;
-  if (activity?.type === TYPES.activity.toolStarted) return `tool: ${activity.payload?.tool || '工具'} …`;
-  if (activity?.type === TYPES.activity.toolEnded) return `tool: ${activity.payload?.tool || '工具'} 完成`;
-  if (activity?.type === TYPES.activity.turnStarted) return 'turn started · 正在生成…';
-  if (activity?.type === TYPES.activity.turnEnded) return 'turn ended';
-  const progress = latestProgress?.envelope?.payload || {};
-  if (progress.kind && NOTE_CURRENT[progress.kind]) return NOTE_CURRENT[progress.kind];
-  return progress.detail || progress.message || progress.text || '正在生成…';
-}
-
 function conversationPayload(payload = {}) {
   const { turn_index: _turnIndex, ...visible } = payload;
   return visible;
@@ -327,11 +310,10 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names }) {
   const liveEnvelope = turn.activity?.at(-1)?.envelope || turn.provisional?.at(-1)?.envelope;
   const agentId = terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0];
   const bubbleTs = terminal?.ts || liveEnvelope?.ts;
+  const processStartedTs = turn.activity?.find((item) => item.envelope?.type === TYPES.activity.turnStarted)?.envelope?.ts || request.ts;
   return <MessageFrame className={`agent-turn-bubble${terminal ? ' settled' : ' processing'}`} contentClassName="response-body" identity={<span className="actor-icon kind-agent">A</span>}>
     <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>
-    {!terminal && <div className="agent-processing-content"><strong>● 处理中: {title}{mergedCount ? `（含合并 ${mergedCount} 条）` : ''}</strong>
-      <ProgressTrail turn={turn} running />
-      <div className="agent-processing-status" role="status" aria-live="polite"><span aria-hidden="true">⋯</span><p>{activityLine(turn)}</p></div></div>}
+    {!terminal && <ProgressTrail turn={turn} running title={title} startedAt={processStartedTs} mergedCount={mergedCount} />}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
     {terminal && !stopped && <div className="response-content"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
     {terminal && <ProgressTrail turn={turn} running={false} />}
@@ -478,7 +460,7 @@ function dayLabel(ts) {
 
 export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, turnDetail, onComposerEditChange }) {
   const [page, setPage] = useState(0);
-  const [scope, setScope] = useState(TIMELINE_SCOPE.all);
+  const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   const [editing, setEditing] = useState(null);
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
@@ -548,7 +530,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
 
   useEffect(() => {
     setPage(0);
-    setScope(TIMELINE_SCOPE.all);
+    setScope(TIMELINE_SCOPE.mine);
     setEditNotice('');
   }, [state.channelId]);
   useEffect(() => setPresentationNow(Date.now()), [state.lastSeq]);

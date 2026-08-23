@@ -143,6 +143,7 @@ export default function App() {
   // 拉：只有这个集合里的响应才算数，账本历史帧恒不当缓存。集合易失——
   // 刷新/重连即清，活状态自然重新现问。
   const liveDescribesRef = useRef(new Set());
+  const describeInFlightRef = useRef(new Set()); // `${channelId}:${actorId}`，回执前也必须防重
   const [manualAgentVersion, setManualAgentVersion] = useState(0);
 
   const obsRef = useRef(null);
@@ -250,6 +251,7 @@ export default function App() {
     // 参数面板态是会话私有的：换账号不得继承上一账号的手选/切换中/探测标记。
     manualAgentsRef.current.clear();
     contextProbedRef.current.clear();
+    describeInFlightRef.current.clear();
     setPendingSelect(null);
     setComposerAgent({ channelId: '', actorId: '' });
     setRosters(new Map());
@@ -594,6 +596,7 @@ export default function App() {
     if (wireState === 'open') {
       contextProbedRef.current.clear();
       liveDescribesRef.current.clear();
+      describeInFlightRef.current.clear();
     }
   }, [wireState]);
 
@@ -647,16 +650,26 @@ export default function App() {
   }, [openContext]);
 
   const describeActor = useCallback(async (actor, channelId = activeChannelId) => {
-    if (!actor || !channelId) return;
-    const requestId = await handleSend({
-      channelId,
-      text: `读取 ${actor.name || actor.id} 的能力`,
-      msgType: TYPES.describe,
-      audience: [actor.id],
-      targetLabel: actor.name || actor.id,
-      payload: {},
-    });
-    if (requestId) liveDescribesRef.current.add(requestId);
+    if (!actor || !channelId) return '';
+    const probeKey = `${channelId}:${actor.id}`;
+    if (describeInFlightRef.current.has(probeKey)) return '';
+    // handleSend 的 Promise 回执可能晚于请求本身进入 feed；若只在 await 后记录
+    // requestId，feedVersion 会在这个窗口反复触发 effect，造成 describe 风暴。
+    describeInFlightRef.current.add(probeKey);
+    try {
+      const requestId = await handleSend({
+        channelId,
+        text: `读取 ${actor.name || actor.id} 的能力`,
+        msgType: TYPES.describe,
+        audience: [actor.id],
+        targetLabel: actor.name || actor.id,
+        payload: {},
+      });
+      if (requestId) liveDescribesRef.current.add(requestId);
+      return requestId || '';
+    } finally {
+      describeInFlightRef.current.delete(probeKey);
+    }
   }, [activeChannelId, handleSend]);
 
   // 参数目标的值域/当前值冷启动：目标无 describe 缓存则描述一次；有值域、无账本
@@ -678,8 +691,9 @@ export default function App() {
       return;
     }
     if (!capability?.describe) return;
-    const view = agentSelectionView({ actorId, describe: capability.describe, usage: null });
-    if (!view) return; // 无 selections 的 agent：不渲染切换菜单，也不探测
+    // 当前配置与可切换值域是两条独立链路。即使 agent.select 没有 selections，
+    // 只要声明了 agent.context，也必须读取当前 model/effort，状态栏按只读展示。
+    if (!capability.describe.types?.has?.(TYPES.agentContext)) return;
     // 当前值恒来自本连接的 context 探测（历史 usage 是旧生命期读数，恒不挡
     // 探测）：每连接对每目标恒探测一次，probe 记录本身即防重。
     const probe = contextProbedRef.current.get(probeKey);
@@ -694,7 +708,12 @@ export default function App() {
     const entry = { requestId: '', failed: false };
     contextProbedRef.current.set(probeKey, entry);
     handleSend({ channelId, text: '', msgType: TYPES.agentContext, audience: [actorId], targetLabel: actorId, payload: {} })
-      .then((requestId) => { entry.requestId = requestId || ''; })
+      .then((requestId) => {
+        entry.requestId = requestId || '';
+        // requestId 存在 ref 中，但它参与当前值推导；回执可能晚于 feed，也可能
+        // 早于 feed，显式 bump 保证两种时序最终都会重算状态栏。
+        setManualAgentVersion((current) => current + 1);
+      })
       .catch(() => { entry.failed = true; });
   }, [composerAgent, feedVersion, wireState, activeChannelId, rosters, pending, manualAgentVersion, describeActor, handleSend]);
 

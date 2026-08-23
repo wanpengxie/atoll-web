@@ -103,12 +103,19 @@ function valueSummary(value) {
   return '';
 }
 
-function CollapsibleResult({ title, value, children }) {
-  const [open, setOpen] = useState(false);
+function CollapsibleResult({ title, value, children, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
   return <details className="structured-result-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary><span>{title}</span><small>{valueSummary(value)}</small><span className="structured-result-action">{open ? '收起' : '展开'}</span></summary>
     <div className="structured-result-scroll">{children || <StructuredTree value={value} />}</div>
   </details>;
+}
+
+// 过程 payload 已经是协议中的 JSON 值，不再套用某一种业务 request 的
+// 语义解释。这里只负责安全、可折叠地展示它，避免长 JSON 冲进主信息流。
+export function StructuredData({ title, value, defaultOpen = false }) {
+  if (value === undefined) return null;
+  return <div className="structured-result"><CollapsibleResult title={title} value={value} defaultOpen={defaultOpen} /></div>;
 }
 
 export function StructuredResult({ requestType = '', payload = {}, renderText }) {

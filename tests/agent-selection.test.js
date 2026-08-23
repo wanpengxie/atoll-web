@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from '../src/model/agent-selection.js';
+import { agentSelectionView, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from '../src/model/agent-selection.js';
 
 const STEWARD = { id: 'steward', kind: 'agent', name: 'Steward' };
 const CLAUDE = { id: 'claude', kind: 'agent', name: 'Claude' };
@@ -112,6 +112,16 @@ describe('当前值恒只认本连接证据（§4.1）', () => {
       turnEnded('b', 'steward', { model: 'm5', effort: 'low' }),
     ]);
     expect(latestAgentUsage(state, 'steward', 'probe-1')).toMatchObject({ model: 'm5', effort: 'low' });
+  });
+
+  it('provider 只报告 model、没有 effort 时仍保留当前配置', () => {
+    const state = stateOf([
+      contextDone('a', 'probe-1', { model: 'claude-opus-5', effort: '' }),
+    ]);
+    const usage = latestAgentUsage(state, 'claude', 'probe-1');
+    expect(usage).toMatchObject({ model: 'claude-opus-5', effort: '' });
+    expect(agentSelectionView({ actorId: 'claude', describe: { words: { 'agent.select': { description: 'standard' } } }, usage }))
+      .toMatchObject({ actorId: 'claude', current: { model: 'claude-opus-5', effort: '' }, configurable: false });
   });
 
   it('别的 agent 的 usage 恒不串值', () => {

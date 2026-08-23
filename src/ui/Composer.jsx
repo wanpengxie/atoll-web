@@ -10,11 +10,6 @@ import { resolveManagementActors } from '../model/management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
 import { ModelSelector } from './ModelSelector.jsx';
 
-function mentionQuery(text) {
-  const match = text.match(/(?:^|\s)@([^\s@]*)$/);
-  return match ? match[1].toLowerCase() : null;
-}
-
 function editorDocument(text = '') {
   return {
     type: 'doc',
@@ -110,6 +105,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
   const composingRef = useRef(false);
   const compositionFrameRef = useRef(0);
+  const draftIdleRef = useRef(null);
   const commitComposerHeightRef = useRef(() => {});
   const editTransitionStartRectRef = useRef(null);
   const lastEditActiveRef = useRef(null);
@@ -118,6 +114,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const lastDraftFingerprintRef = useRef(JSON.stringify(initialDraft.doc));
   const editModeRef = useRef(editMode);
   const mentionContextRef = useRef({ roster: [], selfId: '', selectedIds: [], activeCandidate: 0, editing: false });
+  const suggestionSessionRef = useRef(null);
   const submitRef = useRef(() => {});
   const normalDraftRef = useRef(null);
   const [mentionIds, setMentionIds] = useState(() => mentionIdsOf(initialDraft.doc));
@@ -130,9 +127,32 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const [activeCandidate, setActiveCandidate] = useState(0);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [fileDragActive, setFileDragActive] = useState(false);
-  // 编辑内容归 Composer 自己所有。App 只接收一份无渲染副作用的草稿快照，
-  // 所以每次按键不会重新渲染 Timeline、详情区或整个工作区。
-  const [text, setText] = useState(initialDraft.text);
+  // 正文归 ProseMirror DOM 所有，不在 React 中维护第二份 text 镜像。
+  // 外壳只关心空/非空边界和当前光标处是否正在输入 @ 查询。
+  const [hasText, setHasText] = useState(Boolean(initialDraft.text.trim()));
+  const [query, setQuery] = useState(null);
+  const hasTextRef = useRef(Boolean(initialDraft.text.trim()));
+  const queryRef = useRef(null);
+
+  function updateHasText(next) {
+    if (hasTextRef.current === next) return;
+    hasTextRef.current = next;
+    setHasText(next);
+  }
+
+  function updateQuery(next) {
+    if (queryRef.current === next) return;
+    queryRef.current = next;
+    setQuery(next);
+  }
+
+  function cancelDraftIdle() {
+    const pendingIdle = draftIdleRef.current;
+    if (!pendingIdle) return;
+    if (pendingIdle.kind === 'idle') globalThis.cancelIdleCallback?.(pendingIdle.id);
+    else clearTimeout(pendingIdle.id);
+    draftIdleRef.current = null;
+  }
 
   function syncEditorSnapshot(current) {
     if (!current || current.isDestroyed) return;
@@ -142,7 +162,6 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     if (fingerprint === lastDraftFingerprintRef.current) return;
     lastDraftFingerprintRef.current = fingerprint;
     const nextMentionIds = mentionIdsOf(document);
-    setText((existing) => existing === value ? existing : value);
     setMentionIds((existing) => (
       existing.length === nextMentionIds.length && existing.every((id, index) => id === nextMentionIds[index])
         ? existing
@@ -153,23 +172,56 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     setSendState('idle');
   }
 
+  function syncEditorPresentation(current) {
+    if (!current || current.isDestroyed) return;
+    const value = editorText(current);
+    // 这里只更新发送按钮和 @ 候选所需的轻量状态。getJSON、JSON.stringify、
+    // Mention 树扫描和草稿持久化都不属于字符上屏链路。
+    updateHasText(Boolean(value.trim()));
+    setError('');
+    setSendState('idle');
+  }
+
+  function persistDraftWhenIdle(current, { measure = false } = {}) {
+    cancelDraftIdle();
+    const persist = () => {
+      draftIdleRef.current = null;
+      if (!current || current.isDestroyed || composingRef.current || current.view.composing) return;
+      syncEditorSnapshot(current);
+      if (measure) commitComposerHeightRef.current();
+    };
+    if (typeof globalThis.requestIdleCallback === 'function') {
+      draftIdleRef.current = {
+        kind: 'idle',
+        id: globalThis.requestIdleCallback(persist, { timeout: 300 }),
+      };
+    } else {
+      // Safari / jsdom fallback。RAF 后再进入一个 macrotask，确保浏览器有机会
+      // 先提交 ProseMirror 的 composition DOM，而不是在同一帧继续做业务同步。
+      draftIdleRef.current = { kind: 'timeout', id: setTimeout(persist, 0) };
+    }
+  }
+
   function syncAfterComposition(current) {
     cancelAnimationFrame(compositionFrameRef.current);
-    const settle = () => {
+    const waitForEditor = () => {
       if (!current || current.isDestroyed) return;
-      // ProseMirror 在原生 compositionend 之后才异步拆除 composition DOM。
-      // 等 view.composing 真正结束再同步 React，避免两套渲染在同一帧争抢 DOM。
+      // ProseMirror 自己拥有输入 DOM。compositionend 后先等它拆除临时
+      // composition DOM，再空出完整的一帧让浏览器把确认的文字画出来。
+      // 草稿 JSON、React 外壳和高度测量只能发生在那次绘制之后，否则会让
+      // 中文确认上屏被业务同步阻塞，而英文输入不会经过这条路径。
       if (current.view.composing) {
-        compositionFrameRef.current = requestAnimationFrame(settle);
+        compositionFrameRef.current = requestAnimationFrame(waitForEditor);
         return;
       }
-      composingRef.current = false;
-      compositionFrameRef.current = 0;
-      syncEditorSnapshot(current);
-      // composition DOM 已经拆除后才读取最终高度；合成期间的临时高度从不外溢到 Timeline。
-      commitComposerHeightRef.current();
+      compositionFrameRef.current = requestAnimationFrame(() => {
+        compositionFrameRef.current = 0;
+        composingRef.current = false;
+        syncEditorPresentation(current);
+        persistDraftWhenIdle(current, { measure: true });
+      });
     };
-    compositionFrameRef.current = requestAnimationFrame(settle);
+    compositionFrameRef.current = requestAnimationFrame(waitForEditor);
   }
 
   const editor = useEditor({
@@ -186,13 +238,58 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       Mention.configure({
         HTMLAttributes: { class: 'composer-mention' },
         renderText: ({ node }) => `@${node.attrs.label || node.attrs.id}`,
-        suggestion: { items: () => [] },
+        suggestion: {
+          char: '@',
+          items: ({ query: searchQuery }) => {
+            const context = mentionContextRef.current;
+            return mentionCandidates(context.roster, context.selfId, context.selectedIds, searchQuery.toLowerCase());
+          },
+          render: () => ({
+            onStart: (props) => {
+              suggestionSessionRef.current = props;
+              updateQuery(props.query.toLowerCase());
+              setActiveCandidate(0);
+            },
+            onUpdate: (props) => {
+              suggestionSessionRef.current = props;
+              updateQuery(props.query.toLowerCase());
+            },
+            onExit: () => {
+              suggestionSessionRef.current = null;
+              updateQuery(null);
+            },
+            onKeyDown: ({ event }) => {
+              const session = suggestionSessionRef.current;
+              if (!session) return false;
+              const context = mentionContextRef.current;
+              const rows = mentionCandidates(context.roster, context.selfId, context.selectedIds, session.query.toLowerCase()).slice(0, 8);
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                if (rows.length) {
+                  const direction = event.key === 'ArrowDown' ? 1 : -1;
+                  setActiveCandidate((current) => (current + direction + rows.length) % rows.length);
+                }
+                return true;
+              }
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                const row = rows[context.activeCandidate] || rows[0];
+                if (row) session.command({ id: row.id, label: actorDisplayName(row) });
+                return true;
+              }
+              return false;
+            },
+          }),
+        },
       }),
       Placeholder.configure({ placeholder: '输入消息，使用 @ 选择频道成员' }),
     ],
     content: initialDraft.doc,
     editable: Boolean(channelId) && !disabled,
     immediatelyRender: false,
+    // 编辑器 DOM 由 ProseMirror 直接维护；外围 React 只订阅必要的派生状态。
+    // 明确关闭逐 transaction 的 React 重绘，避免输入与工作区共享渲染节拍。
+    shouldRerenderOnTransaction: false,
     editorProps: {
       attributes: {
         'aria-label': '消息',
@@ -203,33 +300,22 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       },
       handleKeyDown: (view, event) => {
         if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return false;
-        const context = mentionContextRef.current;
-        const { from } = view.state.selection;
-        const before = view.state.doc.textBetween(Math.max(0, from - 120), from, '\n', '\0');
-        const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+        // @ 激活后交还给 Suggestion 插件；普通 Enter 才进入发送动作。
+        if (suggestionSessionRef.current) return false;
         event.preventDefault();
         event.stopPropagation();
-        if (!match || context.editing) {
-          submitRef.current();
-          return true;
-        }
-        const rows = mentionCandidates(context.roster, context.selfId, context.selectedIds, match[1].toLowerCase());
-        const row = rows[context.activeCandidate] || rows[0];
-        if (!row) return true;
-        const mentionType = view.state.schema.nodes.mention;
-        if (!mentionType) return true;
-        const start = from - match[1].length - 1;
-        const node = mentionType.create({ id: row.id, label: actorDisplayName(row) });
-        const transaction = view.state.tr.replaceWith(start, from, node).insertText(' ', start + node.nodeSize).scrollIntoView();
-        view.dispatch(transaction);
+        submitRef.current();
         return true;
       },
     },
     onUpdate: ({ editor: current }) => {
       // 输入法合成期间的文字只是临时态。此时同步 React 会重绘候选菜单和
-      // Composer 外壳，也可能干扰浏览器维护的 composition DOM。
-      if (current.view.composing) return;
-      syncEditorSnapshot(current);
+      // Composer 外壳，也可能干扰浏览器维护的 composition DOM。React 的
+      // composingRef 要持续到确认文字完成首次绘制，覆盖 ProseMirror 已经提前
+      // 清掉 view.composing、但浏览器尚未 paint 的窗口。
+      if (composingRef.current || current.view.composing) return;
+      syncEditorPresentation(current);
+      persistDraftWhenIdle(current);
     },
   }, [channelId]);
   editModeRef.current = editMode;
@@ -250,7 +336,6 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   }, [mentionedAgents, mentions, fallbackAgent, roster]);
   const parameterAgent = parameterTarget.kind === 'single' ? parameterTarget.agent : null;
   useEffect(() => { agentSelection?.onTargetChange?.(parameterAgent?.id || ''); }, [parameterAgent?.id, agentSelection?.onTargetChange]);
-  const query = editMode ? null : mentionQuery(text);
   const matchingCandidates = (searchQuery) => mentionCandidates(roster, selfId, mentions.map((row) => row.id), searchQuery || '');
   const candidates = useMemo(() => matchingCandidates(query), [mentions, query, roster, selfId]);
   mentionContextRef.current = { roster, selfId, selectedIds: mentions.map((row) => row.id), activeCandidate, editing: Boolean(editMode) };
@@ -269,7 +354,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       const next = editorDocument(editMode.session.text);
       lastDraftFingerprintRef.current = JSON.stringify(next);
       editor.commands.setContent(next, { emitUpdate: false });
-      setText(editMode.session.text);
+      updateHasText(Boolean(editMode.session.text.trim()));
+      updateQuery(null);
       setMentionIds([]);
       setError('');
       setSendState(editMode.session.phase === 'editing' ? 'idle' : 'sending');
@@ -281,7 +367,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       normalDraftRef.current = null;
       lastDraftFingerprintRef.current = JSON.stringify(saved.doc);
       editor.commands.setContent(saved.doc, { emitUpdate: false });
-      setText(saved.text);
+      updateHasText(Boolean(saved.text.trim()));
+      updateQuery(null);
       setMentionIds(saved.mentionIds);
       setError('');
       setSendState('idle');
@@ -295,9 +382,13 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
 
   useEffect(() => {
     cancelAnimationFrame(compositionFrameRef.current);
+    cancelDraftIdle();
     compositionFrameRef.current = 0;
     lastDraftFingerprintRef.current = JSON.stringify(initialDraft.doc);
     setMentionIds(mentionIdsOf(initialDraft.doc));
+    updateHasText(Boolean(initialDraft.text.trim()));
+    suggestionSessionRef.current = null;
+    updateQuery(null);
     setError('');
     setSendState('idle');
     setSentMessageId('');
@@ -305,6 +396,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
 
   useEffect(() => () => {
     cancelAnimationFrame(compositionFrameRef.current);
+    cancelDraftIdle();
     clearTimeout(layoutTransitionTimerRef.current);
     layoutAnimationRef.current?.cancel?.();
   }, []);
@@ -401,16 +493,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   }, [pending, sendState, sentMessageId, sentBatch]);
 
   function pick(row) {
-    if (!editor) return;
-    const { from } = editor.state.selection;
-    const before = editor.state.doc.textBetween(Math.max(0, from - 120), from, '\n', '\0');
-    const match = before.match(/(?:^|\s)@([^\s@]*)$/);
-    if (!match) return;
-    const start = from - match[1].length - 1;
-    editor.chain().focus().deleteRange({ from: start, to: from }).insertContent([
-      { type: 'mention', attrs: { id: row.id, label: actorDisplayName(row) } },
-      { type: 'text', text: ' ' },
-    ]).run();
+    suggestionSessionRef.current?.command({ id: row.id, label: actorDisplayName(row) });
   }
 
   function removeMention(id) {
@@ -440,7 +523,9 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   }
 
   async function submit() {
-    const value = text.trim();
+    // 提交读取编辑器真相，而不是可能刻意晚一帧同步的 React 草稿快照。
+    // 这样中文刚确认就按 Enter，也不会丢掉最后一个字。
+    const value = editorText(editor).trim();
     if (editMode) {
       if (!value || !channelId || disabled || editBusy || sendState === 'sending') return;
       const workspace = beginEditLayoutTransition();
@@ -479,7 +564,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
 
       const unresolved = unresolvedMentions(editor);
       if (unresolved.length) throw new TypeError(`请从候选列表选择成员：${unresolved.map((name) => `@${name}`).join('、')}`);
-      let recipients = mentions;
+      const liveMentionIds = mentionIdsOf(editor.getJSON());
+      let recipients = liveMentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean);
       if (!recipients.length) {
         if (parameterAgent) recipients = [parameterAgent];
         else throw new TypeError('请 @ 一个成员，或在右下角选择目标 Agent');
@@ -539,24 +625,6 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   }
 
   submitRef.current = submit;
-
-  function onKeyDown(event) {
-    // React 的 text 快照可能比 ProseMirror 当前按键慢一帧。Enter 是否属于
-    // Mention 菜单必须读取编辑器真相，否则快速输入“@Cl↵”会落入发送分支。
-    const liveText = event.currentTarget?.textContent || editorText(editor);
-    const liveQuery = editMode ? null : mentionQuery(liveText);
-    const liveCandidates = liveQuery == null ? [] : matchingCandidates(liveQuery);
-    if (liveQuery != null) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        if (!liveCandidates.length) return;
-        const direction = event.key === 'ArrowDown' ? 1 : -1;
-        setActiveCandidate((current) => (current + direction + Math.min(liveCandidates.length, 8)) % Math.min(liveCandidates.length, 8));
-        return;
-      }
-      // Enter 由 ProseMirror 的同步 handleKeyDown 在 React 之前处理。
-    }
-  }
 
   async function uploadFiles(files) {
     if (!files.length || !onUploadAttachments) return;
@@ -639,11 +707,11 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             <EditorContent
               editor={editor}
               className="composer-richtext"
-              onKeyDown={onKeyDown}
               onPasteCapture={onPaste}
               onCompositionStart={() => {
                 composingRef.current = true;
                 cancelAnimationFrame(compositionFrameRef.current);
+                cancelDraftIdle();
               }}
               onCompositionEnd={() => syncAfterComposition(editor)}
             />
@@ -687,9 +755,9 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             />
             {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={() => { beginEditLayoutTransition(); editMode.onAbandon(); }}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
             {editMode
-              ? <button type="button" className="send-button" onClick={submit} disabled={!text.trim() || !channelId || disabled || editBusy || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
-              : (text.trim() || attachments.length || !activeAgentTurn)
-              ? <button type="button" className="send-button" onClick={submit} disabled={(!text.trim() && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
+              ? <button type="button" className="send-button" onClick={submit} disabled={!hasText || !channelId || disabled || editBusy || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
+              : (hasText || attachments.length || !activeAgentTurn)
+              ? <button type="button" className="send-button" onClick={submit} disabled={(!hasText && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
               : <button type="button" className="send-button interrupt" onClick={interrupt} disabled={!channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '停止中' : '停止'}>{sendState === 'sending' ? '…' : '■'}</button>}
           </div>
         </div>

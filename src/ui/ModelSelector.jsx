@@ -92,6 +92,20 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
   };
   const modelLabel = displayed ? labelOf('model', displayed.model) : '';
   const effortLabel = displayed ? labelOf('effort', displayed.effort) : '';
+
+  // 当前配置存在但 describe 没给 selections：这是只读状态，不是“配置未知”。
+  // 仍显示 actor + model/effort，但绝不伪造可操作菜单。
+  if (view.configurable === false) {
+    return <div className="model-selector">
+      <div className="model-selector-trigger is-static" aria-label={`${actorName}，模型 ${modelLabel}${effortLabel ? `，推理强度 ${effortLabel}` : ''}`}>
+        <Zap size={14} strokeWidth={2.2} aria-hidden="true" />
+        <strong className="model-selector-actor">{actorName}</strong>
+        <span className="model-selector-divider" aria-hidden="true" />
+        <span className="model-selector-current"><strong>{modelLabel}</strong>{effortLabel && <span>{effortLabel}</span>}</span>
+      </div>
+    </div>;
+  }
+
   // 两级菜单恒是组合对的投影（§4.4）：强度段 = 当前显示 model 名下的合法 effort。
   const effortRows = displayed ? view.selections.filter((row) => row.model === displayed.model)
     .map((row) => ({ id: row.effort, label: row.effortLabel })) : [];

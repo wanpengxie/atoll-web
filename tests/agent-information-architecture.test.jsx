@@ -79,7 +79,7 @@ describe('agent control v7 information architecture', () => {
     expect(within(document.querySelector('.timeline')).getByText('还在等待')).toBeTruthy();
   });
 
-  it('39 creates one button-free agent bubble at processing and settles it in place', () => {
+  it('39 creates one agent process bubble at processing and settles it in place', () => {
     const state = createChannelState('c0');
     add(state, 1, request('work', '重构 loop.go'));
     add(state, 2, response('work-p', 'work', { status: 'processing', turn_id: 'turn-42' }));
@@ -89,7 +89,7 @@ describe('agent control v7 information architecture', () => {
 
     const card = document.querySelector('.agent-conversation-turn');
     const bubble = card.querySelector('.agent-turn-bubble');
-    expect(within(bubble).getByText('● 处理中: 重构 loop.go')).toBeTruthy();
+    expect(within(bubble).getByText(/处理中: 重构 loop\.go/)).toBeTruthy();
     expect(bubble.querySelector('.agent-processing-status').textContent).toContain('tool: read_file …');
     expect(within(card).getByRole('button', { name: '编辑' })).toBeTruthy();
     expect(within(card).getByRole('button', { name: '停止' })).toBeTruthy();

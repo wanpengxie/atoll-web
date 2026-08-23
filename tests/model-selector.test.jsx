@@ -120,4 +120,17 @@ describe('Model/Effort 选择器', () => {
     await user.click(screen.getByRole('menuitemradio', { name: '5.4' }));
     expect(onChange).toHaveBeenCalledWith({ actorId: 'steward', model: 'gpt-5.4', effort: 'light' });
   });
+
+  it('无 selections 但 context 有 model 时显示只读配置，不伪造菜单', () => {
+    const readonly = agentSelectionView({
+      actorId: 'claude',
+      describe: { words: { 'agent.select': { description: 'standard agent request' } } },
+      usage: { model: 'claude-opus-5', effort: '' },
+    });
+    render(<ModelSelector target={{ kind: 'single', agent: { id: 'claude', kind: 'agent', name: 'Claude' } }} actorName="Claude" view={readonly} />);
+    expect(screen.getByLabelText('Claude，模型 claude-opus-5')).toBeTruthy();
+    expect(screen.getByText('claude-opus-5')).toBeTruthy();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
 });

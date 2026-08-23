@@ -59,29 +59,57 @@
 .agent-conversation-turn > .request-message + .information-flow-row { margin-top: -3px; }
 .agent-turn-bubble { margin-top: 2px; }
 .agent-turn-bubble.processing { color: var(--text-muted); }
-.agent-processing-content { display: grid; width: min(100%, 74ch); gap: 5px; padding: 5px 0 7px; }
-.agent-processing-content > strong { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 /* Codex-style live line: readable body-level status, not another card. Its fixed
    block height lets consecutive progress frames replace text without reflow. */
 /* 过程轨迹：处理中滚动显示末几条，回合落定后收成一行入口；每条一行截断，
    点开从右侧拉出完整内容。 */
-.progress-trail { margin: 6px 0 0; }
+.progress-trail { margin: 4px 0 0; }
+.progress-trail.running {
+  position: relative; width: min(100%, 74ch); overflow: hidden;
+  border: 1px solid var(--agent-line); border-radius: var(--radius-modal); background: var(--agent-surface);
+}
 .progress-trail.settled { margin: 8px 0 0; }
 .progress-trail-list { margin: 0; padding: 0 0 0 22px; list-style: none; display: flex; flex-direction: column; gap: 2px; }
-.progress-trail-list.is-tail { mask-image: linear-gradient(to bottom, transparent, var(--text) 14px); }
+.progress-trail.running .progress-trail-list { padding: 0 10px 8px; gap: 0; }
+.progress-running-header {
+  display: grid; width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 9px 10px 7px; border: 0; background: none; color: var(--text); text-align: left; cursor: pointer;
+}
+.progress-running-header:hover, .progress-running-header:focus-visible { background: var(--surface-hover); }
+.progress-running-header > strong { display: flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.progress-running-header > strong > i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--online); animation: progress-live-pulse 1.5s ease-in-out infinite; }
+.progress-running-time { display: inline-flex; min-width: 144px; align-items: center; justify-content: flex-end; gap: 10px; color: var(--text-dim); font: 500 10px/1.2 var(--mono); white-space: nowrap; }
+.progress-running-time b { color: var(--online); font-weight: 600; font-variant-numeric: tabular-nums; }
 .progress-row { min-width: 0; margin: 0; }
-.progress-row.is-state { font-size: 12.5px; line-height: 1.5; color: var(--text); opacity: 0.6; }
+.progress-row.is-state { color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
 .progress-row > button {
-  display: block; width: 100%; padding: 1px 0; border: 0; background: none;
-  overflow: hidden; font: inherit; font-size: 12.5px; line-height: 1.5;
-  color: var(--text); opacity: 0.72; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+  display: grid; width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 1px 0; border: 0; background: none; overflow: hidden; font: inherit; font-size: 12.5px; line-height: 1.5;
+  color: var(--text); opacity: 0.76; text-align: left; cursor: pointer;
 }
 .progress-row > button:hover, .progress-row > button:focus-visible { opacity: 1; text-decoration: underline; }
+.progress-trail.running .progress-row { display: grid; min-height: 22px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.progress-trail.running .progress-row > button { grid-column: 1 / -1; }
+.progress-row-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-row-meta { display: inline-flex; min-width: 122px; align-items: center; justify-content: flex-end; gap: 8px; color: var(--text-dim); font: 500 10px/1.2 var(--mono); white-space: nowrap; }
+.progress-row-duration { display: inline-flex; min-width: 54px; align-items: center; justify-content: flex-end; gap: 5px; color: var(--online); font-variant-numeric: tabular-nums; }
+.progress-row-duration i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: progress-live-pulse 1.5s ease-in-out infinite; }
+@keyframes progress-live-pulse { 50% { opacity: 0.35; transform: scale(0.78); } }
+@media (max-width: 640px) {
+  .progress-trail.running { width: 100%; }
+  .progress-running-header { gap: 6px; padding-inline: 8px; }
+  .progress-running-time { min-width: 124px; gap: 6px; font-size: 9px; }
+  .progress-trail.running .progress-trail-list { padding-inline: 8px; }
+  .progress-trail.running .progress-row, .progress-row > button { gap: 6px; }
+  .progress-row-meta { min-width: 108px; gap: 5px; font-size: 9px; }
+  .progress-row-duration { min-width: 48px; }
+}
 .progress-trail-toggle {
   display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 0; padding: 2px 0 2px 22px;
-  border: 0; background: none; font: inherit; font-size: 12px; color: var(--text); opacity: 0.6; cursor: pointer;
+  border: 0; background: none; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-muted); cursor: pointer;
+  transition: color 120ms ease;
 }
-.progress-trail-toggle:hover, .progress-trail-toggle:focus-visible { opacity: 0.95; }
+.progress-trail-toggle:hover, .progress-trail-toggle:focus-visible { color: var(--text); }
 
 .progress-drawer-backdrop { position: fixed; z-index: 60; inset: 0; background: var(--scrim-soft); }
 .progress-drawer {
@@ -92,7 +120,7 @@
   animation: progress-drawer-in 160ms ease-out;
 }
 @keyframes progress-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
-@media (prefers-reduced-motion: reduce) { .progress-drawer { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .progress-drawer, .progress-row-duration i, .progress-running-header > strong > i { animation: none; } }
 .progress-drawer-header { display: flex; min-height: 52px; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line-structural); }
 .progress-drawer-header strong { font: 700 14px var(--sans); color: var(--text); }
 .progress-drawer-header small { margin-left: 8px; opacity: 0.6; }
@@ -100,9 +128,12 @@
 .progress-drawer-close:hover { opacity: 1; }
 .progress-drawer-body { overflow: auto; padding: 14px; font-size: 13.5px; line-height: 1.6; color: var(--text); }
 .progress-drawer-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.55 var(--mono, monospace); }
-.agent-processing-status { display: grid; width: 100%; height: 42px; grid-template-columns: 22px minmax(0, 1fr); align-items: center; overflow: hidden; color: var(--text); }
-.agent-processing-status > span { display: grid; width: 18px; height: 18px; place-content: center; color: var(--agent); font-size: 18px; line-height: 1; }
-.agent-processing-status > p { display: -webkit-box; overflow: hidden; margin: 0; font-size: 14px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.progress-tool-data { display: grid; gap: 10px; }
+.progress-raw-json { max-height: 240px; overflow: auto; margin: 0; padding: 10px 12px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.progress-raw-json code { color: var(--text); font: 12px/1.55 var(--mono); }
+.progress-tool-detail { padding: 10px 12px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-quieter); }
+.progress-tool-detail strong { font-size: 12px; }
+.progress-tool-detail p, .progress-empty { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-stopped { margin: 2px 0 6px; color: var(--text-muted); font-size: 13px; }
 .message-row { position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 10px; padding: 6px 10px; border-radius: var(--radius-object); outline: 0; }
 .message-row:hover, .message-row:focus-within, .message-row:focus-visible { background: var(--surface-quieter); }

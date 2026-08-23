@@ -256,8 +256,8 @@ function seededHistory(channelId, behavior = {}) {
     add(envelope({ id: `${requestId}-queued`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'queued', turn_index: index, controls: QUEUED_CONTROLS }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 1 }));
     add(envelope({ id: `${requestId}-processing`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 2 }));
     add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'event', type: 'agent.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
-    add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'event', type: 'agent.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
-    add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'completed' }, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
+    add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'event', type: 'agent.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'started', input: { channel_id: channelId, query: `检查 ${channelId} 的协作账本` } }, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
+    add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'completed', output: { ok: true, matched_rows: 3, channel_id: channelId } }, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
     add(envelope({ id: `${requestId}-turn-ended`, channelId, sender: responder, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: index, status: 'ok', usage: { context_tokens: 30_000 + index * 1_000, context_window: 200_000, model: 'gpt-5.6-sol', effort: 'medium' } }, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
     add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'completed', turn_index: index, text: responseText }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 7 }));
   }
@@ -1247,8 +1247,21 @@ export function createMockServer({
     later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, ...(mode === 'long-running' ? { turn_id: `turn-${messageId}` } : {}) } })));
     if (mode === 'business-provisional') later(50, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-business`, kind: 'response', type: payload.msg_type, payload: { status: 'provider.waiting', queue: 'external' } })));
     later(50, () => append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-started`, kind: 'event', type: 'agent.turn.started', payload: { turn_index: 1, status: 'started' } })));
-    later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'started' } })));
-    later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'completed' } })));
+    if (mode === 'progress-demo') {
+      const tools = ['理解任务', '读取频道', '检查成员', '搜索资料', '整理上下文', '分析数据', '生成方案', '校验结果', '组织回复', '完成收尾'];
+      tools.forEach((tool, index) => {
+        const startedAt = 80 + index * 30_000;
+        const callId = `${messageId}-demo-${index + 1}`;
+        later(startedAt, () => append(channelId, envelope({ ...responseBase, id: `${callId}-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: callId, tool, status: 'started', input: { step: index + 1, total: tools.length, channel_id: channelId } } })));
+        later(startedAt + 29_999, () => append(channelId, envelope({ ...responseBase, id: `${callId}-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: callId, tool, status: 'completed', output: { step: index + 1, ok: true } } })));
+      });
+      const completedAt = 80 + tools.length * 30_000;
+      later(completedAt, () => append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-ended`, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: 1, status: 'ok', usage: usageOf(channelId, respondingAgent.id) } })));
+      later(completedAt + 20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', turn_index: 1, text: '已完成 10 个演示过程。' } })));
+      return;
+    }
+    later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'started', input: { channel_id: channelId, message_id: messageId } } })));
+    later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'completed', output: { pong: true, channel_id: channelId } } })));
     if (mode === 'long-running') return;
     const terminalDelay = mode === 'business-provisional' ? 500 : 100;
     // 每个 turn 结束恒出账 usage（activity.go usagePayload 同形）——前端参数区靠它保鲜。
