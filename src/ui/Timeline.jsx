@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import autoAnimate from '@formkit/auto-animate';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
@@ -613,6 +614,25 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     lastSeq: latestVisibleSeq,
     page,
   });
+
+  // 账本状态更新会让同一个消息块从“处理中气泡”收成最终记录。DOM 的正常
+  // layout 必须先落地，滚动锚点才能保持正确；随后只对 timeline 的直接子块做
+  // FLIP 位移/尺寸过渡。这样变化属于消息区本身，不会把 Composer 纳入动画，
+  // 也不会在每个 progress 文本更新时重建 React 状态。
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined' || typeof Element === 'undefined' || typeof Element.prototype.animate !== 'function') return undefined;
+    const motion = autoAnimate(content, {
+      duration: 220,
+      easing: 'cubic-bezier(.22, 1, .36, 1)',
+      disrespectUserMotionPreference: false,
+    });
+    content.dataset.layoutMotion = 'ready';
+    return () => {
+      motion.disable();
+      delete content.dataset.layoutMotion;
+    };
+  }, [state.channelId]);
 
   useEffect(() => {
     setPage(0);

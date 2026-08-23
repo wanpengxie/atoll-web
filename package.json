@@ -22,6 +22,7 @@
     "ws": "^8.21.3"
   },
   "dependencies": {
+    "@formkit/auto-animate": "^0.10.0",
     "@tiptap/core": "^3.30.2",
     "@tiptap/extension-mention": "^3.30.2",
     "@tiptap/extension-placeholder": "^3.30.2",

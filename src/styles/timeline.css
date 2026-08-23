@@ -1,7 +1,7 @@
 /* Flat collaborative ledger: identity first, cards only for structured objects */
 .timeline { grid-row: 4; min-height: 0; margin-bottom: calc(var(--composer-overlay-height, 88px) + var(--agent-wait-dock-height, 0px)); overflow-y: auto; overflow-anchor: none; scrollbar-gutter: stable; background: var(--workspace); }
 .workspace.is-composer-layout-transitioning .timeline { transition: margin-bottom 180ms cubic-bezier(.22, 1, .36, 1); }
-.timeline-inner { display: flex; width: 100%; min-height: 100%; flex-direction: column; gap: 0; padding: 24px 26px; }
+.timeline-inner { display: flex; position: relative; width: 100%; min-height: 100%; flex-direction: column; gap: 0; padding: 24px 26px; }
 .agent-wait-dock { position: absolute; z-index: 2; right: 46px; bottom: calc(var(--composer-overlay-height, 88px) - 8px); left: 46px; display: block; width: min(calc(100% - 92px), calc(var(--timeline-track) - 40px)); margin: 0 auto; }
 .workspace.is-composer-layout-transitioning .agent-wait-dock { transition: bottom 180ms cubic-bezier(.22, 1, .36, 1); }
 .agent-wait-layer { position: relative; width: 100%; height: auto; overflow: hidden; border: 1px solid var(--line-control); border-radius: 15px 15px 0 0; background: var(--raised); box-shadow: 0 -4px 18px var(--shadow); contain: layout paint; }
