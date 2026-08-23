@@ -48,7 +48,7 @@ export function envelope({ id, channelId, sender, kind, type, payload = {}, pare
   };
 }
 
-function createRoster(channel, memberships, clock) {
+function createRoster(channel, memberships, clock, { seedBusiness = true } = {}) {
   // 与真实后端一致：每个频道都有 system 与 svcactor(peer)，registrar 只在 c0。
   const rows = [
     rosterItem({ id: 'system', kind: 'system', name: 'system', description: 'Channel system actor' }, clock),
@@ -57,7 +57,7 @@ function createRoster(channel, memberships, clock) {
   if (channel.id === 'c0') {
     rows.push(rosterItem({ id: 'registrar', kind: 'system', declId: 'registrar', name: 'Registrar Seat', description: 'Registrar seat' }, clock));
   }
-  if (!channel.internal) {
+	if (!channel.internal && seedBusiness) {
     rows.push(rosterItem({ id: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, kind: 'agent', declId: 'mock:steward', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
     if (channel.id === 'c0') rows.push(rosterItem({ id: 'claude', kind: 'agent', declId: 'mock:claude', name: 'Claude', description: 'Mock Claude collaboration agent' }, clock));
   }
@@ -79,6 +79,7 @@ export class MockDomain {
     this.counter = 0;
     this.channels = new Map(config.channels.map((channel) => [channel.id, structuredClone(channel)]));
     this.memberships = structuredClone(config.memberships);
+    this.humanPrincipals = new Set([ROOT_ID, 'alice', 'bob']);
     this.rosters = new Map([...this.channels.values()].map((channel) => [channel.id, createRoster(channel, this.memberships, this.clock)]));
     this.histories = new Map([...this.channels.keys()].map((channelId) => [channelId, []]));
     this.scheduled = structuredClone(config.scheduled || []);
@@ -156,7 +157,7 @@ export class MockDomain {
       qualified_name: channel.qualified_name,
       type: 'group',
       status: channel.status,
-      owner_principal: ROOT_ID,
+			owner_principal: channel.owner_principal || ROOT_ID,
       description: channel.description || '',
       serving: channel.open ? 1 : 0,
       spec: {},
@@ -228,18 +229,42 @@ export class MockDomain {
     return true;
   }
 
-  createChannel(parentId, name, principalId = ROOT_ID) {
+  createChannel(parentId, name, principalId = ROOT_ID, initialActorIds = []) {
     const clean = String(name || '').trim().toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(clean)) throw new TypeError('channel name must use lowercase letters, numbers or hyphens');
     const parent = this.channel(parentId);
     if (!parent || parent.status !== 'present') throw new TypeError('parent channel does not exist');
+		if (!Array.isArray(initialActorIds)) throw new TypeError('initial_actor_ids must be an array');
+		if (new Set(initialActorIds).size !== initialActorIds.length) throw new TypeError('initial_actor_ids contains duplicates');
+		const sourceRows = this.rosters.get(parentId) || [];
+		const sourceActors = initialActorIds.map((actorId) => {
+			const row = sourceRows.find((entry) => entry.declared.id === actorId);
+			if (!row) throw new TypeError(`actor ${actorId} is not an active member of this channel`);
+			if (!['human', 'agent', 'tool'].includes(row.declared.kind)) throw new TypeError(`actor ${actorId} is not importable`);
+			return row.declared;
+		});
     const id = `${parentId}.${clean}`;
     if (this.channels.has(id)) throw new TypeError('channel already exists');
-    const channel = { id, name: clean, qualified_name: id, parent_id: parentId, internal: false, open: true, status: 'present' };
+		const channel = { id, name: clean, qualified_name: id, parent_id: parentId, owner_principal: principalId, internal: false, open: true, status: 'present' };
     this.channels.set(id, channel);
-    const membership = { principal_id: principalId, channel_id: id, actor_id: `${principalId}-${clean}`, role: 'owner', status: 'active' };
-    this.memberships.push(membership);
-    this.rosters.set(id, createRoster(channel, this.memberships, this.clock));
+		for (const source of sourceActors.filter((entry) => entry.kind === 'human')) {
+			this.memberships.push({
+				principal_id: source.principal, channel_id: id,
+				actor_id: `human:${source.principal}:${this.clock + this.counter + 1}`,
+				role: source.principal === principalId ? 'owner' : 'member', status: 'active',
+			});
+			this.counter += 1;
+		}
+		const targetRows = createRoster(channel, this.memberships, this.clock, { seedBusiness: false });
+		for (const source of sourceActors.filter((entry) => entry.kind !== 'human')) {
+			this.counter += 1;
+			const actorId = `${source.kind}:${source.name || source.id}:${this.clock + this.counter}`;
+			targetRows.push(rosterItem({
+				id: actorId, kind: source.kind, declId: source.decl_id || '', name: source.name,
+				description: source.description || '', principal: source.principal || '',
+			}, this.clock));
+		}
+		this.rosters.set(id, targetRows);
     this.histories.set(id, []);
     return { ...channel };
   }
@@ -263,6 +288,7 @@ export class MockDomain {
     const channel = this.channel(channelId);
     if (!channel || channel.status !== 'present') throw new TypeError('channel does not exist');
     if (!principal) throw new TypeError('principal required');
+    if (!this.humanPrincipals.has(principal)) throw new TypeError('system.member.admit accepts human principals only');
     const id = `${principal}-${channel.name}`;
     if (!this.activeMembership(principal, channelId)) {
       this.memberships.push({ principal_id: principal, channel_id: channelId, actor_id: id, role: 'member', status: 'active' });

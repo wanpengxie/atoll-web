@@ -858,8 +858,9 @@ export function createMockServer({
 
           // ---- 空间面（system actor 转交 registrar）----
           case 'system.channel.create': {
-            assertClosedPayload(body, ['name', 'recipe']);
-            const created = domain.createChannel(channelId, body.name, principal);
+						assertClosedPayload(body, ['name', 'recipe', 'initial_actor_ids']);
+						if (!Object.hasOwn(body, 'initial_actor_ids')) throw new TypeError('initial_actor_ids is required; send [] for an empty channel');
+						const created = domain.createChannel(channelId, body.name, principal, body.initial_actor_ids);
             complete({ channel_id: created.id });
             return;
           }

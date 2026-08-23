@@ -13,7 +13,7 @@ const TABS = [
 export function ChannelGovernance({ channel, channels, roster, state, principals, declarations, selfId, identityPending, disabled, onSubmit, onRefresh, onSelectActor, onClose, mode = 'manage' }) {
   const [section, setSection] = useState('members');
   if (mode === 'create') return <SidePanel ariaLabel="新建频道" eyebrow="CHANNEL CREATION" title="新建频道" onClose={onClose}>
-    <ChannelOverviewPanel mode="create" channel={channel} channels={channels} roster={roster} state={state} disabled={disabled} onSubmit={onSubmit} />
+    <ChannelOverviewPanel mode="create" channel={channel} channels={channels} roster={roster} selfId={selfId} state={state} disabled={disabled} onSubmit={onSubmit} />
   </SidePanel>;
   return <SidePanel ariaLabel={`频道管理 ${channel?.qualified_name || channel?.id}`} eyebrow="CHANNEL CONTEXT" title="频道详情" tabs={TABS} activeTab={section} onTabChange={setSection} onClose={onClose}>
     <div hidden={section !== 'overview'}><ChannelOverviewPanel mode="manage" channel={channel} channels={channels} roster={roster} state={state} disabled={disabled} onSubmit={onSubmit} /></div>

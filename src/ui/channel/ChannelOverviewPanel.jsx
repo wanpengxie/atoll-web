@@ -10,7 +10,7 @@ const STEP_LABELS = [
   ['serving', '服务就绪'],
 ];
 
-export function ChannelOverviewPanel({ channel, channels, roster, state, disabled, onSubmit, mode = 'manage' }) {
+export function ChannelOverviewPanel({ channel, channels, roster, selfId = '', state, disabled, onSubmit, mode = 'manage' }) {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
   const [template, setTemplate] = useState('');
@@ -37,7 +37,8 @@ export function ChannelOverviewPanel({ channel, channels, roster, state, disable
     event.preventDefault();
     const validation = validateChannelName(name);
     if (validation) { setError(validation); return; }
-    await run(createChannelCommand({ parentId: channel.id, name, purpose, template, roster }), (id) => setCreateRequest({ id, name: name.trim() }));
+		if (!selfId) { setError('尚未确认你在当前频道中的 Actor 身份'); return; }
+    await run(createChannelCommand({ parentId: channel.id, name, purpose, recipe: template || null, initialActorIds: [selfId], roster }), (id) => setCreateRequest({ id, name: name.trim() }));
   }
 
   return <>

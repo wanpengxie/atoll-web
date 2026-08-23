@@ -1,5 +1,5 @@
-import React, { useRef, useState } from 'react';
-import { createChannelCommand, creationConvergence, validateChannelName } from '../model/channel-governance.js';
+import React, { useMemo, useRef, useState } from 'react';
+import { createChannelCommand, creationConvergence, isProtectedActor, validateChannelName } from '../model/channel-governance.js';
 import { isMemberAccess } from '../model/channel-access.js';
 import { useModalFocus } from './primitives/useModalFocus.js';
 
@@ -16,6 +16,7 @@ export function ChannelCreateModal({
   channel,
   channels = [],
   roster = [],
+  selfId = '',
   state = EMPTY_STATE,
   disabled = false,
   onSubmit,
@@ -25,6 +26,7 @@ export function ChannelCreateModal({
 }) {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
+  const [additionalActors, setAdditionalActors] = useState([]);
 
   const [createRequest, setCreateRequest] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -43,6 +45,9 @@ export function ChannelCreateModal({
   const validation = validateChannelName(name);
   const tracking = Boolean(createRequest && !convergence?.failed && !convergence?.ready);
   const locked = disabled || submitting || tracking || convergence?.ready;
+  const selectableActors = useMemo(() => roster.filter((row) => (
+    row.id !== selfId && ['human', 'agent', 'tool'].includes(row.kind) && !isProtectedActor(row)
+  )), [roster, selfId]);
 
   useModalFocus({ dialogRef, initialFocusRef: nameRef, returnFocusRef, onClose, closeDisabled: submitting });
 
@@ -53,7 +58,8 @@ export function ChannelCreateModal({
     setError('');
     setSubmitting(true);
     try {
-      const id = await onSubmit(createChannelCommand({ parentId: channel.id, name, purpose, roster }));
+      if (!selfId) throw new Error('尚未确认你在当前频道中的 Actor 身份，请刷新后重试');
+      const id = await onSubmit(createChannelCommand({ parentId: channel.id, name, purpose, initialActorIds: [selfId, ...additionalActors], roster }));
       setCreateRequest({ id, name: name.trim() });
     } catch (failure) {
       setError(failure?.message || String(failure));
@@ -79,6 +85,15 @@ export function ChannelCreateModal({
         <label><span>频道名称</span><input ref={nameRef} aria-label="新频道名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 backend" disabled={locked} aria-invalid={Boolean(name && validation)} required /></label>
         {name && validation && <small className="field-error">{validation}</small>}
         <label><span>用途</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>
+        <section className="channel-create-members" aria-labelledby="channel-create-members-title">
+          <header><strong id="channel-create-members-title">初始成员</strong><small>你会自动加入，也可以带入当前频道的其他角色</small></header>
+          {selfId && <div className="channel-create-member pinned"><span>✓</span><div><strong>我</strong><small>{selfId}</small></div></div>}
+          {selectableActors.map((row) => <label className="channel-create-member" key={row.id}>
+            <input type="checkbox" checked={additionalActors.includes(row.id)} disabled={locked} onChange={(event) => setAdditionalActors((current) => event.target.checked ? [...current, row.id] : current.filter((id) => id !== row.id))} />
+            <div><strong>{row.name || row.principal || row.id}</strong><small>{row.kind} · {row.id}</small></div>
+          </label>)}
+          {!selectableActors.length && <small className="field-hint">当前没有其他可带入的业务 Actor。</small>}
+        </section>
 
         {error && <p className="governance-error" role="alert">{error}</p>}
         {convergence && <section className="convergence channel-create-progress" aria-label="频道创建进度" aria-live="polite">

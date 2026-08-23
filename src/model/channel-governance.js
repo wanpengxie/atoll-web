@@ -21,12 +21,17 @@ export function validateChannelName(value) {
   return '';
 }
 
-// system.channel.create 的 payload 是 {name, recipe}，recipe 就是频道模板的
+// system.channel.create 的 payload 是 {name, recipe, initial_actor_ids}。Actor
+// ID 是来源频道局部身份，后端 sysactor 会把它们解析为可信创世 seats。
 // body（declarations + profile）。UI 只提供“空配方 + 可选简介”的形态；从模板
 // 建频道时由调用方先取回模板 body 再作为 recipe 传进来。
-export function createChannelCommand({ parentId, name, purpose = '', recipe = null, roster = [] }) {
+export function createChannelCommand({ parentId, name, purpose = '', recipe = null, initialActorIds, roster = [] }) {
   const error = validateChannelName(name);
   if (error) throw new TypeError(error);
+  if (!Array.isArray(initialActorIds)) throw new TypeError('必须明确提供初始 Actor；空频道请传 []');
+  const initialActors = initialActorIds.map((id) => String(id || '').trim());
+  if (initialActors.some((id) => !id)) throw new TypeError('初始 Actor ID 不能为空');
+  if (new Set(initialActors).size !== initialActors.length) throw new TypeError('初始 Actor ID 不能重复');
   const body = recipe && typeof recipe === 'object' && !Array.isArray(recipe)
     ? { declarations: Array.isArray(recipe.declarations) ? recipe.declarations : [], ...(recipe.profile ? { profile: recipe.profile } : {}) }
     : { declarations: [] };
@@ -35,7 +40,7 @@ export function createChannelCommand({ parentId, name, purpose = '', recipe = nu
     ...target(parentId, roster),
     msgType: GOVERNANCE_TYPES.create,
     text: `创建子频道 ${name}`,
-    payload: { name: String(name).trim(), recipe: body },
+    payload: { name: String(name).trim(), recipe: body, initial_actor_ids: initialActors },
   };
 }
 
@@ -60,7 +65,7 @@ export function isProtectedActor(row) {
 }
 
 export function usablePrincipals(items = [], roster = []) {
-  const present = items.map((item) => item.declared || item).filter((row) => row.id && row.status === 'present');
+  const present = items.map((item) => item.declared || item).filter((row) => row.id && row.status === 'present' && row.kind === 'human');
   const current = new Set(roster.map((row) => row.principal).filter(Boolean));
   return present.filter((row) => !current.has(row.id)).sort((a, b) => (a.display_name || a.email || a.id).localeCompare(b.display_name || b.email || b.id));
 }

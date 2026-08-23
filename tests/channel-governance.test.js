@@ -1,20 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { actorCommand, actorConvergence, createChannelCommand, creationConvergence, isProtectedActor, usableDeclarations, validateChannelName } from '../src/model/channel-governance.js';
+import { actorCommand, actorConvergence, createChannelCommand, creationConvergence, isProtectedActor, usableDeclarations, usablePrincipals, validateChannelName } from '../src/model/channel-governance.js';
 
 const roster = [
   { id: 'system', kind: 'system', name: 'system' },
   { id: 'svcactor', kind: 'peer', decl_id: 'svcactor' },
+	{ id: 'human:root:1', kind: 'human', principal: 'root', name: 'root' },
 ];
 
 describe('阶段 D 频道治理模型', () => {
   it('按真实后端规则校验频道名，并把创建请求发给本频道的 system actor', () => {
     expect(validateChannelName('good-name')).toBe('');
     expect(validateChannelName('Bad')).not.toBe('');
-    expect(createChannelCommand({ parentId: 'c0', name: 'child', roster }).audience).toEqual(['system']);
-    expect(createChannelCommand({ parentId: 'c0.project', name: 'child', roster }).audience).toEqual(['system']);
-    expect(createChannelCommand({ parentId: 'c0', name: 'child', roster }).msgType).toBe('system.channel.create');
-    expect(createChannelCommand({ parentId: 'c0', name: 'child', purpose: '用于设计', roster }).payload)
-      .toEqual({ name: 'child', recipe: { declarations: [], profile: { description: '用于设计' } } });
+		expect(createChannelCommand({ parentId: 'c0', name: 'child', initialActorIds: [], roster }).audience).toEqual(['system']);
+		expect(createChannelCommand({ parentId: 'c0.project', name: 'child', initialActorIds: [], roster }).audience).toEqual(['system']);
+		expect(createChannelCommand({ parentId: 'c0', name: 'child', initialActorIds: [], roster }).msgType).toBe('system.channel.create');
+		expect(createChannelCommand({ parentId: 'c0', name: 'child', purpose: '用于设计', initialActorIds: ['human:root:1'], roster }).payload)
+			.toEqual({ name: 'child', recipe: { declarations: [], profile: { description: '用于设计' } }, initial_actor_ids: ['human:root:1'] });
   });
 
   it('成员维护使用 system 和 member 字段', () => {
@@ -27,6 +28,14 @@ describe('阶段 D 频道治理模型', () => {
     expect(isProtectedActor({ id: 'peer', decl_id: 'peer:c0.child' })).toBe(true);
     expect(isProtectedActor({ id: 'agent', decl_id: 'demo:agent' })).toBe(false);
     expect(usableDeclarations([{ id: 'svcactor', status: 'present' }, { id: 'demo', name: 'Demo', default_class: 'codex', status: 'present' }], 'agent')).toHaveLength(1);
+  });
+
+  it('用户选择器只接收注册表中真实的 human principal', () => {
+    expect(usablePrincipals([
+      { id: 'root', kind: 'human', status: 'present' },
+      { id: 'steward', kind: 'agent', status: 'present' },
+      { id: 'retired', kind: 'human', status: 'retired' },
+    ], [])).toEqual([{ id: 'root', kind: 'human', status: 'present' }]);
   });
 
   it('创建成功必须分别收敛账本、OBS、membership 和 serving', () => {

@@ -97,7 +97,10 @@ describe('mock system actor governance', () => {
     const removed = await call('c0', 'system.member.delete', { member: memberId });
     expect(removed.payload.removed).toEqual([memberId]);
 
-    const design = await call('c0', 'system.channel.create', { name: 'design', recipe: { declarations: [] } });
+    const invalidAdmit = await call('c0', 'system.member.admit', { principal: 'steward' });
+    expect(invalidAdmit.payload).toMatchObject({ status: 'failed' });
+
+		const design = await call('c0', 'system.channel.create', { name: 'design', recipe: { declarations: [] }, initial_actor_ids: ['root'] });
     expect(design.payload.value).toMatchObject({ channel_id: 'c0.design' });
     const children = await fetchWithSession('/obs/space/channels?parent_id=c0').then((response) => response.json());
     expect(children.items.map((entry) => entry.declared.id)).toContain('c0.design');

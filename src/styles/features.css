@@ -366,6 +366,15 @@ button.channel-file-row { cursor: pointer; font: inherit; }
 .channel-create-progress > header { margin-bottom: 6px; }
 .channel-create-progress > header small { color: var(--text-muted); font-size: 9px; }
 .channel-create-progress > div.failed span, .channel-create-progress > div.failed small, .field-error { color: var(--danger); }
+.channel-create-members { display: grid; gap: 6px; padding: 10px 0 2px; border-top: 1px solid var(--line-subtle); }
+.channel-create-members > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.channel-create-members > header small, .channel-create-member small { color: var(--text-muted); font-size: 10px; }
+.channel-create-member { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: var(--radius-control); background: var(--surface-muted); }
+.channel-create-member input { margin: 0; }
+.channel-create-member > span { color: var(--success-text); }
+.channel-create-member > div { min-width: 0; display: grid; gap: 1px; }
+.channel-create-member small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-create-member.pinned { background: var(--surface-selected); }
 .field-error { margin-top: -10px; font-size: 9px; }
 
 @media (max-width: 640px) {
