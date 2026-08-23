@@ -1,6 +1,5 @@
 // 消息类型闭集。每一条都对齐 coagent 后端的当前定义：
 //   agent.*            drivers/agents/base/base.go
-//   agent.turn/tool.*  registry/activity.go
 //   system.*           protocol/message/system.go
 //   human.*            platform/subjectgate/frame.go
 //   actor.describe     lib/introspect/introspect.go
@@ -24,14 +23,6 @@ export const TYPES = Object.freeze({
   humanMessage: 'human.message',
   humanAsk: 'human.ask',
   humanApprove: 'human.approve',
-
-  // 回合与工具的过程事件（kind=event，挂在请求的 parent/correlation 上）。
-  activity: Object.freeze({
-    turnStarted: 'agent.turn.started',
-    turnEnded: 'agent.turn.ended',
-    toolStarted: 'agent.tool.started',
-    toolEnded: 'agent.tool.ended',
-  }),
 
   // 平台叙事事件（kind=event，visibility=system）。
   narration: Object.freeze({
@@ -105,8 +96,6 @@ export const SYSTEM_ACTOR_ID = 'system';
 
 // 由 genesis 铸出、不可由人增删的声明 id（platform/lagoon/contracts.go）。
 export const SYSTEM_DECL_IDS = Object.freeze(['registrar', 'svcactor']);
-
-export const isActivity = (type = '') => type.startsWith('agent.turn.') || type.startsWith('agent.tool.');
 
 // 叙事的判据是 visibility，不是词的前缀：system.* 里既有 visibility=system 的
 // 事件，也有 visibility=public 的治理请求/回复——后者是正经的 turn。

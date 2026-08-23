@@ -28,7 +28,7 @@ Web 不建立 `/api/channels` 一类旁路管理 API。频道和 Actor 管理仍
 │ 我的频道         │ 标题、SEQ、频道级状态             │ 业务 Actor       │
 │ - active         │                                    │ - Agent          │
 │ - stale          │ 可恢复的 RequestTurn 时间线        │ - Human          │
-│ - unavailable    │ request → provisional/activity     │ - 普通 Tool      │
+│ - unavailable    │ request → provisional process      │ - 普通 Tool      │
 │                  │         → one terminal             │                  │
 │ 空间             │                                    │ 隐藏标准 Actor   │
 │ - discoverable   │ 成员 active 时才显示可写编辑器     │ system/registrar │
@@ -139,12 +139,12 @@ submission 由 client-generated message id 对账；RequestTurn 由 request id �
 
 - request id 是唯一回合主键；
 - correlation id 可以关联多个 request，只用于业务链组织；
-- response/activity 优先用 parent_id，缺失时才按 correlation 找最近相关回合；
-- response/activity 先到时暂存，request 到达后归并；
+- response 优先用 parent_id，缺失时才按 correlation 找最近相关回合；
+- response 先到时暂存，request 到达后归并；
 - envelope.id 重放不重复渲染；
 - 第一条有效 terminal 是权威终态，后续不同 terminal 记录 `terminal_conflict`；
 - terminal 后 provisional 记录 `provisional_after_terminal`，但不重开回合；
-- activity.turn.ended 从不关闭 request。
+- process progress 从不关闭 request。
 
 ### 6.3 切频道
 
@@ -203,7 +203,7 @@ TypeMeta 统一映射为：request kind 资格、参数 Schema、payload 示例/
 
 ## 11. 长任务与控制
 
-任务级入口由四项事实共同决定：本人是 request sender、回合没有 terminal、频道为 `member_active`、目标 Actor Describe 声明对应控制类型。processing provisional 中的 `turn_id` 是 steer CAS 输入；activity.turn.ended 不是终态。
+任务级入口由四项事实共同决定：本人是 request sender、回合没有 terminal、频道为 `member_active`、目标 Actor Describe 声明对应控制类型。processing provisional 中的 `turn_id` 是 steer CAS 输入；只有 terminal response 能关闭回合。
 
 cancel 是 WS 控制帧：receipt 后只显示“已受理”，原请求的 `cancelled:true` failed terminal 才关闭任务。断线/超时恢复为 uncertain，并以 replay 为准。steer、interrupt、queue、stop、terminate、restart 是独立账本 request，各自展示自己的 provisional 和 terminal。
 

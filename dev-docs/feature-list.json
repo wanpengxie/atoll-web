@@ -1,9 +1,9 @@
 {
-  "project": "atoll-web-f1-f6",
+  "project": "atoll-web-f1-f7",
   "created_at": "2026-08-18T20:30:00+08:00",
-  "last_updated": "2026-08-18T23:55:00+08:00",
-  "total_features": 38,
-  "completed_features": 38,
+  "last_updated": "2026-08-24T01:40:00+08:00",
+  "total_features": 45,
+  "completed_features": 45,
   "build_commands": {
     "build": "npm run build",
     "test": "npm test",
@@ -27,7 +27,7 @@
 
     {"id":"F3-001","category":"f3","priority":"P0","name":"平面动态条目","description":"业务消息脱离大卡片，保留清晰阅读轴。","dependencies":["F1-001"],"files":["src/ui/Timeline.jsx"],"verification":"动态视觉与浏览器测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
     {"id":"F3-002","category":"f3","priority":"P0","name":"WorkTurn 主线分层","description":"主线显示阶段与终态，技术过程进入详情。","dependencies":["F3-001","F1-003"],"files":["src/ui/Timeline.jsx"],"verification":"回合状态测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
-    {"id":"F3-003","category":"f3","priority":"P0","name":"回合 Context","description":"完整 provisional/activity/anomaly 和控制可审计。","dependencies":["F3-002"],"files":["src/ui/context/TurnContext.jsx"],"verification":"回合详情浏览器测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
+    {"id":"F3-003","category":"f3","priority":"P0","name":"回合 Context","description":"完整 provisional process/anomaly 和控制可审计。","dependencies":["F3-002"],"files":["src/ui/context/TurnContext.jsx"],"verification":"回合详情浏览器测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
     {"id":"F3-004","category":"f3","priority":"P1","name":"消息操作","description":"Hover/Focus 可打开详情、创建任务和返回来源。","dependencies":["F3-001"],"files":["src/ui/Timeline.jsx"],"verification":"键盘与鼠标测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
     {"id":"F3-005","category":"f3","priority":"P0","name":"Composer 完整交互","description":"多行、附件、目标和发送状态保持。","dependencies":["F1-002","F2-005"],"files":["src/ui/Composer.jsx"],"verification":"Composer 单元与浏览器测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
     {"id":"F3-006","category":"f3","priority":"P0","name":"系统事件分级","description":"系统叙事压缩、诊断信息折叠且保持审计。","dependencies":["F3-002"],"files":["src/ui/Timeline.jsx"],"verification":"事件分级测试","passes":true,"completed_at":"2026-08-18T21:10:53+08:00"},
@@ -53,6 +53,14 @@
     {"id":"F6-005","category":"f6","priority":"P0","name":"大历史与流式性能","description":"大历史、长列表、连续 feed 更新避免明显卡顿、重复重算和无界 DOM。","dependencies":["F5-004"],"files":["src/ui/Timeline.jsx","src/ui/ArtifactsView.jsx","src/ui/TasksView.jsx"],"verification":"确定性压力场景与性能预算测试","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
     {"id":"F6-006","category":"f6","priority":"P1","name":"预览资源生命周期","description":"文本、图片、媒体和 PDF 预览有尺寸上限、取消与 Object URL 释放，失败安全降级。","dependencies":["F2-004"],"files":["src/ui/context/ArtifactContext.jsx"],"verification":"预览生命周期与失败浏览器测试","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
     {"id":"F6-007","category":"f6","priority":"P0","name":"过渡实现清理","description":"删除旧右栏资源/定时器主入口、重复 CSS 和已经没有调用方的过渡代码。","dependencies":["F6-001","F6-003"],"files":["src/app","src/ui","src/styles"],"verification":"引用审计、构建与阶段 A–E 回归","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
-    {"id":"F6-008","category":"f6","priority":"P0","name":"发布门禁与真实后端 Smoke","description":"全量单元、浏览器、视觉、构建通过，并用真实 Atoll 验证可启动范围；无法本地证明的 daemon/并发/timer 事实明确保留发布前边界。","dependencies":["F6-001","F6-002","F6-003","F6-004","F6-005","F6-006","F6-007"],"files":["docs/TESTING.md","docs/FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md"],"verification":"npm run test:all + 真实后端 smoke 记录","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"}
+    {"id":"F6-008","category":"f6","priority":"P0","name":"发布门禁与真实后端 Smoke","description":"全量单元、浏览器、视觉、构建通过，并用真实 Atoll 验证可启动范围；无法本地证明的 daemon/并发/timer 事实明确保留发布前边界。","dependencies":["F6-001","F6-002","F6-003","F6-004","F6-005","F6-006","F6-007"],"files":["docs/TESTING.md","docs/FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md"],"verification":"npm run test:all + 真实后端 smoke 记录","passes":true,"completed_at":"2026-08-18T23:55:00+08:00"},
+
+    {"id":"F7-001","category":"f7","priority":"P0","name":"RequestTurn Progress 协议基线","description":"明确 Agent 的 turn/tool/stage 全部作为所属 request 的 provisional response，event 只保留无 request 所有者的频道事实。","dependencies":["F6-008"],"files":["docs/REQUEST-TURN-PROGRESS-PROTOCOL.md"],"verification":"协议审查与 JSON 示例核对","passes":true,"completed_at":"2026-08-24T01:40:00+08:00"},
+    {"id":"F7-002","category":"f7","priority":"P0","name":"后端过程投影统一","description":"Agent Base 将 runtime Tool/Progress 投影为 owner request 的 processing response，不再 Emit agent.turn/tool event。","dependencies":["F7-001"],"files":["../atoll/drivers/agents/base"],"verification":"Go 单元、Agent 集成与账本形状测试","passes":true,"completed_at":"2026-08-24T01:40:00+08:00"},
+    {"id":"F7-003","category":"f7","priority":"P0","name":"公开 Activity 词表退役","description":"移除公开 agent.turn/tool activity 生产依赖，保留 Provider/runtime 内部事件边界。","dependencies":["F7-002"],"files":["../atoll/registry/activity.go","../atoll/scripts/check-activity-types.sh"],"verification":"rg 卫生检查、archtest、go test ./...","passes":true,"completed_at":"2026-08-24T01:40:00+08:00"},
+    {"id":"F7-004","category":"f7","priority":"P0","name":"单一过程回放","description":"前端只从 payload.process 渲染 Tool/Stage progress，删除 agent.turn/tool event 的旧词表与兼容分支。","dependencies":["F7-002"],"files":["src/model/fold.js","src/model/turn-process.js","src/ui/timeline/ProgressTrail.jsx"],"verification":"新账本形状、严格 parent_id 与 terminal 闭合测试","passes":true,"completed_at":"2026-08-24T01:40:00+08:00"},
+    {"id":"F7-005","category":"f7","priority":"P0","name":"Agent 调用消息树","description":"Agent→Agent 业务子 RequestTurn 按 parent_id 递归缩进，且每个节点拥有独立过程组件与 terminal。","dependencies":["F7-004"],"files":["src/ui/Timeline.jsx","src/styles/timeline.css"],"verification":"A→B/C、B→D 组件与浏览器测试","passes":true,"completed_at":"2026-08-24T01:40:00+08:00"},
+    {"id":"F7-006","category":"f7","priority":"P0","name":"双投影分槽与去伪造","description":"父 Tool progress 只进父过程，真实子 request 只进消息树，Tool output.progress_events 不反向生成消息或过程。","dependencies":["F7-004","F7-005"],"files":["src/ui/Timeline.jsx","src/ui/timeline/ProgressTrail.jsx"],"verification":"call_actor 输入输出、子 progress 与无重复断言","passes":true,"completed_at":"2026-08-24T01:40:00+08:00"},
+    {"id":"F7-007","category":"f7","priority":"P0","name":"跨仓协议门禁","description":"Mock、前端单测/浏览器、后端全测和构建共同证明新协议、多级消息树与旧协议彻底退役。","dependencies":["F7-002","F7-003","F7-004","F7-005","F7-006"],"files":["docs/TESTING.md","tests","../atoll/drivers/agents"],"verification":"go test ./... + npm test + F3/F7 browser + 双仓 build/lint","passes":true,"completed_at":"2026-08-24T01:40:00+08:00"}
   ]
 }

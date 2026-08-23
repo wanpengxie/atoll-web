@@ -71,6 +71,7 @@ export const SCENARIOS = Object.freeze({
   'real-backend-shape': standard({ behavior: { roster_principal: false } }),
   'long-running': standard({ history: false, behavior: { capabilities: true, message: 'long-running' } }),
   'progress-demo': standard({ history: false, behavior: { capabilities: true, message: 'progress-demo' } }),
+  'agent-tree': standard({ history: false, behavior: { capabilities: true, message: 'agent-tree' } }),
   'control-conflict': standard({ history: false, behavior: { capabilities: true, message: 'long-running' } }),
   'actor-lifecycle': standard({ history: false, behavior: { capabilities: true } }),
   'approval-schema': standard({ behavior: { approval_schema: true } }),

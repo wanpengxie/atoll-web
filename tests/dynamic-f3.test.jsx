@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Composer } from '../src/ui/Composer.jsx';
+import { fold } from '../src/model/fold.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { TurnContext } from '../src/ui/context/TurnContext.jsx';
 
@@ -13,8 +14,10 @@ function runningTurn() {
   const request = { id: 'req-1', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { text: '整理研究报告', token: 'secret' } };
   return {
     requestId: request.id, request, requestSeq: 1, status: 'processing', latestStatus: 'processing', terminal: null,
-    provisional: [{ seq: 2, status: 'processing', core: true, envelope: { id: 'p-1', type: 'agent.ask', ts: 110, sender: { id: 'agent-1' }, payload: { status: 'processing', detail: '正在整理资料' } } }],
-    activity: [{ seq: 3, envelope: { id: 'a-1', type: 'agent.tool.started', ts: 120, sender: { id: 'agent-1' }, payload: { tool: 'search', status: 'started' } } }],
+    provisional: [
+      { seq: 2, status: 'processing', core: true, envelope: { id: 'p-1', type: 'agent.ask', ts: 110, sender: { id: 'agent-1' }, payload: { status: 'processing', detail: '正在整理资料' } } },
+      { seq: 3, status: 'processing', core: true, envelope: { id: 'p-tool', type: 'agent.ask', ts: 120, sender: { id: 'agent-1' }, payload: { status: 'processing', process: { kind: 'tool', phase: 'started', tool_call_id: 'call-1', tool: 'search' } } } },
+    ],
     anomalies: [{ code: 'sample', seq: 4 }],
   };
 }
@@ -109,12 +112,12 @@ it('消息附件只显示产品摘要，点击整卡进入统一预览', async (
 it('agent 回合中调用的其它 actor 不铺进对话时间线', () => {
   const ask = { id: 'ask', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { body: { text: '把 root 拉进来' } } };
   const askTurn = {
-    requestId: 'ask', request: ask, requestSeq: 1, status: 'completed', provisional: [{ seq: 3, status: 'processing', envelope: { payload: { status: 'processing' } } }], activity: [], anomalies: [],
+    requestId: 'ask', request: ask, requestSeq: 1, status: 'completed', provisional: [{ seq: 3, status: 'processing', envelope: { payload: { status: 'processing' } } }], anomalies: [],
     terminal: { id: 'ask-r', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '已加入' } },
   };
   const admit = { id: 'admit', type: 'system.member.admit', kind: 'request', ts: 110, parent_id: 'ask', sender: { id: 'agent-1', kind: 'agent' }, audience: ['system'], payload: { body: { principal: 'root' } } };
   const admitTurn = {
-    requestId: 'admit', request: admit, requestSeq: 2, status: 'completed', provisional: [], activity: [], anomalies: [],
+    requestId: 'admit', request: admit, requestSeq: 2, status: 'completed', provisional: [], anomalies: [],
     terminal: { id: 'admit-r', type: 'system.member.admit', ts: 115, sender: { id: 'system', kind: 'system' }, payload: { status: 'completed', member: 'human:root:1' } },
   };
   const state = {
@@ -128,6 +131,60 @@ it('agent 回合中调用的其它 actor 不铺进对话时间线', () => {
   expect(document.querySelectorAll('.turn-card')).toHaveLength(1);
   expect(screen.queryByText('邀请成员加入')).toBeNull();
   expect(screen.queryByRole('button', { name: /关联调用/ })).toBeNull();
+});
+
+it('Agent 调用按 parent_id 渲染消息树，子过程只留在自己的节点', () => {
+  const root = { id: 'root-ask', kind: 'request', type: 'agent.ask', ts: 100, sender: { kind: 'human', id: 'me' }, audience: ['agent-a'], visibility: 'public', correlation_id: 'root-ask', payload: { text: '请协作回答' } };
+  const child = { id: 'child-b', kind: 'request', type: 'agent.ask', ts: 120, sender: { kind: 'agent', id: 'agent-a' }, audience: ['agent-b'], visibility: 'public', parent_id: 'root-ask', correlation_id: 'root-ask', payload: { text: 'B 负责查资料' } };
+  const grandchild = { id: 'child-d', kind: 'request', type: 'agent.ask', ts: 140, sender: { kind: 'agent', id: 'agent-b' }, audience: ['agent-d'], visibility: 'public', parent_id: 'child-b', correlation_id: 'root-ask', payload: { text: 'D 负责核验' } };
+  const response = (id, parentId, sender, process, ts) => ({ id, kind: 'response', type: 'agent.ask', ts, sender: { kind: 'agent', id: sender }, audience: ['me'], visibility: 'public', parent_id: parentId, correlation_id: 'root-ask', payload: { status: 'processing', process } });
+  const terminal = (id, parentId, sender, text, ts) => ({ id, kind: 'response', type: 'agent.ask', ts, sender: { kind: 'agent', id: sender }, audience: ['me'], visibility: 'public', parent_id: parentId, correlation_id: 'root-ask', payload: { status: 'completed', text } });
+  const envelopes = [
+    root,
+    response('a-call-b-start', 'root-ask', 'agent-a', { kind: 'tool', phase: 'started', tool_call_id: 'call-b', tool: 'call_actor', input: { actor_id: 'agent-b', type: 'agent.ask', payload: { text: 'B 负责查资料' } } }, 110),
+    child,
+    response('b-stage', 'child-b', 'agent-b', { kind: 'stage', stage: 'thinking', text: 'B 正在查资料' }, 130),
+    response('b-call-d-start', 'child-b', 'agent-b', { kind: 'tool', phase: 'started', tool_call_id: 'call-d', tool: 'call_actor', input: { actor_id: 'agent-d', type: 'agent.ask' } }, 135),
+    grandchild,
+    response('d-stage', 'child-d', 'agent-d', { kind: 'stage', stage: 'thinking', text: 'D 正在核验' }, 150),
+    terminal('d-final', 'child-d', 'agent-d', 'D 核验完成', 160),
+    response('b-call-d-end', 'child-b', 'agent-b', { kind: 'tool', phase: 'ended', tool_call_id: 'call-d', tool: 'call_actor', outcome: 'completed', output: { status: 'completed', text: 'D 核验完成' } }, 170),
+    terminal('b-final', 'child-b', 'agent-b', 'B 汇总完成', 180),
+    response('a-call-b-end', 'root-ask', 'agent-a', { kind: 'tool', phase: 'ended', tool_call_id: 'call-b', tool: 'call_actor', outcome: 'completed', output: { status: 'completed', text: 'B 汇总完成' } }, 190),
+    terminal('a-final', 'root-ask', 'agent-a', 'A 最终回答', 200),
+  ];
+  const state = fold(envelopes.map((envelope, index) => ({ channel_id: 'c0', seq: index + 1, envelope })), 'me');
+  render(<Timeline state={state} roster={[
+    { id: 'me', name: '我' }, { id: 'agent-a', name: 'A' }, { id: 'agent-b', name: 'B' }, { id: 'agent-d', name: 'D' },
+  ]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+
+  const nodes = [...document.querySelectorAll('.agent-thread-node')];
+  expect(nodes).toHaveLength(2);
+  expect(nodes.map((node) => node.getAttribute('aria-level'))).toEqual(['2', '3']);
+  expect(document.querySelector('.agent-thread-request')).toBeNull();
+  expect(nodes.every((node) => node.querySelector('.agent-thread-response > .agent-turn-bubble.compact'))).toBe(true);
+  expect(nodes.every((node) => node.querySelector('.agent-thread-identity-row > .actor-icon'))).toBe(true);
+  expect(nodes.every((node) => node.querySelector('.agent-thread-identity-row > header'))).toBe(true);
+  expect(nodes.every((node) => node.querySelector('.agent-thread-identity-row + .agent-thread-content'))).toBe(true);
+  expect(nodes.every((node) => !node.querySelector('.agent-thread-response > .message-row'))).toBe(true);
+  expect(nodes.every((node) => node.querySelector('.agent-request-quote'))).toBe(true);
+  expect(nodes[0].querySelector('.agent-request-quote').textContent).toContain('回复 A');
+  expect(nodes[1].querySelector('.agent-request-quote').textContent).toContain('回复 B');
+  expect(nodes[0].querySelector('.agent-thread-child-stem')).toBeTruthy();
+  expect(nodes[0].querySelectorAll('.agent-thread-rail')).toHaveLength(1);
+  expect(nodes[0].querySelector('.agent-thread-rail.ends').style.getPropertyValue('--thread-rail-level')).toBe('1');
+  expect(nodes[1].querySelectorAll('.agent-thread-rail')).toHaveLength(1);
+  expect(nodes[1].querySelector('.agent-thread-rail.ends').style.getPropertyValue('--thread-rail-level')).toBe('2');
+  expect(nodes[1].querySelector('.agent-thread-rail.continues')).toBeNull();
+  expect(screen.getByText('B 负责查资料')).toBeTruthy();
+  expect(screen.getByText('D 负责核验')).toBeTruthy();
+  expect(screen.getByText('A 最终回答')).toBeTruthy();
+  expect(screen.getByText('B 汇总完成')).toBeTruthy();
+  expect(screen.getByText('D 核验完成')).toBeTruthy();
+  const processToggles = [...document.querySelectorAll('.progress-trail-toggle')].map((node) => node.textContent);
+  expect(processToggles.some((text) => text.includes('1 条过程记录'))).toBe(true);
+  expect(processToggles.some((text) => text.includes('2 条过程记录'))).toBe(true);
+  expect(document.body.textContent).not.toContain('progress_events');
 });
 
 describe('F3 Composer', () => {

@@ -25,7 +25,7 @@
 
 核心裁决：
 
-> 一个请求不是“点发送后出现一个气泡”，而是“客户端提交动作 + 账本中的 request + 任意 provisional/activity + 唯一 terminal”组成的可恢复状态机。
+> 一个请求不是“点发送后出现一个气泡”，而是“客户端提交动作 + 账本中的 request + 任意 provisional process + 唯一 terminal”组成的可恢复状态机。
 
 ## 2. 产品入口
 
@@ -176,16 +176,17 @@ response 通过 `parent_id` 指向 request id，并继承或建立 correlation�
 
 Actor 自身的具体错误放在 `error_code`，恢复提示可能来自 actor.describe 的 error metadata。
 
-### 4.6 Activity
+### 4.6 Process progress
 
-Agent 过程事件：
+Agent 的 turn、stage、tool 过程统一写成所属 request 的 provisional response：
 
-- `activity.turn.started {turn_index,status:"started"}`；
-- `activity.turn.ended {turn_index,status:"ok|failed|interrupted"}`；
-- `activity.tool.started {turn_index,tool_call_id,tool,status:"started"}`；
-- `activity.tool.ended {turn_index,tool_call_id,tool,status:"completed|failed",detail?}`。
+- top-level `status` 保持合法 provisional 状态；
+- `payload.process.kind` 为 `turn|stage|tool`；
+- Tool 通过 `phase=started|ended` 与 `tool_call_id` 配对；
+- Tool 自身结局写在 `process.outcome=completed|failed`，不关闭 RequestTurn；
+- input/output 保留原始 JSON，不从中推断消息树。
 
-Activity 是账本 event，不是 request 的 terminal。`turn.ended` 也不能代替最终 response，因为请求关闭语义只属于 response terminal。
+完整形状、Agent 调用树和进度隔离律见 `../REQUEST-TURN-PROGRESS-PROTOCOL.md`。
 
 ## 5. 两层状态模型
 
@@ -317,7 +318,7 @@ receipt 与 request feed 可能任意先后到达。模型必须支持：
 
 ### 7.2 未到达 request 的暂存
 
-如果 response/activity 在本地先于 request 被处理：
+如果 response 在本地先于 request 被处理：
 
 - 暂存到 `unmatchedByParent` 或 `unmatchedByCorrelation`；
 - request 到达后重新归并；
@@ -345,7 +346,7 @@ receipt 与 request feed 可能任意先后到达。模型必须支持：
 - request 已存在且内容相同：视为重放；
 - request 已存在但内容不同：记录 `message_id_content_conflict`；
 - 将 pending submission 从 accepted/uncertain 更新为 landed；
-- 尝试归并之前暂存的 response/activity；
+- 尝试归并之前暂存的 response；
 - request type 为 system.* 或 visibility=system 时进入 narration，不进入普通回合列表；
 - human.approve 的专用渲染由审批规格覆盖，但底层仍是 RequestTurn。
 
@@ -366,16 +367,16 @@ receipt 与 request feed 可能任意先后到达。模型必须支持：
 - 后续不同 id terminal 记录 `terminal_conflict`，不覆盖第一条；
 - completed 不要求存在 text；
 - failed 不要求只存在 reason/detail，必须保留完整结构化 payload；
-- terminal 后保留先前 provisional/activity，用于展开过程记录。
+- terminal 后保留先前 provisional process，用于展开过程记录。
 
-### 8.5 Activity
+### 8.5 Process progress
 
-- activity.* event 不建立独立 request；
+- process response 不建立独立 request；
 - 先按 parent_id 匹配，再按 correlation_id 匹配最近仍打开或相关的 request；
-- tool.started/tool.ended 按 tool_call_id 配对，但原始事件都保留；
+- tool started/ended 按 tool_call_id 配对，但原始 response 都保留；
 - 同一个 tool_call_id 的 ended 无 started 时仍展示，并记录 `tool_start_missing`；
-- turn.ended 不关闭 RequestTurn；
-- activity 无法匹配时进入诊断/系统过程区，而不是伪造普通消息。
+- process 不关闭 RequestTurn；
+- process 无法匹配时进入诊断区，而不是伪造普通消息。
 
 ### 8.6 普通 event
 
@@ -518,7 +519,7 @@ credential
 - slash 命令不能成为唯一可读描述，应保留真实 msg_type 和 payload；
 - audience 显示解析后的成员名，无法解析时保留 actor id。
 
-## 11. Provisional 和 Activity UI
+## 11. Provisional 与 Process UI
 
 ### 11.1 核心状态文案
 
@@ -533,12 +534,12 @@ credential
 ### 11.2 展示方式
 
 - 回合卡标题展示最新状态；
-- 展开“过程记录”可看到全部 provisional 和 activity；
+- 展开“过程记录”可看到全部 provisional process；
 - 不删除重复但不同 id 的状态；
 - business provisional 显示原始 status 和结构化 payload；
 - tool started/ended 使用 tool_call_id 配对；
 - tool failed 显示 detail，但不自动把 request 判为 failed；
-- turn interrupted 也等待正式 terminal；
+- interrupt 过程也等待正式 terminal；
 - terminal 到达后过程区默认折叠，仍可展开。
 
 ### 11.3 预计等待时间
@@ -687,7 +688,7 @@ validate frame
 send receipt/error
 append request to ledger
 broadcast request feed
-append provisional/activity
+append provisional process
 append terminal
 broadcast subsequent feed
 ```
@@ -932,7 +933,7 @@ POST /mock/control/inject-terminal-conflict
 3. 回合保持已关闭。
 4. 显示中文错误摘要。
 5. detail 和结构化诊断可展开。
-6. 不因 activity.turn.ended 提前关闭。
+6. 不因任何 process progress 提前关闭。
 
 ### 17.8 命名空间 provisional
 
@@ -963,7 +964,7 @@ Mock 无法代替以下检查：
 1. submit 指定客户端 id 后，receipt.message_id 与 feed envelope.id 一致；
 2. receipt 不包含 seq，真实 cursor 只由 feed 推进；
 3. provisional 和 terminal 的 parent_id/correlation_id 符合 fold 规则；
-4. Agent activity 的 parent_id、correlation_id、turn_index、tool_call_id 与真实运行一致；
+4. Agent process response 的 parent_id、correlation_id、turn_index、tool_call_id 与真实运行一致；
 5. registrar、system actor、actor.describe 的结构化 terminal 形状符合 renderer；
 6. 相同 id/相同语义的重试和不同语义冲突符合后端幂等规则；
 7. 断线重连回放不会制造重复终态；
@@ -1000,10 +1001,10 @@ Mock scenario → receipt/feed 独立调度 → 浏览器验收
 - receipt timeout 显示 uncertain，不谎报确定失败；
 - cursor 只由 feed.seq 推进；
 - request id 是回合主键，correlation 支持多个 request；
-- response/activity 优先按 parent_id 关联；
+- response 优先按 parent_id 关联；
 - 五个核心 provisional 保留原值；
 - 合法命名空间 provisional 不被当作终态或永久孤儿；
-- activity.turn.ended 不关闭 request；
+- process progress 不关闭 request；
 - 第一条有效 terminal 不被后续冲突覆盖；
 - 文本、空成功和结构化成功都有非空可理解 UI；
 - registrar 和 actor.describe 结构化结果可用；

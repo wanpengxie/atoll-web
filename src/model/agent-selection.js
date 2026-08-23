@@ -1,9 +1,10 @@
 import { TYPES } from '../protocol/vocab.js';
+import { FINAL } from '../protocol/envelope.js';
 
 // 协议正形（agent-model-params-design.md §4）：
 // - 值域 = actor.describe 的 agent.select 词条 input_schema——oneOf 每支一个合法
 //   (model, effort) 组合对，const 旁的 title 是展示元数据（无则显裸值）。
-// - 当前值 = 账本保鲜（最后一个带非空 model/effort 的 agent.turn.ended usage）
+// - 当前值 = 账本保鲜（最后一个带非空 model/effort 的 terminal response usage）
 //   + agent.context 冷启动兜底。
 // 本文件是协议的唯一适配点：Composer 和选择器恒不感知帧的具体形状。
 
@@ -49,7 +50,7 @@ function usableUsage(payload) {
 // 该 agent 的当前参数。当前值是活状态读数，恒只认本连接的证据——账本历史
 // usage 是上一个生命期的读数（服务重启可能换过配置），恒不当"当前值"，也
 // 恒不挡本连接的 context 探测。证据链：本连接 agent.context 探测（liveRequestId）
-// 的 completed 响应起算，其后新完成的 turn.ended（usage 带非空 model/effort；
+// 的 completed 响应起算，其后新完成的 terminal response（usage 带非空 model/effort；
 // 缺字段的帧跳过，不得把显示清空）逐步覆盖。无本连接证据恒返回 null。
 export function latestAgentUsage(state, actorId, liveRequestId = '') {
   if (!state?.rows || !actorId || !liveRequestId) return null;
@@ -65,7 +66,7 @@ export function latestAgentUsage(state, actorId, liveRequestId = '') {
       continue;
     }
     if (!live || row.sender?.id !== actorId) continue;
-    if (row.kind === 'event' && row.type === 'agent.turn.ended') {
+    if (row.kind === 'response' && FINAL.has(row.payload?.status)) {
       const usage = usableUsage(row.payload);
       if (usage) found = usage;
     }

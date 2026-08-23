@@ -205,7 +205,7 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
   (model, effort) 组合对（**不是笛卡尔积**），每支 `required` 完整对，const 旁可带
   `title`（源头 decl `model_label`/`effort_label`）。无 selections 的 agent 无 oneOf，
   前端不渲染切换菜单。
-- 当前值：该 agent 最后一个 **usage 带非空 model/effort** 的 `agent.turn.ended`
+- 当前值：该 agent 最后一个 **usage 带非空 model/effort** 的 terminal response
   （failed/lost 可能缺 usage，缺则跳过恒不清显示）；无任何 usage 时冷启动静默发一次
   `agent.context`（终态平铺 `model/effort/context_tokens/context_window`）。
 - 设置：`agent.select {model, effort}` 走**旁路独占槽**（协议 §8，08-22 改判）：

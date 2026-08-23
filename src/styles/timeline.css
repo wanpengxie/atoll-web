@@ -59,6 +59,40 @@
 .agent-conversation-turn > .request-message + .information-flow-row { margin-top: -3px; }
 .agent-turn-bubble { margin-top: 2px; }
 .agent-turn-bubble.processing { color: var(--text-muted); }
+.agent-conversation-turn > .agent-turn-bubble.has-thread-children::after { position: absolute; z-index: 0; top: 22px; bottom: -8px; left: 26px; border-left: 1px solid var(--line-process); content: ''; pointer-events: none; }
+.agent-conversation-turn > .agent-turn-bubble.has-thread-children .information-flow-avatar-slot { position: relative; z-index: 2; }
+.agent-conversation-turn > .agent-turn-bubble.has-thread-children .actor-icon.kind-agent { background: color-mix(in srgb, var(--agent) 9%, var(--workspace)); box-shadow: inset 0 0 0 1px var(--agent-line); }
+.agent-message-thread { --thread-avatar-size: 22px; --thread-node-inset: 13px; --thread-message-inset: 4px; --thread-identity-gap: 5px; --thread-step: calc(var(--thread-node-inset) + var(--thread-message-inset) + var(--thread-avatar-size) * .5); --thread-junction-y: calc(3px + var(--thread-avatar-size) * .5); display: grid; width: calc(100% - 26px); gap: 5px; margin: 8px 0 5px 26px; padding: 0; list-style: none; }
+.agent-thread-node { position: relative; min-width: 0; margin-left: calc((var(--thread-depth, 1) - 1) * var(--thread-step)); padding-left: var(--thread-node-inset); }
+.agent-thread-elbow { position: absolute; z-index: 0; top: var(--thread-junction-y); left: 0; width: var(--thread-step); border-top: 1px solid var(--line-process); pointer-events: none; }
+.agent-thread-rail { position: absolute; z-index: 0; top: -3px; left: calc((var(--thread-rail-level) - var(--thread-depth, 1)) * var(--thread-step)); border-left: 1px solid var(--line-process); pointer-events: none; }
+.agent-thread-rail.continues { bottom: -3px; }
+.agent-thread-rail.ends { height: calc(var(--thread-junction-y) + 3px); }
+.agent-thread-child-stem { position: absolute; z-index: 0; top: var(--thread-junction-y); bottom: -3px; left: var(--thread-step); border-left: 1px solid var(--line-process); pointer-events: none; }
+.agent-thread-response { position: relative; z-index: 1; min-width: 0; }
+.agent-thread-message { width: 100%; margin: 0; padding: 3px 8px 6px var(--thread-message-inset); border-radius: var(--radius-object); outline: 0; }
+.agent-thread-message:hover, .agent-thread-message:focus-within, .agent-thread-message:focus-visible { background: var(--surface-quieter); }
+.agent-thread-identity-row { display: flex; min-width: 0; align-items: center; gap: var(--thread-identity-gap); }
+.agent-thread-identity-row > header { display: flex; min-width: 0; align-items: center; gap: 5px; }
+.agent-thread-identity-row > header strong { overflow: hidden; color: var(--text); font-size: 12.5px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.agent-thread-identity-row > header time { color: var(--text-dim); font-size: 9px; white-space: nowrap; }
+.agent-thread-response .actor-icon { position: relative; z-index: 2; width: var(--thread-avatar-size); height: var(--thread-avatar-size); font-size: 8px; }
+.agent-thread-response .actor-icon.kind-agent { background: color-mix(in srgb, var(--agent) 9%, var(--workspace)); box-shadow: inset 0 0 0 1px var(--agent-line); }
+.agent-thread-content { min-width: 0; margin-left: calc(var(--thread-avatar-size) + var(--thread-identity-gap)); }
+.agent-thread-response .ai-label { padding: 1px 3px; font-size: 7px; }
+.agent-thread-response .agent-turn-bubble { margin-top: 0; }
+.agent-thread-response .response-content { max-width: 74ch; margin-top: 2px; font-size: 13px; line-height: 1.55; }
+.agent-request-quote { max-width: 74ch; margin: 2px 0 5px; padding: 3px 8px; border: 0; border-left: 2px solid var(--line-control); background: transparent; color: var(--text-muted); }
+.agent-request-quote > header { display: flex; min-width: 0; align-items: center; gap: 4px; color: var(--text-dim); font-size: 9px; line-height: 1.35; }
+.agent-request-quote > header strong { color: var(--text-muted); font-size: inherit; font-weight: 650; }
+.agent-request-quote > header time { color: var(--text-dim); font-size: inherit; white-space: nowrap; }
+.agent-request-quote-text { min-width: 0; margin-top: 1px; }
+.agent-request-quote-text p { margin: 0; color: var(--text-muted); font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .agent-message-thread { --thread-avatar-size: 20px; --thread-node-inset: 9px; --thread-identity-gap: 4px; width: calc(100% - 26px); margin-left: 26px; }
+  .agent-thread-message { padding-right: 2px; }
+  .agent-request-quote { padding-right: 4px; padding-left: 6px; }
+}
 /* Codex-style live line: readable body-level status, not another card. Its fixed
    block height lets consecutive progress frames replace text without reflow. */
 /* 过程轨迹：处理中滚动显示末几条，回合落定后收成一行入口；每条一行截断，
@@ -129,8 +163,22 @@
 .progress-drawer-body { overflow: auto; padding: 14px; font-size: 13.5px; line-height: 1.6; color: var(--text); }
 .progress-drawer-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.55 var(--mono, monospace); }
 .progress-tool-data { display: grid; gap: 10px; }
-.progress-raw-json { max-height: 240px; overflow: auto; margin: 0; padding: 10px 12px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-code); white-space: pre-wrap; overflow-wrap: anywhere; }
-.progress-raw-json code { color: var(--text); font: 12px/1.55 var(--mono); }
+.progress-json-shell { max-height: min(52vh, 460px); overflow: auto; padding: 9px 10px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-code); overscroll-behavior: contain; }
+.progress-json-tree { margin: 0; color: var(--text); font: 11.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.progress-json-children { margin: 0 0 0 7px; padding: 0 0 0 12px; border-left: 1px solid var(--line-structural); list-style: none; }
+.progress-json-row { min-width: 0; margin: 0; padding: 1px 0; list-style: none; }
+.progress-json-toggle { display: inline-grid; width: 14px; height: 16px; margin-right: 2px; place-content: center; border: 0; color: var(--text-dim); cursor: pointer; user-select: none; }
+.progress-json-toggle::after { display: block; font: 12px/1 var(--mono); content: '›'; transform-origin: center; transition: transform 100ms ease; }
+.progress-json-toggle.is-open::after { transform: rotate(90deg); }
+.progress-json-collapsed { margin-left: 3px; color: var(--text-dim); cursor: pointer; }
+.progress-json-collapsed::after { content: '…'; }
+.progress-json-label { margin-right: 5px; color: var(--text); font-weight: 650; }
+.progress-json-label.is-clickable { cursor: pointer; }
+.progress-json-punctuation { margin-right: 3px; color: var(--text-muted); font-weight: 600; }
+.progress-json-value.is-string { color: var(--online); }
+.progress-json-value.is-number { color: var(--agent); }
+.progress-json-value.is-boolean { color: var(--business); }
+.progress-json-value.is-null, .progress-json-value.is-undefined { color: var(--danger); }
 .progress-tool-detail { padding: 10px 12px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-quieter); }
 .progress-tool-detail strong { font-size: 12px; }
 .progress-tool-detail p, .progress-empty { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -205,20 +253,8 @@
 .turn-thread-item.status-failed .turn-thread-row strong { color: var(--warning); }
 .turn-thread-result { margin: 0 0 6px; padding: 0 7px 0 calc(9px + (var(--thread-depth, 1) - 1) * 14px); color: var(--text-muted); font-size: 10px; }
 .turn-thread-result.empty { color: var(--text-dim); font-size: 9px; }
-.turn-process { margin: 6px 6px 6px 35px; overflow: hidden; border: 1px solid var(--line-process); border-radius: 7px; background: var(--surface-quieter); }
-.process-heading { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 0; color: var(--text-muted); font-size: 10px; list-style: none; cursor: pointer; }
-.process-heading::-webkit-details-marker { display: none; }
-.completed-process[open] .process-heading { border-bottom: 1px solid var(--border); }
-.process-count { display: inline-grid; min-width: 17px; height: 17px; place-content: center; border-radius: var(--pill); background: var(--surface-2); color: var(--text-muted); font: 8px var(--mono); }
-.process-heading code { margin-left: auto; color: var(--warning); font: 9px var(--mono); text-transform: uppercase; }
 .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); animation: pulse 1.2s infinite; }
 .pulse.done { background: var(--online); animation: none; }
-.activity-row { display: grid; grid-template-columns: 16px minmax(100px, 1fr) auto; align-items: center; gap: 5px; padding: 6px 9px; color: var(--text-muted); font-size: 10px; }
-.activity-row + .activity-row { border-top: 1px solid var(--border); }
-.activity-row code { color: var(--text-dim); font: 8px var(--mono); }
-.activity-row small { grid-column: 2 / 4; color: var(--text-dim); }
-.activity-mark { color: var(--warning); font: 700 13px var(--mono); }
-.activity-mark.done { color: var(--online); }
 .final-answer { margin: 7px 6px 0 35px; padding: 10px 12px 4px; border: 1px solid var(--agent-line); border-radius: var(--radius-object); background: var(--agent-surface); color: var(--text); font-size: 14px; line-height: 1.55; }
 .final-answer.failed { background: var(--accent-bg); color: var(--danger); }
 .turn-response.final-answer { margin: 2px 0 0; padding: 6px 10px; border: 0; border-radius: var(--radius-object); background: transparent; color: var(--text); font-size: 14px; line-height: 1.65; }

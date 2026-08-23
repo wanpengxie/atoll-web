@@ -21,7 +21,7 @@
 - feed 早于 receipt 时，当前 self Actor 学习和 pending 对账会失败；
 - request 以 correlation 而不是 request id 为主键，同一业务链可能互相覆盖；
 - 五种 provisional 被压扁成 processing，命名空间 provisional 被当成孤儿；
-- 第二个冲突终态可能覆盖第一终态，response/activity 先到时不能恢复归并；
+- 第二个冲突终态可能覆盖第一终态，response 先到时不能恢复归并；
 - successful terminal 没有 text 时显示空白，结构化结果不可理解；
 - 切换频道后，异步 receipt、pending 或审批动作可能错误使用新的 active channel；
 - 普通频道没有 registrar 席位，管理命令必须识别 coreactor，不能写死 c0 名册结构。
@@ -56,9 +56,9 @@
 - timeout/发送后断线显示“发送结果待确认”，不谎报确定失败；
 - pending 永远绑定发送时 channel id，切频道不串线；
 - request id 是回合主键，correlation 支持一对多；
-- response/activity 优先按 parent_id，乱序项可在 request 到达后归并；
+- response 优先按 parent_id，乱序项可在 request 到达后归并；
 - 第一条 terminal 是权威终态，后续冲突只记录 anomaly；
-- activity.turn.ended 和 provisional 永不伪造终态。
+- process progress 和普通 provisional 永不伪造终态。
 
 ### B4 完整 provisional 与结构化终态
 
@@ -152,7 +152,7 @@ membership 缺口已由协议补齐：attach 回执携带 `memberships`（网关
 |---|---|---|
 | B-01..03 访问事实 | `src/model/channel-access.js`；`tests/channel-access.test.js`；B-BR-01..03 覆盖断线、停服、partial、明确撤权和退役 | 已证明 |
 | B-04 self Actor | `src/model/roster.js` 在发送前登记 id；request feed 学习 sender；`real-backend-shape` 移除 Mock 扩展；roster 单测与 B-BR-04 | 已证明 |
-| B-05..07 fold | `src/model/fold.js`；`tests/fold-phase-b.test.js` 覆盖一对多、response/activity 先到、五种核心和业务 provisional、迟到与冲突终态 | 已证明 |
+| B-05..07 fold | `src/model/fold.js`；`tests/fold-phase-b.test.js` 覆盖一对多、response 先到、五种核心和业务 provisional、迟到与冲突终态 | 已证明 |
 | B-08..09 submission | `src/model/submissions.js` 与 App 原频道闭包；receipt/feed 延迟和丢失场景；B-BR-06..08 同时覆盖 pending 与审批切频道 | 已证明 |
 | B-10..11 terminal | `src/ui/StructuredResult.jsx`；结构化/空/失败/describe 场景；B-BR-09 验证脱敏和 25 项摘要，B-BR-10 验证 registrar | 已证明 |
 | B-12 管理 Actor | `src/model/management-actors.js`、resolver 单测及普通频道 `/channels` 浏览器测试 | 已证明 |

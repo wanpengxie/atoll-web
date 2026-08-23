@@ -19,16 +19,16 @@ describe('Phase B request fold', () => {
     expect(state.turns.get('req-2').terminal.payload.merged).toBe(true);
   });
 
-  it('reconciles response and activity that arrive before their request', () => {
+  it('reconciles state and process responses that arrive before their request', () => {
     const state = fold(rows([
       env('progress', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'queued' }, sender: { kind: 'agent', id: 'agent' } }),
-      env('tool', 'event', 'agent.tool.ended', { parent_id: 'req', payload: { tool_call_id: 'tool-1', status: 'completed' }, sender: { kind: 'agent', id: 'agent' } }),
+      env('tool', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'processing', process: { kind: 'tool', phase: 'ended', tool_call_id: 'tool-1', tool: 'shell', outcome: 'completed' } }, sender: { kind: 'agent', id: 'agent' } }),
       env('req', 'request', 'agent.ask'),
       env('done', 'response', 'agent.ask', { parent_id: 'req', payload: { status: 'completed' }, sender: { kind: 'agent', id: 'agent' } }),
     ]));
     const turn = state.turns.get('req');
-    expect(turn.provisional.map((item) => item.status)).toEqual(['queued']);
-    expect(turn.activity.map((item) => item.envelope.id)).toEqual(['tool']);
+    expect(turn.provisional.map((item) => item.status)).toEqual(['queued', 'processing']);
+    expect(turn.provisional[1].envelope.payload.process.tool_call_id).toBe('tool-1');
     expect(turn.phase).toBe('completed');
     expect(turn.anomalies.map((item) => item.code)).toContain('tool_start_missing');
   });
@@ -49,11 +49,23 @@ describe('Phase B request fold', () => {
     const turn = state.turns.get('req');
     expect(turn.provisional.map((item) => [item.status, item.core])).toEqual([
       ['received', true], ['queued', true], ['processing', true], ['deferred', true], ['unavailable', true],
-      ['provider.waiting', false], ['processing', true],
+      ['provider.waiting', false],
     ]);
     expect(turn.provisional.find((item) => item.status === 'deferred').envelope.payload.retry_after_ms).toBe(500);
     expect(turn.phase).toBe('completed');
     expect(turn.terminal.id).toBe('done');
     expect(turn.anomalies.map((item) => item.code)).toEqual(expect.arrayContaining(['provisional_after_terminal', 'terminal_conflict']));
+  });
+
+  it('never guesses a response owner from correlation_id', () => {
+    const state = fold(rows([
+      env('req-1', 'request', 'agent.ask', { correlation_id: 'work' }),
+      env('req-2', 'request', 'agent.ask', { parent_id: 'req-1', correlation_id: 'work' }),
+      env('ambiguous', 'response', 'agent.ask', { correlation_id: 'work', payload: { status: 'completed', text: 'must stay orphaned' } }),
+    ]));
+    expect(state.turns.get('req-1').terminal).toBeNull();
+    expect(state.turns.get('req-2').terminal).toBeNull();
+    expect(state.orphans.map((item) => item.envelope.id)).toContain('ambiguous');
+    expect(state.anomalies.map((item) => item.code)).toContain('response_parent_missing');
   });
 });

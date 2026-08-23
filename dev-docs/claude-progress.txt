@@ -169,3 +169,20 @@ Verification:
 - F2/F3/layout browser gates: 9/9 passed across the final relevant code paths.
 - Visual Playwright: 16/16 passed, including the new mounted-file preview Context baseline.
 - Production build and `git diff --check`: passed.
+
+=== 2026-08-24 F7 RequestTurn Progress 与 Agent 消息树 ===
+状态：已完成
+变更：
+- 新增跨前后端协议文档，统一 request、provisional process、terminal、event 与 Agent→Agent 子 RequestTurn 的所有权。
+- Atoll Agent Base 将 runtime turn/stage/tool 投影成 owner request 的 processing response；usage 随 terminal 返回，公开 `agent.turn.*` / `agent.tool.*` event、registry 与 allowlist 已删除。
+- `call_actor` / `await_result` 只向父 Tool 结果返回 terminal/failed/ACK，不再把子 progress 聚合成 `progress_events`；子过程只留在子 RequestTurn。
+- atoll-web 删除 activity 事实源与旧事件兼容，只从 `payload.process` 派生过程；response 只认精确 `parent_id`，terminal 后迟到 progress 只记 anomaly。
+- 主时间线按 request.parent_id 渲染 Agent 调用树，每个子消息拥有自己的请求、过程气泡与 terminal；父 Tool JSON 不制造子消息。
+- Mock 新增 A→B/C、B→D 的确定性 `agent-tree` 场景，并补齐父子过程隔离、原始 JSON、刷新与 320px 门禁。
+验证：
+- atoll-web `npm test`：58 files / 246 tests 全过；F3+F7 Playwright：9/9；`npm run build` 通过。
+- atoll `go test ./...`、`make lint`、`make build-go` 全部通过。
+- 双仓旧公开 Activity 词表卫生检查通过；仅保留对禁止字段 `progress_events` 的负向断言。
+审查：
+- 修复了 correlation_id 猜响应归属、terminal 后仍收录 progress、Tool started/ended 重复计数和全局 logger 四个收口问题。
+- F7-001 至 F7-007 与协议设计一致，未保留旧 wire 兼容分支；`completed_features` 为 45/45。

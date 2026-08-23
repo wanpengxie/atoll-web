@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fold, orderedTimeline } from '../src/model/fold.js';
+import { processCount } from '../src/model/turn-process.js';
 
 const base = {
   ts: 1,
@@ -20,8 +21,8 @@ describe('feed fold', () => {
       env('req-1', 'request', 'agent.ask', { payload: { text: 'ping' }, correlation_id: 'turn-1' }),
       env('p-1', 'response', 'agent.ask', { parent_id: 'req-1', payload: { status: 'queued' }, sender: { kind: 'agent', id: 'agent' } }),
       env('p-2', 'response', 'agent.ask', { parent_id: 'req-1', payload: { status: 'processing' }, sender: { kind: 'agent', id: 'agent' } }),
-      env('a-1', 'event', 'agent.tool.started', { correlation_id: 'turn-1', payload: { tool: 'shell', status: 'started' } }),
-      env('a-2', 'event', 'agent.tool.ended', { correlation_id: 'turn-1', payload: { tool: 'shell', status: 'completed' } }),
+      env('a-1', 'response', 'agent.ask', { parent_id: 'req-1', correlation_id: 'turn-1', payload: { status: 'processing', process: { kind: 'tool', phase: 'started', tool_call_id: 'shell-1', tool: 'shell' } }, sender: { kind: 'agent', id: 'agent' } }),
+      env('a-2', 'response', 'agent.ask', { parent_id: 'req-1', correlation_id: 'turn-1', payload: { status: 'processing', process: { kind: 'tool', phase: 'ended', tool_call_id: 'shell-1', tool: 'shell', outcome: 'completed' } }, sender: { kind: 'agent', id: 'agent' } }),
       env('f-1', 'response', 'agent.ask', { parent_id: 'req-1', payload: { status: 'completed', text: 'PONG' }, sender: { kind: 'agent', id: 'agent' } }),
       env('req-2', 'request', 'agent.ask', { payload: { text: 'fail' } }),
       env('f-2', 'response', 'agent.ask', { parent_id: 'req-2', payload: { status: 'failed', reason: 'tool_error', detail: 'boom' }, sender: { kind: 'agent', id: 'agent' } }),
@@ -39,11 +40,11 @@ describe('feed fold', () => {
     expect(state.approvals.has('approve-1')).toBe(true);
 
     const first = state.turns.get('req-1');
-    expect(first.provisional).toHaveLength(2);
-    expect(first.activity).toHaveLength(2);
+    expect(first.provisional).toHaveLength(4);
+    expect(processCount(first)).toBe(1);
     expect(first.status).toBe('completed');
     expect(first.text).toBe('PONG');
-    expect(first.provisional.map((item) => item.status)).toEqual(['queued', 'processing']);
+    expect(first.provisional.map((item) => item.status)).toEqual(['queued', 'processing', 'processing', 'processing']);
 
     const failed = state.turns.get('req-2');
     expect(failed.status).toBe('failed');

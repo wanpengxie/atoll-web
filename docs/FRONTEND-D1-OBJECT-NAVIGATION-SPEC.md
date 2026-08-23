@@ -31,7 +31,7 @@
 
 | 层级 | 权威性 | 示例 | 可否跨端恢复 |
 |---|---|---|---|
-| Ledger | 最高 | request、provisional、activity、terminal、附件元数据 | 可以 |
+| Ledger | 最高 | request、provisional process、terminal、附件元数据 | 可以 |
 | OBS | 当前投影 | 频道、membership、roster、serving、daemon | 可以，但可能 partial/stale |
 | Receipt | 操作受理证据 | submit、after、resource ticket | 单独不能证明最终业务事实 |
 | Local durable | 设备局部事实 | pending submission、timer id、草稿、视图偏好 | 仅本设备 |
@@ -608,7 +608,7 @@ stateDiagram-v2
 
 - open：请求、当前阶段、最近人类可读 provisional、必要控制；
 - terminal：最终结果直接可见，过程摘要一行；
-- 进入回合详情后显示全部 provisional/activity/anomaly/raw ids；
+- 进入回合详情后显示全部 provisional process/anomaly/raw ids；
 - terminal 冲突继续使用第一终态作为权威，同时在详情显示异常。
 
 #### Composer
@@ -1132,7 +1132,7 @@ interface FocusDescriptor {
 ```text
 用户请求 Researcher 生成竞品报告
 → Dynamic 出现 WorkTurn(agent_run active)
-→ provisional/activity 在主线显示摘要
+→ provisional process 在主线显示摘要
 → terminal 返回 report-v1 Artifact
 → 用户打开 Artifact Context
 → 选择“基于此修订”并提交明确 source

@@ -5,7 +5,7 @@
 
 atoll-web 的产品代码只访问身份 HTTP、WS v2、OBS 和文件数据面。日常开发使用分层 Mock；真实 atoll 只验证 Mock 无法证明的部署、并发、持久化和安全契约。
 
-## 1. 一条命令完成阶段 A–E 与 F1–F6 验证
+## 1. 一条命令完成阶段 A–E 与 F1–F7 验证
 
 首次运行真实浏览器测试前安装 Chromium：
 
@@ -46,7 +46,7 @@ Playwright 套件同时包含 UI 视觉/边界用例（含“新建频道”独�
 | 协议 E2E | `tests/e2e.mock.test.js` | 登录、回放、消息、审批、延迟、故障和重连 |
 | UI primitives | `tests/ui-primitives.test.jsx` | tabs、选择菜单、确认和焦点的 DOM/键盘行为 |
 | F6 专项 | `tests/f6-tokens.test.js`、`tests/f6-performance.test.jsx`、`tests/f6-accessibility.test.jsx` | Token/对比度、长列表 DOM 预算、长动态输入不重渲染 Timeline、预览取消与释放、Modal 焦点契约 |
-| 浏览器 E2E | `tests/browser/phase-a.spec.js`～`phase-e.spec.js`、`tests/browser/f1-workspace.spec.js`～`f6-accessibility-responsive.spec.js`、`tests/browser/ui-visual.spec.js`、`tests/browser/layout-responsive.spec.js` | 阶段 A–E、F1–F6 产品闭环、多档视口/缩放、键盘/焦点/reduced motion、结构布局门禁和视觉基线 |
+| 浏览器 E2E | `tests/browser/phase-a.spec.js`～`phase-e.spec.js`、`tests/browser/f1-workspace.spec.js`～`f7-request-turn-progress.spec.js`、`tests/browser/ui-visual.spec.js`、`tests/browser/layout-responsive.spec.js` | 阶段 A–E、F1–F7 产品闭环、多档视口/缩放、键盘/焦点/reduced motion、RequestTurn 多级消息树、结构布局门禁和视觉基线 |
 
 工作台交互还必须符合 [UI-INTERACTION-ARCHITECTURE.md](UI-INTERACTION-ARCHITECTURE.md)：普通账本条目保持平面、完成过程默认折叠、800px 上下文接管工作区、600/320px 上下文占满视口。
 
@@ -234,6 +234,14 @@ curl -X POST http://127.0.0.1:8832/mock/control/fault \
 6. Schema 审批、过期、四类并发/权限错误和外部处理均保留原事实；
 7. 刷新重放后长任务、turn_id 和控制资格只保留一份。
 
+F7 的 `tests/browser/f7-request-turn-progress.spec.js` 与跨仓测试证明：
+
+1. turn、stage、tool 都是所属 request 的 provisional response，公开账本不再写 `agent.turn.*` / `agent.tool.*` event；
+2. response 只按精确 `parent_id` 归属，terminal 后的迟到 progress 不进入呈现；
+3. A→B/C、B→D 的真实子 RequestTurn 形成递归消息树，每个节点只展示自己的 progress 与 terminal；
+4. 父 `call_actor` 过程只含子调用 input 和 terminal/failed/ACK output，子 progress 不以 `progress_events` 冒泡；
+5. Tool started 丢失时 ended 仍可审计并产生 anomaly；320px 下深层消息树无页面横向溢出。
+
 阶段 E 的 `tests/browser/phase-e.spec.js` 证明：
 
 1. Actor/频道模板 CRUD 与系统声明保护；
@@ -282,11 +290,13 @@ npx vitest run tests/space-administration.test.js tests/resources.test.js tests/
 npx playwright test tests/browser/phase-e.spec.js
 npx vitest run tests/f6-tokens.test.js tests/f6-performance.test.jsx tests/f6-accessibility.test.jsx
 npx playwright test tests/browser/f6-accessibility-responsive.spec.js
+npx vitest run tests/fold-phase-b.test.js tests/progress-trail.test.jsx tests/dynamic-f3.test.jsx tests/e2e.mock.test.js
+npx playwright test tests/browser/f3-dynamic.spec.js tests/browser/f7-request-turn-progress.spec.js
 ```
 
 浏览器用例由 Playwright 自动启动 Mock 和 Vite；若端口已被人工服务占用，先停止对应进程，避免测试连接到旧代码。
 
-## 9. 代码卫生与阶段 A–E、F1–F6 完成门槛
+## 9. 代码卫生与阶段 A–E、F1–F7 完成门槛
 
 ```bash
 rg '/api/workspaces|/api/channels|/api/daemons|subscribe|fonts.googleapis' src index.html
@@ -295,4 +305,4 @@ node -e "JSON.parse(require('fs').readFileSync('contracts/product-capabilities.j
 npm run test:all
 ```
 
-第一条应无结果。全部命令通过后，再按 [PHASE-E.md](PHASE-E.md) 第 5–6 节和 [F6-RELEASE-GATE.md](F6-RELEASE-GATE.md) 登记当前测试输出；不能用旧阶段历史结果替代当前工作树证据。性能阈值和复现方式见 [F6-PERFORMANCE-BUDGET.md](F6-PERFORMANCE-BUDGET.md)。当前产品保持 Light-only，暗色主题不属于 F1–F6 门禁。
+第一条应无结果。全部命令通过后，再按 [PHASE-E.md](PHASE-E.md) 第 5–6 节、[F6-RELEASE-GATE.md](F6-RELEASE-GATE.md) 与 [REQUEST-TURN-PROGRESS-PROTOCOL.md](REQUEST-TURN-PROGRESS-PROTOCOL.md) 登记当前测试输出；不能用旧阶段历史结果替代当前工作树证据。性能阈值和复现方式见 [F6-PERFORMANCE-BUDGET.md](F6-PERFORMANCE-BUDGET.md)。当前产品保持 Light-only，暗色主题不属于 F1–F7 门禁。

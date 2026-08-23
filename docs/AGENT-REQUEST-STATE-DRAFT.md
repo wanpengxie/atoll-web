@@ -36,8 +36,9 @@ terminal response
   唯一最终结果
   completed / failed
 
-activity event
-  工具调用、runtime 活动等技术审计
+process progress
+  归属于单条 request 的 turn、stage、tool 过程
+  通过 provisional response 的 payload.process 传输
 
 Actor OBS
   Actor 健康、负载、容量等不要求与具体 request 严格对齐的观察
@@ -46,7 +47,7 @@ system event
   真正具有频道协作意义的系统事实，不承载普通调度变化
 ```
 
-普通消息状态不依赖 Actor OBS，也不使用 system event。这样 request、progress、terminal 始终处于同一频道账本、同一可见性规则和同一 `parent_id` 因果链中。
+普通消息状态和执行过程不依赖 Actor OBS，也不使用 system event。这样 request、progress、terminal 始终处于同一频道账本、同一可见性规则和同一 `parent_id` 因果链中。完整协议见 `REQUEST-TURN-PROGRESS-PROTOCOL.md`。
 
 ## 3. 请求生命周期
 

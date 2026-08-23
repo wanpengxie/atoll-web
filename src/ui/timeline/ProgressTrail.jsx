@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { TYPES } from '../../protocol/vocab.js';
+import { JsonView } from 'react-json-view-lite';
+import { processObservations } from '../../model/turn-process.js';
 import { useModalFocus } from '../primitives/useModalFocus.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 
@@ -25,35 +26,60 @@ function durationLabel(start, now) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-function rawToolJSON(row) {
+const JSON_TREE_STYLES = Object.freeze({
+  container: 'progress-json-tree',
+  childFieldsContainer: 'progress-json-children',
+  basicChildStyle: 'progress-json-row',
+  collapseIcon: 'progress-json-toggle is-open',
+  expandIcon: 'progress-json-toggle',
+  collapsedContent: 'progress-json-collapsed',
+  label: 'progress-json-label',
+  clickableLabel: 'progress-json-label is-clickable',
+  nullValue: 'progress-json-value is-null',
+  undefinedValue: 'progress-json-value is-undefined',
+  numberValue: 'progress-json-value is-number',
+  stringValue: 'progress-json-value is-string',
+  booleanValue: 'progress-json-value is-boolean',
+  otherValue: 'progress-json-value',
+  punctuation: 'progress-json-punctuation',
+  noQuotesForStringValues: false,
+  quotesForFieldNames: true,
+  stringifyStringValues: true,
+  ariaLables: { collapseJson: '收起 JSON 节点', expandJson: '展开 JSON 节点' },
+});
+
+const expandShallowJson = (level) => level < 2;
+
+function rawToolData(row) {
   const value = {};
   if (row.input !== undefined) value.input = row.input;
   if (row.output !== undefined) value.output = row.output;
-  return Object.keys(value).length ? JSON.stringify(value) : '';
+  return Object.keys(value).length ? value : null;
 }
 
-function toolRow(seq, envelope, ended) {
-  const tool = envelope.payload?.tool || '工具';
-  const detail = envelope.payload?.detail || '';
-  const status = envelope.payload?.status || '';
+function toolRow(seq, envelope, ended, payload = envelope.payload || {}) {
+  const tool = payload.tool || '工具';
+  const detail = payload.detail || '';
+  const status = payload.outcome || '';
   return {
     seq,
     lastSeq: seq,
-    key: `tool:${envelope.payload?.tool_call_id || seq}`,
-    callId: envelope.payload?.tool_call_id || '',
+    key: `tool:${payload.tool_call_id || seq}`,
+    callId: payload.tool_call_id || '',
     kind: 'tool',
     label: `tool · ${tool}`,
     line: ended ? `tool: ${tool} ${status === 'failed' ? '失败' : '完成'}` : `tool: ${tool} …`,
     detail,
-    input: envelope.payload?.input,
-    output: envelope.payload?.output,
+    input: payload.input,
+    output: payload.output,
     status: ended ? status || 'completed' : 'started',
     ts: envelope.ts,
   };
 }
 
-function noteRow(seq, envelope) {
-  const { kind, text } = envelope.payload || {};
+function noteRow(seq, envelope, payload = envelope.payload || {}) {
+  const kind = payload.stage;
+  const { text } = payload;
   // codex 的思考区间没有文本可给（模型侧不下发明文）——它是一段状态，
   // 不是一条可展开的记录。
   if (!text) return { seq, lastSeq: seq, key: `note:${seq}`, kind, label: NOTE_LABEL[kind] || kind, line: THINKING_ONLY, body: '', ts: envelope.ts, stateOnly: true };
@@ -64,15 +90,17 @@ export function progressRows(turn) {
   const rows = [];
   const tools = new Map();
   const scope = turn?.requestId || turn?.request?.id || 'turn';
-  for (const item of turn?.activity || []) {
-    const env = item?.envelope;
-    if (env?.type === TYPES.activity.toolStarted) {
-      const row = toolRow(Number(item.seq), env, false);
-      rows.push(row);
-      if (row.callId) tools.set(row.callId, row);
-    }
-    if (env?.type === TYPES.activity.toolEnded) {
-      const ended = toolRow(Number(item.seq), env, true);
+  for (const observation of processObservations(turn)) {
+    const { seq, envelope, process } = observation;
+    if (process.kind === 'tool') {
+      if (process.phase === 'started') {
+        const row = toolRow(seq, envelope, false, process);
+        rows.push(row);
+        if (row.callId) tools.set(row.callId, row);
+        continue;
+      }
+      if (process.phase !== 'ended') continue;
+      const ended = toolRow(seq, envelope, true, process);
       const started = ended.callId && tools.get(ended.callId);
       if (started) {
         started.lastSeq = ended.seq;
@@ -84,11 +112,9 @@ export function progressRows(turn) {
       } else {
         rows.push(ended);
       }
+      continue;
     }
-  }
-  for (const item of turn?.provisional || []) {
-    const env = item?.envelope;
-    if (env?.payload?.kind) rows.push(noteRow(Number(item.seq), env));
+    if (process.kind === 'stage') rows.push(noteRow(seq, envelope, process));
   }
   rows.sort((a, b) => a.lastSeq - b.lastSeq || a.seq - b.seq);
   return rows.map((row) => ({ ...row, key: `${scope}:${row.key}` }));
@@ -116,6 +142,7 @@ export function ProgressTrailHost({ children }) {
 function ProgressDetailDrawer({ row, onClose }) {
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
+  const toolData = row.kind === 'tool' ? rawToolData(row) : null;
   useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
   return <div className="progress-drawer-backdrop" data-modal-layer role="presentation" onMouseDown={(event) => {
     if (event.target === event.currentTarget) onClose?.();
@@ -127,7 +154,7 @@ function ProgressDetailDrawer({ row, onClose }) {
       </header>
       <div className="progress-drawer-body">
         {row.kind === 'tool' ? <div className="progress-tool-data">
-          {rawToolJSON(row) && <pre className="progress-raw-json"><code>{rawToolJSON(row)}</code></pre>}
+          {toolData && <div className="progress-json-shell"><JsonView data={toolData} style={JSON_TREE_STYLES} shouldExpandNode={expandShallowJson} clickToExpandNode /></div>}
           {row.detail && <div className="progress-tool-detail"><strong>执行说明</strong><p>{row.detail}</p></div>}
           {row.input === undefined && row.output === undefined && !row.detail && <p className="progress-empty">这次调用没有返回可展示的数据。</p>}
         </div> : <MarkdownContent text={row.body} />}

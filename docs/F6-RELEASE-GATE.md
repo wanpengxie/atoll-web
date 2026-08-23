@@ -51,7 +51,7 @@ bin/atoll up --dir "$(mktemp -d /tmp/atoll-web-smoke.XXXXXX)" --addr 127.0.0.1:8
 - 设备 key 的日志隔离、安全 binding 投影和 attach/detach 收敛；
 - 生产 TLS、反向代理、WebSocket Origin/Host 和 Cookie 属性；
 - 大历史在真实 SQLite、真实网络抖动和持续 feed 下的端到端时延。
-- 真实消息选择收件人后的 submit、账本入账、provisional/activity 和 terminal 闭环。
+- 真实消息选择收件人后的 submit、账本入账、provisional process 和 terminal 闭环。
 - 独立 healthz、bearer OBS 响应形状、WS attach receipt/contract version 等未在本次最终浏览器 smoke 中重新取证的接口事实。
 
 `real-backend-shape` Mock、fixture、单元测试或浏览器 Mock E2E 均不得被描述成上述运行时事实已通过。

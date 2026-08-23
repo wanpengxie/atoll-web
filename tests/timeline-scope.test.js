@@ -22,7 +22,7 @@ function channel() {
     // Mine: I ask, the agent works, the agent answers.
     env('req-mine', 'request', 'agent.ask', { payload: { text: 'ping' }, correlation_id: 'turn-mine' }),
     env('prov-mine', 'response', 'agent.ask', { parent_id: 'req-mine', payload: { status: 'processing' }, sender: { kind: 'agent', id: 'agent' } }),
-    env('act-mine', 'event', 'agent.tool.started', { correlation_id: 'turn-mine', payload: { tool: 'shell', status: 'started' }, sender: { kind: 'agent', id: 'agent' } }),
+    env('act-mine', 'response', 'agent.ask', { parent_id: 'req-mine', correlation_id: 'turn-mine', payload: { status: 'processing', process: { kind: 'tool', phase: 'started', tool_call_id: 'shell-1', tool: 'shell' } }, sender: { kind: 'agent', id: 'agent' } }),
     env('done-mine', 'response', 'agent.ask', { parent_id: 'req-mine', payload: { status: 'completed', text: 'PONG' }, sender: { kind: 'agent', id: 'agent' } }),
 
     // Somebody else's, in the same channel: I am neither sender nor audience anywhere.
@@ -46,8 +46,8 @@ describe('timeline scope', () => {
     // Layer two: what the agent said back, by parent…
     expect(visible.has('prov-mine')).toBe(true);
     expect(visible.has('done-mine')).toBe(true);
-    // …and what it did while working, which hangs off the correlation rather than
-    // the request. Without that half, the scope would keep the question and drop
+    // …and what it did while working, which belongs to the same request turn.
+    // Without that half, the scope would keep the question and drop
     // the work, which reads as an agent that never started.
     expect(visible.has('act-mine')).toBe(true);
   });

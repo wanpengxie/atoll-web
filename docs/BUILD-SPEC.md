@@ -1,7 +1,7 @@
 # Atoll Web 构建规格
 
-状态：阶段 A–E 与前端施工 F1–F6 实现基线
-日期：2026-08-18
+状态：阶段 A–E 与前端施工 F1–F7 实现基线
+日期：2026-08-24
 对应设计：[DESIGN.md](DESIGN.md)、[FRONTEND-D1-OBJECT-NAVIGATION-SPEC.md](FRONTEND-D1-OBJECT-NAVIGATION-SPEC.md)、[FRONTEND-D2-VISUAL-INTERACTION-SPEC.md](FRONTEND-D2-VISUAL-INTERACTION-SPEC.md)
 阶段验收：[PHASE-E.md](PHASE-E.md)、[F6-RELEASE-GATE.md](F6-RELEASE-GATE.md)
 
@@ -35,6 +35,7 @@ src/model/control-actions.js  cancel receipt 状态的账户级恢复
 src/model/management-actors.js 内置管理 Actor 解析
 src/model/submissions.js      本地提交状态与持久化
 src/model/fold.js             request-id 账本 fold 与 anomaly
+src/model/turn-process.js     payload.process 的唯一过程投影
 src/model/feed-cache.js       feed rows 缓存与恢复
 src/model/cursors.js          feed/read cursor 与未读
 src/model/workspace-route.js  频道、主视图与稳定对象焦点路由
@@ -45,7 +46,7 @@ src/model/activity.js         可见频道活动、操作与搜索索引
 src/model/list-window.js      动态、文件、任务固定 DOM 窗口
 
 src/ui/ChannelList.jsx        我的频道/空间及 mode 标签
-src/ui/Timeline.jsx           回合、provisional、activity、terminal、pending
+src/ui/Timeline.jsx           回合、provisional process、terminal、Agent 消息树、pending
 src/ui/StructuredResult.jsx   结构化终态与敏感字段遮蔽
 src/ui/ActorDetails.jsx       Actor 能力、动态调用与风险确认
 src/ui/Composer.jsx           Tiptap/ProseMirror、本地编辑状态、@、稳定 submit、兼容管理命令
@@ -58,7 +59,7 @@ src/ui/primitives/*           Modal、焦点、选择菜单等共享交互
 
 `App.jsx` 是控制器组合入口，不再直接渲染具体产品面板。页面结构由 `app/AppShell.jsx` 组合，覆盖式 Context 路由由 `app/RightPanelHost.jsx` 负责；身份恢复、频道目录、feed 批处理/缓存、提交状态机和本地定时器分别位于 `app/hooks/`。App 不在 JSX 内重新推导权限或回合语义。Composer 的逐字输入不得进入 App state；App 只通过 ref 保存按频道草稿快照，避免驱动 Workspace/Timeline 重渲染。
 
-样式入口仍为 `src/styles.css`，它只按固定顺序聚合 `src/styles/` 下的 tokens、base、auth、app-shell、timeline、composer、roster、primitives、features、runtime 与 responsive 文件。F6 将表面、线条、状态、阴影和圆角集中到 `tokens.css`，继续使用 Atoll 暖色、品牌红与 Agent 蓝。当前产品是 Light-only；暗色主题不属于 F1–F6。
+样式入口仍为 `src/styles.css`，它只按固定顺序聚合 `src/styles/` 下的 tokens、base、auth、app-shell、timeline、composer、roster、primitives、features、runtime 与 responsive 文件。F6 将表面、线条、状态、阴影和圆角集中到 `tokens.css`，继续使用 Atoll 暖色、品牌红与 Agent 蓝。当前产品是 Light-only；暗色主题不属于 F1–F7。
 
 ## 3. 协议层
 
@@ -89,6 +90,18 @@ feed receipt error observe_ended
 ### 3.3 Envelope
 
 顶层闭集与真实 `protocol/message.Envelope` 一致。终态只有 completed/failed；核心 provisional 是 received/queued/processing/deferred/unavailable；合法 `<namespace>.<name>` 是业务 provisional。
+
+### 3.4 RequestTurn 过程协议
+
+- Agent turn、stage 与 tool 过程只作为所属 request 的 `kind=response` provisional 写入；
+- 过程数据位于 `payload.process`，顶层 `payload.status` 保持 `processing`；
+- response 必须用精确 `parent_id` 归属 request，前端不按 `correlation_id` 猜父节点；
+- terminal 后的迟到 provisional 只记 anomaly，不进入回合过程；
+- Agent→Agent 的真实子 request 以 `parent_id` 建树；父 `call_actor` 过程只含调用 input 与 terminal/failed/ACK output；
+- 子 Actor progress 不进入父 Tool output，不存在 `progress_events`；
+- `agent.turn.*`、`agent.tool.*` 公开 event 已退役，不保留兼容读取。
+
+完整契约见 [REQUEST-TURN-PROGRESS-PROTOCOL.md](REQUEST-TURN-PROGRESS-PROTOCOL.md)。
 
 ## 4. 频道访问 tracker
 
@@ -180,7 +193,6 @@ RequestTurn：
 {
   requestId, correlationId, request, requestSeq,
   provisional: [{seq,envelope,status,core}],
-  activity: [{seq,envelope}],
   terminal, terminalSeq,
   phase, latestStatus, text, lastSeq, anomalies
 }
@@ -192,10 +204,10 @@ RequestTurn：
 2. envelope.id 去重并检测内容冲突；
 3. system visibility/type 进入 narration；
 4. request 建立 request-id 回合并归并暂存项；
-5. activity 按 parent_id，再按 correlation；
-6. response 按 parent_id，再按 correlation；
-7. provisional 全量保留；
-8. 第一 terminal 关闭回合，后续 terminal 只记 anomaly。
+5. response 只按精确 parent_id 归属；乱序响应按 parent_id 暂存；
+6. provisional 在 terminal 前全量保留，并从 payload.process 派生过程；
+7. 第一 terminal 关闭回合，后续 terminal 或 provisional 只记 anomaly；
+8. request 的 parent_id 建立递归消息树，correlation_id 只用于同一根工作的关联索引。
 
 ## 8. 结构化终态
 
@@ -283,7 +295,7 @@ Mock 必须支持：
 `npm run test:all` 顺序执行：
 
 1. Vitest：协议、access、roster、submission、fold、renderer、Mock、契约 fixture；
-2. Playwright：阶段 A–E、F1–F6、1280/800/600/320、200% 等价窄视口、键盘/焦点/reduced motion 与人工审查后的视觉基线；
+2. Playwright：阶段 A–E、F1–F7、1280/800/600/320、200% 等价窄视口、键盘/焦点/reduced motion、Agent 消息树与人工审查后的视觉基线；
 3. Vite production build。
 
 发布前还必须通过：
@@ -301,7 +313,7 @@ rg '/api/workspaces|/api/channels|/api/daemons|subscribe' src
 Mock 不能证明以下真实事实，发布前仍需最小 smoke：
 
 - client id 与 receipt.message_id/feed envelope.id 一致；
-- 真实 provisional/activity 的 parent/correlation 形态；
+- 真实 provisional process 的 parent/correlation 形态；
 - registrar、system、peer coreactor 的 terminal 包装；
 - `channel.create` 的 introduced 部分结果、OBS/membership/open 独立收敛；
 - owner/core 退役权限、活动子频道冲突和 retirement 后真实服务停止；

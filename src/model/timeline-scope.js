@@ -46,7 +46,7 @@ export function relatedEnvelopeIds(state, selfId) {
 }
 
 // entryEnvelopes 把一个时间线条目摊成它含有的全部信封。一个 turn 是一段对话，不是
-// 一条消息：请求、回执、活动、终态、以及它带起来的子 turn 都算它的一部分。
+// 一条消息：请求、进展、终态、以及它带起来的子 turn 都算它的一部分。
 export function entryEnvelopes(entry, out = []) {
   if (!entry) return out;
   if (entry.envelope) out.push(entry.envelope);
@@ -59,7 +59,6 @@ function turnEnvelopes(turn, out) {
   if (!turn) return;
   if (turn.request) out.push(turn.request);
   for (const item of turn.provisional || []) if (item?.envelope) out.push(item.envelope);
-  for (const item of turn.activity || []) if (item?.envelope) out.push(item.envelope);
   if (turn.terminal) out.push(turn.terminal);
 }
 

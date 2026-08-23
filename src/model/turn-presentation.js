@@ -17,17 +17,17 @@ export function turnStatusLabel(turn) {
 
 export function turnProcessSummary(turn) {
   const provisional = turn?.provisional?.length || 0;
-  const activity = turn?.activity?.length || 0;
   const anomalies = turn?.anomalies?.length || 0;
   const parts = [];
   if (provisional) parts.push(`${provisional} 条进展`);
-  if (activity) parts.push(`${activity} 条技术活动`);
   if (anomalies) parts.push(`${anomalies} 个异常`);
   return parts.join(' · ') || '没有过程记录';
 }
 
 export function latestHumanProgress(turn) {
-  const latest = turn?.provisional?.at(-1);
+  // 过程节点有自己的 ProcessTrail；主消息摘要只读面向人的状态更新，不能被
+  // 最后一条 tool/stage progress 覆盖成泛化的“处理中”。
+  const latest = [...(turn?.provisional || [])].reverse().find((item) => !item.envelope?.payload?.process);
   if (!latest) return '';
   const payload = latest.envelope?.payload || {};
   return payload.detail || payload.message || payload.text || TURN_STATUS_LABELS[latest.status] || latest.status || '';

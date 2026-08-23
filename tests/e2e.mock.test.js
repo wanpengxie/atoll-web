@@ -3,7 +3,7 @@ import { WebSocket } from 'ws';
 import { createMockServer } from '../mock/server.mjs';
 import { createIdentityClient } from '../src/net/identity.js';
 import { createWire } from '../src/net/wire.js';
-import { apply, createChannelState, fold } from '../src/model/fold.js';
+import { apply, createChannelState, fold, orderedTimeline } from '../src/model/fold.js';
 
 const runningServers = new Set();
 
@@ -133,6 +133,58 @@ describe('local mock end-to-end', () => {
         && state.turns.get(third.message_id)?.latestStatus === 'processing'
         && state.turns.get(second.message_id)?.terminal?.payload?.merged_into === third.message_id;
     }, 'manual terminal and FIFO resume');
+    wire.close();
+    await closeServer(server);
+  });
+
+  it('keeps A, B and D progress isolated while preserving the Agent request tree', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', scenario: 'agent-tree', seed: 31 });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    await createIdentityClient(fetchWithSession).login('root@atoll.local', 'test-root');
+    class SessionWebSocket extends WebSocket {
+      constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+    }
+    const rows = [];
+    let attached = false;
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws', WebSocketImpl: SessionWebSocket, since: () => ({}),
+      onState: (value) => { if (value === 'attached') attached = true; },
+      onFeed: (channelId, seq, value) => { if (channelId === 'c0') rows.push({ channel_id: channelId, seq, envelope: value }); },
+    });
+    await waitFor(() => attached, 'agent-tree attach');
+    const { message_id: rootId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: '协作完成任务' }, audience: ['steward'], visibility: 'public' });
+    const state = await waitFor(() => {
+      const next = fold(rows, 'root');
+      return next.turns.get(rootId)?.terminal ? next : null;
+    }, 'agent-tree terminal');
+
+    const entry = orderedTimeline(state).find((item) => item.turn?.requestId === rootId);
+    expect(entry.thread.map((item) => [item.turn.request.payload.text, item.depth])).toEqual([
+      ['B 负责资料分析', 1],
+      ['D 负责核验关键事实', 2],
+      ['C 负责独立复核', 1],
+    ]);
+    const rootProcesses = entry.turn.provisional.map((item) => item.envelope.payload?.process).filter(Boolean);
+    const childB = entry.thread[0].turn;
+    const childD = entry.thread[1].turn;
+    expect(rootProcesses.filter((process) => process.kind === 'tool').map((process) => process.tool_call_id)).toEqual([
+      `${rootId}-call-b`, `${rootId}-call-b`, `${rootId}-call-c`, `${rootId}-call-c`,
+    ]);
+    expect(childB.provisional.map((item) => item.envelope.payload?.process?.kind).filter(Boolean)).toEqual(['turn', 'stage', 'tool', 'tool']);
+    expect(childD.provisional.map((item) => item.envelope.payload?.process?.kind).filter(Boolean)).toEqual(['stage']);
+    expect(JSON.stringify(rows)).not.toContain('progress_events');
+    expect(childB.terminal.payload.text).toBe('B 汇总完成');
+    expect(childD.terminal.payload.text).toBe('D 核验完成');
+
     wire.close();
     await closeServer(server);
   });
@@ -328,7 +380,7 @@ describe('local mock end-to-end', () => {
     });
 
     await waitFor(
-      () => attachCount === 1 && states.get('c0')?.lastSeq === 28 && states.get('c0.project')?.lastSeq === 28,
+      () => attachCount === 1 && states.get('c0')?.lastSeq === 25 && states.get('c0.project')?.lastSeq === 25,
       'attach and seeded replay',
     );
 
@@ -357,8 +409,8 @@ describe('local mock end-to-end', () => {
         && states.get('c0').turns.get(accepted.message_id),
       'live completed PONG turn',
     );
-    expect(liveTurn.provisional.map((value) => value.status)).toEqual(['queued', 'processing']);
-    expect(liveTurn.activity.map((value) => value.envelope.type)).toEqual(['agent.turn.started', 'agent.tool.started', 'agent.tool.ended', 'agent.turn.ended']);
+    expect(liveTurn.provisional.map((value) => value.status)).toEqual(['queued', 'processing', 'processing', 'processing', 'processing']);
+    expect(liveTurn.provisional.filter((value) => value.envelope.payload?.process?.kind === 'tool')).toHaveLength(2);
     expect(liveTurn.text).toBe('PONG');
 
     const approvalId = [...states.get('c0').approvals.keys()][0];
@@ -366,7 +418,7 @@ describe('local mock end-to-end', () => {
     await expect(wire.resolve({ channel_id: 'c0', req_id: approvalId, decision: 'approve' }))
       .resolves.toEqual({ req_id: approvalId });
     await waitFor(() => !states.get('c0').approvals.has(approvalId), 'approval terminal response');
-    expect(states.get('c0').turns.get(approvalId).final.payload).toMatchObject({
+    expect(states.get('c0').turns.get(approvalId).terminal.payload).toMatchObject({
       status: 'completed',
       decision: 'approve',
     });
@@ -420,7 +472,7 @@ describe('local mock end-to-end', () => {
       onError: () => {},
       onState: () => {},
     });
-    await waitFor(() => states.get('c0')?.lastSeq >= 28, 'seeded replay');
+    await waitFor(() => states.get('c0')?.lastSeq >= 25, 'seeded replay');
     const terminalOf = (id) => [...(states.get('c0')?.rows.values() || [])]
       .find((row) => row.kind === 'response' && row.parent_id === id && ['completed', 'failed'].includes(row.payload?.status));
 
@@ -449,13 +501,12 @@ describe('local mock end-to-end', () => {
     };
     expect(await contextOf()).toMatchObject({ status: 'completed', model: 'gpt-5.6-sol', effort: 'medium', context_window: 200_000 });
 
-    // ④ select 完整周期：queued→processing→turn.started→turn.ended(新 usage)→completed，成功后 sticky。
+    // ④ select 完整周期：queued→processing→turn process→terminal(新 usage)，成功后 sticky。
     const { message_id: selectId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'light' }, audience: ['steward'], visibility: 'public' });
     await waitFor(() => terminalOf(selectId)?.payload?.status === 'completed', 'select terminal');
     const selectRows = [...states.get('c0').rows.values()].filter((row) => row.parent_id === selectId || row.correlation_id === selectId);
-    expect(selectRows.filter((row) => row.kind === 'response').map((row) => row.payload.status)).toEqual(['queued', 'processing', 'completed']);
-    const turnEnded = selectRows.find((row) => row.type === 'agent.turn.ended');
-    expect(turnEnded.payload.usage).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
+    expect(selectRows.filter((row) => row.kind === 'response').map((row) => row.payload.status)).toEqual(['queued', 'processing', 'processing', 'completed']);
+    expect(selectRows.find((row) => row.payload?.process?.kind === 'turn')).toBeTruthy();
     expect(terminalOf(selectId).payload.usage).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
     expect(await contextOf()).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
 

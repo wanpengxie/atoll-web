@@ -1,7 +1,7 @@
 # atoll-web 前端产品体验改进总计划
 
-状态：设计 D0–D2、施工 F1–F6 已完成；进入发布审查
-日期：2026-08-18
+状态：设计 D0–D2、施工 F1–F7 已完成；进入用户验收
+日期：2026-08-24
 适用仓库：`atoll-web`
 后端前提：Atoll 的协议、账本、OBS、Actor、审批、资源和治理能力继续作为事实权威
 
@@ -41,7 +41,7 @@ Atoll 已经提供比普通协作产品更强的基础：
 
 - 频道是可回放的事实账本，不只是易失聊天记录；
 - receipt、feed 和 OBS 可以区分提交、确认和投影；
-- Agent 回合具有 provisional、activity、terminal 和稳定标识；
+- Agent 回合具有 request、provisional process、terminal 和稳定标识；
 - cancel、steer、interrupt、queue 具有不同语义；
 - 审批、结构化终态和动态 Schema 是正式协议对象；
 - Actor 能力可以发现，治理操作仍通过统一消息面入账；
@@ -58,7 +58,7 @@ Atoll 已经提供比普通协作产品更强的基础：
 |---|---|---|
 | resource ticket + 文件数据面 | daemon、路径、PUT 表单 | 上传、预览、引用、追溯频道产物 |
 | after/cancel_timer | JSON 定时器面板 | 可理解的自动动作，以及与工作任务明确区分 |
-| provisional/activity/terminal | 技术过程折叠块 | 当前进展、最终结果、必要时查看过程证据 |
+| provisional process / terminal | 过程气泡与最终正文 | 当前进展、最终结果、必要时查看过程证据 |
 | actor.describe + schema | 独立能力表单 | 从当前工作语境调用能力并理解风险 |
 | channel/actor governance | 多个管理表单 | 围绕频道成员和运行状态完成治理 |
 | feed 中的附件和结构化结果 | 分散卡片 | 可搜索、可预览、可回到来源的产物体系 |
@@ -157,7 +157,7 @@ editing → submitting → accepted → confirmed
 表示一次用户请求或 Agent 主动工作的完整回合：
 
 - request、parent、turn 和 actor 标识；
-- 当前阶段、provisional、activity、approval 和 terminal；
+- 当前阶段、provisional process、approval 和 terminal；
 - 可用控制及其权限；
 - 产生的产物和任务；
 - 异常、冲突、取消和替代关系。
@@ -728,9 +728,10 @@ D1/D2 未完成前不得直接进入 F2–F5。F1 可以做有限的容器语义
 - F4 WorkItem、Tasks、来源创建与自动动作归类。
 - F5 成员优先频道详情、独立新建频道 Modal、全局活动与搜索返回来源。
 - F6 Atoll 自有视觉 Token、消息阅读体验、多档响应式、键盘/焦点/对比度、长列表/预览性能、视觉基线和真实 Atoll smoke。
+- F7 RequestTurn 单一过程协议、Agent 调用消息树、父子过程隔离与旧 Activity 协议退役。
 
-当前未完成：无 F1–F6 施工项。生产环境的多节点并发、重启持久化、ticket/磁盘、timer 跨端、设备安全和 TLS/反向代理仍是发布前专项边界，不属于 Mock 或单节点 smoke 的完成事实。
+当前未完成：无 F1–F7 施工项。生产环境的多节点并发、重启持久化、ticket/磁盘、timer 跨端、设备安全和 TLS/反向代理仍是发布前专项边界，不属于 Mock 或单节点 smoke 的完成事实。
 
-**下一步是发布审查与真实部署边界验证，不再继续发明新的前端施工波次。**
+**下一步是用户验收与真实部署边界验证，不再继续发明新的前端施工波次。**
 
-F1 已建立三主视图和 Context Host；F2 建立了可信 Artifact Reference，F6 进一步把真实频道挂载目录恢复为文件主入口；F3 已完成动态阅读轴、连续消息节奏、完整回合审计、消息操作与 Composer；F4 已建立真实能力边界内的 WorkItem 索引、Tasks 主视图、各类详情与来源创建旅程；F5 已完成成员优先管理、频道创建 Modal、Activity/Operation Center、权限过滤和全局搜索返回来源；F6 已统一视觉与组件状态，完成响应式、性能、无障碍、过渡实现清理和真实后端 smoke。
+F1 已建立三主视图和 Context Host；F2 建立了可信 Artifact Reference，F6 进一步把真实频道挂载目录恢复为文件主入口；F3 已完成动态阅读轴、连续消息节奏、完整回合审计、消息操作与 Composer；F4 已建立真实能力边界内的 WorkItem 索引、Tasks 主视图、各类详情与来源创建旅程；F5 已完成成员优先管理、频道创建 Modal、Activity/Operation Center、权限过滤和全局搜索返回来源；F6 已统一视觉与组件状态，完成响应式、性能、无障碍、过渡实现清理和真实后端 smoke；F7 将过程统一到所属 request 的 provisional response，并用真实子 RequestTurn 构造多 Agent 消息树。

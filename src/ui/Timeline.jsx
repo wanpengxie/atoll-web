@@ -11,6 +11,7 @@ import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAge
 import { selectSystemNote } from '../model/agent-selection.js';
 import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
+import { processCount, turnStartObservation } from '../model/turn-process.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
@@ -302,25 +303,109 @@ function conversationPayload(payload = {}) {
   return visible;
 }
 
-function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names }) {
+function latestTurnEnvelope(turn) {
+  const values = (turn.provisional || [])
+    .map((item) => ({ seq: Number(item.seq), envelope: item.envelope }))
+    .sort((left, right) => left.seq - right.seq);
+  return values.at(-1)?.envelope;
+}
+
+function turnStartedAt(turn) {
+  return turnStartObservation(turn)?.envelope?.ts || turn.request?.ts;
+}
+
+function AgentRequestQuote({ request, names, onDownload, onPreview }) {
+  const view = messagePresentation(request);
+  const caller = nameOf(request.sender?.id, names);
+  return <blockquote className="agent-request-quote">
+    <header>
+      <span>回复 <strong>{caller}</strong></span>
+      <span aria-hidden="true">·</span>
+      <time>{timeLabel(request.ts)}</time>
+    </header>
+    <div className="agent-request-quote-text"><MarkdownContent text={view.text} /></div>
+    <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
+  </blockquote>;
+}
+
+function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, quotedRequest = null, onDownload, onPreview, compact = false, hasThreadChildren = false }) {
   const request = turn.request;
   const terminal = turn.terminal;
   const stopped = terminal?.payload?.status === 'failed' && terminal.payload?.error_code === 'interrupted';
   const resumable = stopped && frozen?.source === TYPES.agentInterrupt && (!frozen.target_id || frozen.target_id === turn.requestId);
-  const liveEnvelope = turn.activity?.at(-1)?.envelope || turn.provisional?.at(-1)?.envelope;
+  const liveEnvelope = latestTurnEnvelope(turn);
   const agentId = terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0];
   const bubbleTs = terminal?.ts || liveEnvelope?.ts;
-  const processStartedTs = turn.activity?.find((item) => item.envelope?.type === TYPES.activity.turnStarted)?.envelope?.ts || request.ts;
-  return <MessageFrame className={`agent-turn-bubble${terminal ? ' settled' : ' processing'}`} contentClassName="response-body" identity={<span className="actor-icon kind-agent">A</span>}>
-    <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>
+  const processStartedTs = turnStartedAt(turn);
+  const className = `agent-turn-bubble${terminal ? ' settled' : ' processing'}${compact ? ' compact' : ''}${hasThreadChildren ? ' has-thread-children' : ''}`;
+  const identity = <span className="actor-icon kind-agent">A</span>;
+  const heading = <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>;
+  const content = <>
+    {quotedRequest && <AgentRequestQuote request={quotedRequest} names={names} onDownload={onDownload} onPreview={onPreview} />}
     {!terminal && <ProgressTrail turn={turn} running title={title} startedAt={processStartedTs} mergedCount={mergedCount} />}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
     {terminal && !stopped && <div className="response-content"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
     {terminal && <ProgressTrail turn={turn} running={false} />}
-  </MessageFrame>;
+  </>;
+  if (compact) return <article className={`agent-thread-message ${className}`} tabIndex="0">
+    <div className="agent-thread-identity-row">{identity}{heading}</div>
+    <div className="agent-thread-content">{content}</div>
+  </article>;
+  return <MessageFrame className={className} contentClassName="response-body" identity={identity}>{heading}{content}</MessageFrame>;
 }
 
-function AgentConversationTurn({ turn, leadTurns = [], mergedCount = 0, names, selfId, access, frozen, editActive, editSession = null, onControl, onEdit, onDownload, onPreview }) {
+function hasLaterThreadSibling(items, index, depth) {
+  for (let cursor = index + 1; cursor < items.length; cursor += 1) {
+    const nextDepth = items[cursor].depth;
+    if (nextDepth < depth) return false;
+    if (nextDepth === depth) return true;
+  }
+  return false;
+}
+
+function ancestorThreadIndex(items, index, depth) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const candidateDepth = items[cursor].depth;
+    if (candidateDepth === depth) return cursor;
+    if (candidateDepth < depth) return -1;
+  }
+  return -1;
+}
+
+function threadRails(items, index) {
+  const depth = items[index].depth;
+  const rails = [];
+  for (let level = 1; level <= depth; level += 1) {
+    const ownerIndex = level === depth ? index : ancestorThreadIndex(items, index, level);
+    if (ownerIndex < 0) continue;
+    const continues = hasLaterThreadSibling(items, ownerIndex, level);
+    if (level < depth && !continues) continue;
+    rails.push({ level, continues });
+  }
+  return rails;
+}
+
+function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
+  const collaborative = thread.filter((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent');
+  if (!collaborative.length) return null;
+  return <ol className="agent-message-thread" role="tree" aria-label="Agent 协作消息">
+    {collaborative.map((item, index) => {
+      const child = item.turn;
+      const request = child.request;
+      const requestView = messagePresentation(request);
+      const rails = threadRails(collaborative, index);
+      const hasChildren = collaborative[index + 1]?.depth === item.depth + 1;
+      return <li key={child.requestId} className={`agent-thread-node status-${child.status}${hasChildren ? ' has-children' : ''}`} style={{ '--thread-depth': item.depth }} role="treeitem" aria-level={item.depth + 1}>
+        <span className="agent-thread-elbow" aria-hidden="true" />
+        {rails.map((rail) => <span key={rail.level} className={`agent-thread-rail ${rail.continues ? 'continues' : 'ends'}`} style={{ '--thread-rail-level': rail.level }} aria-hidden="true" />)}
+        {hasChildren && <span className="agent-thread-child-stem" aria-hidden="true" />}
+        <div className="agent-thread-response"><AgentBubble turn={child} title={requestView.text} names={names} quotedRequest={request} onDownload={onDownload} onPreview={onPreview} compact /></div>
+      </li>;
+    })}
+  </ol>;
+}
+
+function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, selfId, access, frozen, editActive, editSession = null, onControl, onEdit, onDownload, onPreview }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const requestText = requestView.text;
@@ -336,7 +421,8 @@ function AgentConversationTurn({ turn, leadTurns = [], mergedCount = 0, names, s
       <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
     </MessageFrame>
     {!turn.terminal && !editSession && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
-    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} />}
+    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
+    <AgentThreadMessages thread={thread} names={names} onDownload={onDownload} onPreview={onPreview} />
   </section>;
 }
 
@@ -353,7 +439,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
       </MessageFrame>
       <ThreadCalls thread={thread} names={names} />
-      {(turn.provisional.length > 0 || turn.activity.length > 0) && <ContentFrame contained><button type="button" className={`turn-process-summary ${turn.terminal ? 'completed' : 'active'}`} onClick={onOpen} aria-expanded={detailsOpen}>
+      {processCount(turn) > 0 && <ContentFrame contained><button type="button" className={`turn-process-summary ${turn.terminal ? 'completed' : 'active'}`} onClick={onOpen} aria-expanded={detailsOpen}>
           <span className={turn.terminal ? 'pulse done' : 'pulse'} />
           <span>{turn.terminal ? turnStatusLabel(turn) : (latestHumanProgress(turn) || '正在处理')}</span>
           <small>{turnProcessSummary(turn)}</small>
@@ -704,7 +790,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
             const common = { turn: entry.turn, names, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment) };
             if (isAgentMessageTurn(entry.turn)) {
-              content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
+              content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
             } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => {
               if (detailsOpen) turnDetail?.onClose?.();
               else {

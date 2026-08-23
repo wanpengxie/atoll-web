@@ -3,6 +3,7 @@ import { actorNameFromMap, actorNameMap } from '../../model/actor-display.js';
 import { taskControlContext } from '../../model/task-controls.js';
 import { messagePresentation } from '../../model/message-presentation.js';
 import { turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
+import { processObservations } from '../../model/turn-process.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 import { StructuredResult } from '../StructuredResult.jsx';
@@ -21,19 +22,19 @@ function requestSummary(request) {
   return [view.text, view.detail].filter(Boolean).join(' · ');
 }
 
-function RecordRow({ label, envelope, names }) {
+function RecordRow({ label, envelope, names, status = '' }) {
   const payload = envelope?.payload || {};
   return <article className="turn-audit-row">
     <span className="turn-audit-mark" />
     <div><strong>{label}</strong><small>{actorName(envelope?.sender?.id, names)} · {timeLabel(envelope?.ts)}</small>{payload.detail && <p>{payload.detail}</p>}</div>
-    <code>{payload.status ? turnStatusLabel({ status: payload.status }) : envelope?.type}</code>
+    <code>{status || (payload.status ? turnStatusLabel({ status: payload.status }) : envelope?.type)}</code>
   </article>;
 }
 
-function technicalLabel(envelope) {
-  if (envelope?.type === 'agent.turn.started') return '开始处理';
-  if (envelope?.type === 'agent.turn.ended') return '处理结束';
-  if (envelope?.type?.startsWith('agent.tool.')) return `工具 · ${envelope.payload?.tool || '未知工具'}`;
+function technicalLabel(process) {
+  if (process.kind === 'turn') return process.phase === 'started' ? '开始处理' : '回合过程';
+  if (process.kind === 'tool') return `工具 · ${process.tool || '未知工具'}`;
+  if (process.kind === 'stage') return process.text || process.stage || '模型过程';
   return '运行记录';
 }
 
@@ -57,6 +58,8 @@ function TurnDetailBody({ turn, roster = [], selfId, access, controlState, onCan
   if (!turn) return null;
   const request = turn.request;
   const context = taskControlContext(turn, { selfId, access });
+  const process = processObservations(turn);
+  const business = (turn.provisional || []).filter((item) => !item.envelope?.payload?.process);
   return <>
     {showRequest && <div className="turn-context-source">
       <span>{actorName(request.sender?.id, names)} · {timeLabel(request.ts)}</span>
@@ -65,10 +68,10 @@ function TurnDetailBody({ turn, roster = [], selfId, access, controlState, onCan
     </div>}
     <section className={`turn-context-status status-${turn.status}`}><span className="turn-status-dot" /><div><strong>{turnStatusLabel(turn)}</strong><small>{turnProcessSummary(turn)}</small></div></section>
     {turn.terminal && <section className="turn-context-terminal"><h3>最终结果</h3><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <p>{text}</p>} /></section>}
-    <section className="turn-context-section"><h3>业务进展</h3><div className="turn-context-process-scroll">{turn.provisional.length ? turn.provisional.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.payload?.detail || item.envelope.payload?.message || turnStatusLabel({ status: item.status })} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有业务进展记录</p>}</div></section>
+    <section className="turn-context-section"><h3>业务进展</h3><div className="turn-context-process-scroll">{business.length ? business.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.payload?.detail || item.envelope.payload?.message || turnStatusLabel({ status: item.status })} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有独立业务状态更新</p>}</div></section>
     <details className="turn-context-section turn-context-technical" open={!turn.terminal}>
-      <summary>技术过程 <span>{turn.activity.length}</span></summary>
-      <div className="turn-context-process-scroll">{turn.activity.length ? turn.activity.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={technicalLabel(item.envelope)} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有工具或运行时活动</p>}</div>
+      <summary>执行过程 <span>{process.length}</span></summary>
+      <div className="turn-context-process-scroll">{process.length ? process.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={technicalLabel(item.process)} envelope={item.envelope} names={names} status={item.process.phase || item.process.stage || item.process.kind} />) : <p className="turn-context-empty">没有工具或运行时过程</p>}</div>
     </details>
     <ContextControls context={context} state={controlState} onCancel={onCancel} onControl={onControl} />
     {argsOf(request).attachments?.length > 0 && <section className="turn-context-section"><h3>关联文件</h3>{argsOf(request).attachments.map((row) => <button type="button" className="turn-context-attachment" key={row.resource_id} onClick={() => onDownload(row)}><span>{row.name || row.resource_id}</span><small>{row.media_type || '文件'} · 下载</small></button>)}</section>}

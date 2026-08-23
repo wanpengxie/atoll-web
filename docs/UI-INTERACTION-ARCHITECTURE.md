@@ -87,12 +87,12 @@ Channel Rail
 
 - “正在处理”与当前状态可见；
 - 取消、调整方向和打断只在实际可用时出现；
-- provisional 和 activity 在运行期间可见，避免用户误以为卡死。
+- provisional response 中的状态与 process 在运行期间可见，避免用户误以为卡死。
 
 ### 5.3 已完成任务
 
 - 终态结果直接可见；
-- provisional、activity 和工具过程默认折叠为“过程记录 N”；
+- provisional response 中的阶段和工具过程默认折叠为“过程记录 N”；
 - 原始 JSON 和脱敏详情继续按需展开；
 - 失败结果保持高对比错误边界。
 

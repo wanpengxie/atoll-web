@@ -23,6 +23,7 @@ const ROOT_ID = 'root';
 const ROOT_EMAIL = 'root@atoll.local';
 const ROOT_ACTOR_ID = 'root';
 const STEWARD_ACTOR_ID = 'steward';
+const REVIEWER_ACTOR_ID = 'reviewer';
 const SYSTEM_ACTOR_ID = 'system';
 // agent 基座的控制词闭集（drivers/agents/base/base.go）。agent.ask 不在其中——
 // 它是“交办一件活”，不是控制。
@@ -255,11 +256,10 @@ function seededHistory(channelId, behavior = {}) {
     add(envelope({ id: requestId, channelId, sender: root, kind: 'request', type: 'agent.ask', payload: { text: requestText, ...(demoAttachments.length ? { attachments: demoAttachments } : {}) }, audience: [responderId], ts: at }));
     add(envelope({ id: `${requestId}-queued`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'queued', turn_index: index, controls: QUEUED_CONTROLS }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 1 }));
     add(envelope({ id: `${requestId}-processing`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 2 }));
-    add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'event', type: 'agent.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
-    add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'event', type: 'agent.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'started', input: { channel_id: channelId, query: `检查 ${channelId} 的协作账本` } }, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
-    add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'completed', output: { ok: true, matched_rows: 3, channel_id: channelId } }, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
-    add(envelope({ id: `${requestId}-turn-ended`, channelId, sender: responder, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: index, status: 'ok', usage: { context_tokens: 30_000 + index * 1_000, context_window: 200_000, model: 'gpt-5.6-sol', effort: 'medium' } }, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
-    add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'completed', turn_index: index, text: responseText }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 7 }));
+    add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS, process: { kind: 'turn', phase: 'started' } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
+    add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'started', tool_call_id: `${requestId}-tool`, tool: toolName, input: { channel_id: channelId, query: `检查 ${channelId} 的协作账本` } } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
+    add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'ended', tool_call_id: `${requestId}-tool`, tool: toolName, outcome: 'completed', output: { ok: true, matched_rows: 3, channel_id: channelId } } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
+    add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'completed', turn_index: index, text: responseText, usage: { context_tokens: 30_000 + index * 1_000, context_window: 200_000, model: 'gpt-5.6-sol', effort: 'medium' } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
   }
 
   const registeredActors = isLobby ? ['svcactor'] : ['steward', 'svcactor'];
@@ -379,10 +379,9 @@ export function createMockServer({
   const runSelectSlotEntry = (channelId, actorId, entry, delayBase = 5) => {
     const { messageId, chosen, base } = entry;
     later(delayBase, () => append(channelId, envelope({ ...base, id: `${messageId}-processing`, kind: 'response', type: 'agent.select', payload: { status: 'processing', turn_index: 1, turn_id: `turn-${messageId}`, controls: [] } })));
-    later(delayBase + 10, () => append(channelId, envelope({ ...base, parentId: '', id: `${messageId}-turn-started`, kind: 'event', type: 'agent.turn.started', payload: { turn_index: 1, status: 'started' } })));
+    later(delayBase + 10, () => append(channelId, envelope({ ...base, id: `${messageId}-turn-started`, kind: 'response', type: 'agent.select', payload: { status: 'processing', turn_index: 1, controls: [], process: { kind: 'turn', phase: 'started' } } })));
     later(delayBase + 20, () => {
       agentSelections.set(`${channelId}:${actorId}`, { model: chosen.model, effort: chosen.effort });
-      append(channelId, envelope({ ...base, parentId: '', id: `${messageId}-turn-ended`, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: 1, status: 'ok', usage: usageOf(channelId, actorId) } }));
     });
     later(delayBase + 30, () => append(channelId, envelope({ ...base, id: `${messageId}-terminal`, kind: 'response', type: 'agent.select', payload: { status: 'completed', turn_index: 1, usage: usageOf(channelId, actorId) } })));
   };
@@ -395,6 +394,14 @@ export function createMockServer({
   };
   let rosters = domain.rosters;
   let histories = domain.histories;
+  const applyScenarioRoster = () => {
+    if (domain.behavior.message !== 'agent-tree') return;
+    const rows = rosters.get('c0');
+    if (rows && !rows.some((row) => row.declared.id === REVIEWER_ACTOR_ID)) {
+      rows.push(rosterItem({ id: REVIEWER_ACTOR_ID, kind: 'agent', declId: 'mock:analyst', name: 'Reviewer', description: 'Mock review agent' }));
+    }
+  };
+  applyScenarioRoster();
   if (loadScenario(scenario, seed).history) {
     for (const channelId of histories.keys()) {
       if (domain.activeMembership(ROOT_ID, channelId)) histories.set(channelId, seededHistory(channelId, domain.behavior));
@@ -599,16 +606,8 @@ export function createMockServer({
     const requestText = String(active.payload?.text || '').trim();
     append(channelId, envelope({
       ...base,
-      id: domain.nextId(`${active.id}-manual-turn-ended`),
-      kind: 'event',
-      type: 'agent.turn.ended',
-      parentId: '',
-      payload: { turn_index: 1, status: 'ok', usage: usageOf(channelId, agent.id) },
-    }));
-    append(channelId, envelope({
-      ...base,
       id: domain.nextId(`${active.id}-manual-terminal`),
-      payload: { status: 'completed', text: `已完成：${requestText || '当前任务'}` },
+      payload: { status: 'completed', text: `已完成：${requestText || '当前任务'}`, usage: usageOf(channelId, agent.id) },
     }));
     // turn 终态后、续跑批之前：select 槽插队（协议 §8"任何指令之前"）。
     runSelectSlot(channelId, agent.id);
@@ -1246,26 +1245,90 @@ export function createMockServer({
     const mode = domain.behavior.message || '';
     later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, ...(mode === 'long-running' ? { turn_id: `turn-${messageId}` } : {}) } })));
     if (mode === 'business-provisional') later(50, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-business`, kind: 'response', type: payload.msg_type, payload: { status: 'provider.waiting', queue: 'external' } })));
-    later(50, () => append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-started`, kind: 'event', type: 'agent.turn.started', payload: { turn_index: 1, status: 'started' } })));
+    later(50, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-turn-started`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, process: { kind: 'turn', phase: 'started' } } })));
     if (mode === 'progress-demo') {
       const tools = ['理解任务', '读取频道', '检查成员', '搜索资料', '整理上下文', '分析数据', '生成方案', '校验结果', '组织回复', '完成收尾'];
       tools.forEach((tool, index) => {
         const startedAt = 80 + index * 30_000;
         const callId = `${messageId}-demo-${index + 1}`;
-        later(startedAt, () => append(channelId, envelope({ ...responseBase, id: `${callId}-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: callId, tool, status: 'started', input: { step: index + 1, total: tools.length, channel_id: channelId } } })));
-        later(startedAt + 29_999, () => append(channelId, envelope({ ...responseBase, id: `${callId}-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: callId, tool, status: 'completed', output: { step: index + 1, ok: true } } })));
+        later(startedAt, () => append(channelId, envelope({ ...responseBase, id: `${callId}-started`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'started', tool_call_id: callId, tool, input: { step: index + 1, total: tools.length, channel_id: channelId } } } })));
+        later(startedAt + 29_999, () => append(channelId, envelope({ ...responseBase, id: `${callId}-ended`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'ended', tool_call_id: callId, tool, outcome: 'completed', output: { step: index + 1, ok: true } } } })));
       });
       const completedAt = 80 + tools.length * 30_000;
-      later(completedAt, () => append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-ended`, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: 1, status: 'ok', usage: usageOf(channelId, respondingAgent.id) } })));
-      later(completedAt + 20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', turn_index: 1, text: '已完成 10 个演示过程。' } })));
+      later(completedAt + 20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', turn_index: 1, text: '已完成 10 个演示过程。', usage: usageOf(channelId, respondingAgent.id) } })));
       return;
     }
-    later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'started', input: { channel_id: channelId, message_id: messageId } } })));
-    later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'completed', output: { pong: true, channel_id: channelId } } })));
+    if (mode === 'agent-tree') {
+      const rootCorrelation = messageId;
+      const parentAgentId = respondingAgent.id;
+      const childAgentId = parentAgentId === 'claude' ? STEWARD_ACTOR_ID : 'claude';
+      const childB = `${messageId}-child-b`;
+      const childC = `${messageId}-child-c`;
+      const grandchildD = `${messageId}-child-d`;
+      const grandchildAgentId = REVIEWER_ACTOR_ID;
+      const callB = `${messageId}-call-b`;
+      const callC = `${messageId}-call-c`;
+      const callD = `${messageId}-call-d`;
+      const progress = (id, parentId, senderId, receiverId, process) => append(channelId, envelope({
+        id, channelId, sender: { kind: 'agent', id: senderId }, kind: 'response', type: 'agent.ask',
+        parentId, correlationId: rootCorrelation, audience: [receiverId],
+        payload: { status: 'processing', controls: PROCESSING_CONTROLS, process },
+      }));
+      const childRequest = (id, parentId, senderId, receiverId, childText) => append(channelId, envelope({
+        id, channelId, sender: { kind: 'agent', id: senderId }, kind: 'request', type: 'agent.ask',
+        parentId, correlationId: rootCorrelation, audience: [receiverId], payload: { text: childText },
+      }));
+      const childTerminal = (id, parentId, senderId, receiverId, childText) => append(channelId, envelope({
+        id, channelId, sender: { kind: 'agent', id: senderId }, kind: 'response', type: 'agent.ask',
+        parentId, correlationId: rootCorrelation, audience: [receiverId], payload: { status: 'completed', text: childText, usage: usageOf(channelId, senderId) },
+      }));
+
+      later(60, () => progress(`${callB}-started`, messageId, parentAgentId, selfActorId, {
+        kind: 'tool', phase: 'started', tool_call_id: callB, tool: 'call_actor',
+        input: { actor_id: childAgentId, type: 'agent.ask', payload: { text: 'B 负责资料分析' } },
+      }));
+      later(70, () => childRequest(childB, messageId, parentAgentId, childAgentId, 'B 负责资料分析'));
+      later(80, () => progress(`${childB}-turn`, childB, childAgentId, parentAgentId, { kind: 'turn', phase: 'started' }));
+      later(90, () => progress(`${childB}-stage`, childB, childAgentId, parentAgentId, { kind: 'stage', stage: 'thinking', text: 'B 正在整理资料' }));
+      later(100, () => progress(`${callD}-started`, childB, childAgentId, parentAgentId, {
+        kind: 'tool', phase: 'started', tool_call_id: callD, tool: 'call_actor',
+        input: { actor_id: grandchildAgentId, type: 'agent.ask', payload: { text: 'D 负责核验关键事实' } },
+      }));
+      later(110, () => childRequest(grandchildD, childB, childAgentId, grandchildAgentId, 'D 负责核验关键事实'));
+      later(120, () => progress(`${grandchildD}-stage`, grandchildD, grandchildAgentId, childAgentId, { kind: 'stage', stage: 'thinking', text: 'D 正在核验' }));
+      later(130, () => childTerminal(`${grandchildD}-terminal`, grandchildD, grandchildAgentId, childAgentId, 'D 核验完成'));
+      later(140, () => progress(`${callD}-ended`, childB, childAgentId, parentAgentId, {
+        kind: 'tool', phase: 'ended', tool_call_id: callD, tool: 'call_actor', outcome: 'completed',
+        output: { status: 'completed', text: 'D 核验完成' },
+      }));
+      later(150, () => childTerminal(`${childB}-terminal`, childB, childAgentId, parentAgentId, 'B 汇总完成'));
+      later(160, () => progress(`${callB}-ended`, messageId, parentAgentId, selfActorId, {
+        kind: 'tool', phase: 'ended', tool_call_id: callB, tool: 'call_actor', outcome: 'completed',
+        output: { status: 'completed', text: 'B 汇总完成' },
+      }));
+
+      later(170, () => progress(`${callC}-started`, messageId, parentAgentId, selfActorId, {
+        kind: 'tool', phase: 'started', tool_call_id: callC, tool: 'call_actor',
+        input: { actor_id: childAgentId, type: 'agent.ask', payload: { text: 'C 负责独立复核' } },
+      }));
+      later(180, () => childRequest(childC, messageId, parentAgentId, childAgentId, 'C 负责独立复核'));
+      later(190, () => progress(`${childC}-stage`, childC, childAgentId, parentAgentId, { kind: 'stage', stage: 'thinking', text: 'C 正在复核' }));
+      later(200, () => childTerminal(`${childC}-terminal`, childC, childAgentId, parentAgentId, 'C 复核完成'));
+      later(210, () => progress(`${callC}-ended`, messageId, parentAgentId, selfActorId, {
+        kind: 'tool', phase: 'ended', tool_call_id: callC, tool: 'call_actor', outcome: 'completed',
+        output: { status: 'completed', text: 'C 复核完成' },
+      }));
+      later(230, () => append(channelId, envelope({
+        ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type,
+        payload: { status: 'completed', text: 'A 已汇总 B 与 C 的结果。', usage: usageOf(channelId, parentAgentId) },
+      })));
+      return;
+    }
+    later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'started', tool_call_id: `${messageId}-tool`, tool: 'mock.ping', input: { channel_id: channelId, message_id: messageId } } } })));
+    later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'ended', tool_call_id: `${messageId}-tool`, tool: 'mock.ping', outcome: 'completed', output: { pong: true, channel_id: channelId } } } })));
     if (mode === 'long-running') return;
     const terminalDelay = mode === 'business-provisional' ? 500 : 100;
-    // 每个 turn 结束恒出账 usage（activity.go usagePayload 同形）——前端参数区靠它保鲜。
-    later(terminalDelay - 10, () => append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-ended`, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: 1, status: mode === 'failed' || /fail/i.test(text) ? 'failed' : 'ok', usage: usageOf(channelId, respondingAgent.id) } })));
+    // 每个 turn 的 usage 只随 terminal 出账——不再制造 turn.ended event。
     later(terminalDelay, () => append(channelId, envelope({
       ...responseBase,
       id: `${messageId}-terminal`,
@@ -1284,8 +1347,8 @@ export function createMockServer({
         : mode === 'empty'
           ? { status: 'completed' }
           : mode === 'failed' || /fail/i.test(text)
-            ? { status: 'failed', reason: 'receiver_internal_error', error_code: 'type_unsupported', detail: 'mock failure requested by message text', diagnostic: { attempt: 1 } }
-            : { status: 'completed', turn_index: 1, text: 'PONG' },
+            ? { status: 'failed', reason: 'receiver_internal_error', error_code: 'type_unsupported', detail: 'mock failure requested by message text', diagnostic: { attempt: 1 }, usage: usageOf(channelId, respondingAgent.id) }
+            : { status: 'completed', turn_index: 1, text: 'PONG', usage: usageOf(channelId, respondingAgent.id) },
     })));
     // turn 终态后、任何续跑之前：先跑挂着的 select 槽。
     later(terminalDelay + 3, () => runSelectSlot(channelId, respondingAgent.id));
@@ -1534,7 +1597,8 @@ export function createMockServer({
         httpError(response, 400, 'invalid_args', error.message);
         return;
       }
-      const email = typeof body?.email === 'string' ? body.email.trim() : '';
+      const submittedAccount = typeof body?.email === 'string' ? body.email.trim() : '';
+      const email = path.endsWith('/login') && submittedAccount === 'root' ? ROOT_EMAIL : submittedAccount;
       const password = typeof body?.password === 'string' ? body.password : '';
       if (!email || !password) {
         httpError(response, 400, 'invalid_args', 'email and password required');
@@ -1838,6 +1902,7 @@ export function createMockServer({
         domain = createMockDomain(loadScenario(body.scenario || 'multi-channel', body.seed));
         rosters = domain.rosters;
         histories = domain.histories;
+        applyScenarioRoster();
         if (loadScenario(body.scenario || 'multi-channel', body.seed).history) {
           for (const channelId of histories.keys()) {
             if (domain.activeMembership(ROOT_ID, channelId)) histories.set(channelId, seededHistory(channelId, domain.behavior));

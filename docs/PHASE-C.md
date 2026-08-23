@@ -90,7 +90,7 @@
 
 ### C6 长任务状态与恢复
 
-- 未出现 terminal 的回合保持运行/排队/等待，不因 activity.turn.ended 伪造完成；
+- 未出现 terminal 的回合保持运行/排队/等待，不因 process progress 伪造完成；
 - processing 中的 turn_id 可恢复任务控制上下文；
 - `expires_at` 和 TypeMeta `max_pending_ms` 只显示时间提示；超时前端不伪造失败；
 - 页面刷新、断线 replay 和重复 feed 后任务、控制请求与审批都只保留一个账本事实；

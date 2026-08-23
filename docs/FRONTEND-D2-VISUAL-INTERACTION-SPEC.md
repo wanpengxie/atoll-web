@@ -675,7 +675,7 @@ Context 在中/窄屏替换主区时，焦点进入 Context 标题；关闭回�
 
 1. Files/Tasks 点击后打开右侧抽屉；
 2. 默认右栏永久展示成员并压缩所有主视图；
-3. 每个 provisional/activity 使用独立消息卡；
+3. 每个 provisional process 使用独立消息卡；
 4. 文件上传首屏显示 daemon/path/ticket；
 5. Tasks 首屏显示 duration/type/payload JSON；
 6. Channel Header 永久显示 SEQ；

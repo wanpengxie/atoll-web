@@ -83,7 +83,7 @@ describe('agent control v7 information architecture', () => {
     const state = createChannelState('c0');
     add(state, 1, request('work', '重构 loop.go'));
     add(state, 2, response('work-p', 'work', { status: 'processing', turn_id: 'turn-42' }));
-    add(state, 3, { id: 'tool', parent_id: 'work', kind: 'event', type: 'agent.tool.started', ts: 120, sender: { kind: 'agent', id: 'agent' }, visibility: 'public', payload: { tool: 'read_file' } });
+    add(state, 3, response('tool', 'work', { status: 'processing', process: { kind: 'tool', phase: 'started', tool_call_id: 'read-1', tool: 'read_file' } }));
     const onTaskControl = vi.fn();
     const view = render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} onTaskControl={onTaskControl} />);
 

@@ -218,7 +218,7 @@ Mock 不应只返回 `{ok:true}`。例如创建频道必须同时产生：
 - `agent.terminate`；
 - `agent.restart`；
 - WS cancel；
-- activity.turn/tool 事件。
+- request 所属 provisional response 中的 turn/tool process。
 
 阶段 C 完成状态：
 
@@ -617,7 +617,7 @@ Mock 只需复刻浏览器可观察的因果关系，不需要实现：
 | 首次注册登录 | 身份、Cookie、初始频道、自我识别 | 必须 | 冒烟 |
 | 已有会话恢复 | localStorage 缺失、OBS、attach | 必须 | 冒烟 |
 | 多频道回放 | since、多频道隔离、切换 | 必须 | 必须 |
-| 普通 Agent 任务 | queued/processing/activity/terminal | 必须 | 冒烟 |
+| 普通 Agent 任务 | queued/processing process/terminal | 必须 | 冒烟 |
 | 长任务取消 | cancel receipt + terminal | 必须 | 必须 |
 | steer/interrupt | 能力判断、控制状态、失败恢复 | 必须 | 必须 |
 | 已存在审批 | 未发言前自我识别 | 必须 | 必须 |
@@ -824,6 +824,6 @@ principal
 
 阶段 A–E 的能力施工、Mock、单元测试、真实 Chromium 回归和文档审计已经完成。协议/能力轨道后续仍保留发布前真实 atoll smoke：真实 daemon 路由/磁盘、设备 key 生命周期与 binding 投影、真实 class config、并发权限和 timer 跨端可观测性；这些不属于用 Mock 冒充完成的范围。
 
-前端产品体验进入独立改进轨道，状态、设计阶段 D0–D2、施工波次 F1–F6 和唯一下一步以[前端产品体验改进总计划](FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md)为准。阶段 A–E 完成不代表新一轮前端体验设计和施工已经完成。
+前端产品体验独立改进轨道的设计阶段 D0–D2、施工波次 F1–F7 和下一步以[前端产品体验改进总计划](FRONTEND-PRODUCT-IMPROVEMENT-MASTER-PLAN.md)为准。阶段 A–E 与 F1–F7 均已完成，后续进入用户验收和真实部署边界验证。
 
 阶段内不再为每个小动作暂停确认；只有产品范围、安全边界或不可逆业务决策才升级给用户决定。

@@ -23,7 +23,7 @@ describe('Artifact 账本索引', () => {
     const state = createChannelState('c0');
     apply(state, row('c0', 1, { id: 'm1', kind: 'request', type: 'agent.ask', payload: { text: '请查看 report-v2-final.pdf' } }));
     apply(state, row('c0', 2, { id: 'm2', kind: 'event', type: 'system.note', payload: { ticket: 'secret', address: 'daemon://hidden/path' } }));
-    apply(state, row('c0', 4, { id: 'm4', kind: 'event', type: 'agent.tool.ended', payload: { attachments: [{ resource_id: 'event-file', name: 'not-terminal.pdf' }] } }));
+    apply(state, row('c0', 4, { id: 'm4', kind: 'event', type: 'system.note', payload: { attachments: [{ resource_id: 'event-file', name: 'not-terminal.pdf' }] } }));
     apply(state, row('c0', 3, { id: 'm3', kind: 'response', type: 'registrar.result', parent_id: 'm1', payload: { status: 'completed', value: { resource_id: 'looks-like-file', name: 'fake.pdf' } } }));
     expect(artifactList(state)).toEqual([]);
   });

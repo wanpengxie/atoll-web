@@ -12,7 +12,7 @@ describe('directory OBS invalidation', () => {
   });
 
   it('普通消息、过程和只读治理词不会刷新目录', () => {
-    for (const type of ['agent.ask', 'agent.tool.started', 'human.message', 'system.channel.list', 'system.member.get', 'actor.describe']) {
+    for (const type of ['agent.ask', 'human.message', 'system.channel.list', 'system.member.get', 'actor.describe']) {
       expect(invalidatesChannelDirectory({ type })).toBe(false);
     }
   });

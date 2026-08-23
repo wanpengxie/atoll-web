@@ -1,5 +1,5 @@
 import { correlationOf, FINAL, PROVISIONAL } from '../protocol/envelope.js';
-import { isActivity, isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
+import { isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
 
 // subjectgate 只让这两个词走 resolve 帧（platform/internal/humancell）。
 const RESOLVABLE = new Set([TYPES.humanAsk, TYPES.humanApprove]);
@@ -21,7 +21,6 @@ export function createChannelState(channelId = '') {
     _seenIds: new Set(),
     _envelopesById: new Map(),
     _unmatchedByParent: new Map(),
-    _unmatchedByCorrelation: new Map(),
   };
 }
 
@@ -34,10 +33,8 @@ function newTurn(request, seq) {
     request,
     requestSeq: seq,
     provisional: [],
-    activity: [],
     terminal: null,
     terminalSeq: 0,
-    final: null, // 兼容旧 UI 名称；与 terminal 始终一致。
     phase: 'open',
     status: 'open',
     latestStatus: '',
@@ -68,16 +65,9 @@ function pushMap(map, key, item) {
   map.set(key, values);
 }
 
-function latestCorrelationTurn(state, correlationId) {
-  const requestIds = state.correlations.get(correlationId) || [];
-  const values = requestIds.map((id) => state.turns.get(id)).filter(Boolean);
-  return values.findLast((turn) => !turn.terminal) || values.at(-1) || null;
-}
-
 function findTurn(state, envelope) {
-  if (envelope.parent_id && state.turns.has(envelope.parent_id)) return state.turns.get(envelope.parent_id);
-  if (envelope.correlation_id) return latestCorrelationTurn(state, envelope.correlation_id);
-  return null;
+  if (!envelope.parent_id) return null;
+  return state.turns.get(envelope.parent_id) || null;
 }
 
 function businessFields(payload = {}) {
@@ -92,6 +82,10 @@ function terminalText(payload = {}) {
 }
 
 function applyProvisional(state, turn, seq, envelope) {
+  if (turn.terminal) {
+    anomaly(state, 'provisional_after_terminal', seq, envelope, turn);
+    return;
+  }
   const status = envelope.payload?.status;
   const core = PROVISIONAL.has(status);
   const business = typeof status === 'string' && BUSINESS_PROVISIONAL.test(status) && !FINAL.has(status);
@@ -100,13 +94,17 @@ function applyProvisional(state, turn, seq, envelope) {
     state.orphans.push({ seq, envelope });
     return;
   }
+  const process = envelope.payload?.process;
+  if (process?.kind === 'tool' && process.phase === 'ended' && process.tool_call_id) {
+    const started = turn.provisional.some((item) => {
+      const candidate = item.envelope?.payload?.process;
+      return candidate?.kind === 'tool' && candidate.phase === 'started' && candidate.tool_call_id === process.tool_call_id;
+    });
+    if (!started) anomaly(state, 'tool_start_missing', seq, envelope, turn);
+  }
   turn.provisional.push({ seq, envelope, status, core });
   turn.latestStatus = status;
   turn.lastSeq = Math.max(turn.lastSeq, seq);
-  if (turn.terminal) {
-    anomaly(state, 'provisional_after_terminal', seq, envelope, turn);
-    return;
-  }
   turn.phase = core ? status : 'business_provisional';
   turn.status = turn.phase;
 }
@@ -117,7 +115,6 @@ function applyTerminal(state, turn, seq, envelope) {
     return;
   }
   turn.terminal = envelope;
-  turn.final = envelope;
   turn.terminalSeq = seq;
   turn.phase = envelope.payload.status;
   turn.status = turn.phase;
@@ -132,32 +129,11 @@ function attachResponse(state, turn, seq, envelope) {
   else applyProvisional(state, turn, seq, envelope);
 }
 
-function attachActivity(state, turn, seq, envelope) {
-  turn.activity.push({ seq, envelope });
-  turn.lastSeq = Math.max(turn.lastSeq, seq);
-  if (envelope.type === TYPES.activity.toolEnded) {
-    const toolCallId = envelope.payload?.tool_call_id;
-    if (toolCallId && !turn.activity.some((item) => (
-      item !== turn.activity.at(-1)
-      && item.envelope.type === TYPES.activity.toolStarted
-      && item.envelope.payload?.tool_call_id === toolCallId
-    ))) anomaly(state, 'tool_start_missing', seq, envelope, turn);
-  }
-}
-
 function drainRequestMatches(state, turn) {
   const byParent = state._unmatchedByParent.get(turn.requestId) || [];
   state._unmatchedByParent.delete(turn.requestId);
   for (const item of byParent.sort((left, right) => left.seq - right.seq)) {
-    if (isActivity(item.envelope.type)) attachActivity(state, turn, item.seq, item.envelope);
-    else attachResponse(state, turn, item.seq, item.envelope);
-  }
-
-  const byCorrelation = state._unmatchedByCorrelation.get(turn.correlationId) || [];
-  state._unmatchedByCorrelation.delete(turn.correlationId);
-  for (const item of byCorrelation.sort((left, right) => left.seq - right.seq)) {
-    if (isActivity(item.envelope.type)) attachActivity(state, turn, item.seq, item.envelope);
-    else attachResponse(state, turn, item.seq, item.envelope);
+    attachResponse(state, turn, item.seq, item.envelope);
   }
 }
 
@@ -204,23 +180,10 @@ export function apply(state, row, selfId = '') {
     return state;
   }
 
-  if (isActivity(envelope.type) && envelope.kind === 'event') {
-    const turn = findTurn(state, envelope);
-    if (turn) attachActivity(state, turn, seq, envelope);
-    else if (envelope.parent_id) pushMap(state._unmatchedByParent, envelope.parent_id, { seq, envelope });
-    else if (envelope.correlation_id) pushMap(state._unmatchedByCorrelation, envelope.correlation_id, { seq, envelope });
-    else {
-      anomaly(state, 'activity_parent_missing', seq, envelope);
-      state.orphans.push({ seq, envelope });
-    }
-    return state;
-  }
-
   if (envelope.kind === 'response') {
     const turn = findTurn(state, envelope);
     if (turn) attachResponse(state, turn, seq, envelope);
     else if (envelope.parent_id) pushMap(state._unmatchedByParent, envelope.parent_id, { seq, envelope });
-    else if (envelope.correlation_id) pushMap(state._unmatchedByCorrelation, envelope.correlation_id, { seq, envelope });
     else {
       anomaly(state, 'response_parent_missing', seq, envelope);
       state.orphans.push({ seq, envelope });
