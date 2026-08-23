@@ -296,6 +296,26 @@ function ThreadCalls({ thread, names }) {
   );
 }
 
+// 后端只负责把回合内已完成的中间产物（note：{kind, text}）原样发成
+// provisional 进度；阶段文案与滚动展示全是前端自己的推断。
+const NOTE_LABEL = Object.freeze({ thinking: '思考', plan: '计划', text: '草稿' });
+const NOTE_CURRENT = Object.freeze({ thinking: '思考中…', plan: '在列计划…', text: '正在写回复…' });
+
+function progressFeed(turn, limit = 4) {
+  const rows = [];
+  for (const item of turn.activity || []) {
+    const env = item?.envelope;
+    if (env?.type === TYPES.activity.toolStarted) rows.push({ seq: Number(item.seq), text: `tool: ${env.payload?.tool || '工具'} …` });
+    if (env?.type === TYPES.activity.toolEnded) rows.push({ seq: Number(item.seq), text: `tool: ${env.payload?.tool || '工具'} 完成` });
+  }
+  for (const item of turn.provisional || []) {
+    const p = item?.envelope?.payload || {};
+    if (p.kind && p.text) rows.push({ seq: Number(item.seq), text: `${NOTE_LABEL[p.kind] || p.kind} · ${p.text}` });
+  }
+  rows.sort((a, b) => a.seq - b.seq);
+  return rows.slice(-limit);
+}
+
 function activityLine(turn) {
   const latestActivity = turn.activity?.at(-1);
   const latestProgress = turn.provisional?.at(-1);
@@ -305,10 +325,7 @@ function activityLine(turn) {
   if (activity?.type === TYPES.activity.turnStarted) return 'turn started · 正在生成…';
   if (activity?.type === TYPES.activity.turnEnded) return 'turn ended';
   const progress = latestProgress?.envelope?.payload || {};
-  // 回合内的阶段读数（agent 的 provisional 进度回执）：没有工具调用的
-  // 纯文本回合也能看出它活在哪个阶段，而不是恒定的"正在生成…"。
-  if (progress.stage === 'thinking') return '思考中…';
-  if (progress.stage === 'writing') return '正在写回复…';
+  if (progress.kind && NOTE_CURRENT[progress.kind]) return NOTE_CURRENT[progress.kind];
   return progress.detail || progress.message || progress.text || '正在生成…';
 }
 
@@ -327,7 +344,9 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names }) {
   const bubbleTs = terminal?.ts || liveEnvelope?.ts;
   return <MessageFrame className={`agent-turn-bubble${terminal ? ' settled' : ' processing'}`} contentClassName="response-body" identity={<span className="actor-icon kind-agent">A</span>}>
     <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>
-    {!terminal && <div className="agent-processing-content"><strong>● 处理中: {title}{mergedCount ? `（含合并 ${mergedCount} 条）` : ''}</strong><div className="agent-processing-status" role="status" aria-live="polite"><span aria-hidden="true">⋯</span><p>{activityLine(turn)}</p></div></div>}
+    {!terminal && <div className="agent-processing-content"><strong>● 处理中: {title}{mergedCount ? `（含合并 ${mergedCount} 条）` : ''}</strong>
+      {(() => { const feed = progressFeed(turn); return feed.length > 0 && <ol className="agent-progress-feed">{feed.map((row) => <li key={row.seq}>{row.text}</li>)}</ol>; })()}
+      <div className="agent-processing-status" role="status" aria-live="polite"><span aria-hidden="true">⋯</span><p>{activityLine(turn)}</p></div></div>}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
     {terminal && !stopped && <div className="response-content"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
   </MessageFrame>;
