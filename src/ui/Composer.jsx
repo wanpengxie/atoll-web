@@ -1,8 +1,10 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Extension } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import Mention from '@tiptap/extension-mention';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
+import Suggestion from '@tiptap/suggestion';
 import { FolderOpen, Upload, X } from 'lucide-react';
 import { actorDisplayName } from '../model/actor-display.js';
 import { formatArtifactSize } from '../model/artifacts.js';
@@ -62,6 +64,17 @@ function mentionCandidates(rows, selfId, selectedIds, query) {
   ));
 }
 
+const AGENT_COMMANDS = Object.freeze([
+  { command: 'compact', type: TYPES.agentCompact, label: '压缩上下文', description: '保留当前对话，压缩较早的上下文' },
+  { command: 'new', type: TYPES.agentNew, label: '新建对话', description: '保留当前 Agent，换成一段全新会话' },
+]);
+
+function commandCandidates(types, query) {
+  const supported = new Set(types || []);
+  const needle = String(query || '').toLowerCase();
+  return AGENT_COMMANDS.filter((row) => supported.has(row.type) && `${row.command} ${row.label}`.toLowerCase().includes(needle));
+}
+
 // 频道面的斜杠命令。收件人恒是本频道的 system actor：成员类的词它自己答，
 // 空间类的词它转交 c0 的 registrar。
 export function slashCommand(value) {
@@ -69,6 +82,10 @@ export function slashCommand(value) {
   if (verb === '/compact') {
     if (rest.length) throw new TypeError('用法：/compact');
     return { msgType: TYPES.agentCompact, payload: {}, target: 'agent' };
+  }
+  if (verb === '/new') {
+    if (rest.length) throw new TypeError('用法：/new');
+    return { msgType: TYPES.agentNew, payload: {}, target: 'agent' };
   }
   if (verb === '/model') {
     if (rest.length > 2) throw new TypeError('用法：/model [model] [effort]');
@@ -115,6 +132,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const editModeRef = useRef(editMode);
   const mentionContextRef = useRef({ roster: [], selfId: '', selectedIds: [], activeCandidate: 0, editing: false });
   const suggestionSessionRef = useRef(null);
+  const commandContextRef = useRef({ types: [], activeCandidate: 0 });
+  const commandSessionRef = useRef(null);
   const submitRef = useRef(() => {});
   const normalDraftRef = useRef(null);
   const [mentionIds, setMentionIds] = useState(() => mentionIdsOf(initialDraft.doc));
@@ -125,12 +144,14 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   // 只有各条 submission 的状态知道谁被拒——批次里任何一条 rejected 都要带目标名报出。
   const [sentBatch, setSentBatch] = useState([]); // [{id, label}]
   const [activeCandidate, setActiveCandidate] = useState(0);
+  const [activeCommandCandidate, setActiveCommandCandidate] = useState(0);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [fileDragActive, setFileDragActive] = useState(false);
   // 正文归 ProseMirror DOM 所有，不在 React 中维护第二份 text 镜像。
   // 外壳只关心空/非空边界和当前光标处是否正在输入 @ 查询。
   const [hasText, setHasText] = useState(Boolean(initialDraft.text.trim()));
   const [query, setQuery] = useState(null);
+  const [commandQuery, setCommandQuery] = useState(null);
   const hasTextRef = useRef(Boolean(initialDraft.text.trim()));
   const queryRef = useRef(null);
 
@@ -282,7 +303,58 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
           }),
         },
       }),
-      Placeholder.configure({ placeholder: '输入消息，使用 @ 选择频道成员' }),
+      Extension.create({
+        name: 'agentCommands',
+        addProseMirrorPlugins() {
+          return [Suggestion({
+            editor: this.editor,
+            char: '/',
+            startOfLine: true,
+            allowSpaces: false,
+            items: ({ query: searchQuery }) => commandCandidates(commandContextRef.current.types, searchQuery),
+            command: ({ editor: current, range, props }) => {
+              current.chain().focus().insertContentAt(range, `/${props.command} `).run();
+            },
+            render: () => ({
+              onStart: (props) => {
+                commandSessionRef.current = props;
+                setCommandQuery(props.query.toLowerCase());
+                setActiveCommandCandidate(0);
+              },
+              onUpdate: (props) => {
+                commandSessionRef.current = props;
+                setCommandQuery(props.query.toLowerCase());
+              },
+              onExit: () => {
+                commandSessionRef.current = null;
+                setCommandQuery(null);
+              },
+              onKeyDown: ({ event }) => {
+                const session = commandSessionRef.current;
+                if (!session) return false;
+                const context = commandContextRef.current;
+                const rows = commandCandidates(context.types, session.query);
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  if (rows.length) {
+                    const direction = event.key === 'ArrowDown' ? 1 : -1;
+                    setActiveCommandCandidate((current) => (current + direction + rows.length) % rows.length);
+                  }
+                  return true;
+                }
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  const row = rows[context.activeCandidate] || rows[0];
+                  if (row) session.command(row);
+                  return true;
+                }
+                return false;
+              },
+            }),
+          })];
+        },
+      }),
+      Placeholder.configure({ placeholder: '输入消息；@ 选择成员，/ 使用命令' }),
     ],
     content: initialDraft.doc,
     editable: Boolean(channelId) && !disabled,
@@ -300,8 +372,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       },
       handleKeyDown: (view, event) => {
         if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return false;
-        // @ 激活后交还给 Suggestion 插件；普通 Enter 才进入发送动作。
-        if (suggestionSessionRef.current) return false;
+        // 候选激活后交还给 Suggestion 插件；普通 Enter 才进入发送动作。
+        if (suggestionSessionRef.current || commandSessionRef.current) return false;
         event.preventDefault();
         event.stopPropagation();
         submitRef.current();
@@ -338,11 +410,14 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   useEffect(() => { agentSelection?.onTargetChange?.(parameterAgent?.id || ''); }, [parameterAgent?.id, agentSelection?.onTargetChange]);
   const matchingCandidates = (searchQuery) => mentionCandidates(roster, selfId, mentions.map((row) => row.id), searchQuery || '');
   const candidates = useMemo(() => matchingCandidates(query), [mentions, query, roster, selfId]);
+  const commands = useMemo(() => commandCandidates(agentSelection?.supportedTypes, commandQuery), [agentSelection?.supportedTypes, commandQuery]);
   mentionContextRef.current = { roster, selfId, selectedIds: mentions.map((row) => row.id), activeCandidate, editing: Boolean(editMode) };
+  commandContextRef.current = { types: agentSelection?.supportedTypes || [], activeCandidate: activeCommandCandidate };
   const sentRows = sentBatch.length ? sentBatch : (sentMessageId ? [{ id: sentMessageId, label: '' }] : []);
   const activeSubmission = sentRows.map((row) => pending.find((item) => item.messageId === row.id)).find(Boolean) || null;
 
   useEffect(() => { setActiveCandidate(0); }, [query]);
+  useEffect(() => { setActiveCommandCandidate(0); }, [commandQuery]);
 
   const editTargetId = editMode?.session?.targetId || '';
   const editBusy = Boolean(editMode && editMode.session?.phase !== 'editing');
@@ -722,6 +797,16 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
                 <button type="button" role="option" aria-selected={index === activeCandidate} key={row.id} onMouseDown={(event) => event.preventDefault()} onClick={() => pick(row)}>
                   <span className={`actor-icon kind-${row.kind}`}>{row.kind.slice(0, 1).toUpperCase()}</span>
                   <strong title={row.id}>{actorDisplayName(row)}</strong><small>{row.kind} · {row.decl_id || row.id}</small>
+                </button>
+              ))}
+            </div>
+          )}
+          {commandQuery != null && commands.length > 0 && (
+            <div className="command-menu" role="listbox" aria-label="Agent 命令">
+              {commands.map((row, index) => (
+                <button type="button" role="option" aria-selected={index === activeCommandCandidate} key={row.command} onMouseDown={(event) => event.preventDefault()} onClick={() => commandSessionRef.current?.command(row)}>
+                  <span className="command-menu-name">/{row.command}</span>
+                  <span><strong>{row.label}</strong><small>{row.description}</small></span>
                 </button>
               ))}
             </div>

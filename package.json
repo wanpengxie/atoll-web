@@ -22,10 +22,12 @@
     "ws": "^8.21.3"
   },
   "dependencies": {
+    "@tiptap/core": "^3.30.2",
     "@tiptap/extension-mention": "^3.30.2",
     "@tiptap/extension-placeholder": "^3.30.2",
     "@tiptap/react": "^3.30.2",
     "@tiptap/starter-kit": "^3.30.2",
+    "@tiptap/suggestion": "^3.30.2",
     "@vitejs/plugin-react": "^6.0.2",
     "lucide-react": "^1.33.0",
     "react": "^19.2.6",

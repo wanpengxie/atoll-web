@@ -16,6 +16,7 @@ const CONTROL_LABEL = {
   [TYPES.agentQueue]: '排队新任务',
   [TYPES.agentFork]: '分叉出新 Agent',
   [TYPES.agentCompact]: '压缩上下文',
+  [TYPES.agentNew]: '新建对话',
   [TYPES.agentSelect]: '切换模型与算力',
   [TYPES.agentContext]: '查看上下文用量',
 };

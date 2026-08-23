@@ -40,6 +40,7 @@ function action(type, payload) {
     [TYPES.agentQueue]: ['加入待办任务', value(payload, 'text')],
     [TYPES.agentFork]: ['分叉出新 Agent', ''],
     [TYPES.agentCompact]: ['压缩上下文', ''],
+    [TYPES.agentNew]: ['新建对话', ''],
     [TYPES.agentSelect]: ['切换模型与算力', value(payload, 'model', 'effort')],
     [TYPES.agentContext]: ['查看上下文用量', ''],
   }[type];

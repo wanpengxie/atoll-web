@@ -31,6 +31,7 @@ const KNOWN_CONTROL_FIELDS = Object.freeze({
     { name: 'attachments', required: false, description: '更新后的附件', type: 'array' },
   ],
   [TYPES.agentCompact]: [],
+  [TYPES.agentNew]: [],
   [TYPES.agentContext]: [],
   [TYPES.agentFork]: [],
 });

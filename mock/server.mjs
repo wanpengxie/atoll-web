@@ -27,7 +27,7 @@ const REVIEWER_ACTOR_ID = 'reviewer';
 const SYSTEM_ACTOR_ID = 'system';
 // agent 基座的控制词闭集（drivers/agents/base/base.go）。agent.ask 不在其中——
 // 它是“交办一件活”，不是控制。
-const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'agent.unhold', 'agent.replace', 'agent.queue', 'agent.compact', 'agent.select', 'agent.context', 'agent.fork'];
+const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'agent.unhold', 'agent.replace', 'agent.queue', 'agent.compact', 'agent.new', 'agent.select', 'agent.context', 'agent.fork'];
 
 // progress 契约：凡带 status（queued/processing）的进度帧必带 controls——受理方在
 // 这条消息自己的账上宣告"此刻可以对它用哪些控制词"。全量快照，后帧覆盖前帧；
@@ -224,6 +224,7 @@ function mockDescribe(actorId, { taskCapability = false } = {}) {
       'agent.replace': { description: '修改排队任务' },
       'agent.queue': { description: '排队一个新任务' },
       'agent.compact': { description: '压缩上下文' },
+      'agent.new': { description: '新建对话' },
       'agent.select': { description: '切换模型与算力', input_schema: selectInputSchema(actorId) },
       'agent.context': { description: '查看上下文用量' },
       'agent.fork': { description: '分叉出新 Agent' },
@@ -1221,7 +1222,7 @@ export function createMockServer({
         runSelectSlotEntry(channelId, respondingAgent.id, entry, 25);
         return;
       }
-      const key = { 'agent.compact': 'compacted', 'agent.fork': 'forked' }[payload.msg_type];
+      const key = { 'agent.compact': 'compacted', 'agent.new': 'new', 'agent.fork': 'forked' }[payload.msg_type];
       later(30, () => {
         closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'cancelled', error_code: 'cancelled', detail: payload.msg_type });
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { [key]: true } } }));

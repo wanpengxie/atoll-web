@@ -562,9 +562,9 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   const allEntries = useMemo(() => orderedTimeline(state).filter((entry) => {
     if (entry.kind !== 'turn') return true;
     if ([TYPES.agentHold, TYPES.agentUnhold, TYPES.agentInterrupt, TYPES.agentContext, TYPES.agentFork, TYPES.describe].includes(entry.turn.request.type)) return false;
-    // select 恒不显示为用户消息（§8 旁路槽：它是配置变更不是发言）；只有成功
-    // 终态收成一条系统行，pending/failed/superseded 的状态呈现全在参数区。
-    if (entry.turn.request.type === TYPES.agentSelect) return entry.turn.terminal?.payload?.status === 'completed';
+    // select/new 都不是用户发言；成功终态只收成一条系统确认。select 的
+    // pending/failed/superseded 状态留在参数区；new 排队时则仍由等待区承接。
+    if ([TYPES.agentSelect, TYPES.agentNew].includes(entry.turn.request.type)) return entry.turn.terminal?.payload?.status === 'completed';
     if (entry.turn.requestId === editingTargetId) return true;
     if (isAgentMessageTurn(entry.turn)) return agentMessageStage(entry.turn) === 'timeline';
     return true;
@@ -782,6 +782,10 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
             const actorId = entry.turn.request.audience?.[0] || '';
             const note = selectSystemNote({ usage: entry.turn.terminal?.payload?.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) });
             content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{note}</div></div>;
+          }
+          if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentNew) {
+            const actorId = entry.turn.request.audience?.[0] || '';
+            content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{nameOf(actorId, names)} 已开始新对话</div></div>;
           }
           if (!content && entry.kind === 'turn') {
             const actorId = entry.turn.request.audience?.length === 1 ? entry.turn.request.audience[0] : '';

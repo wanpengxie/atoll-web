@@ -11,6 +11,7 @@ const CONTROL_TYPES = new Set([
   TYPES.agentReplace,
   TYPES.agentFork,
   TYPES.agentCompact,
+  TYPES.agentNew,
   TYPES.agentSelect,
   TYPES.agentContext,
 ]);

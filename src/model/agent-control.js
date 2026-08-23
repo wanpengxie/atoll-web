@@ -11,6 +11,7 @@ const CONTENT_TYPES = new Set([
   TYPES.agentAsk,
   TYPES.agentQueue,
   TYPES.agentCompact,
+  TYPES.agentNew,
   TYPES.agentReplace,
   TYPES.agentSteer,
 ]);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentSelectionView, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from '../src/model/agent-selection.js';
+import { agentSelectionView, contextUsageView, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from '../src/model/agent-selection.js';
 
 const STEWARD = { id: 'steward', kind: 'agent', name: 'Steward' };
 const CLAUDE = { id: 'claude', kind: 'agent', name: 'Claude' };
@@ -130,5 +130,15 @@ describe('当前值恒只认本连接证据（§4.1）', () => {
       terminal('b', 'claude', { model: 'mx', effort: 'high' }),
     ]);
     expect(latestAgentUsage(state, 'steward', 'probe-1')).toMatchObject({ model: 'm3', effort: 'medium' });
+  });
+
+  it('当前 session context 允许单独更新，比例由前端纯投影', () => {
+    const state = stateOf([
+      contextDone('a', 'probe-1', { model: 'm3', effort: 'medium', context_tokens: 40_000, context_window: 200_000 }),
+      terminal('b', 'steward', { context_tokens: 52_000, context_window: 200_000 }),
+    ]);
+    const usage = latestAgentUsage(state, 'steward', 'probe-1');
+    expect(usage).toEqual({ model: 'm3', effort: 'medium', contextTokens: 52_000, contextWindow: 200_000 });
+    expect(contextUsageView(usage)).toEqual({ tokens: 52_000, window: 200_000, percent: 26 });
   });
 });

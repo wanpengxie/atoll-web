@@ -36,11 +36,23 @@
 .model-selector-current { display: flex; min-width: 0; align-items: baseline; gap: 5px; font-size: 11px; white-space: nowrap; }
 .model-selector-current strong { overflow: hidden; max-width: 110px; color: var(--text); font-weight: 650; text-overflow: ellipsis; }
 .model-selector-current span { color: var(--text-muted); }
+.model-selector-context-compact { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; color: var(--text-muted); font-size: 10px; font-weight: 550; }
+.model-selector-context-compact > span { width: 22px; height: 3px; overflow: hidden; border-radius: var(--pill); background: var(--line-control); }
+.model-selector-context-compact i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.model-selector-context-compact strong { color: inherit; font-size: inherit; font-weight: inherit; }
 .model-selector-popover { position: absolute; z-index: 8; right: 0; bottom: calc(100% + 9px); display: flex; align-items: flex-end; gap: 7px; filter: drop-shadow(0 12px 24px var(--shadow-2)); }
 .model-selector-menu, .model-selector-options { overflow: hidden; border: 1px solid var(--line-control); border-radius: 13px; background: var(--raised); }
 .model-selector-menu { order: 2; width: 228px; padding: 7px; }
 .model-selector-agent-context { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 8px 8px; border-bottom: 1px solid var(--line-subtle); color: var(--text-muted); font-size: 10px; }
 .model-selector-agent-context strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.model-selector-readonly { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 8px 8px; color: var(--text-muted); font-size: 11px; }
+.model-selector-readonly strong { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.model-selector-context-usage { display: grid; gap: 6px; margin-top: 5px; padding: 10px 8px 7px; border-top: 1px solid var(--line-subtle); }
+.model-selector-context-usage > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: 11px; }
+.model-selector-context-usage > div:first-child strong { color: var(--text); font: 600 11px var(--mono); }
+.model-selector-context-track { height: 4px; overflow: hidden; border-radius: var(--pill); background: var(--line-control); }
+.model-selector-context-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .18s ease-out; }
+.model-selector-context-usage small { color: var(--text-muted); font-size: 9px; text-align: right; }
 .model-selector-menu > button { display: grid; width: 100%; grid-template-columns: minmax(72px, 1fr) minmax(0, auto) 18px; align-items: center; gap: 5px; padding: 9px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font: inherit; text-align: left; }
 .model-selector-menu > button:hover, .model-selector-menu > button.active { background: var(--surface-muted); }
 .model-selector-menu-value { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -79,10 +91,19 @@
 .mention-menu button:hover, .mention-menu button[aria-selected="true"] { background: var(--accent-bg); }
 .mention-menu strong { font-size: 11px; }
 .mention-menu small { color: var(--text-dim); font: 9px var(--mono); }
+.command-menu { position: absolute; z-index: 2; right: 0; bottom: calc(100% + 5px); left: 0; overflow: hidden; border: 1px solid var(--line-control); border-radius: 11px; background: var(--raised); box-shadow: 0 14px 32px var(--shadow-2); }
+.command-menu button { display: grid; width: 100%; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px 11px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.command-menu button + button { border-top: 1px solid var(--line-subtle); }
+.command-menu button:hover, .command-menu button[aria-selected="true"] { background: var(--surface-muted); }
+.command-menu-name { color: var(--accent); font: 650 12px var(--mono); }
+.command-menu button > span:last-child { display: grid; gap: 2px; }
+.command-menu strong { font-size: 12px; font-weight: 650; }
+.command-menu small { overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 640px) {
   .model-selector-trigger { min-width: 44px; height: 44px; padding: 0 9px; }
   .model-selector-current span { display: none; }
+  .model-selector-context-compact > span { display: none; }
   .model-selector-actor { max-width: 64px; }
   .model-selector-current strong { max-width: 66px; }
   .model-selector-popover { right: -40px; display: block; width: min(280px, calc(100vw - 32px)); }

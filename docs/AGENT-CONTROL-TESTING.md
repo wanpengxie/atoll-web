@@ -239,3 +239,21 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
 `select_sequence_test.go`（context→select→context 前端序列）、
 `registry/registry_test.go`（Build 尊重实例 manifest——registry.Build 曾无条件用类级
 覆盖实例投影，修于本期）、provider config_test（label 透传 + 重复/空组合拒装）。
+
+---
+
+## 5. 新建 Provider 会话（agent.new，08-24）
+
+公开协议只有一个词：`agent.new {}`。它保留 Actor 身份、声明、工作目录和已选
+model/effort，只替换 Provider 的可恢复会话；不得把 Provider 私有指令暴露给 Web。
+
+Provider 映射已经用本机 JSON 进程实际验证：
+
+- Claude Code stream-json：发送 `/clear`，观察到 `command_lifecycle`、
+  `conversation_reset` 和新的 `system/init.session_id`；以新的 init session 作为持久 seed；
+- Codex app-server：调用 `thread/start`，参数带 `sessionStartSource:"clear"`，以返回的
+  `thread.id` 替换持久 seed；它没有独立的 `thread/new` JSON-RPC 方法。
+
+前端只根据当前目标 Agent 的 `actor.describe.words` 展示 `/` 候选；`/new` 第一次
+Enter 只选择命令，第二次 Enter 才提交 `agent.new`。命令排队时可出现在等待区，完成后
+收成轻量系统行「{agent} 已开始新对话」，不清除或伪造频道历史，也不显示 `/clear`。

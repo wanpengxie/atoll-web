@@ -47,6 +47,15 @@ it('completed answer stays in the agent bubble immediately after its user messag
   expect(card.querySelector('.turn-inline-detail')).toBeNull();
 });
 
+it('agent.new 成功后只显示一条轻量确认，不伪装成用户聊天消息', () => {
+  const request = { id: 'new-1', type: 'agent.new', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: {} };
+  const turn = { requestId: request.id, request, requestSeq: 1, status: 'completed', provisional: [], anomalies: [], terminal: { id: 'new-1-terminal', type: 'agent.new', ts: 110, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed' } } };
+  const state = { channelId: 'c0', rows: new Map([[1, request], [2, turn.terminal]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 2 };
+  render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} />);
+  expect(screen.getByRole('status').textContent).toBe('研究员 已开始新对话');
+  expect(document.querySelector('.request-message')).toBeNull();
+});
+
 it('Turn detail exposes audit identifiers without serializing payload JSON', () => {
   render(<TurnContext turn={runningTurn()} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" access="member_active" capability={null} controlState={{}} onCancel={() => {}} onControl={() => {}} onDownload={() => {}} onSource={() => {}} onClose={() => {}} />);
   expect(screen.getByRole('complementary', { name: '回合详情' })).toBeTruthy();
@@ -188,6 +197,39 @@ it('Agent 调用按 parent_id 渲染消息树，子过程只留在自己的节�
 });
 
 describe('F3 Composer', () => {
+  it('用 / 选择后端声明的 new 命令，第一次 Enter 只选中、第二次才发送', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue('message-new');
+    render(<Composer
+      channelId="c0"
+      roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }]}
+      selfId="me"
+      onSend={onSend}
+      agentSelection={{ fallbackAgentId: 'steward', supportedTypes: ['agent.compact', 'agent.new'] }}
+    />);
+
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '/n{Enter}');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.textContent).toBe('/new ');
+
+    await user.type(input, '{Enter}');
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ msgType: 'agent.new', payload: {}, audience: ['steward'] }));
+  });
+
+  it('命令候选只展示目标 Agent 通过 describe 声明的控制词', async () => {
+    const user = userEvent.setup();
+    render(<Composer
+      channelId="c0"
+      roster={[{ id: 'steward', kind: 'agent', name: 'Steward' }]}
+      onSend={() => {}}
+      agentSelection={{ fallbackAgentId: 'steward', supportedTypes: ['agent.compact'] }}
+    />);
+    await user.type(screen.getByRole('textbox', { name: '消息' }), '/');
+    expect(screen.getByRole('option', { name: /compact/ })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /new/ })).toBeNull();
+  });
+
   it('把候选成员写成 Mention Node，并只按节点路由', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn().mockResolvedValue('message-mention');

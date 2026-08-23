@@ -487,6 +487,7 @@ describe('local mock end-to-end', () => {
       return terminalOf(id).payload;
     };
     const stewardDescribe = await describeOf('steward');
+    expect(stewardDescribe.words['agent.new']).toMatchObject({ description: '新建对话' });
     const stewardSchema = stewardDescribe.words['agent.select'].input_schema;
     expect(stewardSchema.oneOf.every((branch) => branch.required?.includes('model') && branch.required?.includes('effort'))).toBe(true);
     expect(stewardSchema.oneOf[0].properties.model).toMatchObject({ const: 'gpt-5.6-sol', title: '5.6 Sol' });
@@ -501,7 +502,12 @@ describe('local mock end-to-end', () => {
     };
     expect(await contextOf()).toMatchObject({ status: 'completed', model: 'gpt-5.6-sol', effort: 'medium', context_window: 200_000 });
 
-    // ④ select 完整周期：queued→processing→turn process→terminal(新 usage)，成功后 sticky。
+    // ④ new 是唯一的跨 Provider 语义；前端不提交 Claude 私有的 /clear。
+    const { message_id: newId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.new', kind: 'request', payload: {}, audience: ['steward'], visibility: 'public' });
+    await waitFor(() => terminalOf(newId), 'new terminal');
+    expect(terminalOf(newId).payload).toMatchObject({ status: 'completed', value: { new: true } });
+
+    // ⑤ select 完整周期：queued→processing→turn process→terminal(新 usage)，成功后 sticky。
     const { message_id: selectId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'light' }, audience: ['steward'], visibility: 'public' });
     await waitFor(() => terminalOf(selectId)?.payload?.status === 'completed', 'select terminal');
     const selectRows = [...states.get('c0').rows.values()].filter((row) => row.parent_id === selectId || row.correlation_id === selectId);
@@ -510,13 +516,13 @@ describe('local mock end-to-end', () => {
     expect(terminalOf(selectId).payload.usage).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
     expect(await contextOf()).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
 
-    // ⑤ 非法组合：failed invalid_args（组合对不是笛卡尔积——gpt-5.4 名下没有 high）。
+    // ⑥ 非法组合：failed invalid_args（组合对不是笛卡尔积——gpt-5.4 名下没有 high）。
     const { message_id: badId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'high' }, audience: ['steward'], visibility: 'public' });
     await waitFor(() => terminalOf(badId), 'invalid select terminal');
     expect(terminalOf(badId).payload).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
     expect(await contextOf()).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
 
-    // ⑥ 空对象同样非法（宽松形对齐 loop.go：{} 两字段全空 → 全不匹配 → invalid_args，
+    // ⑦ 空对象同样非法（宽松形对齐 loop.go：{} 两字段全空 → 全不匹配 → invalid_args，
     // 恒不"沿用当前值成功"）。
     const { message_id: emptyId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: {}, audience: ['steward'], visibility: 'public' });
     await waitFor(() => terminalOf(emptyId), 'empty select terminal');

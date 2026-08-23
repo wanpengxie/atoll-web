@@ -26,7 +26,7 @@ npm run test:all
 2. Playwright 启动真实 Chromium，连接 Vite 与 Mock 完成产品 E2E；
 3. Vite 生产构建。
 
-Playwright 套件同时包含 UI 视觉/边界用例（含“新建频道”独立 Modal、“全局活动”“全局搜索”“平面账本条目”和频道挂载目录基线），以及 `layout-responsive.spec.js` 的结构布局门禁：Actor 详情、320px 核心导航、@成员浮层、过程收纳、800/600px 上下文接管。`f6-accessibility-responsive.spec.js` 另验证 1280/800/640/600/320px 无页面横向溢出、键盘路径、Modal 焦点恢复和 reduced motion。截图位于 `tests/browser/ui-visual.spec.js-snapshots/`；只有人工审查并登记过的视觉变化才允许更新。
+Playwright 套件同时包含 UI 视觉/边界用例（含“新建频道”独立 Modal、“全局活动”“全局搜索”“平面账本条目”和频道挂载目录基线），以及 `layout-responsive.spec.js` 的结构布局门禁：Actor 详情、320px 核心导航、@成员浮层、过程收纳、800/600px 上下文接管。Composer 的组件测试另钉住 Describe 驱动的 `/` 命令候选、第一次 Enter 选中/第二次 Enter 提交，以及 `/new → agent.new` 的唯一映射。`f6-accessibility-responsive.spec.js` 另验证 1280/800/640/600/320px 无页面横向溢出、键盘路径、Modal 焦点恢复和 reduced motion。截图位于 `tests/browser/ui-visual.spec.js-snapshots/`；只有人工审查并登记过的视觉变化才允许更新。
 
 任何一步失败都视为当前产品基线回归。阶段 B 完成审计还必须执行第 9 节的静态检查。
 

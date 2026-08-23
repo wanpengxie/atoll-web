@@ -49,7 +49,7 @@ src/ui/ChannelList.jsx        我的频道/空间及 mode 标签
 src/ui/Timeline.jsx           回合、provisional process、terminal、Agent 消息树、pending
 src/ui/StructuredResult.jsx   结构化终态与敏感字段遮蔽
 src/ui/ActorDetails.jsx       Actor 能力、动态调用与风险确认
-src/ui/Composer.jsx           Tiptap/ProseMirror、本地编辑状态、@、稳定 submit、兼容管理命令
+src/ui/Composer.jsx           Tiptap/ProseMirror、本地编辑状态、@、基于 Describe 的 / 命令、稳定 submit
 src/ui/Roster.jsx             业务名册与 self 确认状态
 src/ui/ArtifactsView.jsx      当前频道挂载目录主视图与消息引用区
 src/ui/TasksView.jsx          WorkItem 主视图与固定窗口

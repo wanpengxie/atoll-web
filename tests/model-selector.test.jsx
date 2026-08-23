@@ -26,7 +26,7 @@ const DESCRIBE = {
   },
 };
 
-const view = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: { model: 'gpt-5.6-sol', effort: 'medium' } });
+const view = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: { model: 'gpt-5.6-sol', effort: 'medium', contextTokens: 42_000, contextWindow: 200_000 } });
 const single = { kind: 'single', agent: { id: 'steward', kind: 'agent', name: 'Steward' } };
 
 describe('agent-selection 协议适配', () => {
@@ -85,6 +85,16 @@ describe('Model/Effort 选择器', () => {
     expect(screen.getByText('切换中')).toBeTruthy();
   });
 
+  it('在常驻入口与展开面板显示当前 session context 真值', async () => {
+    const user = userEvent.setup();
+    render(<ModelSelector target={single} actorName="Steward" view={view} />);
+    expect(screen.getByText('21%')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /Steward，模型 5.6 Sol/ }));
+    expect(screen.getByLabelText('上下文用量 21%')).toBeTruthy();
+    expect(screen.getByText('42K / 200K')).toBeTruthy();
+    expect(screen.getByRole('progressbar', { name: '上下文已使用' }).getAttribute('aria-valuenow')).toBe('21');
+  });
+
   it('多 @ 显示 N 个目标且无设置入口', () => {
     render(<ModelSelector target={{ kind: 'multi', count: 2 }} />);
     expect(screen.getByText('2 个目标')).toBeTruthy();
@@ -121,16 +131,18 @@ describe('Model/Effort 选择器', () => {
     expect(onChange).toHaveBeenCalledWith({ actorId: 'steward', model: 'gpt-5.4', effort: 'light' });
   });
 
-  it('无 selections 但 context 有 model 时显示只读配置，不伪造菜单', () => {
+  it('无 selections 但 context 有 model 时显示只读状态，不伪造配置项', async () => {
+    const user = userEvent.setup();
     const readonly = agentSelectionView({
       actorId: 'claude',
       describe: { words: { 'agent.select': { description: 'standard agent request' } } },
-      usage: { model: 'claude-opus-5', effort: '' },
+      usage: { model: 'claude-opus-5', effort: '', contextTokens: 25_000, contextWindow: 200_000 },
     });
     render(<ModelSelector target={{ kind: 'single', agent: { id: 'claude', kind: 'agent', name: 'Claude' } }} actorName="Claude" view={readonly} />);
-    expect(screen.getByLabelText('Claude，模型 claude-opus-5')).toBeTruthy();
+    const trigger = screen.getByRole('button', { name: /Claude，模型 claude-opus-5/ });
     expect(screen.getByText('claude-opus-5')).toBeTruthy();
-    expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.queryByRole('menu')).toBeNull();
+    await user.click(trigger);
+    expect(screen.getByRole('dialog', { name: 'Claude Agent 状态' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem')).toBeNull();
   });
 });

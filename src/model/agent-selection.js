@@ -41,10 +41,28 @@ export function selectionFor(selections, model, preferredEffort = '') {
 
 // —— 当前值：账本推导 ——————————————————————————————————————
 
+function normalizedUsage(value) {
+  if (!value || typeof value !== 'object') return null;
+  const contextTokens = value.context_tokens != null && value.context_tokens !== '' && Number.isFinite(Number(value.context_tokens)) && Number(value.context_tokens) >= 0 ? Number(value.context_tokens) : null;
+  const contextWindow = value.context_window != null && value.context_window !== '' && Number.isFinite(Number(value.context_window)) && Number(value.context_window) > 0 ? Number(value.context_window) : null;
+  const model = typeof value.model === 'string' ? value.model : '';
+  const effort = typeof value.effort === 'string' ? value.effort : '';
+  if (!model && contextTokens == null && contextWindow == null) return null;
+  return { model, effort, contextTokens, contextWindow };
+}
+
 function usableUsage(payload) {
-  const usage = payload?.usage || null;
-  if (!usage || typeof usage.model !== 'string' || !usage.model) return null;
-  return { model: usage.model, effort: typeof usage.effort === 'string' ? usage.effort : '', contextTokens: usage.context_tokens ?? null, contextWindow: usage.context_window ?? null };
+  return normalizedUsage(payload?.usage);
+}
+
+function mergeUsage(current, next) {
+  if (!next) return current;
+  return {
+    model: next.model || current?.model || '',
+    effort: next.model ? next.effort : (current?.effort || next.effort || ''),
+    contextTokens: next.contextTokens ?? current?.contextTokens ?? null,
+    contextWindow: next.contextWindow ?? current?.contextWindow ?? null,
+  };
 }
 
 // 该 agent 的当前参数。当前值是活状态读数，恒只认本连接的证据——账本历史
@@ -59,16 +77,13 @@ export function latestAgentUsage(state, actorId, liveRequestId = '') {
   for (const row of state.rows.values()) {
     if (row.kind === 'response' && row.type === TYPES.agentContext && row.parent_id === liveRequestId && row.payload?.status === 'completed') {
       live = true;
-      const flat = row.payload;
-      if (typeof flat.model === 'string' && flat.model) {
-        found = { model: flat.model, effort: typeof flat.effort === 'string' ? flat.effort : '', contextTokens: flat.context_tokens ?? null, contextWindow: flat.context_window ?? null };
-      }
+      found = mergeUsage(found, normalizedUsage(row.payload));
       continue;
     }
     if (!live || row.sender?.id !== actorId) continue;
     if (row.kind === 'response' && FINAL.has(row.payload?.status)) {
       const usage = usableUsage(row.payload);
-      if (usage) found = usage;
+      if (usage) found = mergeUsage(found, usage);
     }
   }
   return found;
@@ -85,11 +100,21 @@ export function agentSelectionView({ actorId, describe, usage }) {
   const current = usage?.model ? { model: usage.model, effort: usage.effort } : null;
   // 没有 selections 只表示不可切换，不表示没有当前配置。agent.context 仍可能
   // 返回真实 model（有些 provider 没有 effort），此时生成只读视图。
-  if (!selections.length && !current) return null;
+  if (!selections.length && !current && usage?.contextTokens == null && usage?.contextWindow == null) return null;
   const seen = new Set();
   const models = selections.filter((row) => !seen.has(row.model) && seen.add(row.model))
     .map((row) => ({ id: row.model, label: row.modelLabel }));
-  return { actorId, current, models, selections, confirmed: Boolean(current), configurable: selections.length > 0 };
+  return { actorId, current, usage, models, selections, confirmed: Boolean(current), configurable: selections.length > 0 };
+}
+
+// Context 是 provider 上报的当前 session 真值。前端只做单位和比例投影；
+// context_window 缺失时展示数值，绝不猜模型窗口。
+export function contextUsageView(usage) {
+  const tokens = Number.isFinite(Number(usage?.contextTokens)) && Number(usage.contextTokens) >= 0 ? Number(usage.contextTokens) : null;
+  const window = Number.isFinite(Number(usage?.contextWindow)) && Number(usage.contextWindow) > 0 ? Number(usage.contextWindow) : null;
+  if (tokens == null && window == null) return null;
+  const percent = tokens != null && window != null ? Math.round((tokens / window) * 100) : null;
+  return { tokens, window, percent };
 }
 
 export function selectedOption(rows, id) {

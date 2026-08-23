@@ -16,6 +16,7 @@ export const TYPES = Object.freeze({
   agentHoldExpired: 'agent.hold_expired',
   agentFork: 'agent.fork',
   agentCompact: 'agent.compact',
+  agentNew: 'agent.new',
   agentSelect: 'agent.select',
   agentContext: 'agent.context',
 
