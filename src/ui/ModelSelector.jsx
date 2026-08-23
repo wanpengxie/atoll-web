@@ -1,43 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Zap } from 'lucide-react';
-import { selectedOption } from '../model/agent-selection.js';
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Users, Zap } from 'lucide-react';
+import { actorDisplayName } from '../model/actor-display.js';
+import { selectionFor } from '../model/agent-selection.js';
 
 const SECTION_LABEL = { model: '模型', effort: '推理强度' };
 
-export function ModelSelector({ value, actorId = '', actorName = '', disabled = false, busy = false, onLoad, onChange }) {
+// 参数面板（协议 §4.3/§4.4）。三种目标态：single（显示该 agent 参数，可切换）、
+// multi（多 @：只报数，收起设置入口——select 是逐 agent 的设置）、none（多 agent
+// 无判据：手选入口）。当前值恒来自账本（view.current）；pending 期间显示目标值 +
+// "切换中"，busy 持续到账本终态（App 观察后清 pending）。
+export function ModelSelector({ target = { kind: 'none' }, actorName = '', view = null, pending = null, candidates = [], disabled = false, onChange, onPickAgent, onOpen }) {
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [section, setSection] = useState('');
-  const [resolved, setResolved] = useState(value);
-  const [loading, setLoading] = useState(false);
-  const targetActorId = actorId || value?.actorId || '';
-  const model = selectedOption(resolved?.models, resolved?.current?.model);
-  const effort = selectedOption(resolved?.efforts, resolved?.current?.effort);
-  const available = Boolean(resolved?.actorId === targetActorId && model && effort && resolved.models?.length && resolved.efforts?.length);
-  const displayActor = actorName || resolved?.actorId || targetActorId;
-
-  useEffect(() => {
-    let alive = true;
-    if (!targetActorId) {
-      setResolved(null);
-      return undefined;
-    }
-    if (value?.actorId === targetActorId) {
-      setResolved(value);
-      setLoading(false);
-      return undefined;
-    }
-    setLoading(true);
-    Promise.resolve(onLoad?.(targetActorId)).then((next) => {
-      if (alive) setResolved(next?.actorId === targetActorId ? next : null);
-    }).catch(() => {
-      if (alive) setResolved(null);
-    }).finally(() => {
-      if (alive) setLoading(false);
-    });
-    return () => { alive = false; };
-  }, [targetActorId, value, onLoad]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -64,63 +40,109 @@ export function ModelSelector({ value, actorId = '', actorName = '', disabled = 
     };
   }, [open, section]);
 
-  if (!available) return null;
+  useEffect(() => { setOpen(false); setSection(''); }, [target.kind, view?.actorId]);
 
-  const choose = async (kind, id) => {
-    if (busy || loading || id === resolved.current[kind]) return;
-    const previous = resolved;
-    const next = { ...resolved, current: { ...resolved.current, [kind]: id } };
-    setResolved(next);
-    try {
-      await onChange?.({ ...next.current, actorId: resolved.actorId });
-      setOpen(false);
-      setSection('');
-      requestAnimationFrame(() => triggerRef.current?.focus());
-    } catch {
-      setResolved(previous);
-      // 全局错误条由提交层负责；菜单保持打开，允许用户重试或换一个选项。
-    }
+  if (target.kind === 'multi') {
+    return <div className="model-selector">
+      <div className="model-selector-trigger is-static" aria-label={`${target.count} 个目标`}>
+        <Users size={14} strokeWidth={2.2} aria-hidden="true" />
+        <strong className="model-selector-actor">{target.count} 个目标</strong>
+      </div>
+    </div>;
+  }
+
+  if (target.kind === 'none') {
+    if (candidates.length < 2) return null;
+    return <div className="model-selector" ref={rootRef}>
+      <button ref={triggerRef} type="button" className="model-selector-trigger" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
+        <Users size={14} strokeWidth={2.2} aria-hidden="true" />
+        <strong className="model-selector-actor">选择 Agent</strong>
+        <ChevronDown size={15} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+      {open && <div className="model-selector-popover">
+        <div className="model-selector-menu" role="menu" aria-label="选择目标 Agent">
+          <div className="model-selector-agent-context"><span>本频道有多个 Agent</span></div>
+          {candidates.map((row) => <button type="button" role="menuitem" key={row.id} onClick={() => { setOpen(false); onPickAgent?.(row.id); }}>
+            <span>{actorDisplayName(row)}</span><ChevronRight size={16} aria-hidden="true" />
+          </button>)}
+        </div>
+      </div>}
+    </div>;
+  }
+
+  // single：值域未就绪（describe 在途 / 探测失败）或该 agent 无 selections →
+  // 只显示角色名；点击走 onOpen（失败探测的显式重试通道）。
+  if (!view) {
+    if (!actorName) return null;
+    return <div className="model-selector">
+      <button type="button" className="model-selector-trigger is-static" aria-label={actorName} onClick={() => onOpen?.()}>
+        <Zap size={14} strokeWidth={2.2} aria-hidden="true" />
+        <strong className="model-selector-actor">{actorName}</strong>
+      </button>
+    </div>;
+  }
+
+  // current 为 null = 账本无真值（§4.1：只显示角色名，恒不冒充默认值）；
+  // 此时仍可设置——选 model 落该 model 首组合。
+  const displayed = pending ? pending.value : view.current;
+  const busy = Boolean(pending);
+  const labelOf = (kind, id) => {
+    const row = view.selections.find((item) => (kind === 'model' ? item.model === id : item.model === displayed?.model && item.effort === id));
+    return kind === 'model' ? (row?.modelLabel || id) : (row?.effortLabel || id);
   };
-  const rows = section === 'model' ? resolved.models : resolved.efforts;
+  const modelLabel = displayed ? labelOf('model', displayed.model) : '';
+  const effortLabel = displayed ? labelOf('effort', displayed.effort) : '';
+  // 两级菜单恒是组合对的投影（§4.4）：强度段 = 当前显示 model 名下的合法 effort。
+  const effortRows = displayed ? view.selections.filter((row) => row.model === displayed.model)
+    .map((row) => ({ id: row.effort, label: row.effortLabel })) : [];
+  const rows = section === 'model' ? view.models : effortRows;
+
+  const choose = (kind, id) => {
+    if (busy || id === displayed?.[kind]) return;
+    // 换 model 时 effort 可能在新 model 名下非法——落到该 model 的合法组合。
+    const next = kind === 'model' ? selectionFor(view.selections, id, displayed?.effort || '') : { model: displayed.model, effort: id };
+    if (!next) return;
+    setOpen(false);
+    setSection('');
+    Promise.resolve(onChange?.({ actorId: view.actorId, ...next })).catch(() => {});
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
 
   return <div className="model-selector" ref={rootRef}>
     <button
       ref={triggerRef}
       type="button"
       className="model-selector-trigger"
-      disabled={disabled || busy || loading}
-      aria-label={`${displayActor}，模型 ${model.label}，推理强度 ${effort.label}`}
+      disabled={disabled || busy}
+      aria-label={displayed ? `${actorName}，模型 ${modelLabel}，推理强度 ${effortLabel}${busy ? '，切换中' : ''}` : `${actorName}，模型未知`}
       aria-haspopup="menu"
       aria-expanded={open}
-      onClick={() => { setOpen((current) => !current); setSection(''); }}
+      onClick={() => { setOpen((current) => { if (!current) onOpen?.(); return !current; }); setSection(''); }}
     >
       <Zap size={14} strokeWidth={2.2} aria-hidden="true" />
-      <strong className="model-selector-actor">{displayActor}</strong>
-      <span className="model-selector-divider" aria-hidden="true" />
-      <span className="model-selector-current"><strong>{model.label}</strong><span>{effort.label}</span></span>
-      <ChevronDown size={15} strokeWidth={1.8} aria-hidden="true" />
+      <strong className="model-selector-actor">{actorName}</strong>
+      {displayed && <span className="model-selector-divider" aria-hidden="true" />}
+      {displayed && <span className="model-selector-current"><strong>{modelLabel}</strong><span>{effortLabel}</span></span>}
+      {busy ? <span className="model-selector-pending">切换中</span> : <ChevronDown size={15} strokeWidth={1.8} aria-hidden="true" />}
     </button>
     {open && <div className={`model-selector-popover${section ? ' has-section' : ''}`}>
       <div className="model-selector-menu" role="menu" aria-label="模型设置">
-        <div className="model-selector-agent-context"><span>当前 Agent</span><strong>{displayActor}</strong></div>
-        {(['model', 'effort']).map((kind) => {
-          const selected = kind === 'model' ? model : effort;
-          return <button type="button" role="menuitem" key={kind} className={section === kind ? 'active' : ''} onClick={() => setSection(kind)}>
-            <span>{SECTION_LABEL[kind]}</span><span className="model-selector-menu-value">{selected.label}</span><ChevronRight size={16} aria-hidden="true" />
-          </button>;
-        })}
+        <div className="model-selector-agent-context"><span>当前 Agent</span><strong>{actorName}</strong></div>
+        {(['model', 'effort']).map((kind) => <button type="button" role="menuitem" key={kind} className={section === kind ? 'active' : ''} onClick={() => setSection(kind)}>
+          <span>{SECTION_LABEL[kind]}</span><span className="model-selector-menu-value">{(kind === 'model' ? modelLabel : effortLabel) || '—'}</span><ChevronRight size={16} aria-hidden="true" />
+        </button>)}
       </div>
       {section && <div className="model-selector-options" role="menu" aria-label={SECTION_LABEL[section]}>
         <div className="model-selector-options-title"><button type="button" onClick={() => setSection('')} aria-label="返回模型设置"><ArrowLeft size={16} aria-hidden="true" /></button><span>{SECTION_LABEL[section]}</span></div>
         {rows.map((row) => <button
           type="button"
           role="menuitemradio"
-          aria-checked={resolved.current[section] === row.id}
+          aria-checked={displayed?.[section] === row.id}
           key={row.id}
           onClick={() => choose(section, row.id)}
         >
-          <span><strong>{row.label}</strong>{row.description && <small>{row.description}</small>}</span>
-          {resolved.current[section] === row.id && <Check size={17} strokeWidth={2} aria-hidden="true" />}
+          <span><strong>{row.label}</strong></span>
+          {displayed?.[section] === row.id && <Check size={17} strokeWidth={2} aria-hidden="true" />}
         </button>)}
       </div>}
     </div>}

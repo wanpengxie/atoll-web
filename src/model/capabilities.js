@@ -82,11 +82,16 @@ function mergeDescribe(current, incoming) {
   };
 }
 
-export function capabilityIndexFromState(state) {
+// capability 是活状态读数，不是账本事实：账本里的历史 describe 响应只是
+// "当时的自述"，服务重启换过配置后即陈旧。liveRequestIds 非空时只折本连接
+// 发出的 describe（现场拉的读数），历史帧恒不当缓存——页面刷新/重连后
+// 集合易失清空，活状态自然重新现问。
+export function capabilityIndexFromState(state, liveRequestIds = null) {
   const index = new Map();
   const turns = [...(state?.turns?.values?.() || [])].sort((left, right) => left.requestSeq - right.requestSeq);
   for (const turn of turns) {
     if (turn.request?.type !== TYPES.describe) continue;
+    if (liveRequestIds && !liveRequestIds.has(turn.requestId)) continue;
     const actorId = turn.request.audience?.[0] || '';
     if (!actorId) continue;
     const current = index.get(actorId) || { actorId, describe: null, loading: false, error: null, requestId: '', seq: 0 };

@@ -8,14 +8,16 @@ import { messagePresentation } from '../model/message-presentation.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { controlLabel, extraControls, taskControlContext } from '../model/task-controls.js';
 import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
+import { selectSystemNote } from '../model/agent-selection.js';
 import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
-import { turnStatusLabel } from '../model/turn-presentation.js';
+import { turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
 import { MarkdownContent } from './MarkdownContent.jsx';
 import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
+import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
 import { useStableTimelineScroll } from './timeline/useStableTimelineScroll.js';
 
 // 平台叙事（成员进出、跨频道入站）暂时不进时间线。它和真正的往来平铺在同一条流里，
@@ -295,6 +297,10 @@ function ThreadCalls({ thread, names }) {
   );
 }
 
+// 后端只负责把回合内已完成的中间产物（note：{kind, text}）原样发成
+// provisional 进度；当前状态文案与轨迹展示全是前端自己的事。
+const NOTE_CURRENT = Object.freeze({ thinking: '思考中…', plan: '在列计划…', text: '正在写回复…' });
+
 function activityLine(turn) {
   const latestActivity = turn.activity?.at(-1);
   const latestProgress = turn.provisional?.at(-1);
@@ -304,6 +310,7 @@ function activityLine(turn) {
   if (activity?.type === TYPES.activity.turnStarted) return 'turn started · 正在生成…';
   if (activity?.type === TYPES.activity.turnEnded) return 'turn ended';
   const progress = latestProgress?.envelope?.payload || {};
+  if (progress.kind && NOTE_CURRENT[progress.kind]) return NOTE_CURRENT[progress.kind];
   return progress.detail || progress.message || progress.text || '正在生成…';
 }
 
@@ -322,9 +329,12 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names }) {
   const bubbleTs = terminal?.ts || liveEnvelope?.ts;
   return <MessageFrame className={`agent-turn-bubble${terminal ? ' settled' : ' processing'}`} contentClassName="response-body" identity={<span className="actor-icon kind-agent">A</span>}>
     <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>
-    {!terminal && <div className="agent-processing-content"><strong>● 处理中: {title}{mergedCount ? `（含合并 ${mergedCount} 条）` : ''}</strong><div className="agent-processing-status" role="status" aria-live="polite"><span aria-hidden="true">⋯</span><p>{activityLine(turn)}</p></div></div>}
+    {!terminal && <div className="agent-processing-content"><strong>● 处理中: {title}{mergedCount ? `（含合并 ${mergedCount} 条）` : ''}</strong>
+      <ProgressTrail turn={turn} running />
+      <div className="agent-processing-status" role="status" aria-live="polite"><span aria-hidden="true">⋯</span><p>{activityLine(turn)}</p></div></div>}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
     {terminal && !stopped && <div className="response-content"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
+    {terminal && <ProgressTrail turn={turn} running={false} />}
   </MessageFrame>;
 }
 
@@ -484,6 +494,9 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   const allEntries = useMemo(() => orderedTimeline(state).filter((entry) => {
     if (entry.kind !== 'turn') return true;
     if ([TYPES.agentHold, TYPES.agentUnhold, TYPES.agentInterrupt, TYPES.agentContext, TYPES.agentFork, TYPES.describe].includes(entry.turn.request.type)) return false;
+    // select 恒不显示为用户消息（§8 旁路槽：它是配置变更不是发言）；只有成功
+    // 终态收成一条系统行，pending/failed/superseded 的状态呈现全在参数区。
+    if (entry.turn.request.type === TYPES.agentSelect) return entry.turn.terminal?.payload?.status === 'completed';
     if (entry.turn.requestId === editingTargetId) return true;
     if (isAgentMessageTurn(entry.turn)) return agentMessageStage(entry.turn) === 'timeline';
     return true;
@@ -660,7 +673,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     if (page !== windowed.page) setPage(windowed.page);
   }, [page, windowed.page]);
 
-  return <>
+  return <ProgressTrailHost>
     <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={observeScroll}>
       <div className="timeline-inner" ref={contentRef}>
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
@@ -697,6 +710,11 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
           ) {
             content = <ContentFrame><ApprovalCard turn={entry.turn} state={approvalStates[entry.turn.request.id]} onResolve={(reqId, decision, payload) => onResolve(state.channelId, reqId, decision, payload)} names={names} /></ContentFrame>;
           }
+          if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentSelect) {
+            const actorId = entry.turn.request.audience?.[0] || '';
+            const note = selectSystemNote({ usage: entry.turn.terminal?.payload?.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) });
+            content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{note}</div></div>;
+          }
           if (!content && entry.kind === 'turn') {
             const actorId = entry.turn.request.audience?.length === 1 ? entry.turn.request.audience[0] : '';
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
@@ -729,5 +747,5 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     </section>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
     <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
-  </>;
+  </ProgressTrailHost>;
 }

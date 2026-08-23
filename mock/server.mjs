@@ -33,30 +33,46 @@ const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'ag
 // 控制词消息自身的进度帧恒为空集；终态帧恒不带。前端据此画按钮，不查任何表。
 const QUEUED_CONTROLS = Object.freeze([{ word: 'agent.replace' }, { word: 'agent.steer' }]);
 const PROCESSING_CONTROLS = Object.freeze([{ word: 'agent.interrupt' }, { word: 'agent.replace' }]);
-const MOCK_MODELS = Object.freeze([
-  { id: 'gpt-5.6-sol', label: '5.6 Sol' },
-  { id: 'gpt-5.6-terra', label: '5.6 Terra' },
-  { id: 'gpt-5.4', label: '5.4' },
-]);
-const MOCK_CLAUDE_MODELS = Object.freeze([
-  { id: 'claude-sonnet', label: 'Claude Sonnet' },
-  { id: 'claude-opus', label: 'Claude Opus' },
-]);
-const MOCK_EFFORTS = Object.freeze([
-  { id: 'light', label: '轻量' },
-  { id: 'medium', label: '中等' },
-  { id: 'high', label: '高' },
-  { id: 'xhigh', label: '超高' },
-  { id: 'ultra', label: '极高', description: '会更快消耗用量额度' },
-]);
+// selections 是组合对目录（协议 §4.2：不是 model×effort 笛卡尔积——某 model
+// 只有某些 effort 合法）。与真后端同源：decl config 的 selections 数组，
+// default 恒是第一条。label 是展示元数据，恒不进当前值/判等。
+const AGENT_SELECTIONS = Object.freeze({
+  codex: [
+    { model: 'gpt-5.6-sol', effort: 'medium', model_label: '5.6 Sol', effort_label: '中等' },
+    { model: 'gpt-5.6-sol', effort: 'high', model_label: '5.6 Sol', effort_label: '高' },
+    { model: 'gpt-5.6-sol', effort: 'xhigh', model_label: '5.6 Sol', effort_label: '超高' },
+    { model: 'gpt-5.6-terra', effort: 'medium', model_label: '5.6 Terra', effort_label: '中等' },
+    { model: 'gpt-5.4', effort: 'light', model_label: '5.4', effort_label: '轻量' },
+  ],
+  claude: [
+    { model: 'claude-opus', effort: 'medium', model_label: 'Claude Opus', effort_label: '中等' },
+    { model: 'claude-opus', effort: 'high', model_label: 'Claude Opus', effort_label: '高' },
+    { model: 'claude-sonnet', effort: 'medium', model_label: 'Claude Sonnet', effort_label: '中等' },
+  ],
+});
 
-function modelCatalog(actorId) {
-  return actorId === 'claude' ? MOCK_CLAUDE_MODELS : MOCK_MODELS;
+function selectionCatalog(actorId) {
+  return actorId === 'claude' ? AGENT_SELECTIONS.claude : AGENT_SELECTIONS.codex;
 }
 
-function defaultAgentSelection(actorId) {
-  return { model: modelCatalog(actorId)[0].id, effort: MOCK_EFFORTS[1].id };
+// describe 的 agent.select 词条 input_schema（协议 §4.2）：oneOf 每支 = 一个合法
+// 组合对，每支必须 required 完整对（缺 required 时 {} 会命中多支被 oneOf 判非法）；
+// 恒不写 additionalProperties:false（后端宽松解码，schema 不得伪装严格）。
+function selectInputSchema(actorId) {
+  return {
+    type: 'object',
+    properties: { model: { type: 'string' }, effort: { type: 'string' } },
+    oneOf: selectionCatalog(actorId).map((row) => ({
+      required: ['model', 'effort'],
+      properties: {
+        model: { const: row.model, ...(row.model_label ? { title: row.model_label } : {}) },
+        effort: { const: row.effort, ...(row.effort_label ? { title: row.effort_label } : {}) },
+      },
+    })),
+  };
 }
+
+const MOCK_CONTEXT_WINDOW = 200_000;
 
 const now = () => Date.now();
 
@@ -161,9 +177,9 @@ function envelope({
 
 // actor.describe 的回答形状 = lib/introspect.Describe：
 // {class, interfaces, capabilities, words}，words 的每一项是 WordSpec。
-function mockDescribe(_actorId, { taskCapability = false } = {}) {
+function mockDescribe(actorId, { taskCapability = false } = {}) {
   return {
-    class: 'codex',
+    class: actorId === 'claude' ? 'claude' : 'codex',
     interfaces: ['actor', 'agent'],
     capabilities: { steer: true, interrupt: true, resume: true },
     words: {
@@ -207,7 +223,7 @@ function mockDescribe(_actorId, { taskCapability = false } = {}) {
       'agent.replace': { description: '修改排队任务' },
       'agent.queue': { description: '排队一个新任务' },
       'agent.compact': { description: '压缩上下文' },
-      'agent.select': { description: '切换模型与算力' },
+      'agent.select': { description: '切换模型与算力', input_schema: selectInputSchema(actorId) },
       'agent.context': { description: '查看上下文用量' },
       'agent.fork': { description: '分叉出新 Agent' },
     },
@@ -242,7 +258,7 @@ function seededHistory(channelId, behavior = {}) {
     add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'event', type: 'agent.turn.started', payload: { turn_index: index, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
     add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'event', type: 'agent.tool.started', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'started' }, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
     add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: index, tool_call_id: `${requestId}-tool`, tool: toolName, status: 'completed' }, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
-    add(envelope({ id: `${requestId}-turn-ended`, channelId, sender: responder, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: index, status: 'ok' }, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
+    add(envelope({ id: `${requestId}-turn-ended`, channelId, sender: responder, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: index, status: 'ok', usage: { context_tokens: 30_000 + index * 1_000, context_window: 200_000, model: 'gpt-5.6-sol', effort: 'medium' } }, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
     add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'completed', turn_index: index, text: responseText }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 7 }));
   }
 
@@ -347,7 +363,36 @@ export function createMockServer({
   const recurring = new Set();
   // agent 的冻结真相：hold 受理即记 holder，unhold 清除；agent.context 如实回报。
   const agentHolds = new Map();
+  // per-agent 当前参数真相：select 成功终态才 sticky（默认 = 目录第一条，同后端
+  // DefaultSelection）；reset 归位。label 恒不进当前值。
   const agentSelections = new Map();
+  const agentOptions = (channelId, actorId) => {
+    const sticky = agentSelections.get(`${channelId}:${actorId}`);
+    if (sticky) return sticky;
+    const { model, effort } = selectionCatalog(actorId)[0];
+    return { model, effort };
+  };
+  const usageOf = (channelId, actorId) => ({ context_tokens: 42_000, context_window: MOCK_CONTEXT_WINDOW, ...agentOptions(channelId, actorId) });
+  // select 旁路独占槽（协议 §8）：0 或 1 个占位，忙时挂起，当前 turn 终态后、
+  // 任何续跑之前插队执行；恒不进等待区、不占容量、不受 hold/interrupt 冻结。
+  const agentSelectSlots = new Map(); // `${channelId}:${actorId}` -> {messageId, chosen, base}
+  const runSelectSlotEntry = (channelId, actorId, entry, delayBase = 5) => {
+    const { messageId, chosen, base } = entry;
+    later(delayBase, () => append(channelId, envelope({ ...base, id: `${messageId}-processing`, kind: 'response', type: 'agent.select', payload: { status: 'processing', turn_index: 1, turn_id: `turn-${messageId}`, controls: [] } })));
+    later(delayBase + 10, () => append(channelId, envelope({ ...base, parentId: '', id: `${messageId}-turn-started`, kind: 'event', type: 'agent.turn.started', payload: { turn_index: 1, status: 'started' } })));
+    later(delayBase + 20, () => {
+      agentSelections.set(`${channelId}:${actorId}`, { model: chosen.model, effort: chosen.effort });
+      append(channelId, envelope({ ...base, parentId: '', id: `${messageId}-turn-ended`, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: 1, status: 'ok', usage: usageOf(channelId, actorId) } }));
+    });
+    later(delayBase + 30, () => append(channelId, envelope({ ...base, id: `${messageId}-terminal`, kind: 'response', type: 'agent.select', payload: { status: 'completed', turn_index: 1, usage: usageOf(channelId, actorId) } })));
+  };
+  const runSelectSlot = (channelId, actorId) => {
+    const key = `${channelId}:${actorId}`;
+    const entry = agentSelectSlots.get(key);
+    if (!entry) return;
+    agentSelectSlots.delete(key);
+    runSelectSlotEntry(channelId, actorId, entry, 5);
+  };
   let rosters = domain.rosters;
   let histories = domain.histories;
   if (loadScenario(scenario, seed).history) {
@@ -554,9 +599,19 @@ export function createMockServer({
     const requestText = String(active.payload?.text || '').trim();
     append(channelId, envelope({
       ...base,
+      id: domain.nextId(`${active.id}-manual-turn-ended`),
+      kind: 'event',
+      type: 'agent.turn.ended',
+      parentId: '',
+      payload: { turn_index: 1, status: 'ok', usage: usageOf(channelId, agent.id) },
+    }));
+    append(channelId, envelope({
+      ...base,
       id: domain.nextId(`${active.id}-manual-terminal`),
       payload: { status: 'completed', text: `已完成：${requestText || '当前任务'}` },
     }));
+    // turn 终态后、续跑批之前：select 槽插队（协议 §8"任何指令之前"）。
+    runSelectSlot(channelId, agent.id);
 
     // 完成后按协议（§4.4.5）恢复：队首为 Resumed 件则单独成批；否则整批带走，
     // 批的 owner 恒是 tail（批内最后一条，同 loop.go:1009），其余 merged_into tail。
@@ -596,6 +651,8 @@ export function createMockServer({
       payload, parentId: request.id, correlationId: request.correlation_id || request.id,
       audience: [request.sender.id],
     }));
+    // turn 被收口（打断等）后：select 槽插队（协议 §8）。
+    runSelectSlot(channelId, actorId);
   }
 
   function handleSubmit(socket, ref, payload) {
@@ -631,8 +688,10 @@ export function createMockServer({
       return;
     }
     const members = new Set((rosters.get(channelId) || []).map((entry) => entry.declared.id));
-    if (kind === 'request' && audience.length === 0) {
-      sendError(socket, { ref, frame: 'submit', code: 'routing_unavailable', detail: 'request must name at least one recipient' });
+    // request 帧恒强制单收件人（runtime/harness/step_kind_audience.go：基数 ≠1 整条拒）。
+    // 多 @ 由前端拆发成 N 条合法帧（协议 §3.2），mock 恒不许非法广播"看似成功"。
+    if (kind === 'request' && audience.length !== 1) {
+      sendError(socket, { ref, frame: 'submit', code: 'harness_request_audience_invalid', detail: 'kind=request requires audience=[<concrete-actor>]' });
       return;
     }
     if (audience.some((actorId) => typeof actorId !== 'string' || !members.has(actorId))) {
@@ -1126,24 +1185,46 @@ export function createMockServer({
         return;
       }
       if (payload.msg_type === 'agent.context') {
-        // 只读自省：如实回报冻结状态，绝不动活动 turn。
+        // 只读自省：如实回报当前参数、上下文用量与冻结状态（loop.go usageValue 同形），
+        // 绝不动活动 turn。
         const holdEntry = agentHolds.get(`${channelId}:${respondingAgent.id}`);
-        later(15, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', ...(holdEntry ? { frozen: { held_by: holdEntry.holdId, until: holdEntry.until || domain.now() + 1_800_000 } } : {}) } })));
+        later(15, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', ...usageOf(channelId, respondingAgent.id), ...(holdEntry ? { frozen: { held_by: holdEntry.holdId, until: holdEntry.until || domain.now() + 1_800_000 } } : {}) } })));
         return;
       }
       if (payload.msg_type === 'agent.select') {
+        // select 走旁路独占槽（协议 §8）：不进等待区、不占容量、不受冻结控制。
+        // 空闲立即执行；忙时挂槽，当前 turn 终态后、任何续跑之前插队执行。
+        const catalog = selectionCatalog(respondingAgent.id);
+        // 宽松形对齐 loop.go validateSelection：未知字段被忽略（恒不闭集拒）；
+        // {} 两字段全空 → 匹配循环全不中 → invalid_args；只给 effort 沿用当前
+        // model；只给 model 时 effort 任意匹配该 model 第一条。
         const selection = payload.payload || {};
-        try { assertClosedPayload(selection, ['model', 'effort']); } catch (error) { fail(error.code || 'invalid_args', error.message); return; }
-        const models = modelCatalog(respondingAgent.id);
-        const current = agentSelections.get(`${channelId}:${respondingAgent.id}`) || defaultAgentSelection(respondingAgent.id);
-        const model = String(selection.model || current.model);
-        const effort = String(selection.effort || current.effort);
-        if (!models.some((row) => row.id === model) || !MOCK_EFFORTS.some((row) => row.id === effort)) { fail('invalid_args', 'unknown model or effort'); return; }
-        agentSelections.set(`${channelId}:${respondingAgent.id}`, { model, effort });
+        const currentOptions = agentOptions(channelId, respondingAgent.id);
+        const rawModel = String(selection.model || '').trim();
+        const rawEffort = String(selection.effort || '').trim();
+        const model = rawModel || (rawEffort ? currentOptions.model : '');
+        const chosen = catalog.find((row) => row.model === model && (!rawEffort || row.effort === rawEffort));
+        if (!chosen) { fail('invalid_args', 'selection is not in provider selections'); return; }
+        const slotKey = `${channelId}:${respondingAgent.id}`;
+        // 独占覆盖：被顶掉的占位者终态 failed/superseded（它从没生效过）。
+        const held = agentSelectSlots.get(slotKey);
+        if (held) {
+          agentSelectSlots.delete(slotKey);
+          append(channelId, envelope({ ...held.base, id: `${held.messageId}-terminal`, kind: 'response', type: 'agent.select', payload: { status: 'failed', reason: 'superseded', error_code: 'superseded', detail: 'superseded by a newer agent.select' } }));
+        }
+        // 槽登记回执（controls 空集：槽在等待区之外，插入/编辑恒够不着）。
+        later(15, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', turn_index: 1, controls: [] } })));
+        const entry = { messageId, chosen, base: { ...responseBase } };
+        if (activeAgentTask(channelId, respondingAgent.id, messageId)) {
+          agentSelectSlots.set(slotKey, entry);
+          return;
+        }
+        runSelectSlotEntry(channelId, respondingAgent.id, entry, 25);
+        return;
       }
-      const key = { 'agent.compact': 'compacted', 'agent.select': 'selected', 'agent.fork': 'forked' }[payload.msg_type];
+      const key = { 'agent.compact': 'compacted', 'agent.fork': 'forked' }[payload.msg_type];
       later(30, () => {
-        if (payload.msg_type !== 'agent.select') closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'cancelled', error_code: 'cancelled', detail: payload.msg_type });
+        closeTask(channelId, active, respondingAgent.id, { status: 'failed', reason: 'cancelled', error_code: 'cancelled', detail: payload.msg_type });
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { [key]: true } } }));
       });
       return;
@@ -1165,10 +1246,13 @@ export function createMockServer({
     const mode = domain.behavior.message || '';
     later(40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, ...(mode === 'long-running' ? { turn_id: `turn-${messageId}` } : {}) } })));
     if (mode === 'business-provisional') later(50, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-business`, kind: 'response', type: payload.msg_type, payload: { status: 'provider.waiting', queue: 'external' } })));
+    later(50, () => append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-started`, kind: 'event', type: 'agent.turn.started', payload: { turn_index: 1, status: 'started' } })));
     later(60, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-started`, kind: 'event', type: 'agent.tool.started', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'started' } })));
     later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-tool-ended`, kind: 'event', type: 'agent.tool.ended', payload: { turn_index: 1, tool_call_id: `${messageId}-tool`, tool: 'mock.ping', status: 'completed' } })));
     if (mode === 'long-running') return;
     const terminalDelay = mode === 'business-provisional' ? 500 : 100;
+    // 每个 turn 结束恒出账 usage（activity.go usagePayload 同形）——前端参数区靠它保鲜。
+    later(terminalDelay - 10, () => append(channelId, envelope({ ...responseBase, parentId: '', id: `${messageId}-turn-ended`, kind: 'event', type: 'agent.turn.ended', payload: { turn_index: 1, status: mode === 'failed' || /fail/i.test(text) ? 'failed' : 'ok', usage: usageOf(channelId, respondingAgent.id) } })));
     later(terminalDelay, () => append(channelId, envelope({
       ...responseBase,
       id: `${messageId}-terminal`,
@@ -1190,6 +1274,8 @@ export function createMockServer({
             ? { status: 'failed', reason: 'receiver_internal_error', error_code: 'type_unsupported', detail: 'mock failure requested by message text', diagnostic: { attempt: 1 } }
             : { status: 'completed', turn_index: 1, text: 'PONG' },
     })));
+    // turn 终态后、任何续跑之前：先跑挂着的 select 槽。
+    later(terminalDelay + 3, () => runSelectSlot(channelId, respondingAgent.id));
     if (mode === 'provisional-after-terminal') {
       later(220, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-late-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', late: true, controls: [] } })));
     }
@@ -1395,7 +1481,14 @@ export function createMockServer({
         return;
       }
       attached.add(socket);
-      sendReceipt(socket, ref, { contract_version: CONTRACT_VERSION, boot: bootId });
+      // 对齐真后端 AttachReceipt：成员清单随回执直接交付（资格账快照），
+      // 前端连上即知道自己在哪些频道，恒不靠 feed 副作用反推。
+      sendReceipt(socket, ref, {
+        contract_version: CONTRACT_VERSION,
+        boot: bootId,
+        memberships: domain.attachMemberships(socketPrincipals.get(socket) || ''),
+        memberships_complete: true,
+      });
       const since = payload.since || {};
       const replay = () => {
         for (const [channelId, history] of histories) {
@@ -1522,14 +1615,6 @@ export function createMockServer({
         json(response, 200, observation('space', 'channels', rows, domain.obsComplete));
         return;
       }
-      if (path === '/obs/space/memberships') {
-        if (domain.behavior.membership_extension === false) {
-          httpError(response, 404, 'not_found', 'membership projection is not available on the real backend');
-          return;
-        }
-        json(response, 200, observation('space', 'memberships', domain.membershipRows(ROOT_ID), domain.obsComplete, { mock_extension: true }));
-        return;
-      }
       if (path === '/obs/space/principals') {
         json(response, 200, observation('space', 'principals', [
           item({ id: ROOT_ID, kind: 'human', email: ROOT_EMAIL, display_name: 'Root', status: 'present', created_at: 1_723_974_400_000 }, null),
@@ -1544,25 +1629,6 @@ export function createMockServer({
       }
       if (path === '/obs/space/decls') {
         json(response, 200, observation('space', 'decls', domain.declarationRows()));
-        return;
-      }
-      const agentSelectionMatch = path.match(/^\/obs\/channel\/([^/]+)\/agent-selection$/);
-      if (agentSelectionMatch) {
-        const channelId = decodeURIComponent(agentSelectionMatch[1]);
-        const requestedActorId = url.searchParams.get('actor_id') || '';
-        if (url.searchParams.size > (requestedActorId ? 1 : 0)) {
-          httpError(response, 400, 'invalid_args', 'only actor_id is supported');
-          return;
-        }
-        const agents = (rosters.get(channelId) || []).map((row) => row.declared).filter((row) => row.kind === 'agent');
-        const actor = requestedActorId ? agents.find((row) => row.id === requestedActorId) : agents[0];
-        if (!actor) {
-          json(response, 200, observation(channelId, 'agent-selection', []));
-          return;
-        }
-        const models = modelCatalog(actor.id);
-        const current = agentSelections.get(`${channelId}:${actor.id}`) || defaultAgentSelection(actor.id);
-        json(response, 200, observation(channelId, 'agent-selection', [item({ actor_id: actor.id, current, models, efforts: MOCK_EFFORTS }, null, actor.id)]));
         return;
       }
       const match = path.match(/^\/obs\/channel\/([^/]+)\/(profile|actors)$/);
@@ -1767,6 +1833,7 @@ export function createMockServer({
         closedRequests.clear();
         agentHolds.clear();
         agentSelections.clear();
+        agentSelectSlots.clear();
         bootId = randomUUID();
         submittedFrames.clear();
         introduced = 0;

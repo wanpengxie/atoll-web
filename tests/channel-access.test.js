@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { canWriteChannel, channelAccessRows, CHANNEL_ACCESS, createChannelAccessTracker, deriveChannelAccess } from '../src/model/channel-access.js';
 
-class MemoryStorage {
-  data = new Map();
-  getItem(key) { return this.data.get(key) ?? null; }
-  setItem(key, value) { this.data.set(key, String(value)); }
-}
 
 describe('channel access model', () => {
   it('combines declaration, serving and membership without conflating discovery', () => {
@@ -31,7 +26,7 @@ describe('channel access model', () => {
   });
 
   it('never hides c0 and activates the root owner without a membership projection', () => {
-    const tracker = createChannelAccessTracker({ principalId: 'root', storage: new MemoryStorage() });
+    const tracker = createChannelAccessTracker({ principalId: "root" });
     tracker.channelsObserved([
       { id: 'c0', name: 'home', status: 'present', open: true, systemReserved: true, owner_principal: 'root' },
       { id: 'c0.lobby', name: 'lobby', status: 'present', open: true, systemReserved: true, owner_principal: 'root' },
@@ -46,8 +41,8 @@ describe('channel access model', () => {
   });
 
   it('keeps access dimensions distinct through disconnect, unavailable, revoke, partial OBS and retire', () => {
-    const storage = new MemoryStorage();
-    const tracker = createChannelAccessTracker({ principalId: 'root', storage, now: () => 10 });
+    
+    const tracker = createChannelAccessTracker({ principalId: "root", now: () => 10 });
     tracker.channelsObserved([{ id: 'c0', status: 'present', open: true }, { id: 'c1', status: 'present', open: true }]);
     tracker.membershipsObserved([{ channel_id: 'c0', actor_id: 'human-root', status: 'active' }]);
     tracker.wire('attached', 'epoch-1');
@@ -71,13 +66,15 @@ describe('channel access model', () => {
     expect(tracker.rows().some((row) => row.id === 'c0')).toBe(false);
   });
 
-  it('restores member evidence as stale instead of current authority', () => {
-    const storage = new MemoryStorage();
-    const first = createChannelAccessTracker({ principalId: 'root', storage });
+  it('访问关系恒不跨实例还魂：新 tracker 对上一个生命期一无所知', () => {
+    const first = createChannelAccessTracker({ principalId: 'root' });
     first.channelsObserved([{ id: 'c0', status: 'present', open: true }]);
     first.wire('attached', 'epoch');
     first.feed('c0');
-    const restored = createChannelAccessTracker({ principalId: 'root', storage });
-    expect(restored.rows().find((row) => row.id === 'c0').access).toBe('member_stale');
+    // 活状态恒只活在内存：重建（= 页面刷新）后一切重新从 attach/obs 现取，
+    // 恒不从任何持久层恢复旧关系。
+    const rebuilt = createChannelAccessTracker({ principalId: 'root' });
+    expect(rebuilt.rows()).toEqual([]);
+    expect(rebuilt.state('c0')).toBe(null);
   });
 });

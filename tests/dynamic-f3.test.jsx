@@ -25,7 +25,8 @@ it('main Dynamic keeps one rolling activity line inside the processing agent bub
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
   expect(document.querySelector('.agent-processing-status').textContent).toContain('tool: search …');
   expect(document.querySelectorAll('.agent-turn-bubble')).toHaveLength(1);
-  expect(document.querySelector('.agent-turn-bubble button')).toBeNull();
+  // 气泡里只有过程轨迹这类纯查看交互，编辑/停止这些控制恒在卡片上。
+  expect(screen.queryAllByRole('button', { name: /编辑|停止|重试/ }).every((button) => !button.closest('.agent-turn-bubble'))).toBe(true);
 });
 
 it('completed answer stays in the agent bubble immediately after its user message', () => {
@@ -144,6 +145,26 @@ describe('F3 Composer', () => {
 
     await user.type(input, '请处理{Enter}');
     expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['agent-1'] }));
+  });
+
+  it('多 @ 拆发：N 个收件人拆成 N 条单 audience 消息，各按 kind 定词', async () => {
+    // request 帧在写入 gate 恒强制收件人恰一个（协议 §3.1），多 audience 是非法
+    // 帧——拆发是把一次输入翻译成 N 条合法帧的唯一方式；混合 @ 各按其 kind。
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValueOnce('m-1').mockResolvedValueOnce('m-2');
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }, { id: 'peer', kind: 'human', name: '同事' }]} selfId="me" onSend={onSend} />);
+
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '@St');
+    await user.click(screen.getByRole('option', { name: /Steward/ }));
+    await user.type(input, '@同');
+    await user.click(screen.getByRole('option', { name: /同事/ }));
+    await user.type(input, '一起看下{Enter}');
+
+    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls[0][0]).toMatchObject({ msgType: 'agent.ask', audience: ['steward'] });
+    expect(onSend.mock.calls[1][0]).toMatchObject({ msgType: 'human.message', audience: ['peer'] });
+    expect(onSend.mock.calls[0][0].text).toBe(onSend.mock.calls[1][0].text);
   });
 
   it('用 Enter 选中 @候选时不会把选择动作继续当成发送', async () => {

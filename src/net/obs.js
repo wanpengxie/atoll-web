@@ -8,15 +8,6 @@ export class ObsError extends Error {
   }
 }
 
-// Membership 是 Mock 提供的可选投影。真实 Atoll 版本可能用 404，或用
-// invalid_args/unknown kind 明确表示该观察面不存在；两者都不是产品错误。
-export function isUnsupportedMembershipObservation(error) {
-  return error?.status === 404
-    || (error?.status === 400
-      && error?.code === 'invalid_args'
-      && /unknown space observation kind/i.test(error?.detail || ''));
-}
-
 async function read(path, fetchImpl, onUnauthorized) {
   const response = await fetchImpl(path, { credentials: 'include' });
   const body = await response.json().catch(() => ({}));
@@ -37,11 +28,6 @@ export function createObsClient({ fetchImpl = fetch, onUnauthorized } = {}) {
     spacePrincipals() {
       return read('/obs/space/principals', fetchImpl, onUnauthorized);
     },
-    // Mock-only product-gap projection. Real atoll currently returns 404;
-    // callers must degrade rather than treating the space tree as membership.
-    spaceMemberships() {
-      return read('/obs/space/memberships', fetchImpl, onUnauthorized);
-    },
     spaceDaemons() {
       return read('/obs/space/daemons', fetchImpl, onUnauthorized);
     },
@@ -54,12 +40,6 @@ export function createObsClient({ fetchImpl = fetch, onUnauthorized } = {}) {
     channelActors(id) {
       return read(`/obs/channel/${encodeURIComponent(id)}/actors`, fetchImpl, onUnauthorized);
     },
-    // 临时观察面：后端返回当前频道主 Agent 的 Model/Effort 及可选项。
-    // 正式 Actor OBS 确定后，保持这个方法签名即可替换底层路径。
-    channelAgentSelection(id, actorId = '') {
-      const query = actorId ? `?actor_id=${encodeURIComponent(actorId)}` : '';
-      return read(`/obs/channel/${encodeURIComponent(id)}/agent-selection${query}`, fetchImpl, onUnauthorized);
-    },
   };
 }
 
@@ -70,4 +50,3 @@ export const spaceDaemons = obs.spaceDaemons;
 export const spaceDecls = obs.spaceDecls;
 export const channelProfile = obs.channelProfile;
 export const channelActors = obs.channelActors;
-export const channelAgentSelection = obs.channelAgentSelection;

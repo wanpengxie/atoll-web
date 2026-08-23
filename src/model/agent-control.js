@@ -5,11 +5,12 @@ import { taskLocation } from './task-controls.js';
 // 会以"一条消息"身份出现在时间线/等待区的词。replace 在列：协议 §4.6 里 replace
 // 请求受理成功后**自身就是新行**（admitBufferedAt 以原下标入队、继承 Resumed），
 // 原行终态 replaced_by 后从呈现中消失，新行以 new_text 接替。
+// agentSelect 恒不在列：select 走旁路独占槽（协议 §8），不进等待区、不占容量、
+// 不受冻结控制——它不是"一条消息"，是一次参数登记；呈现走控制卡，状态走参数区。
 const CONTENT_TYPES = new Set([
   TYPES.agentAsk,
   TYPES.agentQueue,
   TYPES.agentCompact,
-  TYPES.agentSelect,
   TYPES.agentReplace,
   TYPES.agentSteer,
 ]);

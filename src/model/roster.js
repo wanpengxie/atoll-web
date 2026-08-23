@@ -1,8 +1,6 @@
 import { TYPES } from '../protocol/vocab.js';
 import { actorDisplayName } from './actor-display.js';
 
-const SELF_PREFIX = 'atoll.self.v3.';
-
 function measure(actual, name) {
   return actual?.measures?.find((item) => item.name === name);
 }
@@ -24,28 +22,21 @@ function project(item) {
   };
 }
 
-export function createRoster({ obs, me = '', storage = globalThis.localStorage, debounceMs = 500, contractVersion = 2 } = {}) {
+export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
   const cache = new Map();
   const pendingSubmissions = new Map();
   const timers = new Map();
+  // self 是活状态读数（我在此频道以哪个 actor 身份行动），恒只活在内存：
+  // 页面刷新即重学（obs principal 对账 / attach 回执 actor_id / feed 对账），
+  // 恒不落 localStorage——持久化只会让上一个生命期的旧身份还魂。
+  const selves = new Map();
 
   function savedSelf(channelId) {
-    try {
-      const value = JSON.parse(storage?.getItem(`${SELF_PREFIX}${me}.${channelId}`) || 'null');
-      return value?.principal === me && value?.contractVersion === contractVersion ? value.actorId || '' : '';
-    } catch {
-      return '';
-    }
+    return selves.get(channelId) || '';
   }
 
   function saveSelf(channelId, actorId) {
-    if (channelId && actorId && me) storage?.setItem(`${SELF_PREFIX}${me}.${channelId}`, JSON.stringify({
-      principal: me,
-      channelId,
-      actorId,
-      contractVersion,
-      observedAt: Date.now(),
-    }));
+    if (channelId && actorId) selves.set(channelId, actorId);
   }
 
   async function refresh(channelId) {
@@ -90,7 +81,7 @@ export function createRoster({ obs, me = '', storage = globalThis.localStorage, 
       return '';
     },
     clearSelf(channelId) {
-      if (channelId && me) storage?.removeItem?.(`${SELF_PREFIX}${me}.${channelId}`);
+      selves.delete(channelId);
     },
     handleEnvelope(channelId, envelope, onRefresh) {
       if (![TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)) return;

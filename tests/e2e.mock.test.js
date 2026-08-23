@@ -358,7 +358,7 @@ describe('local mock end-to-end', () => {
       'live completed PONG turn',
     );
     expect(liveTurn.provisional.map((value) => value.status)).toEqual(['queued', 'processing']);
-    expect(liveTurn.activity.map((value) => value.envelope.type)).toEqual(['agent.tool.started', 'agent.tool.ended']);
+    expect(liveTurn.activity.map((value) => value.envelope.type)).toEqual(['agent.turn.started', 'agent.tool.started', 'agent.tool.ended', 'agent.turn.ended']);
     expect(liveTurn.text).toBe('PONG');
 
     const approvalId = [...states.get('c0').approvals.keys()][0];
@@ -385,6 +385,145 @@ describe('local mock end-to-end', () => {
     expect(states.get('c0').rows.size).toBe(beforeDropRows + 1);
     expect(duplicateSeq).toBe(0);
     expect(wireErrors).toEqual([]);
+
+    wire.close();
+    await closeServer(server);
+  }, 10_000);
+
+  it('模型参数协议全链：describe 值域、context 当前值、select 周期与 sticky、单收件人门', async () => {
+    const server = createMockServer({ rootPassword: 'test-root' });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    const identity = createIdentityClient(fetchWithSession);
+    await identity.login('root@atoll.local', 'test-root');
+    class SessionWebSocket extends WebSocket {
+      constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+    }
+    const states = new Map();
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws',
+      WebSocketImpl: SessionWebSocket,
+      since: () => ({}),
+      onFeed: (channelId, seq, value) => {
+        let state = states.get(channelId);
+        if (!state) { state = createChannelState(channelId); states.set(channelId, state); }
+        apply(state, { channel_id: channelId, seq, envelope: value }, 'root');
+      },
+      onError: () => {},
+      onState: () => {},
+    });
+    await waitFor(() => states.get('c0')?.lastSeq >= 28, 'seeded replay');
+    const terminalOf = (id) => [...(states.get('c0')?.rows.values() || [])]
+      .find((row) => row.kind === 'response' && row.parent_id === id && ['completed', 'failed'].includes(row.payload?.status));
+
+    // ① request 恒单收件人：多 audience 广播在 gate 整条被拒。
+    await expect(wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'broadcast' }, audience: ['steward', 'claude'], visibility: 'public' }))
+      .rejects.toMatchObject({ code: 'harness_request_audience_invalid' });
+
+    // ② describe 值域：oneOf 组合对 + title；两个 agent 目录不串值。
+    const describeOf = async (actorId) => {
+      const { message_id: id } = await wire.submit({ channel_id: 'c0', msg_type: 'actor.describe', kind: 'request', payload: {}, audience: [actorId], visibility: 'public' });
+      await waitFor(() => terminalOf(id), `describe ${actorId}`);
+      return terminalOf(id).payload;
+    };
+    const stewardDescribe = await describeOf('steward');
+    const stewardSchema = stewardDescribe.words['agent.select'].input_schema;
+    expect(stewardSchema.oneOf.every((branch) => branch.required?.includes('model') && branch.required?.includes('effort'))).toBe(true);
+    expect(stewardSchema.oneOf[0].properties.model).toMatchObject({ const: 'gpt-5.6-sol', title: '5.6 Sol' });
+    const claudeDescribe = await describeOf('claude');
+    expect(claudeDescribe.words['agent.select'].input_schema.oneOf[0].properties.model.const).toBe('claude-opus');
+
+    // ③ context 当前值：默认 = 目录第一条，带上下文用量。
+    const contextOf = async () => {
+      const { message_id: id } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.context', kind: 'request', payload: {}, audience: ['steward'], visibility: 'public' });
+      await waitFor(() => terminalOf(id), 'context terminal');
+      return terminalOf(id).payload;
+    };
+    expect(await contextOf()).toMatchObject({ status: 'completed', model: 'gpt-5.6-sol', effort: 'medium', context_window: 200_000 });
+
+    // ④ select 完整周期：queued→processing→turn.started→turn.ended(新 usage)→completed，成功后 sticky。
+    const { message_id: selectId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'light' }, audience: ['steward'], visibility: 'public' });
+    await waitFor(() => terminalOf(selectId)?.payload?.status === 'completed', 'select terminal');
+    const selectRows = [...states.get('c0').rows.values()].filter((row) => row.parent_id === selectId || row.correlation_id === selectId);
+    expect(selectRows.filter((row) => row.kind === 'response').map((row) => row.payload.status)).toEqual(['queued', 'processing', 'completed']);
+    const turnEnded = selectRows.find((row) => row.type === 'agent.turn.ended');
+    expect(turnEnded.payload.usage).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
+    expect(terminalOf(selectId).payload.usage).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
+    expect(await contextOf()).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
+
+    // ⑤ 非法组合：failed invalid_args（组合对不是笛卡尔积——gpt-5.4 名下没有 high）。
+    const { message_id: badId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'high' }, audience: ['steward'], visibility: 'public' });
+    await waitFor(() => terminalOf(badId), 'invalid select terminal');
+    expect(terminalOf(badId).payload).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(await contextOf()).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
+
+    // ⑥ 空对象同样非法（宽松形对齐 loop.go：{} 两字段全空 → 全不匹配 → invalid_args，
+    // 恒不"沿用当前值成功"）。
+    const { message_id: emptyId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: {}, audience: ['steward'], visibility: 'public' });
+    await waitFor(() => terminalOf(emptyId), 'empty select terminal');
+    expect(terminalOf(emptyId).payload).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+
+    wire.close();
+    await closeServer(server);
+  }, 10_000);
+
+  it('select 旁路独占槽：忙时挂起、新覆盖旧（superseded）、turn 收口后插队生效', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', scenario: 'long-running', seed: 77 });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    const identity = createIdentityClient(fetchWithSession);
+    await identity.login('root@atoll.local', 'test-root');
+    class SessionWebSocket extends WebSocket {
+      constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+    }
+    const rows = [];
+    let attached = false;
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws',
+      WebSocketImpl: SessionWebSocket,
+      since: () => ({}),
+      onError: () => {},
+      onState: (state) => { if (state === 'attached') attached = true; },
+      onFeed: (channelId, seq, value) => { if (channelId === 'c0') rows.push({ channel_id: channelId, seq, envelope: value }); },
+    });
+    await waitFor(() => attached, 'slot test attach');
+    const terminalOf = (id) => rows.map((row) => row.envelope)
+      .find((value) => value.kind === 'response' && value.parent_id === id && ['completed', 'failed'].includes(value.payload?.status));
+
+    const busy = await wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'long task' }, audience: ['steward'] });
+    await waitFor(() => rows.some((row) => row.envelope.parent_id === busy.message_id && row.envelope.payload?.status === 'processing'), 'busy turn processing');
+
+    const held = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'light' }, audience: ['steward'] });
+    await waitFor(() => rows.some((row) => row.envelope.parent_id === held.message_id && row.envelope.payload?.status === 'queued'), 'slot registration receipt');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(terminalOf(held.message_id)).toBeUndefined(); // 忙时挂槽，恒不提前生效
+
+    const winner = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.6-terra', effort: 'medium' }, audience: ['steward'] });
+    await waitFor(() => terminalOf(held.message_id), 'superseded terminal');
+    expect(terminalOf(held.message_id).payload).toMatchObject({ status: 'failed', error_code: 'superseded' });
+
+    const advance = () => fetchWithSession('/mock/control/advance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms: 0, compute: { channel_id: 'c0' } }) }).then((response) => response.json());
+    await advance();
+    await advance();
+    await advance(); // 第三次步进收口当前 turn → 槽插队执行
+    await waitFor(() => terminalOf(winner.message_id)?.payload?.status === 'completed', 'slot ran after turn close');
+    expect(terminalOf(winner.message_id).payload.usage).toMatchObject({ model: 'gpt-5.6-terra', effort: 'medium' });
 
     wire.close();
     await closeServer(server);

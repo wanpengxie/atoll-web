@@ -316,9 +316,9 @@ Mock 不能证明以下真实事实，发布前仍需最小 smoke：
 
 本地最终真实 Atoll smoke 已证明：全新空间声明 `c0`/`c0.lobby`；浏览器可用 root identity 登录，看到并选中 root 默认频道 `c0`，恢复对应 URL、达到 `OPEN`、启用 Composer 文本框，并在文件主视图看到 `local-device` 与 `daemon://local-device/c0/`。本次没有先 `@` 选择成员并实际提交，因此真实入账、进展和终态闭环仍属于未证明边界；healthz、bearer OBS、WS receipt/contract version 等也没有在这次最终浏览器 smoke 中重新取证。Vite 的 `/ws` 代理必须保留原始 Host，才能通过真实 Atoll 的 Origin/Host 同源检查。
 
-当前真实后端对可选 `/obs/space/memberships` 返回 `400 invalid_args` 且 detail 为 unknown observation kind；前端将该结果与旧版 404 一样识别为“能力不支持”，每个会话只探测一次。root 对 well-known `c0` 的访问来自后端启动不变式，不得泛化为其他频道的 membership。
+成员身份是 attach 回执直接携带的一等事实：`AttachReceipt.memberships`（`[{channel_id, actor_id}]`）由网关资格账在同步首轮 reconcile 后快照而来，`memberships_complete=false` 表示该轮 resolver 没查成、清单不可当全量读。前端连上（含每次重连）即得权威清单，恒不再靠 feed 副作用反推；`/obs/space/memberships` 观察面（曾为 mock-only 扩展）已整删。
 
-membership/self 的一般服务端缺口仍在 [PHASE-B.md](PHASE-B.md) 第 5 节明确保留，不以 Mock 通过冒充后端已补齐。单节点 smoke 也不能证明多进程并发、重启持久化、ticket 跨进程/一次性、timer 跨端、真实磁盘、设备 key 生命周期或生产 TLS/反向代理事实。
+self 的服务端缺口仍在 [PHASE-B.md](PHASE-B.md) 第 5 节明确保留，不以 Mock 通过冒充后端已补齐。单节点 smoke 也不能证明多进程并发、重启持久化、ticket 跨进程/一次性、timer 跨端、真实磁盘、设备 key 生命周期或生产 TLS/反向代理事实。
 
 ## 17. 阶段 E：空间、资源与自动化
 

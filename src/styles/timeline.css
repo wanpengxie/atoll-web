@@ -63,6 +63,43 @@
 .agent-processing-content > strong { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 /* Codex-style live line: readable body-level status, not another card. Its fixed
    block height lets consecutive progress frames replace text without reflow. */
+/* 过程轨迹：处理中滚动显示末几条，回合落定后收成一行入口；每条一行截断，
+   点开从右侧拉出完整内容。 */
+.progress-trail { margin: 6px 0 0; }
+.progress-trail.settled { margin: 8px 0 0; }
+.progress-trail-list { margin: 0; padding: 0 0 0 22px; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.progress-trail-list.is-tail { mask-image: linear-gradient(to bottom, transparent, var(--text) 14px); }
+.progress-row { min-width: 0; margin: 0; }
+.progress-row.is-state { font-size: 12.5px; line-height: 1.5; color: var(--text); opacity: 0.6; }
+.progress-row > button {
+  display: block; width: 100%; padding: 1px 0; border: 0; background: none;
+  overflow: hidden; font: inherit; font-size: 12.5px; line-height: 1.5;
+  color: var(--text); opacity: 0.72; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+.progress-row > button:hover, .progress-row > button:focus-visible { opacity: 1; text-decoration: underline; }
+.progress-trail-toggle {
+  display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 0; padding: 2px 0 2px 22px;
+  border: 0; background: none; font: inherit; font-size: 12px; color: var(--text); opacity: 0.6; cursor: pointer;
+}
+.progress-trail-toggle:hover, .progress-trail-toggle:focus-visible { opacity: 0.95; }
+
+.progress-drawer-backdrop { position: fixed; z-index: 60; inset: 0; background: var(--scrim-soft); }
+.progress-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  display: grid; width: min(560px, 92vw); grid-template-rows: auto minmax(0, 1fr);
+  border-left: 1px solid var(--line-structural); background: var(--channel-rail);
+  box-shadow: var(--shadow-context);
+  animation: progress-drawer-in 160ms ease-out;
+}
+@keyframes progress-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce) { .progress-drawer { animation: none; } }
+.progress-drawer-header { display: flex; min-height: 52px; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line-structural); }
+.progress-drawer-header strong { font: 700 14px var(--sans); color: var(--text); }
+.progress-drawer-header small { margin-left: 8px; opacity: 0.6; }
+.progress-drawer-close { border: 0; background: none; font-size: 20px; line-height: 1; color: var(--text); opacity: 0.6; cursor: pointer; }
+.progress-drawer-close:hover { opacity: 1; }
+.progress-drawer-body { overflow: auto; padding: 14px; font-size: 13.5px; line-height: 1.6; color: var(--text); }
+.progress-drawer-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.55 var(--mono, monospace); }
 .agent-processing-status { display: grid; width: 100%; height: 42px; grid-template-columns: 22px minmax(0, 1fr); align-items: center; overflow: hidden; color: var(--text); }
 .agent-processing-status > span { display: grid; width: 18px; height: 18px; place-content: center; color: var(--agent); font-size: 18px; line-height: 1; }
 .agent-processing-status > p { display: -webkit-box; overflow: hidden; margin: 0; font-size: 14px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -161,6 +198,7 @@
 
 .timeline-day { display: flex; width: min(100%, var(--timeline-track)); align-items: center; gap: 12px; margin: 18px auto 12px; color: var(--text-muted); font-size: 10px; font-weight: 650; }
 .timeline-day::before, .timeline-day::after { height: 1px; flex: 1; background: var(--line-subtle); content: ''; }
+.select-system-note { width: min(100%, var(--timeline-track)); margin: 6px auto; color: var(--text-muted); font-size: 11px; text-align: center; }
 .timeline-day span { padding: 3px 9px; border: 1px solid var(--line-subtle); border-radius: var(--pill); background: var(--workspace); }
 
 .standalone-row { align-self: stretch; border: 0; background: transparent; box-shadow: none; }

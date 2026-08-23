@@ -174,10 +174,12 @@ export class MockDomain {
       .map((channel) => this.channelRow(channel));
   }
 
-  membershipRows(principalId) {
+  // attach 回执携带的成员清单（对齐真后端：网关资格账快照，连上即得）。
+  attachMemberships(principalId) {
     return this.memberships
-      .filter((entry) => entry.principal_id === principalId)
-      .map((entry) => item({ ...entry }, null, `${entry.principal_id}:${entry.channel_id}`));
+      .filter((entry) => entry.principal_id === principalId && entry.status === 'active')
+      .map((entry) => ({ channel_id: entry.channel_id, actor_id: entry.actor_id || '' }))
+      .sort((left, right) => left.channel_id.localeCompare(right.channel_id));
   }
 
   append(channelId, value) {

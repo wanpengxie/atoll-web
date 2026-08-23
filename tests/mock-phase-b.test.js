@@ -53,12 +53,23 @@ async function session(baseURL) {
 afterEach(async () => Promise.all([...servers].map(close)));
 
 describe('Phase B mock contract', () => {
-  it('models the real backend membership/self gap instead of leaking mock-only fields', async () => {
+  it('membership 走 attach 回执而非 obs 端点；actors 不泄漏 mock-only principal 字段', async () => {
     const server = createMockServer({ rootPassword: 'test-root', scenario: 'real-backend-shape' });
     const baseURL = await listen(server);
-    const { fetchWithSession } = await session(baseURL);
+    const { fetchWithSession, WebSocketImpl } = await session(baseURL);
+    // memberships 观察面已整删（真后端从未有过；成员清单随 attach 回执交付）。
     const memberships = await fetchWithSession('/obs/space/memberships');
     expect(memberships.status).toBe(404);
+    let attachDetail = null;
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws', WebSocketImpl,
+      onState: (state, detail) => { if (state === 'attached') attachDetail = detail; },
+    });
+    await waitFor(() => attachDetail != null);
+    expect(attachDetail.memberships_complete).toBe(true);
+    expect(attachDetail.memberships.map((entry) => entry.channel_id)).toContain('c0');
+    expect(attachDetail.memberships.every((entry) => typeof entry.actor_id === 'string')).toBe(true);
+    wire.close();
     const actors = await fetchWithSession('/obs/channel/c0/actors').then((response) => response.json());
     expect(actors.items.find((item) => item.declared.kind === 'human').declared).not.toHaveProperty('principal');
     await close(server);

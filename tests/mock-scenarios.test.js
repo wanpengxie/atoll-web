@@ -38,7 +38,7 @@ describe('mock scenario and domain layers', () => {
   it('separates space discovery from active membership', () => {
     const domain = createMockDomain(loadScenario('multi-channel'));
     expect(domain.channelRows('c0').map((item) => item.declared.id)).toEqual(['c0.project', 'c0.public']);
-    expect(domain.membershipRows('root').map((item) => item.declared.channel_id)).toEqual(['c0', 'c0.project']);
+    expect(domain.attachMemberships('root').map((entry) => entry.channel_id)).toEqual(['c0', 'c0.project']);
     expect(domain.canRead('root', 'c0.public')).toBe(false);
     expect(domain.canWrite('root', 'c0.project')).toBe(true);
   });

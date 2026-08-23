@@ -16,8 +16,8 @@ import { messagePresentation } from './model/message-presentation.js';
 import { isSystemWord, TYPES } from './protocol/vocab.js';
 import { newId } from './util/id.js';
 import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
-import { normalizeAgentSelection } from './model/agent-selection.js';
-import { createObsClient, isUnsupportedMembershipObservation, ObsError } from './net/obs.js';
+import { agentSelectionView, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from './model/agent-selection.js';
+import { createObsClient, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
 import { Auth } from './ui/Auth.jsx';
 import { AppShell } from './app/AppShell.jsx';
@@ -133,7 +133,17 @@ export default function App() {
   const [mountedFilePreview, setMountedFilePreview] = useState(null);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [mockAdvance, setMockAdvance] = useState({ available: false, busy: false });
-  const [agentSelection, setAgentSelection] = useState({ channelId: '', value: null, busy: false });
+  // 参数面板（协议 §2/§4）：目标 = Composer 回报的判据链结果；值域走 describe、
+  // 当前值走账本 usage；select 的 pending/failed 三态由账本终态驱动。
+  const [composerAgent, setComposerAgent] = useState({ channelId: '', actorId: '' });
+  const [pendingSelect, setPendingSelect] = useState(null); // {channelId, actorId, requestId, value:{model,effort}}
+  const manualAgentsRef = useRef(new Map()); // channelId -> 手选 agent id（首条 ask 入账即清）
+  const contextProbedRef = useRef(new Map()); // `${channelId}:${actorId}` -> {requestId, failed}，重连时清
+  // 本连接内发出的 describe requestId 集合。capability 是活状态读数，恒现场
+  // 拉：只有这个集合里的响应才算数，账本历史帧恒不当缓存。集合易失——
+  // 刷新/重连即清，活状态自然重新现问。
+  const liveDescribesRef = useRef(new Set());
+  const [manualAgentVersion, setManualAgentVersion] = useState(0);
 
   const obsRef = useRef(null);
   const wireRef = useRef(null);
@@ -166,12 +176,6 @@ export default function App() {
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(null); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
-
-  const loadAgentSelection = useCallback(async (actorId = '') => {
-    if (!activeChannelId || !obsRef.current) return null;
-    const observation = await obsRef.current.channelAgentSelection(activeChannelId, actorId);
-    return normalizeAgentSelection(observation?.items?.[0] || observation);
-  }, [activeChannelId]);
 
   useEffect(() => {
     const applyRoute = () => {
@@ -237,30 +241,17 @@ export default function App() {
     activeChannelRef.current = activeChannelId;
   }, [activeChannelId]);
 
-  useEffect(() => {
-    if (!activeChannelId || wireState !== 'open' || !obsRef.current) {
-      setAgentSelection({ channelId: activeChannelId || '', value: null, busy: false });
-      return undefined;
-    }
-    let alive = true;
-    setAgentSelection({ channelId: activeChannelId, value: null, busy: false });
-    loadAgentSelection().then((value) => {
-      if (!alive) return;
-      setAgentSelection({ channelId: activeChannelId, value, busy: false });
-    }).catch((error) => {
-      if (!alive || error?.status === 401) return;
-      // 这是待正式化的可选观察面。旧后端缺失时不阻塞消息输入。
-      setAgentSelection({ channelId: activeChannelId, value: null, busy: false });
-    });
-    return () => { alive = false; };
-  }, [activeChannelId, wireState, loadAgentSelection]);
-
   const expireSession = useCallback(() => {
     wireRef.current?.close();
     wireRef.current = null;
     clearFeed();
     clearDirectory();
     accessRef.current = null;
+    // 参数面板态是会话私有的：换账号不得继承上一账号的手选/切换中/探测标记。
+    manualAgentsRef.current.clear();
+    contextProbedRef.current.clear();
+    setPendingSelect(null);
+    setComposerAgent({ channelId: '', actorId: '' });
     setRosters(new Map());
     setChannelNotice('');
     setSelectedActor(null);
@@ -292,17 +283,6 @@ export default function App() {
     accessRef.current = access;
 
     let alive = true;
-    let membershipObservationSupported = true;
-    const readMemberships = () => {
-      if (!membershipObservationSupported) return Promise.resolve({ items: [], complete: false, unsupported: true });
-      return obs.spaceMemberships().catch((error) => {
-        if (isUnsupportedMembershipObservation(error)) {
-          membershipObservationSupported = false;
-          return { items: [], complete: false, unsupported: true };
-        }
-        throw error;
-      });
-    };
     let refreshTimer = null;
     let refreshInFlight = null;
     let refreshQueued = false;
@@ -312,16 +292,12 @@ export default function App() {
         refreshQueued = true;
         return refreshInFlight;
       }
-      refreshInFlight = Promise.all([loadChannelTree(obs), readMemberships()]).then(([result, membershipObservation]) => {
+      // 成员身份不再走 obs 轮询：它是 attach 回执直接携带的一等事实
+      // （网关资格账快照），这里只对齐频道树投影。
+      refreshInFlight = loadChannelTree(obs).then((result) => {
       if (!alive) return;
       const profiles = [...result.channels.values()];
       access.channelsObserved(profiles, { complete: result.complete });
-      const membershipRows = (membershipObservation.items || []).map((item) => item.declared || {}).filter((row) => row.channel_id);
-      access.membershipsObserved(membershipRows, {
-        complete: membershipObservation.complete !== false,
-        supported: !membershipObservation.unsupported,
-      });
-      for (const membership of membershipRows.filter((row) => row.status === 'revoked')) roster.clearSelf(membership.channel_id);
       setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
       bumpAccess();
       }).catch((error) => { if (alive && error?.status !== 401) setTopError(displayError(error)); }).finally(() => {
@@ -361,6 +337,19 @@ export default function App() {
           // 服务器世代变了：本地缓存整体作废后重载一次，恒不要求用户手清。
           if (!ensureServerBoot(detail?.boot)) { window.location.reload(); return; }
           access.wire('attached', newId());
+          // attach 回执携带的成员清单是权威来源：连上即得，重连即刷新。
+          // memberships_complete=false 表示服务器这一轮没查成（清单不可信为
+          // 全量），只做增量承认，恒不据此判谁被踢出。
+          if (Array.isArray(detail?.memberships)) {
+            const rows = detail.memberships
+              .filter((entry) => entry?.channel_id)
+              .map((entry) => ({ channel_id: entry.channel_id, status: 'active', actor_id: entry.actor_id || '' }));
+            const memberedBefore = access.rows().filter((row) => row.accessState?.relationship === 'member').map((row) => row.id);
+            access.membershipsObserved(rows, { complete: detail.memberships_complete === true, supported: true });
+            for (const channelId of memberedBefore) {
+              if (access.state(channelId)?.relationship !== 'member') roster.clearSelf(channelId);
+            }
+          }
           setWireState('open');
           // 首次 attach 已有登录初始化 OBS；之后每次重连完成才重新对齐投影。
           if (attachedOnce) scheduleAccessRefresh();
@@ -527,13 +516,12 @@ export default function App() {
     });
   }, [handleSend]);
 
+  // 发起切换：提交成功 ≠ 参数已生效（select 是排队 turn，§4.3 三态）。提交后记
+  // pendingSelect，busy 与回滚由"观察该请求的账本终态"驱动（Promise 拿不到异步终态）。
   const handleAgentSelection = useCallback(async ({ actorId, model, effort }) => {
     if (!activeChannelId || !actorId) return '';
-    const previous = agentSelection.value;
-    const selectsPrimary = previous?.actorId === actorId;
-    setAgentSelection({ channelId: activeChannelId, value: selectsPrimary ? { ...previous, current: { model, effort } } : previous, busy: true });
     try {
-      return await handleSend({
+      const requestId = await handleSend({
         channelId: activeChannelId,
         text: `切换模型：${model} · ${effort}`,
         msgType: TYPES.agentSelect,
@@ -541,14 +529,81 @@ export default function App() {
         targetLabel: actorId,
         payload: { model, effort },
       });
+      setPendingSelect({ channelId: activeChannelId, actorId, requestId, value: { model, effort } });
+      return requestId;
     } catch (error) {
-      setAgentSelection({ channelId: activeChannelId, value: previous, busy: false });
       setTopError(displayError(error));
       throw error;
-    } finally {
-      setAgentSelection((current) => current.channelId === activeChannelId ? { ...current, busy: false } : current);
     }
-  }, [activeChannelId, agentSelection.value, handleSend]);
+  }, [activeChannelId, handleSend]);
+
+  // 观察 pending select 的两层结局：入账前被拒（gate/网络——提交层吞错，Promise
+  // 拿不到，只有 submission 状态知道）与入账后的终态（failed 回落报错 /
+  // completed 由 turn.ended usage 保鲜自动接管）。缺前一层会让"切换中"永久卡死。
+  useEffect(() => {
+    if (!pendingSelect) return;
+    const submission = pending.find((item) => item.messageId === pendingSelect.requestId);
+    if (submission?.state === 'rejected') {
+      setTopError(`切换模型失败：${submission.error?.detail || submission.error?.code || '提交被拒绝'}`);
+      setPendingSelect(null);
+      return;
+    }
+    const state = channelStatesRef.current.get(pendingSelect.channelId);
+    if (!state) return;
+    for (const row of state.rows.values()) {
+      if (row.kind !== 'response' || row.parent_id !== pendingSelect.requestId) continue;
+      const status = row.payload?.status;
+      if (status === 'failed') {
+        setTopError(`切换模型失败：${row.payload?.detail || row.payload?.error_code || row.payload?.reason || '未知原因'}`);
+        setPendingSelect(null);
+        return;
+      }
+      if (status === 'completed') {
+        setPendingSelect(null);
+        return;
+      }
+    }
+  }, [pendingSelect, feedVersion, pending]);
+
+  // 手选目标（判据链 §2.1.2）：per-channel 内存态。
+  const handlePickAgent = useCallback((actorId) => {
+    if (!activeChannelId) return;
+    manualAgentsRef.current.set(activeChannelId, actorId);
+    setManualAgentVersion((current) => current + 1);
+  }, [activeChannelId]);
+
+  // 手选清除恒以账本为准（§2.1.2"首条 agent.ask 成功入账后"）：当最近交互的
+  // 推导结果已经等于手选目标时，手选让位——交接时值无缝，被拒的发送（账本无
+  // 变化）恒不清手选。恒不在提交回执处清（回执 ≠ 入账，且提交层吞错）。
+  useEffect(() => {
+    const channelId = activeChannelRef.current;
+    if (!channelId) return;
+    const manual = manualAgentsRef.current.get(channelId);
+    if (!manual) return;
+    const state = channelStatesRef.current.get(channelId);
+    if (!state) return;
+    const agents = new Set((rosters.get(channelId) || []).filter((row) => row.kind === 'agent').map((row) => row.id));
+    const selfActorId = rosterRef.current?.self(channelId) || '';
+    if (latestInteractedAgentId(state, selfActorId, agents) === manual) {
+      manualAgentsRef.current.delete(channelId);
+      setManualAgentVersion((current) => current + 1);
+    }
+  }, [feedVersion, rosters]);
+
+  useEffect(() => {
+    if (wireState === 'open') {
+      contextProbedRef.current.clear();
+      liveDescribesRef.current.clear();
+    }
+  }, [wireState]);
+
+  const handleComposerAgentChange = useCallback((actorId) => {
+    setComposerAgent((current) => {
+      const channelId = activeChannelRef.current || '';
+      if (current.channelId === channelId && current.actorId === actorId) return current;
+      return { channelId, actorId };
+    });
+  }, []);
 
   const changeWorkspaceView = useCallback((view) => {
     if (!activeChannelId) return;
@@ -593,7 +648,7 @@ export default function App() {
 
   const describeActor = useCallback(async (actor, channelId = activeChannelId) => {
     if (!actor || !channelId) return;
-    await handleSend({
+    const requestId = await handleSend({
       channelId,
       text: `读取 ${actor.name || actor.id} 的能力`,
       msgType: TYPES.describe,
@@ -601,7 +656,68 @@ export default function App() {
       targetLabel: actor.name || actor.id,
       payload: {},
     });
+    if (requestId) liveDescribesRef.current.add(requestId);
   }, [activeChannelId, handleSend]);
+
+  // 参数目标的值域/当前值冷启动：目标无 describe 缓存则描述一次；有值域、无账本
+  // usage 且未探测过则静默发一次 agent.context。探测按三态管理（§4.1.2）：
+  // in-flight（有 requestId 未见结局）/ failed（账本 failed 终态或 submission
+  // 被拒——停止自动重发防循环，重连清空或用户展开参数区时重试）/ 成功（账本
+  // usage 到位后此 effect 不再走到这里）。恒不做"每会话一次"死标记。
+  useEffect(() => {
+    if (wireState !== 'open') return;
+    const { channelId, actorId } = composerAgent;
+    if (!channelId || !actorId || channelId !== activeChannelId) return;
+    const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId);
+    if (!actor) return;
+    const state = channelStatesRef.current.get(channelId);
+    const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actorId);
+    const probeKey = `${channelId}:${actorId}`;
+    if (!capability?.describe && !capability?.loading) {
+      describeActor(actor, channelId);
+      return;
+    }
+    if (!capability?.describe) return;
+    const view = agentSelectionView({ actorId, describe: capability.describe, usage: null });
+    if (!view) return; // 无 selections 的 agent：不渲染切换菜单，也不探测
+    // 当前值恒来自本连接的 context 探测（历史 usage 是旧生命期读数，恒不挡
+    // 探测）：每连接对每目标恒探测一次，probe 记录本身即防重。
+    const probe = contextProbedRef.current.get(probeKey);
+    if (probe) {
+      if (!probe.failed && probe.requestId) {
+        const failedRow = state ? [...state.rows.values()].some((row) => row.kind === 'response' && row.parent_id === probe.requestId && row.payload?.status === 'failed') : false;
+        const rejected = pending.some((item) => item.messageId === probe.requestId && item.state === 'rejected');
+        if (failedRow || rejected) probe.failed = true;
+      }
+      return;
+    }
+    const entry = { requestId: '', failed: false };
+    contextProbedRef.current.set(probeKey, entry);
+    handleSend({ channelId, text: '', msgType: TYPES.agentContext, audience: [actorId], targetLabel: actorId, payload: {} })
+      .then((requestId) => { entry.requestId = requestId || ''; })
+      .catch(() => { entry.failed = true; });
+  }, [composerAgent, feedVersion, wireState, activeChannelId, rosters, pending, manualAgentVersion, describeActor, handleSend]);
+
+  // 用户展开参数区 = 显式重试通道：上次探测失败的目标清掉失败标记重新探测。
+  const handleSelectorOpen = useCallback(() => {
+    const { channelId, actorId } = composerAgent;
+    if (!channelId || !actorId) return;
+    const probeKey = `${channelId}:${actorId}`;
+    let retry = false;
+    if (contextProbedRef.current.get(probeKey)?.failed) {
+      contextProbedRef.current.delete(probeKey);
+      retry = true;
+    }
+    // describe 本连接已发但失败时，展开参数区 = 显式重试：把失败那次从
+    // 本连接集合剔除，capability 归零后冷启动 effect 自动重新自省。
+    const state = channelStatesRef.current.get(channelId);
+    const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actorId);
+    if (capability?.error && !capability?.loading && capability.requestId) {
+      liveDescribesRef.current.delete(capability.requestId);
+      retry = true;
+    }
+    if (retry) setManualAgentVersion((current) => current + 1);
+  }, [composerAgent]);
 
   const handleSelectActor = useCallback((actor) => {
     setSelectedActor(actor);
@@ -610,7 +726,7 @@ export default function App() {
     setContextFocus(focus);
     if (activeChannelId) writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView, focus }, { contextEntry: true });
     const state = channelStatesRef.current.get(activeChannelId);
-    const capability = capabilityIndexFromState(state).get(actor.id);
+    const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actor.id);
     if (!capability?.describe && !capability?.loading) describeActor(actor, activeChannelId);
   }, [activeChannelId, describeActor, workspaceView]);
 
@@ -635,7 +751,7 @@ export default function App() {
     const channelData = channelList.map((channel) => {
       const state = channelStatesRef.current.get(channel.id) || createChannelState(channel.id);
       const roster = visibleRosterRows(rosters.get(channel.id) || []);
-      const capabilityIndex = capabilityIndexFromState(state);
+      const capabilityIndex = capabilityIndexFromState(state, liveDescribesRef.current);
       const selfId = channel.selfActorId || rosterRef.current?.self(channel.id) || '';
       const workItems = buildWorkItemIndex({ state, pending, timers: timerRecords, selfId, access: channel.access, capabilityIndex });
       return { ...channel, state, roster, participants: roster, artifacts: buildArtifactIndex(state), workItems };
@@ -681,7 +797,23 @@ export default function App() {
   ]));
   const activeChannel = activeRow || channels.get(activeChannelId);
   const activeAccess = activeRow?.access || CHANNEL_ACCESS.loading;
-  const capabilityIndex = capabilityIndexFromState(activeState);
+  const capabilityIndex = capabilityIndexFromState(activeState, liveDescribesRef.current);
+  // 参数面板数据（协议 §4）：值域与当前值都是活状态读数，恒只认本连接证据
+  // （describe = liveDescribesRef；usage = 本连接 context 探测起算）。
+  // manualAgentVersion 只为触发重渲染（手选存 ref）。
+  void manualAgentVersion;
+  const composerAgentId = composerAgent.channelId === activeChannelId ? composerAgent.actorId : '';
+  const composerProbeId = composerAgentId ? (contextProbedRef.current.get(`${activeChannelId}:${composerAgentId}`)?.requestId || '') : '';
+  const composerAgentUsage = composerAgentId ? latestAgentUsage(activeState, composerAgentId, composerProbeId) : null;
+  const composerSelectionView = composerAgentId
+    ? agentSelectionView({ actorId: composerAgentId, describe: capabilityIndex.get(composerAgentId)?.describe, usage: composerAgentUsage })
+    : null;
+  const selectPendingHere = pendingSelect && pendingSelect.channelId === activeChannelId ? pendingSelect : null;
+  const manualAgentId = manualAgentsRef.current.get(activeChannelId) || '';
+  // 无 @ 时的默认目标（判据链 §2.1 的 2-4 环：手选 > 最近交互 > 唯一 agent）。
+  // mention 环在 Composer 判（它持有编辑框状态），终判结果经 onTargetChange 回报。
+  const fallbackAgent = resolveParameterAgent({ mentions: [], manualAgentId, roster: activeRoster, state: activeState, selfId });
+  const fallbackAgentId = fallbackAgent.kind === 'single' ? fallbackAgent.agent.id : '';
   const providers = taskProviders(capabilityIndex, activeRoster);
   const workItemIndex = buildWorkItemIndex({ state: activeState, pending, timers: timerRecords, selfId, access: activeAccess, capabilityIndex });
   const artifactIndex = activeArtifactIndex;
@@ -863,7 +995,7 @@ export default function App() {
   <AppShell
     session={{ me, wireState, onLogout: handleLogout }}
     navigation={{ channels: channelList, activeChannelId, unread, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
-    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, access: activeAccess, roster: activeRoster, selfId, pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: agentSelection.channelId === activeChannelId ? { ...agentSelection, onLoad: loadAgentSelection, onChange: handleAgentSelection } : null, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onSend: handleSend, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { daemons: spaceDaemons, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setRightPanel(''); setMountedFilePreview(artifact); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, access: activeAccess, roster: activeRoster, selfId, pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: { view: composerSelectionView, usage: composerAgentUsage, pending: selectPendingHere, fallbackAgentId, onChange: handleAgentSelection, onPickAgent: handlePickAgent, onTargetChange: handleComposerAgentChange, onOpen: handleSelectorOpen }, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onSend: handleSend, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { daemons: spaceDaemons, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setRightPanel(''); setMountedFilePreview(artifact); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     panel={{ value: rightPanel, open: openContext, host }}
   />

@@ -104,7 +104,7 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, modelSelection = null, modelSelectionBusy = false, onLoadModelSelection, onModelSelectionChange, editMode = null }) {
+export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
@@ -124,6 +124,9 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const [error, setError] = useState('');
   const [sendState, setSendState] = useState('idle');
   const [sentMessageId, setSentMessageId] = useState('');
+  // 拆发批次的逐条跟踪（协议 §3.2.1）：提交层吞掉入账前错误，Promise 看不到，
+  // 只有各条 submission 的状态知道谁被拒——批次里任何一条 rejected 都要带目标名报出。
+  const [sentBatch, setSentBatch] = useState([]); // [{id, label}]
   const [activeCandidate, setActiveCandidate] = useState(0);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [fileDragActive, setFileDragActive] = useState(false);
@@ -232,13 +235,27 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   editModeRef.current = editMode;
   const mentions = useMemo(() => mentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean), [mentionIds, roster]);
   const mentionedAgents = useMemo(() => mentions.filter((row) => row.kind === 'agent'), [mentions]);
-  const primaryAgent = useMemo(() => roster.find((row) => row.id === modelSelection?.actorId && row.kind === 'agent') || null, [modelSelection?.actorId, roster]);
-  const parameterAgent = mentionedAgents.at(-1) || primaryAgent;
+  // 参数面板目标（判据链 §2.1）：mention 环在此判（唯一 agent → 它；多 agent →
+  // 多目标态；只 @ 人类 → 收起）；无 mention 落到 App 算的默认环（手选 > 最近交互 >
+  // 唯一 agent）。原则：右下角显示谁，无 @ 回车就发给谁。
+  const fallbackAgent = useMemo(() => roster.find((row) => row.id === agentSelection?.fallbackAgentId && row.kind === 'agent') || null, [agentSelection?.fallbackAgentId, roster]);
+  const parameterTarget = useMemo(() => {
+    if (mentionedAgents.length === 1) return { kind: 'single', agent: mentionedAgents[0] };
+    if (mentionedAgents.length > 1) return { kind: 'multi', count: mentionedAgents.length };
+    if (mentions.length > 0) return { kind: 'none' };
+    if (fallbackAgent) return { kind: 'single', agent: fallbackAgent };
+    const agents = roster.filter((row) => row.kind === 'agent');
+    if (agents.length === 1) return { kind: 'single', agent: agents[0] };
+    return { kind: 'none' };
+  }, [mentionedAgents, mentions, fallbackAgent, roster]);
+  const parameterAgent = parameterTarget.kind === 'single' ? parameterTarget.agent : null;
+  useEffect(() => { agentSelection?.onTargetChange?.(parameterAgent?.id || ''); }, [parameterAgent?.id, agentSelection?.onTargetChange]);
   const query = editMode ? null : mentionQuery(text);
   const matchingCandidates = (searchQuery) => mentionCandidates(roster, selfId, mentions.map((row) => row.id), searchQuery || '');
   const candidates = useMemo(() => matchingCandidates(query), [mentions, query, roster, selfId]);
   mentionContextRef.current = { roster, selfId, selectedIds: mentions.map((row) => row.id), activeCandidate, editing: Boolean(editMode) };
-  const activeSubmission = sentMessageId ? pending.find((item) => item.messageId === sentMessageId) : null;
+  const sentRows = sentBatch.length ? sentBatch : (sentMessageId ? [{ id: sentMessageId, label: '' }] : []);
+  const activeSubmission = sentRows.map((row) => pending.find((item) => item.messageId === row.id)).find(Boolean) || null;
 
   useEffect(() => { setActiveCandidate(0); }, [query]);
 
@@ -360,24 +377,28 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   }, [Boolean(editMode)]);
 
   useEffect(() => {
-    if (!sentMessageId) return undefined;
-    const submission = pending.find((item) => item.messageId === sentMessageId);
-    if (submission) {
-      if (submission.state === 'rejected') {
-        setSendState('error');
-        setError(submission.error?.detail || submission.error?.message || '发送被拒绝');
-      } else if (submission.state === 'uncertain') setSendState('uncertain');
-      else if (submission.state === 'delayed') setSendState('delayed');
-      else setSendState(submission.state === 'transmitting' ? 'sending' : 'accepted');
+    if (!sentRows.length) return undefined;
+    const tracked = sentRows.map((row) => ({ ...row, submission: pending.find((item) => item.messageId === row.id) }));
+    const rejected = tracked.filter((row) => row.submission?.state === 'rejected');
+    if (rejected.length) {
+      setSendState('error');
+      setError(`发送失败：${rejected.map((row) => `${row.label ? `@${row.label} ` : ''}${row.submission.error?.detail || row.submission.error?.message || '被拒绝'}`).join('；')}`);
+      return undefined;
+    }
+    const inFlight = tracked.filter((row) => row.submission);
+    if (inFlight.length) {
+      if (inFlight.some((row) => row.submission.state === 'uncertain')) setSendState('uncertain');
+      else if (inFlight.some((row) => row.submission.state === 'delayed')) setSendState('delayed');
+      else setSendState(inFlight.some((row) => row.submission.state === 'transmitting') ? 'sending' : 'accepted');
       return undefined;
     }
     if (sendState !== 'sending') {
       setSendState('landed');
-      const timer = setTimeout(() => { setSendState('idle'); setSentMessageId(''); }, 2_500);
+      const timer = setTimeout(() => { setSendState('idle'); setSentMessageId(''); setSentBatch([]); }, 2_500);
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [pending, sendState, sentMessageId]);
+  }, [pending, sendState, sentMessageId, sentBatch]);
 
   function pick(row) {
     if (!editor) return;
@@ -438,16 +459,16 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     if ((!value && !attachments.length) || !channelId || disabled || sendState === 'sending') return;
     setError('');
     setSendState('sending');
+    setSentBatch([]);
 
     try {
       const slash = slashCommand(value);
       if (slash) {
         let recipient;
         if (slash.target === 'agent') {
-          const selectedAgents = mentions.filter((row) => row.kind === 'agent');
-          const agents = roster.filter((row) => row.kind === 'agent');
-          recipient = selectedAgents.length === 1 ? selectedAgents[0] : primaryAgent || (agents.length === 1 ? agents[0] : null);
-          if (!recipient) throw new TypeError('请 @ 一个 Agent 执行此命令');
+          // 与消息发送同一判据（§2.2）：@ 唯一 agent 优先，否则参数面板目标。
+          recipient = parameterAgent;
+          if (!recipient) throw new TypeError('请 @ 一个 Agent，或在右下角选择目标 Agent');
         } else recipient = resolveManagementActors(roster).system;
         const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload: slash.payload });
         setSentMessageId(messageId || '');
@@ -460,27 +481,42 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       if (unresolved.length) throw new TypeError(`请从候选列表选择成员：${unresolved.map((name) => `@${name}`).join('、')}`);
       let recipients = mentions;
       if (!recipients.length) {
-        const agents = roster.filter((row) => row.kind === 'agent');
-        if (primaryAgent) recipients = [primaryAgent];
-        else if (agents.length === 1) recipients = agents;
-        else throw new TypeError('请 @ 一个成员');
+        if (parameterAgent) recipients = [parameterAgent];
+        else throw new TypeError('请 @ 一个成员，或在右下角选择目标 Agent');
       }
-      const kinds = new Set(recipients.map((row) => row.kind));
-      if (kinds.size !== 1 || !['agent', 'human'].includes([...kinds][0])) throw new TypeError('暂不支持混合收件人广播');
-      const msgType = kinds.has('human') ? TYPES.humanMessage : TYPES.agentAsk;
+      const invalid = recipients.find((row) => !['agent', 'human'].includes(row.kind));
+      if (invalid) throw new TypeError(`@${actorDisplayName(invalid)} 不能作为消息收件人`);
+      // request 帧恒单收件人（协议 §3）：多 @ 拆成 N 条独立消息逐条发，各按收件人
+      // 的 kind 定词。部分失败恒不回滚——已发出的收回不来，失败的逐条报出可重发。
       // agent.ask 的 text 是必填且不能为空白，所以纯附件消息也要带上一句正文。
       const body = value || `发送 ${attachments.length} 个附件`;
-      const messageId = await onSend({
-        text: body,
-        msgType,
-        audience: recipients.map((row) => row.id),
-        targetLabel: recipients.map((row) => actorDisplayName(row)).join('、'),
-        payload: attachments.length ? { text: body, attachments } : undefined,
-      });
-      setSentMessageId(messageId || '');
+      const failures = [];
+      const sent = [];
+      for (const row of recipients) {
+        try {
+          const id = await onSend({
+            text: body,
+            msgType: row.kind === 'human' ? TYPES.humanMessage : TYPES.agentAsk,
+            audience: [row.id],
+            targetLabel: actorDisplayName(row),
+            payload: attachments.length ? { text: body, attachments } : undefined,
+          });
+          if (id) sent.push({ id, label: actorDisplayName(row) });
+        } catch (failure) {
+          failures.push(`@${actorDisplayName(row)}：${failure.message || failure}`);
+        }
+      }
+      if (failures.length === recipients.length) throw new TypeError(`发送失败 ${failures.join('；')}`);
+      setSentMessageId(sent.at(-1)?.id || '');
+      setSentBatch(sent);
       editor?.commands.clearContent(true);
       onClearAttachments?.();
-      setSendState('accepted');
+      if (failures.length) {
+        setError(`部分发送失败（其余已送出）：${failures.join('；')}`);
+        setSendState('error');
+      } else {
+        setSendState('accepted');
+      }
     } catch (failure) {
       setError(failure.message || String(failure));
       setSendState('error');
@@ -638,7 +674,17 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             <button type="button" aria-label="从频道文件选择" title="从频道文件选择" disabled={disabled || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <div className="composer-submit-actions">
-            <ModelSelector value={modelSelection} actorId={parameterAgent?.id} actorName={parameterAgent ? actorDisplayName(parameterAgent) : ''} busy={modelSelectionBusy} disabled={disabled || sendState === 'sending'} onLoad={onLoadModelSelection} onChange={onModelSelectionChange} />
+            <ModelSelector
+              target={parameterTarget}
+              actorName={parameterAgent ? actorDisplayName(parameterAgent) : ''}
+              view={agentSelection?.view && parameterAgent && agentSelection.view.actorId === parameterAgent.id ? agentSelection.view : null}
+              pending={agentSelection?.pending && parameterAgent && agentSelection.pending.actorId === parameterAgent.id ? agentSelection.pending : null}
+              candidates={roster.filter((row) => row.kind === 'agent')}
+              disabled={disabled || sendState === 'sending'}
+              onChange={agentSelection?.onChange}
+              onPickAgent={agentSelection?.onPickAgent}
+              onOpen={agentSelection?.onOpen}
+            />
             {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={() => { beginEditLayoutTransition(); editMode.onAbandon(); }}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
             {editMode
               ? <button type="button" className="send-button" onClick={submit} disabled={!text.trim() || !channelId || disabled || editBusy || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
