@@ -93,7 +93,11 @@ describe('agent control v7 information architecture', () => {
     expect(bubble.querySelector('.agent-processing-status').textContent).toContain('tool: read_file …');
     expect(within(card).getByRole('button', { name: '编辑' })).toBeTruthy();
     expect(within(card).getByRole('button', { name: '停止' })).toBeTruthy();
-    expect(bubble.querySelectorAll('button')).toHaveLength(0);
+    // 气泡是内容，控制在卡片上：点遍气泡里的每一个按钮（过程轨迹的展开/
+    // 查看详情），恒不得发出任何控制。钉的是"控制不从气泡发起"，不是
+    // "气泡里一个按钮都不许有"——后者会把纯查看的交互一起拦掉。
+    for (const button of bubble.querySelectorAll('button')) fireEvent.click(button);
+    expect(onTaskControl).not.toHaveBeenCalled();
     expect(bubble.textContent).not.toContain('turn-42');
 
     add(state, 4, response('work-d', 'work', { status: 'completed', turn_index: 7, text: '重构完成' }));
@@ -104,7 +108,9 @@ describe('agent control v7 information architecture', () => {
     expect(settled.textContent).not.toContain('✓');
     expect(within(card).queryByRole('button', { name: '编辑' })).toBeNull();
     expect(within(card).queryByRole('button', { name: '停止' })).toBeNull();
-    expect(settled.querySelectorAll('button')).toHaveLength(0);
+    // 落定后气泡里仍只有纯查看交互（回看过程轨迹），恒不冒出控制。
+    for (const button of settled.querySelectorAll('button')) fireEvent.click(button);
+    expect(onTaskControl).not.toHaveBeenCalled();
     // turn_index 恒不上屏——只查答案区，头部时间戳里的数字与此无关。
     expect(settled.querySelector('.response-content').textContent).not.toContain('7');
   });

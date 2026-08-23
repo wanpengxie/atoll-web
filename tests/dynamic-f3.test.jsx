@@ -25,7 +25,8 @@ it('main Dynamic keeps one rolling activity line inside the processing agent bub
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
   expect(document.querySelector('.agent-processing-status').textContent).toContain('tool: search …');
   expect(document.querySelectorAll('.agent-turn-bubble')).toHaveLength(1);
-  expect(document.querySelector('.agent-turn-bubble button')).toBeNull();
+  // 气泡里只有过程轨迹这类纯查看交互，编辑/停止这些控制恒在卡片上。
+  expect(screen.queryAllByRole('button', { name: /编辑|停止|重试/ }).every((button) => !button.closest('.agent-turn-bubble'))).toBe(true);
 });
 
 it('completed answer stays in the agent bubble immediately after its user message', () => {
