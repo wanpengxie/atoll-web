@@ -305,6 +305,10 @@ function activityLine(turn) {
   if (activity?.type === TYPES.activity.turnStarted) return 'turn started · 正在生成…';
   if (activity?.type === TYPES.activity.turnEnded) return 'turn ended';
   const progress = latestProgress?.envelope?.payload || {};
+  // 回合内的阶段读数（agent 的 provisional 进度回执）：没有工具调用的
+  // 纯文本回合也能看出它活在哪个阶段，而不是恒定的"正在生成…"。
+  if (progress.stage === 'thinking') return '思考中…';
+  if (progress.stage === 'writing') return '正在写回复…';
   return progress.detail || progress.message || progress.text || '正在生成…';
 }
 
