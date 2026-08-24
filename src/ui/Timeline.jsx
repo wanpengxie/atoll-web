@@ -1,5 +1,4 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import autoAnimate from '@formkit/auto-animate';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
@@ -255,58 +254,80 @@ function AttachmentCards({ attachments = [], onDownload, onPreview }) {
   })}</section>;
 }
 
-function MessageActions({ onReply, onCreateTask, onMobileActions }) {
-  if (!onReply && !onCreateTask) return null;
-  return <div className="message-actions" aria-label="条目操作">
-    {onReply && <button type="button" className="message-action-desktop" onClick={onReply}>↩ 回复</button>}
-    {onCreateTask && <button type="button" className="message-action-desktop" onClick={onCreateTask}>创建任务</button>}
-    {onMobileActions && <button type="button" className="message-action-mobile" aria-label="更多消息操作" onClick={onMobileActions}>•••</button>}
+function MessageActions({ onCopy, copyState, onReply, onCreateTask }) {
+  if (!onCopy && !onReply && !onCreateTask) return null;
+  const feedback = copyState === 'copied' ? '已复制正文' : copyState === 'error' ? '复制失败' : '';
+  return <div className={`message-actions${feedback ? ' has-feedback' : ''}`} aria-label="条目操作">
+    {onCopy && <button type="button" onClick={onCopy}>{copyState === 'copied' ? '✓ 已复制' : '复制'}</button>}
+    {onReply && <button type="button" onClick={onReply}>↩ 回复</button>}
+    {onCreateTask && <button type="button" onClick={onCreateTask}>创建任务</button>}
+    <span className="message-copy-feedback" role="status">{feedback}</span>
   </div>;
 }
 
-function MessageActionSheet({ open, targetName, onReply, onCreateTask, onClose }) {
-  if (!open || typeof document === 'undefined') return null;
-  return createPortal(<div className="message-action-sheet-host">
-    <button type="button" className="message-action-sheet-backdrop" aria-label="关闭消息操作" onClick={onClose} />
-    <section className="message-action-sheet" role="dialog" aria-modal="true" aria-label={`对 ${targetName} 的消息操作`}>
-      <header><strong>{targetName}</strong><button type="button" aria-label="关闭消息操作" onClick={onClose}>×</button></header>
-      {onReply && <button type="button" onClick={() => { onClose(); onReply(); }}>↩ 回复</button>}
-      {onCreateTask && <button type="button" onClick={() => { onClose(); onCreateTask(); }}>创建任务</button>}
-    </section>
-  </div>, document.body);
+async function copyMessageText(text) {
+  if (globalThis.navigator?.clipboard?.writeText) {
+    await globalThis.navigator.clipboard.writeText(text);
+    return;
+  }
+  if (typeof document === 'undefined' || typeof document.execCommand !== 'function') throw new Error('clipboard unavailable');
+  const field = document.createElement('textarea');
+  field.value = text;
+  field.setAttribute('readonly', '');
+  field.style.position = 'fixed';
+  field.style.opacity = '0';
+  document.body.appendChild(field);
+  field.select();
+  const copied = document.execCommand('copy');
+  field.remove();
+  if (!copied) throw new Error('copy failed');
 }
 
-function ReplyableMessageFrame({ replyTarget, onReply, onCreateTask, children, className = '', ...props }) {
+function ReplyableMessageFrame({ replyTarget, copyText = '', onReply, onCreateTask, children, className = '', ...props }) {
   const gestureRef = useRef(null);
   const longPressRef = useRef(0);
-  const [swipeOffset, setSwipeOffset] = useState(0);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const feedbackRef = useRef(0);
+  const [copyState, setCopyState] = useState('');
   const reply = replyTarget && onReply ? () => onReply(replyTarget) : null;
+  const body = String(copyText || '').trim();
+
+  useEffect(() => () => {
+    clearTimeout(longPressRef.current);
+    clearTimeout(feedbackRef.current);
+  }, []);
 
   function clearLongPress() {
     clearTimeout(longPressRef.current);
     longPressRef.current = 0;
   }
 
-  function finishGesture(event, cancelled = false) {
+  async function copyBody() {
+    if (!body) return;
+    clearTimeout(feedbackRef.current);
+    try {
+      await copyMessageText(body);
+      setCopyState('copied');
+    } catch {
+      setCopyState('error');
+    }
+    feedbackRef.current = window.setTimeout(() => setCopyState(''), 1600);
+  }
+
+  function finishGesture(_event, cancelled = false) {
     clearLongPress();
     const gesture = gestureRef.current;
     gestureRef.current = null;
-    setSwipeOffset(0);
-    if (!cancelled && gesture && reply) {
-      const dx = event.clientX - gesture.x;
-      const dy = event.clientY - gesture.y;
-      if (dx >= 52 && Math.abs(dx) > Math.abs(dy) * 1.25) reply();
-    }
+    if (!cancelled && gesture && !gesture.cancelled && !gesture.longPressed && reply) reply();
   }
 
   function onPointerDown(event) {
-    if (!reply || event.pointerType === 'mouse' || event.target.closest('a, button, input, textarea, select, [contenteditable="true"]')) return;
-    gestureRef.current = { x: event.clientX, y: event.clientY };
+    if ((!reply && !body) || event.pointerType === 'mouse' || event.target.closest('a, button, input, textarea, select, [contenteditable="true"]')) return;
+    const gesture = { x: event.clientX, y: event.clientY, cancelled: false, longPressed: false };
+    gestureRef.current = gesture;
     longPressRef.current = window.setTimeout(() => {
-      gestureRef.current = null;
-      setSwipeOffset(0);
-      setSheetOpen(true);
+      if (gestureRef.current !== gesture || gesture.cancelled || !body) return;
+      gesture.longPressed = true;
+      void copyBody();
       navigator.vibrate?.(10);
     }, 480);
   }
@@ -316,42 +337,32 @@ function ReplyableMessageFrame({ replyTarget, onReply, onCreateTask, children, c
     if (!gesture) return;
     const dx = event.clientX - gesture.x;
     const dy = event.clientY - gesture.y;
-    if (Math.abs(dy) > 12 || dx < -8) {
+    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
+      gesture.cancelled = true;
       clearLongPress();
-      setSwipeOffset(0);
-      return;
-    }
-    if (dx > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) {
-      clearLongPress();
-      setSwipeOffset(Math.min(64, dx));
     }
   }
 
-  const actions = <MessageActions onReply={reply} onCreateTask={onCreateTask} onMobileActions={() => setSheetOpen(true)} />;
-  return <>
-    <MessageFrame
-      {...props}
-      className={`replyable-message${swipeOffset ? ' is-swiping' : ''} ${className}`.trim()}
-      actions={actions}
-      style={{ '--reply-swipe-offset': `${swipeOffset}px` }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={(event) => finishGesture(event)}
-      onPointerCancel={(event) => finishGesture(event, true)}
-      onContextMenu={(event) => {
-        if (!reply || !globalThis.matchMedia?.('(hover: none)').matches) return;
+  const actions = <MessageActions onCopy={body ? copyBody : null} copyState={copyState} onReply={reply} onCreateTask={onCreateTask} />;
+  return <MessageFrame
+    {...props}
+    className={`replyable-message ${className}`.trim()}
+    actions={actions}
+    onPointerDown={onPointerDown}
+    onPointerMove={onPointerMove}
+    onPointerUp={(event) => finishGesture(event)}
+    onPointerCancel={(event) => finishGesture(event, true)}
+    onContextMenu={(event) => {
+      if (!body || !globalThis.matchMedia?.('(hover: none)').matches) return;
+      event.preventDefault();
+    }}
+    onKeyDown={(event) => {
+      if (reply && event.target === event.currentTarget && event.key.toLowerCase() === 'r') {
         event.preventDefault();
-        setSheetOpen(true);
-      }}
-      onKeyDown={(event) => {
-        if (reply && event.target === event.currentTarget && event.key.toLowerCase() === 'r') {
-          event.preventDefault();
-          reply();
-        }
-      }}
-    >{children}</MessageFrame>
-    <MessageActionSheet open={sheetOpen} targetName={replyTarget?.senderName || '消息'} onReply={reply} onCreateTask={onCreateTask} onClose={() => setSheetOpen(false)} />
-  </>;
+        reply();
+      }
+    }}
+  >{children}</MessageFrame>;
 }
 
 // 一次被叫出来的调用。行本身就是它的开关：点开看它自己的结果，就地展开，不劫持
@@ -451,7 +462,7 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
   const replyTarget = terminal && terminal.payload?.status === 'completed'
     ? replyTargetOf(terminal, { roster, selfId, fallbackSenderId: request.audience?.[0], fallbackSenderKind: 'agent' })
     : null;
-  return <ReplyableMessageFrame replyTarget={replyTarget} onReply={onReply} className={className} contentClassName="response-body" identity={identity}>{heading}{content}</ReplyableMessageFrame>;
+  return <ReplyableMessageFrame replyTarget={replyTarget} copyText={terminal ? messagePresentation(terminal).text : ''} onReply={onReply} className={className} contentClassName="response-body" identity={identity}>{heading}{content}</ReplyableMessageFrame>;
 }
 
 function hasLaterThreadSibling(items, index, depth) {
@@ -534,7 +545,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
   const replyTarget = replyTargetOf(request, { roster, selfId });
   return (
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
-      <ReplyableMessageFrame replyTarget={replyTarget} onReply={onReply} onCreateTask={onCreateTask} className="request-message" identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
+      <ReplyableMessageFrame replyTarget={replyTarget} copyText={requestView.text} onReply={onReply} onCreateTask={onCreateTask} className="request-message" identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
           <div className="request-text"><MarkdownContent text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
@@ -588,7 +599,7 @@ function Standalone({ envelope, names, roster, selfId, continuation = false, onC
   const self = envelope.sender?.id === selfId;
   const replyTarget = replyTargetOf(envelope, { roster, selfId });
   return (
-    <ReplyableMessageFrame replyTarget={replyTarget} onReply={onReply} onCreateTask={onCreateTask} className={`standalone-row ${continuation ? 'continuation' : ''} ${self ? 'self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
+    <ReplyableMessageFrame replyTarget={replyTarget} copyText={view.text} onReply={onReply} onCreateTask={onCreateTask} className={`standalone-row ${continuation ? 'continuation' : ''} ${self ? 'self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
       {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownContent text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}
     </ReplyableMessageFrame>
   );

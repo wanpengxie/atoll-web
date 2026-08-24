@@ -8,7 +8,11 @@ import { fold } from '../src/model/fold.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { TurnContext } from '../src/ui/context/TurnContext.jsx';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 function runningTurn() {
   const request = { id: 'req-1', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { text: '整理研究报告', token: 'secret' } };
@@ -64,6 +68,46 @@ it('Agent 最终答复可以建立临时回复目标，处理中气泡不提供�
   view.rerender(<Timeline state={state} roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" onReply={onReply} />);
   fireEvent.click(screen.getByRole('button', { name: /回复/ }));
   expect(onReply).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'terminal-reply', senderId: 'agent-1', senderName: '研究员' }));
+});
+
+it('PC 可复制回复正文；移动端短按回复、长按复制且不误触回复', async () => {
+  vi.useFakeTimers();
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText }, vibrate: vi.fn() });
+  const onReply = vi.fn();
+  const turn = runningTurn();
+  turn.status = 'completed';
+  turn.terminal = { id: 'terminal-copy', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '只复制这一段正文' } };
+  const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 4 };
+  const view = render(<Timeline state={state} roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" onReply={onReply} />);
+
+  fireEvent.click(screen.getByRole('button', { name: '复制' }));
+  await act(async () => Promise.resolve());
+  expect(writeText).toHaveBeenLastCalledWith('只复制这一段正文');
+
+  const message = view.container.querySelector('.agent-turn-bubble');
+  fireEvent.pointerDown(message, { pointerType: 'touch', clientX: 20, clientY: 20 });
+  fireEvent.pointerUp(message, { pointerType: 'touch', clientX: 20, clientY: 20 });
+  expect(onReply).toHaveBeenCalledOnce();
+
+  onReply.mockClear();
+  writeText.mockClear();
+  fireEvent.pointerDown(message, { pointerType: 'touch', clientX: 20, clientY: 20 });
+  await act(async () => {
+    vi.advanceTimersByTime(480);
+    await Promise.resolve();
+  });
+  fireEvent.pointerUp(message, { pointerType: 'touch', clientX: 20, clientY: 20 });
+  expect(writeText).toHaveBeenCalledWith('只复制这一段正文');
+  expect(onReply).not.toHaveBeenCalled();
+
+  writeText.mockClear();
+  fireEvent.pointerDown(message, { pointerType: 'touch', clientX: 20, clientY: 20 });
+  fireEvent.pointerMove(message, { pointerType: 'touch', clientX: 20, clientY: 48 });
+  fireEvent.pointerUp(message, { pointerType: 'touch', clientX: 20, clientY: 48 });
+  vi.advanceTimersByTime(500);
+  expect(writeText).not.toHaveBeenCalled();
+  expect(onReply).not.toHaveBeenCalled();
 });
 
 it('agent.new 成功后只显示一条轻量确认，不伪装成用户聊天消息', () => {
