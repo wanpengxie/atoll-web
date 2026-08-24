@@ -101,8 +101,10 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
       event.preventDefault();
       toggleTerminal();
     };
-    document.addEventListener('keydown', toggleByKey);
-    return () => document.removeEventListener('keydown', toggleByKey);
+    // Capture before xterm's own keyboard handler: after opening, focus moves
+    // into its textarea and xterm legitimately stops many function keys.
+    document.addEventListener('keydown', toggleByKey, true);
+    return () => document.removeEventListener('keydown', toggleByKey, true);
   }, [workspace.channel, workspace.view, contentVisible, navigation.activeChannelId]);
 
   useEffect(() => setComposerEdit(null), [navigation.activeChannelId]);

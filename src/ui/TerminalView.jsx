@@ -107,6 +107,7 @@ function terminalTheme(mode) {
 }
 
 const THEME_KEY = 'atoll.terminal.theme';
+const encoder = new TextEncoder();
 
 // 会话 id 按频道记在 sessionStorage：组件卸载（切频道）或刷新之后回来，
 // 只要还在后端的宽限期内，就接回同一个 shell 而恒不新开一个。
@@ -138,6 +139,7 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
   // Bumping this remounts the effect with a fresh generation and no session id
   // — a deliberate new shell, which is what 「重开」 means.
   const [reopen, setReopen] = useState(0);
+  const [renderer, setRenderer] = useState('');
   const [themeMode, setThemeMode] = useState(() => {
     try { return window.localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
   });
@@ -167,8 +169,9 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
       // 恒不用 transparent：WebGL 渲染器在透明底下表现不稳，而且没有前景色
       // 时 xterm 默认是白字——落在白底上就是看不见。
       theme: terminalTheme(themeRef.current),
-      // 程序自己选的颜色也保证读得出来，恒不指望每个 CLI 都为浅底调过色。
-      minimumContrastRatio: 4.5,
+      // 恒不开 minimumContrastRatio：它让渲染器对**每个单元格**算一次对比度
+      // 并让配色缓存失效，是 xterm 里有名的掉帧源。两套十六色都是照各自底色
+      // 调过的，对比度本就够——为一个已经解决的问题付每帧的代价恒不值得。
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -179,14 +182,22 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
 
     // WebGL is the fast renderer but it fails on some GPUs/drivers; falling
     // back is normal, not an error, so it must never take the terminal down.
+    // WebGL 渲染器。失败会静默回落到 DOM 渲染器——那是**每个单元格一个 DOM
+    // 节点**，在一块 200×50 的网格上就是一万个节点，手感立刻变钝。所以失败
+    // 恒须说出来，恒不吞掉：不然"有点不跟手"永远查不出原因。
     (async () => {
       try {
         const { WebglAddon } = await import('@xterm/addon-webgl');
         const addon = new WebglAddon();
-        addon.onContextLoss(() => addon.dispose());
+        addon.onContextLoss(() => {
+          console.warn('[terminal] WebGL 上下文丢失，已回落 DOM 渲染器——输入手感会变钝');
+          addon.dispose();
+        });
         term.loadAddon(addon);
-      } catch {
-        /* DOM renderer stays; nothing to report. */
+        setRenderer('webgl');
+      } catch (err) {
+        console.warn('[terminal] WebGL 渲染器不可用，回落 DOM 渲染器（手感会变钝）：', err);
+        setRenderer('dom');
       }
     })();
 
@@ -275,7 +286,10 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
 
     const disposeData = term.onData((data) => {
       if (!canWriteRef.current) return;
-      send({ type: 'input', data });
+      // 按键走二进制原样发：终端输入恒不是结构化数据，套一层 JSON 只是给
+      // 每一次击键加一轮编解码。门那侧本就把二进制帧直接当输入收。
+      const ws = gen.ws;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
     });
     const disposeResize = term.onResize(({ cols, rows }) => {
       // Window size is a control message, never an escape smuggled into the
@@ -335,6 +349,7 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
     <section id="workspace-panel-terminal" className="terminal-view" hidden={!visible} data-terminal-theme={themeMode} role="region" aria-labelledby="workspace-terminal-toggle">
       <div className={`terminal-status terminal-status-${status}`} role="status">
         <span>{label}</span>
+        {renderer === 'dom' && <span className="terminal-status-warn">GPU 渲染不可用，手感会变钝</span>}
         <span className="terminal-status-actions">
           {status === 'ended' && (
             <button type="button" onClick={() => { writeSession(channelId, ''); setDetail(''); setReopen((n) => n + 1); }}>重开</button>
