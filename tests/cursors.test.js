@@ -18,16 +18,16 @@ describe('channel cursors', () => {
     expect(cursors.snapshot()).toEqual({ c0: 8, lobby: 2 });
   });
 
-  it('tracks read cursors separately and counts non-system, non-self rows', () => {
+  it('tracks read cursors separately and counts non-system, non-self messages', () => {
     const cursors = createCursors(new MemoryStorage());
     cursors.markRead('c0', 2);
     cursors.markRead('c0', 1);
     expect(cursors.read('c0')).toBe(2);
     const state = { rows: new Map([
-      [2, { visibility: 'public', sender: { id: 'other' } }],
-      [3, { visibility: 'system', sender: { id: 'system' } }],
-      [4, { visibility: 'public', sender: { id: 'me' } }],
-      [5, { visibility: 'public', sender: { id: 'other' } }],
+      [2, { kind: 'request', visibility: 'public', sender: { id: 'other' } }],
+      [3, { kind: 'request', visibility: 'system', sender: { id: 'system' } }],
+      [4, { kind: 'request', visibility: 'public', sender: { id: 'me' } }],
+      [5, { kind: 'response', visibility: 'public', payload: { status: 'completed' }, sender: { id: 'other' } }],
     ]) };
     expect(unreadCount(state, cursors.read('c0'), 'me')).toBe(1);
   });
@@ -49,14 +49,27 @@ describe('channel cursors', () => {
 
   it('separates @me unread messages from the weak all-message count', () => {
     const state = { rows: new Map([
-      [1, { id: 'old', visibility: 'public', audience: ['me'], sender: { id: 'agent' } }],
-      [2, { id: 'system-noise', visibility: 'public', audience: [], sender: { id: 'system' } }],
-      [3, { id: 'ask-me', visibility: 'public', audience: ['me'], sender: { id: 'agent' } }],
-      [4, { id: 'reply-to-me', parent_id: 'ask-me', visibility: 'system', audience: ['me'], sender: { id: 'system' } }],
-      [5, { id: 'mine', visibility: 'public', audience: ['agent'], sender: { id: 'me' } }],
+      [1, { id: 'old', kind: 'request', visibility: 'public', audience: ['me'], sender: { id: 'agent' } }],
+      [2, { id: 'system-noise', kind: 'request', visibility: 'public', audience: [], sender: { id: 'system' } }],
+      [3, { id: 'ask-me', kind: 'request', visibility: 'public', audience: ['me'], sender: { id: 'agent' } }],
+      [4, { id: 'reply-to-me', kind: 'response', parent_id: 'ask-me', visibility: 'system', audience: ['me'], payload: { status: 'completed' }, sender: { id: 'system' } }],
+      [5, { id: 'mine', kind: 'request', visibility: 'public', audience: ['agent'], sender: { id: 'me' } }],
     ]) };
 
     expect(unreadCounts(state, 1, 'me')).toEqual({ related: 2, total: 3 });
     expect(unreadCounts(state, 2, 'me')).toEqual({ related: 2, total: 2 });
+  });
+
+  it('counts requests and settled responses but ignores progress and events', () => {
+    const state = { rows: new Map([
+      [1, { id: 'request', kind: 'request', audience: ['me'], sender: { id: 'agent' } }],
+      [2, { id: 'queued', kind: 'response', parent_id: 'request', audience: ['me'], payload: { status: 'queued' }, sender: { id: 'agent' } }],
+      [3, { id: 'processing', kind: 'response', parent_id: 'request', audience: ['me'], payload: { status: 'processing', process: { kind: 'stage' } }, sender: { id: 'agent' } }],
+      [4, { id: 'business-event', kind: 'event', audience: ['me'], sender: { id: 'agent' } }],
+      [5, { id: 'completed', kind: 'response', parent_id: 'request', audience: ['me'], payload: { status: 'completed' }, sender: { id: 'agent' } }],
+      [6, { id: 'failed', kind: 'response', parent_id: 'request', audience: ['me'], payload: { status: 'failed' }, sender: { id: 'agent' } }],
+    ]) };
+
+    expect(unreadCounts(state, 0, 'me')).toEqual({ related: 3, total: 3 });
   });
 });

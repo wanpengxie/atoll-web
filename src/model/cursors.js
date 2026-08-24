@@ -1,4 +1,5 @@
 import { relatedEnvelopeIds } from './timeline-scope.js';
+import { KIND, PROVISIONAL } from '../protocol/envelope.js';
 
 const CURSOR_PREFIX = 'atoll.cursor.v3.';
 const READ_PREFIX = 'atoll.read.v3.';
@@ -73,6 +74,16 @@ export function createCursors(storage = globalThis.localStorage) {
   };
 }
 
+// Channel badges are notifications, not a ledger row counter. One request may
+// produce many queued/processing/deferred response frames while an agent works;
+// those frames update the existing turn and must not look like new messages.
+// Keep only conversational requests and settled responses. Events remain in
+// the complete timeline, but are deliberately too noisy for the channel rail.
+function isNotifiable(envelope) {
+  if (envelope?.kind === KIND.request) return true;
+  return envelope?.kind === KIND.response && !PROVISIONAL.has(envelope?.payload?.status);
+}
+
 export function unreadCount(channelState, readSeq, selfId) {
   if (!channelState?.rows) return 0;
   let count = 0;
@@ -80,6 +91,7 @@ export function unreadCount(channelState, readSeq, selfId) {
     if (seq <= readSeq) continue;
     if (envelope?.visibility === 'system') continue;
     if (selfId && envelope?.sender?.id === selfId) continue;
+    if (!isNotifiable(envelope)) continue;
     count += 1;
   }
   return count;
@@ -87,7 +99,8 @@ export function unreadCount(channelState, readSeq, selfId) {
 
 // The channel rail carries two different signals:
 //   related — messages in the same conversation scope as the "@我" timeline
-//   total   — every new ledger message not authored by this user
+//   total   — every new conversational request/settled response not authored
+//             by this user
 //
 // Keep one read cursor for both. They describe the same unread interval; only
 // the visual priority differs. In particular, generic system traffic belongs
@@ -101,6 +114,7 @@ export function unreadCounts(channelState, readSeq, selfId) {
   for (const [seq, envelope] of channelState.rows) {
     if (seq <= readSeq) continue;
     if (selfId && envelope?.sender?.id === selfId) continue;
+    if (!isNotifiable(envelope)) continue;
     total += 1;
     if (envelope?.id && relatedIds.has(envelope.id)) related += 1;
   }

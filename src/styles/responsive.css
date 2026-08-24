@@ -32,12 +32,19 @@
   .channel-header-actions { grid-row: 1; grid-column: 3; height: 34px; flex: 0 0 auto; gap: 0; padding-right: 2px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
   .header-action { min-width: 32px; min-height: 30px; padding: 2px 5px; border-radius: 5px; font-size: 10px; }
   .mock-advance-action { display: none; }
-  .channel-view-tabs { grid-row: 1; grid-column: 2; min-height: 34px; align-items: center; gap: 0; padding: 0; border-bottom: 1px solid var(--line-subtle); }
+  .channel-view-tabs { grid-row: 1; grid-column: 2; min-height: 34px; align-items: center; gap: 0; padding: 0 34px 0 0; border-bottom: 1px solid var(--line-subtle); }
   .channel-view-tabs button { min-width: 34px; min-height: 30px; height: 30px; align-self: auto; border-bottom: 0; border-radius: 5px; font-size: 10px; }
   .channel-view-tabs button.active { border-bottom-color: transparent; background: var(--surface-selected); }
+  .terminal-split-toggle { grid-row: 1; grid-column: 2; width: 34px; min-height: 30px; justify-content: center; justify-self: end; gap: 0; margin-right: 0; padding: 0; border: 0; font-size: 0; }
+  .terminal-split-toggle > span { font-size: 14px; }
+  .terminal-split-toggle kbd { display: none; }
   .status-stack { grid-row: 2; grid-column: 1 / -1; }
+  .dynamic-workspace { grid-row: 3; grid-column: 1 / -1; }
+  .dynamic-workspace.terminal-split-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+  .dynamic-workspace.terminal-split-open > .dynamic-message-pane { grid-row: 1; }
+  .dynamic-workspace.terminal-split-open > .terminal-view { grid-row: 2; grid-column: 1; border-top: 1px solid var(--terminal-line); border-left: 0; }
   .timeline { grid-row: 3; grid-column: 1 / -1; }
-  .workspace-view, .channel-private-empty { grid-row: 3; grid-column: 1 / -1; }
+  .workspace-view, .channel-private-empty, .terminal-view { grid-row: 3; grid-column: 1 / -1; }
   .channel-private-empty.dynamic-private-empty { grid-row: 3; }
   .send-button, .task-create-modal > header button, .task-create-modal footer button,
   .global-search > header button, .tasks-header-actions button, .artifact-upload { min-height: 44px; }
