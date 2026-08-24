@@ -1,3 +1,5 @@
+import { relatedEnvelopeIds } from './timeline-scope.js';
+
 const CURSOR_PREFIX = 'atoll.cursor.v3.';
 const READ_PREFIX = 'atoll.read.v3.';
 
@@ -81,4 +83,26 @@ export function unreadCount(channelState, readSeq, selfId) {
     count += 1;
   }
   return count;
+}
+
+// The channel rail carries two different signals:
+//   related — messages in the same conversation scope as the "@我" timeline
+//   total   — every new ledger message not authored by this user
+//
+// Keep one read cursor for both. They describe the same unread interval; only
+// the visual priority differs. In particular, generic system traffic belongs
+// to total but cannot become a strong notification unless it is genuinely in
+// one of this user's conversations.
+export function unreadCounts(channelState, readSeq, selfId) {
+  if (!channelState?.rows) return { related: 0, total: 0 };
+  const relatedIds = relatedEnvelopeIds(channelState, selfId);
+  let related = 0;
+  let total = 0;
+  for (const [seq, envelope] of channelState.rows) {
+    if (seq <= readSeq) continue;
+    if (selfId && envelope?.sender?.id === selfId) continue;
+    total += 1;
+    if (envelope?.id && relatedIds.has(envelope.id)) related += 1;
+  }
+  return { related, total };
 }

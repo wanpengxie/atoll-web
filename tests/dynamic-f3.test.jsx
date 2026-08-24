@@ -30,12 +30,12 @@ it('main Dynamic keeps one rolling activity line inside the processing agent bub
   const turn = runningTurn();
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 3 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-  const scopeToggle = screen.getByRole('button', { name: '与我相关' });
+  const scopeToggle = screen.getByRole('button', { name: '@我' });
   expect(scopeToggle.getAttribute('aria-pressed')).toBe('true');
   expect(screen.queryByRole('button', { name: '全部' })).toBeNull();
   fireEvent.click(scopeToggle);
   expect(screen.getByRole('button', { name: '全部' }).getAttribute('aria-pressed')).toBe('false');
-  expect(screen.queryByRole('button', { name: '与我相关' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '@我' })).toBeNull();
   expect(document.querySelector('.agent-processing-status').textContent).toContain('tool: search …');
   expect(document.querySelectorAll('.agent-turn-bubble')).toHaveLength(1);
   // 气泡里只有过程轨迹这类纯查看交互，编辑/停止这些控制恒在卡片上。
@@ -146,7 +146,7 @@ it('sender 尚未进入 roster 时按 actor_id 中间段显示名称', () => {
   const envelope = { id: 'm-actor-id', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'human:root:1787128257816', kind: 'human' }, payload: { text: '名称降级测试' } };
   const state = { channelId: 'c0', rows: new Map([[1, envelope]]), turns: new Map(), standalone: [{ seq: 1, envelope }], orphans: [], narration: [], lastSeq: 1 };
   render(<Timeline state={state} roster={[]} selfId="another-actor" pending={[]} approvalStates={{}} />);
-  fireEvent.click(screen.getByRole('button', { name: '与我相关' }));
+  fireEvent.click(screen.getByRole('button', { name: '@我' }));
   expect(screen.getByText('root')).toBeTruthy();
   expect(document.body.textContent).not.toContain('human:root:1787128257816');
 });

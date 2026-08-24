@@ -54,8 +54,8 @@
   .request-text, .audience-line, .message-attachments, .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .composer-wrap { padding: 10px; }
   .composer-tools > button, .composer-file-control, .composer-cancel-edit { width: 44px; height: 44px; }
-  .timeline-scope-bar { top: 4px; min-height: 48px; flex-basis: 48px; margin-bottom: 0; padding-right: 8px; }
-  .timeline-scope button { min-height: 44px; padding-right: 12px; padding-left: 12px; }
+  .timeline-scope-bar { top: 4px; min-height: 29px; flex-basis: 29px; margin-bottom: 0; }
+  .timeline-scope button { min-height: 26px; padding: 2px 9px; font-size: 10px; }
   .send-button { min-width: 58px; padding: 8px 12px; }
   .send-button span, .composer-help span:first-child { display: none; }
   .workspace-view-header { display: block; min-height: auto; padding: 12px; }

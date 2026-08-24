@@ -15,7 +15,7 @@ export const TIMELINE_SCOPE = Object.freeze({ all: 'all', mine: 'mine' });
 
 export const TIMELINE_SCOPE_LABELS = Object.freeze({
   [TIMELINE_SCOPE.all]: '全部',
-  [TIMELINE_SCOPE.mine]: '与我相关',
+  [TIMELINE_SCOPE.mine]: '@我',
 });
 
 function directlyMine(envelope, selfId) {

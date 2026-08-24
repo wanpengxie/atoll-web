@@ -31,8 +31,11 @@ export function ChannelList({ channels, activeChannelId, unread, wireState, me, 
         >
           <span className="channel-glyph">#</span>
           <span className="channel-name">{channel.qualified_name || channel.name || channel.id.slice(0, 8)}</span>
-          {accessLabel(channel.access) && <span className={`channel-access-label label-${channel.access}`}>{accessLabel(channel.access)}</span>}
-          {unread[channel.id] > 0 && <span className="unread-badge">{unread[channel.id] > 99 ? '99+' : unread[channel.id]}</span>}
+          <span className="channel-trailing">
+            {accessLabel(channel.access) && <span className={`channel-access-label label-${channel.access}`}>{accessLabel(channel.access)}</span>}
+            {unread[channel.id]?.related > 0 && <span className="unread-badge unread-related" aria-label={`${unread[channel.id].related} 条与我相关的未读消息`} title="与我相关的未读消息">{unread[channel.id].related > 99 ? '99+' : unread[channel.id].related}</span>}
+            {unread[channel.id]?.total > 0 && <span className="unread-total" aria-label={`${unread[channel.id].total} 条全部未读消息`} title="全部未读消息">{unread[channel.id].total > 999 ? '999+' : unread[channel.id].total}</span>}
+          </span>
         </button>
       ))}
       {!rows.length && <p className="rail-empty">{empty}</p>}

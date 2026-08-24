@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createCursors, unreadCount } from '../src/model/cursors.js';
+import { createCursors, unreadCount, unreadCounts } from '../src/model/cursors.js';
 
 class MemoryStorage {
   data = new Map();
@@ -45,5 +45,18 @@ describe('channel cursors', () => {
     expect(cursors.snapshot()).toEqual({ c0: 33, 'missing-cache': 0 });
     expect(cursors.read('c0')).toBe(33);
     expect(cursors.read('missing-cache')).toBe(0);
+  });
+
+  it('separates @me unread messages from the weak all-message count', () => {
+    const state = { rows: new Map([
+      [1, { id: 'old', visibility: 'public', audience: ['me'], sender: { id: 'agent' } }],
+      [2, { id: 'system-noise', visibility: 'public', audience: [], sender: { id: 'system' } }],
+      [3, { id: 'ask-me', visibility: 'public', audience: ['me'], sender: { id: 'agent' } }],
+      [4, { id: 'reply-to-me', parent_id: 'ask-me', visibility: 'system', audience: ['me'], sender: { id: 'system' } }],
+      [5, { id: 'mine', visibility: 'public', audience: ['agent'], sender: { id: 'me' } }],
+    ]) };
+
+    expect(unreadCounts(state, 1, 'me')).toEqual({ related: 2, total: 3 });
+    expect(unreadCounts(state, 2, 'me')).toEqual({ related: 2, total: 2 });
   });
 });

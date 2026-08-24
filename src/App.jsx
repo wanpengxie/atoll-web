@@ -3,7 +3,7 @@ import { capabilityIndexFromState } from './model/capabilities.js';
 import { ensureServerBoot } from './model/server-boot.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
 import { fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
-import { unreadCount } from './model/cursors.js';
+import { unreadCounts } from './model/cursors.js';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
 import { resumeSnapshot } from './model/feed-cache.js';
 import { createChannelState, reconcileApprovals } from './model/fold.js';
@@ -808,7 +808,7 @@ export default function App() {
   const selfId = activeRow?.selfActorId || rosterRef.current?.self(activeChannelId) || '';
   const unread = Object.fromEntries(channelList.map((channel) => [
     channel.id,
-    unreadCount(
+    unreadCounts(
       channelStatesRef.current.get(channel.id),
       cursorsRef.current.read(channel.id),
       rosterRef.current?.self(channel.id) || '',

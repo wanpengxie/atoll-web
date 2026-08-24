@@ -886,7 +886,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
                 leaveLatest();
                 setScope((value) => value === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine);
               }}
-            ><span aria-hidden="true">{scope === TIMELINE_SCOPE.mine ? '@' : '#'}</span>{TIMELINE_SCOPE_LABELS[scope]}</button>
+            >{TIMELINE_SCOPE_LABELS[scope]}</button>
           </div>
         </div>}
         {!state.rows.size && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
