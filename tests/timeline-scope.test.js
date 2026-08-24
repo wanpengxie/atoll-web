@@ -82,3 +82,32 @@ describe('timeline scope', () => {
     expect(scopeEntries(entries, { scope: TIMELINE_SCOPE.mine, state, selfId: '' })).toBe(entries);
   });
 });
+
+describe('自己动手的操作恒不进「@我」', () => {
+  const selfId = 'human:root:1';
+  const cmd = (id) => ({ id, type: 'terminal.command', kind: 'event', sender: { id: selfId, kind: 'human' }, payload: { cmd: 'make test', exit_code: 0 } });
+
+  it('终端命令在「@我」下不出现——我在终端里已经全程看着了', () => {
+    const state = { rows: new Map([['t1', cmd('t1')]]) };
+    const entries = [{ kind: 'message', envelope: cmd('t1') }];
+    const got = scopeEntries(entries, { scope: TIMELINE_SCOPE.mine, state, selfId });
+    expect(got).toEqual([]);
+  });
+
+  it('但在「全部」下照常可见——账本恒是完整的', () => {
+    const state = { rows: new Map([['t1', cmd('t1')]]) };
+    const entries = [{ kind: 'message', envelope: cmd('t1') }];
+    const got = scopeEntries(entries, { scope: TIMELINE_SCOPE.all, state, selfId });
+    expect(got.length).toBe(1);
+  });
+
+  it('恒不因为它而把整段对话捞进来', () => {
+    // 一条终端记录若被当作「我的」种子，它的 correlation 会把无关的往来拖进来。
+    const other = { id: 'x1', type: 'agent.ask', kind: 'request', sender: { id: 'agent:a:1' }, audience: ['agent:b:1'], correlation_id: 'corr-1' };
+    const mine = { ...cmd('t1'), correlation_id: 'corr-1' };
+    const state = { rows: new Map([['t1', mine], ['x1', other]]) };
+    const entries = [{ kind: 'message', envelope: other }];
+    const got = scopeEntries(entries, { scope: TIMELINE_SCOPE.mine, state, selfId });
+    expect(got).toEqual([]);
+  });
+});

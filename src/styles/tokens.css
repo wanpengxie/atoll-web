@@ -86,6 +86,26 @@
   --sans: "Avenir Next", Avenir, "Segoe UI", "PingFang SC", sans-serif;
   --serif: Georgia, "Songti SC", serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* 终端配色。终端惯例是暗底（VSCode/iTerm 在浅色 IDE 里也是暗的），而且
+     它让「这是另一台机器的表面」一眼可辨。色调按本表的暖调走，恒不用冷灰
+     ——否则它在这套配色里像块贴上去的补丁。浅色档由 TerminalView 在运行时
+     从 --text/--workspace 读，故此处只声明暗档。 */
+  --terminal-bg: #1c1a17;
+  --terminal-fg: #e8e0d4;
+  --terminal-dim: #9a8f7f;
+  --terminal-line: #33302b;
+  --terminal-hover: #2a2723;
+}
+
+/* 浅色档：终端跟随页面配色，供 TerminalView 的切换开关使用。 */
+.terminal-view[data-terminal-theme="light"] {
+  --terminal-bg: var(--workspace);
+  --terminal-fg: var(--text);
+  --terminal-dim: var(--text-muted);
+  --terminal-line: var(--line-subtle);
+  --terminal-hover: var(--surface-muted);
+
   font-family: var(--sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;

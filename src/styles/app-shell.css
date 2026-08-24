@@ -66,15 +66,28 @@
 .channel-menu-popover { position: absolute; z-index: 40; top: calc(100% + 6px); right: 0; display: grid; width: 170px; padding: 5px; border: 1px solid var(--line-control-strong); border-radius: var(--radius-object); background: var(--raised); box-shadow: var(--shadow-popover); }
 .channel-menu-popover button { padding: 8px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer; font-size: 11px; }
 .channel-menu-popover button:hover { background: var(--surface-muted); }
-.channel-view-tabs { grid-row: 2; display: flex; min-height: 38px; align-items: end; gap: 24px; padding: 0 18px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
+.channel-view-tabs { grid-row: 2; display: flex; min-height: 38px; align-items: end; gap: 24px; padding: 0 132px 0 18px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
 .channel-view-tabs button { align-self: stretch; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 12px; }
 .channel-view-tabs button:hover { color: var(--text); }
 .channel-view-tabs button.active { border-bottom-color: var(--text); color: var(--text); font-weight: 650; }
+.terminal-split-toggle { z-index: 1; grid-row: 2; justify-self: end; align-self: center; display: inline-flex; min-height: 28px; align-items: center; gap: 6px; margin-right: 18px; padding: 4px 8px; border: 1px solid var(--line-control-strong); border-radius: 6px; background: var(--surface-soft); color: var(--text-muted); cursor: pointer; font-size: 11px; }
+.terminal-split-toggle:hover, .terminal-split-toggle:focus-visible, .terminal-split-toggle.active { border-color: var(--line-control); background: var(--surface-selected); color: var(--text); }
+.terminal-split-toggle.active { box-shadow: inset 2px 0 0 var(--channel-marker); }
+.terminal-split-toggle:disabled { opacity: .4; cursor: not-allowed; }
+.terminal-split-toggle > span { color: var(--accent); font-size: 13px; }
+.terminal-split-toggle kbd { padding: 1px 4px; border: 1px solid var(--line-subtle); border-radius: 4px; background: var(--raised); color: var(--text-dim); font: 9px var(--mono); }
 .status-stack { grid-row: 3; display: grid; }
 .top-error { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 16px; border-bottom: 1px solid var(--danger-line); background: var(--danger-bg); color: var(--danger); font-size: 12px; }
 .top-error button { border: 0; background: none; color: inherit; cursor: pointer; }
 
 .workspace-view { grid-row: 4 / 6; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; background: var(--workspace); }
+.dynamic-workspace { grid-row: 4 / 6; display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
+.dynamic-workspace.terminal-split-open { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.dynamic-message-pane { position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); overflow: hidden; background: var(--workspace); }
+.dynamic-message-pane > .timeline { grid-row: 1; }
+.dynamic-message-pane > .channel-private-empty { grid-row: 1; }
+.dynamic-workspace > .terminal-view { grid-row: 1; }
+.dynamic-workspace.terminal-split-open > .terminal-view { grid-column: 2; border-left: 1px solid var(--terminal-line); }
 .workspace-task-view { grid-template-rows: auto minmax(0, 1fr); }
 .workspace-view-header { display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 18px; border-bottom: 1px solid var(--line-subtle); }
 .workspace-view-header h2 { margin: 0; color: var(--text); font: 600 18px/1.2 var(--sans); }

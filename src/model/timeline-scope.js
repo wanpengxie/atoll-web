@@ -18,6 +18,17 @@ export const TIMELINE_SCOPE_LABELS = Object.freeze({
   [TIMELINE_SCOPE.mine]: '@我',
 });
 
+// 「@我」要的是我参与的**对话**。有些消息作者虽是我，却恒不是对话——它们是
+// 我自己动手的记录，我在那件事发生的地方（终端）已经全程看着了，账本上留一份
+// 是为了让 agent 读得到，恒不是为了再讲给我听一遍。
+//
+// 这类消息在「全部」下照常可见——账本恒是完整的，被收窄的只是这一个视图。
+const SELF_OPERATION_TYPES = new Set(['terminal.command']);
+
+function isSelfOperation(envelope) {
+  return SELF_OPERATION_TYPES.has(envelope?.type);
+}
+
 function directlyMine(envelope, selfId) {
   if (!selfId || !envelope) return false;
   if (envelope.sender?.id === selfId) return true;
@@ -31,6 +42,7 @@ export function relatedEnvelopeIds(state, selfId) {
   const ids = new Set();
   const correlations = new Set();
   for (const envelope of rows) {
+    if (isSelfOperation(envelope)) continue;
     if (!directlyMine(envelope, selfId)) continue;
     if (envelope.id) ids.add(envelope.id);
     const correlation = correlationOf(envelope);
@@ -39,6 +51,7 @@ export function relatedEnvelopeIds(state, selfId) {
   const visible = new Set(ids);
   for (const envelope of rows) {
     if (!envelope?.id || visible.has(envelope.id)) continue;
+    if (isSelfOperation(envelope)) continue;
     if (envelope.parent_id && ids.has(envelope.parent_id)) visible.add(envelope.id);
     else if (correlations.has(correlationOf(envelope))) visible.add(envelope.id);
   }
@@ -71,6 +84,9 @@ export function scopeEntries(entries, { scope, state, selfId }) {
   const visible = relatedEnvelopeIds(state, selfId);
   return entries.filter((entry) => {
     if (entry.kind === 'narration') return true;
-    return entryEnvelopes(entry).some((envelope) => envelope?.id && visible.has(envelope.id));
+    const envelopes = entryEnvelopes(entry);
+    // 整条都是我自己的操作 → 恒不出现；混在一段对话里则跟随那段对话。
+    if (envelopes.length > 0 && envelopes.every(isSelfOperation)) return false;
+    return envelopes.some((envelope) => envelope?.id && visible.has(envelope.id));
   });
 }

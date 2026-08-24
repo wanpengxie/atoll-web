@@ -1,7 +1,9 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import fsPath from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
+import { createScanner, spawnPTY, stripControl } from './pty.mjs';
 import {
   CONTRACT_VERSION,
   cookieValue,
@@ -1949,8 +1951,137 @@ export function createMockServer({
   });
 
   const webSockets = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
+  // 终端腿：独立 WebSocketServer，与账本 feed 互不相扰——与真节点同形
+  // （见 .dalek/pm/terminal-line-design.md §4.5）。
+  const ptySockets = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
+  const ptySessions = new Map();
+  const PTY_GRACE_MS = 60_000;
+  const integrationPath = process.env.ATOLL_MOCK_SHELL_INTEGRATION
+    || fsPath.resolve(process.cwd(), '../atoll/scripts/shell/atoll-integration.zsh');
+
+  // 命令记录落进 mock 的账本，作者是 root——与真节点一样，
+  // 身份由服务端定，恒不由终端自称。这样在时间轴上就能看到完整闭环。
+  function recordCommand(channelId, rec) {
+    // 作者恒是这个频道里的「我」，与 seededHistory 用的是同一条规则——
+    // 真节点由 runtime 从 subject slot 盖章，mock 这里由服务端定，
+    // 两者共同点是：恒不由终端自称。
+    const selfId = channelId === 'c0' || channelId === 'c0.lobby'
+      ? ROOT_ACTOR_ID
+      : `root-${channelId.split('.').at(-1)}`;
+    append(channelId, envelope({
+      id: `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      channelId,
+      sender: { kind: 'human', id: selfId },
+      kind: 'event',
+      type: 'terminal.command',
+      payload: rec,
+    }));
+  }
+
+  function servePTY(ws, url) {
+    const channelId = url.searchParams.get('channel_id') || 'c0';
+    const cols = Number(url.searchParams.get('cols')) || 80;
+    const rows = Number(url.searchParams.get('rows')) || 24;
+    const want = url.searchParams.get('session') || '';
+
+    let session = want ? ptySessions.get(want) : null;
+    if (session && session.grace) { clearTimeout(session.grace); session.grace = null; }
+    // 接管而非拒绝：切频道/刷新回来时，旧 socket 常常还没断干净。拒绝会把人
+    // 推去开一个新 shell，而那正是要避免的事——同一个 caller 恒可接管自己的
+    // 会话，被顶掉的旧 socket 静默关闭。
+    if (session && session.ws) {
+      const stale = session.ws;
+      session.ws = null;
+      try { stale.close(1000, 'superseded'); } catch { /* gone */ }
+    }
+    if (!session) {
+      const id = `pty-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const child = spawnPTY({ cols, rows, integrationPath });
+      session = { id, channelId, child, ws: null, grace: null, scan: createScanner(), tail: '', inCmd: false, openAt: 0 };
+      ptySessions.set(id, session);
+
+      child.stdout.on('data', (buf) => onPTYOutput(session, buf));
+      child.stderr.on('data', (buf) => onPTYOutput(session, buf));
+      const end = (reason) => {
+        if (session.ended) return;
+        session.ended = reason;
+        // 与真节点同形：正常结束恒须带 reason，否则前端分不清
+        // 「shell 退出」与「网络断」，会静默重连进第二个 shell。
+        if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+          try { session.ws.close(1000, reason); } catch { /* gone */ }
+        }
+        ptySessions.delete(session.id);
+      };
+      child.on('exit', (code) => end(code ? `shell exited (${code})` : 'shell exited'));
+      child.on('error', () => end('shell failed to start'));
+      // 没有观众也要上钟：开了却没人来的会话恒不得泄漏一个 shell。
+      session.grace = setTimeout(() => { try { child.kill('SIGHUP'); } catch { /* gone */ } }, PTY_GRACE_MS);
+    }
+
+    session.ws = ws;
+    ws.send(JSON.stringify({ type: 'ready', session: session.id }));
+
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) { session.child.stdin.write(data); return; }
+      let msg;
+      try { msg = JSON.parse(data.toString()); } catch { return; }
+      if (msg.type === 'input') session.child.stdin.write(msg.data);
+      else if (msg.type === 'resize') {
+        // script(1) 不转发窗口尺寸，mock 里只记不改——真节点走 TIOCSWINSZ。
+        session.cols = msg.cols; session.rows = msg.rows;
+      } else if (msg.type === 'close') {
+        try { session.child.kill('SIGHUP'); } catch { /* gone */ }
+      }
+    });
+    ws.on('close', () => {
+      if (session.ws !== ws) return;
+      session.ws = null;
+      // 保住进程，恒不保住输出：断线不杀 shell，宽限期内回来接同一个。
+      if (!session.ended) {
+        session.grace = setTimeout(() => {
+          try { session.child.kill('SIGHUP'); } catch { /* gone */ }
+          ptySessions.delete(session.id);
+        }, PTY_GRACE_MS);
+      }
+    });
+  }
+
+  function onPTYOutput(session, buf) {
+    const events = session.scan(buf);
+    let prev = 0;
+    for (const ev of events) {
+      if (session.inCmd) session.tail += buf.slice(prev, ev.offset).toString();
+      prev = ev.offset;
+      if (ev.kind === 'start') { session.inCmd = true; session.tail = ''; session.openAt = Date.now(); }
+      else if (ev.kind === 'end') {
+        recordCommand(session.channelId, {
+          session_id: session.id,
+          cmd: ev.text,
+          cwd: ev.cwd,
+          exit_code: ev.exitCode,
+          duration_ms: session.openAt ? Date.now() - session.openAt : 0,
+          output_tail: stripControl(session.tail).slice(-4000),
+        });
+        session.inCmd = false; session.tail = '';
+      }
+    }
+    if (session.inCmd && prev < buf.length) session.tail += buf.slice(prev).toString();
+    // 字节恒原样透传：标记是带内的，xterm.js 自己也要消费它。
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) session.ws.send(buf);
+  }
+
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url, 'http://mock.local');
+    if (url.pathname === '/pty') {
+      if (!authenticated(request)) {
+        const body = JSON.stringify({ code: 'not_authenticated', detail: 'invalid session' });
+        socket.write(`HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+        socket.destroy();
+        return;
+      }
+      ptySockets.handleUpgrade(request, socket, head, (ws) => servePTY(ws, url));
+      return;
+    }
     if (url.pathname !== '/ws') {
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       socket.destroy();
