@@ -26,8 +26,12 @@ it('main Dynamic keeps one rolling activity line inside the processing agent bub
   const turn = runningTurn();
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 3 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-  expect(screen.getByRole('button', { name: '与我相关' }).getAttribute('aria-pressed')).toBe('true');
+  const scopeToggle = screen.getByRole('button', { name: '与我相关' });
+  expect(scopeToggle.getAttribute('aria-pressed')).toBe('true');
+  expect(screen.queryByRole('button', { name: '全部' })).toBeNull();
+  fireEvent.click(scopeToggle);
   expect(screen.getByRole('button', { name: '全部' }).getAttribute('aria-pressed')).toBe('false');
+  expect(screen.queryByRole('button', { name: '与我相关' })).toBeNull();
   expect(document.querySelector('.agent-processing-status').textContent).toContain('tool: search …');
   expect(document.querySelectorAll('.agent-turn-bubble')).toHaveLength(1);
   // 气泡里只有过程轨迹这类纯查看交互，编辑/停止这些控制恒在卡片上。
@@ -45,6 +49,21 @@ it('completed answer stays in the agent bubble immediately after its user messag
   expect(children.indexOf(card.querySelector('.request-message'))).toBeLessThan(children.indexOf(card.querySelector('.agent-turn-bubble')));
   expect(screen.getByText('最终答复')).toBeTruthy();
   expect(card.querySelector('.turn-inline-detail')).toBeNull();
+});
+
+it('Agent 最终答复可以建立临时回复目标，处理中气泡不提供回复', async () => {
+  const onReply = vi.fn();
+  const turn = runningTurn();
+  const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 3 };
+  const view = render(<Timeline state={state} roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" onReply={onReply} />);
+  expect(screen.queryByRole('button', { name: /回复/ })).toBeNull();
+
+  turn.status = 'completed';
+  turn.terminal = { id: 'terminal-reply', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '可以回复我' } };
+  state.lastSeq = 4;
+  view.rerender(<Timeline state={state} roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" onReply={onReply} />);
+  fireEvent.click(screen.getByRole('button', { name: /回复/ }));
+  expect(onReply).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'terminal-reply', senderId: 'agent-1', senderName: '研究员' }));
 });
 
 it('agent.new 成功后只显示一条轻量确认，不伪装成用户聊天消息', () => {
@@ -83,7 +102,7 @@ it('sender 尚未进入 roster 时按 actor_id 中间段显示名称', () => {
   const envelope = { id: 'm-actor-id', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'human:root:1787128257816', kind: 'human' }, payload: { text: '名称降级测试' } };
   const state = { channelId: 'c0', rows: new Map([[1, envelope]]), turns: new Map(), standalone: [{ seq: 1, envelope }], orphans: [], narration: [], lastSeq: 1 };
   render(<Timeline state={state} roster={[]} selfId="another-actor" pending={[]} approvalStates={{}} />);
-  fireEvent.click(screen.getByRole('button', { name: '全部' }));
+  fireEvent.click(screen.getByRole('button', { name: '与我相关' }));
   expect(screen.getByText('root')).toBeTruthy();
   expect(document.body.textContent).not.toContain('human:root:1787128257816');
 });
@@ -197,6 +216,51 @@ it('Agent 调用按 parent_id 渲染消息树，子过程只留在自己的节�
 });
 
 describe('F3 Composer', () => {
+  it('回复目标独立于正文 mention，并按 sender kind 自动选择消息词', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue('reply-message');
+    const onReplySent = vi.fn();
+    const onCancelReply = vi.fn();
+    render(<Composer
+      channelId="c0"
+      roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'peer', kind: 'human', name: '同事' }]}
+      selfId="me"
+      replyTarget={{ sourceId: 'source-1', senderId: 'peer', senderKind: 'human', senderName: '同事', excerpt: '请帮我确认一下' }}
+      onCancelReply={onCancelReply}
+      onReplySent={onReplySent}
+      onSend={onSend}
+    />);
+
+    expect(screen.getByText('回复 @同事')).toBeTruthy();
+    expect(document.querySelector('[data-type="mention"]')).toBeNull();
+    await user.type(screen.getByRole('textbox', { name: '消息' }), '收到，我来处理{Enter}');
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ msgType: 'human.message', audience: ['peer'] }));
+    expect(onReplySent).toHaveBeenCalledOnce();
+  });
+
+  it('回复模式阻止向其他 mention 拆发，取消回复不清空正文', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    const onCancelReply = vi.fn();
+    render(<Composer
+      channelId="c0"
+      roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }, { id: 'agent-2', kind: 'agent', name: '执行员' }]}
+      selfId="me"
+      replyTarget={{ sourceId: 'source-2', senderId: 'agent-1', senderKind: 'agent', senderName: '研究员', excerpt: '原始答复' }}
+      onCancelReply={onCancelReply}
+      onSend={onSend}
+    />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '@执行');
+    await user.click(screen.getByRole('option', { name: /执行员/ }));
+    await user.type(input, '改由他处理{Enter}');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toContain('回复只能发送给 @研究员');
+    await user.click(screen.getByRole('button', { name: '取消回复' }));
+    expect(onCancelReply).toHaveBeenCalledOnce();
+    expect(input.textContent).toContain('改由他处理');
+  });
+
   it('用 / 选择后端声明的 new 命令，第一次 Enter 只选中、第二次才发送', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn().mockResolvedValue('message-new');

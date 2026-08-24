@@ -4,6 +4,15 @@
 .composer-surface:focus-within { border-color: var(--line-control-strong); box-shadow: 0 1px 3px var(--shadow), 0 0 0 2px var(--accent-bg); }
 .composer-surface.is-editing-message { border-color: var(--line-control-strong); background: var(--raised); box-shadow: 0 4px 18px var(--shadow-2); }
 .composer-surface.is-file-dragging { border-color: var(--accent); background: var(--accent-bg); box-shadow: 0 0 0 2px var(--accent-bg); }
+.composer-reply { display: grid; min-width: 0; grid-template-columns: 22px minmax(0, 1fr) 30px; align-items: center; gap: 7px; margin: 1px 2px 5px; padding: 6px 7px; border-left: 2px solid var(--accent); border-radius: 7px; background: var(--surface-muted); }
+.composer-reply > span { color: var(--accent); font-size: 14px; }
+.composer-reply > div { display: grid; min-width: 0; gap: 1px; }
+.composer-reply strong, .composer-reply small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-reply strong { color: var(--text); font-size: 11px; }
+.composer-reply small { color: var(--text-muted); font-size: 10px; }
+.composer-reply > button { display: grid; width: 30px; height: 30px; place-content: center; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 17px; }
+.composer-reply > button:hover, .composer-reply > button:focus-visible { background: var(--surface-soft); color: var(--text); }
+.composer-reply-route { max-width: 120px; overflow: hidden; padding: 5px 8px; border-radius: var(--pill); background: var(--surface-muted); color: var(--text); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .composer-drop-hint { position: absolute; z-index: 3; inset: 5px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px dashed var(--accent); border-radius: 10px; background: var(--input); color: var(--accent); pointer-events: none; }
 .composer-drop-hint strong { font-size: 12px; font-weight: 650; }
 .composer-input-area { position: relative; min-width: 0; }
@@ -101,6 +110,8 @@
 .command-menu small { overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 640px) {
+  .composer-reply { grid-template-columns: 22px minmax(0, 1fr) 44px; }
+  .composer-reply > button { width: 44px; height: 44px; }
   .model-selector-trigger { min-width: 44px; height: 44px; padding: 0 9px; }
   .model-selector-current span { display: none; }
   .model-selector-context-compact > span { display: none; }

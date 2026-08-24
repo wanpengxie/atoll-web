@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import autoAnimate from '@formkit/auto-animate';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
@@ -6,6 +7,7 @@ import { formatArtifactSize } from '../model/artifacts.js';
 import { orderedTimeline } from '../model/fold.js';
 import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
+import { replyTargetOf } from '../model/reply-target.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { controlLabel, extraControls, taskControlContext } from '../model/task-controls.js';
 import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
@@ -253,9 +255,103 @@ function AttachmentCards({ attachments = [], onDownload, onPreview }) {
   })}</section>;
 }
 
-function MessageActions({ onCreateTask }) {
-  if (!onCreateTask) return null;
-  return <div className="message-actions" aria-label="条目操作"><button type="button" onClick={onCreateTask}>创建任务</button></div>;
+function MessageActions({ onReply, onCreateTask, onMobileActions }) {
+  if (!onReply && !onCreateTask) return null;
+  return <div className="message-actions" aria-label="条目操作">
+    {onReply && <button type="button" className="message-action-desktop" onClick={onReply}>↩ 回复</button>}
+    {onCreateTask && <button type="button" className="message-action-desktop" onClick={onCreateTask}>创建任务</button>}
+    {onMobileActions && <button type="button" className="message-action-mobile" aria-label="更多消息操作" onClick={onMobileActions}>•••</button>}
+  </div>;
+}
+
+function MessageActionSheet({ open, targetName, onReply, onCreateTask, onClose }) {
+  if (!open || typeof document === 'undefined') return null;
+  return createPortal(<div className="message-action-sheet-host">
+    <button type="button" className="message-action-sheet-backdrop" aria-label="关闭消息操作" onClick={onClose} />
+    <section className="message-action-sheet" role="dialog" aria-modal="true" aria-label={`对 ${targetName} 的消息操作`}>
+      <header><strong>{targetName}</strong><button type="button" aria-label="关闭消息操作" onClick={onClose}>×</button></header>
+      {onReply && <button type="button" onClick={() => { onClose(); onReply(); }}>↩ 回复</button>}
+      {onCreateTask && <button type="button" onClick={() => { onClose(); onCreateTask(); }}>创建任务</button>}
+    </section>
+  </div>, document.body);
+}
+
+function ReplyableMessageFrame({ replyTarget, onReply, onCreateTask, children, className = '', ...props }) {
+  const gestureRef = useRef(null);
+  const longPressRef = useRef(0);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const reply = replyTarget && onReply ? () => onReply(replyTarget) : null;
+
+  function clearLongPress() {
+    clearTimeout(longPressRef.current);
+    longPressRef.current = 0;
+  }
+
+  function finishGesture(event, cancelled = false) {
+    clearLongPress();
+    const gesture = gestureRef.current;
+    gestureRef.current = null;
+    setSwipeOffset(0);
+    if (!cancelled && gesture && reply) {
+      const dx = event.clientX - gesture.x;
+      const dy = event.clientY - gesture.y;
+      if (dx >= 52 && Math.abs(dx) > Math.abs(dy) * 1.25) reply();
+    }
+  }
+
+  function onPointerDown(event) {
+    if (!reply || event.pointerType === 'mouse' || event.target.closest('a, button, input, textarea, select, [contenteditable="true"]')) return;
+    gestureRef.current = { x: event.clientX, y: event.clientY };
+    longPressRef.current = window.setTimeout(() => {
+      gestureRef.current = null;
+      setSwipeOffset(0);
+      setSheetOpen(true);
+      navigator.vibrate?.(10);
+    }, 480);
+  }
+
+  function onPointerMove(event) {
+    const gesture = gestureRef.current;
+    if (!gesture) return;
+    const dx = event.clientX - gesture.x;
+    const dy = event.clientY - gesture.y;
+    if (Math.abs(dy) > 12 || dx < -8) {
+      clearLongPress();
+      setSwipeOffset(0);
+      return;
+    }
+    if (dx > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+      clearLongPress();
+      setSwipeOffset(Math.min(64, dx));
+    }
+  }
+
+  const actions = <MessageActions onReply={reply} onCreateTask={onCreateTask} onMobileActions={() => setSheetOpen(true)} />;
+  return <>
+    <MessageFrame
+      {...props}
+      className={`replyable-message${swipeOffset ? ' is-swiping' : ''} ${className}`.trim()}
+      actions={actions}
+      style={{ '--reply-swipe-offset': `${swipeOffset}px` }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={(event) => finishGesture(event)}
+      onPointerCancel={(event) => finishGesture(event, true)}
+      onContextMenu={(event) => {
+        if (!reply || !globalThis.matchMedia?.('(hover: none)').matches) return;
+        event.preventDefault();
+        setSheetOpen(true);
+      }}
+      onKeyDown={(event) => {
+        if (reply && event.target === event.currentTarget && event.key.toLowerCase() === 'r') {
+          event.preventDefault();
+          reply();
+        }
+      }}
+    >{children}</MessageFrame>
+    <MessageActionSheet open={sheetOpen} targetName={replyTarget?.senderName || '消息'} onReply={reply} onCreateTask={onCreateTask} onClose={() => setSheetOpen(false)} />
+  </>;
 }
 
 // 一次被叫出来的调用。行本身就是它的开关：点开看它自己的结果，就地展开，不劫持
@@ -329,7 +425,7 @@ function AgentRequestQuote({ request, names, onDownload, onPreview }) {
   </blockquote>;
 }
 
-function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, quotedRequest = null, onDownload, onPreview, compact = false, hasThreadChildren = false }) {
+function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, onDownload, onPreview, onReply, compact = false, hasThreadChildren = false }) {
   const request = turn.request;
   const terminal = turn.terminal;
   const stopped = terminal?.payload?.status === 'failed' && terminal.payload?.error_code === 'interrupted';
@@ -352,7 +448,10 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, quote
     <div className="agent-thread-identity-row">{identity}{heading}</div>
     <div className="agent-thread-content">{content}</div>
   </article>;
-  return <MessageFrame className={className} contentClassName="response-body" identity={identity}>{heading}{content}</MessageFrame>;
+  const replyTarget = terminal && terminal.payload?.status === 'completed'
+    ? replyTargetOf(terminal, { roster, selfId, fallbackSenderId: request.audience?.[0], fallbackSenderKind: 'agent' })
+    : null;
+  return <ReplyableMessageFrame replyTarget={replyTarget} onReply={onReply} className={className} contentClassName="response-body" identity={identity}>{heading}{content}</ReplyableMessageFrame>;
 }
 
 function hasLaterThreadSibling(items, index, depth) {
@@ -406,7 +505,7 @@ function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
   </ol>;
 }
 
-function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, selfId, access, frozen, editActive, editSession = null, onControl, onEdit, onDownload, onPreview }) {
+function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, frozen, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const requestText = requestView.text;
@@ -422,23 +521,24 @@ function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount 
       <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
     </MessageFrame>
     {!turn.terminal && !editSession && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
-    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
+    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} roster={roster} selfId={selfId} onReply={onReply} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
     <AgentThreadMessages thread={thread} names={names} onDownload={onDownload} onPreview={onPreview} />
   </section>;
 }
 
-function TurnCard({ turn, thread = [], roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, editSession = null, editActive = false, queuePosition = 0, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview, onOpen, onCreateTask, onCloseDetail }) {
+function TurnCard({ turn, thread = [], roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, editSession = null, editActive = false, queuePosition = 0, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview, onOpen, onCreateTask, onReply, onCloseDetail }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
   const controlContext = taskControlContext(turn, { selfId, access });
+  const replyTarget = replyTargetOf(request, { roster, selfId });
   return (
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
-      <MessageFrame className="request-message" actions={<MessageActions onCreateTask={onCreateTask} />} identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
+      <ReplyableMessageFrame replyTarget={replyTarget} onReply={onReply} onCreateTask={onCreateTask} className="request-message" identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
           <div className="request-text"><MarkdownContent text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
-      </MessageFrame>
+      </ReplyableMessageFrame>
       <ThreadCalls thread={thread} names={names} />
       {processCount(turn) > 0 && <ContentFrame contained><button type="button" className={`turn-process-summary ${turn.terminal ? 'completed' : 'active'}`} onClick={onOpen} aria-expanded={detailsOpen}>
           <span className={turn.terminal ? 'pulse done' : 'pulse'} />
@@ -483,13 +583,14 @@ function Narration({ rows, names }) {
   );
 }
 
-function Standalone({ envelope, names, selfId, continuation = false, onCreateTask }) {
+function Standalone({ envelope, names, roster, selfId, continuation = false, onCreateTask, onReply }) {
   const view = messagePresentation(envelope);
   const self = envelope.sender?.id === selfId;
+  const replyTarget = replyTargetOf(envelope, { roster, selfId });
   return (
-    <MessageFrame className={`standalone-row ${continuation ? 'continuation' : ''} ${self ? 'self' : ''}`} actions={<MessageActions onCreateTask={onCreateTask} />} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
+    <ReplyableMessageFrame replyTarget={replyTarget} onReply={onReply} onCreateTask={onCreateTask} className={`standalone-row ${continuation ? 'continuation' : ''} ${self ? 'self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
       {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownContent text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}
-    </MessageFrame>
+    </ReplyableMessageFrame>
   );
 }
 
@@ -545,7 +646,7 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, turnDetail, onComposerEditChange }) {
+export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
   const [page, setPage] = useState(0);
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   const [editing, setEditing] = useState(null);
@@ -766,13 +867,15 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
       <div className="timeline-inner" ref={contentRef}>
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">
-            {Object.values(TIMELINE_SCOPE).map((value) => <button
-              key={value}
+            <button
               type="button"
-              className={scope === value ? 'active' : ''}
-              aria-pressed={scope === value}
-              onClick={() => { leaveLatest(); setScope(value); }}
-            >{TIMELINE_SCOPE_LABELS[value]}</button>)}
+              aria-pressed={scope === TIMELINE_SCOPE.mine}
+              title={`切换为${TIMELINE_SCOPE_LABELS[scope === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine]}`}
+              onClick={() => {
+                leaveLatest();
+                setScope((value) => value === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine);
+              }}
+            ><span aria-hidden="true">{scope === TIMELINE_SCOPE.mine ? '@' : '#'}</span>{TIMELINE_SCOPE_LABELS[scope]}</button>
           </div>
         </div>}
         {!state.rows.size && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
@@ -812,10 +915,10 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const common = { turn: entry.turn, names, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment) };
+            const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onReply };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
-            } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onOpen={() => {
+            } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onReply={onReply} onOpen={() => {
               if (detailsOpen) turnDetail?.onClose?.();
               else {
                 // Expanding is a local reading action, not a new ledger entry. Stop the
@@ -828,7 +931,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} selfId={selfId} continuation={continuation} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
           }
           const key = entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`;
           return <React.Fragment key={key}>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</React.Fragment>;

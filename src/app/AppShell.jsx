@@ -22,6 +22,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const [composerEdit, setComposerEdit] = useState(null);
+  const [replyTargets, setReplyTargets] = useState({});
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
@@ -59,6 +60,30 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }, [mobileChannelsOpen]);
 
   useEffect(() => setComposerEdit(null), [navigation.activeChannelId]);
+  useEffect(() => {
+    if (!composerEdit || !navigation.activeChannelId) return;
+    setReplyTargets((current) => {
+      if (!current[navigation.activeChannelId]) return current;
+      const next = { ...current };
+      delete next[navigation.activeChannelId];
+      return next;
+    });
+  }, [Boolean(composerEdit), navigation.activeChannelId]);
+
+  const replyTarget = replyTargets[navigation.activeChannelId] || null;
+  function beginReply(target) {
+    if (!target || composerEdit || !navigation.activeChannelId) return;
+    setReplyTargets((current) => ({ ...current, [navigation.activeChannelId]: target }));
+  }
+  function clearReply() {
+    if (!navigation.activeChannelId) return;
+    setReplyTargets((current) => {
+      if (!current[navigation.activeChannelId]) return current;
+      const next = { ...current };
+      delete next[navigation.activeChannelId];
+      return next;
+    });
+  }
 
   function moveViewTab(event, index) {
     const views = ['dynamic', 'artifacts', 'tasks'];
@@ -121,8 +146,8 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
         {ACCESS_MESSAGE[workspace.access] && <div className={`access-banner access-${workspace.access}`} role="status">{ACCESS_MESSAGE[workspace.access]}{isMemberAccess(workspace.access) && !workspace.selfId && <span> 当前频道中的“我”仍在确认，首次发送入账后会自动识别。</span>}</div>}
       </div>
       {workspace.view === 'dynamic' && <>
-        {contentVisible ? <Timeline state={workspace.state} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
-        <Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={workspace.onDraftChange} disabled={writeDisabled} disabledReason={disabledReason} onSend={workspace.onSend} onRetry={workspace.onRetry} activeAgentTurn={runningAgentTurn} onTaskControl={workspace.onTaskControl} attachments={workspace.attachments} onPreviewAttachment={workspace.onPreviewAttachment} onRemoveAttachment={workspace.onRemoveAttachment} onClearAttachments={workspace.onClearAttachments} onUploadAttachments={workspace.onUploadAttachments} onOpenChannelFiles={workspace.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} />
+        {contentVisible ? <Timeline state={workspace.state} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
+        <Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={workspace.onDraftChange} disabled={writeDisabled} disabledReason={disabledReason} onSend={workspace.onSend} onRetry={workspace.onRetry} activeAgentTurn={runningAgentTurn} onTaskControl={workspace.onTaskControl} attachments={workspace.attachments} onPreviewAttachment={workspace.onPreviewAttachment} onRemoveAttachment={workspace.onRemoveAttachment} onClearAttachments={workspace.onClearAttachments} onUploadAttachments={workspace.onUploadAttachments} onOpenChannelFiles={workspace.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={clearReply} onReplySent={clearReply} />
       </>}
       {workspace.view === 'artifacts' && workspace.channel && (contentVisible ? <ArtifactsView channel={workspace.channel} daemons={workspace.resources.daemons} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} /> : <section id="workspace-panel-artifacts" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-artifacts"><strong>文件不可访问</strong><p>恢复频道访问后才能查看频道挂载目录。</p></section>)}
       {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}

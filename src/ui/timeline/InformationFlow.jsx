@@ -1,7 +1,7 @@
 import React from 'react';
 
-export function MessageFrame({ className = '', actions = null, identity = null, contentClassName = '', children }) {
-  return <article className={`message-row ${className}`.trim()} tabIndex="0">
+export function MessageFrame({ className = '', actions = null, identity = null, contentClassName = '', children, ...articleProps }) {
+  return <article className={`message-row ${className}`.trim()} tabIndex="0" {...articleProps}>
     {actions}
     <div className="information-flow-avatar-slot">{identity}</div>
     <div className={`message-body information-flow-content ${contentClassName}`.trim()}>{children}</div>

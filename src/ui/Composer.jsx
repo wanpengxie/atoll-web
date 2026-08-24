@@ -8,6 +8,7 @@ import Suggestion from '@tiptap/suggestion';
 import { FolderOpen, Upload, X } from 'lucide-react';
 import { actorDisplayName } from '../model/actor-display.js';
 import { formatArtifactSize } from '../model/artifacts.js';
+import { replyRecipient } from '../model/reply-target.js';
 import { resolveManagementActors } from '../model/management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
 import { ModelSelector } from './ModelSelector.jsx';
@@ -116,7 +117,7 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null }) {
+export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
@@ -130,6 +131,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const layoutTransitionTimerRef = useRef(0);
   const lastDraftFingerprintRef = useRef(JSON.stringify(initialDraft.doc));
   const editModeRef = useRef(editMode);
+  const replyTargetRef = useRef(replyTarget);
+  const cancelReplyRef = useRef(onCancelReply);
   const mentionContextRef = useRef({ roster: [], selfId: '', selectedIds: [], activeCandidate: 0, editing: false });
   const suggestionSessionRef = useRef(null);
   const commandContextRef = useRef({ types: [], activeCandidate: 0 });
@@ -371,6 +374,11 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         role: 'textbox',
       },
       handleKeyDown: (view, event) => {
+        if (event.key === 'Escape' && replyTargetRef.current) {
+          event.preventDefault();
+          cancelReplyRef.current?.();
+          return true;
+        }
         if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return false;
         // 候选激活后交还给 Suggestion 插件；普通 Enter 才进入发送动作。
         if (suggestionSessionRef.current || commandSessionRef.current) return false;
@@ -391,6 +399,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     },
   }, [channelId]);
   editModeRef.current = editMode;
+  replyTargetRef.current = replyTarget;
+  cancelReplyRef.current = onCancelReply;
   const mentions = useMemo(() => mentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean), [mentionIds, roster]);
   const mentionedAgents = useMemo(() => mentions.filter((row) => row.kind === 'agent'), [mentions]);
   // 参数面板目标（判据链 §2.1）：mention 环在此判（唯一 agent → 它；多 agent →
@@ -407,7 +417,12 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     return { kind: 'none' };
   }, [mentionedAgents, mentions, fallbackAgent, roster]);
   const parameterAgent = parameterTarget.kind === 'single' ? parameterTarget.agent : null;
-  useEffect(() => { agentSelection?.onTargetChange?.(parameterAgent?.id || ''); }, [parameterAgent?.id, agentSelection?.onTargetChange]);
+  const currentReplyRecipient = useMemo(() => replyRecipient(replyTarget, roster), [replyTarget?.senderId, roster]);
+  const effectiveParameterAgent = currentReplyRecipient?.kind === 'agent' ? currentReplyRecipient : replyTarget ? null : parameterAgent;
+  const effectiveParameterTarget = currentReplyRecipient?.kind === 'agent'
+    ? { kind: 'single', agent: currentReplyRecipient }
+    : replyTarget ? { kind: 'none' } : parameterTarget;
+  useEffect(() => { agentSelection?.onTargetChange?.(effectiveParameterAgent?.id || ''); }, [effectiveParameterAgent?.id, agentSelection?.onTargetChange]);
   const matchingCandidates = (searchQuery) => mentionCandidates(roster, selfId, mentions.map((row) => row.id), searchQuery || '');
   const candidates = useMemo(() => matchingCandidates(query), [mentions, query, roster, selfId]);
   const commands = useMemo(() => commandCandidates(agentSelection?.supportedTypes, commandQuery), [agentSelection?.supportedTypes, commandQuery]);
@@ -418,6 +433,11 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
 
   useEffect(() => { setActiveCandidate(0); }, [query]);
   useEffect(() => { setActiveCommandCandidate(0); }, [commandQuery]);
+  useEffect(() => {
+    if (!replyTarget || editMode || !editor) return;
+    setError('');
+    requestAnimationFrame(() => editor.commands.focus('end'));
+  }, [replyTarget?.sourceId, editMode, editor]);
 
   const editTargetId = editMode?.session?.targetId || '';
   const editBusy = Boolean(editMode && editMode.session?.phase !== 'editing');
@@ -624,6 +644,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     try {
       const slash = slashCommand(value);
       if (slash) {
+        if (replyTarget) throw new TypeError('回复模式下不能使用斜杠命令，请先取消回复');
         let recipient;
         if (slash.target === 'agent') {
           // 与消息发送同一判据（§2.2）：@ 唯一 agent 优先，否则参数面板目标。
@@ -640,10 +661,22 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       const unresolved = unresolvedMentions(editor);
       if (unresolved.length) throw new TypeError(`请从候选列表选择成员：${unresolved.map((name) => `@${name}`).join('、')}`);
       const liveMentionIds = mentionIdsOf(editor.getJSON());
-      let recipients = liveMentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean);
-      if (!recipients.length) {
-        if (parameterAgent) recipients = [parameterAgent];
-        else throw new TypeError('请 @ 一个成员，或在右下角选择目标 Agent');
+      let recipients;
+      if (replyTarget) {
+        const recipient = replyRecipient(replyTarget, roster);
+        if (!recipient) throw new TypeError(`@${replyTarget.senderName} 已不在当前频道，请取消回复后重新选择收件人`);
+        const conflicts = liveMentionIds
+          .filter((id) => id !== recipient.id)
+          .map((id) => roster.find((row) => row.id === id))
+          .filter(Boolean);
+        if (conflicts.length) throw new TypeError(`回复只能发送给 @${actorDisplayName(recipient)}；请移除 ${conflicts.map((row) => `@${actorDisplayName(row)}`).join('、')} 或取消回复`);
+        recipients = [recipient];
+      } else {
+        recipients = liveMentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean);
+        if (!recipients.length) {
+          if (parameterAgent) recipients = [parameterAgent];
+          else throw new TypeError('请 @ 一个成员，或在右下角选择目标 Agent');
+        }
       }
       const invalid = recipients.find((row) => !['agent', 'human'].includes(row.kind));
       if (invalid) throw new TypeError(`@${actorDisplayName(invalid)} 不能作为消息收件人`);
@@ -672,6 +705,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       setSentBatch(sent);
       editor?.commands.clearContent(true);
       onClearAttachments?.();
+      if (replyTarget && sent.length) onReplySent?.();
       if (failures.length) {
         setError(`部分发送失败（其余已送出）：${failures.join('；')}`);
         setSendState('error');
@@ -771,6 +805,11 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         onDrop={onDrop}
       >
         {fileDragActive && <div className="composer-drop-hint" role="status"><Upload size={18} strokeWidth={1.8} aria-hidden="true" /><strong>松开以上传到当前频道</strong></div>}
+        {!editMode && replyTarget && <div className="composer-reply" role="status">
+          <span aria-hidden="true">↩</span>
+          <div><strong>回复 @{replyTarget.senderName}</strong><small>{replyTarget.excerpt}</small></div>
+          <button type="button" aria-label="取消回复" title="取消回复" onClick={onCancelReply}>×</button>
+        </div>}
         {!editMode && attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{attachments.map((row) => <article key={row.resource_id}><button type="button" className="attachment-draft-preview" aria-label={`预览文件 ${row.name}`} onClick={() => onPreviewAttachment?.(row)}><span aria-hidden="true">◇</span><span><strong>{row.name}</strong><small>{formatArtifactSize(Number(row.size || 0))} · 点击预览</small></span></button><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name}`} onClick={() => onRemoveAttachment?.(row.resource_id)}>×</button></article>)}</div>}
         {!editMode && mentions.length > 0 && (
           <div className="mention-chips">{mentions.map((row) => (
@@ -827,17 +866,19 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             <button type="button" aria-label="从频道文件选择" title="从频道文件选择" disabled={disabled || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <div className="composer-submit-actions">
-            <ModelSelector
-              target={parameterTarget}
-              actorName={parameterAgent ? actorDisplayName(parameterAgent) : ''}
-              view={agentSelection?.view && parameterAgent && agentSelection.view.actorId === parameterAgent.id ? agentSelection.view : null}
-              pending={agentSelection?.pending && parameterAgent && agentSelection.pending.actorId === parameterAgent.id ? agentSelection.pending : null}
-              candidates={roster.filter((row) => row.kind === 'agent')}
-              disabled={disabled || sendState === 'sending'}
-              onChange={agentSelection?.onChange}
-              onPickAgent={agentSelection?.onPickAgent}
-              onOpen={agentSelection?.onOpen}
-            />
+            {replyTarget?.senderKind === 'human'
+              ? <span className="composer-reply-route">@{replyTarget.senderName}</span>
+              : <ModelSelector
+                target={effectiveParameterTarget}
+                actorName={effectiveParameterAgent ? actorDisplayName(effectiveParameterAgent) : ''}
+                view={agentSelection?.view && effectiveParameterAgent && agentSelection.view.actorId === effectiveParameterAgent.id ? agentSelection.view : null}
+                pending={agentSelection?.pending && effectiveParameterAgent && agentSelection.pending.actorId === effectiveParameterAgent.id ? agentSelection.pending : null}
+                candidates={roster.filter((row) => row.kind === 'agent')}
+                disabled={disabled || sendState === 'sending' || Boolean(replyTarget)}
+                onChange={agentSelection?.onChange}
+                onPickAgent={agentSelection?.onPickAgent}
+                onOpen={agentSelection?.onOpen}
+              />}
             {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={() => { beginEditLayoutTransition(); editMode.onAbandon(); }}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
             {editMode
               ? <button type="button" className="send-button" onClick={submit} disabled={!hasText || !channelId || disabled || editBusy || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
