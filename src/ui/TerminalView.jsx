@@ -22,20 +22,28 @@ const RECONNECT_DELAYS = [400, 800, 1600, 3000, 5000];
 
 export function TerminalView({ channelId, canWrite = true }) {
   const hostRef = useRef(null);
+  // canWrite is read through a ref, never a dependency: a momentary
+  // permission flicker must not tear the terminal down and abandon the
+  // session id — that would strand the running shell and start a new one.
+  const canWriteRef = useRef(canWrite);
+  canWriteRef.current = canWrite;
   const termRef = useRef(null);
   const fitRef = useRef(null);
-  const wsRef = useRef(null);
-  const sessionRef = useRef('');
-  const attemptRef = useRef(0);
-  const closedRef = useRef(false);
+  const genRef = useRef(null);
   const [status, setStatus] = useState('connecting');
   const [detail, setDetail] = useState('');
+  // Bumping this remounts the effect with a fresh generation and no session id
+  // — a deliberate new shell, which is what 「重开」 means.
+  const [reopen, setReopen] = useState(0);
 
   useEffect(() => {
     if (!hostRef.current || !channelId) return undefined;
-    closedRef.current = false;
-    sessionRef.current = '';
-    attemptRef.current = 0;
+    // Per-generation state. The previous effect's sockets fire their onclose
+    // asynchronously, possibly AFTER this one has started; sharing refs across
+    // generations let a dead socket null out the live one and schedule a
+    // reconnect nobody asked for.
+    const gen = { disposed: false, ws: null, timer: 0, attempt: 0, session: '' };
+    genRef.current = gen;
 
     const term = new Terminal({
       allowProposedApi: true,
@@ -76,24 +84,24 @@ export function TerminalView({ channelId, canWrite = true }) {
     let reconnectTimer = 0;
 
     const send = (obj) => {
-      const ws = wsRef.current;
+      const ws = gen.ws;
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
     };
 
     const connect = () => {
-      if (closedRef.current) return;
-      setStatus(sessionRef.current ? 'reconnecting' : 'connecting');
-      const ws = new WebSocket(ptyURL(channelId, sessionRef.current, term.cols, term.rows));
+      if (gen.disposed) return;
+      setStatus(gen.session ? 'reconnecting' : 'connecting');
+      const ws = new WebSocket(ptyURL(channelId, gen.session, term.cols, term.rows));
       ws.binaryType = 'arraybuffer';
-      wsRef.current = ws;
+      gen.ws = ws;
 
-      ws.onopen = () => { attemptRef.current = 0; };
+      ws.onopen = () => { gen.attempt = 0; };
       ws.onmessage = (event) => {
         if (typeof event.data === 'string') {
           try {
             const msg = JSON.parse(event.data);
             if (msg.type === 'ready') {
-              sessionRef.current = msg.session || '';
+              gen.session = msg.session || '';
               setStatus('open');
               setDetail('');
               send({ type: 'resize', cols: term.cols, rows: term.rows });
@@ -104,8 +112,9 @@ export function TerminalView({ channelId, canWrite = true }) {
         term.write(new Uint8Array(event.data));
       };
       ws.onclose = (event) => {
-        wsRef.current = null;
-        if (closedRef.current) return;
+        // A socket from a superseded generation must touch nothing.
+        if (gen.disposed || gen.ws !== ws) return;
+        gen.ws = null;
         // 1000 with a reason means the door ended it deliberately (the shell
         // exited, or the session was closed): reconnecting would silently
         // start a second shell, which is exactly what a person does not mean.
@@ -114,16 +123,16 @@ export function TerminalView({ channelId, canWrite = true }) {
           setDetail(event.reason);
           return;
         }
-        const delay = RECONNECT_DELAYS[Math.min(attemptRef.current, RECONNECT_DELAYS.length - 1)];
-        attemptRef.current += 1;
+        const delay = RECONNECT_DELAYS[Math.min(gen.attempt, RECONNECT_DELAYS.length - 1)];
+        gen.attempt += 1;
         setStatus('reconnecting');
-        reconnectTimer = window.setTimeout(connect, delay);
+        gen.timer = window.setTimeout(connect, delay);
       };
       ws.onerror = () => { setDetail('连接中断'); };
     };
 
     const disposeData = term.onData((data) => {
-      if (!canWrite) return;
+      if (!canWriteRef.current) return;
       send({ type: 'input', data });
     });
     const disposeResize = term.onResize(({ cols, rows }) => {
@@ -135,13 +144,13 @@ export function TerminalView({ channelId, canWrite = true }) {
     connect();
 
     return () => {
-      closedRef.current = true;
-      window.clearTimeout(reconnectTimer);
+      gen.disposed = true;
+      window.clearTimeout(gen.timer);
       observer.disconnect();
       disposeData.dispose();
       disposeResize.dispose();
-      const ws = wsRef.current;
-      wsRef.current = null;
+      const ws = gen.ws;
+      gen.ws = null;
       if (ws) {
         // Plain close, NOT a "close" control message: leaving means the
         // viewer went away, and the shell is supposed to outlive that.
@@ -151,7 +160,8 @@ export function TerminalView({ channelId, canWrite = true }) {
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [channelId, canWrite]);
+    // canWrite is deliberately NOT a dependency — see canWriteRef above.
+  }, [channelId, reopen]);
 
   const label = {
     connecting: '连接中…',
@@ -166,7 +176,7 @@ export function TerminalView({ channelId, canWrite = true }) {
         <div className={`terminal-status terminal-status-${status}`} role="status">
           <span>{label}</span>
           {status === 'ended' && (
-            <button type="button" onClick={() => { sessionRef.current = ''; setStatus('connecting'); window.location.reload(); }}>重开</button>
+            <button type="button" onClick={() => { setReopen((n) => n + 1); }}>重开</button>
           )}
         </div>
       )}
