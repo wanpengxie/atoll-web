@@ -2,11 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, isMemberAccess } from '../model/channel-access.js';
 import { ChannelList } from '../ui/ChannelList.jsx';
 import { ArtifactsView } from '../ui/ArtifactsView.jsx';
+import { TerminalView } from '../ui/TerminalView.jsx';
 import { TasksView } from '../ui/TasksView.jsx';
 import { Composer } from '../ui/Composer.jsx';
 import { Timeline } from '../ui/Timeline.jsx';
 import { RightPanelHost } from './RightPanelHost.jsx';
 import { activeAgentTurn } from '../model/agent-control.js';
+import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex, channelSwipeDirection, channelSwipeStart } from '../model/channel-navigation.js';
 
 const ACCESS_MESSAGE = {
   member_stale: '连接已中断，当前显示本地缓存；恢复连接前不能发送。',
@@ -26,6 +28,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
+  const channelSwipeRef = useRef(null);
   const writeDisabled = session.wireState !== 'open' || !canWriteChannel(workspace.access);
   const contentVisible = canViewChannelContent(workspace.access);
   const runningAgentTurn = activeAgentTurn(workspace.state, workspace.roster, workspace.selfId);
@@ -59,6 +62,23 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     return () => document.removeEventListener('keydown', escape);
   }, [mobileChannelsOpen]);
 
+  useEffect(() => {
+    const switchByKey = (event) => {
+      const memberChannels = navigation.channels.filter((channel) => isMemberAccess(channel.access));
+      const directIndex = channelShortcutIndex(event);
+      const direction = channelShortcutDirection(event);
+      if (directIndex < 0 && !direction) return;
+      const channelId = directIndex >= 0
+        ? memberChannels[directIndex]?.id
+        : adjacentChannelId(memberChannels, navigation.activeChannelId, direction);
+      if (!channelId) return;
+      event.preventDefault();
+      navigation.onSelect(channelId);
+    };
+    document.addEventListener('keydown', switchByKey);
+    return () => document.removeEventListener('keydown', switchByKey);
+  }, [navigation.activeChannelId, navigation.channels, navigation.onSelect]);
+
   useEffect(() => setComposerEdit(null), [navigation.activeChannelId]);
   useEffect(() => {
     if (!composerEdit || !navigation.activeChannelId) return;
@@ -86,7 +106,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }
 
   function moveViewTab(event, index) {
-    const views = ['dynamic', 'artifacts', 'tasks'];
+    const views = ['dynamic', 'artifacts', 'tasks', 'terminal'];
     let next = index;
     if (event.key === 'ArrowRight') next = (index + 1) % views.length;
     else if (event.key === 'ArrowLeft') next = (index - 1 + views.length) % views.length;
@@ -117,10 +137,27 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     }
   }
 
+  function beginChannelSwipe(event) {
+    if (!window.matchMedia?.('(max-width: 640px)').matches || event.touches.length !== 1) {
+      channelSwipeRef.current = null;
+      return;
+    }
+    channelSwipeRef.current = channelSwipeStart(event.touches[0], event.target);
+  }
+
+  function finishChannelSwipe(event) {
+    const start = channelSwipeRef.current;
+    channelSwipeRef.current = null;
+    const direction = channelSwipeDirection(start, event.changedTouches?.[0]);
+    const memberChannels = navigation.channels.filter((channel) => isMemberAccess(channel.access));
+    const channelId = adjacentChannelId(memberChannels, navigation.activeChannelId, direction);
+    if (channelId) navigation.onSelect(channelId);
+  }
+
   const shellClass = ['shell', panel.value && 'has-context', mobileChannelsOpen && 'mobile-channels-open'].filter(Boolean).join(' ');
   return <div className={shellClass} data-workspace-view={workspace.view}>
     <ChannelList channels={navigation.channels} activeChannelId={navigation.activeChannelId} unread={navigation.unread} wireState={session.wireState} me={session.me} onSelect={(channelId) => { navigation.onSelect(channelId); setMobileChannelsOpen(false); }} onCreate={() => { setMobileChannelsOpen(false); navigation.onCreate(); }} onSearch={() => { setMobileChannelsOpen(false); navigation.onSearch(); }} onActivity={() => { setMobileChannelsOpen(false); navigation.onActivity(); }} onSpaceManage={() => { setMobileChannelsOpen(false); navigation.onSpaceManage(); }} onLogout={session.onLogout} onCloseMobile={mobileChannelsOpen ? closeMobileChannels : undefined} />
-    <main className="workspace">
+    <main className="workspace" onTouchStart={beginChannelSwipe} onTouchEnd={finishChannelSwipe} onTouchCancel={() => { channelSwipeRef.current = null; }}>
       <header className="channel-header">
         <div className="channel-identity"><button type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button><div><p className="eyebrow">频道</p><h1>{workspace.channel?.qualified_name || workspace.channel?.name || navigation.activeChannelId || '选择频道'}</h1></div></div>
         <div className="channel-header-actions">
@@ -138,7 +175,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
         </div>
       </header>
       <nav className="channel-view-tabs" aria-label="频道主视图" role="tablist">
-        {['dynamic', 'artifacts', 'tasks'].map((view, index) => <button key={view} ref={(node) => { viewTabRefs.current[index] = node; }} type="button" role="tab" id={`workspace-tab-${view}`} aria-controls={`workspace-panel-${view}`} aria-selected={workspace.view === view} tabIndex={workspace.view === view ? 0 : -1} className={workspace.view === view ? 'active' : ''} onKeyDown={(event) => moveViewTab(event, index)} onClick={() => workspace.onViewChange(view)}>{view === 'dynamic' ? '动态' : view === 'artifacts' ? '文件' : '任务'}</button>)}
+        {['dynamic', 'artifacts', 'tasks', 'terminal'].map((view, index) => <button key={view} ref={(node) => { viewTabRefs.current[index] = node; }} type="button" role="tab" id={`workspace-tab-${view}`} aria-controls={`workspace-panel-${view}`} aria-selected={workspace.view === view} tabIndex={workspace.view === view ? 0 : -1} className={workspace.view === view ? 'active' : ''} onKeyDown={(event) => moveViewTab(event, index)} onClick={() => workspace.onViewChange(view)}>{view === 'dynamic' ? '动态' : view === 'artifacts' ? '文件' : view === 'tasks' ? '任务' : '终端'}</button>)}
       </nav>
       <div className="status-stack">
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}
@@ -150,6 +187,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
         <Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={workspace.onDraftChange} disabled={writeDisabled} disabledReason={disabledReason} onSend={workspace.onSend} onRetry={workspace.onRetry} activeAgentTurn={runningAgentTurn} onTaskControl={workspace.onTaskControl} attachments={workspace.attachments} onPreviewAttachment={workspace.onPreviewAttachment} onRemoveAttachment={workspace.onRemoveAttachment} onClearAttachments={workspace.onClearAttachments} onUploadAttachments={workspace.onUploadAttachments} onOpenChannelFiles={workspace.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={clearReply} onReplySent={clearReply} />
       </>}
       {workspace.view === 'artifacts' && workspace.channel && (contentVisible ? <ArtifactsView channel={workspace.channel} daemons={workspace.resources.daemons} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} /> : <section id="workspace-panel-artifacts" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-artifacts"><strong>文件不可访问</strong><p>恢复频道访问后才能查看频道挂载目录。</p></section>)}
+      {workspace.view === 'terminal' && workspace.channel && (contentVisible ? <TerminalView channelId={navigation.activeChannelId} canWrite={!writeDisabled} /> : <section id="workspace-panel-terminal" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-terminal"><strong>终端不可访问</strong><p>恢复频道访问后才能打开终端。</p></section>)}
       {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}
     </main>
     <RightPanelHost {...panel.host} />
