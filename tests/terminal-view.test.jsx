@@ -9,12 +9,14 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 const terminals = [];
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
-    constructor(options) { this.options = options; this.cols = 80; this.rows = 24; this.addons = []; terminals.push(this); }
+    constructor(options) { this.options = options; this.cols = 80; this.rows = 24; this.selection = ''; this.addons = []; terminals.push(this); }
     loadAddon(addon) { this.addons.push(addon); }
     open() {}
     write() {}
     focus() {}
     dispose() {}
+    hasSelection() { return Boolean(this.selection); }
+    getSelection() { return this.selection; }
     onData() { return { dispose() {} }; }
     onResize() { return { dispose() {} }; }
   },
@@ -131,6 +133,50 @@ describe('会话已不在时的恢复', () => {
       });
     }
     expect(screen.getByRole('button', { name: '重开' }), '一直在空转重连，恒不给人一个出口').toBeTruthy();
+  });
+});
+
+// 终端里 Ctrl+C 恒是 SIGINT，恒不是复制——选择即复制是这块区域唯一顺手的
+// 复制方式。这组测试锁住三件事：松手才复制、没选区恒不动剪贴板、明文 http
+// （navigator.clipboard 恒不存在）下必须还能复制。
+describe('选择即复制', () => {
+  function drag(text) {
+    const term = terminals[terminals.length - 1];
+    term.selection = text;
+    const host = document.querySelector('.terminal-host') || document.querySelector('.terminal-view');
+    host.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  }
+
+  it('松开鼠标就把选中的内容写进剪贴板', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('isSecureContext', true);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    render(<TerminalView channelId="c0" />);
+    drag('atoll status');
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('atoll status'));
+  });
+
+  it('没有选区就恒不动剪贴板——空拖一下不该清掉别处复制的东西', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('isSecureContext', true);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    render(<TerminalView channelId="c0" />);
+    drag('');
+    await Promise.resolve();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('明文 http 下没有 navigator.clipboard，回退路径仍然复制得出去', async () => {
+    // 内网/Tailscale 上的 Atoll 常常是 http 访问的，那里 clipboard API 恒不存在。
+    vi.stubGlobal('isSecureContext', false);
+    vi.stubGlobal('navigator', {});
+    const copied = [];
+    document.execCommand = vi.fn(() => { copied.push(document.activeElement?.value); return true; });
+    render(<TerminalView channelId="c0" />);
+    drag('echo hi');
+    await vi.waitFor(() => expect(document.execCommand).toHaveBeenCalledWith('copy'));
+    expect(copied).toEqual(['echo hi']);
   });
 });
 

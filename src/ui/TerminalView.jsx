@@ -124,6 +124,54 @@ function writeSession(channelId, id) {
   } catch { /* private mode */ }
 }
 
+// navigator.clipboard 只在安全上下文（https 或 localhost）里存在。Atoll 的
+// 网页在内网/Tailscale 上常常是明文 http 访问的——那里它恒是 undefined，所以
+// 必须留一条回退路径，否则"选择即复制"在真实部署里一次都不生效。
+// execCommand('copy') 已废弃但恒可用，且它是非安全上下文里唯一可用的那条。
+function copyFallback(text) {
+  const pad = document.createElement('textarea');
+  pad.value = text;
+  // 恒不让它影响布局或抢走滚动位置。
+  pad.setAttribute('readonly', '');
+  pad.style.position = 'fixed';
+  pad.style.top = '0';
+  pad.style.left = '-9999px';
+  document.body.appendChild(pad);
+  const active = document.activeElement;
+  try {
+    // focus 恒不能省：execCommand('copy') 复制的是**当前选区**，而 select()
+    // 在部分浏览器（尤其 iOS Safari）不会把焦点带过来，那时复制的是空的。
+    // readonly 让 iOS 聚焦时恒不弹软键盘。
+    pad.focus();
+    pad.select();
+    pad.setSelectionRange(0, pad.value.length);
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    pad.remove();
+    // 焦点必须还给终端，否则复制完就打不了字了。
+    if (active instanceof HTMLElement) active.focus();
+  }
+}
+
+let clipboardWarned = false;
+async function copyToClipboard(text) {
+  try {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* 权限被拒或无用户手势，落到下面的回退 */ }
+  const ok = copyFallback(text);
+  // 恒不每次都喊：复制失败是环境性的，刷屏只会淹掉真正的错误。
+  if (!ok && !clipboardWarned) {
+    clipboardWarned = true;
+    console.warn('[terminal] 选中内容无法写入剪贴板（浏览器拒绝了复制）');
+  }
+  return ok;
+}
+
 export function TerminalView({ channelId, canWrite = true, visible = true }) {
   const hostRef = useRef(null);
   // canWrite is read through a ref, never a dependency: a momentary
@@ -148,6 +196,8 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
 
   useEffect(() => {
     if (!hostRef.current || !channelId) return undefined;
+    // 卸载时 hostRef.current 可能已被 React 置空，事件必须摘在同一个节点上。
+    const host = hostRef.current;
     // Per-generation state. The previous effect's sockets fire their onclose
     // asynchronously, possibly AFTER this one has started; sharing refs across
     // generations let a dead socket null out the live one and schedule a
@@ -300,6 +350,28 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
       ws.onerror = () => { setDetail('连接中断'); };
     };
 
+    // 选择即复制。终端里 Ctrl+C 恒是 SIGINT，恒不是复制——所以"拖一下就进
+    // 剪贴板"不是锦上添花，它是这块区域唯一顺手的复制方式。
+    //
+    // 触发点是 mouseup 而不是 xterm 的 onSelectionChange：后者在拖拽过程中
+    // 连续触发，而剪贴板写入需要用户手势（transient activation），拖到一半
+    // 的那些帧恒不带手势。mouseup 既是选区的终点，又必然带手势。
+    //
+    // mouseup 挂在 document 上而不是终端节点上：从终端里往外拖、在页面别处
+    // 松手是常见动作，挂在节点上那一次恒收不到，选了却没复制最恼人。
+    let selecting = false;
+    const beginSelect = (event) => { if (event.button === 0) selecting = true; };
+    const endSelect = () => {
+      if (!selecting) return;
+      selecting = false;
+      if (!term.hasSelection()) return;
+      const text = term.getSelection();
+      if (!text) return;
+      void copyToClipboard(text);
+    };
+    host.addEventListener('mousedown', beginSelect);
+    document.addEventListener('mouseup', endSelect);
+
     const disposeData = term.onData((data) => {
       if (!canWriteRef.current) return;
       // 按键走二进制原样发：终端输入恒不是结构化数据，套一层 JSON 只是给
@@ -319,6 +391,8 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
       gen.disposed = true;
       window.clearTimeout(gen.timer);
       observer.disconnect();
+      host.removeEventListener('mousedown', beginSelect);
+      document.removeEventListener('mouseup', endSelect);
       disposeData.dispose();
       disposeResize.dispose();
       const ws = gen.ws;
