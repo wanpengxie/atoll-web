@@ -665,6 +665,11 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
   const loadingOlderRef = useRef(false);
+  // A newly mounted timeline begins at scrollTop=0 before the follow-to-bottom
+  // layout effect runs. That transient top position is not user intent and must
+  // never turn lazy history into an eager full replay. Arm the top trigger only
+  // after this viewport has first moved meaningfully away from the top.
+  const olderScrollArmedRef = useRef(false);
   const previousAccess = useRef(access);
   const names = useMemo(() => actorNameMap(roster), [roster]);
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
@@ -742,6 +747,15 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
     } finally {
       loadingOlderRef.current = false;
     }
+  }
+
+  function handleTimelineScroll(event) {
+    observeScroll(event);
+    const node = event.currentTarget;
+    if (node.scrollTop > 200) olderScrollArmedRef.current = true;
+    if (node.scrollTop >= 160 || !olderScrollArmedRef.current) return;
+    olderScrollArmedRef.current = false;
+    void loadOlder();
   }
 
   // 账本状态更新会让同一个消息块从“处理中气泡”收成最终记录。DOM 的正常
@@ -898,7 +912,7 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
   }, [page, windowed.page]);
 
   return <ProgressTrailHost>
-    <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={(event) => { observeScroll(event); if (event.currentTarget.scrollTop < 160) void loadOlder(); }}>
+    <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={handleTimelineScroll}>
       <div className="timeline-inner" ref={contentRef}>
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">

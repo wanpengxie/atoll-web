@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 
 // 切频道时消息区必须换一棵新的树。auto-animate 的退场动画会把 React 已经删掉的
 // 节点按 position:absolute / z-index:100 插回容器，只靠动画的 finish 事件回收；
@@ -91,5 +91,24 @@ describe('退场残影的回收', () => {
     expect(finished).toBe(0);
     view.unmount();
     expect(finished).toBe(1);
+  });
+});
+
+describe('历史懒加载滚动门槛', () => {
+  it('首屏临时位于顶部不读取历史，离开顶部再返回才读取', async () => {
+    const state = { channelId: 'c0', rows: new Map(), turns: new Map(), standalone: [], orphans: [], narration: [], lastSeq: 0 };
+    const onLoadOlder = vi.fn(() => Promise.resolve());
+    render(<Timeline state={state} history={{ hasOlder: true }} onLoadOlder={onLoadOlder} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const timeline = document.querySelector('.timeline');
+
+    timeline.scrollTop = 0;
+    fireEvent.scroll(timeline);
+    expect(onLoadOlder).not.toHaveBeenCalled();
+
+    timeline.scrollTop = 300;
+    fireEvent.scroll(timeline);
+    timeline.scrollTop = 0;
+    fireEvent.scroll(timeline);
+    await waitFor(() => expect(onLoadOlder).toHaveBeenCalledTimes(1));
   });
 });

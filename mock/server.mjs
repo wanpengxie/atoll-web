@@ -347,6 +347,69 @@ function seededHistory(channelId, behavior = {}) {
   return rows;
 }
 
+const TERMINAL_STATUSES = new Set(['completed', 'failed']);
+
+// Mirrors Platform View's history semantics: limit is a soft raw-row target,
+// while the actual cursor lands on a root request and retains at least three
+// completed root turns when they exist. Child requests share their root's
+// correlation tree and never count as independent turns.
+export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimumCompleteRoots = 3 } = {}) {
+  const visible = allRows.filter((row) => row.envelope.visibility !== 'system');
+  const headSeq = allRows.at(-1)?.seq || 0;
+  const anchor = beforeSeq > 0 ? beforeSeq : headSeq + 1;
+  const candidates = visible.filter((row) => row.seq < anchor);
+  if (!candidates.length) return { rows: [], headSeq, oldestSeq: 0, newestSeq: 0, hasOlder: false };
+
+  const target = Math.max(1, Number(targetRows) || 200);
+  const minimumRoots = Math.max(1, Number(minimumCompleteRoots) || 3);
+  const terminalParents = new Set(candidates
+    .filter((row) => row.envelope.kind === 'response' && TERMINAL_STATUSES.has(row.envelope.payload?.status) && row.envelope.parent_id)
+    .map((row) => row.envelope.parent_id));
+  const rootIndexes = [];
+  const completeRootIndexes = [];
+  candidates.forEach((row, index) => {
+    if (row.envelope.kind !== 'request' || row.envelope.parent_id) return;
+    rootIndexes.push(index);
+    if (terminalParents.has(row.envelope.id)) completeRootIndexes.push(index);
+  });
+
+  let boundary = 0;
+  if (!rootIndexes.length) {
+    const hasTurnRows = candidates.some((row) => ['request', 'response'].includes(row.envelope.kind));
+    if (!hasTurnRows) boundary = Math.max(0, candidates.length - target);
+  } else {
+    const cutoff = Math.max(0, candidates.length - target);
+    boundary = rootIndexes.filter((index) => index <= cutoff).at(-1) ?? 0;
+    if (completeRootIndexes.length >= minimumRoots) {
+      boundary = Math.min(boundary, completeRootIndexes.at(-minimumRoots));
+    } else {
+      boundary = 0;
+    }
+  }
+
+  const raw = candidates.slice(boundary);
+  const rawTerminalParents = new Set(raw
+    .filter((row) => row.envelope.kind === 'response' && TERMINAL_STATUSES.has(row.envelope.payload?.status) && row.envelope.parent_id)
+    .map((row) => row.envelope.parent_id));
+  const latestProvisional = new Map();
+  for (const row of raw) {
+    if (row.envelope.kind !== 'response' || !row.envelope.parent_id || TERMINAL_STATUSES.has(row.envelope.payload?.status)) continue;
+    latestProvisional.set(row.envelope.parent_id, row.seq);
+  }
+  const rows = raw.filter((row) => {
+    if (row.envelope.kind !== 'response') return true;
+    if (TERMINAL_STATUSES.has(row.envelope.payload?.status)) return true;
+    return !rawTerminalParents.has(row.envelope.parent_id) && latestProvisional.get(row.envelope.parent_id) === row.seq;
+  });
+  return {
+    rows,
+    headSeq,
+    oldestSeq: raw[0]?.seq || 0,
+    newestSeq: rows.at(-1)?.seq || 0,
+    hasOlder: boundary > 0,
+  };
+}
+
 export function createMockServer({
   rootPassword = process.env.ATOLL_ROOT_PASSWORD || 'root',
   liveIntervalMs = 0,
@@ -1448,18 +1511,18 @@ export function createMockServer({
         sendError(socket, { ref, frame: type, code: 'channel_not_found', detail: 'channel does not exist' });
         return;
       }
-      const rows = histories.get(payload.channel_id).filter((row) => row.envelope.visibility !== 'system');
-      const headSeq = histories.get(payload.channel_id).at(-1)?.seq || 0;
-      const anchor = payload.before_seq > 0 ? payload.before_seq : headSeq + 1;
-      const candidates = rows.filter((row) => row.seq < anchor);
-      const page = candidates.slice(-(payload.limit || 200));
+      const page = historyWindow(histories.get(payload.channel_id), {
+        beforeSeq: payload.before_seq,
+        targetRows: payload.limit || 200,
+      });
+      for (const row of page.rows) sendFrame(socket, 'feed', '', row);
       sendReceipt(socket, ref, {
         channel_id: payload.channel_id,
-        head_seq: headSeq,
-        oldest_seq: page[0]?.seq || 0,
-        newest_seq: page.at(-1)?.seq || 0,
-        has_older: candidates.length > page.length,
-        rows: page.map(({ seq, envelope }) => ({ seq, envelope })),
+        head_seq: page.headSeq,
+        oldest_seq: page.oldestSeq,
+        newest_seq: page.newestSeq,
+        has_older: page.hasOlder,
+        rows: [],
       });
       return;
     }
@@ -1596,9 +1659,9 @@ export function createMockServer({
         const principal = socketPrincipals.get(socket) || '';
         const observed = socketObserved.get(socket) || new Set();
         if (!domain.canRead(principal, channelId, observed)) continue;
-        const visible = rows.filter((row) => row.envelope.visibility !== 'system');
-        const tail = visible.slice(-200);
-        const oldestSeq = tail[0]?.seq || 0;
+        const window = historyWindow(rows);
+        const tail = window.rows;
+        const oldestSeq = window.oldestSeq;
         const floor = oldestSeq ? oldestSeq - 1 : rows.at(-1)?.seq || 0;
         const cursor = Number(since[channelId] || 0);
         const truncated = cursor < floor;
@@ -1606,7 +1669,7 @@ export function createMockServer({
           effectiveSince[channelId] = rows.at(-1)?.seq || 0;
           initialTails.set(channelId, tail);
         }
-        historyGrants.push({ channel_id: channelId, head_seq: rows.at(-1)?.seq || 0, oldest_seq: oldestSeq, has_older: visible.length > tail.length, truncated });
+        historyGrants.push({ channel_id: channelId, head_seq: window.headSeq, oldest_seq: oldestSeq, has_older: window.hasOlder, truncated });
       }
       // 对齐真后端 AttachReceipt：成员清单随回执直接交付（资格账快照），
       // 前端连上即知道自己在哪些频道，恒不靠 feed 副作用反推。

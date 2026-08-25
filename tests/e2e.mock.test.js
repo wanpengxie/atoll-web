@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { createMockServer } from '../mock/server.mjs';
+import { createMockServer, historyWindow } from '../mock/server.mjs';
 import { createIdentityClient } from '../src/net/identity.js';
 import { createWire } from '../src/net/wire.js';
 import { apply, createChannelState, fold, orderedTimeline } from '../src/model/fold.js';
@@ -53,7 +53,7 @@ afterEach(async () => {
 });
 
 describe('local mock end-to-end', () => {
-  it('bounds attach replay and serves ascending keyset history pages', async () => {
+  it('bounds attach replay and completes history after its feed rows', async () => {
     const server = createMockServer({ rootPassword: 'test-root', scenario: 'multi-channel', seed: 17 });
     const baseURL = await listen(server);
     let cookie = '';
@@ -70,22 +70,51 @@ describe('local mock end-to-end', () => {
       constructor(url) { super(url, { headers: { Cookie: cookie } }); }
     }
     let detail = null;
+    const feedRows = [];
     const wire = createWire({
       url: baseURL.replace(/^http/, 'ws') + '/ws', WebSocketImpl: SessionWebSocket,
       since: () => ({}),
       onState: (state, value) => { if (state === 'attached') detail = value; },
+      onFeed: (channelId, seq, envelope) => feedRows.push({ channelId, seq, envelope }),
     });
     await waitFor(() => detail, 'history attach metadata');
     expect(detail.history.find((entry) => entry.channel_id === 'c0')).toMatchObject({ head_seq: expect.any(Number), oldest_seq: expect.any(Number) });
 
+    await waitFor(() => feedRows.some((row) => row.channelId === 'c0'), 'initial semantic history feed');
+    const before = feedRows.length;
     const tail = await wire.historyBefore('c0', 0, 3);
-    expect(tail.rows).toHaveLength(3);
-    expect(tail.rows.map((row) => row.seq)).toEqual([...tail.rows.map((row) => row.seq)].sort((a, b) => a - b));
-    expect(tail.has_older).toBe(true);
-    const older = await wire.historyBefore('c0', tail.oldest_seq, 3);
-    expect(older.rows.every((row) => row.seq < tail.oldest_seq)).toBe(true);
+    expect(tail.rows).toEqual([]);
+    expect(feedRows.length).toBeGreaterThan(before);
+    expect(tail.oldest_seq).toBeGreaterThan(0);
     wire.close();
     await closeServer(server);
+  });
+
+  it('mock history pages on root turns and projects intermediate progress', () => {
+    const rows = [];
+    const add = (envelope) => rows.push({ channel_id: 'c0', seq: rows.length + 1, envelope: { visibility: 'public', ...envelope } });
+    for (let turn = 1; turn <= 7; turn += 1) {
+      const root = `root-${turn}`;
+      add({ id: root, kind: 'request', type: 'agent.ask', payload: {}, correlation_id: root });
+      for (let step = 1; step <= (turn === 7 ? 300 : 4); step += 1) {
+        add({ id: `${root}-progress-${step}`, kind: 'response', type: 'agent.ask', parent_id: root, correlation_id: root, payload: { status: 'processing' } });
+      }
+      if (turn === 6) {
+        add({ id: 'root-6-child', kind: 'request', type: 'tool.call', parent_id: root, correlation_id: root, payload: {} });
+        add({ id: 'root-6-child-terminal', kind: 'response', type: 'tool.call', parent_id: 'root-6-child', correlation_id: root, payload: { status: 'completed' } });
+      }
+      add({ id: `${root}-terminal`, kind: 'response', type: 'agent.ask', parent_id: root, correlation_id: root, payload: { status: 'completed' } });
+    }
+
+    const newest = historyWindow(rows, { targetRows: 200 });
+    expect(newest.hasOlder).toBe(true);
+    expect(newest.rows.filter((row) => row.envelope.kind === 'request' && !row.envelope.parent_id).map((row) => row.envelope.id)).toEqual(['root-5', 'root-6', 'root-7']);
+    expect(newest.rows.some((row) => row.envelope.id.includes('progress'))).toBe(false);
+    expect(newest.rows.some((row) => row.envelope.id === 'root-6-child')).toBe(true);
+
+    const older = historyWindow(rows, { beforeSeq: newest.oldestSeq, targetRows: 6 });
+    expect(older.rows.every((row) => row.seq < newest.oldestSeq)).toBe(true);
+    expect(older.rows.filter((row) => row.envelope.kind === 'request' && !row.envelope.parent_id)).toHaveLength(3);
   });
 
   it('selects, inspects and advances deterministic scenarios through the control plane', async () => {
