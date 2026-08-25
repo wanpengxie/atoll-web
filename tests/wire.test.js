@@ -84,6 +84,23 @@ describe('wire client', () => {
     wire.close();
   });
 
+  it('commits attach history as one barrier before reporting attached', () => {
+    const events = [];
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      onFeed: (_channelId, seq) => events.push(`feed:${seq}`),
+      onState: (state) => events.push(`state:${state}`),
+    });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.message({ v: 2, frame_type: 'feed', payload: { channel_id: 'c0', seq: 10, envelope: { id: 'm10' } } });
+    socket.message({ v: 2, frame_type: 'feed', payload: { channel_id: 'c0', seq: 11, envelope: { id: 'm11' } } });
+    expect(events).toEqual(['state:open']);
+    receipt(socket, socket.sent[0], { history: [{ channel_id: 'c0', oldest_seq: 10 }] });
+    expect(events).toEqual(['state:open', 'feed:10', 'feed:11', 'state:attached']);
+    wire.close();
+  });
+
   it('reads an older page over the attached websocket', async () => {
     const wire = createWire({ WebSocketImpl: FakeWebSocket });
     const socket = FakeWebSocket.instances[0];

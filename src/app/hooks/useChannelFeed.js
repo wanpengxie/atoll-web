@@ -24,6 +24,11 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const taskRef = useRef(null);
   const historyRef = useRef(new Map());
   const historyInFlightRef = useRef(new Map());
+  // History transport and visible timeline state are deliberately separate.
+  // A background page is captured here first; it cannot affect layout until
+  // Timeline explicitly releases rows from the reservoir.
+  const historyCaptureRef = useRef(new Map());
+  const historyReservoirRef = useRef(new Map());
   const historySchedulersRef = useRef(new Map());
   const historyRunnerRef = useRef(null);
 
@@ -87,7 +92,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     }
   }, [accessRef, activeChannelRef, onAccessChanged, onChannelsDiscovered, onDirectoryInvalidated, onError, onRoster, onSubmissionFeed, onTimerFired, rosterRef]);
 
-  const enqueue = useCallback((channelId, seq, envelope) => {
+  const enqueueVisible = useCallback((channelId, seq, envelope) => {
     const key = `${channelId}:${seq}`;
     if (statesRef.current.get(channelId)?.rows?.has(seq) || queuedRowsRef.current.has(key)) return;
     queuedRowsRef.current.add(key);
@@ -96,6 +101,25 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     const run = () => process();
     taskRef.current = 'requestIdleCallback' in window ? window.requestIdleCallback(run, { timeout: 100 }) : setTimeout(run, 0);
   }, [process]);
+  const enqueue = useCallback((channelId, seq, envelope) => {
+    const numericSeq = Number(seq);
+    const capture = historyCaptureRef.current.get(channelId);
+    // history_before is exclusive. Live rows remain >= beforeSeq and therefore
+    // bypass capture even when they interleave with a history response.
+    if (capture && numericSeq < capture.beforeSeq) {
+      if (!statesRef.current.get(channelId)?.rows?.has(numericSeq)) capture.rows.set(numericSeq, envelope);
+      return;
+    }
+    enqueueVisible(channelId, numericSeq, envelope);
+  }, [enqueueVisible]);
+
+  const flush = useCallback(() => {
+    while (queueRef.current.length) {
+      cancel();
+      process();
+    }
+    cancel();
+  }, [cancel, process]);
   const setHistoryGrants = useCallback((grants = []) => {
     let changed = false;
     for (const grant of grants || []) {
@@ -144,6 +168,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       historyRef.current.set(channelId, { ...existing, loading: true, error: '' });
       setVersion((value) => value + 1);
     }
+    const capture = { beforeSeq: Number(beforeSeq) || Number.MAX_SAFE_INTEGER, rows: new Map() };
+    historyCaptureRef.current.set(channelId, capture);
     const request = wireRef.current?.historyBefore(channelId, beforeSeq, limit)
       ?? Promise.reject(new Error('消息连接尚未就绪'));
     const settled = request
@@ -161,8 +187,18 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
           loaded: true,
           error: '',
         });
-        for (const row of page.rows || []) enqueue(row.channel_id || channelId, Number(row.seq), row.envelope);
-        setVersion((value) => value + 1);
+        const reservoir = historyReservoirRef.current.get(channelId) || new Map();
+        for (const [seq, envelope] of capture.rows) {
+          if (!statesRef.current.get(channelId)?.rows?.has(seq)) reservoir.set(seq, envelope);
+        }
+        // Kept for adapters/tests that return rows in the receipt instead of
+        // streaming feed frames before it.
+        for (const row of page.rows || []) {
+          const seq = Number(row.seq);
+          if (!statesRef.current.get(channelId)?.rows?.has(seq)) reservoir.set(seq, row.envelope);
+        }
+        historyReservoirRef.current.set(channelId, reservoir);
+        if (!silent) setVersion((value) => value + 1);
         return page;
       })
       .catch((error) => {
@@ -174,10 +210,13 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         }
         throw error;
       })
-      .finally(() => historyInFlightRef.current.delete(key));
+      .finally(() => {
+        if (historyCaptureRef.current.get(channelId) === capture) historyCaptureRef.current.delete(channelId);
+        historyInFlightRef.current.delete(key);
+      });
     historyInFlightRef.current.set(key, settled);
     return settled;
-  }, [enqueue, onError, wireRef]);
+  }, [onError, wireRef]);
 
   const scheduleHistory = useCallback((channelId, delay = 0) => {
     const job = historySchedulersRef.current.get(channelId);
@@ -190,7 +229,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 
   const runHistoryScheduler = useCallback(async (channelId) => {
     const job = historySchedulersRef.current.get(channelId);
-    if (!job?.active || job.running || job.reserve >= job.target) return;
+    const buffered = historyReservoirRef.current.get(channelId)?.size || 0;
+    if (!job?.active || job.running || buffered >= job.target) return;
     const history = historyRef.current.get(channelId) || {};
     const beforeSeq = Number(history.oldestSeq) || 0;
     if (!history.loaded || !history.hasOlder || beforeSeq <= 0) return;
@@ -202,8 +242,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       const current = historySchedulersRef.current.get(channelId);
       if (!current?.active || current.generation !== generation) return;
       const nextOldest = Number(page?.oldest_seq) || 0;
-      if (nextOldest > 0 && nextOldest < beforeSeq) current.reserve += HISTORY_PAGE_SIZE;
-      else current.active = false; // A non-advancing cursor must never spin.
+      if (!(nextOldest > 0 && nextOldest < beforeSeq)) current.active = false; // A non-advancing cursor must never spin.
     } catch {
       retryDelay = 2_000;
     } finally {
@@ -216,7 +255,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     const current = historySchedulersRef.current.get(channelId);
     if (!current?.active || current.generation !== generation) return;
     if (retryDelay >= 0) scheduleHistory(channelId, retryDelay);
-    else if (current.reserve < current.target && historyRef.current.get(channelId)?.hasOlder) scheduleHistory(channelId);
+    else if ((historyReservoirRef.current.get(channelId)?.size || 0) < current.target && historyRef.current.get(channelId)?.hasOlder) scheduleHistory(channelId);
   }, [loadHistory, scheduleHistory]);
   historyRunnerRef.current = runHistoryScheduler;
 
@@ -224,7 +263,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     if (!channelId) return;
     let job = historySchedulersRef.current.get(channelId);
     if (!job) {
-      job = { active: true, generation: 0, reserve: 0, target, running: false, timer: null };
+      job = { active: true, generation: 0, target, running: false, timer: null };
       historySchedulersRef.current.set(channelId, job);
     } else {
       job.active = true;
@@ -233,12 +272,16 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     scheduleHistory(channelId);
   }, [scheduleHistory]);
 
-  const consumeHistory = useCallback((channelId, count) => {
-    const job = historySchedulersRef.current.get(channelId);
-    if (!job || !Number.isFinite(count) || count <= 0) return;
-    job.reserve = Math.max(0, job.reserve - count);
+  const revealHistory = useCallback((channelId, count) => {
+    if (!Number.isFinite(count) || count <= 0) return 0;
+    const reservoir = historyReservoirRef.current.get(channelId);
+    if (!reservoir?.size) return 0;
+    const selected = [...reservoir.entries()].sort(([a], [b]) => b - a).slice(0, count);
+    for (const [seq] of selected) reservoir.delete(seq);
+    selected.sort(([a], [b]) => a - b).forEach(([seq, envelope]) => enqueueVisible(channelId, seq, envelope));
     scheduleHistory(channelId);
-  }, [scheduleHistory]);
+    return selected.length;
+  }, [enqueueVisible, scheduleHistory]);
 
   const pauseHistory = useCallback((channelId) => {
     const job = historySchedulersRef.current.get(channelId);
@@ -257,7 +300,10 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     }
     historySchedulersRef.current.clear();
   }, []);
-  const historyFor = useCallback((channelId) => historyRef.current.get(channelId) || { headSeq: 0, oldestSeq: 0, hasOlder: false, loading: false, loaded: false, error: '' }, []);
+  const historyFor = useCallback((channelId) => ({
+    ...(historyRef.current.get(channelId) || { headSeq: 0, oldestSeq: 0, hasOlder: false, loading: false, loaded: false, error: '' }),
+    buffered: historyReservoirRef.current.get(channelId)?.size || 0,
+  }), []);
   const bump = useCallback(() => setVersion((value) => value + 1), []);
   const clear = useCallback(() => {
     cancel();
@@ -267,11 +313,13 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     queuedRowsRef.current.clear();
     dirtyRef.current.clear();
     historyRef.current.clear();
+    historyCaptureRef.current.clear();
+    historyReservoirRef.current.clear();
     setVersion((value) => value + 1);
   }, [cancel, clearHistorySchedulers]);
   useEffect(() => () => {
     cancel();
     clearHistorySchedulers();
   }, [cancel, clearHistorySchedulers]);
-  return { statesRef, cursorsRef, version, bump, enqueue, cancel, clear, setHistoryGrants, loadHistory, historyFor, maintainHistory, consumeHistory, pauseHistory };
+  return { statesRef, cursorsRef, version, bump, enqueue, flush, cancel, clear, setHistoryGrants, loadHistory, historyFor, maintainHistory, revealHistory, pauseHistory };
 }

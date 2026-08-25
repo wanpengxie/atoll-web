@@ -1,19 +1,21 @@
 import { expect, test } from '@playwright/test';
 
+const MOCK_ORIGIN = process.env.ATOLL_MOCK_ORIGIN || 'http://127.0.0.1:8832';
+
 async function reset(request, scenario = 'multi-channel', seed = 81) {
-  const response = await request.post('http://127.0.0.1:8832/mock/control/reset', { data: { scenario, seed } });
+  const response = await request.post(`${MOCK_ORIGIN}/mock/control/reset`, { data: { scenario, seed } });
   expect(response.ok()).toBe(true);
 }
 
 async function action(request, data) {
-  const response = await request.post('http://127.0.0.1:8832/mock/control/action', { data });
+  const response = await request.post(`${MOCK_ORIGIN}/mock/control/action`, { data });
   expect(response.ok()).toBe(true);
   return response.json();
 }
 
 async function login(page) {
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号' }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.getByRole('navigation', { name: '频道' })).toBeVisible();
@@ -59,6 +61,32 @@ test('B-BR-02 断线时进入 stale、保留账本并在重连后恢复', async 
   await context.setOffline(false);
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByLabel('消息')).toBeEnabled();
+});
+
+test('B-BR-02a 刷新进入频道后固定在最新处，后台历史预取不推动页面', async ({ page, request }) => {
+  await reset(request, 'multi-channel', 812);
+  await login(page);
+  await page.getByRole('tab', { name: '动态' }).click();
+  await page.reload();
+  await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
+  await expect(page.locator('.timeline')).toBeVisible();
+  const samples = await page.evaluate(async () => {
+    const viewport = document.querySelector('.timeline');
+    const rows = [];
+    for (let index = 0; index < 30; index += 1) {
+      rows.push({
+        top: viewport.scrollTop,
+        bottom: viewport.scrollHeight - viewport.clientHeight,
+        height: viewport.scrollHeight,
+        entries: viewport.querySelectorAll('.timeline-entry').length,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return rows;
+  });
+  expect(samples.every((row) => Math.abs(row.bottom - row.top) <= 2)).toBe(true);
+  expect(new Set(samples.map((row) => row.height)).size).toBe(1);
+  expect(new Set(samples.map((row) => row.entries)).size).toBe(1);
 });
 
 test('B-BR-03 unavailable、partial OBS、权限撤销和退役分别收敛', async ({ page, request }) => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render } from '@testing-library/react';
 
 // 切频道时消息区必须换一棵新的树。auto-animate 的退场动画会把 React 已经删掉的
 // 节点按 position:absolute / z-index:100 插回容器，只靠动画的 finish 事件回收；
@@ -143,13 +143,15 @@ describe('历史自动懒加载', () => {
     };
   }
 
-  it('首屏内容不足一屏时只揭示已缓存历史并报告消耗量', async () => {
+  it('首屏不足一屏也保持最新位置，后台蓄水池增长不推动 DOM', async () => {
     const restore = timelineGeometry({ clientHeight: 600, scrollHeight: 400 });
-    const onHistoryConsumed = vi.fn();
+    const onRevealHistory = vi.fn();
     try {
-      const view = render(<Timeline state={historyState()} history={{ hasOlder: true }} onHistoryConsumed={onHistoryConsumed} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-      await waitFor(() => expect(view.container.querySelectorAll('.standalone-row')).toHaveLength(152));
-      expect(onHistoryConsumed).toHaveBeenCalledWith(32);
+      const view = render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+      view.rerender(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 5_000 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(view.container.querySelectorAll('.standalone-row')).toHaveLength(120);
+      expect(onRevealHistory).not.toHaveBeenCalled();
       expect(document.body.textContent).not.toContain('查看更早动态');
     } finally {
       restore();
@@ -158,13 +160,16 @@ describe('历史自动懒加载', () => {
 
   it('首屏已经溢出时停在最新处且不由 Timeline 发起历史 I/O', async () => {
     const restore = timelineGeometry({ clientHeight: 600, scrollHeight: 1_200 });
-    const onHistoryConsumed = vi.fn();
+    const onRevealHistory = vi.fn();
     try {
-      render(<Timeline state={historyState()} history={{ hasOlder: true }} onHistoryConsumed={onHistoryConsumed} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+      render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 40 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
       const timeline = document.querySelector('.timeline');
       await new Promise((resolve) => setTimeout(resolve, 120));
-      expect(onHistoryConsumed).not.toHaveBeenCalled();
+      expect(onRevealHistory).not.toHaveBeenCalled();
       expect(timeline.scrollTop).toBe(600);
+      timeline.scrollTop = 0;
+      fireEvent.scroll(timeline);
+      expect(onRevealHistory).toHaveBeenCalledWith(32);
     } finally {
       restore();
     }

@@ -658,7 +658,7 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, onHistoryConsumed, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
+export function Timeline({ state, history = {}, onRevealHistory, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
   const [page, setPage] = useState(0);
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   const [editing, setEditing] = useState(null);
@@ -805,18 +805,19 @@ export function Timeline({ state, history = {}, onHistoryConsumed, roster, selfI
     requestAnimationFrame(() => layoutMotionRef.current?.enable());
   }
 
-  function revealPrefetchedHistory({ keepLatest = false } = {}) {
-    if (!windowed.hasOlder) return false;
-    const revealed = Math.min(TIMELINE_HISTORY_REVEAL_SIZE, windowed.start);
+  function revealPrefetchedHistory() {
+    const localRevealed = Math.min(TIMELINE_HISTORY_REVEAL_SIZE, windowed.start);
+    const requested = TIMELINE_HISTORY_REVEAL_SIZE - localRevealed;
+    // The reservoir is intentionally not React state: polling it through a
+    // prop would make every 200-row background page rerender the whole app.
+    // Claim rows synchronously only when an actual scroll needs them.
+    const fromReservoir = requested > 0 ? Number(onRevealHistory?.(requested)) || 0 : 0;
+    const revealed = localRevealed + fromReservoir;
+    if (!revealed) return false;
     beginHistoryMutation();
-    if (!keepLatest) leaveLatest();
+    leaveLatest();
     setPage((value) => value + 1);
-    onHistoryConsumed?.(revealed);
     return true;
-  }
-
-  function ensureOlderHistory(options) {
-    revealPrefetchedHistory(options);
   }
 
   function handleTimelineScroll(event) {
@@ -827,7 +828,7 @@ export function Timeline({ state, history = {}, onHistoryConsumed, roster, selfI
     if (atLatest) return;
     // The channel history scheduler owns all I/O. Scrolling only exposes rows
     // already resident in memory and can therefore never wait on the network.
-    if (viewport.scrollTop <= Math.max(160, viewport.clientHeight * 0.5)) ensureOlderHistory();
+    if (viewport.scrollTop <= Math.max(160, viewport.clientHeight * 0.5)) revealPrefetchedHistory();
   }
 
   // Preserve the message under the reader's eye when older DOM is prepended.
@@ -836,29 +837,9 @@ export function Timeline({ state, history = {}, onHistoryConsumed, roster, selfI
   useLayoutEffect(() => {
     const mutation = historyMutationRef.current;
     if (!mutation) return;
-    const changed = windowed.start !== mutation.start;
+    const changed = windowed.start !== mutation.start || windowed.total !== mutation.total;
     if (changed) finishHistoryMutation();
-  }, [windowed.start]);
-
-  // Reveal only already-resident rows. The scheduler continuously replenishes
-  // the hidden reservoir independently of viewport activity.
-  useEffect(() => {
-    if (!windowed.hasOlder) return undefined;
-    const frame = requestAnimationFrame(() => {
-      const viewport = viewportRef.current;
-      if (!viewport) return;
-      const underfilled = viewport.scrollHeight <= viewport.clientHeight + 1;
-      const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-      const atLatest = bottom - viewport.scrollTop < 80;
-      const nearReveal = !atLatest && viewport.scrollTop <= Math.max(160, viewport.clientHeight * 0.5);
-      if (underfilled) {
-        ensureOlderHistory({ keepLatest: true });
-      } else if (nearReveal) {
-        ensureOlderHistory();
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [state.channelId, windowed.start, windowed.total]);
+  }, [windowed.start, windowed.total]);
 
   // 账本状态更新会让同一个消息块从“处理中气泡”收成最终记录。DOM 的正常
   // layout 必须先落地，滚动锚点才能保持正确；随后只对 timeline 的直接子块做

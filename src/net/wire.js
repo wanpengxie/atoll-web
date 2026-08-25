@@ -51,6 +51,7 @@ export function createWire({
   let reconnectTimer = null;
   let counter = 0;
   let attachRef = '';
+  let preAttachFeed = [];
   const pending = new Map();
 
   function rejectPending(code = 'closed', detail = 'connection closed') {
@@ -109,6 +110,12 @@ export function createWire({
       if (incoming.ref === attachRef) {
         attached = true;
         reconnectAttempt = 0;
+        // Attach history is one snapshot, not a stream of visible mutations.
+        // Commit every preceding feed frame before opening the UI so the first
+        // paint is already complete and pinned to the latest message.
+        const initialFeed = preAttachFeed;
+        preAttachFeed = [];
+        for (const row of initialFeed) onFeed(row.channel_id, Number(row.seq), row.envelope);
         onState('attached', {
           contract_version: payload.contract_version,
           boot: payload.boot,
@@ -134,7 +141,8 @@ export function createWire({
       return;
     }
     if (parsed.kind === DOWN.feed) {
-      onFeed(payload.channel_id, Number(payload.seq), payload.envelope);
+      if (!attached) preAttachFeed.push(payload);
+      else onFeed(payload.channel_id, Number(payload.seq), payload.envelope);
       return;
     }
     if (parsed.kind === DOWN.observe_ended) {
@@ -157,6 +165,7 @@ export function createWire({
     if (stopped) return;
     attached = false;
     attachRef = '';
+    preAttachFeed = [];
     socket = new WebSocketImpl(websocketURL(url));
     socket.addEventListener('open', () => {
       if (stopped) return;
@@ -173,6 +182,7 @@ export function createWire({
     });
     socket.addEventListener('close', () => {
       attached = false;
+      preAttachFeed = [];
       rejectPending('closed', 'connection closed');
       if (stopped) {
         onState('closed');
