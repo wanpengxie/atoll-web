@@ -742,6 +742,13 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     content.dataset.layoutMotion = 'ready';
     return () => {
       motion.disable();
+      // disable() 只是不再接管新的 mutation，恒不回收已经插回 DOM 的退场残影：
+      // 那些节点带着 position:absolute / z-index:100 躺在容器里，只等自己的动画
+      // finish 事件才被摘掉。强制结束未播完的动画，走 auto-animate 自己的回收路径。
+      for (const animation of content.getAnimations?.({ subtree: true }) || []) {
+        try { animation.finish(); }
+        catch { /* 无限时长的动画不参与退场回收 */ }
+      }
       delete content.dataset.layoutMotion;
     };
   }, [state.channelId]);
