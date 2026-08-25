@@ -657,13 +657,14 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
+export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
   const [page, setPage] = useState(0);
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   const [editing, setEditing] = useState(null);
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
+  const loadingOlderRef = useRef(false);
   const previousAccess = useRef(access);
   const names = useMemo(() => actorNameMap(roster), [roster]);
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
@@ -726,6 +727,22 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
     lastSeq: latestVisibleSeq,
     page,
   });
+
+  async function loadOlder() {
+    if (loadingOlderRef.current || history?.loading || (!windowed.hasOlder && !history?.hasOlder)) return;
+    loadingOlderRef.current = true;
+    leaveLatest();
+    try {
+      if (windowed.start > 0) {
+        setPage((value) => value + 1);
+      } else if (history?.hasOlder && onLoadOlder) {
+        await onLoadOlder();
+        setPage((value) => value + 1);
+      }
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }
 
   // 账本状态更新会让同一个消息块从“处理中气泡”收成最终记录。DOM 的正常
   // layout 必须先落地，滚动锚点才能保持正确；随后只对 timeline 的直接子块做
@@ -881,7 +898,7 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
   }, [page, windowed.page]);
 
   return <ProgressTrailHost>
-    <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={observeScroll}>
+    <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={(event) => { observeScroll(event); if (event.currentTarget.scrollTop < 160) void loadOlder(); }}>
       <div className="timeline-inner" ref={contentRef}>
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">
@@ -903,7 +920,8 @@ export function Timeline({ state, roster, selfId, pending, approvalStates, contr
           // none of it is theirs.
           <div className="empty-ledger"><span>@</span><h2>这个频道里还没有与你相关的往来</h2><p>切回「全部」可以看到频道里其他人的动态。</p></div>
         )}
-        {windowed.hasOlder && <button type="button" className="bounded-list-control" onClick={() => { leaveLatest(); setPage((value) => value + 1); }}>查看更早动态（当前 {windowed.start + 1}–{windowed.end} / {windowed.total}）</button>}
+        {(windowed.hasOlder || history?.hasOlder) && <button type="button" className="bounded-list-control" disabled={history?.loading} onClick={() => void loadOlder()}>{history?.loading ? '正在读取更早动态…' : `查看更早动态（当前 ${windowed.start + 1}–${windowed.end} / ${windowed.total}）`}</button>}
+        {history?.error && <p className="bounded-list-note" role="alert">{history.error}</p>}
         {windowed.items.map((entry, index) => {
           const continuation = isContinuation(windowed.items, index);
           const timestamp = entryTimestamp(entry);

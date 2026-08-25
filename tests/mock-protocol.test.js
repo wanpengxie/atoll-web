@@ -12,7 +12,7 @@ describe('mock protocol layer', () => {
     expect(FRAME_VERSION).toBe(2);
     expect(MAX_FRAME_BYTES).toBe(512 * 1024);
     expect(Object.keys(PAYLOAD_FIELDS).sort()).toEqual([
-      'after', 'attach', 'cancel', 'cancel_timer', 'observe', 'resolve', 'resource', 'submit', 'unobserve',
+      'after', 'attach', 'cancel', 'cancel_timer', 'history_before', 'observe', 'resolve', 'resource', 'submit', 'unobserve',
     ]);
     expect(downstreamFrame('receipt', 'r1', { message_id: 'm1' })).toEqual({
       v: 2,
@@ -40,6 +40,7 @@ describe('mock protocol layer', () => {
       resource: { channel_id: 'c0', op: 'list' },
       observe: { channel_id: 'c1' },
       unobserve: { channel_id: 'c1' },
+      history_before: { channel_id: 'c1', before_seq: 10, limit: 50 },
     };
     for (const [type, payload] of Object.entries(values)) expect(validatePayload(type, payload)).toBe('');
   });

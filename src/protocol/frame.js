@@ -11,6 +11,7 @@ export const UP = Object.freeze({
   resource: 'resource',
   observe: 'observe',
   unobserve: 'unobserve',
+  history_before: 'history_before',
 });
 
 export const DOWN = Object.freeze({
@@ -75,6 +76,7 @@ const PAYLOAD_FIELDS = Object.freeze({
   ],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
+  history_before: ['channel_id', 'before_seq', 'limit'],
 });
 
 const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
@@ -87,6 +89,7 @@ const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
   resource: ['channel_id', 'op'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
+  history_before: ['channel_id'],
 });
 
 export class FrameValidationError extends Error {
@@ -121,6 +124,14 @@ export function validateUpstreamPayload(type, payload) {
   }
   if (type === UP.after && (!Number.isSafeInteger(payload.duration_ms) || payload.duration_ms <= 0)) {
     throw new FrameValidationError('after duration_ms must be a positive safe integer');
+  }
+  if (type === UP.history_before) {
+    if (payload.before_seq != null && (!Number.isSafeInteger(payload.before_seq) || payload.before_seq < 0)) {
+      throw new FrameValidationError('history_before before_seq must be a non-negative safe integer');
+    }
+    if (payload.limit != null && (!Number.isSafeInteger(payload.limit) || payload.limit < 1 || payload.limit > 200)) {
+      throw new FrameValidationError('history_before limit must be an integer between 1 and 200');
+    }
   }
   if (type === UP.resource) validateResourcePayload(payload);
 }

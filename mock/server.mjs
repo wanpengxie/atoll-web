@@ -1437,6 +1437,32 @@ export function createMockServer({
       socket.close(1012, 'injected mock drop');
       return;
     }
+    if (type === 'history_before') {
+      const principal = socketPrincipals.get(socket) || '';
+      const observed = socketObserved.get(socket) || new Set();
+      if (!domain.canRead(principal, payload.channel_id, observed)) {
+        sendError(socket, { ref, frame: type, code: 'forbidden', detail: 'no eligibility for channel' });
+        return;
+      }
+      if (!histories.has(payload.channel_id)) {
+        sendError(socket, { ref, frame: type, code: 'channel_not_found', detail: 'channel does not exist' });
+        return;
+      }
+      const rows = histories.get(payload.channel_id).filter((row) => row.envelope.visibility !== 'system');
+      const headSeq = histories.get(payload.channel_id).at(-1)?.seq || 0;
+      const anchor = payload.before_seq > 0 ? payload.before_seq : headSeq + 1;
+      const candidates = rows.filter((row) => row.seq < anchor);
+      const page = candidates.slice(-(payload.limit || 200));
+      sendReceipt(socket, ref, {
+        channel_id: payload.channel_id,
+        head_seq: headSeq,
+        oldest_seq: page[0]?.seq || 0,
+        newest_seq: page.at(-1)?.seq || 0,
+        has_older: candidates.length > page.length,
+        rows: page.map(({ seq, envelope }) => ({ seq, envelope })),
+      });
+      return;
+    }
     if (type === 'submit') return handleSubmit(socket, ref, payload);
     if (!['observe', 'unobserve'].includes(type)) {
       const principal = socketPrincipals.get(socket) || '';
@@ -1556,11 +1582,32 @@ export function createMockServer({
       }
       const payload = value.payload ?? {};
       const validation = validatePayload('attach', payload);
-      if (validation || (payload.since != null && (!isObject(payload.since) || Object.values(payload.since).some((seq) => !Number.isSafeInteger(seq) || seq < 0)))) {
+      const invalidPositions = (positions) => positions != null && (!isObject(positions) || Object.values(positions).some((seq) => !Number.isSafeInteger(seq) || seq < 0));
+      if (validation || invalidPositions(payload.since)) {
         sendError(socket, { ref, frame: frameType, code: 'bad_payload', detail: validation || 'since must map channel ids to non-negative integer seq values' });
         return;
       }
       attached.add(socket);
+      const since = payload.since || {};
+      const historyGrants = [];
+      const effectiveSince = { ...since };
+      const initialTails = new Map();
+      for (const [channelId, rows] of histories) {
+        const principal = socketPrincipals.get(socket) || '';
+        const observed = socketObserved.get(socket) || new Set();
+        if (!domain.canRead(principal, channelId, observed)) continue;
+        const visible = rows.filter((row) => row.envelope.visibility !== 'system');
+        const tail = visible.slice(-200);
+        const oldestSeq = tail[0]?.seq || 0;
+        const floor = oldestSeq ? oldestSeq - 1 : rows.at(-1)?.seq || 0;
+        const cursor = Number(since[channelId] || 0);
+        const truncated = cursor < floor;
+        if (truncated) {
+          effectiveSince[channelId] = rows.at(-1)?.seq || 0;
+          initialTails.set(channelId, tail);
+        }
+        historyGrants.push({ channel_id: channelId, head_seq: rows.at(-1)?.seq || 0, oldest_seq: oldestSeq, has_older: visible.length > tail.length, truncated });
+      }
       // 对齐真后端 AttachReceipt：成员清单随回执直接交付（资格账快照），
       // 前端连上即知道自己在哪些频道，恒不靠 feed 副作用反推。
       sendReceipt(socket, ref, {
@@ -1568,16 +1615,17 @@ export function createMockServer({
         boot: bootId,
         memberships: domain.attachMemberships(socketPrincipals.get(socket) || ''),
         memberships_complete: true,
+        history: historyGrants,
       });
-      const since = payload.since || {};
       const replay = () => {
         for (const [channelId, history] of histories) {
           const principal = socketPrincipals.get(socket) || '';
           const observed = socketObserved.get(socket) || new Set();
           if (!domain.canRead(principal, channelId, observed)) continue;
-          const cursor = Number(since[channelId] || 0);
-          for (const row of history) {
-            if (row.seq > cursor) sendFrame(socket, 'feed', '', row);
+          const cursor = Number(effectiveSince[channelId] || 0);
+          const replayRows = initialTails.get(channelId) || history.filter((row) => row.envelope.visibility !== 'system' && row.seq > cursor);
+          for (const row of replayRows) {
+            sendFrame(socket, 'feed', '', row);
           }
         }
       };

@@ -53,6 +53,41 @@ afterEach(async () => {
 });
 
 describe('local mock end-to-end', () => {
+  it('bounds attach replay and serves ascending keyset history pages', async () => {
+    const server = createMockServer({ rootPassword: 'test-root', scenario: 'multi-channel', seed: 17 });
+    const baseURL = await listen(server);
+    let cookie = '';
+    const fetchWithSession = async (path, options = {}) => {
+      const headers = new Headers(options.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      const response = await fetch(`${baseURL}${path}`, { ...options, headers });
+      const setCookie = response.headers.get('set-cookie');
+      if (setCookie) cookie = setCookie.split(';', 1)[0];
+      return response;
+    };
+    await createIdentityClient(fetchWithSession).login('root@atoll.local', 'test-root');
+    class SessionWebSocket extends WebSocket {
+      constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+    }
+    let detail = null;
+    const wire = createWire({
+      url: baseURL.replace(/^http/, 'ws') + '/ws', WebSocketImpl: SessionWebSocket,
+      since: () => ({}),
+      onState: (state, value) => { if (state === 'attached') detail = value; },
+    });
+    await waitFor(() => detail, 'history attach metadata');
+    expect(detail.history.find((entry) => entry.channel_id === 'c0')).toMatchObject({ head_seq: expect.any(Number), oldest_seq: expect.any(Number) });
+
+    const tail = await wire.historyBefore('c0', 0, 3);
+    expect(tail.rows).toHaveLength(3);
+    expect(tail.rows.map((row) => row.seq)).toEqual([...tail.rows.map((row) => row.seq)].sort((a, b) => a - b));
+    expect(tail.has_older).toBe(true);
+    const older = await wire.historyBefore('c0', tail.oldest_seq, 3);
+    expect(older.rows.every((row) => row.seq < tail.oldest_seq)).toBe(true);
+    wire.close();
+    await closeServer(server);
+  });
+
   it('selects, inspects and advances deterministic scenarios through the control plane', async () => {
     const server = createMockServer({ rootPassword: 'test-root', scenario: 'first-login', seed: 3 });
     const baseURL = await listen(server);
@@ -388,7 +423,9 @@ describe('local mock end-to-end', () => {
     expect(replay.turns).toHaveLength(4);
     expect([...replay.turns.values()].filter((turn) => turn.request.type === 'agent.ask')).toHaveLength(3);
     expect([...replay.turns.values()].filter((turn) => turn.status === 'completed')).toHaveLength(3);
-    expect(replay.narration).toHaveLength(2);
+    // Production visible-log reads exclude visibility=system rows; the mock
+    // attach path now follows the same contract.
+    expect(replay.narration).toHaveLength(0);
     expect(replay.approvals).toHaveLength(1);
     expect(states.get('c0').standalone.at(-1).envelope.payload.text).toContain('c0 独立账本');
     expect(states.get('c0.project').standalone.at(-1).envelope.payload.text).toContain('c0.project 独立账本');

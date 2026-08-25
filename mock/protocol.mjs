@@ -13,6 +13,7 @@ export const PAYLOAD_FIELDS = Object.freeze({
   resource: ['channel_id', 'op', 'resource_id', 'args', 'target', 'ops', 'query', 'address', 'with_content'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
+  history_before: ['channel_id', 'before_seq', 'limit'],
 });
 
 export const REQUIRED_FIELDS = Object.freeze({
@@ -25,6 +26,7 @@ export const REQUIRED_FIELDS = Object.freeze({
   resource: ['channel_id', 'op'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
+  history_before: ['channel_id'],
 });
 
 export const isObject = (value) => value != null && typeof value === 'object' && !Array.isArray(value);
@@ -77,6 +79,10 @@ export function validatePayload(type, payload) {
   if (payload.audience != null && (!Array.isArray(payload.audience) || payload.audience.some((value) => typeof value !== 'string'))) return `${type} audience must be an array of strings`;
   if (payload.decision != null && typeof payload.decision !== 'string') return `${type} decision must be a string`;
   if (type === 'after' && (!Number.isSafeInteger(payload.duration_ms) || payload.duration_ms <= 0)) return 'after duration_ms must be a positive safe integer';
+  if (type === 'history_before') {
+    if (payload.before_seq != null && (!Number.isSafeInteger(payload.before_seq) || payload.before_seq < 0)) return 'history_before before_seq must be a non-negative safe integer';
+    if (payload.limit != null && (!Number.isSafeInteger(payload.limit) || payload.limit < 1 || payload.limit > 200)) return 'history_before limit must be an integer between 1 and 200';
+  }
   if (type === 'resource') {
     const ops = ['create', 'read', 'write', 'delete', 'stat', 'list'];
     if (!ops.includes(payload.op)) return `resource op must be one of: ${ops.join(', ')}`;

@@ -116,6 +116,7 @@ export function createWire({
           // 以什么 actor 身份"，恒不再靠 feed 副作用反推。
           memberships: payload.memberships,
           memberships_complete: payload.memberships_complete,
+          history: payload.history || [],
         });
       }
       return;
@@ -207,6 +208,9 @@ export function createWire({
     },
     unobserve(channelId) {
       return transmit(UP.unobserve, { channel_id: channelId });
+    },
+    historyBefore(channelId, beforeSeq = 0, limit = 200) {
+      return transmit(UP.history_before, { channel_id: channelId, before_seq: beforeSeq, limit });
     },
     close() {
       if (stopped) return;

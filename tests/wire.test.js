@@ -79,7 +79,25 @@ describe('wire client', () => {
       contract_version: 'v4',
       memberships: [{ channel_id: 'c0', actor_id: 'root' }],
       memberships_complete: true,
+      history: [],
     }]);
+    wire.close();
+  });
+
+  it('reads an older page over the attached websocket', async () => {
+    const wire = createWire({ WebSocketImpl: FakeWebSocket });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    receipt(socket, socket.sent[0]);
+
+    const pagePromise = wire.historyBefore('c0', 42, 50);
+    const request = socket.sent.at(-1);
+    expect(request).toMatchObject({
+      frame_type: 'history_before',
+      payload: { channel_id: 'c0', before_seq: 42, limit: 50 },
+    });
+    receipt(socket, request, { channel_id: 'c0', oldest_seq: 10, has_older: true, rows: [] });
+    await expect(pagePromise).resolves.toMatchObject({ channel_id: 'c0', oldest_seq: 10, has_older: true });
     wire.close();
   });
 
