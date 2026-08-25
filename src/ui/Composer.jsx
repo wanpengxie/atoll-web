@@ -117,7 +117,7 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, activeAgentTurn = null, onTaskControl, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
+export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
@@ -718,21 +718,6 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     }
   }
 
-  async function interrupt() {
-    if (!activeAgentTurn || disabled || sendState === 'sending') return;
-    setError('');
-    setSendState('sending');
-    try {
-      const actorId = activeAgentTurn.request?.audience?.[0] || '';
-      const messageId = await onTaskControl?.({ channelId, turn: activeAgentTurn, actorId, type: TYPES.agentInterrupt, payload: {} });
-      setSentMessageId(messageId || '');
-      setSendState('accepted');
-    } catch (failure) {
-      setError(failure.message || String(failure));
-      setSendState('error');
-    }
-  }
-
   submitRef.current = submit;
 
   async function uploadFiles(files) {
@@ -880,11 +865,17 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
                 onOpen={agentSelection?.onOpen}
               />}
             {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={() => { beginEditLayoutTransition(); editMode.onAbandon(); }}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
-            {editMode
-              ? <button type="button" className="send-button" onClick={submit} disabled={!hasText || !channelId || disabled || editBusy || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
-              : (hasText || attachments.length || !activeAgentTurn)
-              ? <button type="button" className="send-button" onClick={submit} disabled={(!hasText && !attachments.length) || !channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
-              : <button type="button" className="send-button interrupt" onClick={interrupt} disabled={!channelId || disabled || sendState === 'sending'} aria-label={sendState === 'sending' ? '停止中' : '停止'}>{sendState === 'sending' ? '…' : '■'}</button>}
+            {/* composer 的这个按钮恒只有一个含义：发送。
+                它曾经在"框是空的 + 有任务在跑"时变成停止（■），而"框是不是空的"读的是
+                hasText —— 一面故意晚一拍的镜子（onUpdate 在输入法合成期间直接返回）。
+                手机键盘几乎所有输入都走合成，于是从落第一个字到抬手点按钮的整段时间里
+                镜子恒是空，按钮恒是 ■：打完字一点，打断的是上一条还在跑的任务。
+                PC 上按回车恒不经过按钮，所以只在手机上出现。
+                改判据（比如"聚焦时就是发送"）救不了它：点按钮的顺序是
+                mousedown → 编辑器 blur → click，焦点在 click 之前就已经被按钮抢走，
+                是同一场赛跑换个变量。而停止本来就不缺入口——turn 卡片的「任务控制」
+                里一直有停止和编辑。所以这里恒不再承担第二个含义。 */}
+            <button type="button" className="send-button" onClick={submit} disabled={(editMode ? !hasText : (!hasText && !attachments.length)) || !channelId || disabled || (editMode && editBusy) || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
           </div>
         </div>
       </div>
