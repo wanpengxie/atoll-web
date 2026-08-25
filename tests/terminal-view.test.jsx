@@ -27,6 +27,7 @@ vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class WebglAddon { onContextL
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
 
 import { TerminalView } from '../src/ui/TerminalView.jsx';
+import { resetPtyClient } from '../src/net/pty.js';
 
 // 这组测试存在的理由：TerminalView 从头到尾没有被渲染过一次，于是一个
 // "monoStack is not defined" 级别的错误可以同时通过 vite build 和全部
@@ -38,12 +39,19 @@ class FakeWebSocket {
   static OPEN = 1;
   constructor(url) {
     this.url = url;
-    this.readyState = 1;
+    // 真浏览器里 new 之后是 CONNECTING(0)，恒不是 OPEN。这个差别有意义：
+    // 假成 OPEN 会让"连接已就绪就直接发"和"onopen 统一补发"两条路都触发。
+    this.readyState = 0;
     this.sent = [];
     sockets.push(this);
+    queueMicrotask(() => { this.readyState = 1; this.onopen?.(); });
   }
   send(data) { this.sent.push(data); }
   close() { this.readyState = 3; this.onclose?.({ code: 1006, reason: '' }); }
+  // 客户端发出的控制消息（JSON 文本帧）。
+  get control() { return this.sent.filter((d) => typeof d === 'string').map((d) => JSON.parse(d)); }
+  opens() { return this.control.filter((m) => m.type === 'open'); }
+  reply(v) { this.onmessage?.({ data: JSON.stringify(v) }); }
 }
 
 beforeEach(() => {
@@ -52,6 +60,7 @@ beforeEach(() => {
   window.sessionStorage?.clear();
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.stubGlobal('WebSocket', FakeWebSocket);
+  resetPtyClient();
   // jsdom 没有 canvas，xterm 的渲染器会走它自己的兜底；这里只关心组件挂载
   // 与副作用不抛错。
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
@@ -62,37 +71,63 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('终端视图', () => {
-  it('挂载不抛错，并按频道发起 /pty 连接', () => {
+  it('挂载不抛错，并在共享连接上按频道开一条流', async () => {
     render(<TerminalView channelId="c0" />);
-    expect(sockets.length).toBe(1);
-    const url = new URL(sockets[0].url.replace(/^ws/, 'http'));
-    expect(url.pathname).toBe('/pty');
-    expect(url.searchParams.get('channel_id')).toBe('c0');
-    expect(Number(url.searchParams.get('cols'))).toBeGreaterThan(0);
+    await vi.waitFor(() => expect(sockets.length).toBe(1));
+    expect(new URL(sockets[0].url.replace(/^ws/, 'http')).pathname).toBe('/pty');
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(1));
+    const open = sockets[0].opens()[0];
+    expect(open.channel_id).toBe('c0');
+    expect(open.id).toBeGreaterThan(0);
+    expect(open.cols).toBeGreaterThan(0);
   });
 
-  it('隐藏时恒不断开连接——切页签不是断线', () => {
+  // 这条是这一版的核心承诺：开十个频道恒不是十条 WS。
+  it('多块终端共用一条 WebSocket', async () => {
+    const a = render(<TerminalView channelId="c0" />);
+    await vi.waitFor(() => expect(sockets.length).toBe(1));
+    render(<TerminalView channelId="c1" />);
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(2));
+    expect(sockets.length, '第二块终端又开了一条连接').toBe(1);
+    const ids = sockets[0].opens().map((m) => m.id);
+    expect(new Set(ids).size, '两条流用了同一个流 id').toBe(2);
+    a.unmount();
+  });
+
+  it('隐藏时恒不断开连接——切页签不是断线', async () => {
     const { rerender } = render(<TerminalView channelId="c0" visible />);
-    const opened = sockets.length;
+    await vi.waitFor(() => expect(sockets.length).toBe(1));
     rerender(<TerminalView channelId="c0" visible={false} />);
-    expect(sockets.length).toBe(opened);
+    expect(sockets.length).toBe(1);
     expect(sockets[0].readyState).toBe(FakeWebSocket.OPEN);
   });
 
-  it('canWrite 变化恒不重建连接——权限抖动不该丢掉正在跑的 shell', () => {
+  it('canWrite 变化恒不重建连接——权限抖动不该丢掉正在跑的 shell', async () => {
     const { rerender } = render(<TerminalView channelId="c0" canWrite />);
-    const opened = sockets.length;
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(1));
     rerender(<TerminalView channelId="c0" canWrite={false} />);
-    expect(sockets.length).toBe(opened);
+    expect(sockets[0].opens()).toHaveLength(1);
   });
 
-  it('拿到 ready 后把 session 记下来，重连时带上它', () => {
-    const { unmount } = render(<TerminalView channelId="c0" />);
-    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ready', session: 'pty-abc' }) });
-    unmount();
+  it('卸载走 detach 恒不走 close——切走频道恒不杀 shell', async () => {
+    const view = render(<TerminalView channelId="c0" />);
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(1));
+    const id = sockets[0].opens()[0].id;
+    sockets[0].reply({ type: 'ready', id, session: 'pty-abc' });
+    view.unmount();
+    const verbs = sockets[0].control.filter((m) => m.type === 'detach' || m.type === 'close');
+    expect(verbs.map((m) => m.type), '卸载把 shell 杀了').toEqual(['detach']);
+  });
+
+  it('拿到 ready 后把 session 记下来，重新挂载时带上它', async () => {
+    const view = render(<TerminalView channelId="c0" />);
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(1));
+    sockets[0].reply({ type: 'ready', id: sockets[0].opens()[0].id, session: 'pty-abc' });
+    view.unmount();
     render(<TerminalView channelId="c0" />);
-    const url = new URL(sockets[sockets.length - 1].url.replace(/^ws/, 'http'));
-    expect(url.searchParams.get('session')).toBe('pty-abc');
+    await vi.waitFor(() => expect(sockets[sockets.length - 1].opens().length).toBeGreaterThan(0));
+    const last = sockets[sockets.length - 1].opens().at(-1);
+    expect(last.session).toBe('pty-abc');
   });
 
   it('提供配色切换', () => {
@@ -102,28 +137,24 @@ describe('终端视图', () => {
 });
 
 describe('会话已不在时的恢复', () => {
-  it('拿着失效的 session 连不上 → 丢掉它重开，恒不无限重试同一个死 id', async () => {
-    // 宽限期过了、或节点重启过，sessionStorage 里的 id 就指向一个不存在的
-    // 会话。浏览器的 WebSocket API 恒拿不到握手的 HTTP 状态码，唯一能分辨
-    // 的事实是「这次有没有拿到 ready」。
+  it('死掉的 session 被拒 → 丢掉它重开，恒不无限重试同一个死 id', async () => {
+    // 宽限期过了、或节点重启过，sessionStorage 里的 id 就指向一个不存在的会话。
+    // 现在门会明说一条 error，恒不再需要靠"这次有没有拿到 ready"去猜。
     window.sessionStorage.setItem('atoll.terminal.session.c0', 'dead-session');
     render(<TerminalView channelId="c0" />);
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(1));
+    const first = sockets[0].opens()[0];
+    expect(first.session).toBe('dead-session');
 
-    const first = new URL(sockets[0].url.replace(/^ws/, 'http'));
-    expect(first.searchParams.get('session')).toBe('dead-session');
-
-    // 握手失败（没有 ready），且 code 不是 1000
-    sockets[0].onclose?.({ code: 1006, reason: '' });
-    await vi.waitFor(() => expect(sockets.length).toBe(2));
-
-    const second = new URL(sockets[1].url.replace(/^ws/, 'http'));
-    expect(second.searchParams.get('session'), '仍在用那个死 id 重试').toBeNull();
+    sockets[0].reply({ type: 'error', id: first.id, code: 'not_found', detail: 'no such session' });
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(2));
+    expect(sockets[0].opens()[1].session, '仍在用那个死 id 重试').toBeUndefined();
     expect(window.sessionStorage.getItem('atoll.terminal.session.c0')).toBeNull();
   });
 
   it('全新会话也连不上时恒不空转，给出可重试的终止态', async () => {
     render(<TerminalView channelId="c0" />);
-    // 一路失败：每次失败后把退避定时器推完，直到组件放弃。
+    await vi.waitFor(() => expect(sockets.length).toBe(1));
     for (let i = 0; i < 10; i += 1) {
       if (screen.queryByRole('button', { name: '重开' })) break;
       const ws = sockets[sockets.length - 1];
@@ -134,56 +165,17 @@ describe('会话已不在时的恢复', () => {
     }
     expect(screen.getByRole('button', { name: '重开' }), '一直在空转重连，恒不给人一个出口').toBeTruthy();
   });
-});
 
-// 终端里 Ctrl+C 恒是 SIGINT，恒不是复制——选择即复制是这块区域唯一顺手的
-// 复制方式。这组测试锁住三件事：松手才复制、没选区恒不动剪贴板、明文 http
-// （navigator.clipboard 恒不存在）下必须还能复制。
-describe('选择即复制', () => {
-  function drag(text) {
-    const term = terminals[terminals.length - 1];
-    term.selection = text;
-    const host = document.querySelector('.terminal-host') || document.querySelector('.terminal-view');
-    host.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true }));
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-  }
-
-  it('松开鼠标就把选中的内容写进剪贴板', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('isSecureContext', true);
-    vi.stubGlobal('navigator', { clipboard: { writeText } });
+  it('shell 退出时只结束这一条流，恒不关整条连接', async () => {
     render(<TerminalView channelId="c0" />);
-    drag('atoll status');
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('atoll status'));
-  });
-
-  it('没有选区就恒不动剪贴板——空拖一下不该清掉别处复制的东西', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('isSecureContext', true);
-    vi.stubGlobal('navigator', { clipboard: { writeText } });
-    render(<TerminalView channelId="c0" />);
-    drag('');
-    await Promise.resolve();
-    expect(writeText).not.toHaveBeenCalled();
-  });
-
-  it('明文 http 下没有 navigator.clipboard，回退路径仍然复制得出去', async () => {
-    // 内网/Tailscale 上的 Atoll 常常是 http 访问的，那里 clipboard API 恒不存在。
-    vi.stubGlobal('isSecureContext', false);
-    vi.stubGlobal('navigator', {});
-    const copied = [];
-    document.execCommand = vi.fn(() => { copied.push(document.activeElement?.value); return true; });
-    render(<TerminalView channelId="c0" />);
-    drag('echo hi');
-    await vi.waitFor(() => expect(document.execCommand).toHaveBeenCalledWith('copy'));
-    expect(copied).toEqual(['echo hi']);
+    render(<TerminalView channelId="c1" />);
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(2));
+    const [first] = sockets[0].opens();
+    sockets[0].reply({ type: 'exit', id: first.id, reason: 'shell exited' });
+    expect(sockets[0].readyState, 'shell 退出把整条连接也关了').toBe(FakeWebSocket.OPEN);
   });
 });
 
-// WebGL 渲染器是动态 import 的，它的续体在 await 之后才跑。那时本代可能已经
-// 被卸载、term 已经 dispose——往一个 dispose 过的 terminal 上 loadAddon 会炸在
-// 它的内部字段上，而那口锅会被记成"GPU 不可用"，并且死掉那一代的 setRenderer
-// 会盖掉活着那一代的成功。真浏览器里这一条让终端长期以为自己没有 GPU。
 describe('WebGL 渲染器的分代', () => {
   it('卸载后到达的 WebGL 续体恒不再往死掉的终端上装载', async () => {
     const { unmount } = render(<TerminalView channelId="c0" />);

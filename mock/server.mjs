@@ -2089,72 +2089,109 @@ export function createMockServer({
     }));
   }
 
-  function servePTY(ws, url) {
-    const channelId = url.searchParams.get('channel_id') || 'c0';
-    const cols = Number(url.searchParams.get('cols')) || 80;
-    const rows = Number(url.searchParams.get('rows')) || 24;
-    const want = url.searchParams.get('session') || '';
+  // 终端腿是**一条** WS 承载所有频道的所有终端，与真节点同形
+  // （协议见 drivers/gateway/portal/pty.go 顶部）。恒不是一个终端一条连接。
+  const PTY_STREAM_HEADER = 4;
+  const MAX_REPLAY = 256 * 1024;
 
-    let session = want ? ptySessions.get(want) : null;
-    if (session && session.grace) { clearTimeout(session.grace); session.grace = null; }
-    // 接管而非拒绝：切频道/刷新回来时，旧 socket 常常还没断干净。拒绝会把人
-    // 推去开一个新 shell，而那正是要避免的事——同一个 caller 恒可接管自己的
-    // 会话，被顶掉的旧 socket 静默关闭。
-    if (session && session.ws) {
-      const stale = session.ws;
-      session.ws = null;
-      try { stale.close(1000, 'superseded'); } catch { /* gone */ }
+  function ptyFrame(id, payload) {
+    const head = Buffer.alloc(PTY_STREAM_HEADER);
+    head.writeUInt32BE(id >>> 0, 0);
+    return Buffer.concat([head, Buffer.from(payload)]);
+  }
+
+  // 会话恒持有一块屏幕：attach 时先回放再转直播。恒有界，满了从前面丢。
+  function replayOf(session) {
+    if (!session.replay.length) return null;
+    let body = session.replay;
+    if (body.length >= MAX_REPLAY) {
+      const cut = body.indexOf(0x0a);
+      if (cut >= 0 && cut + 1 < body.length) body = body.subarray(cut + 1);
     }
-    if (!session) {
-      const id = `pty-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const child = spawnPTY({ cols, rows, integrationPath });
-      session = { id, channelId, child, ws: null, grace: null, scan: createScanner(), tail: '', inCmd: false, openAt: 0 };
-      ptySessions.set(id, session);
+    return Buffer.concat([Buffer.from([0x1b, 0x63]), body]); // RIS + 屏幕
+  }
 
-      child.stdout.on('data', (buf) => onPTYOutput(session, buf));
-      child.stderr.on('data', (buf) => onPTYOutput(session, buf));
-      const end = (reason) => {
-        if (session.ended) return;
-        session.ended = reason;
-        // 与真节点同形：正常结束恒须带 reason，否则前端分不清
-        // 「shell 退出」与「网络断」，会静默重连进第二个 shell。
-        if (session.ws && session.ws.readyState === WebSocket.OPEN) {
-          try { session.ws.close(1000, reason); } catch { /* gone */ }
+  function servePTY(ws) {
+    const streams = new Map();
+
+    const detach = (id) => {
+      const st = streams.get(id);
+      if (!st) return;
+      streams.delete(id);
+      if (st.session.viewer === st) {
+        st.session.viewer = null;
+        // 保住进程，恒不保住输出：viewer 走人恒不杀 shell。
+        if (!st.session.ended) {
+          st.session.grace = setTimeout(() => {
+            try { st.session.child.kill('SIGHUP'); } catch { /* gone */ }
+            ptySessions.delete(st.session.id);
+          }, PTY_GRACE_MS);
         }
-        ptySessions.delete(session.id);
-      };
-      child.on('exit', (code) => end(code ? `shell exited (${code})` : 'shell exited'));
-      child.on('error', () => end('shell failed to start'));
-      // 没有观众也要上钟：开了却没人来的会话恒不得泄漏一个 shell。
-      session.grace = setTimeout(() => { try { child.kill('SIGHUP'); } catch { /* gone */ } }, PTY_GRACE_MS);
-    }
-
-    session.ws = ws;
-    ws.send(JSON.stringify({ type: 'ready', session: session.id }));
+      }
+    };
 
     ws.on('message', (data, isBinary) => {
-      if (isBinary) { session.child.stdin.write(data); return; }
+      if (isBinary) {
+        const buf = Buffer.from(data);
+        if (buf.length < PTY_STREAM_HEADER) return;
+        const id = buf.readUInt32BE(0);
+        streams.get(id)?.session.child.stdin.write(buf.subarray(PTY_STREAM_HEADER));
+        return;
+      }
       let msg;
       try { msg = JSON.parse(data.toString()); } catch { return; }
-      if (msg.type === 'input') session.child.stdin.write(msg.data);
-      else if (msg.type === 'resize') {
-        // script(1) 不转发窗口尺寸，mock 里只记不改——真节点走 TIOCSWINSZ。
-        session.cols = msg.cols; session.rows = msg.rows;
-      } else if (msg.type === 'close') {
-        try { session.child.kill('SIGHUP'); } catch { /* gone */ }
+      if (msg.type === 'open') {
+        const channelId = msg.channel_id || 'c0';
+        const cols = Number(msg.cols) || 80;
+        const rows = Number(msg.rows) || 24;
+        let session = msg.session ? ptySessions.get(msg.session) : null;
+        if (msg.session && !session) {
+          ws.send(JSON.stringify({ type: 'error', id: msg.id, code: 'not_found', detail: 'no such session' }));
+          return;
+        }
+        if (session && session.grace) { clearTimeout(session.grace); session.grace = null; }
+        if (!session) {
+          const id = `pty-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          const child = spawnPTY({ cols, rows, integrationPath });
+          session = { id, channelId, child, viewer: null, grace: null, scan: createScanner(), tail: '', inCmd: false, openAt: 0, replay: Buffer.alloc(0) };
+          ptySessions.set(id, session);
+          child.stdout.on('data', (buf) => onPTYOutput(session, buf));
+          child.stderr.on('data', (buf) => onPTYOutput(session, buf));
+          const end = (reason) => {
+            if (session.ended) return;
+            session.ended = reason;
+            // 恒只结束这一条流，恒不关整条连接——别的频道的终端还在上面跑。
+            const st = session.viewer;
+            if (st && st.ws.readyState === WebSocket.OPEN) {
+              try { st.ws.send(JSON.stringify({ type: 'exit', id: st.id, reason })); } catch { /* gone */ }
+            }
+            ptySessions.delete(session.id);
+          };
+          child.on('exit', (code) => end(code ? `shell exited (${code})` : 'shell exited'));
+          child.on('error', () => end('shell failed to start'));
+          session.grace = setTimeout(() => { try { child.kill('SIGHUP'); } catch { /* gone */ } }, PTY_GRACE_MS);
+        }
+        // 接管而非拒绝：切频道/刷新回来时旧 socket 常常还没断干净。
+        if (session.viewer) streams.delete(session.viewer.id);
+        const st = { id: msg.id, ws, session };
+        session.viewer = st;
+        streams.set(msg.id, st);
+        ws.send(JSON.stringify({ type: 'ready', id: msg.id, session: session.id }));
+        const replay = replayOf(session);
+        if (replay) ws.send(ptyFrame(msg.id, replay));
+        return;
+      }
+      const st = streams.get(msg.id);
+      if (!st) return;
+      if (msg.type === 'resize') { st.session.cols = msg.cols; st.session.rows = msg.rows; }
+      else if (msg.type === 'detach') detach(msg.id);
+      else if (msg.type === 'close') {
+        streams.delete(msg.id);
+        try { st.session.child.kill('SIGHUP'); } catch { /* gone */ }
+        ptySessions.delete(st.session.id);
       }
     });
-    ws.on('close', () => {
-      if (session.ws !== ws) return;
-      session.ws = null;
-      // 保住进程，恒不保住输出：断线不杀 shell，宽限期内回来接同一个。
-      if (!session.ended) {
-        session.grace = setTimeout(() => {
-          try { session.child.kill('SIGHUP'); } catch { /* gone */ }
-          ptySessions.delete(session.id);
-        }, PTY_GRACE_MS);
-      }
-    });
+    ws.on('close', () => { for (const id of [...streams.keys()]) detach(id); });
   }
 
   function onPTYOutput(session, buf) {
@@ -2177,8 +2214,12 @@ export function createMockServer({
       }
     }
     if (session.inCmd && prev < buf.length) session.tail += buf.slice(prev).toString();
+    // 屏幕环恒无条件地喂：没人看的时候攒的正是"回来要看到的那一屏"。
+    session.replay = Buffer.concat([session.replay, buf]);
+    if (session.replay.length > MAX_REPLAY) session.replay = session.replay.subarray(session.replay.length - MAX_REPLAY);
     // 字节恒原样透传：标记是带内的，xterm.js 自己也要消费它。
-    if (session.ws && session.ws.readyState === WebSocket.OPEN) session.ws.send(buf);
+    const st = session.viewer;
+    if (st && st.ws.readyState === WebSocket.OPEN) st.ws.send(ptyFrame(st.id, buf));
   }
 
   server.on('upgrade', (request, socket, head) => {
@@ -2190,7 +2231,7 @@ export function createMockServer({
         socket.destroy();
         return;
       }
-      ptySockets.handleUpgrade(request, socket, head, (ws) => servePTY(ws, url));
+      ptySockets.handleUpgrade(request, socket, head, (ws) => servePTY(ws));
       return;
     }
     if (url.pathname !== '/ws') {

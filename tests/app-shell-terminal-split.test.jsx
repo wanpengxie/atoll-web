@@ -65,37 +65,36 @@ describe('终端分屏开关', () => {
 // 切频道时连同展开状态一起清空：切走 → TerminalView 被卸载 → 切回来是黑屏
 //（实时流恒不回放，卸了就真没了），布局也恒不保留。两个频道各开一个终端时
 // 单槽根本装不下，来回切等于把两边轮流拆掉。
+// 终端的真相恒在服务端（会话的回放环 + 宽限期），所以切走频道就卸载是安全的，
+// 切回来由服务端回放。这一组锁住的是**前端这一侧的账**：分屏开合按频道各记各的，
+// 恒不再像上一版那样切一次频道就把所有终端一起清掉。
 describe('终端分屏按频道各记各的', () => {
   const terminals = () => [...document.querySelectorAll('#workspace-panel-terminal')]
     .map((node) => ({ channel: node.dataset.channel, visible: !node.hidden }));
 
-  it('切走再切回来，同一块终端恒不被卸载，展开状态也留着', () => {
+  it('切走时只卸载当前这块，切回来分屏布局还在', () => {
     const view = render(<AppShell {...props('dynamic', 'c0')} />);
     fireEvent.click(screen.getByRole('button', { name: /终端/ }));
     expect(terminals()).toEqual([{ channel: 'c0', visible: true }]);
 
+    // 切到没开过终端的频道：恒不该凭空给它起一个 shell。
     view.rerender(<AppShell {...props('dynamic', 'c1')} />);
-    expect(terminals(), 'c0 的终端被卸载了——切回来只会是黑屏').toEqual([{ channel: 'c0', visible: false }]);
+    expect(terminals()).toEqual([]);
 
+    // 切回来：分屏状态是记着的，终端重新挂上（屏幕由服务端回放）。
     view.rerender(<AppShell {...props('dynamic', 'c0')} />);
     expect(terminals(), '切回来没有恢复分屏布局').toEqual([{ channel: 'c0', visible: true }]);
   });
 
-  it('两个频道各开一个终端，互不干扰', () => {
+  it('恒只有当前频道那一块终端活着——十个频道恒不是十块', () => {
     const view = render(<AppShell {...props('dynamic', 'c0')} />);
     fireEvent.click(screen.getByRole('button', { name: /终端/ }));
     view.rerender(<AppShell {...props('dynamic', 'c1')} />);
     fireEvent.click(screen.getByRole('button', { name: /终端/ }));
-    expect(terminals()).toEqual([
-      { channel: 'c0', visible: false },
-      { channel: 'c1', visible: true },
-    ]);
+    expect(terminals()).toEqual([{ channel: 'c1', visible: true }]);
 
     view.rerender(<AppShell {...props('dynamic', 'c0')} />);
-    expect(terminals()).toEqual([
-      { channel: 'c0', visible: true },
-      { channel: 'c1', visible: false },
-    ]);
+    expect(terminals()).toEqual([{ channel: 'c0', visible: true }]);
   });
 
   it('在一个频道收起分屏，恒不影响另一个频道', () => {
@@ -104,6 +103,7 @@ describe('终端分屏按频道各记各的', () => {
     view.rerender(<AppShell {...props('dynamic', 'c1')} />);
     fireEvent.click(screen.getByRole('button', { name: /终端/ }));
     fireEvent.click(screen.getByRole('button', { name: /终端/ })); // c1 收起
+    expect(terminals(), '收起恒只是隐藏，恒不是卸载').toEqual([{ channel: 'c1', visible: false }]);
     view.rerender(<AppShell {...props('dynamic', 'c0')} />);
     expect(terminals().find((row) => row.channel === 'c0').visible, 'c0 的分屏被 c1 的收起带走了').toBe(true);
   });

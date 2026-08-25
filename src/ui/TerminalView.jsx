@@ -3,22 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-
-// The terminal leg is its own WebSocket, not the ledger feed's: a build's
-// scrolling output would otherwise share one serialized writer pump with every
-// ledger frame. See .dalek/pm/terminal-line-design.md §4.5 — this is a known
-// workaround for the browser leg lacking a multiplexer, not the target shape.
-function ptyURL(channelId, sessionId, cols, rows) {
-  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const q = new URLSearchParams({ channel_id: channelId, cols: String(cols), rows: String(rows) });
-  if (sessionId) q.set('session', sessionId);
-  return `${scheme}//${window.location.host}/pty?${q.toString()}`;
-}
-
-// 保住进程，恒不保住输出 (§4.4): the shell survives a dropped connection for a
-// grace window, so reconnecting reattaches rather than starting a new shell.
-// Output produced while away is gone — nothing was buffered, by design.
-const RECONNECT_DELAYS = [400, 800, 1600, 3000, 5000];
+import { ptyClient, writeSession } from '../net/pty.js';
 
 // xterm 用 canvas 的 ctx.font 量字，**CSS var() 在那里恒不解析**——直接把
 // "var(--mono)" 交给它会静默回落到浏览器默认字体（通常是衬线体）。所以在
@@ -112,18 +97,6 @@ const encoder = new TextEncoder();
 // 会话 id 按频道记在 sessionStorage：组件卸载（切频道）或刷新之后回来，
 // 只要还在后端的宽限期内，就接回同一个 shell 而恒不新开一个。
 // 用 sessionStorage 而非模块变量，是为了让刷新页面也能接回去。
-const sessionKey = (channelId) => `atoll.terminal.session.${channelId}`;
-
-function readSession(channelId) {
-  try { return window.sessionStorage.getItem(sessionKey(channelId)) || ''; } catch { return ''; }
-}
-function writeSession(channelId, id) {
-  try {
-    if (id) window.sessionStorage.setItem(sessionKey(channelId), id);
-    else window.sessionStorage.removeItem(sessionKey(channelId));
-  } catch { /* private mode */ }
-}
-
 // navigator.clipboard 只在安全上下文（https 或 localhost）里存在。Atoll 的
 // 网页在内网/Tailscale 上常常是明文 http 访问的——那里它恒是 undefined，所以
 // 必须留一条回退路径，否则"选择即复制"在真实部署里一次都不生效。
@@ -202,7 +175,9 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
     // asynchronously, possibly AFTER this one has started; sharing refs across
     // generations let a dead socket null out the live one and schedule a
     // reconnect nobody asked for.
-    const gen = { disposed: false, ws: null, timer: 0, attempt: 0, session: readSession(channelId) };
+    // 一代 = 一次挂载。连接与重连都归 net/pty.js 的单例管，这里只留
+    // "本代还在不在"这一件事：await 之后到达的续体恒不许写别代的状态。
+    const gen = { disposed: false, handle: null };
     genRef.current = gen;
 
     const term = new Terminal({
@@ -274,81 +249,25 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
     });
     observer.observe(hostRef.current);
 
-    let reconnectTimer = 0;
-
-    const send = (obj) => {
-      const ws = gen.ws;
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-    };
-
-    const connect = () => {
-      if (gen.disposed) return;
-      setStatus(gen.session ? 'reconnecting' : 'connecting');
-      const requested = gen.session;
-      let ready = false;
-      const ws = new WebSocket(ptyURL(channelId, requested, term.cols, term.rows));
-      ws.binaryType = 'arraybuffer';
-      gen.ws = ws;
-
-      ws.onopen = () => { gen.attempt = 0; };
-      ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'ready') {
-              ready = true;
-              gen.session = msg.session || '';
-              writeSession(channelId, gen.session);
-              setStatus('open');
-              setDetail('');
-              send({ type: 'resize', cols: term.cols, rows: term.rows });
-            }
-          } catch { /* not ours */ }
-          return;
-        }
-        term.write(new Uint8Array(event.data));
-      };
-      ws.onclose = (event) => {
-        // A socket from a superseded generation must touch nothing.
-        if (gen.disposed || gen.ws !== ws) return;
-        gen.ws = null;
-        // 1000 with a reason means the door ended it deliberately (the shell
-        // exited, or the session was closed): reconnecting would silently
-        // start a second shell, which is exactly what a person does not mean.
-        if (event.code === 1000 && event.reason) {
-          // 真结束（shell 退出/显式关闭）：清掉记录，否则下次会拿着一个
-          // 死 id 去接，门会答 no such session。
-          writeSession(channelId, '');
-          setStatus('ended');
-          setDetail(event.reason);
-          return;
-        }
-        // 带着一个 session id 却连 ready 都没拿到 → 那个会话已经不在了
-        // （宽限期过了，或者节点重启过）。浏览器的 WebSocket API 恒拿不到
-        // 握手的 HTTP 状态码，所以恒不能靠状态码分辨；能分辨的事实只有
-        // 「这次有没有握上手」。此时**必须把 id 丢掉重开**，否则就是拿着
-        // 一个死 id 无限重试——用户看到的就是永远「重连中」的黑屏。
-        if (!ready && requested) {
-          writeSession(channelId, '');
-          gen.session = '';
-          gen.attempt = 0;
-          setStatus('connecting');
-          gen.timer = window.setTimeout(connect, 200);
-          return;
-        }
-        // 连全新的会话都开不起来，就恒不再空转：说清楚并把重试交给人。
-        if (!ready && gen.attempt >= RECONNECT_DELAYS.length) {
-          setStatus('ended');
-          setDetail('连不上终端——设备可能不在线');
-          return;
-        }
-        const delay = RECONNECT_DELAYS[Math.min(gen.attempt, RECONNECT_DELAYS.length - 1)];
-        gen.attempt += 1;
-        setStatus('reconnecting');
-        gen.timer = window.setTimeout(connect, delay);
-      };
-      ws.onerror = () => { setDetail('连接中断'); };
-    };
+    // 连接不再归这块终端所有：整页共用一条 WS，这里只要一条流。
+    // 屏幕由服务端回放（platform/terminal 的回放环），所以卸载/重挂/刷新页面
+    // 回来看到的都是走之前那一屏，恒不是黑屏。
+    const handle = ptyClient().attach(channelId, {
+      cols: term.cols,
+      rows: term.rows,
+      onData: (bytes) => term.write(bytes),
+      onStatus: (next, detail) => {
+        if (gen.disposed) return;
+        setStatus(next);
+        setDetail(detail || '');
+      },
+      onExit: (reason) => {
+        if (gen.disposed) return;
+        setStatus('ended');
+        setDetail(reason);
+      },
+    });
+    gen.handle = handle;
 
     // 选择即复制。终端里 Ctrl+C 恒是 SIGINT，恒不是复制——所以"拖一下就进
     // 剪贴板"不是锦上添花，它是这块区域唯一顺手的复制方式。
@@ -376,36 +295,33 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
       if (!canWriteRef.current) return;
       // 按键走二进制原样发：终端输入恒不是结构化数据，套一层 JSON 只是给
       // 每一次击键加一轮编解码。门那侧本就把二进制帧直接当输入收。
-      const ws = gen.ws;
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
+      gen.handle?.write(encoder.encode(data));
     });
     const disposeResize = term.onResize(({ cols, rows }) => {
       // Window size is a control message, never an escape smuggled into the
       // byte stream: it is low-frequency and has to be reliable (§4).
-      send({ type: 'resize', cols, rows });
+      gen.handle?.resize(cols, rows);
     });
-
-    connect();
 
     return () => {
       gen.disposed = true;
-      window.clearTimeout(gen.timer);
       observer.disconnect();
       host.removeEventListener('mousedown', beginSelect);
       document.removeEventListener('mouseup', endSelect);
+      for (const animation of hostRef.current?.getAnimations?.({ subtree: true }) || []) {
+        try { animation.finish(); } catch { /* 无限时长的动画不参与回收 */ }
+      }
       disposeData.dispose();
       disposeResize.dispose();
-      const ws = gen.ws;
-      gen.ws = null;
-      if (ws) {
-        // Plain close, NOT a "close" control message: leaving means the
-        // viewer went away, and the shell is supposed to outlive that.
-        try { ws.close(); } catch { /* already gone */ }
-      }
+      // detach 恒不是 close：卸载只是 viewer 走人，shell 由宽限期保住（§4.4），
+      // 屏幕由服务端的回放环保住。下次挂回来两样都还在。
+      gen.handle?.detach();
+      gen.handle = null;
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
+
     // canWrite is deliberately NOT a dependency — see canWriteRef above.
   }, [channelId, reopen]);
 

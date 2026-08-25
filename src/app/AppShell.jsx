@@ -37,8 +37,9 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   // 因为实时流恒不回放），布局也恒不保留。两个频道各开一个终端时最明显——
   // 单槽装不下两个，来回切等于把两边轮流拆掉。
   const [terminalSplits, setTerminalSplits] = useState({});
-  const openedTerminalIds = Object.keys(terminalSplits);
   const terminalOpen = Boolean(terminalSplits[navigation.activeChannelId]);
+  // 键在 = 这个频道开过：收起分屏恒只是隐藏（恒不断线），切走频道才卸载。
+  const terminalEverOpened = navigation.activeChannelId in terminalSplits;
   const writeDisabled = session.wireState !== 'open' || !canWriteChannel(workspace.access);
   const contentVisible = canViewChannelContent(workspace.access);
   const runningAgentTurn = activeAgentTurn(workspace.state, workspace.roster, workspace.selfId);
@@ -222,17 +223,12 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
           {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} state={workspace.state} history={workspace.history} onLoadOlder={workspace.onLoadOlder} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
           <Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={workspace.onDraftChange} disabled={writeDisabled} disabledReason={disabledReason} onSend={workspace.onSend} onRetry={workspace.onRetry} activeAgentTurn={runningAgentTurn} onTaskControl={workspace.onTaskControl} attachments={workspace.attachments} onPreviewAttachment={workspace.onPreviewAttachment} onRemoveAttachment={workspace.onRemoveAttachment} onClearAttachments={workspace.onClearAttachments} onUploadAttachments={workspace.onUploadAttachments} onOpenChannelFiles={workspace.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={clearReply} onReplySent={clearReply} />
         </div>
-        {/* 开过终端的每个频道各挂一块，恒不卸载：收起分屏、切走频道都只是隐藏。
-            xterm 的缓冲区因此原地保留，切回来看到的是走之前那一屏，恒不是黑屏
-            ——实时流恒不落账也恒不回放（design §4.3），卸了就真的没了。 */}
-        {workspace.channel && contentVisible && openedTerminalIds.map((channelId) => (
-          <TerminalView
-            key={channelId}
-            channelId={channelId}
-            canWrite={channelId === navigation.activeChannelId && !writeDisabled}
-            visible={channelId === navigation.activeChannelId && terminalOpen}
-          />
-        ))}
+        {/* 恒只挂当前频道这一块。切走就卸载——**这是安全的**，因为终端的真相
+            恒在服务端：shell 由宽限期保住，屏幕由会话的回放环保住，attach 时
+            先回放再转直播。上一版为了不黑屏把 N 块常驻在 DOM 里，那是把真相
+            放在浏览器里的补丁，回放做掉之后它恒无必要。 */}
+        {terminalEverOpened && workspace.channel && contentVisible
+          && <TerminalView channelId={navigation.activeChannelId} canWrite={!writeDisabled} visible={terminalOpen} />}
       </div>}
       {workspace.view === 'artifacts' && workspace.channel && (contentVisible ? <ArtifactsView channel={workspace.channel} daemons={workspace.resources.daemons} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} /> : <section id="workspace-panel-artifacts" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-artifacts"><strong>文件不可访问</strong><p>恢复频道访问后才能查看频道挂载目录。</p></section>)}
       {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}
