@@ -62,7 +62,8 @@
   .composer-wrap { padding: 10px; }
   .composer-tools > button, .composer-file-control, .composer-cancel-edit { width: 44px; height: 44px; }
   .timeline-scope-bar { top: 4px; min-height: 29px; flex-basis: 29px; margin-bottom: 0; }
-  .timeline-scope button { min-height: 26px; padding: 2px 9px; font-size: 10px; }
+  .timeline-scope > button { min-height: 26px; padding: 2px 9px; font-size: 10px; }
+  .timeline-actor-filter button { min-height: 20px; max-width: 7em; padding: 1px 7px; font-size: 9px; }
   .send-button { min-width: 58px; padding: 8px 12px; }
   .send-button span, .composer-help span:first-child { display: none; }
   .workspace-view-header { display: block; min-height: auto; padding: 12px; }

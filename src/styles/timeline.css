@@ -391,9 +391,16 @@
 
 
 .timeline-scope-bar { position: sticky; z-index: 3; top: 8px; display: flex; width: min(100%, var(--timeline-track)); min-height: 36px; flex: 0 0 36px; justify-content: flex-end; margin: 0 auto 4px; padding: 0; pointer-events: none; }
-.timeline-scope { pointer-events: auto; transform: translateX(4px); }
-.timeline-scope button { display: flex; min-height: 32px; align-items: center; padding: 5px 11px; border: 1px solid var(--line-control-strong); border-radius: var(--pill); opacity: .6; background: var(--raised); color: var(--text); box-shadow: 0 4px 16px var(--shadow-2), 0 1px 3px var(--shadow); cursor: pointer; font-size: 11px; font-weight: 650; transition: opacity .12s; }
-.timeline-scope button:hover, .timeline-scope button:focus-visible { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
+.timeline-scope { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; pointer-events: auto; transform: translateX(4px); }
+/* 成员过滤竖排在「@我」下面，左边缘与它对齐——整列一起左对齐，恒不是各自右对齐：
+   名字比「@我」宽，右对齐会把「@我」往里推，两边都不齐。
+   字号比它小一档：这是一列常驻的旁支控件，恒不与主开关争视线。 */
+.timeline-actor-filter { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.timeline-actor-filter button { display: flex; min-height: 22px; max-width: 8.5em; align-items: center; overflow: hidden; padding: 2px 8px; border: 1px solid var(--line-control-strong); border-radius: var(--pill); opacity: .5; background: var(--raised); color: var(--text); box-shadow: 0 2px 8px var(--shadow); cursor: pointer; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; transition: opacity .12s; }
+.timeline-actor-filter button:hover, .timeline-actor-filter button:focus-visible { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
+.timeline-actor-filter button.is-on { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); font-weight: 700; }
+.timeline-scope > button { display: flex; min-height: 32px; align-items: center; padding: 5px 11px; border: 1px solid var(--line-control-strong); border-radius: var(--pill); opacity: .6; background: var(--raised); color: var(--text); box-shadow: 0 4px 16px var(--shadow-2), 0 1px 3px var(--shadow); cursor: pointer; font-size: 11px; font-weight: 650; transition: opacity .12s; }
+.timeline-scope > button:hover, .timeline-scope > button:focus-visible { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
 
 /* 终端视图。字节流是易逝的体验面，账本才是持久真相——这里只负责好看和好用。 */
 .terminal-view[hidden] { display: none; }
