@@ -109,11 +109,16 @@ class PtyClient {
     // 于是永远连不上——而且症状只在"关掉又立刻要"时出现，恒难查。
     this.opening = false;
     const ws = this.ws;
-    this.ws = null;
     this.attempt = 0;
     if (ws) {
-      ws.onclose = null;
+      // close() 只是发起关闭握手，close 事件到达前旧 socket 仍真实存在。
+      // 这段窗口里若新频道 attach，恒让 ensure() 看见旧 socket 并等待它真正
+      // close；若现在就把 this.ws 置空，会立刻再 new 一条，短暂出现两条并发
+      // /pty（干净 CI 的 F8-001 正好抓到这个窗口）。onclose 是唯一把 ws 清空
+      // 并按需重连的地方，因此连接代际恒不重叠。
       try { ws.close(); } catch { /* already gone */ }
+    } else {
+      this.ws = null;
     }
   }
 

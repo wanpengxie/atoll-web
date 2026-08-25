@@ -94,6 +94,23 @@ describe('终端视图', () => {
     a.unmount();
   });
 
+  it('旧连接关闭握手完成前不创建下一条连接', async () => {
+    const first = render(<TerminalView channelId="c0" />);
+    await vi.waitFor(() => expect(sockets.length).toBe(1));
+    const old = sockets[0];
+    // 模拟真浏览器的异步 close：调用 close() 后，close 事件稍后才到。
+    old.close = function closeLater() { this.readyState = 2; };
+    first.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+
+    render(<TerminalView channelId="c1" />);
+    expect(sockets, '旧 socket 尚未 close 就创建了下一条').toHaveLength(1);
+
+    old.onclose?.({ code: 1000, reason: '' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+  });
+
   it('隐藏时恒不断开连接——切页签不是断线', async () => {
     const { rerender } = render(<TerminalView channelId="c0" visible />);
     await vi.waitFor(() => expect(sockets.length).toBe(1));
