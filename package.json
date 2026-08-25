@@ -10,6 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:browser": "playwright test",
+    "test:browser:ci": "playwright test tests/browser/f7-request-turn-progress.spec.js tests/browser/f7-terminal.spec.js tests/browser/f8-terminal-session.spec.js tests/browser/phase-b.spec.js --grep '^(F7|F8|B-BR-02a)'",
+    "test:ci": "npm test && npm run test:browser:ci && npm run build",
     "test:all": "npm test && npm run test:browser && npm run build"
   },
   "devDependencies": {
