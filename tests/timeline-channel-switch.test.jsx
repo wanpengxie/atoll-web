@@ -54,6 +54,33 @@ describe('切频道的消息区', () => {
     // 没有按频道 key 时 React 只做一次 props 更新，挂载次数会停在 1。
     expect(mounts.filter((event) => event === 'mount')).toHaveLength(2);
   });
+
+  // 上一版把 Timeline 的 key 写成了 activeChannelId——和它同一个父节点里的
+  // Composer 撞了。React 明说重复 key「可能导致子节点被复制或被省略」，实测
+  // 就是每切一次频道多出一整列消息区。只数挂载次数看不出来，必须数活着的棵数。
+  it('反复切频道后，消息区恒只有一棵', () => {
+    mounts = [];
+    const view = render(<AppShell {...shellProps('c0')} />);
+    for (let i = 0; i < 6; i += 1) {
+      view.rerender(<AppShell {...shellProps(i % 2 ? 'c1' : 'c0')} />);
+    }
+    expect(document.querySelectorAll('#workspace-panel-dynamic')).toHaveLength(1);
+  });
+
+  // React 对重复 key 只发 console.error，恒不抛错——所以它可以在全绿的测试里
+  // 一路滑到线上。这条把那声警告变成硬失败。
+  it('消息区这一层恒不出现重复 key 警告', () => {
+    const errors = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => { errors.push(args.join(' ')); });
+    try {
+      const view = render(<AppShell {...shellProps('c0')} />);
+      view.rerender(<AppShell {...shellProps('c1')} />);
+      view.rerender(<AppShell {...shellProps('c0')} />);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errors.filter((line) => line.includes('same key')), errors.join(' | ')).toHaveLength(0);
+  });
 });
 
 describe('退场残影的回收', () => {
