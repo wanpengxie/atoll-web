@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { createMockServer, historyWindow } from '../mock/server.mjs';
+import { createMockServer, historyWindow, rawHistoryPage } from '../mock/server.mjs';
 import { createIdentityClient } from '../src/net/identity.js';
 import { createWire } from '../src/net/wire.js';
 import { apply, createChannelState, fold, orderedTimeline } from '../src/model/fold.js';
@@ -106,15 +106,30 @@ describe('local mock end-to-end', () => {
       add({ id: `${root}-terminal`, kind: 'response', type: 'agent.ask', parent_id: root, correlation_id: root, payload: { status: 'completed' } });
     }
 
-    const newest = historyWindow(rows, { targetRows: 200 });
+    const newest = historyWindow(rows, { targetRows: 200, minimumCompleteRoots: 3 });
     expect(newest.hasOlder).toBe(true);
     expect(newest.rows.filter((row) => row.envelope.kind === 'request' && !row.envelope.parent_id).map((row) => row.envelope.id)).toEqual(['root-5', 'root-6', 'root-7']);
     expect(newest.rows.some((row) => row.envelope.id.includes('progress'))).toBe(false);
     expect(newest.rows.some((row) => row.envelope.id === 'root-6-child')).toBe(true);
 
-    const older = historyWindow(rows, { beforeSeq: newest.oldestSeq, targetRows: 6 });
+    const older = historyWindow(rows, { beforeSeq: newest.oldestSeq, targetRows: 6, minimumCompleteRoots: 3 });
     expect(older.rows.every((row) => row.seq < newest.oldestSeq)).toBe(true);
     expect(older.rows.filter((row) => row.envelope.kind === 'request' && !row.envelope.parent_id)).toHaveLength(3);
+  });
+
+  it('scheduler history pages are exact raw cursor batches after attach', () => {
+    const rows = Array.from({ length: 450 }, (_, index) => ({
+      channel_id: 'c0', seq: index + 1,
+      envelope: { id: `row-${index + 1}`, kind: 'event', type: 'human.note', visibility: 'public', payload: {} },
+    }));
+    const newest = rawHistoryPage(rows, { limit: 200 });
+    expect(newest.rows).toHaveLength(200);
+    expect(newest.oldestSeq).toBe(251);
+    expect(newest.hasOlder).toBe(true);
+    const older = rawHistoryPage(rows, { beforeSeq: newest.oldestSeq, limit: 200 });
+    expect(older.rows).toHaveLength(200);
+    expect(older.oldestSeq).toBe(51);
+    expect(older.newestSeq).toBe(250);
   });
 
   it('selects, inspects and advances deterministic scenarios through the control plane', async () => {

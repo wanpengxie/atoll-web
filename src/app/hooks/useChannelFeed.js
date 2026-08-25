@@ -5,6 +5,8 @@ import { apply, createChannelState, reconcileApprovals } from '../../model/fold.
 import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
 
 const BATCH_SIZE = 250;
+const HISTORY_PAGE_SIZE = 200;
+export const HISTORY_RESERVOIR_SIZE = 5_000;
 
 export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster, onError, onChannelsDiscovered, onDirectoryInvalidated, onTimerFired, onSubmissionFeed, onAccessChanged }) {
   const [version, setVersion] = useState(0);
@@ -22,6 +24,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const taskRef = useRef(null);
   const historyRef = useRef(new Map());
   const historyInFlightRef = useRef(new Map());
+  const historySchedulersRef = useRef(new Map());
+  const historyRunnerRef = useRef(null);
 
   const cancel = useCallback(() => {
     if (taskRef.current == null) return;
@@ -131,13 +135,15 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     }
     if (changed) setVersion((value) => value + 1);
   }, [rosterRef]);
-  const loadHistory = useCallback((channelId, { beforeSeq = 0, limit = 200 } = {}) => {
+  const loadHistory = useCallback((channelId, { beforeSeq = 0, limit = HISTORY_PAGE_SIZE, silent = false } = {}) => {
     if (!channelId) return Promise.resolve(null);
     const key = `${channelId}:${beforeSeq || 'tail'}`;
     if (historyInFlightRef.current.has(key)) return historyInFlightRef.current.get(key);
     const existing = historyRef.current.get(channelId) || {};
-    historyRef.current.set(channelId, { ...existing, loading: true, error: '' });
-    setVersion((value) => value + 1);
+    if (!silent) {
+      historyRef.current.set(channelId, { ...existing, loading: true, error: '' });
+      setVersion((value) => value + 1);
+    }
     const request = wireRef.current?.historyBefore(channelId, beforeSeq, limit)
       ?? Promise.reject(new Error('消息连接尚未就绪'));
     const settled = request
@@ -151,7 +157,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
           oldestSeq: pageOldest && knownOldest ? Math.min(pageOldest, knownOldest) : pageOldest || knownOldest,
           hasOlder: Boolean(page.has_older),
           truncated: false,
-          loading: false,
+          loading: silent ? Boolean(current.loading) : false,
           loaded: true,
           error: '',
         });
@@ -160,27 +166,112 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         return page;
       })
       .catch((error) => {
-        const current = historyRef.current.get(channelId) || {};
-        historyRef.current.set(channelId, { ...current, loading: false, error: error.message || '历史加载失败' });
-        setVersion((value) => value + 1);
-        onError(error);
+        if (!silent) {
+          const current = historyRef.current.get(channelId) || {};
+          historyRef.current.set(channelId, { ...current, loading: false, error: error.message || '历史加载失败' });
+          setVersion((value) => value + 1);
+          onError(error);
+        }
         throw error;
       })
       .finally(() => historyInFlightRef.current.delete(key));
     historyInFlightRef.current.set(key, settled);
     return settled;
   }, [enqueue, onError, wireRef]);
+
+  const scheduleHistory = useCallback((channelId, delay = 0) => {
+    const job = historySchedulersRef.current.get(channelId);
+    if (!job?.active || job.running || job.timer != null) return;
+    job.timer = window.setTimeout(() => {
+      job.timer = null;
+      historyRunnerRef.current?.(channelId);
+    }, delay);
+  }, []);
+
+  const runHistoryScheduler = useCallback(async (channelId) => {
+    const job = historySchedulersRef.current.get(channelId);
+    if (!job?.active || job.running || job.reserve >= job.target) return;
+    const history = historyRef.current.get(channelId) || {};
+    const beforeSeq = Number(history.oldestSeq) || 0;
+    if (!history.loaded || !history.hasOlder || beforeSeq <= 0) return;
+    const generation = job.generation;
+    job.running = true;
+    let retryDelay = -1;
+    try {
+      const page = await loadHistory(channelId, { beforeSeq, limit: HISTORY_PAGE_SIZE, silent: true });
+      const current = historySchedulersRef.current.get(channelId);
+      if (!current?.active || current.generation !== generation) return;
+      const nextOldest = Number(page?.oldest_seq) || 0;
+      if (nextOldest > 0 && nextOldest < beforeSeq) current.reserve += HISTORY_PAGE_SIZE;
+      else current.active = false; // A non-advancing cursor must never spin.
+    } catch {
+      retryDelay = 2_000;
+    } finally {
+      const current = historySchedulersRef.current.get(channelId);
+      if (current) {
+        current.running = false;
+        if (current.active && current.generation !== generation) scheduleHistory(channelId);
+      }
+    }
+    const current = historySchedulersRef.current.get(channelId);
+    if (!current?.active || current.generation !== generation) return;
+    if (retryDelay >= 0) scheduleHistory(channelId, retryDelay);
+    else if (current.reserve < current.target && historyRef.current.get(channelId)?.hasOlder) scheduleHistory(channelId);
+  }, [loadHistory, scheduleHistory]);
+  historyRunnerRef.current = runHistoryScheduler;
+
+  const maintainHistory = useCallback((channelId, target = HISTORY_RESERVOIR_SIZE) => {
+    if (!channelId) return;
+    let job = historySchedulersRef.current.get(channelId);
+    if (!job) {
+      job = { active: true, generation: 0, reserve: 0, target, running: false, timer: null };
+      historySchedulersRef.current.set(channelId, job);
+    } else {
+      job.active = true;
+      job.target = Math.max(job.target, target);
+    }
+    scheduleHistory(channelId);
+  }, [scheduleHistory]);
+
+  const consumeHistory = useCallback((channelId, count) => {
+    const job = historySchedulersRef.current.get(channelId);
+    if (!job || !Number.isFinite(count) || count <= 0) return;
+    job.reserve = Math.max(0, job.reserve - count);
+    scheduleHistory(channelId);
+  }, [scheduleHistory]);
+
+  const pauseHistory = useCallback((channelId) => {
+    const job = historySchedulersRef.current.get(channelId);
+    if (!job) return;
+    job.active = false;
+    job.generation += 1;
+    if (job.timer != null) window.clearTimeout(job.timer);
+    job.timer = null;
+  }, []);
+
+  const clearHistorySchedulers = useCallback(() => {
+    for (const job of historySchedulersRef.current.values()) {
+      job.active = false;
+      job.generation += 1;
+      if (job.timer != null) window.clearTimeout(job.timer);
+    }
+    historySchedulersRef.current.clear();
+  }, []);
   const historyFor = useCallback((channelId) => historyRef.current.get(channelId) || { headSeq: 0, oldestSeq: 0, hasOlder: false, loading: false, loaded: false, error: '' }, []);
   const bump = useCallback(() => setVersion((value) => value + 1), []);
   const clear = useCallback(() => {
     cancel();
+    clearHistorySchedulers();
     statesRef.current = new Map();
     queueRef.current = [];
     queuedRowsRef.current.clear();
     dirtyRef.current.clear();
     historyRef.current.clear();
     setVersion((value) => value + 1);
-  }, [cancel]);
-  useEffect(() => cancel, [cancel]);
-  return { statesRef, cursorsRef, version, bump, enqueue, cancel, clear, setHistoryGrants, loadHistory, historyFor };
+  }, [cancel, clearHistorySchedulers]);
+  useEffect(() => () => {
+    cancel();
+    clearHistorySchedulers();
+  }, [cancel, clearHistorySchedulers]);
+  return { statesRef, cursorsRef, version, bump, enqueue, cancel, clear, setHistoryGrants, loadHistory, historyFor, maintainHistory, consumeHistory, pauseHistory };
 }

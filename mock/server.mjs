@@ -350,10 +350,10 @@ function seededHistory(channelId, behavior = {}) {
 const TERMINAL_STATUSES = new Set(['completed', 'failed']);
 
 // Mirrors Platform View's history semantics: limit is a soft raw-row target,
-// while the actual cursor lands on a root request and retains at least three
+// while the actual cursor lands on a root request and retains at least twenty
 // completed root turns when they exist. Child requests share their root's
 // correlation tree and never count as independent turns.
-export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimumCompleteRoots = 3 } = {}) {
+export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimumCompleteRoots = 20 } = {}) {
   const visible = allRows.filter((row) => row.envelope.visibility !== 'system');
   const headSeq = allRows.at(-1)?.seq || 0;
   const anchor = beforeSeq > 0 ? beforeSeq : headSeq + 1;
@@ -361,7 +361,7 @@ export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimu
   if (!candidates.length) return { rows: [], headSeq, oldestSeq: 0, newestSeq: 0, hasOlder: false };
 
   const target = Math.max(1, Number(targetRows) || 200);
-  const minimumRoots = Math.max(1, Number(minimumCompleteRoots) || 3);
+  const minimumRoots = Math.max(1, Number(minimumCompleteRoots) || 20);
   const terminalParents = new Set(candidates
     .filter((row) => row.envelope.kind === 'response' && TERMINAL_STATUSES.has(row.envelope.payload?.status) && row.envelope.parent_id)
     .map((row) => row.envelope.parent_id));
@@ -407,6 +407,26 @@ export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimu
     oldestSeq: raw[0]?.seq || 0,
     newestSeq: rows.at(-1)?.seq || 0,
     hasOlder: boundary > 0,
+  };
+}
+
+// After the semantic attach window, history_before is scheduler read-ahead:
+// an exact, cursor-stable raw page. Semantic completeness is deliberately not
+// recomputed for every one of the many quiet reservoir fills.
+export function rawHistoryPage(allRows, { beforeSeq = 0, limit = 200 } = {}) {
+  const visible = allRows.filter((row) => row.envelope.visibility !== 'system');
+  const headSeq = allRows.at(-1)?.seq || 0;
+  const anchor = beforeSeq > 0 ? beforeSeq : headSeq + 1;
+  const candidates = visible.filter((row) => row.seq < anchor);
+  const size = Math.max(1, Math.min(200, Number(limit) || 200));
+  const hasOlder = candidates.length > size;
+  const rows = candidates.slice(-size);
+  return {
+    rows,
+    headSeq,
+    oldestSeq: rows[0]?.seq || 0,
+    newestSeq: rows.at(-1)?.seq || 0,
+    hasOlder,
   };
 }
 
@@ -1511,9 +1531,9 @@ export function createMockServer({
         sendError(socket, { ref, frame: type, code: 'channel_not_found', detail: 'channel does not exist' });
         return;
       }
-      const page = historyWindow(histories.get(payload.channel_id), {
+      const page = rawHistoryPage(histories.get(payload.channel_id), {
         beforeSeq: payload.before_seq,
-        targetRows: payload.limit || 200,
+        limit: payload.limit || 200,
       });
       for (const row of page.rows) sendFrame(socket, 'feed', '', row);
       sendReceipt(socket, ref, {

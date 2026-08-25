@@ -4,7 +4,7 @@ function bottomOf(node) {
   return Math.max(0, node.scrollHeight - node.clientHeight);
 }
 
-export function useStableTimelineScroll({ channelId, lastSeq, page }) {
+export function useStableTimelineScroll({ channelId, lastSeq }) {
   const viewportRef = useRef(null);
   const contentRef = useRef(null);
   const pinnedRef = useRef(true);
@@ -37,7 +37,7 @@ export function useStableTimelineScroll({ channelId, lastSeq, page }) {
   }, [lastSeq]);
 
   useLayoutEffect(() => {
-    if (page !== 0 || !pinnedRef.current) return undefined;
+    if (!pinnedRef.current) return undefined;
     const node = viewportRef.current;
     if (node) {
       const target = bottomOf(node);
@@ -47,20 +47,20 @@ export function useStableTimelineScroll({ channelId, lastSeq, page }) {
       if (Math.abs(node.scrollTop - target) > 1) node.scrollTop = target;
     }
     return undefined;
-  }, [page, lastSeq]);
+  }, [lastSeq]);
 
   useEffect(() => {
     const content = contentRef.current;
     if (!content || typeof ResizeObserver === 'undefined') return undefined;
     const observer = new ResizeObserver(() => {
-      if (page === 0 && pinnedRef.current) scheduleBottom();
+      if (pinnedRef.current) scheduleBottom();
     });
     observer.observe(content);
     return () => {
       observer.disconnect();
       cancelAnimationFrame(frameRef.current);
     };
-  }, [page, channelId]);
+  }, [channelId]);
 
   function observeScroll(event) {
     const node = event.currentTarget;

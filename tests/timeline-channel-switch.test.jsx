@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 
 // 切频道时消息区必须换一棵新的树。auto-animate 的退场动画会把 React 已经删掉的
 // 节点按 position:absolute / z-index:100 插回容器，只靠动画的 finish 事件回收；
@@ -121,21 +121,52 @@ describe('退场残影的回收', () => {
   });
 });
 
-describe('历史懒加载滚动门槛', () => {
-  it('首屏临时位于顶部不读取历史，离开顶部再返回才读取', async () => {
-    const state = { channelId: 'c0', rows: new Map(), turns: new Map(), standalone: [], orphans: [], narration: [], lastSeq: 0 };
-    const onLoadOlder = vi.fn(() => Promise.resolve());
-    render(<Timeline state={state} history={{ hasOlder: true }} onLoadOlder={onLoadOlder} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    const timeline = document.querySelector('.timeline');
+describe('历史自动懒加载', () => {
+  function historyState(count = 160) {
+    const standalone = Array.from({ length: count }, (_, index) => ({
+      seq: index + 1,
+      envelope: { id: `history-${index + 1}`, kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: `历史 ${index + 1}` } },
+    }));
+    return { channelId: 'c0', rows: new Map(standalone.map((row) => [row.seq, row.envelope])), turns: new Map(), standalone, orphans: [], narration: [], lastSeq: count };
+  }
 
-    timeline.scrollTop = 0;
-    fireEvent.scroll(timeline);
-    expect(onLoadOlder).not.toHaveBeenCalled();
+  function timelineGeometry({ clientHeight, scrollHeight }) {
+    const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get() { return this.classList?.contains('timeline') ? clientHeight : 0; } });
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return this.classList?.contains('timeline') ? scrollHeight : 0; } });
+    return () => {
+      if (client) Object.defineProperty(HTMLElement.prototype, 'clientHeight', client);
+      else delete HTMLElement.prototype.clientHeight;
+      if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scroll);
+      else delete HTMLElement.prototype.scrollHeight;
+    };
+  }
 
-    timeline.scrollTop = 300;
-    fireEvent.scroll(timeline);
-    timeline.scrollTop = 0;
-    fireEvent.scroll(timeline);
-    await waitFor(() => expect(onLoadOlder).toHaveBeenCalledTimes(1));
+  it('首屏内容不足一屏时只揭示已缓存历史并报告消耗量', async () => {
+    const restore = timelineGeometry({ clientHeight: 600, scrollHeight: 400 });
+    const onHistoryConsumed = vi.fn();
+    try {
+      const view = render(<Timeline state={historyState()} history={{ hasOlder: true }} onHistoryConsumed={onHistoryConsumed} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+      await waitFor(() => expect(view.container.querySelectorAll('.standalone-row')).toHaveLength(152));
+      expect(onHistoryConsumed).toHaveBeenCalledWith(32);
+      expect(document.body.textContent).not.toContain('查看更早动态');
+    } finally {
+      restore();
+    }
+  });
+
+  it('首屏已经溢出时停在最新处且不由 Timeline 发起历史 I/O', async () => {
+    const restore = timelineGeometry({ clientHeight: 600, scrollHeight: 1_200 });
+    const onHistoryConsumed = vi.fn();
+    try {
+      render(<Timeline state={historyState()} history={{ hasOlder: true }} onHistoryConsumed={onHistoryConsumed} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+      const timeline = document.querySelector('.timeline');
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(onHistoryConsumed).not.toHaveBeenCalled();
+      expect(timeline.scrollTop).toBe(600);
+    } finally {
+      restore();
+    }
   });
 });

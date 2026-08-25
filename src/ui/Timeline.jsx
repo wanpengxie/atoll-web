@@ -4,7 +4,7 @@ import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { orderedTimeline } from '../model/fold.js';
-import { boundedPage, LIST_WINDOW_SIZE } from '../model/list-window.js';
+import { LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { replyTargetOf } from '../model/reply-target.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
@@ -27,6 +27,7 @@ import { useStableTimelineScroll } from './timeline/useStableTimelineScroll.js';
 // 每次 agent 干活就刷出一串，把人要读的东西淹掉。数据仍然在 state.narration 里，
 // 什么都没丢——等它有了合适的落位（侧栏或频道信息页）再接回来。
 const SHOW_CHANNEL_NARRATION = false;
+const TIMELINE_HISTORY_REVEAL_SIZE = 32;
 
 const ERROR_LABELS = {
   bad_payload: '请求格式不正确',
@@ -657,19 +658,16 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
+export function Timeline({ state, history = {}, onHistoryConsumed, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
   const [page, setPage] = useState(0);
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   const [editing, setEditing] = useState(null);
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
-  const loadingOlderRef = useRef(false);
-  // A newly mounted timeline begins at scrollTop=0 before the follow-to-bottom
-  // layout effect runs. That transient top position is not user intent and must
-  // never turn lazy history into an eager full replay. Arm the top trigger only
-  // after this viewport has first moved meaningfully away from the top.
-  const olderScrollArmedRef = useRef(false);
+  const historyMutationRef = useRef(null);
+  const layoutMotionRef = useRef(null);
+  const renderGrowthRef = useRef({ channelId: state.channelId, total: 0, latestSeq: 0, extra: 0 });
   const previousAccess = useRef(access);
   const names = useMemo(() => actorNameMap(roster), [roster]);
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
@@ -703,7 +701,38 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
   const withNarration = [...visibleEntries, ...(SHOW_CHANNEL_NARRATION && state.narration.length ? [{ kind: 'narration', seq: narrationSeq }] : [])]
     .sort((left, right) => left.seq - right.seq);
   const latestVisibleSeq = withNarration.at(-1)?.seq || 0;
-  const windowed = boundedPage(withNarration, page);
+  // Timeline history grows upwards. A page expands the rendered suffix instead
+  // of replacing it with a disjoint page; otherwise reaching the top makes the
+  // messages the reader was looking at disappear.
+  const growth = renderGrowthRef.current;
+  if (growth.channelId !== state.channelId) {
+    growth.channelId = state.channelId;
+    growth.total = withNarration.length;
+    growth.latestSeq = latestVisibleSeq;
+    growth.extra = 0;
+  } else {
+    // Scheduler pages prepend smaller seq values and must remain hidden in the
+    // reservoir. Only genuinely newer tail entries expand an older reading
+    // window so realtime delivery never evicts what the reader is looking at.
+    if (page > 0 && latestVisibleSeq > growth.latestSeq) {
+      growth.extra += withNarration.filter((entry) => entry.seq > growth.latestSeq).length;
+    }
+    if (page === 0) growth.extra = 0;
+    growth.total = withNarration.length;
+    growth.latestSeq = Math.max(growth.latestSeq, latestVisibleSeq);
+  }
+  // Keep the initial DOM budget, then expose prefetched history in small
+  // increments. Adding a whole 120-row window at once makes the scrollbar
+  // appear to hit the top and then jump a long way back down.
+  const renderCount = LIST_WINDOW_SIZE + page * TIMELINE_HISTORY_REVEAL_SIZE + growth.extra;
+  const windowStart = Math.max(0, withNarration.length - renderCount);
+  const windowed = {
+    items: withNarration.slice(windowStart),
+    start: windowStart,
+    end: withNarration.length,
+    total: withNarration.length,
+    hasOlder: windowStart > 0,
+  };
   const queuedTurns = [...state.turns.values()]
     .filter((turn) => agentMessageStage(turn) === 'queued' && turn.requestId !== editingTargetId)
     .sort((left, right) => {
@@ -727,36 +756,109 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
     const owner = mergedInto(turn);
     if (owner) mergedCounts.set(owner, (mergedCounts.get(owner) || 0) + 1);
   }
-  const { viewportRef, contentRef, unseenCount, observeScroll, jumpToLatest, leaveLatest } = useStableTimelineScroll({
+  const { viewportRef, contentRef, unseenCount, jumpToLatest, observeScroll, leaveLatest } = useStableTimelineScroll({
     channelId: state.channelId,
     lastSeq: latestVisibleSeq,
-    page,
   });
 
-  async function loadOlder() {
-    if (loadingOlderRef.current || history?.loading || (!windowed.hasOlder && !history?.hasOlder)) return;
-    loadingOlderRef.current = true;
-    leaveLatest();
-    try {
-      if (windowed.start > 0) {
-        setPage((value) => value + 1);
-      } else if (history?.hasOlder && onLoadOlder) {
-        await onLoadOlder();
-        setPage((value) => value + 1);
+  function beginHistoryMutation() {
+    const viewport = viewportRef.current;
+    if (!viewport || historyMutationRef.current) return;
+    layoutMotionRef.current?.disable();
+    const viewportTop = viewport.getBoundingClientRect().top;
+    const anchor = [...viewport.querySelectorAll('.timeline-entry[data-entry-id]')]
+      .find((node) => node.getBoundingClientRect().bottom > viewportTop + 1);
+    historyMutationRef.current = {
+      height: viewport.scrollHeight,
+      top: viewport.scrollTop,
+      anchorId: anchor?.dataset.entryId || '',
+      anchorTop: anchor ? anchor.getBoundingClientRect().top - viewportTop : 0,
+      total: windowed.total,
+      start: windowed.start,
+      fallback: window.setTimeout(() => finishHistoryMutation(), 5_000),
+    };
+  }
+
+  function finishHistoryMutation() {
+    const mutation = historyMutationRef.current;
+    if (!mutation) return;
+    const viewport = viewportRef.current;
+    if (viewport) {
+      const viewportTop = viewport.getBoundingClientRect().top;
+      const anchor = mutation.anchorId
+        ? [...viewport.querySelectorAll('.timeline-entry[data-entry-id]')]
+          .find((node) => node.dataset.entryId === mutation.anchorId)
+        : null;
+      if (anchor) {
+        // Anchor the actual message the reader was looking at. A scrollHeight
+        // delta is only an approximation when markdown, images or progress
+        // blocks change height while older rows are arriving.
+        const nextTop = anchor.getBoundingClientRect().top - viewportTop;
+        viewport.scrollTop += nextTop - mutation.anchorTop;
+      } else {
+        const addedHeight = viewport.scrollHeight - mutation.height;
+        if (addedHeight > 0) viewport.scrollTop = mutation.top + addedHeight;
       }
-    } finally {
-      loadingOlderRef.current = false;
     }
+    window.clearTimeout(mutation.fallback);
+    historyMutationRef.current = null;
+    requestAnimationFrame(() => layoutMotionRef.current?.enable());
+  }
+
+  function revealPrefetchedHistory({ keepLatest = false } = {}) {
+    if (!windowed.hasOlder) return false;
+    const revealed = Math.min(TIMELINE_HISTORY_REVEAL_SIZE, windowed.start);
+    beginHistoryMutation();
+    if (!keepLatest) leaveLatest();
+    setPage((value) => value + 1);
+    onHistoryConsumed?.(revealed);
+    return true;
+  }
+
+  function ensureOlderHistory(options) {
+    revealPrefetchedHistory(options);
   }
 
   function handleTimelineScroll(event) {
     observeScroll(event);
-    const node = event.currentTarget;
-    if (node.scrollTop > 200) olderScrollArmedRef.current = true;
-    if (node.scrollTop >= 160 || !olderScrollArmedRef.current) return;
-    olderScrollArmedRef.current = false;
-    void loadOlder();
+    const viewport = event.currentTarget;
+    const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const atLatest = bottom - viewport.scrollTop < 80;
+    if (atLatest) return;
+    // The channel history scheduler owns all I/O. Scrolling only exposes rows
+    // already resident in memory and can therefore never wait on the network.
+    if (viewport.scrollTop <= Math.max(160, viewport.clientHeight * 0.5)) ensureOlderHistory();
   }
+
+  // Preserve the message under the reader's eye when older DOM is prepended.
+  // scrollTop must grow by exactly the added height; leaving it unchanged would
+  // jump the viewport to newly fetched history.
+  useLayoutEffect(() => {
+    const mutation = historyMutationRef.current;
+    if (!mutation) return;
+    const changed = windowed.start !== mutation.start;
+    if (changed) finishHistoryMutation();
+  }, [windowed.start]);
+
+  // Reveal only already-resident rows. The scheduler continuously replenishes
+  // the hidden reservoir independently of viewport activity.
+  useEffect(() => {
+    if (!windowed.hasOlder) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      const underfilled = viewport.scrollHeight <= viewport.clientHeight + 1;
+      const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      const atLatest = bottom - viewport.scrollTop < 80;
+      const nearReveal = !atLatest && viewport.scrollTop <= Math.max(160, viewport.clientHeight * 0.5);
+      if (underfilled) {
+        ensureOlderHistory({ keepLatest: true });
+      } else if (nearReveal) {
+        ensureOlderHistory();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [state.channelId, windowed.start, windowed.total]);
 
   // 账本状态更新会让同一个消息块从“处理中气泡”收成最终记录。DOM 的正常
   // layout 必须先落地，滚动锚点才能保持正确；随后只对 timeline 的直接子块做
@@ -770,8 +872,10 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
       easing: 'cubic-bezier(.22, 1, .36, 1)',
       disrespectUserMotionPreference: false,
     });
+    layoutMotionRef.current = motion;
     content.dataset.layoutMotion = 'ready';
     return () => {
+      layoutMotionRef.current = null;
       motion.disable();
       // disable() 只是不再接管新的 mutation，恒不回收已经插回 DOM 的退场残影：
       // 那些节点带着 position:absolute / z-index:100 躺在容器里，只等自己的动画
@@ -789,6 +893,11 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
     setScope(TIMELINE_SCOPE.mine);
     setEditNotice('');
   }, [state.channelId]);
+  useEffect(() => () => {
+    const mutation = historyMutationRef.current;
+    if (mutation) window.clearTimeout(mutation.fallback);
+    historyMutationRef.current = null;
+  }, []);
   useEffect(() => setPresentationNow(Date.now()), [state.lastSeq]);
   useEffect(() => {
     if (!Number.isFinite(nextFreezeDeadline)) return undefined;
@@ -907,10 +1016,6 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
 
   useEffect(() => () => onComposerEditChange?.(null), [onComposerEditChange, state.channelId]);
 
-  useEffect(() => {
-    if (page !== windowed.page) setPage(windowed.page);
-  }, [page, windowed.page]);
-
   return <ProgressTrailHost>
     <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={handleTimelineScroll}>
       <div className="timeline-inner" ref={contentRef}>
@@ -934,7 +1039,7 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
           // none of it is theirs.
           <div className="empty-ledger"><span>@</span><h2>这个频道里还没有与你相关的往来</h2><p>切回「全部」可以看到频道里其他人的动态。</p></div>
         )}
-        {(windowed.hasOlder || history?.hasOlder) && <button type="button" className="bounded-list-control" disabled={history?.loading} onClick={() => void loadOlder()}>{history?.loading ? '正在读取更早动态…' : `查看更早动态（当前 ${windowed.start + 1}–${windowed.end} / ${windowed.total}）`}</button>}
+        {history?.loading && <span className="sr-only" role="status">正在读取更早动态</span>}
         {history?.error && <p className="bounded-list-note" role="alert">{history.error}</p>}
         {windowed.items.map((entry, index) => {
           const continuation = isContinuation(windowed.items, index);
@@ -986,8 +1091,7 @@ export function Timeline({ state, history = {}, onLoadOlder, roster, selfId, pen
           const key = entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`;
           return <React.Fragment key={key}>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</React.Fragment>;
         })}
-        {windowed.hasNewer && <button type="button" className="bounded-list-control" onClick={() => setPage((value) => Math.max(0, value - 1))}>查看更新动态（{windowed.end + 1}–{Math.min(windowed.total, windowed.end + LIST_WINDOW_SIZE)}）</button>}
-        {unseenCount > 0 && page === 0 && <button type="button" className="timeline-jump-latest" onClick={() => { setPage(0); jumpToLatest(); }}>↓ {unseenCount} 条新动态</button>}
+        {unseenCount > 0 && <button type="button" className="timeline-jump-latest" onClick={() => { setPage(0); jumpToLatest(); }}>↓ {unseenCount} 条新动态</button>}
       </div>
     </section>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
