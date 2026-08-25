@@ -186,12 +186,28 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
     // 节点**，在一块 200×50 的网格上就是一万个节点，手感立刻变钝。所以失败
     // 恒须说出来，恒不吞掉：不然"有点不跟手"永远查不出原因。
     (async () => {
+      let WebglAddon;
       try {
-        const { WebglAddon } = await import('@xterm/addon-webgl');
+        ({ WebglAddon } = await import('@xterm/addon-webgl'));
+      } catch (err) {
+        if (!gen.disposed) {
+          console.warn('[terminal] WebGL 渲染器加载失败，回落 DOM 渲染器（手感会变钝）：', err);
+          setRenderer('dom');
+        }
+        return;
+      }
+      // 这里是 await 之后的续体，本代可能已经被卸载，term 也可能已经 dispose 掉。
+      // 往一个 dispose 过的 terminal 上 loadAddon 会炸在它的内部字段上（linkifier
+      // 随 dispose 一起清空），而那口锅会被上面的 catch 记到 WebGL 头上——更糟的是
+      // 死掉那一代的 setRenderer('dom') 会盖掉活着那一代的成功，让人以为 GPU 不可用。
+      // 恒不让上一代的续体写这一代的状态（与下面 WS 的分代同律）。
+      if (gen.disposed || termRef.current !== term) return;
+      try {
         const addon = new WebglAddon();
         addon.onContextLoss(() => {
           console.warn('[terminal] WebGL 上下文丢失，已回落 DOM 渲染器——输入手感会变钝');
           addon.dispose();
+          if (!gen.disposed) setRenderer('dom');
         });
         term.loadAddon(addon);
         setRenderer('webgl');

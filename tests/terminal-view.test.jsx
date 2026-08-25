@@ -6,10 +6,11 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 // **我们这一侧**的逻辑：连接、会话持久化、可见性、配色。而 options 仍由
 // 我们的代码构造，所以 monoStack()/terminalTheme() 照样会被真调用，
 // 那正是漏掉的那类错误的发生点。
+const terminals = [];
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
-    constructor(options) { this.options = options; this.cols = 80; this.rows = 24; }
-    loadAddon() {}
+    constructor(options) { this.options = options; this.cols = 80; this.rows = 24; this.addons = []; terminals.push(this); }
+    loadAddon(addon) { this.addons.push(addon); }
     open() {}
     write() {}
     focus() {}
@@ -20,7 +21,7 @@ vi.mock('@xterm/xterm', () => ({
 }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
-vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }));
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class WebglAddon { onContextLoss() {} dispose() {} } }));
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
 
 import { TerminalView } from '../src/ui/TerminalView.jsx';
@@ -45,6 +46,7 @@ class FakeWebSocket {
 
 beforeEach(() => {
   sockets.length = 0;
+  terminals.length = 0;
   window.sessionStorage?.clear();
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.stubGlobal('WebSocket', FakeWebSocket);
@@ -129,5 +131,29 @@ describe('会话已不在时的恢复', () => {
       });
     }
     expect(screen.getByRole('button', { name: '重开' }), '一直在空转重连，恒不给人一个出口').toBeTruthy();
+  });
+});
+
+// WebGL 渲染器是动态 import 的，它的续体在 await 之后才跑。那时本代可能已经
+// 被卸载、term 已经 dispose——往一个 dispose 过的 terminal 上 loadAddon 会炸在
+// 它的内部字段上，而那口锅会被记成"GPU 不可用"，并且死掉那一代的 setRenderer
+// 会盖掉活着那一代的成功。真浏览器里这一条让终端长期以为自己没有 GPU。
+describe('WebGL 渲染器的分代', () => {
+  it('卸载后到达的 WebGL 续体恒不再往死掉的终端上装载', async () => {
+    const { unmount } = render(<TerminalView channelId="c0" />);
+    const dead = terminals[terminals.length - 1];
+    unmount();
+    // 把动态 import 的微任务跑完。
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    const loadedWebgl = dead.addons.some((a) => a?.constructor?.name === 'WebglAddon');
+    expect(loadedWebgl, '往已经 dispose 的终端装了 WebGL').toBe(false);
+  });
+
+  it('活着的终端照常装上 WebGL', async () => {
+    render(<TerminalView channelId="c0" />);
+    const live = terminals[terminals.length - 1];
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(live.addons.some((a) => a?.constructor?.name === 'WebglAddon')).toBe(true);
+    expect(screen.queryByText(/GPU 渲染不可用/)).toBeNull();
   });
 });
