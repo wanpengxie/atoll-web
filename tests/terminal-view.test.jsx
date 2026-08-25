@@ -17,7 +17,8 @@ vi.mock('@xterm/xterm', () => ({
     dispose() {}
     hasSelection() { return Boolean(this.selection); }
     getSelection() { return this.selection; }
-    onData() { return { dispose() {} }; }
+    onData(fn) { this.dataHandler = fn; return { dispose: () => { this.dataHandler = null; } }; }
+    emitData(data) { this.dataHandler?.(data); }
     onResize() { return { dispose() {} }; }
   },
 }));
@@ -109,6 +110,18 @@ describe('终端视图', () => {
     old.onclose?.({ code: 1000, reason: '' });
     await act(async () => { await vi.advanceTimersByTimeAsync(400); });
     await vi.waitFor(() => expect(sockets).toHaveLength(2));
+  });
+
+  it('连接 ready 前的输入不会静默丢失', async () => {
+    render(<TerminalView channelId="c0" />);
+    await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(1));
+    terminals[0].emitData('echo buffered\r');
+    expect(sockets[0].sent.filter((item) => item instanceof Uint8Array)).toHaveLength(0);
+
+    sockets[0].reply({ type: 'ready', id: sockets[0].opens()[0].id, session: 'pty-buffered' });
+    const binary = sockets[0].sent.filter((item) => item instanceof Uint8Array);
+    expect(binary).toHaveLength(1);
+    expect(new TextDecoder().decode(binary[0].subarray(4))).toBe('echo buffered\r');
   });
 
   it('隐藏时恒不断开连接——切页签不是断线', async () => {

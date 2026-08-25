@@ -9,6 +9,7 @@
 
 const RECONNECT_DELAYS = [400, 800, 1600, 3000, 5000];
 const STREAM_HEADER = 4;
+const MAX_PENDING_INPUT = 64 << 10;
 
 function ptyURL() {
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -57,6 +58,8 @@ class PtyClient {
       ready: false,
       onData, onReady, onExit, onStatus,
       closed: false,
+      pendingInput: [],
+      pendingBytes: 0,
     };
     this.streams.set(id, stream);
     window.clearTimeout(this.idleTimer);
@@ -139,10 +142,28 @@ class PtyClient {
   }
 
   writeBytes(id, bytes) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const stream = this.streams.get(id);
-    if (!stream?.ready) return;
+    if (!stream || stream.closed) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !stream.ready) {
+      // xterm 在连接恢复前照样会接收人的击键。恒不能把这段输入悄悄扔掉；
+      // 有界保存，ready 后原序发送。64KB 远高于正常交互输入，同时防止失联
+      // 页面被脚本持续灌入后无限占内存。
+      if (stream.pendingBytes + bytes.length <= MAX_PENDING_INPUT) {
+        const copy = new Uint8Array(bytes);
+        stream.pendingInput.push(copy);
+        stream.pendingBytes += copy.length;
+      }
+      return;
+    }
     this.ws.send(encodeFrame(id, bytes));
+  }
+
+  flushInput(stream) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !stream.ready) return;
+    const pending = stream.pendingInput;
+    stream.pendingInput = [];
+    stream.pendingBytes = 0;
+    for (const bytes of pending) this.ws.send(encodeFrame(stream.id, bytes));
   }
 
   resize(id, cols, rows) {
@@ -195,6 +216,7 @@ class PtyClient {
         stream.ready = true;
         stream.session = msg.session || '';
         writeSession(stream.channelId, stream.session);
+        this.flushInput(stream);
         stream.onReady?.(stream.session);
         stream.onStatus?.('open');
         return;
