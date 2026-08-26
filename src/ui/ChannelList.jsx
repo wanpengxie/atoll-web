@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { isMemberAccess } from '../model/channel-access.js';
+import { agentActivityDuration } from '../model/agent-activity.js';
 
 const STATE_LABEL = {
   open: 'OPEN',
@@ -8,9 +9,22 @@ const STATE_LABEL = {
   closed: 'CLOSED',
 };
 
-export function ChannelList({ channels, activeChannelId, unread, wireState, me, onSelect, onCreate, onSearch, onActivity, onSpaceManage, onLogout, onCloseMobile }) {
+function agentLabel(actorId = '') {
+  const parts = String(actorId).split(':');
+  return parts.length >= 2 ? parts[1] : actorId;
+}
+
+export function ChannelList({ channels, activeChannelId, unread, agentActivity, wireState, me, onSelect, onCreate, onSearch, onActivity, onSpaceManage, onLogout, onCloseMobile }) {
   const mine = channels.filter((channel) => isMemberAccess(channel.access));
   const space = channels.filter((channel) => !isMemberAccess(channel.access));
+  const [now, setNow] = useState(() => Date.now());
+  const activeCount = Object.values(agentActivity?.byChannel || {}).reduce((count, channel) => count + (channel.active?.length || 0), 0);
+  useEffect(() => {
+    if (!activeCount) return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [activeCount]);
   const otherUnread = (channelId) => Math.max(0, Number(unread[channelId]?.total || 0) - Number(unread[channelId]?.related || 0));
   const accessLabel = (access) => ({
     member_stale: '离线缓存',
@@ -23,7 +37,10 @@ export function ChannelList({ channels, activeChannelId, unread, wireState, me, 
   }[access] || '');
   const group = (rows, empty) => (
     <div className="channel-items">
-      {rows.map((channel) => (
+      {rows.map((channel) => {
+        const active = agentActivity?.byChannel?.[channel.id]?.active || [];
+        const shown = active.slice(0, 2);
+        return (
         <button
           type="button"
           key={channel.id}
@@ -31,14 +48,25 @@ export function ChannelList({ channels, activeChannelId, unread, wireState, me, 
           onClick={() => onSelect(channel.id)}
         >
           <span className="channel-glyph">#</span>
-          <span className="channel-name">{channel.qualified_name || channel.name || channel.id.slice(0, 8)}</span>
+          <span className="channel-main">
+            <span className="channel-name">{channel.qualified_name || channel.name || channel.id.slice(0, 8)}</span>
+            {shown.length > 0 && <span className="channel-agent-activity" aria-label={`${active.length} 项 Agent 正在运行`}>
+              {shown.map((entry) => <span className="channel-agent-timer" key={entry.requestId} title={`${agentLabel(entry.agentId)} 正在运行`}>
+                <i aria-hidden="true" />
+                <b>{agentLabel(entry.agentId)}</b>
+                <time>{agentActivityDuration(entry.startedAt, now)}</time>
+              </span>)}
+              {active.length > shown.length && <span className="channel-agent-more" title={`另有 ${active.length - shown.length} 项正在运行`}>+{active.length - shown.length}</span>}
+            </span>}
+          </span>
           <span className="channel-trailing">
             {accessLabel(channel.access) && <span className={`channel-access-label label-${channel.access}`}>{accessLabel(channel.access)}</span>}
             {unread[channel.id]?.related > 0 && <span className="unread-badge unread-related" aria-label={`${unread[channel.id].related} 条与我相关的未读消息`} title="与我相关的未读消息">{unread[channel.id].related > 99 ? '99+' : unread[channel.id].related}</span>}
             {otherUnread(channel.id) > 0 && <span className="unread-total" aria-label={`${otherUnread(channel.id)} 条其他未读消息`} title="其他未读消息">{otherUnread(channel.id) > 999 ? '999+' : otherUnread(channel.id)}</span>}
           </span>
         </button>
-      ))}
+        );
+      })}
       {!rows.length && <p className="rail-empty">{empty}</p>}
     </div>
   );

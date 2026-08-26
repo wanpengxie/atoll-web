@@ -666,7 +666,7 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, onRevealHistory, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
+export function Timeline({ state, history = {}, onRevealHistory, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   // 选中的 agent。空集 = 不过滤（常态）。Timeline 按频道 key 挂载，所以切频道
   // 天然重置，恒不需要自己清。
@@ -1034,13 +1034,17 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
             {actorFilterApplies && filterableAgents.length > 1 && <div className="timeline-actor-filter" role="group" aria-label="按成员过滤">
               {filterableAgents.map((row) => {
                 const on = actorFilter.has(row.id);
+                const activity = agentActivity?.agents?.[row.id];
+                const activityState = activity?.state || '';
+                const actorName = names.get(row.id) || row.id;
                 return <button
                   key={row.id}
                   type="button"
-                  className={on ? 'is-on' : ''}
+                  className={[on && 'is-on', activityState && `activity-${activityState}`].filter(Boolean).join(' ')}
                   aria-pressed={on}
-                  title={on ? `取消只看 ${names.get(row.id) || row.id}` : `只看我与 ${names.get(row.id) || row.id} 的往来`}
+                  title={activityState === 'active' ? `${actorName} 正在运行` : activityState === 'settled' ? `${actorName} 已完成，点击确认` : on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
                   onClick={() => {
+                    if (activityState === 'settled') onAcknowledgeAgentActivity?.(row.id);
                     // 点一下选中，再点一下取消——按钮各自开关，恒不是单选。
                     setActorFilter((current) => {
                       const next = new Set(current);
@@ -1048,7 +1052,7 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
                       return next;
                     });
                   }}
-                >{names.get(row.id) || row.id}</button>;
+                >{activityState && <i className="agent-activity-dot" aria-hidden="true" />}{actorName}</button>;
               })}
             </div>}
           </div>

@@ -27,7 +27,14 @@
 .channel-item { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; width: 100%; min-height: 38px; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); text-align: left; cursor: pointer; transition: background .15s, color .15s; }
 .channel-item:hover { background: var(--surface-hover); color: var(--text); }
 .channel-item.active { background: var(--surface-selected); color: var(--text); box-shadow: inset 2px 0 0 var(--channel-marker); }
-.channel-name { overflow: hidden; font-size: 13.5px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.channel-main { display: grid; min-width: 0; gap: 3px; }
+.channel-name { display: block; overflow: hidden; font-size: 13.5px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.channel-agent-activity { display: flex; min-width: 0; align-items: center; gap: 4px; overflow: hidden; }
+.channel-agent-timer { display: inline-flex; min-width: 0; align-items: center; gap: 3px; color: var(--text-dim); font: 600 8px var(--mono); }
+.channel-agent-timer > i { width: 5px; height: 5px; flex: 0 0 auto; border-radius: 50%; background: var(--online); animation: progress-live-pulse 1.5s ease-in-out infinite; }
+.channel-agent-timer > b { max-width: 4.5em; overflow: hidden; color: var(--text-muted); font: inherit; text-overflow: ellipsis; white-space: nowrap; }
+.channel-agent-timer > time { color: var(--online); font: inherit; font-variant-numeric: tabular-nums; }
+.channel-agent-more { flex: 0 0 auto; color: var(--text-dim); font: 600 8px var(--mono); }
 .channel-trailing { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: 5px; }
 .channel-access-label { color: var(--text-dim); font: 500 9px var(--mono); }
 .space-caption { margin-top: 20px; }

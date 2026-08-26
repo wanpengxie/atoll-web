@@ -5,10 +5,11 @@ import { apply, createChannelState, reconcileApprovals } from '../../model/fold.
 import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
 import { createHistoryScheduler, HISTORY_RESERVOIR_SIZE } from '../../model/history-scheduler.js';
 import { diagnostic } from '../../model/diagnostics.js';
+import { turnStartObservation } from '../../model/turn-process.js';
 
 export { HISTORY_RESERVOIR_SIZE };
 
-export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster, onError, onChannelsDiscovered, onDirectoryInvalidated, onTimerFired, onSubmissionFeed, onAccessChanged }) {
+export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster, onError, onChannelsDiscovered, onDirectoryInvalidated, onTimerFired, onSubmissionFeed, onAccessChanged, onAgentActivity }) {
   const [version, setVersion] = useState(0);
   const [ready, setReady] = useState(false);
   const cursorsRef = useRef(createCursors());
@@ -101,11 +102,18 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	const payload = typeof payloadOrChannel === 'object'
 	  ? payloadOrChannel
 	  : detail || { channel_id: payloadOrChannel, seq, envelope, source: 'live' };
-	if (schedulerRef.current.historyRow(payload)) return;
+	const historical = schedulerRef.current.historyRow(payload);
+	if (historical) {
+	  onAgentActivity?.(payload);
+	  return;
+	}
 	// Live rows never enter the historical executor or reservoir.
 	applyRowsRef.current?.([{ channel_id: payload.channel_id, seq: Number(payload.seq), envelope: payload.envelope }]);
+	const turn = statesRef.current.get(payload.channel_id)?.turns?.get(payload.envelope?.parent_id);
+	const startedAt = turnStartObservation(turn)?.envelope?.ts || turn?.request?.ts;
+	onAgentActivity?.(payload, { startedAt });
 	schedulerRef.current.observeLive(payload.channel_id, payload.envelope?.ts);
-  }, []);
+	}, [onAgentActivity]);
 
   const setHistoryGrants = useCallback((grants = [], detail = {}) => {
     const generation = detail.generation;
