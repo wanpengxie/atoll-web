@@ -11,7 +11,7 @@ import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { controlLabel, extraControls, taskControlContext } from '../model/task-controls.js';
 import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { selectSystemNote } from '../model/agent-selection.js';
-import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
+import { filterEntriesByActors, scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { processCount, turnStartObservation } from '../model/turn-process.js';
 import { diagnostic } from '../model/diagnostics.js';
@@ -668,6 +668,9 @@ function dayLabel(ts) {
 
 export function Timeline({ state, history = {}, onRevealHistory, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
+  // 选中的 agent。空集 = 不过滤（常态）。Timeline 按频道 key 挂载，所以切频道
+  // 天然重置，恒不需要自己清。
+  const [actorFilter, setActorFilter] = useState(() => new Set());
   const [editing, setEditing] = useState(null);
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
@@ -697,7 +700,17 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
     if (isAgentMessageTurn(entry.turn)) return agentMessageStage(entry.turn) === 'timeline';
     return true;
   }), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length, editingTargetId]);
-  const entries = useMemo(() => scopeEntries(allEntries, { scope, state, selfId }), [allEntries, scope, state, state.lastSeq, selfId]);
+  const scoped = useMemo(() => scopeEntries(allEntries, { scope, state, selfId }), [allEntries, scope, state, state.lastSeq, selfId]);
+  // 成员过滤只在「@我」下成立：「全部」的意思就是不收窄，摆一列过滤在那里是自相矛盾。
+  // 切到「全部」时这一列收起、过滤同时**失效**——恒不留一个看不见却仍在改变画面的
+  // 状态。选中本身留着，切回「@我」时那一列连同亮着的选中一起回来。
+  const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
+  const entries = useMemo(
+    () => (actorFilterApplies ? filterEntriesByActors(scoped, actorFilter) : scoped),
+    [scoped, actorFilter, actorFilterApplies],
+  );
+  // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。
+  const filterableAgents = useMemo(() => (roster || []).filter((row) => row.kind === 'agent'), [roster]);
   const latestTransient = new Map();
   for (const entry of entries) {
     if (isTransientEntry(entry)) {
@@ -959,6 +972,27 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
                 setScope((value) => value === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine);
               }}
             >{TIMELINE_SCOPE_LABELS[scope]}</button>
+            {actorFilterApplies && filterableAgents.length > 1 && <div className="timeline-actor-filter" role="group" aria-label="按成员过滤">
+              {filterableAgents.map((row) => {
+                const on = actorFilter.has(row.id);
+                return <button
+                  key={row.id}
+                  type="button"
+                  className={on ? 'is-on' : ''}
+                  aria-pressed={on}
+                  title={on ? `取消只看 ${names.get(row.id) || row.id}` : `只看我与 ${names.get(row.id) || row.id} 的往来`}
+                  onClick={() => {
+                    leaveLatest();
+                    // 点一下选中，再点一下取消——按钮各自开关，恒不是单选。
+                    setActorFilter((current) => {
+                      const next = new Set(current);
+                      if (!next.delete(row.id)) next.add(row.id);
+                      return next;
+                    });
+                  }}
+                >{names.get(row.id) || row.id}</button>;
+              })}
+            </div>}
           </div>
         </div>}
         {!state.rows.size && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}

@@ -90,3 +90,20 @@ export function scopeEntries(entries, { scope, state, selfId }) {
     return envelopes.some((envelope) => envelope?.id && visible.has(envelope.id));
   });
 }
+
+// 一个 workspace 里常有好几个 agent，往来混在一条流里。按成员过滤要的是「我跟他
+// 那几段」，所以判据与 scopeEntries 同律：判的是**条目**不是信封——一段对话里只要
+// 有一条与选中的成员有关，整段都留下。半段对话比没有更难读。
+//
+// narration 是频道级叙事，恒不属于任何人的往来。没有过滤时它照常在（scopeEntries
+// 两个范围下都留它）；一旦挑明了「只看我跟某某」，它就不在那个问题的答案里。
+export function filterEntriesByActors(entries, actorIds) {
+  if (!actorIds?.size) return entries;
+  return entries.filter((entry) => {
+    if (entry.kind === 'narration') return false;
+    return entryEnvelopes(entry).some((envelope) => (
+      actorIds.has(envelope?.sender?.id)
+      || (Array.isArray(envelope?.audience) && envelope.audience.some((id) => actorIds.has(id)))
+    ));
+  });
+}
