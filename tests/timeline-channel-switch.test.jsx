@@ -93,50 +93,53 @@ describe('历史自动懒加载', () => {
   }
 
   it('后台蓄水池增长不推动可见列表，且不存在手动加载按钮', async () => {
-    const onRevealHistory = vi.fn();
-    const view = render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 0 }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     expect(await screen.findByText('历史 1')).toBeTruthy();
     const before = view.container.querySelectorAll('.standalone-row').length;
-    view.rerender(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 5_000 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 5_000 }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     expect(view.container.querySelectorAll('.standalone-row').length).toBe(before);
     expect(document.body.textContent).not.toContain('查看更早动态');
   });
 
   it('短首屏已经触顶时自动释放一批 reservoir', async () => {
-    const onRevealHistory = vi.fn(() => 32);
-    render(<Timeline state={historyState(4)} history={{ hasOlder: true, buffered: 5_000 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledWith(32));
+    const loadOlder = vi.fn(async () => ({ kind: 'exhausted' }));
+    render(<Timeline state={historyState(4)} history={{ hasOlder: true, buffered: 5_000, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledOnce());
+    expect(loadOlder.mock.calls[0][0]).toMatchObject({ anchorSeq: 1 });
   });
 
   it('attach 前建立的顶部 demand 不会被挂载 effect 或短列表的 bottom 状态清掉', async () => {
-    const onRevealHistory = vi.fn()
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(32);
+    let finish;
+    const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const state = historyState(4, 100);
-    const view = render(<Timeline state={state} history={{ attached: false, hasOlder: false, buffered: 0, revealVersion: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(1));
+    const view = render(<Timeline state={state} history={{ attached: false, hasOlder: false, buffered: 0, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
 
     // Meta/IDB settles after Virtuoso has already reported both top and bottom.
-    // The original demand must consume the warm reservoir without another gesture.
-    view.rerender(<Timeline state={state} history={{ attached: true, hasOlder: true, buffered: 5_000, revealVersion: 1 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(2));
-    expect(onRevealHistory).toHaveBeenLastCalledWith(32);
+    // The original operation remains the sole owner; rerender cannot replace it.
+    view.rerender(<Timeline state={state} history={{ attached: true, hasOlder: true, buffered: 5_000, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    finish({ kind: 'exhausted' });
   });
 
   it('scheduler 兑现 demand 且真正 prepend 可见项后不重复消费 reservoir', async () => {
-    const onRevealHistory = vi.fn(() => 0);
-    const view = render(<Timeline state={historyState(4, 100)} history={{ attached: true, hasOlder: true, buffered: 0, revealVersion: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(1));
-    view.rerender(<Timeline state={historyState(36, 68)} history={{ attached: true, hasOlder: true, buffered: 16, revealVersion: 1 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    let finish;
+    const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const view = render(<Timeline state={historyState(4, 100)} history={{ attached: true, hasOlder: true, buffered: 0, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
+    view.rerender(<Timeline state={historyState(36, 68)} history={{ attached: true, hasOlder: true, buffered: 16, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    finish({ kind: 'satisfied', firstVisibleSeq: 68 });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(onRevealHistory).toHaveBeenCalledTimes(1);
+    expect(loadOlder).toHaveBeenCalledTimes(1);
   });
 
-  it('ledger batch 没有产生更早可见项时继续兑现同一个顶部 demand', async () => {
-    const onRevealHistory = vi.fn(() => 0);
+  it('隐藏行导致 rerender 时仍由同一个顶部 operation 持有 continuation', async () => {
+    let finish;
+    const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const initial = historyState(4, 100);
-    const view = render(<Timeline state={initial} history={{ attached: true, hasOlder: true, buffered: 0, revealVersion: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(1));
+    const view = render(<Timeline state={initial} history={{ attached: true, hasOlder: true, buffered: 0, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
 
     const hidden = {
       seq: 90,
@@ -147,8 +150,10 @@ describe('历史自动懒加载', () => {
       rows: new Map([[hidden.seq, hidden.envelope], ...initial.rows]),
       standalone: [hidden, ...initial.standalone],
     };
-    view.rerender(<Timeline state={next} history={{ attached: true, hasOlder: true, buffered: 16, revealVersion: 1 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(2));
+    view.rerender(<Timeline state={next} history={{ attached: true, hasOlder: true, buffered: 16, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    finish({ kind: 'exhausted' });
   });
 
   it('成员过滤按钮在 Virtuoso 时间线中可点击并收窄条目', async () => {
@@ -173,7 +178,7 @@ describe('历史自动懒加载', () => {
       narration: [],
       lastSeq: 2,
     };
-    render(<Timeline state={state} history={{ attached: true, hasOlder: false }} onRevealHistory={() => 0} roster={[{ id: 'agent-a', kind: 'agent' }, { id: 'agent-b', kind: 'agent' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    render(<Timeline state={state} history={{ attached: true, hasOlder: false }} roster={[{ id: 'agent-a', kind: 'agent' }, { id: 'agent-b', kind: 'agent' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
 
     fireEvent.click(await screen.findByTitle('只看我与 agent-a 的往来'));
     expect(screen.getByTitle('取消只看 agent-a').getAttribute('aria-pressed')).toBe('true');

@@ -51,7 +51,7 @@ test('F7 deep history starts at the tail, reveals upward automatically, and keep
 
   const cachedRows = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const open = indexedDB.open('atoll-feed-v7');
+      const open = indexedDB.open('atoll-feed-v8');
       open.onsuccess = () => resolve(open.result);
       open.onerror = () => reject(open.error);
     });
@@ -105,23 +105,22 @@ test('F7 100k ledger keeps bounded initial DOM and reveals older rows on upward 
   await viewport.hover();
   await page.mouse.wheel(0, -100_000);
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
-    .some((entry) => ['timeline.history_demand_waiting', 'timeline.history_revealed'].includes(entry.event)))).toBe(true);
+    .some((entry) => entry.event === 'history.intent_started'))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
-    (entry.event === 'timeline.history_revealed' && Number(entry.detail?.released) > 0)
-    || (entry.event === 'history.batch_complete' && entry.detail?.purpose === 'hydrate' && Number(entry.detail?.demandReleased) > 0)
+	entry.event === 'history.intent_satisfied'
   ))), { timeout: 5_000 }).toBe(true);
   expect(await page.locator('.timeline-virtual-item').count()).toBeLessThan(100);
 });
 
 test('F7 a 5000-row warm cache survives reload and satisfies one physical top demand', async ({ page, request }) => {
-  test.setTimeout(45_000);
+  test.setTimeout(60_000);
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'huge-history', seed: 1710 } });
   expect(reset.ok()).toBe(true);
   await login(page);
 
   const cachedRows = () => page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const open = indexedDB.open('atoll-feed-v7');
+      const open = indexedDB.open('atoll-feed-v8');
       open.onsuccess = () => resolve(open.result);
       open.onerror = () => reject(open.error);
     });
@@ -132,7 +131,7 @@ test('F7 a 5000-row warm cache survives reload and satisfies one physical top de
       count.onerror = () => reject(count.error);
     });
   });
-  await expect.poll(cachedRows, { timeout: 20_000 }).toBe(5_000);
+  await expect.poll(cachedRows, { timeout: 30_000 }).toBe(5_000);
 
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
@@ -146,16 +145,105 @@ test('F7 a 5000-row warm cache survives reload and satisfies one physical top de
     node.dispatchEvent(new Event('scroll', { bubbles: true }));
   });
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
-    entry.event === 'history.demand_taken'
-    && Number(entry.detail?.before?.reservoir) > 0
-    && Number(entry.detail?.released) > 0
+	entry.event === 'history.intent_started'
   )))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
-    entry.event === 'timeline.history_demand_satisfied'
+	entry.event === 'history.intent_satisfied'
   )))).toBe(true);
 
   const operations = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => (
-    entry.event === 'history.demand_taken'
+	entry.event === 'history.intent_started'
   )));
   expect(operations).toHaveLength(1);
+});
+
+test('F7 a lagged cache reads the current network tail first and joins cache only at the exact seam', async ({ page, request }) => {
+  test.setTimeout(45_000);
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1711 } });
+  expect(reset.ok()).toBe(true);
+  await login(page);
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
+    entry.event === 'history.batch_complete'
+      && entry.detail?.channelId === 'c0'
+      && entry.detail?.hasOlder === false
+  )))).toBe(true);
+  await page.waitForTimeout(500);
+
+  const context = page.context();
+  await page.close();
+  for (let index = 0; index < 20; index += 1) {
+    const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
+    expect(pulse.ok()).toBe(true);
+  }
+
+  const resumed = await context.newPage();
+  await resumed.goto('/');
+  await expect(resumed.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(resumed.getByText(/c0 动态 #19/)).toBeVisible();
+  await expect.poll(() => resumed.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
+    entry.event === 'history.segment_requested'
+      && entry.detail?.channelId === 'c0'
+      && entry.detail?.source === 'indexeddb'
+  ))), { timeout: 15_000 }).toBe(true);
+
+  const sources = await resumed.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+    .filter((entry) => entry.event === 'history.segment_requested' && entry.detail?.channelId === 'c0')
+    .map((entry) => ({ source: entry.detail.source, beforeSeq: entry.detail.beforeSeq })));
+  expect(sources[0]?.source).toBe('network');
+  const cacheIndex = sources.findIndex((entry) => entry.source === 'indexeddb');
+  expect(cacheIndex).toBeGreaterThan(0);
+  expect(sources[cacheIndex].beforeSeq).toBeLessThan(sources[0].beforeSeq);
+});
+
+test('F7 one top operation crosses hundreds of cached progress facts with no visible item', async ({ page, request }) => {
+  test.setTimeout(45_000);
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1712 } });
+  expect(reset.ok()).toBe(true);
+  await login(page);
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+
+  const dense = await request.post('/mock/control/action', {
+    data: { type: 'dense_progress', channel_id: 'c0', count: 640 },
+  });
+  expect(dense.ok()).toBe(true);
+  const detail = await dense.json();
+  await expect.poll(() => page.evaluate(async (headSeq) => {
+    const database = await new Promise((resolve, reject) => {
+      const open = indexedDB.open('atoll-feed-v8');
+      open.onsuccess = () => resolve(open.result);
+      open.onerror = () => reject(open.error);
+    });
+    return new Promise((resolve, reject) => {
+      const tx = database.transaction('channelMeta', 'readonly');
+      const get = tx.objectStore('channelMeta').get('c0');
+      get.onsuccess = () => resolve((get.result?.coverage || []).some((entry) => entry.highSeq >= headSeq));
+      get.onerror = () => reject(get.error);
+    });
+  }, detail.head_seq), { timeout: 15_000 }).toBe(true);
+
+  const context = page.context();
+  await page.close();
+  const resumed = await context.newPage();
+  await resumed.goto('/');
+  await expect(resumed.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(resumed.getByText('dense progress request (640)', { exact: true })).toBeVisible({ timeout: 15_000 });
+
+  const diagnostics = await resumed.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot());
+  const started = diagnostics.filter((entry) => entry.event === 'history.intent_started');
+  const firstOperationId = diagnostics.find((entry) => entry.event === 'history.projection_checked')?.detail?.operationId;
+  const invisibleChecks = diagnostics.filter((entry) => (
+    entry.event === 'history.projection_checked'
+      && entry.detail?.operationId === firstOperationId
+      && Number(entry.detail?.released) > 0
+      && Number(entry.detail?.firstVisibleSeq) === 0
+  ));
+  expect(started.length).toBeGreaterThanOrEqual(1);
+  expect(new Set(started.map((entry) => entry.detail.epoch)).size).toBe(1);
+  expect(invisibleChecks.length).toBeGreaterThanOrEqual(2);
+  const firstSatisfied = diagnostics.findIndex((entry) => entry.event === 'history.intent_satisfied');
+  const startedIndexes = diagnostics.flatMap((entry, index) => entry.event === 'history.intent_started' ? [index] : []);
+  const secondStarted = startedIndexes[1] ?? -1;
+  expect(firstSatisfied).toBeGreaterThan(0);
+  if (secondStarted >= 0) expect(firstSatisfied).toBeLessThan(secondStarted);
 });

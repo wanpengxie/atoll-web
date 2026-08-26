@@ -1,4 +1,4 @@
-export const FRAME_VERSION = 4;
+export const FRAME_VERSION = 5;
 export const MAX_FRAME_BYTES = 512 * 1024;
 
 export const UP = Object.freeze({
@@ -12,10 +12,12 @@ export const UP = Object.freeze({
   observe: 'observe',
   unobserve: 'unobserve',
   history_before: 'history_before',
+  history_cancel: 'history_cancel',
 });
 
 export const DOWN = Object.freeze({
   feed: 'feed',
+  checkpoint: 'checkpoint',
   receipt: 'receipt',
   error: 'error',
   observe_ended: 'observe_ended',
@@ -77,7 +79,8 @@ const PAYLOAD_FIELDS = Object.freeze({
   ],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
-  history_before: ['channel_id', 'before_seq', 'limit', 'byte_limit', 'generation', 'purpose'],
+  history_before: ['channel_id', 'before_seq', 'limit', 'byte_limit', 'generation', 'purpose', 'priority'],
+  history_cancel: ['channel_id', 'target_ref', 'generation'],
 });
 
 const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
@@ -90,7 +93,8 @@ const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
   resource: ['channel_id', 'op'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
-  history_before: ['channel_id', 'generation', 'purpose'],
+  history_before: ['channel_id', 'generation', 'purpose', 'priority'],
+  history_cancel: ['channel_id', 'target_ref', 'generation'],
 });
 
 export class FrameValidationError extends Error {
@@ -141,6 +145,17 @@ export function validateUpstreamPayload(type, payload) {
 	}
 	if (!['initial-tail', 'user-demand', 'hydrate'].includes(payload.purpose)) {
 	  throw new FrameValidationError('history_before purpose is invalid');
+	}
+	if (!['foreground', 'background'].includes(payload.priority)) {
+	  throw new FrameValidationError('history_before priority is invalid');
+	}
+  }
+  if (type === UP.history_cancel) {
+	if (typeof payload.target_ref !== 'string' || !payload.target_ref) {
+	  throw new FrameValidationError('history_cancel target_ref is required');
+	}
+	if (!Number.isSafeInteger(payload.generation) || payload.generation < 1) {
+	  throw new FrameValidationError('history_cancel generation must be a positive safe integer');
 	}
   }
   if (type === UP.attach && payload.history_protocol !== FRAME_VERSION) {

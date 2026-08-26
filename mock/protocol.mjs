@@ -1,7 +1,7 @@
-export const FRAME_VERSION = 4;
+export const FRAME_VERSION = 5;
 export const MAX_FRAME_BYTES = 512 * 1024;
 export const SESSION_COOKIE = 'atoll_session';
-export const CONTRACT_VERSION = 'mock-v4';
+export const CONTRACT_VERSION = 'mock-v5';
 
 export const PAYLOAD_FIELDS = Object.freeze({
   attach: ['since', 'focus', 'history_protocol', 'generation'],
@@ -13,7 +13,8 @@ export const PAYLOAD_FIELDS = Object.freeze({
   resource: ['channel_id', 'op', 'resource_id', 'args', 'target', 'ops', 'query', 'address', 'with_content'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
-  history_before: ['channel_id', 'before_seq', 'limit', 'byte_limit', 'generation', 'purpose'],
+  history_before: ['channel_id', 'before_seq', 'limit', 'byte_limit', 'generation', 'purpose', 'priority'],
+  history_cancel: ['channel_id', 'target_ref', 'generation'],
 });
 
 export const REQUIRED_FIELDS = Object.freeze({
@@ -26,7 +27,8 @@ export const REQUIRED_FIELDS = Object.freeze({
   resource: ['channel_id', 'op'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
-  history_before: ['channel_id', 'generation', 'purpose'],
+  history_before: ['channel_id', 'generation', 'purpose', 'priority'],
+  history_cancel: ['channel_id', 'target_ref', 'generation'],
 });
 
 export const isObject = (value) => value != null && typeof value === 'object' && !Array.isArray(value);
@@ -84,7 +86,12 @@ export function validatePayload(type, payload) {
     if (payload.limit != null && (!Number.isSafeInteger(payload.limit) || payload.limit < 1 || payload.limit > 200)) return 'history_before limit must be an integer between 1 and 200';
 	if (!Number.isSafeInteger(payload.generation) || payload.generation < 1) return 'history_before generation must be a positive safe integer';
 	if (!['initial-tail', 'user-demand', 'hydrate'].includes(payload.purpose)) return 'history_before purpose is invalid';
+	if (!['foreground', 'background'].includes(payload.priority)) return 'history_before priority is invalid';
 	if (payload.byte_limit != null && (!Number.isSafeInteger(payload.byte_limit) || payload.byte_limit < 1 || payload.byte_limit > 4 * 1024 * 1024)) return 'history_before byte_limit must be between 1 and 4MiB';
+  }
+  if (type === 'history_cancel') {
+	if (typeof payload.target_ref !== 'string' || !payload.target_ref) return 'history_cancel target_ref is required';
+	if (!Number.isSafeInteger(payload.generation) || payload.generation < 1) return 'history_cancel generation must be a positive safe integer';
   }
   if (type === 'attach' && payload.history_protocol !== FRAME_VERSION) return `attach history_protocol must be ${FRAME_VERSION}`;
 	if (type === 'attach' && (!Number.isSafeInteger(payload.generation) || payload.generation < 1)) return 'attach generation must be a positive safe integer';

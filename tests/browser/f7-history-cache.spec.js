@@ -38,6 +38,7 @@ test('F7 IndexedDB cache keeps the newest bounded tail and recovers from quota p
       IDBObjectStore.prototype.put = originalPut;
     }
     await cache.saveRows(Array.from({ length: 6 }, (_, index) => ({ channel_id: 'c0', seq: index + 10, envelope: envelope(index + 10) })));
+    await cache.saveCoverage('c0', 1, 15);
     await cache.idle();
 
     const restored = createFeedCache(options);

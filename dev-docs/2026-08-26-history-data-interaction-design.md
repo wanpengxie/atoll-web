@@ -1,6 +1,6 @@
 # Timeline History 数据平面与交互平面统一设计
 
-状态：设计完成，待实现与验收  
+状态：Phase A+B+C 已实现并通过模型/隔离浏览器/协议门禁；Phase D 仅为可选首屏性能增强
 日期：2026-08-26  
 范围：Timeline 历史首屏、向上加载、IndexedDB、WS live/history、筛选、频道切换、断线恢复、优先级与可观测性
 
@@ -139,8 +139,7 @@ type ChannelHistory = {
   generation: number
   boot: string
   headSeq: number
-  revealBeforeSeq: number   // 下一段要交给 FoldStore 的 highExclusive
-  fetchBeforeSeq: number    // 下一段要从 source 取得的 highExclusive
+  beforeSeq: number         // cache/network 共用的 exclusive scan frontier
   ledgerExhausted: boolean
   coverage: CoverageMap
   reservoir: OrderedSegments
@@ -149,7 +148,8 @@ type ChannelHistory = {
 }
 ```
 
-- `fetchBeforeSeq` 可以领先于 `revealBeforeSeq`，中间是有序 reservoir；
+- cache 与 network 只能服务同一个 `beforeSeq`；cache miss/hole 不移动它，network 从原位接管；
+- 取得的事实可以先进入有序 reservoir，只有用户消费 segment 时才进入 FoldStore；reservoir 不是第二条账本 cursor；
 - segment 必须首尾相接，不允许 reservoir 内有静默 gap；
 - 每频道最多一个 history fetch in-flight；
 - live 不进入 reservoir，也不移动 history cursor；
@@ -157,34 +157,23 @@ type ChannelHistory = {
 
 ### 4.3 Cache 与 network 的统一合同
 
-当前 v7 cache 同一张 rows 表混入两类内容：live 写入完整原始行，network history 写入已投影行。仅凭 row count、oldest/newest 或 coverage 无法证明二者语义同构。
+v8 cache 保留浏览器实际收到的不可变 envelope fact，不再尝试在 terminal 到来时破坏性删除 provisional。network history 已做服务端投影、live 是完整可见账本；两者不需要伪装成同一种 row 分布，因为它们都只是同一个幂等 FoldStore 的合法输入。真正必须同构的是扫描合同：同一个 exclusive `beforeSeq`、明确的连续 coverage、严格递减的 `nextBeforeSeq`。
 
-新 cache 的逻辑读单位必须是 HistorySegment，而不是把异构 row 假装成一种 page。物理上不能把整个 segment 当不可变 blob：一个 open turn 的 latest provisional 以后会被新的 provisional 或 terminal 替换。建议拆成三张事实表：
+实现采用两类持久事实而不是不可变 page blob：
 
 ```text
-semantic_facts   (channel, seq) → immutable envelope fact
-scan_segments    (channel, highExclusive, lowInclusive, rootSafe, projectionVersion)
-channel_meta     boot / authoritativeExhausted / quota / checkpoint
+rows          (channel, seq) → 已收到且可重放的 envelope fact
+channel_meta  → boot / 独立 coverage intervals / quota metadata
 ```
 
-HistorySegment 是对一个 `scan_segments` interval 查询其当前 `semantic_facts` 后构造的返回值。这样 terminal 到达时可以删除已过时的 provisional fact、写入 terminal fact，而不伪造或重写 ledger seq。
+coverage 只证明区间已被权威扫描，不声称该区间应有多少 row。fact 可以是 0，也可以有数百个 progress。短窗口写合批先提交 facts，再提交合并后的 coverage；崩溃最多造成安全的重复拉取，不会产生“coverage 已有、事实没落”的假命中。FIFO/quota eviction 同步裁剪 coverage，cache hole 从同一个 frontier 回到 network。
 
-具体约束：
-
-- segment 保存明确的 scan interval、projection version 和 boot；
-- coverage 是“该 scan interval 已知”，与实际存了多少 fact 分开；
-- network segment 只有在匹配的 `page_end` 后落盘；
-- live row 先进入 bounded journal，再由同一 HistoryProjector 更新 semantic facts；
-- 尚未闭合 root boundary 的 journal fringe 不得宣称 semantic coverage；
-- completed turn 只保留产品合同需要的历史摘要，open turn 保留 request + latest provisional；
-- housekeeping 即使产生零 fact，也必须持久化 scan coverage。
-
-这里还有一个协议前提：仅凭若干 live feed row，客户端不能知道它们之间缺失的 seq 是“服务端已扫描但不可见”，还是“尚未收到”。网关 `pumpChannel` 已经知道本批的 `scanned` watermark，但当前没有把它发给浏览器。因此 v8 必须新增一个与 generation/channel 关联的 `live_checkpoint(scanned_seq)`（或等价 batch terminal）：
+这里还有一个协议前提：仅凭若干 live feed row，客户端不能知道它们之间缺失的 seq 是“服务端已扫描但不可见”，还是“尚未收到”。v5 协议因此已新增与 generation/channel 关联的 `checkpoint(scanned_seq)`：
 
 - live row 仍立即进入 FoldStore，不等待 checkpoint；
 - cache 先把 live row 写 journal，但只在 checkpoint 后把上一个 checkpoint 到 `scanned_seq` 记为权威 scan coverage；
 - 断线前未 checkpoint 的 journal row 可以保留为 hint，不能形成 coverage；
-- checkpoint 与该批 semantic fact/cache meta 同一事务提交；
+- checkpoint coverage 在同一有序写批中排在对应 facts 后提交；
 - checkpoint 只证明 scan coverage，不改变 history reveal cursor，也不满足顶部 intent。
 
 没有这个 watermark，live cache 最多只能保存零散 singleton coverage，不能被 HistorySource 当作连续历史。这是自审后补出的必要条件，不是可选优化。
@@ -209,10 +198,10 @@ network page 以 `(generation, channelId, ref)` staged：
 1. feed rows 只进入 batch staging；
 2. `page_end` 到达后校验 generation/ref/channel、rows/bytes、scan interval、cursor 单调性；
 3. `nextBeforeSeq < requestedBeforeSeq`，除非 `ledgerExhausted`；
-4. 一次提交 segment、coverage、fetch cursor 和 cache transaction；
+4. `page_end` 校验成功后，在一个同步临界区提交内存 segment、coverage 与 `beforeSeq`；随后异步持久化，严格 facts-before-coverage；
 5. 旧 generation、半页、缺 page_end 的结果不改变任何 cursor。
 
-IndexedDB 中 semantic fact 更新 + scan segment/coverage + channel meta/checkpoint 必须在同一 transaction。内存消费必须是无 `await` 的同步临界区：
+IndexedDB 写入遵守 facts-before-coverage；不要求用一个超大 transaction 锁住整个批次。崩溃在 facts 后只会重拉，绝不能让 coverage 先于 facts。内存消费必须是无 `await` 的同步临界区：
 
 ```text
 peek segment → validate → FoldStore.apply all → advance reveal cursor → one publish
@@ -222,31 +211,9 @@ peek segment → validate → FoldStore.apply all → advance reveal cursor → 
 
 ### 4.6 FoldStore 的内存形态
 
-Virtuoso 只限制 DOM，不会自动限制 `state.rows`、turn provisional 数组或 payload 内存。把 10 万行全塞进现有 FoldStore 再宣称“虚拟化了”仍然不完整。
+后台 hydrate 只进入有行数/字节双上限的 reservoir 和 5000-row IDB FIFO，绝不因为“预取到了”就进入 FoldStore。FoldStore 只保留用户已经实际展开的语义历史与本次 live session；Virtuoso 另外限制 DOM。这样 10 万 raw ledger 的首屏不会变成 10 万 JS envelope，测试同时约束 DOM、reservoir 和 IDB。
 
-FoldStore 必须分两层：
-
-```text
-TimelineIndex（内存）
-  entry header: seq/root/type/participants/correlation/status/cacheKey
-  足够完成排序、scope/filter、firstVisibleSeq 和 Virtuoso item identity
-
-EntryBodyStore（IndexedDB + 小型内存 LRU）
-  request/terminal/latest provisional/markdown/process detail/thread body
-  当前 viewport、open turns、编辑目标固定驻留
-```
-
-约束：
-
-- intermediate progress 在 turn 完成后按 projection policy compact，不继续占 `state.rows`；
-- housekeeping 不进入 TimelineIndex；
-- `@我` 和 actor filter 改用 entry header 的 participant/correlation index，不能再为筛选永久保留所有 raw envelope；
-- TimelineIndex 按条目数和 header bytes 计费，EntryBody LRU 按真实 encoded bytes 计费；
-- body 被 spill 不影响 firstVisibleSeq 和 history completion；滚回可见 viewport 时按 cacheKey hydrate；
-- open turn、pending approval、editing target 和 live tail 不得被 spill；
-- quota/缺 body 时可重新从 semantic cache/network 取得，不得把 placeholder 当 history exhausted。
-
-这样 10 万 raw ledger 的常见 progress 密集场景先语义压缩，最坏 10 万可见条目也只常驻轻量 header，重 payload 仍有明确上限。这个结构应与 cache v8 同期建立；只限制 reservoir 和 DOM 不算完成内存设计。
+自审曾尝试在 terminal 到来时删除 provisional 来压缩内存，结果造成 reservoir 以 5000 输入 fact 停水而 cache 只剩 4008，且会丢失审计细节；该方案已撤销。任何未来 body spill/LRU 必须先建立完整的可回水 body 合同，不能夹在本次正确性修复里用删除事实冒充内存模型。
 
 ## 5. 交互平面
 
@@ -304,7 +271,7 @@ Virtuoso 的 `startReached` 和 `atTopStateChange` 都只是观测提示。contr
 
 - `scrollTop <= epsilon` 才是 atTop；
 - false → true 建立一个 `topEpoch`；
-- 同一 epoch 的重复回调只 join；
+- 同一 epoch 同时最多一个 active operation，重复回调只 join；短列表在前一个 operation 完成并完成 layout acknowledgement 后，可以在同一 epoch 串行启动下一次 continuation；
 - 离开顶部取消 consumer operation；已经完成的 network segment可以留在 reservoir，但不能在用户离开后突然 prepend；
 - viewKey 在顶部改变时创建新的 epoch，旧 operation cancel；
 - attach/cache metadata 晚到时 controller 重新 reconcile 当前 level，不需要补造 callback。
@@ -401,7 +368,7 @@ live 直接进入 FoldStore，但不能满足旧 anchor。用户不在 bottom �
 
 ### 8.2 HistoryCacheStore
 
-只拥有 segment、coverage、boot、projectionVersion、quota 和事务。它不决定交互是否满足。
+只拥有 fact FIFO、coverage、boot、quota 和有序写批次。它不决定交互是否满足。
 
 ### 8.3 HistoryCoordinator
 
@@ -409,7 +376,7 @@ live 直接进入 FoldStore，但不能满足旧 anchor。用户不在 bottom �
 
 ### 8.4 FoldStore + projectTimeline
 
-FoldStore 只接受事实并保持 seq/id 幂等，向 TimelineIndex/EntryBodyStore 提交语义结果；projectTimeline 只读 header/index，是唯一展示投影。二者都不发 network 请求。body hydration 是渲染资源读取，不能改变条目是否可见或 history completion。
+FoldStore 只接受事实并保持 seq/id 幂等；projectTimeline 是唯一展示投影。二者都不发 network 请求，也不从“收到多少事实”推导 history completion。
 
 ### 8.5 HistoryInteractionController
 
@@ -432,7 +399,7 @@ FoldStore 只接受事实并保持 seq/id 幂等，向 TimelineIndex/EntryBodySt
 9. reservoir 有行数和字节双上限；eviction 不得留下 coverage 幽灵。
 10. generation/ref/channel 三者不匹配的 row/page_end/checkpoint 都不能提交。
 11. membership revoke 之后任何 cache fact 都不能进入产品投影。
-12. raw progress/payload 不得随已加载 ledger 行数无界常驻内存；projection header 与 body LRU 分别计费。
+12. background reservoir/cache 不得因为预取而把 raw progress 注入 FoldStore；reservoir、IDB、DOM 分别有独立上限。
 
 ### 交互不变量
 
@@ -466,7 +433,7 @@ Phase A 已能消除当前 32 行死锁，但不能宣称 cache/network 一致�
 4. live checkpoint 协议，把 server 的 scanned watermark 交给 cache coverage；
 5. page staging、cursor validation、fact/segment/coverage 原子 transaction；
 6. initial query 锚定 attach head；
-7. TimelineIndex + EntryBodyStore，移除 history 对完整 `state.rows` 常驻的依赖。
+7. 后台 reservoir 与 FoldStore 隔离；禁止用破坏性 progress 删除伪造内存上限。
 
 ### Phase C：端到端优先级
 
@@ -558,18 +525,20 @@ history.intent_satisfied | exhausted | failed | cancelled
 7. “滞后 cache 会通过 live 无界回放到 head”——审计现有 gateway 后确认不成立；attach metadata 已把 live cursor 推到 head。
 8. “一个隐藏 terminal.session 的测试足以覆盖零可见批次”——真实数据是数百行 progress/control/child turn 的组合。
 
-## 14. 尚未证明的部分
+## 14. 实现证明与明确边界
 
-这份文档完成的是设计，不是实现证明。以下内容必须通过 Phase B/C 和 gate 后才能宣称完成：
+本次完成的门禁：
 
-- JS HistoryProjector 与 Go history projection 的 golden equivalence；
-- live checkpoint 在断线、重连和 hidden-row gap 下的 coverage 证明；
-- v8 cache 在 quota/eviction/crash 下的 segment+coverage 原子性；
-- focused initial 精确锚定 attach head 后的 seam e2e；
-- server foreground slot 与 history cancel 的实际延迟上界；
-- TimelineIndex / EntryBodyStore 在 10 万可见条目、body spill 与回滚 hydration 下的实际内存预算。
+- pure projector 与 UI/history completion 共用；20 个连续 zero-visible segment 模型测试；
+- cache hole 原位回 network、stale cache claim、lag cache network-first seam；
+- cold cache、5000-row warm cache、640 连续 cached progress、10 万 raw ledger、移动端与 live-during-history 浏览器场景；
+- page generation/ref/channel/row-count/scan-range 原子校验；
+- attach `H+1` seam、live checkpoint、foreground/background admission、cancel receipt 屏障；
+- v8 FIFO、quota recovery、zero-fact coverage、boot change 与 pending write 隔离；
+- React StrictMode setup/cleanup/setup 生命周期回归；
+- Go gateway/subjectgate、race、e2e 与生产 build（以最终提交前门禁结果为准）。
 
-任一项未通过，都只能报告具体未完成项，不能再说“最终方案已经修好”。
+明确不混入本次正确性合同的性能增强只有 Phase D focus-first attach。另一个可选方向是完整 EntryBodyStore/LRU；当前没有用删除 fact 假装它已经实现。现有硬边界是：后台 reservoir 5000 row/16MiB per channel、64MiB global，IDB 5000 row per channel/256MiB global，history network 4 in-flight/background≤3，DOM 虚拟化；FoldStore 只随用户实际展开的语义历史和本次 live session 增长。
 
 ## 15. 方案自审记录
 
@@ -577,9 +546,9 @@ history.intent_satisfied | exhausted | failed | cancelled
 |---|---|---|
 | 32 行全是 progress/control | row release 后 operation 可能失联 | operation 自己循环，只有 visible anchor/权威终态可结束 |
 | React 因 live feed rerender | effect cleanup 可清唯一 timer | continuation 在独立 operation；React 只回报 layout revision |
-| cache 有 5000 raw 行 | raw 与 network projection 混算 | semantic facts + scan segment；统一 HistorySegment 读合同 |
+| cache 有 5000 raw 行 | raw row 数被当成可见完成 | fact 与 coverage 分开；同一 frontier + pure projector 判定完成 |
 | live seq 100 后直接到 105 | 客户端可能误认 101..104 已覆盖 | 只有 server `live_checkpoint.scanned_seq` 能增加连续 coverage |
-| open turn 后来 terminal | 不可变 segment blob 会保留旧 provisional | facts 与 scan segment 分表；terminal 原子替换 semantic fact set |
+| open turn 后来 terminal | 为压缩直接删除 provisional 会丢审计并破坏水位 | 保留已收到事实；服务端历史投影负责远端压缩，客户端不破坏性改写 |
 | cache coverage 中间有 hole | readBefore 可能跨 hole 改 cursor | source read 截止当前 interval；hole 从同一 before 转 network |
 | cache 自己用完 | 被误判全账本结束 | cache-miss 与 authoritative ledgerExhausted 分开 |
 | 4 个 background 已运行 | foreground 即使最高分也没槽 | client/server 都限制 background≤3，保留 foreground slot |
@@ -590,7 +559,7 @@ history.intent_satisfied | exhausted | failed | cancelled
 | 短列表 top/bottom 同时成立 | bottom 清 demand 或 timer 连发 | topEpoch + visibleRevision layout acknowledgement |
 | 筛选后全不可见 | 固定批数后假成功或永远 pending | cursor 严格递减直到匹配 visible 或 authoritative exhausted |
 | page 中途断线 | 半页 rows 已进入 fold/cache | rows staged，只有匹配 page_end 才原子提交 |
-| 10 万 ledger | DOM 小但 JS heap 仍无界 | TimelineIndex 轻 header + EntryBody IDB/LRU + progress compaction |
+| 10 万 ledger | 后台预取若直接 fold，DOM 小但 JS heap 仍会膨胀 | hydrate 只进有界 reservoir/IDB；用户消费后才 fold，DOM 继续虚拟化 |
 | revoke 后读旧 cache | 历史事实可能重新显露 | access gate cancel + cache clear/隔离是数据不变量 |
 
-自审后的结论：当前卡死可由 Phase A 消除，但用户提出的“冷启动、滞后 cache、WS、展示和优先级整体一致”只有 Phase A+B+C 全部通过验收才成立；focus-first attach 是进一步消除无关频道首屏阻塞的 Phase D。不能只合入一个 Timeline patch 就把整体问题标记完成。
+自审后的结论：实现必须同时满足 Phase A+B+C；当前代码按这三个平面一起落地并由上述反例门禁约束。focus-first attach 是进一步消除无关频道 metadata 首屏阻塞的 Phase D，不参与本次历史正确性。

@@ -475,6 +475,7 @@ export function createMockServer({
   const socketPrincipals = new WeakMap();
   const socketObserved = new WeakMap();
   const socketGenerations = new WeakMap();
+  const socketHistoryTimers = new WeakMap();
   const scheduled = new Set();
   const recurring = new Set();
   // agent 的冻结真相：hold 受理即记 holder，unhold 清除；agent.context 如实回报。
@@ -600,7 +601,9 @@ export function createMockServer({
       const principal = socketPrincipals.get(socket) || '';
       const observed = socketObserved.get(socket) || new Set();
 	  if (attached.has(socket) && domain.canRead(principal, row.channel_id, observed)) {
-		sendFrame(socket, 'feed', '', { ...row, source: 'live', generation: socketGenerations.get(socket) || 0 });
+		const generation = socketGenerations.get(socket) || 0;
+		sendFrame(socket, 'feed', '', { ...row, source: 'live', generation });
+		sendFrame(socket, 'checkpoint', '', { channel_id: row.channel_id, scan_low_seq: row.seq, scanned_seq: row.seq, generation });
 	  }
     }
   }
@@ -620,6 +623,7 @@ export function createMockServer({
       task();
     }, delay);
     scheduled.add(timer);
+    return timer;
   }
 
   function pushApproval(channelId = 'c0') {
@@ -1592,7 +1596,10 @@ export function createMockServer({
         beforeSeq: payload.before_seq,
         limit: payload.limit || 200,
       });
+	  const historyTimers = socketHistoryTimers.get(socket) || new Map();
+	  socketHistoryTimers.set(socket, historyTimers);
       const deliver = () => {
+		historyTimers.delete(ref);
 		let sent = 0;
 		for (const row of page.rows) sent += Number(sendFrame(socket, 'feed', ref, { ...row, source: 'history', generation }));
         const ended = sendFrame(socket, 'page_end', ref, {
@@ -1623,13 +1630,29 @@ export function createMockServer({
 		}));
       };
       const historyDelay = Math.max(0, Number(domain.behavior.history_page_delay_ms || 0));
-	  sendReceipt(socket, ref, { accepted: true, channel_id: payload.channel_id, purpose: payload.purpose, generation }, () => {
+	  sendReceipt(socket, ref, { accepted: true, channel_id: payload.channel_id, purpose: payload.purpose, priority: payload.priority, generation }, () => {
 		if (historyDelay) {
 		  console.info('[mock:history.scheduled]', JSON.stringify({ at: Date.now(), channel_id: payload.channel_id, ref, rows: page.rows.length, delay_ms: historyDelay }));
-		  later(historyDelay, deliver);
+		  historyTimers.set(ref, later(historyDelay, deliver));
 		} else deliver();
 	  });
       return;
+    }
+    if (type === 'history_cancel') {
+	  const generation = socketGenerations.get(socket) || 0;
+	  if (payload.generation !== generation) {
+		sendError(socket, { ref, frame: type, code: 'unavailable', detail: 'stale connection generation' });
+		return;
+	  }
+	  const timers = socketHistoryTimers.get(socket);
+	  const timer = timers?.get(payload.target_ref);
+	  if (timer) {
+		clearTimeout(timer);
+		scheduled.delete(timer);
+		timers.delete(payload.target_ref);
+	  }
+	  sendReceipt(socket, ref, { channel_id: payload.channel_id, target_ref: payload.target_ref, generation });
+	  return;
     }
     if (type === 'submit') return handleSubmit(socket, ref, payload);
     if (!['observe', 'unobserve'].includes(type)) {
@@ -1730,7 +1753,7 @@ export function createMockServer({
     const ref = typeof value?.ref === 'string' ? value.ref : '';
     const frameType = typeof value?.frame_type === 'string' ? value.frame_type : '';
     if (!isObject(value) || value.v !== FRAME_VERSION || !frameType) {
-	  sendError(socket, { ref, frame: frameType, code: 'bad_payload', detail: 'frame requires v:4 and frame_type' });
+	  sendError(socket, { ref, frame: frameType, code: 'bad_payload', detail: `frame requires v:${FRAME_VERSION} and frame_type` });
       return;
     }
     if (value.ref != null && typeof value.ref !== 'string') {
@@ -2048,6 +2071,25 @@ export function createMockServer({
         if (body.type === 'pulse') {
           pushLiveDemo();
           json(response, 200, { type: body.type, tick: liveTick });
+          return;
+        }
+        if (body.type === 'dense_progress') {
+          const channelId = body.channel_id || 'c0';
+          const count = Math.max(1, Math.min(2_000, Number(body.count) || 640));
+          const selfActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
+          const requestId = domain.nextId(`${channelId}-dense-request`);
+          append(channelId, envelope({
+            id: requestId, channelId,
+            sender: { kind: 'human', id: selfActorId }, kind: 'request', type: 'agent.ask',
+            payload: { text: `dense progress request (${count})` }, audience: [STEWARD_ACTOR_ID],
+          }));
+          for (let index = 1; index <= count; index += 1) append(channelId, envelope({
+            id: `${requestId}-progress-${index}`, channelId,
+            sender: { kind: 'agent', id: STEWARD_ACTOR_ID }, kind: 'response', type: 'agent.ask',
+            payload: { status: 'processing', controls: PROCESSING_CONTROLS, step: index },
+            parentId: requestId, correlationId: requestId, audience: [selfActorId],
+          }));
+          json(response, 200, { type: body.type, request_id: requestId, count, head_seq: histories.get(channelId)?.length || 0 });
           return;
         }
         if (body.type === 'push_provisional' || body.type === 'push_terminal' || body.type === 'terminal_conflict') {

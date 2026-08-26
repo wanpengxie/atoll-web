@@ -3,7 +3,6 @@ import { Virtuoso, VirtuosoMockContext } from 'react-virtuoso';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
-import { orderedTimeline } from '../model/fold.js';
 import { LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { replyTargetOf } from '../model/reply-target.js';
@@ -11,10 +10,12 @@ import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { controlLabel, extraControls, taskControlContext } from '../model/task-controls.js';
 import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { selectSystemNote } from '../model/agent-selection.js';
-import { filterEntriesByActors, scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
+import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
+import { projectTimeline } from '../model/timeline-projection.js';
 import { turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { processCount, turnStartObservation } from '../model/turn-process.js';
 import { diagnostic } from '../model/diagnostics.js';
+import { createTopIntentController, HISTORY_OPERATION } from '../model/history-interaction.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
@@ -27,7 +28,6 @@ import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
 // 每次 agent 干活就刷出一串，把人要读的东西淹掉。数据仍然在 state.narration 里，
 // 什么都没丢——等它有了合适的落位（侧栏或频道信息页）再接回来。
 const SHOW_CHANNEL_NARRATION = false;
-const TIMELINE_HISTORY_REVEAL_SIZE = 32;
 // firstItemIndex must remain non-negative while prepending. A billion leaves
 // ample room for repeated 32-row reveals even in six-figure histories.
 const VIRTUAL_INDEX_BASE = 1_000_000_000;
@@ -623,11 +623,6 @@ function WireErrorLine({ error }) {
   );
 }
 
-function isTransientEntry(entry) {
-  return entry.kind === 'standalone'
-    && (entry.envelope.payload?.transient === true || entry.envelope.type === 'mock.channel.pulse');
-}
-
 function entryAuthor(entry) {
   return entry.kind === 'turn' ? entry.turn.request?.sender?.id : entry.kind === 'standalone' ? entry.envelope.sender?.id : '';
 }
@@ -666,7 +661,7 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, onRevealHistory, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
+export function Timeline({ state, history = {}, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   // 选中的 agent。空集 = 不过滤（常态）。Timeline 按频道 key 挂载，所以切频道
   // 天然重置，恒不需要自己清。
@@ -681,13 +676,22 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 	const listTransitionRef = useRef({ key: '', firstSeq: 0, lastSeq: 0, length: 0, firstItemIndex: VIRTUAL_INDEX_BASE });
 	const [messageListAtBottom, setMessageListAtBottom] = useState(true);
 	const [messageListUnseen, setMessageListUnseen] = useState(0);
-	// Top loading is a level-triggered operation scoped to the current visible
-	// projection.  It must not be an anonymous boolean that a later mount effect
-	// can erase after Virtuoso already observed the top.
-	const historyDemandRef = useRef({ context: '', pending: false, anchorSeq: 0, armed: true });
-	const historyTopProbeRef = useRef('');
 	const historyInteractionReadyRef = useRef('');
-	const historyRevealVersionRef = useRef(Number(history?.revealVersion || 0));
+	const historyLoadRef = useRef(null);
+	const historyOperationSerialRef = useRef(0);
+	const historyControllerRef = useRef(null);
+	historyLoadRef.current = history?.loadOlder || null;
+	function newHistoryController() {
+	  return createTopIntentController({
+		load: (goal) => historyLoadRef.current
+		  ? historyLoadRef.current(goal)
+		  : Promise.resolve({ kind: HISTORY_OPERATION.exhausted }),
+		onState: ({ state: operationState, epoch, viewKey, result, reason }) => diagnostic('debug', `history.intent_${operationState}`, {
+		  channelId: state.channelId, epoch, viewKey, reason: reason || result?.kind || '',
+		}),
+	  });
+	}
+	if (historyControllerRef.current === null) historyControllerRef.current = newHistoryController();
 	const previousAccess = useRef(access);
 	const setMessageListScroller = useCallback((node) => {
 	  if (messageListScrollerRef.current === node) return;
@@ -698,13 +702,25 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 		return;
 	  }
 	  const handleScroll = () => {
-		const demand = historyDemandRef.current;
-		if (node.scrollTop > 1 && !demand.pending) demand.armed = true;
+		if (node.scrollTop > 1) historyControllerRef.current?.leaveTop();
 	  };
 	  node.addEventListener('scroll', handleScroll, { passive: true });
 	  messageListScrollCleanupRef.current = () => node.removeEventListener('scroll', handleScroll);
 	}, []);
-	useEffect(() => () => messageListScrollCleanupRef.current(), []);
+	useLayoutEffect(() => {
+	  // React StrictMode intentionally performs setup → cleanup → setup in
+	  // development. A controller disposed by the simulated cleanup must be
+	  // replaced; otherwise every later physical-top callback becomes a no-op.
+	  let controller = historyControllerRef.current;
+	  if (!controller || controller.snapshot().disposed) {
+		controller = newHistoryController();
+		historyControllerRef.current = controller;
+	  }
+	  return () => {
+		controller.dispose();
+		if (historyControllerRef.current === controller) historyControllerRef.current = null;
+	  };
+	}, []);
   const names = useMemo(() => actorNameMap(roster), [roster]);
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
   // 但呈现上必须留在用户点下"编辑"的位置原地变可编辑——恒不在编辑中途瞬移。
@@ -712,46 +728,20 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
   // 保存/放弃后钉住不放（resumePin），直到账上真正回到处理中——否则解冻帧到达前
   // 的空窗里消息会闪跳进等待区。
   const editingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
-  const allEntries = useMemo(() => orderedTimeline(state).filter((entry) => {
-    // Terminal lifecycle rows remain in the ledger for agents and audit, but
-    // they are transport bookkeeping rather than timeline content.
-    if (entry.kind === 'standalone' && entry.envelope?.type === 'terminal.session') return false;
-    if (entry.kind !== 'turn') return true;
-    if ([TYPES.agentHold, TYPES.agentUnhold, TYPES.agentInterrupt, TYPES.agentContext, TYPES.agentFork, TYPES.describe].includes(entry.turn.request.type)) return false;
-    // select/new 都不是用户发言；成功终态只收成一条系统确认。select 的
-    // pending/failed/superseded 状态留在参数区；new 排队时则仍由等待区承接。
-    if ([TYPES.agentSelect, TYPES.agentNew].includes(entry.turn.request.type)) return entry.turn.terminal?.payload?.status === 'completed';
-    if (entry.turn.requestId === editingTargetId) return true;
-    if (isAgentMessageTurn(entry.turn)) return agentMessageStage(entry.turn) === 'timeline';
-    return true;
-  }), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length, editingTargetId]);
-  const scoped = useMemo(() => scopeEntries(allEntries, { scope, state, selfId }), [allEntries, scope, state, state.lastSeq, selfId]);
-  // 成员过滤只在「@我」下成立：「全部」的意思就是不收窄，摆一列过滤在那里是自相矛盾。
-  // 切到「全部」时这一列收起、过滤同时**失效**——恒不留一个看不见却仍在改变画面的
-  // 状态。选中本身留着，切回「@我」时那一列连同亮着的选中一起回来。
-  const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
-  const entries = useMemo(
-    () => (actorFilterApplies ? filterEntriesByActors(scoped, actorFilter) : scoped),
-    [scoped, actorFilter, actorFilterApplies],
-  );
+  const projection = useMemo(() => projectTimeline(state, {
+    scope,
+    selfId,
+    actorFilter,
+    editingTargetId,
+    showNarration: SHOW_CHANNEL_NARRATION,
+  }), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length, scope, selfId, actorFilter, editingTargetId]);
+  const { filtered: entries, actorFilterApplies } = projection;
   // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。
   const filterableAgents = useMemo(() => (roster || []).filter((row) => row.kind === 'agent'), [roster]);
-  const latestTransient = new Map();
-  for (const entry of entries) {
-    if (isTransientEntry(entry)) {
-      latestTransient.set(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`, entry);
-    }
-  }
-  const visibleEntries = entries.filter((entry) => (
-    !isTransientEntry(entry)
-    || latestTransient.get(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`) === entry
-  ));
-  const narrationSeq = state.narration[0]?.seq ?? Number.POSITIVE_INFINITY;
-  const withNarration = [...visibleEntries, ...(SHOW_CHANNEL_NARRATION && state.narration.length ? [{ kind: 'narration', seq: narrationSeq }] : [])]
-    .sort((left, right) => left.seq - right.seq);
-  const latestVisibleSeq = withNarration.at(-1)?.seq || 0;
-	const firstVisibleSeq = withNarration[0]?.seq || 0;
-	const historyProjectionKey = `${state.channelId}:${scope}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
+	const withNarration = projection.items;
+  const latestVisibleSeq = projection.lastVisibleSeq;
+	const firstVisibleSeq = projection.firstVisibleSeq;
+	const historyProjectionKey = `${state.channelId}:${scope}:${selfId}:${editingTargetId}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
 	const previousList = listTransitionRef.current;
 	const messageListKey = `${state.channelId}:${scope}`;
 	let firstItemIndex = previousList.firstItemIndex;
@@ -825,21 +815,6 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 	  return Boolean(scroller) && scroller.scrollTop <= 1;
 	}
 
-	function demandForCurrentProjection() {
-	  if (historyDemandRef.current.context !== historyProjectionKey) {
-		historyDemandRef.current = { context: historyProjectionKey, pending: false, anchorSeq: 0, armed: true };
-	  }
-	  return historyDemandRef.current;
-	}
-
-	function clearCurrentHistoryDemand({ rearm = false } = {}) {
-	  const demand = historyDemandRef.current;
-	  if (demand.context !== historyProjectionKey) return;
-	  demand.pending = false;
-	  demand.anchorSeq = 0;
-	  if (rearm) demand.armed = true;
-	}
-
 	function markLatestRead() {
 	  if (!state.lastSeq || !messageListScrollerRef.current) return;
 	  if (document.visibilityState === 'hidden' || !scrollerIsAtBottom()) return;
@@ -877,42 +852,25 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 	  if (confirmed) {
 		historyInteractionReadyRef.current = messageListKey;
 		setMessageListUnseen(0);
-		// A short or heavily filtered list can be at top and bottom at once.  In
-		// that state bottom is not evidence that the top demand was satisfied.
-		if (!scrollerIsAtTop()) clearCurrentHistoryDemand({ rearm: true });
-		else window.setTimeout(() => requestHistoryAtTop('short-list-ready'), 0);
+		if (scrollerIsAtTop()) requestHistoryAtTop('short-list-ready', { continuation: true });
+		else historyControllerRef.current?.leaveTop();
 		markLatestRead();
 	  }
 	}
 
-	function releaseHistoryForDemand(trigger) {
-	  const demand = demandForCurrentProjection();
-	  const released = Number(onRevealHistory?.(TIMELINE_HISTORY_REVEAL_SIZE)) || 0;
-	  diagnostic('debug', released ? 'timeline.history_revealed' : 'timeline.history_demand_waiting', {
-		channelId: state.channelId,
-		released,
-		buffered: Number(history?.buffered || 0),
-		hasOlder: Boolean(history?.hasOlder),
-		loading: Boolean(history?.loading),
-		attached: Boolean(history?.attached),
-		generation: Number(history?.generation || 0),
-		firstVisibleSeq,
-		demandAnchorSeq: demand.anchorSeq,
-		trigger,
-	  });
-	  return released;
-	}
-
-	function requestHistoryAtTop(trigger) {
-	  const demand = demandForCurrentProjection();
+	function requestHistoryAtTop(trigger, { continuation = false } = {}) {
 	  const scroller = messageListScrollerRef.current;
 	  const physicallyAtTop = !scroller || scroller.scrollTop <= 1;
+	  const controller = historyControllerRef.current;
+	  if (!controller) return;
+	  controller.setView(historyProjectionKey);
+	  const controllerState = controller.snapshot();
 	  const detail = {
 		channelId: state.channelId,
 		trigger,
-		demandPending: demand.pending,
-		demandArmed: demand.armed,
-		demandAnchorSeq: demand.anchorSeq,
+		demandPending: controllerState.active,
+		demandArmed: !controllerState.consumed || continuation,
+		demandAnchorSeq: firstVisibleSeq,
 		firstVisibleSeq,
 		latestVisibleSeq,
 		visibleItems: withNarration.length,
@@ -935,12 +893,16 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 		diagnostic('info', 'timeline.history_top_stale', detail);
 		return;
 	  }
-	  diagnostic('info', demand.pending || !demand.armed ? 'timeline.history_top_ignored' : 'timeline.history_top_observed', detail);
-	  if (demand.pending || !demand.armed) return;
-	  demand.pending = true;
-	  demand.armed = false;
-	  demand.anchorSeq = firstVisibleSeq;
-	  releaseHistoryForDemand(trigger);
+	  diagnostic('info', controllerState.active || (controllerState.consumed && !continuation)
+		? 'timeline.history_top_ignored'
+		: 'timeline.history_top_observed', detail);
+	  const operationId = `${state.channelId}:${++historyOperationSerialRef.current}`;
+	  void controller.enterTop({
+		operationId,
+		anchorSeq: firstVisibleSeq,
+		topEpoch: controllerState.epoch,
+		viewSpec: { scope, selfId, actorFilter, editingTargetId, showNarration: SHOW_CHANNEL_NARRATION },
+	  }, { continuation });
 	}
 
 	function handleStartReached() {
@@ -952,95 +914,32 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 		requestHistoryAtTop('at-top-state');
 		return;
 	  }
-	  const demand = demandForCurrentProjection();
-	  if (!scrollerIsAtTop() && !demand.pending) {
-		demand.armed = true;
+	  if (!scrollerIsAtTop()) {
+		historyControllerRef.current?.leaveTop();
 		diagnostic('debug', 'timeline.history_top_left', {
 		  channelId: state.channelId,
-		  pending: demand.pending,
+		  pending: historyControllerRef.current?.snapshot().active,
 		  scrollTop: Math.round(Number(messageListScrollerRef.current?.scrollTop || 0)),
 		});
 	  }
 	}
 
-	useEffect(() => {
-	  const demand = historyDemandRef.current;
-	  if (demand.context !== historyProjectionKey) return undefined;
-	  const version = Number(history?.revealVersion || 0);
-	  const exhausted = Boolean(history?.attached)
-		&& !history?.loading
-		&& !history?.hasOlder
-		&& Number(history?.buffered || 0) <= 0;
-	  if (demand.pending && exhausted) {
-		diagnostic('info', 'timeline.history_demand_exhausted', {
-		  channelId: state.channelId, firstVisibleSeq, buffered: Number(history?.buffered || 0),
-		  hasOlder: Boolean(history?.hasOlder), attached: Boolean(history?.attached),
-		});
-		clearCurrentHistoryDemand();
-	  }
-	  if (version === historyRevealVersionRef.current) return undefined;
-	  historyRevealVersionRef.current = version;
-	  if (!demand.pending) return undefined;
-
-	  const anchor = demand.anchorSeq;
-	  const visiblePrepend = firstVisibleSeq > 0 && (anchor === 0 || firstVisibleSeq < anchor);
-	  if (visiblePrepend) {
-		const scroller = messageListScrollerRef.current;
-		const stillShortAtTop = Boolean(scroller)
-		  && scroller.clientHeight > 0
-		  && scroller.scrollTop <= 1
-		  && scroller.scrollHeight <= scroller.clientHeight + 1;
-		if (stillShortAtTop && !exhausted) {
-		  demand.anchorSeq = firstVisibleSeq;
-		  diagnostic('debug', 'timeline.history_short_list_continues', {
-			channelId: state.channelId, firstVisibleSeq,
-			scrollHeight: Math.round(scroller.scrollHeight), clientHeight: Math.round(scroller.clientHeight),
-		  });
-		  const timer = window.setTimeout(() => releaseHistoryForDemand('short-list-fill'), 0);
-		  return () => window.clearTimeout(timer);
-		}
-		diagnostic('info', 'timeline.history_demand_satisfied', {
-		  channelId: state.channelId, anchorSeq: anchor, firstVisibleSeq,
-		  buffered: Number(history?.buffered || 0), hasOlder: Boolean(history?.hasOlder),
-		});
-		clearCurrentHistoryDemand();
-		if (!scrollerIsAtTop()) demandForCurrentProjection().armed = true;
-		return undefined;
-	  }
-	  if (exhausted) return undefined;
-
-	  // A history batch is a ledger-row batch, not a rendered-item batch.  The
-	  // whole batch may be housekeeping, filtered agent traffic, or rows that
-	  // merely complete the first visible root turn.  Virtuoso then sees no
-	  // prepend and will not emit startReached a second time.  Keep the existing
-	  // top demand sticky, but claim only one additional bounded batch per render.
-	  const timer = window.setTimeout(() => {
-		const current = historyDemandRef.current;
-		if (current.context === historyProjectionKey && current.pending) releaseHistoryForDemand('projection-empty');
-	  }, 0);
-	  return () => window.clearTimeout(timer);
-	}, [history?.revealVersion, history?.attached, history?.loading, history?.hasOlder, history?.buffered, firstVisibleSeq, onRevealHistory, historyProjectionKey]);
-
-	// Treat "the current projection is physically at the top" as state, not as
-	// a callback edge.  This closes races where Virtuoso emitted startReached
-	// before attach/cache metadata settled or while React mount effects ran.
-	useEffect(() => {
-	  if (historyTopProbeRef.current === historyProjectionKey) return undefined;
-	  historyTopProbeRef.current = historyProjectionKey;
+	useLayoutEffect(() => {
+	  const controller = historyControllerRef.current;
+	  if (!controller) return;
+	  controller.setView(historyProjectionKey);
+	  const scroller = messageListScrollerRef.current;
+	  if (!scroller || historyInteractionReadyRef.current !== messageListKey || scroller.scrollTop > 1) return;
 	  const canLoad = Number(history?.buffered || 0) > 0
 		|| Boolean(history?.hasOlder)
 		|| Boolean(history?.loading)
 		|| !history?.attached;
-	  if (!canLoad) return undefined;
-	  const timer = window.setTimeout(() => {
-		const demand = demandForCurrentProjection();
-		if (scrollerIsAtTop() && !demand.pending) requestHistoryAtTop('top-level-state');
-	  }, 0);
-	  return () => window.clearTimeout(timer);
-	}, [historyProjectionKey, history?.attached, history?.loading, history?.hasOlder, history?.buffered, history?.revealVersion, firstVisibleSeq]);
+	  if (!canLoad) return;
+	  const short = scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 1;
+	  requestHistoryAtTop(short ? 'short-list-layout' : 'top-level-state', { continuation: short });
+	}, [historyProjectionKey, messageListKey, history?.attached, history?.loading, history?.hasOlder, history?.buffered, firstVisibleSeq, withNarration.length]);
 
   useEffect(() => {
-	  historyRevealVersionRef.current = Number(history?.revealVersion || 0);
     setScope(TIMELINE_SCOPE.mine);
     setEditNotice('');
   }, [state.channelId]);

@@ -5,6 +5,8 @@ import { apply, createChannelState, reconcileApprovals } from '../../model/fold.
 import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
 import { createHistoryScheduler, HISTORY_RESERVOIR_SIZE } from '../../model/history-scheduler.js';
 import { diagnostic } from '../../model/diagnostics.js';
+import { loadUntilVisible } from '../../model/history-interaction.js';
+import { projectTimeline } from '../../model/timeline-projection.js';
 import { turnStartObservation } from '../../model/turn-process.js';
 
 export { HISTORY_RESERVOIR_SIZE };
@@ -86,6 +88,11 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         if (!wire) return Promise.reject(new Error('消息连接尚未就绪'));
 		return wire.historyBefore(channelId, beforeSeq, limit, options);
       },
+	  cancelPage: (channelId, ref, generation) => {
+		const wire = wireRef.current;
+		if (!wire) return Promise.resolve();
+		return wire.cancelHistory(channelId, ref, generation);
+	  },
 	  readCache: (channelId, beforeSeq, limit, byteLimit) => cacheRef.current.readBefore(channelId, beforeSeq, limit, byteLimit),
 	  persistRows: (rows, options) => cacheRef.current.saveRows(rows, options),
       hasVisibleRow: (channelId, seq) => statesRef.current.get(channelId)?.rows.has(seq) === true,
@@ -155,12 +162,49 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     return accepted;
   }, []);
 
+  const liveCheckpoint = useCallback((payload = {}) => {
+    const channelId = payload.channel_id;
+    const lowSeq = Number(payload.scan_low_seq);
+    const highSeq = Number(payload.scanned_seq);
+    if (!channelId || !Number.isSafeInteger(lowSeq) || !Number.isSafeInteger(highSeq) || lowSeq <= 0 || highSeq < lowSeq) {
+      diagnostic('warn', 'feed.live_checkpoint_invalid', payload);
+      return false;
+    }
+	void cacheRef.current.saveCoverage(channelId, lowSeq, highSeq).then(() => {
+	  const nextMeta = cacheRef.current.metaSnapshot();
+	  cacheMetaRef.current = nextMeta;
+	  const channelMeta = nextMeta.get(channelId);
+	  if (channelMeta) schedulerRef.current.setLocalMeta(new Map([[channelId, channelMeta]]));
+	}).catch((error) => {
+      diagnostic('error', 'feed.live_checkpoint_failed', { channelId, lowSeq, highSeq, error });
+      onError(error);
+    });
+    diagnostic('debug', 'feed.live_checkpoint', { channelId, lowSeq, highSeq, generation: payload.generation });
+    return true;
+  }, [onError]);
+
   const focusHistory = useCallback((channelId) => schedulerRef.current.focus(channelId), []);
   const disconnectHistory = useCallback((generation) => {
 	diagnostic('info', 'feed.connection_reset', { generation });
     schedulerRef.current.disconnected(generation);
   }, []);
-  const revealHistory = useCallback((channelId, count) => schedulerRef.current.take(channelId, count), []);
+  const loadHistory = useCallback(async (channelId, { anchorSeq = 0, viewSpec = {}, signal, operationId = '', topEpoch = 0 } = {}) => {
+	const operation = schedulerRef.current.beginOperation(channelId, { signal });
+	try {
+	  return await loadUntilVisible({
+      anchorSeq,
+      signal,
+	  next: ({ signal: nextSignal }) => operation.next({ signal: nextSignal }),
+      project: () => projectTimeline(statesRef.current.get(channelId) || createChannelState(channelId), viewSpec),
+      onCheck: ({ firstVisibleSeq, step }) => diagnostic('debug', 'history.projection_checked', {
+        channelId, operationId, topEpoch, anchorSeq, firstVisibleSeq,
+        released: Number(step?.released || 0), kind: step?.kind || '',
+      }),
+	  });
+	} finally {
+	  operation.release();
+	}
+  }, []);
   const historyFor = useCallback((channelId) => schedulerRef.current.snapshot(channelId), []);
   const bump = useCallback(() => setVersion((value) => value + 1), []);
   const markRead = useCallback((channelId, seq) => {
@@ -170,7 +214,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     if (next !== before) setVersion((value) => value + 1);
     return next;
   }, []);
-  const cancel = useCallback(() => {}, []);
+  const cancel = useCallback(() => schedulerRef.current.disconnected(), []);
   const clear = useCallback(() => {
     schedulerRef.current.clear();
     statesRef.current = new Map();
@@ -213,6 +257,6 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
   return {
     statesRef, cursorsRef, version, ready, bump, enqueue, cancel, clear, resetPersistent,
-    setHistoryGrants, pageEnd, disconnectHistory, focusHistory, historyFor, revealHistory, markRead,
+    setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, focusHistory, historyFor, loadHistory, markRead,
   };
 }

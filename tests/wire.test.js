@@ -47,7 +47,7 @@ class FakeWebSocket {
 }
 
 function receipt(socket, sent, payload = {}) {
-  socket.message({ v: 4, frame_type: 'receipt', ref: sent.ref, payload });
+  socket.message({ v: 5, frame_type: 'receipt', ref: sent.ref, payload });
 }
 
 describe('wire client', () => {
@@ -62,10 +62,10 @@ describe('wire client', () => {
     const socket = FakeWebSocket.instances[0];
     socket.open();
     expect(socket.sent).toEqual([{
-	  v: 4,
+	  v: 5,
       frame_type: 'attach',
       ref: 'attach-1',
-	  payload: { since: { c0: 7 }, focus: '', history_protocol: 4, generation: 1 },
+	  payload: { since: { c0: 7 }, focus: '', history_protocol: 5, generation: 1 },
     }]);
     receipt(socket, socket.sent[0], {
       contract_version: 'v4',
@@ -87,7 +87,7 @@ describe('wire client', () => {
     wire.close();
   });
 
-	it('rejects feed before the v4 attach receipt instead of emulating the old wire', () => {
+	it('rejects feed before the v5 attach receipt instead of emulating the old wire', () => {
     const events = [];
     const wire = createWire({
       WebSocketImpl: FakeWebSocket,
@@ -97,10 +97,10 @@ describe('wire client', () => {
     });
     const socket = FakeWebSocket.instances[0];
     socket.open();
-	socket.message({ v: 4, frame_type: 'feed', payload: { source: 'live', generation: 1, channel_id: 'c0', seq: 10, envelope: { id: 'm10' } } });
+	socket.message({ v: 5, frame_type: 'feed', payload: { source: 'live', generation: 1, channel_id: 'c0', seq: 10, envelope: { id: 'm10' } } });
     expect(events).toEqual(['state:open', 'error:feed arrived before attach receipt']);
     receipt(socket, socket.sent[0]);
-	socket.message({ v: 4, frame_type: 'feed', payload: { source: 'live', generation: 1, channel_id: 'c0', seq: 11, envelope: { id: 'm11' } } });
+	socket.message({ v: 5, frame_type: 'feed', payload: { source: 'live', generation: 1, channel_id: 'c0', seq: 11, envelope: { id: 'm11' } } });
     expect(events).toEqual(['state:open', 'error:feed arrived before attach receipt', 'state:attached', 'feed:11']);
     wire.close();
   });
@@ -117,9 +117,21 @@ describe('wire client', () => {
     socket.open();
     const attach = socket.sent[0];
 	receipt(socket, attach, { history_meta: [{ channel_id: 'c0', head_seq: 10, has_rows: true }] });
-	socket.message({ v: 4, frame_type: 'feed', ref: 'history-2', payload: { source: 'history', generation: 1, channel_id: 'c0', seq: 10, envelope: { id: 'm10' } } });
-	socket.message({ v: 4, frame_type: 'page_end', ref: 'history-2', payload: { source: 'history', generation: 1, channel_id: 'c0', oldest_seq: 10 } });
+	socket.message({ v: 5, frame_type: 'feed', ref: 'history-2', payload: { source: 'history', generation: 1, channel_id: 'c0', seq: 10, envelope: { id: 'm10' } } });
+	socket.message({ v: 5, frame_type: 'page_end', ref: 'history-2', payload: { source: 'history', generation: 1, channel_id: 'c0', oldest_seq: 10 } });
 	expect(events).toEqual(['state:open', 'state:attached', 'feed:history-2:10', 'end:history-2:1']);
+    wire.close();
+  });
+
+  it('delivers only current-generation live scan checkpoints after attach', () => {
+    const checkpoints = [];
+    const wire = createWire({ WebSocketImpl: FakeWebSocket, onCheckpoint: (payload) => checkpoints.push(payload) });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    receipt(socket, socket.sent[0]);
+    socket.message({ v: 5, frame_type: 'checkpoint', payload: { generation: 1, channel_id: 'c0', scan_low_seq: 11, scanned_seq: 20 } });
+    socket.message({ v: 5, frame_type: 'checkpoint', payload: { generation: 0, channel_id: 'c0', scan_low_seq: 1, scanned_seq: 10 } });
+    expect(checkpoints).toEqual([{ generation: 1, channel_id: 'c0', scan_low_seq: 11, scanned_seq: 20 }]);
     wire.close();
   });
 
@@ -129,14 +141,30 @@ describe('wire client', () => {
     socket.open();
     receipt(socket, socket.sent[0]);
 
-	const pagePromise = wire.historyBefore('c0', 42, 50, { purpose: 'user-demand' });
+	const pagePromise = wire.historyBefore('c0', 42, 50, { purpose: 'user-demand', priority: 'foreground' });
     const request = socket.sent.at(-1);
     expect(request).toMatchObject({
       frame_type: 'history_before',
-	  payload: { channel_id: 'c0', before_seq: 42, limit: 50, byte_limit: 4 * 1024 * 1024, generation: 1, purpose: 'user-demand' },
+	  payload: { channel_id: 'c0', before_seq: 42, limit: 50, byte_limit: 4 * 1024 * 1024, generation: 1, purpose: 'user-demand', priority: 'foreground' },
     });
     receipt(socket, request, { channel_id: 'c0', oldest_seq: 10, has_older: true, rows: [] });
     await expect(pagePromise).resolves.toMatchObject({ channel_id: 'c0', oldest_seq: 10, has_older: true });
+    wire.close();
+  });
+
+  it('cancels a correlated history batch without overloading request cancel', async () => {
+    const wire = createWire({ WebSocketImpl: FakeWebSocket });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    receipt(socket, socket.sent[0]);
+    const cancellation = wire.cancelHistory('c0', 'history_before-9', 1);
+    const sent = socket.sent.at(-1);
+    expect(sent).toMatchObject({
+      frame_type: 'history_cancel',
+      payload: { channel_id: 'c0', target_ref: 'history_before-9', generation: 1 },
+    });
+    receipt(socket, sent, sent.payload);
+    await expect(cancellation).resolves.toMatchObject({ target_ref: 'history_before-9' });
     wire.close();
   });
 
@@ -154,7 +182,7 @@ describe('wire client', () => {
     const refused = wire.resolve({ channel_id: 'c0', req_id: 'r1', decision: 'approved' });
     const resolve = socket.sent.at(-1);
     socket.message({
-	  v: 4,
+	  v: 5,
       frame_type: 'error',
       ref: resolve.ref,
       payload: { frame: 'resolve', code: 'already_closed', detail: 'done' },
@@ -190,7 +218,7 @@ describe('wire client', () => {
     wire.close();
   });
 
-	it('fails closed when a pre-v4 downstream frame arrives', () => {
+	it('fails closed when a pre-v5 downstream frame arrives', () => {
     const errors = [];
     const wire = createWire({ WebSocketImpl: FakeWebSocket, onError: (error) => errors.push(error) });
     const socket = FakeWebSocket.instances[0];

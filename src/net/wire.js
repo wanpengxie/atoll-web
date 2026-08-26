@@ -37,6 +37,7 @@ export function createWire({
   since = () => ({}),
   focus = () => '',
   onFeed = () => {},
+  onCheckpoint = () => {},
   onPageEnd = () => {},
   onError = () => {},
   onObserveEnded = () => {},
@@ -178,6 +179,18 @@ export function createWire({
 	  onFeed(payload.channel_id, detail.seq, payload.envelope, detail);
       return;
     }
+    if (parsed.kind === DOWN.checkpoint) {
+      if (!attached || Number(payload.generation) !== generation) {
+        diagnostic('warn', 'wire.stale_checkpoint_ignored', { wireGeneration: generation, frameGeneration: payload.generation });
+        return;
+      }
+      onCheckpoint({
+        ...payload,
+        scan_low_seq: Number(payload.scan_low_seq),
+        scanned_seq: Number(payload.scanned_seq),
+      });
+      return;
+    }
     if (parsed.kind === DOWN.observe_ended) {
       onObserveEnded(payload.channel_id, payload.reason);
       return;
@@ -293,7 +306,7 @@ export function createWire({
     unobserve(channelId) {
       return transmit(UP.unobserve, { channel_id: channelId });
     },
-    historyBefore(channelId, beforeSeq = 0, limit = 200, { purpose = 'hydrate', generation: requestedGeneration = generation, byteLimit = 4 * 1024 * 1024 } = {}) {
+    historyBefore(channelId, beforeSeq = 0, limit = 200, { purpose = 'hydrate', priority = 'background', generation: requestedGeneration = generation, byteLimit = 4 * 1024 * 1024 } = {}) {
       return transmit(UP.history_before, {
 		channel_id: channelId,
 		before_seq: beforeSeq,
@@ -301,6 +314,14 @@ export function createWire({
 		byte_limit: byteLimit,
 		generation: requestedGeneration,
 		purpose,
+		priority,
+	  });
+    },
+    cancelHistory(channelId, targetRef, requestedGeneration = generation) {
+      return transmit(UP.history_cancel, {
+		channel_id: channelId,
+		target_ref: targetRef,
+		generation: requestedGeneration,
 	  });
     },
     close() {

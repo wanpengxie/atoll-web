@@ -7,6 +7,7 @@ export const HISTORY_RESERVOIR_SIZE = 5_000;
 export const HISTORY_RESERVOIR_CHANNEL_BYTES = 16 * 1024 * 1024;
 export const HISTORY_RESERVOIR_GLOBAL_BYTES = 64 * 1024 * 1024;
 export const HISTORY_MAX_INFLIGHT = 4;
+export const HISTORY_MAX_BACKGROUND_INFLIGHT = 3;
 export const HISTORY_REVEAL_SIZE = 32;
 export const HISTORY_REVEAL_BYTES = 1 * 1024 * 1024;
 export const HISTORY_BATCH_TIMEOUT_MS = 30_000;
@@ -38,23 +39,30 @@ function coverageContains(meta, seq) {
   ));
 }
 
+function hasLocalKnowledge(meta) {
+  return Boolean(meta && (numeric(meta.rowCount) > 0 || (Array.isArray(meta.coverage) && meta.coverage.length > 0)));
+}
+
 function createState(id, previous = {}) {
   return {
     id,
     attachedGeneration: 0,
     headSeq: 0,
-    networkBeforeSeq: 0,
-    networkStarted: false,
-    localBeforeSeq: 0,
+    // One exclusive scan frontier is shared by IndexedDB and the network.
+    // Sources may serve this cursor; they never own or translate it.
+    beforeSeq: 0,
+    cacheBypassBeforeSeq: 0,
     localMeta: null,
-    localExhausted: false,
     hasRows: false,
     hasOlder: false,
     tailVisible: false,
     reservoir: new Map(),
     reservoirBytes: 0,
     revealVersion: 0,
-    userDemand: 0,
+    foregroundWaiters: [],
+    foregroundOwners: new Set(),
+	projectionPending: false,
+	cancelPending: null,
     retryAt: 0,
     retryCount: 0,
     error: '',
@@ -65,13 +73,20 @@ function createState(id, previous = {}) {
 }
 
 function purposeFor(state, focus) {
-  if (state.userDemand > 0) return 'user-demand';
+  if (state.foregroundOwners.size > 0 || state.foregroundWaiters.length > 0) return 'user-demand';
   if (!state.tailVisible) return 'initial-tail';
   return 'hydrate';
 }
 
+function priorityFor(state, purpose, focus) {
+  return purpose === 'user-demand' || (purpose === 'initial-tail' && state.id === focus)
+    ? 'foreground'
+    : 'background';
+}
+
 export function createHistoryScheduler({
   requestPage,
+  cancelPage = () => Promise.resolve(),
   readCache = async () => ({ rows: [], exhausted: true, nextBeforeSeq: 0, bytes: 0 }),
   revealRows,
   hasVisibleRow = () => false,
@@ -88,6 +103,7 @@ export function createHistoryScheduler({
   const channels = new Map();
   const inflightByChannel = new Map();
   const inflightByRef = new Map();
+  const cancelledRefs = new Map();
   let focus = '';
   let generation = 0;
   let globalReservoirBytes = 0;
@@ -98,6 +114,24 @@ export function createHistoryScheduler({
   let destroyed = false;
 
   function publish() { onChange(); }
+
+  function settleForeground(state, result) {
+    const waiters = state?.foregroundWaiters?.splice?.(0) || [];
+	if (waiters.length > 0) state.projectionPending = true;
+    for (const waiter of waiters) {
+      waiter.cleanup?.();
+      waiter.resolve(result);
+    }
+  }
+
+  function authoritativeExhausted(state) {
+    return Boolean(state
+      && generation
+      && state.attachedGeneration === generation
+      && !state.hasOlder
+      && !state.reservoir.size
+      && !inflightByChannel.has(state.id));
+  }
 
   function clearWake() {
     if (wakeTimer != null) clearTimeoutImpl(wakeTimer);
@@ -119,25 +153,18 @@ export function createHistoryScheduler({
 
   function sourceFor(state) {
     const local = state.localMeta;
-    if (!local || state.localExhausted || !local.rowCount) return 'network';
-    if (state.localBeforeSeq && !state.localExhausted) return 'indexeddb';
-    const frontier = state.networkStarted ? state.networkBeforeSeq - 1 : state.headSeq;
-    if (Array.isArray(local.coverage) && local.coverage.length) {
-      return frontier > 0 && coverageContains(local, frontier) ? 'indexeddb' : 'network';
-    }
-    const before = state.localBeforeSeq || state.networkBeforeSeq || state.headSeq;
-    // A stale disk tail must never win first paint over the server's newest
-    // tail. Network closes the gap first; IDB takes over once cursors overlap.
-    if (!state.tailVisible && local.newestSeq < state.headSeq) return 'network';
-    if (before > local.newestSeq + 1) return 'network';
-    return 'indexeddb';
+    if (!local || state.cacheBypassBeforeSeq === state.beforeSeq) return 'network';
+    const frontier = state.beforeSeq - 1;
+    return frontier > 0 && coverageContains(local, frontier) ? 'indexeddb' : 'network';
   }
 
   function candidate(state) {
-    if (!state || !generation || state.attachedGeneration !== generation || inflightByChannel.has(state.id) || state.retryAt > now()) return null;
+    if (!state || !generation || state.attachedGeneration !== generation || inflightByChannel.has(state.id) || state.cancelPending || state.retryAt > now()) return null;
+	if (state.projectionPending) return null;
     if (state.reservoir.size >= HISTORY_RESERVOIR_SIZE || state.reservoirBytes >= HISTORY_RESERVOIR_CHANNEL_BYTES) return null;
     const purpose = purposeFor(state, focus);
-    const urgent = purpose === 'user-demand' || purpose === 'initial-tail';
+    const priority = priorityFor(state, purpose, focus);
+    const urgent = priority === 'foreground';
     const channelAvailable = Math.max(0, HISTORY_RESERVOIR_CHANNEL_BYTES - state.reservoirBytes);
     const globalAvailable = Math.max(0, HISTORY_RESERVOIR_GLOBAL_BYTES - globalReservoirBytes - reservedInflightBytes);
     const byteLimit = Math.min(HISTORY_BATCH_BYTES, channelAvailable, urgent ? HISTORY_BATCH_BYTES : globalAvailable);
@@ -146,12 +173,15 @@ export function createHistoryScheduler({
     // Initial/user-demand pages are released immediately and may borrow exactly
     // one batch beyond the resident global budget, but never beyond the channel cap.
     if (!urgent && byteLimit < Math.min(HISTORY_BATCH_BYTES, channelAvailable)) return null;
-    if (!state.hasRows && !state.hasOlder && !state.localMeta?.rowCount) return null;
-    if (state.tailVisible && !state.hasOlder && state.localExhausted) return null;
-    let priorityClass = state.id === focus ? 20 : 10;
-    if (purpose === 'user-demand') priorityClass = 50;
-    else if (!state.tailVisible) priorityClass = state.id === focus ? 40 : 30;
-    if (state.waitDispatches >= FAIRNESS_DISPATCHES && priorityClass < 49) priorityClass = 49;
+    if (!state.hasRows && !state.hasOlder && !hasLocalKnowledge(state.localMeta)) return null;
+    if (state.tailVisible && !state.hasOlder) return null;
+    let priorityClass = priority === 'foreground' ? 100 : 0;
+    if (purpose === 'user-demand') priorityClass += 20;
+    else if (purpose === 'initial-tail') priorityClass += 10;
+    // Starvation promotion is deliberately confined to the same transport
+    // class. Background hydration can become the next background batch, but
+    // it can never jump ahead of a person's active top operation.
+    priorityClass += Math.min(9, Math.floor(state.waitDispatches / FAIRNESS_DISPATCHES));
     const limit = Math.max(1, Math.min(HISTORY_PAGE_SIZE, HISTORY_RESERVOIR_SIZE - state.reservoir.size));
     return {
       id: `${generation}:${state.id}:${dispatchSerial + 1}`,
@@ -159,9 +189,8 @@ export function createHistoryScheduler({
       channelId: state.id,
       source: sourceFor(state),
       purpose,
-      beforeSeq: sourceFor(state) === 'indexeddb'
-        ? (state.localBeforeSeq || (state.tailVisible ? (state.networkBeforeSeq || state.headSeq) : 0))
-        : (state.networkStarted ? state.networkBeforeSeq : 0),
+      priority,
+      beforeSeq: state.beforeSeq,
       limit,
       byteLimit,
       reservedBytes: byteLimit,
@@ -181,7 +210,10 @@ export function createHistoryScheduler({
   }
 
   function choose() {
-    const candidates = [...channels.values()].map(candidate).filter(Boolean).sort(compare);
+    const backgroundInflight = [...inflightByChannel.values()].filter((batch) => batch.priority === 'background').length;
+    const candidates = [...channels.values()].map(candidate).filter((batch) => (
+      batch && (batch.priority === 'foreground' || backgroundInflight < HISTORY_MAX_BACKGROUND_INFLIGHT)
+    )).sort(compare);
     return candidates[0] || null;
   }
 
@@ -231,6 +263,7 @@ export function createHistoryScheduler({
     state.retryAt = now() + delay;
     diagnostic('warn', 'history.batch_retry', { channelId: state.id, generation, delay, detail: state.error });
     scheduleWake(state.retryAt);
+    settleForeground(state, { kind: 'failed', error: error instanceof Error ? error : new Error(state.error) });
     onError(error instanceof Error ? error : new Error(state.error));
   }
 
@@ -239,7 +272,8 @@ export function createHistoryScheduler({
     let accepted;
     try {
       accepted = requestPage(batch.channelId, batch.beforeSeq, batch.limit, {
-        purpose: batch.purpose, generation: batch.generation, byteLimit: batch.byteLimit,
+        purpose: batch.purpose, priority: batch.priority,
+        generation: batch.generation, byteLimit: batch.byteLimit,
       });
     } catch (error) {
       throw error;
@@ -247,20 +281,58 @@ export function createHistoryScheduler({
     batch.ref = accepted?.ref || '';
     batch.rows = [];
     batch.terminal = terminal;
+    // A cancellation may arrive immediately after dispatch, before the receipt
+    // promise has yielded. Mark this promise handled now; awaiting it below
+    // still observes the same rejection.
+    void terminal.promise.catch(() => {});
     inflightByRef.set(batch.ref, batch);
     const receipt = await accepted;
     if (!receipt?.accepted || receipt.generation !== batch.generation || receipt.channel_id !== batch.channelId) {
       throw new Error('历史批次回执不匹配');
     }
     const page = await terminal.promise;
-    return { ...page, rows: batch.rows };
+	return { ...page, declaredRows: page.rows, rows: batch.rows };
   }
 
   async function execute(batch) {
+    if (batch.cancelled) throw new Error('history batch cancelled');
     if (batch.source === 'indexeddb') {
       return readCache(batch.channelId, batch.beforeSeq, batch.limit, batch.byteLimit);
     }
     return executeNetwork(batch);
+  }
+
+  function validateNetworkPage(batch, result, rows) {
+	if (numeric(result.generation) !== batch.generation) throw new Error('历史批次 generation 不匹配');
+	if (result.channel_id !== batch.channelId) throw new Error('历史批次 channel 不匹配');
+	const declaredRows = Number(result.declaredRows);
+	if (!Number.isSafeInteger(declaredRows) || declaredRows !== rows.length) throw new Error('历史批次 rows 计数不匹配');
+	const scanHigh = Number(result.scan_high_seq);
+	const nextBefore = Number(result.next_before_seq);
+	if (!Number.isSafeInteger(scanHigh) || scanHigh !== batch.beforeSeq - 1) {
+	  throw new Error(`历史批次 scan_high 不连续: got=${scanHigh} want=${batch.beforeSeq - 1}`);
+	}
+	if (!Number.isSafeInteger(nextBefore) || nextBefore < 0 || nextBefore > scanHigh) throw new Error('历史批次 next_before 非法');
+	const scanLow = Number(result.scan_low_seq);
+	if (!Number.isSafeInteger(scanLow) || scanLow !== nextBefore) throw new Error('历史批次 scan_low 与 cursor 不一致');
+	if (result.has_older && nextBefore >= batch.beforeSeq) throw new Error('历史批次 cursor 未前进');
+	for (const row of rows) {
+	  const seq = Number(row.seq);
+	  if (!Number.isSafeInteger(seq) || seq < scanLow || seq > scanHigh) throw new Error('历史事实落在扫描区间外');
+	}
+  }
+
+  function validateCachePage(batch, result, rows) {
+    const nextBefore = Number(result.nextBeforeSeq);
+    if (!Number.isSafeInteger(nextBefore) || nextBefore <= 0 || nextBefore >= batch.beforeSeq) {
+      throw new Error('缓存历史批次 cursor 未前进');
+    }
+    for (const row of rows) {
+      const seq = Number(row.seq);
+      if (!Number.isSafeInteger(seq) || seq < nextBefore || seq >= batch.beforeSeq) {
+        throw new Error('缓存历史事实落在扫描区间外');
+      }
+    }
   }
 
   function commit(batch, result) {
@@ -269,17 +341,27 @@ export function createHistoryScheduler({
     if (!state) return;
     const rows = (result.rows || []).sort((left, right) => left.seq - right.seq);
     if (batch.source === 'indexeddb') {
-      state.localBeforeSeq = numeric(result.nextBeforeSeq) || batch.beforeSeq;
-      state.localExhausted = Boolean(result.exhausted);
-      if (state.localExhausted && state.localMeta?.oldestSeq) {
-        state.networkBeforeSeq = Math.min(state.networkBeforeSeq || state.headSeq, state.localMeta.oldestSeq);
-        state.networkStarted = true;
+      // Metadata can become stale after FIFO/quota eviction. A miss does not
+      // advance truth; it only bypasses this cache claim at the same frontier.
+      if (result.cacheMiss) {
+        state.cacheBypassBeforeSeq = batch.beforeSeq;
+        diagnostic('warn', 'history.cache_claim_missed', {
+          channelId: state.id, beforeSeq: batch.beforeSeq, generation,
+        });
+        return;
       }
+      validateCachePage(batch, result, rows);
+      state.beforeSeq = Number(result.nextBeforeSeq);
+      state.cacheBypassBeforeSeq = 0;
     } else {
+	  validateNetworkPage(batch, result, rows);
       state.headSeq = Math.max(state.headSeq, numeric(result.head_seq));
-      state.networkBeforeSeq = numeric(result.next_before_seq) || numeric(result.oldest_seq) || batch.beforeSeq;
-      state.networkStarted = true;
-      state.hasOlder = Boolean(result.has_older);
+	  state.beforeSeq = Number(result.next_before_seq);
+	  state.cacheBypassBeforeSeq = 0;
+	  // Cursor zero is the ledger origin and therefore authoritative exhaustion,
+	  // even if an older server/mocked projector conservatively reports
+	  // has_older=true because only hidden housekeeping remains.
+	  state.hasOlder = Boolean(result.has_older) && state.beforeSeq > 0;
       const lowSeq = numeric(result.scan_low_seq);
       const highSeq = numeric(result.scan_high_seq);
       const coverageByChannel = lowSeq && highSeq >= lowSeq
@@ -287,28 +369,28 @@ export function createHistoryScheduler({
         : new Map();
       void persistRows(rows, { coverageByChannel }).catch((error) => diagnostic('error', 'history.cache_persist_failed', { channelId: state.id, error }));
     }
-    const acceptedRows = rememberRows(state, rows, { allowGlobalOverflow: batch.purpose === 'initial-tail' || batch.purpose === 'user-demand' });
+    const acceptedRows = rememberRows(state, rows, { allowGlobalOverflow: batch.priority === 'foreground' });
+    let initialReleased = 0;
     if (!state.tailVisible) {
-      release(state, state.reservoir.size, { initial: true });
+      initialReleased = release(state, state.reservoir.size, { initial: true });
       state.tailVisible = true;
-    }
-    let demandReleased = 0;
-    if (state.userDemand > 0 && state.reservoir.size) {
-      demandReleased = release(state, Math.min(state.userDemand, HISTORY_REVEAL_SIZE));
-      state.userDemand = Math.max(0, state.userDemand - demandReleased);
     }
     state.retryAt = 0;
     state.retryCount = 0;
     state.error = '';
     diagnostic('info', 'history.batch_complete', {
-      channelId: state.id, source: batch.source, purpose: batch.purpose,
+      channelId: state.id, source: batch.source, purpose: batch.purpose, priority: batch.priority,
       generation, ref: batch.ref || '', rows: rows.length,
       acceptedRows, reservoir: state.reservoir.size, reservoirBytes: state.reservoirBytes,
-      demandReleased, pendingDemand: state.userDemand, hasOlder: state.hasOlder,
-      localExhausted: state.localExhausted, networkBeforeSeq: state.networkBeforeSeq,
+      hasOlder: state.hasOlder,
+      beforeSeq: state.beforeSeq,
       nextBeforeSeq: numeric(result.next_before_seq) || numeric(result.nextBeforeSeq),
       scanLowSeq: numeric(result.scan_low_seq), scanHighSeq: numeric(result.scan_high_seq),
     });
+    if (initialReleased > 0) settleForeground(state, { kind: 'segment', released: initialReleased, initial: true });
+    else if (state.reservoir.size > 0) settleForeground(state, { kind: 'available' });
+    else if (!state.hasOlder) settleForeground(state, { kind: 'exhausted' });
+    else settleForeground(state, { kind: 'segment', released: 0, scanAdvanced: true });
   }
 
   function dispatch(batch) {
@@ -321,12 +403,16 @@ export function createHistoryScheduler({
       if (state.id === batch.channelId) state.waitDispatches = 0;
       else if (candidate(state)) state.waitDispatches += 1;
     }
-    diagnostic('debug', 'history.batch_dispatched', batch);
+	diagnostic('info', 'history.segment_requested', batch);
     let failed = false;
     executors.add(() => execute(batch), { id: batch.id, timeout: HISTORY_BATCH_TIMEOUT_MS }).then((result) => commit(batch, result)).catch((error) => {
       failed = true;
       const state = channels.get(batch.channelId);
-      if (batch.generation === generation && !destroyed && state) retry(state, error);
+	  if (!batch.cancelled && batch.source === 'network' && batch.ref) {
+		batch.terminal?.reject(error);
+		void cancelPage(batch.channelId, batch.ref, batch.generation).catch(() => {});
+	  }
+	  if (!batch.cancelled && batch.generation === generation && !destroyed && state) retry(state, error);
     }).finally(() => {
       reservedInflightBytes = Math.max(0, reservedInflightBytes - batch.reservedBytes);
       if (batch.ref) inflightByRef.delete(batch.ref);
@@ -337,6 +423,42 @@ export function createHistoryScheduler({
       if (batch.purpose !== 'hydrate' || failed) publish();
       schedule();
     });
+  }
+
+  function cancelBatch(batch, reason = 'history operation cancelled') {
+    if (!batch || batch.cancelled) return;
+    batch.cancelled = true;
+	if (batch.ref) {
+	  cancelledRefs.set(batch.ref, { channelId: batch.channelId, generation: batch.generation });
+	  while (cancelledRefs.size > 128) cancelledRefs.delete(cancelledRefs.keys().next().value);
+	}
+    batch.terminal?.reject(new Error(reason));
+    if (batch.source === 'network' && batch.ref) {
+	  const state = channels.get(batch.channelId);
+	  const pending = Promise.resolve().then(() => cancelPage(batch.channelId, batch.ref, batch.generation));
+	  if (state) state.cancelPending = pending;
+      void pending.catch((error) => {
+        diagnostic('warn', 'history.cancel_failed', { channelId: batch.channelId, ref: batch.ref, error });
+	  }).finally(() => {
+		if (state?.cancelPending === pending) state.cancelPending = null;
+		publish();
+		schedule();
+      });
+    }
+    diagnostic('debug', 'history.batch_cancelled', {
+      channelId: batch.channelId, ref: batch.ref || '', generation: batch.generation, reason,
+    });
+  }
+
+  function cancelUnownedForeground(state) {
+    if (!state || state.foregroundWaiters.length > 0) return;
+    const batch = inflightByChannel.get(state.id);
+    if (batch?.priority === 'foreground' && batch.purpose === 'user-demand') cancelBatch(batch);
+  }
+
+  function promoteChannel(state, reason) {
+    const batch = state ? inflightByChannel.get(state.id) : null;
+    if (batch?.priority === 'background') cancelBatch(batch, reason);
   }
 
   function schedule() {
@@ -364,24 +486,16 @@ export function createHistoryScheduler({
       if (!id) continue;
       seen.add(id);
       const previous = channels.get(id);
-      const pendingDemand = numeric(previous?.userDemand);
       const state = createState(id, previous);
       state.attachedGeneration = generation;
       state.headSeq = numeric(entry.head_seq);
-      state.networkBeforeSeq = state.headSeq;
-      state.networkStarted = false;
+      state.beforeSeq = state.headSeq + 1;
+      state.cacheBypassBeforeSeq = 0;
       state.localMeta = localMeta.get?.(id) || localMeta[id] || null;
-      state.localBeforeSeq = 0;
-      state.localExhausted = !state.localMeta?.rowCount;
       state.hasRows = Boolean(entry.has_rows);
       state.hasOlder = state.hasRows;
       state.activity = Math.max(numeric(entry.last_activity), numeric(state.localMeta?.lastActivity));
       state.tailVisible = false;
-      // A reader can hit the top while attach is still waiting on the tiny IDB
-      // boot/meta transaction.  That intent belongs to the channel, not to the
-      // old connection generation, so carry it across the attach seam instead
-      // of leaving the Timeline permanently locked at its first page.
-      state.userDemand = pendingDemand;
       state.error = entry.error_detail || '';
       channels.set(id, state);
     }
@@ -390,7 +504,6 @@ export function createHistoryScheduler({
       state.attachedGeneration = 0;
       state.hasRows = false;
       state.hasOlder = false;
-      state.localExhausted = true;
     }
     diagnostic('info', 'history.attach_meta', { generation, focus, channels: seen.size });
     publish();
@@ -402,6 +515,11 @@ export function createHistoryScheduler({
     if (payload.source !== 'history') return false;
     const batch = inflightByRef.get(payload.ref || '');
     if (!batch || numeric(payload.generation) !== batch.generation || payload.channel_id !== batch.channelId) {
+	  const cancelled = cancelledRefs.get(payload.ref || '');
+	  if (cancelled?.generation === numeric(payload.generation) && cancelled.channelId === payload.channel_id) {
+		diagnostic('debug', 'history.cancelled_row_ignored', { ref: payload.ref, channelId: payload.channel_id, generation: payload.generation });
+		return true;
+	  }
       diagnostic('warn', 'history.unmatched_row', { ref: payload.ref, channelId: payload.channel_id, generation: payload.generation });
       return true;
     }
@@ -412,6 +530,12 @@ export function createHistoryScheduler({
   function pageEnd(payload = {}) {
     const batch = inflightByRef.get(payload.ref || '');
     if (!batch || numeric(payload.generation) !== batch.generation || payload.channel_id !== batch.channelId) {
+	  const cancelled = cancelledRefs.get(payload.ref || '');
+	  if (cancelled?.generation === numeric(payload.generation) && cancelled.channelId === payload.channel_id) {
+		cancelledRefs.delete(payload.ref || '');
+		diagnostic('debug', 'history.cancelled_page_end_ignored', { ref: payload.ref, channelId: payload.channel_id, generation: payload.generation });
+		return true;
+	  }
       diagnostic('warn', 'history.unmatched_page_end', { ref: payload.ref, channelId: payload.channel_id, generation: payload.generation });
       return false;
     }
@@ -420,64 +544,87 @@ export function createHistoryScheduler({
     return true;
   }
 
-  function take(channelId, count = HISTORY_REVEAL_SIZE) {
+  async function nextSegment(channelId, { signal, count = HISTORY_REVEAL_SIZE } = {}) {
+    if (signal?.aborted) return { kind: 'cancelled' };
     let state = channels.get(channelId);
     if (!state) {
-      // Timeline can become scrollable from an already-folded live/cache tail
-      // before the metadata-only attach has reached the scheduler.  Preserve
-      // that early top demand in a placeholder; attach() will hydrate this
-      // exact state and immediately schedule a normal user-demand batch.
       state = createState(channelId);
       channels.set(channelId, state);
     }
-    const before = {
-      attached: Boolean(generation && state.attachedGeneration === generation),
-      generation,
-      attachedGeneration: state.attachedGeneration,
-      reservoir: state.reservoir.size,
-      reservoirBytes: state.reservoirBytes,
-      pendingDemand: state.userDemand,
-      hasOlder: state.hasOlder,
-      localExhausted: state.localExhausted,
-      networkBeforeSeq: state.networkBeforeSeq,
-    };
-    const released = release(state, count);
-    if (released < count && (
-      !generation
-      || state.attachedGeneration !== generation
-      || state.hasOlder
-      || !state.localExhausted
-    )) {
-      state.userDemand = Math.max(state.userDemand, count - released);
+	// The caller has completed projection of the previous segment and is asking
+	// for a continuation. This acknowledgement, not a render timer, releases the
+	// channel to schedule its next contiguous batch.
+	state.projectionPending = false;
+    if (state.reservoir.size > 0) {
+      const released = release(state, Math.max(1, count));
+      publish();
+      schedule();
+      return { kind: 'segment', released };
     }
-    publish();
-    schedule();
-    const inflight = inflightByChannel.get(channelId);
-    diagnostic('info', 'history.demand_taken', {
-      channelId, requested: count, released,
-      before,
-      after: {
-        reservoir: state.reservoir.size,
-        reservoirBytes: state.reservoirBytes,
-        pendingDemand: state.userDemand,
-        hasOlder: state.hasOlder,
-        localExhausted: state.localExhausted,
-        networkBeforeSeq: state.networkBeforeSeq,
-        inflight: inflight ? {
-          source: inflight.source,
-          purpose: inflight.purpose,
-          beforeSeq: inflight.beforeSeq,
-          ref: inflight.ref || '',
-        } : null,
-      },
+    if (authoritativeExhausted(state)) return { kind: 'exhausted' };
+    if (state.error && state.retryAt > now()) {
+      return { kind: 'failed', error: new Error(state.error) };
+    }
+    return new Promise((resolve) => {
+      const waiter = { resolve, cleanup: null };
+      if (signal) {
+        const abort = () => {
+          const index = state.foregroundWaiters.indexOf(waiter);
+          if (index >= 0) state.foregroundWaiters.splice(index, 1);
+          resolve({ kind: 'cancelled' });
+          cancelUnownedForeground(state);
+          publish();
+          schedule();
+        };
+        signal.addEventListener('abort', abort, { once: true });
+        waiter.cleanup = () => signal.removeEventListener('abort', abort);
+      }
+      state.foregroundWaiters.push(waiter);
+      state.retryAt = 0;
+      publish();
+      schedule();
+    }).then((result) => {
+      if (result?.kind !== 'available') return result;
+      return nextSegment(channelId, { signal, count });
     });
-    return released;
+  }
+
+  function beginOperation(channelId, { signal } = {}) {
+	let state = channels.get(channelId);
+	if (!state) {
+	  state = createState(channelId);
+	  channels.set(channelId, state);
+	}
+	const owner = {};
+	let released = false;
+	state.foregroundOwners.add(owner);
+	promoteChannel(state, 'history channel promoted by user intent');
+	const release = () => {
+	  if (released) return;
+	  released = true;
+	  signal?.removeEventListener('abort', release);
+	  state.foregroundOwners.delete(owner);
+	  if (state.foregroundOwners.size === 0 && state.foregroundWaiters.length === 0) {
+		state.projectionPending = false;
+		cancelUnownedForeground(state);
+	  }
+	  publish();
+	  schedule();
+	};
+	if (signal) signal.addEventListener('abort', release, { once: true });
+	publish();
+	schedule();
+	return {
+	  next: (options = {}) => nextSegment(channelId, { ...options, signal: options.signal || signal }),
+	  release,
+	};
   }
 
   function setFocus(channelId) {
     focus = channelId || '';
     const state = channels.get(focus);
     if (state?.retryAt) state.retryAt = 0;
+	promoteChannel(state, 'history channel promoted by focus');
     publish();
     schedule();
   }
@@ -487,7 +634,7 @@ export function createHistoryScheduler({
       const state = channels.get(id);
       if (!state) continue;
       state.localMeta = value;
-      state.localExhausted = !value?.rowCount;
+      state.cacheBypassBeforeSeq = 0;
       state.activity = Math.max(state.activity, numeric(value?.lastActivity));
     }
     publish();
@@ -496,8 +643,18 @@ export function createHistoryScheduler({
 
   function disconnected(nextGeneration = generation + 1) {
     generation = Math.max(generation + 1, numeric(nextGeneration));
-    for (const batch of inflightByRef.values()) batch.terminal?.reject(new Error('connection closed'));
+    for (const batch of inflightByChannel.values()) {
+      batch.cancelled = true;
+      batch.terminal?.reject(new Error('connection closed'));
+    }
+    for (const state of channels.values()) settleForeground(state, { kind: 'cancelled' });
+	for (const state of channels.values()) {
+	  state.foregroundOwners.clear();
+	  state.projectionPending = false;
+	  state.cancelPending = null;
+	}
     inflightByRef.clear();
+    cancelledRefs.clear();
     inflightByChannel.clear();
     executors.clear();
     reservedInflightBytes = 0;
@@ -510,8 +667,8 @@ export function createHistoryScheduler({
     if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, buffered: 0, bufferedNewest: 0, revealVersion: 0, attached: false, generation, error: '' };
     return {
       headSeq: state.headSeq,
-      oldestSeq: state.networkBeforeSeq,
-      hasOlder: state.hasOlder || !state.localExhausted,
+      oldestSeq: state.beforeSeq,
+      hasOlder: state.hasOlder,
       loaded: state.tailVisible,
       loading: inflightByChannel.has(channelId),
       buffered: state.reservoir.size,
@@ -542,5 +699,5 @@ export function createHistoryScheduler({
     disconnected(generation + 1);
   }
 
-  return { attach, setLocalMeta, historyRow, pageEnd, take, focus: setFocus, observeLive, disconnected, clear, destroy, snapshot, tick: schedule };
+  return { attach, setLocalMeta, historyRow, pageEnd, nextSegment, beginOperation, focus: setFocus, observeLive, disconnected, clear, destroy, snapshot, tick: schedule };
 }

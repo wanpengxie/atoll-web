@@ -1,7 +1,7 @@
 import Dexie from 'dexie';
 import { diagnostic } from './diagnostics.js';
 
-const DB_NAME = 'atoll-feed-v7';
+const DB_NAME = 'atoll-feed-v8';
 const LEGACY_PREFIX = 'atoll.feed.v5.';
 const GLOBAL_META_ID = 'global';
 export const FEED_CACHE_ROWS_PER_CHANNEL = 5_000;
@@ -22,7 +22,8 @@ export function redactFeedSecrets(value, key = '') {
 export function resumeSnapshot(source) {
   const entries = source instanceof Map ? [...source] : Object.entries(source || {});
   return Object.fromEntries(entries.flatMap(([channelId, value]) => {
-    const seq = Number(value?.newestSeq ?? value?.newest_seq ?? value?.lastSeq ?? 0);
+    const coverageHigh = normalizeCoverage(value?.coverage).reduce((high, interval) => Math.max(high, interval.highSeq), 0);
+    const seq = Math.max(Number(value?.newestSeq ?? value?.newest_seq ?? value?.lastSeq ?? 0), coverageHigh);
     return Number.isSafeInteger(seq) && seq > 0 ? [[channelId, seq]] : [];
   }));
 }
@@ -40,7 +41,11 @@ function removeLegacy(storage) {
 function encodedRecord(channelId, seq, envelope) {
   const redacted = redactFeedSecrets(envelope);
   const bytes = new TextEncoder().encode(JSON.stringify(redacted)).byteLength;
-  return { channelId, seq, envelope: redacted, bytes, activity: Number(envelope?.ts) || Date.now() };
+  return {
+	channelId, seq, envelope: redacted, bytes,
+	activity: Number(envelope?.ts) || Date.now(),
+	parentId: String(envelope?.parent_id || ''),
+  };
 }
 
 function normalizeMeta(value = {}) {
@@ -98,6 +103,10 @@ export function createFeedCache({
   let database = null;
   let openPromise = null;
   let writeTail = Promise.resolve();
+  let pendingRecords = [];
+  let pendingCoverage = [];
+  let pendingWaiters = [];
+  let flushTimer = null;
 
   function open() {
     if (openPromise) return openPromise;
@@ -109,7 +118,7 @@ export function createFeedCache({
     }
     database = new Dexie(databaseName, { indexedDB: indexedDBImpl, IDBKeyRange: IDBKeyRangeImpl });
     database.version(1).stores({
-      rows: '&[channelId+seq], channelId, seq, activity',
+	  rows: '&[channelId+seq], [channelId+parentId], channelId, seq, activity',
       channelMeta: '&channelId, lastActivity, newestSeq',
       globalMeta: '&id',
     });
@@ -160,7 +169,7 @@ export function createFeedCache({
   }
 
   async function trimGlobal() {
-    const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 1, serverBoot: '' };
+    const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '' };
     if (global.totalBytes <= globalBytes) return;
     while (global.totalBytes > globalBytes) {
       const channel = [...meta.values()].filter((entry) => entry.rowCount > 0).sort((left, right) => left.lastActivity - right.lastActivity)[0];
@@ -185,14 +194,16 @@ export function createFeedCache({
 		current.channelId = channelId;
         let addedBytes = 0;
         let addedRows = 0;
-        let wroteAny = false;
-        for (const record of incoming) {
+        const uniqueIncoming = [...new Map(incoming.map((record) => [record.seq, record])).values()];
+        const previousRows = await database.rows.bulkGet(uniqueIncoming.map((record) => [channelId, record.seq]));
+        const writes = [];
+        for (let index = 0; index < uniqueIncoming.length; index += 1) {
+          const record = uniqueIncoming[index];
+          const previous = previousRows[index];
           // The disk cache is a strict latest-tail FIFO. Older network history
           // remains in the bounded in-memory reservoir once the FIFO is full.
-          if (current.rowCount >= rowsPerChannel && current.oldestSeq && record.seq < current.oldestSeq) continue;
-          const previous = await database.rows.get([channelId, record.seq]);
-          await database.rows.put(record);
-          wroteAny = true;
+          if (!previous && current.rowCount >= rowsPerChannel && current.oldestSeq && record.seq < current.oldestSeq) continue;
+          writes.push(record);
           if (!previous) {
             current.rowCount += 1;
             addedRows += 1;
@@ -207,15 +218,12 @@ export function createFeedCache({
           current.newestSeq = Math.max(current.newestSeq, record.seq);
           current.lastActivity = Math.max(current.lastActivity, record.activity);
         }
+        if (writes.length) await database.rows.bulkPut(writes);
         const coverage = coverageByChannel.get?.(channelId) || coverageByChannel[channelId];
-        if (wroteAny && coverage) current.coverage = normalizeCoverage([...current.coverage, coverage]);
-        else if (wroteAny) current.coverage = normalizeCoverage([
-          ...current.coverage,
-          ...incoming.map((record) => ({ lowSeq: record.seq, highSeq: record.seq })),
-        ]);
+        if (writes.length && coverage) current.coverage = normalizeCoverage([...current.coverage, coverage]);
         meta.set(channelId, current);
         await database.channelMeta.put(current);
-        const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 1, serverBoot: '' };
+        const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '' };
         global.totalBytes = Math.max(0, (Number(global.totalBytes) || 0) + addedBytes);
         if (current.rowCount > rowsPerChannel) {
           const reclaimed = await trimChannel(channelId, current.rowCount - rowsPerChannel);
@@ -236,7 +244,16 @@ export function createFeedCache({
 	  await database.transaction('rw', database.channelMeta, async () => {
 		const current = normalizeMeta(meta.get(channelId));
 		current.channelId = channelId;
-		current.coverage = normalizeCoverage([...current.coverage, coverage]);
+		// A checkpoint can legitimately cover a zero-fact interval newer than
+		// every cached row. Keep that proof intact. Only clip the low edge when
+		// the interval crosses the retained FIFO: seqs older than oldestSeq may
+		// have contained evicted visible facts and therefore are not cached.
+		const lowSeq = Number(coverage.lowSeq) || 0;
+		const highSeq = Number(coverage.highSeq) || 0;
+		const bounded = current.oldestSeq && lowSeq <= current.newestSeq
+		  ? { lowSeq: Math.max(lowSeq, current.oldestSeq), highSeq }
+		  : { lowSeq, highSeq };
+		current.coverage = normalizeCoverage([...current.coverage, bounded]);
 		meta.set(channelId, current);
 		await database.channelMeta.put(current);
 	  });
@@ -244,51 +261,94 @@ export function createFeedCache({
     await trimGlobal();
   }
 
-  function saveRows(rows, { coverageByChannel = new Map() } = {}) {
-    const records = (rows || []).flatMap((row) => {
-      const channelId = row?.channel_id;
-      const seq = Number(row?.seq);
-      return channelId && Number.isSafeInteger(seq) && seq > 0 ? [encodedRecord(channelId, seq, row.envelope)] : [];
-    });
-	const hasCoverage = coverageByChannel instanceof Map
-	  ? coverageByChannel.size > 0
-	  : Object.keys(coverageByChannel || {}).length > 0;
-	if (!records.length && !hasCoverage) return writeTail;
-    writeTail = writeTail.then(async () => {
-	  const chunks = chunksOf(records);
-	  if (!chunks.length) await persist([], coverageByChannel);
-	  else {
-		for (const chunk of chunks) await persist(chunk);
-		if (hasCoverage) await persist([], coverageByChannel);
-	  }
-    }).catch(async (error) => {
-      diagnostic('error', 'feed_cache.write_failed', { records: records.length, error });
-      if (error?.name !== 'QuotaExceededError' || !database) throw error;
-      for (const channelId of new Set(records.map((row) => row.channelId))) {
-        const current = meta.get(channelId);
-        let remaining = Math.max(1, Math.ceil((current?.rowCount || 0) / 2));
-        let reclaimed = 0;
-        while (remaining > 0) {
-          const count = Math.min(FEED_CACHE_BATCH_SIZE, remaining);
-          reclaimed += await database.transaction('rw', database.rows, database.channelMeta, async () => trimChannel(channelId, count));
-          remaining -= count;
-        }
-        const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 1 };
-        global.totalBytes = Math.max(0, Number(global.totalBytes || 0) - reclaimed);
-        await database.globalMeta.put(global);
-      }
+  async function writeBatch(records, coverageEntries) {
+	const coverageByChannel = new Map();
+	for (const [channelId, coverage] of coverageEntries) {
+	  if (!channelId || !coverage) continue;
+	  coverageByChannel.set(channelId, [...(coverageByChannel.get(channelId) || []), coverage]);
+	}
+	const compactCoverage = [...coverageByChannel].flatMap(([channelId, intervals]) => (
+	  normalizeCoverage(intervals).map((coverage) => [channelId, coverage])
+	));
+	try {
 	  for (const chunk of chunksOf(records)) await persist(chunk);
-	  if (hasCoverage) await persist([], coverageByChannel);
-    });
-    return writeTail;
+	  // Coverage is committed only after every corresponding fact queued ahead
+	  // of it. A crash may cause a harmless refetch, never a false cache hit.
+	  for (const [channelId, coverage] of compactCoverage) {
+		await persist([], new Map([[channelId, coverage]]));
+	  }
+	} catch (error) {
+	  diagnostic('error', 'feed_cache.write_failed', { records: records.length, error });
+	  if (error?.name !== 'QuotaExceededError' || !database) throw error;
+	  for (const channelId of new Set(records.map((row) => row.channelId))) {
+		const current = meta.get(channelId);
+		let remaining = Math.max(1, Math.ceil((current?.rowCount || 0) / 2));
+		let reclaimed = 0;
+		while (remaining > 0) {
+		  const count = Math.min(FEED_CACHE_BATCH_SIZE, remaining);
+		  reclaimed += await database.transaction('rw', database.rows, database.channelMeta, async () => trimChannel(channelId, count));
+		  remaining -= count;
+		}
+		const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2 };
+		global.totalBytes = Math.max(0, Number(global.totalBytes || 0) - reclaimed);
+		await database.globalMeta.put(global);
+	  }
+	  for (const chunk of chunksOf(records)) await persist(chunk);
+	  for (const [channelId, coverage] of compactCoverage) {
+		await persist([], new Map([[channelId, coverage]]));
+	  }
+	}
+  }
+
+  function flushPending() {
+	if (flushTimer != null) clearTimeout(flushTimer);
+	flushTimer = null;
+	if (!pendingRecords.length && !pendingCoverage.length) return writeTail;
+	const records = pendingRecords;
+	const coverageEntries = pendingCoverage;
+	const waiters = pendingWaiters;
+	pendingRecords = [];
+	pendingCoverage = [];
+	pendingWaiters = [];
+	const operation = writeTail.catch(() => {}).then(() => writeBatch(records, coverageEntries));
+	writeTail = operation;
+	void operation.then(
+	  () => waiters.forEach((waiter) => waiter.resolve()),
+	  (error) => waiters.forEach((waiter) => waiter.reject(error)),
+	);
+	return operation;
+  }
+
+  function saveRows(rows, { coverageByChannel = new Map() } = {}) {
+	const records = (rows || []).flatMap((row) => {
+	  const channelId = row?.channel_id;
+	  const seq = Number(row?.seq);
+	  return channelId && Number.isSafeInteger(seq) && seq > 0 ? [encodedRecord(channelId, seq, row.envelope)] : [];
+	});
+	const coverageEntries = coverageByChannel instanceof Map
+	  ? [...coverageByChannel]
+	  : Object.entries(coverageByChannel || {});
+	if (!records.length && !coverageEntries.length) return writeTail;
+	pendingRecords.push(...records);
+	pendingCoverage.push(...coverageEntries);
+	const queued = new Promise((resolve, reject) => pendingWaiters.push({ resolve, reject }));
+	if (flushTimer == null) flushTimer = setTimeout(flushPending, 10);
+	return queued;
   }
 
   async function readBefore(channelId, beforeSeq = 0, limit = FEED_CACHE_BATCH_SIZE, byteLimit = FEED_CACHE_BATCH_BYTES) {
     if (!(await open())) return { rows: [], nextBeforeSeq: beforeSeq, exhausted: true, bytes: 0 };
-    const upper = beforeSeq > 0 ? beforeSeq : Dexie.maxKey;
+    const channel = meta.get(channelId);
+    const frontier = beforeSeq > 0 ? beforeSeq - 1 : Number(channel?.newestSeq || 0);
+    const interval = (channel?.coverage || []).find((entry) => entry.lowSeq <= frontier && entry.highSeq >= frontier);
+    if (!interval) {
+      diagnostic('debug', 'feed_cache.coverage_miss', { channelId, beforeSeq, frontier });
+      return { rows: [], nextBeforeSeq: beforeSeq, exhausted: true, cacheMiss: true, bytes: 0 };
+    }
+    const upper = beforeSeq > 0 ? beforeSeq : interval.highSeq + 1;
     const records = await database.rows
       .where('[channelId+seq]')
-      .between([channelId, Dexie.minKey], [channelId, upper], true, beforeSeq <= 0)
+      .between([channelId, interval.lowSeq], [channelId, upper], true, false)
       .reverse()
       .limit(Math.max(1, limit))
       .toArray();
@@ -300,24 +360,29 @@ export function createFeedCache({
       bytes += Number(record.bytes) || 0;
     }
     selected.reverse();
-    const oldest = selected[0]?.seq || beforeSeq || 0;
-    const channel = meta.get(channelId);
-    const exhausted = !selected.length || !channel?.oldestSeq || oldest <= channel.oldestSeq;
+    const oldest = selected[0]?.seq || interval.lowSeq;
+    const exhausted = !selected.length || oldest <= interval.lowSeq;
     diagnostic('debug', 'feed_cache.batch_read', { channelId, beforeSeq, rows: selected.length, bytes, exhausted });
     return {
       rows: selected.map((row) => ({ channel_id: channelId, seq: row.seq, envelope: row.envelope })),
       nextBeforeSeq: oldest,
       exhausted,
+      scanLowSeq: interval.lowSeq,
+      scanHighSeq: Math.min(frontier, interval.highSeq),
       bytes,
     };
   }
 
   async function ensureBoot(serverBoot = '') {
+	// Finish the previous connection's ordered journal before deciding whether
+	// this server boot owns it. If the boot changed, the transaction below then
+	// clears the complete old world; no delayed write can resurrect it.
+	await flushPending().catch(() => {});
     if (!(await open()) || !serverBoot) return { changed: false, meta: new Map(meta) };
     let changed = false;
     await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
       const global = await database.globalMeta.get(GLOBAL_META_ID)
-        || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 1, serverBoot: '' };
+        || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '' };
       if (global.serverBoot && global.serverBoot !== serverBoot) {
         await database.rows.clear();
         await database.channelMeta.clear();
@@ -325,7 +390,7 @@ export function createFeedCache({
         changed = true;
       }
       global.serverBoot = serverBoot;
-      global.schemaVersion = 1;
+      global.schemaVersion = 2;
       await database.globalMeta.put(global);
     });
     if (changed) {
@@ -340,10 +405,15 @@ export function createFeedCache({
     metaSnapshot: () => new Map([...meta].map(([id, value]) => [id, { ...value }])),
     readBefore,
     saveRows,
+    saveCoverage(channelId, lowSeq, highSeq) {
+      if (!channelId || !Number.isSafeInteger(lowSeq) || !Number.isSafeInteger(highSeq) || lowSeq <= 0 || highSeq < lowSeq) return writeTail;
+      return saveRows([], { coverageByChannel: new Map([[channelId, { lowSeq, highSeq }]]) });
+    },
     ensureBoot,
-    // Compatibility during the atomic v4 cutover: metadata only, never bodies.
+    // Compatibility during the atomic v5 cutover: metadata only, never bodies.
     async restore() { await open(); return new Map(); },
     async clear() {
+	  flushPending();
       await writeTail.catch(() => {});
       if (!(await open())) return;
       await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
@@ -352,6 +422,6 @@ export function createFeedCache({
       meta.clear();
       diagnostic('info', 'feed_cache.cleared', { databaseName });
     },
-    async idle() { await writeTail; },
+    async idle() { await flushPending(); },
   };
 }
