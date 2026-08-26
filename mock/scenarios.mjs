@@ -38,6 +38,17 @@ const standard = (overrides = {}) => ({
 export const SCENARIOS = Object.freeze({
   'first-login': standard({ memberships: [], history: false }),
   'multi-channel': standard({ files: DEMO_FILES, behavior: { demo_attachments: true } }),
+  'deep-history': standard({ behavior: { history_turns: 120 } }),
+  // 14,286 turns × 7 ledger rows + 4 non-turn rows = 100,006 rows (~100k).
+  // Keep this scenario to one membership channel so the fixture measures one
+  // genuinely deep ledger rather than spending the same memory on a background
+  // channel nobody is testing. This scenario stresses bounded paging and DOM,
+  // not delayed delivery: holding a timer across the freshly allocated fixture's
+  // first major GC invents a 10s+ network stall the indexed backend does not have.
+  'huge-history': standard({
+    memberships: [member('c0')],
+    behavior: { history_turns: 14_286, history_page_delay_ms: 0 },
+  }),
   'message-flow': standard({ history: false }),
   approval: standard({ approval: true }),
   'network-drop': standard(),

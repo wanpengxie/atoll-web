@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 
 // 切频道时消息区必须换一棵新的树。auto-animate 的退场动画会把 React 已经删掉的
 // 节点按 position:absolute / z-index:100 插回容器，只靠动画的 finish 事件回收；
@@ -83,44 +83,6 @@ describe('切频道的消息区', () => {
   });
 });
 
-describe('退场残影的回收', () => {
-  const originals = {};
-  let finished;
-
-  beforeEach(() => {
-    finished = 0;
-    originals.ro = globalThis.ResizeObserver;
-    originals.io = globalThis.IntersectionObserver;
-    originals.animate = Element.prototype.animate;
-    originals.getAnimations = Element.prototype.getAnimations;
-    globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
-    globalThis.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
-    Element.prototype.animate = function animate() {
-      return { addEventListener() {}, cancel() {}, finish() {}, play() {}, pause() {} };
-    };
-    // 一条还没播完的退场动画：卸载时必须被强制结束，才会走 auto-animate 自己的
-    // finish 回调把残影摘掉。
-    Element.prototype.getAnimations = () => [{ finish() { finished += 1; } }];
-  });
-
-  afterEach(() => {
-    globalThis.ResizeObserver = originals.ro;
-    globalThis.IntersectionObserver = originals.io;
-    Element.prototype.animate = originals.animate;
-    if (originals.getAnimations) Element.prototype.getAnimations = originals.getAnimations;
-    else delete Element.prototype.getAnimations;
-  });
-
-  it('卸载消息区时强制结束未播完的退场动画', () => {
-    const state = { channelId: 'c0', rows: new Map(), turns: new Map(), standalone: [], orphans: [], narration: [], lastSeq: 0 };
-    const view = render(<Timeline state={state} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    expect(document.querySelector('.timeline-inner')?.dataset.layoutMotion).toBe('ready');
-    expect(finished).toBe(0);
-    view.unmount();
-    expect(finished).toBe(1);
-  });
-});
-
 describe('历史自动懒加载', () => {
   function historyState(count = 160) {
     const standalone = Array.from({ length: count }, (_, index) => ({
@@ -130,48 +92,28 @@ describe('历史自动懒加载', () => {
     return { channelId: 'c0', rows: new Map(standalone.map((row) => [row.seq, row.envelope])), turns: new Map(), standalone, orphans: [], narration: [], lastSeq: count };
   }
 
-  function timelineGeometry({ clientHeight, scrollHeight }) {
-    const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
-    const scroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
-    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get() { return this.classList?.contains('timeline') ? clientHeight : 0; } });
-    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return this.classList?.contains('timeline') ? scrollHeight : 0; } });
-    return () => {
-      if (client) Object.defineProperty(HTMLElement.prototype, 'clientHeight', client);
-      else delete HTMLElement.prototype.clientHeight;
-      if (scroll) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scroll);
-      else delete HTMLElement.prototype.scrollHeight;
-    };
-  }
-
-  it('首屏不足一屏也保持最新位置，后台蓄水池增长不推动 DOM', async () => {
-    const restore = timelineGeometry({ clientHeight: 600, scrollHeight: 400 });
+  it('后台蓄水池增长不推动可见列表，且不存在手动加载按钮', async () => {
     const onRevealHistory = vi.fn();
-    try {
-      const view = render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-      view.rerender(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 5_000 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      expect(view.container.querySelectorAll('.standalone-row')).toHaveLength(120);
-      expect(onRevealHistory).not.toHaveBeenCalled();
-      expect(document.body.textContent).not.toContain('查看更早动态');
-    } finally {
-      restore();
-    }
+    const view = render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    expect(await screen.findByText('历史 1')).toBeTruthy();
+    const before = view.container.querySelectorAll('.standalone-row').length;
+    view.rerender(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 5_000 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    expect(view.container.querySelectorAll('.standalone-row').length).toBe(before);
+    expect(document.body.textContent).not.toContain('查看更早动态');
   });
 
-  it('首屏已经溢出时停在最新处且不由 Timeline 发起历史 I/O', async () => {
-    const restore = timelineGeometry({ clientHeight: 600, scrollHeight: 1_200 });
-    const onRevealHistory = vi.fn();
-    try {
-      render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 40 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-      const timeline = document.querySelector('.timeline');
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      expect(onRevealHistory).not.toHaveBeenCalled();
-      expect(timeline.scrollTop).toBe(600);
-      timeline.scrollTop = 0;
-      fireEvent.scroll(timeline);
-      expect(onRevealHistory).toHaveBeenCalledWith(32);
-    } finally {
-      restore();
-    }
+  it('短首屏已经触顶时自动释放一批 reservoir', async () => {
+    const onRevealHistory = vi.fn(() => 32);
+    render(<Timeline state={historyState(4)} history={{ hasOlder: true, buffered: 40 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledWith(32));
+  });
+
+  it('scheduler 兑现已登记的顶部 demand 后，列表不重复消费 reservoir', async () => {
+    const onRevealHistory = vi.fn(() => 0);
+    const view = render(<Timeline state={historyState(4)} history={{ hasOlder: true, buffered: 0, revealVersion: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(1));
+    view.rerender(<Timeline state={historyState(36)} history={{ hasOlder: true, buffered: 16, revealVersion: 1 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onRevealHistory).toHaveBeenCalledTimes(1);
   });
 });

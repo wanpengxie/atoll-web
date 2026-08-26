@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { apply, createChannelState } from '../src/model/fold.js';
-import { createFeedCache, resumeSnapshot } from '../src/model/feed-cache.js';
+import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
+import { createFeedCache, redactFeedSecrets, resumeSnapshot } from '../src/model/feed-cache.js';
 
 class MemoryStorage {
   constructor() { this.data = new Map(); }
@@ -8,57 +8,87 @@ class MemoryStorage {
   key(index) { return [...this.data.keys()][index] ?? null; }
   getItem(key) { return this.data.get(key) ?? null; }
   setItem(key, value) { this.data.set(key, String(value)); }
+  removeItem(key) { this.data.delete(key); }
 }
 
 function envelope(id, text) {
   return {
-    id,
-    ts: '2026-08-17T00:00:00Z',
-    channel_id: 'c0',
-    sender: { kind: 'human', id: 'root' },
-    kind: 'request',
-    type: 'agent.ask',
-    payload: { text },
-    visibility: 'public',
-    audience: ['steward'],
+    id, ts: 1, channel_id: 'c0', sender: { kind: 'human', id: 'root' },
+    kind: 'request', type: 'agent.ask', payload: { text }, visibility: 'public', audience: ['steward'],
   };
 }
 
 describe('feed cache', () => {
-  it('restores folded channel state and supplies a matching resume cursor', () => {
-    const storage = new MemoryStorage();
-    const cache = createFeedCache(storage);
-    const state = createChannelState('c0');
-    apply(state, { channel_id: 'c0', seq: 4, envelope: envelope('m-4', 'hello') });
-    apply(state, { channel_id: 'c0', seq: 7, envelope: envelope('m-7', 'again') });
-    expect(cache.save(state)).toBe(true);
-
-    const restored = cache.restore();
-    expect(restored.get('c0').rows.size).toBe(2);
-    expect(restored.get('c0').turns.size).toBe(2);
-    expect(restored.get('c0').lastSeq).toBe(7);
-    expect(resumeSnapshot(restored)).toEqual({ c0: 7 });
+	it('derives the resume cursor from lightweight channel metadata', () => {
+	expect(resumeSnapshot(new Map([['c0', { newestSeq: 7 }]]))).toEqual({ c0: 7 });
   });
 
-  it('ignores a damaged cache so the channel can be replayed from zero', () => {
+  it('removes the unbounded localStorage v5 cache during IndexedDB migration', async () => {
     const storage = new MemoryStorage();
-    storage.setItem('atoll.feed.v4.c0', '{bad json');
-    const restored = createFeedCache(storage).restore();
+    storage.setItem('atoll.feed.v5.c0', '[{"stale":true}]');
+    storage.setItem('unrelated', 'keep');
+	const restored = await createFeedCache({ indexedDBImpl: null, IDBKeyRangeImpl: null, legacyStorage: storage }).restore();
     expect(restored.size).toBe(0);
-    expect(resumeSnapshot(restored)).toEqual({});
+    expect(storage.getItem('atoll.feed.v5.c0')).toBeNull();
+    expect(storage.getItem('unrelated')).toBe('keep');
   });
 
-  it('never persists device keys or nested credentials from feed payloads', () => {
-    const storage = new MemoryStorage();
-    const state = createChannelState('c0');
-    const row = envelope('mint', 'mint');
-    row.kind = 'response';
-    row.payload = { status: 'completed', value: { device_id: 'd1', key: 'one-time-key', nested: { token: 'token-value' } } };
-    apply(state, { channel_id: 'c0', seq: 1, envelope: row });
-    createFeedCache(storage).save(state);
-    const saved = storage.getItem('atoll.feed.v5.c0');
+  it('redacts device keys and nested credentials before IndexedDB persistence', () => {
+    const value = redactFeedSecrets({ device_id: 'd1', key: 'one-time-key', nested: { token: 'token-value' } });
+    const saved = JSON.stringify(value);
     expect(saved).not.toContain('one-time-key');
     expect(saved).not.toContain('token-value');
     expect(saved).toContain('已隐藏');
+  });
+
+	it('reads rows by reverse cursor in bounded batches and never restores bodies wholesale', async () => {
+	const cache = createFeedCache({
+	  indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange,
+	  databaseName: `feed-cache-batch-${crypto.randomUUID()}`,
+	});
+	await cache.openMeta();
+	await cache.saveRows(Array.from({ length: 450 }, (_, index) => ({
+	  channel_id: 'c0', seq: index + 1, envelope: envelope(`m-${index + 1}`, `row ${index + 1}`),
+	})));
+	await cache.idle();
+	const newest = await cache.readBefore('c0', 0, 200);
+	expect(newest.rows).toHaveLength(200);
+	expect(newest.rows[0].seq).toBe(251);
+	expect(newest.nextBeforeSeq).toBe(251);
+	const older = await cache.readBefore('c0', newest.nextBeforeSeq, 200);
+	expect(older.rows[0].seq).toBe(51);
+	expect(older.rows.at(-1).seq).toBe(250);
+	expect((await cache.restore()).size).toBe(0);
+  });
+
+	it('keeps a transactional per-channel FIFO of the latest rows', async () => {
+	const cache = createFeedCache({
+	  indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange,
+	  databaseName: `feed-cache-fifo-${crypto.randomUUID()}`,
+	  rowsPerChannel: 5,
+	});
+	await cache.openMeta();
+	await cache.saveRows(Array.from({ length: 8 }, (_, index) => ({
+	  channel_id: 'c0', seq: index + 1, envelope: envelope(`m-${index + 1}`, `row ${index + 1}`),
+	})));
+	await cache.idle();
+	const batch = await cache.readBefore('c0', 0, 20);
+	expect(batch.rows.map((row) => row.seq)).toEqual([4, 5, 6, 7, 8]);
+	expect(cache.metaSnapshot().get('c0')).toMatchObject({ oldestSeq: 4, newestSeq: 8, rowCount: 5 });
+  });
+
+	it('persists empty projected scan coverage and resets IndexedDB on boot change', async () => {
+	const databaseName = `feed-cache-boot-${crypto.randomUUID()}`;
+	const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	await cache.openMeta();
+	await cache.ensureBoot('boot-a');
+	await cache.saveRows([{ channel_id: 'c0', seq: 10, envelope: envelope('m-10', 'ten') }]);
+	await cache.saveRows([], { coverageByChannel: new Map([['quiet', { lowSeq: 20, highSeq: 40 }]]) });
+	await cache.idle();
+	expect(cache.metaSnapshot().get('quiet')?.coverage).toEqual([{ lowSeq: 20, highSeq: 40 }]);
+	expect((await cache.readBefore('c0', 0, 20)).rows).toHaveLength(1);
+	await expect(cache.ensureBoot('boot-b')).resolves.toMatchObject({ changed: true });
+	expect((await cache.readBefore('c0', 0, 20)).rows).toHaveLength(0);
+	expect(cache.metaSnapshot().size).toBe(0);
   });
 });

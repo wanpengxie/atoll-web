@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import autoAnimate from '@formkit/auto-animate';
+import { Virtuoso, VirtuosoMockContext } from 'react-virtuoso';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
@@ -14,6 +14,7 @@ import { selectSystemNote } from '../model/agent-selection.js';
 import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { processCount, turnStartObservation } from '../model/turn-process.js';
+import { diagnostic } from '../model/diagnostics.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
@@ -21,13 +22,20 @@ import { MarkdownContent } from './MarkdownContent.jsx';
 import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
-import { useStableTimelineScroll } from './timeline/useStableTimelineScroll.js';
 
 // 平台叙事（成员进出、跨频道入站）暂时不进时间线。它和真正的往来平铺在同一条流里，
 // 每次 agent 干活就刷出一串，把人要读的东西淹掉。数据仍然在 state.narration 里，
 // 什么都没丢——等它有了合适的落位（侧栏或频道信息页）再接回来。
 const SHOW_CHANNEL_NARRATION = false;
 const TIMELINE_HISTORY_REVEAL_SIZE = 32;
+// firstItemIndex must remain non-negative while prepending. A billion leaves
+// ample room for repeated 32-row reveals even in six-figure histories.
+const VIRTUAL_INDEX_BASE = 1_000_000_000;
+
+function TimelineVirtualList({ children }) {
+  if (import.meta.env.MODE !== 'test') return children;
+  return <VirtuosoMockContext.Provider value={{ viewportHeight: 720, itemHeight: 96 }}>{children}</VirtuosoMockContext.Provider>;
+}
 
 const ERROR_LABELS = {
   bad_payload: '请求格式不正确',
@@ -659,15 +667,18 @@ function dayLabel(ts) {
 }
 
 export function Timeline({ state, history = {}, onRevealHistory, roster, selfId, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
-  const [page, setPage] = useState(0);
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   const [editing, setEditing] = useState(null);
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
-  const historyMutationRef = useRef(null);
-  const layoutMotionRef = useRef(null);
-  const renderGrowthRef = useRef({ channelId: state.channelId, total: 0, latestSeq: 0, extra: 0 });
+	const messageListRef = useRef(null);
+	const messageListScrollerRef = useRef(null);
+	const listTransitionRef = useRef({ key: '', firstSeq: 0, lastSeq: 0, length: 0, firstItemIndex: VIRTUAL_INDEX_BASE });
+	const [messageListAtBottom, setMessageListAtBottom] = useState(true);
+	const [messageListUnseen, setMessageListUnseen] = useState(0);
+  const historyDemandRef = useRef(false);
+	const historyRevealVersionRef = useRef(Number(history?.revealVersion || 0));
   const previousAccess = useRef(access);
   const names = useMemo(() => actorNameMap(roster), [roster]);
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
@@ -701,38 +712,45 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
   const withNarration = [...visibleEntries, ...(SHOW_CHANNEL_NARRATION && state.narration.length ? [{ kind: 'narration', seq: narrationSeq }] : [])]
     .sort((left, right) => left.seq - right.seq);
   const latestVisibleSeq = withNarration.at(-1)?.seq || 0;
-  // Timeline history grows upwards. A page expands the rendered suffix instead
-  // of replacing it with a disjoint page; otherwise reaching the top makes the
-  // messages the reader was looking at disappear.
-  const growth = renderGrowthRef.current;
-  if (growth.channelId !== state.channelId) {
-    growth.channelId = state.channelId;
-    growth.total = withNarration.length;
-    growth.latestSeq = latestVisibleSeq;
-    growth.extra = 0;
-  } else {
-    // Scheduler pages prepend smaller seq values and must remain hidden in the
-    // reservoir. Only genuinely newer tail entries expand an older reading
-    // window so realtime delivery never evicts what the reader is looking at.
-    if (page > 0 && latestVisibleSeq > growth.latestSeq) {
-      growth.extra += withNarration.filter((entry) => entry.seq > growth.latestSeq).length;
-    }
-    if (page === 0) growth.extra = 0;
-    growth.total = withNarration.length;
-    growth.latestSeq = Math.max(growth.latestSeq, latestVisibleSeq);
-  }
-  // Keep the initial DOM budget, then expose prefetched history in small
-  // increments. Adding a whole 120-row window at once makes the scrollbar
-  // appear to hit the top and then jump a long way back down.
-  const renderCount = LIST_WINDOW_SIZE + page * TIMELINE_HISTORY_REVEAL_SIZE + growth.extra;
-  const windowStart = Math.max(0, withNarration.length - renderCount);
+	const firstVisibleSeq = withNarration[0]?.seq || 0;
+	const previousList = listTransitionRef.current;
+	const messageListKey = `${state.channelId}:${scope}`;
+	let firstItemIndex = previousList.firstItemIndex;
+	if (previousList.key !== messageListKey) firstItemIndex = VIRTUAL_INDEX_BASE;
+	else if (firstVisibleSeq && previousList.firstSeq && firstVisibleSeq < previousList.firstSeq) {
+	  const prepended = withNarration.findIndex((entry) => entry.seq === previousList.firstSeq);
+	  if (prepended > 0) firstItemIndex = previousList.firstItemIndex - prepended;
+	}
+	const nextListTransition = {
+	  key: messageListKey,
+	  firstSeq: firstVisibleSeq,
+	  lastSeq: latestVisibleSeq,
+	  length: withNarration.length,
+	  firstItemIndex,
+	};
+	useLayoutEffect(() => {
+	  listTransitionRef.current = nextListTransition;
+	}, [messageListKey, firstVisibleSeq, latestVisibleSeq, withNarration.length, firstItemIndex]);
+  // The fold's visible window can now be large: Message List virtualizes it.
+  // Older historical batches remain outside React in the scheduler reservoir
+  // until a top demand releases 32 rows.
+  const windowStart = 0;
   const windowed = {
-    items: withNarration.slice(windowStart),
+	items: withNarration,
     start: windowStart,
     end: withNarration.length,
     total: withNarration.length,
     hasOlder: windowStart > 0,
   };
+	// Day separators used to scan all preceding entries for every row (O(n²)).
+	// Keep the last meaningful timestamp in one pass; virtualization then only
+	// has to construct DOM for the viewport.
+	const previousTimestampByIndex = [];
+	let previousTimestampCursor = 0;
+	for (let index = 0; index < windowed.items.length; index += 1) {
+	  previousTimestampByIndex[index] = previousTimestampCursor;
+	  previousTimestampCursor = entryTimestamp(windowed.items[index]) || previousTimestampCursor;
+	}
   const queuedTurns = [...state.turns.values()]
     .filter((turn) => agentMessageStage(turn) === 'queued' && turn.requestId !== editingTargetId)
     .sort((left, right) => {
@@ -756,139 +774,70 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
     const owner = mergedInto(turn);
     if (owner) mergedCounts.set(owner, (mergedCounts.get(owner) || 0) + 1);
   }
-  const { viewportRef, contentRef, unseenCount, jumpToLatest, observeScroll, leaveLatest } = useStableTimelineScroll({
-    channelId: state.channelId,
-    lastSeq: latestVisibleSeq,
-  });
+	function scrollerIsAtBottom() {
+	  const scroller = messageListScrollerRef.current;
+	  return scroller
+		? scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 24
+		: messageListAtBottom;
+	}
 
-  function beginHistoryMutation() {
-    const viewport = viewportRef.current;
-    if (!viewport || historyMutationRef.current) return;
-    layoutMotionRef.current?.disable();
-    const viewportTop = viewport.getBoundingClientRect().top;
-    const anchor = [...viewport.querySelectorAll('.timeline-entry[data-entry-id]')]
-      .find((node) => node.getBoundingClientRect().bottom > viewportTop + 1);
-    historyMutationRef.current = {
-      height: viewport.scrollHeight,
-      top: viewport.scrollTop,
-      anchorId: anchor?.dataset.entryId || '',
-      anchorTop: anchor ? anchor.getBoundingClientRect().top - viewportTop : 0,
-      total: windowed.total,
-      start: windowed.start,
-      fallback: window.setTimeout(() => finishHistoryMutation(), 5_000),
-    };
-  }
+	useEffect(() => {
+	  const physicallyAtBottom = scrollerIsAtBottom();
+	  if (previousList.key !== messageListKey || physicallyAtBottom) {
+		setMessageListUnseen(0);
+		return;
+	  }
+	  const added = Math.max(0, withNarration.length - previousList.length);
+	  if (added > 0 && latestVisibleSeq > previousList.lastSeq) {
+		diagnostic('debug', 'timeline.realtime_arrived_while_reading', {
+		  channelId: state.channelId, added, latestVisibleSeq, previousLastSeq: previousList.lastSeq,
+		});
+		setMessageListUnseen((value) => value + added);
+	  }
+	}, [messageListKey, latestVisibleSeq, withNarration.length]);
 
-  function finishHistoryMutation() {
-    const mutation = historyMutationRef.current;
-    if (!mutation) return;
-    const viewport = viewportRef.current;
-    if (viewport) {
-      const viewportTop = viewport.getBoundingClientRect().top;
-      const anchor = mutation.anchorId
-        ? [...viewport.querySelectorAll('.timeline-entry[data-entry-id]')]
-          .find((node) => node.dataset.entryId === mutation.anchorId)
-        : null;
-      if (anchor) {
-        // Anchor the actual message the reader was looking at. A scrollHeight
-        // delta is only an approximation when markdown, images or progress
-        // blocks change height while older rows are arriving.
-        const nextTop = anchor.getBoundingClientRect().top - viewportTop;
-        viewport.scrollTop += nextTop - mutation.anchorTop;
-      } else {
-        const addedHeight = viewport.scrollHeight - mutation.height;
-        if (addedHeight > 0) viewport.scrollTop = mutation.top + addedHeight;
-      }
-    }
-    window.clearTimeout(mutation.fallback);
-    historyMutationRef.current = null;
-    requestAnimationFrame(() => layoutMotionRef.current?.enable());
-  }
+	function handleAtBottomChange(isAtBottom) {
+	  // Measurement and prepend compensation can transiently report atBottom
+	  // using the previous range. Never let that erase an unread marker while
+	  // the actual scroller is still in history.
+	  const confirmed = isAtBottom && scrollerIsAtBottom();
+	  setMessageListAtBottom(confirmed);
+	  if (confirmed) {
+		setMessageListUnseen(0);
+		historyDemandRef.current = false;
+	  }
+	}
 
-  function revealPrefetchedHistory() {
-    const localRevealed = Math.min(TIMELINE_HISTORY_REVEAL_SIZE, windowed.start);
-    const requested = TIMELINE_HISTORY_REVEAL_SIZE - localRevealed;
-    // The reservoir is intentionally not React state: polling it through a
-    // prop would make every 200-row background page rerender the whole app.
-    // Claim rows synchronously only when an actual scroll needs them.
-    const fromReservoir = requested > 0 ? Number(onRevealHistory?.(requested)) || 0 : 0;
-    const revealed = localRevealed + fromReservoir;
-    if (!revealed) return false;
-    beginHistoryMutation();
-    leaveLatest();
-    setPage((value) => value + 1);
-    return true;
-  }
+	function handleStartReached() {
+	  if (historyDemandRef.current) return;
+	  historyDemandRef.current = true;
+	  const released = Number(onRevealHistory?.(TIMELINE_HISTORY_REVEAL_SIZE)) || 0;
+	  diagnostic('debug', released ? 'timeline.history_revealed' : 'timeline.history_demand_waiting', {
+		channelId: state.channelId, released, buffered: Number(history?.buffered || 0), hasOlder: Boolean(history?.hasOlder),
+	  });
+	  if (released > 0) historyDemandRef.current = false;
+	}
 
-  function handleTimelineScroll(event) {
-    observeScroll(event);
-    const viewport = event.currentTarget;
-    const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    const atLatest = bottom - viewport.scrollTop < 80;
-    if (atLatest) return;
-    // The channel history scheduler owns all I/O. Scrolling only exposes rows
-    // already resident in memory and can therefore never wait on the network.
-    if (viewport.scrollTop <= Math.max(160, viewport.clientHeight * 0.5)) revealPrefetchedHistory();
-  }
-
-  // Preserve the message under the reader's eye when older DOM is prepended.
-  // scrollTop must grow by exactly the added height; leaving it unchanged would
-  // jump the viewport to newly fetched history.
-  useLayoutEffect(() => {
-    const mutation = historyMutationRef.current;
-    if (!mutation) return;
-    const changed = windowed.start !== mutation.start || windowed.total !== mutation.total;
-    if (changed) finishHistoryMutation();
-  }, [windowed.start, windowed.total]);
-
-  // 账本状态更新会让同一个消息块从“处理中气泡”收成最终记录。DOM 的正常
-  // layout 必须先落地，滚动锚点才能保持正确；随后只对 timeline 的直接子块做
-  // FLIP 位移/尺寸过渡。这样变化属于消息区本身，不会把 Composer 纳入动画，
-  // 也不会在每个 progress 文本更新时重建 React 状态。
-  useEffect(() => {
-    const content = contentRef.current;
-    if (!content || typeof ResizeObserver === 'undefined' || typeof Element === 'undefined' || typeof Element.prototype.animate !== 'function') return undefined;
-    const motion = autoAnimate(content, {
-      duration: 220,
-      easing: 'cubic-bezier(.22, 1, .36, 1)',
-      disrespectUserMotionPreference: false,
-    });
-    layoutMotionRef.current = motion;
-    content.dataset.layoutMotion = 'ready';
-    return () => {
-      layoutMotionRef.current = null;
-      motion.disable();
-      // disable() 只是不再接管新的 mutation，恒不回收已经插回 DOM 的退场残影：
-      // 那些节点带着 position:absolute / z-index:100 躺在容器里，只等自己的动画
-      // finish 事件才被摘掉。强制结束未播完的动画，走 auto-animate 自己的回收路径。
-      for (const animation of content.getAnimations?.({ subtree: true }) || []) {
-        try { animation.finish(); }
-        catch { /* 无限时长的动画不参与退场回收 */ }
-      }
-      delete content.dataset.layoutMotion;
-    };
-  }, [state.channelId]);
+	useEffect(() => {
+	  const version = Number(history?.revealVersion || 0);
+	  if (version !== historyRevealVersionRef.current) {
+		historyRevealVersionRef.current = version;
+		historyDemandRef.current = false;
+	  }
+	}, [history?.revealVersion, state.channelId]);
 
   useEffect(() => {
-    setPage(0);
+    historyDemandRef.current = false;
+	  historyRevealVersionRef.current = Number(history?.revealVersion || 0);
     setScope(TIMELINE_SCOPE.mine);
     setEditNotice('');
   }, [state.channelId]);
-  useEffect(() => () => {
-    const mutation = historyMutationRef.current;
-    if (mutation) window.clearTimeout(mutation.fallback);
-    historyMutationRef.current = null;
-  }, []);
   useEffect(() => setPresentationNow(Date.now()), [state.lastSeq]);
   useEffect(() => {
     if (!Number.isFinite(nextFreezeDeadline)) return undefined;
     const timer = window.setTimeout(() => setPresentationNow(Date.now()), Math.max(1, nextFreezeDeadline - Date.now() + 1));
     return () => window.clearTimeout(timer);
   }, [nextFreezeDeadline]);
-  // Narrowing the scope shortens the list, so the page the reader is on may no
-  // longer exist. Going back to the newest is the only landing that is always
-  // there, and it is where a reader who just changed the filter is looking.
-  useEffect(() => setPage(0), [scope]);
 
   useEffect(() => {
     if (!editing) return;
@@ -998,8 +947,8 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
   useEffect(() => () => onComposerEditChange?.(null), [onComposerEditChange, state.channelId]);
 
   return <ProgressTrailHost>
-    <section id="workspace-panel-dynamic" className="timeline" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" ref={viewportRef} onScroll={handleTimelineScroll}>
-      <div className="timeline-inner" ref={contentRef}>
+	<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text">
+      <div className="timeline-inner">
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">
             <button
@@ -1007,7 +956,6 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
               aria-pressed={scope === TIMELINE_SCOPE.mine}
               title={`切换为${TIMELINE_SCOPE_LABELS[scope === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine]}`}
               onClick={() => {
-                leaveLatest();
                 setScope((value) => value === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine);
               }}
             >{TIMELINE_SCOPE_LABELS[scope]}</button>
@@ -1022,10 +970,24 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
         )}
         {history?.loading && <span className="sr-only" role="status">正在读取更早动态</span>}
         {history?.error && <p className="bounded-list-note" role="alert">{history.error}</p>}
-        {windowed.items.map((entry, index) => {
+	  </div>
+	  <TimelineVirtualList>
+		<Virtuoso
+		  key={messageListKey}
+		  ref={messageListRef}
+		  scrollerRef={(node) => { messageListScrollerRef.current = node; }}
+		  className="timeline-message-list"
+		  firstItemIndex={firstItemIndex}
+		  initialTopMostItemIndex={import.meta.env.MODE === 'test' ? undefined : { index: 'LAST', align: 'end' }}
+		  alignToBottom
+		  atBottomThreshold={24}
+		  increaseViewportBy={480}
+		  data={windowed.items.map((entry, index) => {
+			const id = entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`;
+			return { id, render: () => {
           const continuation = isContinuation(windowed.items, index);
           const timestamp = entryTimestamp(entry);
-          const previousTimestamp = windowed.items.slice(0, index).reverse().map(entryTimestamp).find(Boolean) || 0;
+          const previousTimestamp = previousTimestampByIndex[index] || 0;
           const showDay = timestamp > 0 && (!previousTimestamp || dayKey(timestamp) !== dayKey(previousTimestamp));
           let content;
           if (entry.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
@@ -1060,7 +1022,6 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
                 // Expanding is a local reading action, not a new ledger entry. Stop the
                 // bottom pin before the panel changes height so the clicked message does
                 // not jump out of the viewport and appear attached to another turn.
-                leaveLatest();
                 onOpenTurn?.(entry.turn);
               }
             }} onCloseDetail={turnDetail?.onClose} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
@@ -1069,11 +1030,20 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
             content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
           }
-          const key = entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`;
-          return <React.Fragment key={key}>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</React.Fragment>;
-        })}
-        {unseenCount > 0 && <button type="button" className="timeline-jump-latest" onClick={() => { setPage(0); jumpToLatest(); }}>↓ {unseenCount} 条新动态</button>}
-      </div>
+		  return <>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</>;
+			} };
+		})}
+		  computeItemKey={(_index, item) => item.id}
+		  itemContent={(_index, item) => <div className="timeline-virtual-item">{item.render()}</div>}
+		  startReached={handleStartReached}
+		  atBottomStateChange={handleAtBottomChange}
+		  followOutput={(atBottom) => atBottom ? 'auto' : false}
+		/>
+	  </TimelineVirtualList>
+	  {messageListUnseen > 0 && <button type="button" className="timeline-jump-latest" onClick={() => {
+		setMessageListUnseen(0);
+		messageListRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' });
+	  }}>↓ {messageListUnseen} 条新动态</button>}
     </section>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
     <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />

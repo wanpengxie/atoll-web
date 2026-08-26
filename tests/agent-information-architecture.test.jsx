@@ -44,7 +44,16 @@ function capabilitiesFor(...actorIds) {
 const roster = [{ id: 'me', kind: 'human', name: '我' }, { id: 'agent', kind: 'agent', name: 'Agent' }];
 
 describe('agent control v7 information architecture', () => {
-  it('38 keeps queued only in the wait layer and promotes only explicit acceptance facts', () => {
+  it('semantic history keeps a completed request visible without progress frames', () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('historical', '历史中的完整问句'));
+    add(state, 2, response('historical-done', 'historical', { status: 'completed', text: '历史中的完整答复' }));
+    render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} />);
+    expect(screen.getByText('历史中的完整问句')).toBeTruthy();
+    expect(screen.getByText('历史中的完整答复')).toBeTruthy();
+  });
+
+  it('38 keeps queued only in the wait layer and promotes only explicit acceptance facts', async () => {
     const state = createChannelState('c0');
     add(state, 1, request('queued', '还在等待'));
     add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
@@ -76,7 +85,11 @@ describe('agent control v7 information architecture', () => {
     add(state, 7, response('queued-p', 'queued', { status: 'processing', turn_id: 'turn-1' }));
     view.rerender(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} onTaskControl={onTaskControl} />);
     expect(screen.queryByRole('region', { name: '等待区' })).toBeNull();
-    expect(within(document.querySelector('.timeline')).getByText('还在等待')).toBeTruthy();
+    // The promoted request predates the current viewport. Virtuoso correctly
+    // preserves the reading anchor, so remount the scope before inspecting it.
+    fireEvent.click(screen.getByRole('button', { name: '@我' }));
+    fireEvent.click(screen.getByRole('button', { name: '全部' }));
+    await waitFor(() => expect(within(document.querySelector('.timeline')).getByText('还在等待')).toBeTruthy());
   });
 
   it('39 creates one agent process bubble at processing and settles it in place', () => {

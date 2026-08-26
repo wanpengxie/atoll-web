@@ -1,10 +1,12 @@
 import {
   DOWN,
+  FRAME_VERSION,
   frame,
   MAX_FRAME_BYTES,
   parseDownstream,
   UP,
 } from '../protocol/frame.js';
+import { diagnostic } from '../model/diagnostics.js';
 
 export class WireError extends Error {
   constructor({ frame: frameType = '', code = 'unknown', detail = '', ref = '' } = {}) {
@@ -33,7 +35,9 @@ function byteLength(value) {
 export function createWire({
   url = '/ws',
   since = () => ({}),
+  focus = () => '',
   onFeed = () => {},
+  onPageEnd = () => {},
   onError = () => {},
   onObserveEnded = () => {},
   onState = () => {},
@@ -51,7 +55,7 @@ export function createWire({
   let reconnectTimer = null;
   let counter = 0;
   let attachRef = '';
-  let preAttachFeed = [];
+  let generation = 0;
   const pending = new Map();
 
   function rejectPending(code = 'closed', detail = 'connection closed') {
@@ -77,10 +81,12 @@ export function createWire({
     if (byteLength(encoded) > MAX_FRAME_BYTES) {
       return Promise.reject(new WireError({ frame: type, code: 'bad_payload', detail: 'frame exceeds 512KB', ref }));
     }
-    return new Promise((resolve, reject) => {
+    const promise = new Promise((resolve, reject) => {
       const timer = setTimeoutImpl(() => {
         pending.delete(ref);
-        reject(new WireError({ frame: type, code: 'timeout', detail: 'frame receipt timed out', ref }));
+        const error = new WireError({ frame: type, code: 'timeout', detail: 'frame receipt timed out', ref });
+        diagnostic('error', 'wire.receipt_timeout', { type, ref, pending: pending.size, generation });
+        reject(error);
       }, pendingTimeoutMs);
       pending.set(ref, { resolve, reject, timer, type });
       try {
@@ -88,18 +94,26 @@ export function createWire({
       } catch (error) {
         clearTimeoutImpl(timer);
         pending.delete(ref);
+        diagnostic('error', 'wire.send_failed', { type, ref, generation, error });
         reject(new WireError({ frame: type, code: 'closed', detail: error.message, ref }));
       }
     });
+    promise.ref = ref;
+    return promise;
   }
 
   function handleMessage(event) {
     const parsed = parseDownstream(event.data);
     if (parsed.kind === 'invalid' || parsed.kind === 'bad_version') {
+      diagnostic('error', 'wire.protocol_rejected', { kind: parsed.kind, generation });
       onError(new WireError({ frame: 'downstream', code: 'bad_payload', detail: 'invalid downstream frame' }));
+      socket?.close(1002, 'invalid downstream frame');
       return;
     }
-    if (parsed.kind === 'unknown') return;
+    if (parsed.kind === 'unknown') {
+      diagnostic('warn', 'wire.unknown_frame', { generation });
+      return;
+    }
     const { frame: incoming, payload } = parsed;
     if (parsed.kind === DOWN.receipt) {
       const entry = pending.get(incoming.ref);
@@ -110,12 +124,13 @@ export function createWire({
       if (incoming.ref === attachRef) {
         attached = true;
         reconnectAttempt = 0;
-        // Attach history is one snapshot, not a stream of visible mutations.
-        // Commit every preceding feed frame before opening the UI so the first
-        // paint is already complete and pinned to the latest message.
-        const initialFeed = preAttachFeed;
-        preAttachFeed = [];
-        for (const row of initialFeed) onFeed(row.channel_id, Number(row.seq), row.envelope);
+        diagnostic('info', 'wire.attached', {
+          generation,
+          contractVersion: payload.contract_version,
+          boot: payload.boot,
+          memberships: payload.memberships?.length || 0,
+          historyChannels: payload.history_meta?.length || 0,
+        });
         onState('attached', {
           contract_version: payload.contract_version,
           boot: payload.boot,
@@ -123,13 +138,22 @@ export function createWire({
           // 以什么 actor 身份"，恒不再靠 feed 副作用反推。
           memberships: payload.memberships,
           memberships_complete: payload.memberships_complete,
-          history: payload.history || [],
+          history_meta: payload.history_meta || [],
+          attach_ref: incoming.ref,
+          generation,
         });
       }
       return;
     }
     if (parsed.kind === DOWN.error) {
       const error = new WireError({ ...payload, ref: incoming.ref || '' });
+      diagnostic('error', 'wire.server_error', {
+        generation,
+        frame: error.frame,
+        code: error.code,
+        detail: error.detail,
+        ref: error.ref,
+      });
       const entry = incoming.ref ? pending.get(incoming.ref) : null;
       if (entry) {
         clearTimeoutImpl(entry.timer);
@@ -141,12 +165,39 @@ export function createWire({
       return;
     }
     if (parsed.kind === DOWN.feed) {
-      if (!attached) preAttachFeed.push(payload);
-      else onFeed(payload.channel_id, Number(payload.seq), payload.envelope);
+      if (!attached) {
+        diagnostic('error', 'wire.feed_before_attach', { generation, channelId: payload.channel_id, seq: payload.seq });
+        onError(new WireError({ frame: DOWN.feed, code: 'bad_payload', detail: 'feed arrived before attach receipt' }));
+        return;
+      }
+	  if (Number(payload.generation) !== generation) {
+		diagnostic('warn', 'wire.stale_feed_ignored', { wireGeneration: generation, frameGeneration: payload.generation, ref: incoming.ref || '' });
+		return;
+	  }
+	  const detail = { ...payload, seq: Number(payload.seq), ref: incoming.ref || '' };
+	  onFeed(payload.channel_id, detail.seq, payload.envelope, detail);
       return;
     }
     if (parsed.kind === DOWN.observe_ended) {
       onObserveEnded(payload.channel_id, payload.reason);
+      return;
+    }
+    if (parsed.kind === DOWN.page_end) {
+      diagnostic(payload.error_code ? 'error' : 'debug', 'wire.page_end', {
+        generation,
+        ref: incoming.ref || '',
+        source: payload.source,
+        channelId: payload.channel_id,
+        oldestSeq: payload.oldest_seq,
+        newestSeq: payload.newest_seq,
+        hasOlder: payload.has_older,
+        errorCode: payload.error_code || '',
+      });
+	  if (Number(payload.generation) !== generation) {
+		diagnostic('warn', 'wire.stale_page_end_ignored', { wireGeneration: generation, frameGeneration: payload.generation, ref: incoming.ref || '' });
+		return;
+	  }
+      onPageEnd({ ...payload, ref: incoming.ref || '' });
     }
   }
 
@@ -154,6 +205,7 @@ export function createWire({
     if (stopped || reconnectTimer != null) return;
     const delay = Math.min(30_000, 500 * 2 ** Math.min(reconnectAttempt, 6));
     reconnectAttempt += 1;
+    diagnostic('warn', 'wire.reconnect_scheduled', { generation, attempt: reconnectAttempt, delay });
     onState('reconnecting', { delay });
     reconnectTimer = setTimeoutImpl(() => {
       reconnectTimer = null;
@@ -165,25 +217,47 @@ export function createWire({
     if (stopped) return;
     attached = false;
     attachRef = '';
-    preAttachFeed = [];
-    socket = new WebSocketImpl(websocketURL(url));
+    generation += 1;
+    diagnostic('info', 'wire.connecting', { generation, url: websocketURL(url) });
+    try {
+      socket = new WebSocketImpl(websocketURL(url));
+    } catch (error) {
+      diagnostic('error', 'wire.construct_failed', { generation, error });
+      onError(error);
+      scheduleReconnect();
+      return;
+    }
     socket.addEventListener('open', () => {
       if (stopped) return;
       onState('open');
-      const attachPromise = transmit(UP.attach, { since: since() || {} }, { allowBeforeAttach: true });
+      diagnostic('info', 'wire.open', { generation });
+      const attachSince = since() || {};
+      const attachFocus = focus() || '';
+      const attachPromise = transmit(UP.attach, { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation }, { allowBeforeAttach: true });
       attachRef = `${UP.attach}-${counter}`;
+      diagnostic('info', 'wire.attach_sent', { generation, ref: attachRef, focus: attachFocus, cursorChannels: Object.keys(attachSince).length });
       attachPromise.catch((error) => {
         if (!stopped) onError(error);
       });
     });
-    socket.addEventListener('message', handleMessage);
+    socket.addEventListener('message', (event) => {
+      try {
+        handleMessage(event);
+      } catch (error) {
+        diagnostic('error', 'wire.message_handler_failed', { generation, error });
+        onError(error);
+        socket?.close(1002, 'message handler failed');
+      }
+    });
     socket.addEventListener('error', () => {
+      diagnostic('error', 'wire.socket_error', { generation, readyState: socket?.readyState });
       if (socket?.readyState !== WebSocketImpl.CLOSED) socket.close();
     });
     socket.addEventListener('close', () => {
       attached = false;
-      preAttachFeed = [];
       rejectPending('closed', 'connection closed');
+      onState('disconnected', { generation });
+      diagnostic(stopped ? 'info' : 'warn', 'wire.closed', { generation, stopped, pending: pending.size });
       if (stopped) {
         onState('closed');
       } else {
@@ -219,8 +293,15 @@ export function createWire({
     unobserve(channelId) {
       return transmit(UP.unobserve, { channel_id: channelId });
     },
-    historyBefore(channelId, beforeSeq = 0, limit = 200) {
-      return transmit(UP.history_before, { channel_id: channelId, before_seq: beforeSeq, limit });
+    historyBefore(channelId, beforeSeq = 0, limit = 200, { purpose = 'hydrate', generation: requestedGeneration = generation, byteLimit = 4 * 1024 * 1024 } = {}) {
+      return transmit(UP.history_before, {
+		channel_id: channelId,
+		before_seq: beforeSeq,
+		limit,
+		byte_limit: byteLimit,
+		generation: requestedGeneration,
+		purpose,
+	  });
     },
     close() {
       if (stopped) return;

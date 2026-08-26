@@ -33,6 +33,11 @@ export function agentMessageStage(turn) {
   const location = taskLocation(turn);
   if (location === 'processing') return 'timeline';
   if (terminalValue(turn, 'merged_into')) return 'timeline';
+  // Semantic history deliberately removes completed progress frames. A
+  // terminal request/response pair is still a complete conversation and must
+  // not disappear merely because its former `processing` position marker was
+  // compacted out of the transport window.
+  if (turn?.terminal && !terminalValue(turn, 'replaced_by')) return 'timeline';
   if (!turn?.terminal && location === 'queued') return 'queued';
   return '';
 }

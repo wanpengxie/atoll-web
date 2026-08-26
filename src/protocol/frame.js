@@ -1,4 +1,4 @@
-export const FRAME_VERSION = 2;
+export const FRAME_VERSION = 4;
 export const MAX_FRAME_BYTES = 512 * 1024;
 
 export const UP = Object.freeze({
@@ -19,6 +19,7 @@ export const DOWN = Object.freeze({
   receipt: 'receipt',
   error: 'error',
   observe_ended: 'observe_ended',
+  page_end: 'page_end',
 });
 
 export const ERROR_CODES = Object.freeze([
@@ -47,7 +48,7 @@ export const OBSERVE_ENDED = Object.freeze([
 ]);
 
 const PAYLOAD_FIELDS = Object.freeze({
-  attach: ['since'],
+  attach: ['since', 'focus', 'history_protocol', 'generation'],
   submit: [
     'channel_id',
     'id',
@@ -76,11 +77,11 @@ const PAYLOAD_FIELDS = Object.freeze({
   ],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
-  history_before: ['channel_id', 'before_seq', 'limit'],
+  history_before: ['channel_id', 'before_seq', 'limit', 'byte_limit', 'generation', 'purpose'],
 });
 
 const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
-  attach: [],
+  attach: ['focus', 'history_protocol', 'generation'],
   submit: ['channel_id', 'msg_type'],
   resolve: ['channel_id', 'req_id'],
   cancel: ['channel_id', 'req_id'],
@@ -89,7 +90,7 @@ const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
   resource: ['channel_id', 'op'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
-  history_before: ['channel_id'],
+  history_before: ['channel_id', 'generation', 'purpose'],
 });
 
 export class FrameValidationError extends Error {
@@ -132,7 +133,22 @@ export function validateUpstreamPayload(type, payload) {
     if (payload.limit != null && (!Number.isSafeInteger(payload.limit) || payload.limit < 1 || payload.limit > 200)) {
       throw new FrameValidationError('history_before limit must be an integer between 1 and 200');
     }
+	if (payload.byte_limit != null && (!Number.isSafeInteger(payload.byte_limit) || payload.byte_limit < 1 || payload.byte_limit > 4 * 1024 * 1024)) {
+	  throw new FrameValidationError('history_before byte_limit must be an integer between 1 and 4MiB');
+	}
+	if (!Number.isSafeInteger(payload.generation) || payload.generation < 1) {
+	  throw new FrameValidationError('history_before generation must be a positive safe integer');
+	}
+	if (!['initial-tail', 'user-demand', 'hydrate'].includes(payload.purpose)) {
+	  throw new FrameValidationError('history_before purpose is invalid');
+	}
   }
+  if (type === UP.attach && payload.history_protocol !== FRAME_VERSION) {
+    throw new FrameValidationError(`attach history_protocol must be ${FRAME_VERSION}`);
+  }
+	if (type === UP.attach && (!Number.isSafeInteger(payload.generation) || payload.generation < 1)) {
+	  throw new FrameValidationError('attach generation must be a positive safe integer');
+	}
   if (type === UP.resource) validateResourcePayload(payload);
 }
 

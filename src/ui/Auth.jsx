@@ -47,7 +47,7 @@ export function Auth({ identity, onAuthed }) {
         <div className="auth-brand">
           <span className="auth-brand-mark">↯</span>
           <strong>ATOLL</strong>
-          <small>// collaboration ledger · ws v2</small>
+          <small>// collaboration ledger · ws v3</small>
         </div>
         <div className="auth-tabs" role="tablist" aria-label="账号操作">
           <button type="button" role="tab" data-auth-mode="login" aria-selected={mode === 'login'} tabIndex={mode === 'login' ? 0 : -1} className={mode === 'login' ? 'active' : ''} onKeyDown={switchModeByKey} onClick={() => setMode('login')}>登录</button>

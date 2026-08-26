@@ -7,6 +7,8 @@
 // 它恒不与账本 feed 合并：/ws 是一条串行写泵，一次构建的滚屏会把 feed 拖住
 //（"字节恒不进控制帧……为了背压与队头阻塞"）。所以全局恒为两条：feed + 终端。
 
+import { diagnostic } from '../model/diagnostics.js';
+
 const RECONNECT_DELAYS = [400, 800, 1600, 3000, 5000];
 const STREAM_HEADER = 4;
 const MAX_PENDING_INPUT = 64 << 10;
@@ -179,12 +181,21 @@ class PtyClient {
   ensure() {
     if (this.ws || this.opening || !this.streams.size) return;
     this.opening = true;
-    const ws = new WebSocket(ptyURL());
+    let ws;
+    try {
+      ws = new WebSocket(ptyURL());
+    } catch (error) {
+      this.opening = false;
+      diagnostic('error', 'pty.construct_failed', { streams: this.streams.size, error });
+      for (const stream of this.streams.values()) stream.onStatus?.('ended', '无法建立终端连接');
+      return;
+    }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
 
     ws.onopen = () => {
       this.opening = false;
+      diagnostic('info', 'pty.open', { streams: this.streams.size, attempt: this.attempt });
       // 退避计数恒不在这里清零。"TCP 握上了"证明不了这条连接有用：门可能
       // 接下来就把它关掉（节点在重启、鉴权掉了、设备不在线）。在 onopen 清零
       // 等于永远退不到底，人看到的是永远"重连中"、永远等不到那个出口。
@@ -202,15 +213,25 @@ class PtyClient {
     ws.onmessage = (event) => {
       if (typeof event.data !== 'string') {
         const view = new Uint8Array(event.data);
-        if (view.length < STREAM_HEADER) return;
+        if (view.length < STREAM_HEADER) {
+          diagnostic('warn', 'pty.short_binary_frame', { bytes: view.length });
+          return;
+        }
         const id = new DataView(event.data).getUint32(0, false);
         this.streams.get(id)?.onData?.(view.subarray(STREAM_HEADER));
         return;
       }
       let msg;
-      try { msg = JSON.parse(event.data); } catch { return; }
+      try { msg = JSON.parse(event.data); }
+      catch (error) {
+        diagnostic('error', 'pty.invalid_control_frame', { bytes: event.data.length, error });
+        return;
+      }
       const stream = this.streams.get(msg.id);
-      if (!stream) return;
+      if (!stream) {
+        diagnostic('warn', 'pty.unknown_stream', { id: msg.id, type: msg.type });
+        return;
+      }
       if (msg.type === 'ready') {
         this.attempt = 0;
         stream.ready = true;
@@ -230,6 +251,7 @@ class PtyClient {
         return;
       }
       if (msg.type === 'error') {
+        diagnostic('error', 'pty.stream_error', { id: msg.id, channelId: stream.channelId, hasSession: Boolean(stream.session), code: msg.code, detail: msg.detail });
         // 带着一个 session id 却被拒：那个会话已经不在了（宽限期过了，或者节点
         // 重启过）。**必须把 id 丢掉重开一次**，否则就是拿着死 id 无限重试——
         // 人看到的就是永远"重连中"的黑屏。
@@ -244,7 +266,10 @@ class PtyClient {
         stream.onExit?.(msg.detail || '无法打开终端');
         this.scheduleIdleShutdown();
       }
+      diagnostic('warn', 'pty.unknown_control', { id: msg.id, channelId: stream.channelId, type: msg.type });
     };
+
+    ws.onerror = () => diagnostic('error', 'pty.socket_error', { streams: this.streams.size, attempt: this.attempt });
 
     ws.onclose = () => {
       this.opening = false;
@@ -261,6 +286,7 @@ class PtyClient {
       }
       const delay = RECONNECT_DELAYS[Math.min(this.attempt, RECONNECT_DELAYS.length - 1)];
       this.attempt += 1;
+      diagnostic('warn', 'pty.reconnect_scheduled', { streams: this.streams.size, attempt: this.attempt, delay });
       this.timer = window.setTimeout(() => this.ensure(), delay);
     };
   }

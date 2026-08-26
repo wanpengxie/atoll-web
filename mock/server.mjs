@@ -245,7 +245,7 @@ function seededHistory(channelId, behavior = {}) {
   const system = { kind: 'system', id: SYSTEM_ACTOR_ID };
   const base = 1_723_974_400_000;
 
-  for (let index = 1; index <= 3; index += 1) {
+  for (let index = 1; index <= Number(behavior.history_turns || 3); index += 1) {
     const requestId = `${channelId}-history-request-${index}`;
     const at = base + index * 10_000;
     const requestText = isLobby
@@ -348,46 +348,76 @@ function seededHistory(channelId, behavior = {}) {
 }
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed']);
+const HOUSEKEEPING_WORDS = new Set([
+  'actor.describe',
+  'agent.context', 'agent.hold', 'agent.unhold', 'agent.interrupt',
+  'agent.fork', 'agent.select', 'agent.new', 'agent.steer', 'agent.compact',
+]);
+const isHousekeepingWord = (word = '') => HOUSEKEEPING_WORDS.has(word) || word.startsWith('system.');
 
 // Mirrors Platform View's history semantics: limit is a soft raw-row target,
 // while the actual cursor lands on a root request and retains at least twenty
 // completed root turns when they exist. Child requests share their root's
 // correlation tree and never count as independent turns.
 export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimumCompleteRoots = 20 } = {}) {
-  const visible = allRows.filter((row) => row.envelope.visibility !== 'system');
   const headSeq = allRows.at(-1)?.seq || 0;
   const anchor = beforeSeq > 0 ? beforeSeq : headSeq + 1;
-  const candidates = visible.filter((row) => row.seq < anchor);
-  if (!candidates.length) return { rows: [], headSeq, oldestSeq: 0, newestSeq: 0, hasOlder: false };
-
   const target = Math.max(1, Number(targetRows) || 200);
   const minimumRoots = Math.max(1, Number(minimumCompleteRoots) || 20);
-  const terminalParents = new Set(candidates
-    .filter((row) => row.envelope.kind === 'response' && TERMINAL_STATUSES.has(row.envelope.payload?.status) && row.envelope.parent_id)
-    .map((row) => row.envelope.parent_id));
-  const rootIndexes = [];
-  const completeRootIndexes = [];
-  candidates.forEach((row, index) => {
-    if (row.envelope.kind !== 'request' || row.envelope.parent_id) return;
-    rootIndexes.push(index);
-    if (terminalParents.has(row.envelope.id)) completeRootIndexes.push(index);
-  });
-
-  let boundary = 0;
-  if (!rootIndexes.length) {
-    const hasTurnRows = candidates.some((row) => ['request', 'response'].includes(row.envelope.kind));
-    if (!hasTurnRows) boundary = Math.max(0, candidates.length - target);
-  } else {
-    const cutoff = Math.max(0, candidates.length - target);
-    boundary = rootIndexes.filter((index) => index <= cutoff).at(-1) ?? 0;
-    if (completeRootIndexes.length >= minimumRoots) {
-      boundary = Math.min(boundary, completeRootIndexes.at(-minimumRoots));
-    } else {
-      boundary = 0;
-    }
+  // Rows are seq-ordered. Find the exclusive anchor with a binary search, then
+  // walk backwards only until both semantic boundaries are known. The old mock
+  // built several full-ledger arrays and sets for every page; at 100k rows that
+  // caused multi-second GC pauses and made a 750ms delayed page appear lost.
+  let low = 0;
+  let high = allRows.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (allRows[middle].seq < anchor) low = middle + 1;
+    else high = middle;
   }
+  const end = low;
+  let firstVisible = -1;
+  let tailBoundary = -1;
+  let targetBoundary = -1;
+  let completeBoundary = -1;
+  let visibleCount = 0;
+  let completeRoots = 0;
+  let sawRoot = false;
+  let hasTurnRows = false;
+  const terminalParents = new Set();
+  for (let index = end - 1; index >= 0; index -= 1) {
+    const row = allRows[index];
+    if (row.envelope.visibility === 'system') continue;
+    firstVisible = index;
+    visibleCount += 1;
+    if (visibleCount <= target) tailBoundary = index;
+    const envelope = row.envelope;
+    if (['request', 'response'].includes(envelope.kind)) hasTurnRows = true;
+    if (envelope.kind === 'response' && TERMINAL_STATUSES.has(envelope.payload?.status) && envelope.parent_id) {
+      terminalParents.add(envelope.parent_id);
+    }
+    const root = envelope.kind === 'request' && !envelope.parent_id && !isHousekeepingWord(envelope.type);
+    if (!root) continue;
+    sawRoot = true;
+    if (targetBoundary < 0 && visibleCount >= target) targetBoundary = index;
+    if (terminalParents.has(envelope.id)) {
+      completeRoots += 1;
+      if (completeRoots === minimumRoots) completeBoundary = index;
+    }
+    if (targetBoundary >= 0 && completeBoundary >= 0) break;
+  }
+  if (firstVisible < 0) return { rows: [], headSeq, oldestSeq: 0, newestSeq: 0, hasOlder: false };
 
-  const raw = candidates.slice(boundary);
+  let boundary = firstVisible;
+  if (sawRoot && completeBoundary >= 0) {
+    boundary = Math.min(targetBoundary >= 0 ? targetBoundary : firstVisible, completeBoundary);
+  } else if (!sawRoot && !hasTurnRows) {
+    boundary = tailBoundary;
+  }
+  const raw = allRows.slice(boundary, end).filter((row) => row.envelope.visibility !== 'system');
+  const housekeeping = new Set(raw
+    .filter((row) => row.envelope.kind === 'request' && isHousekeepingWord(row.envelope.type))
+    .map((row) => row.envelope.id));
   const rawTerminalParents = new Set(raw
     .filter((row) => row.envelope.kind === 'response' && TERMINAL_STATUSES.has(row.envelope.payload?.status) && row.envelope.parent_id)
     .map((row) => row.envelope.parent_id));
@@ -397,37 +427,36 @@ export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimu
     latestProvisional.set(row.envelope.parent_id, row.seq);
   }
   const rows = raw.filter((row) => {
+    if (housekeeping.has(row.envelope.id) || housekeeping.has(row.envelope.parent_id)) return false;
     if (row.envelope.kind !== 'response') return true;
     if (TERMINAL_STATUSES.has(row.envelope.payload?.status)) return true;
     return !rawTerminalParents.has(row.envelope.parent_id) && latestProvisional.get(row.envelope.parent_id) === row.seq;
   });
+  let hasOlder = false;
+  for (let index = boundary - 1; index >= 0; index -= 1) {
+    if (allRows[index].envelope.visibility !== 'system') {
+      hasOlder = true;
+      break;
+    }
+  }
   return {
     rows,
     headSeq,
     oldestSeq: raw[0]?.seq || 0,
     newestSeq: rows.at(-1)?.seq || 0,
-    hasOlder: boundary > 0,
+    hasOlder,
   };
 }
 
-// After the semantic attach window, history_before is scheduler read-ahead:
-// an exact, cursor-stable raw page. Semantic completeness is deliberately not
-// recomputed for every one of the many quiet reservoir fills.
+// history_before uses the same historical projection as attach. It keeps a
+// smaller one-root floor because the reservoir owns depth, while still landing
+// on a root-safe cursor and applying identical housekeeping/progress rules.
 export function rawHistoryPage(allRows, { beforeSeq = 0, limit = 200 } = {}) {
-  const visible = allRows.filter((row) => row.envelope.visibility !== 'system');
-  const headSeq = allRows.at(-1)?.seq || 0;
-  const anchor = beforeSeq > 0 ? beforeSeq : headSeq + 1;
-  const candidates = visible.filter((row) => row.seq < anchor);
-  const size = Math.max(1, Math.min(200, Number(limit) || 200));
-  const hasOlder = candidates.length > size;
-  const rows = candidates.slice(-size);
-  return {
-    rows,
-    headSeq,
-    oldestSeq: rows[0]?.seq || 0,
-    newestSeq: rows.at(-1)?.seq || 0,
-    hasOlder,
-  };
+  return historyWindow(allRows, {
+    beforeSeq,
+    targetRows: Math.max(1, Math.min(200, Number(limit) || 200)),
+    minimumCompleteRoots: 1,
+  });
 }
 
 export function createMockServer({
@@ -445,6 +474,7 @@ export function createMockServer({
   const attached = new WeakSet();
   const socketPrincipals = new WeakMap();
   const socketObserved = new WeakMap();
+  const socketGenerations = new WeakMap();
   const scheduled = new Set();
   const recurring = new Set();
   // agent 的冻结真相：hold 受理即记 holder，unhold 清除；agent.context 如实回报。
@@ -511,24 +541,44 @@ export function createMockServer({
   }
 
   function sendFrame(socket, frameType, ref, payload) {
-    if (socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify(downstreamFrame(frameType, ref, payload)));
+    if (socket.readyState !== WebSocket.OPEN) {
+      console.error('[mock:wire.drop]', JSON.stringify({
+        frame_type: frameType,
+        ref,
+        ready_state: socket.readyState,
+      }));
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify(downstreamFrame(frameType, ref, payload)), (error) => {
+        if (error) console.error('[mock:wire.send_failed]', JSON.stringify({ frame_type: frameType, ref, detail: error.message }));
+      });
+      return true;
+    } catch (error) {
+      console.error('[mock:wire.send_failed]', JSON.stringify({ frame_type: frameType, ref, detail: error.message }));
+      return false;
+    }
   }
 
   function sendError(socket, { ref = '', frame = '', code = 'bad_payload', detail = '' } = {}) {
     sendFrame(socket, 'error', ref, { frame, code, ...(detail ? { detail } : {}) });
   }
 
-  function sendReceipt(socket, ref, payload) {
+  function sendReceipt(socket, ref, payload, after) {
     // receipt 故障注入针对业务回执；attach receipt 只受 delay 影响，避免场景在登录阶段提前消耗故障。
     const fault = String(ref).startsWith('attach-') ? null : domain.takeFault('receipt');
     const delay = fault?.mode === 'delay' ? fault.delay_ms : Number(domain.delays.receipt_ms || 0);
     if (fault?.mode === 'drop') {
       socket.close(1012, 'mock receipt drop');
-      return;
+      return false;
     }
-    if (delay > 0) later(delay, () => sendFrame(socket, 'receipt', ref, payload));
-    else sendFrame(socket, 'receipt', ref, payload);
+    const deliver = () => {
+      sendFrame(socket, 'receipt', ref, payload);
+      after?.();
+    };
+    if (delay > 0) later(delay, deliver);
+    else deliver();
+    return true;
   }
 
   function broadcast(row) {
@@ -549,7 +599,9 @@ export function createMockServer({
     for (const socket of sockets) {
       const principal = socketPrincipals.get(socket) || '';
       const observed = socketObserved.get(socket) || new Set();
-      if (attached.has(socket) && domain.canRead(principal, row.channel_id, observed)) sendFrame(socket, 'feed', '', row);
+	  if (attached.has(socket) && domain.canRead(principal, row.channel_id, observed)) {
+		sendFrame(socket, 'feed', '', { ...row, source: 'live', generation: socketGenerations.get(socket) || 0 });
+	  }
     }
   }
 
@@ -1531,19 +1583,52 @@ export function createMockServer({
         sendError(socket, { ref, frame: type, code: 'channel_not_found', detail: 'channel does not exist' });
         return;
       }
+	  const generation = socketGenerations.get(socket) || 0;
+	  if (payload.generation !== generation) {
+		sendError(socket, { ref, frame: type, code: 'unavailable', detail: 'stale connection generation' });
+		return;
+	  }
       const page = rawHistoryPage(histories.get(payload.channel_id), {
         beforeSeq: payload.before_seq,
         limit: payload.limit || 200,
       });
-      for (const row of page.rows) sendFrame(socket, 'feed', '', row);
-      sendReceipt(socket, ref, {
-        channel_id: payload.channel_id,
-        head_seq: page.headSeq,
-        oldest_seq: page.oldestSeq,
-        newest_seq: page.newestSeq,
-        has_older: page.hasOlder,
-        rows: [],
-      });
+      const deliver = () => {
+		let sent = 0;
+		for (const row of page.rows) sent += Number(sendFrame(socket, 'feed', ref, { ...row, source: 'history', generation }));
+        const ended = sendFrame(socket, 'page_end', ref, {
+		  source: 'history',
+          channel_id: payload.channel_id,
+		  purpose: payload.purpose,
+		  generation,
+          head_seq: page.headSeq,
+          oldest_seq: page.oldestSeq,
+          newest_seq: page.newestSeq,
+		  scan_low_seq: page.oldestSeq,
+		  scan_high_seq: payload.before_seq > 0 ? payload.before_seq - 1 : page.headSeq,
+		  next_before_seq: page.oldestSeq,
+		  rows: page.rows.length,
+		  bytes: page.rows.reduce((sum, row) => sum + Buffer.byteLength(JSON.stringify(row.envelope)), 0),
+          has_older: page.hasOlder,
+        });
+		if (historyDelay || sent !== page.rows.length || !ended) console.info('[mock:history.deliver]', JSON.stringify({
+		  at: Date.now(),
+		  channel_id: payload.channel_id,
+		  ref,
+		  rows: page.rows.length,
+		  sent,
+		  page_end: ended,
+		  ready_state: socket.readyState,
+		  buffered_bytes: socket.bufferedAmount,
+		  delay_ms: historyDelay,
+		}));
+      };
+      const historyDelay = Math.max(0, Number(domain.behavior.history_page_delay_ms || 0));
+	  sendReceipt(socket, ref, { accepted: true, channel_id: payload.channel_id, purpose: payload.purpose, generation }, () => {
+		if (historyDelay) {
+		  console.info('[mock:history.scheduled]', JSON.stringify({ at: Date.now(), channel_id: payload.channel_id, ref, rows: page.rows.length, delay_ms: historyDelay }));
+		  later(historyDelay, deliver);
+		} else deliver();
+	  });
       return;
     }
     if (type === 'submit') return handleSubmit(socket, ref, payload);
@@ -1645,7 +1730,7 @@ export function createMockServer({
     const ref = typeof value?.ref === 'string' ? value.ref : '';
     const frameType = typeof value?.frame_type === 'string' ? value.frame_type : '';
     if (!isObject(value) || value.v !== FRAME_VERSION || !frameType) {
-      sendError(socket, { ref, frame: frameType, code: 'bad_payload', detail: 'frame requires v:2 and frame_type' });
+	  sendError(socket, { ref, frame: frameType, code: 'bad_payload', detail: 'frame requires v:4 and frame_type' });
       return;
     }
     if (value.ref != null && typeof value.ref !== 'string') {
@@ -1671,25 +1756,19 @@ export function createMockServer({
         return;
       }
       attached.add(socket);
-      const since = payload.since || {};
-      const historyGrants = [];
-      const effectiveSince = { ...since };
-      const initialTails = new Map();
+	  socketGenerations.set(socket, payload.generation);
+	  const historyMeta = [];
       for (const [channelId, rows] of histories) {
         const principal = socketPrincipals.get(socket) || '';
         const observed = socketObserved.get(socket) || new Set();
         if (!domain.canRead(principal, channelId, observed)) continue;
-        const window = historyWindow(rows);
-        const tail = window.rows;
-        const oldestSeq = window.oldestSeq;
-        const floor = oldestSeq ? oldestSeq - 1 : rows.at(-1)?.seq || 0;
-        const cursor = Number(since[channelId] || 0);
-        const truncated = cursor < floor;
-        if (truncated) {
-          effectiveSince[channelId] = rows.at(-1)?.seq || 0;
-          initialTails.set(channelId, tail);
-        }
-        historyGrants.push({ channel_id: channelId, head_seq: window.headSeq, oldest_seq: oldestSeq, has_older: window.hasOlder, truncated });
+		const latest = rows.at(-1);
+		historyMeta.push({
+		  channel_id: channelId,
+		  head_seq: latest?.seq || 0,
+		  has_rows: rows.some((row) => row.envelope.visibility !== 'system'),
+		  last_activity: Number(latest?.envelope?.ts) || 0,
+		});
       }
       // 对齐真后端 AttachReceipt：成员清单随回执直接交付（资格账快照），
       // 前端连上即知道自己在哪些频道，恒不靠 feed 副作用反推。
@@ -1698,23 +1777,8 @@ export function createMockServer({
         boot: bootId,
         memberships: domain.attachMemberships(socketPrincipals.get(socket) || ''),
         memberships_complete: true,
-        history: historyGrants,
+		history_meta: historyMeta,
       });
-      const replay = () => {
-        for (const [channelId, history] of histories) {
-          const principal = socketPrincipals.get(socket) || '';
-          const observed = socketObserved.get(socket) || new Set();
-          if (!domain.canRead(principal, channelId, observed)) continue;
-          const cursor = Number(effectiveSince[channelId] || 0);
-          const replayRows = initialTails.get(channelId) || history.filter((row) => row.envelope.visibility !== 'system' && row.seq > cursor);
-          for (const row of replayRows) {
-            sendFrame(socket, 'feed', '', row);
-          }
-        }
-      };
-      const receiptDelay = Number(domain.delays.receipt_ms || 0);
-      if (receiptDelay > 0) later(receiptDelay, replay);
-      else replay();
       return;
     }
     handleAttachedFrame(socket, value);

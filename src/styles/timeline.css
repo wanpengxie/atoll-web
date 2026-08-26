@@ -1,5 +1,10 @@
 /* Flat collaborative ledger: identity first, cards only for structured objects */
 .timeline { grid-row: 4; min-height: 0; margin-bottom: calc(var(--composer-overlay-height, 88px) + var(--agent-wait-dock-height, 0px)); overflow-y: auto; overflow-anchor: none; scrollbar-gutter: stable; background: var(--workspace); }
+.timeline.timeline-virtualized { position: relative; display: flex; overflow: hidden; flex-direction: column; scrollbar-gutter: auto; }
+.timeline-virtualized > .timeline-inner { min-height: 0; flex: 0 0 auto; padding-bottom: 0; }
+.timeline-message-list { min-height: 0; flex: 1 1 auto; background: var(--workspace); }
+.timeline-virtual-item { width: 100%; padding: 0 26px; }
+.timeline-virtualized > .timeline-jump-latest { position: absolute; right: 50%; bottom: 8px; margin: 0; transform: translateX(50%); }
 .timeline .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; white-space: nowrap; }
 .workspace.is-composer-layout-transitioning .timeline { transition: margin-bottom 180ms cubic-bezier(.22, 1, .36, 1); }
 .timeline-inner { display: flex; position: relative; width: 100%; min-height: 100%; flex-direction: column; gap: 0; padding: 24px 26px; }
