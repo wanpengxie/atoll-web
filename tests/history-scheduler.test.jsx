@@ -1,197 +1,163 @@
 // @vitest-environment jsdom
+import React, { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useChannelFeed } from '../src/app/hooks/useChannelFeed.js';
-import { createHistoryScheduler } from '../src/model/history-scheduler.js';
+import { createHistoryScheduler, HISTORY_MAX_INFLIGHT } from '../src/model/history-scheduler.js';
 
-function accepted(ref) {
-  const promise = Promise.resolve({ accepted: true });
+function accepted(ref, channelId, generation, purpose) {
+  const promise = Promise.resolve({ accepted: true, channel_id: channelId, generation, purpose });
   promise.ref = ref;
   return promise;
 }
 
-function setup(historyBefore) {
-  return renderHook(() => useChannelFeed({
-    wireRef: { current: { historyBefore } },
-    rosterRef: { current: { self: () => '', observeFeed: () => '', handleEnvelope: () => {} } },
-    accessRef: { current: { feed: () => {}, self: () => {} } },
-    activeChannelRef: { current: 'c0' },
-    onRoster: () => {}, onError: () => {}, onChannelsDiscovered: () => {},
-    onDirectoryInvalidated: () => {}, onTimerFired: () => {},
-    onSubmissionFeed: () => {}, onAccessChanged: () => {},
-  }));
+function requestHarness() {
+  let serial = 0;
+  const calls = [];
+  const requestPage = vi.fn((channelId, beforeSeq, limit, options) => {
+    const ref = `history-${++serial}`;
+    calls.push({ ref, channelId, beforeSeq, limit, ...options });
+    return accepted(ref, channelId, options.generation, options.purpose);
+  });
+  return { calls, requestPage };
 }
 
-function attach(hook, grant = { channel_id: 'c0', head_seq: 1_200, oldest_seq: 1_000, has_older: true }) {
-  act(() => {
-    hook.result.current.setHistoryGrants([grant], { attach_ref: 'attach-1', generation: 1, focus: 'c0' });
-    hook.result.current.pageEnd({ source: 'attach', ref: 'attach-1', generation: 1, channel_id: 'c0', head_seq: 1_200, oldest_seq: 1_000, has_older: true });
+function finish(scheduler, call, { oldest = call.beforeSeq - 2, hasOlder = true, rows = 2 } = {}) {
+  for (let index = 0; index < rows; index += 1) {
+    const seq = oldest + index;
+    scheduler.historyRow({
+      source: 'history', ref: call.ref, generation: call.generation,
+      channel_id: call.channelId, seq,
+      envelope: { id: `${call.channelId}-${seq}`, kind: 'event', type: 'human.note', payload: { text: `${seq}` } },
+    });
+  }
+  scheduler.pageEnd({
+    source: 'history', ref: call.ref, generation: call.generation,
+    channel_id: call.channelId, purpose: call.purpose,
+    head_seq: call.beforeSeq, oldest_seq: oldest,
+    next_before_seq: oldest, has_older: hasOlder,
   });
 }
 
-function streamPage(hook, { ref, before, oldest, hasOlder = true }) {
-  act(() => {
-    for (let seq = oldest; seq < before; seq += 1) {
-      hook.result.current.enqueue('c0', seq, {
-        id: `history-${seq}`, kind: 'event', type: 'human.note', visibility: 'public',
-        sender: { id: 'me', kind: 'human' }, payload: { text: `历史 ${seq}` },
-      });
-    }
-    hook.result.current.pageEnd({ source: 'page', ref, generation: 1, channel_id: 'c0', head_seq: 1_200, oldest_seq: oldest, newest_seq: before - 1, has_older: hasOlder });
-  });
-}
+afterEach(() => vi.restoreAllMocks());
 
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.useRealTimers();
+describe('v4 history batch coordinator', () => {
+  it('starts several active channels concurrently while respecting the global limit', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    scheduler.attach(Array.from({ length: 8 }, (_, index) => ({
+      channel_id: `c${index}`, head_seq: 1_000 - index, has_rows: true, last_activity: 100 - index,
+    })), { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(HISTORY_MAX_INFLIGHT));
+    expect(new Set(harness.calls.map((call) => call.channelId)).size).toBe(HISTORY_MAX_INFLIGHT);
+    expect(harness.calls[0].channelId).toBe('c0');
+    expect(harness.calls.every((call) => call.beforeSeq === 0)).toBe(true);
+    scheduler.destroy();
+  });
+
+  it('never runs two batches for one channel and re-scores after completion', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 1_000, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    scheduler.tick();
+    expect(harness.calls).toHaveLength(1);
+    finish(scheduler, harness.calls[0], { oldest: 800 });
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    expect(harness.calls[1]).toMatchObject({ channelId: 'c0', beforeSeq: 800, purpose: 'hydrate' });
+    scheduler.destroy();
+  });
+
+  it('routes concurrent rows by ref instead of guessing from seq', async () => {
+    const harness = requestHarness();
+    const revealed = new Map();
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      revealRows: (channelId, rows) => revealed.set(channelId, rows),
+    });
+    scheduler.attach([
+      { channel_id: 'a', head_seq: 100, has_rows: true },
+      { channel_id: 'b', head_seq: 100, has_rows: true },
+    ], { generation: 1, focus: 'a' });
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    const a = harness.calls.find((call) => call.channelId === 'a');
+    const b = harness.calls.find((call) => call.channelId === 'b');
+    finish(scheduler, b, { oldest: 90, rows: 1, hasOlder: false });
+    finish(scheduler, a, { oldest: 80, rows: 1, hasOlder: false });
+    await waitFor(() => expect(revealed.size).toBe(2));
+    expect(revealed.get('a')[0][0]).toBe(80);
+    expect(revealed.get('b')[0][0]).toBe(90);
+    scheduler.destroy();
+  });
+
+  it('keeps user demand sticky when the reservoir is empty', async () => {
+    const harness = requestHarness();
+    const revealRows = vi.fn();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(scheduler.take('c0', 32)).toBe(0);
+    finish(scheduler, harness.calls[0], { oldest: 68, rows: 32 });
+    await waitFor(() => expect(revealRows).toHaveBeenCalled());
+    expect(revealRows.mock.calls[0][1]).toHaveLength(32);
+    scheduler.destroy();
+  });
+
+  it('uses an overlapping IndexedDB tail as the same bounded batch type', async () => {
+    const readCache = vi.fn(async (channelId, beforeSeq) => ({
+      rows: [{ channel_id: channelId, seq: 99, envelope: { id: 'cached-99', kind: 'event', type: 'human.note' } }],
+      nextBeforeSeq: 99, exhausted: true, bytes: 10,
+    }));
+	const requestPage = vi.fn((channelId, _before, _limit, options) => accepted('after-cache', channelId, options.generation, options.purpose));
+    const revealRows = vi.fn();
+    const scheduler = createHistoryScheduler({ requestPage, readCache, revealRows });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], {
+      generation: 1, focus: 'c0',
+      localMeta: new Map([['c0', { newestSeq: 100, oldestSeq: 20, rowCount: 81, lastActivity: 1 }]]),
+    });
+    await waitFor(() => expect(readCache).toHaveBeenCalledWith('c0', 0, 200, 4 * 1024 * 1024));
+	expect(readCache.mock.invocationCallOrder[0]).toBeLessThan(requestPage.mock.invocationCallOrder[0]);
+	expect(requestPage).toHaveBeenCalledWith('c0', 20, 200, expect.objectContaining({ purpose: 'hydrate' }));
+    expect(revealRows).toHaveBeenCalledWith('c0', [[99, expect.objectContaining({ id: 'cached-99' })]], { initial: true });
+    scheduler.destroy();
+  });
+
+  it('ignores stale-generation terminals without closing the current batch', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 2, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    const call = harness.calls[0];
+    expect(scheduler.pageEnd({ source: 'history', ref: call.ref, generation: 1, channel_id: 'c0' })).toBe(false);
+    expect(scheduler.snapshot('c0').loading).toBe(true);
+    finish(scheduler, call, { oldest: 90, hasOlder: false });
+    await waitFor(() => expect(scheduler.snapshot('c0').loading).toBe(false));
+    scheduler.destroy();
+  });
 });
 
-describe('global history scheduler', () => {
-  it('串行预取到不可见水库，reveal 后才进入 fold', async () => {
-    let requestIndex = 0;
-    const historyBefore = vi.fn(() => accepted(`history-${++requestIndex}`));
-    const hook = setup(historyBefore);
-    attach(hook);
+describe('live feed priority', () => {
+  it('applies live rows immediately while a history batch is in flight', async () => {
+    const historyBefore = vi.fn((channelId, _before, _limit, options) => accepted('history-live', channelId, options.generation, options.purpose));
+    const hook = renderHook(() => useChannelFeed({
+      wireRef: { current: { historyBefore } },
+      rosterRef: { current: { self: () => '', observeFeed: () => '', handleEnvelope: () => {} } },
+      accessRef: { current: { feed: () => {}, self: () => {} } },
+      activeChannelRef: { current: 'c0' },
+      onRoster: () => {}, onError: () => {}, onChannelsDiscovered: () => {},
+      onDirectoryInvalidated: () => {}, onTimerFired: () => {},
+      onSubmissionFeed: () => {}, onAccessChanged: () => {},
+    }), { wrapper: ({ children }) => <StrictMode>{children}</StrictMode> });
+    act(() => hook.result.current.setHistoryGrants([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' }));
     await waitFor(() => expect(historyBefore).toHaveBeenCalledOnce());
-    streamPage(hook, { ref: 'history-1', before: 1_000, oldest: 800 });
-    await waitFor(() => expect(historyBefore).toHaveBeenCalledTimes(2));
-    streamPage(hook, { ref: 'history-2', before: 800, oldest: 600, hasOlder: false });
-
-    expect(hook.result.current.statesRef.current.get('c0')).toBeUndefined();
-    expect(hook.result.current.historyFor('c0').buffered).toBe(400);
-    act(() => expect(hook.result.current.revealHistory('c0', 32)).toBe(32));
-    expect(hook.result.current.statesRef.current.get('c0').rows.size).toBe(32);
-    hook.unmount();
-  });
-
-  it('历史页在途时实时消息仍同步进入主状态', async () => {
-    const historyBefore = vi.fn(() => accepted('history-live'));
-    const hook = setup(historyBefore);
-    attach(hook);
-    await waitFor(() => expect(historyBefore).toHaveBeenCalledOnce());
-    act(() => hook.result.current.enqueue('c0', 1_201, { id: 'live', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: '实时' } }));
-    expect(hook.result.current.statesRef.current.get('c0').rows.has(1_201)).toBe(true);
-    hook.unmount();
-  });
-
-  it('accepted 后断线会终结旧页，重连可从同一游标继续', async () => {
-    let requestIndex = 0;
-    const historyBefore = vi.fn(() => accepted(`history-${++requestIndex}`));
-    const hook = setup(historyBefore);
-    attach(hook);
-    await waitFor(() => expect(historyBefore).toHaveBeenCalledOnce());
-    act(() => hook.result.current.disconnectHistory(1));
-    act(() => {
-      hook.result.current.setHistoryGrants([{ channel_id: 'c0', head_seq: 1_200, oldest_seq: 1_000, has_older: true }], { attach_ref: 'attach-2', generation: 2, focus: 'c0' });
-      hook.result.current.pageEnd({ source: 'attach', ref: 'attach-2', generation: 2, channel_id: 'c0', head_seq: 1_200, oldest_seq: 1_000, has_older: true });
-    });
-    await waitFor(() => expect(historyBefore).toHaveBeenCalledTimes(2));
-    expect(historyBefore.mock.calls[1].slice(0, 2)).toEqual(['c0', 1_000]);
-    hook.unmount();
-  });
-
-  it('切换焦点后，当前页结束时由新焦点拿到下一页', () => {
-    let index = 0;
-    const requestPage = vi.fn(() => accepted(`page-${++index}`));
-    const scheduler = createHistoryScheduler({ requestPage, revealRows: () => {} });
-    scheduler.attach([
-      { channel_id: 'a', head_seq: 900, oldest_seq: 700, has_older: true },
-      { channel_id: 'b', head_seq: 800, oldest_seq: 600, has_older: true },
-    ], { attachRef: 'attach', generation: 1, focus: 'b' });
-    scheduler.pageEnd({ source: 'attach', ref: 'attach', generation: 1, channel_id: 'b', head_seq: 800, oldest_seq: 600, has_older: true });
-    expect(requestPage.mock.calls[0].slice(0, 2)).toEqual(['b', 600]);
-    scheduler.pageEnd({ source: 'attach', ref: 'attach', generation: 1, channel_id: 'a', head_seq: 900, oldest_seq: 700, has_older: true });
-    scheduler.focus('a');
-    scheduler.pageEnd({ source: 'page', ref: 'page-1', generation: 1, channel_id: 'b', head_seq: 800, oldest_seq: 400, has_older: true });
-    expect(requestPage.mock.calls[1].slice(0, 2)).toEqual(['a', 700]);
-    scheduler.destroy();
-  });
-
-  it('attach 失败不靠外部事件也会由唯一 wake timer 自动重试', () => {
-    vi.useFakeTimers();
-    const requestPage = vi.fn(() => accepted('retry-1'));
-    const revealRows = vi.fn();
-    const scheduler = createHistoryScheduler({ requestPage, revealRows });
-    scheduler.attach([{
-      channel_id: 'c0', error_code: 'unavailable', error_detail: '暂不可用',
-    }], { attachRef: 'attach', generation: 1, focus: 'c0' });
-    expect(requestPage).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(499);
-    expect(requestPage).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(requestPage).toHaveBeenCalledWith('c0', 0, 200);
-    scheduler.classifyRow('c0', 9, { id: 'tail-9' });
-    scheduler.classifyRow('c0', 10, { id: 'tail-10' });
-    scheduler.pageEnd({ source: 'page', ref: 'retry-1', generation: 1, channel_id: 'c0', head_seq: 10, oldest_seq: 9, newest_seq: 10, has_older: false });
-    expect(revealRows).toHaveBeenCalledWith('c0', [[9, { id: 'tail-9' }], [10, { id: 'tail-10' }]]);
-    scheduler.destroy();
-  });
-
-  it('旧连接迟到的 page_end 不能关闭新连接的在途页', () => {
-    let index = 0;
-    const requestPage = vi.fn(() => accepted(`page-${++index}`));
-    const scheduler = createHistoryScheduler({ requestPage, revealRows: () => {} });
-    scheduler.attach([{ channel_id: 'c0', head_seq: 100, oldest_seq: 80, has_older: true }], { attachRef: 'attach-1', generation: 1, focus: 'c0' });
-    scheduler.pageEnd({ source: 'attach', ref: 'attach-1', generation: 1, channel_id: 'c0', oldest_seq: 80, has_older: true });
-    scheduler.disconnected(1);
-    scheduler.attach([{ channel_id: 'c0', head_seq: 100, oldest_seq: 80, has_older: true }], { attachRef: 'attach-2', generation: 2, focus: 'c0' });
-    scheduler.pageEnd({ source: 'attach', ref: 'attach-2', generation: 2, channel_id: 'c0', oldest_seq: 80, has_older: true });
-    expect(requestPage).toHaveBeenCalledTimes(2);
-    expect(scheduler.pageEnd({ source: 'page', ref: 'page-1', generation: 1, channel_id: 'c0', oldest_seq: 60, has_older: true })).toBe(false);
-    expect(scheduler.snapshot('c0').loading).toBe(true);
-    scheduler.pageEnd({ source: 'page', ref: 'page-2', generation: 2, channel_id: 'c0', oldest_seq: 60, has_older: false });
-    expect(scheduler.snapshot('c0').loading).toBe(false);
-    scheduler.destroy();
-  });
-
-  it('预取与磁盘恢复的可见行重叠时只在水库保留缺口行', () => {
-    const visible = new Set([61, 62]);
-    const scheduler = createHistoryScheduler({
-      requestPage: () => accepted('page-overlap'),
-      revealRows: () => {},
-      hasVisibleRow: (_channelId, seq) => visible.has(seq),
-    });
-    scheduler.attach([{ channel_id: 'c0', head_seq: 100, oldest_seq: 80, has_older: true }], { attachRef: 'attach', generation: 1, focus: 'c0' });
-    scheduler.pageEnd({ source: 'attach', ref: 'attach', generation: 1, channel_id: 'c0', oldest_seq: 80, has_older: true });
-    scheduler.classifyRow('c0', 60, { id: 'gap-60' });
-    scheduler.classifyRow('c0', 61, { id: 'cached-61' });
-    scheduler.classifyRow('c0', 62, { id: 'cached-62' });
-    scheduler.pageEnd({ source: 'page', ref: 'page-overlap', generation: 1, channel_id: 'c0', oldest_seq: 60, newest_seq: 79, has_older: false });
-    expect(scheduler.snapshot('c0')).toMatchObject({ buffered: 1, bufferedNewest: 60 });
-    scheduler.destroy();
-  });
-
-  it('水库接近 5000 时只请求缺少的行数，不跨页丢历史', () => {
-    let index = 0;
-    const requestPage = vi.fn(() => accepted(`page-${++index}`));
-    const scheduler = createHistoryScheduler({ requestPage, revealRows: () => {} });
-    scheduler.attach([{ channel_id: 'c0', head_seq: 12_000, oldest_seq: 10_000, has_older: true }], { attachRef: 'attach', generation: 1, focus: 'c0' });
-    scheduler.pageEnd({ source: 'attach', ref: 'attach', generation: 1, channel_id: 'c0', oldest_seq: 10_000, has_older: true });
-    let before = 10_000;
-    for (let page = 1; page <= 25; page += 1) {
-      const oldest = before - 200;
-      for (let seq = oldest; seq < before; seq += 1) scheduler.classifyRow('c0', seq, { id: `m-${seq}` });
-      scheduler.pageEnd({ source: 'page', ref: `page-${page}`, generation: 1, channel_id: 'c0', oldest_seq: oldest, newest_seq: before - 1, has_older: true });
-      before = oldest;
-    }
-    expect(scheduler.snapshot('c0').buffered).toBe(5_000);
-    expect(requestPage).toHaveBeenCalledTimes(25);
-    scheduler.take('c0', 32);
-    expect(requestPage).toHaveBeenCalledTimes(26);
-    expect(requestPage.mock.calls[25]).toEqual(['c0', 5_000, 32]);
-    scheduler.destroy();
-  });
-
-  it('旧 attach page_end 不会把新连接尚未完成的尾巴提交到 fold', () => {
-    const hook = setup(() => accepted('unused'));
-    act(() => {
-      hook.result.current.setHistoryGrants([{ channel_id: 'c0', head_seq: 20, oldest_seq: 10, has_older: false }], { attach_ref: 'attach-2', generation: 2, focus: 'c0' });
-      hook.result.current.enqueue('c0', 10, { id: 'tail-10', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: '尾巴' } });
-      hook.result.current.pageEnd({ source: 'attach', ref: 'attach-1', generation: 1, channel_id: 'c0', oldest_seq: 10, has_older: false });
-    });
-    expect(hook.result.current.statesRef.current.get('c0')).toBeUndefined();
-    act(() => hook.result.current.pageEnd({ source: 'attach', ref: 'attach-2', generation: 2, channel_id: 'c0', oldest_seq: 10, has_older: false }));
-    expect(hook.result.current.statesRef.current.get('c0').rows.has(10)).toBe(true);
+    act(() => hook.result.current.enqueue('c0', 101, {
+      id: 'live', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'me', kind: 'human' }, payload: { text: '实时' },
+    }, { source: 'live', generation: 1, channel_id: 'c0', seq: 101, envelope: {
+      id: 'live', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'me', kind: 'human' }, payload: { text: '实时' },
+    } }));
+    expect(hook.result.current.statesRef.current.get('c0').rows.has(101)).toBe(true);
     hook.unmount();
   });
 });

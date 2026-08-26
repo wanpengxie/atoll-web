@@ -6,7 +6,6 @@ test('F7 IndexedDB cache keeps the newest bounded tail and recovers from quota p
     const { createFeedCache } = await import('/src/model/feed-cache.js');
     const databaseName = `atoll-feed-browser-${Date.now()}`;
     const options = { databaseName, rowsPerChannel: 8, globalBytes: 1024 * 1024, legacyStorage: null };
-    const state = { channelId: 'c0', rows: new Map() };
     const envelope = (seq) => ({
       id: `m-${seq}`,
       kind: 'event',
@@ -17,9 +16,8 @@ test('F7 IndexedDB cache keeps the newest bounded tail and recovers from quota p
     });
 
     const cache = createFeedCache(options);
-    await cache.restore();
-    for (let seq = 1; seq <= 8; seq += 1) state.rows.set(seq, envelope(seq));
-    await cache.save(state);
+    await cache.openMeta();
+    await cache.saveRows(Array.from({ length: 8 }, (_, index) => ({ channel_id: 'c0', seq: index + 1, envelope: envelope(index + 1) })));
     await cache.idle();
 
     // Force the next row write to hit the browser's real QuotaExceededError
@@ -33,19 +31,18 @@ test('F7 IndexedDB cache keeps the newest bounded tail and recovers from quota p
       }
       return originalPut.call(this, value, ...args);
     };
-    state.rows.set(9, envelope(9));
     try {
-      await cache.save(state);
+      await cache.saveRows([{ channel_id: 'c0', seq: 9, envelope: envelope(9) }]);
       await cache.idle();
     } finally {
       IDBObjectStore.prototype.put = originalPut;
     }
-    for (let seq = 10; seq <= 15; seq += 1) state.rows.set(seq, envelope(seq));
-    await cache.save(state);
+    await cache.saveRows(Array.from({ length: 6 }, (_, index) => ({ channel_id: 'c0', seq: index + 10, envelope: envelope(index + 10) })));
     await cache.idle();
 
-    const restored = await createFeedCache(options).restore();
-    const rows = restored.get('c0')?.rows || new Map();
+    const restored = createFeedCache(options);
+    const page = await restored.readBefore('c0', 0, 200, 4 * 1024 * 1024);
+    const rows = new Map(page.rows.map((row) => [row.seq, row.envelope]));
     return {
       failed,
       seqs: [...rows.keys()],

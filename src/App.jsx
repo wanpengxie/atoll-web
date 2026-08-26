@@ -180,7 +180,7 @@ export default function App() {
   const forwardDirectoryInvalidated = useCallback(() => accessRefreshActionsRef.current.schedule?.(), []);
   const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
-  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, ready: feedReady, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, resetPersistent: resetFeedCache, setHistoryGrants, pageEnd: finishHistoryPage, disconnectHistory, focusHistory, historyFor, revealHistory } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
+  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, resetPersistent: resetFeedCache, setHistoryGrants, pageEnd: finishHistoryPage, disconnectHistory, focusHistory, historyFor, revealHistory } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(null); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
@@ -289,7 +289,10 @@ export default function App() {
   }, [clearDirectory, clearFeed, clearSession, clearSubmissions, clearTimers]);
 
   useEffect(() => {
-    if (!me || !feedReady) return undefined;
+	// Realtime is never gated by IndexedDB hydration. Cache metadata and body
+	// batches may finish later; the v4 attach head gives the live stream its
+	// atomic starting seam immediately.
+    if (!me) return undefined;
     setTopError('');
     const obs = createObsClient({ onUnauthorized: expireSession });
     const roster = createRoster({ obs, me: me.id });
@@ -369,7 +372,7 @@ export default function App() {
             resetFeedCache().finally(() => window.location.reload());
             return;
           }
-          setHistoryGrants(detail?.history || [], { ...detail, focus: activeChannelRef.current });
+		  setHistoryGrants(detail?.history_meta || [], { ...detail, focus: activeChannelRef.current });
           access.wire('attached', newId());
           // attach 回执携带的成员清单是权威来源：连上即得，重连即刷新。
           // memberships_complete=false 表示服务器这一轮没查成（清单不可信为
@@ -415,7 +418,7 @@ export default function App() {
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [bumpAccess, cancelFeedTask, disconnectHistory, enqueueFeed, expireSession, feedReady, finishHistoryPage, me, resetFeedCache, setHistoryGrants]);
+  }, [bumpAccess, cancelFeedTask, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, me, resetFeedCache, setHistoryGrants]);
 
   const refreshRoster = useCallback(async (channelId, force = false) => {
     if (!channelId || !rosterRef.current) return;

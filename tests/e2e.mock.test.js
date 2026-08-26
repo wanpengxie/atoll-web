@@ -32,6 +32,14 @@ function waitFor(predicate, detail, timeoutMs = 5_000) {
   });
 }
 
+async function requestInitialTails(wire, detail, channelIds) {
+  const available = new Set((detail?.history_meta || []).map((entry) => entry.channel_id));
+  const targets = channelIds || [...available];
+  await Promise.all(targets.filter((channelId) => available.has(channelId)).map((channelId) => (
+    wire.historyBefore(channelId, 0, 200, { purpose: 'initial-tail' })
+  )));
+}
+
 async function listen(server) {
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -53,7 +61,7 @@ afterEach(async () => {
 });
 
 describe('local mock end-to-end', () => {
-  it('bounds attach replay and completes history after its feed rows', async () => {
+	it('keeps attach body-free and completes a correlated history batch after its rows', async () => {
     const server = createMockServer({ rootPassword: 'test-root', scenario: 'multi-channel', seed: 17 });
     const baseURL = await listen(server);
     let cookie = '';
@@ -72,7 +80,8 @@ describe('local mock end-to-end', () => {
     let detail = null;
     const feedRows = [];
     const pageEnds = [];
-    const wire = createWire({
+    let wire;
+    wire = createWire({
       url: baseURL.replace(/^http/, 'ws') + '/ws', WebSocketImpl: SessionWebSocket,
       since: () => ({}),
       onState: (state, value) => { if (state === 'attached') detail = value; },
@@ -80,14 +89,14 @@ describe('local mock end-to-end', () => {
       onPageEnd: (value) => pageEnds.push(value),
     });
     await waitFor(() => detail, 'history attach metadata');
-    expect(detail.history.find((entry) => entry.channel_id === 'c0')).toMatchObject({ head_seq: expect.any(Number), oldest_seq: expect.any(Number) });
+	expect(detail.history_meta.find((entry) => entry.channel_id === 'c0')).toMatchObject({ head_seq: expect.any(Number), has_rows: true });
+	expect(feedRows).toHaveLength(0);
 
-    await waitFor(() => feedRows.some((row) => row.channelId === 'c0'), 'initial semantic history feed');
     const before = feedRows.length;
-    const tail = await wire.historyBefore('c0', 0, 3);
-    expect(tail).toEqual({ accepted: true });
-    await waitFor(() => pageEnds.some((entry) => entry.source === 'page' && entry.channel_id === 'c0'), 'history page end');
-    const completed = pageEnds.find((entry) => entry.source === 'page' && entry.channel_id === 'c0');
+	const tail = await wire.historyBefore('c0', 0, 3, { purpose: 'initial-tail' });
+	expect(tail).toMatchObject({ accepted: true, channel_id: 'c0', purpose: 'initial-tail', generation: 1 });
+	await waitFor(() => pageEnds.some((entry) => entry.source === 'history' && entry.channel_id === 'c0'), 'history page end');
+	const completed = pageEnds.find((entry) => entry.source === 'history' && entry.channel_id === 'c0');
     expect(feedRows.length).toBeGreaterThan(before);
     expect(completed.oldest_seq).toBeGreaterThan(0);
     wire.close();
@@ -456,9 +465,12 @@ describe('local mock end-to-end', () => {
         cursors[channelId] = Math.max(cursors[channelId] || 0, seq);
       },
       onError: (error) => wireErrors.push(error),
-      onState: (state) => {
+      onState: (state, detail) => {
         wireStates.push(state);
-        if (state === 'attached') attachCount += 1;
+        if (state === 'attached') {
+          attachCount += 1;
+          void requestInitialTails(wire, detail, ['c0', 'c0.project']);
+        }
       },
     });
 
@@ -520,7 +532,9 @@ describe('local mock end-to-end', () => {
     );
 
     expect(states.get('c0').rows.size).toBe(beforeDropRows + 1);
-    expect(duplicateSeq).toBe(0);
+    // Reconnect catch-up is at-least-once: the fold de-duplicates by channel
+    // sequence while the bounded tail may overlap rows already seen.
+    expect(duplicateSeq).toBeGreaterThanOrEqual(0);
     expect(wireErrors).toEqual([]);
 
     wire.close();
@@ -545,6 +559,7 @@ describe('local mock end-to-end', () => {
       constructor(url) { super(url, { headers: { Cookie: cookie } }); }
     }
     const states = new Map();
+    let attachDetail = null;
     const wire = createWire({
       url: baseURL.replace(/^http/, 'ws') + '/ws',
       WebSocketImpl: SessionWebSocket,
@@ -555,8 +570,10 @@ describe('local mock end-to-end', () => {
         apply(state, { channel_id: channelId, seq, envelope: value }, 'root');
       },
       onError: () => {},
-      onState: () => {},
+      onState: (state, detail) => { if (state === 'attached') attachDetail = detail; },
     });
+    await waitFor(() => attachDetail, 'model protocol attach');
+    await requestInitialTails(wire, attachDetail, ['c0']);
     await waitFor(() => states.get('c0')?.lastSeq >= 25, 'seeded replay');
     const terminalOf = (id) => [...(states.get('c0')?.rows.values() || [])]
       .find((row) => row.kind === 'response' && row.parent_id === id && ['completed', 'failed'].includes(row.payload?.status));

@@ -13,11 +13,13 @@ test('F7 deep history starts at the tail, reveals upward automatically, and keep
   expect(reset.ok()).toBe(true);
   await login(page);
 
-  const viewport = page.locator('.timeline');
+  const viewport = page.locator('.timeline-message-list');
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  await expect.poll(() => viewport.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBeLessThanOrEqual(2);
+  // Virtuoso treats the final 24px as the bottom zone so late dynamic-height
+  // measurement cannot incorrectly disable realtime follow.
+  await expect.poll(() => viewport.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBeLessThanOrEqual(24);
   const samples = await page.evaluate(async () => {
-    const node = document.querySelector('.timeline');
+    const node = document.querySelector('.timeline-message-list');
     const values = [];
     for (let index = 0; index < 6; index += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -25,7 +27,7 @@ test('F7 deep history starts at the tail, reveals upward automatically, and keep
     }
     return values;
   });
-  expect(samples.every((distance) => Math.abs(distance) <= 2), JSON.stringify(samples)).toBe(true);
+  expect(samples.every((distance) => Math.abs(distance) <= 24), JSON.stringify(samples)).toBe(true);
 
   // No button and no network wait: real scroll events claim the already-prefetched
   // reservoir in small anchored batches until the oldest turn becomes visible.
@@ -45,7 +47,7 @@ test('F7 deep history starts at the tail, reveals upward automatically, and keep
 
   const cachedRows = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const open = indexedDB.open('atoll-feed-v6');
+      const open = indexedDB.open('atoll-feed-v7');
       open.onsuccess = () => resolve(open.result);
       open.onerror = () => reject(open.error);
     });
@@ -66,7 +68,7 @@ test('F7 mobile keeps realtime delivery while the reader is browsing history', a
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
 
-  const viewport = page.locator('.timeline');
+  const viewport = page.locator('.timeline-message-list');
   for (let index = 0; index < 5; index += 1) {
     await viewport.evaluate((node) => {
       node.scrollTop = 0;
@@ -87,25 +89,22 @@ test('F7 100k ledger keeps bounded initial DOM and reveals older rows on upward 
   expect(reset.ok()).toBe(true);
   await login(page);
   await page.waitForFunction(() => {
-    const node = document.querySelector('.timeline');
+    const node = document.querySelector('.timeline-message-list');
     return node && node.scrollHeight > node.clientHeight && document.querySelector('.request-text');
   });
 
-  const viewport = page.locator('.timeline');
-  const oldestVisibleTurn = () => page.locator('.request-text').evaluateAll((nodes) => Math.min(...nodes
-    .map((node) => /history (\d+):/.exec(node.textContent || '')?.[1])
-    .filter(Boolean)
-    .map(Number)));
-  const before = await oldestVisibleTurn();
-
-  // Exactly one gesture, deliberately before the delayed first page reaches
-  // the reservoir. The UI must remember it and reveal when data arrives.
-  await viewport.evaluate((node) => {
-    node.scrollTop = 0;
-    node.dispatchEvent(new Event('scroll', { bubbles: true }));
-  });
-  await expect.poll(oldestVisibleTurn, { timeout: 5_000 }).toBeLessThan(before);
-
-  const diagnostic = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().find((entry) => entry.event === 'history.page_complete'));
-  expect(diagnostic?.detail?.reservoir).toBeGreaterThan(0);
+  const viewport = page.locator('.timeline-message-list');
+  expect(await page.locator('.timeline-virtual-item').count()).toBeLessThan(100);
+  // Exactly one gesture. Depending on machine speed the prefetched batch may
+  // already be in the reservoir or still in flight; both paths must reveal an
+  // older row without a second gesture.
+  await viewport.hover();
+  await page.mouse.wheel(0, -100_000);
+  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+    .some((entry) => ['timeline.history_demand_waiting', 'timeline.history_revealed'].includes(entry.event)))).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
+    (entry.event === 'timeline.history_revealed' && Number(entry.detail?.released) > 0)
+    || (entry.event === 'history.batch_complete' && entry.detail?.purpose === 'hydrate' && Number(entry.detail?.demandReleased) > 0)
+  ))), { timeout: 5_000 }).toBe(true);
+  expect(await page.locator('.timeline-virtual-item').count()).toBeLessThan(100);
 });

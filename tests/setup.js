@@ -24,3 +24,21 @@ if (typeof Range !== 'undefined') {
 if (typeof Text !== 'undefined') {
   Text.prototype.getClientRects ||= () => [];
 }
+
+// Virtuoso still constructs its measurement hook when a deterministic testing
+// context is supplied; the context supplies sizes, this inert observer only
+// satisfies the browser capability check.
+globalThis.ResizeObserver ||= class ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
+
+// Anchor compensation after a prepend uses scrollBy. Browsers provide it;
+// jsdom does not, so model its only stateful effect for virtual-list tests.
+if (typeof HTMLElement !== 'undefined' && !HTMLElement.prototype.scrollBy) {
+  HTMLElement.prototype.scrollBy = function scrollBy(optionsOrX, y) {
+    const delta = typeof optionsOrX === 'object' ? Number(optionsOrX.top || 0) : Number(y || 0);
+    this.scrollTop = Number(this.scrollTop || 0) + delta;
+  };
+}

@@ -129,7 +129,7 @@ export function createWire({
           contractVersion: payload.contract_version,
           boot: payload.boot,
           memberships: payload.memberships?.length || 0,
-          historyChannels: payload.history?.length || 0,
+          historyChannels: payload.history_meta?.length || 0,
         });
         onState('attached', {
           contract_version: payload.contract_version,
@@ -138,7 +138,7 @@ export function createWire({
           // 以什么 actor 身份"，恒不再靠 feed 副作用反推。
           memberships: payload.memberships,
           memberships_complete: payload.memberships_complete,
-          history: payload.history || [],
+          history_meta: payload.history_meta || [],
           attach_ref: incoming.ref,
           generation,
         });
@@ -170,7 +170,12 @@ export function createWire({
         onError(new WireError({ frame: DOWN.feed, code: 'bad_payload', detail: 'feed arrived before attach receipt' }));
         return;
       }
-      onFeed(payload.channel_id, Number(payload.seq), payload.envelope);
+	  if (Number(payload.generation) !== generation) {
+		diagnostic('warn', 'wire.stale_feed_ignored', { wireGeneration: generation, frameGeneration: payload.generation, ref: incoming.ref || '' });
+		return;
+	  }
+	  const detail = { ...payload, seq: Number(payload.seq), ref: incoming.ref || '' };
+	  onFeed(payload.channel_id, detail.seq, payload.envelope, detail);
       return;
     }
     if (parsed.kind === DOWN.observe_ended) {
@@ -188,7 +193,11 @@ export function createWire({
         hasOlder: payload.has_older,
         errorCode: payload.error_code || '',
       });
-      onPageEnd({ ...payload, ref: incoming.ref || '', generation });
+	  if (Number(payload.generation) !== generation) {
+		diagnostic('warn', 'wire.stale_page_end_ignored', { wireGeneration: generation, frameGeneration: payload.generation, ref: incoming.ref || '' });
+		return;
+	  }
+      onPageEnd({ ...payload, ref: incoming.ref || '' });
     }
   }
 
@@ -224,7 +233,7 @@ export function createWire({
       diagnostic('info', 'wire.open', { generation });
       const attachSince = since() || {};
       const attachFocus = focus() || '';
-      const attachPromise = transmit(UP.attach, { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION }, { allowBeforeAttach: true });
+      const attachPromise = transmit(UP.attach, { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation }, { allowBeforeAttach: true });
       attachRef = `${UP.attach}-${counter}`;
       diagnostic('info', 'wire.attach_sent', { generation, ref: attachRef, focus: attachFocus, cursorChannels: Object.keys(attachSince).length });
       attachPromise.catch((error) => {
@@ -284,8 +293,15 @@ export function createWire({
     unobserve(channelId) {
       return transmit(UP.unobserve, { channel_id: channelId });
     },
-    historyBefore(channelId, beforeSeq = 0, limit = 200) {
-      return transmit(UP.history_before, { channel_id: channelId, before_seq: beforeSeq, limit });
+    historyBefore(channelId, beforeSeq = 0, limit = 200, { purpose = 'hydrate', generation: requestedGeneration = generation, byteLimit = 4 * 1024 * 1024 } = {}) {
+      return transmit(UP.history_before, {
+		channel_id: channelId,
+		before_seq: beforeSeq,
+		limit,
+		byte_limit: byteLimit,
+		generation: requestedGeneration,
+		purpose,
+	  });
     },
     close() {
       if (stopped) return;

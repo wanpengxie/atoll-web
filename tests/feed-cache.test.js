@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apply, createChannelState } from '../src/model/fold.js';
+import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
 import { createFeedCache, redactFeedSecrets, resumeSnapshot } from '../src/model/feed-cache.js';
 
 class MemoryStorage {
@@ -19,18 +19,15 @@ function envelope(id, text) {
 }
 
 describe('feed cache', () => {
-  it('derives the resume cursor from the rows that are actually available', () => {
-    const state = createChannelState('c0');
-    apply(state, { channel_id: 'c0', seq: 4, envelope: envelope('m-4', 'hello') });
-    apply(state, { channel_id: 'c0', seq: 7, envelope: envelope('m-7', 'again') });
-    expect(resumeSnapshot(new Map([['c0', state]]))).toEqual({ c0: 7 });
+	it('derives the resume cursor from lightweight channel metadata', () => {
+	expect(resumeSnapshot(new Map([['c0', { newestSeq: 7 }]]))).toEqual({ c0: 7 });
   });
 
   it('removes the unbounded localStorage v5 cache during IndexedDB migration', async () => {
     const storage = new MemoryStorage();
     storage.setItem('atoll.feed.v5.c0', '[{"stale":true}]');
     storage.setItem('unrelated', 'keep');
-    const restored = await createFeedCache({ indexedDBImpl: null, legacyStorage: storage }).restore();
+	const restored = await createFeedCache({ indexedDBImpl: null, IDBKeyRangeImpl: null, legacyStorage: storage }).restore();
     expect(restored.size).toBe(0);
     expect(storage.getItem('atoll.feed.v5.c0')).toBeNull();
     expect(storage.getItem('unrelated')).toBe('keep');
@@ -42,5 +39,56 @@ describe('feed cache', () => {
     expect(saved).not.toContain('one-time-key');
     expect(saved).not.toContain('token-value');
     expect(saved).toContain('已隐藏');
+  });
+
+	it('reads rows by reverse cursor in bounded batches and never restores bodies wholesale', async () => {
+	const cache = createFeedCache({
+	  indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange,
+	  databaseName: `feed-cache-batch-${crypto.randomUUID()}`,
+	});
+	await cache.openMeta();
+	await cache.saveRows(Array.from({ length: 450 }, (_, index) => ({
+	  channel_id: 'c0', seq: index + 1, envelope: envelope(`m-${index + 1}`, `row ${index + 1}`),
+	})));
+	await cache.idle();
+	const newest = await cache.readBefore('c0', 0, 200);
+	expect(newest.rows).toHaveLength(200);
+	expect(newest.rows[0].seq).toBe(251);
+	expect(newest.nextBeforeSeq).toBe(251);
+	const older = await cache.readBefore('c0', newest.nextBeforeSeq, 200);
+	expect(older.rows[0].seq).toBe(51);
+	expect(older.rows.at(-1).seq).toBe(250);
+	expect((await cache.restore()).size).toBe(0);
+  });
+
+	it('keeps a transactional per-channel FIFO of the latest rows', async () => {
+	const cache = createFeedCache({
+	  indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange,
+	  databaseName: `feed-cache-fifo-${crypto.randomUUID()}`,
+	  rowsPerChannel: 5,
+	});
+	await cache.openMeta();
+	await cache.saveRows(Array.from({ length: 8 }, (_, index) => ({
+	  channel_id: 'c0', seq: index + 1, envelope: envelope(`m-${index + 1}`, `row ${index + 1}`),
+	})));
+	await cache.idle();
+	const batch = await cache.readBefore('c0', 0, 20);
+	expect(batch.rows.map((row) => row.seq)).toEqual([4, 5, 6, 7, 8]);
+	expect(cache.metaSnapshot().get('c0')).toMatchObject({ oldestSeq: 4, newestSeq: 8, rowCount: 5 });
+  });
+
+	it('persists empty projected scan coverage and resets IndexedDB on boot change', async () => {
+	const databaseName = `feed-cache-boot-${crypto.randomUUID()}`;
+	const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	await cache.openMeta();
+	await cache.ensureBoot('boot-a');
+	await cache.saveRows([{ channel_id: 'c0', seq: 10, envelope: envelope('m-10', 'ten') }]);
+	await cache.saveRows([], { coverageByChannel: new Map([['quiet', { lowSeq: 20, highSeq: 40 }]]) });
+	await cache.idle();
+	expect(cache.metaSnapshot().get('quiet')?.coverage).toEqual([{ lowSeq: 20, highSeq: 40 }]);
+	expect((await cache.readBefore('c0', 0, 20)).rows).toHaveLength(1);
+	await expect(cache.ensureBoot('boot-b')).resolves.toMatchObject({ changed: true });
+	expect((await cache.readBefore('c0', 0, 20)).rows).toHaveLength(0);
+	expect(cache.metaSnapshot().size).toBe(0);
   });
 });

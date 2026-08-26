@@ -51,14 +51,17 @@ async function connect(scenario) {
     constructor(url) { super(url, { headers: { Cookie: cookie } }); }
   }
   const feeds = [];
-  let attached = false;
+  let attachDetail = null;
   const wire = createWire({
     url: baseURL.replace(/^http/, 'ws') + '/ws',
     WebSocketImpl: SessionWebSocket,
-    onState: (state) => { if (state === 'attached') attached = true; },
+    onState: (state, detail) => { if (state === 'attached') attachDetail = detail; },
     onFeed: (channelId, seq, envelope) => feeds.push({ channelId, seq, envelope }),
   });
-  await waitFor(() => attached, 'attach');
+  await waitFor(() => attachDetail, 'attach');
+  await Promise.all((attachDetail.history_meta || []).map((entry) => (
+    wire.historyBefore(entry.channel_id, 0, 200, { purpose: 'initial-tail' })
+  )));
   return { server, baseURL, fetchWithSession, wire, feeds };
 }
 
@@ -80,9 +83,10 @@ afterEach(async () => Promise.all([...servers].map(close)));
 describe('Phase C mock contract', () => {
   it('returns real Describe metadata and preserves typed capability payload/result', async () => {
     const { server, wire, feeds } = await connect('actor-capability');
+    await wire.submit(request('describe-live', 'actor.describe'));
     const describe = await waitFor(
-      () => feeds.find((row) => row.envelope.id === 'c0-actor-describe-completed')?.envelope,
-      'seeded actor.describe replay',
+      () => terminal(feeds, 'describe-live'),
+      'live actor.describe terminal',
     );
     expect(describe.payload).toMatchObject({ class: 'codex', interfaces: ['actor', 'agent'] });
     expect(describe.payload.words['mock.order.create']).toMatchObject({

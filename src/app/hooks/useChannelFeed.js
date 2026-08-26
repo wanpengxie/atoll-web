@@ -14,12 +14,13 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const cursorsRef = useRef(createCursors());
   const cacheRef = useRef(null);
   if (cacheRef.current === null) cacheRef.current = createFeedCache();
+  const cacheMetaRef = useRef(new Map());
   const statesRef = useRef(new Map());
-  const attachQueueRef = useRef(new Map());
   const applyRowsRef = useRef(null);
   const schedulerRef = useRef(null);
+  const lifecycleRef = useRef(0);
 
-  const applyRows = useCallback((rows, { publish = true } = {}) => {
+  const applyRows = useCallback((rows, { publish = true, persist = true } = {}) => {
     if (!rows?.length) return 0;
     let rosterChanged = false;
     let changed = 0;
@@ -69,12 +70,10 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     onChannelsDiscovered(unseenChannels);
     onSubmissionFeed(landedMessageIds, closedRequestIds);
     onAccessChanged();
-    for (const channelId of dirtyChannels) {
-      cacheRef.current.save(statesRef.current.get(channelId)).catch((error) => {
-        diagnostic('error', 'feed.cache_save_failed', { channelId, error });
-        onError(error);
-      });
-    }
+    if (persist) cacheRef.current.saveRows(rows).catch((error) => {
+      diagnostic('error', 'feed.cache_save_failed', { channels: [...dirtyChannels], error });
+      onError(error);
+    });
     if (publish) setVersion((value) => value + 1 + Number(rosterChanged));
     return changed;
   }, [accessRef, activeChannelRef, onAccessChanged, onChannelsDiscovered, onDirectoryInvalidated, onError, onRoster, onSubmissionFeed, onTimerFired, rosterRef]);
@@ -82,61 +81,67 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 
   if (schedulerRef.current === null) {
     schedulerRef.current = createHistoryScheduler({
-      requestPage: (channelId, beforeSeq, limit) => {
+      requestPage: (channelId, beforeSeq, limit, options) => {
         const wire = wireRef.current;
         if (!wire) return Promise.reject(new Error('消息连接尚未就绪'));
-        return wire.historyBefore(channelId, beforeSeq, limit);
+		return wire.historyBefore(channelId, beforeSeq, limit, options);
       },
+	  readCache: (channelId, beforeSeq, limit, byteLimit) => cacheRef.current.readBefore(channelId, beforeSeq, limit, byteLimit),
+	  persistRows: (rows, options) => cacheRef.current.saveRows(rows, options),
       hasVisibleRow: (channelId, seq) => statesRef.current.get(channelId)?.rows.has(seq) === true,
-      revealRows: (channelId, entries) => applyRowsRef.current?.(entries.map(([seq, envelope]) => ({ channel_id: channelId, seq, envelope }))),
+	  revealRows: (channelId, entries) => applyRowsRef.current?.(
+		entries.map(([seq, envelope]) => ({ channel_id: channelId, seq, envelope })),
+		{ persist: false },
+	  ),
       onChange: () => setVersion((value) => value + 1),
       onError,
     });
   }
 
-  const enqueue = useCallback((channelId, seq, envelope) => {
-    const numericSeq = Number(seq);
-    const kind = schedulerRef.current.classifyRow(channelId, numericSeq, envelope);
-    if (kind === 'history') return;
-    if (kind === 'attach') {
-      attachQueueRef.current.set(`${channelId}:${numericSeq}`, { channel_id: channelId, seq: numericSeq, envelope });
-      return;
-    }
-    applyRowsRef.current?.([{ channel_id: channelId, seq: numericSeq, envelope }]);
-  }, []);
-
-  const flush = useCallback((channelId = '') => {
-    const rows = [];
-    for (const [key, row] of attachQueueRef.current) {
-      if (channelId && row.channel_id !== channelId) continue;
-      rows.push(row);
-      attachQueueRef.current.delete(key);
-    }
-    rows.sort((left, right) => left.channel_id.localeCompare(right.channel_id) || left.seq - right.seq);
-    return applyRowsRef.current?.(rows) || 0;
+  const enqueue = useCallback((payloadOrChannel, seq, envelope, detail) => {
+	const payload = typeof payloadOrChannel === 'object'
+	  ? payloadOrChannel
+	  : detail || { channel_id: payloadOrChannel, seq, envelope, source: 'live' };
+	if (schedulerRef.current.historyRow(payload)) return;
+	// Live rows never enter the historical executor or reservoir.
+	applyRowsRef.current?.([{ channel_id: payload.channel_id, seq: Number(payload.seq), envelope: payload.envelope }]);
+	schedulerRef.current.observeLive(payload.channel_id, payload.envelope?.ts);
   }, []);
 
   const setHistoryGrants = useCallback((grants = [], detail = {}) => {
-    schedulerRef.current.attach(grants, {
-      attachRef: detail.attach_ref || '',
-      generation: detail.generation,
-      focus: detail.focus || activeChannelRef.current || '',
+    const generation = detail.generation;
+    // Live WS delivery is already active. Only historical scheduling waits for
+    // this metadata-only IndexedDB generation check, never message bodies.
+    void cacheRef.current.ensureBoot(detail.boot).then(({ changed, meta }) => {
+      cacheMetaRef.current = meta;
+      if (changed) cursorsRef.current.reconcile({});
+      schedulerRef.current.attach(grants, {
+        generation,
+        focus: detail.focus || activeChannelRef.current || '',
+		localMeta: meta,
+      });
+    }).catch((error) => {
+      diagnostic('error', 'feed.cache_boot_check_failed', { generation, error });
+      onError(error);
+      schedulerRef.current.attach(grants, {
+        generation,
+        focus: detail.focus || activeChannelRef.current || '',
+		localMeta: new Map(),
+      });
     });
   }, [activeChannelRef]);
 
   const pageEnd = useCallback((payload) => {
     const accepted = schedulerRef.current.pageEnd(payload);
-    if (accepted && payload?.source === 'attach') flush(payload.channel_id);
     if (!accepted) diagnostic('warn', 'feed.page_end_ignored', {
       channelId: payload?.channel_id, source: payload?.source, ref: payload?.ref, generation: payload?.generation,
     });
     return accepted;
-  }, [flush]);
+  }, []);
 
   const focusHistory = useCallback((channelId) => schedulerRef.current.focus(channelId), []);
   const disconnectHistory = useCallback((generation) => {
-    diagnostic('info', 'feed.connection_reset', { generation, queuedAttachRows: attachQueueRef.current.size });
-    attachQueueRef.current.clear();
+	diagnostic('info', 'feed.connection_reset', { generation });
     schedulerRef.current.disconnected(generation);
   }, []);
   const revealHistory = useCallback((channelId, count) => schedulerRef.current.take(channelId, count), []);
@@ -144,7 +149,6 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const bump = useCallback(() => setVersion((value) => value + 1), []);
   const cancel = useCallback(() => {}, []);
   const clear = useCallback(() => {
-    attachQueueRef.current.clear();
     schedulerRef.current.clear();
     statesRef.current = new Map();
     setVersion((value) => value + 1);
@@ -158,13 +162,15 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
 
   useEffect(() => {
+    const lifecycle = ++lifecycleRef.current;
     let alive = true;
-    cacheRef.current.restore().then((restored) => {
+    cacheRef.current.openMeta().then((meta) => {
       if (!alive) return;
-      statesRef.current = restored;
-      cursorsRef.current.reconcile(resumeSnapshot(restored));
+	  cacheMetaRef.current = meta;
+	  cursorsRef.current.reconcile(resumeSnapshot(meta));
+	  schedulerRef.current.setLocalMeta(meta);
       setReady(true);
-      diagnostic('info', 'feed.ready', { channels: restored.size, cursors: Object.keys(resumeSnapshot(restored)).length });
+	  diagnostic('info', 'feed.meta_ready', { channels: meta.size, cursors: Object.keys(resumeSnapshot(meta)).length });
       setVersion((value) => value + 1);
     }).catch((error) => {
       if (!alive) return;
@@ -174,11 +180,16 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     });
     return () => {
       alive = false;
-      schedulerRef.current.destroy();
+      // React StrictMode immediately mounts the same hook again after its
+      // development cleanup probe. Defer irreversible destruction for one
+      // microtask and cancel it implicitly when a new lifecycle has begun.
+      queueMicrotask(() => {
+        if (lifecycleRef.current === lifecycle) schedulerRef.current.destroy();
+      });
     };
   }, []);
   return {
-    statesRef, cursorsRef, version, ready, bump, enqueue, flush, cancel, clear, resetPersistent,
+    statesRef, cursorsRef, version, ready, bump, enqueue, cancel, clear, resetPersistent,
     setHistoryGrants, pageEnd, disconnectHistory, focusHistory, historyFor, revealHistory,
   };
 }

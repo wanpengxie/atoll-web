@@ -8,6 +8,13 @@ export function ensureServerBoot(boot, storage = globalThis.localStorage) {
   if (!boot || !storage) return true;
   const known = storage.getItem(BOOT_KEY);
   if (known === boot) return true;
+  // First observation establishes the world identity. Login/session state may
+  // already have been written during this same boot and is not stale merely
+  // because the server receipt arrived a few milliseconds later.
+  if (!known) {
+    storage.setItem(BOOT_KEY, boot);
+    return true;
+  }
   const stale = [];
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
@@ -15,6 +22,5 @@ export function ensureServerBoot(boot, storage = globalThis.localStorage) {
   }
   for (const key of stale) storage.removeItem(key);
   storage.setItem(BOOT_KEY, boot);
-  // 没有旧世界的缓存可作废时（全新浏览器）不需要重载。
   return stale.length === 0;
 }

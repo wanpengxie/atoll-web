@@ -1,10 +1,10 @@
-export const FRAME_VERSION = 3;
+export const FRAME_VERSION = 4;
 export const MAX_FRAME_BYTES = 512 * 1024;
 export const SESSION_COOKIE = 'atoll_session';
-export const CONTRACT_VERSION = 'mock-v3';
+export const CONTRACT_VERSION = 'mock-v4';
 
 export const PAYLOAD_FIELDS = Object.freeze({
-  attach: ['since', 'focus', 'history_protocol'],
+  attach: ['since', 'focus', 'history_protocol', 'generation'],
   submit: ['channel_id', 'id', 'msg_type', 'kind', 'payload', 'audience', 'visibility', 'parent_id', 'expires_at_ms'],
   resolve: ['channel_id', 'req_id', 'text', 'decision', 'note'],
   cancel: ['channel_id', 'req_id'],
@@ -13,11 +13,11 @@ export const PAYLOAD_FIELDS = Object.freeze({
   resource: ['channel_id', 'op', 'resource_id', 'args', 'target', 'ops', 'query', 'address', 'with_content'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
-  history_before: ['channel_id', 'before_seq', 'limit'],
+  history_before: ['channel_id', 'before_seq', 'limit', 'byte_limit', 'generation', 'purpose'],
 });
 
 export const REQUIRED_FIELDS = Object.freeze({
-  attach: ['focus', 'history_protocol'],
+  attach: ['focus', 'history_protocol', 'generation'],
   submit: ['channel_id', 'msg_type'],
   resolve: ['channel_id', 'req_id'],
   cancel: ['channel_id', 'req_id'],
@@ -26,7 +26,7 @@ export const REQUIRED_FIELDS = Object.freeze({
   resource: ['channel_id', 'op'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
-  history_before: ['channel_id'],
+  history_before: ['channel_id', 'generation', 'purpose'],
 });
 
 export const isObject = (value) => value != null && typeof value === 'object' && !Array.isArray(value);
@@ -82,8 +82,12 @@ export function validatePayload(type, payload) {
   if (type === 'history_before') {
     if (payload.before_seq != null && (!Number.isSafeInteger(payload.before_seq) || payload.before_seq < 0)) return 'history_before before_seq must be a non-negative safe integer';
     if (payload.limit != null && (!Number.isSafeInteger(payload.limit) || payload.limit < 1 || payload.limit > 200)) return 'history_before limit must be an integer between 1 and 200';
+	if (!Number.isSafeInteger(payload.generation) || payload.generation < 1) return 'history_before generation must be a positive safe integer';
+	if (!['initial-tail', 'user-demand', 'hydrate'].includes(payload.purpose)) return 'history_before purpose is invalid';
+	if (payload.byte_limit != null && (!Number.isSafeInteger(payload.byte_limit) || payload.byte_limit < 1 || payload.byte_limit > 4 * 1024 * 1024)) return 'history_before byte_limit must be between 1 and 4MiB';
   }
   if (type === 'attach' && payload.history_protocol !== FRAME_VERSION) return `attach history_protocol must be ${FRAME_VERSION}`;
+	if (type === 'attach' && (!Number.isSafeInteger(payload.generation) || payload.generation < 1)) return 'attach generation must be a positive safe integer';
   if (type === 'resource') {
     const ops = ['create', 'read', 'write', 'delete', 'stat', 'list'];
     if (!ops.includes(payload.op)) return `resource op must be one of: ${ops.join(', ')}`;
