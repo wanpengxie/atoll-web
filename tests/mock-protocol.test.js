@@ -8,14 +8,14 @@ import {
 } from '../mock/protocol.mjs';
 
 describe('mock protocol layer', () => {
-  it('matches the wire v2 envelope baseline', () => {
-    expect(FRAME_VERSION).toBe(2);
+  it('matches the wire v3 envelope baseline', () => {
+    expect(FRAME_VERSION).toBe(3);
     expect(MAX_FRAME_BYTES).toBe(512 * 1024);
     expect(Object.keys(PAYLOAD_FIELDS).sort()).toEqual([
       'after', 'attach', 'cancel', 'cancel_timer', 'history_before', 'observe', 'resolve', 'resource', 'submit', 'unobserve',
     ]);
     expect(downstreamFrame('receipt', 'r1', { message_id: 'm1' })).toEqual({
-      v: 2,
+      v: 3,
       frame_type: 'receipt',
       ref: 'r1',
       payload: { message_id: 'm1' },
@@ -31,7 +31,7 @@ describe('mock protocol layer', () => {
 
   it('accepts every minimal closed-set payload', () => {
     const values = {
-      attach: {},
+      attach: { focus: '', history_protocol: 3 },
       submit: { channel_id: 'c0', msg_type: 'agent.ask' },
       resolve: { channel_id: 'c0', req_id: 'r', decision: 'approved' },
       cancel: { channel_id: 'c0', req_id: 'r' },

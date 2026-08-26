@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { parseDownstream } from '../src/protocol/frame.js';
 import { ENVELOPE_FIELDS } from '../src/protocol/envelope.js';
 
-const fixtures = JSON.parse(readFileSync(new URL('./fixtures/atoll-contract-v2.json', import.meta.url), 'utf8'));
+const fixtures = JSON.parse(readFileSync(new URL('./fixtures/atoll-contract-v3.json', import.meta.url), 'utf8'));
 
-describe('atoll contract v2 fixtures', () => {
+describe('atoll contract v3 fixtures', () => {
   it('parses every authoritative downstream frame shape', () => {
     for (const [name, value] of Object.entries(fixtures.downstream)) {
       const parsed = parseDownstream(JSON.stringify(value));

@@ -14,6 +14,7 @@ import { selectSystemNote } from '../model/agent-selection.js';
 import { scopeEntries, TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { processCount, turnStartObservation } from '../model/turn-process.js';
+import { diagnostic } from '../model/diagnostics.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { StructuredResult } from './StructuredResult.jsx';
@@ -666,6 +667,7 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
   const historyMutationRef = useRef(null);
+  const historyDemandRef = useRef(false);
   const layoutMotionRef = useRef(null);
   const renderGrowthRef = useRef({ channelId: state.channelId, total: 0, latestSeq: 0, extra: 0 });
   const previousAccess = useRef(access);
@@ -806,14 +808,21 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
   }
 
   function revealPrefetchedHistory() {
-    const localRevealed = Math.min(TIMELINE_HISTORY_REVEAL_SIZE, windowed.start);
-    const requested = TIMELINE_HISTORY_REVEAL_SIZE - localRevealed;
+    const nextLocalSeq = withNarration[windowed.start - 1]?.seq || 0;
+    // A restored disk tail can sit below a network gap. Prefer the reservoir
+    // while its newest row belongs between the rendered window and that local
+    // tail; once the gap is stitched, resume exposing already-folded rows.
+    const reservoirFirst = Number(history?.bufferedNewest || 0) > nextLocalSeq;
+    const fromReservoir = reservoirFirst ? Number(onRevealHistory?.(TIMELINE_HISTORY_REVEAL_SIZE)) || 0 : 0;
+    const localRevealed = Math.min(TIMELINE_HISTORY_REVEAL_SIZE - fromReservoir, windowed.start);
+    const requested = TIMELINE_HISTORY_REVEAL_SIZE - fromReservoir - localRevealed;
     // The reservoir is intentionally not React state: polling it through a
     // prop would make every 200-row background page rerender the whole app.
     // Claim rows synchronously only when an actual scroll needs them.
-    const fromReservoir = requested > 0 ? Number(onRevealHistory?.(requested)) || 0 : 0;
-    const revealed = localRevealed + fromReservoir;
+    const trailingReservoir = requested > 0 ? Number(onRevealHistory?.(requested)) || 0 : 0;
+    const revealed = localRevealed + fromReservoir + trailingReservoir;
     if (!revealed) return false;
+    historyDemandRef.current = false;
     beginHistoryMutation();
     leaveLatest();
     setPage((value) => value + 1);
@@ -825,11 +834,47 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
     const viewport = event.currentTarget;
     const bottom = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
     const atLatest = bottom - viewport.scrollTop < 80;
-    if (atLatest) return;
+    if (atLatest) {
+      historyDemandRef.current = false;
+      return;
+    }
     // The channel history scheduler owns all I/O. Scrolling only exposes rows
     // already resident in memory and can therefore never wait on the network.
-    if (viewport.scrollTop <= Math.max(160, viewport.clientHeight * 0.5)) revealPrefetchedHistory();
+    const threshold = Math.max(160, viewport.clientHeight * 0.5);
+    if (viewport.scrollTop <= threshold) {
+      if (!revealPrefetchedHistory()) {
+        historyDemandRef.current = true;
+        diagnostic('debug', 'timeline.history_demand_waiting', {
+          channelId: state.channelId,
+          buffered: Number(history?.buffered || 0),
+          hasOlder: Boolean(history?.hasOlder),
+        });
+      }
+    } else {
+      historyDemandRef.current = false;
+    }
   }
+
+  // Reaching the top is an explicit read request even when the network page has
+  // not arrived yet. Preserve that intent. Once the scheduler publishes new
+  // reservoir rows, release one anchored batch without demanding an impossible
+  // second upward scroll from a viewport that is already at scrollTop=0.
+  useLayoutEffect(() => {
+    if (!historyDemandRef.current || !(Number(history?.buffered) > 0) || historyMutationRef.current) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const threshold = Math.max(160, viewport.clientHeight * 0.5);
+    if (viewport.scrollTop > threshold) {
+      historyDemandRef.current = false;
+      return;
+    }
+    if (revealPrefetchedHistory()) {
+      diagnostic('info', 'timeline.history_demand_fulfilled', {
+        channelId: state.channelId,
+        buffered: Number(history?.buffered || 0),
+      });
+    }
+  }, [history?.buffered, state.channelId]);
 
   // Preserve the message under the reader's eye when older DOM is prepended.
   // scrollTop must grow by exactly the added height; leaving it unchanged would
@@ -870,6 +915,7 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
   }, [state.channelId]);
 
   useEffect(() => {
+    historyDemandRef.current = false;
     setPage(0);
     setScope(TIMELINE_SCOPE.mine);
     setEditNotice('');

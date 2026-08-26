@@ -47,7 +47,7 @@ class FakeWebSocket {
 }
 
 function receipt(socket, sent, payload = {}) {
-  socket.message({ v: 2, frame_type: 'receipt', ref: sent.ref, payload });
+  socket.message({ v: 3, frame_type: 'receipt', ref: sent.ref, payload });
 }
 
 describe('wire client', () => {
@@ -62,10 +62,10 @@ describe('wire client', () => {
     const socket = FakeWebSocket.instances[0];
     socket.open();
     expect(socket.sent).toEqual([{
-      v: 2,
+      v: 3,
       frame_type: 'attach',
       ref: 'attach-1',
-      payload: { since: { c0: 7 } },
+      payload: { since: { c0: 7 }, focus: '', history_protocol: 3 },
     }]);
     receipt(socket, socket.sent[0], {
       contract_version: 'v4',
@@ -80,24 +80,46 @@ describe('wire client', () => {
       memberships: [{ channel_id: 'c0', actor_id: 'root' }],
       memberships_complete: true,
       history: [],
+      attach_ref: 'attach-1',
+      boot: undefined,
+      generation: 1,
     }]);
     wire.close();
   });
 
-  it('commits attach history as one barrier before reporting attached', () => {
+  it('rejects feed before the v3 attach receipt instead of emulating the old wire', () => {
     const events = [];
     const wire = createWire({
       WebSocketImpl: FakeWebSocket,
       onFeed: (_channelId, seq) => events.push(`feed:${seq}`),
+      onError: (error) => events.push(`error:${error.detail}`),
       onState: (state) => events.push(`state:${state}`),
     });
     const socket = FakeWebSocket.instances[0];
     socket.open();
-    socket.message({ v: 2, frame_type: 'feed', payload: { channel_id: 'c0', seq: 10, envelope: { id: 'm10' } } });
-    socket.message({ v: 2, frame_type: 'feed', payload: { channel_id: 'c0', seq: 11, envelope: { id: 'm11' } } });
-    expect(events).toEqual(['state:open']);
-    receipt(socket, socket.sent[0], { history: [{ channel_id: 'c0', oldest_seq: 10 }] });
-    expect(events).toEqual(['state:open', 'feed:10', 'feed:11', 'state:attached']);
+    socket.message({ v: 3, frame_type: 'feed', payload: { channel_id: 'c0', seq: 10, envelope: { id: 'm10' } } });
+    expect(events).toEqual(['state:open', 'error:feed arrived before attach receipt']);
+    receipt(socket, socket.sent[0]);
+    socket.message({ v: 3, frame_type: 'feed', payload: { channel_id: 'c0', seq: 11, envelope: { id: 'm11' } } });
+    expect(events).toEqual(['state:open', 'error:feed arrived before attach receipt', 'state:attached', 'feed:11']);
+    wire.close();
+  });
+
+  it('delivers attach rows and their correlated page_end after the receipt', () => {
+    const events = [];
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      onFeed: (_channelId, seq) => events.push(`feed:${seq}`),
+      onPageEnd: (payload) => events.push(`end:${payload.ref}:${payload.generation}`),
+      onState: (state) => events.push(`state:${state}`),
+    });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const attach = socket.sent[0];
+    receipt(socket, attach, { history: [{ channel_id: 'c0', oldest_seq: 10 }] });
+    socket.message({ v: 3, frame_type: 'feed', payload: { channel_id: 'c0', seq: 10, envelope: { id: 'm10' } } });
+    socket.message({ v: 3, frame_type: 'page_end', ref: attach.ref, payload: { source: 'attach', channel_id: 'c0', oldest_seq: 10 } });
+    expect(events).toEqual(['state:open', 'state:attached', 'feed:10', `end:${attach.ref}:1`]);
     wire.close();
   });
 
@@ -132,7 +154,7 @@ describe('wire client', () => {
     const refused = wire.resolve({ channel_id: 'c0', req_id: 'r1', decision: 'approved' });
     const resolve = socket.sent.at(-1);
     socket.message({
-      v: 2,
+      v: 3,
       frame_type: 'error',
       ref: resolve.ref,
       payload: { frame: 'resolve', code: 'already_closed', detail: 'done' },
@@ -165,6 +187,17 @@ describe('wire client', () => {
     socket.close();
     await expect(request).rejects.toEqual(expect.objectContaining({ code: 'closed' }));
     await expect(Promise.reject(new WireError({ code: 'closed' }))).rejects.toBeInstanceOf(WireError);
+    wire.close();
+  });
+
+  it('fails closed when a pre-v3 downstream frame arrives', () => {
+    const errors = [];
+    const wire = createWire({ WebSocketImpl: FakeWebSocket, onError: (error) => errors.push(error) });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.message({ v: 2, frame_type: 'receipt', ref: socket.sent[0].ref, payload: {} });
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(errors.at(-1)).toMatchObject({ code: 'bad_payload', detail: 'invalid downstream frame' });
     wire.close();
   });
 });

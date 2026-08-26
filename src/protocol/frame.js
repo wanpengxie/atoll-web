@@ -1,4 +1,4 @@
-export const FRAME_VERSION = 2;
+export const FRAME_VERSION = 3;
 export const MAX_FRAME_BYTES = 512 * 1024;
 
 export const UP = Object.freeze({
@@ -19,6 +19,7 @@ export const DOWN = Object.freeze({
   receipt: 'receipt',
   error: 'error',
   observe_ended: 'observe_ended',
+  page_end: 'page_end',
 });
 
 export const ERROR_CODES = Object.freeze([
@@ -47,7 +48,7 @@ export const OBSERVE_ENDED = Object.freeze([
 ]);
 
 const PAYLOAD_FIELDS = Object.freeze({
-  attach: ['since'],
+  attach: ['since', 'focus', 'history_protocol'],
   submit: [
     'channel_id',
     'id',
@@ -80,7 +81,7 @@ const PAYLOAD_FIELDS = Object.freeze({
 });
 
 const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
-  attach: [],
+  attach: ['focus', 'history_protocol'],
   submit: ['channel_id', 'msg_type'],
   resolve: ['channel_id', 'req_id'],
   cancel: ['channel_id', 'req_id'],
@@ -132,6 +133,9 @@ export function validateUpstreamPayload(type, payload) {
     if (payload.limit != null && (!Number.isSafeInteger(payload.limit) || payload.limit < 1 || payload.limit > 200)) {
       throw new FrameValidationError('history_before limit must be an integer between 1 and 200');
     }
+  }
+  if (type === UP.attach && payload.history_protocol !== FRAME_VERSION) {
+    throw new FrameValidationError(`attach history_protocol must be ${FRAME_VERSION}`);
   }
   if (type === UP.resource) validateResourcePayload(payload);
 }

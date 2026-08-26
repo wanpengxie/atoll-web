@@ -6,12 +6,12 @@
     "describe": "../atoll/lib/introspect/introspect.go"
   },
   "downstream": {
-    "attach_receipt": {"v": 2, "frame_type": "receipt", "ref": "attach-1", "payload": {"contract_version": "atoll-test"}},
-    "submit_receipt": {"v": 2, "frame_type": "receipt", "ref": "submit-2", "payload": {"message_id": "m-1"}},
-    "feed": {"v": 2, "frame_type": "feed", "payload": {"channel_id": "c0", "seq": 1, "envelope": {"id": "m-1", "ts": 1723974400000, "channel_id": "c0", "sender": {"kind": "human", "id": "root"}, "kind": "request", "type": "human.text", "payload": {"text": "ping"}, "visibility": "public", "audience": ["steward"]}}},
-    "error": {"v": 2, "frame_type": "error", "ref": "submit-3", "payload": {"frame": "submit", "code": "forbidden", "detail": "principal is not eligible"}},
-    "observe_ended": {"v": 2, "frame_type": "observe_ended", "payload": {"channel_id": "c0.public", "reason": "channel_retired"}},
-    "resource_receipt": {"v": 2, "frame_type": "receipt", "ref": "resource-4", "payload": {"status": "accepted", "ticket": "fixture-redacted", "redeem": "/files/daemon%3A%2F%2Fmock%2Fc0%2Fdocs%2Fa.txt"}}
+    "attach_receipt": {"v": 3, "frame_type": "receipt", "ref": "attach-1", "payload": {"contract_version": "atoll-test"}},
+    "submit_receipt": {"v": 3, "frame_type": "receipt", "ref": "submit-2", "payload": {"message_id": "m-1"}},
+    "feed": {"v": 3, "frame_type": "feed", "payload": {"channel_id": "c0", "seq": 1, "envelope": {"id": "m-1", "ts": 1723974400000, "channel_id": "c0", "sender": {"kind": "human", "id": "root"}, "kind": "request", "type": "human.text", "payload": {"text": "ping"}, "visibility": "public", "audience": ["steward"]}}},
+    "error": {"v": 3, "frame_type": "error", "ref": "submit-3", "payload": {"frame": "submit", "code": "forbidden", "detail": "principal is not eligible"}},
+    "observe_ended": {"v": 3, "frame_type": "observe_ended", "payload": {"channel_id": "c0.public", "reason": "channel_retired"}},
+    "resource_receipt": {"v": 3, "frame_type": "receipt", "ref": "resource-4", "payload": {"status": "accepted", "ticket": "fixture-redacted", "redeem": "/files/daemon%3A%2F%2Fmock%2Fc0%2Fdocs%2Fa.txt"}}
   },
   "observations": {
     "channels": {"subject": "space/channels", "kind": "channels", "complete": true, "items": [{"key": "c0", "declared": {"id": "c0", "name": "home", "qualified_name": "c0", "type": "group", "status": "present", "owner_principal": "root", "description": "", "serving": 1, "spec": {}, "created_at": 1723974400000}, "actual": {"measures": [{"name": "open", "value": true, "unknown": false, "observed_at": 1723974400000, "since": null}]}}]},

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { apply, createChannelState } from '../src/model/fold.js';
-import { createFeedCache, resumeSnapshot } from '../src/model/feed-cache.js';
+import { createFeedCache, redactFeedSecrets, resumeSnapshot } from '../src/model/feed-cache.js';
 
 class MemoryStorage {
   constructor() { this.data = new Map(); }
@@ -8,55 +8,37 @@ class MemoryStorage {
   key(index) { return [...this.data.keys()][index] ?? null; }
   getItem(key) { return this.data.get(key) ?? null; }
   setItem(key, value) { this.data.set(key, String(value)); }
+  removeItem(key) { this.data.delete(key); }
 }
 
 function envelope(id, text) {
   return {
-    id,
-    ts: '2026-08-17T00:00:00Z',
-    channel_id: 'c0',
-    sender: { kind: 'human', id: 'root' },
-    kind: 'request',
-    type: 'agent.ask',
-    payload: { text },
-    visibility: 'public',
-    audience: ['steward'],
+    id, ts: 1, channel_id: 'c0', sender: { kind: 'human', id: 'root' },
+    kind: 'request', type: 'agent.ask', payload: { text }, visibility: 'public', audience: ['steward'],
   };
 }
 
 describe('feed cache', () => {
-  it('restores folded channel state and supplies a matching resume cursor', () => {
-    const storage = new MemoryStorage();
-    const cache = createFeedCache(storage);
+  it('derives the resume cursor from the rows that are actually available', () => {
     const state = createChannelState('c0');
     apply(state, { channel_id: 'c0', seq: 4, envelope: envelope('m-4', 'hello') });
     apply(state, { channel_id: 'c0', seq: 7, envelope: envelope('m-7', 'again') });
-    expect(cache.save(state)).toBe(true);
-
-    const restored = cache.restore();
-    expect(restored.get('c0').rows.size).toBe(2);
-    expect(restored.get('c0').turns.size).toBe(2);
-    expect(restored.get('c0').lastSeq).toBe(7);
-    expect(resumeSnapshot(restored)).toEqual({ c0: 7 });
+    expect(resumeSnapshot(new Map([['c0', state]]))).toEqual({ c0: 7 });
   });
 
-  it('ignores a damaged cache so the channel can be replayed from zero', () => {
+  it('removes the unbounded localStorage v5 cache during IndexedDB migration', async () => {
     const storage = new MemoryStorage();
-    storage.setItem('atoll.feed.v4.c0', '{bad json');
-    const restored = createFeedCache(storage).restore();
+    storage.setItem('atoll.feed.v5.c0', '[{"stale":true}]');
+    storage.setItem('unrelated', 'keep');
+    const restored = await createFeedCache({ indexedDBImpl: null, legacyStorage: storage }).restore();
     expect(restored.size).toBe(0);
-    expect(resumeSnapshot(restored)).toEqual({});
+    expect(storage.getItem('atoll.feed.v5.c0')).toBeNull();
+    expect(storage.getItem('unrelated')).toBe('keep');
   });
 
-  it('never persists device keys or nested credentials from feed payloads', () => {
-    const storage = new MemoryStorage();
-    const state = createChannelState('c0');
-    const row = envelope('mint', 'mint');
-    row.kind = 'response';
-    row.payload = { status: 'completed', value: { device_id: 'd1', key: 'one-time-key', nested: { token: 'token-value' } } };
-    apply(state, { channel_id: 'c0', seq: 1, envelope: row });
-    createFeedCache(storage).save(state);
-    const saved = storage.getItem('atoll.feed.v5.c0');
+  it('redacts device keys and nested credentials before IndexedDB persistence', () => {
+    const value = redactFeedSecrets({ device_id: 'd1', key: 'one-time-key', nested: { token: 'token-value' } });
+    const saved = JSON.stringify(value);
     expect(saved).not.toContain('one-time-key');
     expect(saved).not.toContain('token-value');
     expect(saved).toContain('已隐藏');

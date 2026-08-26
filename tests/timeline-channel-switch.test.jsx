@@ -174,4 +174,26 @@ describe('历史自动懒加载', () => {
       restore();
     }
   });
+
+  it('用户先到顶、历史后到达时自动兑现已经发生的读取意图', async () => {
+    const restore = timelineGeometry({ clientHeight: 600, scrollHeight: 1_200 });
+    let available = false;
+    const onRevealHistory = vi.fn(() => available ? 32 : 0);
+    try {
+      const view = render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+      const timeline = document.querySelector('.timeline');
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      timeline.scrollTop = 0;
+      fireEvent.scroll(timeline);
+      expect(onRevealHistory).toHaveBeenCalledTimes(1);
+      expect(onRevealHistory).toHaveLastReturnedWith(0);
+
+      available = true;
+      view.rerender(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 32 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+      await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(2));
+      expect(onRevealHistory).toHaveLastReturnedWith(32);
+    } finally {
+      restore();
+    }
+  });
 });

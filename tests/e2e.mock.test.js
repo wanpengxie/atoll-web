@@ -71,11 +71,13 @@ describe('local mock end-to-end', () => {
     }
     let detail = null;
     const feedRows = [];
+    const pageEnds = [];
     const wire = createWire({
       url: baseURL.replace(/^http/, 'ws') + '/ws', WebSocketImpl: SessionWebSocket,
       since: () => ({}),
       onState: (state, value) => { if (state === 'attached') detail = value; },
       onFeed: (channelId, seq, envelope) => feedRows.push({ channelId, seq, envelope }),
+      onPageEnd: (value) => pageEnds.push(value),
     });
     await waitFor(() => detail, 'history attach metadata');
     expect(detail.history.find((entry) => entry.channel_id === 'c0')).toMatchObject({ head_seq: expect.any(Number), oldest_seq: expect.any(Number) });
@@ -83,9 +85,11 @@ describe('local mock end-to-end', () => {
     await waitFor(() => feedRows.some((row) => row.channelId === 'c0'), 'initial semantic history feed');
     const before = feedRows.length;
     const tail = await wire.historyBefore('c0', 0, 3);
-    expect(tail.rows).toEqual([]);
+    expect(tail).toEqual({ accepted: true });
+    await waitFor(() => pageEnds.some((entry) => entry.source === 'page' && entry.channel_id === 'c0'), 'history page end');
+    const completed = pageEnds.find((entry) => entry.source === 'page' && entry.channel_id === 'c0');
     expect(feedRows.length).toBeGreaterThan(before);
-    expect(tail.oldest_seq).toBeGreaterThan(0);
+    expect(completed.oldest_seq).toBeGreaterThan(0);
     wire.close();
     await closeServer(server);
   });

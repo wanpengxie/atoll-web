@@ -44,6 +44,15 @@ function capabilitiesFor(...actorIds) {
 const roster = [{ id: 'me', kind: 'human', name: '我' }, { id: 'agent', kind: 'agent', name: 'Agent' }];
 
 describe('agent control v7 information architecture', () => {
+  it('semantic history keeps a completed request visible without progress frames', () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('historical', '历史中的完整问句'));
+    add(state, 2, response('historical-done', 'historical', { status: 'completed', text: '历史中的完整答复' }));
+    render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} />);
+    expect(screen.getByText('历史中的完整问句')).toBeTruthy();
+    expect(screen.getByText('历史中的完整答复')).toBeTruthy();
+  });
+
   it('38 keeps queued only in the wait layer and promotes only explicit acceptance facts', () => {
     const state = createChannelState('c0');
     add(state, 1, request('queued', '还在等待'));

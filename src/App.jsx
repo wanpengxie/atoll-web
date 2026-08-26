@@ -32,6 +32,7 @@ import { useSubmissions } from './app/hooks/useSubmissions.js';
 import { useAtollSession } from './app/hooks/useAtollSession.js';
 import { useChannelDirectory } from './app/hooks/useChannelDirectory.js';
 import { useChannelFeed } from './app/hooks/useChannelFeed.js';
+import { diagnostic } from './model/diagnostics.js';
 
 function displayError(error) {
   if (error instanceof ObsError && error.status === 503) return '频道未在服务';
@@ -151,7 +152,10 @@ export default function App() {
   const rosterRef = useRef(null);
   const accessRef = useRef(null);
   const activeChannelRef = useRef('');
-  const showSessionError = useCallback((error) => setTopError(displayError(error)), []);
+  const showSessionError = useCallback((error) => {
+    diagnostic('error', 'session.failed', { error });
+    setTopError(displayError(error));
+  }, []);
   const { booting, principal: me, identity, accept: handleAuthed, clear: clearSession, logoutRemote } = useAtollSession({ onError: showSessionError });
 
   useEffect(() => {
@@ -168,22 +172,22 @@ export default function App() {
   const submissionActionsRef = useRef({});
   const accessRefreshActionsRef = useRef({});
   const receiveRoster = useCallback((channelId, rows) => setRosters((current) => new Map(current).set(channelId, rows)), []);
-  const receiveFeedError = useCallback((error) => setTopError(displayError(error)), []);
+  const receiveFeedError = useCallback((error) => {
+    diagnostic('error', 'feed.failed', { error });
+    setTopError(displayError(error));
+  }, []);
   const forwardChannels = useCallback((channelIds) => directoryActionsRef.current.discover?.(channelIds), []);
   const forwardDirectoryInvalidated = useCallback(() => accessRefreshActionsRef.current.schedule?.(), []);
   const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
-  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, flush: flushFeed, cancel: cancelFeedTask, clear: clearFeed, setHistoryGrants, historyFor, maintainHistory, revealHistory, pauseHistory } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
+  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, ready: feedReady, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, resetPersistent: resetFeedCache, setHistoryGrants, pageEnd: finishHistoryPage, disconnectHistory, focusHistory, historyFor, revealHistory } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(null); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
 
-  const activeHistoryLoaded = Boolean(historyFor(activeChannelId).loaded);
   useEffect(() => {
-    if (wireState !== 'open' || !activeChannelId || !activeHistoryLoaded) return undefined;
-    maintainHistory(activeChannelId);
-    return () => pauseHistory(activeChannelId);
-  }, [activeChannelId, activeHistoryLoaded, maintainHistory, pauseHistory, wireState]);
+    focusHistory(activeChannelId);
+  }, [activeChannelId, focusHistory]);
 
   useEffect(() => {
     const applyRoute = () => {
@@ -232,7 +236,10 @@ export default function App() {
       writeWorkspaceRoute({ channelId: activeChannelId, view }, { replace: true });
     }
   }, [activeChannelId, workspaceView]);
-  const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireRef, rosterRef, accessRef, channelStatesRef, onError: setTopError, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
+  const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireRef, rosterRef, accessRef, channelStatesRef, onError: (error) => {
+    diagnostic('error', 'submission.failed', { error });
+    setTopError(displayError(error));
+  }, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
   const { pending, approvalStates, controlStates, send: handleSend, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions } = submissions;
   directoryActionsRef.current.bump = bumpAccess;
   directoryActionsRef.current.discover = (channelIds) => setChannels((current) => {
@@ -282,7 +289,7 @@ export default function App() {
   }, [clearDirectory, clearFeed, clearSession, clearSubmissions, clearTimers]);
 
   useEffect(() => {
-    if (!me) return undefined;
+    if (!me || !feedReady) return undefined;
     setTopError('');
     const obs = createObsClient({ onUnauthorized: expireSession });
     const roster = createRoster({ obs, me: me.id });
@@ -309,7 +316,12 @@ export default function App() {
       access.channelsObserved(profiles, { complete: result.complete });
       setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
       bumpAccess();
-      }).catch((error) => { if (alive && error?.status !== 401) setTopError(displayError(error)); }).finally(() => {
+      }).catch((error) => {
+        if (alive && error?.status !== 401) {
+          diagnostic('error', 'directory.refresh_failed', { error });
+          setTopError(displayError(error));
+        }
+      }).finally(() => {
         refreshInFlight = null;
         if (alive && refreshQueued) {
           refreshQueued = false;
@@ -332,11 +344,17 @@ export default function App() {
     setWireState('connecting');
     const wire = createWire({
       since: () => resumeSnapshot(channelStatesRef.current),
+      focus: () => activeChannelRef.current,
       onFeed: enqueueFeed,
+      onPageEnd: finishHistoryPage,
       onError: (error) => {
-        if (error?.code !== 'closed') setTopError(`${error.code}: ${displayError(error)}`);
+        if (error?.code !== 'closed') {
+          diagnostic('error', 'wire.failed', { error });
+          setTopError(`${error.code}: ${displayError(error)}`);
+        }
       },
       onObserveEnded: (channelId, reason) => {
+        diagnostic('warn', 'wire.observe_ended', { channelId, reason });
         if (reason === 'channel_retired') access.retire(channelId, reason);
         setTopError(`${channelId} 旁听已结束：${reason}`);
         bumpAccess();
@@ -344,12 +362,14 @@ export default function App() {
       onState: (state, detail) => {
         if (state === 'attached') {
           // 服务器世代变了：本地缓存整体作废后重载一次，恒不要求用户手清。
-          if (!ensureServerBoot(detail?.boot)) { window.location.reload(); return; }
-          // createWire releases the complete attach snapshot immediately before
-          // this callback. Fold it synchronously so React's first open render
-          // sees one finished tail, never a sequence of upward-moving batches.
-          flushFeed();
-          setHistoryGrants(detail?.history || []);
+          if (!ensureServerBoot(detail?.boot)) {
+            // Stop this generation before clearing. Otherwise attach tail frames
+            // can race the IndexedDB clear and repopulate it with the old boot.
+            wire.close();
+            resetFeedCache().finally(() => window.location.reload());
+            return;
+          }
+          setHistoryGrants(detail?.history || [], { ...detail, focus: activeChannelRef.current });
           access.wire('attached', newId());
           // attach 回执携带的成员清单是权威来源：连上即得，重连即刷新。
           // memberships_complete=false 表示服务器这一轮没查成（清单不可信为
@@ -368,6 +388,8 @@ export default function App() {
           // 首次 attach 已有登录初始化 OBS；之后每次重连完成才重新对齐投影。
           if (attachedOnce) scheduleAccessRefresh();
           attachedOnce = true;
+        } else if (state === 'disconnected') {
+          disconnectHistory(detail?.generation);
         } else if (state === 'reconnecting') {
           access.wire('disconnected');
           setWireState('reconnecting');
@@ -393,7 +415,7 @@ export default function App() {
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [bumpAccess, cancelFeedTask, enqueueFeed, expireSession, flushFeed, me, setHistoryGrants]);
+  }, [bumpAccess, cancelFeedTask, disconnectHistory, enqueueFeed, expireSession, feedReady, finishHistoryPage, me, resetFeedCache, setHistoryGrants]);
 
   const refreshRoster = useCallback(async (channelId, force = false) => {
     if (!channelId || !rosterRef.current) return;
