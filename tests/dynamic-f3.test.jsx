@@ -151,6 +151,25 @@ it('sender 尚未进入 roster 时按 actor_id 中间段显示名称', () => {
   expect(document.body.textContent).not.toContain('human:root:1787128257816');
 });
 
+it('终端会话生命周期不进入动态时间线', () => {
+  const envelope = { id: 'terminal-session-1', kind: 'event', type: 'terminal.session', ts: 1_000, sender: { id: 'me', kind: 'human' }, payload: { session_id: 'session-1', event: 'closed', exit_code: 0 } };
+  const state = { channelId: 'c0', rows: new Map([[1, envelope]]), turns: new Map(), standalone: [{ seq: 1, envelope }], orphans: [], narration: [], lastSeq: 1 };
+  render(<Timeline state={state} roster={[{ id: 'me', name: '我' }]} selfId="me" pending={[]} approvalStates={{}} />);
+  expect(document.body.textContent).not.toContain('提交了一项操作');
+  expect(document.body.textContent).not.toContain('session-1');
+  fireEvent.click(screen.getByRole('button', { name: '@我' }));
+  expect(document.body.textContent).not.toContain('提交了一项操作');
+  expect(document.body.textContent).not.toContain('session-1');
+});
+
+it('只有时间线确认位于最新端后才回报已读序号', async () => {
+  const envelope = { id: 'latest-1', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'other', kind: 'human' }, audience: ['me'], payload: { text: '最新消息' } };
+  const state = { channelId: 'c0', rows: new Map([[7, envelope]]), turns: new Map(), standalone: [{ seq: 7, envelope }], orphans: [], narration: [], lastSeq: 7 };
+  const onReadLatest = vi.fn();
+  render(<Timeline state={state} history={{ onReadLatest }} roster={[{ id: 'me', name: '我' }]} selfId="me" pending={[]} approvalStates={{}} />);
+  await waitFor(() => expect(onReadLatest).toHaveBeenCalledWith(7));
+});
+
 // 平台叙事暂时不进时间线（Timeline 的 SHOW_CHANNEL_NARRATION）：它与真正的往来
 // 平铺在一条流里，agent 每干一次活就刷出一串，把人要读的东西淹掉。这条钉的是
 // "不出现"，而不是它长什么样——等它有了合适的落位，连同这条一起重写。

@@ -23,7 +23,7 @@ export const TIMELINE_SCOPE_LABELS = Object.freeze({
 // 是为了让 agent 读得到，恒不是为了再讲给我听一遍。
 //
 // 这类消息在「全部」下照常可见——账本恒是完整的，被收窄的只是这一个视图。
-const SELF_OPERATION_TYPES = new Set(['terminal.command']);
+const SELF_OPERATION_TYPES = new Set(['terminal.command', 'terminal.session']);
 
 function isSelfOperation(envelope) {
   return SELF_OPERATION_TYPES.has(envelope?.type);

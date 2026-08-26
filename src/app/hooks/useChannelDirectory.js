@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CHANNEL_ACCESS } from '../../model/channel-access.js';
 
-export function useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, rosterRef, onChannelChanged, onNotice }) {
+export function useChannelDirectory({ accessRef, rosterRef, onChannelChanged, onNotice }) {
   const [channels, setChannels] = useState(new Map());
   const [version, setVersion] = useState(0);
   const [activeChannelId, setActiveChannelId] = useState('');
@@ -24,10 +24,8 @@ export function useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, r
 
   const select = useCallback((channelId) => {
     setActiveChannelId(channelId);
-    const lastSeq = channelStatesRef.current.get(channelId)?.lastSeq || 0;
-    cursorsRef.current.markRead(channelId, lastSeq);
     onChannelChanged();
-  }, [channelStatesRef, cursorsRef, onChannelChanged]);
+  }, [onChannelChanged]);
   const bump = useCallback(() => setVersion((value) => value + 1), []);
   const clear = useCallback(() => { setChannels(new Map()); setActiveChannelId(''); }, []);
 

@@ -45,7 +45,6 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       accessRef.current?.feed(channelId);
       dirtyChannels.add(channelId);
       cursorsRef.current.advance(channelId, seq);
-      if (activeChannelRef.current === channelId) cursorsRef.current.markRead(channelId, seq);
       const learnedSelf = roster?.observeFeed(channelId, row.envelope);
       if (learnedSelf) {
         reconcileApprovals(state, learnedSelf);
@@ -114,7 +113,16 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     // this metadata-only IndexedDB generation check, never message bodies.
     void cacheRef.current.ensureBoot(detail.boot).then(({ changed, meta }) => {
       cacheMetaRef.current = meta;
-      if (changed) cursorsRef.current.reconcile({});
+      if (changed) {
+        cursorsRef.current.reconcile({});
+        cursorsRef.current.resetReads();
+      }
+      // The attach head is the exact historical/live seam. A browser without
+      // a read fact starts observing after that snapshot; body hydration at or
+      // below the head can never manufacture unread notifications.
+      for (const entry of grants) {
+        if (entry?.channel_id) cursorsRef.current.baselineRead(entry.channel_id, entry.head_seq);
+      }
       schedulerRef.current.attach(grants, {
         generation,
         focus: detail.focus || activeChannelRef.current || '',
@@ -147,6 +155,13 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const revealHistory = useCallback((channelId, count) => schedulerRef.current.take(channelId, count), []);
   const historyFor = useCallback((channelId) => schedulerRef.current.snapshot(channelId), []);
   const bump = useCallback(() => setVersion((value) => value + 1), []);
+  const markRead = useCallback((channelId, seq) => {
+    if (!channelId) return 0;
+    const before = cursorsRef.current.read(channelId);
+    const next = cursorsRef.current.markRead(channelId, seq);
+    if (next !== before) setVersion((value) => value + 1);
+    return next;
+  }, []);
   const cancel = useCallback(() => {}, []);
   const clear = useCallback(() => {
     schedulerRef.current.clear();
@@ -190,6 +205,6 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
   return {
     statesRef, cursorsRef, version, ready, bump, enqueue, cancel, clear, resetPersistent,
-    setHistoryGrants, pageEnd, disconnectHistory, focusHistory, historyFor, revealHistory,
+    setHistoryGrants, pageEnd, disconnectHistory, focusHistory, historyFor, revealHistory, markRead,
   };
 }

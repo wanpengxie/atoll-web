@@ -691,6 +691,9 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
   // 的空窗里消息会闪跳进等待区。
   const editingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
   const allEntries = useMemo(() => orderedTimeline(state).filter((entry) => {
+    // Terminal lifecycle rows remain in the ledger for agents and audit, but
+    // they are transport bookkeeping rather than timeline content.
+    if (entry.kind === 'standalone' && entry.envelope?.type === 'terminal.session') return false;
     if (entry.kind !== 'turn') return true;
     if ([TYPES.agentHold, TYPES.agentUnhold, TYPES.agentInterrupt, TYPES.agentContext, TYPES.agentFork, TYPES.describe].includes(entry.turn.request.type)) return false;
     // select/new 都不是用户发言；成功终态只收成一条系统确认。select 的
@@ -794,6 +797,19 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 		: messageListAtBottom;
 	}
 
+	function markLatestRead() {
+	  if (!state.lastSeq || !messageListScrollerRef.current) return;
+	  if (document.visibilityState === 'hidden' || !scrollerIsAtBottom()) return;
+	  history?.onReadLatest?.(state.lastSeq);
+	}
+
+	useEffect(() => {
+	  markLatestRead();
+	  const handleVisibility = () => markLatestRead();
+	  document.addEventListener('visibilitychange', handleVisibility);
+	  return () => document.removeEventListener('visibilitychange', handleVisibility);
+	}, [state.lastSeq, messageListAtBottom, history?.onReadLatest]);
+
 	useEffect(() => {
 	  const physicallyAtBottom = scrollerIsAtBottom();
 	  if (previousList.key !== messageListKey || physicallyAtBottom) {
@@ -818,6 +834,7 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 	  if (confirmed) {
 		setMessageListUnseen(0);
 		historyDemandRef.current = false;
+		markLatestRead();
 	  }
 	}
 

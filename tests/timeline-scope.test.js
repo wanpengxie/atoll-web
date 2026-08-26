@@ -86,12 +86,24 @@ describe('timeline scope', () => {
 describe('自己动手的操作恒不进「@我」', () => {
   const selfId = 'human:root:1';
   const cmd = (id) => ({ id, type: 'terminal.command', kind: 'event', sender: { id: selfId, kind: 'human' }, payload: { cmd: 'make test', exit_code: 0 } });
+  const session = (id, event = 'opened') => ({ id, type: 'terminal.session', kind: 'event', sender: { id: selfId, kind: 'human' }, payload: { session_id: 'session-1', event, exit_code: 0 } });
 
   it('终端命令在「@我」下不出现——我在终端里已经全程看着了', () => {
     const state = { rows: new Map([['t1', cmd('t1')]]) };
     const entries = [{ kind: 'message', envelope: cmd('t1') }];
     const got = scopeEntries(entries, { scope: TIMELINE_SCOPE.mine, state, selfId });
     expect(got).toEqual([]);
+  });
+
+  it('终端会话开关在「@我」下同样不出现', () => {
+    const opened = session('s1');
+    const closed = session('s2', 'closed');
+    const state = { rows: new Map([['s1', opened], ['s2', closed]]) };
+    const entries = [
+      { kind: 'message', envelope: opened },
+      { kind: 'message', envelope: closed },
+    ];
+    expect(scopeEntries(entries, { scope: TIMELINE_SCOPE.mine, state, selfId })).toEqual([]);
   });
 
   it('但在「全部」下照常可见——账本恒是完整的', () => {

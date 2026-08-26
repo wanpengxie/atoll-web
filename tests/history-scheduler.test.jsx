@@ -150,6 +150,7 @@ describe('live feed priority', () => {
     }), { wrapper: ({ children }) => <StrictMode>{children}</StrictMode> });
     act(() => hook.result.current.setHistoryGrants([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' }));
     await waitFor(() => expect(historyBefore).toHaveBeenCalledOnce());
+    expect(hook.result.current.cursorsRef.current.read('c0')).toBe(100);
     act(() => hook.result.current.enqueue('c0', 101, {
       id: 'live', kind: 'event', type: 'human.note', visibility: 'public',
       sender: { id: 'me', kind: 'human' }, payload: { text: '实时' },
@@ -158,6 +159,11 @@ describe('live feed priority', () => {
       sender: { id: 'me', kind: 'human' }, payload: { text: '实时' },
     } }));
     expect(hook.result.current.statesRef.current.get('c0').rows.has(101)).toBe(true);
+    // Merely being the selected channel is not evidence that the user saw the
+    // tail; Timeline advances this only after its scroller confirms bottom.
+    expect(hook.result.current.cursorsRef.current.read('c0')).toBe(100);
+    act(() => hook.result.current.markRead('c0', 101));
+    expect(hook.result.current.cursorsRef.current.read('c0')).toBe(101);
     hook.unmount();
   });
 });

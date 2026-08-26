@@ -180,9 +180,9 @@ export default function App() {
   const forwardDirectoryInvalidated = useCallback(() => accessRefreshActionsRef.current.schedule?.(), []);
   const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
-  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, resetPersistent: resetFeedCache, setHistoryGrants, pageEnd: finishHistoryPage, disconnectHistory, focusHistory, historyFor, revealHistory } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
+  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, resetPersistent: resetFeedCache, setHistoryGrants, pageEnd: finishHistoryPage, disconnectHistory, focusHistory, historyFor, revealHistory, markRead } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(null); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
-  const directory = useChannelDirectory({ accessRef, channelStatesRef, cursorsRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
+  const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
 
   useEffect(() => {
@@ -470,12 +470,6 @@ export default function App() {
     if (actor) setSelectedActor(actor);
     else if (rosters.has(activeChannelId)) setChannelNotice('对象暂不可用，已保留当前主视图。');
   }, [activeChannelId, contextFocus, rosters]);
-
-  useEffect(() => {
-    if (!activeChannelId) return;
-    const lastSeq = channelStatesRef.current.get(activeChannelId)?.lastSeq || 0;
-    cursorsRef.current.markRead(activeChannelId, lastSeq);
-  }, [activeChannelId, feedVersion]);
 
   const handleLogout = useCallback(async () => {
     await logoutRemote();
@@ -840,7 +834,7 @@ export default function App() {
   if (!me) return <Auth identity={identity} onAuthed={handleAuthed} />;
 
   const activeState = channelStatesRef.current.get(activeChannelId) || createChannelState(activeChannelId);
-  const activeHistory = historyFor(activeChannelId);
+  const activeHistory = { ...historyFor(activeChannelId), onReadLatest: (seq) => markRead(activeChannelId, seq) };
   const activeRow = channelList.find((channel) => channel.id === activeChannelId);
   const activeRoster = isMemberAccess(activeRow?.access) ? rosters.get(activeChannelId) || [] : [];
   const selfId = activeRow?.selfActorId || rosterRef.current?.self(activeChannelId) || '';
@@ -848,7 +842,7 @@ export default function App() {
     const loaded = unreadCounts(
       channelStatesRef.current.get(channel.id),
       cursorsRef.current.read(channel.id),
-      rosterRef.current?.self(channel.id) || '',
+      channel.selfActorId || rosterRef.current?.self(channel.id) || '',
     );
     return [channel.id, loaded];
   }));
