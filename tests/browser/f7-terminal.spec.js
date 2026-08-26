@@ -85,6 +85,9 @@ test('F7-004 配色可切换，且切换恒不重建终端', async ({ page }) =>
 
 test('F7-005 Ctrl+F12 与按钮使用同一个分屏开关', async ({ page }) => {
   await login(page);
+  // 连接 open 不等于频道就绪：toggleTerminal 在 workspace.channel 落定前是空操作，
+  // 按键会被静默吞掉。按钮的 disabled 正是同一个就绪条件，等它再按。
+  await expect(terminalToggle(page)).toBeEnabled();
   await page.keyboard.press('Control+F12');
   await expect(page.locator('.terminal-view')).toBeVisible();
   await expect(terminalToggle(page)).toHaveAttribute('aria-pressed', 'true');

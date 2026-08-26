@@ -70,6 +70,9 @@ test('B-BR-02a 刷新进入频道后固定在最新处，后台历史预取不�
   await page.reload();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
   await expect(page.locator('.timeline')).toBeVisible();
+  // 虚拟列表首屏挂载晚于 .timeline 可见：第一采样可能落在 0 行。等首行出现再采，
+  // 之后的任何增长才是"后台历史推动页面"。
+  await expect(page.locator('.timeline-entry').first()).toBeVisible();
   const samples = await page.evaluate(async () => {
     const viewport = document.querySelector('.timeline');
     const rows = [];
