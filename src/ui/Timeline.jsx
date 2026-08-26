@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoMockContext } from 'react-virtuoso';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
@@ -677,13 +677,34 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
 	const messageListRef = useRef(null);
 	const messageListScrollerRef = useRef(null);
+	const messageListScrollCleanupRef = useRef(() => {});
 	const listTransitionRef = useRef({ key: '', firstSeq: 0, lastSeq: 0, length: 0, firstItemIndex: VIRTUAL_INDEX_BASE });
 	const [messageListAtBottom, setMessageListAtBottom] = useState(true);
 	const [messageListUnseen, setMessageListUnseen] = useState(0);
-  const historyDemandRef = useRef(false);
-	const historyDemandAnchorRef = useRef(0);
+	// Top loading is a level-triggered operation scoped to the current visible
+	// projection.  It must not be an anonymous boolean that a later mount effect
+	// can erase after Virtuoso already observed the top.
+	const historyDemandRef = useRef({ context: '', pending: false, anchorSeq: 0, armed: true });
+	const historyTopProbeRef = useRef('');
+	const historyInteractionReadyRef = useRef('');
 	const historyRevealVersionRef = useRef(Number(history?.revealVersion || 0));
-  const previousAccess = useRef(access);
+	const previousAccess = useRef(access);
+	const setMessageListScroller = useCallback((node) => {
+	  if (messageListScrollerRef.current === node) return;
+	  messageListScrollCleanupRef.current();
+	  messageListScrollerRef.current = node;
+	  if (!node) {
+		messageListScrollCleanupRef.current = () => {};
+		return;
+	  }
+	  const handleScroll = () => {
+		const demand = historyDemandRef.current;
+		if (node.scrollTop > 1 && !demand.pending) demand.armed = true;
+	  };
+	  node.addEventListener('scroll', handleScroll, { passive: true });
+	  messageListScrollCleanupRef.current = () => node.removeEventListener('scroll', handleScroll);
+	}, []);
+	useEffect(() => () => messageListScrollCleanupRef.current(), []);
   const names = useMemo(() => actorNameMap(roster), [roster]);
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
   // 但呈现上必须留在用户点下"编辑"的位置原地变可编辑——恒不在编辑中途瞬移。
@@ -730,6 +751,7 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
     .sort((left, right) => left.seq - right.seq);
   const latestVisibleSeq = withNarration.at(-1)?.seq || 0;
 	const firstVisibleSeq = withNarration[0]?.seq || 0;
+	const historyProjectionKey = `${state.channelId}:${scope}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
 	const previousList = listTransitionRef.current;
 	const messageListKey = `${state.channelId}:${scope}`;
 	let firstItemIndex = previousList.firstItemIndex;
@@ -798,6 +820,26 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 		: messageListAtBottom;
 	}
 
+	function scrollerIsAtTop() {
+	  const scroller = messageListScrollerRef.current;
+	  return Boolean(scroller) && scroller.scrollTop <= 1;
+	}
+
+	function demandForCurrentProjection() {
+	  if (historyDemandRef.current.context !== historyProjectionKey) {
+		historyDemandRef.current = { context: historyProjectionKey, pending: false, anchorSeq: 0, armed: true };
+	  }
+	  return historyDemandRef.current;
+	}
+
+	function clearCurrentHistoryDemand({ rearm = false } = {}) {
+	  const demand = historyDemandRef.current;
+	  if (demand.context !== historyProjectionKey) return;
+	  demand.pending = false;
+	  demand.anchorSeq = 0;
+	  if (rearm) demand.armed = true;
+	}
+
 	function markLatestRead() {
 	  if (!state.lastSeq || !messageListScrollerRef.current) return;
 	  if (document.visibilityState === 'hidden' || !scrollerIsAtBottom()) return;
@@ -833,51 +875,136 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 	  const confirmed = isAtBottom && scrollerIsAtBottom();
 	  setMessageListAtBottom(confirmed);
 	  if (confirmed) {
+		historyInteractionReadyRef.current = messageListKey;
 		setMessageListUnseen(0);
-		historyDemandRef.current = false;
-		historyDemandAnchorRef.current = 0;
+		// A short or heavily filtered list can be at top and bottom at once.  In
+		// that state bottom is not evidence that the top demand was satisfied.
+		if (!scrollerIsAtTop()) clearCurrentHistoryDemand({ rearm: true });
+		else window.setTimeout(() => requestHistoryAtTop('short-list-ready'), 0);
 		markLatestRead();
 	  }
 	}
 
 	function releaseHistoryForDemand(trigger) {
+	  const demand = demandForCurrentProjection();
 	  const released = Number(onRevealHistory?.(TIMELINE_HISTORY_REVEAL_SIZE)) || 0;
 	  diagnostic('debug', released ? 'timeline.history_revealed' : 'timeline.history_demand_waiting', {
 		channelId: state.channelId,
 		released,
 		buffered: Number(history?.buffered || 0),
 		hasOlder: Boolean(history?.hasOlder),
+		loading: Boolean(history?.loading),
+		attached: Boolean(history?.attached),
+		generation: Number(history?.generation || 0),
+		firstVisibleSeq,
+		demandAnchorSeq: demand.anchorSeq,
 		trigger,
 	  });
 	  return released;
 	}
 
+	function requestHistoryAtTop(trigger) {
+	  const demand = demandForCurrentProjection();
+	  const scroller = messageListScrollerRef.current;
+	  const physicallyAtTop = !scroller || scroller.scrollTop <= 1;
+	  const detail = {
+		channelId: state.channelId,
+		trigger,
+		demandPending: demand.pending,
+		demandArmed: demand.armed,
+		demandAnchorSeq: demand.anchorSeq,
+		firstVisibleSeq,
+		latestVisibleSeq,
+		visibleItems: withNarration.length,
+		buffered: Number(history?.buffered || 0),
+		hasOlder: Boolean(history?.hasOlder),
+		loading: Boolean(history?.loading),
+		attached: Boolean(history?.attached),
+		generation: Number(history?.generation || 0),
+		scrollTop: Math.round(Number(scroller?.scrollTop || 0)),
+		scrollHeight: Math.round(Number(scroller?.scrollHeight || 0)),
+		clientHeight: Math.round(Number(scroller?.clientHeight || 0)),
+		physicallyAtTop,
+		interactionReady: historyInteractionReadyRef.current === messageListKey,
+	  };
+	  if (historyInteractionReadyRef.current !== messageListKey) {
+		diagnostic('info', 'timeline.history_top_not_ready', detail);
+		return;
+	  }
+	  if (!physicallyAtTop) {
+		diagnostic('info', 'timeline.history_top_stale', detail);
+		return;
+	  }
+	  diagnostic('info', demand.pending || !demand.armed ? 'timeline.history_top_ignored' : 'timeline.history_top_observed', detail);
+	  if (demand.pending || !demand.armed) return;
+	  demand.pending = true;
+	  demand.armed = false;
+	  demand.anchorSeq = firstVisibleSeq;
+	  releaseHistoryForDemand(trigger);
+	}
+
 	function handleStartReached() {
-	  if (historyDemandRef.current) return;
-	  historyDemandRef.current = true;
-	  historyDemandAnchorRef.current = firstVisibleSeq;
-	  releaseHistoryForDemand('start-reached');
+	  requestHistoryAtTop('start-reached');
+	}
+
+	function handleAtTopChange(isAtTop) {
+	  if (isAtTop) {
+		requestHistoryAtTop('at-top-state');
+		return;
+	  }
+	  const demand = demandForCurrentProjection();
+	  if (!scrollerIsAtTop() && !demand.pending) {
+		demand.armed = true;
+		diagnostic('debug', 'timeline.history_top_left', {
+		  channelId: state.channelId,
+		  pending: demand.pending,
+		  scrollTop: Math.round(Number(messageListScrollerRef.current?.scrollTop || 0)),
+		});
+	  }
 	}
 
 	useEffect(() => {
+	  const demand = historyDemandRef.current;
+	  if (demand.context !== historyProjectionKey) return undefined;
 	  const version = Number(history?.revealVersion || 0);
 	  const exhausted = Boolean(history?.attached)
 		&& !history?.loading
 		&& !history?.hasOlder
 		&& Number(history?.buffered || 0) <= 0;
-	  if (historyDemandRef.current && exhausted) {
-		historyDemandRef.current = false;
-		historyDemandAnchorRef.current = 0;
+	  if (demand.pending && exhausted) {
+		diagnostic('info', 'timeline.history_demand_exhausted', {
+		  channelId: state.channelId, firstVisibleSeq, buffered: Number(history?.buffered || 0),
+		  hasOlder: Boolean(history?.hasOlder), attached: Boolean(history?.attached),
+		});
+		clearCurrentHistoryDemand();
 	  }
 	  if (version === historyRevealVersionRef.current) return undefined;
 	  historyRevealVersionRef.current = version;
-	  if (!historyDemandRef.current) return undefined;
+	  if (!demand.pending) return undefined;
 
-	  const anchor = historyDemandAnchorRef.current;
+	  const anchor = demand.anchorSeq;
 	  const visiblePrepend = firstVisibleSeq > 0 && (anchor === 0 || firstVisibleSeq < anchor);
 	  if (visiblePrepend) {
-		historyDemandRef.current = false;
-		historyDemandAnchorRef.current = 0;
+		const scroller = messageListScrollerRef.current;
+		const stillShortAtTop = Boolean(scroller)
+		  && scroller.clientHeight > 0
+		  && scroller.scrollTop <= 1
+		  && scroller.scrollHeight <= scroller.clientHeight + 1;
+		if (stillShortAtTop && !exhausted) {
+		  demand.anchorSeq = firstVisibleSeq;
+		  diagnostic('debug', 'timeline.history_short_list_continues', {
+			channelId: state.channelId, firstVisibleSeq,
+			scrollHeight: Math.round(scroller.scrollHeight), clientHeight: Math.round(scroller.clientHeight),
+		  });
+		  const timer = window.setTimeout(() => releaseHistoryForDemand('short-list-fill'), 0);
+		  return () => window.clearTimeout(timer);
+		}
+		diagnostic('info', 'timeline.history_demand_satisfied', {
+		  channelId: state.channelId, anchorSeq: anchor, firstVisibleSeq,
+		  buffered: Number(history?.buffered || 0), hasOlder: Boolean(history?.hasOlder),
+		});
+		clearCurrentHistoryDemand();
+		if (!scrollerIsAtTop()) demandForCurrentProjection().armed = true;
 		return undefined;
 	  }
 	  if (exhausted) return undefined;
@@ -888,22 +1015,35 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 	  // prepend and will not emit startReached a second time.  Keep the existing
 	  // top demand sticky, but claim only one additional bounded batch per render.
 	  const timer = window.setTimeout(() => {
-		if (historyDemandRef.current) releaseHistoryForDemand('projection-empty');
+		const current = historyDemandRef.current;
+		if (current.context === historyProjectionKey && current.pending) releaseHistoryForDemand('projection-empty');
 	  }, 0);
 	  return () => window.clearTimeout(timer);
-	}, [history?.revealVersion, history?.attached, history?.loading, history?.hasOlder, history?.buffered, firstVisibleSeq, onRevealHistory, state.channelId]);
+	}, [history?.revealVersion, history?.attached, history?.loading, history?.hasOlder, history?.buffered, firstVisibleSeq, onRevealHistory, historyProjectionKey]);
+
+	// Treat "the current projection is physically at the top" as state, not as
+	// a callback edge.  This closes races where Virtuoso emitted startReached
+	// before attach/cache metadata settled or while React mount effects ran.
+	useEffect(() => {
+	  if (historyTopProbeRef.current === historyProjectionKey) return undefined;
+	  historyTopProbeRef.current = historyProjectionKey;
+	  const canLoad = Number(history?.buffered || 0) > 0
+		|| Boolean(history?.hasOlder)
+		|| Boolean(history?.loading)
+		|| !history?.attached;
+	  if (!canLoad) return undefined;
+	  const timer = window.setTimeout(() => {
+		const demand = demandForCurrentProjection();
+		if (scrollerIsAtTop() && !demand.pending) requestHistoryAtTop('top-level-state');
+	  }, 0);
+	  return () => window.clearTimeout(timer);
+	}, [historyProjectionKey, history?.attached, history?.loading, history?.hasOlder, history?.buffered, history?.revealVersion, firstVisibleSeq]);
 
   useEffect(() => {
-    historyDemandRef.current = false;
-	  historyDemandAnchorRef.current = 0;
 	  historyRevealVersionRef.current = Number(history?.revealVersion || 0);
     setScope(TIMELINE_SCOPE.mine);
     setEditNotice('');
   }, [state.channelId]);
-	useEffect(() => {
-	  historyDemandRef.current = false;
-	  historyDemandAnchorRef.current = 0;
-	}, [scope, actorFilter]);
   useEffect(() => setPresentationNow(Date.now()), [state.lastSeq]);
   useEffect(() => {
     if (!Number.isFinite(nextFreezeDeadline)) return undefined;
@@ -1071,7 +1211,7 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 		<Virtuoso
 		  key={messageListKey}
 		  ref={messageListRef}
-		  scrollerRef={(node) => { messageListScrollerRef.current = node; }}
+		  scrollerRef={setMessageListScroller}
 		  className="timeline-message-list"
 		  firstItemIndex={firstItemIndex}
 		  initialTopMostItemIndex={import.meta.env.MODE === 'test' ? undefined : { index: 'LAST', align: 'end' }}
@@ -1132,6 +1272,7 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 		  computeItemKey={(_index, item) => item.id}
 		  itemContent={(_index, item) => <div className="timeline-virtual-item">{item.render()}</div>}
 		  startReached={handleStartReached}
+		  atTopStateChange={handleAtTopChange}
 		  atBottomStateChange={handleAtBottomChange}
 		  followOutput={(atBottom) => atBottom ? 'auto' : false}
 		/>

@@ -104,8 +104,23 @@ describe('历史自动懒加载', () => {
 
   it('短首屏已经触顶时自动释放一批 reservoir', async () => {
     const onRevealHistory = vi.fn(() => 32);
-    render(<Timeline state={historyState(4)} history={{ hasOlder: true, buffered: 40 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    render(<Timeline state={historyState(4)} history={{ hasOlder: true, buffered: 5_000 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledWith(32));
+  });
+
+  it('attach 前建立的顶部 demand 不会被挂载 effect 或短列表的 bottom 状态清掉', async () => {
+    const onRevealHistory = vi.fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(32);
+    const state = historyState(4, 100);
+    const view = render(<Timeline state={state} history={{ attached: false, hasOlder: false, buffered: 0, revealVersion: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(1));
+
+    // Meta/IDB settles after Virtuoso has already reported both top and bottom.
+    // The original demand must consume the warm reservoir without another gesture.
+    view.rerender(<Timeline state={state} history={{ attached: true, hasOlder: true, buffered: 5_000, revealVersion: 1 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(2));
+    expect(onRevealHistory).toHaveBeenLastCalledWith(32);
   });
 
   it('scheduler 兑现 demand 且真正 prepend 可见项后不重复消费 reservoir', async () => {

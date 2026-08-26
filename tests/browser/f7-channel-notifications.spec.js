@@ -198,3 +198,26 @@ test('F7 mobile channel drawer keeps Agent activity visible, bounded, and action
   const finalWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(finalWidth).toBeLessThanOrEqual(320);
 });
+
+test.describe('touch Agent filters', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+  test('F7 mobile Agent filter visually clears after the second tap', async ({ page, request }) => {
+    const reset = await request.post('/mock/control/reset', { data: { scenario: 'multi-channel', seed: 2616 } });
+    expect(reset.ok()).toBe(true);
+    await login(page);
+
+    const filter = page.locator('.timeline-actor-filter button').first();
+    await expect(filter).toBeVisible();
+    const idleBackground = await filter.evaluate((node) => getComputedStyle(node).backgroundColor);
+
+    await filter.tap();
+    await expect(filter).toHaveAttribute('aria-pressed', 'true');
+    const selectedBackground = await filter.evaluate((node) => getComputedStyle(node).backgroundColor);
+    expect(selectedBackground).not.toBe(idleBackground);
+
+    await filter.tap();
+    await expect(filter).toHaveAttribute('aria-pressed', 'false');
+    await expect.poll(() => filter.evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(idleBackground);
+  });
+});

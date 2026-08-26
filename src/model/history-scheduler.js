@@ -287,7 +287,7 @@ export function createHistoryScheduler({
         : new Map();
       void persistRows(rows, { coverageByChannel }).catch((error) => diagnostic('error', 'history.cache_persist_failed', { channelId: state.id, error }));
     }
-    rememberRows(state, rows, { allowGlobalOverflow: batch.purpose === 'initial-tail' || batch.purpose === 'user-demand' });
+    const acceptedRows = rememberRows(state, rows, { allowGlobalOverflow: batch.purpose === 'initial-tail' || batch.purpose === 'user-demand' });
     if (!state.tailVisible) {
       release(state, state.reservoir.size, { initial: true });
       state.tailVisible = true;
@@ -303,7 +303,11 @@ export function createHistoryScheduler({
     diagnostic('info', 'history.batch_complete', {
       channelId: state.id, source: batch.source, purpose: batch.purpose,
       generation, ref: batch.ref || '', rows: rows.length,
-      reservoir: state.reservoir.size, demandReleased, hasOlder: state.hasOlder,
+      acceptedRows, reservoir: state.reservoir.size, reservoirBytes: state.reservoirBytes,
+      demandReleased, pendingDemand: state.userDemand, hasOlder: state.hasOlder,
+      localExhausted: state.localExhausted, networkBeforeSeq: state.networkBeforeSeq,
+      nextBeforeSeq: numeric(result.next_before_seq) || numeric(result.nextBeforeSeq),
+      scanLowSeq: numeric(result.scan_low_seq), scanHighSeq: numeric(result.scan_high_seq),
     });
   }
 
@@ -426,6 +430,17 @@ export function createHistoryScheduler({
       state = createState(channelId);
       channels.set(channelId, state);
     }
+    const before = {
+      attached: Boolean(generation && state.attachedGeneration === generation),
+      generation,
+      attachedGeneration: state.attachedGeneration,
+      reservoir: state.reservoir.size,
+      reservoirBytes: state.reservoirBytes,
+      pendingDemand: state.userDemand,
+      hasOlder: state.hasOlder,
+      localExhausted: state.localExhausted,
+      networkBeforeSeq: state.networkBeforeSeq,
+    };
     const released = release(state, count);
     if (released < count && (
       !generation
@@ -437,6 +452,25 @@ export function createHistoryScheduler({
     }
     publish();
     schedule();
+    const inflight = inflightByChannel.get(channelId);
+    diagnostic('info', 'history.demand_taken', {
+      channelId, requested: count, released,
+      before,
+      after: {
+        reservoir: state.reservoir.size,
+        reservoirBytes: state.reservoirBytes,
+        pendingDemand: state.userDemand,
+        hasOlder: state.hasOlder,
+        localExhausted: state.localExhausted,
+        networkBeforeSeq: state.networkBeforeSeq,
+        inflight: inflight ? {
+          source: inflight.source,
+          purpose: inflight.purpose,
+          beforeSeq: inflight.beforeSeq,
+          ref: inflight.ref || '',
+        } : null,
+      },
+    });
     return released;
   }
 

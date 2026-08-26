@@ -402,7 +402,10 @@
    字号比它小一档：这是一列常驻的旁支控件，恒不与主开关争视线。 */
 .timeline-actor-filter { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
 .timeline-actor-filter button { display: flex; min-height: 22px; max-width: 8.5em; align-items: center; gap: 5px; overflow: hidden; padding: 2px 8px; border: 1px solid var(--line-control-strong); border-radius: var(--pill); opacity: .5; background: var(--raised); color: var(--text); box-shadow: 0 2px 8px var(--shadow); cursor: pointer; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; transition: opacity .12s; }
-.timeline-actor-filter button:hover, .timeline-actor-filter button:focus-visible { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
+.timeline-actor-filter button:focus-visible { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
+@media (hover: hover) {
+  .timeline-actor-filter button:hover { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
+}
 .timeline-actor-filter button.is-on { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); font-weight: 700; }
 .timeline-actor-filter button.activity-active, .timeline-actor-filter button.activity-settled { opacity: .78; }
 .agent-activity-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--online); box-shadow: 0 0 5px color-mix(in srgb, var(--online), transparent 30%); }
