@@ -681,6 +681,7 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 	const [messageListAtBottom, setMessageListAtBottom] = useState(true);
 	const [messageListUnseen, setMessageListUnseen] = useState(0);
   const historyDemandRef = useRef(false);
+	const historyDemandAnchorRef = useRef(0);
 	const historyRevealVersionRef = useRef(Number(history?.revealVersion || 0));
   const previousAccess = useRef(access);
   const names = useMemo(() => actorNameMap(roster), [roster]);
@@ -834,34 +835,75 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
 	  if (confirmed) {
 		setMessageListUnseen(0);
 		historyDemandRef.current = false;
+		historyDemandAnchorRef.current = 0;
 		markLatestRead();
 	  }
+	}
+
+	function releaseHistoryForDemand(trigger) {
+	  const released = Number(onRevealHistory?.(TIMELINE_HISTORY_REVEAL_SIZE)) || 0;
+	  diagnostic('debug', released ? 'timeline.history_revealed' : 'timeline.history_demand_waiting', {
+		channelId: state.channelId,
+		released,
+		buffered: Number(history?.buffered || 0),
+		hasOlder: Boolean(history?.hasOlder),
+		trigger,
+	  });
+	  return released;
 	}
 
 	function handleStartReached() {
 	  if (historyDemandRef.current) return;
 	  historyDemandRef.current = true;
-	  const released = Number(onRevealHistory?.(TIMELINE_HISTORY_REVEAL_SIZE)) || 0;
-	  diagnostic('debug', released ? 'timeline.history_revealed' : 'timeline.history_demand_waiting', {
-		channelId: state.channelId, released, buffered: Number(history?.buffered || 0), hasOlder: Boolean(history?.hasOlder),
-	  });
-	  if (released > 0) historyDemandRef.current = false;
+	  historyDemandAnchorRef.current = firstVisibleSeq;
+	  releaseHistoryForDemand('start-reached');
 	}
 
 	useEffect(() => {
 	  const version = Number(history?.revealVersion || 0);
-	  if (version !== historyRevealVersionRef.current) {
-		historyRevealVersionRef.current = version;
+	  const exhausted = Boolean(history?.attached)
+		&& !history?.loading
+		&& !history?.hasOlder
+		&& Number(history?.buffered || 0) <= 0;
+	  if (historyDemandRef.current && exhausted) {
 		historyDemandRef.current = false;
+		historyDemandAnchorRef.current = 0;
 	  }
-	}, [history?.revealVersion, state.channelId]);
+	  if (version === historyRevealVersionRef.current) return undefined;
+	  historyRevealVersionRef.current = version;
+	  if (!historyDemandRef.current) return undefined;
+
+	  const anchor = historyDemandAnchorRef.current;
+	  const visiblePrepend = firstVisibleSeq > 0 && (anchor === 0 || firstVisibleSeq < anchor);
+	  if (visiblePrepend) {
+		historyDemandRef.current = false;
+		historyDemandAnchorRef.current = 0;
+		return undefined;
+	  }
+	  if (exhausted) return undefined;
+
+	  // A history batch is a ledger-row batch, not a rendered-item batch.  The
+	  // whole batch may be housekeeping, filtered agent traffic, or rows that
+	  // merely complete the first visible root turn.  Virtuoso then sees no
+	  // prepend and will not emit startReached a second time.  Keep the existing
+	  // top demand sticky, but claim only one additional bounded batch per render.
+	  const timer = window.setTimeout(() => {
+		if (historyDemandRef.current) releaseHistoryForDemand('projection-empty');
+	  }, 0);
+	  return () => window.clearTimeout(timer);
+	}, [history?.revealVersion, history?.attached, history?.loading, history?.hasOlder, history?.buffered, firstVisibleSeq, onRevealHistory, state.channelId]);
 
   useEffect(() => {
     historyDemandRef.current = false;
+	  historyDemandAnchorRef.current = 0;
 	  historyRevealVersionRef.current = Number(history?.revealVersion || 0);
     setScope(TIMELINE_SCOPE.mine);
     setEditNotice('');
   }, [state.channelId]);
+	useEffect(() => {
+	  historyDemandRef.current = false;
+	  historyDemandAnchorRef.current = 0;
+	}, [scope, actorFilter]);
   useEffect(() => setPresentationNow(Date.now()), [state.lastSeq]);
   useEffect(() => {
     if (!Number.isFinite(nextFreezeDeadline)) return undefined;
@@ -999,7 +1041,6 @@ export function Timeline({ state, history = {}, onRevealHistory, roster, selfId,
                   aria-pressed={on}
                   title={on ? `取消只看 ${names.get(row.id) || row.id}` : `只看我与 ${names.get(row.id) || row.id} 的往来`}
                   onClick={() => {
-                    leaveLatest();
                     // 点一下选中，再点一下取消——按钮各自开关，恒不是单选。
                     setActorFilter((current) => {
                       const next = new Set(current);

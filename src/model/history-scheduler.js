@@ -41,6 +41,7 @@ function coverageContains(meta, seq) {
 function createState(id, previous = {}) {
   return {
     id,
+    attachedGeneration: 0,
     headSeq: 0,
     networkBeforeSeq: 0,
     networkStarted: false,
@@ -133,7 +134,7 @@ export function createHistoryScheduler({
   }
 
   function candidate(state) {
-    if (!state || inflightByChannel.has(state.id) || state.retryAt > now()) return null;
+    if (!state || !generation || state.attachedGeneration !== generation || inflightByChannel.has(state.id) || state.retryAt > now()) return null;
     if (state.reservoir.size >= HISTORY_RESERVOIR_SIZE || state.reservoirBytes >= HISTORY_RESERVOIR_CHANNEL_BYTES) return null;
     const purpose = purposeFor(state, focus);
     const urgent = purpose === 'user-demand' || purpose === 'initial-tail';
@@ -359,7 +360,9 @@ export function createHistoryScheduler({
       if (!id) continue;
       seen.add(id);
       const previous = channels.get(id);
+      const pendingDemand = numeric(previous?.userDemand);
       const state = createState(id, previous);
+      state.attachedGeneration = generation;
       state.headSeq = numeric(entry.head_seq);
       state.networkBeforeSeq = state.headSeq;
       state.networkStarted = false;
@@ -370,12 +373,17 @@ export function createHistoryScheduler({
       state.hasOlder = state.hasRows;
       state.activity = Math.max(numeric(entry.last_activity), numeric(state.localMeta?.lastActivity));
       state.tailVisible = false;
-      state.userDemand = 0;
+      // A reader can hit the top while attach is still waiting on the tiny IDB
+      // boot/meta transaction.  That intent belongs to the channel, not to the
+      // old connection generation, so carry it across the attach seam instead
+      // of leaving the Timeline permanently locked at its first page.
+      state.userDemand = pendingDemand;
       state.error = entry.error_detail || '';
       channels.set(id, state);
     }
     for (const [id, state] of channels) {
       if (seen.has(id)) continue;
+      state.attachedGeneration = 0;
       state.hasRows = false;
       state.hasOlder = false;
       state.localExhausted = true;
@@ -409,10 +417,22 @@ export function createHistoryScheduler({
   }
 
   function take(channelId, count = HISTORY_REVEAL_SIZE) {
-    const state = channels.get(channelId);
-    if (!state) return 0;
+    let state = channels.get(channelId);
+    if (!state) {
+      // Timeline can become scrollable from an already-folded live/cache tail
+      // before the metadata-only attach has reached the scheduler.  Preserve
+      // that early top demand in a placeholder; attach() will hydrate this
+      // exact state and immediately schedule a normal user-demand batch.
+      state = createState(channelId);
+      channels.set(channelId, state);
+    }
     const released = release(state, count);
-    if (released < count && (state.hasOlder || !state.localExhausted)) {
+    if (released < count && (
+      !generation
+      || state.attachedGeneration !== generation
+      || state.hasOlder
+      || !state.localExhausted
+    )) {
       state.userDemand = Math.max(state.userDemand, count - released);
     }
     publish();
@@ -453,7 +473,7 @@ export function createHistoryScheduler({
 
   function snapshot(channelId) {
     const state = channels.get(channelId);
-    if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, buffered: 0, bufferedNewest: 0, revealVersion: 0, error: '' };
+    if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, buffered: 0, bufferedNewest: 0, revealVersion: 0, attached: false, generation, error: '' };
     return {
       headSeq: state.headSeq,
       oldestSeq: state.networkBeforeSeq,
@@ -463,6 +483,8 @@ export function createHistoryScheduler({
       buffered: state.reservoir.size,
       bufferedNewest: Math.max(0, ...state.reservoir.keys()),
       revealVersion: state.revealVersion,
+      attached: generation > 0 && state.attachedGeneration === generation,
+      generation,
       error: state.error,
     };
   }

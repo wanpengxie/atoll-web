@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 // 切频道时消息区必须换一棵新的树。auto-animate 的退场动画会把 React 已经删掉的
 // 节点按 position:absolute / z-index:100 插回容器，只靠动画的 finish 事件回收；
@@ -84,12 +84,12 @@ describe('切频道的消息区', () => {
 });
 
 describe('历史自动懒加载', () => {
-  function historyState(count = 160) {
+  function historyState(count = 160, startSeq = 1) {
     const standalone = Array.from({ length: count }, (_, index) => ({
-      seq: index + 1,
-      envelope: { id: `history-${index + 1}`, kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: `历史 ${index + 1}` } },
+      seq: startSeq + index,
+      envelope: { id: `history-${startSeq + index}`, kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: `历史 ${startSeq + index}` } },
     }));
-    return { channelId: 'c0', rows: new Map(standalone.map((row) => [row.seq, row.envelope])), turns: new Map(), standalone, orphans: [], narration: [], lastSeq: count };
+    return { channelId: 'c0', rows: new Map(standalone.map((row) => [row.seq, row.envelope])), turns: new Map(), standalone, orphans: [], narration: [], lastSeq: startSeq + count - 1 };
   }
 
   it('后台蓄水池增长不推动可见列表，且不存在手动加载按钮', async () => {
@@ -108,12 +108,61 @@ describe('历史自动懒加载', () => {
     await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledWith(32));
   });
 
-  it('scheduler 兑现已登记的顶部 demand 后，列表不重复消费 reservoir', async () => {
+  it('scheduler 兑现 demand 且真正 prepend 可见项后不重复消费 reservoir', async () => {
     const onRevealHistory = vi.fn(() => 0);
-    const view = render(<Timeline state={historyState(4)} history={{ hasOlder: true, buffered: 0, revealVersion: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={historyState(4, 100)} history={{ attached: true, hasOlder: true, buffered: 0, revealVersion: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(1));
-    view.rerender(<Timeline state={historyState(36)} history={{ hasOlder: true, buffered: 16, revealVersion: 1 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={historyState(36, 68)} history={{ attached: true, hasOlder: true, buffered: 16, revealVersion: 1 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(onRevealHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('ledger batch 没有产生更早可见项时继续兑现同一个顶部 demand', async () => {
+    const onRevealHistory = vi.fn(() => 0);
+    const initial = historyState(4, 100);
+    const view = render(<Timeline state={initial} history={{ attached: true, hasOlder: true, buffered: 0, revealVersion: 0 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(1));
+
+    const hidden = {
+      seq: 90,
+      envelope: { id: 'hidden-session', kind: 'event', type: 'terminal.session', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { event: 'closed' } },
+    };
+    const next = {
+      ...initial,
+      rows: new Map([[hidden.seq, hidden.envelope], ...initial.rows]),
+      standalone: [hidden, ...initial.standalone],
+    };
+    view.rerender(<Timeline state={next} history={{ attached: true, hasOlder: true, buffered: 16, revealVersion: 1 }} onRevealHistory={onRevealHistory} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(onRevealHistory).toHaveBeenCalledTimes(2));
+  });
+
+  it('成员过滤按钮在 Virtuoso 时间线中可点击并收窄条目', async () => {
+    const standalone = ['agent-a', 'agent-b'].map((agentId, index) => ({
+      seq: index + 1,
+      envelope: {
+        id: `from-${agentId}`,
+        kind: 'event',
+        type: 'human.note',
+        visibility: 'public',
+        sender: { id: agentId, kind: 'agent' },
+        audience: ['me'],
+        payload: { text: `来自 ${agentId}` },
+      },
+    }));
+    const state = {
+      channelId: 'c0',
+      rows: new Map(standalone.map((row) => [row.seq, row.envelope])),
+      turns: new Map(),
+      standalone,
+      orphans: [],
+      narration: [],
+      lastSeq: 2,
+    };
+    render(<Timeline state={state} history={{ attached: true, hasOlder: false }} onRevealHistory={() => 0} roster={[{ id: 'agent-a', kind: 'agent' }, { id: 'agent-b', kind: 'agent' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+
+    fireEvent.click(await screen.findByTitle('只看我与 agent-a 的往来'));
+    expect(screen.getByTitle('取消只看 agent-a').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('来自 agent-a')).toBeTruthy();
+    expect(screen.queryByText('来自 agent-b')).toBeNull();
   });
 });

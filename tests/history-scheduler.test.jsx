@@ -103,6 +103,23 @@ describe('v4 history batch coordinator', () => {
     scheduler.destroy();
   });
 
+  it('keeps a top demand that arrives before attach metadata', async () => {
+    const harness = requestHarness();
+    const revealRows = vi.fn();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows });
+
+    expect(scheduler.snapshot('c0').attached).toBe(false);
+    expect(scheduler.take('c0', 32)).toBe(0);
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({ channelId: 'c0', purpose: 'user-demand' });
+    finish(scheduler, harness.calls[0], { oldest: 68, rows: 32, hasOlder: false });
+    await waitFor(() => expect(revealRows).toHaveBeenCalled());
+    expect(scheduler.snapshot('c0').attached).toBe(true);
+    scheduler.destroy();
+  });
+
   it('uses an overlapping IndexedDB tail as the same bounded batch type', async () => {
     const readCache = vi.fn(async (channelId, beforeSeq) => ({
       rows: [{ channel_id: channelId, seq: 99, envelope: { id: 'cached-99', kind: 'event', type: 'human.note' } }],
