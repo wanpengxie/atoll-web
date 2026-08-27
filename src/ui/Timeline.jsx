@@ -18,6 +18,7 @@ import { diagnostic } from '../model/diagnostics.js';
 import { createTopIntentController, HISTORY_OPERATION } from '../model/history-interaction.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
+import { messageTimeLabel } from '../util/time.js';
 import { StructuredResult } from './StructuredResult.jsx';
 import { MarkdownContent } from './MarkdownContent.jsx';
 import { TurnInlineDetail } from './context/TurnContext.jsx';
@@ -60,8 +61,7 @@ const ERROR_LABELS = {
 };
 
 function timeLabel(ts) {
-  if (!ts) return '';
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(ts));
+  return messageTimeLabel(ts);
 }
 
 function nameOf(id, names) {
