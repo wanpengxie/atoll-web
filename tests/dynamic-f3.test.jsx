@@ -224,7 +224,8 @@ it('agent 回合中调用的其它 actor 不铺进对话时间线', () => {
   expect(screen.queryByRole('button', { name: /关联调用/ })).toBeNull();
 });
 
-it('Agent 调用按 parent_id 渲染消息树，子过程只留在自己的节点', () => {
+it('Agent 调用按 parent_id 渲染消息树，每个子节点独立折叠且子过程只留在自己的节点', async () => {
+  const user = userEvent.setup();
   const root = { id: 'root-ask', kind: 'request', type: 'agent.ask', ts: 100, sender: { kind: 'human', id: 'me' }, audience: ['agent-a'], visibility: 'public', correlation_id: 'root-ask', payload: { text: '请协作回答' } };
   const child = { id: 'child-b', kind: 'request', type: 'agent.ask', ts: 120, sender: { kind: 'agent', id: 'agent-a' }, audience: ['agent-b'], visibility: 'public', parent_id: 'root-ask', correlation_id: 'root-ask', payload: { text: 'B 负责查资料' } };
   const grandchild = { id: 'child-d', kind: 'request', type: 'agent.ask', ts: 140, sender: { kind: 'agent', id: 'agent-b' }, audience: ['agent-d'], visibility: 'public', parent_id: 'child-b', correlation_id: 'root-ask', payload: { text: 'D 负责核验' } };
@@ -254,6 +255,15 @@ it('Agent 调用按 parent_id 渲染消息树，子过程只留在自己的节�
   expect(nodes.map((node) => node.getAttribute('aria-level'))).toEqual(['2', '3']);
   expect(document.querySelector('.agent-thread-request')).toBeNull();
   expect(nodes.every((node) => node.querySelector('.agent-thread-response > .agent-turn-bubble.compact'))).toBe(true);
+  const collapseToggles = nodes.map((node) => node.querySelector('.agent-thread-collapse-toggle'));
+  expect(collapseToggles.every(Boolean)).toBe(true);
+  expect(collapseToggles.map((node) => node.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
+  expect(nodes.every((node) => node.querySelector('.agent-thread-message.is-collapsed'))).toBe(true);
+  await user.click(collapseToggles[0]);
+  expect(collapseToggles[0].getAttribute('aria-expanded')).toBe('true');
+  expect(collapseToggles[1].getAttribute('aria-expanded')).toBe('false');
+  expect(nodes[0].querySelector('.agent-thread-message.is-expanded')).toBeTruthy();
+  expect(nodes[1].querySelector('.agent-thread-message.is-collapsed')).toBeTruthy();
   expect(nodes.every((node) => node.querySelector('.agent-thread-identity-row > .actor-icon'))).toBe(true);
   expect(nodes.every((node) => node.querySelector('.agent-thread-identity-row > header'))).toBe(true);
   expect(nodes.every((node) => node.querySelector('.agent-thread-identity-row + .agent-thread-content'))).toBe(true);

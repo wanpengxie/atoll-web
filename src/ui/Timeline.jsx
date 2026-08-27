@@ -445,7 +445,7 @@ function AgentRequestQuote({ request, names, onDownload, onPreview }) {
   </blockquote>;
 }
 
-function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, onDownload, onPreview, onReply, compact = false, hasThreadChildren = false }) {
+function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, onDownload, onPreview, onReply, compact = false, compactExpanded = false, onCompactToggle = null, hasThreadChildren = false }) {
   const request = turn.request;
   const terminal = turn.terminal;
   const stopped = terminal?.payload?.status === 'failed' && terminal.payload?.error_code === 'interrupted';
@@ -464,9 +464,9 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
     {terminal && !stopped && <div className="response-content"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
     {terminal && <ProgressTrail turn={turn} running={false} />}
   </>;
-  if (compact) return <article className={`agent-thread-message ${className}`} tabIndex="0">
-    <div className="agent-thread-identity-row">{identity}{heading}</div>
-    <div className="agent-thread-content">{content}</div>
+  if (compact) return <article className={`agent-thread-message ${className}${compactExpanded ? ' is-expanded' : ' is-collapsed'}`} tabIndex="0">
+    <div className="agent-thread-identity-row">{identity}{heading}{onCompactToggle && <button type="button" className="agent-thread-collapse-toggle" aria-label={`${compactExpanded ? '收起' : '展开'} ${nameOf(agentId, names)} 的协作消息`} aria-expanded={compactExpanded} onClick={onCompactToggle}><span aria-hidden="true">⌄</span></button>}</div>
+    <div className="agent-thread-content" aria-hidden={!compactExpanded} inert={!compactExpanded ? true : undefined}>{content}</div>
   </article>;
   const replyTarget = terminal && terminal.payload?.status === 'completed'
     ? replyTargetOf(terminal, { roster, selfId, fallbackSenderId: request.audience?.[0], fallbackSenderKind: 'agent' })
@@ -506,6 +506,7 @@ function threadRails(items, index) {
 }
 
 function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
+  const [expanded, setExpanded] = useState(() => new Set());
   const collaborative = thread.filter((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent');
   if (!collaborative.length) return null;
   return <ol className="agent-message-thread" role="tree" aria-label="Agent 协作消息">
@@ -515,11 +516,17 @@ function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
       const requestView = messagePresentation(request);
       const rails = threadRails(collaborative, index);
       const hasChildren = collaborative[index + 1]?.depth === item.depth + 1;
+      const nodeExpanded = expanded.has(child.requestId);
       return <li key={child.requestId} className={`agent-thread-node status-${child.status}${hasChildren ? ' has-children' : ''}`} style={{ '--thread-depth': item.depth }} role="treeitem" aria-level={item.depth + 1}>
         <span className="agent-thread-elbow" aria-hidden="true" />
         {rails.map((rail) => <span key={rail.level} className={`agent-thread-rail ${rail.continues ? 'continues' : 'ends'}`} style={{ '--thread-rail-level': rail.level }} aria-hidden="true" />)}
         {hasChildren && <span className="agent-thread-child-stem" aria-hidden="true" />}
-        <div className="agent-thread-response"><AgentBubble turn={child} title={requestView.text} names={names} quotedRequest={request} onDownload={onDownload} onPreview={onPreview} compact /></div>
+        <div className="agent-thread-response"><AgentBubble turn={child} title={requestView.text} names={names} quotedRequest={request} onDownload={onDownload} onPreview={onPreview} compact compactExpanded={nodeExpanded} onCompactToggle={() => setExpanded((current) => {
+          const next = new Set(current);
+          if (next.has(child.requestId)) next.delete(child.requestId);
+          else next.add(child.requestId);
+          return next;
+        })} /></div>
       </li>;
     })}
   </ol>;
