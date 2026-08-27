@@ -181,7 +181,7 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
       held = true;
       for (const turn of cancellable) {
         try {
-          await onCancel?.(state.channelId, turn.requestId, taskControlContext(turn, { selfId, access }).cancelsAsSubstrate);
+          await onCancel?.(state.channelId, turn.requestId, taskControlContext(turn, { selfId, access }).cancelsAsDismiss);
         } catch (error) {
           failures.push(error?.message || String(error));
         }
@@ -241,7 +241,7 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
                   {paused && <span className="agent-wait-paused">已暂停</span>}
                   {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
                   {context.canEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
-                  {context.canCancel && <button type="button" title={context.cancelsAsSubstrate ? '这条不是你发的，将请底座代为关闭' : '撤回你自己发出的这条请求'} onClick={() => onCancel?.(state.channelId, turn.requestId, context.cancelsAsSubstrate)}>取消</button>}
+                  {context.canCancel && <button type="button" title={context.cancelsAsDismiss ? '这条不是你发的，将请对方放弃它' : '撤回你自己发出的这条请求'} onClick={() => onCancel?.(state.channelId, turn.requestId, context.cancelsAsDismiss)}>取消</button>}
                   {extraControls(context).map((entry) => <button key={entry.word} type="button" onClick={() => onControl(turn, group.actorId, entry.word, { target: turn.requestId })}>{controlLabel(entry)}</button>)}
                 </div>
               </>}

@@ -564,21 +564,24 @@ export default function App() {
     });
   }, [handleSend]);
 
-  // 关掉一条等待中的请求。自己发的那条走 wire.cancel（调用方给自己的账写终态）;
-  // 别人发的没有那一臂,只能请 system actor 以底座身份代关——同一个按钮,两条路,
-  // 由消息归属决定走哪条。
-  const handleCancelAny = useCallback(async (channelId, reqId, asSubstrate) => {
+  // 「取消」按钮背后的两条路。自己发的那条走 wire.cancel（调用方给自己开的账写
+  // 终态）；别人发的没有那一臂——第三方不是合法的终态作者——所以改为请**持有它
+  // 的 actor** 自己把它答掉。同一个按钮，事实不同：一个是撤回，一个是对方放弃。
+  const handleCancelAny = useCallback(async (channelId, reqId, asDismiss) => {
     if (!channelId || !reqId) return '';
-    if (!asSubstrate) return handleCancel(channelId, reqId);
+    if (!asDismiss) return handleCancel(channelId, reqId);
+    const turn = channelStatesRef.current.get(channelId)?.turns.get(reqId);
+    const holder = turn?.request?.audience?.length === 1 ? turn.request.audience[0] : '';
+    if (!holder) return '';
     return handleSend({
       channelId,
-      text: `关闭等待中的请求 ${reqId}`,
-      msgType: TYPES.request.cancel,
-      audience: [SYSTEM_ACTOR_ID],
-      targetLabel: SYSTEM_ACTOR_ID,
-      payload: { request_id: reqId },
+      text: `请放弃等待中的任务 ${reqId}`,
+      msgType: TYPES.agentDismiss,
+      audience: [holder],
+      targetLabel: holder,
+      payload: { target: reqId },
     });
-  }, [handleCancel, handleSend]);
+  }, [channelStatesRef, handleCancel, handleSend]);
 
   // 破窗恢复：把"重启这个频道"作为一条普通控制请求发给 system actor。它和其它
   // 控制词走同一条路，所以请求与终态自然落在时间线上——不需要另造一套结果 UI，

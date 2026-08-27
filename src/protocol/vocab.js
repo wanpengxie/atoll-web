@@ -10,6 +10,9 @@ export const TYPES = Object.freeze({
   agentSteer: 'agent.steer',
   agentQueue: 'agent.queue',
   agentInterrupt: 'agent.interrupt',
+  // 请受理方把一条还在等待的活答掉。取消自己的那条走 wire.cancel（调用方自闭
+  // 账）；别人的没有那一臂，只能请持有它的 actor 自己回一条。
+  agentDismiss: 'agent.dismiss',
   agentHold: 'agent.hold',
   agentUnhold: 'agent.unhold',
   agentReplace: 'agent.replace',
@@ -43,9 +46,6 @@ export const TYPES = Object.freeze({
     // 破窗恢复：给频道内所有干活的成员（agent/tool）换一届任期。不删任何东西。
     restartAll: 'system.member.restart_all',
   }),
-  // 关掉别人发的那条请求。取消自己的走 wire.cancel（调用方自闭账）；这条是请底座
-  // 代为观察——终态授权是闭集，第三方没有自己的那一臂。
-  request: Object.freeze({ cancel: 'system.request.cancel' }),
   log: Object.freeze({ recent: 'system.log.recent' }),
 
   // 空间面：同样发给 system actor，由它转交 c0 的 registrar。

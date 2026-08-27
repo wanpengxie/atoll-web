@@ -4,9 +4,9 @@ import { controlLabel, extraControls, taskControlContext } from '../src/model/ta
 // 按钮可用性唯一来源 = 消息自己 progress 账上最新 status 帧的 controls（受理方宣告），
 // 交上写权限。前端恒不查 describe、恒不按收方身份推断。
 //
-// 归属不再决定"能不能"，只决定"走哪条路"：频道是一个统一权限边界，能在这里写就
-// 能操作这里等待中的活。取消自己发的那条是调用方自闭账；别人发的没有那一臂
-// （终态授权是 receiver / caller / substrate 的闭集），改请底座代关。
+// 归属不再决定"能不能"，只决定这一下是哪件事：频道是一个统一权限边界，能在这里
+// 写就能操作这里等待中的活。取消自己发的那条是撤回（调用方关掉自己开的账）；
+// 别人发的是请持有它的 actor 把它答掉——第三方不是合法的终态作者。
 describe('task control eligibility', () => {
   const processing = {
     request: { id: 'r1', type: 'agent.ask', sender: { id: 'me' }, audience: ['agent'], expires_at: 2000 },
@@ -15,7 +15,7 @@ describe('task control eligibility', () => {
   };
   const queued = {
     ...processing,
-    provisional: [{ envelope: { payload: { status: 'queued', controls: [{ word: 'agent.replace' }, { word: 'agent.steer' }] } } }],
+    provisional: [{ envelope: { payload: { status: 'queued', controls: [{ word: 'agent.replace' }, { word: 'agent.dismiss' }, { word: 'agent.steer' }] } } }],
   };
 
   it('requires a writable channel and an advertised control', () => {
@@ -32,13 +32,22 @@ describe('task control eligibility', () => {
     expect(taskControlContext(queued, { selfId: 'other', access: 'member_active' })).toMatchObject({ canInsert: true, canEdit: true });
   });
 
-  // 取消对谁都开，但归属决定走哪条路：自己发的由调用方自闭账，别人发的没有那一臂
-  // （终态授权是闭集），只能请底座代关。按钮只有一个，路由不暴露给使用者。
-  it('lets anyone cancel, and says which path it must take', () => {
-    expect(taskControlContext(queued, { selfId: 'me', access: 'member_active' })).toMatchObject({ canCancel: true, cancelsAsSubstrate: false });
-    expect(taskControlContext(queued, { selfId: 'other', access: 'member_active' })).toMatchObject({ canCancel: true, cancelsAsSubstrate: true });
+  // 一个按钮，两种事实：自己发的是撤回（调用方关掉自己开的账）；别人发的是请持有
+  // 它的 actor 把它答掉——第三方不是合法的终态作者，所以后者以受理方在账上宣告
+  // dismiss 为准，账上没宣告就没有按钮。
+  it('cancels your own request, and asks the holder to drop anyone else\'s', () => {
+    expect(taskControlContext(queued, { selfId: 'me', access: 'member_active' })).toMatchObject({ canCancel: true, cancelsAsDismiss: false });
+    expect(taskControlContext(queued, { selfId: 'other', access: 'member_active' })).toMatchObject({ canCancel: true, cancelsAsDismiss: true });
     // 不可写的频道两条路都没有。
-    expect(taskControlContext(queued, { selfId: 'other', access: 'member_stale' })).toMatchObject({ canCancel: false, cancelsAsSubstrate: false });
+    expect(taskControlContext(queued, { selfId: 'other', access: 'member_stale' })).toMatchObject({ canCancel: false, cancelsAsDismiss: false });
+  });
+
+  // 受理方没宣告 dismiss，就没有请它放弃的路——按钮不该凭空出现。
+  it('offers no drop for others when the holder does not advertise it', () => {
+    const noDismiss = { ...queued, provisional: [{ envelope: { payload: { status: 'queued', controls: [{ word: 'agent.replace' }] } } }] };
+    expect(taskControlContext(noDismiss, { selfId: 'other', access: 'member_active' })).toMatchObject({ canCancel: false });
+    // 自己那条仍然可以撤回：撤回不依赖对方宣告什么。
+    expect(taskControlContext(noDismiss, { selfId: 'me', access: 'member_active' })).toMatchObject({ canCancel: true });
   });
 
   it('draws nothing when the account advertises no controls', () => {
