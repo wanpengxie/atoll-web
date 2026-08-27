@@ -25,6 +25,9 @@ async function request(path, options = {}, fetchImpl = fetch) {
 
 export function createIdentityClient(fetchImpl = fetch) {
   return {
+    session() {
+      return request('/api/identity/session', {}, fetchImpl);
+    },
     login(email, password) {
       return request('/api/identity/login', {
         method: 'POST',

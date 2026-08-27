@@ -2,13 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createIdentityClient } from '../../net/identity.js';
 import { createObsClient } from '../../net/obs.js';
 
-const PRINCIPAL_KEY = 'atoll.principal';
-
-function savedPrincipal() {
-  try { return JSON.parse(localStorage.getItem(PRINCIPAL_KEY) || 'null'); }
-  catch { return null; }
-}
-
 export function useAtollSession({ onError }) {
   const [booting, setBooting] = useState(true);
   const [principal, setPrincipal] = useState(null);
@@ -19,11 +12,20 @@ export function useAtollSession({ onError }) {
     const obs = createObsClient();
     (async () => {
       try {
-        const principals = await obs.spacePrincipals();
+        // The HttpOnly session is the identity authority. Browser storage may
+        // disappear independently and must never be required to recover who
+        // owns an otherwise valid server session.
+        const current = await identityRef.current.session();
         if (!alive) return;
-        const saved = savedPrincipal();
-        const row = (principals.items || []).map((item) => item.declared || {}).find((item) => item.id === saved?.id);
-        setPrincipal(saved ? { ...saved, ...row } : { id: '', display_name: '已登录用户' });
+        let row;
+        try {
+          const principals = await obs.spacePrincipals();
+          row = (principals.items || []).map((item) => item.declared || {}).find((item) => item.id === current.id);
+        } catch (error) {
+          if (error?.status === 401) throw error;
+          onError(error);
+        }
+        if (alive) setPrincipal({ ...(row || {}), id: current.id, display_name: row?.display_name || '' });
       } catch (error) {
         if (alive && error?.status !== 401) onError(error);
       } finally {
@@ -35,7 +37,6 @@ export function useAtollSession({ onError }) {
 
   const accept = useCallback((value) => {
     const next = { id: value.id, display_name: value.display_name || '' };
-    localStorage.setItem(PRINCIPAL_KEY, JSON.stringify(next));
     setPrincipal(next);
   }, []);
   const clear = useCallback(() => { setPrincipal(null); setBooting(false); }, []);

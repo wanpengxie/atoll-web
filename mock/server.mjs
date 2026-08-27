@@ -1851,6 +1851,12 @@ export function createMockServer({
       return;
     }
 
+    if (request.method === 'GET' && path === '/api/identity/session') {
+      if (!authenticated(request)) { httpError(response, 401, 'not_authenticated', 'invalid session'); return; }
+      json(response, 200, { id: ROOT_ID });
+      return;
+    }
+
     if (path === '/api/update') {
       if (!authenticated(request)) { httpError(response, 401, 'not_authenticated', 'invalid session'); return; }
       if (request.method === 'GET') {
