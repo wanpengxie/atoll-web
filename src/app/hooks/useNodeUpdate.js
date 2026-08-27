@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ACTIVE_UPDATE_STATES, markUpdateChecked, readNodeUpdate, startNodeUpdate, updateCheckDue } from '../../model/node-update.js';
-
-const DAILY_POLL_MS = 60 * 60 * 1000;
+import { ACTIVE_UPDATE_STATES, readNodeUpdate, startNodeUpdate, UPDATE_CHECK_INTERVAL_MS } from '../../model/node-update.js';
 
 export function useNodeUpdate({ principalId, wireState }) {
   const [update, setUpdate] = useState(null);
   const mountedRef = useRef(true);
   const updateRef = useRef(null);
+  const hasConnectedRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -16,10 +15,8 @@ export function useNodeUpdate({ principalId, wireState }) {
 
   const refresh = useCallback(async (forceCheck = false) => {
     if (principalId !== 'root') return null;
-    const check = forceCheck || updateCheckDue();
     try {
-      const next = await readNodeUpdate({ check });
-      if (check) markUpdateChecked();
+      const next = await readNodeUpdate({ check: forceCheck });
       if (mountedRef.current) setUpdate(next);
       return next;
     } catch (error) {
@@ -35,10 +32,13 @@ export function useNodeUpdate({ principalId, wireState }) {
   useEffect(() => {
     if (principalId !== 'root') {
       setUpdate(null);
+      hasConnectedRef.current = false;
       return undefined;
     }
-    void refresh(false);
-    const timer = window.setInterval(() => { if (updateCheckDue()) void refresh(false); }, DAILY_POLL_MS);
+    // Opening or reloading the page always checks once. While it remains open,
+    // the official origins are checked again every six hours.
+    void refresh(true);
+    const timer = window.setInterval(() => void refresh(true), UPDATE_CHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [principalId, refresh]);
 
@@ -49,8 +49,12 @@ export function useNodeUpdate({ principalId, wireState }) {
   }, [refresh, update?.status]);
 
   useEffect(() => {
-    if (wireState === 'open' && ACTIVE_UPDATE_STATES.has(update?.status)) void refresh(false);
-  }, [refresh, update?.status, wireState]);
+    if (wireState !== 'open') return;
+    // The first open belongs to page startup, already checked above. A later
+    // open means the node restarted and the wire reconnected, so check again.
+    if (hasConnectedRef.current) void refresh(true);
+    hasConnectedRef.current = true;
+  }, [refresh, wireState]);
 
   const start = useCallback(async () => {
     try {

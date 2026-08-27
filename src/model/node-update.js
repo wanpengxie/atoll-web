@@ -1,5 +1,4 @@
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const CHECKED_KEY = 'atoll.node-update.checked-at';
+export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 async function requestUpdate(path, options) {
   const response = await fetch(path, { credentials: 'same-origin', ...options });
@@ -11,19 +10,6 @@ async function requestUpdate(path, options) {
     throw error;
   }
   return body;
-}
-
-export function updateCheckDue(storage = globalThis.localStorage, now = Date.now()) {
-  try {
-    const checkedAt = Number(storage?.getItem(CHECKED_KEY) || 0);
-    return !Number.isFinite(checkedAt) || checkedAt <= 0 || now - checkedAt >= CHECK_INTERVAL_MS;
-  } catch {
-    return true;
-  }
-}
-
-export function markUpdateChecked(storage = globalThis.localStorage, now = Date.now()) {
-  try { storage?.setItem(CHECKED_KEY, String(now)); } catch { /* checking still succeeded */ }
 }
 
 export async function readNodeUpdate({ check = false } = {}) {
