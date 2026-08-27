@@ -36,6 +36,11 @@ test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯�
   await view.getByLabel('选择要上传到当前目录的文件').setInputFiles({ name: '研究交付物.txt', mimeType: 'text/plain', buffer: Buffer.from('可信的预览内容') });
   await expect(view.getByText('研究交付物.txt', { exact: true })).toBeVisible();
   const mountedFile = view.locator('.channel-file-row').filter({ hasText: '研究交付物.txt' });
+  await expect(mountedFile.getByRole('button', { name: '预览', exact: true })).toHaveText('');
+  await expect(mountedFile.getByRole('button', { name: '附加', exact: true })).toHaveText('');
+  const rowDownload = page.waitForEvent('download');
+  await mountedFile.locator('.finder-name-cell').click();
+  expect((await rowDownload).suggestedFilename()).toBe('研究交付物.txt');
   await mountedFile.getByRole('button', { name: '预览', exact: true }).click();
   const mountedPreview = page.getByRole('dialog', { name: /文件预览：研究交付物.txt/ });
   await expect(mountedPreview).toContainText('可信的预览内容');
@@ -150,9 +155,9 @@ test('文件夹按物理 node_type 导航，不会被当成文件预览', async 
   await view.getByRole('button', { name: '创建', exact: true }).click();
   const folder = view.locator('.channel-file-row').filter({ hasText: '研究资料' });
   await expect(folder).toContainText('文件夹');
+  await expect(folder.getByRole('button', { name: '打开' })).toHaveCount(0);
   await folder.click();
   await expect(page.getByRole('dialog', { name: /文件预览/ })).toHaveCount(0);
-  await folder.dblclick();
   await expect(view.getByRole('button', { name: '研究资料', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(view).toContainText('当前目录为空');
   await view.getByRole('button', { name: /新建文件夹/ }).click();

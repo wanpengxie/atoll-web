@@ -12,7 +12,7 @@ const daemons = [{ id: 'device-id', name: 'local-device' }];
 const root = 'daemon://local-device/c0/';
 
 describe('channel file browser', () => {
-  it('selects a directory without previewing it and navigates only on open', async () => {
+  it('opens a directory with one row click without previewing it', async () => {
     const user = userEvent.setup();
     const onPreview = vi.fn();
     const onResource = vi.fn(async (payload) => {
@@ -24,7 +24,6 @@ describe('channel file browser', () => {
     const folder = await screen.findByRole('row', { name: /docs/ });
     await user.click(folder);
     expect(onPreview).not.toHaveBeenCalled();
-    await user.dblClick(folder);
     expect(await screen.findByRole('row', { name: /readme.md/ })).toBeTruthy();
     expect(onResource).toHaveBeenCalledWith(expect.objectContaining({
       op: 'list', query: expect.objectContaining({ prefix: `${root}docs/`, limit: 100 }),
@@ -66,7 +65,7 @@ describe('channel file browser', () => {
       return { items: [] };
     });
     render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
-    await user.dblClick(await screen.findByRole('row', { name: /研究资料/ }));
+    await user.click(await screen.findByRole('row', { name: /研究资料/ }));
     await screen.findByText('当前目录为空');
     await user.click(screen.getByRole('button', { name: /新建文件夹/ }));
     await user.type(screen.getByLabelText('新文件夹名称'), '设计');
@@ -89,7 +88,7 @@ describe('channel file browser', () => {
     });
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
-    await user.dblClick(await screen.findByRole('row', { name: /docs/ }));
+    await user.click(await screen.findByRole('row', { name: /docs/ }));
     const inside = await screen.findByRole('row', { name: /inside.txt/ });
     await user.click(inside.querySelector('button[title^="删除"]'));
     await user.click(screen.getByRole('button', { name: '返回上一级' }));
@@ -111,10 +110,27 @@ describe('channel file browser', () => {
     });
     const view = <ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />;
     const { rerender } = render(view);
-    await user.dblClick(await screen.findByRole('row', { name: /docs/ }));
+    await user.click(await screen.findByRole('row', { name: /docs/ }));
     await screen.findByText('当前目录为空');
     rerender(<ArtifactsView channel={{ id: 'c1', qualified_name: 'c1' }} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
     expect(await screen.findByRole('row', { name: /fresh.txt/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'c1', exact: true }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('sorts loaded rows from the column headers', async () => {
+    const user = userEvent.setup();
+    const onResource = vi.fn(async () => ({ items: [
+      { id: `${root}alpha.txt`, meta: { node_type: 'regular', size: 10 } },
+      { id: `${root}zulu.txt`, meta: { node_type: 'regular', size: 2 } },
+    ] }));
+    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    await screen.findByRole('row', { name: /alpha.txt/ });
+    const rowNames = () => screen.getAllByRole('row').slice(1).map((row) => row.textContent);
+    expect(rowNames()[0]).toContain('alpha.txt');
+    await user.click(screen.getByRole('button', { name: '名称' }));
+    expect(rowNames()[0]).toContain('zulu.txt');
+    await user.click(screen.getByRole('button', { name: '大小' }));
+    expect(rowNames()[0]).toContain('zulu.txt');
+    expect(screen.getByRole('columnheader', { name: /大小/ }).getAttribute('aria-sort')).toBe('ascending');
   });
 });

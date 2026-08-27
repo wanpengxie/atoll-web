@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Download, Eye, FolderOpen, FolderPlus, Paperclip, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { Eye, FolderPlus, Paperclip, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { artifactKindForMediaType, previewForMediaType } from '../model/artifacts.js';
 import { fileTransferURL, mediaTypeFromFileName, uploadChannelFile } from '../model/channel-file-transfer.js';
 import { attachmentFromResource, readFileTicket } from '../model/resources.js';
@@ -83,14 +83,11 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
 
   function actions(entry) {
     return <div className="channel-file-actions" role="cell">
-      {entry.kind === 'directory'
-        ? <button type="button" title={`打开 ${entry.name}`} onClick={(event) => { event.stopPropagation(); browser.openDirectory(entry); }}><FolderOpen size={14} />打开</button>
-        : entry.kind === 'file' ? <>
-          <button type="button" title={`预览 ${entry.name}`} onClick={(event) => { event.stopPropagation(); previewFile(entry); }}><Eye size={14} />预览</button>
-          <button type="button" title={`附加 ${entry.name}`} onClick={(event) => { event.stopPropagation(); attachFile(entry); }}><Paperclip size={14} />附加</button>
-          <button type="button" title={`下载 ${entry.name}`} onClick={(event) => { event.stopPropagation(); void download(entry); }}><Download size={14} />下载</button>
-        </> : null}
-      <button type="button" className="danger" title={`删除 ${entry.name}`} onClick={(event) => { event.stopPropagation(); void remove(entry); }}><Trash2 size={14} />删除</button>
+      {entry.kind === 'file' && <>
+        <button type="button" aria-label="预览" title={`预览 ${entry.name}`} onClick={(event) => { event.stopPropagation(); previewFile(entry); }}><Eye size={15} /></button>
+        <button type="button" aria-label="附加" title={`附加 ${entry.name}`} onClick={(event) => { event.stopPropagation(); attachFile(entry); }}><Paperclip size={15} /></button>
+      </>}
+      <button type="button" className="danger" aria-label="删除" title={`删除 ${entry.name}`} onClick={(event) => { event.stopPropagation(); void remove(entry); }}><Trash2 size={15} /></button>
     </div>;
   }
 
@@ -119,7 +116,7 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
       {browser.error && <p className="governance-error" role="alert">{browser.error}</p>}
       {!browser.daemonId
         ? <div className="artifact-empty"><strong>这个频道还没有可用的文件挂载</strong><p>连接设备后，这里会显示频道的默认目录。</p></div>
-        : <FileBrowserRows browser={browser} onActivateFile={previewFile} renderActions={actions} />}
+        : <FileBrowserRows browser={browser} onActivateFile={download} renderActions={actions} />}
     </div>
   </section>;
 }

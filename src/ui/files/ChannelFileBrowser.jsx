@@ -1,5 +1,5 @@
-import React from 'react';
-import { ChevronRight, File, Folder } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { ArrowDown, ArrowUp, ChevronRight, File, Folder } from 'lucide-react';
 import { normalizeDirectory } from '../../model/channel-files.js';
 
 export function fileCrumbs(directory, rootName) {
@@ -42,15 +42,75 @@ function FileGlyph({ entry }) {
     : <span className="file-kind-icon" aria-hidden="true"><File size={14} /></span>;
 }
 
+const SORT_COLUMNS = [
+  { key: 'name', label: '名称' },
+  { key: 'modified', label: '修改日期' },
+  { key: 'size', label: '大小' },
+  { key: 'kind', label: '种类' },
+];
+
+const nameCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+
+function kindOrder(entry) {
+  return entry.kind === 'directory' ? 0 : entry.kind === 'file' ? 1 : 2;
+}
+
+export function sortFileEntries(entries, sort) {
+  const direction = sort.direction === 'descending' ? -1 : 1;
+  return [...entries].sort((left, right) => {
+    // Finder-style grouping keeps folders discoverable while sorting file facts.
+    if (sort.key !== 'kind' && kindOrder(left) !== kindOrder(right)) return kindOrder(left) - kindOrder(right);
+    let result = 0;
+    if (sort.key === 'name') result = nameCollator.compare(left.name, right.name);
+    if (sort.key === 'kind') result = kindOrder(left) - kindOrder(right);
+    if (sort.key === 'modified') {
+      const leftValue = Date.parse(left.modifiedAt || '');
+      const rightValue = Date.parse(right.modifiedAt || '');
+      const leftMissing = Number.isNaN(leftValue);
+      const rightMissing = Number.isNaN(rightValue);
+      if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+      if (!leftMissing) result = leftValue - rightValue;
+    }
+    if (sort.key === 'size') {
+      const leftMissing = !Number.isFinite(Number(left.size));
+      const rightMissing = !Number.isFinite(Number(right.size));
+      if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+      if (!leftMissing) result = Number(left.size) - Number(right.size);
+    }
+    if (result) return result * direction;
+    return nameCollator.compare(left.name, right.name) || String(left.key).localeCompare(String(right.key));
+  });
+}
+
+function SortHeader({ column, sort, onSort }) {
+  const active = sort.key === column.key;
+  return <span role="columnheader" aria-sort={active ? sort.direction : 'none'}>
+    <button type="button" className={`finder-sort-button finder-sort-${column.key}`} onClick={() => onSort(column.key)}>
+      <span>{column.label}</span>
+      {active && (sort.direction === 'ascending' ? <ArrowUp size={11} aria-hidden="true" /> : <ArrowDown size={11} aria-hidden="true" />)}
+    </button>
+  </span>;
+}
+
 export function FileBrowserRows({ browser, mode = 'manage', onActivateFile, renderActions }) {
+  const [sort, setSort] = useState({ key: 'name', direction: 'ascending' });
+  const entries = useMemo(() => sortFileEntries(browser.entries, sort), [browser.entries, sort]);
+  const changeSort = (key) => setSort((current) => ({
+    key,
+    direction: current.key === key && current.direction === 'ascending' ? 'descending' : 'ascending',
+  }));
   const activate = (entry) => {
+    browser.setSelectedKey(entry.key);
     if (entry.kind === 'directory') browser.openDirectory(entry);
     else if (entry.kind === 'file') onActivateFile?.(entry);
   };
 
   return <div className={`channel-file-list file-browser-${mode}`} role="table" aria-label="当前目录内容" aria-busy={browser.busy}>
-    <div className="finder-list-header" role="row"><span role="columnheader">名称</span><span role="columnheader">修改日期</span><span role="columnheader">大小</span><span role="columnheader">种类</span><span aria-hidden="true" /></div>
-    {browser.entries.map((entry, index) => {
+    <div className="finder-list-header" role="row">
+      {SORT_COLUMNS.map((column) => <SortHeader key={column.key} column={column} sort={sort} onSort={changeSort} />)}
+      <span aria-hidden="true" />
+    </div>
+    {entries.map((entry, index) => {
       const selected = browser.selectedKey === entry.key;
       const className = `channel-file-row ${index % 2 ? 'row-tinted' : 'row-light'}${selected ? ' is-selected' : ''}${entry.kind === 'directory' ? ' directory-row' : ''}`;
       const contents = <>
@@ -62,8 +122,8 @@ export function FileBrowserRows({ browser, mode = 'manage', onActivateFile, rend
       </>;
       if (mode === 'pick') return <button type="button" className={className} aria-pressed={selected} disabled={entry.kind === 'other'} key={entry.key} onClick={() => activate(entry)}>{contents}</button>;
       return <div className={className} role="row" tabIndex={0} aria-selected={selected} key={entry.key}
-        onClick={() => browser.setSelectedKey(entry.key)} onDoubleClick={() => activate(entry)}
-        onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); activate(entry); } }}>
+        onClick={(event) => { if (event.detail < 2) activate(entry); }}
+        onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(entry); } }}>
         {contents}
       </div>;
     })}
