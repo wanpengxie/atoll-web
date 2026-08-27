@@ -48,13 +48,17 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
   const request = turn?.request;
   const actorId = request?.audience?.length === 1 ? request.audience[0] : '';
   const open = Boolean(request && !turn.terminal);
+  // 谁能操作:频道是一个统一权限边界,所以"能在这里写"就能操作这里等待中的活,
+  // 不要求是它的发起人。发起人限制曾让最常见的一种情况无人可管——agent 代人转发
+  // 的请求,它的 sender 是转发的 agent,于是真正的委托人只能眼看着自己的活排在队
+  // 里而碰不到任何按钮。
   const owned = Boolean(selfId && request?.sender?.id === selfId);
   const writable = access === 'member_active';
   const frame = latestStatusFrame(turn);
   const location = frame?.status || '';
   const controls = open ? controlEntries(frame) : [];
   const words = new Set(controls.map((entry) => entry.word));
-  const actionable = open && owned && writable;
+  const actionable = open && writable;
   const expiresAt = Number(request?.expires_at || 0);
   return {
     actorId,
@@ -68,8 +72,12 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
     expired: expiresAt > 0 && expiresAt <= now,
     location,
     controls,
-    // 取消是消息撤回（channel 层的能力），不是 agent 控制词，不进 controls。
-    canCancel: actionable && location === 'queued',
+    // 取消是消息撤回(channel 层的能力),不是 agent 控制词,不进 controls——
+    // 而且它是唯一仍然要求 owned 的一个,不是策略选择而是结构约束:取消写的是
+    // **调用方给自己的账**写终态,harness 只认 sender == 那条请求的 sender 这一支
+    // (step_response_pairing 的 callerSelfClose)。第三方按下去只会拿到
+    // unauthorized_sender,所以按钮不该出现。别人的活要停,用 interrupt。
+    canCancel: actionable && owned && location === 'queued',
     canInsert: actionable && words.has(TYPES.agentSteer),
     canEdit: actionable && words.has(TYPES.agentReplace),
     canStop: actionable && words.has(TYPES.agentInterrupt),
