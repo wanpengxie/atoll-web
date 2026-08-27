@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { isMemberAccess } from '../model/channel-access.js';
 import { agentActivityDuration } from '../model/agent-activity.js';
+import { ACTIVE_UPDATE_STATES, nodeUpdateLabel } from '../model/node-update.js';
 
 const STATE_LABEL = {
   open: 'OPEN',
@@ -14,11 +15,14 @@ function agentLabel(actorId = '') {
   return parts.length >= 2 ? parts[1] : actorId;
 }
 
-export function ChannelList({ channels, activeChannelId, unread, agentActivity, wireState, me, onSelect, onCreate, onSearch, onActivity, onSpaceManage, onLogout, onCloseMobile }) {
+export function ChannelList({ channels, activeChannelId, unread, agentActivity, wireState, me, update, onSelect, onCreate, onSearch, onActivity, onSpaceManage, onLogout, onCloseMobile }) {
   const mine = channels.filter((channel) => isMemberAccess(channel.access));
   const space = channels.filter((channel) => !isMemberAccess(channel.access));
   const [now, setNow] = useState(() => Date.now());
   const activeCount = Object.values(agentActivity?.byChannel || {}).reduce((count, channel) => count + (channel.active?.length || 0), 0);
+  const updateValue = update?.value;
+  const updateActive = ACTIVE_UPDATE_STATES.has(updateValue?.status);
+  const showUpdate = Boolean(updateValue?.available || updateActive);
   useEffect(() => {
     if (!activeCount) return undefined;
     setNow(Date.now());
@@ -70,6 +74,11 @@ export function ChannelList({ channels, activeChannelId, unread, agentActivity, 
       {!rows.length && <p className="rail-empty">{empty}</p>}
     </div>
   );
+  const beginUpdate = () => {
+    const target = updateValue?.latest_version || '最新版';
+    const confirmed = window.confirm(`升级到 ${target}？\n\n升级会重启 Atoll，并暂时中断当前连接和正在进行的工作。频道记录、任务和工作区数据会保留。`);
+    if (confirmed) void update.start().catch(() => {});
+  };
   return (
     <aside className="channel-rail">
       <header className="rail-header">
@@ -88,6 +97,11 @@ export function ChannelList({ channels, activeChannelId, unread, agentActivity, 
         <p className="rail-caption space-caption">空间 <span>{space.length}</span></p>
         {group(space, '没有可发现频道')}
       </nav>
+      {showUpdate && <div className="node-update-action">
+        <button type="button" disabled={updateActive} onClick={beginUpdate} title={updateValue?.detail || `升级到 ${updateValue?.latest_version || '最新版'}`}>
+          <span aria-hidden="true">↑</span>{nodeUpdateLabel(updateValue, wireState)}
+        </button>
+      </div>}
       <footer className="account-card">
         <span className="avatar">{(me.display_name || me.email || me.id || '?').slice(0, 1).toUpperCase()}</span>
         <span><strong>{me.display_name || me.email || '已登录用户'}</strong><small>{me.id || 'principal 未知'}</small></span>

@@ -468,6 +468,7 @@ export function createMockServer({
   seed = process.env.ATOLL_MOCK_SEED,
 } = {}) {
   let domain = createMockDomain(loadScenario(scenario, seed));
+  let nodeUpdate = { current_version: 'v0.06', latest_version: 'v0.07', available: true, status: 'idle' };
   const sessions = new Map();
   // 服务器世代号：进程重启或账本 reset 都是"新世界"，随 attach 回执告知前端，
   // 前端据此整体作废本地缓存——手测者恒不该被要求手清 cookie/localStorage。
@@ -1847,6 +1848,23 @@ export function createMockServer({
       const token = cookieValue(request, SESSION_COOKIE);
       if (token) sessions.delete(token);
       json(response, 200, { ok: true }, { 'Set-Cookie': `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax` });
+      return;
+    }
+
+    if (path === '/api/update') {
+      if (!authenticated(request)) { httpError(response, 401, 'not_authenticated', 'invalid session'); return; }
+      if (request.method === 'GET') {
+        json(response, 200, nodeUpdate);
+        return;
+      }
+      if (request.method === 'POST') {
+        nodeUpdate = { ...nodeUpdate, status: 'downloading', detail: '正在下载 v0.07' };
+        later(600, () => { nodeUpdate = { ...nodeUpdate, status: 'restarting', detail: '正在重启并等待连接恢复' }; });
+        later(1600, () => { nodeUpdate = { current_version: 'v0.07', latest_version: 'v0.07', available: false, status: 'succeeded', detail: '升级完成' }; });
+        json(response, 202, nodeUpdate);
+        return;
+      }
+      httpError(response, 405, 'not_found', 'method not allowed');
       return;
     }
 

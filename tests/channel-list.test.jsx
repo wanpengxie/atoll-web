@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChannelList } from '../src/ui/ChannelList.jsx';
 
@@ -45,5 +45,27 @@ describe('channel Agent timers', () => {
     expect(screen.getByTitle('另有 1 项正在运行').textContent).toBe('+1');
     act(() => vi.advanceTimersByTime(2_000));
     expect(document.querySelectorAll('.channel-agent-timer time')[0].textContent).toBe('01:07');
+  });
+});
+
+describe('node update action', () => {
+  it('shows one bottom-left button only when an update is available and confirms before starting', () => {
+    const start = vi.fn().mockResolvedValue({ status: 'starting' });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<ChannelList {...props} unread={{}} update={{ value: { current_version: 'v0.06', latest_version: 'v0.07', available: true, status: 'idle' }, start }} />);
+    const button = screen.getByRole('button', { name: '升级到 v0.07' });
+    fireEvent.click(button);
+    expect(start).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][0]).toContain('暂时中断当前连接');
+    expect(confirm.mock.calls[0][0]).toContain('数据会保留');
+  });
+
+  it('uses the same disabled button to report progress and hides it when current', () => {
+    const { rerender } = render(<ChannelList {...props} unread={{}} update={{ value: { latest_version: 'v0.07', available: true, status: 'verifying' }, start: vi.fn() }} />);
+    expect(screen.getByRole('button', { name: '正在校验…' }).disabled).toBe(true);
+    rerender(<ChannelList {...props} unread={{}} update={{ value: { current_version: 'v0.07', latest_version: 'v0.07', available: false, status: 'succeeded' }, start: vi.fn() }} />);
+    expect(screen.queryByText('升级到 v0.07')).toBeNull();
   });
 });
