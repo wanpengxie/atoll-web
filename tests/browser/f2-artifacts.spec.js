@@ -155,6 +155,14 @@ test('文件夹按物理 node_type 导航，不会被当成文件预览', async 
   await folder.dblclick();
   await expect(view.getByRole('button', { name: '研究资料', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(view).toContainText('当前目录为空');
+  await view.getByRole('button', { name: /新建文件夹/ }).click();
+  await view.getByLabel('新文件夹名称').fill('设计');
+  await view.getByRole('button', { name: '创建', exact: true }).click();
+  const nested = view.locator('.channel-file-row').filter({ hasText: '设计' });
+  await expect(nested).toContainText('文件夹');
+  page.once('dialog', (dialog) => dialog.accept());
+  await nested.getByRole('button', { name: '删除' }).click();
+  await expect(nested).toHaveCount(0);
   await view.getByRole('button', { name: '返回上一级' }).click();
   page.once('dialog', (dialog) => dialog.accept());
   await view.locator('.channel-file-row').filter({ hasText: '研究资料' }).getByRole('button', { name: '删除' }).click();

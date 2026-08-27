@@ -20,8 +20,14 @@ export function normalizeDirectory(value = '') {
   return parts.length ? `${parts.join('/')}/` : '';
 }
 
+export function fileDirectoryPrefix({ daemonName, qualifiedChannel, directory = '' }) {
+  const logical = normalizeDirectory(directory);
+  const encoded = logical.split('/').filter(Boolean).map((part) => encodeURIComponent(part)).join('/');
+  return `${channelMountRoot({ daemonName, qualifiedChannel })}${encoded ? `${encoded}/` : ''}`;
+}
+
 export function fileListCommand({ channelId, daemonName, qualifiedChannel, directory = '', cursor = '', limit = 100 }) {
-  const prefix = `${channelMountRoot({ daemonName, qualifiedChannel })}${normalizeDirectory(directory)}`;
+  const prefix = fileDirectoryPrefix({ daemonName, qualifiedChannel, directory });
   return { channel_id: channelId, op: 'list', query: { prefix, limit, ...(cursor ? { cursor } : {}) } };
 }
 
@@ -38,14 +44,17 @@ export function directoryEntries(items, prefix) {
     const nodeType = String(item.meta?.node_type || 'regular');
     const directory = nodeType === 'directory';
     const kind = directory ? 'directory' : nodeType === 'regular' ? 'file' : 'other';
+    const name = displaySegment(relative);
     rows.push({
       key: `${directory ? 'dir' : kind}:${id}`,
       kind,
       nodeType,
-      name: displaySegment(relative),
+      name,
       resourceId: id,
       ops: Array.isArray(item.ops) ? item.ops : [],
-      ...(directory ? { directory: `${relative}/` } : {}),
+      // Browser state is a logical path. Encoding happens exactly once, when
+      // the state crosses into a resource address or list prefix.
+      ...(directory ? { directory: `${name}/` } : {}),
       ...(item.meta?.media_type ? { mediaType: String(item.meta.media_type) } : {}),
       ...(Number.isFinite(Number(item.meta?.size)) ? { size: Number(item.meta.size) } : {}),
       ...(modifiedAt ? { modifiedAt } : {}),

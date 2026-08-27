@@ -5,7 +5,7 @@ import { normalizeDirectory } from '../../model/channel-files.js';
 export function fileCrumbs(directory, rootName) {
   const parts = normalizeDirectory(directory).split('/').filter(Boolean);
   return [{ name: rootName, directory: '' }, ...parts.map((name, index) => ({
-    name: (() => { try { return decodeURIComponent(name); } catch { return name; } })(),
+    name,
     directory: `${parts.slice(0, index + 1).join('/')}/`,
   }))];
 }

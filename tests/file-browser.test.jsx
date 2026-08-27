@@ -5,7 +5,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ArtifactsView } from '../src/ui/ArtifactsView.jsx';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const channel = { id: 'c0', qualified_name: 'c0' };
 const daemons = [{ id: 'device-id', name: 'local-device' }];
@@ -55,5 +55,66 @@ describe('channel file browser', () => {
     await user.click(screen.getByRole('button', { name: '载入更多' }));
     expect(await screen.findByRole('row', { name: /second.txt/ })).toBeTruthy();
     expect(onResource).toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ cursor: 'cursor-1' }) }));
+  });
+
+  it('creates inside a non-ASCII directory without double-encoding its parent', async () => {
+    const user = userEvent.setup();
+    const encodedParent = encodeURIComponent('研究资料');
+    const onResource = vi.fn(async (payload) => {
+      if (payload.op !== 'list') return { status: 'ok' };
+      if (payload.query.prefix === root) return { items: [{ id: `${root}${encodedParent}`, meta: { node_type: 'directory' } }] };
+      return { items: [] };
+    });
+    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    await user.dblClick(await screen.findByRole('row', { name: /研究资料/ }));
+    await screen.findByText('当前目录为空');
+    await user.click(screen.getByRole('button', { name: /新建文件夹/ }));
+    await user.type(screen.getByLabelText('新文件夹名称'), '设计');
+    await user.click(screen.getByRole('button', { name: '创建' }));
+    await waitFor(() => expect(onResource).toHaveBeenCalledWith({
+      channel_id: 'c0', op: 'create',
+      address: `${root}${encodedParent}/${encodeURIComponent('设计')}`,
+      node_type: 'directory',
+    }));
+  });
+
+  it('does not let a completed mutation refresh overwrite a newer directory', async () => {
+    const user = userEvent.setup();
+    let releaseDelete;
+    const deleting = new Promise((resolve) => { releaseDelete = resolve; });
+    const onResource = vi.fn(async (payload) => {
+      if (payload.op === 'delete') { await deleting; return { status: 'ok' }; }
+      if (payload.query?.prefix === `${root}docs/`) return { items: [{ id: `${root}docs/inside.txt`, meta: { node_type: 'regular' } }] };
+      return { items: [{ id: `${root}docs`, meta: { node_type: 'directory' } }] };
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    await user.dblClick(await screen.findByRole('row', { name: /docs/ }));
+    const inside = await screen.findByRole('row', { name: /inside.txt/ });
+    await user.click(inside.querySelector('button[title^="删除"]'));
+    await user.click(screen.getByRole('button', { name: '返回上一级' }));
+    await screen.findByRole('row', { name: /docs/ });
+    releaseDelete();
+    await deleting;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => expect(onResource.mock.calls.filter(([payload]) => payload.query?.prefix === `${root}docs/`)).toHaveLength(1));
+    expect(screen.queryByRole('row', { name: /inside.txt/ })).toBeNull();
+  });
+
+  it('returns to the root when the active channel changes', async () => {
+    const user = userEvent.setup();
+    const onResource = vi.fn(async (payload) => {
+      if (payload.query?.prefix === root) return { items: [{ id: `${root}docs`, meta: { node_type: 'directory' } }] };
+      if (payload.query?.prefix === `${root}docs/`) return { items: [] };
+      if (payload.query?.prefix === 'daemon://local-device/c1/') return { items: [{ id: 'daemon://local-device/c1/fresh.txt', meta: { node_type: 'regular' } }] };
+      return { items: [] };
+    });
+    const view = <ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />;
+    const { rerender } = render(view);
+    await user.dblClick(await screen.findByRole('row', { name: /docs/ }));
+    await screen.findByText('当前目录为空');
+    rerender(<ArtifactsView channel={{ id: 'c1', qualified_name: 'c1' }} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    expect(await screen.findByRole('row', { name: /fresh.txt/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'c1', exact: true }).getAttribute('aria-current')).toBe('page');
   });
 });

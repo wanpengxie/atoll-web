@@ -18,19 +18,21 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !browser.daemonName) return;
+    const uploadLocation = browser.locationKey;
     browser.setError(''); setUploading(true);
     try {
       const attachment = await uploadChannelFile({ file, channel, daemonName: browser.daemonName, directory: browser.directory, onResource });
       setUploadedMeta((current) => new Map(current).set(attachment.address, { name: file.name, type: attachment.media_type, size: file.size }));
-      await browser.refresh();
+      await browser.refreshLocation(uploadLocation);
     } catch (failure) {
-      browser.setError(failure?.message || String(failure));
+      if (browser.isCurrentLocation(uploadLocation)) browser.setError(failure?.message || String(failure));
     } finally {
       setUploading(false);
     }
   }
 
   async function download(entry) {
+    const actionLocation = browser.locationKey;
     browser.setError('');
     try {
       const receipt = await onResource(readFileTicket({ channelId: channel.id, resourceId: entry.resourceId }));
@@ -42,7 +44,7 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
       anchor.href = url; anchor.download = entry.name; anchor.click();
       setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (failure) {
-      browser.setError(failure?.message || String(failure));
+      if (browser.isCurrentLocation(actionLocation)) browser.setError(failure?.message || String(failure));
     }
   }
 

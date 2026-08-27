@@ -22,6 +22,17 @@ describe('channel mounted files', () => {
     ]);
   });
 
+  it('keeps directory state logical and encodes every path segment once at the wire edge', () => {
+    const prefix = 'daemon://local-device/c0/';
+    const [entry] = directoryEntries([
+      { id: `${prefix}${encodeURIComponent('研究资料')}`, meta: { node_type: 'directory' } },
+    ], prefix);
+    expect(entry).toMatchObject({ name: '研究资料', directory: '研究资料/' });
+    expect(fileListCommand({
+      channelId: 'c0', daemonName: 'local-device', qualifiedChannel: 'c0', directory: `${entry.directory}设计/`,
+    }).query.prefix).toBe(`${prefix}${encodeURIComponent('研究资料')}/${encodeURIComponent('设计')}/`);
+  });
+
   it('normalizes breadcrumbs without allowing traversal', () => {
     expect(normalizeDirectory('/docs/design')).toBe('docs/design/');
     expect(parentDirectory('docs/design/')).toBe('docs/');
