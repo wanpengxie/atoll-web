@@ -12,6 +12,7 @@ describe('resource model', () => {
     expect(createDirectoryResource({ channelId: 'c0', address })).toEqual({ channel_id: 'c0', op: 'create', address, node_type: 'directory' });
     expect(deleteFileResource({ channelId: 'c0', resourceId: address })).toEqual({ channel_id: 'c0', op: 'delete', resource_id: address });
     expect(readFileTicket({ channelId: 'c0', resourceId: 'file:a' })).toEqual({ channel_id: 'c0', op: 'read', resource_id: 'file:a', with_content: true });
+    expect(readFileTicket({ channelId: 'c0', resourceId: '/srv/频道/报告 1.md' })).toEqual({ channel_id: 'c0', op: 'read', resource_id: '/srv/频道/报告 1.md', with_content: true });
   });
   it('rejects traversal paths and creates safe attachment metadata', () => {
     expect(() => fileAddress({ daemonName: 'd1', qualifiedChannel: 'c0', path: '../a' })).toThrow('..');

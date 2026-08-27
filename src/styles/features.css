@@ -95,6 +95,8 @@
 .artifact-context-preview { min-height: 180px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line-structural); border-radius: var(--radius-object); background: var(--raised); }
 .artifact-context-preview p { color: var(--text-muted); font-size: 11px; }
 .artifact-context-preview pre { align-self: stretch; justify-self: stretch; max-height: 360px; margin: 0; padding: 14px; overflow: auto; color: var(--text); font: 11px/1.55 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.artifact-text-lines > span.is-target { display: inline-block; min-width: 100%; border-radius: 3px; background: var(--surface-selected); box-shadow: inset 3px 0 0 var(--accent); }
+.artifact-line-missing { margin: 0 0 10px; color: var(--danger); }
 .artifact-context-preview img, .artifact-context-preview video, .artifact-context-preview iframe { display: block; width: 100%; max-height: 420px; border: 0; object-fit: contain; }
 .artifact-context-preview audio { width: calc(100% - 24px); }
 .artifact-no-preview { padding: 30px 18px; text-align: center; }
@@ -126,6 +128,7 @@
 .file-preview-stage.kind-text .file-preview-document { place-items: start stretch; padding: clamp(28px, 5vw, 64px); border-radius: 4px; background: var(--workspace); box-shadow: var(--shadow-modal); }
 .file-preview-document > p { color: var(--text-muted); }
 .file-preview-document > pre { width: 100%; min-height: 100%; margin: 0; color: var(--text); font: 13px/1.75 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.file-preview-document > .artifact-text-lines > span { min-height: 1.75em; scroll-margin-block: 30vh; }
 .file-preview-document > img, .file-preview-document > video { display: block; max-width: 100%; max-height: calc(100vh - 190px); object-fit: contain; box-shadow: var(--shadow-modal); }
 .file-preview-document > iframe { width: min(100%, 980px); height: calc(100vh - 150px); border: 0; border-radius: 4px; background: var(--workspace); box-shadow: var(--shadow-modal); }
 .file-preview-document > audio { width: min(100%, 720px); }

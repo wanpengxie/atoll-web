@@ -9,7 +9,7 @@ import { orderedTimeline } from '../src/model/fold.js';
 import { TasksView } from '../src/ui/TasksView.jsx';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { Composer } from '../src/ui/Composer.jsx';
-import { ArtifactContext, PREVIEW_LIMITS, readBoundedText } from '../src/ui/context/ArtifactContext.jsx';
+import { ArtifactContext, ArtifactPreviewBody, PREVIEW_LIMITS, readBoundedText } from '../src/ui/context/ArtifactContext.jsx';
 
 afterEach(() => {
   cleanup();
@@ -115,6 +115,17 @@ describe('F6 长列表预算', () => {
 describe('F6 预览生命周期预算', () => {
   const imageArtifact = { channelId: 'c0', resourceId: 'r1', name: '大图.png', mediaType: 'image/png', kind: 'image', preview: 'image', size: 10, source: { seq: 1 } };
   const props = { authorName: 'Alice', onDownload: () => {}, onAttach: () => {}, onSource: () => {}, onClose: () => {} };
+
+  it('文本文件定位并标记消息链接指定的行号', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const view = render(<ArtifactPreviewBody artifact={{ preview: 'text', line: 2 }} preview={{ phase: 'ready', text: '第一行\n第二行\n第三行' }} />);
+    const target = view.container.querySelector('[data-line="2"]');
+    expect(target?.textContent).toBe('第二行');
+    expect(target?.classList.contains('is-target')).toBe(true);
+    expect(view.container.querySelector('pre')?.textContent).toBe('第一行\n第二行\n第三行');
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' }));
+  });
 
   it('文本流超过 512 KiB 时立即取消 reader', async () => {
     const cancel = vi.fn(() => Promise.resolve());

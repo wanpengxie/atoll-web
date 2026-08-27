@@ -198,6 +198,24 @@ it('消息附件只显示产品摘要，点击整卡进入统一预览', async (
   expect(onPreviewResource).toHaveBeenCalledWith('c0', turn.request.payload.attachments[0]);
 });
 
+it('Agent 答复中的显式绝对路径在当前频道打开受控预览', async () => {
+  const user = userEvent.setup();
+  const turn = runningTurn();
+  turn.status = 'completed';
+  turn.terminal = { id: 'terminal-file-ref', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '[main.go](/srv/atoll/channels/c0/main.go:42)' } };
+  const onPreviewResource = vi.fn();
+  const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 4 };
+  render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} onPreviewResource={onPreviewResource} />);
+  await user.click(screen.getByRole('link', { name: 'main.go' }));
+  expect(onPreviewResource).toHaveBeenCalledWith('c0', {
+    resource_id: '/srv/atoll/channels/c0/main.go',
+    name: 'main.go',
+    media_type: 'text/plain',
+    file_reference: true,
+    line: 42,
+  });
+});
+
 // agent 为了答一句话调用别的 actor，那些调用过去和人问的那句平铺在同一层。这里钉的是
 // 它们聚在这一问底下、默认收起，展开才看得到细节——人先读到主线，需要时才读过程。
 it('agent 回合中调用的其它 actor 不铺进对话时间线', () => {

@@ -474,7 +474,18 @@ export class MockDomain {
       if (store.has(id)) throw new TypeError('resource already exists');
       const row = { id, resource_id: id, kind: 'kv', value: structuredClone(args ?? {}) }; store.set(id, row); return { status: 'ok', resource_id: id, value: row.value };
     }
-    const row = store.get(id) || [...store.values()].find((entry) => entry.address === id);
+    let row = store.get(id) || [...store.values()].find((entry) => entry.address === id);
+    // 真 accessdoor 会把频道 mount 内的宿主绝对路径规范化成 daemon:// address。
+    // Mock 只为 read 复刻这条已有能力，让文件引用演示走完整 ticket 数据面。
+    if (!row && op === 'read' && typeof id === 'string' && id.startsWith('/')) {
+      const channel = this.channel(channelId);
+      const root = `/mock/atoll/local-device/channels/${channel?.qualified_name || channelId}`;
+      if (!id.startsWith(`${root}/`)) throw new TypeError('path is outside this channel');
+      const segments = id.slice(root.length + 1).split('/');
+      if (!segments.length || segments.some((segment) => !segment || segment === '.' || segment === '..')) throw new TypeError('path is outside this channel');
+      const address = `daemon://local-device/${channel.qualified_name}/${segments.map((segment) => encodeURIComponent(segment)).join('/')}`;
+      row = [...store.values()].find((entry) => entry.address === address);
+    }
     if (op === 'stat') return { exists: Boolean(row), ...(row ? { meta: { kind: row.kind, ...(row.meta || {}) } } : {}) };
     if (!row) throw new TypeError('resource does not exist');
     if (op === 'read' && row.kind === 'file' && payload.with_content) return { status: 'ok', ticket: this.issueTicket('get', row.address, id), redeem: 'http', resource_id: id };

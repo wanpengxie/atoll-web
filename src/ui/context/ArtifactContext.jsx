@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { artifactAttachment, formatArtifactSize } from '../../model/artifacts.js';
 import { fileTransferURL } from '../../model/channel-file-transfer.js';
 import { readFileTicket } from '../../model/resources.js';
@@ -88,11 +88,31 @@ export function useArtifactPreview(artifact, onResource) {
   return preview;
 }
 
+function TextArtifactPreview({ text, line }) {
+  const targetRef = useRef(null);
+  const lines = String(text || '').split('\n');
+  const targetLine = Number.isSafeInteger(line) && line > 0 ? line : 0;
+  const targetExists = targetLine > 0 && targetLine <= lines.length;
+  useEffect(() => {
+    if (targetExists) targetRef.current?.scrollIntoView?.({ block: 'center' });
+  }, [targetExists, targetLine, text]);
+  if (!targetLine) return <pre>{text}</pre>;
+  if (targetExists) {
+    const before = lines.slice(0, targetLine - 1).join('\n');
+    const after = lines.slice(targetLine).join('\n');
+    return <pre className="artifact-text-lines">{before ? `${before}\n` : ''}<span ref={targetRef} className="is-target" data-line={targetLine}>{lines[targetLine - 1] || '\u200b'}</span>{after ? `\n${after}` : ''}</pre>;
+  }
+  return <>
+    <p className="artifact-line-missing" role="status">目标第 {targetLine} 行超出文件范围（共 {lines.length} 行）</p>
+    <pre>{text}</pre>
+  </>;
+}
+
 export function ArtifactPreviewBody({ artifact, preview }) {
   if (!artifact) return null;
   return <>
     {preview.phase === 'loading' && <p>正在加载预览…</p>}
-    {preview.phase === 'ready' && artifact.preview === 'text' && <pre>{preview.text}</pre>}
+    {preview.phase === 'ready' && artifact.preview === 'text' && <TextArtifactPreview text={preview.text} line={artifact.line} />}
     {preview.phase === 'ready' && artifact.preview === 'image' && <img src={preview.url} alt={artifact.name} />}
     {preview.phase === 'ready' && artifact.preview === 'media' && (artifact.kind === 'audio' ? <audio src={preview.url} controls /> : <video src={preview.url} controls />)}
     {preview.phase === 'ready' && artifact.preview === 'inline' && <iframe src={preview.url} title={artifact.name} />}

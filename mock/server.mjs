@@ -251,7 +251,9 @@ function seededHistory(channelId, behavior = {}) {
     const requestText = isLobby
       ? `Lobby history ${index}: inspect channel coordination`
       : `${channelId} history ${index}: ask ${responderId} for PONG`;
-    const responseText = isLobby ? `Lobby coordination check ${index} complete` : `${channelId} PONG ${index}`;
+    const responseText = behavior.file_reference_demo && channelId === 'c0' && index === 3
+      ? '文件已经生成，点击 [path-preview-demo.go 第 4 行](/mock/atoll/local-device/channels/c0/workspace/path-preview-demo.go:4) 在 Atoll 内预览。'
+      : isLobby ? `Lobby coordination check ${index} complete` : `${channelId} PONG ${index}`;
     const toolName = isLobby ? 'mock.lobby.status' : 'mock.echo';
     const demoAttachments = behavior.demo_attachments && channelId === 'c0.project' && index === 3
       ? [{ resource_id: 'file:seed:c0.project:3', name: '项目说明.md', media_type: 'text/markdown', size: 47 }]

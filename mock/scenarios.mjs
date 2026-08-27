@@ -15,6 +15,20 @@ const DEMO_FILES = Object.freeze([
   { channel_id: 'c0.public', path: '共享说明.md', media_type: 'text/markdown', content: '# Public\n\n这是可发现频道的共享目录示例。' },
 ]);
 
+const FILE_REFERENCE_DEMO = Object.freeze({
+  channel_id: 'c0',
+  path: 'workspace/path-preview-demo.go',
+  media_type: 'text/plain',
+  content: [
+    'package demo',
+    '',
+    'func PreviewPath() string {',
+    '    message := "这行来自 Agent 返回的宿主绝对路径"',
+    '    return message',
+    '}',
+  ].join('\n'),
+});
+
 const member = (channelId, actorId = 'root', role = 'owner') => ({
   principal_id: 'root',
   channel_id: channelId,
@@ -66,6 +80,7 @@ export const SCENARIOS = Object.freeze({
   'space-administration-denied': standard({ behavior: { governance_denied: true } }),
   'device-governance': standard(),
   'resource-workflow': standard(),
+  'file-reference': standard({ files: [...DEMO_FILES, FILE_REFERENCE_DEMO], behavior: { file_reference_demo: true } }),
   'resource-ticket-expired': standard(),
   'scheduled-action': standard(),
   'scheduled-action-denied': standard({ memberships: [] }),

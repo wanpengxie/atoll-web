@@ -22,7 +22,7 @@ export function FilePreviewModal({ artifact, onResource, onAttach, onDownload, o
   }}>
     <section ref={dialogRef} tabIndex={-1} className="file-preview-modal" role="dialog" aria-modal="true" aria-label={`文件预览：${artifact.name}`}>
       <header className="file-preview-header">
-        <div className="file-preview-identity"><span aria-hidden="true">◇</span><div><strong>{artifact.name}</strong><small>{artifact.mediaType} · {formatArtifactSize(artifact.size)}</small></div></div>
+        <div className="file-preview-identity"><span aria-hidden="true">◇</span><div><strong>{artifact.name}</strong><small>{artifact.mediaType} · {formatArtifactSize(artifact.size)}{artifact.line ? ` · 第 ${artifact.line} 行` : ''}</small></div></div>
         <div className="file-preview-actions"><button type="button" onClick={() => onAttach?.(attachment)}>附加到消息</button><button type="button" onClick={() => onDownload?.(attachment)}>下载</button><button ref={closeRef} type="button" className="file-preview-close" aria-label="关闭文件预览" onClick={onClose}>×</button></div>
       </header>
       <div className={`file-preview-stage kind-${artifact.preview}`} aria-label="预览画布">

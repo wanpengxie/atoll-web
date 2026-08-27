@@ -6,6 +6,15 @@ export function resourceId(value) {
   return id;
 }
 
+// 文件读取还接受 accessdoor 已有的 device-local 绝对路径解析面。只在 read
+// helper 放宽；create/write/delete 等写面继续要求规范 ResourceID/address。
+export function readableResourceId(value) {
+  const raw = String(value || '');
+  if (!raw.startsWith('/')) return resourceId(raw);
+  if (raw.length > 4095 || /[\u0000-\u001f\u007f]/.test(raw)) throw new TypeError('文件路径格式无效');
+  return raw;
+}
+
 export function kvResource({ channelId, op, id = '', args, query, target, ops }) {
   if (!channelId) throw new TypeError('频道不能为空');
   if (!RESOURCE_OPS.includes(op)) throw new TypeError('未知资源操作');
@@ -44,7 +53,7 @@ export function deleteFileResource({ channelId, resourceId: id }) {
 }
 
 export function readFileTicket({ channelId, resourceId: id }) {
-  return { channel_id: channelId, op: 'read', resource_id: resourceId(id), with_content: true };
+  return { channel_id: channelId, op: 'read', resource_id: readableResourceId(id), with_content: true };
 }
 
 export function resourceOutcome(value) {

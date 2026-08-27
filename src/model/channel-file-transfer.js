@@ -8,7 +8,16 @@ export function safeUploadName(name) {
 export function mediaTypeFromFileName(name, declared = '') {
   if (declared) return declared;
   const extension = String(name).split('.').pop()?.toLowerCase();
-  return ({ md: 'text/markdown', txt: 'text/plain', json: 'application/json', csv: 'text/csv', pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', mp3: 'audio/mpeg', mp4: 'video/mp4' })[extension] || 'application/octet-stream';
+  return ({
+    md: 'text/markdown', txt: 'text/plain', log: 'text/plain',
+    go: 'text/plain', js: 'text/javascript', jsx: 'text/javascript', ts: 'text/plain', tsx: 'text/plain',
+    py: 'text/plain', rs: 'text/plain', java: 'text/plain', c: 'text/plain', cc: 'text/plain', cpp: 'text/plain', h: 'text/plain', hpp: 'text/plain',
+    sh: 'text/plain', bash: 'text/plain', zsh: 'text/plain', css: 'text/css', html: 'text/html', xml: 'text/xml',
+    yaml: 'text/yaml', yml: 'text/yaml', toml: 'text/plain', sql: 'text/plain',
+    json: 'application/json', csv: 'text/csv', pdf: 'application/pdf',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+    mp3: 'audio/mpeg', mp4: 'video/mp4',
+  })[extension] || 'application/octet-stream';
 }
 
 // 传输带频道和票，仅此两样。票的作用域就是（频道, actor）：频道由请求写明，跟其他
