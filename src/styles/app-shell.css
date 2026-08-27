@@ -51,6 +51,7 @@
 .node-update-action button:hover:not(:disabled), .node-update-action button:focus-visible { border-color: var(--line-control); background: var(--surface-selected); color: var(--text); }
 .node-update-action button:disabled { cursor: wait; opacity: .7; }
 .node-update-action span { color: var(--accent); font: 700 14px var(--mono); }
+.node-version { flex-shrink: 0; padding: 5px 14px 4px; color: var(--text-dim); font: 500 9px var(--mono); text-align: center; }
 .avatar { display: grid; width: 30px; height: 30px; place-content: center; border-radius: var(--radius-object); background: var(--surface-3); color: var(--text); font: 700 11px var(--sans); }
 .account-card > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
 .account-card strong, .account-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

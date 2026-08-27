@@ -23,6 +23,7 @@ export function ChannelList({ channels, activeChannelId, unread, agentActivity, 
   const updateValue = update?.value;
   const updateActive = ACTIVE_UPDATE_STATES.has(updateValue?.status);
   const showUpdate = Boolean(updateValue?.available || updateActive);
+  const showVersion = Boolean(updateValue?.current_version && !showUpdate);
   useEffect(() => {
     if (!activeCount) return undefined;
     setNow(Date.now());
@@ -102,6 +103,7 @@ export function ChannelList({ channels, activeChannelId, unread, agentActivity, 
           <span aria-hidden="true">↑</span>{nodeUpdateLabel(updateValue, wireState)}
         </button>
       </div>}
+      {showVersion && <div className="node-version" title={`Atoll ${updateValue.current_version}`}>{updateValue.current_version}</div>}
       <footer className="account-card">
         <span className="avatar">{(me.display_name || me.email || me.id || '?').slice(0, 1).toUpperCase()}</span>
         <span><strong>{me.display_name || me.email || '已登录用户'}</strong><small>{me.id || 'principal 未知'}</small></span>

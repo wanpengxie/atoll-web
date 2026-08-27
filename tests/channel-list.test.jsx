@@ -62,10 +62,12 @@ describe('node update action', () => {
     expect(confirm.mock.calls[0][0]).toContain('数据会保留');
   });
 
-  it('uses the same disabled button to report progress and hides it when current', () => {
+  it('uses the same disabled button to report progress and shows only the version when current', () => {
     const { rerender } = render(<ChannelList {...props} unread={{}} update={{ value: { latest_version: 'v0.07', available: true, status: 'verifying' }, start: vi.fn() }} />);
     expect(screen.getByRole('button', { name: '正在校验…' }).disabled).toBe(true);
     rerender(<ChannelList {...props} unread={{}} update={{ value: { current_version: 'v0.07', latest_version: 'v0.07', available: false, status: 'succeeded' }, start: vi.fn() }} />);
     expect(screen.queryByText('升级到 v0.07')).toBeNull();
+    expect(screen.queryByRole('button', { name: /升级/ })).toBeNull();
+    expect(screen.getByTitle('Atoll v0.07').textContent).toBe('v0.07');
   });
 });
