@@ -40,6 +40,7 @@ export const ERROR_CODES = Object.freeze([
   'capability_unavailable',
   'forbidden',
   'closed',
+  'bad_cursor',
 ]);
 
 export const OBSERVE_ENDED = Object.freeze([
@@ -76,6 +77,7 @@ const PAYLOAD_FIELDS = Object.freeze({
     'query',
     'address',
     'with_content',
+    'node_type',
   ],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
@@ -183,6 +185,15 @@ function validateResourcePayload(payload) {
   }
   if (payload.with_content != null && typeof payload.with_content !== 'boolean') {
     throw new FrameValidationError('resource with_content must be a boolean');
+  }
+  if (payload.node_type != null && !['regular', 'directory'].includes(payload.node_type)) {
+    throw new FrameValidationError('resource node_type must be regular or directory');
+  }
+  if (payload.node_type != null && (payload.op !== 'create' || !hasAddress)) {
+    throw new FrameValidationError('resource node_type is valid only for address create');
+  }
+  if (payload.node_type === 'directory' && payload.with_content) {
+    throw new FrameValidationError('resource directory cannot carry content');
   }
 }
 

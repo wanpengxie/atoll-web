@@ -54,4 +54,13 @@ describe('frame ABI', () => {
       ]
     `);
   });
+
+  it('keeps directory creation inside the resource payload contract', () => {
+	expect(frame('resource', 'mkdir-1', {
+	  channel_id: 'c0', op: 'create', address: 'daemon://local-device/c0/docs', node_type: 'directory',
+	}).payload.node_type).toBe('directory');
+	expect(() => frame('resource', 'bad-dir', {
+	  channel_id: 'c0', op: 'create', address: 'daemon://local-device/c0/docs', node_type: 'directory', with_content: true,
+	})).toThrow(FrameValidationError);
+  });
 });

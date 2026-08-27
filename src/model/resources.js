@@ -34,6 +34,15 @@ export function createFileTicket({ channelId, address }) {
   return { channel_id: channelId, op: 'create', address, with_content: true };
 }
 
+export function createDirectoryResource({ channelId, address }) {
+  if (!channelId || !String(address || '').startsWith('daemon://')) throw new TypeError('文件夹地址无效');
+  return { channel_id: channelId, op: 'create', address, node_type: 'directory' };
+}
+
+export function deleteFileResource({ channelId, resourceId: id }) {
+  return { channel_id: channelId, op: 'delete', resource_id: resourceId(id) };
+}
+
 export function readFileTicket({ channelId, resourceId: id }) {
   return { channel_id: channelId, op: 'read', resource_id: resourceId(id), with_content: true };
 }

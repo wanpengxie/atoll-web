@@ -20,46 +20,47 @@ export function normalizeDirectory(value = '') {
   return parts.length ? `${parts.join('/')}/` : '';
 }
 
-export function fileListCommand({ channelId, daemonName, qualifiedChannel, directory = '' }) {
+export function fileListCommand({ channelId, daemonName, qualifiedChannel, directory = '', cursor = '', limit = 100 }) {
   const prefix = `${channelMountRoot({ daemonName, qualifiedChannel })}${normalizeDirectory(directory)}`;
-  return { channel_id: channelId, op: 'list', query: { prefix } };
+  return { channel_id: channelId, op: 'list', query: { prefix, limit, ...(cursor ? { cursor } : {}) } };
 }
 
 export function directoryEntries(items, prefix) {
-  const rows = new Map();
+  const rows = [];
   for (const item of items || []) {
     const id = String(item?.id || item?.resource_id || item?.address || '');
     if (!id.startsWith(prefix)) continue;
     const relative = id.slice(prefix.length);
-    if (!relative) continue;
-    const slash = relative.indexOf('/');
-    if (slash >= 0) {
-      const rawName = relative.slice(0, slash);
-      const modifiedAt = item.meta?.modified_at || item.meta?.mtime || item.updated_at;
-      const key = `dir:${rawName}`;
-      if (rawName && !rows.has(key)) rows.set(key, { key, kind: 'directory', name: displaySegment(rawName), directory: `${rawName}/`, ...(modifiedAt ? { modifiedAt } : {}) });
-      else if (modifiedAt && rows.has(key)) {
-        const current = rows.get(key);
-        if (!current.modifiedAt || new Date(modifiedAt) > new Date(current.modifiedAt)) rows.set(key, { ...current, modifiedAt });
-      }
-      continue;
-    }
+    // A file list is one physical directory page. Never synthesize folders
+    // from slashes: navigation is determined only by the backend node fact.
+    if (!relative || relative.includes('/')) continue;
     const modifiedAt = item.meta?.modified_at || item.meta?.mtime || item.updated_at;
-    rows.set(`file:${id}`, {
-      key: `file:${id}`,
-      kind: 'file',
+    const nodeType = String(item.meta?.node_type || 'regular');
+    const directory = nodeType === 'directory';
+    const kind = directory ? 'directory' : nodeType === 'regular' ? 'file' : 'other';
+    rows.push({
+      key: `${directory ? 'dir' : kind}:${id}`,
+      kind,
+      nodeType,
       name: displaySegment(relative),
       resourceId: id,
       ops: Array.isArray(item.ops) ? item.ops : [],
+      ...(directory ? { directory: `${relative}/` } : {}),
       ...(item.meta?.media_type ? { mediaType: String(item.meta.media_type) } : {}),
       ...(Number.isFinite(Number(item.meta?.size)) ? { size: Number(item.meta.size) } : {}),
       ...(modifiedAt ? { modifiedAt } : {}),
     });
   }
-  return [...rows.values()].sort((left, right) => {
-    if (left.kind !== right.kind) return left.kind === 'directory' ? -1 : 1;
-    return left.name.localeCompare(right.name, 'zh-CN');
-  });
+  // The device page is already ordered (directory, regular, other, then
+  // path). Preserve it: re-sorting each accumulated page client-side would
+  // make later pages jump ahead of rows whose cursor produced them.
+  return rows;
+}
+
+export function directoryName(value) {
+  const name = String(value || '').trim();
+  if (!name || name === '.' || name === '..' || /[\\/]/.test(name)) throw new TypeError('文件夹名称不能为空，也不能包含 / 或 \\');
+  return name;
 }
 
 export function parentDirectory(directory = '') {

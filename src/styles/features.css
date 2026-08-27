@@ -138,7 +138,7 @@
 .file-preview-controls span { min-width: 48px; color: var(--text-light); font: 11px var(--mono); text-align: center; }
 
 /* The channel mount is a file browser, not a resource dashboard. */
-.channel-files-view { grid-template-rows: auto minmax(0, 1fr); background: var(--workspace); }
+.channel-files-view { position: relative; grid-template-rows: auto minmax(0, 1fr); background: var(--workspace); }
 .finder-toolbar { display: flex; min-width: 0; min-height: 48px; align-items: center; gap: 8px; padding: 6px 12px; background: var(--surface-soft); }
 .finder-nav-button, .finder-tool-button, .finder-upload { min-height: 32px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--text); cursor: pointer; }
 .finder-nav-button { width: 32px; padding: 0; flex: 0 0 auto; font-size: 23px; line-height: 1; }
@@ -152,15 +152,17 @@
 .finder-tools .select-menu { min-width: 150px; }
 .finder-device { max-width: 148px; padding: 0 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .finder-tool-button { width: 34px; padding: 0; font-size: 16px; }
+.finder-tool-button.labeled { display: flex; width: auto; align-items: center; gap: 5px; padding: 0 9px; font-size: 10px; }
 .finder-upload { padding: 5px 11px; border-color: var(--accent); background: var(--accent); color: var(--white); font-size: 10px; font-weight: 650; }
 .finder-native-upload { position: relative; display: grid; place-content: center; }
 .finder-native-upload input { position: absolute; z-index: 1; inset: -1px; display: block; width: calc(100% + 2px); min-width: 0; max-width: none; height: calc(100% + 2px); padding: 0; opacity: 0; cursor: pointer; }
 .finder-native-upload input:disabled, .finder-native-upload.is-disabled { cursor: not-allowed; }
 .finder-native-upload.is-disabled { opacity: .42; }
+.finder-native-upload > span { display: flex; align-items: center; gap: 5px; }
 .finder-native-upload:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .workspace-view-scroll.channel-files-scroll { padding: 0; background: var(--raised); }
 .channel-files-scroll > .channel-file-list { width: 100%; min-width: 650px; min-height: 100%; margin: 0; overflow: hidden; border: 0; border-radius: 0; background: var(--raised); box-shadow: none; }
-.finder-list-header, .channel-file-row { display: grid; grid-template-columns: minmax(220px, 1fr) 168px 82px 126px 166px; align-items: center; gap: 0; width: 100%; }
+.finder-list-header, .channel-file-row { display: grid; grid-template-columns: minmax(220px, 1fr) 168px 82px 126px 230px; align-items: center; gap: 0; width: 100%; }
 .finder-list-header { position: sticky; z-index: 1; top: 0; min-height: 31px; border-top: 1px solid var(--line-structural); border-bottom: 1px solid var(--line-structural); background: var(--surface-soft); color: var(--text-muted); font-size: 10px; font-weight: 650; }
 .finder-list-header > span { min-width: 0; padding: 0 10px; border-right: 1px solid var(--line-subtle); }
 .finder-list-header > span:last-child { border-right: 0; }
@@ -170,6 +172,7 @@
 .channel-file-row.row-tinted { background: var(--surface-soft); }
 button.channel-file-row { cursor: pointer; font: inherit; }
 .channel-file-row:hover, .channel-file-row:focus-within { background: var(--surface-selected); }
+.channel-file-row.is-selected { background: var(--surface-selected); box-shadow: inset 3px 0 0 var(--accent); }
 .channel-file-row > * { min-width: 0; padding: 0 10px; }
 .finder-name-cell { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .channel-file-open { height: 38px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
@@ -185,8 +188,15 @@ button.channel-file-row { cursor: pointer; font: inherit; }
 .channel-file-actions { display: flex; justify-content: flex-end; gap: 3px; opacity: 0; transition: opacity 120ms ease; }
 .channel-file-row:hover .channel-file-actions, .channel-file-row:focus-within .channel-file-actions { opacity: 1; }
 .channel-file-actions button { min-height: 26px; padding: 4px 7px; border: 1px solid var(--line-control); border-radius: 5px; background: var(--raised); color: var(--text); cursor: pointer; font-size: 9px; }
+.channel-file-actions button { display: inline-flex; align-items: center; gap: 3px; }
+.channel-file-actions button.danger:hover, .channel-file-actions button.danger:focus-visible { border-color: var(--danger); color: var(--danger); }
 .channel-file-actions button:hover, .channel-file-actions button:focus-visible { border-color: var(--accent); color: var(--accent); }
 .channel-file-list > .artifact-empty { min-width: 0; }
+.new-folder-form { position: absolute; z-index: 4; top: 44px; right: 62px; display: flex; align-items: flex-end; gap: 6px; padding: 10px; border: 1px solid var(--line-control); border-radius: 8px; background: var(--raised); box-shadow: var(--shadow-modal); }
+.new-folder-form label { display: grid; gap: 4px; color: var(--text-muted); font-size: 10px; }
+.new-folder-form input { width: 220px; min-height: 34px; padding: 6px 9px; border: 1px solid var(--line-control); border-radius: 6px; background: var(--input); color: var(--text); }
+.new-folder-form button { min-height: 34px; padding: 6px 10px; border: 1px solid var(--line-control); border-radius: 6px; background: var(--raised); color: var(--text); cursor: pointer; }
+.new-folder-form button[type="submit"] { border-color: var(--accent); background: var(--accent); color: var(--white); }
 
 /* Composer channel-file chooser: a focused Finder surface, not a second Files page. */
 .attachment-picker-backdrop { padding: 28px; }
@@ -202,7 +212,9 @@ button.channel-file-row { cursor: pointer; font: inherit; }
 .attachment-picker-toolbar .file-breadcrumbs { flex: 1 1 auto; }
 .attachment-picker-toolbar .select-menu { width: 170px; flex: 0 0 auto; }
 .picker-daemon { max-width: 170px; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.attachment-picker-list { min-height: 0; overflow-y: auto; padding: 6px; background: var(--raised); }
+.attachment-picker-list { min-height: 0; overflow-y: auto; padding: 0; background: var(--raised); }
+.attachment-picker-list .channel-file-list { min-height: 100%; }
+.attachment-picker-list .finder-list-header, .attachment-picker-list .channel-file-row { grid-template-columns: minmax(220px, 1fr) 150px 90px 100px 56px; }
 .attachment-picker-row { display: grid; width: 100%; min-height: 42px; grid-template-columns: 30px minmax(0, 1fr) 90px 54px; align-items: center; gap: 8px; padding: 5px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .attachment-picker-row:nth-child(even) { background: var(--surface-soft); }
 .attachment-picker-row:hover, .attachment-picker-row:focus-visible { background: var(--surface-selected); }
@@ -211,7 +223,7 @@ button.channel-file-row { cursor: pointer; font: inherit; }
 .attachment-picker-row > span:last-child { color: var(--text-muted); font-size: 10px; text-align: right; }
 .attachment-picker-row.directory > span:last-child { font-size: 18px; }
 .attachment-picker-empty { display: grid; min-height: 240px; place-content: center; color: var(--text-muted); font-size: 12px; }
-.attachment-picker-modal > footer { display: flex; min-height: 50px; align-items: center; justify-content: flex-end; padding: 7px 12px; border-top: 1px solid var(--line-subtle); background: var(--input); }
+.attachment-picker-modal > footer { display: flex; min-height: 50px; align-items: center; justify-content: space-between; padding: 7px 12px; border-top: 1px solid var(--line-subtle); background: var(--input); color: var(--text-muted); font-size: 10px; }
 .attachment-picker-modal > footer button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--line-control); border-radius: 7px; background: var(--raised); color: var(--text); cursor: pointer; font-size: 11px; }
 
 @media (max-width: 640px) {
@@ -225,6 +237,7 @@ button.channel-file-row { cursor: pointer; font: inherit; }
   .finder-nav-button, .finder-tool-button, .finder-upload { min-height: 44px; }
   .finder-nav-button, .finder-tool-button { width: 44px; }
   .finder-device, .finder-tools .select-menu { display: none; }
+  .finder-tool-button.labeled { width: 44px; padding: 0; justify-content: center; font-size: 0; }
   .file-breadcrumbs button { min-height: 40px; padding: 8px 6px; }
   .finder-upload { padding-right: 10px; padding-left: 10px; }
   .workspace-view-scroll.channel-files-scroll { padding: 0; overflow-x: auto; }
@@ -249,6 +262,9 @@ button.channel-file-row { cursor: pointer; font: inherit; }
   .attachment-picker-toolbar .select-menu, .picker-daemon { display: none; }
   .attachment-picker-row { grid-template-columns: 30px minmax(0, 1fr) 58px; min-height: 48px; }
   .attachment-picker-row > span:last-child { display: none; }
+  .attachment-picker-list .finder-list-header, .attachment-picker-list .channel-file-row { grid-template-columns: minmax(150px, 1fr) 70px 52px; }
+  .new-folder-form { right: 8px; left: 8px; align-items: stretch; flex-wrap: wrap; }
+  .new-folder-form label, .new-folder-form input { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

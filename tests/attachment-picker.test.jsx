@@ -25,8 +25,8 @@ describe('Composer 附件来源', () => {
     const onChoose = vi.fn();
     const onClose = vi.fn();
     const onResource = vi.fn().mockResolvedValue({ items: [
-      { id: 'daemon://local-device/c0/%E8%B5%84%E6%96%99/', meta: {} },
-      { id: 'daemon://local-device/c0/%E8%AF%B4%E6%98%8E.md', meta: { media_type: 'text/markdown', size: 24 } },
+      { id: 'daemon://local-device/c0/%E8%B5%84%E6%96%99', meta: { node_type: 'directory' } },
+      { id: 'daemon://local-device/c0/%E8%AF%B4%E6%98%8E.md', meta: { node_type: 'regular', media_type: 'text/markdown', size: 24 } },
     ] });
     // 设备行的 id 与 name 是两样东西，而 daemon 地址那一段是 name——夹具里让它们
     // 不同，这样"拿 id 去拼地址"会拼出对不上的前缀，列表直接空掉。

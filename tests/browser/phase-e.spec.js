@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
-const MOCK = 'http://127.0.0.1:8832';
+const MOCK = `http://127.0.0.1:${process.env.ATOLL_TEST_MOCK_PORT || 8832}`;
 const UPLOAD = path.resolve('tests/fixtures/phase-e-upload.txt');
 
 async function reset(request, scenario = 'space-administration', seed = 301) {
@@ -11,7 +11,7 @@ async function reset(request, scenario = 'space-administration', seed = 301) {
 
 async function login(page) {
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号', exact: true }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
@@ -149,7 +149,7 @@ test('E-BR-08/E-BR-10 文件上传、附件消息卡和下载闭环', async ({ p
   await reset(request, 'resource-workflow', 306); await login(page);
   const panel = await openResources(page, '文件');
   await panel.getByRole('combobox', { name: '文件目标设备' }).click();
-  await panel.getByRole('option', { name: /Mock local device/ }).click();
+  await panel.getByRole('option', { name: /local-device/ }).click();
   await panel.getByLabel('文件资源路径').fill('uploads/phase-e-upload.txt');
   await panel.getByLabel('选择上传文件').setInputFiles(UPLOAD);
   await panel.getByRole('button', { name: '上传', exact: true }).click();
@@ -169,7 +169,9 @@ test('E-BR-08/E-BR-10 文件上传、附件消息卡和下载闭环', async ({ p
 test('E-BR-09 ticket 过期保留上下文并可重新获取，不复用旧 PUT', async ({ page, request }) => {
   await reset(request, 'resource-ticket-expired', 307); await login(page);
   let firstPut = true;
-  await page.route('**/files/**', async (route) => {
+  // The transfer endpoint is `/files?…`, not a child path below `/files/`.
+  // Match the endpoint itself so the clock advances before the first PUT.
+  await page.route(/\/files(?:\?|$)/, async (route) => {
     if (route.request().method() === 'PUT' && firstPut) {
       firstPut = false;
       await request.post(`${MOCK}/mock/control/advance`, { data: { ms: 60_000 } });
@@ -178,7 +180,7 @@ test('E-BR-09 ticket 过期保留上下文并可重新获取，不复用旧 PUT'
   });
   const panel = await openResources(page, '文件');
   await panel.getByRole('combobox', { name: '文件目标设备' }).click();
-  await panel.getByRole('option', { name: /Mock local device/ }).click();
+  await panel.getByRole('option', { name: /local-device/ }).click();
   await panel.getByLabel('文件资源路径').fill('uploads/expired.txt');
   await panel.getByLabel('选择上传文件').setInputFiles(UPLOAD);
   await panel.getByRole('button', { name: '上传', exact: true }).click();

@@ -101,7 +101,9 @@ export class MockDomain {
     ]);
     this.overlays = new Map();
     this.profiles = new Map([...this.channels.values()].map((channel) => [channel.id, { channel_id: channel.id, description: channel.description || '', serving: channel.open ? 1 : 0, endpoints: {} }]));
-    this.devices = new Map([['local-device', { id: 'local-device', owner_principal: ROOT_ID, name: 'Mock local device', status: 'present', online: true, key: 'mock-device-key-never-observed' }]]);
+    // Device name is an address identity (the daemon:// host), so the mock
+    // obeys the registry's DNS-label law instead of using a presentation label.
+    this.devices = new Map([['local-device', { id: 'local-device', owner_principal: ROOT_ID, name: 'local-device', status: 'present', online: true, key: 'mock-device-key-never-observed' }]]);
     this.bindings = new Set();
     this.resources = new Map([...this.channels.keys()].map((id) => [id, new Map()]));
     this.files = new Map();
@@ -115,7 +117,14 @@ export class MockDomain {
       const content = Buffer.from(String(seed.content || ''), 'utf8');
       const mediaType = seed.media_type || 'application/octet-stream';
       const resourceId = `file:seed:${seed.channel_id}:${index + 1}`;
-      store.set(resourceId, { id: resourceId, resource_id: resourceId, kind: 'file', address, meta: { size: content.length, media_type: mediaType, available: true } });
+      for (let depth = 1; depth < segments.length; depth += 1) {
+        const directoryAddress = `daemon://local-device/${channel.qualified_name}/${segments.slice(0, depth).map((segment) => encodeURIComponent(segment)).join('/')}`;
+        if (![...store.values()].some((row) => row.address === directoryAddress)) {
+          const directoryId = `file:directory:${seed.channel_id}:${segments.slice(0, depth).join(':')}`;
+          store.set(directoryId, { id: directoryId, resource_id: directoryId, kind: 'file', address: directoryAddress, meta: { node_type: 'directory' } });
+        }
+      }
+      store.set(resourceId, { id: resourceId, resource_id: resourceId, kind: 'file', address, meta: { node_type: 'regular', size: content.length, media_type: mediaType, available: true } });
       this.files.set(address, { content, mediaType, size: content.length });
     }
     this.tickets = new Map();
@@ -425,19 +434,37 @@ export class MockDomain {
       const prefix = String(payload.query?.prefix || '');
       const rows = [...store.values()];
       if (prefix.startsWith('daemon://')) {
+        const cursor = Number.parseInt(String(payload.query?.cursor || '0'), 10);
+        const limit = Math.max(1, Math.min(500, Number(payload.query?.limit) || 50));
+        if (!Number.isSafeInteger(cursor) || cursor < 0) throw new TypeError('bad_cursor');
+        const candidates = rows
+          .filter((row) => row.kind === 'file' && String(row.address || '').startsWith(prefix))
+          .filter((row) => !String(row.address).slice(prefix.length).includes('/'))
+          .sort((left, right) => {
+            const leftDir = left.meta?.node_type === 'directory';
+            const rightDir = right.meta?.node_type === 'directory';
+            if (leftDir !== rightDir) return leftDir ? -1 : 1;
+            return String(left.address).localeCompare(String(right.address));
+          });
+        const page = candidates.slice(cursor, cursor + limit);
         return {
-          items: rows
-            .filter((row) => row.kind === 'file' && String(row.address || '').startsWith(prefix))
-            .map((row) => ({ id: row.address, kind: 'file', ops: ['read', 'write', 'delete'], meta: structuredClone(row.meta || {}) })),
-          next: null,
+          items: page.map((row) => ({ id: row.address, kind: 'file', ops: ['read', 'write', 'delete'], meta: structuredClone(row.meta || {}) })),
+          next: cursor + page.length < candidates.length ? String(cursor + page.length) : null,
         };
       }
       return { items: rows.map((row) => structuredClone(row)), next: null };
     }
     if (op === 'create' && payload.address) {
+      const nodeType = payload.node_type || 'regular';
+      const existing = [...store.values()].find((entry) => entry.address === payload.address);
+      if (existing) {
+        if (nodeType !== 'regular' || existing.meta?.node_type !== 'regular') throw new TypeError('resource already exists');
+        return { status: 'ok', ticket: this.issueTicket('put', payload.address, existing.resource_id), redeem: 'http', resource_id: existing.resource_id };
+      }
       const resourceId = `file:${this.nextId('resource')}`;
-      const row = { id: resourceId, resource_id: resourceId, kind: 'file', address: payload.address, meta: {} };
+      const row = { id: resourceId, resource_id: resourceId, kind: 'file', address: payload.address, meta: { node_type: nodeType } };
       store.set(resourceId, row);
+      if (nodeType === 'directory') return { status: 'ok', resource_id: payload.address };
       const ticket = this.issueTicket('put', payload.address, resourceId);
       // 回执不带 address：真实服务端只回述 resource_id，mock 多给一个字段就会让
       // 前端写出依赖它的代码，而那份代码到了真节点上必然失败。
@@ -453,7 +480,10 @@ export class MockDomain {
     if (op === 'read' && row.kind === 'file' && payload.with_content) return { status: 'ok', ticket: this.issueTicket('get', row.address, id), redeem: 'http', resource_id: id };
     if (op === 'read') return { status: 'ok', resource_id: id, value: structuredClone(row.value) };
     if (op === 'write') { row.value = structuredClone(args ?? {}); return { status: 'ok', resource_id: id, value: row.value }; }
-    if (op === 'delete') { store.delete(row.id || id); if (row.address) this.files.delete(row.address); return { status: 'ok', resource_id: id, deleted: true }; }
+    if (op === 'delete') {
+      if (row.meta?.node_type === 'directory' && [...store.values()].some((entry) => String(entry.address || '').startsWith(`${row.address}/`))) throw new TypeError('directory is not empty');
+      store.delete(row.id || id); if (row.address) this.files.delete(row.address); return { status: 'ok', resource_id: id, deleted: true };
+    }
     throw new TypeError('unsupported resource operation');
   }
 

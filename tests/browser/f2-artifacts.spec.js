@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const MOCK = 'http://127.0.0.1:8832';
+const MOCK = `http://127.0.0.1:${process.env.ATOLL_TEST_MOCK_PORT || 8832}`;
 
 async function reset(request, seed) {
   const response = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario: 'resource-workflow', seed } });
@@ -9,7 +9,7 @@ async function reset(request, seed) {
 
 async function login(page) {
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号', exact: true }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
@@ -31,7 +31,7 @@ test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯�
   expect(fileGeometry.headerTop).toBe(fileGeometry.toolbarBottom);
   expect(fileGeometry.radius).toBe('0px');
   await expect(view).toContainText('当前目录为空');
-  await expect(view).toContainText('Mock local device');
+  await expect(view).toContainText('local-device');
   await expect(view).not.toContainText('daemon://local-device/c0/');
   await view.getByLabel('选择要上传到当前目录的文件').setInputFiles({ name: '研究交付物.txt', mimeType: 'text/plain', buffer: Buffer.from('可信的预览内容') });
   await expect(view.getByText('研究交付物.txt', { exact: true })).toBeVisible();
@@ -139,4 +139,24 @@ test('Composer 支持粘贴与鼠标拖入本机文件', async ({ page, request 
   });
   await expect(page.getByLabel('待发送附件')).toContainText('拖入报告.pdf');
   await expect(page.getByText('松开以上传到当前频道')).toBeHidden();
+});
+
+test('文件夹按物理 node_type 导航，不会被当成文件预览', async ({ page, request }) => {
+  await reset(request, 1205); await login(page);
+  await page.getByRole('tab', { name: '文件', exact: true }).click();
+  const view = page.getByRole('tabpanel', { name: '文件' });
+  await view.getByRole('button', { name: /新建文件夹/ }).click();
+  await view.getByLabel('新文件夹名称').fill('研究资料');
+  await view.getByRole('button', { name: '创建', exact: true }).click();
+  const folder = view.locator('.channel-file-row').filter({ hasText: '研究资料' });
+  await expect(folder).toContainText('文件夹');
+  await folder.click();
+  await expect(page.getByRole('dialog', { name: /文件预览/ })).toHaveCount(0);
+  await folder.dblclick();
+  await expect(view.getByRole('button', { name: '研究资料', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(view).toContainText('当前目录为空');
+  await view.getByRole('button', { name: '返回上一级' }).click();
+  page.once('dialog', (dialog) => dialog.accept());
+  await view.locator('.channel-file-row').filter({ hasText: '研究资料' }).getByRole('button', { name: '删除' }).click();
+  await expect(view.locator('.channel-file-row').filter({ hasText: '研究资料' })).toHaveCount(0);
 });

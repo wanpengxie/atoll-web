@@ -5,20 +5,20 @@ describe('channel mounted files', () => {
   it('builds the real Atoll file-list prefix for the active channel mount', () => {
     expect(channelMountRoot({ daemonName: 'local-device', qualifiedChannel: 'c0.project' })).toBe('daemon://local-device/c0.project/');
     expect(fileListCommand({ channelId: 'project-id', daemonName: 'local-device', qualifiedChannel: 'c0.project', directory: 'docs/design/' })).toEqual({
-      channel_id: 'project-id', op: 'list', query: { prefix: 'daemon://local-device/c0.project/docs/design/' },
+      channel_id: 'project-id', op: 'list', query: { prefix: 'daemon://local-device/c0.project/docs/design/', limit: 100 },
     });
   });
 
-  it('projects recursive backend rows into immediate folders and files', () => {
+  it('uses physical node_type and never invents folders from path slashes', () => {
     const prefix = 'daemon://local-device/c0/';
     expect(directoryEntries([
-      { id: `${prefix}docs/a.txt`, kind: 'file', ops: ['read'] },
-      { id: `${prefix}docs/nested/b.txt`, kind: 'file', ops: ['read'] },
-      { id: `${prefix}readme.md`, kind: 'file', ops: ['read'] },
+      { id: `${prefix}docs`, kind: 'file', ops: ['read'], meta: { node_type: 'directory' } },
+      { id: `${prefix}docs/a.txt`, kind: 'file', ops: ['read'], meta: { node_type: 'regular' } },
+      { id: `${prefix}readme.md`, kind: 'file', ops: ['read'], meta: { node_type: 'regular' } },
       { id: 'kv:ignore', kind: 'kv' },
     ], prefix)).toEqual([
-      { key: 'dir:docs', kind: 'directory', name: 'docs', directory: 'docs/' },
-      { key: `${'file:'}${prefix}readme.md`, kind: 'file', name: 'readme.md', resourceId: `${prefix}readme.md`, ops: ['read'] },
+      { key: `dir:${prefix}docs`, kind: 'directory', nodeType: 'directory', name: 'docs', directory: 'docs/', resourceId: `${prefix}docs`, ops: ['read'] },
+      { key: `${'file:'}${prefix}readme.md`, kind: 'file', nodeType: 'regular', name: 'readme.md', resourceId: `${prefix}readme.md`, ops: ['read'] },
     ]);
   });
 

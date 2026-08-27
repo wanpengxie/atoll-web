@@ -1871,7 +1871,7 @@ export function createMockServer({
         domain.files.set(address, { content, mediaType, size: content.length });
         for (const store of domain.resources.values()) {
           const row = store.get(grant.resourceId);
-          if (row) row.meta = { size: content.length, media_type: mediaType, available: true };
+          if (row) row.meta = { node_type: 'regular', size: content.length, media_type: mediaType, available: true };
         }
         json(response, 200, { status: 'ok', resource_id: grant.resourceId, size: content.length });
         return;

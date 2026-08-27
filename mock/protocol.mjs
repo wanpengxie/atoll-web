@@ -10,7 +10,7 @@ export const PAYLOAD_FIELDS = Object.freeze({
   cancel: ['channel_id', 'req_id'],
   after: ['channel_id', 'duration_ms', 'msg_type', 'payload'],
   cancel_timer: ['channel_id', 'timer_id'],
-  resource: ['channel_id', 'op', 'resource_id', 'args', 'target', 'ops', 'query', 'address', 'with_content'],
+  resource: ['channel_id', 'op', 'resource_id', 'args', 'target', 'ops', 'query', 'address', 'with_content', 'node_type'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
   history_before: ['channel_id', 'before_seq', 'limit', 'byte_limit', 'generation', 'purpose', 'priority'],
@@ -103,6 +103,9 @@ export function validatePayload(type, payload) {
     if (payload.op === 'create' && !hasResourceId && !hasAddress) return 'resource create requires resource_id or address';
     if (['read', 'write', 'delete', 'stat'].includes(payload.op) && !hasResourceId) return `resource ${payload.op} requires resource_id`;
     if (payload.with_content != null && typeof payload.with_content !== 'boolean') return 'resource with_content must be a boolean';
+    if (payload.node_type != null && !['regular', 'directory'].includes(payload.node_type)) return 'resource node_type must be regular or directory';
+    if (payload.node_type != null && (payload.op !== 'create' || !hasAddress)) return 'resource node_type is valid only for address create';
+    if (payload.node_type === 'directory' && payload.with_content) return 'resource directory cannot carry content';
   }
   return '';
 }

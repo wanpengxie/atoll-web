@@ -49,10 +49,11 @@ describe('mock scenario and domain layers', () => {
     const projectFiles = domain.resource('c0.project', { op: 'list', query: { prefix: projectPrefix } }).items.map((row) => row.id);
     expect(projectFiles).toEqual(expect.arrayContaining([
       `${projectPrefix}${encodeURIComponent('项目说明.md')}`,
-      `${projectPrefix}docs/${encodeURIComponent('交互设计.md')}`,
-      `${projectPrefix}reports/F6-${encodeURIComponent('验收记录.txt')}`,
-      `${projectPrefix}data/demo.json`,
+      `${projectPrefix}docs`, `${projectPrefix}reports`, `${projectPrefix}data`,
     ]));
+    expect(domain.resource('c0.project', { op: 'list', query: { prefix: `${projectPrefix}docs/` } }).items.map((row) => row.id)).toContain(`${projectPrefix}docs/${encodeURIComponent('交互设计.md')}`);
+    expect(domain.resource('c0.project', { op: 'list', query: { prefix: `${projectPrefix}reports/` } }).items.map((row) => row.id)).toContain(`${projectPrefix}reports/F6-${encodeURIComponent('验收记录.txt')}`);
+    expect(domain.resource('c0.project', { op: 'list', query: { prefix: `${projectPrefix}data/` } }).items.map((row) => row.id)).toContain(`${projectPrefix}data/demo.json`);
     expect(projectFiles.every((address) => address.startsWith(projectPrefix))).toBe(true);
     expect(domain.resource('c0', { op: 'list', query: { prefix: 'daemon://local-device/c0/' } }).items.map((row) => row.id)).not.toContain(projectFiles[0]);
   });
