@@ -72,12 +72,12 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
     expired: expiresAt > 0 && expiresAt <= now,
     location,
     controls,
-    // 取消是消息撤回(channel 层的能力),不是 agent 控制词,不进 controls——
-    // 而且它是唯一仍然要求 owned 的一个,不是策略选择而是结构约束:取消写的是
-    // **调用方给自己的账**写终态,harness 只认 sender == 那条请求的 sender 这一支
-    // (step_response_pairing 的 callerSelfClose)。第三方按下去只会拿到
-    // unauthorized_sender,所以按钮不该出现。别人的活要停,用 interrupt。
-    canCancel: actionable && owned && location === 'queued',
+    // 取消是消息撤回(channel 层的能力),不是 agent 控制词,不进 controls。
+    // 任何可写成员都能关掉等待中的活;owned 只决定**走哪条路**,不决定能不能:
+    // 自己发的那条由调用方自闭账,别人发的请底座代关(终态授权是闭集,第三方
+    // 没有自己的那一臂)。两条路都由 onCancel 背后挑,按钮只有一个。
+    canCancel: actionable && location === 'queued',
+    cancelsAsSubstrate: actionable && !owned,
     canInsert: actionable && words.has(TYPES.agentSteer),
     canEdit: actionable && words.has(TYPES.agentReplace),
     canStop: actionable && words.has(TYPES.agentInterrupt),

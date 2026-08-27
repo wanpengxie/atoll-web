@@ -3,6 +3,7 @@ import { Virtuoso, VirtuosoMockContext } from 'react-virtuoso';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
+import { attachmentFromFileReference } from '../model/file-references.js';
 import { LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { replyTargetOf } from '../model/reply-target.js';
@@ -20,7 +21,7 @@ import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { messageTimeLabel } from '../util/time.js';
 import { StructuredResult } from './StructuredResult.jsx';
-import { MarkdownContent } from './MarkdownContent.jsx';
+import { MarkdownContent, MarkdownFileReferenceProvider } from './MarkdownContent.jsx';
 import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
@@ -180,7 +181,7 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
       held = true;
       for (const turn of cancellable) {
         try {
-          await onCancel?.(state.channelId, turn.requestId);
+          await onCancel?.(state.channelId, turn.requestId, taskControlContext(turn, { selfId, access }).cancelsAsSubstrate);
         } catch (error) {
           failures.push(error?.message || String(error));
         }
@@ -240,7 +241,7 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
                   {paused && <span className="agent-wait-paused">已暂停</span>}
                   {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
                   {context.canEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
-                  {context.canCancel && <button type="button" onClick={() => onCancel?.(state.channelId, turn.requestId)}>取消</button>}
+                  {context.canCancel && <button type="button" title={context.cancelsAsSubstrate ? '这条不是你发的，将请底座代为关闭' : '撤回你自己发出的这条请求'} onClick={() => onCancel?.(state.channelId, turn.requestId, context.cancelsAsSubstrate)}>取消</button>}
                   {extraControls(context).map((entry) => <button key={entry.word} type="button" onClick={() => onControl(turn, group.actorId, entry.word, { target: turn.requestId })}>{controlLabel(entry)}</button>)}
                 </div>
               </>}
@@ -700,6 +701,9 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	}
 	if (historyControllerRef.current === null) historyControllerRef.current = newHistoryController();
 	const previousAccess = useRef(access);
+	const openFileReference = useCallback((reference) => {
+	  onPreviewResource?.(state.channelId, attachmentFromFileReference(reference));
+	}, [onPreviewResource, state.channelId]);
 	const setMessageListScroller = useCallback((node) => {
 	  if (messageListScrollerRef.current === node) return;
 	  messageListScrollCleanupRef.current();
@@ -1064,7 +1068,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 
   useEffect(() => () => onComposerEditChange?.(null), [onComposerEditChange, state.channelId]);
 
-  return <ProgressTrailHost>
+  return <MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost>
 	<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text">
       <div className="timeline-inner">
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
@@ -1190,5 +1194,5 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     </section>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
     <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
-  </ProgressTrailHost>;
+  </ProgressTrailHost></MarkdownFileReferenceProvider>;
 }
