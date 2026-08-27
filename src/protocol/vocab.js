@@ -40,6 +40,8 @@ export const TYPES = Object.freeze({
     get: 'system.member.get',
     remove: 'system.member.delete',
     restart: 'system.member.restart',
+    // 破窗恢复：给频道内所有干活的成员（agent/tool）换一届任期。不删任何东西。
+    restartAll: 'system.member.restart_all',
   }),
   log: Object.freeze({ recent: 'system.log.recent' }),
 

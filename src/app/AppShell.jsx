@@ -90,6 +90,21 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     return () => document.removeEventListener('keydown', switchByKey);
   }, [navigation.activeChannelId, navigation.channels, navigation.onSelect]);
 
+  // 破窗恢复。它会打断频道里正在跑的一切,所以先问一句;确认后就是一条普通控制
+  // 请求,结果落在时间线上,这里只负责别让人连点两次。
+  const [restarting, setRestarting] = useState(false);
+  async function restartChannel() {
+    if (!workspace.channel || restarting) return;
+    const name = workspace.channel.qualified_name || workspace.channel.name || workspace.channel.id;
+    if (!window.confirm(`重启频道「${name}」内的全部 agent 与 tool?\n\n正在进行的工作会被打断。频道、账本、成员和文件都不会被删除。`)) return;
+    setRestarting(true);
+    try {
+      await workspace.onRestartChannel?.();
+    } finally {
+      setRestarting(false);
+    }
+  }
+
   function toggleTerminal() {
     if (!workspace.channel || !contentVisible) return;
     const channelId = navigation.activeChannelId;
@@ -207,7 +222,10 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
       <nav className="channel-view-tabs" aria-label="频道主视图" role="tablist">
         {['dynamic', 'artifacts', 'tasks'].map((view, index) => <button key={view} ref={(node) => { viewTabRefs.current[index] = node; }} type="button" role="tab" id={`workspace-tab-${view}`} aria-controls={`workspace-panel-${view}`} aria-selected={workspace.view === view} tabIndex={workspace.view === view ? 0 : -1} className={workspace.view === view ? 'active' : ''} onKeyDown={(event) => moveViewTab(event, index)} onClick={() => workspace.onViewChange(view)}>{view === 'dynamic' ? '动态' : view === 'artifacts' ? '文件' : '任务'}</button>)}
       </nav>
-      <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${terminalOpen ? ' active' : ''}`} aria-pressed={terminalOpen} aria-controls="workspace-panel-terminal" disabled={!workspace.channel || !contentVisible} title="切换终端分屏（Ctrl+F12）" onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端<kbd>Ctrl F12</kbd></button>
+      <div className="workspace-quick-actions">
+        <button id="workspace-channel-restart" type="button" className="channel-restart-action" disabled={!workspace.channel || writeDisabled || restarting} title="重启本频道内全部成员(agent 与 tool);不会删除频道、账本或文件" onClick={restartChannel}><span aria-hidden="true">⟳</span>{restarting ? '重启中…' : '重启频道'}</button>
+        <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${terminalOpen ? ' active' : ''}`} aria-pressed={terminalOpen} aria-controls="workspace-panel-terminal" disabled={!workspace.channel || !contentVisible} title="切换终端分屏(Ctrl+F12)" onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端<kbd>Ctrl F12</kbd></button>
+      </div>
       <div className="status-stack">
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}
         {notices.channel && <div className="channel-notice" role="status"><span>{notices.channel}</span><button type="button" onClick={notices.dismissChannel} aria-label="关闭频道提示">×</button></div>}

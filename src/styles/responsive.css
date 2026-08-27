@@ -36,6 +36,9 @@
   .channel-view-tabs { grid-row: 1; grid-column: 2; min-height: 34px; align-items: center; gap: 0; padding: 0 34px 0 0; border-bottom: 1px solid var(--line-subtle); }
   .channel-view-tabs button { min-width: 34px; min-height: 30px; height: 30px; align-self: auto; border-bottom: 0; border-radius: 5px; font-size: 10px; }
   .channel-view-tabs button.active { border-bottom-color: transparent; background: var(--surface-selected); }
+  .workspace-quick-actions { grid-row: 1; grid-column: 2; justify-self: end; gap: 6px; margin-right: 0; }
+  .channel-restart-action { width: 34px; min-height: 30px; justify-content: center; gap: 0; padding: 0; border: 0; font-size: 0; }
+  .channel-restart-action > span { font-size: 14px; }
   .terminal-split-toggle { grid-row: 1; grid-column: 2; width: 34px; min-height: 30px; justify-content: center; justify-self: end; gap: 0; margin-right: 0; padding: 0; border: 0; font-size: 0; }
   .terminal-split-toggle > span { font-size: 14px; }
   .terminal-split-toggle kbd { display: none; }

@@ -13,7 +13,7 @@ import { safeDaemonRows } from './model/space-administration.js';
 import { buildWorkItemIndex, taskProviders } from './model/work-items.js';
 import { parseWorkspaceHash, writeWorkspaceRoute } from './model/workspace-route.js';
 import { messagePresentation } from './model/message-presentation.js';
-import { isSystemWord, TYPES } from './protocol/vocab.js';
+import { isSystemWord, SYSTEM_ACTOR_ID, TYPES } from './protocol/vocab.js';
 import { newId } from './util/id.js';
 import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
 import { agentSelectionView, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from './model/agent-selection.js';
@@ -564,6 +564,21 @@ export default function App() {
     });
   }, [handleSend]);
 
+  // 破窗恢复：把"重启这个频道"作为一条普通控制请求发给 system actor。它和其它
+  // 控制词走同一条路，所以请求与终态自然落在时间线上——不需要另造一套结果 UI，
+  // 谁重启了、谁失败了、谁被跳过都在那条终态里。
+  const handleRestartChannel = useCallback(async () => {
+    if (!activeChannelId) return '';
+    return handleSend({
+      channelId: activeChannelId,
+      text: '重启本频道内全部成员',
+      msgType: TYPES.member.restartAll,
+      audience: [SYSTEM_ACTOR_ID],
+      targetLabel: SYSTEM_ACTOR_ID,
+      payload: {},
+    });
+  }, [activeChannelId, handleSend]);
+
   // 发起切换：提交成功 ≠ 参数已生效（select 是排队 turn，§4.3 三态）。提交后记
   // pendingSelect，busy 与回滚由"观察该请求的账本终态"驱动（Promise 拿不到异步终态）。
   const handleAgentSelection = useCallback(async ({ actorId, model, effort }) => {
@@ -929,7 +944,13 @@ export default function App() {
     const resourceId = attachment?.resource_id;
     if (!channelId || !resourceId) return;
     const mediaType = attachment.media_type || 'application/octet-stream';
-    const artifact = artifactIndex.get(`artifact:${channelId}:${resourceId}`) || {
+    const indexedArtifact = artifactIndex.get(`artifact:${channelId}:${resourceId}`);
+    const referenceLine = Number(attachment.line);
+    const referenceFields = {
+      ...(Number.isSafeInteger(referenceLine) && referenceLine > 0 ? { line: referenceLine } : {}),
+      ...(attachment.file_reference ? { provenance: { source: 'file_reference' } } : {}),
+    };
+    const artifact = indexedArtifact ? { ...indexedArtifact, ...referenceFields } : {
       key: `message-file:${channelId}:${resourceId}`,
       channelId,
       resourceId,
@@ -940,6 +961,7 @@ export default function App() {
       preview: previewForMediaType(mediaType),
       state: 'available',
       provenance: { source: 'feed' },
+      ...referenceFields,
     };
     setSelectedActor(null);
     setContextFocus(null);
@@ -1070,7 +1092,7 @@ export default function App() {
   <AppShell
     session={{ me, wireState, onLogout: handleLogout }}
     navigation={{ channels: channelList, activeChannelId, unread, agentActivity, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
-    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: { view: composerSelectionView, usage: composerAgentUsage, supportedTypes: composerSupportedTypes, pending: selectPendingHere, fallbackAgentId, onChange: handleAgentSelection, onPickAgent: handlePickAgent, onTargetChange: handleComposerAgentChange, onOpen: handleSelectorOpen }, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onSend: handleSend, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { daemons: spaceDaemons, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setRightPanel(''); setMountedFilePreview(artifact); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: { view: composerSelectionView, usage: composerAgentUsage, supportedTypes: composerSupportedTypes, pending: selectPendingHere, fallbackAgentId, onChange: handleAgentSelection, onPickAgent: handlePickAgent, onTargetChange: handleComposerAgentChange, onOpen: handleSelectorOpen }, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancel, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { daemons: spaceDaemons, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setRightPanel(''); setMountedFilePreview(artifact); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     panel={{ value: rightPanel, open: openContext, host }}
   />

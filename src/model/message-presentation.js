@@ -26,6 +26,7 @@ function action(type, payload) {
     [TYPES.member.get]: ['查看成员状态', value(payload, 'member')],
     [TYPES.member.remove]: ['移除参与者', value(payload, 'member')],
     [TYPES.member.restart]: ['重启参与者', value(payload, 'member')],
+    [TYPES.member.restartAll]: ['重启频道内全部成员', ''],
     [TYPES.log.recent]: ['读取最近账本', ''],
     [TYPES.describe]: ['查看 Actor 能力', value(payload, 'type')],
     [TYPES.actorOverlay.set]: ['设置 Actor 频道配置', value(payload, 'decl_id')],
