@@ -9,7 +9,7 @@ import { orderedTimeline } from '../src/model/fold.js';
 import { TasksView } from '../src/ui/TasksView.jsx';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { Composer } from '../src/ui/Composer.jsx';
-import { ArtifactContext, ArtifactPreviewBody, PREVIEW_LIMITS, readBoundedText } from '../src/ui/context/ArtifactContext.jsx';
+import { ArtifactContext, ArtifactPreviewBody, PREVIEW_LIMITS, readBoundedText, textPreviewFormat } from '../src/ui/context/ArtifactContext.jsx';
 
 afterEach(() => {
   cleanup();
@@ -119,12 +119,35 @@ describe('F6 预览生命周期预算', () => {
   it('文本文件定位并标记消息链接指定的行号', async () => {
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
-    const view = render(<ArtifactPreviewBody artifact={{ preview: 'text', line: 2 }} preview={{ phase: 'ready', text: '第一行\n第二行\n第三行' }} />);
+    const view = render(<ArtifactPreviewBody artifact={{ preview: 'text', name: 'sample.go', mediaType: 'text/plain', line: 2 }} preview={{ phase: 'ready', text: '第一行\n第二行\n第三行' }} />);
     const target = view.container.querySelector('[data-line="2"]');
-    expect(target?.textContent).toBe('第二行');
+    expect(target?.querySelector('.artifact-source-line-code')?.textContent).toBe('第二行');
     expect(target?.classList.contains('is-target')).toBe(true);
-    expect(view.container.querySelector('pre')?.textContent).toBe('第一行\n第二行\n第三行');
+    expect(view.container.querySelectorAll('.artifact-source-line')).toHaveLength(3);
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' }));
+  });
+
+  it('Markdown 默认渲染文档并允许切换到高亮源码', async () => {
+    const user = userEvent.setup();
+    const artifact = { preview: 'text', resourceId: 'readme', name: 'README.md', mediaType: 'text/markdown' };
+    render(<ArtifactPreviewBody artifact={artifact} preview={{ phase: 'ready', text: '# 标题\n\n```js\nconst ready = true\n```' }} />);
+    expect(screen.getByRole('heading', { name: '标题' })).toBeTruthy();
+    expect(screen.queryByText('1', { selector: '.artifact-source-line-number' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '源码' }));
+    expect(document.querySelector('.artifact-source-preview')).toBeTruthy();
+    expect(document.querySelector('.artifact-source-preview')?.textContent).toContain('const ready = true');
+  });
+
+  it('源码使用 Prism 语法着色并显示行号', () => {
+    render(<ArtifactPreviewBody artifact={{ preview: 'text', resourceId: 'worker', name: 'worker.tsx', mediaType: 'text/plain' }} preview={{ phase: 'ready', text: 'const ready: boolean = true' }} />);
+    expect(document.querySelector('.token.keyword')?.textContent).toBe('const');
+    expect(document.querySelector('.artifact-source-line-number')?.textContent).toBe('1');
+  });
+
+  it('按文件名和媒体类型选择成熟预览格式', () => {
+    expect(textPreviewFormat({ name: 'README.md', mediaType: 'text/plain' })).toMatchObject({ markdown: true, language: 'markdown' });
+    expect(textPreviewFormat({ name: 'worker.tsx', mediaType: 'text/plain' })).toMatchObject({ markdown: false, language: 'tsx' });
+    expect(textPreviewFormat({ name: 'payload', mediaType: 'application/json' })).toMatchObject({ markdown: false, language: 'json' });
   });
 
   it('文本流超过 512 KiB 时立即取消 reader', async () => {

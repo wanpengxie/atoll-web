@@ -36,16 +36,19 @@ test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯�
   await view.getByLabel('选择要上传到当前目录的文件').setInputFiles({ name: '研究交付物.txt', mimeType: 'text/plain', buffer: Buffer.from('可信的预览内容') });
   await expect(view.getByText('研究交付物.txt', { exact: true })).toBeVisible();
   const mountedFile = view.locator('.channel-file-row').filter({ hasText: '研究交付物.txt' });
-  await expect(mountedFile.getByRole('button', { name: '预览', exact: true })).toHaveText('');
+  await expect(mountedFile.getByRole('button', { name: '下载', exact: true })).toHaveText('');
   await expect(mountedFile.getByRole('button', { name: '附加', exact: true })).toHaveText('');
   const rowDownload = page.waitForEvent('download');
-  await mountedFile.locator('.finder-name-cell').click();
+  await mountedFile.getByRole('button', { name: '下载', exact: true }).click();
   expect((await rowDownload).suggestedFilename()).toBe('研究交付物.txt');
-  await mountedFile.getByRole('button', { name: '预览', exact: true }).click();
-  const mountedPreview = page.getByRole('dialog', { name: /文件预览：研究交付物.txt/ });
+  await mountedFile.locator('.finder-name-cell').click();
+  const mountedPreview = page.getByRole('complementary', { name: '文件详情' });
   await expect(mountedPreview).toContainText('可信的预览内容');
   await expect(mountedPreview).toContainText('text/plain');
-  await mountedPreview.getByRole('button', { name: '关闭文件预览' }).click();
+  await expect(page.locator('.context-host')).toHaveAttribute('data-context-type', 'artifact');
+  const previewWidth = await page.locator('.context-pane').evaluate((node) => node.getBoundingClientRect().width);
+  expect(previewWidth).toBeGreaterThan(520);
+  await mountedPreview.getByRole('button', { name: '关闭文件详情' }).click();
   await mountedFile.getByRole('button', { name: '附加' }).click();
   await expect(page.getByLabel('待发送附件')).toContainText('研究交付物.txt');
   await expect(page.getByRole('tab', { name: '动态' })).toHaveAttribute('aria-selected', 'true');
@@ -57,7 +60,7 @@ test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯�
   await expect(messageAttachment).toContainText('文本');
   await expect(messageAttachment).not.toContainText('resource:');
   await messageAttachment.click();
-  await expect(page.getByRole('dialog', { name: /文件预览：研究交付物.txt/ })).toContainText('可信的预览内容');
+  await expect(page.getByRole('complementary', { name: '文件详情' })).toContainText('可信的预览内容');
 });
 
 test('F2-006 长文件名与不支持预览安全降级，窄屏无横向溢出', async ({ page, request }) => {
@@ -69,7 +72,7 @@ test('F2-006 长文件名与不支持预览安全降级，窄屏无横向溢出'
   await page.getByRole('button', { name: /发送/ }).click();
   const messageAttachment = page.getByRole('button', { name: new RegExp(`预览 ${longName.slice(0, 12)}`) });
   await messageAttachment.click();
-  const preview = page.getByRole('dialog', { name: new RegExp(`文件预览：${longName.slice(0, 12)}`) });
+  const preview = page.getByRole('complementary', { name: '文件详情' });
   await expect(preview).toContainText('此文件暂不支持站内预览');
   await page.setViewportSize({ width: 320, height: 720 });
   const geometry = await page.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth }));
@@ -85,9 +88,9 @@ test('Composer 直接区分本机上传与 daemon 频道文件选择', async ({ 
   await page.getByLabel('上传本机文件到频道').setInputFiles({ name: '直接上传.txt', mimeType: 'text/plain', buffer: Buffer.from('由当前用户上传') });
   await expect(page.getByLabel('待发送附件')).toContainText('直接上传.txt');
   await page.getByRole('button', { name: '预览文件 直接上传.txt' }).click();
-  const draftPreview = page.getByRole('dialog', { name: '文件预览：直接上传.txt' });
+  const draftPreview = page.getByRole('complementary', { name: '文件详情' });
   await expect(draftPreview).toContainText('由当前用户上传');
-  await draftPreview.getByRole('button', { name: '关闭文件预览' }).click();
+  await draftPreview.getByRole('button', { name: '关闭文件详情' }).click();
   await expect(page.getByLabel('待发送附件')).toContainText('直接上传.txt');
   await page.getByRole('button', { name: '移除附件 直接上传.txt' }).click();
 

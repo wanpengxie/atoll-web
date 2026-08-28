@@ -12,6 +12,7 @@
   .shell { position: relative; grid-template-columns: 210px minmax(0, 1fr); }
   .shell.has-context { grid-template-columns: 210px minmax(0, 1fr); }
   .context-host { grid-template-columns: 210px minmax(0, 1fr); }
+  .context-host[data-context-type="artifact"] { grid-template-columns: 210px minmax(0, 1fr); }
   .context-pane { grid-column: 2; }
   .context-host .side-panel, .context-host .roster-panel { position: static; display: grid; width: 100%; box-shadow: none; }
 }
@@ -24,6 +25,7 @@
   .shell.mobile-channels-open .mobile-rail-close { display: grid; }
   .shell.mobile-channels-open .workspace, .shell.mobile-channels-open .context-host { display: none; }
   .context-host { inset: 0; width: 100%; grid-template-columns: minmax(0, 1fr); }
+  .context-host[data-context-type="artifact"] { grid-template-columns: minmax(0, 1fr); }
   .context-pane { grid-column: 1; }
   .channel-header { display: contents; }
   .channel-identity { grid-row: 1; grid-column: 1; min-width: 0; height: 34px; gap: 4px; padding-left: 4px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }

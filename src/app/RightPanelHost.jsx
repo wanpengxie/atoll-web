@@ -55,5 +55,6 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
     content = <ActivityCenter activities={activity.activities} operations={activity.operations} onOpen={activity.onOpen} onClose={close} />;
   }
   if (!content) return null;
-  return <ContextHost type={panel.focus?.type} focusKey={panel.focus?.key} onClose={close}>{content}</ContextHost>;
+  const contextType = panel.value === 'artifact-focus' ? 'artifact' : panel.focus?.type;
+  return <ContextHost type={contextType} focusKey={panel.focus?.key} onClose={close}>{content}</ContextHost>;
 }

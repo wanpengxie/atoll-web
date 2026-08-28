@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Highlight, themes } from 'prism-react-renderer';
 import { artifactAttachment, formatArtifactSize } from '../../model/artifacts.js';
 import { fileTransferURL } from '../../model/channel-file-transfer.js';
 import { readFileTicket } from '../../model/resources.js';
+import { MarkdownContent } from '../MarkdownContent.jsx';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 
 
@@ -88,7 +90,39 @@ export function useArtifactPreview(artifact, onResource) {
   return preview;
 }
 
-function TextArtifactPreview({ text, line }) {
+const SOURCE_LANGUAGE_BY_EXTENSION = Object.freeze({
+  c: 'c', cc: 'cpp', cpp: 'cpp', cxx: 'cpp', h: 'c', hpp: 'cpp',
+  css: 'css', go: 'go', html: 'markup', htm: 'markup',
+  js: 'javascript', jsx: 'jsx', json: 'json', kt: 'kotlin', kts: 'kotlin',
+  md: 'markdown', markdown: 'markdown', mdown: 'markdown',
+  mjs: 'javascript', cjs: 'javascript', py: 'python', rs: 'rust',
+  sql: 'sql', svg: 'markup', swift: 'swift', ts: 'typescript', tsx: 'tsx',
+  xml: 'markup', yaml: 'yaml', yml: 'yaml',
+});
+
+function fileExtension(name = '') {
+  const base = String(name).split(/[\\/]/).pop() || '';
+  const index = base.lastIndexOf('.');
+  return index > -1 ? base.slice(index + 1).toLowerCase() : '';
+}
+
+export function textPreviewFormat(artifact = {}) {
+  const extension = fileExtension(artifact.name);
+  const mediaType = String(artifact.mediaType || '').toLowerCase().split(';')[0];
+  const markdown = mediaType === 'text/markdown' || ['md', 'markdown', 'mdown'].includes(extension);
+  let language = SOURCE_LANGUAGE_BY_EXTENSION[extension] || 'plain';
+  if (language === 'plain') {
+    if (/json/.test(mediaType)) language = 'json';
+    else if (/javascript/.test(mediaType)) language = 'javascript';
+    else if (/css/.test(mediaType)) language = 'css';
+    else if (/(html|xml|svg)/.test(mediaType)) language = 'markup';
+    else if (/ya?ml/.test(mediaType)) language = 'yaml';
+    else if (/sql/.test(mediaType)) language = 'sql';
+  }
+  return { markdown, language };
+}
+
+function SourceArtifactPreview({ text, line, language }) {
   const targetRef = useRef(null);
   const lines = String(text || '').split('\n');
   const targetLine = Number.isSafeInteger(line) && line > 0 ? line : 0;
@@ -96,23 +130,47 @@ function TextArtifactPreview({ text, line }) {
   useEffect(() => {
     if (targetExists) targetRef.current?.scrollIntoView?.({ block: 'center' });
   }, [targetExists, targetLine, text]);
-  if (!targetLine) return <pre>{text}</pre>;
-  if (targetExists) {
-    const before = lines.slice(0, targetLine - 1).join('\n');
-    const after = lines.slice(targetLine).join('\n');
-    return <pre className="artifact-text-lines">{before ? `${before}\n` : ''}<span ref={targetRef} className="is-target" data-line={targetLine}>{lines[targetLine - 1] || '\u200b'}</span>{after ? `\n${after}` : ''}</pre>;
-  }
   return <>
-    <p className="artifact-line-missing" role="status">目标第 {targetLine} 行超出文件范围（共 {lines.length} 行）</p>
-    <pre>{text}</pre>
+    {targetLine > 0 && !targetExists && <p className="artifact-line-missing" role="status">目标第 {targetLine} 行超出文件范围（共 {lines.length} 行）</p>}
+    <Highlight theme={themes.oneLight} code={String(text || '')} language={language || 'plain'}>
+      {({ className, style, tokens, getLineProps, getTokenProps }) => <pre className={`${className} artifact-source-preview`} style={{ ...style, background: 'transparent' }}>
+        {tokens.map((sourceLine, index) => {
+          const number = index + 1;
+          const lineProps = getLineProps({ line: sourceLine });
+          const selected = number === targetLine;
+          return <div {...lineProps} ref={selected ? targetRef : undefined} className={`${lineProps.className || ''} artifact-source-line${selected ? ' is-target' : ''}`} data-line={number} key={number}>
+            <span className="artifact-source-line-number" aria-hidden="true">{number}</span>
+            <span className="artifact-source-line-code">{sourceLine.map((token, tokenIndex) => <span {...getTokenProps({ token })} key={tokenIndex} />)}</span>
+          </div>;
+        })}
+      </pre>}
+    </Highlight>
   </>;
+}
+
+function TextArtifactPreview({ artifact, text }) {
+  const { markdown, language } = textPreviewFormat(artifact);
+  const targetLine = Number.isSafeInteger(artifact.line) && artifact.line > 0 ? artifact.line : 0;
+  const [mode, setMode] = useState(markdown && !targetLine ? 'preview' : 'source');
+  useEffect(() => {
+    setMode(markdown && !targetLine ? 'preview' : 'source');
+  }, [artifact.resourceId, markdown, targetLine]);
+  return <div className="artifact-text-preview">
+    {markdown && <div className="artifact-preview-mode" role="group" aria-label="Markdown 查看方式">
+      <button type="button" className={mode === 'preview' ? 'active' : ''} aria-pressed={mode === 'preview'} onClick={() => setMode('preview')}>预览</button>
+      <button type="button" className={mode === 'source' ? 'active' : ''} aria-pressed={mode === 'source'} onClick={() => setMode('source')}>源码</button>
+    </div>}
+    {markdown && mode === 'preview'
+      ? <MarkdownContent text={text} className="artifact-markdown-preview" />
+      : <SourceArtifactPreview text={text} line={targetLine} language={language} />}
+  </div>;
 }
 
 export function ArtifactPreviewBody({ artifact, preview }) {
   if (!artifact) return null;
   return <>
     {preview.phase === 'loading' && <p>正在加载预览…</p>}
-    {preview.phase === 'ready' && artifact.preview === 'text' && <TextArtifactPreview text={preview.text} line={artifact.line} />}
+    {preview.phase === 'ready' && artifact.preview === 'text' && <TextArtifactPreview artifact={artifact} text={preview.text} />}
     {preview.phase === 'ready' && artifact.preview === 'image' && <img src={preview.url} alt={artifact.name} />}
     {preview.phase === 'ready' && artifact.preview === 'media' && (artifact.kind === 'audio' ? <audio src={preview.url} controls /> : <video src={preview.url} controls />)}
     {preview.phase === 'ready' && artifact.preview === 'inline' && <iframe src={preview.url} title={artifact.name} />}
@@ -129,7 +187,7 @@ export function ArtifactContext({ artifact, authorName, onResource, onDownload, 
     <section className="artifact-context-preview" aria-label="文件预览">
       <ArtifactPreviewBody artifact={artifact} preview={preview} />
     </section>
-    <dl className="artifact-metadata"><dt>类型</dt><dd>{artifact.mediaType}</dd><dt>大小</dt><dd>{formatArtifactSize(artifact.size)}</dd>{mounted ? <><dt>位置</dt><dd>当前频道挂载目录</dd></> : <><dt>作者</dt><dd>{authorName || '未知作者'}</dd><dt>来源</dt><dd>频道动态 #{artifact.source.seq}</dd></>}{artifact.versionOf && <><dt>版本关系</dt><dd>明确基于另一个产物</dd></>}</dl>
+    <dl className="artifact-metadata"><dt>类型</dt><dd>{artifact.mediaType}</dd><dt>大小</dt><dd>{formatArtifactSize(artifact.size)}</dd>{mounted ? <><dt>位置</dt><dd>当前频道挂载目录</dd></> : <><dt>作者</dt><dd>{authorName || '未知作者'}</dd><dt>来源</dt><dd>{artifact.source?.seq ? `频道动态 #${artifact.source.seq}` : artifact.provenance?.source === 'file_reference' ? 'Agent 文件引用' : '消息附件'}</dd></>}{artifact.versionOf && <><dt>版本关系</dt><dd>明确基于另一个产物</dd></>}</dl>
     <div className="artifact-context-actions">{artifact.source && onSource && <button type="button" onClick={() => onSource(artifact.source)}>查看来源</button>}<button type="button" onClick={() => onAttach(artifactAttachment(artifact))}>附加到消息</button><button type="button" className="primary-button" onClick={() => onDownload(artifactAttachment(artifact))}>下载</button></div>
   </SidePanel>;
 }

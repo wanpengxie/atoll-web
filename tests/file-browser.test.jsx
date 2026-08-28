@@ -30,6 +30,30 @@ describe('channel file browser', () => {
     }));
   });
 
+  it('previews a file from the row and reserves the trailing action for download', async () => {
+    const user = userEvent.setup();
+    const onPreview = vi.fn();
+    const onResource = vi.fn(async (payload) => payload.op === 'list'
+      ? { items: [{ id: `${root}readme.md`, meta: { node_type: 'regular', size: 12 } }] }
+      : { ticket: 'download-ticket' });
+    const createObjectURL = vi.fn(() => 'blob:download');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL });
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, blob: () => Promise.resolve(new Blob(['hello'])) })));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={onPreview} />);
+    const row = await screen.findByRole('row', { name: /readme.md/ });
+
+    await user.click(row.querySelector('.finder-name-cell'));
+    expect(onPreview).toHaveBeenCalledWith(expect.objectContaining({ name: 'readme.md', resourceId: `${root}readme.md`, preview: 'text' }));
+    expect(fetch).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '下载' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    expect(onPreview).toHaveBeenCalledTimes(1);
+    expect(click).toHaveBeenCalledOnce();
+  });
+
   it('creates a directory through resource create and then refreshes', async () => {
     const user = userEvent.setup();
     const onResource = vi.fn(async (payload) => payload.op === 'list' ? { items: [] } : { status: 'ok' });

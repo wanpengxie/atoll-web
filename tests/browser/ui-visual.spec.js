@@ -163,9 +163,9 @@ test('UI-VIS-13 频道挂载文件预览视觉基线', async ({ page, request })
   await files.getByLabel('选择要上传到当前目录的文件').setInputFiles({
     name: '可预览说明.md',
     mimeType: 'text/markdown',
-    buffer: Buffer.from('# 文件预览\n\n挂载目录文件可以直接在全屏画布中预览。'),
+    buffer: Buffer.from('# 文件预览\n\n挂载目录文件可以直接在右侧面板中预览。'),
   });
-  await files.locator('.channel-file-row').filter({ hasText: '可预览说明.md' }).getByRole('button', { name: '预览', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: /文件预览：可预览说明.md/ })).toContainText('挂载目录文件可以直接在全屏画布中预览');
+  await files.locator('.channel-file-row').filter({ hasText: '可预览说明.md' }).locator('.finder-name-cell').click();
+  await expect(page.getByRole('complementary', { name: '文件详情' })).toContainText('挂载目录文件可以直接在右侧面板中预览');
   await expect(page).toHaveScreenshot('channel-files-preview.png', SCREENSHOT_OPTIONS);
 });
