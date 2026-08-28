@@ -1070,7 +1070,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 
   return <MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost>
 	<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text">
-      <div className="timeline-inner">
+      <div className={state.rows.size ? 'timeline-inner timeline-controls-overlay' : 'timeline-inner'}>
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">
             <button

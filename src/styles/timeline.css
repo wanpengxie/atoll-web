@@ -422,6 +422,13 @@
 .timeline-scope > button { display: flex; min-height: 32px; align-items: center; padding: 5px 11px; border: 1px solid var(--line-control-strong); border-radius: var(--pill); opacity: .6; background: var(--raised); color: var(--text); box-shadow: 0 4px 16px var(--shadow-2), 0 1px 3px var(--shadow); cursor: pointer; font-size: 11px; font-weight: 650; transition: opacity .12s; }
 .timeline-scope > button:hover, .timeline-scope > button:focus-visible { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
 
+/* 桌面端的范围开关是消息面上的悬浮控件，不是一行消息头。它的容器必须脱离
+   flex 布局，否则一个 32px 的「@我」按钮会让整条消息列表永久下移 64px。 */
+@media (min-width: 761px) {
+  .timeline-virtualized > .timeline-controls-overlay { position: absolute; z-index: 3; top: 8px; right: 0; left: 0; width: 100%; height: 0; min-height: 0; padding: 0; pointer-events: none; }
+  .timeline-controls-overlay .timeline-scope-bar { position: static; }
+}
+
 /* 终端视图。字节流是易逝的体验面，账本才是持久真相——这里只负责好看和好用。 */
 .terminal-view[hidden] { display: none; }
 .terminal-view {
