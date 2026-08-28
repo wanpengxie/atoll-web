@@ -97,6 +97,21 @@ export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
       }
       return '';
     },
+    // noteSelf 记下"我在这个频道是哪个 actor"。
+    //
+    // attach 回执自带这份清单,是权威来源。在此之前 self() 只有两条路——把那个
+    // 频道的 roster 拉下来(只有当前活跃频道会拉),或者你自己在那儿发过言——
+    // 所以一个你还没打开、也没说过话的频道里,self() 是空的。
+    //
+    // 而 fold 用 selfId 判断"这条是不是发给我的":空了就整条丢掉,而且之后没人
+    // 再捡回来。人家在别的频道 @ 你一条 human.ask,或者 agent 发一条 ui.* 过来,
+    // 都会这样无声消失。既然连上那一刻答案就在手里,就不该等到那两条慢路。
+    noteSelf(channelId, actorId) {
+      if (!channelId || !actorId) return '';
+      if (selves.get(channelId) === actorId) return '';
+      saveSelf(channelId, actorId);
+      return actorId;
+    },
     clearSelf(channelId) {
       selves.delete(channelId);
     },

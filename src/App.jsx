@@ -404,6 +404,15 @@ export default function App() {
               .map((entry) => ({ channel_id: entry.channel_id, status: 'active', actor_id: entry.actor_id || '' }));
             const memberedBefore = access.rows().filter((row) => row.accessState?.relationship === 'member').map((row) => row.id);
             access.membershipsObserved(rows, { complete: detail.memberships_complete === true, supported: true });
+            // 同一份清单也回答了"我在每个频道是谁"。fold 用它判断一条消息是不是
+            // 发给我的,所以它到得晚,消息就被丢掉且不再捡回——把已经在手里的答案
+            // 立刻交给 roster,并把此前折错的那些重折一遍。
+            for (const entry of rows) {
+              if (!roster.noteSelf(entry.channel_id, entry.actor_id)) continue;
+              const state = channelStatesRef.current.get(entry.channel_id);
+              if (state) reconcileApprovals(state, entry.actor_id);
+            }
+            bumpFeed();
             for (const channelId of memberedBefore) {
               if (access.state(channelId)?.relationship !== 'member') roster.clearSelf(channelId);
             }
@@ -719,6 +728,9 @@ export default function App() {
   //
   // 快照从**渲染真正读的那几个 state** 算出来，不另建影子状态：两份必然漂移，
   // 而 agent"先看再动"看到一份漂移的状态比它不看更糟。
+  // 稳定引用:内联箭头每次渲染都是新的,effect 就会每次渲染清理重跑,把正在飞的
+  // 那次异步执行掐死在"算出答案了、还没发出去"。
+  const uiSelfIdFor = useCallback((channelId) => rosterRef.current.self(channelId), []);
   const readUiSnapshot = useCallback(() => uiSnapshot({
     session: uiSession,
     channelId: activeChannelId,
@@ -732,7 +744,7 @@ export default function App() {
     channelStatesRef,
     version: feedVersion,
     session: uiSession,
-    selfIdFor: (channelId) => rosterRef.current.self(channelId),
+    selfIdFor: uiSelfIdFor,
     wireRef,
     readSnapshot: readUiSnapshot,
     actions: {

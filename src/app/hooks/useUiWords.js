@@ -22,8 +22,6 @@ export function useUiWords({ channelStatesRef, version, session, selfIdFor, wire
 
   useEffect(() => {
     if (!enabled) return;
-    let cancelled = false;
-
     (async () => {
       for (const [channelId, state] of channelStatesRef.current) {
         if (!state?.uiRequests?.size) continue;
@@ -32,12 +30,15 @@ export function useUiWords({ channelStatesRef, version, session, selfIdFor, wire
         for (const envelope of state.uiRequests.values()) {
           if (handledRef.current.has(envelope.id)) continue;
           handledRef.current.add(envelope.id);
+          // 从这里往下不再看 cancelled。这个 effect 每次重渲染都会清理重跑,而
+          // 算出一帧要 await——中途放弃就会卡在"答案已经有了、但没发出去",而
+          // 上面那行已经把它记成做过了,于是永远不会重试。请求是否还有效由服务端
+          // 判断(已关的它会拒),不由一次组件重渲染判断。
           const frame = await execute(envelope, {
             session,
             actions: actionsRef.current,
             readSnapshot: snapshotRef.current,
           });
-          if (cancelled) return;
           if (!frame) continue; // 点名了别的屏幕,这块不掺和
           try {
             await wireRef.current?.resolve(frame);
@@ -50,6 +51,5 @@ export function useUiWords({ channelStatesRef, version, session, selfIdFor, wire
       }
     })();
 
-    return () => { cancelled = true; };
   }, [channelStatesRef, enabled, selfIdFor, session, version, wireRef]);
 }

@@ -234,3 +234,60 @@ describe('wire client', () => {
   });
 });
 
+
+// 人说的那句话,总是在某块屏上说的,那块屏有身份。
+//
+// 只盖 agent.ask:控制词不需要(agent 收到 interrupt 就停,在哪按的不改变什么),
+// 而且 body 是那个词的接收方严格解码的——"谁盖"和"谁认"必须是同一个词,否则
+// 接收方以 unknown field 拒收,而那个错误跟这个功能看不出任何关系。
+describe('人说的那句话盖上从哪块屏说的', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.useFakeTimers();
+  });
+
+  const attached = async (session = 's-abc', label = 'Mac Chrome') => {
+    const wire = createWire({ WebSocketImpl: FakeWebSocket });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    receipt(socket, socket.sent[0], {
+      contract_version: 'v5', session, label, memberships: [], memberships_complete: true,
+    });
+    await Promise.resolve();
+    return { wire, socket };
+  };
+  const bodyOf = (socket) => socket.sent.find((f) => f.frame_type === 'submit').payload.payload;
+
+  it('agent.ask 的 body 上盖着 origin', async () => {
+    const { wire, socket } = await attached();
+    wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'hi' } }).catch(() => {});
+    expect(bodyOf(socket)).toEqual({ text: 'hi', origin: { session: 's-abc', label: 'Mac Chrome' } });
+    wire.close();
+  });
+
+  // 这一条是上次那个故障的守卫。
+  it('别的词一个字都不加——控制命令和 system 词都不盖', async () => {
+    for (const type of ['agent.interrupt', 'agent.dismiss', 'agent.fork', 'system.member.list']) {
+      FakeWebSocket.instances = [];
+      const { wire, socket } = await attached();
+      wire.submit({ channel_id: 'c0', msg_type: type, kind: 'request', payload: {} }).catch(() => {});
+      expect(bodyOf(socket), type).toEqual({});
+      wire.close();
+    }
+  });
+
+  it('已有的 origin 不覆盖——代转的消息来源是最先说话那块屏', async () => {
+    const { wire, socket } = await attached();
+    wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'hi', origin: { session: 's-phone' } } }).catch(() => {});
+    expect(bodyOf(socket).origin).toEqual({ session: 's-phone' });
+    wire.close();
+  });
+
+  // 空的 origin 比没有更糟:它看起来像个答案。
+  it('服务端没给 session 就不盖', async () => {
+    const { wire, socket } = await attached('', '');
+    wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'hi' } }).catch(() => {});
+    expect(bodyOf(socket)).toEqual({ text: 'hi' });
+    wire.close();
+  });
+});

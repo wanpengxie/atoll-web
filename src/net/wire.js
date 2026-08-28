@@ -7,6 +7,7 @@ import {
   UP,
 } from '../protocol/frame.js';
 import { diagnostic } from '../model/diagnostics.js';
+import { TYPES } from '../protocol/vocab.js';
 
 export class WireError extends Error {
   constructor({ frame: frameType = '', code = 'unknown', detail = '', ref = '' } = {}) {
@@ -59,9 +60,11 @@ export function createWire({
   let reconnectTimer = null;
   let counter = 0;
   let attachRef = '';
-  // 这条连接自己的名字,attach 回执给的。它留在这里,是因为"这条消息从哪块屏
-  // 发出来的"要在**咽喉处**盖章才可靠——发送者那条线之所以从不漏,正是因为它
-  // 在一个谁也绕不过去的点上盖,而不是在每个调用点各盖一次。
+  // 这条连接自己的名字,attach 回执给的。人发给 agent 的消息盖上它:总有一个端
+  // 发出了这条消息,那个端有身份,而 agent 要操作某块屏时必须能点名它。
+  //
+  // 留在这一层,是因为"从哪块屏发出的"要在**咽喉处**盖才可靠——盖在各个调用点
+  // 就一定会漏,而读的人分不清"这条没有来源"和"那条路径忘了盖"。
   let sessionID = '';
   let sessionLabel = '';
   let generation = 0;
@@ -141,6 +144,8 @@ export function createWire({
           memberships: payload.memberships?.length || 0,
           historyChannels: payload.history_meta?.length || 0,
         });
+        sessionID = payload.session || '';
+        sessionLabel = payload.label || '';
         sessionID = payload.session || '';
         sessionLabel = payload.label || '';
         onState('attached', {
@@ -300,11 +305,37 @@ export function createWire({
     });
   }
 
+  // stampOrigin 给**人说的那句话**盖上"从哪块屏说的"。
+  //
+  // 只盖 agent.ask,不盖别的:
+  //
+  // - 不盖 _context —— 那是每个 actor 都有的格子,而"我在哪块屏上"只有 human
+  //   才有;放进去等于让每个 actor 都扛一个对它毫无意义的字段。
+  // - 不盖控制词 —— agent 收到 interrupt 就停,你在哪块屏按的按钮不改变它做
+  //   什么。需要来历的是**那句话**,因为那是 agent 要读、要据以推理的东西。
+  //
+  // 盖在这一层而不是各个调用点:这是这条连接唯一的出口,盖不漏。
+  //
+  // 这个词名必须和 drivers/agents/base/loop.go 里认它的那个 struct 对上——
+  // 盖到一个不认它的词头上,接收方会以 unknown field 拒收,而那个错误跟这个
+  // 功能看不出任何关系(2026-08-28 就这么炸过一次)。
+  function stampOrigin(payload) {
+    if (!sessionID || !payload || typeof payload !== 'object') return payload;
+    if (payload.msg_type !== TYPES.agentAsk) return payload;
+    const body = payload.payload;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return payload;
+    if (body.origin !== undefined) return payload; // 已经说了从哪来,不覆盖
+    return {
+      ...payload,
+      payload: { ...body, origin: { session: sessionID, ...(sessionLabel ? { label: sessionLabel } : {}) } },
+    };
+  }
+
   connect();
 
   return {
     submit(payload) {
-      return transmit(UP.submit, payload);
+      return transmit(UP.submit, stampOrigin(payload));
     },
     resolve(payload) {
       return transmit(UP.resolve, payload);
