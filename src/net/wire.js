@@ -59,6 +59,11 @@ export function createWire({
   let reconnectTimer = null;
   let counter = 0;
   let attachRef = '';
+  // 这条连接自己的名字,attach 回执给的。它留在这里,是因为"这条消息从哪块屏
+  // 发出来的"要在**咽喉处**盖章才可靠——发送者那条线之所以从不漏,正是因为它
+  // 在一个谁也绕不过去的点上盖,而不是在每个调用点各盖一次。
+  let sessionID = '';
+  let sessionLabel = '';
   let generation = 0;
   const pending = new Map();
 
@@ -136,6 +141,8 @@ export function createWire({
           memberships: payload.memberships?.length || 0,
           historyChannels: payload.history_meta?.length || 0,
         });
+        sessionID = payload.session || '';
+        sessionLabel = payload.label || '';
         onState('attached', {
           // 这条连接自己的名字。一个人的手机和网页同时连着,两条都在,所以任何
           // 冲着"这个人的屏幕"来的东西都得说清是哪一块——而这块屏得知道自己
@@ -256,6 +263,8 @@ export function createWire({
       const attachSince = since() || {};
       const attachFocus = focus() || '';
       // 空标签不占位:这条帧的形状是契约,不该为了一个没人填的字段多一个键。
+      sessionID = '';
+      sessionLabel = '';
       const attachPayload = { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation };
       if (label) attachPayload.label = label;
       const attachPromise = transmit(UP.attach, attachPayload, { allowBeforeAttach: true });
@@ -291,11 +300,30 @@ export function createWire({
     });
   }
 
+  // stampOrigin 给这条连接发出的每一条消息盖上"从哪块屏来的"。
+  //
+  // 盖在词的 body 里,不在 _context 里:_context 是底座读的,而 msg.go 会把它剥
+  // 成 caller,actor 那边根本收不到——放进去等于让底座扛一个只有别人读、而别人
+  // 又读不到的载荷。
+  //
+  // 盖在这里而不是各个调用点:这是这条连接唯一的出口,所以它盖不漏。发送者那条
+  // 线可靠也是同一个道理。
+  function stampOrigin(payload) {
+    if (!sessionID || !payload || typeof payload !== 'object') return payload;
+    const body = payload.payload;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return payload;
+    if (body.origin !== undefined) return payload; // 已经说了从哪来,不覆盖
+    return {
+      ...payload,
+      payload: { ...body, origin: { session: sessionID, ...(sessionLabel ? { label: sessionLabel } : {}) } },
+    };
+  }
+
   connect();
 
   return {
     submit(payload) {
-      return transmit(UP.submit, payload);
+      return transmit(UP.submit, stampOrigin(payload));
     },
     resolve(payload) {
       return transmit(UP.resolve, payload);

@@ -23,7 +23,7 @@ const baseSnapshot = () => snapshot({
 describe('ui.* 是客户端自己受理的词', () => {
   it('ui.state 什么都不改，只回快照', async () => {
     const actions = { navigate: vi.fn(), open: vi.fn() };
-    const frame = await execute(req(TYPES.uiState, {}), { session: HERE, actions, readSnapshot: baseSnapshot });
+    const frame = await execute(req(TYPES.uiState, { session: HERE.id }), { session: HERE, actions, readSnapshot: baseSnapshot });
     expect(actions.navigate).not.toHaveBeenCalled();
     expect(actions.open).not.toHaveBeenCalled();
     expect(frame.result.route).toEqual({ channel_id: 'c0.dev', view: 'dynamic' });
@@ -91,7 +91,7 @@ describe('ui.* 是客户端自己受理的词', () => {
     expect(frame).toBeNull();
   });
 
-  it('会改东西的词不点名就拒绝,而且把自己的 id 说出来', async () => {
+  it('不点名就拒绝,而且把自己的 id 说出来', async () => {
     const actions = { navigate: vi.fn(), open: vi.fn() };
     const frame = await execute(
       req(TYPES.uiNavigate, { channel_id: 'c0' }),
@@ -104,10 +104,11 @@ describe('ui.* 是客户端自己受理的词', () => {
     expect(frame.error.message).toContain('MacBook 网页');
   });
 
-  // ui.state 是发现的入口,所以不点名也答;它改不了任何东西,多答几次只是浪费。
-  it('只读的 ui.state 不点名也答,而且答里说出自己是谁', async () => {
+  // 读也要点名。给只读开口子等于把这一族分成两条规则,读一条写一条——
+  // 没人记得住,也没有理由记。发现靠人自己消息上盖的 origin,不靠削弱寻址。
+  it('ui.state 也要点名,答里说出自己是谁', async () => {
     const actions = { navigate: vi.fn(), open: vi.fn() };
-    const frame = await execute(req(TYPES.uiState, {}), { session: HERE, actions, readSnapshot: baseSnapshot });
+    const frame = await execute(req(TYPES.uiState, { session: HERE.id }), { session: HERE, actions, readSnapshot: baseSnapshot });
     expect(frame.error).toBeUndefined();
     expect(frame.result.session).toEqual(HERE);
   });
@@ -122,5 +123,18 @@ describe('ui.* 是客户端自己受理的词', () => {
     expect(openFromPreview({ resource_id: '/a.go', name: 'a.go', file_reference: true, line: 7 }))
       .toEqual({ kind: 'file', path: '/a.go', name: 'a.go', line: 7 });
     expect(openFromPreview({ resource_id: 'res-1', name: 'x.png' }).kind).toBe('artifact');
+  });
+});
+
+// 发现路径的另一半在 useSubmissions:人发消息时客户端把 origin 盖进 body。
+// 这里断言的是它落在**哪儿** —— body,不是 _context。
+describe('origin 盖在词的契约里,不在底座的格子里', () => {
+  it('actor 收到的是 body,_context 会被底座剥掉,所以 origin 必须在 body', () => {
+    // msg.go 把 {_context, body} 拆开:actor 拿到 body,_context 变成 caller。
+    // 所以放进 _context 的东西 agent 物理上看不见。
+    const asContext = { payload: { _context: { origin: { session: 's-1' } }, body: { text: 'hi' } } };
+    const asBody = { payload: { _context: { caller: {} }, body: { text: 'hi', origin: { session: 's-1' } } } };
+    expect(requestBody(asContext).origin).toBeUndefined();
+    expect(requestBody(asBody).origin).toEqual({ session: 's-1' });
   });
 });

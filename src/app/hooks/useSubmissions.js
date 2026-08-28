@@ -69,6 +69,8 @@ export function useSubmissions({ principalId, activeChannelId, wireRef, rosterRe
     const channelId = requestedChannelId || activeChannelId;
     if (!channelId || !wireRef.current) return '';
     const messageId = newId();
+    // origin(这条消息从哪块屏发出)不在这里盖——它盖在 wire.submit,那是这条
+    // 连接唯一的出口,盖在那里才漏不掉。
     const frame = { channel_id: channelId, id: messageId, msg_type: msgType, kind: 'request', payload: payload || { text }, audience, visibility: 'public', ...(parentId ? { parent_id: parentId } : {}), ...(expiresAtMs ? { expires_at_ms: expiresAtMs } : {}) };
     const submission = createSubmission({ id: messageId, channelId, text, targetLabel, frame });
     setPending((current) => [...current, submission]);

@@ -62,32 +62,28 @@ const fail = (reqId, channelId, code, message) => ({ channel_id: channelId, req_
 // 必须说清是哪一块——否则每一块都会动,而那不是任何人想要的:一次 ui.navigate
 // 会把他所有标签页一起切走。
 //
-// 分寸按"会不会改东西"划:
-//   - 只读的 ui.state 不点名也答。它是发现的入口,而多答几次只是浪费,不是伤害;
-//     回执里带着自己的 session,调用方读一次就知道该怎么点名。
-//   - 会改东西的一律要求点名,而且**拒绝时把自己的 id 说出来**——一次没点名的
-//     尝试因此是有收获的,而不只是一个"不行"。
-function addressedToMe(envelope, session) {
-  const named = String(requestBody(envelope).session || '');
-  if (!named) return { mine: true, named: '' };
-  return { mine: !!session?.id && named === session.id, named };
-}
-
-export function isReadOnly(type) { return type === TYPES.uiState; }
-
+// 每个 ui 词都要点名,**读也要**。
+//
+// 我最初给只读的 ui.state 开了"不点名也答"的口子,理由是解决先有鸡还是先有蛋:
+// 调用方怎么知道 session id。那是**在寻址规则上打洞来解决发现问题**,而它同时
+// 把这一族分成了两条规则,读和写各一条——没有人记得住这种分法,也没有理由记。
+//
+// 发现是另一个问题,单独解决:人自己发的消息上盖着 origin,那里说了这条消息来自
+// 哪块屏。调用方从那里拿 id,不从这里。
 export async function execute(envelope, { session, actions, readSnapshot }) {
   const reqId = envelope.id;
   const channelId = envelope.channel_id;
   const body = requestBody(envelope);
 
-  const { mine, named } = addressedToMe(envelope, session);
-  if (!mine) return null; // 点名了别人:这块屏什么都不做,也不回帧。
-  if (!named && !isReadOnly(envelope.type)) {
+  const named = String(body.session || '');
+  if (!named) {
+    // 拒绝要有收获:说出这块屏叫什么,调用方下一次就知道怎么点名。
     return fail(reqId, channelId, 'session_required',
       `${envelope.type} must name a session; this client is ${session?.id || 'unnamed'}` +
       (session?.label ? ` (${session.label})` : '') +
-      '. Read ui.state first — its answer says which session replied.');
+      '. A person holds several screens; the origin stamped on their messages says which one each came from.');
   }
+  if (!session?.id || named !== session.id) return null; // 点名了别的屏幕,这块不掺和,也不回帧。
 
   try {
     switch (envelope.type) {
