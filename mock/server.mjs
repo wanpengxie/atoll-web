@@ -476,8 +476,10 @@ export function createMockServer({
   const sockets = new Set();
   const attached = new WeakSet();
   const socketPrincipals = new WeakMap();
+  const socketSessionIds = new WeakMap();
   const socketObserved = new WeakMap();
   const socketGenerations = new WeakMap();
+  let nextSocketSession = 0;
   const socketHistoryTimers = new WeakMap();
   const scheduled = new Set();
   const recurring = new Set();
@@ -1801,6 +1803,8 @@ export function createMockServer({
       sendReceipt(socket, ref, {
         contract_version: CONTRACT_VERSION,
         boot: bootId,
+        session: socketSessionIds.get(socket) || '',
+        label: payload.label || '',
         memberships: domain.attachMemberships(socketPrincipals.get(socket) || ''),
         memberships_complete: true,
 		history_meta: historyMeta,
@@ -2402,6 +2406,8 @@ export function createMockServer({
   webSockets.on('connection', (socket, request) => {
     sockets.add(socket);
     socketPrincipals.set(socket, cookieValue(request, SESSION_COOKIE) ? ROOT_ID : '');
+    nextSocketSession += 1;
+    socketSessionIds.set(socket, `s-mock-${nextSocketSession}`);
     socketObserved.set(socket, new Set());
     socket.on('message', (data, isBinary) => handleWSMessage(socket, data, isBinary));
     socket.on('close', () => sockets.delete(socket));

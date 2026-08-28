@@ -4,7 +4,7 @@ export const SESSION_COOKIE = 'atoll_session';
 export const CONTRACT_VERSION = 'mock-v5';
 
 export const PAYLOAD_FIELDS = Object.freeze({
-  attach: ['since', 'focus', 'history_protocol', 'generation'],
+  attach: ['since', 'focus', 'history_protocol', 'generation', 'label'],
   submit: ['channel_id', 'id', 'msg_type', 'kind', 'payload', 'audience', 'visibility', 'parent_id', 'expires_at_ms'],
   resolve: ['channel_id', 'req_id', 'text', 'decision', 'note'],
   cancel: ['channel_id', 'req_id'],
@@ -94,6 +94,7 @@ export function validatePayload(type, payload) {
 	if (!Number.isSafeInteger(payload.generation) || payload.generation < 1) return 'history_cancel generation must be a positive safe integer';
   }
   if (type === 'attach' && payload.history_protocol !== FRAME_VERSION) return `attach history_protocol must be ${FRAME_VERSION}`;
+	if (type === 'attach' && payload.label != null && typeof payload.label !== 'string') return 'attach label must be a string';
 	if (type === 'attach' && (!Number.isSafeInteger(payload.generation) || payload.generation < 1)) return 'attach generation must be a positive safe integer';
   if (type === 'resource') {
     const ops = ['create', 'read', 'write', 'delete', 'stat', 'list'];

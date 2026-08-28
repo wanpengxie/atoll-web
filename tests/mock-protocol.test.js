@@ -46,6 +46,15 @@ describe('mock protocol layer', () => {
     for (const [type, payload] of Object.entries(values)) expect(validatePayload(type, payload)).toBe('');
   });
 
+  it('accepts the client label on attach and rejects a non-string label', () => {
+    expect(validatePayload('attach', {
+      focus: '', history_protocol: 5, generation: 1, label: 'Mac Chrome',
+    })).toBe('');
+    expect(validatePayload('attach', {
+      focus: '', history_protocol: 5, generation: 1, label: 42,
+    })).toContain('label must be a string');
+  });
+
   it('validates resource requirements by operation instead of globally requiring resource_id', () => {
     expect(validatePayload('resource', { channel_id: 'c0', op: 'list' })).toBe('');
     expect(validatePayload('resource', { channel_id: 'c0', op: 'create', address: 'daemon://d/c0/file.txt', with_content: true })).toBe('');
