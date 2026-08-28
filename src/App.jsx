@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { capabilityIndexFromState } from './model/capabilities.js';
 import { ensureServerBoot } from './model/server-boot.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
+import { openFromPreview, snapshot as uiSnapshot } from './model/ui-words.js';
+import { useUiWords } from './app/hooks/useUiWords.js';
 import { fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
 import { unreadCounts } from './model/cursors.js';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
@@ -706,6 +708,34 @@ export default function App() {
     setWorkspaceView(view);
     writeWorkspaceRoute({ channelId, view });
   }, [selectChannel]);
+
+  // ui.* —— 频道可以反过来操作 UI。实验性原型（DEV_BACKLOG 附录 A）。
+  //
+  // 快照从**渲染真正读的那几个 state** 算出来，不另建影子状态：两份必然漂移，
+  // 而 agent"先看再动"看到一份漂移的状态比它不看更糟。
+  const readUiSnapshot = useCallback(() => uiSnapshot({
+    channelId: activeChannelId,
+    view: workspaceView,
+    channels: channelList,
+    open: openFromPreview(mountedFilePreview),
+    viewport: typeof window === 'undefined' ? {} : { width: window.innerWidth, height: window.innerHeight },
+  }), [activeChannelId, channelList, mountedFilePreview, workspaceView]);
+
+  useUiWords({
+    channelStatesRef,
+    version: feedVersion,
+    selfIdFor: (channelId) => rosterRef.current.self(channelId),
+    wireRef,
+    readSnapshot: readUiSnapshot,
+    actions: {
+      navigate: (channelId, view) => {
+        selectWorkspaceChannel(channelId);
+        if (view) changeWorkspaceView(view);
+      },
+      open: (attachment) => previewMessageAttachment(activeChannelId, attachment),
+    },
+    enabled: wireState === 'open',
+  });
 
   const openContext = useCallback((value, focus = null) => {
     setSelectedActor(null);

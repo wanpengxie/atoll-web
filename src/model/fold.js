@@ -3,6 +3,9 @@ import { isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
 
 // subjectgate 只让这两个词走 resolve 帧（platform/internal/humancell）。
 const RESOLVABLE = new Set([TYPES.humanAsk, TYPES.humanApprove]);
+// 由客户端自己受理的词。刻意不进 approvals：那一栏是"等你回答的事"，
+// 而这些不需要人参与，混进去就是给人看一堆他不该操心的待办。
+const UI_WORDS = new Set([TYPES.uiState, TYPES.uiNavigate, TYPES.uiOpen]);
 const BUSINESS_PROVISIONAL = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*$/;
 const timelineCache = new WeakMap();
 
@@ -14,6 +17,7 @@ export function createChannelState(channelId = '') {
     correlations: new Map(), // correlation id → request ids[]
     narration: [],
     approvals: new Map(),
+    uiRequests: new Map(), // 发给我、仍开着的 ui.* 请求
     standalone: [],
     orphans: [],
     anomalies: [],
@@ -121,7 +125,7 @@ function applyTerminal(state, turn, seq, envelope) {
   turn.latestStatus = envelope.payload.status;
   turn.text = terminalText(envelope.payload);
   turn.lastSeq = Math.max(turn.lastSeq, seq);
-  if (envelope.parent_id) state.approvals.delete(envelope.parent_id);
+  if (envelope.parent_id) { state.approvals.delete(envelope.parent_id); state.uiRequests.delete(envelope.parent_id); }
 }
 
 function attachResponse(state, turn, seq, envelope) {
@@ -176,6 +180,9 @@ export function apply(state, row, selfId = '') {
     if (RESOLVABLE.has(envelope.type) && selfId && envelope.audience?.includes(selfId)) {
       state.approvals.set(envelope.id, envelope);
     }
+    if (UI_WORDS.has(envelope.type) && selfId && envelope.audience?.includes(selfId)) {
+      state.uiRequests.set(envelope.id, envelope);
+    }
     drainRequestMatches(state, turn);
     return state;
   }
@@ -197,6 +204,7 @@ export function apply(state, row, selfId = '') {
 
 export function reconcileApprovals(state, selfId) {
   state.approvals.clear();
+  state.uiRequests.clear();
   if (!selfId) return state;
   for (const turn of state.turns.values()) {
     const request = turn.request;
@@ -205,6 +213,9 @@ export function reconcileApprovals(state, selfId) {
       && request.audience?.includes(selfId)
       && !turn.terminal
     ) state.approvals.set(request.id, request);
+    if (UI_WORDS.has(request.type) && request.audience?.includes(selfId) && !turn.terminal) {
+      state.uiRequests.set(request.id, request);
+    }
   }
   return state;
 }

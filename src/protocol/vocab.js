@@ -28,6 +28,14 @@ export const TYPES = Object.freeze({
   humanAsk: 'human.ask',
   humanApprove: 'human.approve',
 
+  // 频道对 UI：由**人的客户端**受理，不是人。实验性（见 DEV_BACKLOG 附录 A）。
+  // 与 human.* 分族是刻意的：human.* 等的是有人来读（分钟/小时/永不），
+  // ui.* 等的是一个标签页（毫秒，或者页面根本不在）。混成一族，调用方就
+  // 分不清"还没人看"和"没有屏幕"。
+  uiState: 'ui.state',
+  uiNavigate: 'ui.navigate',
+  uiOpen: 'ui.open',
+
   // 平台叙事事件（kind=event，visibility=system）。
   narration: Object.freeze({
     memberCreated: 'system.member.created',
