@@ -4,6 +4,7 @@ import { ensureServerBoot } from './model/server-boot.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
 import { describeClient } from './model/client-label.js';
 import { openFromPreview, snapshot as uiSnapshot } from './model/ui-words.js';
+import { UiActivityOverlay } from './ui/UiActivityOverlay.jsx';
 import { useUiWords } from './app/hooks/useUiWords.js';
 import { fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
 import { unreadCounts } from './model/cursors.js';
@@ -137,6 +138,9 @@ export default function App() {
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [mountedFilePreview, setMountedFilePreview] = useState(null);
   const [uiSession, setUiSession] = useState({ id: '', label: '' });
+  // 频道对这块屏做过什么。只留最近几条:这是一条回执,不是审计日志——
+  // 完整的记录本来就在账本里,这里只回答"刚才那一下是什么"。
+  const [uiActivity, setUiActivity] = useState([]);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [mockAdvance, setMockAdvance] = useState({ available: false, busy: false });
   // 参数面板（协议 §2/§4）：目标 = Composer 回报的判据链结果；值域走 describe、
@@ -765,6 +769,9 @@ export default function App() {
     selfIdFor: uiSelfIdFor,
     wireRef,
     readSnapshot: () => uiSnapshotRef.current,
+    onActivity: useCallback((entry) => {
+      setUiActivity((current) => [...current.filter((row) => row.id !== entry.id), entry].slice(-6));
+    }, []),
     actions: {
       navigate: async (channelId, view) => {
         // 先把视图记给**目标**频道,再切——不要切完再调 changeWorkspaceView。
@@ -1196,6 +1203,7 @@ export default function App() {
   {taskCreateSource !== undefined && <TaskCreateModal providers={providers} source={taskCreateSource} onSubmit={submitTask} onClose={() => setTaskCreateSource(undefined)} />}
   {channelCreateOpen && activeChannel && <ChannelCreateModal channel={activeChannel} channels={channelList} roster={activeRoster} selfId={selfId} state={activeState} disabled={wireState !== 'open' || !canWriteChannel(activeAccess)} onSubmit={handleSend} onClose={() => setChannelCreateOpen(false)} onEnterChannel={(channel) => { setChannelCreateOpen(false); selectWorkspaceChannel(channel.id); }} />}
   {globalSearchOpen && <GlobalSearch index={globalData.searchIndex} onOpen={navigateToSource} onClose={() => setGlobalSearchOpen(false)} />}
+  <UiActivityOverlay entries={uiActivity} />
   {attachmentPickerOpen && activeChannel && <ChannelFilePickerModal channel={activeChannel} daemons={spaceDaemons} disabled={wireState !== 'open' || !canWriteChannel(activeAccess)} onResource={handleResource} onChoose={attachToDraft} onClose={() => setAttachmentPickerOpen(false)} />}
   </>;
 }

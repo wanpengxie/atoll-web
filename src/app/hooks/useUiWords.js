@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { execute } from '../../model/ui-words.js';
+import { execute, requestBody } from '../../model/ui-words.js';
 
 // useUiWords 是 ui.* 的**不纯**那一半：盯住账本里发给我、还开着的 ui.* 请求，
 // 执行，回帧。
@@ -10,12 +10,14 @@ import { execute } from '../../model/ui-words.js';
 // version 是必需的，不是可选优化：channelStatesRef.current 是一个**原地变更**
 // 的 Map，它的身份从不改变，所以拿它当依赖的 effect 永远不会因为"来了新请求"
 // 而重跑。feed 的版本号是这里唯一如实反映"账本动过了"的东西。
-export function useUiWords({ channelStatesRef, version, session, selfIdFor, wireRef, actions, readSnapshot, enabled = true }) {
+export function useUiWords({ channelStatesRef, version, session, selfIdFor, wireRef, actions, readSnapshot, onActivity, enabled = true }) {
   // 一条请求在终态回到账本之前会一直留在 uiRequests 里，所以必须自己记住做过
   // 什么，否则同一条会被反复执行——ui.navigate 反复执行只是多余，
   // 但任何有副作用的词都会因此出错。
   const handledRef = useRef(new Set());
   const actionsRef = useRef(actions);
+  const activityRef = useRef(onActivity);
+  activityRef.current = onActivity;
   const snapshotRef = useRef(readSnapshot);
   actionsRef.current = actions;
   snapshotRef.current = readSnapshot;
@@ -40,6 +42,16 @@ export function useUiWords({ channelStatesRef, version, session, selfIdFor, wire
             readSnapshot: snapshotRef.current,
           });
           if (!frame) continue; // 点名了别的屏幕,这块不掺和
+          // 页面自己动起来是件吓人的事,所以坐在屏前的人要看得见发生了什么。
+          // 报告在**发送之前**:动作已经做完了,回帧发没发出去不改变这个事实。
+          activityRef.current?.({
+            id: envelope.id,
+            type: envelope.type,
+            body: requestBody(envelope),
+            ok: !frame.error,
+            error: frame.error?.message || frame.error?.code || '',
+            at: Date.now(),
+          });
           try {
             await wireRef.current?.resolve(frame);
           } catch {
