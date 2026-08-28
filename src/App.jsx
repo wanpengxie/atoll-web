@@ -731,14 +731,32 @@ export default function App() {
   // 稳定引用:内联箭头每次渲染都是新的,effect 就会每次渲染清理重跑,把正在飞的
   // 那次异步执行掐死在"算出答案了、还没发出去"。
   const uiSelfIdFor = useCallback((channelId) => rosterRef.current.self(channelId), []);
-  const readUiSnapshot = useCallback(() => uiSnapshot({
+  const uiSnapshotRef = useRef(null);
+  const readUiSnapshot = useCallback(() => {
+    // 路由的真身是 URL:writeWorkspaceRoute 同步写 hash,刷新后也是从它恢复。
+    // activeChannelId / workspaceView 只是它的 React 缓存,而缓存要等提交才追上
+    // ——从真身读,"操作之后的状态"就没有时序可言。
+    const route = parseWorkspaceHash(typeof window === 'undefined' ? '' : window.location.hash);
+    return uiSnapshot({
     session: uiSession,
-    channelId: activeChannelId,
-    view: workspaceView,
+    channelId: route.valid ? route.channelId : activeChannelId,
+    view: route.valid ? route.view : workspaceView,
     channels: channelList,
     open: openFromPreview(mountedFilePreview),
     viewport: typeof window === 'undefined' ? {} : { width: window.innerWidth, height: window.innerHeight },
-  }), [activeChannelId, channelList, mountedFilePreview, uiSession, workspaceView]);
+    });
+  }, [activeChannelId, channelList, mountedFilePreview, uiSession, workspaceView]);
+  // 每次提交后把快照存进 ref。ui.* 的动作是 setState,是异步的,而 readUiSnapshot
+  // 闭包里的值属于**发起那次操作的那一帧**——直接读它,回的是操作之前的状态,而
+  // 这组词的契约恰恰是"回操作之后的状态,调用方不用再读一次"。
+  uiSnapshotRef.current = readUiSnapshot();
+
+  // committed 等 React 把这次 setState 提交完。路由从 URL 读,不需要它;但打开
+  // 文件那类状态的真身就在 React 里,没有别的地方可读,只能等它提交。
+  const committed = useCallback(() => new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== 'function') { setTimeout(resolve, 0); return; }
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }), []);
 
   useUiWords({
     channelStatesRef,
@@ -746,13 +764,17 @@ export default function App() {
     session: uiSession,
     selfIdFor: uiSelfIdFor,
     wireRef,
-    readSnapshot: readUiSnapshot,
+    readSnapshot: () => uiSnapshotRef.current,
     actions: {
-      navigate: (channelId, view) => {
+      navigate: async (channelId, view) => {
         selectWorkspaceChannel(channelId);
         if (view) changeWorkspaceView(view);
+        await committed();
       },
-      open: (attachment) => previewMessageAttachment(activeChannelId, attachment),
+      open: async (attachment) => {
+        previewMessageAttachment(activeChannelRef.current, attachment);
+        await committed();
+      },
     },
     enabled: wireState === 'open',
   });
