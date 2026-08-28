@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
-import { artifactAttachment, formatArtifactSize } from '../../model/artifacts.js';
+import { formatArtifactSize } from '../../model/artifacts.js';
 import { fileTransferURL } from '../../model/channel-file-transfer.js';
 import { readFileTicket } from '../../model/resources.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
@@ -148,17 +148,22 @@ function SourceArtifactPreview({ text, line, language }) {
   </>;
 }
 
-function TextArtifactPreview({ artifact, text }) {
+function TextArtifactPreview({ artifact, text, mode: controlledMode, onModeChange, showModeControls = true }) {
   const { markdown, language } = textPreviewFormat(artifact);
   const targetLine = Number.isSafeInteger(artifact.line) && artifact.line > 0 ? artifact.line : 0;
-  const [mode, setMode] = useState(markdown && !targetLine ? 'preview' : 'source');
+  const [localMode, setLocalMode] = useState(markdown && !targetLine ? 'preview' : 'source');
+  const mode = controlledMode || localMode;
+  const changeMode = (nextMode) => {
+    setLocalMode(nextMode);
+    onModeChange?.(nextMode);
+  };
   useEffect(() => {
-    setMode(markdown && !targetLine ? 'preview' : 'source');
+    setLocalMode(markdown && !targetLine ? 'preview' : 'source');
   }, [artifact.resourceId, markdown, targetLine]);
   return <div className="artifact-text-preview">
-    {markdown && <div className="artifact-preview-mode" role="group" aria-label="Markdown 查看方式">
-      <button type="button" className={mode === 'preview' ? 'active' : ''} aria-pressed={mode === 'preview'} onClick={() => setMode('preview')}>预览</button>
-      <button type="button" className={mode === 'source' ? 'active' : ''} aria-pressed={mode === 'source'} onClick={() => setMode('source')}>源码</button>
+    {markdown && showModeControls && <div className="artifact-preview-mode" role="group" aria-label="Markdown 查看方式">
+      <button type="button" className={mode === 'preview' ? 'active' : ''} aria-pressed={mode === 'preview'} onClick={() => changeMode('preview')}>预览</button>
+      <button type="button" className={mode === 'source' ? 'active' : ''} aria-pressed={mode === 'source'} onClick={() => changeMode('source')}>源码</button>
     </div>}
     {markdown && mode === 'preview'
       ? <MarkdownContent text={text} className="artifact-markdown-preview" />
@@ -166,11 +171,11 @@ function TextArtifactPreview({ artifact, text }) {
   </div>;
 }
 
-export function ArtifactPreviewBody({ artifact, preview }) {
+export function ArtifactPreviewBody({ artifact, preview, textMode, onTextModeChange, showTextModeControls = true }) {
   if (!artifact) return null;
   return <>
     {preview.phase === 'loading' && <p>正在加载预览…</p>}
-    {preview.phase === 'ready' && artifact.preview === 'text' && <TextArtifactPreview artifact={artifact} text={preview.text} />}
+    {preview.phase === 'ready' && artifact.preview === 'text' && <TextArtifactPreview artifact={artifact} text={preview.text} mode={textMode} onModeChange={onTextModeChange} showModeControls={showTextModeControls} />}
     {preview.phase === 'ready' && artifact.preview === 'image' && <img src={preview.url} alt={artifact.name} />}
     {preview.phase === 'ready' && artifact.preview === 'media' && (artifact.kind === 'audio' ? <audio src={preview.url} controls /> : <video src={preview.url} controls />)}
     {preview.phase === 'ready' && artifact.preview === 'inline' && <iframe src={preview.url} title={artifact.name} />}
@@ -179,15 +184,22 @@ export function ArtifactPreviewBody({ artifact, preview }) {
   </>;
 }
 
-export function ArtifactContext({ artifact, authorName, onResource, onDownload, onAttach, onSource, onClose }) {
+export function ArtifactContext({ artifact, onResource, onClose }) {
   const preview = useArtifactPreview(artifact, onResource);
+  const format = textPreviewFormat(artifact || {});
+  const targetLine = Number.isSafeInteger(artifact?.line) && artifact.line > 0 ? artifact.line : 0;
+  const [textMode, setTextMode] = useState(format.markdown && !targetLine ? 'preview' : 'source');
+  useEffect(() => {
+    setTextMode(format.markdown && !targetLine ? 'preview' : 'source');
+  }, [artifact?.resourceId, format.markdown, targetLine]);
   if (!artifact) return null;
-  const mounted = artifact.provenance?.source === 'channel_mount';
-  return <SidePanel className="artifact-context" ariaLabel="文件详情" eyebrow={mounted ? 'CHANNEL FILE' : 'FILE REFERENCE'} title={artifact.name} closeLabel="关闭文件详情" onClose={onClose}>
+  const modeActions = format.markdown ? <div className="artifact-preview-mode artifact-preview-mode-header" role="group" aria-label="Markdown 查看方式">
+    <button type="button" className={textMode === 'preview' ? 'active' : ''} aria-pressed={textMode === 'preview'} onClick={() => setTextMode('preview')}>预览</button>
+    <button type="button" className={textMode === 'source' ? 'active' : ''} aria-pressed={textMode === 'source'} onClick={() => setTextMode('source')}>源码</button>
+  </div> : null;
+  return <SidePanel className="artifact-context" ariaLabel="文件详情" title={artifact.name} closeLabel="关闭文件详情" headerActions={modeActions} onClose={onClose}>
     <section className="artifact-context-preview" aria-label="文件预览">
-      <ArtifactPreviewBody artifact={artifact} preview={preview} />
+      <ArtifactPreviewBody artifact={artifact} preview={preview} textMode={textMode} onTextModeChange={setTextMode} showTextModeControls={false} />
     </section>
-    <dl className="artifact-metadata"><dt>类型</dt><dd>{artifact.mediaType}</dd><dt>大小</dt><dd>{formatArtifactSize(artifact.size)}</dd>{mounted ? <><dt>位置</dt><dd>当前频道挂载目录</dd></> : <><dt>作者</dt><dd>{authorName || '未知作者'}</dd><dt>来源</dt><dd>{artifact.source?.seq ? `频道动态 #${artifact.source.seq}` : artifact.provenance?.source === 'file_reference' ? 'Agent 文件引用' : '消息附件'}</dd></>}{artifact.versionOf && <><dt>版本关系</dt><dd>明确基于另一个产物</dd></>}</dl>
-    <div className="artifact-context-actions">{artifact.source && onSource && <button type="button" onClick={() => onSource(artifact.source)}>查看来源</button>}<button type="button" onClick={() => onAttach(artifactAttachment(artifact))}>附加到消息</button><button type="button" className="primary-button" onClick={() => onDownload(artifactAttachment(artifact))}>下载</button></div>
   </SidePanel>;
 }

@@ -138,6 +138,23 @@ describe('F6 预览生命周期预算', () => {
     expect(document.querySelector('.artifact-source-preview')?.textContent).toContain('const ready = true');
   });
 
+  it('文件面板只保留标题栏和阅读区，Markdown 切换放在关闭按钮左侧', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      headers: { get: () => '0' },
+      text: () => Promise.resolve('# 阅读区'),
+    })));
+    render(<ArtifactContext artifact={{ preview: 'text', resourceId: 'readme', channelId: 'c0', name: 'README.md', mediaType: 'text/markdown', size: 10 }} onResource={() => Promise.resolve({ ticket: 'ticket' })} onClose={() => {}} />);
+    expect(await screen.findByRole('heading', { name: '阅读区' })).toBeTruthy();
+    const header = document.querySelector('.side-panel-header');
+    const buttons = [...header.querySelectorAll('button')].map((button) => button.textContent || button.getAttribute('aria-label'));
+    expect(buttons).toEqual(['预览', '源码', '×']);
+    expect(document.querySelector('.artifact-metadata')).toBeNull();
+    expect(document.querySelector('.artifact-context-actions')).toBeNull();
+    expect(document.querySelectorAll('.artifact-preview-mode')).toHaveLength(1);
+    expect(document.querySelector('.artifact-preview-mode-header')).toBeTruthy();
+  });
+
   it('源码使用 Prism 语法着色并显示行号', () => {
     render(<ArtifactPreviewBody artifact={{ preview: 'text', resourceId: 'worker', name: 'worker.tsx', mediaType: 'text/plain' }} preview={{ phase: 'ready', text: 'const ready: boolean = true' }} />);
     expect(document.querySelector('.token.keyword')?.textContent).toBe('const');

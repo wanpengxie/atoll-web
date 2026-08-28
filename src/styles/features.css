@@ -92,19 +92,21 @@
 .advanced-resources > p { margin: 6px 0 10px; font-size: 11px; }
 .embedded-resources > .panel-tabs { padding-right: 0; padding-left: 0; }
 .embedded-resources .panel-card { box-shadow: none; }
-.artifact-context-preview { min-height: 300px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line-structural); border-radius: var(--radius-object); background: var(--raised); }
+.artifact-context .side-panel-scroll { display: grid; padding: 0; overflow: hidden; }
+.artifact-context-preview { width: 100%; height: 100%; min-height: 0; display: grid; place-items: center; overflow: hidden; background: var(--raised); }
 .artifact-context-preview p { color: var(--text-muted); font-size: 11px; }
-.artifact-text-preview { align-self: stretch; justify-self: stretch; min-width: 0; min-height: 300px; }
+.artifact-text-preview { align-self: stretch; justify-self: stretch; min-width: 0; min-height: 0; height: 100%; }
 .artifact-preview-mode { position: sticky; z-index: 2; top: 0; display: flex; justify-content: flex-end; gap: 3px; padding: 7px; border-bottom: 1px solid var(--line-subtle); background: var(--surface-soft); }
 .artifact-preview-mode button { min-height: 28px; padding: 4px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
 .artifact-preview-mode button:hover, .artifact-preview-mode button:focus-visible { color: var(--text); }
 .artifact-preview-mode button.active { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-control); }
-.artifact-source-preview { align-self: stretch; justify-self: stretch; max-height: min(64vh, 720px); margin: 0 !important; padding: 12px 0 !important; overflow: auto; color: var(--text); font: 11px/1.6 var(--mono) !important; text-align: left; }
+.artifact-preview-mode-header { position: static; padding: 0; border: 0; background: transparent; }
+.artifact-source-preview { align-self: stretch; justify-self: stretch; width: 100%; height: 100%; max-height: none; margin: 0 !important; padding: 12px 0 !important; overflow: auto; color: var(--text); font: 11px/1.6 var(--mono) !important; text-align: left; }
 .artifact-source-line { display: grid; min-width: max-content; grid-template-columns: 48px minmax(0, 1fr); padding-right: 14px; }
 .artifact-source-line.is-target { background: var(--surface-selected); box-shadow: inset 3px 0 0 var(--accent); scroll-margin-block: 28vh; }
 .artifact-source-line-number { padding-right: 12px; color: var(--text-dim); text-align: right; user-select: none; }
 .artifact-source-line-code { min-width: 0; white-space: pre; }
-.artifact-markdown-preview { max-height: min(64vh, 720px); padding: 24px clamp(18px, 4vw, 42px); overflow: auto; color: var(--text); font-size: 13px; line-height: 1.7; text-align: left; }
+.artifact-markdown-preview { width: 100%; height: 100%; max-height: none; padding: 24px clamp(18px, 4vw, 42px); overflow: auto; color: var(--text); font-size: 13px; line-height: 1.7; text-align: left; }
 .artifact-markdown-preview h1, .artifact-markdown-preview h2, .artifact-markdown-preview h3 { margin: 1.5em 0 .6em; line-height: 1.25; }
 .artifact-markdown-preview h1 { padding-bottom: .35em; border-bottom: 1px solid var(--line-structural); font-size: 24px; }
 .artifact-markdown-preview h2 { padding-bottom: .3em; border-bottom: 1px solid var(--line-subtle); font-size: 19px; }
@@ -117,17 +119,11 @@
 .artifact-markdown-preview th, .artifact-markdown-preview td { padding: 7px 9px; border: 1px solid var(--line-structural); }
 .artifact-markdown-preview img { max-width: 100%; }
 .artifact-line-missing { margin: 0 0 10px; color: var(--danger); }
-.artifact-context-preview img, .artifact-context-preview video, .artifact-context-preview iframe { display: block; width: 100%; max-height: 420px; border: 0; object-fit: contain; }
+.artifact-context-preview img, .artifact-context-preview video, .artifact-context-preview iframe { display: block; width: 100%; height: 100%; max-height: none; border: 0; object-fit: contain; }
 .artifact-context-preview audio { width: calc(100% - 24px); }
 .artifact-no-preview { padding: 30px 18px; text-align: center; }
 .artifact-no-preview strong { font-size: 13px; }
 .artifact-no-preview p { margin: 6px 0 0; line-height: 1.5; }
-.artifact-metadata { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; margin: 14px 0; font-size: 11px; }
-.artifact-metadata dt { color: var(--text-dim); }
-.artifact-metadata dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--text); }
-.artifact-context-actions { display: flex; flex-wrap: wrap; gap: 7px; padding-top: 12px; border-top: 1px solid var(--line-structural); }
-.artifact-context-actions button { min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--text); cursor: pointer; font-size: 10px; }
-.artifact-context-actions .primary-button { border-color: var(--accent); background: var(--accent); color: white; }
 
 /* The channel mount is a file browser, not a resource dashboard. */
 .channel-files-view { position: relative; grid-template-rows: auto minmax(0, 1fr); background: var(--workspace); }
@@ -241,8 +237,6 @@ button.channel-file-row { font: inherit; }
   .channel-file-actions button { width: 36px; height: 36px; }
   .channel-file-actions button:last-child { display: none; }
   .finder-row-disclosure { grid-column: 3; }
-  .artifact-context-preview, .artifact-text-preview { min-height: 240px; }
-  .artifact-source-preview, .artifact-markdown-preview { max-height: none; }
   .artifact-markdown-preview { padding: 18px 15px; }
   .attachment-picker-backdrop { padding: 0; }
   .attachment-picker-modal { width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; }

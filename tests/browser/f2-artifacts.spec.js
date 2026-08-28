@@ -44,7 +44,9 @@ test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯�
   await mountedFile.locator('.finder-name-cell').click();
   const mountedPreview = page.getByRole('complementary', { name: '文件详情' });
   await expect(mountedPreview).toContainText('可信的预览内容');
-  await expect(mountedPreview).toContainText('text/plain');
+  await expect(mountedPreview).not.toContainText('text/plain');
+  await expect(mountedPreview.locator('.artifact-metadata')).toHaveCount(0);
+  await expect(mountedPreview.locator('.artifact-context-actions')).toHaveCount(0);
   await expect(page.locator('.context-host')).toHaveAttribute('data-context-type', 'artifact');
   const previewWidth = await page.locator('.context-pane').evaluate((node) => node.getBoundingClientRect().width);
   expect(previewWidth).toBeGreaterThan(520);
@@ -77,7 +79,8 @@ test('F2-006 长文件名与不支持预览安全降级，窄屏无横向溢出'
   await page.setViewportSize({ width: 320, height: 720 });
   const geometry = await page.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth }));
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
-  await expect(preview.getByRole('button', { name: '下载' })).toBeVisible();
+  await expect(preview.getByRole('button', { name: '下载' })).toHaveCount(0);
+  await expect(preview.getByRole('button', { name: '关闭文件详情' })).toBeVisible();
 });
 
 test('Composer 直接区分本机上传与 daemon 频道文件选择', async ({ page, request }) => {

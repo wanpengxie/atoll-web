@@ -59,10 +59,11 @@ describe('PanelTabs', () => {
 
 describe('SidePanel 与表单 primitives', () => {
   it('无标签时仍只有一个明确滚动区', () => {
-    render(<SidePanel ariaLabel="自动化" eyebrow="LOCAL" title="定时动作" onClose={() => {}}><p>内容</p></SidePanel>);
+    render(<SidePanel ariaLabel="自动化" eyebrow="LOCAL" title="定时动作" headerActions={<button type="button">预览</button>} onClose={() => {}}><p>内容</p></SidePanel>);
     expect(screen.queryByRole('tablist')).toBeNull();
     expect(document.querySelectorAll('.side-panel-scroll')).toHaveLength(1);
     expect(screen.getByText('内容')).toBeTruthy();
+    expect(document.querySelector('.side-panel-header-actions')?.textContent).toContain('预览');
   });
 
   it('FormField 关联 label、说明和错误', () => {
