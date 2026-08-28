@@ -76,6 +76,10 @@ describe('wire client', () => {
     expect(socket.sent.filter((item) => item.frame_type === 'attach')).toHaveLength(1);
     // attach 回执携带的成员清单原样透传给 onState 消费方。
     expect(states).toContainEqual(['attached', {
+      // 这条连接自己的名字。一个人的手机和网页同时连着,任何冲着"这个人的屏幕"
+      // 来的东西都得说清是哪一块,而这块屏得知道自己叫什么才认得出被点到的是它。
+      session: '',
+      session_label: '',
       contract_version: 'v4',
       memberships: [{ channel_id: 'c0', actor_id: 'root' }],
       memberships_complete: true,

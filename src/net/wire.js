@@ -42,6 +42,9 @@ export function createWire({
   onError = () => {},
   onObserveEnded = () => {},
   onState = () => {},
+  // label 是这条连接的自称,给人看的,由调用方给——wire 是传输,"这块屏叫什么"
+  // 是应用层的决定,而且在这里嗅探 navigator 会让传输层的测试跟着运行环境走。
+  label = '',
   WebSocketImpl = globalThis.WebSocket,
   pendingTimeoutMs = 30_000,
   setTimeoutImpl = globalThis.setTimeout,
@@ -128,11 +131,17 @@ export function createWire({
         diagnostic('info', 'wire.attached', {
           generation,
           contractVersion: payload.contract_version,
+          session: payload.session,
           boot: payload.boot,
           memberships: payload.memberships?.length || 0,
           historyChannels: payload.history_meta?.length || 0,
         });
         onState('attached', {
+          // 这条连接自己的名字。一个人的手机和网页同时连着,两条都在,所以任何
+          // 冲着"这个人的屏幕"来的东西都得说清是哪一块——而这块屏得知道自己
+          // 叫什么,才认得出被点到的是不是自己。
+          session: payload.session || '',
+          session_label: payload.label || '',
           contract_version: payload.contract_version,
           boot: payload.boot,
           // attach 回执自带成员清单（网关资格账快照）：连上即知道"我在哪些频道、
@@ -246,7 +255,10 @@ export function createWire({
       diagnostic('info', 'wire.open', { generation });
       const attachSince = since() || {};
       const attachFocus = focus() || '';
-      const attachPromise = transmit(UP.attach, { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation }, { allowBeforeAttach: true });
+      // 空标签不占位:这条帧的形状是契约,不该为了一个没人填的字段多一个键。
+      const attachPayload = { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation };
+      if (label) attachPayload.label = label;
+      const attachPromise = transmit(UP.attach, attachPayload, { allowBeforeAttach: true });
       attachRef = `${UP.attach}-${counter}`;
       diagnostic('info', 'wire.attach_sent', { generation, ref: attachRef, focus: attachFocus, cursorChannels: Object.keys(attachSince).length });
       attachPromise.catch((error) => {
@@ -340,3 +352,4 @@ export function createWire({
     },
   };
 }
+

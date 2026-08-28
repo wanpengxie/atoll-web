@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { capabilityIndexFromState } from './model/capabilities.js';
 import { ensureServerBoot } from './model/server-boot.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
+import { describeClient } from './model/client-label.js';
 import { openFromPreview, snapshot as uiSnapshot } from './model/ui-words.js';
 import { useUiWords } from './app/hooks/useUiWords.js';
 import { fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
@@ -135,6 +136,7 @@ export default function App() {
   const [channelCreateOpen, setChannelCreateOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [mountedFilePreview, setMountedFilePreview] = useState(null);
+  const [uiSession, setUiSession] = useState({ id: '', label: '' });
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [mockAdvance, setMockAdvance] = useState({ available: false, busy: false });
   // 参数面板（协议 §2/§4）：目标 = Composer 回报的判据链结果；值域走 describe、
@@ -359,6 +361,7 @@ export default function App() {
 
     setWireState('connecting');
     const wire = createWire({
+      label: describeClient(),
       since: () => resumeSnapshot(channelStatesRef.current),
       focus: () => activeChannelRef.current,
       onFeed: enqueueFeed,
@@ -386,6 +389,9 @@ export default function App() {
             resetFeedCache().finally(() => window.location.reload());
             return;
           }
+          // 这条连接自己的名字。服务端铸的 id 是寻址用的唯一依据;label 只给
+          // 人看,因为选屏幕是人用话做的事。
+          setUiSession({ id: detail?.session || '', label: detail?.session_label || '' });
 		  agentActivityRef.current.attach(detail);
 		  setHistoryGrants(detail?.history_meta || [], { ...detail, focus: activeChannelRef.current });
           access.wire('attached', newId());
@@ -714,16 +720,18 @@ export default function App() {
   // 快照从**渲染真正读的那几个 state** 算出来，不另建影子状态：两份必然漂移，
   // 而 agent"先看再动"看到一份漂移的状态比它不看更糟。
   const readUiSnapshot = useCallback(() => uiSnapshot({
+    session: uiSession,
     channelId: activeChannelId,
     view: workspaceView,
     channels: channelList,
     open: openFromPreview(mountedFilePreview),
     viewport: typeof window === 'undefined' ? {} : { width: window.innerWidth, height: window.innerHeight },
-  }), [activeChannelId, channelList, mountedFilePreview, workspaceView]);
+  }), [activeChannelId, channelList, mountedFilePreview, uiSession, workspaceView]);
 
   useUiWords({
     channelStatesRef,
     version: feedVersion,
+    session: uiSession,
     selfIdFor: (channelId) => rosterRef.current.self(channelId),
     wireRef,
     readSnapshot: readUiSnapshot,

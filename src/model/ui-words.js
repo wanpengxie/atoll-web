@@ -25,8 +25,11 @@ export function requestBody(envelope) {
 //
 // available 是刻意在的：只给当前状态而不给可选项，调用方只能靠猜，
 // 于是 ui.navigate 的合法参数集就没有出处。
-export function snapshot({ channelId, view, channels, open, viewport }) {
+export function snapshot({ session, channelId, view, channels, open, viewport }) {
   return {
+    // 每份快照都说出自己是谁答的。这是**发现机制**:调用方读一次状态就拿到
+    // 一个可寻址的会话 id,不需要另开一个"列出所有屏幕"的词。
+    session: session || { id: '', label: '' },
     route: { channel_id: channelId || '', view: view || '' },
     open: open || { kind: 'none' },
     available: {
@@ -55,10 +58,36 @@ const fail = (reqId, channelId, code, message) => ({ channel_id: channelId, req_
 //
 // actions 里的动作是同步的 UI 变更；它们做完之后 snapshot 才算数，所以帧里的
 // 状态是**操作之后**的——调用方不需要再读一次。
-export async function execute(envelope, { actions, readSnapshot }) {
+// 一个人同时开着手机和网页,两条连接并存,谁也不顶掉谁。所以"操作这个人的屏幕"
+// 必须说清是哪一块——否则每一块都会动,而那不是任何人想要的:一次 ui.navigate
+// 会把他所有标签页一起切走。
+//
+// 分寸按"会不会改东西"划:
+//   - 只读的 ui.state 不点名也答。它是发现的入口,而多答几次只是浪费,不是伤害;
+//     回执里带着自己的 session,调用方读一次就知道该怎么点名。
+//   - 会改东西的一律要求点名,而且**拒绝时把自己的 id 说出来**——一次没点名的
+//     尝试因此是有收获的,而不只是一个"不行"。
+function addressedToMe(envelope, session) {
+  const named = String(requestBody(envelope).session || '');
+  if (!named) return { mine: true, named: '' };
+  return { mine: !!session?.id && named === session.id, named };
+}
+
+export function isReadOnly(type) { return type === TYPES.uiState; }
+
+export async function execute(envelope, { session, actions, readSnapshot }) {
   const reqId = envelope.id;
   const channelId = envelope.channel_id;
   const body = requestBody(envelope);
+
+  const { mine, named } = addressedToMe(envelope, session);
+  if (!mine) return null; // 点名了别人:这块屏什么都不做,也不回帧。
+  if (!named && !isReadOnly(envelope.type)) {
+    return fail(reqId, channelId, 'session_required',
+      `${envelope.type} must name a session; this client is ${session?.id || 'unnamed'}` +
+      (session?.label ? ` (${session.label})` : '') +
+      '. Read ui.state first — its answer says which session replied.');
+  }
 
   try {
     switch (envelope.type) {
