@@ -300,30 +300,11 @@ export function createWire({
     });
   }
 
-  // stampOrigin 给这条连接发出的每一条消息盖上"从哪块屏来的"。
-  //
-  // 盖在词的 body 里,不在 _context 里:_context 是底座读的,而 msg.go 会把它剥
-  // 成 caller,actor 那边根本收不到——放进去等于让底座扛一个只有别人读、而别人
-  // 又读不到的载荷。
-  //
-  // 盖在这里而不是各个调用点:这是这条连接唯一的出口,所以它盖不漏。发送者那条
-  // 线可靠也是同一个道理。
-  function stampOrigin(payload) {
-    if (!sessionID || !payload || typeof payload !== 'object') return payload;
-    const body = payload.payload;
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return payload;
-    if (body.origin !== undefined) return payload; // 已经说了从哪来,不覆盖
-    return {
-      ...payload,
-      payload: { ...body, origin: { session: sessionID, ...(sessionLabel ? { label: sessionLabel } : {}) } },
-    };
-  }
-
   connect();
 
   return {
     submit(payload) {
-      return transmit(UP.submit, stampOrigin(payload));
+      return transmit(UP.submit, payload);
     },
     resolve(payload) {
       return transmit(UP.resolve, payload);

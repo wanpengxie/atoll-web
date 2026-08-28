@@ -126,10 +126,13 @@ describe('ui.* 是客户端自己受理的词', () => {
   });
 });
 
-// 发现路径的另一半在 useSubmissions:人发消息时客户端把 origin 盖进 body。
-// 这里断言的是它落在**哪儿** —— body,不是 _context。
-describe('origin 盖在词的契约里,不在底座的格子里', () => {
-  it('actor 收到的是 body,_context 会被底座剥掉,所以 origin 必须在 body', () => {
+// origin 曾经被盖进 body,那是错的:body 是**每个词自己的契约**,而接收方严格解
+// 码自己的 body——一个"每条消息都盖"的通用字段塞进去,等于每个词的 schema 都得
+// 认它。agent.ask 当场以 `unknown field \"origin\"` 拒收。
+// 这里保留的是它**读**的能力(词确实可以带 session 之类的结构化参数),
+// 但客户端不再往每条消息里盖。
+describe('body 是词自己的契约', () => {
+  it('requestBody 从 {_context, body} 里取的是 body', () => {
     // msg.go 把 {_context, body} 拆开:actor 拿到 body,_context 变成 caller。
     // 所以放进 _context 的东西 agent 物理上看不见。
     const asContext = { payload: { _context: { origin: { session: 's-1' } }, body: { text: 'hi' } } };
