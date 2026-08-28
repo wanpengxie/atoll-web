@@ -767,8 +767,13 @@ export default function App() {
     readSnapshot: () => uiSnapshotRef.current,
     actions: {
       navigate: async (channelId, view) => {
+        // 先把视图记给**目标**频道,再切——不要切完再调 changeWorkspaceView。
+        // 后者用的是闭包里的 activeChannelId,而这一刻 React 还没重渲染,它仍是
+        // 旧频道,于是第二次写路由会把第一次写的目标频道盖掉:换频道又指定视图时,
+        // 视图变了、频道没动。selectWorkspaceChannel 本来就会读这个 ref 里
+        // "这个频道上次看的是哪个视图",所以先记后切,一次写完。
+        if (view) workspaceViewsRef.current.set(channelId, view);
         selectWorkspaceChannel(channelId);
-        if (view) changeWorkspaceView(view);
         await committed();
       },
       open: async (attachment) => {

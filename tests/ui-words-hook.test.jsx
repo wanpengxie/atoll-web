@@ -102,6 +102,17 @@ describe('ui.* 到了浏览器会被执行并回帧', () => {
     await waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));
   });
 
+  // 换频道**同时**指定视图,是这条链路里最容易出错的一步:两次写路由,第二次
+  // 若用了旧的频道 id 就会把第一次盖掉——现象是"视图变了、频道没动",而且只有
+  // 连着做几步才看得出来。
+  it('换频道并指定视图:两样都要生效', async () => {
+    const resolve = vi.fn().mockResolvedValue({});
+    const navigate = vi.fn();
+    const state = stateWith('ui.navigate', { session: SESSION.id, channel_id: 'c0', view: 'artifacts' });
+    render(<Harness state={state} session={SESSION} actions={{ navigate, open: vi.fn() }} resolve={resolve} version={1} />);
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('c0', 'artifacts'));
+  });
+
   // 点名了别的屏幕:这块屏什么都不做,也不回帧。
   it('点名别人的屏幕就完全不掺和', async () => {
     const resolve = vi.fn().mockResolvedValue({});
