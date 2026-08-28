@@ -19,6 +19,22 @@ function isTransientEntry(entry) {
     && (entry.envelope?.payload?.transient === true || entry.envelope?.type === 'mock.channel.pulse');
 }
 
+function isUiProtocolTurn(turn) {
+  return typeof turn?.request?.type === 'string' && turn.request.type.startsWith('ui.');
+}
+
+// ui.* is an operation stream between an agent and one browser tab, not a
+// conversation with the person. Keep it in "all" for ledger inspection, but
+// remove both root UI turns and nested UI calls from the person's chat view.
+function withoutUiProtocol(entries) {
+  return entries
+    .filter((entry) => entry.kind !== 'turn' || !isUiProtocolTurn(entry.turn))
+    .map((entry) => {
+      if (!entry.thread?.some((item) => isUiProtocolTurn(item.turn))) return entry;
+      return { ...entry, thread: entry.thread.filter((item) => !isUiProtocolTurn(item.turn)) };
+    });
+}
+
 function timelineEntryVisible(entry, editingTargetId) {
   if (entry.kind === 'standalone' && entry.envelope?.type === 'terminal.session') return false;
   if (entry.kind !== 'turn') return true;
@@ -40,7 +56,8 @@ export function projectTimeline(state, {
   showNarration = false,
 } = {}) {
   const allEntries = orderedTimeline(state).filter((entry) => timelineEntryVisible(entry, editingTargetId));
-  const scoped = scopeEntries(allEntries, { scope, state, selfId });
+  const conversationalEntries = scope === TIMELINE_SCOPE.mine ? withoutUiProtocol(allEntries) : allEntries;
+  const scoped = scopeEntries(conversationalEntries, { scope, state, selfId });
   const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
   const filtered = actorFilterApplies ? filterEntriesByActors(scoped, actorFilter) : scoped;
 
