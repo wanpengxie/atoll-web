@@ -51,7 +51,9 @@ export const OBSERVE_ENDED = Object.freeze([
 ]);
 
 const PAYLOAD_FIELDS = Object.freeze({
-  attach: ['since', 'focus', 'history_protocol', 'generation'],
+  // label:这条连接的自称,给人看的。服务端在 attach 回执里回一个铸好的 session
+  // id,这块屏靠它认出"被点名的是不是我"。
+  attach: ['since', 'focus', 'history_protocol', 'generation', 'label'],
   submit: [
     'channel_id',
     'id',
@@ -63,7 +65,10 @@ const PAYLOAD_FIELDS = Object.freeze({
     'parent_id',
     'expires_at_ms',
   ],
-  resolve: ['channel_id', 'req_id', 'text', 'decision', 'note'],
+  // text/decision/note 关的是**人**答的词(human.ask / human.approve);
+  // result/error 关的是**客户端**答的词(ui.*)。两组恒不混用——服务端
+  // (platform/internal/humancell) 会拒掉混着来的 resolve。
+  resolve: ['channel_id', 'req_id', 'text', 'decision', 'note', 'result', 'error'],
   cancel: ['channel_id', 'req_id'],
   after: ['channel_id', 'duration_ms', 'msg_type', 'payload'],
   cancel_timer: ['channel_id', 'timer_id'],
