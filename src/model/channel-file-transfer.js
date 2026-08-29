@@ -30,10 +30,10 @@ export function fileTransferURL(channelId, ticket) {
 }
 
 // resource create 由当前登录会话发送，因此账本中的上传主体是用户，而不是 agent。
-export async function uploadChannelFile({ file, channel, deviceId, directory = '', onResource, fetchImpl = fetch }) {
-  if (!file || !channel?.id || !deviceId || !onResource) throw new TypeError('上传上下文不完整');
+export async function uploadChannelFile({ file, channel, deviceName, directory = '', onResource, fetchImpl = fetch }) {
+  if (!file || !channel?.id || !deviceName || !onResource) throw new TypeError('上传上下文不完整');
   const path = `${normalizeDirectory(directory)}${safeUploadName(file.name)}`;
-  const address = fileAddress({ deviceId, channelId: channel.id, path });
+  const address = fileAddress({ deviceName, channelName: channel.qualified_name || channel.name || channel.id, path });
   const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
   if (!ticket?.ticket) throw new TypeError('服务端没有返回上传凭据');
   const response = await fetchImpl(fileTransferURL(channel.id, ticket.ticket), { method: 'PUT', credentials: 'include', body: file });

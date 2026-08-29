@@ -28,7 +28,8 @@ export function FilesPanel({ channel, devices = [], disabled, onResource, onAtta
     setError('');
     setUploadState('ticket');
     try {
-      const address = fileAddress({ deviceId: daemonId, channelId: channel.id, path });
+      const deviceName = devices.find((row) => row.id === daemonId)?.name;
+      const address = fileAddress({ deviceName, channelName: channel.qualified_name || channel.name || channel.id, path });
       const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
       if (!ticket?.ticket) throw new TypeError('服务端没有返回上传 ticket');
       setUploadState('uploading');

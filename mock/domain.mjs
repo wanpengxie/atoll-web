@@ -101,7 +101,8 @@ export class MockDomain {
     ]);
     this.overlays = new Map();
     this.profiles = new Map([...this.channels.values()].map((channel) => [channel.id, { channel_id: channel.id, description: channel.description || '', serving: channel.open ? 1 : 0, default_storage_device_id: 'local-device', endpoints: {} }]));
-    // Device id is address/routing identity; name is presentation only.
+    // Device id is authority/routing identity; its canonical name spells the
+    // human-readable daemon:// namespace.
     this.devices = new Map([['local-device', { id: 'local-device', owner_principal: ROOT_ID, name: 'local-device', status: 'present', online: true, key: 'mock-device-key-never-observed' }]]);
     this.bindings = new Set([...this.channels.keys()].map((channelId) => `${channelId}:local-device`));
     this.resources = new Map([...this.channels.keys()].map((id) => [id, new Map()]));
@@ -112,12 +113,12 @@ export class MockDomain {
       const segments = String(seed.path || '').split('/').filter(Boolean);
       if (!channel || !store || segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) continue;
       const encodedPath = segments.map((segment) => encodeURIComponent(segment)).join('/');
-      const address = `daemon://local-device/${channel.id}/${encodedPath}`;
+      const address = `daemon://local-device/${channel.qualified_name || channel.name || channel.id}/${encodedPath}`;
       const content = Buffer.from(String(seed.content || ''), 'utf8');
       const mediaType = seed.media_type || 'application/octet-stream';
       const resourceId = `file:seed:${seed.channel_id}:${index + 1}`;
       for (let depth = 1; depth < segments.length; depth += 1) {
-        const directoryAddress = `daemon://local-device/${channel.id}/${segments.slice(0, depth).map((segment) => encodeURIComponent(segment)).join('/')}`;
+        const directoryAddress = `daemon://local-device/${channel.qualified_name || channel.name || channel.id}/${segments.slice(0, depth).map((segment) => encodeURIComponent(segment)).join('/')}`;
         if (![...store.values()].some((row) => row.address === directoryAddress)) {
           const directoryId = `file:directory:${seed.channel_id}:${segments.slice(0, depth).join(':')}`;
           store.set(directoryId, { id: directoryId, resource_id: directoryId, kind: 'file', address: directoryAddress, meta: { node_type: 'directory' } });
@@ -500,7 +501,7 @@ export class MockDomain {
       if (!id.startsWith(`${root}/`)) throw new TypeError('path is outside this channel');
       const segments = id.slice(root.length + 1).split('/');
       if (!segments.length || segments.some((segment) => !segment || segment === '.' || segment === '..')) throw new TypeError('path is outside this channel');
-      const address = `daemon://local-device/${channel.id}/${segments.map((segment) => encodeURIComponent(segment)).join('/')}`;
+      const address = `daemon://local-device/${channel.qualified_name || channel.name || channel.id}/${segments.map((segment) => encodeURIComponent(segment)).join('/')}`;
       row = [...store.values()].find((entry) => entry.address === address);
     }
     if (op === 'stat') return { exists: Boolean(row), ...(row ? { meta: { kind: row.kind, ...(row.meta || {}) } } : {}) };

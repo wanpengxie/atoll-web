@@ -27,9 +27,9 @@ export function kvResource({ channelId, op, id = '', args, query, target, ops })
   return payload;
 }
 
-export function fileAddress({ deviceId, channelId, path }) {
-  const device = String(deviceId || '').trim();
-  const channel = String(channelId || '').trim();
+export function fileAddress({ deviceName, channelName, path }) {
+  const device = String(deviceName || '').trim();
+  const channel = String(channelName || '').trim();
   const cleanPath = String(path || '').trim().replace(/^\/+/, '');
   if (!device || !channel || !cleanPath) throw new TypeError('设备、频道和文件路径不能为空');
   if (cleanPath.split('/').some((part) => !part || part === '.' || part === '..')) throw new TypeError('文件路径不能包含空段、. 或 ..');

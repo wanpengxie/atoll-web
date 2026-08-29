@@ -16,7 +16,9 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
   const requestGeneration = useRef(0);
 
   const activeDaemon = devices.find((row) => row.id === daemonId);
-  const prefix = daemonId && channel?.id ? fileDirectoryPrefix({ deviceId: daemonId, channelId: channel.id, directory }) : '';
+  const deviceName = activeDaemon?.name || '';
+  const channelName = channel?.qualified_name || channel?.name || '';
+  const prefix = deviceName && channelName ? fileDirectoryPrefix({ deviceName, channelName, directory }) : '';
   const locationKey = `${channel?.id || ''}\u0000${daemonId}\u0000${directory}`;
   const locationRef = useRef(locationKey);
   locationRef.current = locationKey;
@@ -38,7 +40,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
 
   const load = useCallback(async ({ append = false, cursor = '', expectedLocation = locationKey } = {}) => {
     if (locationRef.current !== expectedLocation) return false;
-    if (!channel?.id || !daemonId || disabled || !onResource) {
+    if (!channel?.id || !daemonId || !deviceName || !channelName || disabled || !onResource) {
       setItems([]); setNext(''); setStatus('ready');
       return true;
     }
@@ -47,7 +49,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
     setError('');
     try {
       const page = await onResource(fileListCommand({
-        channelId: channel.id, deviceId: daemonId, directory, cursor, limit: PAGE_SIZE,
+        channelId: channel.id, deviceName, channelName, directory, cursor, limit: PAGE_SIZE,
       }));
       if (generation !== requestGeneration.current || locationRef.current !== expectedLocation) return false;
       const incoming = Array.isArray(page?.items) ? page.items : [];
@@ -66,7 +68,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
       setError(failure?.message || String(failure));
       return false;
     }
-  }, [channel?.id, daemonId, directory, disabled, locationKey, onResource]);
+  }, [channel?.id, channelName, daemonId, deviceName, directory, disabled, locationKey, onResource]);
 
   useEffect(() => {
     setItems([]); setNext(''); setSelectedKey('');
@@ -91,7 +93,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
   const createDirectory = useCallback(async (value) => {
     const mutationLocation = locationKey;
     const name = directoryName(value);
-    const address = fileAddress({ deviceId: daemonId, channelId: channel.id, path: `${normalizeDirectory(directory)}${name}` });
+    const address = fileAddress({ deviceName, channelName, path: `${normalizeDirectory(directory)}${name}` });
     setStatus('mutating'); setError('');
     try {
       await onResource(createDirectoryResource({ channelId: channel.id, address }));
@@ -102,7 +104,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
       }
       throw failure;
     }
-  }, [channel?.id, daemonId, directory, load, locationKey, onResource]);
+  }, [channel?.id, channelName, deviceName, directory, load, locationKey, onResource]);
 
   const deleteEntry = useCallback(async (entry) => {
     if (!entry?.resourceId) return;
@@ -121,7 +123,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
   }, [channel?.id, load, locationKey, onResource]);
 
   return {
-    daemonId, setDaemonId, activeDaemon, channelLabel: channel?.qualified_name || channel?.id || '', directory, prefix, locationKey,
+    daemonId, setDaemonId, activeDaemon, channelLabel: channelName || channel?.id || '', directory, prefix, locationKey,
     entries, next, status, error, setError, selected, selectedKey, setSelectedKey,
     navigate, openDirectory, parent: () => navigate(parentDirectory(directory)),
     refresh, refreshLocation, isCurrentLocation, loadMore, createDirectory, deleteEntry,

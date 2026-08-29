@@ -19,7 +19,7 @@ describe('channel file browser', () => {
     render(<ArtifactsView channel={configured} devices={mounts} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
     await screen.findByText('当前目录为空');
     expect(onResource).toHaveBeenCalledWith(expect.objectContaining({
-      op: 'list', query: expect.objectContaining({ prefix: 'daemon://remote-id/project/' }),
+      op: 'list', query: expect.objectContaining({ prefix: 'daemon://mac-mbp/c0.project/' }),
     }));
     expect(onResource).not.toHaveBeenCalledWith(expect.objectContaining({
       query: expect.objectContaining({ prefix: 'daemon://first-device/c0.project/' }),

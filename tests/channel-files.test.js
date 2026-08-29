@@ -17,9 +17,9 @@ describe('channel mounted files', () => {
   });
 
   it('builds the real Atoll file-list prefix for the active channel mount', () => {
-    expect(channelMountRoot({ deviceId: 'device-7f3a', channelId: 'project-id' })).toBe('daemon://device-7f3a/project-id/');
-    expect(fileListCommand({ channelId: 'project-id', deviceId: 'device-7f3a', directory: 'docs/design/' })).toEqual({
-      channel_id: 'project-id', op: 'list', query: { prefix: 'daemon://device-7f3a/project-id/docs/design/', limit: 100 },
+    expect(channelMountRoot({ deviceName: 'mac-mbp', channelName: 'c0.project' })).toBe('daemon://mac-mbp/c0.project/');
+    expect(fileListCommand({ channelId: 'project-id', deviceName: 'mac-mbp', channelName: 'c0.project', directory: 'docs/design/' })).toEqual({
+      channel_id: 'project-id', op: 'list', query: { prefix: 'daemon://mac-mbp/c0.project/docs/design/', limit: 100 },
     });
   });
 
@@ -43,7 +43,7 @@ describe('channel mounted files', () => {
     ], prefix);
     expect(entry).toMatchObject({ name: '研究资料', directory: '研究资料/' });
     expect(fileListCommand({
-      channelId: 'c0', deviceId: 'local-device', directory: `${entry.directory}设计/`,
+      channelId: 'c0-id', deviceName: 'local-device', channelName: 'c0', directory: `${entry.directory}设计/`,
     }).query.prefix).toBe(`${prefix}${encodeURIComponent('研究资料')}/${encodeURIComponent('设计')}/`);
   });
 

@@ -1061,7 +1061,7 @@ export default function App() {
     if (!daemon) throw new TypeError('频道没有可用的默认文件存储设备');
     if (daemon.online === false) throw new TypeError(`频道默认文件存储设备 ${daemon.name || daemon.id} 当前离线`);
     const uploaded = [];
-    for (const file of files) uploaded.push(await uploadChannelFile({ file, channel, deviceId: daemon.id, onResource: handleResource }));
+    for (const file of files) uploaded.push(await uploadChannelFile({ file, channel, deviceName: daemon.name, onResource: handleResource }));
     setDraftAttachments((current) => {
       const rows = [...(current[channel.id] || [])];
       for (const attachment of uploaded) {

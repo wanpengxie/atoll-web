@@ -18,10 +18,11 @@ export function availableDefaultStorageDeviceId(channel, devices = []) {
   return devices.some((row) => row?.id === configured) ? configured : '';
 }
 
-// Resource addresses carry registry identities, never mutable labels.
-export function channelMountRoot({ deviceId, channelId }) {
-  const device = cleanSegment(deviceId);
-  const channel = cleanSegment(channelId);
+// Resource addresses are a readable namespace. Device/channel ids remain the
+// authority for bindings and requests; their canonical names spell the path.
+export function channelMountRoot({ deviceName, channelName }) {
+  const device = cleanSegment(deviceName);
+  const channel = cleanSegment(channelName);
   if (!device || !channel) throw new TypeError('设备和频道不能为空');
   return `daemon://${device}/${channel}/`;
 }
@@ -32,14 +33,14 @@ export function normalizeDirectory(value = '') {
   return parts.length ? `${parts.join('/')}/` : '';
 }
 
-export function fileDirectoryPrefix({ deviceId, channelId, directory = '' }) {
+export function fileDirectoryPrefix({ deviceName, channelName, directory = '' }) {
   const logical = normalizeDirectory(directory);
   const encoded = logical.split('/').filter(Boolean).map((part) => encodeURIComponent(part)).join('/');
-  return `${channelMountRoot({ deviceId, channelId })}${encoded ? `${encoded}/` : ''}`;
+  return `${channelMountRoot({ deviceName, channelName })}${encoded ? `${encoded}/` : ''}`;
 }
 
-export function fileListCommand({ channelId, deviceId, directory = '', cursor = '', limit = 100 }) {
-  const prefix = fileDirectoryPrefix({ deviceId, channelId, directory });
+export function fileListCommand({ channelId, deviceName, channelName, directory = '', cursor = '', limit = 100 }) {
+  const prefix = fileDirectoryPrefix({ deviceName, channelName, directory });
   return { channel_id: channelId, op: 'list', query: { prefix, limit, ...(cursor ? { cursor } : {}) } };
 }
 

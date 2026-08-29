@@ -21,7 +21,7 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
     const uploadLocation = browser.locationKey;
     browser.setError(''); setUploading(true);
     try {
-      const attachment = await uploadChannelFile({ file, channel, deviceId: browser.daemonId, directory: browser.directory, onResource });
+      const attachment = await uploadChannelFile({ file, channel, deviceName: browser.activeDaemon?.name, directory: browser.directory, onResource });
       setUploadedMeta((current) => new Map(current).set(attachment.address, { name: file.name, type: attachment.media_type, size: file.size }));
       await browser.refreshLocation(uploadLocation);
     } catch (failure) {
