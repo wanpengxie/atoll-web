@@ -1,29 +1,34 @@
 import React, { useEffect, useState } from 'react';
 import { fileTransferURL } from '../../model/channel-file-transfer.js';
+import { availableDefaultStorageDeviceId } from '../../model/channel-files.js';
 import { attachmentFromResource, createFileTicket, fileAddress, readFileTicket } from '../../model/resources.js';
 import { PanelCard } from '../primitives/PanelCard.jsx';
 import { SelectMenu } from '../primitives/SelectMenu.jsx';
 
 
-export function FilesPanel({ channel, daemons, disabled, onResource, onAttach }) {
+export function FilesPanel({ channel, devices = [], disabled, onResource, onAttach }) {
   const [error, setError] = useState('');
-  const [daemonId, setDaemonId] = useState(daemons[0]?.id || '');
+  const defaultDaemonId = availableDefaultStorageDeviceId(channel, devices);
+  const [daemonId, setDaemonId] = useState(defaultDaemonId);
   const [file, setFile] = useState(null);
   const [path, setPath] = useState('uploads/demo.txt');
   const [files, setFiles] = useState([]);
   const [uploadState, setUploadState] = useState('idle');
 
   useEffect(() => {
-    if (!daemonId && daemons[0]?.id) setDaemonId(daemons[0].id);
-  }, [daemonId, daemons]);
+    setDaemonId(defaultDaemonId);
+  }, [channel?.id, defaultDaemonId]);
+
+  useEffect(() => {
+    if (daemonId && !devices.some((row) => row.id === daemonId)) setDaemonId(defaultDaemonId);
+  }, [daemonId, devices, defaultDaemonId]);
 
   async function upload() {
     if (!file) { setError('请选择文件'); return; }
     setError('');
     setUploadState('ticket');
     try {
-      const daemonName = daemons.find((row) => row.id === daemonId)?.name;
-      const address = fileAddress({ daemonName, qualifiedChannel: channel.qualified_name || channel.id, path });
+      const address = fileAddress({ deviceId: daemonId, channelId: channel.id, path });
       const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
       if (!ticket?.ticket) throw new TypeError('服务端没有返回上传 ticket');
       setUploadState('uploading');
@@ -65,7 +70,7 @@ export function FilesPanel({ channel, daemons, disabled, onResource, onAttach })
     {error && <p className="governance-error" role="alert">{error}</p>}
     <PanelCard className="governance-form" title="上传文件">
       <p>控制面先创建 ticket，文件字节再通过 HTTP PUT 发送。</p>
-      <label>目标设备<SelectMenu ariaLabel="文件目标设备" value={daemonId} placeholder="选择在线设备" options={daemons.map((row) => ({ value: row.id, label: `${row.name} · ${row.id}` }))} onChange={setDaemonId} /></label>
+      <label>目标设备<SelectMenu ariaLabel="文件目标设备" value={daemonId} placeholder="选择频道已绑定设备" options={devices.map((row) => ({ value: row.id, label: `${row.name} · ${row.id}` }))} onChange={setDaemonId} /></label>
       <label>文件路径<input aria-label="文件资源路径" value={path} onChange={(event) => setPath(event.target.value)} /></label>
       <label className="file-picker">本地文件<input aria-label="选择上传文件" type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} /><span>{file ? `${file.name} · ${file.size} bytes` : '尚未选择'}</span></label>
       <button type="button" className="primary-button" disabled={disabled || !daemonId || !file || ['ticket', 'uploading', 'confirming'].includes(uploadState)} onClick={upload}>上传</button>

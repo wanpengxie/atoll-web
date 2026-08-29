@@ -98,31 +98,30 @@ test('E-BR-03/E-BR-04 配置只作用于来源频道并区分账本终态与 OBS
 test('E-BR-05/E-BR-06 设备使用安全 OBS，一次性密钥不进时间线和持久化，操作均需确认', async ({ page, request }) => {
   await reset(request, 'device-governance', 304); await login(page);
   const panel = await openSpace(page, '设备');
-  await expect(panel).toContainText('界面从不调用可能返回 key 的 device.list');
-  await panel.getByLabel('设备名称').fill('Browser Device');
-  await panel.getByRole('button', { name: '签发新设备' }).click();
+  await expect(panel).toContainText('空间列表用于设备身份管理');
+  await panel.getByLabel('设备名称').fill('browser-device');
+  await panel.getByRole('button', { name: '创建设备' }).click();
   const secretCard = panel.getByText('设备密钥只显示这一次').locator('..');
   await expect(secretCard).toBeVisible();
   const secret = await secretCard.locator('code').innerText();
   expect(secret).toMatch(/^mock-key-/);
-  await expect(page.locator('.turn-card[data-request-type="device.mint"]')).toContainText('已隐藏');
+  await expect(page.locator('.turn-card[data-request-type="system.device.create"]')).toContainText('已隐藏');
   await secretCard.getByRole('button', { name: '我已保存，关闭' }).click();
   await expect(page.getByText(secret, { exact: true })).toHaveCount(0);
   await expect.poll(() => page.evaluate((value) => JSON.stringify({ ...localStorage }).includes(value), secret)).toBe(false);
-  await panel.getByRole('button', { name: '刷新安全 OBS' }).click();
-  const row = panel.locator('.device-row').filter({ hasText: 'Browser Device' });
+  const row = panel.locator('.device-row').filter({ hasText: 'browser-device' });
   await expect(row).toBeVisible();
   await row.getByRole('button', { name: '绑定当前频道' }).click();
   await expect(panel.locator('.inline-confirmation')).toContainText('最终运行状态');
   await panel.getByRole('button', { name: '确认操作' }).click();
-  await expect(page.locator('.turn-card[data-request-type="device.attach"]')).toContainText('attached');
+  await expect(row).toContainText('已绑定');
   await row.getByRole('button', { name: '解绑' }).click();
   await panel.getByRole('button', { name: '确认操作' }).click();
-  await expect(page.locator('.turn-card[data-request-type="device.detach"]')).toContainText('attached');
+  await expect(row).not.toContainText('已绑定');
   await row.getByRole('button', { name: '退役' }).click();
   await expect(panel.locator('.inline-confirmation')).toContainText('不可由前端恢复');
   await panel.getByRole('button', { name: '确认操作' }).click();
-  await expect(page.locator('.turn-card[data-request-type="device.retire"]')).toContainText('retired');
+  await expect(row).toHaveCount(0);
 });
 
 test('E-BR-07 KV create/read/write/stat/list/delete 完整闭环', async ({ page, request }) => {

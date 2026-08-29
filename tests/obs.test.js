@@ -14,3 +14,11 @@ describe('Agent 模型选择观察面', () => {
     expect(obs.channelAgentSelection).toBeUndefined();
   });
 });
+
+describe('频道设备观察面', () => {
+  it('按频道读取绑定、在线和默认存储投影', async () => {
+    const fetchImpl = async (path) => ({ ok: true, json: async () => ({ path }) });
+    const obs = createObsClient({ fetchImpl });
+    await expect(obs.channelDevices('c0/work')).resolves.toEqual({ path: '/obs/channel/c0%2Fwork/devices' });
+  });
+});

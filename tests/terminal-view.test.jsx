@@ -27,8 +27,13 @@ vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
 vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class WebglAddon { onContextLoss() {} dispose() {} } }));
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
 
-import { TerminalView } from '../src/ui/TerminalView.jsx';
+import { TerminalView as RealTerminalView } from '../src/ui/TerminalView.jsx';
 import { resetPtyClient } from '../src/net/pty.js';
+
+const DEVICE = { id: 'local-device', name: 'Local device', defaultStorage: true, online: true };
+function TerminalView(props) {
+  return <RealTerminalView devices={[DEVICE]} {...props} />;
+}
 
 // 这组测试存在的理由：TerminalView 从头到尾没有被渲染过一次，于是一个
 // "monoStack is not defined" 级别的错误可以同时通过 vite build 和全部
@@ -79,6 +84,7 @@ describe('终端视图', () => {
     await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(1));
     const open = sockets[0].opens()[0];
     expect(open.channel_id).toBe('c0');
+    expect(open.device).toBe('local-device');
     expect(open.id).toBeGreaterThan(0);
     expect(open.cols).toBeGreaterThan(0);
   });
@@ -170,7 +176,7 @@ describe('会话已不在时的恢复', () => {
   it('死掉的 session 被拒 → 丢掉它重开，恒不无限重试同一个死 id', async () => {
     // 宽限期过了、或节点重启过，sessionStorage 里的 id 就指向一个不存在的会话。
     // 现在门会明说一条 error，恒不再需要靠"这次有没有拿到 ready"去猜。
-    window.sessionStorage.setItem('atoll.terminal.session.c0', 'dead-session');
+    window.sessionStorage.setItem('atoll.terminal.session.c0.local-device', 'dead-session');
     render(<TerminalView channelId="c0" />);
     await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(1));
     const first = sockets[0].opens()[0];
@@ -179,7 +185,7 @@ describe('会话已不在时的恢复', () => {
     sockets[0].reply({ type: 'error', id: first.id, code: 'not_found', detail: 'no such session' });
     await vi.waitFor(() => expect(sockets[0].opens()).toHaveLength(2));
     expect(sockets[0].opens()[1].session, '仍在用那个死 id 重试').toBeUndefined();
-    expect(window.sessionStorage.getItem('atoll.terminal.session.c0')).toBeNull();
+    expect(window.sessionStorage.getItem('atoll.terminal.session.c0.local-device')).toBeNull();
   });
 
   it('全新会话也连不上时恒不空转，给出可重试的终止态', async () => {

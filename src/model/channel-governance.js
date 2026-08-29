@@ -32,9 +32,12 @@ export function createChannelCommand({ parentId, name, purpose = '', recipe = nu
   const initialActors = initialActorIds.map((id) => String(id || '').trim());
   if (initialActors.some((id) => !id)) throw new TypeError('初始 Actor ID 不能为空');
   if (new Set(initialActors).size !== initialActors.length) throw new TypeError('初始 Actor ID 不能重复');
-  const body = recipe && typeof recipe === 'object' && !Array.isArray(recipe)
-    ? { declarations: Array.isArray(recipe.declarations) ? recipe.declarations : [], ...(recipe.profile ? { profile: recipe.profile } : {}) }
-    : { declarations: [] };
+  const supplied = recipe && typeof recipe === 'object' && !Array.isArray(recipe) ? recipe : {};
+  const profile = supplied.profile && typeof supplied.profile === 'object' && !Array.isArray(supplied.profile) ? supplied.profile : {};
+  const body = {
+    declarations: Array.isArray(supplied.declarations) ? supplied.declarations : [],
+    profile: { ...profile, default_storage_device_id: profile.default_storage_device_id ?? 'local-device' },
+  };
   if (purpose.trim()) body.profile = { ...(body.profile || {}), description: purpose.trim() };
   return {
     ...target(parentId, roster),

@@ -64,6 +64,7 @@ export const TYPES = Object.freeze({
     set: 'system.channel.set',
     remove: 'system.channel.delete',
   }),
+  channelDevice: Object.freeze({ list: 'system.channel.device.list' }),
   channelTemplate: Object.freeze({
     create: 'system.channel.template.create',
     get: 'system.channel.template.get',

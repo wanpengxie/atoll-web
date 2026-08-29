@@ -7,8 +7,8 @@ import { FileBreadcrumbs, FileBrowserRows } from './files/ChannelFileBrowser.jsx
 import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 
-export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach, onPreview }) {
-  const browser = useChannelFileBrowser({ channel, daemons, disabled, onResource });
+export function ArtifactsView({ channel, devices = [], disabled, onResource, onAttach, onPreview }) {
+  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource });
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [uploading, setUploading] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -17,11 +17,11 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
   async function chooseFile(event) {
     const file = event.target.files?.[0];
     event.target.value = '';
-    if (!file || !browser.daemonName) return;
+    if (!file || !browser.daemonId) return;
     const uploadLocation = browser.locationKey;
     browser.setError(''); setUploading(true);
     try {
-      const attachment = await uploadChannelFile({ file, channel, daemonName: browser.daemonName, directory: browser.directory, onResource });
+      const attachment = await uploadChannelFile({ file, channel, deviceId: browser.daemonId, directory: browser.directory, onResource });
       setUploadedMeta((current) => new Map(current).set(attachment.address, { name: file.name, type: attachment.media_type, size: file.size }));
       await browser.refreshLocation(uploadLocation);
     } catch (failure) {
@@ -96,8 +96,8 @@ export function ArtifactsView({ channel, daemons, disabled, onResource, onAttach
       <button type="button" className="finder-nav-button" aria-label="返回上一级" disabled={!browser.directory} onClick={browser.parent}>‹</button>
       <FileBreadcrumbs browser={browser} />
       <div className="finder-tools">
-        {daemons.length > 1
-          ? <SelectMenu ariaLabel="文件挂载设备" value={browser.daemonId} placeholder="没有可用设备" options={daemons.map((row) => ({ value: row.id, label: row.name || row.id, description: row.id }))} onChange={browser.setDaemonId} />
+        {devices.length > 1
+          ? <SelectMenu ariaLabel="文件挂载设备" value={browser.daemonId} placeholder="没有可用设备" options={devices.map((row) => ({ value: row.id, label: row.name || row.id, description: row.id }))} onChange={browser.setDaemonId} />
           : browser.activeDaemon && <span className="finder-device" title={browser.activeDaemon.id}>{browser.activeDaemon.name || browser.activeDaemon.id}</span>}
         <button type="button" className="finder-tool-button labeled" disabled={disabled || !browser.daemonId || browser.busy} onClick={() => setCreatingFolder(true)}><FolderPlus size={15} />新建文件夹</button>
         <button type="button" className="finder-tool-button" aria-label="刷新文件目录" disabled={disabled || !browser.daemonId || browser.busy} onClick={browser.refresh}><RefreshCw size={15} /></button>

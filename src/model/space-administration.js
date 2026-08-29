@@ -43,14 +43,15 @@ export function isProtectedDeclaration(id) {
 // 这里先拦一道，是为了当场说清楚，而不是把"My Agent"送出去换一句远端拒绝。
 // 规矩本身由 registrar 执法，这里只是把它照抄到人眼前。
 export const NAME_RULE = '名称是成员的名字：1-63 个字符，只能用小写 a-z、0-9 和 -，首尾必须是字母或数字。想写的说明放到"说明"里。';
+export const DEVICE_NAME_RULE = '设备名称须为 1-63 个字符，只能用小写 a-z、0-9 和 -，首尾必须是字母或数字。';
 
 export function isValidName(value) {
   return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(value ?? ''));
 }
 
-function requireName(value) {
+function requireName(value, rule = NAME_RULE) {
   const name = String(value ?? '').trim();
-  if (!isValidName(name)) throw new TypeError(NAME_RULE);
+  if (!isValidName(name)) throw new TypeError(rule);
   return name;
 }
 
@@ -64,6 +65,25 @@ export function safeDaemonRows(observation) {
       status: declared.status || 'present',
       online: measures.online ?? measures.device_online,
       description: declared.description || '',
+    };
+  }).filter((row) => row.id);
+}
+
+// A channel device row is the only client-side input for channel storage and
+// file operations. Space devices answer ownership/inventory; they do not say
+// whether a device is mounted in this channel or which mount is the default.
+export function safeChannelDeviceRows(observation) {
+  return (observation?.items || []).map((item) => {
+    const declared = item.declared || {};
+    const measures = Object.fromEntries((item.actual?.measures || []).map((row) => [row.name, row.unknown ? undefined : row.value]));
+    return {
+      id: declared.device_id || item.key,
+      name: declared.name || declared.device_id || item.key,
+      ownerPrincipal: declared.owner_principal || '',
+      status: declared.status || 'present',
+      attachedAt: declared.attached_at,
+      defaultStorage: declared.default_storage === true,
+      online: measures.online,
     };
   }).filter((row) => row.id);
 }
@@ -109,10 +129,22 @@ export function channelTemplateCommand(action, values, roster) {
   const id = String(values?.id || '').trim();
   if (!['list'].includes(action) && !id) throw new TypeError('模板 ID 不能为空');
   let payload = {};
-  if (action === 'register') payload = { id, name: String(values.name || '').trim(), visibility: values.visibility || 'private', body: values.body || { declarations: [] }, ...(values.description ? { description: String(values.description).trim() } : {}) };
-  if (action === 'edit') payload = { id, ...pickDefined(values, ['name', 'description', 'visibility', 'body']) };
+  if (action === 'register') payload = { id, name: String(values.name || '').trim(), visibility: values.visibility || 'private', body: channelTemplateBody(values.body), ...(values.description ? { description: String(values.description).trim() } : {}) };
+  if (action === 'edit') {
+    payload = { id, ...pickDefined(values, ['name', 'description', 'visibility']) };
+    if (values.body !== undefined) payload.body = channelTemplateBody(values.body);
+  }
   if (action === 'revoke' || action === 'get') payload = { id };
   return command({ type, payload, roster, label: `${type} → ${id || 'all'}` });
+}
+
+function channelTemplateBody(value) {
+  const body = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const profile = body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile) ? body.profile : {};
+  return {
+    declarations: Array.isArray(body.declarations) ? body.declarations : [],
+    profile: { ...profile, default_storage_device_id: profile.default_storage_device_id ?? 'local-device' },
+  };
 }
 
 export function overlayCommand({ channelId, declId, config, clear = false, roster }) {
@@ -122,20 +154,21 @@ export function overlayCommand({ channelId, declId, config, clear = false, roste
   return command({ channelId, type, payload, roster, label: `${type} → ${declId}` });
 }
 
-// system.channel.set 的字段闭集是 {channel_id, description, serving}；endpoints
-// 只能在建频道时随 recipe.profile 一起给，不是这个词的参数。
-export function profileCommand({ channelId, description = '', serving = 0, roster }) {
+// endpoints 只能在建频道时随 recipe.profile 一起给；默认文件存储是可变的
+// channel profile 配置，改它不会改变 actor placement。
+export function profileCommand({ channelId, description = '', serving = 0, defaultStorageDeviceId, roster }) {
   if (!channelId) throw new TypeError('频道不能为空');
   const value = Number(serving);
   if (!Number.isSafeInteger(value) || value < 0 || value > 1) throw new TypeError('serving 必须是 0 或 1');
-  return command({ channelId, type: SPACE_TYPES.profileSet, payload: { channel_id: channelId, description: String(description), serving: value }, roster, label: `${SPACE_TYPES.profileSet} → ${channelId}` });
+  const storage = String(defaultStorageDeviceId || '').trim();
+  return command({ channelId, type: SPACE_TYPES.profileSet, payload: { channel_id: channelId, description: String(description), serving: value, ...(storage ? { default_storage_device_id: storage } : {}) }, roster, label: `${SPACE_TYPES.profileSet} → ${channelId}` });
 }
 
 export function deviceCommand(action, values, roster) {
   const type = SPACE_TYPES[`device${action[0].toUpperCase()}${action.slice(1)}`];
   if (!type) throw new TypeError('未知设备操作');
   let payload;
-  if (action === 'create') payload = { name: String(values.name || '').trim() };
+  if (action === 'create') payload = { name: requireName(values.name, DEVICE_NAME_RULE) };
   if (action === 'retire') payload = { device_id: String(values.deviceId || '').trim() };
   if (action === 'attach' || action === 'detach') payload = { channel_id: String(values.channelId || '').trim(), device_id: String(values.deviceId || '').trim() };
   if (action === 'list') payload = {};

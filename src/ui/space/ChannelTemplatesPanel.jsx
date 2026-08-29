@@ -7,7 +7,7 @@ export function ChannelTemplatesPanel({ states, registrarRoster, disabled, onSub
   const [error, setError] = useState('');
   const [requestId, setRequestId] = useState('');
   const [listId, setListId] = useState('');
-  const [template, setTemplate] = useState({ id: '', name: '', description: '', visibility: 'private', body: '{\n  "declarations": []\n}' });
+  const [template, setTemplate] = useState({ id: '', name: '', description: '', visibility: 'private', body: '{\n  "declarations": [],\n  "profile": {\n    "default_storage_device_id": "local-device"\n  }\n}' });
   const rows = resultRows(states, listId);
 
   async function act(action) {

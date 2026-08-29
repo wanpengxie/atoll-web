@@ -28,14 +28,14 @@ function encodeFrame(id, payload) {
 // 会话 id 按频道存在 sessionStorage：刷新页面后还能接回同一个 shell。
 // 恒不用 localStorage——会话恒不跨浏览器标签页共享，那会让两个标签抢同一个
 // shell，谁也说不清屏幕该听谁的。
-const sessionKey = (channelId) => `atoll.terminal.session.${channelId}`;
-export function readSession(channelId) {
-  try { return window.sessionStorage.getItem(sessionKey(channelId)) || ''; } catch { return ''; }
+const sessionKey = (channelId, deviceId) => `atoll.terminal.session.${channelId}.${deviceId || 'default'}`;
+export function readSession(channelId, deviceId = '') {
+  try { return window.sessionStorage.getItem(sessionKey(channelId, deviceId)) || ''; } catch { return ''; }
 }
-export function writeSession(channelId, id) {
+export function writeSession(channelId, id, deviceId = '') {
   try {
-    if (id) window.sessionStorage.setItem(sessionKey(channelId), id);
-    else window.sessionStorage.removeItem(sessionKey(channelId));
+    if (id) window.sessionStorage.setItem(sessionKey(channelId, deviceId), id);
+    else window.sessionStorage.removeItem(sessionKey(channelId, deviceId));
   } catch { /* private mode */ }
 }
 
@@ -52,11 +52,11 @@ class PtyClient {
   }
 
   // attach 恒是幂等地"要一块终端"：连接没起来就先记账，连上之后统一补发 open。
-  attach(channelId, { cols, rows, onData, onReady, onExit, onStatus }) {
+  attach(channelId, { deviceId = '', cols, rows, onData, onReady, onExit, onStatus }) {
     const id = this.nextId++;
     const stream = {
-      id, channelId, cols, rows,
-      session: readSession(channelId),
+      id, channelId, deviceId, cols, rows,
+      session: readSession(channelId, deviceId),
       ready: false,
       onData, onReady, onExit, onStatus,
       closed: false,
@@ -85,7 +85,7 @@ class PtyClient {
     if (!stream) return;
     stream.closed = true;
     this.streams.delete(id);
-    if (verb === 'close') writeSession(stream.channelId, '');
+    if (verb === 'close') writeSession(stream.channelId, '', stream.deviceId);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: verb, id }));
     }
@@ -137,6 +137,7 @@ class PtyClient {
       type: 'open',
       id: stream.id,
       channel_id: stream.channelId,
+      device: stream.deviceId || undefined,
       session: stream.session || undefined,
       cols: stream.cols,
       rows: stream.rows,
@@ -204,7 +205,7 @@ class PtyClient {
       // 于是各自接回各自那个 shell，屏幕由服务端回放。
       for (const stream of this.streams.values()) {
         stream.ready = false;
-        stream.session = readSession(stream.channelId);
+        stream.session = readSession(stream.channelId, stream.deviceId);
         stream.onStatus?.('connecting');
         this.sendOpen(stream);
       }
@@ -236,7 +237,7 @@ class PtyClient {
         this.attempt = 0;
         stream.ready = true;
         stream.session = msg.session || '';
-        writeSession(stream.channelId, stream.session);
+        writeSession(stream.channelId, stream.session, stream.deviceId);
         this.flushInput(stream);
         stream.onReady?.(stream.session);
         stream.onStatus?.('open');
@@ -244,7 +245,7 @@ class PtyClient {
       }
       if (msg.type === 'exit') {
         // shell 真的退出了：清掉 session id，否则下次拿着一个死 id 去接。
-        writeSession(stream.channelId, '');
+        writeSession(stream.channelId, '', stream.deviceId);
         this.streams.delete(msg.id);
         stream.onExit?.(msg.reason || 'session ended');
         this.scheduleIdleShutdown();
@@ -256,7 +257,7 @@ class PtyClient {
         // 重启过）。**必须把 id 丢掉重开一次**，否则就是拿着死 id 无限重试——
         // 人看到的就是永远"重连中"的黑屏。
         if (stream.session) {
-          writeSession(stream.channelId, '');
+          writeSession(stream.channelId, '', stream.deviceId);
           stream.session = '';
           stream.sentOn = null; // 这是**换一个请求**重开，恒不是重复的 open
           this.sendOpen(stream);

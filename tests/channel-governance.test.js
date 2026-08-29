@@ -15,7 +15,7 @@ describe('阶段 D 频道治理模型', () => {
 		expect(createChannelCommand({ parentId: 'c0.project', name: 'child', initialActorIds: [], roster }).audience).toEqual(['system']);
 		expect(createChannelCommand({ parentId: 'c0', name: 'child', initialActorIds: [], roster }).msgType).toBe('system.channel.create');
 		expect(createChannelCommand({ parentId: 'c0', name: 'child', purpose: '用于设计', initialActorIds: ['human:root:1'], roster }).payload)
-			.toEqual({ name: 'child', recipe: { declarations: [], profile: { description: '用于设计' } }, initial_actor_ids: ['human:root:1'] });
+			.toEqual({ name: 'child', recipe: { declarations: [], profile: { default_storage_device_id: 'local-device', description: '用于设计' } }, initial_actor_ids: ['human:root:1'] });
   });
 
   it('成员维护使用 system 和 member 字段', () => {

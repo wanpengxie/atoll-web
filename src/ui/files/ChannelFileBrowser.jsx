@@ -27,7 +27,7 @@ export function formatFileModified(value) {
   }).format(date);
 }
 
-export function FileBreadcrumbs({ browser, rootName = browser.qualifiedChannel }) {
+export function FileBreadcrumbs({ browser, rootName = browser.channelLabel }) {
   return <nav className="file-breadcrumbs" aria-label="文件路径">
     {fileCrumbs(browser.directory, rootName).map((crumb, index, rows) => <React.Fragment key={crumb.directory || 'root'}>
       <button type="button" aria-current={index === rows.length - 1 ? 'page' : undefined} onClick={() => browser.navigate(crumb.directory)}>{crumb.name}</button>

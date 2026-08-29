@@ -34,7 +34,7 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
     content = <ChannelGovernance channel={active.channel} channels={directory.channels} roster={active.roster} state={active.state} principals={governance.principals} declarations={governance.declarations} selfId={active.selfId} identityPending={isMemberAccess(active.access) && !active.selfId} disabled={!canWriteChannel(active.access)} onSubmit={governance.onSubmit} onRefresh={governance.onRefresh} onSelectActor={roster.onSelectActor} onClose={close} />;
   }
   else if (panel.value === 'space' && active.channel) {
-    content = <SpaceAdministration channel={active.channel} channels={directory.channels} roster={active.roster} registrarRoster={governance.registrarRoster} state={active.state} rootState={governance.rootState || createChannelState('c0')} version={governance.version} daemons={governance.daemons} disabled={active.wireState !== 'open'} onSubmit={governance.onSubmit} onRefresh={governance.onRefresh} onClose={close} />;
+    content = <SpaceAdministration channel={active.channel} channels={directory.channels} roster={active.roster} registrarRoster={governance.registrarRoster} state={active.state} rootState={governance.rootState || createChannelState('c0')} version={governance.version} daemons={governance.daemons} channelDevices={governance.channelDevices} disabled={active.wireState !== 'open'} onSubmit={governance.onSubmit} onRefresh={governance.onRefresh} onClose={close} />;
   }
   else if (panel.value === 'roster-focus' && active.channel) {
     content = <Roster rows={active.roster} selfId={active.selfId} identityPending={isMemberAccess(active.access) && !active.selfId} busy={roster.busy} focused onClosePanel={close} onRefresh={roster.onRefresh} selectedActor={roster.selectedActor} capability={roster.capability} disabled={!canWriteChannel(active.access)} onSelectActor={roster.onSelectActor} onCloseActor={roster.onCloseActor} onDescribe={roster.onDescribe} onInvoke={roster.onInvoke} />;
@@ -49,7 +49,7 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
     content = <ChannelAutomation channel={active.channel} records={active.automation.records} disabled={active.automation.disabled} onAfter={active.automation.onAfter} onCancel={active.automation.onCancel} onClose={close} />;
   }
   else if (panel.value === 'resources' && active.channel) {
-    content = <ChannelResources channel={active.channel} daemons={governance.daemons} disabled={!canWriteChannel(active.access)} onResource={artifacts.onResource} onAttach={artifacts.onAttach} onClose={close} />;
+    content = <ChannelResources channel={active.channel} devices={governance.channelDevices} disabled={!canWriteChannel(active.access)} onResource={artifacts.onResource} onAttach={artifacts.onAttach} onClose={close} />;
   }
   else if (panel.value === 'activity') {
     content = <ActivityCenter activities={activity.activities} operations={activity.operations} onOpen={activity.onOpen} onClose={close} />;

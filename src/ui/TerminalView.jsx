@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { ptyClient, writeSession } from '../net/pty.js';
+import { SelectMenu } from './primitives/SelectMenu.jsx';
 
 // xterm 用 canvas 的 ctx.font 量字，**CSS var() 在那里恒不解析**——直接把
 // "var(--mono)" 交给它会静默回落到浏览器默认字体（通常是衬线体）。所以在
@@ -93,6 +94,7 @@ function terminalTheme(mode) {
 
 const THEME_KEY = 'atoll.terminal.theme';
 const encoder = new TextEncoder();
+const EMPTY_DEVICES = Object.freeze([]);
 
 // 会话 id 按频道记在 sessionStorage：组件卸载（切频道）或刷新之后回来，
 // 只要还在后端的宽限期内，就接回同一个 shell 而恒不新开一个。
@@ -145,7 +147,13 @@ async function copyToClipboard(text) {
   return ok;
 }
 
-export function TerminalView({ channelId, canWrite = true, visible = true }) {
+function preferredTerminalDevice(devices) {
+  const local = devices.find((row) => row.id === 'local-device');
+  if (local) return local.id;
+  return devices.length === 1 ? devices[0].id : '';
+}
+
+export function TerminalView({ channelId, devices = EMPTY_DEVICES, canWrite = true, visible = true }) {
   const hostRef = useRef(null);
   // canWrite is read through a ref, never a dependency: a momentary
   // permission flicker must not tear the terminal down and abandon the
@@ -157,6 +165,7 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
   const genRef = useRef(null);
   const [status, setStatus] = useState('connecting');
   const [detail, setDetail] = useState('');
+  const [deviceId, setDeviceId] = useState(() => preferredTerminalDevice(devices));
   // Bumping this remounts the effect with a fresh generation and no session id
   // — a deliberate new shell, which is what 「重开」 means.
   const [reopen, setReopen] = useState(0);
@@ -168,7 +177,15 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
   themeRef.current = themeMode;
 
   useEffect(() => {
-    if (!hostRef.current || !channelId) return undefined;
+    setDeviceId((current) => devices.some((row) => row.id === current)
+      ? current
+      : preferredTerminalDevice(devices));
+  }, [channelId, devices]);
+
+  useEffect(() => {
+    if (!hostRef.current || !channelId || !deviceId) return undefined;
+    setStatus('connecting');
+    setDetail('');
     // 卸载时 hostRef.current 可能已被 React 置空，事件必须摘在同一个节点上。
     const host = hostRef.current;
     // Per-generation state. The previous effect's sockets fire their onclose
@@ -253,6 +270,7 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
     // 屏幕由服务端回放（platform/terminal 的回放环），所以卸载/重挂/刷新页面
     // 回来看到的都是走之前那一屏，恒不是黑屏。
     const handle = ptyClient().attach(channelId, {
+      deviceId,
       cols: term.cols,
       rows: term.rows,
       onData: (bytes) => term.write(bytes),
@@ -323,7 +341,7 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
     };
 
     // canWrite is deliberately NOT a dependency — see canWriteRef above.
-  }, [channelId, reopen]);
+  }, [channelId, deviceId, reopen]);
 
   // 切换配色恒不重建终端——重建会清空屏幕，而配色只是外观。
   useEffect(() => {
@@ -344,12 +362,12 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
     return () => window.cancelAnimationFrame(id);
   }, [visible]);
 
-  const label = {
+  const label = !deviceId ? '频道没有可用的终端设备' : ({
     connecting: '连接中…',
     reconnecting: '重连中——断线期间的输出不会补',
     open: '',
     ended: detail || '会话已结束',
-  }[status];
+  }[status] || '');
 
   return (
     <section id="workspace-panel-terminal" className="terminal-view" hidden={!visible} data-terminal-theme={themeMode} role="region" aria-labelledby="workspace-terminal-toggle">
@@ -357,8 +375,9 @@ export function TerminalView({ channelId, canWrite = true, visible = true }) {
         <span>{label}</span>
         {renderer === 'dom' && <span className="terminal-status-warn">GPU 渲染不可用，手感会变钝</span>}
         <span className="terminal-status-actions">
+          {devices.length > 1 && <SelectMenu ariaLabel="终端设备" value={deviceId} placeholder="选择频道设备" options={devices.map((row) => ({ value: row.id, label: row.name || row.id, description: `${row.id}${row.online === false ? ' · 离线' : ''}` }))} onChange={setDeviceId} />}
           {status === 'ended' && (
-            <button type="button" onClick={() => { writeSession(channelId, ''); setDetail(''); setReopen((n) => n + 1); }}>重开</button>
+            <button type="button" onClick={() => { writeSession(channelId, '', deviceId); setDetail(''); setReopen((n) => n + 1); }}>重开</button>
           )}
           <button
             type="button"

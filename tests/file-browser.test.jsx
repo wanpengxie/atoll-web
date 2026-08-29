@@ -8,10 +8,24 @@ import { ArtifactsView } from '../src/ui/ArtifactsView.jsx';
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const channel = { id: 'c0', qualified_name: 'c0' };
-const daemons = [{ id: 'device-id', name: 'local-device' }];
+const daemons = [{ id: 'local-device', name: 'local-device' }];
 const root = 'daemon://local-device/c0/';
 
 describe('channel file browser', () => {
+  it('opens the configured storage device instead of the first daemon row', async () => {
+    const configured = { id: 'project', qualified_name: 'c0.project', default_storage_device_id: 'remote-id' };
+    const mounts = [{ id: 'first-id', name: 'first-device' }, { id: 'remote-id', name: 'mac-mbp' }];
+    const onResource = vi.fn(async () => ({ items: [] }));
+    render(<ArtifactsView channel={configured} devices={mounts} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    await screen.findByText('当前目录为空');
+    expect(onResource).toHaveBeenCalledWith(expect.objectContaining({
+      op: 'list', query: expect.objectContaining({ prefix: 'daemon://remote-id/project/' }),
+    }));
+    expect(onResource).not.toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ prefix: 'daemon://first-device/c0.project/' }),
+    }));
+  });
+
   it('opens a directory with one row click without previewing it', async () => {
     const user = userEvent.setup();
     const onPreview = vi.fn();
@@ -20,7 +34,7 @@ describe('channel file browser', () => {
       if (payload.query.prefix === root) return { items: [{ id: `${root}docs`, meta: { node_type: 'directory' } }] };
       return { items: [{ id: `${root}docs/readme.md`, meta: { node_type: 'regular', size: 12 } }] };
     });
-    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={onPreview} />);
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={onPreview} />);
     const folder = await screen.findByRole('row', { name: /docs/ });
     await user.click(folder);
     expect(onPreview).not.toHaveBeenCalled();
@@ -41,7 +55,7 @@ describe('channel file browser', () => {
     vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL });
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, blob: () => Promise.resolve(new Blob(['hello'])) })));
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
-    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={onPreview} />);
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={onPreview} />);
     const row = await screen.findByRole('row', { name: /readme.md/ });
 
     await user.click(row.querySelector('.finder-name-cell'));
@@ -57,7 +71,7 @@ describe('channel file browser', () => {
   it('creates a directory through resource create and then refreshes', async () => {
     const user = userEvent.setup();
     const onResource = vi.fn(async (payload) => payload.op === 'list' ? { items: [] } : { status: 'ok' });
-    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
     await screen.findByText('当前目录为空');
     await user.click(screen.getByRole('button', { name: /新建文件夹/ }));
     await user.type(screen.getByLabelText('新文件夹名称'), '研究资料');
@@ -73,7 +87,7 @@ describe('channel file browser', () => {
     const onResource = vi.fn(async (payload) => payload.query?.cursor
       ? { items: [{ id: `${root}second.txt`, meta: { node_type: 'regular' } }] }
       : { items: [{ id: `${root}first.txt`, meta: { node_type: 'regular' } }], next: 'cursor-1' });
-    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
     await screen.findByRole('row', { name: /first.txt/ });
     await user.click(screen.getByRole('button', { name: '载入更多' }));
     expect(await screen.findByRole('row', { name: /second.txt/ })).toBeTruthy();
@@ -88,7 +102,7 @@ describe('channel file browser', () => {
       if (payload.query.prefix === root) return { items: [{ id: `${root}${encodedParent}`, meta: { node_type: 'directory' } }] };
       return { items: [] };
     });
-    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
     await user.click(await screen.findByRole('row', { name: /研究资料/ }));
     await screen.findByText('当前目录为空');
     await user.click(screen.getByRole('button', { name: /新建文件夹/ }));
@@ -111,7 +125,7 @@ describe('channel file browser', () => {
       return { items: [{ id: `${root}docs`, meta: { node_type: 'directory' } }] };
     });
     vi.spyOn(window, 'confirm').mockReturnValue(true);
-    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
     await user.click(await screen.findByRole('row', { name: /docs/ }));
     const inside = await screen.findByRole('row', { name: /inside.txt/ });
     await user.click(inside.querySelector('button[title^="删除"]'));
@@ -132,11 +146,11 @@ describe('channel file browser', () => {
       if (payload.query?.prefix === 'daemon://local-device/c1/') return { items: [{ id: 'daemon://local-device/c1/fresh.txt', meta: { node_type: 'regular' } }] };
       return { items: [] };
     });
-    const view = <ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />;
+    const view = <ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />;
     const { rerender } = render(view);
     await user.click(await screen.findByRole('row', { name: /docs/ }));
     await screen.findByText('当前目录为空');
-    rerender(<ArtifactsView channel={{ id: 'c1', qualified_name: 'c1' }} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    rerender(<ArtifactsView channel={{ id: 'c1', qualified_name: 'c1' }} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
     expect(await screen.findByRole('row', { name: /fresh.txt/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'c1', exact: true }).getAttribute('aria-current')).toBe('page');
   });
@@ -147,7 +161,7 @@ describe('channel file browser', () => {
       { id: `${root}alpha.txt`, meta: { node_type: 'regular', size: 10 } },
       { id: `${root}zulu.txt`, meta: { node_type: 'regular', size: 2 } },
     ] }));
-    render(<ArtifactsView channel={channel} daemons={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
     await screen.findByRole('row', { name: /alpha.txt/ });
     const rowNames = () => screen.getAllByRole('row').slice(1).map((row) => row.textContent);
     expect(rowNames()[0]).toContain('alpha.txt');

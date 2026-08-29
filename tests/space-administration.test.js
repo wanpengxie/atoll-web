@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actorTemplateCommand, deviceCommand, isProtectedDeclaration, overlayCommand, parseJSONObject, profileCommand, safeDaemonRows, terminalValue } from '../src/model/space-administration.js';
+import { actorTemplateCommand, channelTemplateCommand, deviceCommand, isProtectedDeclaration, overlayCommand, parseJSONObject, profileCommand, safeChannelDeviceRows, safeDaemonRows, terminalValue } from '../src/model/space-administration.js';
 
 const roster = [{ id: 'system', kind: 'system', name: 'system' }];
 
@@ -30,13 +30,27 @@ describe('space administration model', () => {
     // system.channel.set 的 serving 是 0/1 闭集，且不接受 endpoints。
     expect(profileCommand({ channelId: 'c0.work', description: 'Work', serving: 1, roster }).payload)
       .toEqual({ channel_id: 'c0.work', description: 'Work', serving: 1 });
+    expect(profileCommand({ channelId: 'c0.work', description: 'Work', serving: 1, defaultStorageDeviceId: 'local-device', roster }).payload)
+      .toEqual({ channel_id: 'c0.work', description: 'Work', serving: 1, default_storage_device_id: 'local-device' });
     expect(() => profileCommand({ channelId: 'c0.work', serving: 2, roster })).toThrow('serving');
+  });
+
+  it('materializes local-device in every channel template body', () => {
+    expect(channelTemplateCommand('register', { id: 'default', name: 'Default', body: { declarations: [] } }, roster).payload.body)
+      .toEqual({ declarations: [], profile: { default_storage_device_id: 'local-device' } });
+    expect(channelTemplateCommand('edit', { id: 'default', body: { declarations: [], profile: { description: 'x', default_storage_device_id: 'remote-id' } } }, roster).payload.body)
+      .toEqual({ declarations: [], profile: { description: 'x', default_storage_device_id: 'remote-id' } });
   });
 
   it('projects daemon observations without secret fields', () => {
     const rows = safeDaemonRows({ items: [{ key: 'd1', declared: { id: 'd1', name: 'Mac', key: 'secret' }, actual: { measures: [{ name: 'online', value: true, unknown: false }] } }] });
     expect(rows).toEqual([{ id: 'd1', name: 'Mac', status: 'present', online: true, description: '' }]);
     expect(JSON.stringify(rows)).not.toContain('secret');
+  });
+
+  it('projects the channel-scoped device authority separately from space inventory', () => {
+    const rows = safeChannelDeviceRows({ items: [{ key: 'device-a', declared: { device_id: 'device-a', owner_principal: 'root', name: 'Mac', status: 'present', attached_at: 42, default_storage: true }, actual: { measures: [{ name: 'online', value: false, unknown: false }] } }] });
+    expect(rows).toEqual([{ id: 'device-a', name: 'Mac', ownerPrincipal: 'root', status: 'present', attachedAt: 42, defaultStorage: true, online: false }]);
   });
 
   it('parses object JSON and reads authoritative terminal phase', () => {

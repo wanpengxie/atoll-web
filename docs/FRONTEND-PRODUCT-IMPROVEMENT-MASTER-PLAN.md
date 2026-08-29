@@ -167,7 +167,7 @@ editing → submitting → accepted → confirmed
 ### 4.3 ChannelMount 与 Artifact Reference
 
 `ChannelMount` 是文件主视图的第一事实：每个频道在已连接 daemon 上拥有以
-`daemon://{daemon}/{qualified_channel}/` 为根的默认挂载目录。界面首先按设备、目录、
+`daemon://{device_id}/{channel_id}/` 为根的默认挂载目录。界面首先按设备、目录、
 面包屑和真实 `resource list query.prefix` 展示文件系统；不得从消息附件反推一个虚假的
 “全局产物库”。
 

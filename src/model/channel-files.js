@@ -6,12 +6,24 @@ function displaySegment(value) {
   try { return decodeURIComponent(value); } catch { return value; }
 }
 
-// daemon 段是设备名字，不是设备 id——服务端按名字解析（ResolveDeviceName）。
-export function channelMountRoot({ daemonName, qualifiedChannel }) {
-  const daemon = cleanSegment(daemonName);
-  const channel = cleanSegment(qualifiedChannel);
-  if (!daemon || !channel) throw new TypeError('设备和频道不能为空');
-  return `daemon://${daemon}/${channel}/`;
+export function channelDefaultStorageDeviceId(channel, devices = []) {
+  const projected = devices.find((row) => row?.defaultStorage === true)?.id;
+  return String(projected || channel?.default_storage_device_id || 'local-device').trim();
+}
+
+// The channel declares its starting mount. Never substitute daemons[0]: the
+// space daemon list is not a storage policy and its order carries no intent.
+export function availableDefaultStorageDeviceId(channel, devices = []) {
+  const configured = channelDefaultStorageDeviceId(channel, devices);
+  return devices.some((row) => row?.id === configured) ? configured : '';
+}
+
+// Resource addresses carry registry identities, never mutable labels.
+export function channelMountRoot({ deviceId, channelId }) {
+  const device = cleanSegment(deviceId);
+  const channel = cleanSegment(channelId);
+  if (!device || !channel) throw new TypeError('设备和频道不能为空');
+  return `daemon://${device}/${channel}/`;
 }
 
 export function normalizeDirectory(value = '') {
@@ -20,14 +32,14 @@ export function normalizeDirectory(value = '') {
   return parts.length ? `${parts.join('/')}/` : '';
 }
 
-export function fileDirectoryPrefix({ daemonName, qualifiedChannel, directory = '' }) {
+export function fileDirectoryPrefix({ deviceId, channelId, directory = '' }) {
   const logical = normalizeDirectory(directory);
   const encoded = logical.split('/').filter(Boolean).map((part) => encodeURIComponent(part)).join('/');
-  return `${channelMountRoot({ daemonName, qualifiedChannel })}${encoded ? `${encoded}/` : ''}`;
+  return `${channelMountRoot({ deviceId, channelId })}${encoded ? `${encoded}/` : ''}`;
 }
 
-export function fileListCommand({ channelId, daemonName, qualifiedChannel, directory = '', cursor = '', limit = 100 }) {
-  const prefix = fileDirectoryPrefix({ daemonName, qualifiedChannel, directory });
+export function fileListCommand({ channelId, deviceId, directory = '', cursor = '', limit = 100 }) {
+  const prefix = fileDirectoryPrefix({ deviceId, channelId, directory });
   return { channel_id: channelId, op: 'list', query: { prefix, limit, ...(cursor ? { cursor } : {}) } };
 }
 

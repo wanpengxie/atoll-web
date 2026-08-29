@@ -18,7 +18,7 @@
 - Actor 声明：`actor.template.register|edit|revoke|list`；
 - 频道模板：`channel.template.register|edit|revoke|list|get`；
 - 配置：`actor.overlay.set|clear`、`channel.profile.set`；
-- 设备：`device.mint|claim|retire|attach|detach`；
+- 设备：`system.device.create|delete|attach|detach`；
 - c0 使用 registrar seat，普通频道的频道内配置通过该频道 coreactor 转发；
 - 所有结果仍以 RequestTurn terminal 为权威，OBS/运行状态是后续应用证据。
 
@@ -34,7 +34,7 @@
 
 ### 2.4 设备安全
 
-设备列表只读取 `/obs/space/daemons`，该投影不含 key。`device.mint|claim` 返回的 key 只在本次操作组件中展示一次；普通时间线、Mock 快照、截图基线和持久化均必须脱敏。真实 `device.list` 当前会序列化 key，产品禁止调用。
+空间设备清单读取 `/obs/space/daemons`；当前频道的绑定、默认存储与在线事实读取 `/obs/channel/<id>/devices`，两者都不含 key。`system.device.create` 返回的 key 只在本次操作组件中展示一次；普通时间线、Mock 快照、截图基线和持久化均必须脱敏。真实 `system.device.list` 当前会序列化 key，产品禁止调用。
 
 ## 3. 信息架构
 
