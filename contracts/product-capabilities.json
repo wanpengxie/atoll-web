@@ -434,16 +434,16 @@
     {
       "id": "device.manage",
       "stage": "E",
-      "user_task": "查看、签发、认领、绑定、解绑和退役设备",
+      "user_task": "查看、创建、绑定、解绑和退役设备",
       "ui_region": "空间管理",
-      "backend": [{"surface": "ws-submit+obs", "operation": "device.mint|claim|attach|detach|retire and OBS daemons"}],
+      "backend": [{"surface": "ws-submit+obs", "operation": "system.device.create|attach|detach|delete, space inventory OBS, and channel device OBS"}],
       "preconditions": ["空间治理权限", "列表投影不得泄漏 key"],
       "accepted_evidence": "submit receipt.message_id",
       "completed_evidence": "结构化结果入账且安全设备投影收敛",
       "mock_scenarios": ["device-governance", "space-administration-denied"],
       "browser_acceptance": ["E-BR-05", "E-BR-06", "E-BR-13"],
       "real_server_check": true,
-      "implementation": "complete-with-documented-binding-observation-gap"
+      "implementation": "complete"
     },
     {
       "id": "resource.kv",

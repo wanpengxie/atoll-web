@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { channelMountRoot, directoryEntries, fileListCommand, normalizeDirectory, parentDirectory } from '../src/model/channel-files.js';
+import { availableDefaultStorageDeviceId, channelDefaultStorageDeviceId, channelMountRoot, directoryEntries, fileListCommand, normalizeDirectory, parentDirectory } from '../src/model/channel-files.js';
 
 describe('channel mounted files', () => {
+  it('defaults legacy channels to local-device and never guesses from daemon ordering', () => {
+    expect(channelDefaultStorageDeviceId({ id: 'c0' })).toBe('local-device');
+    expect(availableDefaultStorageDeviceId({ id: 'c0' }, [
+      { id: 'remote-id', name: 'mac-mbp' },
+      { id: 'local-device', name: 'local-device' },
+    ])).toBe('local-device');
+    expect(availableDefaultStorageDeviceId({ id: 'c0', default_storage_device_id: 'missing' }, [
+      { id: 'remote-id', name: 'mac-mbp' },
+    ])).toBe('');
+    expect(channelDefaultStorageDeviceId({ id: 'c0', default_storage_device_id: 'stale' }, [
+      { id: 'remote-id', name: 'mac-mbp', defaultStorage: true },
+    ])).toBe('remote-id');
+  });
+
   it('builds the real Atoll file-list prefix for the active channel mount', () => {
-    expect(channelMountRoot({ daemonName: 'local-device', qualifiedChannel: 'c0.project' })).toBe('daemon://local-device/c0.project/');
-    expect(fileListCommand({ channelId: 'project-id', daemonName: 'local-device', qualifiedChannel: 'c0.project', directory: 'docs/design/' })).toEqual({
-      channel_id: 'project-id', op: 'list', query: { prefix: 'daemon://local-device/c0.project/docs/design/', limit: 100 },
+    expect(channelMountRoot({ deviceName: 'mac-mbp', channelName: 'c0.project' })).toBe('daemon://mac-mbp/c0.project/');
+    expect(fileListCommand({ channelId: 'project-id', deviceName: 'mac-mbp', channelName: 'c0.project', directory: 'docs/design/' })).toEqual({
+      channel_id: 'project-id', op: 'list', query: { prefix: 'daemon://mac-mbp/c0.project/docs/design/', limit: 100 },
     });
   });
 
@@ -29,7 +43,7 @@ describe('channel mounted files', () => {
     ], prefix);
     expect(entry).toMatchObject({ name: '研究资料', directory: '研究资料/' });
     expect(fileListCommand({
-      channelId: 'c0', daemonName: 'local-device', qualifiedChannel: 'c0', directory: `${entry.directory}设计/`,
+      channelId: 'c0-id', deviceName: 'local-device', channelName: 'c0', directory: `${entry.directory}设计/`,
     }).query.prefix).toBe(`${prefix}${encodeURIComponent('研究资料')}/${encodeURIComponent('设计')}/`);
   });
 

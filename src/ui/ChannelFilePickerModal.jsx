@@ -6,8 +6,8 @@ import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 import { useModalFocus } from './primitives/useModalFocus.js';
 
-export function ChannelFilePickerModal({ channel, daemons = [], disabled = false, onResource, onChoose, onClose }) {
-  const browser = useChannelFileBrowser({ channel, daemons, disabled, onResource });
+export function ChannelFilePickerModal({ channel, devices = [], disabled = false, onResource, onChoose, onClose }) {
+  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource });
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
   useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
@@ -30,8 +30,8 @@ export function ChannelFilePickerModal({ channel, daemons = [], disabled = false
       <div className="attachment-picker-toolbar">
         <button type="button" className="picker-back" aria-label="返回上一级目录" disabled={!browser.directory} onClick={browser.parent}>‹</button>
         <FileBreadcrumbs browser={browser} />
-        {daemons.length > 1
-          ? <SelectMenu ariaLabel="选择文件设备" value={browser.daemonId} placeholder="没有可用设备" options={daemons.map((row) => ({ value: row.id, label: row.name || row.id, description: row.id }))} onChange={browser.setDaemonId} />
+        {devices.length > 1
+          ? <SelectMenu ariaLabel="选择文件设备" value={browser.daemonId} placeholder="没有可用设备" options={devices.map((row) => ({ value: row.id, label: row.name || row.id, description: row.id }))} onChange={browser.setDaemonId} />
           : browser.activeDaemon && <span className="picker-daemon">{browser.activeDaemon.name || browser.activeDaemon.id}</span>}
       </div>
       <div className="attachment-picker-list">

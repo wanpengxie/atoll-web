@@ -1025,11 +1025,15 @@ export function createMockServer({
             return;
           }
           case 'system.channel.set': {
-            assertClosedPayload(body, ['channel_id', 'description', 'serving']);
+            assertClosedPayload(body, ['channel_id', 'description', 'serving', 'default_storage_device_id']);
             if (body.channel_id !== channelId) throw new TypeError('profile must target the source channel');
             complete(domain.setProfile(channelId, body));
             return;
           }
+          case 'system.channel.device.list':
+            assertClosedPayload(body, []);
+            complete(domain.channelDeviceRows(channelId).map((row) => row.declared));
+            return;
           case 'system.channel.delete': {
             assertClosedPayload(body, ['channel_id']);
             const targetChannelId = body.channel_id;
@@ -1960,7 +1964,7 @@ export function createMockServer({
         json(response, 200, observation('space', 'decls', domain.declarationRows()));
         return;
       }
-      const match = path.match(/^\/obs\/channel\/([^/]+)\/(profile|actors)$/);
+      const match = path.match(/^\/obs\/channel\/([^/]+)\/(profile|actors|devices)$/);
       if (match) {
         const channelId = decodeURIComponent(match[1]);
         if (!domain.channel(channelId)) {
@@ -1973,6 +1977,8 @@ export function createMockServer({
           profile.declared.serving = domain.profiles.get(channelId)?.serving ?? profile.declared.serving;
           profile.declared.endpoints = structuredClone(domain.profiles.get(channelId)?.endpoints || {});
           json(response, 200, observation(channelId, 'profile', [profile]));
+        } else if (match[2] === 'devices') {
+          json(response, 200, observation(channelId, 'devices', domain.channelDeviceRows(channelId)));
         } else {
           if (!domain.channel(channelId).open) {
             httpError(response, 503, 'not_serving', 'channel is not serving');

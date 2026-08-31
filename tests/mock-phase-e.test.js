@@ -38,6 +38,10 @@ describe('phase E stateful mock', () => {
     expect((await submitTerminal(h, 'system.actor.overlay.set', { channel_id: 'c0', decl_id: 'demo:assistant', config: { model: 'overlay' } })).payload.value.applied).toBe(true);
     // system.channel.set 的字段闭集不含 endpoints。
     expect((await submitTerminal(h, 'system.channel.set', { channel_id: 'c0', description: 'Configured', serving: 1 })).payload.status).toBe('completed');
+    const devices = await submitTerminal(h, 'system.channel.device.list', {});
+    expect(devices.payload.value).toEqual(expect.arrayContaining([
+      expect.objectContaining({ channel_id: 'c0', device_id: 'local-device' }),
+    ]));
     const minted = await submitTerminal(h, 'system.device.create', { name: 'Laptop' });
     expect(minted.payload.value.key).toMatch(/^mock-key-/);
     const daemons = await h.fetchSession('/obs/space/daemons').then((response) => response.json());

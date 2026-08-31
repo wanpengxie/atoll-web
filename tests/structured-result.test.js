@@ -23,7 +23,7 @@ describe('structured terminal presentation', () => {
   });
 
   it('redacts registrar value secrets before rendering', () => {
-    expect(terminalPresentation('device.mint', { status: 'completed', value: { device_id: 'd1', key: 'secret-value' } }).value)
+    expect(terminalPresentation('system.device.create', { status: 'completed', value: { device_id: 'd1', key: 'secret-value' } }).value)
       .toEqual({ device_id: 'd1', key: '已隐藏' });
   });
 });

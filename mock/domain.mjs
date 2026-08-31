@@ -97,14 +97,14 @@ export class MockDomain {
       ['svcactor', { id: 'svcactor', name: 'Service Actor', owner: ROOT_ID, class: 'svcactor', default_class: 'svcactor', status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
     ]);
     this.channelTemplates = new Map([
-      ['mock:team', { id: 'mock:team', name: 'Team channel', description: 'Mock team template', visibility: 'private', body: { declarations: [{ decl_id: 'mock:steward' }] }, status: 'present' }],
+      ['mock:team', { id: 'mock:team', name: 'Team channel', description: 'Mock team template', visibility: 'private', body: { declarations: [{ decl_id: 'mock:steward' }], profile: { default_storage_device_id: 'local-device' } }, status: 'present' }],
     ]);
     this.overlays = new Map();
-    this.profiles = new Map([...this.channels.values()].map((channel) => [channel.id, { channel_id: channel.id, description: channel.description || '', serving: channel.open ? 1 : 0, endpoints: {} }]));
-    // Device name is an address identity (the daemon:// host), so the mock
-    // obeys the registry's DNS-label law instead of using a presentation label.
+    this.profiles = new Map([...this.channels.values()].map((channel) => [channel.id, { channel_id: channel.id, description: channel.description || '', serving: channel.open ? 1 : 0, default_storage_device_id: 'local-device', endpoints: {} }]));
+    // Device id is authority/routing identity; its canonical name spells the
+    // human-readable daemon:// namespace.
     this.devices = new Map([['local-device', { id: 'local-device', owner_principal: ROOT_ID, name: 'local-device', status: 'present', online: true, key: 'mock-device-key-never-observed' }]]);
-    this.bindings = new Set();
+    this.bindings = new Set([...this.channels.keys()].map((channelId) => `${channelId}:local-device`));
     this.resources = new Map([...this.channels.keys()].map((id) => [id, new Map()]));
     this.files = new Map();
     for (const [index, seed] of (config.files || []).entries()) {
@@ -113,12 +113,12 @@ export class MockDomain {
       const segments = String(seed.path || '').split('/').filter(Boolean);
       if (!channel || !store || segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) continue;
       const encodedPath = segments.map((segment) => encodeURIComponent(segment)).join('/');
-      const address = `daemon://local-device/${channel.qualified_name}/${encodedPath}`;
+      const address = `daemon://local-device/${channel.qualified_name || channel.name || channel.id}/${encodedPath}`;
       const content = Buffer.from(String(seed.content || ''), 'utf8');
       const mediaType = seed.media_type || 'application/octet-stream';
       const resourceId = `file:seed:${seed.channel_id}:${index + 1}`;
       for (let depth = 1; depth < segments.length; depth += 1) {
-        const directoryAddress = `daemon://local-device/${channel.qualified_name}/${segments.slice(0, depth).map((segment) => encodeURIComponent(segment)).join('/')}`;
+        const directoryAddress = `daemon://local-device/${channel.qualified_name || channel.name || channel.id}/${segments.slice(0, depth).map((segment) => encodeURIComponent(segment)).join('/')}`;
         if (![...store.values()].some((row) => row.address === directoryAddress)) {
           const directoryId = `file:directory:${seed.channel_id}:${segments.slice(0, depth).join(':')}`;
           store.set(directoryId, { id: directoryId, resource_id: directoryId, kind: 'file', address: directoryAddress, meta: { node_type: 'directory' } });
@@ -169,6 +169,7 @@ export class MockDomain {
 			owner_principal: channel.owner_principal || ROOT_ID,
       description: channel.description || '',
       serving: channel.open ? 1 : 0,
+      default_storage_device_id: this.profiles.get(channel.id)?.default_storage_device_id || 'local-device',
       spec: {},
       created_at: STAMP,
     };
@@ -273,8 +274,10 @@ export class MockDomain {
 				description: source.description || '', principal: source.principal || '',
 			}, this.clock));
 		}
-		this.rosters.set(id, targetRows);
+    this.rosters.set(id, targetRows);
     this.histories.set(id, []);
+    this.profiles.set(id, { channel_id: id, description: '', serving: 1, default_storage_device_id: 'local-device', endpoints: {} });
+    this.bindings.add(`${id}:local-device`);
     return { ...channel };
   }
 
@@ -396,13 +399,23 @@ export class MockDomain {
   setProfile(channelId, profile) {
     const channel = this.channel(channelId);
     if (!channel) throw new TypeError('channel does not exist');
-    this.profiles.set(channelId, structuredClone(profile));
+    const current = this.profiles.get(channelId) || {};
+    const next = { ...current, ...structuredClone(profile) };
+    if (!this.bindings.has(`${channelId}:${next.default_storage_device_id}`)) throw new TypeError('default storage device is not attached to channel');
+    this.profiles.set(channelId, next);
     channel.description = profile.description; channel.open = profile.serving > 0;
-    return structuredClone(profile);
+    return structuredClone(next);
   }
 
   daemonRows() {
     return [...this.devices.values()].filter((row) => row.status === 'present').map((row) => item({ id: row.id, owner_principal: row.owner_principal, name: row.name, status: row.status, created_at: STAMP }, [measure('online', row.online, this.clock)]));
+  }
+
+  channelDeviceRows(channelId) {
+    const defaultDevice = this.profiles.get(channelId)?.default_storage_device_id || 'local-device';
+    return [...this.devices.values()]
+      .filter((row) => row.status === 'present' && this.bindings.has(`${channelId}:${row.id}`))
+      .map((row) => item({ channel_id: channelId, device_id: row.id, owner_principal: row.owner_principal, name: row.name, status: row.status, attached_at: STAMP, default_storage: row.id === defaultDevice }, [measure('online', row.online, this.clock)]));
   }
 
   mintDevice(name, claimedId = '') {
@@ -416,6 +429,7 @@ export class MockDomain {
 
   retireDevice(id) {
     const row = this.devices.get(id); if (!row || row.status !== 'present') throw new TypeError('device does not exist');
+    if ([...this.profiles.values()].some((profile) => profile.default_storage_device_id === id)) throw new TypeError('device is still a channel default storage');
     row.status = 'retired'; this.bindings = new Set([...this.bindings].filter((value) => !value.endsWith(`:${id}`)));
     return { device_id: id, retired: true };
   }
@@ -423,7 +437,11 @@ export class MockDomain {
   bindDevice(channelId, deviceId, attach) {
     if (!this.channel(channelId) || !this.devices.get(deviceId) || this.devices.get(deviceId).status !== 'present') throw new TypeError('channel or device does not exist');
     const key = `${channelId}:${deviceId}`;
-    if (attach) this.bindings.add(key); else this.bindings.delete(key);
+    if (attach) this.bindings.add(key);
+    else {
+      if (this.profiles.get(channelId)?.default_storage_device_id === deviceId) throw new TypeError('device is this channel default storage');
+      this.bindings.delete(key);
+    }
     return { channel_id: channelId, device_id: deviceId, attached: attach };
   }
 
@@ -483,7 +501,7 @@ export class MockDomain {
       if (!id.startsWith(`${root}/`)) throw new TypeError('path is outside this channel');
       const segments = id.slice(root.length + 1).split('/');
       if (!segments.length || segments.some((segment) => !segment || segment === '.' || segment === '..')) throw new TypeError('path is outside this channel');
-      const address = `daemon://local-device/${channel.qualified_name}/${segments.map((segment) => encodeURIComponent(segment)).join('/')}`;
+      const address = `daemon://local-device/${channel.qualified_name || channel.name || channel.id}/${segments.map((segment) => encodeURIComponent(segment)).join('/')}`;
       row = [...store.values()].find((entry) => entry.address === address);
     }
     if (op === 'stat') return { exists: Boolean(row), ...(row ? { meta: { kind: row.kind, ...(row.meta || {}) } } : {}) };

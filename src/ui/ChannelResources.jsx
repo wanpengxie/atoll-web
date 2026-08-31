@@ -6,11 +6,11 @@ import { SidePanel } from './primitives/SidePanel.jsx';
 
 const TABS = [{ id: 'files', label: '文件' }, { id: 'kv', label: 'KV' }];
 
-export function ChannelResources({ channel, daemons, disabled, onResource, onAttach, onClose, surface = 'context' }) {
+export function ChannelResources({ channel, devices = [], disabled, onResource, onAttach, onClose, surface = 'context' }) {
   const [tab, setTab] = useState('files');
   const content = <>
     <div hidden={tab !== 'kv'}><KeyValuePanel channel={channel} disabled={disabled} onResource={onResource} /></div>
-    <div hidden={tab !== 'files'}><FilesPanel channel={channel} daemons={daemons} disabled={disabled} onResource={onResource} onAttach={onAttach} /></div>
+    <div hidden={tab !== 'files'}><FilesPanel channel={channel} devices={devices} disabled={disabled} onResource={onResource} onAttach={onAttach} /></div>
   </>;
   if (surface === 'workspace') {
     return <section className="workspace-view workspace-resource-view" aria-label="频道资源">

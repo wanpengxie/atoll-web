@@ -35,7 +35,7 @@ describe('ChannelCreateModal', () => {
       channelId: 'c0',
       msgType: 'system.channel.create',
       audience: ['system'],
-			payload: { name: 'research', recipe: { declarations: [], profile: { description: '分析资料' } }, initial_actor_ids: ['human:root:1'] },
+			payload: { name: 'research', recipe: { declarations: [], profile: { default_storage_device_id: 'local-device', description: '分析资料' } }, initial_actor_ids: ['human:root:1'] },
     }));
     expect(await screen.findByRole('region', { name: '频道创建进度' })).toBeTruthy();
   });

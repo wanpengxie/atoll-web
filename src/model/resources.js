@@ -27,15 +27,14 @@ export function kvResource({ channelId, op, id = '', args, query, target, ops })
   return payload;
 }
 
-// daemon 段是设备的名字，不是设备 id——服务端用 ResolveDeviceName 按名字查。
-export function fileAddress({ daemonName, qualifiedChannel, path }) {
-  const daemon = String(daemonName || '').trim();
-  const channel = String(qualifiedChannel || '').trim();
+export function fileAddress({ deviceName, channelName, path }) {
+  const device = String(deviceName || '').trim();
+  const channel = String(channelName || '').trim();
   const cleanPath = String(path || '').trim().replace(/^\/+/, '');
-  if (!daemon || !channel || !cleanPath) throw new TypeError('daemon、频道和文件路径不能为空');
+  if (!device || !channel || !cleanPath) throw new TypeError('设备、频道和文件路径不能为空');
   if (cleanPath.split('/').some((part) => !part || part === '.' || part === '..')) throw new TypeError('文件路径不能包含空段、. 或 ..');
   const encodedPath = cleanPath.split('/').map((part) => encodeURIComponent(part)).join('/');
-  return `daemon://${daemon}/${channel}/${encodedPath}`;
+  return `daemon://${device}/${channel}/${encodedPath}`;
 }
 
 export function createFileTicket({ channelId, address }) {

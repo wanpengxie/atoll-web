@@ -330,7 +330,7 @@ Mock 不应只返回 `{ok:true}`。例如创建频道必须同时产生：
 
 后端能力：
 
-- device.mint/claim/list/retire/attach/detach；
+- system.device.create/list/delete/attach/detach；
 - OBS space daemons；
 - actor device presence。
 

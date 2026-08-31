@@ -40,6 +40,9 @@ export function createObsClient({ fetchImpl = fetch, onUnauthorized } = {}) {
     channelActors(id) {
       return read(`/obs/channel/${encodeURIComponent(id)}/actors`, fetchImpl, onUnauthorized);
     },
+    channelDevices(id) {
+      return read(`/obs/channel/${encodeURIComponent(id)}/devices`, fetchImpl, onUnauthorized);
+    },
   };
 }
 
@@ -50,3 +53,4 @@ export const spaceDaemons = obs.spaceDaemons;
 export const spaceDecls = obs.spaceDecls;
 export const channelProfile = obs.channelProfile;
 export const channelActors = obs.channelActors;
+export const channelDevices = obs.channelDevices;
