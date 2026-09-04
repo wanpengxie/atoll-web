@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
-const MOCK = 'http://127.0.0.1:8832';
 
 async function reset(request, scenario, seed) {
   const response = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario, seed } });
@@ -9,7 +9,7 @@ async function reset(request, scenario, seed) {
 
 async function login(page) {
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号' }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
@@ -51,7 +51,7 @@ test('LAYOUT-02 320px 下频道列表、工作区和 Context 是可返回的单�
   await login(page);
 
   for (const name of ['成员', '频道操作']) await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
-  await expect(page.getByRole('tab', { name: '文件' })).toBeVisible();
+  await expect(page.locator('#workspace-files-toggle')).toBeVisible();
   await expect(page.getByRole('tab', { name: '任务' })).toBeVisible();
   await page.getByRole('button', { name: '频道操作' }).click();
   await expect(page.getByRole('menuitem', { name: '频道详情' })).toBeVisible();
@@ -115,8 +115,14 @@ test('LAYOUT-04 已完成任务原地定格答案且 Agent 气泡无按钮', asy
   await reset(request, 'actor-capability', 954);
   await login(page);
   const turn = page.locator('.agent-conversation-turn.status-completed').first();
-  await expect(turn.locator('.agent-turn-bubble')).toBeVisible();
-  await expect(turn.locator('.agent-turn-bubble button')).toHaveCount(0);
+  const bubble = turn.locator('.agent-turn-bubble');
+  await expect(bubble).toBeVisible();
+  // 这条守的是"已定格的答案里恒无任务控制"——停止、编辑、重试的入口在 turn 卡片的
+  // 「任务控制」里，恒不在气泡上。它原本写作"气泡里恒无按钮"，那在 2026-08-21 成立；
+  // 08-24 的 f812dac 给每条消息加了通用的条目操作（复制 / 回复），于是这句话的字面
+  // 不再成立而它要守的意思还在。所以改成正面点名：气泡里的按钮**只有**那两个。
+  await expect(bubble.locator('.message-actions button')).toHaveText(['复制', '↩ 回复']);
+  await expect(bubble.locator('button')).toHaveCount(2);
   await expect(turn.locator('.turn-process-summary')).toHaveCount(0);
 });
 

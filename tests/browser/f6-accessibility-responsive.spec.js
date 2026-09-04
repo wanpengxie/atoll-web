@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
-const MOCK = 'http://127.0.0.1:8832';
 
 async function login(page, request, seed) {
   const response = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario: 'multi-channel', seed } });
   expect(response.ok()).toBe(true);
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号' }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
@@ -22,10 +22,13 @@ test('F6-003 1280/800/600/320 与 200% 等价视口没有页面横向溢出', as
 
   await page.setViewportSize({ width: 320, height: 720 });
   for (const selector of ['.mobile-channel-toggle', '.header-action', '.channel-view-tabs button', '.send-button']) {
-    const boxes = await page.locator(selector).evaluateAll((nodes) => nodes.filter((node) => !node.hidden).map((node) => {
+    // 只量"画出来了"的：display:none 的件（窄屏下的 .mock-advance-action）盒子是
+    // 0×0，手指点不到它，拿 44 去要求它只会把一条真判据变成假警报。node.hidden
+    // 只看 HTML 的 hidden 属性，看不见 display:none。
+    const boxes = await page.locator(selector).evaluateAll((nodes) => nodes.map((node) => {
       const box = node.getBoundingClientRect();
       return { width: box.width, height: box.height };
-    }));
+    }).filter((box) => box.width > 0 && box.height > 0));
     expect(boxes.length, selector).toBeGreaterThan(0);
     for (const box of boxes) expect(Math.min(box.width, box.height), selector).toBeGreaterThanOrEqual(44);
   }
@@ -40,9 +43,9 @@ test('F6-004 主视图支持方向键，Modal 隔离背景并恢复焦点', asyn
   const dynamic = page.getByRole('tab', { name: '动态' });
   await dynamic.focus();
   await dynamic.press('ArrowRight');
-  await expect(page.getByRole('tab', { name: '文件' })).toBeFocused();
-  await expect(page.getByRole('tab', { name: '文件' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('tabpanel', { name: '文件' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '任务' })).toBeFocused();
+  await expect(page.getByRole('tab', { name: '任务' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tabpanel', { name: '任务' })).toBeVisible();
 
   const opener = page.locator('button[aria-label="全局搜索"]');
   await opener.click();

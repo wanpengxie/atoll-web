@@ -417,3 +417,18 @@ button.channel-file-row { font: inherit; }
 .ui-activity-list li { display: grid; gap: 1px; color: var(--text); }
 .ui-activity-list li.is-failed .ui-activity-what { color: var(--danger); }
 .ui-activity-why { color: var(--muted); font-size: 11px; }
+
+/* 文件区的列数跟着**它自己**的宽度走，恒不跟视口。
+   它已经不是整屏的一个 tab 了：分屏之后视口再宽，这一格也可能只有 500px，而
+   五列要 700px——按视口判，半屏里就恒是横向滚动条。上面那组 @media 是给窄视口
+   的整屏形态的，两处判据一致，只是问的对象不同。 */
+.dynamic-workspace > .artifacts-view { container-type: inline-size; }
+@container (max-width: 700px) {
+  .finder-device, .finder-tools .select-menu { display: none; }
+  .finder-tool-button.labeled { width: 40px; padding: 0; justify-content: center; font-size: 0; }
+  .channel-files-scroll > .channel-file-list { min-width: 0; }
+  .finder-list-header, .channel-file-row { grid-template-columns: minmax(0, 1fr) 82px 104px; }
+  .finder-list-header > span:nth-child(2), .finder-list-header > span:nth-child(4), .finder-date-cell, .finder-type-cell { display: none; }
+  .finder-list-header > span:nth-child(3) { grid-column: 2; }
+  .finder-list-header > span:nth-child(5) { grid-column: 3; }
+}
