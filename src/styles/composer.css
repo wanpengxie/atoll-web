@@ -93,8 +93,16 @@
 .composer-status.state-delayed, .composer-status.state-uncertain { color: var(--warning); }
 .composer-retry { margin-left: 8px; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-decoration: underline; }
 .composer-disabled-reason { color: var(--text-muted); }
-.mention-chips { display: flex; gap: 6px; padding-bottom: 7px; }
-.mention-chips button { padding: 4px 7px; border: 1px solid var(--accent-glow); border-radius: 99px; background: var(--accent-bg); color: var(--accent); cursor: pointer; font: 9px var(--mono); }
+/* 收件人：贴在输入框上沿的一层，恒不占一行。
+   零布局高度是重点——它一旦进流，就是在输入框上面多堆一条横幅，等候区被顶高一格，
+   而它要说的只有一个名字。bottom:100% 让它的下边正好落在框的上边框上。
+   一句陈述而已：半透明底、淡绿字、无描边，恒不跟输入框抢注意力；只有"没有收件人"
+   换成警告色，因为那一格按回车会被拒。 */
+.composer-target { position: absolute; z-index: 2; bottom: 100%; left: 12px; display: flex; max-width: calc(100% - 24px); align-items: flex-end; }
+.composer-target-pill { display: inline-flex; max-width: 100%; overflow: hidden; align-items: center; padding: 2px 9px 3px; border-radius: 7px 7px 0 0; background: var(--recipient-bg); color: var(--recipient-text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.composer-target.is-none .composer-target-pill, .composer-target.is-lost .composer-target-pill { background: var(--recipient-warn-bg); color: var(--recipient-warn-text); }
+/* 发不出去时只压暗，恒不卸载——恒不进出，就恒不闪。 */
+.composer-target.is-muted { opacity: .6; }
 .mention-menu { position: absolute; z-index: 1; right: 0; bottom: calc(100% + 5px); left: 0; max-height: min(250px, 40vh); overflow-y: auto; border: 1px solid var(--border-2); border-radius: 10px; background: var(--surface); box-shadow: 0 14px 32px var(--shadow-2); }
 .mention-menu button { display: grid; grid-template-columns: 30px auto 1fr; width: 100%; align-items: center; gap: 8px; padding: 8px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; text-align: left; cursor: pointer; }
 .mention-menu button:hover, .mention-menu button[aria-selected="true"] { background: var(--accent-bg); }

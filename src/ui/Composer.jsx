@@ -9,6 +9,7 @@ import { FolderOpen, Upload, X } from 'lucide-react';
 import { actorDisplayName } from '../model/actor-display.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { replyRecipient } from '../model/reply-target.js';
+import { composerDelivery, deliverySourceLabel } from '../model/composer-target.js';
 import { resolveManagementActors } from '../model/management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
 import { ModelSelector } from './ModelSelector.jsx';
@@ -423,6 +424,24 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     ? { kind: 'single', agent: currentReplyRecipient }
     : replyTarget ? { kind: 'none' } : parameterTarget;
   useEffect(() => { agentSelection?.onTargetChange?.(effectiveParameterAgent?.id || ''); }, [effectiveParameterAgent?.id, agentSelection?.onTargetChange]);
+  // 收件人横幅：参数面板答"给谁调参"，横幅答"回车发给谁"。两个问题在只有一个
+  // agent 时同解，在「@ 了三个人」「@ 的全是人类」这些格子上并不同解，所以恒
+  // 各算各的，横幅这一边与 submit 同源（composer-target.js）。
+  const delivery = useMemo(() => composerDelivery({
+    mentions,
+    replyTarget,
+    replyRecipient: currentReplyRecipient,
+    fallbackAgent,
+    fallbackSource: fallbackAgent ? (agentSelection?.fallbackAgentSource || '') : '',
+  }), [mentions, replyTarget, currentReplyRecipient, fallbackAgent, agentSelection?.fallbackAgentSource]);
+  const deliveryLabel = deliverySourceLabel(delivery.source);
+  const deliveryText = delivery.kind === 'none' ? '⚠ 无收件人'
+    : delivery.kind === 'lost' ? `⚠ @${delivery.lostName} 已不在`
+      : `@${actorDisplayName(delivery.rows[0])}${delivery.rows.length > 1 ? ` +${delivery.rows.length - 1}` : ''}`;
+  // 名单和理由都住在 title 里：屏幕上恒只有一个名字，要核对的时候鼠标停一下。
+  const deliveryTitle = delivery.kind === 'none' ? '还没有收件人：@ 一位成员，或在右下角选择目标 Agent'
+    : delivery.kind === 'lost' ? `@${delivery.lostName} 已不在本频道，取消回复后重新选择收件人`
+      : [delivery.rows.map((row) => `@${actorDisplayName(row)}`).join('、'), deliveryLabel].filter(Boolean).join(' · ');
   const matchingCandidates = (searchQuery) => mentionCandidates(roster, selfId, mentions.map((row) => row.id), searchQuery || '');
   const candidates = useMemo(() => matchingCandidates(query), [mentions, query, roster, selfId]);
   const commands = useMemo(() => commandCandidates(agentSelection?.supportedTypes, commandQuery), [agentSelection?.supportedTypes, commandQuery]);
@@ -789,6 +808,21 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {/* 收件人。它恒不占一行——占一行就是在输入框上面再堆一条横幅，等候区被顶得
+            更高，而它要说的只有一个名字。所以它是**贴在输入框上沿的一层**：绝对定位、
+            bottom:100%、零布局高度，像钉在框边上的一个小标签。
+            在框外指的是这个：渲染在框的上沿之外，而不是挤进框里占掉编辑区。
+
+            拖拽不受影响——.composer-surface 那组 drag 处理器用的是深度计数，
+            进出子节点恒是成对的。
+
+            它曾是框内左上角一排红色 @ 芯片，只在 @ 了人的时候才出现——于是"没 @ 时
+            发给谁"在屏幕上没有答案，而那恰好是最容易发错的一格。红色也是错的：
+            这不是错误也不是危险，是一句陈述。唯一该刺眼的是"没有收件人"。
+            判据来源与多收件人名单挂在 title 上，想知道时鼠标停一下。 */}
+        {!editMode && <div className={`composer-target is-${delivery.kind}${disabled ? ' is-muted' : ''}`} role="status" aria-label="收件人" title={deliveryTitle}>
+          <span className="composer-target-pill">{deliveryText}</span>
+        </div>}
         {fileDragActive && <div className="composer-drop-hint" role="status"><Upload size={18} strokeWidth={1.8} aria-hidden="true" /><strong>松开以上传到当前频道</strong></div>}
         {!editMode && replyTarget && <div className="composer-reply" role="status">
           <span aria-hidden="true">↩</span>
@@ -796,11 +830,6 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
           <button type="button" aria-label="取消回复" title="取消回复" onClick={onCancelReply}>×</button>
         </div>}
         {!editMode && attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{attachments.map((row) => <article key={row.resource_id}><button type="button" className="attachment-draft-preview" aria-label={`预览文件 ${row.name}`} onClick={() => onPreviewAttachment?.(row)}><span aria-hidden="true">◇</span><span><strong>{row.name}</strong><small>{formatArtifactSize(Number(row.size || 0))} · 点击预览</small></span></button><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name}`} onClick={() => onRemoveAttachment?.(row.resource_id)}>×</button></article>)}</div>}
-        {!editMode && mentions.length > 0 && (
-          <div className="mention-chips">{mentions.map((row) => (
-            <button type="button" key={row.id} onClick={() => removeMention(row.id)}>@{actorDisplayName(row)} ×</button>
-          ))}</div>
-        )}
         <div className="composer-input-area">
           <div className="composer-box">
             <EditorContent

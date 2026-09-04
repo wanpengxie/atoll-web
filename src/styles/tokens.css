@@ -53,6 +53,12 @@
   --warning-line: rgba(229, 150, 0, .35);
   --warning-line-soft: rgba(229, 150, 0, .2);
   --danger-bg: var(--accent-bg);
+  /* 收件人标签：一句陈述，恒不跟输入框抢注意力，所以比 success/warning 正色更淡。
+     它贴在输入框上沿、字号 10px，不承担正文对比度义务（正文色见上面那组门禁）。 */
+  --recipient-text: #4c9d75;
+  --recipient-bg: rgba(0, 166, 81, .09);
+  --recipient-warn-text: #a9791f;
+  --recipient-warn-bg: rgba(229, 150, 0, .12);
   --danger-line: rgba(228, 0, 43, .25);
   --agent-line: rgba(0, 114, 206, .14);
   --agent-surface: rgba(0, 114, 206, .045);

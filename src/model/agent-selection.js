@@ -138,12 +138,19 @@ export function selectSystemNote({ usage = {}, describe = null, agentName = '' }
 // mentionAgents：编辑框里 @ 生效的 agent（顺序即出现序）。返回：
 // { kind: 'single', agent } | { kind: 'multi', count } | { kind: 'none' }。
 // mention 里只有 human → none（不显示"最近 agent"误导）。
-export function resolveParameterAgent({ mentions = [], manualAgentId = '', roster = [], state = null, selfId = '' }) {
+//
+// filterAgentId：动态过滤条恰好只选中一个 agent 时，就是那个 agent。它排在手选
+// 之前，理由是它恒在屏幕上显示着——屏幕上只剩「我和他」的往来时，回车发给别人
+// 是显然错的，而人看得见自己筛的是谁，所以拿它当默认恒不引入暗状态。手选（§2.1.2）
+// 只在判据链走到 none 时才有入口，两者恒不会互相抢：筛选一旦命中，手选入口本就不出现。
+export function resolveParameterAgent({ mentions = [], filterAgentId = '', manualAgentId = '', roster = [], state = null, selfId = '' }) {
   const agents = roster.filter((row) => row.kind === 'agent');
   const mentionAgents = mentions.filter((row) => row.kind === 'agent');
   if (mentionAgents.length === 1) return { kind: 'single', agent: mentionAgents[0], source: 'mention' };
   if (mentionAgents.length > 1) return { kind: 'multi', count: mentionAgents.length };
   if (mentions.length > 0) return { kind: 'none' };
+  const focused = filterAgentId ? agents.find((row) => row.id === filterAgentId) : null;
+  if (focused) return { kind: 'single', agent: focused, source: 'filter' };
   const manual = manualAgentId ? agents.find((row) => row.id === manualAgentId) : null;
   if (manual) return { kind: 'single', agent: manual, source: 'manual' };
   const recentId = latestInteractedAgentId(state, selfId, new Set(agents.map((row) => row.id)));

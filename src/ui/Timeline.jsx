@@ -669,7 +669,7 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange }) {
+export function Timeline({ state, history = {}, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
   const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
   // 选中的 agent。空集 = 不过滤（常态）。Timeline 按频道 key 挂载，所以切频道
   // 天然重置，恒不需要自己清。
@@ -749,6 +749,15 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
   const { filtered: entries, actorFilterApplies } = projection;
   // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。
   const filterableAgents = useMemo(() => (roster || []).filter((row) => row.kind === 'agent'), [roster]);
+  // 过滤条恰好只选中一个 agent 时，屏幕上就只剩「我和他」的往来。此时 composer
+  // 的默认收件人恒该是他——否则人照着屏幕打字，消息发去了另一个 agent。多选或
+  // 空集恒不构成"一个目标"，报空让判据链继续往下走。
+  const focusAgentId = useMemo(() => {
+    if (!actorFilterApplies || actorFilter.size !== 1) return '';
+    const [only] = [...actorFilter];
+    return filterableAgents.some((row) => row.id === only) ? only : '';
+  }, [actorFilterApplies, actorFilter, filterableAgents]);
+  useEffect(() => { onFocusAgentChange?.(focusAgentId); }, [focusAgentId, onFocusAgentChange]);
 	const withNarration = projection.items;
   const latestVisibleSeq = projection.lastVisibleSeq;
 	const firstVisibleSeq = projection.firstVisibleSeq;
