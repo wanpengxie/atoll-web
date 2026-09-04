@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, isMemberAccess } from '../model/channel-access.js';
 import { ChannelList } from '../ui/ChannelList.jsx';
 import { ArtifactsView } from '../ui/ArtifactsView.jsx';
@@ -9,6 +9,11 @@ import { Timeline } from '../ui/Timeline.jsx';
 import { RightPanelHost } from './RightPanelHost.jsx';
 import { activeAgentTurn } from '../model/agent-control.js';
 import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex, channelSwipeDirection, channelSwipeStart } from '../model/channel-navigation.js';
+
+// 主视图 tab 只剩两个：文件已经从「整屏替换动态区」改成「与动态并排的分屏」，
+// 由 workspace-quick-actions 里的开关控制（见 filesOpen）。artifacts 仍是合法路由
+// 视图，含义变成"动态 + 文件分屏"——URL、ui.navigate、按频道记忆全部照旧。
+const WORKSPACE_TABS = ['dynamic', 'tasks'];
 
 const ACCESS_MESSAGE = {
   member_stale: '连接已中断，当前显示本地缓存；恢复连接前不能发送。',
@@ -40,6 +45,32 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   const terminalOpen = Boolean(terminalSplits[navigation.activeChannelId]);
   // 键在 = 这个频道开过：收起分屏恒只是隐藏（恒不断线），切走频道才卸载。
   const terminalEverOpened = navigation.activeChannelId in terminalSplits;
+  // 文件区跟终端同形，但开合态**不另立一份**：它就是路由的 artifacts 视图。
+  // 这样它免费拿到三件已经建好的事——URL 里带得走、刷新后还在、按频道记住
+  // （App 的 workspaceViewsRef），以及 agent 的 ui.navigate 恒不用改。
+  // 以前 artifacts 是整屏替换动态区的一个 tab，人去查个文件就看不见对话了。
+  const filesOpen = workspace.view === 'artifacts';
+  const dynamicVisible = workspace.view === 'dynamic' || filesOpen;
+  const [filesEverOpened, setFilesEverOpened] = useState(() => (filesOpen ? { [navigation.activeChannelId]: true } : {}));
+  useEffect(() => {
+    if (!filesOpen) return;
+    setFilesEverOpened((current) => (current[navigation.activeChannelId] ? current : { ...current, [navigation.activeChannelId]: true }));
+  }, [filesOpen, navigation.activeChannelId]);
+  // 上次停在哪一台设备的哪个目录，按频道记。放在 AppShell 是因为它必须活得比
+  // ArtifactsView 长——那棵树按频道 key 重挂，一换频道就没了。
+  const fileLocationsRef = useRef(new Map());
+  const rememberFileLocation = useCallback((location) => {
+    fileLocationsRef.current.set(navigation.activeChannelId, location);
+  }, [navigation.activeChannelId]);
+  // 分屏开着没开着，也按频道记一份。路由只有一个 view 字段，去了「任务」就把
+  // 「动态 + 文件分屏」这件事挤掉了——不记的话，从任务点回动态分屏就没了，
+  // 而人并没有关过它。
+  const filesOpenRef = useRef(new Map());
+  useEffect(() => {
+    if (!dynamicVisible) return;
+    filesOpenRef.current.set(navigation.activeChannelId, filesOpen);
+  }, [dynamicVisible, filesOpen, navigation.activeChannelId]);
+  const dynamicTabView = () => (filesOpenRef.current.get(navigation.activeChannelId) ? 'artifacts' : 'dynamic');
   const writeDisabled = session.wireState !== 'open' || !canWriteChannel(workspace.access);
   const contentVisible = canViewChannelContent(workspace.access);
   const runningAgentTurn = activeAgentTurn(workspace.state, workspace.roster, workspace.selfId);
@@ -105,10 +136,18 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     }
   }
 
+  function toggleFiles() {
+    if (!workspace.channel || !contentVisible) return;
+    workspace.onViewChange(filesOpen ? 'dynamic' : 'artifacts');
+  }
+
   function toggleTerminal() {
     if (!workspace.channel || !contentVisible) return;
     const channelId = navigation.activeChannelId;
-    if (!terminalSplits[channelId] && workspace.view !== 'dynamic') workspace.onViewChange('dynamic');
+    // 从任务那一格开终端，要先回到动态——终端是挂在动态那块布局里的。但
+    // artifacts 已经**就是**动态布局（动态 + 文件分屏），把它也当成"不在动态"
+    // 会顺手把文件分屏关掉：人只是开了个终端，文件区却没了。
+    if (!terminalSplits[channelId] && !dynamicVisible) workspace.onViewChange('dynamic');
     setTerminalSplits((current) => ({ ...current, [channelId]: !current[channelId] }));
   }
 
@@ -122,7 +161,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     // into its textarea and xterm legitimately stops many function keys.
     document.addEventListener('keydown', toggleByKey, true);
     return () => document.removeEventListener('keydown', toggleByKey, true);
-  }, [workspace.channel, workspace.view, contentVisible, navigation.activeChannelId]);
+  }, [workspace.channel, workspace.view, dynamicVisible, contentVisible, navigation.activeChannelId]);
 
   useEffect(() => setComposerEdit(null), [navigation.activeChannelId]);
   useEffect(() => {
@@ -151,7 +190,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }
 
   function moveViewTab(event, index) {
-    const views = ['dynamic', 'artifacts', 'tasks'];
+    const views = WORKSPACE_TABS;
     let next = index;
     if (event.key === 'ArrowRight') next = (index + 1) % views.length;
     else if (event.key === 'ArrowLeft') next = (index - 1 + views.length) % views.length;
@@ -159,7 +198,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     else if (event.key === 'End') next = views.length - 1;
     else return;
     event.preventDefault();
-    workspace.onViewChange(views[next]);
+    workspace.onViewChange(views[next] === 'dynamic' ? dynamicTabView() : views[next]);
     requestAnimationFrame(() => document.getElementById(`workspace-tab-${views[next]}`)?.focus());
   }
 
@@ -220,10 +259,17 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
         </div>
       </header>
       <nav className="channel-view-tabs" aria-label="频道主视图" role="tablist">
-        {['dynamic', 'artifacts', 'tasks'].map((view, index) => <button key={view} ref={(node) => { viewTabRefs.current[index] = node; }} type="button" role="tab" id={`workspace-tab-${view}`} aria-controls={`workspace-panel-${view}`} aria-selected={workspace.view === view} tabIndex={workspace.view === view ? 0 : -1} className={workspace.view === view ? 'active' : ''} onKeyDown={(event) => moveViewTab(event, index)} onClick={() => workspace.onViewChange(view)}>{view === 'dynamic' ? '动态' : view === 'artifacts' ? '文件' : '任务'}</button>)}
+        {WORKSPACE_TABS.map((view, index) => {
+          // 文件不再是一个 tab，但它仍是一个路由视图（artifacts = 动态 + 文件分屏）。
+          // 所以在动态那一格上，开着分屏时也算选中——否则地址栏在 artifacts、
+          // 屏幕上却没有任何一个 tab 是亮的。
+          const selected = workspace.view === view || (view === 'dynamic' && filesOpen);
+          return <button key={view} ref={(node) => { viewTabRefs.current[index] = node; }} type="button" role="tab" id={`workspace-tab-${view}`} aria-controls={`workspace-panel-${view}`} aria-selected={selected} tabIndex={selected ? 0 : -1} className={selected ? 'active' : ''} onKeyDown={(event) => moveViewTab(event, index)} onClick={() => workspace.onViewChange(view === 'dynamic' ? dynamicTabView() : view)}>{view === 'dynamic' ? '动态' : '任务'}</button>;
+        })}
       </nav>
       <div className="workspace-quick-actions">
         <button id="workspace-channel-restart" type="button" className="channel-restart-action" disabled={!workspace.channel || writeDisabled || restarting} title="重启本频道内全部成员(agent 与 tool);不会删除频道、账本或文件" onClick={restartChannel}><span aria-hidden="true">⟳</span>{restarting ? '重启中…' : '重启频道'}</button>
+        <button id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} aria-controls="workspace-panel-artifacts" disabled={!workspace.channel || !contentVisible} title="切换文件分屏" onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
         <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${terminalOpen ? ' active' : ''}`} aria-pressed={terminalOpen} aria-controls="workspace-panel-terminal" disabled={!workspace.channel || !contentVisible} title="切换终端分屏(Ctrl+F12)" onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端<kbd>Ctrl F12</kbd></button>
       </div>
       <div className="status-stack">
@@ -253,7 +299,6 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
         {terminalEverOpened && workspace.channel && contentVisible
           && <TerminalView channelId={navigation.activeChannelId} devices={workspace.resources.devices || []} canWrite={!writeDisabled} visible={terminalOpen} />}
       </div>}
-      {workspace.view === 'artifacts' && workspace.channel && (contentVisible ? <ArtifactsView channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} /> : <section id="workspace-panel-artifacts" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-artifacts"><strong>文件不可访问</strong><p>恢复频道访问后才能查看频道挂载目录。</p></section>)}
       {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}
     </main>
     <RightPanelHost {...panel.host} />

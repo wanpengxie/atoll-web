@@ -4,16 +4,25 @@ import { createDirectoryResource, deleteFileResource, fileAddress } from '../../
 
 const PAGE_SIZE = 100;
 
-export function useChannelFileBrowser({ channel, devices = [], disabled = false, onResource }) {
+// initialLocation / onLocationChange 是这个浏览器的"上次停在哪"。
+//
+// 它恒不自己持久化：位置属于"这个频道的文件区"，而这个 hook 每换一个频道就换一
+// 个实例。谁活得比实例长，谁就该记——所以由 AppShell 拿着一张按频道的表，挂载时
+// 交进来、变了再交回去。文件区从整屏 tab 改成分屏之后这条才成立：以前每次切走
+// 都是真卸载，人回来恒从根目录重新往下点。
+export function useChannelFileBrowser({ channel, devices = [], disabled = false, onResource, initialLocation = null, onLocationChange }) {
   const defaultDaemonId = availableDefaultStorageDeviceId(channel, devices);
-  const [daemonId, setDaemonId] = useState(defaultDaemonId);
-  const [directory, setDirectory] = useState('');
+  const [daemonId, setDaemonId] = useState(initialLocation?.daemonId || defaultDaemonId);
+  const [directory, setDirectory] = useState(initialLocation?.directory || '');
   const [items, setItems] = useState([]);
   const [next, setNext] = useState('');
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
   const [selectedKey, setSelectedKey] = useState('');
   const requestGeneration = useRef(0);
+  // 恢复来的那个目录可能已经不在了（上次之后被删掉/改名）。恒不能因此让文件区
+  // 从此打不开——第一次加载它失败就退回根目录重来，且只退这一次。
+  const restoredDirectoryRef = useRef(initialLocation?.directory || '');
 
   const activeDaemon = devices.find((row) => row.id === daemonId);
   const deviceName = activeDaemon?.name || '';
@@ -25,18 +34,41 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
   const entries = useMemo(() => directoryEntries(items, prefix), [items, prefix]);
   const selected = entries.find((entry) => entry.key === selectedKey) || null;
 
+  // 下面两条都判"变了没有"而不是无条件写。挂载时无条件写等于把恢复来的位置立刻
+  // 冲掉——恢复与重置会在同一次提交里打架，而重置恒在后面。频道换了是整个实例换
+  // （组件按频道 key 重挂），所以这里只需要管同一个频道内的变化。
+  // 空的设备表恒是"还不知道"，恒不是"你选的那台没了"。切频道时它会空上几帧，
+  // 据此改选择就会把人从当前设备踢走、连带把目录清回根——恢复位置之后这一下
+  // 变得看得见了：离开频道的那一瞬间，记下的位置先被改成空设备、再被清成根目录。
+  // （同一条判据在 daemonhost 那边叫 absent vs unknown。）
+  const known = devices.length > 0 && Boolean(defaultDaemonId);
+  const seenDefaultRef = useRef(`${channel?.id || ''}\u0000${defaultDaemonId}`);
   useEffect(() => {
+    if (!known) return;
+    const key = `${channel?.id || ''}\u0000${defaultDaemonId}`;
+    if (seenDefaultRef.current === key) return;
+    seenDefaultRef.current = key;
     setDaemonId(defaultDaemonId);
-  }, [channel?.id, defaultDaemonId]);
+  }, [known, channel?.id, defaultDaemonId]);
 
   useEffect(() => {
+    if (!known) return;
     if (daemonId && !devices.some((row) => row.id === daemonId)) setDaemonId(defaultDaemonId);
-  }, [daemonId, devices, defaultDaemonId]);
+  }, [known, daemonId, devices, defaultDaemonId]);
 
+  // 换设备或换频道 → 回根目录：路径是那台机器上那个频道里的路径，换一个就没有
+  // 意义了。调用方通常按频道 key 重挂这棵树，但这条恒不依赖它那么做——一个
+  // 只在别人正确调用时才正确的 hook，是把自己的不变量寄放在别人身上。
+  const seenLocationRef = useRef(`${channel?.id || ''}\u0000${daemonId}`);
   useEffect(() => {
+    const key = `${channel?.id || ''}\u0000${daemonId}`;
+    if (seenLocationRef.current === key) return;
+    seenLocationRef.current = key;
     requestGeneration.current += 1;
     setDirectory(''); setItems([]); setNext(''); setSelectedKey('');
   }, [channel?.id, daemonId]);
+
+  useEffect(() => { onLocationChange?.({ daemonId, directory }); }, [daemonId, directory, onLocationChange]);
 
   const load = useCallback(async ({ append = false, cursor = '', expectedLocation = locationKey } = {}) => {
     if (locationRef.current !== expectedLocation) return false;
@@ -64,6 +96,11 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
       return true;
     } catch (failure) {
       if (generation !== requestGeneration.current || locationRef.current !== expectedLocation) return false;
+      if (restoredDirectoryRef.current && directory === restoredDirectoryRef.current) {
+        restoredDirectoryRef.current = '';
+        setDirectory('');
+        return false;
+      }
       setStatus('error');
       setError(failure?.message || String(failure));
       return false;

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Download, FolderPlus, Paperclip, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { Download, FolderPlus, Paperclip, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { artifactKindForMediaType, previewForMediaType } from '../model/artifacts.js';
 import { fileTransferURL, mediaTypeFromFileName, uploadChannelFile } from '../model/channel-file-transfer.js';
 import { attachmentFromResource, readFileTicket } from '../model/resources.js';
@@ -7,8 +7,8 @@ import { FileBreadcrumbs, FileBrowserRows } from './files/ChannelFileBrowser.jsx
 import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 
-export function ArtifactsView({ channel, devices = [], disabled, onResource, onAttach, onPreview }) {
-  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource });
+export function ArtifactsView({ channel, devices = [], disabled, onResource, onAttach, onPreview, visible = true, initialLocation = null, onLocationChange, onClose }) {
+  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource, initialLocation, onLocationChange });
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [uploading, setUploading] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -91,7 +91,13 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
     </div>;
   }
 
-  return <section id="workspace-panel-artifacts" className="workspace-view artifacts-view channel-files-view" role="tabpanel" aria-labelledby="workspace-tab-artifacts" aria-label="频道文件">
+  // 收起分屏恒只是 hidden，恒不卸载：目录、滚动位置、选中项都在这棵树里，卸一次
+  // 人就得从根目录重新点回来。role 从 tabpanel 改成 region——它已经不是一个 tab
+  // 的内容了，是与动态并排的一块。
+  //
+  // 名字只用 aria-label：aria-labelledby 与 aria-label 同在时无障碍名恒取前者，
+  // 指向开关按钮就会让这一整块叫"文件"，与按钮同名。
+  return <section id="workspace-panel-artifacts" className="workspace-view artifacts-view channel-files-view" hidden={!visible} role="region" aria-label="频道文件">
     <div className="finder-toolbar">
       <button type="button" className="finder-nav-button" aria-label="返回上一级" disabled={!browser.directory} onClick={browser.parent}>‹</button>
       <FileBreadcrumbs browser={browser} />
@@ -105,6 +111,7 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
           <input aria-label="选择要上传到当前目录的文件" type="file" disabled={disabled || !browser.daemonId || uploading} onChange={chooseFile} />
           <span aria-hidden="true"><Upload size={14} />{uploading ? '上传中…' : '上传'}</span>
         </span>
+        {onClose && <button type="button" className="finder-tool-button" aria-label="收起文件分屏" title="收起文件分屏" onClick={onClose}><X size={15} /></button>}
       </div>
     </div>
     {creatingFolder && <form className="new-folder-form" onSubmit={submitFolder}>
