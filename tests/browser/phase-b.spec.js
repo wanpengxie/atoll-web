@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN } from './mock-origin.js';
 
-const MOCK_ORIGIN = process.env.ATOLL_MOCK_ORIGIN || 'http://127.0.0.1:8832';
 
 async function reset(request, scenario = 'multi-channel', seed = 81) {
   const response = await request.post(`${MOCK_ORIGIN}/mock/control/reset`, { data: { scenario, seed } });

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
-const MOCK = 'http://127.0.0.1:8832';
 
 // 这组测试存在的理由，如实记账：终端线连续三次交付了「构建通过、单测全绿、
 // 但浏览器一打开就白屏」的版本（monoStack is not defined、

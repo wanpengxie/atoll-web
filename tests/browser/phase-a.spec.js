@@ -1,13 +1,14 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
 async function reset(request, scenario = 'multi-channel', seed = 31) {
-  const response = await request.post('http://127.0.0.1:8832/mock/control/reset', { data: { scenario, seed } });
+  const response = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario, seed } });
   expect(response.ok()).toBe(true);
 }
 
 async function login(page) {
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号' }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.getByRole('navigation', { name: '频道' })).toBeVisible();
@@ -60,8 +61,8 @@ test('A-BR-04/05/06/07 多频道隔离、消息终态、审批与系统 Actor �
   await expect(approval.getByText('已回执', { exact: true })).toBeVisible();
   await expect(approval.getByText(/COMPLETED/)).toBeVisible();
 
-  await request.post('http://127.0.0.1:8832/mock/control/action', { data: { type: 'pulse' } });
-  await request.post('http://127.0.0.1:8832/mock/control/action', { data: { type: 'pulse' } });
+  await request.post(`${MOCK}/mock/control/action`, { data: { type: 'pulse' } });
+  await request.post(`${MOCK}/mock/control/action`, { data: { type: 'pulse' } });
   await expect(page.getByText(/project 动态 #2/)).toBeVisible();
   await expect(page.locator('main').getByText(/c0 动态 #1/)).toHaveCount(0);
 });
@@ -73,16 +74,16 @@ test('A-BR-08/09 断线、权限撤销和频道退役后界面收敛', async ({ 
   await page.getByRole('button', { name: /c0\.project/ }).click();
   await expect(page.getByLabel('消息')).toBeEnabled();
 
-  await request.post('http://127.0.0.1:8832/mock/control/action', { data: { type: 'drop' } });
+  await request.post(`${MOCK}/mock/control/action`, { data: { type: 'drop' } });
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
 
-  await request.post('http://127.0.0.1:8832/mock/control/action', {
+  await request.post(`${MOCK}/mock/control/action`, {
     data: { type: 'revoke_membership', channel_id: 'c0.project' },
   });
   await expect(page.getByLabel('消息')).toBeDisabled();
   await expect(page.locator('.channel-rail').getByText('c0.project', { exact: true })).toBeVisible();
 
-  await request.post('http://127.0.0.1:8832/mock/control/action', {
+  await request.post(`${MOCK}/mock/control/action`, {
     data: { type: 'retire_channel', channel_id: 'c0.project' },
   });
   await expect(page.locator('main h1')).toHaveText('c0');

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
-const MOCK = `http://127.0.0.1:${process.env.ATOLL_TEST_MOCK_PORT || 8832}`;
 
 async function reset(request, seed) {
   const response = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario: 'resource-workflow', seed } });
@@ -17,17 +17,22 @@ async function login(page) {
 
 test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯引用', async ({ page, request }) => {
   await reset(request, 1201); await login(page);
-  await page.getByRole('tab', { name: '文件', exact: true }).click();
-  const view = page.getByRole('tabpanel', { name: '文件' });
+  await page.locator('#workspace-files-toggle').click();
+  const view = page.getByRole('region', { name: '频道文件' });
+  // 列表吃满的是**它那一格**，不再是整个工作区——文件区已经是与动态并排的分屏。
+  // 判据没变（列表恒不自己留白、恒无圆角、表头恒贴着工具条），只是量的对象换了。
   const fileGeometry = await page.evaluate(() => {
-    const workspace = document.querySelector('.workspace').getBoundingClientRect();
+    const paneNode = document.querySelector('.artifacts-view');
+    // 量的是内容盒：分屏那条 1px 分隔线是边框，恒不算列表的留白。
+    const paneBox = paneNode.getBoundingClientRect();
+    const pane = { left: paneBox.left + paneNode.clientLeft, right: paneBox.right - (paneBox.width - paneNode.clientLeft - paneNode.clientWidth) };
     const toolbar = document.querySelector('.finder-toolbar').getBoundingClientRect();
     const list = document.querySelector('.channel-file-list').getBoundingClientRect();
     const header = document.querySelector('.finder-list-header').getBoundingClientRect();
-    return { workspaceLeft: workspace.left, workspaceRight: workspace.right, toolbarBottom: toolbar.bottom, listLeft: list.left, listRight: list.right, headerTop: header.top, radius: getComputedStyle(document.querySelector('.channel-file-list')).borderRadius };
+    return { paneLeft: pane.left, paneRight: pane.right, toolbarBottom: toolbar.bottom, listLeft: list.left, listRight: list.right, headerTop: header.top, radius: getComputedStyle(document.querySelector('.channel-file-list')).borderRadius };
   });
-  expect(fileGeometry.listLeft).toBe(fileGeometry.workspaceLeft);
-  expect(fileGeometry.listRight).toBe(fileGeometry.workspaceRight);
+  expect(fileGeometry.listLeft).toBe(fileGeometry.paneLeft);
+  expect(fileGeometry.listRight).toBe(fileGeometry.paneRight);
   expect(fileGeometry.headerTop).toBe(fileGeometry.toolbarBottom);
   expect(fileGeometry.radius).toBe('0px');
   await expect(view).toContainText('当前目录为空');
@@ -67,7 +72,7 @@ test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯�
 
 test('F2-006 长文件名与不支持预览安全降级，窄屏无横向溢出', async ({ page, request }) => {
   await reset(request, 1202); await login(page);
-  await page.getByRole('tab', { name: '文件', exact: true }).click();
+  await page.locator('#workspace-files-toggle').click();
   const longName = `${'非常长的交付文件名称'.repeat(12)}.bin`;
   await page.getByLabel('选择要上传到当前目录的文件').setInputFiles({ name: longName, mimeType: 'application/octet-stream', buffer: Buffer.from([1, 2, 3]) });
   await page.locator('.channel-file-row').filter({ hasText: longName }).getByRole('button', { name: '附加' }).click();
@@ -113,7 +118,7 @@ test('Composer 直接区分本机上传与 daemon 频道文件选择', async ({ 
   expect(daemonPickerBounds?.width).toBeGreaterThanOrEqual(44);
   expect(daemonPickerBounds?.height).toBeGreaterThanOrEqual(44);
 
-  await page.getByRole('tab', { name: '文件', exact: true }).click();
+  await page.locator('#workspace-files-toggle').click();
   const mountedUploadBounds = await page.getByLabel('选择要上传到当前目录的文件').boundingBox();
   expect(mountedUploadBounds?.width).toBeGreaterThanOrEqual(44);
   expect(mountedUploadBounds?.height).toBeGreaterThanOrEqual(44);
@@ -154,8 +159,8 @@ test('Composer 支持粘贴与鼠标拖入本机文件', async ({ page, request 
 
 test('文件夹按物理 node_type 导航，不会被当成文件预览', async ({ page, request }) => {
   await reset(request, 1205); await login(page);
-  await page.getByRole('tab', { name: '文件', exact: true }).click();
-  const view = page.getByRole('tabpanel', { name: '文件' });
+  await page.locator('#workspace-files-toggle').click();
+  const view = page.getByRole('region', { name: '频道文件' });
   await view.getByRole('button', { name: /新建文件夹/ }).click();
   await view.getByLabel('新文件夹名称').fill('研究资料');
   await view.getByRole('button', { name: '创建', exact: true }).click();

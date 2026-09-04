@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
-const MOCK = 'http://127.0.0.1:8832';
 
 async function reset(request, scenario = 'message-flow', seed = 1301) {
   const response = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario, seed } });
@@ -71,7 +71,7 @@ test('Composer 的 @成员是可恢复的 Mention Node，不靠正文猜收件�
   await page.getByRole('option', { name: /steward/ }).click();
   await expect(editor.locator('[data-type="mention"][data-id="steward"]')).toHaveCount(1);
 
-  await page.getByRole('tab', { name: '文件' }).click();
+  await page.locator('#workspace-files-toggle').click();
   await page.getByRole('tab', { name: '动态' }).click();
   const restored = page.getByLabel('消息');
   await expect(restored.locator('[data-type="mention"][data-id="steward"]')).toHaveCount(1);

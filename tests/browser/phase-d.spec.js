@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
-const MOCK = 'http://127.0.0.1:8832';
 
 async function reset(request, scenario = 'channel-governance', seed = 201) {
   const response = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario, seed } });
@@ -9,7 +9,7 @@ async function reset(request, scenario = 'channel-governance', seed = 201) {
 
 async function login(page) {
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号' }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();

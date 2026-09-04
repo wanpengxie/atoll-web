@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
-const MOCK = `http://127.0.0.1:${process.env.ATOLL_TEST_MOCK_PORT || 8832}`;
 
 async function reset(request, seed = 1701) {
   const response = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario: 'agent-tree', seed } });

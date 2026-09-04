@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
 test('WebSocket OPEN 后不会周期轮询频道与成员 OBS', async ({ page, request }) => {
-  const reset = await request.post('http://127.0.0.1:8832/mock/control/reset', { data: { scenario: 'multi-channel', seed: 1601 } });
+  const reset = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario: 'multi-channel', seed: 1601 } });
   expect(reset.ok()).toBe(true);
   const observationRequests = [];
   page.on('request', (entry) => {
@@ -11,7 +12,7 @@ test('WebSocket OPEN 后不会周期轮询频道与成员 OBS', async ({ page, r
     }
   });
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号' }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();

@@ -99,7 +99,7 @@ test.fixme('F8-001 两个频道各开终端：恒只有一条 WS，来回切各�
 test('F8-002 切主视图再回来，屏幕还在', async ({ page }) => {
   await login(page);
   await openTerminalAndMark(page, 'KEEP_TAB');
-  await page.getByRole('tab', { name: '文件' }).click();
+  await page.locator('#workspace-files-toggle').click();
   await page.waitForTimeout(500);
   await page.getByRole('tab', { name: '动态' }).click();
   await expect.poll(() => visibleScreen(page), { timeout: 20_000 }).toContain('KEEP_TAB');

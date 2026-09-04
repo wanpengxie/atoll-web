@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
-const MOCK = 'http://127.0.0.1:8832';
 const SCREENSHOT_OPTIONS = { animations: 'disabled', caret: 'hide', scale: 'css', maxDiffPixels: 10 };
 
 function pageScreenshotOptions(page) {
@@ -14,7 +14,7 @@ async function reset(request, scenario, seed) {
 
 async function login(page) {
   await page.goto('/');
-  await page.getByLabel('邮箱').fill('root@atoll.local');
+  await page.getByRole('textbox', { name: '账号' }).fill('root@atoll.local');
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('main h1')).toHaveText('c0');
@@ -71,7 +71,7 @@ for (const [tab, filename] of [['KV', 'channel-resources-kv.png'], ['文件', 'c
     await page.setViewportSize({ width: 1280, height: 720 });
     await reset(request, 'resource-workflow', 904);
     await login(page);
-    await page.getByRole('tab', { name: '文件', exact: true }).click();
+    await page.locator('#workspace-files-toggle').click();
     await page.getByText('高级资源工具', { exact: true }).click();
     const panel = page.locator('.embedded-resources');
     await expect(panel).toBeVisible();
@@ -143,8 +143,8 @@ test('UI-VIS-12 频道挂载文件主页面视觉基线', async ({ page, request
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'resource-workflow', 911);
   await login(page);
-  await page.getByRole('tab', { name: '文件', exact: true }).click();
-  const files = page.getByRole('tabpanel', { name: '文件' });
+  await page.locator('#workspace-files-toggle').click();
+  const files = page.getByRole('region', { name: '频道文件' });
   await files.getByLabel('选择要上传到当前目录的文件').setInputFiles({
     name: '频道交付说明.txt',
     mimeType: 'text/plain',
@@ -158,8 +158,8 @@ test('UI-VIS-13 频道挂载文件预览视觉基线', async ({ page, request })
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'resource-workflow', 912);
   await login(page);
-  await page.getByRole('tab', { name: '文件', exact: true }).click();
-  const files = page.getByRole('tabpanel', { name: '文件' });
+  await page.locator('#workspace-files-toggle').click();
+  const files = page.getByRole('region', { name: '频道文件' });
   await files.getByLabel('选择要上传到当前目录的文件').setInputFiles({
     name: '可预览说明.md',
     mimeType: 'text/markdown',
