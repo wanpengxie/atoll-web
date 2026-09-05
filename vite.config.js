@@ -26,6 +26,10 @@ export default defineConfig({
       // 与 /ws 同样保留浏览器原始 Host：门做同源校验时看到的 Origin 必须与
       // Host 一致，否则升级会被拒。
       '/pty': { target: serverURL, ws: true, changeOrigin: false },
+      // 开发入口放到 Tailscale Serve 的根路径时，daemon 的 carrier 也会先
+      // 到 Vite。它不是浏览器连接，但必须原样穿到节点，不能落入 SPA fallback。
+      '/compute': { target: serverURL, ws: true, changeOrigin: false },
+      '/healthz': { target: serverURL, changeOrigin: true },
       '/obs': { target: serverURL, changeOrigin: true },
       '/mock': { target: serverURL, changeOrigin: true },
       '/files': { target: serverURL, changeOrigin: true },
