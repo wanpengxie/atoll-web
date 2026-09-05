@@ -217,7 +217,7 @@
 .turn-card.self .task-control-buttons { justify-content: flex-end; }
 .turn-card.self > .request-message > .information-flow-content, .standalone-row.self > .information-flow-content { grid-row: 1; grid-column: 1; width: fit-content; max-width: min(74ch, 100%); justify-self: end; }
 .turn-card.self > .request-message .message-body > header, .standalone-row.self .message-body > header { justify-content: flex-end; padding: 0 4px 3px; }
-.turn-card.self > .request-message .request-text, .standalone-row.self .message-body > .markdown-content { padding: 8px 12px; border: 1px solid var(--line-control); border-radius: 14px 4px 14px 14px; background: var(--surface-muted); }
+.turn-card.self > .request-message .request-text, .standalone-row.self .message-body > .message-fold { padding: 8px 12px; border: 1px solid var(--line-control); border-radius: 14px 4px 14px 14px; background: var(--surface-muted); }
 .turn-card.self .task-control-buttons button:first-child { border-color: var(--line-control); color: var(--text-muted); }
 .turn-card.self > .request-message:hover, .turn-card.self > .request-message:focus-within, .standalone-row.self:hover, .standalone-row.self:focus-within, .standalone-row.self:focus-visible { background: transparent; }
 .turn-card.self > .request-message .message-actions, .standalone-row.self > .message-actions { grid-column: 1; justify-content: flex-end; }
@@ -234,6 +234,20 @@
 .request-text a, .response-content a { color: var(--agent); }
 .request-text code:not(pre code), .response-content code:not(pre code) { padding: 1px 4px; border-radius: 4px; background: var(--surface-muted); font: .88em var(--mono); }
 .request-text pre, .response-content pre { max-height: 240px; overflow: auto; padding: 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--raised); font: 11px/1.55 var(--mono); }
+/* 围栏代码块（CodeBlock）：边框和圆角在 figure 上，pre 只管滚动。顶栏放语言名和复制。 */
+.code-block { min-width: 0; max-width: 100%; margin: 7px 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--raised); }
+.code-block-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 26px; padding: 2px 6px 2px 11px; border-bottom: 1px solid var(--border); background: var(--surface-code); }
+.code-block-lang { color: var(--text-muted); font: 500 10.5px/1.4 var(--mono); letter-spacing: .02em; text-transform: lowercase; }
+.code-block-copy { min-height: 22px; padding: 2px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10.5px; }
+.code-block-copy:hover, .code-block-copy:focus-visible { background: var(--surface-muted); color: var(--text); }
+.request-text .code-block-pre, .response-content .code-block-pre, .markdown-content .code-block-pre { max-height: 360px; margin: 0; padding: 9px 11px; border: 0; border-radius: 0; background: transparent; font: 11.5px/1.6 var(--mono); tab-size: 4; }
+.code-block-pre > code { display: block; }
+.code-block-line { display: block; white-space: pre; }
+.code-block.is-numbered .code-block-line { display: grid; grid-template-columns: 34px minmax(0, 1fr); }
+.code-block-line-number { padding-right: 12px; color: var(--text-dim); text-align: right; user-select: none; }
+.code-block-line-code { min-width: 0; }
+.markdown-content .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.markdown-content .katex-display > .katex { min-width: max-content; }
 .markdown-table-scroll { max-width: 100%; overflow-x: auto; margin: 7px 0; }
 .markdown-table-scroll table { width: max-content; min-width: 100%; border-spacing: 0; border-collapse: collapse; font-size: 12px; }
 .markdown-table-scroll th, .markdown-table-scroll td { padding: 5px 8px; border: 1px solid var(--line-structural); text-align: left; }
@@ -456,3 +470,11 @@
 .terminal-status button { border-color: var(--terminal-line); background: transparent; color: var(--terminal-fg); }
 .terminal-status button:hover { background: var(--terminal-hover); }
 .terminal-view[data-terminal-theme="light"] .terminal-status button:hover { background: var(--surface-muted); }
+/* 正文折叠。按内容长度判，不看发送者：超过 --message-fold-lines 行就只露开头，
+   渐隐到底，下面一个"展开全文"。折叠形沿用线程紧凑气泡那一套（max-height + mask）。 */
+.message-fold { position: relative; min-width: 0; }
+.message-fold.is-folded > .message-fold-content { max-height: calc(var(--message-fold-lines) * 1lh); overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, var(--text) 78%, transparent 100%); mask-image: linear-gradient(to bottom, var(--text) 78%, transparent 100%); }
+.message-fold-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; margin-top: 3px; padding: 2px 8px 2px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 11.5px; line-height: 1.4; }
+.message-fold-toggle:hover, .message-fold-toggle:focus-visible { background: var(--surface-muted); color: var(--text); }
+.message-fold-toggle > span[aria-hidden] { display: block; font-size: 13px; line-height: 1; transition: transform .15s ease; }
+.message-fold-toggle[aria-expanded="true"] > span[aria-hidden] { transform: rotate(180deg); }

@@ -87,6 +87,8 @@
   --radius-modal: 12px;
   --pill: 999px;
   --timeline-track: 1080px;
+  /* 正文默认露出的行数；超过这么多行就折起来（FoldableBody） */
+  --message-fold-lines: 14;
   --white: #ffffff;
   --rainbow: linear-gradient(90deg, #e4002b 0 20%, #ff6900 20% 40%, #ffd100 40% 60%, #00a651 60% 80%, #0072ce 80% 100%);
   --sans: "Avenir Next", Avenir, "Segoe UI", "PingFang SC", sans-serif;

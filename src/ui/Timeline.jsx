@@ -25,6 +25,7 @@ import { MarkdownContent, MarkdownFileReferenceProvider } from './MarkdownConten
 import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
+import { FoldableBody } from './timeline/FoldableBody.jsx';
 
 // 平台叙事（成员进出、跨频道入站）暂时不进时间线。它和真正的往来平铺在同一条流里，
 // 每次 agent 干活就刷出一串，把人要读的东西淹掉。数据仍然在 state.narration 里，
@@ -446,9 +447,10 @@ function AgentRequestQuote({ request, names, onDownload, onPreview }) {
   </blockquote>;
 }
 
-function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, onDownload, onPreview, onReply, compact = false, compactExpanded = false, onCompactToggle = null, hasThreadChildren = false }) {
+function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, fold = null, onDownload, onPreview, onReply, compact = false, compactExpanded = false, onCompactToggle = null, hasThreadChildren = false }) {
   const request = turn.request;
   const terminal = turn.terminal;
+  const responseFoldId = `${turn.requestId}:response`;
   const stopped = terminal?.payload?.status === 'failed' && terminal.payload?.error_code === 'interrupted';
   const resumable = stopped && frozen?.source === TYPES.agentInterrupt && (!frozen.target_id || frozen.target_id === turn.requestId);
   const liveEnvelope = latestTurnEnvelope(turn);
@@ -462,7 +464,9 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
     {quotedRequest && <AgentRequestQuote request={quotedRequest} names={names} onDownload={onDownload} onPreview={onPreview} />}
     {!terminal && <ProgressTrail turn={turn} running title={title} startedAt={processStartedTs} mergedCount={mergedCount} />}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
-    {terminal && !stopped && <div className="response-content"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
+    {terminal && !stopped && <div className="response-content">{compact
+      ? <StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} />
+      : <FoldableBody id={responseFoldId} text={messagePresentation(terminal).text} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></FoldableBody>}</div>}
     {terminal && <ProgressTrail turn={turn} running={false} />}
   </>;
   if (compact) return <article className={`agent-thread-message ${className}${compactExpanded ? ' is-expanded' : ' is-collapsed'}`} tabIndex="0">
@@ -533,10 +537,11 @@ function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
   </ol>;
 }
 
-function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, frozen, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply }) {
+function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, frozen, fold = null, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const requestText = requestView.text;
+  const requestFoldId = `${turn.requestId}:request`;
   const controlContext = taskControlContext(turn, { selfId, access });
   const lead = leadTurns.map((item) => messagePresentation(item.request).text);
   const processingTitle = [...lead, requestText].join(' ＋ ');
@@ -544,27 +549,31 @@ function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount 
   return <section className={`turn-card agent-conversation-turn self status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
     <MessageFrame className="request-message" identity={<span className="actor-icon kind-human">H</span>}>
       <header><strong>{nameOf(request.sender?.id, names)}</strong><time>{timeLabel(request.ts)}</time></header>
-      <div className="request-text"><MarkdownContent text={requestText} /></div>
+      <div className="request-text"><FoldableBody id={requestFoldId} text={requestText} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent text={requestText} /></FoldableBody></div>
       {editSession && <small className="message-editing-state">正在输入框中编辑</small>}
       <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
     </MessageFrame>
     {!turn.terminal && !editSession && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
-    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} roster={roster} selfId={selfId} onReply={onReply} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
+    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} roster={roster} selfId={selfId} fold={fold} onReply={onReply} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
     <AgentThreadMessages thread={thread} names={names} onDownload={onDownload} onPreview={onPreview} />
   </section>;
 }
 
-function TurnCard({ turn, thread = [], roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, editSession = null, editActive = false, queuePosition = 0, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview, onOpen, onCreateTask, onReply, onCloseDetail }) {
+function TurnCard({ turn, thread = [], roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, fold = null, editSession = null, editActive = false, queuePosition = 0, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview, onOpen, onCreateTask, onReply, onCloseDetail }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
   const controlContext = taskControlContext(turn, { selfId, access });
   const replyTarget = replyTargetOf(request, { roster, selfId });
+  const requestFoldId = `${turn.requestId}:request`;
+  const responseFoldId = `${turn.requestId}:response`;
+  // 正在查看过程的那轮，读者显然在读它，答案不折。
+  const foldExempt = Boolean(fold?.latest || detailsOpen);
   return (
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
       <ReplyableMessageFrame replyTarget={replyTarget} copyText={requestView.text} onReply={onReply} onCreateTask={onCreateTask} className="request-message" identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
-          <div className="request-text"><MarkdownContent text={requestView.text} />{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
+          <div className="request-text"><FoldableBody id={requestFoldId} text={requestView.text} exempt={foldExempt} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent text={requestView.text} /></FoldableBody>{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
       </ReplyableMessageFrame>
       <ThreadCalls thread={thread} names={names} />
@@ -579,7 +588,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
       {editSession && <ContentFrame contained><p className="message-editing-state">正在输入框中编辑</p></ContentFrame>}
       {turn.terminal && (
         <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
-          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownContent text={text} />} /></div>
+          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(turn.terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownContent text={text} />} /></FoldableBody></div>
         </MessageFrame>
       )}
     </section>
@@ -611,13 +620,14 @@ function Narration({ rows, names }) {
   );
 }
 
-function Standalone({ envelope, names, roster, selfId, continuation = false, onCreateTask, onReply }) {
+function Standalone({ envelope, names, roster, selfId, continuation = false, fold = null, onCreateTask, onReply }) {
   const view = messagePresentation(envelope);
   const self = envelope.sender?.id === selfId;
   const replyTarget = replyTargetOf(envelope, { roster, selfId });
+  const foldId = `${envelope.id}:message`;
   return (
     <ReplyableMessageFrame replyTarget={replyTarget} copyText={view.text} onReply={onReply} onCreateTask={onCreateTask} className={`standalone-row ${continuation ? 'continuation' : ''} ${self ? 'self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
-      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<MarkdownContent text={view.text} />{view.detail && <p className="message-detail">{view.detail}</p>}
+      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<FoldableBody id={foldId} text={view.text} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(foldId)} onToggle={fold?.onToggle}><MarkdownContent text={view.text} /></FoldableBody>{view.detail && <p className="message-detail">{view.detail}</p>}
     </ReplyableMessageFrame>
   );
 }
@@ -674,6 +684,10 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
   // 选中的 agent。空集 = 不过滤（常态）。Timeline 按频道 key 挂载，所以切频道
   // 天然重置，恒不需要自己清。
   const [actorFilter, setActorFilter] = useState(() => new Set());
+  // 读者手动展开 / 收起过的正文，按正文 id 记（true 展开、false 收起）。没记的按
+  // 默认规则：超阈值即折，最新一轮和正在查看过程的那轮例外。按频道重挂自然重置。
+  const [foldOverrides, setFoldOverrides] = useState(() => new Map());
+  const toggleFold = useCallback((id, expanded) => setFoldOverrides((current) => new Map(current).set(id, expanded)), []);
   const [editing, setEditing] = useState(null);
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
@@ -1127,6 +1141,8 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
         {history?.error && <p className="bounded-list-note" role="alert">{history.error}</p>}
 	  </div>
 	  <TimelineVirtualList>
+		{/* Folding changes one visible item's height. Deliver its measurement before
+		    paint so FoldableBody can keep the clicked control pinned in that frame. */}
 		<Virtuoso
 		  key={messageListKey}
 		  ref={messageListRef}
@@ -1135,6 +1151,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 		  firstItemIndex={firstItemIndex}
 		  initialTopMostItemIndex={import.meta.env.MODE === 'test' ? undefined : { index: 'LAST', align: 'end' }}
 		  alignToBottom
+		  skipAnimationFrameInResizeObserver
 		  atBottomThreshold={24}
 		  increaseViewportBy={480}
 		  data={windowed.items.map((entry, index) => {
@@ -1168,10 +1185,11 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onReply };
+            const fold = { latest: index === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold };
+            const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onReply };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
-            } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onReply={onReply} onOpen={() => {
+            } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} fold={fold} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onReply={onReply} onOpen={() => {
               if (detailsOpen) turnDetail?.onClose?.();
               else {
                 // Expanding is a local reading action, not a new ledger entry. Stop the
@@ -1183,7 +1201,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: index === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
           }
 		  return <>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</>;
 			} };

@@ -4,8 +4,35 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { MarkdownContent, MarkdownFileReferenceProvider } from '../src/ui/MarkdownContent.jsx';
+import { normalizeMathMarkdown } from '../src/model/math-markdown.js';
 
 describe('MarkdownContent', () => {
+  it('renders dollar and LaTeX bracket math while leaving code literal', () => {
+    const source = [
+      '行内 \\(M_t = \\operatorname{Fold}_R(H_t)\\) 与 $G_t$.',
+      '',
+      '\\[',
+      '\\text{Problem}\\rightarrow\\text{Machine}',
+      '\\]',
+      '',
+      '`\\(not math\\)`',
+      '',
+      '```tex',
+      '\\[not math\\]',
+      '```',
+    ].join('\n');
+    const { container } = render(<MarkdownContent text={source} />);
+    expect(container.querySelectorAll('.katex').length).toBe(3);
+    expect(container.querySelectorAll('.katex-display')).toHaveLength(1);
+    expect(container.querySelector('code').textContent).toBe('\\(not math\\)');
+    expect(container.querySelector('pre code').textContent).toContain('\\[not math\\]');
+  });
+
+  it('normalizes only paired, unescaped delimiters outside Markdown code', () => {
+    const source = '\\(x\\) `\\(code\\)` \\\\(literal\\\\) \\[y\\] \\[unclosed';
+    expect(normalizeMathMarkdown(source)).toBe('$x$ `\\(code\\)` \\\\(literal\\\\) $$y$$ \\[unclosed');
+  });
+
   it('用 CommonMark/GFM AST 渲染表格、任务列表、删除线与链接', () => {
     const source = [
       '| 名称 | 状态 |',
