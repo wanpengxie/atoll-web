@@ -1,10 +1,10 @@
 /* Collaboration workspace: navigation, ledger, and contextual detail */
-.shell { position: relative; display: grid; grid-template-columns: 264px minmax(420px, 1fr); grid-template-rows: minmax(0, 1fr); width: 100%; height: 100%; min-height: 0; overflow: hidden; background: var(--channel-rail); }
-.shell.has-context { grid-template-columns: 264px minmax(420px, 1fr); }
-.context-host { position: absolute; z-index: 50; inset: 0; display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr) minmax(320px, 360px); overflow: hidden; }
-.context-host[data-context-type="artifact"] { grid-template-columns: minmax(0, 1fr) clamp(520px, 52vw, 760px); }
+.shell { position: relative; display: grid; grid-template-columns: var(--rail-width, 264px) minmax(420px, 1fr); grid-template-rows: minmax(0, 1fr); width: 100%; height: 100%; min-height: 0; overflow: hidden; background: var(--channel-rail); }
+.shell.has-context { grid-template-columns: var(--rail-width, 264px) minmax(420px, 1fr); }
+.context-host { position: absolute; z-index: 50; inset: 0; display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr) var(--context-width, minmax(320px, 360px)); overflow: hidden; }
+.context-host[data-context-type="artifact"] { grid-template-columns: minmax(0, 1fr) var(--context-width, clamp(520px, 52vw, 760px)); }
 .context-backdrop { grid-column: 1 / -1; grid-row: 1; width: 100%; height: 100%; padding: 0; border: 0; background: var(--scrim-soft); cursor: default; }
-.context-pane { z-index: 1; min-width: 0; min-height: 0; grid-column: 2; grid-row: 1; overflow: hidden; background: var(--channel-rail); box-shadow: var(--shadow-context); }
+.context-pane { position: relative; z-index: 1; min-width: 0; min-height: 0; grid-column: 2; grid-row: 1; overflow: hidden; background: var(--channel-rail); box-shadow: var(--shadow-context); }
 .context-pane > * { height: 100%; }
 .channel-rail { min-width: 0; min-height: 0; display: flex; height: 100%; flex-direction: column; overflow: hidden; border-right: 1px solid var(--line-structural); background: var(--channel-rail); color: var(--text); }
 .rail-header { display: flex; min-height: 58px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--line-structural); }
@@ -131,3 +131,13 @@
 .channel-private-empty.dynamic-private-empty { grid-row: 4; }
 .channel-private-empty strong { font-size: 15px; }
 .channel-private-empty p { max-width: 420px; margin: 8px auto 0; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
+
+/* 面板分隔条。平时透明，悬停显示一条线，拖动时用强调色。把手骑在边框上（各占 3px），
+   不占布局宽度。左栏的骑在栏右缘，右侧面板的骑在面板左缘。 */
+.pane-resizer { position: absolute; top: 0; bottom: 0; z-index: 40; width: 7px; cursor: col-resize; touch-action: none; user-select: none; outline: 0; }
+.pane-resizer::after { position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: transparent; content: ''; transition: background .12s, width .12s, left .12s; }
+.pane-resizer:hover::after, .pane-resizer:focus-visible::after { left: 2px; width: 3px; background: var(--line-control-strong); }
+.pane-resizer.is-dragging::after { left: 2px; width: 3px; background: var(--accent); }
+.pane-resizer-rail { left: calc(var(--rail-width, 264px) - 3px); }
+.context-pane > .pane-resizer { left: -3px; }
+body:has(.pane-resizer.is-dragging) { cursor: col-resize; user-select: none; }

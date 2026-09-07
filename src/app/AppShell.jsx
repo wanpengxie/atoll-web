@@ -9,6 +9,8 @@ import { Timeline } from '../ui/Timeline.jsx';
 import { RightPanelHost } from './RightPanelHost.jsx';
 import { activeAgentTurn } from '../model/agent-control.js';
 import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex, channelSwipeDirection, channelSwipeStart } from '../model/channel-navigation.js';
+import { PaneResizer } from '../ui/primitives/PaneResizer.jsx';
+import { readPaneWidth, writePaneWidth } from '../model/pane-sizes.js';
 
 // 主视图 tab 只剩两个：文件已经从「整屏替换动态区」改成「与动态并排的分屏」，
 // 由 workspace-quick-actions 里的开关控制（见 filesOpen）。artifacts 仍是合法路由
@@ -49,6 +51,11 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   // 这样它免费拿到三件已经建好的事——URL 里带得走、刷新后还在、按频道记住
   // （App 的 workspaceViewsRef），以及 agent 的 ui.navigate 恒不用改。
   // 以前 artifacts 是整屏替换动态区的一个 tab，人去查个文件就看不见对话了。
+  // 左侧频道栏的宽度：读者拖过就记住（localStorage），没拖过用 CSS 默认。
+  const [railWidth, setRailWidth] = useState(() => readPaneWidth('rail'));
+  const railRef = useRef(null);
+  const commitRailWidth = useCallback((value) => { setRailWidth(value); writePaneWidth('rail', value); }, []);
+  const resetRailWidth = useCallback(() => { setRailWidth(null); writePaneWidth('rail', null); }, []);
   const filesOpen = workspace.view === 'artifacts';
   const dynamicVisible = workspace.view === 'dynamic' || filesOpen;
   const [filesEverOpened, setFilesEverOpened] = useState(() => (filesOpen ? { [navigation.activeChannelId]: true } : {}));
@@ -239,8 +246,9 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }
 
   const shellClass = ['shell', panel.value && 'has-context', mobileChannelsOpen && 'mobile-channels-open'].filter(Boolean).join(' ');
-  return <div className={shellClass} data-workspace-view={workspace.view}>
+  return <div ref={railRef} className={shellClass} data-workspace-view={workspace.view} style={railWidth ? { '--rail-width': `${railWidth}px` } : undefined}>
     <ChannelList channels={navigation.channels} activeChannelId={navigation.activeChannelId} unread={navigation.unread} agentActivity={navigation.agentActivity} wireState={session.wireState} me={session.me} update={session.update} onSelect={(channelId) => { navigation.onSelect(channelId); setMobileChannelsOpen(false); }} onCreate={() => { setMobileChannelsOpen(false); navigation.onCreate(); }} onSearch={() => { setMobileChannelsOpen(false); navigation.onSearch(); }} onActivity={() => { setMobileChannelsOpen(false); navigation.onActivity(); }} onSpaceManage={() => { setMobileChannelsOpen(false); navigation.onSpaceManage(); }} onLogout={session.onLogout} onCloseMobile={mobileChannelsOpen ? closeMobileChannels : undefined} />
+    <PaneResizer kind="rail" grows="right" width={railWidth} measure={() => railRef.current?.querySelector('.channel-rail')?.getBoundingClientRect().width} onResize={setRailWidth} onCommit={commitRailWidth} onReset={resetRailWidth} label="调整频道栏宽度" />
     <main className="workspace" onTouchStart={beginChannelSwipe} onTouchEnd={finishChannelSwipe} onTouchCancel={() => { channelSwipeRef.current = null; }}>
       <header className="channel-header">
         <div className="channel-identity"><button type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button><div><p className="eyebrow">频道</p><h1>{workspace.channel?.qualified_name || workspace.channel?.name || navigation.activeChannelId || '选择频道'}</h1></div></div>

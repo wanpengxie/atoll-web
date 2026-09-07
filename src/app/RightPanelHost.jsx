@@ -1,4 +1,6 @@
-import React, { useLayoutEffect, useRef } from 'react';
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { PaneResizer } from '../ui/primitives/PaneResizer.jsx';
+import { readPaneWidth, writePaneWidth } from '../model/pane-sizes.js';
 import { canWriteChannel, isMemberAccess } from '../model/channel-access.js';
 import { createChannelState } from '../model/fold.js';
 import { ChannelGovernance } from '../ui/ChannelGovernance.jsx';
@@ -13,6 +15,13 @@ import { ChannelResources } from '../ui/ChannelResources.jsx';
 function ContextHost({ type, focusKey, onClose, children }) {
   const hostRef = useRef(null);
   const openerRef = useRef(null);
+  // 右侧面板的宽度，文件预览和其他面板分开记：预览要宽，成员/治理不需要。
+  const kind = type === 'artifact' ? 'artifact' : 'context';
+  const [widths, setWidths] = useState(() => ({ context: readPaneWidth('context'), artifact: readPaneWidth('artifact') }));
+  const width = widths[kind];
+  const setWidth = useCallback((value) => setWidths((current) => (current[kind] === value ? current : { ...current, [kind]: value })), [kind]);
+  const commitWidth = useCallback((value) => { setWidth(value); writePaneWidth(kind, value); }, [kind, setWidth]);
+  const resetWidth = useCallback(() => { setWidth(null); writePaneWidth(kind, null); }, [kind, setWidth]);
   useLayoutEffect(() => {
     openerRef.current = document.activeElement;
     hostRef.current?.querySelector('.context-pane button[aria-label^="关闭"]')?.focus();
@@ -21,9 +30,12 @@ function ContextHost({ type, focusKey, onClose, children }) {
       if (opener?.isConnected && !opener.disabled) opener.focus();
     };
   }, []);
-  return <div ref={hostRef} className="context-host" data-context-type={type || 'transitional'} data-context-key={focusKey || ''}>
+  return <div ref={hostRef} className="context-host" data-context-type={type || 'transitional'} data-context-key={focusKey || ''} style={width ? { '--context-width': `${width}px` } : undefined}>
     <button type="button" className="context-backdrop" aria-label="关闭上下文" tabIndex={-1} onClick={onClose} />
-    <div className="context-pane">{children}</div>
+    <div className="context-pane">
+      <PaneResizer kind={kind} grows="left" width={width} measure={() => hostRef.current?.querySelector('.context-pane')?.getBoundingClientRect().width} onResize={setWidth} onCommit={commitWidth} onReset={resetWidth} label="调整右侧面板宽度" />
+      {children}
+    </div>
   </div>;
 }
 

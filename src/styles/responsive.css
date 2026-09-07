@@ -1,7 +1,7 @@
 
 @media (max-width: 1050px) {
-  .shell { grid-template-columns: 220px minmax(0, 1fr); }
-  .shell.has-context { grid-template-columns: 220px minmax(0, 1fr); }
+  .shell { grid-template-columns: var(--rail-width, 220px) minmax(0, 1fr); }
+  .shell.has-context { grid-template-columns: var(--rail-width, 220px) minmax(0, 1fr); }
   .timeline-inner { padding: 16px; }
 	.timeline-virtual-item { padding-right: 16px; padding-left: 16px; }
   .agent-wait-dock { right: 28px; left: 28px; width: calc(100% - 56px); }
@@ -9,6 +9,7 @@
 }
 
 @media (max-width: 900px) {
+  .pane-resizer { display: none; }
   .shell { position: relative; grid-template-columns: 210px minmax(0, 1fr); }
   .shell.has-context { grid-template-columns: 210px minmax(0, 1fr); }
   .context-host { grid-template-columns: 210px minmax(0, 1fr); }
