@@ -7,3 +7,7 @@ dist/
 .DS_Store
 test-results/
 playwright-report/
+
+# 视觉基线只认 Mac 上拍的（-darwin）；Linux 机器上跑 ui-visual 会生成一套 -linux 图，
+# 那是本机产物，不入库。
+tests/browser/**/*-linux.png
