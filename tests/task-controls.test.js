@@ -66,3 +66,16 @@ describe('task control eligibility', () => {
     expect(extraControls(taskControlContext(custom, { selfId: 'other', access: 'member_stale' }))).toEqual([]);
   });
 });
+
+describe('steering 状态', () => {
+  it('并入中的排队请求：按钮清空，steering 事实为真', async () => {
+    const { taskControlContext } = await import('../src/model/task-controls.js');
+    const request = { id: 'q', kind: 'request', type: 'agent.ask', sender: { id: 'me' }, audience: ['agent'], expires_at: 0 };
+    const steering = { request, requestId: 'q', terminal: null, provisional: [
+      { envelope: { payload: { status: 'queued', controls: [{ word: 'agent.steer' }, { word: 'agent.replace' }] } } },
+      { envelope: { payload: { status: 'queued', steering: true, controls: [] } } },
+    ] };
+    const context = taskControlContext(steering, { selfId: 'me', access: 'member_active' });
+    expect(context).toMatchObject({ location: 'queued', steering: true, canInsert: false, canEdit: false });
+  });
+});

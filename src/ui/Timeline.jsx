@@ -57,6 +57,10 @@ const ERROR_LABELS = {
   closed: '连接已关闭',
   timeout: '等待回执超时',
   cas_mismatch: '任务回合已经变化，请刷新后重试',
+  steer_missed: '没赶上这一轮，已排到下一轮执行',
+  superseded: '已被更新的操作取代，任务已回到队列',
+  control_timeout: '受理方没有在时限内回应',
+  busy: '另一个控制正在进行，稍后再试',
   interrupted: '任务已被打断',
   cancelled: '任务已取消',
   empty_input: '控制内容不能为空',
@@ -240,6 +244,7 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
                 <div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{view.text}</strong></div>
                 <div className="agent-wait-actions">
                   {paused && <span className="agent-wait-paused">已暂停</span>}
+                  {context.steering && <span className="agent-wait-paused">正在并入…</span>}
                   {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
                   {context.canEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
                   {context.canCancel && <button type="button" title={context.cancelsAsDismiss ? '这条不是你发的，将请对方放弃它' : '撤回你自己发出的这条请求'} onClick={() => onCancel?.(state.channelId, turn.requestId, context.cancelsAsDismiss)}>取消</button>}

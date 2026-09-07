@@ -45,7 +45,12 @@ function foldLinesOf(element) {
 export function FoldableBody({ id, text = '', exempt = false, expanded, onToggle, className = '', children }) {
   const contentRef = useRef(null);
   const wrapperRef = useRef(null);
-  const [measure, setMeasure] = useState({ overflow: null, lines: 0 });
+  // 首次渲染就按源文本先判一次，明显超长的正文第一帧就是折叠态。这不只是少一次
+  // 闪动：Virtuoso 开着 skipAnimationFrameInResizeObserver，会在 ResizeObserver
+  // 回调里同步挂载条目；如果条目挂载后在 layout effect 里才切成折叠、尺寸又变一次，
+  // 浏览器就报 "ResizeObserver loop completed with undelivered notifications"。
+  // 真实高度量出来后仍以量到的为准，只在临界情况下会纠正这次预判。
+  const [measure, setMeasure] = useState(() => (text ? { overflow: foldCandidate(text), lines: countLines(String(text)) } : { overflow: null, lines: 0 }));
   const toggleRef = useRef(null);
   const foldAnchorRef = useRef(null);
   const foldObserverRef = useRef(null);
@@ -72,16 +77,20 @@ export function FoldableBody({ id, text = '', exempt = false, expanded, onToggle
     };
     evaluate();
     if (typeof ResizeObserver !== 'function') return undefined;
-    // 折起本身会改内容的可见高度，观察回调里直接 setState 会在同一帧再触发一次
-    // 观察，浏览器就报 "ResizeObserver loop completed with undelivered
-    // notifications"。挪到下一帧再量，一帧只结算一次。
+    // 两处都推到下一帧，原因相同："ResizeObserver loop completed with undelivered
+    // notifications" 报的是同一轮投递里又冒出了新通知。Virtuoso 开着
+    // skipAnimationFrameInResizeObserver，会在它的观察回调里同步挂载条目；条目一
+    // 挂载就 observe() 自己，等于在投递中途登记新观察，浏览器只能报错。回调里直接
+    // setState 改高度是同一个坑。所以：登记观察延到下一帧，量高度也延到下一帧。
     let frame = 0;
+    let attach = 0;
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(evaluate);
     });
-    observer.observe(element);
+    attach = requestAnimationFrame(() => observer.observe(element));
     return () => {
+      cancelAnimationFrame(attach);
       cancelAnimationFrame(frame);
       observer.disconnect();
     };

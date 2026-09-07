@@ -78,15 +78,29 @@ export function diagnosticsText() {
   return JSON.stringify(diagnosticsSnapshot(), null, 2);
 }
 
+export function isResizeObserverLoop(message) {
+  return /ResizeObserver loop (completed with undelivered notifications|limit exceeded)/.test(String(message || ''));
+}
+
 export function installGlobalDiagnostics() {
   if (!globalThis.addEventListener) return () => {};
-  const onError = (event) => diagnostic('error', 'window.error', {
-    message: event.message,
-    source: event.filename,
-    line: event.lineno,
-    column: event.colno,
-    error: event.error,
-  });
+  const onError = (event) => {
+    // 这一条不是错误：时间线的 Virtuoso 开着 skipAnimationFrameInResizeObserver
+    // （收起长消息时的锚定要靠它同步量高度），浏览器就会在同一帧里又冒出新尺寸
+    // 通知时报这句。Virtuoso 自己下一轮会补量，页面没有任何坏结果。降到 debug 记
+    // 一笔，别再当错误刷屏。
+    if (isResizeObserverLoop(event.message)) {
+      diagnostic('debug', 'window.resize_observer_loop', { source: event.filename });
+      return;
+    }
+    diagnostic('error', 'window.error', {
+      message: event.message,
+      source: event.filename,
+      line: event.lineno,
+      column: event.colno,
+      error: event.error,
+    });
+  };
   const onRejection = (event) => diagnostic('error', 'window.unhandled_rejection', { error: event.reason });
   globalThis.addEventListener('error', onError);
   globalThis.addEventListener('unhandledrejection', onRejection);

@@ -72,6 +72,9 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
     expired: expiresAt > 0 && expiresAt <= now,
     location,
     controls,
+    // 已离开队列、正在等 provider 裁定是否并入当前轮。按钮随 controls 一起清空，
+    // 这里再给一个明确的事实，让等待区能写"正在并入"而不是无声地少了按钮。
+    steering: Boolean(frame?.steering),
     // 「取消」一个按钮，两种事实，由归属决定是哪一种：
     //   自己发的 → 撤回，调用方关掉自己开的账（wire.cancel）；
     //   别人发的 → 请持有它的 actor 把它答掉（agent.dismiss）——第三方不是
