@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentSelectionView, contextUsageView, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from '../src/model/agent-selection.js';
+import { agentSelectionView, contextUsageView, latestAgentOptions, latestAgentUsage, normalizeAgentOptions, latestInteractedAgentId, resolveParameterAgent } from '../src/model/agent-selection.js';
 
 const STEWARD = { id: 'steward', kind: 'agent', name: 'Steward' };
 const CLAUDE = { id: 'claude', kind: 'agent', name: 'Claude' };
@@ -140,5 +140,56 @@ describe('当前值恒只认本连接证据（§4.1）', () => {
     const usage = latestAgentUsage(state, 'steward', 'probe-1');
     expect(usage).toEqual({ model: 'm3', effort: 'medium', contextTokens: 52_000, contextWindow: 200_000 });
     expect(contextUsageView(usage)).toEqual({ tokens: 52_000, window: 200_000, percent: 26 });
+  });
+});
+
+describe('agent.options incarnation 快照', () => {
+  const payload = {
+    status: 'completed', provider: 'codex', source: 'native', generated_at: '2026-09-06T00:00:00Z',
+    models: [
+      { value: 'gpt-new', label: 'GPT New', efforts: [{ value: 'low', label: '轻量' }, { value: 'high', label: '高' }] },
+      { value: 'fast', label: 'Fast' },
+    ],
+    current: { model: 'gpt-new', effort: 'high' },
+    client: { name: 'codex', current: '0.153.4', latest: '0.154.0', update_status: 'available' },
+  };
+
+  it('只认本连接发出的 options request 对应终态', () => {
+    const state = stateOf([
+      { id: 'old', kind: 'response', type: 'agent.options', parent_id: 'old-probe', sender: { id: 'steward' }, payload },
+      { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload },
+    ]);
+    expect(latestAgentOptions(state, 'steward', 'old-never')).toBeNull();
+    expect(latestAgentOptions(state, 'steward', 'live-probe')).toMatchObject({ provider: 'codex', source: 'native', current: { model: 'gpt-new', effort: 'high' } });
+  });
+
+  it('按模型保留各自 effort，无码 effort 的模型仍可选择', () => {
+    const options = normalizeAgentOptions(payload);
+    expect(options.selections).toEqual([
+      { model: 'gpt-new', effort: 'low', modelLabel: 'GPT New', effortLabel: '轻量', description: '' },
+      { model: 'gpt-new', effort: 'high', modelLabel: 'GPT New', effortLabel: '高', description: '' },
+      { model: 'fast', effort: '', modelLabel: 'Fast', effortLabel: '' },
+    ]);
+    const view = agentSelectionView({ actorId: 'steward', options, usage: null });
+    expect(view.current).toEqual({ model: 'gpt-new', effort: 'high' });
+    expect(view.client.update_status).toBe('available');
+  });
+
+  it('usage 报 resolved id 时保留目录中的 canonical current', () => {
+    const options = normalizeAgentOptions({
+      models: [{ value: 'claude-fable-5[1m]', label: 'Fable', efforts: [{ value: 'high' }] }],
+      current: { model: 'claude-fable-5[1m]', effort: 'high' },
+    });
+    const view = agentSelectionView({ actorId: 'claude', options, usage: { model: 'claude-fable-5', effort: 'high' } });
+    expect(view.current).toEqual({ model: 'claude-fable-5[1m]', effort: 'high' });
+  });
+
+  it('成功 select 的 catalog value 立即覆盖 options 旧 current', () => {
+    const options = normalizeAgentOptions({
+      models: [{ value: 'm1', efforts: [{ value: 'low' }] }, { value: 'm2', efforts: [{ value: 'high' }] }],
+      current: { model: 'm1', effort: 'low' },
+    });
+    const view = agentSelectionView({ actorId: 'codex', options, usage: { model: 'm2', effort: 'high' } });
+    expect(view.current).toEqual({ model: 'm2', effort: 'high' });
   });
 });

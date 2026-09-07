@@ -1,11 +1,12 @@
 import { TYPES } from '../protocol/vocab.js';
 import { FINAL } from '../protocol/envelope.js';
 
-// 协议正形（agent-model-params-design.md §4）：
-// - 值域 = actor.describe 的 agent.select 词条 input_schema——oneOf 每支一个合法
-//   (model, effort) 组合对，const 旁的 title 是展示元数据（无则显裸值）。
-// - 当前值 = 账本保鲜（最后一个带非空 model/effort 的 terminal response usage）
-//   + agent.context 冷启动兜底。
+// 协议正形：
+// - actor.describe 只声明 agent.options / agent.select 两个稳定 word；
+// - 值域 = 当前 incarnation 的 agent.options 终态快照；旧服务的 describe.oneOf
+//   仅保留为滚动升级期 fallback。
+// - 当前值 = agent.options 的当前 generation 快照；本连接内后续可确认的
+//   terminal usage / agent.context 再覆盖它。
 // 本文件是协议的唯一适配点：Composer 和选择器恒不感知帧的具体形状。
 
 // —— 值域：describe → 组合对列表 ——————————————————————————————
@@ -27,6 +28,51 @@ export function selectionsFromDescribe(describe) {
       effortLabel: String(effort.title || effort.const),
     };
   }).filter(Boolean);
+}
+
+export function normalizeAgentOptions(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.models)) return null;
+  const models = [];
+  const selections = [];
+  for (const rawModel of value.models) {
+    const model = typeof rawModel?.value === 'string' ? rawModel.value.trim() : '';
+    if (!model) continue;
+    const modelLabel = String(rawModel.label || model);
+    models.push({ id: model, label: modelLabel, description: String(rawModel.description || '') });
+    const efforts = Array.isArray(rawModel.efforts) ? rawModel.efforts : [];
+    if (!efforts.length) {
+      selections.push({ model, effort: '', modelLabel, effortLabel: '' });
+      continue;
+    }
+    for (const rawEffort of efforts) {
+      const effort = typeof rawEffort?.value === 'string' ? rawEffort.value.trim() : '';
+      if (!effort) continue;
+      selections.push({ model, effort, modelLabel, effortLabel: String(rawEffort.label || effort), description: String(rawEffort.description || '') });
+    }
+  }
+  if (!models.length) return null;
+  const current = typeof value.current?.model === 'string' && value.current.model
+    ? { model: value.current.model, effort: typeof value.current.effort === 'string' ? value.current.effort : '' }
+    : null;
+  return {
+    provider: String(value.provider || ''),
+    source: String(value.source || ''),
+    generatedAt: String(value.generated_at || ''),
+    models,
+    selections,
+    current,
+    client: value.client && typeof value.client === 'object' ? value.client : null,
+  };
+}
+
+export function latestAgentOptions(state, actorId, liveRequestId = '') {
+  if (!state?.rows || !actorId || !liveRequestId) return null;
+  for (const row of state.rows.values()) {
+    if (row.kind !== 'response' || row.type !== TYPES.agentOptions || row.parent_id !== liveRequestId) continue;
+    if (row.sender?.id !== actorId || row.payload?.status !== 'completed') continue;
+    return normalizeAgentOptions(row.payload);
+  }
+  return null;
 }
 
 // 换 model 的落点：命中 (model, preferredEffort) 或该 model 的第一个合法组合。
@@ -92,19 +138,27 @@ export function latestAgentUsage(state, actorId, liveRequestId = '') {
 // —— 参数面板视图（ModelSelector 的消费形）—————————————————————
 
 // 两级菜单是组合对的投影：模型段 = 去重 model；强度段 = 当前 model 名下的合法
-// effort（逐 model 不同）。current 恒来自账本真相（usage/context），无真值时为
-// null——恒不拿 selections[0] 冒充当前值（decl 的 default 可以不是第一条，
-// 冒充会长期显示错误参数；§4.1 要求无真值只显示角色名）。
-export function agentSelectionView({ actorId, describe, usage }) {
-  const selections = selectionsFromDescribe(describe);
-  const current = usage?.model ? { model: usage.model, effort: usage.effort } : null;
+// effort（逐 model 不同）。current 的基线来自 agent.options，随后由本连接内能
+// 命中 catalog 的 usage/context 覆盖；恒不拿 selections[0] 冒充当前值（decl 的
+// default 可以不是第一条，冒充会长期显示错误参数）。
+export function agentSelectionView({ actorId, describe, options = null, usage }) {
+  const selections = options?.selections?.length ? options.selections : selectionsFromDescribe(describe);
+  // Native usage can report a resolved model id while the selectable value is
+  // an alias (Claude: claude-fable-5 vs claude-fable-5[1m]). Keep the options
+  // snapshot's canonical current unless usage names an actual catalog value.
+  // A successful agent.select reports that value, so it still updates at once.
+  const optionModels = new Set(options?.models?.map((model) => model.id) || []);
+  const usageIsSelectable = usage?.model && (!options || optionModels.has(usage.model));
+  const current = usageIsSelectable
+    ? { model: usage.model, effort: usage.effort }
+    : options?.current || (usage?.model ? { model: usage.model, effort: usage.effort } : null);
   // 没有 selections 只表示不可切换，不表示没有当前配置。agent.context 仍可能
   // 返回真实 model（有些 provider 没有 effort），此时生成只读视图。
   if (!selections.length && !current && usage?.contextTokens == null && usage?.contextWindow == null) return null;
   const seen = new Set();
-  const models = selections.filter((row) => !seen.has(row.model) && seen.add(row.model))
+  const models = options?.models?.length ? options.models : selections.filter((row) => !seen.has(row.model) && seen.add(row.model))
     .map((row) => ({ id: row.model, label: row.modelLabel }));
-  return { actorId, current, usage, models, selections, confirmed: Boolean(current), configurable: selections.length > 0 };
+  return { actorId, current, usage, models, selections, client: options?.client || null, source: options?.source || '', confirmed: Boolean(current), configurable: selections.length > 0 };
 }
 
 // Context 是 provider 上报的当前 session 真值。前端只做单位和比例投影；

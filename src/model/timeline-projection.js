@@ -8,6 +8,7 @@ const HIDDEN_TURN_TYPES = new Set([
   TYPES.agentUnhold,
   TYPES.agentInterrupt,
   TYPES.agentContext,
+  TYPES.agentOptions,
   TYPES.agentFork,
   TYPES.describe,
 ]);

@@ -21,7 +21,7 @@ import { messagePresentation } from './model/message-presentation.js';
 import { isSystemWord, SYSTEM_ACTOR_ID, TYPES } from './protocol/vocab.js';
 import { newId } from './util/id.js';
 import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
-import { agentSelectionView, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from './model/agent-selection.js';
+import { agentSelectionView, latestAgentOptions, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from './model/agent-selection.js';
 import { createAgentActivityTracker } from './model/agent-activity.js';
 import { createObsClient, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
@@ -72,7 +72,7 @@ async function loadChannelTree(obs) {
 const GOVERNANCE_READ_TYPES = new Set([
   TYPES.channel.get, TYPES.channel.list, TYPES.channelTemplate.get, TYPES.channelTemplate.list,
   TYPES.actorTemplate.get, TYPES.actorTemplate.list, TYPES.principal.get, TYPES.principal.list,
-  TYPES.device.list, TYPES.member.list, TYPES.member.get, TYPES.log.recent,
+  TYPES.device.list, TYPES.member.list, TYPES.member.get, TYPES.log.recent, TYPES.log.query,
 ]);
 
 function isGovernanceOperation(type = '') {
@@ -151,6 +151,7 @@ export default function App() {
   const [pendingSelect, setPendingSelect] = useState(null); // {channelId, actorId, requestId, value:{model,effort}}
   const manualAgentsRef = useRef(new Map()); // channelId -> 手选 agent id（首条 ask 入账即清）
   const contextProbedRef = useRef(new Map()); // `${channelId}:${actorId}` -> {requestId, failed}，重连时清
+  const optionsProbedRef = useRef(new Map()); // 同上；agent.options 是 incarnation 级活快照
   // 本连接内发出的 describe requestId 集合。capability 是活状态读数，恒现场
   // 拉：只有这个集合里的响应才算数，账本历史帧恒不当缓存。集合易失——
   // 刷新/重连即清，活状态自然重新现问。
@@ -285,6 +286,7 @@ export default function App() {
     // 参数面板态是会话私有的：换账号不得继承上一账号的手选/切换中/探测标记。
     manualAgentsRef.current.clear();
     contextProbedRef.current.clear();
+    optionsProbedRef.current.clear();
     describeInFlightRef.current.clear();
     setPendingSelect(null);
     setComposerAgent({ channelId: '', actorId: '' });
@@ -655,11 +657,11 @@ export default function App() {
     try {
       const requestId = await handleSend({
         channelId: activeChannelId,
-        text: `切换模型：${model} · ${effort}`,
+        text: `切换模型：${model}${effort ? ` · ${effort}` : ''}`,
         msgType: TYPES.agentSelect,
         audience: [actorId],
         targetLabel: actorId,
-        payload: { model, effort },
+        payload: { model, ...(effort ? { effort } : {}) },
       });
       setPendingSelect({ channelId: activeChannelId, actorId, requestId, value: { model, effort } });
       return requestId;
@@ -733,6 +735,7 @@ export default function App() {
   useEffect(() => {
     if (wireState === 'open') {
       contextProbedRef.current.clear();
+      optionsProbedRef.current.clear();
       liveDescribesRef.current.clear();
       describeInFlightRef.current.clear();
     }
@@ -892,30 +895,30 @@ export default function App() {
       return;
     }
     if (!capability?.describe) return;
-    // 当前配置与可切换值域是两条独立链路。即使 agent.select 没有 selections，
-    // 只要声明了 agent.context，也必须读取当前 model/effort，状态栏按只读展示。
-    if (!capability.describe.types?.has?.(TYPES.agentContext)) return;
-    // 当前值恒来自本连接的 context 探测（历史 usage 是旧生命期读数，恒不挡
-    // 探测）：每连接对每目标恒探测一次，probe 记录本身即防重。
-    const probe = contextProbedRef.current.get(probeKey);
-    if (probe) {
-      if (!probe.failed && probe.requestId) {
-        const failedRow = state ? [...state.rows.values()].some((row) => row.kind === 'response' && row.parent_id === probe.requestId && row.payload?.status === 'failed') : false;
-        const rejected = pending.some((item) => item.messageId === probe.requestId && item.state === 'rejected');
-        if (failedRow || rejected) probe.failed = true;
+    // 值域与当前 context 是两个普通 actor word。各自每连接探测一次，失败只在
+    // 用户再次展开面板时重试，避免断路时形成自激请求环。
+    const probeWord = (type, registry) => {
+      if (!capability.describe.types?.has?.(type)) return;
+      const probe = registry.current.get(probeKey);
+      if (probe) {
+        if (!probe.failed && probe.requestId) {
+          const failedRow = state ? [...state.rows.values()].some((row) => row.kind === 'response' && row.parent_id === probe.requestId && row.payload?.status === 'failed') : false;
+          const rejected = pending.some((item) => item.messageId === probe.requestId && item.state === 'rejected');
+          if (failedRow || rejected) probe.failed = true;
+        }
+        return;
       }
-      return;
-    }
-    const entry = { requestId: '', failed: false };
-    contextProbedRef.current.set(probeKey, entry);
-    handleSend({ channelId, text: '', msgType: TYPES.agentContext, audience: [actorId], targetLabel: actorId, payload: {} })
-      .then((requestId) => {
-        entry.requestId = requestId || '';
-        // requestId 存在 ref 中，但它参与当前值推导；回执可能晚于 feed，也可能
-        // 早于 feed，显式 bump 保证两种时序最终都会重算状态栏。
-        setManualAgentVersion((current) => current + 1);
-      })
-      .catch(() => { entry.failed = true; });
+      const entry = { requestId: '', failed: false };
+      registry.current.set(probeKey, entry);
+      handleSend({ channelId, text: '', msgType: type, audience: [actorId], targetLabel: actorId, payload: {} })
+        .then((requestId) => {
+          entry.requestId = requestId || '';
+          setManualAgentVersion((current) => current + 1);
+        })
+        .catch(() => { entry.failed = true; });
+    };
+    probeWord(TYPES.agentOptions, optionsProbedRef);
+    probeWord(TYPES.agentContext, contextProbedRef);
   }, [composerAgent, feedVersion, wireState, activeChannelId, rosters, pending, manualAgentVersion, describeActor, handleSend]);
 
   // 用户展开参数区 = 显式重试通道：上次探测失败的目标清掉失败标记重新探测。
@@ -926,6 +929,10 @@ export default function App() {
     let retry = false;
     if (contextProbedRef.current.get(probeKey)?.failed) {
       contextProbedRef.current.delete(probeKey);
+      retry = true;
+    }
+    if (optionsProbedRef.current.get(probeKey)?.failed) {
+      optionsProbedRef.current.delete(probeKey);
       retry = true;
     }
     // describe 本连接已发但失败时，展开参数区 = 显式重试：把失败那次从
@@ -1026,14 +1033,17 @@ export default function App() {
   const activeAccess = activeRow?.access || CHANNEL_ACCESS.loading;
   const capabilityIndex = capabilityIndexFromState(activeState, liveDescribesRef.current);
   // 参数面板数据（协议 §4）：值域与当前值都是活状态读数，恒只认本连接证据
-  // （describe = liveDescribesRef；usage = 本连接 context 探测起算）。
+  // （describe = liveDescribesRef；options = generation 快照；usage = 本连接
+  // context 探测起算）。
   // manualAgentVersion 只为触发重渲染（手选存 ref）。
   void manualAgentVersion;
   const composerAgentId = composerAgent.channelId === activeChannelId ? composerAgent.actorId : '';
   const composerProbeId = composerAgentId ? (contextProbedRef.current.get(`${activeChannelId}:${composerAgentId}`)?.requestId || '') : '';
+  const composerOptionsProbeId = composerAgentId ? (optionsProbedRef.current.get(`${activeChannelId}:${composerAgentId}`)?.requestId || '') : '';
   const composerAgentUsage = composerAgentId ? latestAgentUsage(activeState, composerAgentId, composerProbeId) : null;
+  const composerAgentOptions = composerAgentId ? latestAgentOptions(activeState, composerAgentId, composerOptionsProbeId) : null;
   const composerSelectionView = composerAgentId
-    ? agentSelectionView({ actorId: composerAgentId, describe: capabilityIndex.get(composerAgentId)?.describe, usage: composerAgentUsage })
+    ? agentSelectionView({ actorId: composerAgentId, describe: capabilityIndex.get(composerAgentId)?.describe, options: composerAgentOptions, usage: composerAgentUsage })
     : null;
   const composerSupportedTypes = composerAgentId
     ? [...(capabilityIndex.get(composerAgentId)?.describe?.types?.keys?.() || [])]

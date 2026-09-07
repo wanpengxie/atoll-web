@@ -19,6 +19,7 @@ const CONTROL_LABEL = {
   [TYPES.agentNew]: '新建对话',
   [TYPES.agentSelect]: '切换模型与算力',
   [TYPES.agentContext]: '查看上下文用量',
+  [TYPES.agentOptions]: '查看可用模型与客户端版本',
 };
 
 function CapabilityForm({ actor, type, meta, disabled, onInvoke, onClose }) {

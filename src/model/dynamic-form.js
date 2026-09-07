@@ -33,6 +33,7 @@ const KNOWN_CONTROL_FIELDS = Object.freeze({
   [TYPES.agentCompact]: [],
   [TYPES.agentNew]: [],
   [TYPES.agentContext]: [],
+  [TYPES.agentOptions]: [],
   [TYPES.agentFork]: [],
 });
 

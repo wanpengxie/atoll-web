@@ -45,6 +45,7 @@ function action(type, payload) {
     [TYPES.agentNew]: ['新建对话', ''],
     [TYPES.agentSelect]: ['切换模型与算力', value(payload, 'model', 'effort')],
     [TYPES.agentContext]: ['查看上下文用量', ''],
+    [TYPES.agentOptions]: ['读取 Agent 可用模型', ''],
   }[type];
   if (exact) return exact;
 

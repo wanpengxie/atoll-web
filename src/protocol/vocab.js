@@ -21,6 +21,7 @@ export const TYPES = Object.freeze({
   agentCompact: 'agent.compact',
   agentNew: 'agent.new',
   agentSelect: 'agent.select',
+  agentOptions: 'agent.options',
   agentContext: 'agent.context',
 
   // 人对人：humancell 的三个词。
@@ -54,7 +55,7 @@ export const TYPES = Object.freeze({
     // 破窗恢复：给频道内所有干活的成员（agent/tool）换一届任期。不删任何东西。
     restartAll: 'system.member.restart_all',
   }),
-  log: Object.freeze({ recent: 'system.log.recent' }),
+  log: Object.freeze({ recent: 'system.log.recent', query: 'system.log.query' }),
 
   // 空间面：同样发给 system actor，由它转交 c0 的 registrar。
   channel: Object.freeze({

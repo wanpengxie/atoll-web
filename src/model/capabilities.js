@@ -14,6 +14,7 @@ const CONTROL_TYPES = new Set([
   TYPES.agentNew,
   TYPES.agentSelect,
   TYPES.agentContext,
+  TYPES.agentOptions,
 ]);
 
 const HIGH_RISK_TYPES = new Set([TYPES.agentFork]);

@@ -145,4 +145,12 @@ describe('Model/Effort 选择器', () => {
     expect(screen.getByRole('dialog', { name: 'Claude Agent 状态' })).toBeTruthy();
     expect(screen.queryByRole('menuitem')).toBeNull();
   });
+
+  it('展开时显示 provider 私有的客户端升级信号', async () => {
+    const user = userEvent.setup();
+    const withClient = { ...view, client: { name: 'codex', current: '0.153.4', latest: '0.154.0', update_status: 'available' } };
+    render(<ModelSelector target={single} actorName="Steward" view={withClient} />);
+    await user.click(screen.getByRole('button', { name: /Steward，模型 5.6 Sol/ }));
+    expect(screen.getByText('0.153.4 · 可升级至 0.154.0')).toBeTruthy();
+  });
 });

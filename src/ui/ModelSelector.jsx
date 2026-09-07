@@ -23,6 +23,14 @@ function ContextUsage({ usage, compact = false }) {
   </div>;
 }
 
+function ClientStatus({ client }) {
+  if (!client || (!client.current && !client.latest && !client.update_status)) return null;
+  const status = client.update_status === 'available'
+    ? `可升级${client.latest ? `至 ${client.latest}` : ''}`
+    : client.update_status === 'current' ? '已是最新' : '升级状态未知';
+  return <div className="model-selector-readonly"><span>{client.name || '客户端'}</span><strong>{[client.current, status].filter(Boolean).join(' · ')}</strong></div>;
+}
+
 // 参数面板（协议 §4.3/§4.4）。三种目标态：single（显示该 agent 参数，可切换）、
 // multi（多 @：只报数，收起设置入口——select 是逐 agent 的设置）、none（多 agent
 // 无判据：手选入口）。当前值恒来自账本（view.current）；pending 期间显示目标值 +
@@ -122,13 +130,14 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
         <ContextUsage usage={view.usage} compact />
         <ChevronDown size={15} strokeWidth={1.8} aria-hidden="true" />
       </button>
-      {open && <div className="model-selector-popover"><div className="model-selector-menu is-status" role="dialog" aria-label={`${actorName} Agent 状态`}><div className="model-selector-agent-context"><span>当前 Agent</span><strong>{actorName}</strong></div>{modelLabel && <div className="model-selector-readonly"><span>模型</span><strong>{modelLabel}</strong></div>}<ContextUsage usage={view.usage} /></div></div>}
+      {open && <div className="model-selector-popover"><div className="model-selector-menu is-status" role="dialog" aria-label={`${actorName} Agent 状态`}><div className="model-selector-agent-context"><span>当前 Agent</span><strong>{actorName}</strong></div>{modelLabel && <div className="model-selector-readonly"><span>模型</span><strong>{modelLabel}</strong></div>}<ClientStatus client={view.client} /><ContextUsage usage={view.usage} /></div></div>}
     </div>;
   }
 
   // 两级菜单恒是组合对的投影（§4.4）：强度段 = 当前显示 model 名下的合法 effort。
   const effortRows = displayed ? view.selections.filter((row) => row.model === displayed.model)
     .map((row) => ({ id: row.effort, label: row.effortLabel })) : [];
+  const hasEffort = effortRows.some((row) => row.id);
   const rows = section === 'model' ? view.models : effortRows;
 
   const choose = (kind, id) => {
@@ -148,7 +157,7 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
       type="button"
       className="model-selector-trigger"
       disabled={disabled || busy}
-      aria-label={displayed ? `${actorName}，模型 ${modelLabel}，推理强度 ${effortLabel}${busy ? '，切换中' : ''}` : `${actorName}，模型未知`}
+      aria-label={displayed ? `${actorName}，模型 ${modelLabel}${effortLabel ? `，推理强度 ${effortLabel}` : ''}${busy ? '，切换中' : ''}` : `${actorName}，模型未知`}
       aria-haspopup="menu"
       aria-expanded={open}
       onClick={() => { setOpen((current) => { if (!current) onOpen?.(); return !current; }); setSection(''); }}
@@ -163,9 +172,10 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
     {open && <div className={`model-selector-popover${section ? ' has-section' : ''}`}>
       <div className="model-selector-menu" role="menu" aria-label="模型设置">
         <div className="model-selector-agent-context"><span>当前 Agent</span><strong>{actorName}</strong></div>
-        {(['model', 'effort']).map((kind) => <button type="button" role="menuitem" key={kind} className={section === kind ? 'active' : ''} onClick={() => setSection(kind)}>
+        {(['model', ...(hasEffort ? ['effort'] : [])]).map((kind) => <button type="button" role="menuitem" key={kind} className={section === kind ? 'active' : ''} onClick={() => setSection(kind)}>
           <span>{SECTION_LABEL[kind]}</span><span className="model-selector-menu-value">{(kind === 'model' ? modelLabel : effortLabel) || '—'}</span><ChevronRight size={16} aria-hidden="true" />
         </button>)}
+        <ClientStatus client={view.client} />
         <ContextUsage usage={view.usage} />
       </div>
       {section && <div className="model-selector-options" role="menu" aria-label={SECTION_LABEL[section]}>
