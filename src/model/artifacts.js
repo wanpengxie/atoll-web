@@ -34,11 +34,20 @@ function attachmentFact(value) {
   };
 }
 
+// 结构化文本的 application/* 类型：按文本预览。+json / +xml 后缀是 RFC 6839 的写法。
+const TEXT_APPLICATION_TYPES = new Set(['application/json', 'application/xml', 'application/javascript', 'application/x-javascript', 'application/ecmascript',
+  'application/yaml', 'application/x-yaml', 'application/toml', 'application/x-sh', 'application/x-shellscript', 'application/sql', 'application/x-ndjson', 'application/ld+json']);
+
+export function isTextMediaType(mediaType = '') {
+  const value = String(mediaType || '').toLowerCase().split(';')[0].trim();
+  return value.startsWith('text/') || TEXT_APPLICATION_TYPES.has(value) || value.endsWith('+json') || value.endsWith('+xml');
+}
+
 export function previewForMediaType(mediaType = '') {
   if (mediaType.startsWith('image/')) return 'image';
   if (mediaType.startsWith('audio/') || mediaType.startsWith('video/')) return 'media';
   if (mediaType === 'application/pdf') return 'inline';
-  if (mediaType.startsWith('text/') || ['application/json', 'text/markdown'].includes(mediaType)) return 'text';
+  if (isTextMediaType(mediaType)) return 'text';
   if (/officedocument|msword|ms-excel|ms-powerpoint/.test(mediaType)) return 'download_only';
   return 'unsupported';
 }

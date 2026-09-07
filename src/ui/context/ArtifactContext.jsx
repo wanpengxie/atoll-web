@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
-import { formatArtifactSize } from '../../model/artifacts.js';
-import { fileTransferURL } from '../../model/channel-file-transfer.js';
+import { artifactKindForMediaType, formatArtifactSize, previewForMediaType } from '../../model/artifacts.js';
+import { fileTransferURL, mediaTypeFromFileName } from '../../model/channel-file-transfer.js';
 import { readFileTicket } from '../../model/resources.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 import { SidePanel } from '../primitives/SidePanel.jsx';
@@ -52,17 +52,57 @@ export async function readBoundedText(response, limit = PREVIEW_LIMITS.text, sig
   }
 }
 
-export function useArtifactPreview(artifact, onResource) {
+// 调用方带来的分类可能是按 "application/octet-stream" 判的（消息附件、agent 引用的
+// 文件常常不带类型），那等于什么都不知道。这里按文件名再判一次；扩展名认得的，
+// 就按认得的走。认不得的留给下面的内容嗅探。
+export function resolveArtifact(artifact) {
+  if (!artifact) return artifact;
+  const mediaType = mediaTypeFromFileName(artifact.name, artifact.mediaType);
+  if (mediaType === (artifact.mediaType || '') && artifact.preview) return artifact;
+  const kind = artifact.kind && artifact.kind !== 'file' && artifact.kind !== 'other' ? artifact.kind : artifactKindForMediaType(mediaType);
+  return { ...artifact, mediaType, preview: previewForMediaType(mediaType), kind };
+}
+
+// 服务端没说清类型时（缺失或 octet-stream），用我们判定出的类型重打 blob；
+// 服务端说了具体类型就尊重它。
+export function typedBlob(blob, mediaType) {
+  const declared = String(blob?.type || '').toLowerCase();
+  const wanted = String(mediaType || '').toLowerCase().split(';')[0].trim();
+  if (!wanted || wanted === 'application/octet-stream') return blob;
+  if (declared && declared !== 'application/octet-stream') return blob;
+  return new Blob([blob], { type: wanted });
+}
+
+const SNIFF_WINDOW = 8 * 1024;
+
+// 类型认不出来的文件，看内容：前 8KB 里没有 NUL 字节，而且整体是合法 UTF-8，就当文本。
+// 二进制文件几乎总在开头就有 NUL；反过来能完整解码成 UTF-8 的字节流基本不是二进制。
+export function looksLikeText(bytes) {
+  if (!bytes || bytes.byteLength === 0) return '';
+  const head = bytes.subarray(0, SNIFF_WINDOW);
+  for (let index = 0; index < head.length; index += 1) if (head[index] === 0) return null;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+export function useArtifactPreview(rawArtifact, onResource) {
   const [preview, setPreview] = useState({ phase: 'idle', url: '', text: '', error: '' });
+  const artifact = resolveArtifact(rawArtifact);
+  const previewKind = artifact?.preview;
+  const resourceKey = artifact ? `${artifact.channelId}:${artifact.resourceId}:${previewKind}:${artifact.size ?? ''}` : '';
   useEffect(() => {
     let alive = true;
     let objectURL = '';
     const controller = new AbortController();
     setPreview({ phase: 'idle', url: '', text: '', error: '' });
-    if (!artifact || !['text', 'image', 'media', 'inline'].includes(artifact.preview)) return () => controller.abort();
-    const limit = previewLimit(artifact.preview);
+    if (!artifact || !['text', 'image', 'media', 'inline', 'unsupported'].includes(previewKind)) return () => controller.abort();
+    const sniff = previewKind === 'unsupported';
+    const limit = previewLimit(sniff ? 'text' : previewKind);
     if (Number.isFinite(artifact.size) && artifact.size > limit) {
-      setPreview({ phase: 'error', url: '', text: '', error: sizeError(limit) });
+      setPreview(sniff ? { phase: 'unsupported', url: '', text: '', error: '' } : { phase: 'error', url: '', text: '', error: sizeError(limit) });
       return () => controller.abort();
     }
     setPreview({ phase: 'loading', url: '', text: '', error: '' });
@@ -74,20 +114,58 @@ export function useArtifactPreview(artifact, onResource) {
       if (!response.ok) throw new TypeError(`预览读取失败 (${response.status})`);
       const declared = Number(response.headers?.get?.('content-length') || 0);
       if (declared > limit) throw new RangeError(sizeError(limit));
-      if (artifact.preview === 'text') {
+      if (previewKind === 'text') {
         const value = await readBoundedText(response, limit, controller.signal);
         if (alive) setPreview({ phase: 'ready', text: value, url: '', error: '' });
+      } else if (sniff) {
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength > limit) throw new RangeError(sizeError(limit));
+        const value = looksLikeText(new Uint8Array(buffer));
+        if (!alive) return;
+        if (value === null) setPreview({ phase: 'unsupported', url: '', text: '', error: '' });
+        else setPreview({ phase: 'ready', text: value, url: '', error: '', sniffed: true });
       } else {
-        const blob = await response.blob();
-        if (blob.size > limit) throw new RangeError(sizeError(limit));
+        // 节点的 /files 下载口一律回 application/octet-stream 加 attachment（那是
+        // 下载安全的刻意设计），照单全收的 blob 就是 octet-stream，浏览器拿它喂
+        // <object>/<img> 会当成"不知道是什么"直接下载。预览要的是我们判定出的类型，
+        // 所以 blob 按 artifact.mediaType 重新打上 type。
+        const raw = await response.blob();
+        if (raw.size > limit) throw new RangeError(sizeError(limit));
+        const blob = typedBlob(raw, artifact.mediaType);
         objectURL = URL.createObjectURL(blob);
         if (!alive) URL.revokeObjectURL(objectURL);
         else setPreview({ phase: 'ready', url: objectURL, text: '', error: '' });
       }
     }).catch((error) => { if (alive && error?.name !== 'AbortError') setPreview({ phase: 'error', url: '', text: '', error: error.message || String(error) }); });
     return () => { alive = false; controller.abort(); if (objectURL) URL.revokeObjectURL(objectURL); };
-  }, [artifact, onResource]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- resolveArtifact 每次返回新对象，按稳定键重跑
+  }, [resourceKey, onResource]);
   return preview;
+}
+
+// 预览到的正文是否可复制：文本类，或嗅探出来是文本的。
+export function previewText(artifact, preview) {
+  if (preview?.phase !== 'ready') return null;
+  const resolved = resolveArtifact(artifact);
+  if (resolved?.preview === 'text' || preview.sniffed) return preview.text ?? '';
+  return null;
+}
+
+function CopyPreviewButton({ text }) {
+  const [state, setState] = useState('idle');
+  const timerRef = useRef(null);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setState('done');
+    } catch {
+      setState('failed');
+    }
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setState('idle'), 1600);
+  };
+  return <button type="button" className="artifact-copy" onClick={copy} aria-live="polite" title="复制文件全文">{state === 'done' ? '已复制' : state === 'failed' ? '复制失败' : '复制'}</button>;
 }
 
 const SOURCE_LANGUAGE_BY_EXTENSION = Object.freeze({
@@ -171,20 +249,26 @@ function TextArtifactPreview({ artifact, text, mode: controlledMode, onModeChang
   </div>;
 }
 
-export function ArtifactPreviewBody({ artifact, preview, textMode, onTextModeChange, showTextModeControls = true }) {
+export function ArtifactPreviewBody({ artifact: rawArtifact, preview, textMode, onTextModeChange, showTextModeControls = true }) {
+  const artifact = resolveArtifact(rawArtifact);
   if (!artifact) return null;
+  const textReady = preview.phase === 'ready' && (artifact.preview === 'text' || preview.sniffed);
   return <>
     {preview.phase === 'loading' && <p>正在加载预览…</p>}
-    {preview.phase === 'ready' && artifact.preview === 'text' && <TextArtifactPreview artifact={artifact} text={preview.text} mode={textMode} onModeChange={onTextModeChange} showModeControls={showTextModeControls} />}
+    {textReady && <TextArtifactPreview artifact={artifact} text={preview.text} mode={textMode} onModeChange={onTextModeChange} showModeControls={showTextModeControls} />}
     {preview.phase === 'ready' && artifact.preview === 'image' && <img src={preview.url} alt={artifact.name} />}
     {preview.phase === 'ready' && artifact.preview === 'media' && (artifact.kind === 'audio' ? <audio src={preview.url} controls /> : <video src={preview.url} controls />)}
-    {preview.phase === 'ready' && artifact.preview === 'inline' && <iframe src={preview.url} title={artifact.name} />}
-    {(artifact.preview === 'download_only' || artifact.preview === 'unsupported') && <div className="artifact-no-preview"><strong>此文件暂不支持站内预览</strong><p>文件事实和来源仍然保留，可以安全下载后打开。</p></div>}
+    {preview.phase === 'ready' && artifact.preview === 'inline' && <object className="artifact-pdf" data={preview.url} type="application/pdf" aria-label={artifact.name}>
+      {/* 浏览器没有内嵌 PDF 查看器时（部分移动端、无头环境）才会显示这段 */}
+      <div className="artifact-no-preview"><strong>这个浏览器不能内嵌显示 PDF</strong><p>可以下载后用系统查看器打开。</p></div>
+    </object>}
+    {(artifact.preview === 'download_only' || preview.phase === 'unsupported') && <div className="artifact-no-preview"><strong>此文件暂不支持站内预览</strong><p>文件事实和来源仍然保留，可以安全下载后打开。</p></div>}
     {preview.phase === 'error' && <div className="artifact-no-preview"><strong>预览暂不可用</strong><p>{preview.error}</p></div>}
   </>;
 }
 
-export function ArtifactContext({ artifact, onResource, onClose }) {
+export function ArtifactContext({ artifact: rawArtifact, onResource, onClose }) {
+  const artifact = resolveArtifact(rawArtifact);
   const preview = useArtifactPreview(artifact, onResource);
   const format = textPreviewFormat(artifact || {});
   const targetLine = Number.isSafeInteger(artifact?.line) && artifact.line > 0 ? artifact.line : 0;
@@ -193,9 +277,13 @@ export function ArtifactContext({ artifact, onResource, onClose }) {
     setTextMode(format.markdown && !targetLine ? 'preview' : 'source');
   }, [artifact?.resourceId, format.markdown, targetLine]);
   if (!artifact) return null;
-  const modeActions = format.markdown ? <div className="artifact-preview-mode artifact-preview-mode-header" role="group" aria-label="Markdown 查看方式">
-    <button type="button" className={textMode === 'preview' ? 'active' : ''} aria-pressed={textMode === 'preview'} onClick={() => setTextMode('preview')}>预览</button>
-    <button type="button" className={textMode === 'source' ? 'active' : ''} aria-pressed={textMode === 'source'} onClick={() => setTextMode('source')}>源码</button>
+  const copyable = previewText(artifact, preview);
+  const modeActions = (format.markdown || copyable !== null) ? <div className="artifact-preview-mode artifact-preview-mode-header" role="group" aria-label="文件操作">
+    {format.markdown && <>
+      <button type="button" className={textMode === 'preview' ? 'active' : ''} aria-pressed={textMode === 'preview'} onClick={() => setTextMode('preview')}>预览</button>
+      <button type="button" className={textMode === 'source' ? 'active' : ''} aria-pressed={textMode === 'source'} onClick={() => setTextMode('source')}>源码</button>
+    </>}
+    {copyable !== null && <CopyPreviewButton text={copyable} />}
   </div> : null;
   return <SidePanel className="artifact-context" ariaLabel="文件详情" title={artifact.name} closeLabel="关闭文件详情" headerActions={modeActions} onClose={onClose}>
     <section className="artifact-context-preview" aria-label="文件预览">

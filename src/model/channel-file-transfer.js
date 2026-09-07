@@ -5,19 +5,39 @@ export function safeUploadName(name) {
   return String(name || 'upload').replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+/, '') || 'upload';
 }
 
+// "application/octet-stream" 不算声明：它是"我不知道"的写法，不是一种类型。消息附件
+// 和 agent 引用的文件经常只带这个值，按它判就什么都预览不了；扩展名比它更可信。
+export const UNKNOWN_MEDIA_TYPE = 'application/octet-stream';
+
+const MEDIA_TYPE_BY_EXTENSION = Object.freeze({
+  md: 'text/markdown', markdown: 'text/markdown', mdown: 'text/markdown', txt: 'text/plain', text: 'text/plain', log: 'text/plain',
+  go: 'text/plain', js: 'text/javascript', mjs: 'text/javascript', cjs: 'text/javascript', jsx: 'text/javascript', ts: 'text/plain', tsx: 'text/plain',
+  py: 'text/plain', rs: 'text/plain', java: 'text/plain', kt: 'text/plain', swift: 'text/plain', rb: 'text/plain', php: 'text/plain',
+  c: 'text/plain', cc: 'text/plain', cpp: 'text/plain', cxx: 'text/plain', h: 'text/plain', hpp: 'text/plain',
+  sh: 'text/plain', bash: 'text/plain', zsh: 'text/plain', fish: 'text/plain', ps1: 'text/plain', bat: 'text/plain',
+  css: 'text/css', scss: 'text/plain', less: 'text/plain', html: 'text/html', htm: 'text/html', xml: 'text/xml', svg: 'image/svg+xml',
+  yaml: 'text/yaml', yml: 'text/yaml', toml: 'text/plain', ini: 'text/plain', cfg: 'text/plain', conf: 'text/plain', env: 'text/plain', properties: 'text/plain',
+  sql: 'text/plain', graphql: 'text/plain', proto: 'text/plain', diff: 'text/plain', patch: 'text/plain', tex: 'text/plain', rst: 'text/plain', org: 'text/plain',
+  json: 'application/json', jsonl: 'application/json', ndjson: 'application/json', csv: 'text/csv', tsv: 'text/tab-separated-values',
+  pdf: 'application/pdf',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
+  mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', flac: 'audio/flac',
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+  zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+});
+
 export function mediaTypeFromFileName(name, declared = '') {
-  if (declared) return declared;
-  const extension = String(name).split('.').pop()?.toLowerCase();
-  return ({
-    md: 'text/markdown', txt: 'text/plain', log: 'text/plain',
-    go: 'text/plain', js: 'text/javascript', jsx: 'text/javascript', ts: 'text/plain', tsx: 'text/plain',
-    py: 'text/plain', rs: 'text/plain', java: 'text/plain', c: 'text/plain', cc: 'text/plain', cpp: 'text/plain', h: 'text/plain', hpp: 'text/plain',
-    sh: 'text/plain', bash: 'text/plain', zsh: 'text/plain', css: 'text/css', html: 'text/html', xml: 'text/xml',
-    yaml: 'text/yaml', yml: 'text/yaml', toml: 'text/plain', sql: 'text/plain',
-    json: 'application/json', csv: 'text/csv', pdf: 'application/pdf',
-    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
-    mp3: 'audio/mpeg', mp4: 'video/mp4',
-  })[extension] || 'application/octet-stream';
+  const known = String(declared || '').trim().toLowerCase();
+  if (known && known !== UNKNOWN_MEDIA_TYPE) return declared;
+  const base = String(name || '').split(/[\\/]/).pop() || '';
+  const dot = base.lastIndexOf('.');
+  const extension = dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+  // 常见的无扩展名文本文件：Makefile、Dockerfile、LICENSE、.gitignore 这一类。
+  if (!extension && /^(makefile|dockerfile|license|readme|changelog|authors|todo|\..+)$/i.test(base)) return 'text/plain';
+  return MEDIA_TYPE_BY_EXTENSION[extension] || UNKNOWN_MEDIA_TYPE;
 }
 
 // 传输带频道和票，仅此两样。票的作用域就是（频道, actor）：频道由请求写明，跟其他

@@ -119,9 +119,10 @@
 .artifact-markdown-preview th, .artifact-markdown-preview td { padding: 7px 9px; border: 1px solid var(--line-structural); }
 .artifact-markdown-preview img { max-width: 100%; }
 .artifact-line-missing { margin: 0 0 10px; color: var(--danger); }
-.artifact-context-preview img, .artifact-context-preview video, .artifact-context-preview iframe { display: block; width: 100%; height: 100%; max-height: none; border: 0; object-fit: contain; }
+.artifact-context-preview img, .artifact-context-preview video, .artifact-context-preview iframe, .artifact-context-preview object { display: block; width: 100%; height: 100%; max-height: none; border: 0; object-fit: contain; }
 .artifact-context-preview audio { width: calc(100% - 24px); }
 .artifact-no-preview { padding: 30px 18px; text-align: center; }
+.artifact-preview-mode .artifact-copy { margin-left: 4px; }
 .artifact-no-preview strong { font-size: 13px; }
 .artifact-no-preview p { margin: 6px 0 0; line-height: 1.5; }
 

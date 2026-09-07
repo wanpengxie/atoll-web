@@ -148,7 +148,7 @@ describe('F6 预览生命周期预算', () => {
     expect(await screen.findByRole('heading', { name: '阅读区' })).toBeTruthy();
     const header = document.querySelector('.side-panel-header');
     const buttons = [...header.querySelectorAll('button')].map((button) => button.textContent || button.getAttribute('aria-label'));
-    expect(buttons).toEqual(['预览', '源码', '×']);
+    expect(buttons).toEqual(['预览', '源码', '复制', '×']);
     expect(document.querySelector('.artifact-metadata')).toBeNull();
     expect(document.querySelector('.artifact-context-actions')).toBeNull();
     expect(document.querySelectorAll('.artifact-preview-mode')).toHaveLength(1);
