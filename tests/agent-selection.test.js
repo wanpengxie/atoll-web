@@ -175,13 +175,15 @@ describe('agent.options incarnation 快照', () => {
     expect(view.client.update_status).toBe('available');
   });
 
-  it('usage 报 resolved id 时保留目录中的 canonical current', () => {
+  it('usage 报目录外的 resolved id 时如实显示，不退回过期的 options current', () => {
+    // options 快照每个 incarnation 只探测一次，select 之后 current 就过期了；
+    // 账本里最近一条 usage 才是 agent 真正用的模型（owner 2026-09-09：如实反映，不判断）。
     const options = normalizeAgentOptions({
-      models: [{ value: 'claude-fable-5[1m]', label: 'Fable', efforts: [{ value: 'high' }] }],
-      current: { model: 'claude-fable-5[1m]', effort: 'high' },
+      models: [{ value: 'claude-fable-5[1m]', label: 'Fable', efforts: [{ value: 'high' }] }, { value: 'haiku', label: 'Haiku', efforts: [] }],
+      current: { model: 'haiku', effort: '' },
     });
     const view = agentSelectionView({ actorId: 'claude', options, usage: { model: 'claude-fable-5', effort: 'high' } });
-    expect(view.current).toEqual({ model: 'claude-fable-5[1m]', effort: 'high' });
+    expect(view.current).toEqual({ model: 'claude-fable-5', effort: 'high' });
   });
 
   it('成功 select 的 catalog value 立即覆盖 options 旧 current', () => {

@@ -143,15 +143,16 @@ export function latestAgentUsage(state, actorId, liveRequestId = '') {
 // default 可以不是第一条，冒充会长期显示错误参数）。
 export function agentSelectionView({ actorId, describe, options = null, usage }) {
   const selections = options?.selections?.length ? options.selections : selectionsFromDescribe(describe);
-  // Native usage can report a resolved model id while the selectable value is
-  // an alias (Claude: claude-fable-5 vs claude-fable-5[1m]). Keep the options
-  // snapshot's canonical current unless usage names an actual catalog value.
-  // A successful agent.select reports that value, so it still updates at once.
-  const optionModels = new Set(options?.models?.map((model) => model.id) || []);
-  const usageIsSelectable = usage?.model && (!options || optionModels.has(usage.model));
-  const current = usageIsSelectable
+  // The displayed current value is the ledger's truth: whatever the latest
+  // usage reports is what the agent ran with, even when the provider spells
+  // it as a resolved id the catalog does not list (Claude reports
+  // claude-fable-5-1 for the catalog value claude-fable-5-1[1m]). The options
+  // snapshot is probed once per incarnation and goes stale after the first
+  // agent.select, so it is only the baseline before any usage exists. Owner
+  // 2026-09-09: reflect faithfully, do not judge.
+  const current = usage?.model
     ? { model: usage.model, effort: usage.effort }
-    : options?.current || (usage?.model ? { model: usage.model, effort: usage.effort } : null);
+    : options?.current || null;
   // 没有 selections 只表示不可切换，不表示没有当前配置。agent.context 仍可能
   // 返回真实 model（有些 provider 没有 effort），此时生成只读视图。
   if (!selections.length && !current && usage?.contextTokens == null && usage?.contextWindow == null) return null;
