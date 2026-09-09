@@ -123,3 +123,32 @@ describe('自己动手的操作恒不进「@我」', () => {
     expect(got).toEqual([]);
   });
 });
+
+describe('agent 给自己的委托进「@我」——那是它的调度任务留下的痕迹', () => {
+  const selfId = 'human:root:1';
+  const agent = { id: 'agent:codex:1', kind: 'agent' };
+  // 闹钟到点：触发事件 → 自己给自己的 agent.timer.wake → 进展 → 它由此发出的子请求。
+  // 每一条的 sender 和 audience 都是同一个 agent，没有一条跟人有关。
+  const fire = { id: 'timer:t1', kind: 'event', type: 'agent.resume', sender: agent, audience: [agent.id], payload: { task: 'resume deployment' } };
+  const wake = { id: 'wake-1', kind: 'request', type: 'agent.timer.wake', parent_id: 'timer:t1', correlation_id: 'timer:t1', sender: agent, audience: [agent.id], payload: { body: { text: '闹钟到点了' } } };
+  const progress = { id: 'wake-1-p', kind: 'response', type: 'agent.timer.wake', parent_id: 'wake-1', correlation_id: 'timer:t1', sender: agent, audience: [agent.id], payload: { status: 'processing' } };
+  const child = { id: 'child-1', kind: 'request', type: 'agent.ask', correlation_id: 'timer:t1', sender: agent, audience: ['peer:other:1'], payload: { body: { text: 'ping' } } };
+  const rows = new Map([['timer:t1', fire], ['wake-1', wake], ['wake-1-p', progress], ['child-1', child]]);
+
+  it('触发事件、唤醒请求、它的进展和子请求都在', () => {
+    const visible = relatedEnvelopeIds({ rows }, selfId);
+    for (const id of ['timer:t1', 'wake-1', 'wake-1-p', 'child-1']) expect(visible.has(id)).toBe(true);
+  });
+
+  it('agent 之间的普通往来仍不算——只有自己发给自己的才是委托', () => {
+    const other = { id: 'x1', kind: 'request', type: 'agent.ask', sender: agent, audience: ['agent:claude:1'], correlation_id: 'corr-x', payload: {} };
+    const visible = relatedEnvelopeIds({ rows: new Map([['x1', other]]) }, selfId);
+    expect(visible.has('x1')).toBe(false);
+  });
+
+  it('人给自己发的不算委托——那条线走的是"我发/我收"，不受这条规则影响', () => {
+    const note = { id: 'n1', kind: 'event', type: 'note', sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:other:1'], payload: {} };
+    const visible = relatedEnvelopeIds({ rows: new Map([['n1', note]]) }, selfId);
+    expect(visible.has('n1')).toBe(false);
+  });
+});

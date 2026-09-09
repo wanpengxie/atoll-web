@@ -8,12 +8,12 @@ import { LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { replyTargetOf } from '../model/reply-target.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
-import { controlLabel, extraControls, taskControlContext } from '../model/task-controls.js';
+import { controlLabel, controlPayload, extraControls, taskControlContext } from '../model/task-controls.js';
 import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { selectSystemNote } from '../model/agent-selection.js';
 import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { projectTimeline } from '../model/timeline-projection.js';
-import { turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
+import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { processCount, turnStartObservation } from '../model/turn-process.js';
 import { diagnostic } from '../model/diagnostics.js';
 import { createTopIntentController, HISTORY_OPERATION } from '../model/history-interaction.js';
@@ -127,13 +127,14 @@ function ApprovalCard({ turn, state, onResolve, names }) {
 
 function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) {
   const extras = extraControls(context);
-  if (!context.canEdit && !context.canStop && !extras.length) return null;
+  if (!context.workId && !context.canEdit && !context.canStop && !extras.length) return null;
   return (
     <section className="task-controls" aria-label="任务控制">
+      {context.workId && <div className="task-work-identity"><code>{context.workId}</code><span>{[context.workState, context.workStage, context.executionState].filter(Boolean).join(' · ')}</span></div>}
       <div className="task-control-buttons">
         {context.canEdit && <button type="button" onClick={onEdit} disabled={editActive}>编辑</button>}
-        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, {})}>停止</button>}
-        {extras.map((entry) => <button key={entry.word} type="button" onClick={() => onControl(entry.word, { target: context.requestId })}>{controlLabel(entry)}</button>)}
+        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, controlPayload(context, TYPES.agentInterrupt, {}))}>停止</button>}
+        {extras.map((entry) => <button key={entry.word} type="button" onClick={() => onControl(entry.word, controlPayload(context, entry.word, { target: context.requestId }))}>{controlLabel(entry)}</button>)}
       </div>
     </section>
   );

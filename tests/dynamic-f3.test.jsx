@@ -26,6 +26,18 @@ function runningTurn() {
   };
 }
 
+it.each([true, false])('普通请求显示过程摘要，有文字进展：%s', (hasHumanProgress) => {
+  const turn = runningTurn();
+  turn.request.type = 'report.generate';
+  for (const item of turn.provisional) item.envelope.type = turn.request.type;
+  if (!hasHumanProgress) turn.provisional.shift();
+  const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 3 };
+  render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+  const summary = screen.getByRole('button', { name: hasHumanProgress ? /正在整理资料/ : /正在处理/ });
+  expect(summary.textContent).toContain(hasHumanProgress ? '正在整理资料' : '正在处理');
+  expect(summary.getAttribute('aria-expanded')).toBe('false');
+});
+
 it('main Dynamic keeps one rolling activity line inside the processing agent bubble', () => {
   const turn = runningTurn();
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 3 };

@@ -44,6 +44,18 @@ export function controlLabel(entry) {
   return entry.label || entry.word.split('.').pop();
 }
 
+// Work-aware controls carry their stable target in the actor-authored entry.
+// Legacy controls omit payload and keep using the caller's request/turn
+// fallback. The declaration wins so a targeted stop can never degrade into
+// the empty, Agent-wide legacy interrupt.
+export function controlPayload(context, word, fallback = {}) {
+  const entry = context?.controls?.find((candidate) => candidate.word === word);
+  const declared = entry?.payload;
+  return declared && typeof declared === 'object' && !Array.isArray(declared)
+    ? { ...fallback, ...declared }
+    : fallback;
+}
+
 export function taskControlContext(turn, { selfId = '', access = '', now = Date.now() } = {}) {
   const request = turn?.request;
   const actorId = request?.audience?.length === 1 ? request.audience[0] : '';
@@ -55,6 +67,7 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
   const owned = Boolean(selfId && request?.sender?.id === selfId);
   const writable = access === 'member_active';
   const frame = latestStatusFrame(turn);
+  const workFrame = frame?.work_id ? frame : (turn?.terminal?.payload?.work_id ? turn.terminal.payload : null);
   const location = frame?.status || '';
   const controls = open ? controlEntries(frame) : [];
   const words = new Set(controls.map((entry) => entry.word));
@@ -72,6 +85,10 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
     expired: expiresAt > 0 && expiresAt <= now,
     location,
     controls,
+    workId: typeof workFrame?.work_id === 'string' ? workFrame.work_id : '',
+    workState: workFrame?.work_state || workFrame?.state || '',
+    workStage: workFrame?.stage || '',
+    executionState: workFrame?.execution_state || '',
     // 已离开队列、正在等 provider 裁定是否并入当前轮。按钮随 controls 一起清空，
     // 这里再给一个明确的事实，让等待区能写"正在并入"而不是无声地少了按钮。
     steering: Boolean(frame?.steering),

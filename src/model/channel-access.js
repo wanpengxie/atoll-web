@@ -84,7 +84,8 @@ function isReserved(profile) {
   // c0 是空间根频道。后端可以把根频道标成 systemReserved，但这不代表它
   // 是内部 lobby；产品必须始终保留它。只有真正的 lobby/内部占位频道隐藏。
   if (profile?.id === 'c0') return false;
-  return profile?.id === 'c0.lobby' || profile?.name === 'lobby' || profile?.systemReserved === true;
+  return profile?.type === 'actor'
+    || profile?.id === 'c0.lobby' || profile?.name === 'lobby' || profile?.systemReserved === true;
 }
 
 function isRootOwner(state, principalId) {

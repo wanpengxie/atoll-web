@@ -4,7 +4,7 @@ import { correlationOf } from '../protocol/envelope.js';
 // 那样会把 agent 的回答、工具的活动、被我问到的人的答复全部切掉，剩下一串自言自语。
 // 要的是「我参与的那几段对话」，所以范围按两层取：
 //
-//   第一层  我直接发起或直接收到的消息
+//   第一层  我直接发起或直接收到的消息，以及 agent 给自己的委托（见 isSelfCommission）
 //   第二层  以第一层为父、或与第一层同属一个 correlation 的消息
 //
 // 第二层里 correlation 那一半是关键：一次请求引出的回执、活动事件、以及被调方再
@@ -35,6 +35,20 @@ function directlyMine(envelope, selfId) {
   return Array.isArray(envelope.audience) && envelope.audience.includes(selfId);
 }
 
+// agent 给自己的委托也算第一层。闹钟到点时 agent 不是"被唤醒"，而是给自己 Post 一条
+// 请求（agent.timer.wake，触发事件本身也是自己发给自己的），随后的进展、终态、以及它
+// 由此发出的子请求全挂在这条委托的 correlation 上。这些往来里没有人，按"我发/我收"
+// 恒取不到——可它们正是 agent 的调度任务在频道里留下的痕迹，看频道的人要看的就是
+// 这个：agent 什么时候自己醒了、醒来干了什么。
+//
+// 判据是 sender 与 audience 同一个 agent，不是消息类型：类型由定闹钟的人随便起
+// （msg_type 可指定），而"自己发给自己"是底座给这类委托的固定形状。
+function isSelfCommission(envelope) {
+  const sender = envelope?.sender;
+  if (sender?.kind !== 'agent' || !sender.id) return false;
+  return Array.isArray(envelope.audience) && envelope.audience.includes(sender.id);
+}
+
 // relatedEnvelopeIds 走的是频道收到的全部信封（state.rows），不是当前可见的那一页：
 // 第二层要拿第一层的 id 去比对，而第一层可能落在窗口之外。
 export function relatedEnvelopeIds(state, selfId) {
@@ -43,7 +57,7 @@ export function relatedEnvelopeIds(state, selfId) {
   const correlations = new Set();
   for (const envelope of rows) {
     if (isSelfOperation(envelope)) continue;
-    if (!directlyMine(envelope, selfId)) continue;
+    if (!directlyMine(envelope, selfId) && !isSelfCommission(envelope)) continue;
     if (envelope.id) ids.add(envelope.id);
     const correlation = correlationOf(envelope);
     if (correlation) correlations.add(correlation);

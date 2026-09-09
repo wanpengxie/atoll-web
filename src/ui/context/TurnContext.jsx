@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { actorNameFromMap, actorNameMap } from '../../model/actor-display.js';
-import { taskControlContext } from '../../model/task-controls.js';
+import { controlPayload, taskControlContext } from '../../model/task-controls.js';
 import { messagePresentation } from '../../model/message-presentation.js';
 import { turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
 import { processObservations } from '../../model/turn-process.js';
@@ -45,7 +45,7 @@ function ContextControls({ context, state = {}, onCancel, onControl }) {
     <h3>控制</h3>
     <div>
       {context.canCancel && <button type="button" disabled={busy} onClick={onCancel}>{state.status === 'sending' ? '正在取消…' : '取消任务'}</button>}
-      {context.canStop && <button type="button" disabled={busy} onClick={() => onControl('agent.interrupt', {})}>停止</button>}
+      {context.canStop && <button type="button" disabled={busy} onClick={() => onControl('agent.interrupt', controlPayload(context, 'agent.interrupt', {}))}>停止</button>}
     </div>
     {state.status === 'accepted' && <p>控制请求已受理，最终状态仍以频道账本为准。</p>}
     {state.status === 'uncertain' && <p className="uncertain">结果待确认；重连后会按账本事实恢复。</p>}
@@ -67,6 +67,7 @@ function TurnDetailBody({ turn, roster = [], selfId, access, controlState, onCan
       {showSource && onSource && <button type="button" onClick={() => onSource({ view: 'dynamic', objectType: 'turn', objectId: turn.requestId, seq: turn.requestSeq })}>在动态中查看</button>}
     </div>}
     <section className={`turn-context-status status-${turn.status}`}><span className="turn-status-dot" /><div><strong>{turnStatusLabel(turn)}</strong><small>{turnProcessSummary(turn)}</small></div></section>
+    {context.workId && <section className="turn-context-section turn-context-work"><h3>Agent Work</h3><dl className="turn-audit-facts"><div><dt>稳定编号</dt><dd>{context.workId}</dd></div><div><dt>状态</dt><dd>{[context.workState, context.workStage, context.executionState].filter(Boolean).join(' · ') || '未知'}</dd></div></dl></section>}
     {turn.terminal && <section className="turn-context-terminal"><h3>最终结果</h3><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <p>{text}</p>} /></section>}
     <section className="turn-context-section"><h3>业务进展</h3><div className="turn-context-process-scroll">{business.length ? business.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.payload?.detail || item.envelope.payload?.message || turnStatusLabel({ status: item.status })} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有独立业务状态更新</p>}</div></section>
     <details className="turn-context-section turn-context-technical" open={!turn.terminal}>
