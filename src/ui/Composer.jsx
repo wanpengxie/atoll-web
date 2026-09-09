@@ -60,12 +60,16 @@ function mentionCandidates(rows, selfId, selectedIds, query) {
 const AGENT_COMMANDS = Object.freeze([
   { command: 'compact', type: TYPES.agentCompact, label: '压缩上下文', description: '保留当前对话，压缩较早的上下文' },
   { command: 'new', type: TYPES.agentNew, label: '新建对话', description: '保留当前 Agent，换成一段全新会话' },
+  // 这一条恒不问 agent 声明了什么词——它正是给"agent 不响应了"准备的。停止
+  // （agent.interrupt）要那个 agent 自己把它从队列里读出来，卡死的时候恰恰读不到；
+  // restart 的收件人是频道的 system actor，恒不经过卡住的那一位。
+  { command: 'restart', type: TYPES.member.restart, scope: 'channel', label: '重启 Agent', description: 'Agent 卡住不响应时给它换一届任期，手上的活全部作废；账本与文件不动' },
 ]);
 
 function commandCandidates(types, query) {
   const supported = new Set(types || []);
   const needle = String(query || '').toLowerCase();
-  return AGENT_COMMANDS.filter((row) => supported.has(row.type) && `${row.command} ${row.label}`.toLowerCase().includes(needle));
+  return AGENT_COMMANDS.filter((row) => (row.scope === 'channel' || supported.has(row.type)) && `${row.command} ${row.label}`.toLowerCase().includes(needle));
 }
 
 // 频道面的斜杠命令。收件人恒是本频道的 system actor：成员类的词它自己答，
@@ -83,6 +87,12 @@ export function slashCommand(value) {
   if (verb === '/model') {
     if (rest.length > 2) throw new TypeError('用法：/model [model] [effort]');
     return { msgType: TYPES.agentSelect, payload: { ...(rest[0] ? { model: rest[0] } : {}), ...(rest[1] ? { effort: rest[1] } : {}) }, target: 'agent' };
+  }
+  // 重启：说的是"对哪个 agent 做"，收件人却是频道的 system actor——目标 agent
+  // 此刻可能正卡着，恒不能把这条也交给它。member 由判据链填（与消息发送同源）。
+  if (verb === '/restart') {
+    if (rest.length) throw new TypeError('用法：/restart（重启当前目标 Agent）');
+    return { msgType: TYPES.member.restart, payload: {}, member: 'target' };
   }
   if (verb === '/fork' || verb === '/context' || verb === '/status') {
     if (rest.length) throw new TypeError(`用法：${verb}`);
@@ -723,7 +733,13 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
           recipient = parameterAgent;
           if (!recipient) throw new TypeError('请 @ 一个 Agent，或在右下角选择目标 Agent');
         } else recipient = resolveManagementActors(roster).system;
-        const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload: slash.payload });
+        let payload = slash.payload;
+        if (slash.member) {
+          const member = parameterAgent;
+          if (!member) throw new TypeError('请 @ 一个 Agent，或在右下角选择目标 Agent');
+          payload = { ...payload, member: member.id };
+        }
+        const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload });
         setSentMessageId(messageId || '');
         editor?.commands.clearContent(true);
         recipientsRef.current = [];

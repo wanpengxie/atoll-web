@@ -397,6 +397,34 @@ describe('F3 Composer', () => {
     expect(screen.queryByRole('option', { name: /new/ })).toBeNull();
   });
 
+  // restart 是唯一一条恒不看 describe 的：它正是给"这个 agent 已经不响应了"准备的，
+  // 而不响应的 agent 连 describe 都可能答不出来。收件人是频道的 system actor，
+  // 恒不经过卡住的那一位自己的队列。
+  it('/restart 恒在候选里，且发给频道 system actor、payload 指名目标 Agent', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue('m-restart');
+    render(<Composer
+      channelId="c0"
+      roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }, { id: 'codex', kind: 'agent', name: 'Codex' }]}
+      selfId="me"
+      onSend={onSend}
+      agentSelection={{ fallbackAgentId: 'steward', supportedTypes: [] }}
+    />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '/');
+    expect(screen.getByRole('option', { name: /restart/ })).toBeTruthy();
+    await user.clear(input);
+
+    await user.type(input, '@Co');
+    await user.click(screen.getByRole('option', { name: /Codex/ }));
+    await user.type(input, '/restart{Enter}{Enter}');
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
+      msgType: 'system.member.restart',
+      audience: ['system'],
+      payload: { member: 'codex' },
+    }));
+  });
+
   // mention 是一个动词，不是一段文本：@ 只负责打开选择框，选中的人离开正文、
   // 上到收件人条。正文自此恒是纯文本——这正是"粘一段带 @ 的东西就发不出去"的解药。
   it('选中的成员离开正文、上到收件人条，并随草稿一起存活', async () => {
