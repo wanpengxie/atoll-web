@@ -190,20 +190,29 @@ export function selectSystemNote({ usage = {}, describe = null, agentName = '' }
 
 // —— 参数面板目标判据链（§2.1，从上往下第一个命中即止）————————————
 
-// mentionAgents：编辑框里 @ 生效的 agent（顺序即出现序）。返回：
+// recipients：收件人条上 @ 选中的成员（顺序即选中序）。返回：
 // { kind: 'single', agent } | { kind: 'multi', count } | { kind: 'none' }。
-// mention 里只有 human → none（不显示"最近 agent"误导）。
+// 只 @ 了 human → none（不显示"最近 agent"误导）。
 //
 // filterAgentId：动态过滤条恰好只选中一个 agent 时，就是那个 agent。它排在手选
 // 之前，理由是它恒在屏幕上显示着——屏幕上只剩「我和他」的往来时，回车发给别人
 // 是显然错的，而人看得见自己筛的是谁，所以拿它当默认恒不引入暗状态。手选（§2.1.2）
 // 只在判据链走到 none 时才有入口，两者恒不会互相抢：筛选一旦命中，手选入口本就不出现。
-export function resolveParameterAgent({ mentions = [], filterAgentId = '', manualAgentId = '', roster = [], state = null, selfId = '' }) {
+// 判据链的第一环单独导出：Composer 持有收件人条，App 持有名册与账本，两边恒共用
+// 这一环，恒不各写一份（写两份就会在"@ 了三个人"这种格子上各说各话）。
+// 未命中返回 null = 这一环没有意见，继续往下走。
+export function mentionRing(recipients = []) {
+  const agents = recipients.filter((row) => row.kind === 'agent');
+  if (agents.length === 1) return { kind: 'single', agent: agents[0], source: 'mention' };
+  if (agents.length > 1) return { kind: 'multi', count: agents.length };
+  if (recipients.length > 0) return { kind: 'none' };
+  return null;
+}
+
+export function resolveParameterAgent({ recipients = [], filterAgentId = '', manualAgentId = '', roster = [], state = null, selfId = '' }) {
   const agents = roster.filter((row) => row.kind === 'agent');
-  const mentionAgents = mentions.filter((row) => row.kind === 'agent');
-  if (mentionAgents.length === 1) return { kind: 'single', agent: mentionAgents[0], source: 'mention' };
-  if (mentionAgents.length > 1) return { kind: 'multi', count: mentionAgents.length };
-  if (mentions.length > 0) return { kind: 'none' };
+  const mentioned = mentionRing(recipients);
+  if (mentioned) return mentioned;
   const focused = filterAgentId ? agents.find((row) => row.id === filterAgentId) : null;
   if (focused) return { kind: 'single', agent: focused, source: 'filter' };
   const manual = manualAgentId ? agents.find((row) => row.id === manualAgentId) : null;

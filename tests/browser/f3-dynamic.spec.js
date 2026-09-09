@@ -64,21 +64,48 @@ test('F3-003..005 键盘、多行草稿、附件入口与 320px 单表面可达'
   await expect(turn.locator('.agent-turn-bubble').getByRole('button', { name: /编辑|停止|重试/ })).toHaveCount(0);
 });
 
-test('Composer 的 @成员是可恢复的 Mention Node，不靠正文猜收件人', async ({ page, request }) => {
+// @ 是动词不是文本：选中的人离开正文、上到收件人条，正文里恒不留下任何"疑似
+// 收件人"的字符串。收件人跟正文一样属于草稿，切走再回来恒还在。
+test('Composer 的 @成员是收件人条上的芯片，正文恒是纯文本', async ({ page, request }) => {
   await reset(request, 'message-flow', 1305); await login(page);
   const editor = page.getByLabel('消息');
+  const banner = page.getByRole('status', { name: '收件人' });
   await editor.fill('@st');
   await page.getByRole('option', { name: /steward/ }).click();
-  await expect(editor.locator('[data-type="mention"][data-id="steward"]')).toHaveCount(1);
+  await expect(banner.locator('.composer-target-pill.is-picked')).toHaveCount(1);
+  await expect(banner).toContainText('@steward');
+  await expect(editor).not.toContainText('@');
 
   await page.locator('#workspace-files-toggle').click();
   await page.getByRole('tab', { name: '动态' }).click();
   const restored = page.getByLabel('消息');
-  await expect(restored.locator('[data-type="mention"][data-id="steward"]')).toHaveCount(1);
+  await expect(page.getByRole('status', { name: '收件人' }).locator('.composer-target-pill.is-picked')).toHaveCount(1);
   await restored.press('End');
   await restored.pressSequentially('检查结构化收件人');
   await page.getByRole('button', { name: /发送/ }).click();
   await expect(page.locator('.turn-card').filter({ hasText: '检查结构化收件人' })).toBeVisible();
+});
+
+// 这条测的是"粘一段带 @ 的文本就发不出去"那个病：正文里的 @ 恒只是一个字符，
+// ESC 是它的出口——@ 后面按 ESC，选择框收起，接着写邮箱。
+test('正文里的 @ 是字面量：ESC 关掉选择框后照常写、照常发', async ({ page, request }) => {
+  await reset(request, 'message-flow', 1306); await login(page);
+  const editor = page.getByLabel('消息');
+  await editor.click();
+  // 这一个 @ 不是在叫人：ESC 关掉选择框，把邮箱写完，@ 就只是一个字符。
+  await page.keyboard.type('@st');
+  await expect(page.getByRole('option', { name: /steward/ })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('option', { name: /steward/ })).toHaveCount(0);
+  await page.keyboard.type('eward@atoll.local 看下 ');
+  await expect(page.getByRole('status', { name: '收件人' }).locator('.composer-target-pill.is-picked')).toHaveCount(0);
+
+  // 摘掉一个 @ 恒只摘掉那一个：下一个 @ 照常打开选择框。
+  await page.keyboard.type('@st');
+  await page.getByRole('option', { name: /steward/ }).click();
+  await expect(page.getByRole('status', { name: '收件人' }).locator('.composer-target-pill.is-picked')).toHaveCount(1);
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.turn-card').filter({ hasText: '@steward@atoll.local 看下' })).toBeVisible();
 });
 
 test('Composer 聚焦时只有一个紧凑的外层焦点表面', async ({ page, request }) => {

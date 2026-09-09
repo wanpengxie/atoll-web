@@ -5,15 +5,18 @@
 //
 // 判据链（自上而下，第一个命中即止），与 submit 的分支一一对应：
 //   回复态  → 被回复的那一位；对方已不在名册就是"发不出去"，恒不静默退回默认目标
-//   有 @    → 全部被 @ 到的成员（含人类——submit 也是全发，不是只发 agent）
-//   无 @    → 默认目标（筛选 > 手选 > 最近交互 > 唯一 agent，见 resolveParameterAgent）
+//   @ 过人  → 收件人条上的全部芯片（含人类——submit 也是全发，不是只发 agent）
+//   没 @ 过 → 默认目标（筛选 > 手选 > 最近交互 > 唯一 agent，见 resolveParameterAgent）
 //   都没有  → 无收件人；此时回车会被拒，所以横幅在这一格必须是警告而不是留白
-export function composerDelivery({ mentions = [], replyTarget = null, replyRecipient = null, fallbackAgent = null, fallbackSource = '' }) {
+//
+// recipients 是 @ 选中后落到收件人条上的那组字段（见 mention-recipients.js），
+// 恒不是从正文里扫出来的——正文里的 @ 只是 @。
+export function composerDelivery({ recipients = [], replyTarget = null, replyRecipient = null, fallbackAgent = null, fallbackSource = '' }) {
   if (replyTarget) {
     if (!replyRecipient) return { kind: 'lost', rows: [], source: '', lostName: replyTarget.senderName || '' };
     return { kind: 'direct', rows: [replyRecipient], source: 'reply' };
   }
-  if (mentions.length > 0) return { kind: 'direct', rows: mentions, source: 'mention' };
+  if (recipients.length > 0) return { kind: 'direct', rows: recipients, source: 'mention' };
   if (fallbackAgent) return { kind: 'direct', rows: [fallbackAgent], source: fallbackSource };
   return { kind: 'none', rows: [], source: '' };
 }

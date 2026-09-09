@@ -15,37 +15,37 @@ const ask = (id, sender, audience) => ({ id, kind: 'request', type: 'agent.ask',
 
 describe('参数面板目标判据链（§2.1）', () => {
   it('@ 恰一个 agent 优先于一切', () => {
-    const out = resolveParameterAgent({ mentions: [CLAUDE], manualAgentId: 'steward', roster: ROSTER, state: stateOf([ask('a', 'me', ['steward'])]), selfId: 'me' });
+    const out = resolveParameterAgent({ recipients: [CLAUDE], manualAgentId: 'steward', roster: ROSTER, state: stateOf([ask('a', 'me', ['steward'])]), selfId: 'me' });
     expect(out).toMatchObject({ kind: 'single', agent: CLAUDE, source: 'mention' });
   });
 
   it('@ 多个 agent 是多目标态', () => {
-    expect(resolveParameterAgent({ mentions: [STEWARD, CLAUDE], roster: ROSTER, selfId: 'me' })).toEqual({ kind: 'multi', count: 2 });
+    expect(resolveParameterAgent({ recipients: [STEWARD, CLAUDE], roster: ROSTER, selfId: 'me' })).toEqual({ kind: 'multi', count: 2 });
   });
 
   it('只 @ 人类时收起（不显示最近 agent 误导）', () => {
-    const out = resolveParameterAgent({ mentions: [PEER], roster: ROSTER, state: stateOf([ask('a', 'me', ['steward'])]), selfId: 'me' });
+    const out = resolveParameterAgent({ recipients: [PEER], roster: ROSTER, state: stateOf([ask('a', 'me', ['steward'])]), selfId: 'me' });
     expect(out.kind).toBe('none');
   });
 
   it('无 @ 时手选压最近交互', () => {
-    const out = resolveParameterAgent({ mentions: [], manualAgentId: 'claude', roster: ROSTER, state: stateOf([ask('a', 'me', ['steward'])]), selfId: 'me' });
+    const out = resolveParameterAgent({ recipients: [], manualAgentId: 'claude', roster: ROSTER, state: stateOf([ask('a', 'me', ['steward'])]), selfId: 'me' });
     expect(out).toMatchObject({ kind: 'single', agent: CLAUDE, source: 'manual' });
   });
 
   it('最近交互取我发的最后一条 agent.ask', () => {
     const state = stateOf([ask('a', 'me', ['steward']), ask('b', 'me', ['claude'])]);
-    const out = resolveParameterAgent({ mentions: [], roster: ROSTER, state, selfId: 'me' });
+    const out = resolveParameterAgent({ recipients: [], roster: ROSTER, state, selfId: 'me' });
     expect(out).toMatchObject({ kind: 'single', agent: CLAUDE, source: 'recent' });
   });
 
   it('多 agent 且无任何判据时为 none（前端拦截手选）', () => {
-    expect(resolveParameterAgent({ mentions: [], roster: ROSTER, state: stateOf([]), selfId: 'me' }).kind).toBe('none');
+    expect(resolveParameterAgent({ recipients: [], roster: ROSTER, state: stateOf([]), selfId: 'me' }).kind).toBe('none');
   });
 
   it('唯一 agent 频道恒有目标', () => {
     const roster = [ME, STEWARD];
-    const out = resolveParameterAgent({ mentions: [], roster, state: stateOf([]), selfId: 'me' });
+    const out = resolveParameterAgent({ recipients: [], roster, state: stateOf([]), selfId: 'me' });
     expect(out).toMatchObject({ kind: 'single', agent: STEWARD, source: 'only' });
   });
 });

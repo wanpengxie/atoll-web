@@ -59,6 +59,8 @@
   --recipient-bg: rgba(0, 166, 81, .09);
   --recipient-warn-text: #a9791f;
   --recipient-warn-bg: rgba(229, 150, 0, .12);
+  /* 芯片上那颗 × 的悬停底色：同色系再压一档，恒不在收件人条上开出第二种颜色。 */
+  --recipient-remove-hover: rgba(0, 166, 81, .18);
   --danger-line: rgba(228, 0, 43, .25);
   --agent-line: rgba(0, 114, 206, .14);
   --agent-surface: rgba(0, 114, 206, .045);

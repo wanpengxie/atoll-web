@@ -1052,7 +1052,7 @@ export default function App() {
   const manualAgentId = manualAgentsRef.current.get(activeChannelId) || '';
   // 无 @ 时的默认目标（判据链 §2.1 的 2-5 环：筛选 > 手选 > 最近交互 > 唯一 agent）。
   // mention 环在 Composer 判（它持有编辑框状态），终判结果经 onTargetChange 回报。
-  const fallbackAgent = resolveParameterAgent({ mentions: [], filterAgentId: focusAgentId, manualAgentId, roster: activeRoster, state: activeState, selfId });
+  const fallbackAgent = resolveParameterAgent({ recipients: [], filterAgentId: focusAgentId, manualAgentId, roster: activeRoster, state: activeState, selfId });
   const fallbackAgentId = fallbackAgent.kind === 'single' ? fallbackAgent.agent.id : '';
   const fallbackAgentSource = fallbackAgent.kind === 'single' ? (fallbackAgent.source || '') : '';
   const providers = taskProviders(capabilityIndex, activeRoster);

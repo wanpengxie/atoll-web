@@ -24,7 +24,7 @@ describe('筛选决定默认收件人', () => {
   });
 
   it('编辑框里的 @ 仍然压过筛选——它是当场写下的、最明确的一句话', () => {
-    const target = resolveParameterAgent({ mentions: [CLAUDE], filterAgentId: CODEX.id, roster });
+    const target = resolveParameterAgent({ recipients: [CLAUDE], filterAgentId: CODEX.id, roster });
     expect(target).toMatchObject({ kind: 'single', source: 'mention' });
     expect(target.agent.id).toBe(CLAUDE.id);
   });
@@ -46,13 +46,13 @@ describe('横幅报的收件人与 submit 同源', () => {
   // submit 对多个 @ 是逐个全发（含人类），横幅恒不能只报其中一个，
   // 也恒不能像参数面板那样把这一格收成"多目标"而不说是谁。
   it('@ 了多个成员 → 全部列出，人类也在内', () => {
-    const delivery = composerDelivery({ mentions: [CLAUDE, HUMAN], fallbackAgent: CODEX, fallbackSource: 'recent' });
+    const delivery = composerDelivery({ recipients: [CLAUDE, HUMAN], fallbackAgent: CODEX, fallbackSource: 'recent' });
     expect(delivery.rows).toEqual([CLAUDE, HUMAN]);
     expect(delivery.source).toBe('mention');
   });
 
   it('只 @ 了人类 → 就是发给人类，恒不悄悄退回默认 agent', () => {
-    const delivery = composerDelivery({ mentions: [HUMAN], fallbackAgent: CODEX, fallbackSource: 'recent' });
+    const delivery = composerDelivery({ recipients: [HUMAN], fallbackAgent: CODEX, fallbackSource: 'recent' });
     expect(delivery.rows).toEqual([HUMAN]);
   });
 
@@ -67,7 +67,7 @@ describe('横幅报的收件人与 submit 同源', () => {
   });
 
   it('回复压过 @ 与默认目标', () => {
-    const delivery = composerDelivery({ mentions: [CLAUDE], replyTarget: { senderName: 'root' }, replyRecipient: HUMAN, fallbackAgent: CODEX });
+    const delivery = composerDelivery({ recipients: [CLAUDE], replyTarget: { senderName: 'root' }, replyRecipient: HUMAN, fallbackAgent: CODEX });
     expect(delivery.rows).toEqual([HUMAN]);
     expect(delivery.source).toBe('reply');
   });

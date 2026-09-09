@@ -1,18 +1,25 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Extension } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
-import Mention from '@tiptap/extension-mention';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Suggestion from '@tiptap/suggestion';
+import { PluginKey } from '@tiptap/pm/state';
 import { FolderOpen, Upload, X } from 'lucide-react';
 import { actorDisplayName } from '../model/actor-display.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { replyRecipient } from '../model/reply-target.js';
 import { composerDelivery, deliverySourceLabel } from '../model/composer-target.js';
+import { addRecipient, normalizeRecipients, removeRecipient, resolveRecipients } from '../model/mention-recipients.js';
+import { mentionRing } from '../model/agent-selection.js';
 import { resolveManagementActors } from '../model/management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
 import { ModelSelector } from './ModelSelector.jsx';
+
+// 两个 Suggestion 插件同挂一个编辑器，各自要一把键——同键会在建 view 时直接抛
+// "Adding different instances of a keyed plugin"。
+const MENTION_PLUGIN_KEY = new PluginKey('memberMention');
+const COMMAND_PLUGIN_KEY = new PluginKey('agentCommand');
 
 function editorDocument(text = '') {
   return {
@@ -24,33 +31,17 @@ function editorDocument(text = '') {
   };
 }
 
+// 草稿是"正文 + 收件人"两件事。收件人恒不藏在正文里（那正是这次要治的病），
+// 所以它作为独立字段随草稿一起存活，切频道回来芯片还在。
 function normalizedDraft(draft) {
   if (draft && typeof draft === 'object') {
     return {
       text: String(draft.text || ''),
       doc: draft.doc?.type === 'doc' ? draft.doc : editorDocument(draft.text),
+      recipients: normalizeRecipients(draft.recipients),
     };
   }
-  return { text: String(draft || ''), doc: editorDocument(draft) };
-}
-
-function mentionIdsOf(document) {
-  const ids = [];
-  function visit(node) {
-    if (node?.type === 'mention' && node.attrs?.id && !ids.includes(node.attrs.id)) ids.push(node.attrs.id);
-    node?.content?.forEach(visit);
-  }
-  visit(document);
-  return ids;
-}
-
-function unresolvedMentions(editor) {
-  const tokens = [];
-  editor?.state.doc.descendants((node) => {
-    if (!node.isText) return;
-    for (const match of node.text.matchAll(/(?:^|\s)@([^\s@]+)/g)) tokens.push(match[1]);
-  });
-  return tokens;
+  return { text: String(draft || ''), doc: editorDocument(draft), recipients: [] };
 }
 
 function editorText(editor) {
@@ -136,11 +127,23 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const cancelReplyRef = useRef(onCancelReply);
   const mentionContextRef = useRef({ roster: [], selfId: '', selectedIds: [], activeCandidate: 0, editing: false });
   const suggestionSessionRef = useRef(null);
+  // 屏幕上有没有一张打开的菜单。回车该给菜单还是该发消息，恒以"人看见了什么"为准：
+  // ProseMirror 的 editorProps.handleKeyDown 排在插件之前，所以这一判必须在这里做，
+  // 而不是等插件的 onKeyDown（那时回车已经被这里放过去了）。没有候选的 @ 恒不算菜单
+  // ——"@2026 的计划" 按回车就该发出去，恒不被一张空菜单吞掉。
+  const menuOpenRef = useRef({ mention: false, command: false });
   const commandContextRef = useRef({ types: [], activeCandidate: 0 });
   const commandSessionRef = useRef(null);
   const submitRef = useRef(() => {});
   const normalDraftRef = useRef(null);
-  const [mentionIds, setMentionIds] = useState(() => mentionIdsOf(initialDraft.doc));
+  // 收件人条上的芯片。它是 @ 这个动词的产物，恒不是正文的函数——正文里的 @ 只是 @。
+  const [recipients, setRecipients] = useState(() => initialDraft.recipients);
+  const recipientsRef = useRef(initialDraft.recipients);
+  // 编辑器配置只建一次（deps 是 channelId），里面的回调恒经 ref 打到本次渲染的闭包。
+  const recipientActionsRef = useRef({ add: () => {}, dropLast: () => false });
+  // ESC 摘掉的那个 @ 记在这里（记 token 起点）：菜单收起，"@" 留在正文里当字面量，
+  // 继续打字恒不再把它重新认成一次 mention。token 结束（空格/删掉）时 onExit 清掉。
+  const dismissedMentionRef = useRef(null);
   const [error, setError] = useState('');
   const [sendState, setSendState] = useState('idle');
   const [sentMessageId, setSentMessageId] = useState('');
@@ -186,13 +189,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     const fingerprint = JSON.stringify(document);
     if (fingerprint === lastDraftFingerprintRef.current) return;
     lastDraftFingerprintRef.current = fingerprint;
-    const nextMentionIds = mentionIdsOf(document);
-    setMentionIds((existing) => (
-      existing.length === nextMentionIds.length && existing.every((id, index) => id === nextMentionIds[index])
-        ? existing
-        : nextMentionIds
-    ));
-    if (!editModeRef.current) onDraftChange?.({ text: value, doc: document });
+    if (!editModeRef.current) onDraftChange?.({ text: value, doc: document, recipients: recipientsRef.current });
     setError('');
     setSendState('idle');
   }
@@ -260,51 +257,75 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         listItem: false,
         orderedList: false,
       }),
-      Mention.configure({
-        HTMLAttributes: { class: 'composer-mention' },
-        renderText: ({ node }) => `@${node.attrs.label || node.attrs.id}`,
-        suggestion: {
-          char: '@',
-          items: ({ query: searchQuery }) => {
-            const context = mentionContextRef.current;
-            return mentionCandidates(context.roster, context.selfId, context.selectedIds, searchQuery.toLowerCase());
-          },
-          render: () => ({
-            onStart: (props) => {
-              suggestionSessionRef.current = props;
-              updateQuery(props.query.toLowerCase());
-              setActiveCandidate(0);
-            },
-            onUpdate: (props) => {
-              suggestionSessionRef.current = props;
-              updateQuery(props.query.toLowerCase());
-            },
-            onExit: () => {
-              suggestionSessionRef.current = null;
-              updateQuery(null);
-            },
-            onKeyDown: ({ event }) => {
-              const session = suggestionSessionRef.current;
-              if (!session) return false;
+      // @ 是一个动词，不是一段文本：它只负责打开选择框。选中之后 "@查询" 从正文里
+      // 删掉，人上到收件人条；正文自此恒是纯文本，粘一段带 @ 的东西、写邮箱、写
+      // "@codex /compact" 都只是字符，恒不再挡住发送。
+      Extension.create({
+        name: 'memberMentions',
+        addProseMirrorPlugins() {
+          return [Suggestion({
+            editor: this.editor,
+            pluginKey: MENTION_PLUGIN_KEY,
+            char: '@',
+            items: ({ query: searchQuery }) => {
               const context = mentionContextRef.current;
-              const rows = mentionCandidates(context.roster, context.selfId, context.selectedIds, session.query.toLowerCase()).slice(0, 8);
-              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                event.preventDefault();
-                if (rows.length) {
-                  const direction = event.key === 'ArrowDown' ? 1 : -1;
-                  setActiveCandidate((current) => (current + direction + rows.length) % rows.length);
-                }
-                return true;
-              }
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                const row = rows[context.activeCandidate] || rows[0];
-                if (row) session.command({ id: row.id, label: actorDisplayName(row) });
-                return true;
-              }
-              return false;
+              return mentionCandidates(context.roster, context.selfId, context.selectedIds, searchQuery.toLowerCase());
             },
-          }),
+            command: ({ editor: current, range, props }) => {
+              current.chain().focus().deleteRange(range).run();
+              recipientActionsRef.current.add(props);
+            },
+            render: () => ({
+              onStart: (props) => {
+                if (dismissedMentionRef.current === props.range.from) return;
+                dismissedMentionRef.current = null;
+                suggestionSessionRef.current = props;
+                updateQuery(props.query.toLowerCase());
+                setActiveCandidate(0);
+              },
+              onUpdate: (props) => {
+                if (dismissedMentionRef.current === props.range.from) return;
+                suggestionSessionRef.current = props;
+                updateQuery(props.query.toLowerCase());
+              },
+              onExit: () => {
+                dismissedMentionRef.current = null;
+                suggestionSessionRef.current = null;
+                updateQuery(null);
+              },
+              onKeyDown: ({ event, range }) => {
+                const session = suggestionSessionRef.current;
+                if (!session) return false;
+                // ESC：这一个 @ 我不是在叫人。菜单收起，字面量留在正文里继续打
+                // ——邮箱、@ts-ignore、"@ 一下他" 都得能写。
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  dismissedMentionRef.current = (range || session.range)?.from ?? null;
+                  suggestionSessionRef.current = null;
+                  updateQuery(null);
+                  return true;
+                }
+                const context = mentionContextRef.current;
+                const rows = mentionCandidates(context.roster, context.selfId, context.selectedIds, session.query.toLowerCase()).slice(0, 8);
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  if (rows.length) {
+                    const direction = event.key === 'ArrowDown' ? 1 : -1;
+                    setActiveCandidate((current) => (current + direction + rows.length) % rows.length);
+                  }
+                  return true;
+                }
+                if (event.key === 'Enter') {
+                  const row = rows[context.activeCandidate] || rows[0];
+                  if (!row) return false;
+                  event.preventDefault();
+                  session.command({ id: row.id, label: actorDisplayName(row), kind: row.kind });
+                  return true;
+                }
+                return false;
+              },
+            }),
+          })];
         },
       }),
       Extension.create({
@@ -312,6 +333,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         addProseMirrorPlugins() {
           return [Suggestion({
             editor: this.editor,
+            pluginKey: COMMAND_PLUGIN_KEY,
             char: '/',
             startOfLine: true,
             allowSpaces: false,
@@ -375,14 +397,24 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         role: 'textbox',
       },
       handleKeyDown: (view, event) => {
-        if (event.key === 'Escape' && replyTargetRef.current) {
+        // 光标顶在正文最前面再按退格 = 摘掉最后一枚收件人芯片。收件人不在正文里，
+        // 但摘除它的手势恒该在正文里也有一个入口（芯片上的 × 是另一个）。
+        if (event.key === 'Backspace' && !event.isComposing) {
+          const { empty, from } = view.state.selection;
+          if (empty && from <= 1 && recipientActionsRef.current.dropLast()) {
+            event.preventDefault();
+            return true;
+          }
+        }
+        const menus = menuOpenRef.current;
+        if (event.key === 'Escape' && !menus.mention && !menus.command && replyTargetRef.current) {
           event.preventDefault();
           cancelReplyRef.current?.();
           return true;
         }
         if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return false;
-        // 候选激活后交还给 Suggestion 插件；普通 Enter 才进入发送动作。
-        if (suggestionSessionRef.current || commandSessionRef.current) return false;
+        // 菜单开着就把回车交还给 Suggestion 插件；否则回车恒是发送。
+        if (menus.mention || menus.command) return false;
         event.preventDefault();
         event.stopPropagation();
         submitRef.current();
@@ -402,21 +434,21 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   editModeRef.current = editMode;
   replyTargetRef.current = replyTarget;
   cancelReplyRef.current = onCancelReply;
-  const mentions = useMemo(() => mentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean), [mentionIds, roster]);
-  const mentionedAgents = useMemo(() => mentions.filter((row) => row.kind === 'agent'), [mentions]);
-  // 参数面板目标（判据链 §2.1）：mention 环在此判（唯一 agent → 它；多 agent →
-  // 多目标态；只 @ 人类 → 收起）；无 mention 落到 App 算的默认环（手选 > 最近交互 >
-  // 唯一 agent）。原则：右下角显示谁，无 @ 回车就发给谁。
+  // 芯片按当前名册重解：名字随成员改名走，这个 id 不在名册里了就标 missing
+  // ——恒不静默把一个收件人丢掉再退回默认目标。
+  const mentions = useMemo(() => resolveRecipients(recipients, roster), [recipients, roster]);
+  // 参数面板目标（判据链 §2.1）：mention 环与 App 共用同一个函数；无 @ 落到 App
+  // 算的默认环（筛选 > 手选 > 最近交互 > 唯一 agent）。原则：右下角显示谁，
+  // 没 @ 过人时回车就发给谁。
   const fallbackAgent = useMemo(() => roster.find((row) => row.id === agentSelection?.fallbackAgentId && row.kind === 'agent') || null, [agentSelection?.fallbackAgentId, roster]);
   const parameterTarget = useMemo(() => {
-    if (mentionedAgents.length === 1) return { kind: 'single', agent: mentionedAgents[0] };
-    if (mentionedAgents.length > 1) return { kind: 'multi', count: mentionedAgents.length };
-    if (mentions.length > 0) return { kind: 'none' };
+    const mentioned = mentionRing(mentions.filter((row) => !row.missing));
+    if (mentioned) return mentioned;
     if (fallbackAgent) return { kind: 'single', agent: fallbackAgent };
     const agents = roster.filter((row) => row.kind === 'agent');
     if (agents.length === 1) return { kind: 'single', agent: agents[0] };
     return { kind: 'none' };
-  }, [mentionedAgents, mentions, fallbackAgent, roster]);
+  }, [mentions, fallbackAgent, roster]);
   const parameterAgent = parameterTarget.kind === 'single' ? parameterTarget.agent : null;
   const currentReplyRecipient = useMemo(() => replyRecipient(replyTarget, roster), [replyTarget?.senderId, roster]);
   const effectiveParameterAgent = currentReplyRecipient?.kind === 'agent' ? currentReplyRecipient : replyTarget ? null : parameterAgent;
@@ -428,16 +460,19 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   // agent 时同解，在「@ 了三个人」「@ 的全是人类」这些格子上并不同解，所以恒
   // 各算各的，横幅这一边与 submit 同源（composer-target.js）。
   const delivery = useMemo(() => composerDelivery({
-    mentions,
+    recipients: mentions,
     replyTarget,
     replyRecipient: currentReplyRecipient,
     fallbackAgent,
     fallbackSource: fallbackAgent ? (agentSelection?.fallbackAgentSource || '') : '',
   }), [mentions, replyTarget, currentReplyRecipient, fallbackAgent, agentSelection?.fallbackAgentSource]);
   const deliveryLabel = deliverySourceLabel(delivery.source);
+  // 芯片是 @ 亲手放上去的，恒逐个显示（要能逐个摘掉）；派生出来的默认目标只有
+  // 一个名字，仍是一枚不可摘的芯片。
   const deliveryText = delivery.kind === 'none' ? '⚠ 无收件人'
     : delivery.kind === 'lost' ? `⚠ @${delivery.lostName} 已不在`
       : `@${actorDisplayName(delivery.rows[0])}${delivery.rows.length > 1 ? ` +${delivery.rows.length - 1}` : ''}`;
+  const removableRows = delivery.source === 'mention' ? delivery.rows : [];
   // 名单和理由都住在 title 里：屏幕上恒只有一个名字，要核对的时候鼠标停一下。
   const deliveryTitle = delivery.kind === 'none' ? '还没有收件人：@ 一位成员，或在右下角选择目标 Agent'
     : delivery.kind === 'lost' ? `@${delivery.lostName} 已不在本频道，取消回复后重新选择收件人`
@@ -446,6 +481,7 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   const candidates = useMemo(() => matchingCandidates(query), [mentions, query, roster, selfId]);
   const commands = useMemo(() => commandCandidates(agentSelection?.supportedTypes, commandQuery), [agentSelection?.supportedTypes, commandQuery]);
   mentionContextRef.current = { roster, selfId, selectedIds: mentions.map((row) => row.id), activeCandidate, editing: Boolean(editMode) };
+  menuOpenRef.current = { mention: query != null && candidates.length > 0, command: commandQuery != null && commands.length > 0 };
   commandContextRef.current = { types: agentSelection?.supportedTypes || [], activeCandidate: activeCommandCandidate };
   const sentRows = sentBatch.length ? sentBatch : (sentMessageId ? [{ id: sentMessageId, label: '' }] : []);
   const activeSubmission = sentRows.map((row) => pending.find((item) => item.messageId === row.id)).find(Boolean) || null;
@@ -464,13 +500,14 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
   useEffect(() => {
     if (!editor) return;
     if (editTargetId) {
-      if (!normalDraftRef.current) normalDraftRef.current = { doc: editor.getJSON(), text: editorText(editor), mentionIds: mentionIdsOf(editor.getJSON()) };
+      if (!normalDraftRef.current) normalDraftRef.current = { doc: editor.getJSON(), text: editorText(editor), recipients: recipientsRef.current };
       const next = editorDocument(editMode.session.text);
       lastDraftFingerprintRef.current = JSON.stringify(next);
       editor.commands.setContent(next, { emitUpdate: false });
       updateHasText(Boolean(editMode.session.text.trim()));
       updateQuery(null);
-      setMentionIds([]);
+      recipientsRef.current = [];
+      setRecipients([]);
       setError('');
       setSendState(editMode.session.phase === 'editing' ? 'idle' : 'sending');
       requestAnimationFrame(() => editor.commands.focus('end'));
@@ -483,7 +520,8 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       editor.commands.setContent(saved.doc, { emitUpdate: false });
       updateHasText(Boolean(saved.text.trim()));
       updateQuery(null);
-      setMentionIds(saved.mentionIds);
+      recipientsRef.current = saved.recipients;
+      setRecipients(saved.recipients);
       setError('');
       setSendState('idle');
     }
@@ -499,8 +537,10 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     cancelDraftIdle();
     compositionFrameRef.current = 0;
     lastDraftFingerprintRef.current = JSON.stringify(initialDraft.doc);
-    setMentionIds(mentionIdsOf(initialDraft.doc));
+    recipientsRef.current = initialDraft.recipients;
+    setRecipients(initialDraft.recipients);
     updateHasText(Boolean(initialDraft.text.trim()));
+    dismissedMentionRef.current = null;
     suggestionSessionRef.current = null;
     updateQuery(null);
     setError('');
@@ -606,22 +646,35 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
     return undefined;
   }, [pending, sendState, sentMessageId, sentBatch]);
 
-  function pick(row) {
-    suggestionSessionRef.current?.command({ id: row.id, label: actorDisplayName(row) });
+  // 收件人的唯一写入口。芯片变了就立刻落草稿——它和正文一样是草稿的一部分，
+  // 切走再回来恒还在。
+  function commitRecipients(next) {
+    if (next === recipientsRef.current) return false;
+    recipientsRef.current = next;
+    setRecipients(next);
+    setError('');
+    if (!editModeRef.current && editor && !editor.isDestroyed) {
+      onDraftChange?.({ text: editorText(editor), doc: editor.getJSON(), recipients: next });
+    }
+    return true;
   }
 
-  function removeMention(id) {
-    if (!editor) return;
-    editor.commands.command(({ tr, state, dispatch }) => {
-      const ranges = [];
-      state.doc.descendants((node, pos) => {
-        if (node.type.name === 'mention' && node.attrs.id === id) ranges.push({ from: pos, to: pos + node.nodeSize });
-      });
-      ranges.reverse().forEach((range) => tr.delete(range.from, range.to));
-      dispatch?.(tr);
-      return true;
-    });
-    editor.commands.focus();
+  recipientActionsRef.current = {
+    add: (row) => commitRecipients(addRecipient(recipientsRef.current, row)),
+    dropLast: () => {
+      const rows = recipientsRef.current;
+      if (!rows.length) return false;
+      return commitRecipients(rows.slice(0, -1));
+    },
+  };
+
+  function pick(row) {
+    suggestionSessionRef.current?.command({ id: row.id, label: actorDisplayName(row), kind: row.kind });
+  }
+
+  function dropRecipient(id) {
+    commitRecipients(removeRecipient(recipientsRef.current, id));
+    editor?.commands.focus();
   }
 
   function beginEditLayoutTransition() {
@@ -673,30 +726,32 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
         const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload: slash.payload });
         setSentMessageId(messageId || '');
         editor?.commands.clearContent(true);
+        recipientsRef.current = [];
+        setRecipients([]);
+        onDraftChange?.({ text: '', doc: editorDocument(''), recipients: [] });
         setSendState('accepted');
         return;
       }
 
-      const unresolved = unresolvedMentions(editor);
-      if (unresolved.length) throw new TypeError(`请从候选列表选择成员：${unresolved.map((name) => `@${name}`).join('、')}`);
-      const liveMentionIds = mentionIdsOf(editor.getJSON());
-      let recipients;
+      // 正文恒不再被搜身：@ 在正文里就只是一个字符。收件人只有两个来源——
+      // 收件人条上的芯片，或者判据链算出来的默认目标。
+      const missing = mentions.filter((row) => row.missing);
+      if (missing.length) throw new TypeError(`${missing.map((row) => `@${row.label}`).join('、')} 已不在本频道，请从收件人条上摘掉`);
+      let targets;
       if (replyTarget) {
         const recipient = replyRecipient(replyTarget, roster);
         if (!recipient) throw new TypeError(`@${replyTarget.senderName} 已不在当前频道，请取消回复后重新选择收件人`);
-        const conflicts = liveMentionIds
-          .filter((id) => id !== recipient.id)
-          .map((id) => roster.find((row) => row.id === id))
-          .filter(Boolean);
+        const conflicts = mentions.filter((row) => row.id !== recipient.id);
         if (conflicts.length) throw new TypeError(`回复只能发送给 @${actorDisplayName(recipient)}；请移除 ${conflicts.map((row) => `@${actorDisplayName(row)}`).join('、')} 或取消回复`);
-        recipients = [recipient];
+        targets = [recipient];
       } else {
-        recipients = liveMentionIds.map((id) => roster.find((row) => row.id === id)).filter(Boolean);
-        if (!recipients.length) {
-          if (parameterAgent) recipients = [parameterAgent];
+        targets = mentions.length ? mentions : [];
+        if (!targets.length) {
+          if (parameterAgent) targets = [parameterAgent];
           else throw new TypeError('请 @ 一个成员，或在右下角选择目标 Agent');
         }
       }
+      const recipients = targets;
       const invalid = recipients.find((row) => !['agent', 'human'].includes(row.kind));
       if (invalid) throw new TypeError(`@${actorDisplayName(invalid)} 不能作为消息收件人`);
       // request 帧恒单收件人（协议 §3）：多 @ 拆成 N 条独立消息逐条发，各按收件人
@@ -723,6 +778,11 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       setSentMessageId(sent.at(-1)?.id || '');
       setSentBatch(sent);
       editor?.commands.clearContent(true);
+      // 芯片属于刚发出去的那一句。下一句要发给谁，由判据链重新回答（最近交互
+      // 这一环恰好会指向刚发过的人），恒不把上一句的收件人黏在框上。
+      recipientsRef.current = [];
+      setRecipients([]);
+      onDraftChange?.({ text: '', doc: editorDocument(''), recipients: [] });
       onClearAttachments?.();
       if (replyTarget && sent.length) onReplySent?.();
       if (failures.length) {
@@ -821,7 +881,14 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
             这不是错误也不是危险，是一句陈述。唯一该刺眼的是"没有收件人"。
             判据来源与多收件人名单挂在 title 上，想知道时鼠标停一下。 */}
         {!editMode && <div className={`composer-target is-${delivery.kind}${disabled ? ' is-muted' : ''}`} role="status" aria-label="收件人" title={deliveryTitle}>
-          <span className="composer-target-pill">{deliveryText}</span>
+          {removableRows.length
+            ? removableRows.map((row) => (
+              <span key={row.id} className={`composer-target-pill is-picked${row.missing ? ' is-lost' : ''}`}>
+                {`@${actorDisplayName(row)}`}
+                <button type="button" className="composer-target-remove" aria-label={`移除收件人 @${actorDisplayName(row)}`} title="移除收件人" disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={() => dropRecipient(row.id)}><X size={11} strokeWidth={2.4} aria-hidden="true" /></button>
+              </span>
+            ))
+            : <span className="composer-target-pill">{deliveryText}</span>}
         </div>}
         {fileDragActive && <div className="composer-drop-hint" role="status"><Upload size={18} strokeWidth={1.8} aria-hidden="true" /><strong>松开以上传到当前频道</strong></div>}
         {!editMode && replyTarget && <div className="composer-reply" role="status">

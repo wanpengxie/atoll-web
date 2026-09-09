@@ -335,7 +335,7 @@ describe('F3 Composer', () => {
     />);
 
     expect(screen.getByText('回复 @同事')).toBeTruthy();
-    expect(document.querySelector('[data-type="mention"]')).toBeNull();
+    expect(document.querySelectorAll('.composer-target-pill.is-picked')).toHaveLength(0);
     await user.type(screen.getByRole('textbox', { name: '消息' }), '收到，我来处理{Enter}');
     expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ msgType: 'human.message', audience: ['peer'] }));
     expect(onReplySent).toHaveBeenCalledOnce();
@@ -397,7 +397,9 @@ describe('F3 Composer', () => {
     expect(screen.queryByRole('option', { name: /new/ })).toBeNull();
   });
 
-  it('把候选成员写成 Mention Node，并只按节点路由', async () => {
+  // mention 是一个动词，不是一段文本：@ 只负责打开选择框，选中的人离开正文、
+  // 上到收件人条。正文自此恒是纯文本——这正是"粘一段带 @ 的东西就发不出去"的解药。
+  it('选中的成员离开正文、上到收件人条，并随草稿一起存活', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn().mockResolvedValue('message-mention');
     const onDraftChange = vi.fn();
@@ -407,13 +409,50 @@ describe('F3 Composer', () => {
     await user.type(input, '@研');
     await user.click(screen.getByRole('option', { name: /研究员/ }));
 
-    const mention = document.querySelector('[data-type="mention"][data-id="agent-1"]');
-    expect(mention).toBeTruthy();
+    expect(input.textContent).not.toContain('@');
+    const chip = document.querySelector('.composer-target-pill.is-picked');
+    expect(chip.textContent).toContain('@研究员');
     const snapshot = onDraftChange.mock.calls.at(-1)[0];
-    expect(snapshot.doc.content[0].content.some((node) => node.type === 'mention' && node.attrs.id === 'agent-1')).toBe(true);
+    expect(snapshot.recipients).toEqual([{ id: 'agent-1', label: '研究员', kind: 'agent' }]);
+    expect(JSON.stringify(snapshot.doc)).not.toContain('mention');
 
     await user.type(input, '请处理{Enter}');
-    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['agent-1'] }));
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['agent-1'], text: '请处理' }));
+  });
+
+  it('芯片可以摘掉：× 一枚一枚摘，正文最前面按退格摘最后一枚', async () => {
+    const user = userEvent.setup();
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }, { id: 'agent-2', kind: 'agent', name: '执行员' }]} selfId="me" onSend={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '@研');
+    await user.click(screen.getByRole('option', { name: /研究员/ }));
+    await user.type(input, '@执');
+    await user.click(screen.getByRole('option', { name: /执行员/ }));
+    expect(document.querySelectorAll('.composer-target-pill.is-picked')).toHaveLength(2);
+
+    await user.click(screen.getByRole('button', { name: '移除收件人 @研究员' }));
+    expect(document.querySelectorAll('.composer-target-pill.is-picked')).toHaveLength(1);
+
+    await user.type(input, '{Backspace}');
+    expect(document.querySelectorAll('.composer-target-pill.is-picked')).toHaveLength(0);
+  });
+
+  // 芯片上的 id 已经不在名册里了（成员被移出频道），恒不静默丢掉它再悄悄发给
+  // 默认目标——那是"我以为发给了他"的经典发生方式。
+  it('芯片上的 id 已不在名册 → 报出来并拒发，恒不静默退回默认目标', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer
+      channelId="c0"
+      roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }]}
+      selfId="me"
+      draft={{ text: '', doc: undefined, recipients: [{ id: 'agent:gone:1', label: '研究员', kind: 'agent' }] }}
+      agentSelection={{ fallbackAgentId: 'steward' }}
+      onSend={onSend}
+    />);
+    await user.type(screen.getByRole('textbox', { name: '消息' }), '继续{Enter}');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toContain('@研究员 已不在本频道');
   });
 
   it('多 @ 拆发：N 个收件人拆成 N 条单 audience 消息，各按 kind 定词', async () => {
@@ -445,16 +484,53 @@ describe('F3 Composer', () => {
     await user.type(input, '@Cl{Enter}');
 
     expect(onSend).not.toHaveBeenCalled();
-    expect(document.querySelector('[data-type="mention"][data-id="claude"]')).toBeTruthy();
+    expect(document.querySelector('.composer-target-pill.is-picked').textContent).toContain('@Claude');
   });
 
-  it('不会把普通文本里的 @ 名称猜成收件人', async () => {
+  // 正文里的 @ 恒只是一个字符。以前它得先证明自己不是收件人，于是粘一段带 @ 的
+  // 文本、写个邮箱、写 "@codex /compact"，整条消息都发不出去。
+  it('正文里的 @ 就是字面量：照发不误，收件人由默认目标回答', async () => {
     const user = userEvent.setup();
-    const onSend = vi.fn();
-    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }, { id: 'agent-2', kind: 'agent', name: '执行员' }]} selfId="me" onSend={onSend} />);
-    await user.type(screen.getByRole('textbox', { name: '消息' }), '正文里的 @研究员 不是节点{Enter}');
-    expect(onSend).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert').textContent).toContain('请从候选列表选择成员');
+    const onSend = vi.fn().mockResolvedValue('m-plain');
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }]} selfId="me" agentSelection={{ fallbackAgentId: 'steward' }} onSend={onSend} />);
+    await user.type(screen.getByRole('textbox', { name: '消息' }), '联系 ops@atoll.local 看下 @ts-ignore{Enter}');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['steward'], text: '联系 ops@atoll.local 看下 @ts-ignore' }));
+  });
+
+  // ESC = 这一个 @ 我不是在叫人。菜单收起，字面量留在正文里继续打。
+  it('@ 后按 ESC 取消选择框，@ 变回普通字符，回车照发', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue('m-esc');
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }]} selfId="me" agentSelection={{ fallbackAgentId: 'steward' }} onSend={onSend} />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '@st');
+    expect(screen.getByRole('option', { name: /Steward/ })).toBeTruthy();
+
+    await user.type(input, '{Escape}');
+    expect(screen.queryByRole('option', { name: /Steward/ })).toBeNull();
+    await user.type(input, 'eward@example.com{Enter}');
+    expect(document.querySelectorAll('.composer-target-pill.is-picked')).toHaveLength(0);
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['steward'], text: '@steward@example.com' }));
+  });
+
+  // @codex /compact —— 命令词从前被正文里的 @ 顶掉（首词成了 "@codex"），
+  // 于是"@ 谁去执行一个命令"这件事根本做不到。
+  it('@ 一个 Agent 再打命令：命令词照解析，收件人就是被 @ 的那个', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue('m-cmd');
+    render(<Composer
+      channelId="c0"
+      roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }, { id: 'codex', kind: 'agent', name: 'Codex' }]}
+      selfId="me"
+      agentSelection={{ fallbackAgentId: 'steward', supportedTypes: ['agent.compact'] }}
+      onSend={onSend}
+    />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '@Co');
+    await user.click(screen.getByRole('option', { name: /Codex/ }));
+    await user.type(input, '/compact{Enter}{Enter}');
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ msgType: 'agent.compact', audience: ['codex'] }));
   });
 
   it('supports multiline, attachment entry and accepted state', async () => {
