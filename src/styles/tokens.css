@@ -53,14 +53,15 @@
   --warning-line: rgba(229, 150, 0, .35);
   --warning-line-soft: rgba(229, 150, 0, .2);
   --danger-bg: var(--accent-bg);
-  /* 收件人标签：一句陈述，恒不跟输入框抢注意力，所以比 success/warning 正色更淡。
-     它贴在输入框上沿、字号 10px，不承担正文对比度义务（正文色见上面那组门禁）。 */
-  --recipient-text: #4c9d75;
-  --recipient-bg: rgba(0, 166, 81, .09);
-  --recipient-warn-text: #a9791f;
-  --recipient-warn-bg: rgba(229, 150, 0, .12);
+  /* 收件人标签：曾经是"一句陈述"，所以比 success/warning 正色更淡。现在 mention
+     只住在这里——正文里恒不再留收件人——它就是"这条发给谁"的唯一答案，所以恒是
+     全强度：不透明底、正色字，恒不再半透明地挂在框沿上（owner 2026-09-10）。 */
+  --recipient-text: #18713f;
+  --recipient-bg: #d7ecdf;
+  --recipient-warn-text: #8d5b0a;
+  --recipient-warn-bg: #fbf0d8;
   /* 芯片上那颗 × 的悬停底色：同色系再压一档，恒不在收件人条上开出第二种颜色。 */
-  --recipient-remove-hover: rgba(0, 166, 81, .18);
+  --recipient-remove-hover: #bcdfca;
   --danger-line: rgba(228, 0, 43, .25);
   --agent-line: rgba(0, 114, 206, .14);
   --agent-surface: rgba(0, 114, 206, .045);

@@ -95,16 +95,17 @@
 /* 收件人：贴在输入框上沿的一层，恒不占一行。
    零布局高度是重点——它一旦进流，就是在输入框上面多堆一条横幅，等候区被顶高一格，
    而它要说的只有一个名字。bottom:100% 让它的下边正好落在框的上边框上。
-   一句陈述而已：半透明底、淡绿字、无描边，恒不跟输入框抢注意力；只有"没有收件人"
-   换成警告色，因为那一格按回车会被拒。 */
+   mention 现在只住在这条上（正文里恒不再留收件人），所以它恒是全强度的：不透明底、
+   正色字、无描边——它不再是一句可以忽略的陈述，而是"这条发给谁"的唯一答案。
+   "没有收件人"和失联的收件人换成警告色，因为那一格按回车会被拒。 */
 .composer-target { position: absolute; z-index: 2; bottom: 100%; left: 12px; display: flex; max-width: calc(100% - 24px); flex-wrap: wrap; align-items: flex-end; gap: 2px; }
 .composer-target-pill { display: inline-flex; max-width: 100%; overflow: hidden; align-items: center; padding: 2px 9px 3px; border-radius: 7px 7px 0 0; background: var(--recipient-bg); color: var(--recipient-text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .composer-target.is-none .composer-target-pill, .composer-target.is-lost .composer-target-pill, .composer-target-pill.is-lost { background: var(--recipient-warn-bg); color: var(--recipient-warn-text); }
 /* @ 亲手放上去的人是芯片：能逐个看见，也能逐个摘掉（× 或正文最前面按退格）。
    派生出来的默认目标只有名字，没有 × ——它不是被"放上去"的，摘不掉也不该摘。 */
 .composer-target-pill.is-picked { padding-right: 3px; gap: 3px; }
-.composer-target-remove { display: inline-flex; padding: 1px; border: 0; border-radius: 5px; background: transparent; color: inherit; opacity: .65; cursor: pointer; }
-.composer-target-remove:hover:not(:disabled) { background: var(--recipient-remove-hover); opacity: 1; }
+.composer-target-remove { display: inline-flex; padding: 1px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.composer-target-remove:hover:not(:disabled) { background: var(--recipient-remove-hover); }
 .composer-target-remove:disabled { cursor: default; opacity: .35; }
 /* 发不出去时只压暗，恒不卸载——恒不进出，就恒不闪。 */
 .composer-target.is-muted { opacity: .6; }
