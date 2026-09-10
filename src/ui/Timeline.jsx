@@ -464,17 +464,23 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
   const bubbleTs = terminal?.ts || liveEnvelope?.ts;
   const processStartedTs = turnStartedAt(turn);
   const conversationTexts = conversationTextObservations(turn);
+  const terminalText = terminal && !stopped ? messagePresentation(terminal).text : '';
+  const foldText = [...conversationTexts.map(({ process }) => process.text), terminalText].filter(Boolean).join('\n\n');
   const className = `agent-turn-bubble${terminal ? ' settled' : ' processing'}${compact ? ' compact' : ''}${hasThreadChildren ? ' has-thread-children' : ''}`;
   const identity = <span className="actor-icon kind-agent">A</span>;
   const heading = <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>;
+  const conversationBody = <>
+    {conversationTexts.map(({ seq, envelope, process }) => <div key={envelope.id || seq} className="agent-progress-text" data-seq={seq}><MarkdownContent text={process.text} /></div>)}
+    {terminal && !stopped && <div className="agent-final-text"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
+  </>;
+  const hasConversationBody = conversationTexts.length > 0 || Boolean(terminal && !stopped);
   const content = <>
     {quotedRequest && <AgentRequestQuote request={quotedRequest} names={names} onDownload={onDownload} onPreview={onPreview} />}
-    {conversationTexts.map(({ seq, envelope, process }) => <div key={envelope.id || seq} className="response-content agent-progress-text" data-seq={seq}><MarkdownContent text={process.text} /></div>)}
+    {hasConversationBody && <div className="response-content">{compact
+      ? conversationBody
+      : <FoldableBody id={responseFoldId} text={foldText} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}>{conversationBody}</FoldableBody>}</div>}
     {!terminal && <ProgressTrail turn={turn} running title={title} startedAt={processStartedTs} mergedCount={mergedCount} />}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
-    {terminal && !stopped && <div className="response-content">{compact
-      ? <StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} />
-      : <FoldableBody id={responseFoldId} text={messagePresentation(terminal).text} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></FoldableBody>}</div>}
     {terminal && <ProgressTrail turn={turn} running={false} />}
   </>;
   if (compact) return <article className={`agent-thread-message ${className}${compactExpanded ? ' is-expanded' : ' is-collapsed'}`} tabIndex="0">

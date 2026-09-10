@@ -291,8 +291,8 @@
 .response-body { min-width: 0; }
 .response-body > header .response-failed { color: var(--danger); font-size: 10px; }
 .response-content { max-width: 74ch; }
-.agent-progress-text + .response-content { margin-top: 8px; }
-.agent-progress-text + .progress-trail { margin-top: 6px; }
+.agent-progress-text + .agent-progress-text, .agent-progress-text + .agent-final-text { margin-top: 8px; }
+.agent-turn-bubble .response-content + .progress-trail { margin-top: 6px; }
 
 .timeline-day { display: flex; width: min(100%, var(--timeline-track)); align-items: center; gap: 12px; margin: 18px auto 12px; color: var(--text-muted); font-size: 10px; font-weight: 650; }
 .timeline-day::before, .timeline-day::after { height: 1px; flex: 1; background: var(--line-subtle); content: ''; }

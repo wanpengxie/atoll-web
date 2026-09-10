@@ -59,6 +59,11 @@ const done = (id, parentId, text) => ({
   id, parent_id: parentId, kind: 'response', type: 'agent.ask', ts: Date.now(),
   sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { status: 'completed', text },
 });
+const progressText = (id, parentId, text) => ({
+  id, parent_id: parentId, kind: 'response', type: 'agent.ask', ts: Date.now(),
+  sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public',
+  payload: { status: 'processing', process: { kind: 'stage', stage: 'text', text } },
+});
 const roster = [{ id: 'me', kind: 'human', name: '我' }, { id: 'agent', kind: 'agent', name: 'Agent' }];
 const capabilityIndex = new Map([['agent', { describe: normalizeDescribe({ class: 'agent', capabilities: {}, words: { 'agent.ask': {} } }) }]]);
 
@@ -91,5 +96,26 @@ describe('Timeline 正文自动折叠', () => {
     fireEvent.click(screen.getByRole('button', { name: /展开全文/ }));
     rerender(<Timeline {...props} />);
     expect(document.querySelector('[data-entry-id="r1"] .message-fold.is-folded')).toBeNull();
+  });
+
+  it('中间正文与最终答复共用整段对话的展开和收起范围', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '第一问') });
+    apply(state, { channel_id: 'c0', seq: 2, envelope: progressText('r1-progress', 'r1', LONG) });
+    apply(state, { channel_id: 'c0', seq: 3, envelope: done('r1-done', 'r1', SHORT) });
+    apply(state, { channel_id: 'c0', seq: 4, envelope: request('r2', '第二问') });
+    apply(state, { channel_id: 'c0', seq: 5, envelope: done('r2-done', 'r2', SHORT) });
+    render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilityIndex} />);
+
+    const response = document.querySelector('[data-entry-id="r1"] .response-body .response-content');
+    const fold = response.querySelector('.message-fold');
+    expect(fold.classList.contains('is-folded')).toBe(true);
+    expect(fold.querySelector('.message-fold-content').contains(response.querySelector('.agent-progress-text'))).toBe(true);
+    expect(fold.querySelector('.message-fold-content').contains(response.querySelector('.agent-final-text'))).toBe(true);
+
+    fireEvent.click(response.querySelector('.message-fold-toggle'));
+    expect(fold.classList.contains('is-folded')).toBe(false);
+    fireEvent.click(response.querySelector('.message-fold-toggle'));
+    expect(fold.classList.contains('is-folded')).toBe(true);
   });
 });
