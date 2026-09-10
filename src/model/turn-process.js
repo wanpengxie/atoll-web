@@ -12,9 +12,24 @@ export function processObservations(turn) {
     .sort((left, right) => left.seq - right.seq);
 }
 
+// stage:text 是 agent 已经发给对话参与者的正文，只是在线协议把它挂在
+// provisional response 上。它不是思考草稿，也不属于执行过程。
+export function conversationTextObservations(turn) {
+  return processObservations(turn).filter(({ process }) => (
+    process.kind === 'stage'
+    && process.stage === 'text'
+    && typeof process.text === 'string'
+    && process.text.trim().length > 0
+  ));
+}
+
+export function executionProcessObservations(turn) {
+  return processObservations(turn).filter(({ process }) => !(process.kind === 'stage' && process.stage === 'text'));
+}
+
 export function processCount(turn) {
   const keys = new Set();
-  for (const item of processObservations(turn)) {
+  for (const item of executionProcessObservations(turn)) {
     if (item.process.kind === 'tool') keys.add(`tool:${item.process.tool_call_id || item.seq}`);
     if (item.process.kind === 'stage') keys.add(`stage:${item.seq}`);
   }

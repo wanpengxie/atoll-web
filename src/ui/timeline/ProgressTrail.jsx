@@ -1,13 +1,13 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { JsonView } from 'react-json-view-lite';
-import { processObservations } from '../../model/turn-process.js';
+import { executionProcessObservations } from '../../model/turn-process.js';
 import { useModalFocus } from '../primitives/useModalFocus.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 
-// 回合的过程痕迹：工具调用行与 agent 的中间产物（note）是同一量级的东西，
+// 回合的过程痕迹：工具调用行与 agent 的思考/计划是同一量级的东西，
 // 合成一条按序的轨迹。进行中滚动显示末几条，回合落定后仍可展开回看——
-// 过程恒不随终稿到达而消失。
-const NOTE_LABEL = Object.freeze({ thinking: '思考', plan: '计划', text: '草稿' });
+// 过程恒不随终稿到达而消失。stage:text 是对话正文，由 AgentBubble 展示。
+const NOTE_LABEL = Object.freeze({ thinking: '思考', plan: '计划' });
 const THINKING_ONLY = '思考中…';
 const SCROLL_ROWS = 2;
 
@@ -90,7 +90,7 @@ export function progressRows(turn) {
   const rows = [];
   const tools = new Map();
   const scope = turn?.requestId || turn?.request?.id || 'turn';
-  for (const observation of processObservations(turn)) {
+  for (const observation of executionProcessObservations(turn)) {
     const { seq, envelope, process } = observation;
     if (process.kind === 'tool') {
       if (process.phase === 'started') {

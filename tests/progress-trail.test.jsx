@@ -9,8 +9,7 @@ afterEach(() => { cleanup(); vi.useRealTimers(); });
 const roster = [{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }];
 const LONG = '这是一段很长的思考记录，'.repeat(12);
 
-// 过程轨迹的三条：进行中能看、落定后仍能回看、任何一条都能拉开看全文。
-// 这三件事都是纯查看——控制恒不在气泡里（见 agent-information-architecture）。
+// 工具与思考留在过程轨迹；stage:text 是已经发出的对话正文。
 function turnWith({ terminal = null } = {}) {
   const request = { id: 'req-1', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { text: '解释账本模型' } };
   return {
@@ -32,14 +31,15 @@ function renderTurn(turn) {
   return render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
 }
 
-it('处理中：工具行与中间产物同轨滚动，每条一行且可展开全文', () => {
+it('处理中：stage:text 显示为正文，工具与思考留在可展开的过程轨迹', () => {
   renderTurn(turnWith());
+  expect(document.querySelector('.agent-progress-text').textContent).toBe('先说结论');
   expect(document.querySelectorAll('.progress-trail.running .progress-row')).toHaveLength(2);
   fireEvent.click(screen.getByRole('button', { name: /展开过程详情/ }));
   const rows = [...document.querySelectorAll('.progress-row')].map((row) => row.textContent);
   expect(rows.some((text) => text.startsWith('tool: search 完成'))).toBe(true);
   expect(rows.some((text) => text.startsWith('思考 · '))).toBe(true);
-  expect(rows.some((text) => text.startsWith('草稿 · 先说结论'))).toBe(true);
+  expect(rows.some((text) => text.includes('先说结论'))).toBe(false);
 
   // 详情浮层：点一条才出来，出来后是全文，关掉就没了。
   expect(document.querySelector('.progress-drawer')).toBeNull();
@@ -72,12 +72,13 @@ it('处理中：工具行与中间产物同轨滚动，每条一行且可展开�
 it('落定后过程仍在：收成入口，展开是同一条轨迹', () => {
   const terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '最终答复' } };
   renderTurn(turnWith({ terminal }));
+  expect(document.querySelector('.agent-progress-text').textContent).toBe('先说结论');
   expect(screen.getByText('最终答复')).toBeTruthy();
   const toggle = document.querySelector('.progress-trail.settled .progress-trail-toggle');
-  expect(toggle.textContent).toContain('3 条过程记录');
+  expect(toggle.textContent).toContain('2 条过程记录');
   expect(document.querySelectorAll('.progress-row')).toHaveLength(0);
   fireEvent.click(toggle);
-  expect(document.querySelectorAll('.progress-row').length).toBe(3);
+  expect(document.querySelectorAll('.progress-row').length).toBe(2);
 });
 
 it('没有文本的思考区间是状态不是记录：显示但点不开', () => {
@@ -96,7 +97,7 @@ it('运行气泡默认两行、整块展开，每行有时间且最后一行持�
   const turn = turnWith();
   turn.provisional[1].envelope.ts = now.getTime() - 8_000;
   turn.provisional[2].envelope.ts = now.getTime() - 4_000;
-  turn.provisional[3].envelope.ts = now.getTime() - 6_000;
+  turn.provisional[3].envelope.ts = now.getTime() - 2_000;
   turn.provisional[4].envelope.ts = now.getTime() - 2_000;
   renderTurn(turn);
 
@@ -108,8 +109,8 @@ it('运行气泡默认两行、整块展开，每行有时间且最后一行持�
   expect(bubble.querySelector('.progress-row-duration').textContent).toBe('00:04');
 
   fireEvent.click(screen.getByRole('button', { name: /展开过程详情/ }));
-  expect(bubble.querySelectorAll('.progress-row')).toHaveLength(3);
-  expect(bubble.querySelectorAll('.progress-row time')).toHaveLength(3);
+  expect(bubble.querySelectorAll('.progress-row')).toHaveLength(2);
+  expect(bubble.querySelectorAll('.progress-row time')).toHaveLength(2);
   expect(screen.getByRole('button', { name: /收起过程详情/ })).toBeTruthy();
 });
 
@@ -121,7 +122,7 @@ it('运行气泡没有过程时只显示 header，一条过程时只占一行；
   expect(document.querySelector('.progress-trail.running .progress-trail-list')).toBeNull();
 
   const one = turnWith();
-  one.provisional = [one.provisional[0], one.provisional[4]];
+  one.provisional = [one.provisional[0], one.provisional[2]];
   view.unmount();
   renderTurn(one);
   expect(document.querySelectorAll('.progress-trail.running .progress-row')).toHaveLength(1);

@@ -3,7 +3,7 @@ import { actorNameFromMap, actorNameMap } from '../../model/actor-display.js';
 import { controlPayload, taskControlContext } from '../../model/task-controls.js';
 import { messagePresentation } from '../../model/message-presentation.js';
 import { turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
-import { processObservations } from '../../model/turn-process.js';
+import { executionProcessObservations } from '../../model/turn-process.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 import { StructuredResult } from '../StructuredResult.jsx';
@@ -58,7 +58,7 @@ function TurnDetailBody({ turn, roster = [], selfId, access, controlState, onCan
   if (!turn) return null;
   const request = turn.request;
   const context = taskControlContext(turn, { selfId, access });
-  const process = processObservations(turn);
+  const process = executionProcessObservations(turn);
   const business = (turn.provisional || []).filter((item) => !item.envelope?.payload?.process);
   return <>
     {showRequest && <div className="turn-context-source">
