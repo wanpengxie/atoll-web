@@ -1,5 +1,6 @@
 import { MOBILE_WINDOW, trimChannelState } from '../../model/memory-window.js';
 import { isMobileProfile } from '../../model/device-profile.js';
+import { abbreviateToolRow } from '../../model/payload-abbreviate.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createCursors } from '../../model/cursors.js';
 import { createFeedCache, resumeSnapshot } from '../../model/feed-cache.js';
@@ -53,7 +54,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       if (state.rows.has(seq)) continue;
       const roster = rosterRef.current;
       const selfId = roster?.self(channelId) || '';
-      apply(state, row, selfId);
+      // 工具输出在手机上只进头部(见 payload-abbreviate.js);落缓存的仍是原样,
+      // 所以这里恒不是把内容丢了。
+      apply(state, isMobileProfile() ? abbreviateToolRow(row) : row, selfId);
       changed += 1;
       accessRef.current?.feed(channelId);
       dirtyChannels.add(channelId);
