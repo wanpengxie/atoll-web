@@ -48,12 +48,19 @@ export function createWire({
   label = '',
   WebSocketImpl = globalThis.WebSocket,
   pendingTimeoutMs = 30_000,
+  // 退避上限。手机上压到几秒:那里断线是常态(锁屏、切基站、wifi 换 4G),而
+  // 30 秒的干等就是"掉线"的全部体感。
+  maxReconnectDelayMs = 30_000,
+  // (fire) => unsubscribe。谁算"醒过来"由调用方定(见 net/wake.js),传输层恒不
+  // 嗅探运行环境。
+  wake = null,
   setTimeoutImpl = globalThis.setTimeout,
   clearTimeoutImpl = globalThis.clearTimeout,
 } = {}) {
   if (!WebSocketImpl) throw new TypeError('WebSocket is unavailable');
 
   let socket = null;
+  let releaseWake = null;
   let stopped = false;
   let attached = false;
   let reconnectAttempt = 0;
@@ -237,7 +244,7 @@ export function createWire({
 
   function scheduleReconnect() {
     if (stopped || reconnectTimer != null) return;
-    const delay = Math.min(30_000, 500 * 2 ** Math.min(reconnectAttempt, 6));
+    const delay = Math.min(maxReconnectDelayMs, 500 * 2 ** Math.min(reconnectAttempt, 6));
     reconnectAttempt += 1;
     diagnostic('warn', 'wire.reconnect_scheduled', { generation, attempt: reconnectAttempt, delay });
     onState('reconnecting', { delay });
@@ -245,6 +252,22 @@ export function createWire({
       reconnectTimer = null;
       connect();
     }, delay);
+  }
+
+  // 被叫醒:退避表上还剩多久已经不重要了——刚才那段等待的前提(网络还是坏的、
+  // 屏幕没人看)已经不成立。取消定时器、把次数清零、立刻重连。
+  // 已经连着的不动:半死的连接由服务端 60 秒的读超时判,恒不在这里猜。
+  function wakeNow(reason) {
+    if (stopped || attached) return;
+    const state = socket?.readyState;
+    if (state === WebSocketImpl.CONNECTING || state === WebSocketImpl.OPEN) return;
+    if (reconnectTimer != null) {
+      clearTimeoutImpl(reconnectTimer);
+      reconnectTimer = null;
+    }
+    reconnectAttempt = 0;
+    diagnostic('info', 'wire.wake', { generation, reason });
+    connect();
   }
 
   function connect() {
@@ -332,6 +355,7 @@ export function createWire({
   }
 
   connect();
+  releaseWake = wake ? wake(wakeNow) : null;
 
   return {
     submit(payload) {
@@ -379,6 +403,8 @@ export function createWire({
     close() {
       if (stopped) return;
       stopped = true;
+      releaseWake?.();
+      releaseWake = null;
       if (reconnectTimer != null) {
         clearTimeoutImpl(reconnectTimer);
         reconnectTimer = null;

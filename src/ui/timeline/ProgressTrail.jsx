@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import { JsonView } from 'react-json-view-lite';
 import { executionProcessObservations } from '../../model/turn-process.js';
 import { useModalFocus } from '../primitives/useModalFocus.js';
+import { useSecondTick } from '../../app/hooks/useSecondTick.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 
 // 回合的过程痕迹：工具调用行与 agent 的思考/计划是同一量级的东西，
@@ -189,15 +190,9 @@ function PreviewRow({ row, active, now }) {
 // running=false：回合已落定，收成一行入口，展开后是同一个列表。
 export function ProgressTrail({ turn, running, title = '', startedAt = 0, mergedCount = 0 }) {
   const [open, setOpen] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
   const detail = useProgressDetail();
   const rows = progressRows(turn);
-  useEffect(() => {
-    if (!running || rows.length === 0) return undefined;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [running, rows.at(-1)?.key, rows.at(-1)?.lastSeq]);
+  const now = useSecondTick(Boolean(running && rows.length), `${rows.at(-1)?.key || ''}:${rows.at(-1)?.lastSeq || ''}`);
   const visible = open ? rows : rows.slice(-SCROLL_ROWS);
   const toggle = <button type="button" className="progress-trail-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
     <span aria-hidden="true">⤷</span>

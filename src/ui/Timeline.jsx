@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoMockContext } from 'react-virtuoso';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
+import { isMobileProfile } from '../model/device-profile.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { attachmentFromFileReference } from '../model/file-references.js';
@@ -773,6 +774,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     actorFilter,
     editingTargetId,
     showNarration: SHOW_CHANNEL_NARRATION,
+    incremental: isMobileProfile(),
   }), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length, scope, selfId, actorFilter, editingTargetId]);
   const { filtered: entries, actorFilterApplies } = projection;
   // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。

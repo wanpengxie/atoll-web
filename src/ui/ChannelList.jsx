@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { isMemberAccess } from '../model/channel-access.js';
 import { agentActivityDuration } from '../model/agent-activity.js';
 import { ACTIVE_UPDATE_STATES, nodeUpdateLabel } from '../model/node-update.js';
+import { useSecondTick } from '../app/hooks/useSecondTick.js';
 
 const STATE_LABEL = {
   open: 'OPEN',
@@ -18,18 +19,12 @@ function agentLabel(actorId = '') {
 export function ChannelList({ channels, activeChannelId, unread, agentActivity, wireState, me, update, onSelect, onCreate, onSearch, onActivity, onSpaceManage, onLogout, onCloseMobile }) {
   const mine = channels.filter((channel) => isMemberAccess(channel.access));
   const space = channels.filter((channel) => !isMemberAccess(channel.access));
-  const [now, setNow] = useState(() => Date.now());
   const activeCount = Object.values(agentActivity?.byChannel || {}).reduce((count, channel) => count + (channel.active?.length || 0), 0);
+  const now = useSecondTick(Boolean(activeCount));
   const updateValue = update?.value;
   const updateActive = ACTIVE_UPDATE_STATES.has(updateValue?.status);
   const showUpdate = Boolean(updateValue?.available || updateActive);
   const showVersion = Boolean(updateValue?.current_version && !showUpdate);
-  useEffect(() => {
-    if (!activeCount) return undefined;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [activeCount]);
   const otherUnread = (channelId) => Math.max(0, Number(unread[channelId]?.total || 0) - Number(unread[channelId]?.related || 0));
   const accessLabel = (access) => ({
     member_stale: '离线缓存',

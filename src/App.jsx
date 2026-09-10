@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
 import { ensureServerBoot } from './model/server-boot.js';
+import { isMobileProfile } from './model/device-profile.js';
+import { foregroundWake } from './net/wake.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
 import { describeClient } from './model/client-label.js';
 import { openFromPreview, snapshot as uiSnapshot } from './model/ui-words.js';
@@ -371,6 +373,10 @@ export default function App() {
     setWireState('connecting');
     const wire = createWire({
       label: describeClient(),
+      // 手机上断线是常态,回来得快才是要紧的:退避压到 5 秒,并且一回到前台/网络
+      // 恢复就立刻重连,恒不在退避表上干等。PC 维持原样。
+      maxReconnectDelayMs: isMobileProfile() ? 5_000 : 30_000,
+      wake: foregroundWake(),
       since: () => resumeSnapshot(channelStatesRef.current),
       focus: () => activeChannelRef.current,
       onFeed: enqueueFeed,

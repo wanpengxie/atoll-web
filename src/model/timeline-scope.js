@@ -51,6 +51,59 @@ function isSelfCommission(envelope) {
 
 // relatedEnvelopeIds 走的是频道收到的全部信封（state.rows），不是当前可见的那一页：
 // 第二层要拿第一层的 id 去比对，而第一层可能落在窗口之外。
+// 「我的往来」这张集合是每帧都要的,而它原来每帧都从零算:先把整本账复制成数组
+// (state.rows 有多少行就多大),再走两遍全量。agent 一秒吐十帧,这本账就被完整
+// 走十遍——频道越老越慢,而这正是人最需要它跟手的时候。
+//
+// 增量版把已经判过的行记下来:集合只增不减,新来的行只判自己;而"一条新的我的行
+// 会让更早的行变可见"这件事,靠一张只会变短的未决表兜住(late correlation 恒不
+// 丢)。输出与全量版逐个元素相等——equivalence 由测试钉死,恒不靠眼看。
+const scopeIndexes = new WeakMap();
+
+function ingestScopeRows(index, state) {
+  const fresh = [];
+  for (const [seq, envelope] of state.rows) {
+    if (seq <= index.through) continue;
+    if (seq > index.through) index.through = seq;
+    if (isSelfOperation(envelope)) continue;
+    if (directlyMine(envelope, selfId(index)) || isSelfCommission(envelope)) {
+      if (envelope.id) {
+        index.ids.add(envelope.id);
+        index.visible.add(envelope.id);
+      }
+      const correlation = correlationOf(envelope);
+      if (correlation) index.correlations.add(correlation);
+      continue;
+    }
+    fresh.push(envelope);
+  }
+  if (fresh.length) index.unresolved.push(...fresh);
+  if (!index.unresolved.length) return index.visible;
+  const still = [];
+  for (const envelope of index.unresolved) {
+    if (!envelope?.id || index.visible.has(envelope.id)) continue;
+    if (envelope.parent_id && index.ids.has(envelope.parent_id)) index.visible.add(envelope.id);
+    else if (index.correlations.has(correlationOf(envelope))) index.visible.add(envelope.id);
+    else still.push(envelope);
+  }
+  index.unresolved = still;
+  return index.visible;
+}
+
+function selfId(index) {
+  return index.self;
+}
+
+export function relatedEnvelopeIdsIncremental(state, self) {
+  const cached = scopeIndexes.get(state);
+  // 账本只会往后长。倒退(换频道复用了同一个对象、缓存被清)就重建,恒不在错的
+  // 基线上继续加。
+  const usable = cached && cached.self === self && cached.through <= (state?.lastSeq || 0);
+  const index = usable ? cached : { self, through: 0, ids: new Set(), correlations: new Set(), visible: new Set(), unresolved: [] };
+  if (!usable) scopeIndexes.set(state, index);
+  return ingestScopeRows(index, state);
+}
+
 export function relatedEnvelopeIds(state, selfId) {
   const rows = [...(state?.rows?.values?.() || [])];
   const ids = new Set();
@@ -93,9 +146,9 @@ function turnEnvelopes(turn, out) {
 // 半段对话比没有更难读——问句在、答句不在，读的人会以为对方没回。
 //
 // narration 是频道级叙事，不属于任何人的往来，两个范围下都保留。
-export function scopeEntries(entries, { scope, state, selfId }) {
+export function scopeEntries(entries, { scope, state, selfId, incremental = false }) {
   if (scope !== TIMELINE_SCOPE.mine || !selfId) return entries;
-  const visible = relatedEnvelopeIds(state, selfId);
+  const visible = incremental ? relatedEnvelopeIdsIncremental(state, selfId) : relatedEnvelopeIds(state, selfId);
   return entries.filter((entry) => {
     if (entry.kind === 'narration') return true;
     const envelopes = entryEnvelopes(entry);

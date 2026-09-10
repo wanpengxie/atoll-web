@@ -55,10 +55,13 @@ export function projectTimeline(state, {
   actorFilter = new Set(),
   editingTargetId = '',
   showNarration = false,
+  // 「我的往来」用增量索引算(见 timeline-scope.js)。输出相同,代价从"每帧走一遍
+  // 整本账"降到"每帧只判新来的那几行"。
+  incremental = false,
 } = {}) {
   const allEntries = orderedTimeline(state).filter((entry) => timelineEntryVisible(entry, editingTargetId));
   const conversationalEntries = scope === TIMELINE_SCOPE.mine ? withoutUiProtocol(allEntries) : allEntries;
-  const scoped = scopeEntries(conversationalEntries, { scope, state, selfId });
+  const scoped = scopeEntries(conversationalEntries, { scope, state, selfId, incremental });
   const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
   const filtered = actorFilterApplies ? filterEntriesByActors(scoped, actorFilter) : scoped;
 
