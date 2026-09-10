@@ -1,4 +1,4 @@
-import { relatedEnvelopeIds } from './timeline-scope.js';
+import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from './timeline-scope.js';
 import { KIND, PROVISIONAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
@@ -142,9 +142,12 @@ export function unreadCount(channelState, readSeq, selfId) {
 // the visual priority differs. In particular, generic system traffic belongs
 // to total but cannot become a strong notification unless it is genuinely in
 // one of this user's conversations.
-export function unreadCounts(channelState, readSeq, selfId) {
+// incremental:与时间线共用那张增量索引(输出等价,见 timeline-scope.js)。这个函数
+// 被每个频道各叫一次,而它里面那趟 relatedEnvelopeIds 是"把整本账复制一遍再走两
+// 遍"——频道多、账本长的时候,它比时间线投影还贵。
+export function unreadCounts(channelState, readSeq, selfId, { incremental = false } = {}) {
   if (!channelState?.rows) return { related: 0, total: 0 };
-  const relatedIds = relatedEnvelopeIds(channelState, selfId);
+  const relatedIds = incremental ? relatedEnvelopeIdsIncremental(channelState, selfId) : relatedEnvelopeIds(channelState, selfId);
   const byId = new Map();
   for (const envelope of channelState.rows.values()) {
     if (!envelope?.id) continue;

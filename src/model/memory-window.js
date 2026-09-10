@@ -22,7 +22,10 @@ export function estimateRowBytes(envelope) {
   let bytes = 256;
   const payload = envelope?.payload;
   if (payload && typeof payload === 'object') {
-    for (const value of Object.values(payload)) {
+    // for…in 而不是 Object.values:这一行在裁剪时会跑几百次,恒不为估个字节数
+    // 就给每一行分配一个数组。
+    for (const key in payload) {
+      const value = payload[key];
       if (typeof value === 'string') bytes += value.length;
     }
   }
@@ -41,9 +44,13 @@ function openTurnFloor(state) {
 
 // 返回被摘掉的行数。纯函数式的副作用:只改 state 自己的索引,恒不碰账本和缓存。
 export function trimChannelState(state, { maxRows, maxBytes } = MOBILE_WINDOW) {
-  if (!state?.rows?.size) return 0;
-  const seqs = [...state.rows.keys()].sort((left, right) => left - right);
   const keep = Math.max(1, Math.floor(maxRows * KEEP_RATIO));
+  // 这条判断是热路径上的守门人:trim 每条消息都会被叫一次(人贴着底部时),而下面
+  // 那趟排序 + 逐行估字节恒不能每条消息跑一遍。行数没到水位就什么都不做——工具
+  // 输出已经在源头缩过了(payload-abbreviate.js),所以"行数还很少但字节已经爆了"
+  // 这一格恒不成立,字节水位只需要在行数逼近时量。
+  if (!state?.rows?.size || state.rows.size <= keep) return 0;
+  const seqs = [...state.rows.keys()].sort((left, right) => left - right);
   // 从最新的一头往回数,行数和字节谁先到就在哪儿断。两条水位都要真的能拦住:
   // 只数行数,一条几百 KB 的工具输出会把窗口撑爆;只数字节,一堆小状态帧又会把
   // 表撑长。

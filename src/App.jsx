@@ -1027,14 +1027,18 @@ export default function App() {
   const activeRow = channelList.find((channel) => channel.id === activeChannelId);
   const activeRoster = isMemberAccess(activeRow?.access) ? rosters.get(activeChannelId) || [] : [];
   const selfId = activeRow?.selfActorId || rosterRef.current?.self(activeChannelId) || '';
-  const unread = Object.fromEntries(channelList.map((channel) => {
+  // 未读数是账本 + 游标的纯函数,却在每次渲染时对**每个频道**各算一遍,而每一遍
+  // 都要把那个频道的整本账走两趟。改读的游标变化会 bump feedVersion,所以这组依赖
+  // 是齐的。恒不是行为改动——同一个答案,只是不再算 N 遍。
+  const unread = useMemo(() => Object.fromEntries(channelList.map((channel) => {
     const loaded = unreadCounts(
       channelStatesRef.current.get(channel.id),
       cursorsRef.current.read(channel.id),
       channel.selfActorId || rosterRef.current?.self(channel.id) || '',
+      { incremental: isMobileProfile() },
     );
     return [channel.id, loaded];
-  }));
+  })), [channelList, feedVersion, rosters]);
   const activeChannel = activeRow || channels.get(activeChannelId);
   const activeAccess = activeRow?.access || CHANNEL_ACCESS.loading;
   const capabilityIndex = capabilityIndexFromState(activeState, liveDescribesRef.current);
@@ -1062,7 +1066,11 @@ export default function App() {
   const fallbackAgentId = fallbackAgent.kind === 'single' ? fallbackAgent.agent.id : '';
   const fallbackAgentSource = fallbackAgent.kind === 'single' ? (fallbackAgent.source || '') : '';
   const providers = taskProviders(capabilityIndex, activeRoster);
-  const workItemIndex = buildWorkItemIndex({ state: activeState, pending, timers: timerRecords, selfId, access: activeAccess, capabilityIndex });
+  // 同上:它走一遍当前频道的全部 turn,而每次渲染都走。同一个答案,不再算 N 遍。
+  const workItemIndex = useMemo(
+    () => buildWorkItemIndex({ state: activeState, pending, timers: timerRecords, selfId, access: activeAccess, capabilityIndex }),
+    [activeState, feedVersion, pending, timerRecords, selfId, activeAccess, capabilityIndex],
+  );
   const artifactIndex = activeArtifactIndex;
   const selectedCapability = selectedActor ? capabilityIndex.get(selectedActor.id) : null;
   const selectedArtifact = contextFocus?.type === 'artifact' ? artifactIndex.get(contextFocus.key) : null;

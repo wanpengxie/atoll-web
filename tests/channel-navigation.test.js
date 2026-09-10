@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex, channelSwipeDirection, channelSwipeStart } from '../src/model/channel-navigation.js';
+import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex } from '../src/model/channel-navigation.js';
 
 const channels = [{ id: 'c0' }, { id: 'design' }, { id: 'dev' }];
 
@@ -37,18 +37,5 @@ describe('channel navigation shortcuts', () => {
     expect(channelShortcutIndex({ key: '9', ctrlKey: true, target: plain })).toBe(8);
     expect(channelShortcutIndex({ key: '0', ctrlKey: true, target: plain })).toBe(-1);
     expect(channelShortcutIndex({ key: '2', ctrlKey: true, shiftKey: true, target: plain })).toBe(-1);
-  });
-
-  it('recognizes deliberate horizontal swipes and rejects scrolls or controls', () => {
-    const surface = document.createElement('div');
-    const left = channelSwipeStart({ clientX: 180, clientY: 100 }, surface, 1_000);
-    expect(channelSwipeDirection(left, { clientX: 90, clientY: 108 }, 1_400)).toBe(1);
-    const right = channelSwipeStart({ clientX: 80, clientY: 100 }, surface, 2_000);
-    expect(channelSwipeDirection(right, { clientX: 160, clientY: 95 }, 2_400)).toBe(-1);
-    expect(channelSwipeDirection(left, { clientX: 130, clientY: 180 }, 1_400)).toBe(0);
-    expect(channelSwipeDirection(left, { clientX: 80, clientY: 100 }, 2_000)).toBe(0);
-
-    const button = document.createElement('button');
-    expect(channelSwipeStart({ clientX: 100, clientY: 100 }, button, 1_000)).toBeNull();
   });
 });

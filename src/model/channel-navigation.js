@@ -10,14 +10,6 @@ const EDITING_TARGETS = [
   '[aria-modal="true"]',
 ].join(',');
 
-const SWIPE_BLOCKED_TARGETS = [
-  ...EDITING_TARGETS.split(','),
-  'button',
-  'a',
-  'pre',
-  '[data-no-channel-swipe="true"]',
-].join(',');
-
 export function adjacentChannelId(channels, activeChannelId, direction) {
   const ids = (channels || []).map((channel) => channel?.id).filter(Boolean);
   if (!ids.length || !direction) return '';
@@ -44,17 +36,4 @@ export function channelShortcutIndex(event, documentRoot = globalThis.document) 
   if (event.target?.closest?.(EDITING_TARGETS)) return -1;
   const key = String(event.key || '');
   return /^[1-9]$/.test(key) ? Number(key) - 1 : -1;
-}
-
-export function channelSwipeStart(touch, target, now = Date.now()) {
-  if (!touch || target?.closest?.(SWIPE_BLOCKED_TARGETS)) return null;
-  return { x: touch.clientX, y: touch.clientY, at: now };
-}
-
-export function channelSwipeDirection(start, touch, now = Date.now()) {
-  if (!start || !touch || now - start.at > 900) return 0;
-  const x = touch.clientX - start.x;
-  const y = touch.clientY - start.y;
-  if (Math.abs(x) < 64 || Math.abs(x) < Math.abs(y) * 1.35) return 0;
-  return x < 0 ? 1 : -1;
 }

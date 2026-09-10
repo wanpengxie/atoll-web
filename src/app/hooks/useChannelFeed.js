@@ -1,6 +1,7 @@
 import { MOBILE_WINDOW, trimChannelState } from '../../model/memory-window.js';
 import { isMobileProfile } from '../../model/device-profile.js';
 import { abbreviateToolRow } from '../../model/payload-abbreviate.js';
+import { createFrameBatcher } from '../../model/frame-batcher.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createCursors } from '../../model/cursors.js';
 import { createFeedCache, resumeSnapshot } from '../../model/feed-cache.js';
@@ -119,6 +120,20 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     });
   }
 
+  const landLiveRows = useCallback((payloads) => {
+    applyRowsRef.current?.(payloads.map((payload) => ({ channel_id: payload.channel_id, seq: Number(payload.seq), envelope: payload.envelope })));
+    for (const payload of payloads) {
+      const turn = statesRef.current.get(payload.channel_id)?.turns?.get(payload.envelope?.parent_id);
+      const startedAt = turnStartObservation(turn)?.envelope?.ts || turn?.request?.ts;
+      onAgentActivity?.(payload, { startedAt });
+      schedulerRef.current.observeLive(payload.channel_id, payload.envelope?.ts);
+    }
+  }, [onAgentActivity]);
+  const landLiveRowsRef = useRef(landLiveRows);
+  landLiveRowsRef.current = landLiveRows;
+  const liveBatchRef = useRef(null);
+  if (!liveBatchRef.current) liveBatchRef.current = createFrameBatcher((batch) => landLiveRowsRef.current(batch));
+
   const enqueue = useCallback((payloadOrChannel, seq, envelope, detail) => {
 	const payload = typeof payloadOrChannel === 'object'
 	  ? payloadOrChannel
@@ -129,12 +144,11 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	  return;
 	}
 	// Live rows never enter the historical executor or reservoir.
-	applyRowsRef.current?.([{ channel_id: payload.channel_id, seq: Number(payload.seq), envelope: payload.envelope }]);
-	const turn = statesRef.current.get(payload.channel_id)?.turns?.get(payload.envelope?.parent_id);
-	const startedAt = turnStartObservation(turn)?.envelope?.ts || turn?.request?.ts;
-	onAgentActivity?.(payload, { startedAt });
-	schedulerRef.current.observeLive(payload.channel_id, payload.envelope?.ts);
-	}, [onAgentActivity]);
+	// 手机上同一帧里到的行合成一批再落(见 frame-batcher.js):一条一落意味着一条
+	// 消息一次整棵树的重渲染,而 agent 流式说话时那是一秒十几次。
+	if (isMobileProfile()) liveBatchRef.current.push(payload);
+	else landLiveRows([payload]);
+	}, [landLiveRows]);
 
   const setHistoryGrants = useCallback((grants = [], detail = {}) => {
     const generation = detail.generation;
@@ -231,6 +245,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
   const cancel = useCallback(() => schedulerRef.current.disconnected(), []);
   const clear = useCallback(() => {
+    // 缓冲里的行先落地再清:恒不留下一批"清完之后才醒过来"的行,把刚清空的表又
+    // 填出半张。
+    liveBatchRef.current.flushNow();
     schedulerRef.current.clear();
     statesRef.current = new Map();
     setVersion((value) => value + 1);

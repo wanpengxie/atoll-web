@@ -8,7 +8,7 @@ import { Composer } from '../ui/Composer.jsx';
 import { Timeline } from '../ui/Timeline.jsx';
 import { RightPanelHost } from './RightPanelHost.jsx';
 import { activeAgentTurn } from '../model/agent-control.js';
-import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex, channelSwipeDirection, channelSwipeStart } from '../model/channel-navigation.js';
+import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex } from '../model/channel-navigation.js';
 import { PaneResizer } from '../ui/primitives/PaneResizer.jsx';
 import { readPaneWidth, writePaneWidth } from '../model/pane-sizes.js';
 
@@ -35,7 +35,6 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
-  const channelSwipeRef = useRef(null);
   // 终端分屏是**按频道**记的：键在 = 这个频道开过终端，值 = 此刻是否展开。
   //
   // 恒不为没用过终端的人起 shell（没开过的频道不在这张表里），开过之后就恒不
@@ -228,28 +227,11 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     }
   }
 
-  function beginChannelSwipe(event) {
-    if (!window.matchMedia?.('(max-width: 640px)').matches || event.touches.length !== 1) {
-      channelSwipeRef.current = null;
-      return;
-    }
-    channelSwipeRef.current = channelSwipeStart(event.touches[0], event.target);
-  }
-
-  function finishChannelSwipe(event) {
-    const start = channelSwipeRef.current;
-    channelSwipeRef.current = null;
-    const direction = channelSwipeDirection(start, event.changedTouches?.[0]);
-    const memberChannels = navigation.channels.filter((channel) => isMemberAccess(channel.access));
-    const channelId = adjacentChannelId(memberChannels, navigation.activeChannelId, direction);
-    if (channelId) navigation.onSelect(channelId);
-  }
-
   const shellClass = ['shell', panel.value && 'has-context', mobileChannelsOpen && 'mobile-channels-open'].filter(Boolean).join(' ');
   return <div ref={railRef} className={shellClass} data-workspace-view={workspace.view} style={railWidth ? { '--rail-width': `${railWidth}px` } : undefined}>
     <ChannelList channels={navigation.channels} activeChannelId={navigation.activeChannelId} unread={navigation.unread} agentActivity={navigation.agentActivity} wireState={session.wireState} me={session.me} update={session.update} onSelect={(channelId) => { navigation.onSelect(channelId); setMobileChannelsOpen(false); }} onCreate={() => { setMobileChannelsOpen(false); navigation.onCreate(); }} onSearch={() => { setMobileChannelsOpen(false); navigation.onSearch(); }} onActivity={() => { setMobileChannelsOpen(false); navigation.onActivity(); }} onSpaceManage={() => { setMobileChannelsOpen(false); navigation.onSpaceManage(); }} onLogout={session.onLogout} onCloseMobile={mobileChannelsOpen ? closeMobileChannels : undefined} />
     <PaneResizer kind="rail" grows="right" width={railWidth} measure={() => railRef.current?.querySelector('.channel-rail')?.getBoundingClientRect().width} onResize={setRailWidth} onCommit={commitRailWidth} onReset={resetRailWidth} label="调整频道栏宽度" />
-    <main className="workspace" onTouchStart={beginChannelSwipe} onTouchEnd={finishChannelSwipe} onTouchCancel={() => { channelSwipeRef.current = null; }}>
+    <main className="workspace">
       <header className="channel-header">
         <div className="channel-identity"><button type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button><div><p className="eyebrow">频道</p><h1>{workspace.channel?.qualified_name || workspace.channel?.name || navigation.activeChannelId || '选择频道'}</h1></div></div>
         <div className="channel-header-actions">
