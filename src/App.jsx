@@ -129,6 +129,20 @@ export default function App() {
   const [contextFocus, setContextFocus] = useState(null);
   const [workspaceView, setWorkspaceView] = useState(initialRouteRef.current.view);
   const workspaceViewsRef = useRef(new Map());
+  // 早返回(booting / 未登录)之后的那一段恒不能再调 hook——hook 的条数在两次渲染
+  // 之间必须一样,多一条就是 "Rendered more hooks than during the previous render"。
+  // 那一段里要缓存派生值,就用这张自己管的表:它是在早返回**之前**建的,而 derived()
+  // 只是个普通函数,恒不新增 hook。
+  const derivedRef = useRef(new Map());
+  function derived(key, deps, compute) {
+    const cached = derivedRef.current.get(key);
+    if (cached && cached.deps.length === deps.length && cached.deps.every((value, index) => Object.is(value, deps[index]))) {
+      return cached.value;
+    }
+    const value = compute();
+    derivedRef.current.set(key, { deps, value });
+    return value;
+  }
   const [spacePrincipals, setSpacePrincipals] = useState([]);
   const [spaceDeclarations, setSpaceDeclarations] = useState([]);
   const [spaceDaemons, setSpaceDaemons] = useState([]);
@@ -1030,7 +1044,7 @@ export default function App() {
   // 未读数是账本 + 游标的纯函数,却在每次渲染时对**每个频道**各算一遍,而每一遍
   // 都要把那个频道的整本账走两趟。改读的游标变化会 bump feedVersion,所以这组依赖
   // 是齐的。恒不是行为改动——同一个答案,只是不再算 N 遍。
-  const unread = useMemo(() => Object.fromEntries(channelList.map((channel) => {
+  const unread = derived('unread', [channelList, feedVersion, rosters], () => Object.fromEntries(channelList.map((channel) => {
     const loaded = unreadCounts(
       channelStatesRef.current.get(channel.id),
       cursorsRef.current.read(channel.id),
@@ -1038,7 +1052,7 @@ export default function App() {
       { incremental: isMobileProfile() },
     );
     return [channel.id, loaded];
-  })), [channelList, feedVersion, rosters]);
+  })));
   const activeChannel = activeRow || channels.get(activeChannelId);
   const activeAccess = activeRow?.access || CHANNEL_ACCESS.loading;
   const capabilityIndex = capabilityIndexFromState(activeState, liveDescribesRef.current);
@@ -1067,9 +1081,10 @@ export default function App() {
   const fallbackAgentSource = fallbackAgent.kind === 'single' ? (fallbackAgent.source || '') : '';
   const providers = taskProviders(capabilityIndex, activeRoster);
   // 同上:它走一遍当前频道的全部 turn,而每次渲染都走。同一个答案,不再算 N 遍。
-  const workItemIndex = useMemo(
-    () => buildWorkItemIndex({ state: activeState, pending, timers: timerRecords, selfId, access: activeAccess, capabilityIndex }),
+  const workItemIndex = derived(
+    'workItems',
     [activeState, feedVersion, pending, timerRecords, selfId, activeAccess, capabilityIndex],
+    () => buildWorkItemIndex({ state: activeState, pending, timers: timerRecords, selfId, access: activeAccess, capabilityIndex }),
   );
   const artifactIndex = activeArtifactIndex;
   const selectedCapability = selectedActor ? capabilityIndex.get(selectedActor.id) : null;
