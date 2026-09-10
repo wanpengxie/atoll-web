@@ -60,13 +60,21 @@ function isSelfCommission(envelope) {
 // 丢)。输出与全量版逐个元素相等——equivalence 由测试钉死,恒不靠眼看。
 const scopeIndexes = new WeakMap();
 
+// 返回 null = 基线不成立(窗口被裁剪过),由调用方整张重建——窗口有界,重建很便宜。
+//
+// 判据是"我处理过的行,是不是还都在表里",恒不用 seq 当水位:历史回读补回来的行
+// 会挂在 Map 的末尾,迭代顺序自此不再等于 seq 顺序,拿水位一判就会把它们当成
+// "早就处理过的"跳掉——刚读回来的历史于是在「我的往来」里是隐形的。
+//
+// 算法本身与顺序无关:第一遍只收"直接是我的"行,第二遍反复重扫那张只会变短的
+// 未决表,所以一条行比它的因由先到也不会丢(late correlation 恒能补上)。
 function ingestScopeRows(index, state) {
   const fresh = [];
   for (const [seq, envelope] of state.rows) {
-    if (seq <= index.through) continue;
-    if (seq > index.through) index.through = seq;
+    if (index.processed.has(seq)) continue;
+    index.processed.add(seq);
     if (isSelfOperation(envelope)) continue;
-    if (directlyMine(envelope, selfId(index)) || isSelfCommission(envelope)) {
+    if (directlyMine(envelope, index.self) || isSelfCommission(envelope)) {
       if (envelope.id) {
         index.ids.add(envelope.id);
         index.visible.add(envelope.id);
@@ -77,31 +85,42 @@ function ingestScopeRows(index, state) {
     }
     fresh.push(envelope);
   }
+  // 处理过的比表里还多 = 有行被摘走了,这张索引的基线不再成立。
+  if (index.processed.size !== state.rows.size) return null;
   if (fresh.length) index.unresolved.push(...fresh);
-  if (!index.unresolved.length) return index.visible;
-  const still = [];
-  for (const envelope of index.unresolved) {
-    if (!envelope?.id || index.visible.has(envelope.id)) continue;
-    if (envelope.parent_id && index.ids.has(envelope.parent_id)) index.visible.add(envelope.id);
-    else if (index.correlations.has(correlationOf(envelope))) index.visible.add(envelope.id);
-    else still.push(envelope);
+  if (index.unresolved.length) {
+    const still = [];
+    for (const envelope of index.unresolved) {
+      if (!envelope?.id || index.visible.has(envelope.id)) continue;
+      if (envelope.parent_id && index.ids.has(envelope.parent_id)) index.visible.add(envelope.id);
+      else if (index.correlations.has(correlationOf(envelope))) index.visible.add(envelope.id);
+      else still.push(envelope);
+    }
+    index.unresolved = still;
   }
-  index.unresolved = still;
   return index.visible;
 }
 
-function selfId(index) {
-  return index.self;
+// 窗口移动(内存裁剪、历史回读)之后,增量索引的基线就不成立了:它按 seq 单向前进,
+// 认不出"比水位更早的行又回来了"。丢掉重建即可——窗口是有界的,重建很便宜。
+export function invalidateScopeIndex(state) {
+  scopeIndexes.delete(state);
+}
+
+function freshScopeIndex(self) {
+  return { self, processed: new Set(), ids: new Set(), correlations: new Set(), visible: new Set(), unresolved: [] };
 }
 
 export function relatedEnvelopeIdsIncremental(state, self) {
   const cached = scopeIndexes.get(state);
-  // 账本只会往后长。倒退(换频道复用了同一个对象、缓存被清)就重建,恒不在错的
-  // 基线上继续加。
-  const usable = cached && cached.self === self && cached.through <= (state?.lastSeq || 0);
-  const index = usable ? cached : { self, through: 0, ids: new Set(), correlations: new Set(), visible: new Set(), unresolved: [] };
-  if (!usable) scopeIndexes.set(state, index);
-  return ingestScopeRows(index, state);
+  if (cached && cached.self === self) {
+    const reused = ingestScopeRows(cached, state);
+    if (reused) return reused;
+  }
+  const index = freshScopeIndex(self);
+  scopeIndexes.set(state, index);
+  // 空基线上恒不会不成立。
+  return ingestScopeRows(index, state) || index.visible;
 }
 
 export function relatedEnvelopeIds(state, selfId) {

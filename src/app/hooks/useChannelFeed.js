@@ -1,3 +1,5 @@
+import { MOBILE_WINDOW, trimChannelState } from '../../model/memory-window.js';
+import { isMobileProfile } from '../../model/device-profile.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createCursors } from '../../model/cursors.js';
 import { createFeedCache, resumeSnapshot } from '../../model/feed-cache.js';
@@ -10,6 +12,14 @@ import { projectTimeline } from '../../model/timeline-projection.js';
 import { turnStartObservation } from '../../model/turn-process.js';
 
 export { HISTORY_RESERVOIR_SIZE };
+
+// 内存窗口只在移动端收:PC 维持"全都留着"。收的时机是"这个频道此刻没人在看历史"
+// ——后台频道随时可收;当前频道只在人贴着底部时收(markRead 恰好就是这个事实:
+// 它只在页面可见且滚到底时才报)。人往上翻的时候恒不收,否则刚读回来的又被丢掉。
+function trimIfMobile(state) {
+  if (!state || !isMobileProfile()) return;
+  trimChannelState(state, MOBILE_WINDOW);
+}
 
 export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster, onError, onChannelsDiscovered, onDirectoryInvalidated, onTimerFired, onSubmissionFeed, onAccessChanged, onAgentActivity }) {
   const [version, setVersion] = useState(0);
@@ -48,6 +58,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       accessRef.current?.feed(channelId);
       dirtyChannels.add(channelId);
       cursorsRef.current.advance(channelId, seq);
+      if (channelId !== activeChannelRef.current) trimIfMobile(state);
       const learnedSelf = roster?.observeFeed(channelId, row.envelope);
       if (learnedSelf) {
         reconcileApprovals(state, learnedSelf);
@@ -209,6 +220,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const bump = useCallback(() => setVersion((value) => value + 1), []);
   const markRead = useCallback((channelId, seq) => {
     if (!channelId) return 0;
+    trimIfMobile(statesRef.current.get(channelId));
     const before = cursorsRef.current.read(channelId);
     const next = cursorsRef.current.markRead(channelId, seq);
     if (next !== before) setVersion((value) => value + 1);
