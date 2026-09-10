@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isTextMediaType, previewForMediaType } from '../src/model/artifacts.js';
 import { mediaTypeFromFileName } from '../src/model/channel-file-transfer.js';
 import { ArtifactContext, ArtifactPreviewBody, looksLikeText, resolveArtifact } from '../src/ui/context/ArtifactContext.jsx';
+import { MarkdownFileReferenceProvider } from '../src/ui/MarkdownContent.jsx';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -104,5 +105,43 @@ describe('blob 类型', () => {
     await waitFor(() => expect(document.querySelector('object.artifact-pdf')).toBeTruthy());
     expect(created).toHaveLength(1);
     expect(created[0].type).toBe('application/pdf');
+  });
+});
+
+// 预览区里的链接曾经点不开:消息区被 MarkdownFileReferenceProvider 包着,右侧面板
+// 没有,于是同一段 Markdown 在这边退回成普通 <a target="_blank">——点下去浏览器拿
+// 当前站点去访问 /home/... 这条路径,跳到一个本站根本不提供的地址。
+describe('预览区里的文件链接', () => {
+  it('绝对路径链接交给 provider,在 Atoll 里打开,恒不让浏览器去访问那条路径', async () => {
+    const onOpen = vi.fn();
+    render(<MarkdownFileReferenceProvider onOpen={onOpen}>
+      <ArtifactPreviewBody
+        artifact={{ name: 'notes.md', mediaType: 'text/markdown', preview: 'text' }}
+        preview={{ phase: 'ready', text: '见 [设计文档](/home/xiewanpeng/atoll/DESIGN.md:20)' }}
+        textMode="preview"
+        onTextModeChange={() => {}}
+      />
+    </MarkdownFileReferenceProvider>);
+    const link = await screen.findByRole('link', { name: '设计文档' });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.dispatchEvent(event);
+    expect(onOpen).toHaveBeenCalledWith({ path: '/home/xiewanpeng/atoll/DESIGN.md', line: 20 });
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('外部链接照常是外部链接', async () => {
+    const onOpen = vi.fn();
+    render(<MarkdownFileReferenceProvider onOpen={onOpen}>
+      <ArtifactPreviewBody
+        artifact={{ name: 'notes.md', mediaType: 'text/markdown', preview: 'text' }}
+        preview={{ phase: 'ready', text: '见 [外部](https://example.com/x)' }}
+        textMode="preview"
+        onTextModeChange={() => {}}
+      />
+    </MarkdownFileReferenceProvider>);
+    const link = await screen.findByRole('link', { name: '外部' });
+    link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(link.getAttribute('target')).toBe('_blank');
   });
 });

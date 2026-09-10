@@ -11,6 +11,7 @@ import { WorkItemContext } from '../ui/context/WorkItemContext.jsx';
 import { ChannelAutomation } from '../ui/ChannelAutomation.jsx';
 import { ActivityCenter } from '../ui/ActivityCenter.jsx';
 import { ChannelResources } from '../ui/ChannelResources.jsx';
+import { MarkdownFileReferenceProvider } from '../ui/MarkdownContent.jsx';
 
 function ContextHost({ type, focusKey, onClose, children }) {
   const hostRef = useRef(null);
@@ -68,5 +69,11 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
   }
   if (!content) return null;
   const contextType = panel.value === 'artifact-focus' ? 'artifact' : panel.focus?.type;
-  return <ContextHost type={contextType} focusKey={panel.focus?.key} onClose={close}>{content}</ContextHost>;
+  // 面板里的正文和消息区读的是同一种 Markdown,里面的绝对路径链接也该是同一种东西:
+  // 在 Atoll 里打开那个文件。少了这一层,MarkdownContent 找不到 provider,就退回成
+  // 普通 <a target="_blank">——点下去浏览器会拿当前站点去访问 /home/... 这条路径,
+  // 跳到一个本站根本不提供的地址。预览里的链接"点不开"就是这么来的。
+  return <ContextHost type={contextType} focusKey={panel.focus?.key} onClose={close}>
+    <MarkdownFileReferenceProvider onOpen={artifacts.onFileReference}>{content}</MarkdownFileReferenceProvider>
+  </ContextHost>;
 }

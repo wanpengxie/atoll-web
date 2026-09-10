@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
+import { attachmentFromFileReference } from './model/file-references.js';
 import { ensureServerBoot } from './model/server-boot.js';
 import { isMobileProfile } from './model/device-profile.js';
 import { foregroundWake } from './net/wake.js';
@@ -1260,7 +1261,7 @@ export default function App() {
     active: { channel: activeChannel, state: activeState, roster: activeRoster, access: activeAccess, selfId, wireState, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } },
     directory: { channels: channelList },
     governance: { principals: spacePrincipals, declarations: spaceDeclarations, daemons: spaceDaemons, channelDevices, registrarRoster: rosters.get('c0') || (activeChannelId === 'c0' ? activeRoster : []), rootState: channelStatesRef.current.get('c0'), version: feedVersion, onSubmit: handleSend, onRefresh: refreshGovernanceData },
-    artifacts: { selected: previewArtifact || selectedArtifact, authorName: activeRoster.find((row) => row.id === (previewArtifact || selectedArtifact)?.authorActorId)?.name, onResource: handleResource, onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onAttach: attachToDraft, onSource: openArtifactSource },
+    artifacts: { selected: previewArtifact || selectedArtifact, authorName: activeRoster.find((row) => row.id === (previewArtifact || selectedArtifact)?.authorActorId)?.name, onResource: handleResource, onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onAttach: attachToDraft, onSource: openArtifactSource, onFileReference: (reference) => previewMessageAttachment(activeChannelId, attachmentFromFileReference(reference)) },
     workItems: { selected: selectedWorkItem, roster: activeRoster, onSource: openWorkItemSource, onResolve: (item, decision) => handleResolve(activeChannelId, item.nativeId, decision, {}), onOpenTurn: openTurnDetail, onRetry: (item) => { const submission = pending.find((row) => row.key === item.diagnostic?.submissionKey); if (submission) handleRetry(submission); }, onCancelAutomation: handleCancelTimer },
     roster: { busy: rosterBusy, onRefresh: () => refreshRoster(activeChannelId, true), selectedActor, capability: selectedCapability, onSelectActor: handleSelectActor, onCloseActor: () => {
       setSelectedActor(null);
