@@ -40,3 +40,24 @@ export function processCount(turn) {
 export function turnStartObservation(turn) {
   return processObservations(turn).find((item) => item.process.kind === 'turn' && item.process.phase === 'started') || null;
 }
+
+// claude 的最后一个 text 块与终稿同文——这是 provider 有意的选择（见
+// provider/claude/output.go："过程是过程，回答是回答，各自完整，恒不为了去重而猜
+// '这块是不是最后一块'"）。它猜不了：发那一块的时候它还不知道终稿长什么样。
+//
+// 但渲染的时候两份都在手上，就不用猜了：**末条过程文本如果就是答案本身，只是
+// 答案提前到了一次，不是又说了一遍。** 只看末条——中间那些是真正的过程正文，一个
+// 都不能少。
+//
+// 过程记录是截断过的（provider 侧 4096 字），所以"是答案本身"包含"是答案的前缀"。
+const TRUNCATION_MARK = '…[truncated]';
+
+export function withoutFinalEcho(observations, terminalText) {
+  const answer = String(terminalText || '').trim();
+  if (!answer || !observations.length) return observations;
+  const last = String(observations.at(-1)?.process?.text || '').trim();
+  if (!last) return observations;
+  const body = last.endsWith(TRUNCATION_MARK) ? last.slice(0, -TRUNCATION_MARK.length) : last;
+  if (!body) return observations;
+  return answer.startsWith(body) ? observations.slice(0, -1) : observations;
+}

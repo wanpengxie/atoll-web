@@ -15,7 +15,7 @@ import { selectSystemNote } from '../model/agent-selection.js';
 import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { projectTimeline } from '../model/timeline-projection.js';
 import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
-import { conversationTextObservations, processCount, turnStartObservation } from '../model/turn-process.js';
+import { conversationTextObservations, processCount, turnStartObservation, withoutFinalEcho } from '../model/turn-process.js';
 import { diagnostic } from '../model/diagnostics.js';
 import { createTopIntentController, HISTORY_OPERATION } from '../model/history-interaction.js';
 import { argsOf } from '../protocol/envelope.js';
@@ -464,8 +464,8 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
   const agentId = terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0];
   const bubbleTs = terminal?.ts || liveEnvelope?.ts;
   const processStartedTs = turnStartedAt(turn);
-  const conversationTexts = conversationTextObservations(turn);
   const terminalText = terminal && !stopped ? messagePresentation(terminal).text : '';
+  const conversationTexts = withoutFinalEcho(conversationTextObservations(turn), terminalText);
   const foldText = [...conversationTexts.map(({ process }) => process.text), terminalText].filter(Boolean).join('\n\n');
   const className = `agent-turn-bubble${terminal ? ' settled' : ' processing'}${compact ? ' compact' : ''}${hasThreadChildren ? ' has-thread-children' : ''}`;
   const identity = <span className="actor-icon kind-agent">A</span>;
@@ -564,7 +564,7 @@ function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount 
   return <section className={`turn-card agent-conversation-turn self status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
     <MessageFrame className="request-message" identity={<span className="actor-icon kind-human">H</span>}>
       <header><strong>{nameOf(request.sender?.id, names)}</strong><time>{timeLabel(request.ts)}</time></header>
-      <div className="request-text"><FoldableBody id={requestFoldId} text={requestText} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent text={requestText} /></FoldableBody></div>
+      <div className="request-text"><FoldableBody id={requestFoldId} text={requestText} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent text={requestText} /></FoldableBody></div>
       {editSession && <small className="message-editing-state">正在输入框中编辑</small>}
       <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
     </MessageFrame>
@@ -583,12 +583,15 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
   const requestFoldId = `${turn.requestId}:request`;
   const responseFoldId = `${turn.requestId}:response`;
   // 正在查看过程的那轮，读者显然在读它，答案不折。
+  // 只豁免**答案**：豁免是为了让人不用点就能读到新东西，而自己刚发出去的那段提问
+  // 恒不是新东西——一段长粘贴把屏幕占满，挡住的正是他在等的那个回答。提问一律按
+  // 同一条长度判据折，跟其他消息一样，点一下就能展开。
   const foldExempt = Boolean(fold?.latest || detailsOpen);
   return (
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
       <ReplyableMessageFrame replyTarget={replyTarget} copyText={requestView.text} onReply={onReply} onCreateTask={onCreateTask} className="request-message" identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
-          <div className="request-text"><FoldableBody id={requestFoldId} text={requestView.text} exempt={foldExempt} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent text={requestView.text} /></FoldableBody>{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
+          <div className="request-text"><FoldableBody id={requestFoldId} text={requestView.text} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent text={requestView.text} /></FoldableBody>{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
       </ReplyableMessageFrame>
       <ThreadCalls thread={thread} names={names} />
