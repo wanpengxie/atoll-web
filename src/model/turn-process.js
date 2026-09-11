@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 // RequestTurn 的过程只有一个事实源：所属 request 的 provisional response。
 // 这里负责从 wire payload 中取出 process，并保留 envelope/seq 供所有 UI
 // 组件使用；组件不得再从 event type 或 Tool output 猜过程语义。
@@ -6,7 +7,7 @@ export function processObservations(turn) {
     .map((item) => ({
       seq: Number(item.seq),
       envelope: item.envelope,
-      process: item.envelope?.payload?.process,
+      process: argsOf(item.envelope)?.process,
     }))
     .filter((item) => Number.isFinite(item.seq) && item.process && typeof item.process === 'object')
     .sort((left, right) => left.seq - right.seq);

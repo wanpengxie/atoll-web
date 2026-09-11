@@ -1,3 +1,4 @@
+import { argsOf } from '../../protocol/envelope.js';
 import { MOBILE_WINDOW, trimChannelState } from '../../model/memory-window.js';
 import { isMobileProfile } from '../../model/device-profile.js';
 import { abbreviateToolRow } from '../../model/payload-abbreviate.js';
@@ -79,7 +80,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         landedMessageIds.add(row.envelope.id);
         onTimerFired(row.envelope.id, row.envelope.ts || Date.now());
       }
-      if (row.envelope?.kind === 'response' && ['completed', 'failed'].includes(row.envelope?.payload?.status) && row.envelope?.parent_id) {
+      if (row.envelope?.kind === 'response' && ['completed', 'failed'].includes(argsOf(row.envelope)?.status) && row.envelope?.parent_id) {
         closedRequestIds.add(`${channelId}:${row.envelope.parent_id}:cancel`);
       }
     }
@@ -133,6 +134,19 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   landLiveRowsRef.current = landLiveRows;
   const liveBatchRef = useRef(null);
   if (!liveBatchRef.current) liveBatchRef.current = createFrameBatcher((batch) => landLiveRowsRef.current(batch));
+
+  // 页面要走了就把缓冲落地。这不是上面那条不变量的替代(那条靠 checkpoint 前 flush
+  // 保证),是缩小窗口:冻结的后台标签页连定时器都不会来,缓冲里的行会跟着页面一起消失。
+  useEffect(() => {
+    const flush = () => liveBatchRef.current.flushNow();
+    const onHidden = () => { if (document.visibilityState === 'hidden') flush(); };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onHidden);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onHidden);
+    };
+  }, []);
 
   const enqueue = useCallback((payloadOrChannel, seq, envelope, detail) => {
 	const payload = typeof payloadOrChannel === 'object'
@@ -191,6 +205,10 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
 
   const liveCheckpoint = useCallback((payload = {}) => {
+    // checkpoint 说的是"这段 seq 我扫过了",它一落盘,重连时这段就不会再补。所以
+    // 它恒不能跑在还没落地的行前面——合批缓冲里那些行正属于它声称覆盖的范围,
+    // 缓冲一旦随页面关闭消失,那几行就再也没有人去取了(账上有、这台设备永远看不到)。
+    liveBatchRef.current.flushNow();
     const channelId = payload.channel_id;
     const lowSeq = Number(payload.scan_low_seq);
     const highSeq = Number(payload.scanned_seq);

@@ -1,6 +1,8 @@
+import { argsOf } from './protocol/envelope.js';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
 import { attachmentFromFileReference } from './model/file-references.js';
+import { rememberChannelNames } from './model/channel-name-cache.js';
 import { ensureServerBoot } from './model/server-boot.js';
 import { isMobileProfile } from './model/device-profile.js';
 import { foregroundWake } from './net/wake.js';
@@ -84,18 +86,18 @@ function isGovernanceOperation(type = '') {
 
 function governanceOperationTitle(turn) {
   const type = turn.request?.type || '';
-  const payload = turn.request?.payload || {};
+  const payload = argsOf(turn.request) || {};
   const known = messagePresentation(turn.request || {});
   if (type === TYPES.channel.create) return `创建频道 ${payload.name || ''}`.trim();
   return known.detail ? `${known.text} ${known.detail}`.trim() : known.text || payload.title || type;
 }
 
 function governanceOperation(channel, turn, channelRows) {
-  const terminal = turn.terminal?.payload;
+  const terminal = argsOf(turn.terminal);
   let state = terminal?.status === 'failed' ? 'failed' : terminal?.status === 'cancelled' ? 'cancelled' : terminal?.status === 'completed' ? 'completed' : 'waiting_ledger';
-  let detail = terminal ? '账本已确认' : '等待账本确认';
+  let detail = turn.terminal ? '账本已确认' : '等待账本确认';
   if (turn.request?.type === TYPES.channel.create && terminal?.status === 'completed') {
-    const expected = `${channel.qualified_name || channel.name || channel.id}.${turn.request.payload?.name || ''}`;
+    const expected = `${channel.qualified_name || channel.name || channel.id}.${argsOf(turn.request)?.name || ''}`;
     const created = channelRows.find((row) => row.id === terminal.value?.channel_id || row.qualified_name === expected);
     if (!created) { state = 'waiting_projection'; detail = '等待频道可观察'; }
     else if (!isMemberAccess(created.access)) { state = 'waiting_projection'; detail = '等待成员关系'; }
@@ -357,6 +359,7 @@ export default function App() {
       refreshInFlight = loadChannelTree(obs).then((result) => {
       if (!alive) return;
       const profiles = [...result.channels.values()];
+      rememberChannelNames(profiles);
       access.channelsObserved(profiles, { complete: result.complete });
       setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
       bumpAccess();
@@ -707,9 +710,9 @@ export default function App() {
     if (!state) return;
     for (const row of state.rows.values()) {
       if (row.kind !== 'response' || row.parent_id !== pendingSelect.requestId) continue;
-      const status = row.payload?.status;
+      const status = argsOf(row)?.status;
       if (status === 'failed') {
-        setTopError(`切换模型失败：${row.payload?.detail || row.payload?.error_code || row.payload?.reason || '未知原因'}`);
+        setTopError(`切换模型失败：${argsOf(row)?.detail || argsOf(row)?.error_code || argsOf(row)?.reason || '未知原因'}`);
         setPendingSelect(null);
         return;
       }
@@ -923,7 +926,7 @@ export default function App() {
       const probe = registry.current.get(probeKey);
       if (probe) {
         if (!probe.failed && probe.requestId) {
-          const failedRow = state ? [...state.rows.values()].some((row) => row.kind === 'response' && row.parent_id === probe.requestId && row.payload?.status === 'failed') : false;
+          const failedRow = state ? [...state.rows.values()].some((row) => row.kind === 'response' && row.parent_id === probe.requestId && argsOf(row)?.status === 'failed') : false;
           const rejected = pending.some((item) => item.messageId === probe.requestId && item.state === 'rejected');
           if (failedRow || rejected) probe.failed = true;
         }

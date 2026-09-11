@@ -36,7 +36,13 @@ export function deriveChannelMode(state, { connected = true } = {}) {
   if (state.relationship === 'denied') return CHANNEL_ACCESS.accessDenied;
   if (state.relationship === 'member') {
     if (!connected || state.freshness !== 'fresh') return CHANNEL_ACCESS.memberStale;
-    if (state.unavailable || state.runtime !== 'open') return CHANNEL_ACCESS.memberUnavailable;
+    if (state.unavailable) return CHANNEL_ACCESS.memberUnavailable;
+    // 成员资格由 attach 回执带来,频道档案要另走一趟 /obs/space/channels——回执先到
+    // 是常态(尤其手机上)。而 runtime 只能从档案里来,**没拿到档案 ≠ 频道不可用**,
+    // 它只是还不知道。把"还不知道"说成"暂不可用"是一句会被打脸的断言:下一秒档案
+    // 到了,它就变回可用。宁可说"确认中"。
+    if (!state.profile) return CHANNEL_ACCESS.loading;
+    if (state.runtime !== 'open') return CHANNEL_ACCESS.memberUnavailable;
     return CHANNEL_ACCESS.memberActive;
   }
   if (state.relationship === 'observer') {

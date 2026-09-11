@@ -23,7 +23,7 @@ function requestSummary(request) {
 }
 
 function RecordRow({ label, envelope, names, status = '' }) {
-  const payload = envelope?.payload || {};
+  const payload = argsOf(envelope) || {};
   return <article className="turn-audit-row">
     <span className="turn-audit-mark" />
     <div><strong>{label}</strong><small>{actorName(envelope?.sender?.id, names)} · {timeLabel(envelope?.ts)}</small>{payload.detail && <p>{payload.detail}</p>}</div>
@@ -59,7 +59,7 @@ function TurnDetailBody({ turn, roster = [], selfId, access, controlState, onCan
   const request = turn.request;
   const context = taskControlContext(turn, { selfId, access });
   const process = executionProcessObservations(turn);
-  const business = (turn.provisional || []).filter((item) => !item.envelope?.payload?.process);
+  const business = (turn.provisional || []).filter((item) => !argsOf(item.envelope)?.process);
   return <>
     {showRequest && <div className="turn-context-source">
       <span>{actorName(request.sender?.id, names)} · {timeLabel(request.ts)}</span>
@@ -68,8 +68,8 @@ function TurnDetailBody({ turn, roster = [], selfId, access, controlState, onCan
     </div>}
     <section className={`turn-context-status status-${turn.status}`}><span className="turn-status-dot" /><div><strong>{turnStatusLabel(turn)}</strong><small>{turnProcessSummary(turn)}</small></div></section>
     {context.workId && <section className="turn-context-section turn-context-work"><h3>Agent Work</h3><dl className="turn-audit-facts"><div><dt>稳定编号</dt><dd>{context.workId}</dd></div><div><dt>状态</dt><dd>{[context.workState, context.workStage, context.executionState].filter(Boolean).join(' · ') || '未知'}</dd></div></dl></section>}
-    {turn.terminal && <section className="turn-context-terminal"><h3>最终结果</h3><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <p>{text}</p>} /></section>}
-    <section className="turn-context-section"><h3>业务进展</h3><div className="turn-context-process-scroll">{business.length ? business.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={item.envelope.payload?.detail || item.envelope.payload?.message || turnStatusLabel({ status: item.status })} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有独立业务状态更新</p>}</div></section>
+    {turn.terminal && <section className="turn-context-terminal"><h3>最终结果</h3><StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <p>{text}</p>} /></section>}
+    <section className="turn-context-section"><h3>业务进展</h3><div className="turn-context-process-scroll">{business.length ? business.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={argsOf(item.envelope)?.detail || argsOf(item.envelope)?.message || turnStatusLabel({ status: item.status })} envelope={item.envelope} names={names} />) : <p className="turn-context-empty">没有独立业务状态更新</p>}</div></section>
     <details className="turn-context-section turn-context-technical" open={!turn.terminal}>
       <summary>执行过程 <span>{process.length}</span></summary>
       <div className="turn-context-process-scroll">{process.length ? process.map((item) => <RecordRow key={`${item.seq}-${item.envelope.id}`} label={technicalLabel(item.process)} envelope={item.envelope} names={names} status={item.process.phase || item.process.stage || item.process.kind} />) : <p className="turn-context-empty">没有工具或运行时过程</p>}</div>

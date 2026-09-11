@@ -1,5 +1,5 @@
+import { argsOf, KIND, PROVISIONAL } from '../protocol/envelope.js';
 import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from './timeline-scope.js';
-import { KIND, PROVISIONAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
 const CURSOR_PREFIX = 'atoll.cursor.v3.';
@@ -117,7 +117,7 @@ const HIDDEN_CONTROL_TYPES = new Set([
 function isNotifiable(envelope) {
   if (HIDDEN_CONTROL_TYPES.has(envelope?.type)) return false;
   if (envelope?.kind === KIND.request) return true;
-  return envelope?.kind === KIND.response && !PROVISIONAL.has(envelope?.payload?.status);
+  return envelope?.kind === KIND.response && !PROVISIONAL.has(argsOf(envelope)?.status);
 }
 
 export function unreadCount(channelState, readSeq, selfId) {

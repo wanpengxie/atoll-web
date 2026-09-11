@@ -1,3 +1,4 @@
+import { argsOf } from '../../protocol/envelope.js';
 import React, { useEffect, useRef, useState } from 'react';
 import { overlayCommand, parseJSONObject, profileCommand } from '../../model/space-administration.js';
 import { PanelCard } from '../primitives/PanelCard.jsx';
@@ -18,7 +19,7 @@ export function ChannelConfigurationPanel({ channel, devices = [], roster, state
 
   useEffect(() => {
     if (!requestId || refreshedRequestRef.current === requestId) return;
-    const phase = stateFor(states, requestId)?.turns?.get(requestId)?.terminal?.payload?.status;
+    const phase = argsOf(stateFor(states, requestId)?.turns?.get(requestId)?.terminal)?.status;
     if (!['completed', 'failed'].includes(phase)) return;
     refreshedRequestRef.current = requestId;
     onRefresh?.();

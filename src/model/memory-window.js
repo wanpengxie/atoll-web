@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { invalidateScopeIndex } from './timeline-scope.js';
 
 // 这一页在内存里留多少账。
@@ -20,7 +21,7 @@ const KEEP_RATIO = 0.8;
 // 输出把窗口撑爆"。
 export function estimateRowBytes(envelope) {
   let bytes = 256;
-  const payload = envelope?.payload;
+  const payload = argsOf(envelope);
   if (payload && typeof payload === 'object') {
     // for…in 而不是 Object.values:这一行在裁剪时会跑几百次,恒不为估个字节数
     // 就给每一行分配一个数组。

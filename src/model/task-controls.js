@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
 // 一条消息此刻可被哪些控制词操作，唯一权威是受理方（agent 基座的处理循环）——
@@ -10,14 +11,14 @@ import { TYPES } from '../protocol/vocab.js';
 function latestStatusFrame(turn) {
   return [...(turn?.provisional || [])]
     .reverse()
-    .map((item) => item.envelope?.payload)
+    .map((item) => argsOf(item.envelope))
     .find((payload) => payload?.status === 'queued' || payload?.status === 'processing') || null;
 }
 
 function processingTurnId(turn) {
   return [...(turn?.provisional || [])]
     .reverse()
-    .map((item) => item.envelope?.payload?.turn_id)
+    .map((item) => argsOf(item.envelope)?.turn_id)
     .find((value) => typeof value === 'string' && value) || '';
 }
 
@@ -67,7 +68,7 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
   const owned = Boolean(selfId && request?.sender?.id === selfId);
   const writable = access === 'member_active';
   const frame = latestStatusFrame(turn);
-  const workFrame = frame?.work_id ? frame : (turn?.terminal?.payload?.work_id ? turn.terminal.payload : null);
+  const workFrame = frame?.work_id ? frame : (argsOf(turn?.terminal)?.work_id ? argsOf(turn.terminal) : null);
   const location = frame?.status || '';
   const controls = open ? controlEntries(frame) : [];
   const words = new Set(controls.map((entry) => entry.word));

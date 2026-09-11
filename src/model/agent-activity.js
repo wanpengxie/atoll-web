@@ -1,4 +1,4 @@
-import { FINAL } from '../protocol/envelope.js';
+import { argsOf, FINAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
 // Only user-visible Agent work owns an activity timer. Control/configuration
@@ -26,13 +26,13 @@ function timestamp(envelope, fallback) {
 function isRunningProgress(envelope) {
   return envelope?.kind === 'response'
     && ACTIVITY_TYPES.has(envelope.type)
-    && (envelope.payload?.status === 'processing' || Boolean(envelope.payload?.process));
+    && (argsOf(envelope)?.status === 'processing' || Boolean(argsOf(envelope)?.process));
 }
 
 function isTerminalActivity(envelope) {
   return envelope?.kind === 'response'
     && ACTIVITY_TYPES.has(envelope.type)
-    && FINAL.has(envelope.payload?.status);
+    && FINAL.has(argsOf(envelope)?.status);
 }
 
 function cloneEntry(entry) {
@@ -102,7 +102,7 @@ export function createAgentActivityTracker({ onChange = () => {}, now = () => Da
         state: 'settled',
         updatedAt: at,
         settledAt: at,
-        outcome: envelope.payload?.status || '',
+        outcome: argsOf(envelope)?.status || '',
       });
       changed();
       return true;
@@ -114,7 +114,7 @@ export function createAgentActivityTracker({ onChange = () => {}, now = () => Da
     const at = timestamp(envelope, now());
     const current = entries.get(key);
     if (current?.state === 'settled') return false;
-    const process = envelope.payload?.process;
+    const process = argsOf(envelope)?.process;
     const processStarted = process?.kind === 'turn' && process?.phase === 'started';
     const contextStartedAt = new Date(context.startedAt).getTime();
     const next = {

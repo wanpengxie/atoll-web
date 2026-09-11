@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CHANNEL_ACCESS } from '../../model/channel-access.js';
+import { withCachedChannelName } from '../../model/channel-name-cache.js';
 
 export function useChannelDirectory({ accessRef, rosterRef, onChannelChanged, onNotice }) {
   const [channels, setChannels] = useState(new Map());
   const [version, setVersion] = useState(0);
   const [activeChannelId, setActiveChannelId] = useState('');
-  const rows = useMemo(() => (accessRef.current?.rows() || []).sort((left, right) => {
+  const rows = useMemo(() => (accessRef.current?.rows() || []).map(withCachedChannelName).sort((left, right) => {
     if (left.id === 'c0') return -1;
     if (right.id === 'c0') return 1;
     return (left.qualified_name || left.name || left.id).localeCompare(right.qualified_name || right.name || right.id);

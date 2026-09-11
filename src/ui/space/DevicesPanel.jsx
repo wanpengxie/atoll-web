@@ -1,3 +1,4 @@
+import { argsOf } from '../../protocol/envelope.js';
 import React, { useEffect, useRef, useState } from 'react';
 import { DEVICE_NAME_RULE, deviceCommand, terminalValue } from '../../model/space-administration.js';
 import { InlineConfirmation } from '../primitives/InlineConfirmation.jsx';
@@ -27,7 +28,7 @@ export function DevicesPanel({ channel, states, version, daemons, channelDevices
 
   useEffect(() => {
     if (!requestId || refreshedRequestRef.current === requestId) return;
-    const phase = stateFor(states, requestId)?.turns?.get(requestId)?.terminal?.payload?.status;
+    const phase = argsOf(stateFor(states, requestId)?.turns?.get(requestId)?.terminal)?.status;
     if (!['completed', 'failed'].includes(phase)) return;
     refreshedRequestRef.current = requestId;
     onRefresh?.();

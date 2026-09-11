@@ -1,3 +1,4 @@
+import { argsOf } from './envelope.js';
 import { TYPES } from './vocab.js';
 
 function text(value) {
@@ -5,7 +6,7 @@ function text(value) {
 }
 
 function memberEvent(envelope, kind) {
-  const payload = envelope?.payload;
+  const payload = argsOf(envelope);
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const memberId = text(payload.member);
   if (!memberId) return null;
@@ -22,7 +23,7 @@ const DECODERS = new Map([
   [TYPES.narration.memberCreated, (envelope) => memberEvent(envelope, 'member_joined')],
   [TYPES.narration.memberDeleted, (envelope) => memberEvent(envelope, 'member_left')],
   [TYPES.narration.channelInbound, (envelope) => {
-    const payload = envelope?.payload;
+    const payload = argsOf(envelope);
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
     const fromChannel = text(payload.from);
     const requestType = text(payload.type);

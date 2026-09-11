@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { registryCommand } from './channel-governance.js';
 import { isSystemDeclaration } from './management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
@@ -89,7 +90,7 @@ export function safeChannelDeviceRows(observation) {
 }
 
 export function terminalValue(state, requestId) {
-  const terminal = state?.turns?.get(requestId)?.terminal?.payload;
+  const terminal = argsOf(state?.turns?.get(requestId)?.terminal);
   if (!terminal) return { phase: 'waiting', value: null, error: '' };
   if (terminal.status === 'failed') return { phase: 'failed', value: terminal.value ?? null, error: terminal.error_code || terminal.reason || terminal.detail || '操作失败' };
   if (terminal.status === 'completed') return { phase: 'completed', value: terminal.value ?? null, error: '' };

@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { systemEventPresentation } from './system-event-presentation.js';
 import { turnStatusLabel } from './turn-presentation.js';
 
@@ -103,7 +104,7 @@ function preferActivity(left, right) {
 function terminalActivity(channelId, turn) {
   const terminal = turn?.terminal;
   if (!terminal) return null;
-  const status = terminal.payload?.status;
+  const status = argsOf(terminal)?.status;
   if (!['completed', 'failed', 'cancelled'].includes(status)) return null;
   const source = sourceRef(null, {
     channelId,
@@ -114,7 +115,7 @@ function terminalActivity(channelId, turn) {
     requestId: turn.requestId,
     envelopeId: terminal.id,
   });
-  const requestText = string(turn.request?.payload?.title || turn.request?.payload?.text || turn.request?.type);
+  const requestText = string(argsOf(turn.request)?.title || argsOf(turn.request)?.text || turn.request?.type);
   return {
     key: `activity:${factKey(source, `${channelId}:turn:${turn.requestId}`)}`,
     factKey: factKey(source),
@@ -179,7 +180,7 @@ function narrationActivity(channelId, item) {
     kind: 'membership',
     title: presentation.title,
     summary: string(envelope.type),
-    severity: envelope.payload?.severity === 'critical' ? 'critical' : 'warning',
+    severity: argsOf(envelope)?.severity === 'critical' ? 'critical' : 'warning',
     actionableBySelf: false,
     updatedAt: timestamp(envelope.ts, item.seq),
     source,
@@ -317,8 +318,8 @@ function requestSearchIdentity(channelId, source) {
 function turnSearchItem(channelId, turn) {
   const request = turn?.request || {};
   const source = sourceRef(null, { channelId, view: 'dynamic', objectType: 'turn', objectId: turn.requestId, seq: turn.requestSeq, requestId: turn.requestId, envelopeId: request.id });
-  const title = string(request.payload?.title || request.payload?.text || request.type) || '频道工作';
-  const responseText = string(turn.terminal?.payload?.text || turn.terminal?.payload?.detail);
+  const title = string(argsOf(request)?.title || argsOf(request)?.text || request.type) || '频道工作';
+  const responseText = string(argsOf(turn.terminal)?.text || argsOf(turn.terminal)?.detail);
   return {
     key: `search:${channelId}:turn:${turn.requestId}`,
     channelId,
@@ -333,7 +334,7 @@ function turnSearchItem(channelId, turn) {
 
 function standaloneSearchItem(channelId, item) {
   const envelope = item?.envelope || {};
-  const title = string(envelope.payload?.title || envelope.payload?.text || envelope.payload?.message || envelope.payload?.detail || envelope.type);
+  const title = string(argsOf(envelope)?.title || argsOf(envelope)?.text || argsOf(envelope)?.message || argsOf(envelope)?.detail || envelope.type);
   const source = sourceRef(null, { channelId, view: 'dynamic', objectType: 'entry', objectId: envelope.id, seq: item.seq, envelopeId: envelope.id });
   if (!title || !source) return null;
   return {

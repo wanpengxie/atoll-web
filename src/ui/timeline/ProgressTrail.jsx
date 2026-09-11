@@ -1,3 +1,4 @@
+import { argsOf } from '../../protocol/envelope.js';
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { JsonView } from 'react-json-view-lite';
 import { executionProcessObservations } from '../../model/turn-process.js';
@@ -58,7 +59,7 @@ function rawToolData(row) {
   return Object.keys(value).length ? value : null;
 }
 
-function toolRow(seq, envelope, ended, payload = envelope.payload || {}) {
+function toolRow(seq, envelope, ended, payload = argsOf(envelope) || {}) {
   const tool = payload.tool || '工具';
   const detail = payload.detail || '';
   const status = payload.outcome || '';
@@ -78,7 +79,7 @@ function toolRow(seq, envelope, ended, payload = envelope.payload || {}) {
   };
 }
 
-function noteRow(seq, envelope, payload = envelope.payload || {}) {
+function noteRow(seq, envelope, payload = argsOf(envelope) || {}) {
   const kind = payload.stage;
   const { text } = payload;
   // codex 的思考区间没有文本可给（模型侧不下发明文）——它是一段状态，

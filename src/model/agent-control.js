@@ -18,7 +18,7 @@ const CONTENT_TYPES = new Set([
 const DEFAULT_HOLD_DURATION_MS = 30 * 60 * 1000;
 
 function terminalValue(turn, key) {
-  return turn?.terminal?.payload?.[key] ?? turn?.terminal?.payload?.value?.[key];
+  return argsOf(turn?.terminal)?.[key] ?? argsOf(turn?.terminal)?.value?.[key];
 }
 
 export function isAgentMessageTurn(turn) {
@@ -51,12 +51,12 @@ export function preemptedBy(turn) {
 }
 
 function terminalCompleted(turn) {
-  return turn?.terminal?.payload?.status === 'completed';
+  return argsOf(turn?.terminal)?.status === 'completed';
 }
 
 export function resumedQueued(turn) {
   return [...(turn?.provisional || [])].reverse().some((item) => (
-    item.envelope?.payload?.status === 'queued' && item.envelope?.payload?.resumed === true
+    argsOf(item.envelope)?.status === 'queued' && argsOf(item.envelope)?.resumed === true
   ));
 }
 
@@ -65,7 +65,7 @@ export function editAdmission(state, session) {
   const hold = state?.turns?.get(session.holdId);
   if (!hold?.terminal) return { ready: false, error: '' };
   if (!terminalCompleted(hold)) {
-    return { ready: false, error: hold.terminal.payload?.detail || hold.terminal.payload?.error_code || '无法锁定这条任务' };
+    return { ready: false, error: argsOf(hold.terminal)?.detail || argsOf(hold.terminal)?.error_code || '无法锁定这条任务' };
   }
   if (session.location === 'processing' && !resumedQueued(state?.turns?.get(session.targetId))) {
     return { ready: false, error: '' };
@@ -108,11 +108,11 @@ export function agentFrozenState(state, actorId, now = Date.now()) {
       operations.push({ seq: turn.requestSeq, kind: 'clear' });
     }
     if (CONTENT_TYPES.has(type)) {
-      const enteredBuffer = (turn.provisional || []).some((item) => item.envelope?.payload?.status === 'queued' && item.envelope?.payload?.resumed !== true);
-      const capacityFailure = turn.terminal?.payload?.status === 'failed' && turn.terminal.payload?.error_code === 'base_capacity';
+      const enteredBuffer = (turn.provisional || []).some((item) => argsOf(item.envelope)?.status === 'queued' && argsOf(item.envelope)?.resumed !== true);
+      const capacityFailure = argsOf(turn.terminal)?.status === 'failed' && argsOf(turn.terminal)?.error_code === 'base_capacity';
       if (enteredBuffer || capacityFailure) operations.push({ seq: turn.requestSeq, kind: 'new-content' });
       for (const item of turn.provisional || []) {
-        if (item.envelope?.payload?.status === 'processing') operations.push({ seq: item.seq, kind: 'advanced' });
+        if (argsOf(item.envelope)?.status === 'processing') operations.push({ seq: item.seq, kind: 'advanced' });
       }
       if (terminalValue(turn, 'merged_into')) operations.push({ seq: turn.terminalSeq, kind: 'advanced' });
     }
@@ -134,7 +134,7 @@ export function agentFrozenState(state, actorId, now = Date.now()) {
       frozen = null;
     } else if (operation.kind === 'new-content' && frozen && operation.seq > frozen._seq) {
       frozen = null;
-    } else if (operation.kind === 'fire' && frozen && operation.envelope?.payload?.hold_id === frozen.held_by) {
+    } else if (operation.kind === 'fire' && frozen && argsOf(operation.envelope)?.hold_id === frozen.held_by) {
       frozen = null;
     }
   }

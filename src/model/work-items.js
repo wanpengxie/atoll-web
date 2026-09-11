@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { isAgentControl, supportsType } from './capabilities.js';
 import { TYPES, isSystemWord } from '../protocol/vocab.js';
 import { actorNameMap } from './actor-display.js';
@@ -24,8 +25,8 @@ function stateOfTurn(turn) {
     if (turn?.latestStatus === 'unavailable') return 'blocked';
     return 'active';
   }
-  if (turn.terminal.payload?.status === 'completed') return 'completed';
-  const reason = turn.terminal.payload?.reason || turn.terminal.payload?.error_code;
+  if (argsOf(turn.terminal)?.status === 'completed') return 'completed';
+  const reason = argsOf(turn.terminal)?.reason || argsOf(turn.terminal)?.error_code;
   return reason === 'cancelled' || reason === 'interrupted' ? 'cancelled' : 'failed';
 }
 
@@ -36,14 +37,14 @@ function approvalState(turn, now) {
 }
 
 function titleOfTurn(turn) {
-  const payload = turn?.request?.payload || {};
+  const payload = argsOf(turn?.request) || {};
   return String(payload.title || payload.text || payload.detail || turn?.request?.type || '未命名工作').trim();
 }
 
 function taskValue(turn) {
-  if (turn?.request?.type !== 'task.create' || turn?.terminal?.payload?.status !== 'completed') return null;
-  const raw = turn.terminal.payload?.value;
-  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : turn.terminal.payload;
+  if (turn?.request?.type !== 'task.create' || argsOf(turn?.terminal)?.status !== 'completed') return null;
+  const raw = argsOf(turn.terminal)?.value;
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : argsOf(turn.terminal);
   const taskId = value.task_id || value.id;
   return typeof taskId === 'string' && taskId ? { ...value, taskId } : null;
 }
@@ -74,15 +75,15 @@ export function buildWorkItemIndex({ state, pending = [], timers = [], selfId = 
     const itemSource = source(channelId, 'turn', turn.requestId, turn.requestSeq);
     const task = taskValue(turn);
     if (task) {
-      const declaredSource = request.payload?.source;
+      const declaredSource = argsOf(request)?.source;
       const taskSource = declaredSource && declaredSource.channelId === channelId && declaredSource.objectId
         ? { ...declaredSource, channelId }
         : itemSource;
       index.set(`task:${channelId}:${task.taskId}`, {
         key: `task:${channelId}:${task.taskId}`, channelId, kind: 'task', nativeId: task.taskId,
-        title: String(task.title || request.payload?.title || request.payload?.description || '未命名任务'), state: taskState(task),
+        title: String(task.title || argsOf(request)?.title || argsOf(request)?.description || '未命名任务'), state: taskState(task),
         assigneeActorIds: [task.assignee || request.audience?.[0]].filter(Boolean), requesterActorId: request.sender?.id,
-        dueAt: task.due_at || request.payload?.due_at || '', priority: task.priority || request.payload?.priority || 'normal',
+        dueAt: task.due_at || argsOf(request)?.due_at || '', priority: task.priority || argsOf(request)?.priority || 'normal',
         source: taskSource, relatedArtifacts: task.related_artifacts || [],
         createdAt: request.ts, updatedAt: turn.terminal?.ts || request.ts, actionableBySelf: false,
         provenance: 'ledger', diagnostic: { providerActorId: request.audience?.[0] || '', rawStatus: task.status || task.state || '' },
@@ -95,10 +96,10 @@ export function buildWorkItemIndex({ state, pending = [], timers = [], selfId = 
       index.set(`approval:${channelId}:${turn.requestId}`, {
         key: `approval:${channelId}:${turn.requestId}`, channelId, kind: 'approval', nativeId: turn.requestId,
         title: titleOfTurn(turn), state: itemState, assigneeActorIds: assignees, requesterActorId: request.sender?.id,
-        dueAt: request.expires_at || '', waitingFor: '等待审批决定', priority: request.payload?.priority || 'high', source: itemSource,
+        dueAt: request.expires_at || '', waitingFor: '等待审批决定', priority: argsOf(request)?.priority || 'high', source: itemSource,
         relatedArtifacts: [], createdAt: request.ts, updatedAt: turn.terminal?.ts || request.ts,
         actionableBySelf: writable && itemState === 'waiting' && assignees.includes(selfId), provenance: 'ledger',
-        diagnostic: { requestType: request.type, impact: request.payload?.impact || '' },
+        diagnostic: { requestType: request.type, impact: argsOf(request)?.impact || '' },
       });
       continue;
     }

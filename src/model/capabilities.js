@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
 // agent 基座直接受理的控制词（drivers/agents/base/base.go）。它们不是“一件正在
@@ -100,15 +101,15 @@ export function capabilityIndexFromState(state, liveRequestIds = null) {
     current.requestId = turn.requestId;
     current.seq = turn.lastSeq;
     current.loading = !turn.terminal;
-    if (turn.terminal?.payload?.status === 'completed') {
-      const describe = normalizeDescribe(describeValue(turn.terminal.payload));
+    if (argsOf(turn.terminal)?.status === 'completed') {
+      const describe = normalizeDescribe(describeValue(argsOf(turn.terminal)));
       if (describe) current.describe = mergeDescribe(current.describe, describe);
       current.error = describe ? null : { code: 'invalid_describe', detail: 'Actor 返回的能力结构无法识别' };
       current.loading = false;
     } else if (turn.terminal) {
       current.error = {
-        code: turn.terminal.payload?.error_code || turn.terminal.payload?.reason || 'describe_failed',
-        detail: turn.terminal.payload?.detail || '',
+        code: argsOf(turn.terminal)?.error_code || argsOf(turn.terminal)?.reason || 'describe_failed',
+        detail: argsOf(turn.terminal)?.detail || '',
       };
       current.loading = false;
     }

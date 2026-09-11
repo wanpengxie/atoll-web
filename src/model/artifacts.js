@@ -72,7 +72,7 @@ function registeredArtifact(payload, adapters, envelopeType) {
 }
 
 function factsFromEnvelope(envelope, adapters) {
-  const payload = envelope?.payload;
+  const payload = argsOf(envelope);
   if (!payload || typeof payload !== 'object') return [];
   const facts = [];
   const terminal = envelope.kind === 'response' && ['completed', 'failed', 'cancelled'].includes(payload.status);

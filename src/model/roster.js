@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 import { actorDisplayName } from './actor-display.js';
 
@@ -36,7 +37,7 @@ export function invalidatesRoster(envelope) {
   if ([TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)) return true;
   return envelope?.kind === 'response'
     && ROSTER_MUTATION_WORDS.has(envelope?.type)
-    && envelope?.payload?.status === 'completed';
+    && argsOf(envelope)?.status === 'completed';
 }
 
 export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {

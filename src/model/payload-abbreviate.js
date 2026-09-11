@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 // 工具输出在手机上缩略。
 //
 // 一次 grep 或者一次文件读取的返回可以是几百 KB,而它在屏幕上永远只露出前几行
@@ -35,7 +36,8 @@ function abbreviateOutput(output, limits) {
 
 // 没有可缩的东西就原样返回(连一次复制都不做):绝大多数行走的是这条路。
 export function abbreviateToolRow(row, limits = MOBILE_TOOL_OUTPUT) {
-  const process = row?.envelope?.payload?.process;
+  const body = argsOf(row?.envelope);
+  const process = body.process;
   if (!process || process.kind !== 'tool') return row;
   const output = abbreviateOutput(process.output, limits);
   if (output === process.output) return row;
@@ -43,7 +45,9 @@ export function abbreviateToolRow(row, limits = MOBILE_TOOL_OUTPUT) {
     ...row,
     envelope: {
       ...row.envelope,
-      payload: { ...row.envelope.payload, process: { ...process, output, output_abbreviated: true } },
+      payload: Object.prototype.hasOwnProperty.call(row.envelope.payload, 'body')
+        ? { ...row.envelope.payload, body: { ...body, process: { ...process, output, output_abbreviated: true } } }
+        : { ...body, process: { ...process, output, output_abbreviated: true } },
     },
   };
 }

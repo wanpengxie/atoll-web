@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 import { isSystemDeclaration, SYSTEM_ACTOR } from './management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
 
@@ -89,7 +90,7 @@ export function declarationKind(row) {
 }
 
 export function creationConvergence({ turn, expectedQualifiedName, channels = [], membership = null }) {
-  const terminal = turn?.terminal?.payload;
+  const terminal = argsOf(turn?.terminal);
   const failed = terminal?.status === 'failed';
   const createdId = terminal?.value?.channel_id || '';
   const channel = channels.find((row) => row.qualified_name === expectedQualifiedName || row.id === createdId) || null;
@@ -107,7 +108,7 @@ export function creationConvergence({ turn, expectedQualifiedName, channels = []
 }
 
 export function actorConvergence({ turn, type, actorId = '', roster = [] }) {
-  const terminal = turn?.terminal?.payload;
+  const terminal = argsOf(turn?.terminal);
   // system.member.* 的回复是平铺的：create/admit/restart 回 {member}，delete 回 {removed:[…]}。
   const targetId = terminal?.member || actorId;
   const actor = roster.find((row) => row.id === targetId) || null;

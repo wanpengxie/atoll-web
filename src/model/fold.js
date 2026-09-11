@@ -1,4 +1,4 @@
-import { correlationOf, FINAL, PROVISIONAL } from '../protocol/envelope.js';
+import { argsOf, correlationOf, FINAL, PROVISIONAL } from '../protocol/envelope.js';
 import { isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
 
 // subjectgate 只让这两个词走 resolve 帧（platform/internal/humancell）。
@@ -90,7 +90,7 @@ function applyProvisional(state, turn, seq, envelope) {
     anomaly(state, 'provisional_after_terminal', seq, envelope, turn);
     return;
   }
-  const status = envelope.payload?.status;
+  const status = argsOf(envelope)?.status;
   const core = PROVISIONAL.has(status);
   const business = typeof status === 'string' && BUSINESS_PROVISIONAL.test(status) && !FINAL.has(status);
   if (!core && !business) {
@@ -98,10 +98,10 @@ function applyProvisional(state, turn, seq, envelope) {
     state.orphans.push({ seq, envelope });
     return;
   }
-  const process = envelope.payload?.process;
+  const process = argsOf(envelope)?.process;
   if (process?.kind === 'tool' && process.phase === 'ended' && process.tool_call_id) {
     const started = turn.provisional.some((item) => {
-      const candidate = item.envelope?.payload?.process;
+      const candidate = argsOf(item.envelope)?.process;
       return candidate?.kind === 'tool' && candidate.phase === 'started' && candidate.tool_call_id === process.tool_call_id;
     });
     if (!started) anomaly(state, 'tool_start_missing', seq, envelope, turn);
@@ -120,16 +120,16 @@ function applyTerminal(state, turn, seq, envelope) {
   }
   turn.terminal = envelope;
   turn.terminalSeq = seq;
-  turn.phase = envelope.payload.status;
+  turn.phase = argsOf(envelope).status;
   turn.status = turn.phase;
-  turn.latestStatus = envelope.payload.status;
-  turn.text = terminalText(envelope.payload);
+  turn.latestStatus = argsOf(envelope).status;
+  turn.text = terminalText(argsOf(envelope));
   turn.lastSeq = Math.max(turn.lastSeq, seq);
   if (envelope.parent_id) { state.approvals.delete(envelope.parent_id); state.uiRequests.delete(envelope.parent_id); }
 }
 
 function attachResponse(state, turn, seq, envelope) {
-  if (FINAL.has(envelope.payload?.status)) applyTerminal(state, turn, seq, envelope);
+  if (FINAL.has(argsOf(envelope)?.status)) applyTerminal(state, turn, seq, envelope);
   else applyProvisional(state, turn, seq, envelope);
 }
 

@@ -1,5 +1,5 @@
+import { argsOf, FINAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
-import { FINAL } from '../protocol/envelope.js';
 
 // 协议正形：
 // - actor.describe 只声明 agent.options / agent.select 两个稳定 word；
@@ -69,8 +69,8 @@ export function latestAgentOptions(state, actorId, liveRequestId = '') {
   if (!state?.rows || !actorId || !liveRequestId) return null;
   for (const row of state.rows.values()) {
     if (row.kind !== 'response' || row.type !== TYPES.agentOptions || row.parent_id !== liveRequestId) continue;
-    if (row.sender?.id !== actorId || row.payload?.status !== 'completed') continue;
-    return normalizeAgentOptions(row.payload);
+    if (row.sender?.id !== actorId || argsOf(row)?.status !== 'completed') continue;
+    return normalizeAgentOptions(argsOf(row));
   }
   return null;
 }
@@ -121,14 +121,14 @@ export function latestAgentUsage(state, actorId, liveRequestId = '') {
   let live = false;
   let found = null;
   for (const row of state.rows.values()) {
-    if (row.kind === 'response' && row.type === TYPES.agentContext && row.parent_id === liveRequestId && row.payload?.status === 'completed') {
+    if (row.kind === 'response' && row.type === TYPES.agentContext && row.parent_id === liveRequestId && argsOf(row)?.status === 'completed') {
       live = true;
-      found = mergeUsage(found, normalizedUsage(row.payload));
+      found = mergeUsage(found, normalizedUsage(argsOf(row)));
       continue;
     }
     if (!live || row.sender?.id !== actorId) continue;
-    if (row.kind === 'response' && FINAL.has(row.payload?.status)) {
-      const usage = usableUsage(row.payload);
+    if (row.kind === 'response' && FINAL.has(argsOf(row)?.status)) {
+      const usage = usableUsage(argsOf(row));
       if (usage) found = mergeUsage(found, usage);
     }
   }

@@ -1,3 +1,4 @@
+import { argsOf } from '../protocol/envelope.js';
 export const TURN_STATUS_LABELS = {
   open: '等待处理',
   received: '已收到',
@@ -11,7 +12,7 @@ export const TURN_STATUS_LABELS = {
 };
 
 export function turnStatusLabel(turn) {
-  const status = turn?.terminal?.payload?.status || turn?.latestStatus || turn?.status || 'open';
+  const status = argsOf(turn?.terminal)?.status || turn?.latestStatus || turn?.status || 'open';
   return TURN_STATUS_LABELS[status] || status;
 }
 
@@ -27,8 +28,8 @@ export function turnProcessSummary(turn) {
 export function latestHumanProgress(turn) {
   // 过程节点有自己的 ProcessTrail；主消息摘要只读面向人的状态更新，不能被
   // 最后一条 tool/stage progress 覆盖成泛化的“处理中”。
-  const latest = [...(turn?.provisional || [])].reverse().find((item) => !item.envelope?.payload?.process);
+  const latest = [...(turn?.provisional || [])].reverse().find((item) => !argsOf(item.envelope)?.process);
   if (!latest) return '';
-  const payload = latest.envelope?.payload || {};
+  const payload = argsOf(latest.envelope) || {};
   return payload.detail || payload.message || payload.text || TURN_STATUS_LABELS[latest.status] || latest.status || '';
 }

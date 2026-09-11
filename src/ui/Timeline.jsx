@@ -101,7 +101,7 @@ function ApprovalCard({ turn, state, onResolve, names }) {
   return (
     <article className={`approval-card ${settled ? 'settled' : ''}`}>
       <header><span>{spec.mode === 'text' ? '需要你的回答' : '需要你的决定'}</span><small>{nameOf(request.sender?.id, names)} · {timeLabel(request.ts)}</small></header>
-      <div className="approval-summary"><strong>{request.payload?.title || request.payload?.text || request.type}</strong>{request.payload?.detail && <p>{request.payload.detail}</p>}{request.payload?.impact && <p><b>影响：</b>{request.payload.impact}</p>}</div>
+      <div className="approval-summary"><strong>{argsOf(request)?.title || argsOf(request)?.text || request.type}</strong>{argsOf(request)?.detail && <p>{argsOf(request).detail}</p>}{argsOf(request)?.impact && <p><b>影响：</b>{argsOf(request).impact}</p>}</div>
       <label className="approval-answer"><span>{spec.label}</span><textarea rows={spec.mode === 'text' ? 4 : 2} value={answer} disabled={busy || settled || expired} onChange={(event) => { setAnswer(event.target.value); setFormError(''); }} /></label>
       {request.expires_at && <p className={expired ? 'approval-expired' : 'approval-deadline'}>{expired ? '已过期，不能再处理' : `截止：${new Date(request.expires_at).toLocaleString('zh-CN')}`}</p>}
       <div className="approval-actions">
@@ -116,9 +116,9 @@ function ApprovalCard({ turn, state, onResolve, names }) {
       {formError && <p className="approval-form-error" role="alert">{formError}</p>}
       {turn.terminal && (
         <footer className={turn.status === 'failed' ? 'final-answer failed' : 'final-answer'}>
-          <p className="answer-label">RESPONSE · {String(turn.terminal.payload?.status || '').toUpperCase()}</p>
-          <p className="approval-resolver">处理者：{nameOf(turn.terminal.sender?.id, names)}{turn.terminal.payload?.decision && ` · ${turn.terminal.payload.decision}`}</p>
-          <StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownContent text={text} />} />
+          <p className="answer-label">RESPONSE · {String(argsOf(turn.terminal)?.status || '').toUpperCase()}</p>
+          <p className="approval-resolver">处理者：{nameOf(turn.terminal.sender?.id, names)}{argsOf(turn.terminal)?.decision && ` · ${argsOf(turn.terminal).decision}`}</p>
+          <StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <MarkdownContent text={text} />} />
         </footer>
       )}
       {error && <WireErrorLine error={error} />}
@@ -398,7 +398,7 @@ function ThreadCall({ item, names }) {
         <small>{nameOf(child.request.sender?.id, names)} → {receivers || '—'} · {turnStatusLabel(child)} · {timeLabel(child.request.ts)}</small>
       </button>
       {open && (child.terminal
-        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={child.terminal.payload} renderText={(text) => <MarkdownContent text={text} />} /></div>
+        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={argsOf(child.terminal)} renderText={(text) => <MarkdownContent text={text} />} /></div>
         : <p className="turn-thread-result empty">还没有终态。</p>)}
     </li>
   );
@@ -458,7 +458,7 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
   const request = turn.request;
   const terminal = turn.terminal;
   const responseFoldId = `${turn.requestId}:response`;
-  const stopped = terminal?.payload?.status === 'failed' && terminal.payload?.error_code === 'interrupted';
+  const stopped = argsOf(terminal)?.status === 'failed' && argsOf(terminal)?.error_code === 'interrupted';
   const resumable = stopped && frozen?.source === TYPES.agentInterrupt && (!frozen.target_id || frozen.target_id === turn.requestId);
   const liveEnvelope = latestTurnEnvelope(turn);
   const agentId = terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0];
@@ -472,7 +472,7 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
   const heading = <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>;
   const conversationBody = <>
     {conversationTexts.map(({ seq, envelope, process }) => <div key={envelope.id || seq} className="agent-progress-text" data-seq={seq}><MarkdownContent text={process.text} /></div>)}
-    {terminal && !stopped && <div className="agent-final-text"><StructuredResult requestType={request.type} payload={conversationPayload(terminal.payload)} renderText={(text) => <MarkdownContent text={text} />} /></div>}
+    {terminal && !stopped && <div className="agent-final-text"><StructuredResult requestType={request.type} payload={conversationPayload(argsOf(terminal))} renderText={(text) => <MarkdownContent text={text} />} /></div>}
   </>;
   const hasConversationBody = conversationTexts.length > 0 || Boolean(terminal && !stopped);
   const content = <>
@@ -488,7 +488,7 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
     <div className="agent-thread-identity-row">{identity}{heading}{onCompactToggle && <button type="button" className="agent-thread-collapse-toggle" aria-label={`${compactExpanded ? '收起' : '展开'} ${nameOf(agentId, names)} 的协作消息`} aria-expanded={compactExpanded} onClick={onCompactToggle}><span aria-hidden="true">⌄</span></button>}</div>
     <div className="agent-thread-content" aria-hidden={!compactExpanded} inert={!compactExpanded ? true : undefined}>{content}</div>
   </article>;
-  const replyTarget = terminal && terminal.payload?.status === 'completed'
+  const replyTarget = terminal && argsOf(terminal)?.status === 'completed'
     ? replyTargetOf(terminal, { roster, selfId, fallbackSenderId: request.audience?.[0], fallbackSenderKind: 'agent' })
     : null;
   return <ReplyableMessageFrame replyTarget={replyTarget} copyText={terminal ? messagePresentation(terminal).text : ''} onReply={onReply} className={className} contentClassName="response-body" identity={identity}>{heading}{content}</ReplyableMessageFrame>;
@@ -603,7 +603,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
       {editSession && <ContentFrame contained><p className="message-editing-state">正在输入框中编辑</p></ContentFrame>}
       {turn.terminal && (
         <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
-          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(turn.terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={turn.terminal.payload} renderText={(text) => <MarkdownContent text={text} />} /></FoldableBody></div>
+          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(turn.terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <MarkdownContent text={text} />} /></FoldableBody></div>
         </MessageFrame>
       )}
     </section>
@@ -1014,11 +1014,11 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     if (editing.phase === 'checking') {
       const contextTurn = state.turns.get(editing.contextId);
       if (!contextTurn?.terminal) return;
-      if (contextTurn.terminal.payload?.status !== 'completed') {
-        setEditing((current) => current && ({ ...current, phase: 'editing', error: contextTurn.terminal.payload?.detail || '编辑锁已失效' }));
+      if (argsOf(contextTurn.terminal)?.status !== 'completed') {
+        setEditing((current) => current && ({ ...current, phase: 'editing', error: argsOf(contextTurn.terminal)?.detail || '编辑锁已失效' }));
         return;
       }
-      const lock = lockFromContext(contextTurn.terminal.payload, editing.holdId);
+      const lock = lockFromContext(argsOf(contextTurn.terminal), editing.holdId);
       if (!lock.valid) {
         setEditing((current) => current && ({ ...current, phase: 'editing', error: lock.error }));
         return;
@@ -1034,12 +1034,12 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
       // 协议形（§4.6）：替换生效的账面事实 = 原行终态 replaced_by 指向 replace 请求；
       // replace 请求自身即新行（入队，不立刻终态）。失败才落在 replace 请求的终态上。
       const replacement = state.turns.get(editing.replacementId);
-      if (replacement?.terminal?.payload?.status === 'failed') {
-        setEditing((current) => current && ({ ...current, phase: 'editing', error: replacement.terminal.payload?.detail || replacement.terminal.payload?.error_code || '修改失败' }));
+      if (argsOf(replacement?.terminal)?.status === 'failed') {
+        setEditing((current) => current && ({ ...current, phase: 'editing', error: argsOf(replacement.terminal)?.detail || argsOf(replacement.terminal)?.error_code || '修改失败' }));
         return;
       }
       const target = state.turns.get(editing.targetId);
-      const replacedBy = target?.terminal?.payload?.replaced_by ?? target?.terminal?.payload?.value?.replaced_by;
+      const replacedBy = argsOf(target?.terminal)?.replaced_by ?? argsOf(target?.terminal)?.value?.replaced_by;
       if (replacedBy !== editing.replacementId) return;
       // 替换已生效，立即解冻让队列续跑——编辑收尾恒不把消息留在暂停的等待区。
       Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: target, actorId: editing.actorId, type: TYPES.agentUnhold, payload: {} })).catch(() => {});
@@ -1189,7 +1189,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
           }
           if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentSelect) {
             const actorId = entry.turn.request.audience?.[0] || '';
-            const note = selectSystemNote({ usage: entry.turn.terminal?.payload?.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) });
+            const note = selectSystemNote({ usage: argsOf(entry.turn.terminal)?.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) });
             content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{note}</div></div>;
           }
           if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentNew) {
