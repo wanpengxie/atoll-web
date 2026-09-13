@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, createChannelState } from '../src/model/fold.js';
 import { normalizeDescribe } from '../src/model/capabilities.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { FoldableBody, foldCandidate } from '../src/ui/timeline/FoldableBody.jsx';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 const LONG = Array.from({ length: 40 }, (_, index) => `第 ${index + 1} 行`).join('\n');
 const SHORT = '三行\n而已\n真的';
@@ -40,6 +43,25 @@ describe('FoldableBody', () => {
     render(<FoldableBody id="m2" text={SHORT}><p>{SHORT}</p></FoldableBody>);
     expect(screen.queryByRole('button')).toBeNull();
     expect(document.querySelector('.message-fold.is-folded')).toBeNull();
+  });
+
+  it('明确不可能超限的短正文不读布局也不创建 observer', () => {
+    const observe = vi.fn();
+    const ResizeObserver = vi.fn(function Observer() { this.observe = observe; this.disconnect = vi.fn(); });
+    vi.stubGlobal('ResizeObserver', ResizeObserver);
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get');
+    render(<FoldableBody id="short-fast" text="一句话"><p>一句话</p></FoldableBody>);
+    expect(ResizeObserver).not.toHaveBeenCalled();
+    expect(scrollHeight).not.toHaveBeenCalled();
+    scrollHeight.mockRestore();
+  });
+
+  it('长正文流式变化时复用同一个高度 observer', () => {
+    const ResizeObserver = vi.fn(function Observer() { this.observe = vi.fn(); this.disconnect = vi.fn(); });
+    vi.stubGlobal('ResizeObserver', ResizeObserver);
+    const view = render(<FoldableBody id="stream" text={LONG}><pre>{LONG}</pre></FoldableBody>);
+    view.rerender(<FoldableBody id="stream" text={`${LONG}\n新一行`}><pre>{LONG}\n新一行</pre></FoldableBody>);
+    expect(ResizeObserver).toHaveBeenCalledTimes(1);
   });
 
   it('例外位置（最新一轮）默认展开但仍可手动收起', () => {
@@ -117,5 +139,32 @@ describe('Timeline 正文自动折叠', () => {
     expect(fold.classList.contains('is-folded')).toBe(false);
     fireEvent.click(response.querySelector('.message-fold-toggle'));
     expect(fold.classList.contains('is-folded')).toBe(true);
+  });
+
+  it('同一 processing 阶段追加正文时不重建全量投影但仍更新可见内容', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '开始') });
+    apply(state, { channel_id: 'c0', seq: 2, envelope: progressText('r1-progress-1', 'r1', '第一段') });
+    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex };
+    const { rerender } = render(<Timeline {...props} />);
+    const version = state._timelineProjectionVersion;
+    const controlVersion = state._timelineControlVersion;
+
+    apply(state, { channel_id: 'c0', seq: 3, envelope: progressText('r1-progress-2', 'r1', '第二段') });
+    expect(state._timelineProjectionVersion).toBe(version);
+    expect(state._timelineControlVersion).toBe(controlVersion);
+    rerender(<Timeline {...props} />);
+
+    expect(screen.getByText('第一段')).toBeTruthy();
+    expect(screen.getByText('第二段')).toBeTruthy();
+
+    apply(state, { channel_id: 'c0', seq: 4, envelope: {
+      ...progressText('r1-progress-3', 'r1', '第三段'),
+      payload: { status: 'processing', controls: [{ word: 'agent.interrupt' }] },
+    } });
+    expect(state._timelineProjectionVersion).toBe(version);
+    expect(state._timelineControlVersion).toBe(controlVersion + 1);
+    rerender(<Timeline {...props} />);
+    expect(screen.getByRole('button', { name: '停止' })).toBeTruthy();
   });
 });

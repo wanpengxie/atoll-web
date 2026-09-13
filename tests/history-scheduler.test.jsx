@@ -299,7 +299,7 @@ describe('v5 history batch coordinator', () => {
 });
 
 describe('live feed priority', () => {
-  it('applies live rows immediately while a history batch is in flight', async () => {
+  it('applies live rows on the next frame while a history batch is in flight', async () => {
     const historyBefore = vi.fn((channelId, _before, _limit, options) => accepted('history-live', channelId, options.generation, options.purpose));
     const hook = renderHook(() => useChannelFeed({
       wireRef: { current: { historyBefore } },
@@ -320,12 +320,18 @@ describe('live feed priority', () => {
       id: 'live', kind: 'event', type: 'human.note', visibility: 'public',
       sender: { id: 'me', kind: 'human' }, payload: { text: '实时' },
     } }));
-    expect(hook.result.current.statesRef.current.get('c0').rows.has(101)).toBe(true);
+    // Desktop and mobile share the same frame boundary: live still bypasses the
+    // history executor, but a burst publishes once instead of once per row.
+    await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(101)).toBe(true));
     // Merely being the selected channel is not evidence that the user saw the
     // tail; Timeline advances this only after its scroller confirms bottom.
     expect(hook.result.current.cursorsRef.current.read('c0')).toBe(100);
+    const version = hook.result.current.version;
     act(() => hook.result.current.markRead('c0', 101));
     expect(hook.result.current.cursorsRef.current.read('c0')).toBe(101);
+    // This event cannot create a channel badge, so marking it read updates the
+    // cursor without publishing a second application render.
+    expect(hook.result.current.version).toBe(version);
     hook.unmount();
   });
 });

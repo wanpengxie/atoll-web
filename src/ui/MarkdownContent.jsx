@@ -20,7 +20,7 @@ export function MarkdownFileReferenceProvider({ onOpen, children }) {
 
 // 消息正文只接受 CommonMark/GFM AST。react-markdown 默认不会执行原始 HTML，
 // 因而账本中的文本不会穿透为 DOM 或脚本。
-export function MarkdownContent({ text, className = '' }) {
+export const MarkdownContent = React.memo(function MarkdownContent({ text, className = '' }) {
   const onOpenFileReference = useContext(FileReferenceContext);
   const source = useMemo(() => normalizeMathMarkdown(text), [text]);
   const components = useMemo(() => ({
@@ -50,4 +50,4 @@ export function MarkdownContent({ text, className = '' }) {
       </ReactMarkdown>
     </div>
   );
-}
+});

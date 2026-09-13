@@ -81,4 +81,16 @@ describe('connection-scoped Agent activity', () => {
     expect(tracker.snapshot().byChannel).toEqual({});
     expect(agentActivityDuration(1_000, 66_000)).toBe('01:05');
   });
+
+  it('reuses the visible snapshot while repeated progress changes no chrome', () => {
+    const tracker = createAgentActivityTracker();
+    tracker.attach({ boot: 'boot-a', generation: 1 });
+    tracker.observe(row({ ts: 1_000 }));
+    const visible = tracker.snapshot();
+    expect(tracker.snapshot()).toBe(visible);
+    tracker.observe(row({ ts: 2_000 }));
+    expect(tracker.snapshot()).toBe(visible);
+    tracker.observe(row({ status: 'completed', ts: 3_000 }));
+    expect(tracker.snapshot()).not.toBe(visible);
+  });
 });

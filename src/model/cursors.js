@@ -120,16 +120,35 @@ function isNotifiable(envelope) {
   return envelope?.kind === KIND.response && !PROVISIONAL.has(argsOf(envelope)?.status);
 }
 
+function visitUnreadRows(channelState, readSeq, visit) {
+  const order = channelState?._rowOrder;
+  const maxima = channelState?._rowMaxSeq;
+  if (Array.isArray(order) && Array.isArray(maxima) && order.length === maxima.length) {
+    // 倒着只走 cursor 之后的尾巴。历史页可能较晚插入但 seq 更小，所以用这个
+    // 位置之前的 prefix max 判定“更前面绝无未读”，不能拿当前 seq 直接 break。
+    for (let index = order.length - 1; index >= 0; index -= 1) {
+      if (maxima[index] <= readSeq) break;
+      const seq = order[index];
+      if (seq <= readSeq) continue;
+      const envelope = channelState.rows.get(seq);
+      if (envelope) visit(seq, envelope);
+    }
+    return;
+  }
+  for (const [seq, envelope] of channelState.rows) {
+    if (seq > readSeq) visit(seq, envelope);
+  }
+}
+
 export function unreadCount(channelState, readSeq, selfId) {
   if (!channelState?.rows) return 0;
   let count = 0;
-  for (const [seq, envelope] of channelState.rows) {
-    if (seq <= readSeq) continue;
-    if (envelope?.visibility === 'system') continue;
-    if (selfId && envelope?.sender?.id === selfId) continue;
-    if (!isNotifiable(envelope)) continue;
+  visitUnreadRows(channelState, readSeq, (_seq, envelope) => {
+    if (envelope?.visibility === 'system') return;
+    if (selfId && envelope?.sender?.id === selfId) return;
+    if (!isNotifiable(envelope)) return;
     count += 1;
-  }
+  });
   return count;
 }
 
@@ -148,10 +167,15 @@ export function unreadCount(channelState, readSeq, selfId) {
 export function unreadCounts(channelState, readSeq, selfId, { incremental = false } = {}) {
   if (!channelState?.rows) return { related: 0, total: 0 };
   const relatedIds = incremental ? relatedEnvelopeIdsIncremental(channelState, selfId) : relatedEnvelopeIds(channelState, selfId);
-  const byId = new Map();
-  for (const envelope of channelState.rows.values()) {
-    if (!envelope?.id) continue;
-    byId.set(envelope.id, envelope);
+  // fold 已经为 parent 路由维护了同一份 id 索引；未读投影复用它，避免每次
+  // App 渲染都先把每个频道的整本账复制成另一张临时 Map。手工构造的旧状态和
+  // 单元测试没有该索引时仍保持原来的纯函数行为。
+  let byId = channelState._envelopesById;
+  if (!byId) {
+    byId = new Map();
+    for (const envelope of channelState.rows.values()) {
+      if (envelope?.id) byId.set(envelope.id, envelope);
+    }
   }
 
   function rootId(envelope) {
@@ -168,14 +192,13 @@ export function unreadCounts(channelState, readSeq, selfId, { incremental = fals
 
   const totalRoots = new Set();
   const relatedRoots = new Set();
-  for (const [seq, envelope] of channelState.rows) {
-    if (seq <= readSeq) continue;
-    if (selfId && envelope?.sender?.id === selfId) continue;
-    if (!isNotifiable(envelope)) continue;
+  visitUnreadRows(channelState, readSeq, (_seq, envelope) => {
+    if (selfId && envelope?.sender?.id === selfId) return;
+    if (!isNotifiable(envelope)) return;
     const root = rootId(envelope);
-    if (!root) continue;
+    if (!root) return;
     totalRoots.add(root);
     if (envelope?.id && (relatedIds.has(envelope.id) || relatedIds.has(root))) relatedRoots.add(root);
-  }
+  });
   return { related: relatedRoots.size, total: totalRoots.size };
 }

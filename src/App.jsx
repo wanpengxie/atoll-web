@@ -80,6 +80,9 @@ const GOVERNANCE_READ_TYPES = new Set([
   TYPES.device.list, TYPES.member.list, TYPES.member.get, TYPES.log.recent, TYPES.log.query,
 ]);
 
+const EMPTY_INDEX = new Map();
+const EMPTY_GLOBAL_DATA = Object.freeze({ channelData: [], activities: [], operations: [], searchIndex: EMPTY_INDEX });
+
 function isGovernanceOperation(type = '') {
   return isSystemWord(type) && !GOVERNANCE_READ_TYPES.has(type);
 }
@@ -926,7 +929,7 @@ export default function App() {
       const probe = registry.current.get(probeKey);
       if (probe) {
         if (!probe.failed && probe.requestId) {
-          const failedRow = state ? [...state.rows.values()].some((row) => row.kind === 'response' && row.parent_id === probe.requestId && argsOf(row)?.status === 'failed') : false;
+          const failedRow = argsOf(state?.turns?.get?.(probe.requestId)?.terminal)?.status === 'failed';
           const rejected = pending.some((item) => item.messageId === probe.requestId && item.state === 'rejected');
           if (failedRow || rejected) probe.failed = true;
         }
@@ -993,12 +996,21 @@ export default function App() {
     });
   }, [activeChannelId, handleSend, selectedActor]);
 
+  // 文件索引要走完整本账。只有真的打开某个账本产物时才需要它；普通聊天帧
+  // 恒不为了一个关闭着的右侧面板重扫几万条消息。
   const activeArtifactIndex = useMemo(
-    () => buildArtifactIndex(channelStatesRef.current.get(activeChannelId)),
-    [activeChannelId, feedVersion],
+    () => contextFocus?.type === 'artifact'
+      ? buildArtifactIndex(channelStatesRef.current.get(activeChannelId))
+      : EMPTY_INDEX,
+    [activeChannelId, feedVersion, contextFocus?.type],
   );
 
+  // 全局搜索和活动中心是按需投影，不是 feed 的写入索引。旧实现即便两个界面
+  // 都关着，也会在每个流式响应上遍历所有频道、重建 work/artifact/activity/
+  // search 四套数据；这会直接和 Composer 在主线程上抢时间。
+  const globalProjection = globalSearchOpen ? 'search' : rightPanel === 'activity' ? 'activity' : '';
   const globalData = useMemo(() => {
+    if (!globalProjection) return EMPTY_GLOBAL_DATA;
     const channelData = channelList.map((channel) => {
       const state = channelStatesRef.current.get(channel.id) || createChannelState(channel.id);
       const roster = visibleRosterRows(rosters.get(channel.id) || []);
@@ -1024,12 +1036,19 @@ export default function App() {
     }));
     const rawOperations = [...submissionOperations, ...governanceOperations];
     const names = new Map(channelList.map((channel) => [channel.id, channel.qualified_name || channel.name || channel.id]));
-    const activities = [...buildActivityIndex({ channels: channelData, operations: rawOperations }).values()]
-      .map((item) => ({ ...item, channelName: names.get(item.channelId), detail: item.summary }));
-    const operations = activeOperations(buildOperationIndex({ channels: channelData, operations: rawOperations }))
-      .map((item) => ({ ...item, channelName: names.get(item.channelId) }));
-    return { channelData, activities, operations, searchIndex: buildGlobalSearchIndex({ channels: channelData, operations: rawOperations }) };
-  }, [channelList, feedVersion, pending, rosters, timerRecords]);
+    const activities = globalProjection === 'activity'
+      ? [...buildActivityIndex({ channels: channelData, operations: rawOperations }).values()]
+        .map((item) => ({ ...item, channelName: names.get(item.channelId), detail: item.summary }))
+      : [];
+    const operations = globalProjection === 'activity'
+      ? activeOperations(buildOperationIndex({ channels: channelData, operations: rawOperations }))
+        .map((item) => ({ ...item, channelName: names.get(item.channelId) }))
+      : [];
+    const searchIndex = globalProjection === 'search'
+      ? buildGlobalSearchIndex({ channels: channelData, operations: rawOperations })
+      : EMPTY_INDEX;
+    return { channelData, activities, operations, searchIndex };
+  }, [globalProjection, channelList, feedVersion, pending, rosters, timerRecords]);
 
   if (booting) return <div className="boot-screen"><span className="brand-dot" />正在恢复会话…</div>;
   if (!me) return <Auth identity={identity} onAuthed={handleAuthed} />;
@@ -1037,10 +1056,20 @@ export default function App() {
   const activeState = channelStatesRef.current.get(activeChannelId) || createChannelState(activeChannelId);
   const agentActivity = agentActivityRef.current.snapshot();
   const acknowledgeAgentActivity = (channelId, agentId) => agentActivityRef.current.acknowledge(channelId, agentId);
+  const readActiveLatest = derived(
+    'readActiveLatest',
+    [activeChannelId, markRead],
+    () => (seq) => markRead(activeChannelId, seq),
+  );
+  const loadActiveOlder = derived(
+    'loadActiveOlder',
+    [activeChannelId, loadHistory],
+    () => (options) => loadHistory(activeChannelId, options),
+  );
   const activeHistory = {
     ...historyFor(activeChannelId),
-    onReadLatest: (seq) => markRead(activeChannelId, seq),
-    loadOlder: (options) => loadHistory(activeChannelId, options),
+    onReadLatest: readActiveLatest,
+    loadOlder: loadActiveOlder,
   };
   const activeRow = channelList.find((channel) => channel.id === activeChannelId);
   const activeRoster = isMemberAccess(activeRow?.access) ? rosters.get(activeChannelId) || [] : [];
@@ -1053,13 +1082,19 @@ export default function App() {
       channelStatesRef.current.get(channel.id),
       cursorsRef.current.read(channel.id),
       channel.selfActorId || rosterRef.current?.self(channel.id) || '',
-      { incremental: isMobileProfile() },
+      { incremental: true },
     );
     return [channel.id, loaded];
   })));
   const activeChannel = activeRow || channels.get(activeChannelId);
   const activeAccess = activeRow?.access || CHANNEL_ACCESS.loading;
-  const capabilityIndex = capabilityIndexFromState(activeState, liveDescribesRef.current);
+  const requestVersion = activeState._requestVersion ?? activeState.turns.size;
+  const terminalVersion = activeState._terminalVersion ?? activeState.lastSeq;
+  const capabilityIndex = derived(
+    'activeCapabilities',
+    [activeState, requestVersion, terminalVersion, liveDescribesRef.current.size, manualAgentVersion],
+    () => capabilityIndexFromState(activeState, liveDescribesRef.current),
+  );
   // 参数面板数据（协议 §4）：值域与当前值都是活状态读数，恒只认本连接证据
   // （describe = liveDescribesRef；options = generation 快照；usage = 本连接
   // context 探测起算）。
@@ -1068,27 +1103,54 @@ export default function App() {
   const composerAgentId = composerAgent.channelId === activeChannelId ? composerAgent.actorId : '';
   const composerProbeId = composerAgentId ? (contextProbedRef.current.get(`${activeChannelId}:${composerAgentId}`)?.requestId || '') : '';
   const composerOptionsProbeId = composerAgentId ? (optionsProbedRef.current.get(`${activeChannelId}:${composerAgentId}`)?.requestId || '') : '';
-  const composerAgentUsage = composerAgentId ? latestAgentUsage(activeState, composerAgentId, composerProbeId) : null;
-  const composerAgentOptions = composerAgentId ? latestAgentOptions(activeState, composerAgentId, composerOptionsProbeId) : null;
-  const composerSelectionView = composerAgentId
-    ? agentSelectionView({ actorId: composerAgentId, describe: capabilityIndex.get(composerAgentId)?.describe, options: composerAgentOptions, usage: composerAgentUsage })
-    : null;
-  const composerSupportedTypes = composerAgentId
-    ? [...(capabilityIndex.get(composerAgentId)?.describe?.types?.keys?.() || [])]
-    : [];
+  const composerAgentUsage = derived(
+    'composerAgentUsage',
+    [activeState, terminalVersion, composerAgentId, composerProbeId],
+    () => composerAgentId ? latestAgentUsage(activeState, composerAgentId, composerProbeId) : null,
+  );
+  const composerAgentOptions = derived(
+    'composerAgentOptions',
+    [activeState, terminalVersion, composerAgentId, composerOptionsProbeId],
+    () => composerAgentId ? latestAgentOptions(activeState, composerAgentId, composerOptionsProbeId) : null,
+  );
+  const composerSelectionView = derived(
+    'composerSelectionView',
+    [composerAgentId, capabilityIndex, composerAgentOptions, composerAgentUsage],
+    () => composerAgentId
+      ? agentSelectionView({ actorId: composerAgentId, describe: capabilityIndex.get(composerAgentId)?.describe, options: composerAgentOptions, usage: composerAgentUsage })
+      : null,
+  );
+  const composerSupportedTypes = derived(
+    'composerSupportedTypes',
+    [composerAgentId, capabilityIndex],
+    () => composerAgentId ? [...(capabilityIndex.get(composerAgentId)?.describe?.types?.keys?.() || [])] : [],
+  );
   const selectPendingHere = pendingSelect && pendingSelect.channelId === activeChannelId ? pendingSelect : null;
   const manualAgentId = manualAgentsRef.current.get(activeChannelId) || '';
   // 无 @ 时的默认目标（判据链 §2.1 的 2-5 环：筛选 > 手选 > 最近交互 > 唯一 agent）。
   // mention 环在 Composer 判（它持有编辑框状态），终判结果经 onTargetChange 回报。
-  const fallbackAgent = resolveParameterAgent({ recipients: [], filterAgentId: focusAgentId, manualAgentId, roster: activeRoster, state: activeState, selfId });
+  const fallbackAgent = derived(
+    'fallbackAgent',
+    [focusAgentId, manualAgentId, activeRoster, activeState, requestVersion, selfId],
+    () => resolveParameterAgent({ recipients: [], filterAgentId: focusAgentId, manualAgentId, roster: activeRoster, state: activeState, selfId }),
+  );
   const fallbackAgentId = fallbackAgent.kind === 'single' ? fallbackAgent.agent.id : '';
   const fallbackAgentSource = fallbackAgent.kind === 'single' ? (fallbackAgent.source || '') : '';
   const providers = taskProviders(capabilityIndex, activeRoster);
+  const activePending = derived('activePending', [pending, activeChannelId], () => pending.filter((item) => item.channelId === activeChannelId));
+  const composerAgentSelection = derived(
+    'composerAgentSelection',
+    [composerSelectionView, composerAgentUsage, composerSupportedTypes, selectPendingHere, fallbackAgentId, fallbackAgentSource, handleAgentSelection, handlePickAgent, handleComposerAgentChange, handleSelectorOpen],
+    () => ({ view: composerSelectionView, usage: composerAgentUsage, supportedTypes: composerSupportedTypes, pending: selectPendingHere, fallbackAgentId, fallbackAgentSource, onChange: handleAgentSelection, onPickAgent: handlePickAgent, onTargetChange: handleComposerAgentChange, onOpen: handleSelectorOpen }),
+  );
   // 同上:它走一遍当前频道的全部 turn,而每次渲染都走。同一个答案,不再算 N 遍。
+  const needsWorkItemIndex = workspaceView === 'tasks' || contextFocus?.type === 'work_item';
   const workItemIndex = derived(
     'workItems',
-    [activeState, feedVersion, pending, timerRecords, selfId, activeAccess, capabilityIndex],
-    () => buildWorkItemIndex({ state: activeState, pending, timers: timerRecords, selfId, access: activeAccess, capabilityIndex }),
+    [needsWorkItemIndex, activeState, feedVersion, pending, timerRecords, selfId, activeAccess, capabilityIndex],
+    () => needsWorkItemIndex
+      ? buildWorkItemIndex({ state: activeState, pending, timers: timerRecords, selfId, access: activeAccess, capabilityIndex })
+      : EMPTY_INDEX,
   );
   const artifactIndex = activeArtifactIndex;
   const selectedCapability = selectedActor ? capabilityIndex.get(selectedActor.id) : null;
@@ -1278,7 +1340,7 @@ export default function App() {
   <AppShell
     session={{ me, wireState, update: nodeUpdate, onLogout: handleLogout }}
     navigation={{ channels: channelList, activeChannelId, unread, agentActivity, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
-    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: pending.filter((item) => item.channelId === activeChannelId), approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: { view: composerSelectionView, usage: composerAgentUsage, supportedTypes: composerSupportedTypes, pending: selectPendingHere, fallbackAgentId, fallbackAgentSource, onChange: handleAgentSelection, onPickAgent: handlePickAgent, onTargetChange: handleComposerAgentChange, onOpen: handleSelectorOpen }, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(artifact); setRightPanel('artifact-focus'); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(artifact); setRightPanel('artifact-focus'); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     panel={{ value: rightPanel, open: openContext, host }}
   />

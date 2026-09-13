@@ -94,32 +94,8 @@ function freezeDeadline(turn) {
   return requestTimestamp(turn?.request) + duration;
 }
 
-// 冻结与解除按请求自己的因果 seq 排，而不是按异步终态的落账 seq 排。
-// processing/merged_into 是队列已经推进的事实，按它自己的事实 seq 清除。
-export function agentFrozenState(state, actorId, now = Date.now()) {
+function reduceFrozenOperations(operations, now) {
   let frozen = null;
-  const operations = [];
-  for (const turn of state?.turns?.values?.() || []) {
-    if (turn.request?.audience?.length !== 1 || turn.request.audience[0] !== actorId) continue;
-    const type = turn.request?.type;
-    if (terminalCompleted(turn) && (type === TYPES.agentHold || type === TYPES.agentInterrupt)) {
-      operations.push({ seq: turn.requestSeq, kind: 'freeze', turn });
-    } else if (terminalCompleted(turn) && type === TYPES.agentUnhold) {
-      operations.push({ seq: turn.requestSeq, kind: 'clear' });
-    }
-    if (CONTENT_TYPES.has(type)) {
-      const enteredBuffer = (turn.provisional || []).some((item) => argsOf(item.envelope)?.status === 'queued' && argsOf(item.envelope)?.resumed !== true);
-      const capacityFailure = argsOf(turn.terminal)?.status === 'failed' && argsOf(turn.terminal)?.error_code === 'base_capacity';
-      if (enteredBuffer || capacityFailure) operations.push({ seq: turn.requestSeq, kind: 'new-content' });
-      for (const item of turn.provisional || []) {
-        if (argsOf(item.envelope)?.status === 'processing') operations.push({ seq: item.seq, kind: 'advanced' });
-      }
-      if (terminalValue(turn, 'merged_into')) operations.push({ seq: turn.terminalSeq, kind: 'advanced' });
-    }
-  }
-  for (const [seq, envelope] of state?.rows || []) {
-    if (envelope?.kind === 'event' && envelope.type === TYPES.agentHoldExpired) operations.push({ seq, kind: 'fire', envelope });
-  }
   operations.sort((left, right) => left.seq - right.seq);
   for (const operation of operations) {
     if (operation.kind === 'freeze') {
@@ -143,12 +119,71 @@ export function agentFrozenState(state, actorId, now = Date.now()) {
   return visible;
 }
 
+// 一次生成屏幕上所有 agent 的冻结状态。旧的逐 actor 查询会为每个成员各扫描
+// 一遍 turns 和 rows；频道越热、成员越多，单条 progress 的成本就被成倍放大。
+// 冻结与解除仍按请求自己的因果 seq 排，processing/merged_into 按事实 seq 清除。
+export function agentFrozenStates(state, actorIds = null, now = Date.now()) {
+  const wanted = actorIds ? new Set(actorIds) : null;
+  const operationsByActor = new Map();
+  const holdOwner = new Map();
+  const operationsFor = (actorId) => {
+    let operations = operationsByActor.get(actorId);
+    if (!operations) {
+      operations = [];
+      operationsByActor.set(actorId, operations);
+    }
+    return operations;
+  };
+  for (const turn of state?.turns?.values?.() || []) {
+    if (turn.request?.audience?.length !== 1) continue;
+    const actorId = turn.request.audience[0];
+    if (wanted && !wanted.has(actorId)) continue;
+    const operations = operationsFor(actorId);
+    const type = turn.request?.type;
+    if (terminalCompleted(turn) && (type === TYPES.agentHold || type === TYPES.agentInterrupt)) {
+      operations.push({ seq: turn.requestSeq, kind: 'freeze', turn });
+      holdOwner.set(turn.requestId, actorId);
+    } else if (terminalCompleted(turn) && type === TYPES.agentUnhold) {
+      operations.push({ seq: turn.requestSeq, kind: 'clear' });
+    }
+    if (CONTENT_TYPES.has(type)) {
+      const enteredBuffer = (turn.provisional || []).some((item) => argsOf(item.envelope)?.status === 'queued' && argsOf(item.envelope)?.resumed !== true);
+      const capacityFailure = argsOf(turn.terminal)?.status === 'failed' && argsOf(turn.terminal)?.error_code === 'base_capacity';
+      if (enteredBuffer || capacityFailure) operations.push({ seq: turn.requestSeq, kind: 'new-content' });
+      for (const item of turn.provisional || []) {
+        if (argsOf(item.envelope)?.status === 'processing') operations.push({ seq: item.seq, kind: 'advanced' });
+      }
+      if (terminalValue(turn, 'merged_into')) operations.push({ seq: turn.terminalSeq, kind: 'advanced' });
+    }
+  }
+  if (holdOwner.size) {
+    for (const [seq, envelope] of state?.rows || []) {
+      if (envelope?.kind !== 'event' || envelope.type !== TYPES.agentHoldExpired) continue;
+      const actorId = holdOwner.get(argsOf(envelope)?.hold_id);
+      if (actorId) operationsFor(actorId).push({ seq, kind: 'fire', envelope });
+    }
+  }
+  const states = new Map();
+  for (const [actorId, operations] of operationsByActor) {
+    const frozen = reduceFrozenOperations(operations, now);
+    if (frozen) states.set(actorId, frozen);
+  }
+  return states;
+}
+
+export function agentFrozenState(state, actorId, now = Date.now()) {
+  return agentFrozenStates(state, [actorId], now).get(actorId) || null;
+}
+
 export function activeAgentTurn(state, roster = [], selfId = '') {
   const agentIDs = new Set(roster.filter((row) => row.kind === 'agent').map((row) => row.id));
-  return [...(state?.turns?.values?.() || [])]
-    .filter((turn) => !turn.terminal && (!selfId || turn.request?.sender?.id === selfId) && turn.request?.audience?.length === 1
-      && agentIDs.has(turn.request.audience[0]) && taskLocation(turn) === 'processing')
-    .sort((left, right) => right.lastSeq - left.lastSeq)[0] || null;
+  let latest = null;
+  for (const turn of state?.turns?.values?.() || []) {
+    if (turn.terminal || (selfId && turn.request?.sender?.id !== selfId) || turn.request?.audience?.length !== 1) continue;
+    if (!agentIDs.has(turn.request.audience[0]) || taskLocation(turn) !== 'processing') continue;
+    if (!latest || turn.lastSeq > latest.lastSeq) latest = turn;
+  }
+  return latest;
 }
 
 export function editableText(turn) {

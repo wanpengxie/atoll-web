@@ -25,6 +25,19 @@ export function createChannelState(channelId = '') {
     _seenIds: new Set(),
     _envelopesById: new Map(),
     _unmatchedByParent: new Map(),
+    // Map 没有“从上次迭代结束处继续”的可复用游标。保留一条只增的 seq
+    // 日志，让上层派生索引只消费新行；真正的信封仍只在 rows 里。
+    _rowOrder: [],
+    // rowOrder 每个位置之前出现过的最大 seq。历史页会在 live tail 之后才插入，
+    // 因而不能见到一条旧 seq 就停止倒扫；prefix max 让未读投影仍能在越过
+    // 当前 read cursor 后立刻停止，而不是每帧遍历整本账。
+    _rowMaxSeq: [],
+    // Timeline 的成员集合/可见性只在结构或阶段变化时重投影。流式正文在 turn
+    // 对象上原地增长，恒不需要为同一条 processing 帧重扫整本账。
+    _timelineProjectionVersion: 0,
+    _timelineControlVersion: 0,
+    _requestVersion: 0,
+    _terminalVersion: 0,
   };
 }
 
@@ -45,7 +58,55 @@ function newTurn(request, seq) {
     text: '',
     lastSeq: seq,
     anomalies: [],
+    _controlSignature: '',
+    _projectionParticipants: new Set([
+      request?.sender?.id,
+      ...(Array.isArray(request?.audience) ? request.audience : []),
+    ].filter(Boolean)),
   };
+}
+
+// Timeline 的控制投影只依赖 status 帧里的这一小组事实。正文 delta 可以很大、
+// 很频繁，却不会改变按钮、等待区位置或 work 状态；把整帧当缓存键等于重新引入
+// 每个 token 都全量扫描 turns 的问题。
+function responseControlSignature(envelope) {
+  const payload = argsOf(envelope);
+  if (payload?.status !== 'queued' && payload?.status !== 'processing') return '';
+  return JSON.stringify({
+    status: payload.status,
+    controls: Array.isArray(payload.controls) ? payload.controls : [],
+    turn_id: payload.turn_id || '',
+    resumed: payload.resumed === true,
+    steering: payload.steering === true,
+    work_id: payload.work_id || '',
+    work_state: payload.work_state || payload.state || '',
+    stage: payload.stage || '',
+    execution_state: payload.execution_state || '',
+  });
+}
+
+function responseChangesControl(turn, envelope) {
+  if (FINAL.has(argsOf(envelope)?.status)) return true;
+  const signature = responseControlSignature(envelope);
+  if (!signature) return false;
+  const changed = signature !== turn._controlSignature;
+  turn._controlSignature = signature;
+  return changed;
+}
+
+function responseChangesProjection(turn, envelope) {
+  const status = argsOf(envelope)?.status;
+  if (FINAL.has(status) || turn.provisional.length === 0 || turn.latestStatus !== status) return true;
+  const participants = turn._projectionParticipants;
+  if (!participants) return true;
+  const ids = [envelope?.sender?.id, ...(Array.isArray(envelope?.audience) ? envelope.audience : [])].filter(Boolean);
+  return ids.some((id) => !participants.has(id));
+}
+
+function rememberProjectionParticipants(turn, envelope) {
+  if (!turn._projectionParticipants) turn._projectionParticipants = new Set();
+  if (envelope?.sender?.id) turn._projectionParticipants.add(envelope.sender.id);
+  for (const id of envelope?.audience || []) if (id) turn._projectionParticipants.add(id);
 }
 
 function anomaly(state, code, seq, envelope, turn = null) {
@@ -160,9 +221,12 @@ export function apply(state, row, selfId = '') {
     state._envelopesById.set(envelope.id, envelope);
   }
   state.rows.set(seq, envelope);
+  state._rowOrder?.push(seq);
+  state._rowMaxSeq?.push(Math.max(seq, state._rowMaxSeq.at(-1) || 0));
 
   if (isNarrationEnvelope(envelope)) {
     state.narration.push({ seq, envelope });
+    state._timelineProjectionVersion += 1;
     return state;
   }
 
@@ -184,21 +248,37 @@ export function apply(state, row, selfId = '') {
       state.uiRequests.set(envelope.id, envelope);
     }
     drainRequestMatches(state, turn);
+    state._timelineProjectionVersion += 1;
+    state._timelineControlVersion += 1;
+    state._requestVersion += 1;
     return state;
   }
 
   if (envelope.kind === 'response') {
     const turn = findTurn(state, envelope);
-    if (turn) attachResponse(state, turn, seq, envelope);
+    if (turn) {
+      const changesProjection = responseChangesProjection(turn, envelope);
+      const changesControl = responseChangesControl(turn, envelope);
+      attachResponse(state, turn, seq, envelope);
+      rememberProjectionParticipants(turn, envelope);
+      if (changesProjection) state._timelineProjectionVersion += 1;
+      if (changesControl) state._timelineControlVersion += 1;
+      if (turn.terminal === envelope) state._terminalVersion += 1;
+    }
     else if (envelope.parent_id) pushMap(state._unmatchedByParent, envelope.parent_id, { seq, envelope });
     else {
       anomaly(state, 'response_parent_missing', seq, envelope);
       state.orphans.push({ seq, envelope });
+      state._timelineProjectionVersion += 1;
     }
     return state;
   }
 
   state.standalone.push({ seq, envelope });
+  state._timelineProjectionVersion += 1;
+  if (envelope.type === TYPES.agentHoldExpired) {
+    state._timelineControlVersion += 1;
+  }
   return state;
 }
 
@@ -247,6 +327,32 @@ export function orderedTimeline(state) {
   const cached = timelineCache.get(state);
   if (cached?.signature === signature) return cached.entries;
 
+  // 最常见的结构变化是 live event 落在账尾。它没有改变请求树，且 seq 比现有
+  // 时间线都大时，直接追加即可；旧实现会为这一条 event 重建、重排整棵时间线。
+  // 历史 prepend、孤儿补齐和新 request 仍走下面的完整构造。
+  if (cached
+    && cached.turnCount === state.turns.size
+    && cached.standaloneCount <= state.standalone.length
+    && cached.orphanCount <= state.orphans.length) {
+    const additions = [
+      ...state.standalone.slice(cached.standaloneCount).map((item) => ({ kind: 'standalone', ...item })),
+      ...state.orphans.slice(cached.orphanCount).map((item) => ({ kind: 'orphan', ...item })),
+    ].sort((left, right) => left.seq - right.seq);
+    const expected = (state.standalone.length - cached.standaloneCount) + (state.orphans.length - cached.orphanCount);
+    if (additions.length === expected && additions.every((entry) => entry.seq > cached.lastEntrySeq)) {
+      const entries = [...cached.entries, ...additions];
+      timelineCache.set(state, {
+        signature,
+        entries,
+        turnCount: state.turns.size,
+        standaloneCount: state.standalone.length,
+        orphanCount: state.orphans.length,
+        lastEntrySeq: entries.at(-1)?.seq || 0,
+      });
+      return entries;
+    }
+  }
+
   const childrenByParent = new Map();
   const roots = [];
   for (const turn of state.turns.values()) {
@@ -264,7 +370,14 @@ export function orderedTimeline(state) {
   for (const item of state.standalone) entries.push({ kind: 'standalone', ...item });
   for (const item of state.orphans) entries.push({ kind: 'orphan', ...item });
   entries.sort((left, right) => left.seq - right.seq);
-  timelineCache.set(state, { signature, entries });
+  timelineCache.set(state, {
+    signature,
+    entries,
+    turnCount: state.turns.size,
+    standaloneCount: state.standalone.length,
+    orphanCount: state.orphans.length,
+    lastEntrySeq: entries.at(-1)?.seq || 0,
+  });
   return entries;
 }
 

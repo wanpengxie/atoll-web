@@ -67,6 +67,13 @@ export function normalizeAgentOptions(value) {
 
 export function latestAgentOptions(state, actorId, liveRequestId = '') {
   if (!state?.rows || !actorId || !liveRequestId) return null;
+  const liveTurn = state?.turns?.get?.(liveRequestId);
+  if (liveTurn) {
+    const row = liveTurn.terminal;
+    if (row?.kind !== 'response' || row.type !== TYPES.agentOptions || row.parent_id !== liveRequestId) return null;
+    if (row.sender?.id !== actorId || argsOf(row)?.status !== 'completed') return null;
+    return normalizeAgentOptions(argsOf(row));
+  }
   for (const row of state.rows.values()) {
     if (row.kind !== 'response' || row.type !== TYPES.agentOptions || row.parent_id !== liveRequestId) continue;
     if (row.sender?.id !== actorId || argsOf(row)?.status !== 'completed') continue;
@@ -118,6 +125,34 @@ function mergeUsage(current, next) {
 // 缺字段的帧跳过，不得把显示清空）逐步覆盖。无本连接证据恒返回 null。
 export function latestAgentUsage(state, actorId, liveRequestId = '') {
   if (!state?.rows || !actorId || !liveRequestId) return null;
+  const liveTurn = state?.turns?.get?.(liveRequestId);
+  const order = state?._rowOrder;
+  const maxima = state?._rowMaxSeq;
+  if (liveTurn && Array.isArray(order) && Array.isArray(maxima) && order.length === maxima.length) {
+    const response = liveTurn.terminal;
+    if (response?.kind !== 'response'
+      || response.type !== TYPES.agentContext
+      || response.parent_id !== liveRequestId
+      || argsOf(response)?.status !== 'completed') return null;
+    let found = mergeUsage(null, normalizedUsage(argsOf(response)));
+    const baseline = Number(liveTurn.terminalSeq || liveTurn.lastSeq || liveTurn.requestSeq || 0);
+    const later = [];
+    // context probe 通常就在账尾，只走它之后的新行；晚到的历史页即便追加在
+    // _rowOrder 尾部，seq 更老，也不会污染本连接的活状态。
+    for (let index = order.length - 1; index >= 0; index -= 1) {
+      if (maxima[index] <= baseline) break;
+      const seq = order[index];
+      if (seq <= baseline) continue;
+      const row = state.rows.get(seq);
+      if (row) later.push([seq, row]);
+    }
+    later.sort((left, right) => left[0] - right[0]);
+    for (const [, row] of later) {
+      if (row.sender?.id !== actorId || row.kind !== 'response' || !FINAL.has(argsOf(row)?.status)) continue;
+      found = mergeUsage(found, usableUsage(argsOf(row)));
+    }
+    return found;
+  }
   let live = false;
   let found = null;
   for (const row of state.rows.values()) {
@@ -229,6 +264,24 @@ export function resolveParameterAgent({ recipients = [], filterAgentId = '', man
 // 从账本推导，不另设持久状态。
 export function latestInteractedAgentId(state, selfId, agentIds) {
   if (!state?.rows || !selfId) return '';
+  const order = state?._rowOrder;
+  const maxima = state?._rowMaxSeq;
+  if (Array.isArray(order) && Array.isArray(maxima) && order.length === maxima.length) {
+    let found = '';
+    let foundSeq = 0;
+    for (let index = order.length - 1; index >= 0; index -= 1) {
+      if (maxima[index] <= foundSeq) break;
+      const seq = order[index];
+      if (seq <= foundSeq) continue;
+      const row = state.rows.get(seq);
+      if (row?.kind !== 'request' || row.type !== TYPES.agentAsk || row.sender?.id !== selfId) continue;
+      const audience = Array.isArray(row.audience) ? row.audience : [];
+      if (audience.length !== 1 || !agentIds.has(audience[0])) continue;
+      found = audience[0];
+      foundSeq = seq;
+    }
+    return found;
+  }
   let found = '';
   for (const row of state.rows.values()) {
     if (row.kind !== 'request' || row.type !== TYPES.agentAsk) continue;

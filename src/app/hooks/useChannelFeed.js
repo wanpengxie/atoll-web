@@ -4,7 +4,7 @@ import { isMobileProfile } from '../../model/device-profile.js';
 import { abbreviateToolRow } from '../../model/payload-abbreviate.js';
 import { createFrameBatcher } from '../../model/frame-batcher.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createCursors } from '../../model/cursors.js';
+import { createCursors, unreadCount } from '../../model/cursors.js';
 import { createFeedCache, resumeSnapshot } from '../../model/feed-cache.js';
 import { apply, createChannelState, reconcileApprovals } from '../../model/fold.js';
 import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
@@ -157,12 +157,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	  onAgentActivity?.(payload);
 	  return;
 	}
-	// Live rows never enter the historical executor or reservoir.
-	// 手机上同一帧里到的行合成一批再落(见 frame-batcher.js):一条一落意味着一条
-	// 消息一次整棵树的重渲染,而 agent 流式说话时那是一秒十几次。
-	if (isMobileProfile()) liveBatchRef.current.push(payload);
-	else landLiveRows([payload]);
-	}, [landLiveRows]);
+	// Live rows never enter the historical executor or reservoir. 所有屏幕都按浏览器
+	// 帧合批：桌面端也和编辑器共用一条主线程，逐行 publish 会让键盘/输入法
+	// 事件排在时间线重绘后面。合批只延后到下一帧，不改顺序和内容；checkpoint
+	// 和断线等依赖“行已落地”的边界会在下面强制 flush。
+	liveBatchRef.current.push(payload);
+	}, [onAgentActivity]);
 
   const setHistoryGrants = useCallback((grants = [], detail = {}) => {
     const generation = detail.generation;
@@ -231,6 +231,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 
   const focusHistory = useCallback((channelId) => schedulerRef.current.focus(channelId), []);
   const disconnectHistory = useCallback((generation) => {
+	liveBatchRef.current.flushNow();
 	diagnostic('info', 'feed.connection_reset', { generation });
     schedulerRef.current.disconnected(generation);
   }, []);
@@ -255,13 +256,21 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const bump = useCallback(() => setVersion((value) => value + 1), []);
   const markRead = useCallback((channelId, seq) => {
     if (!channelId) return 0;
-    trimIfMobile(statesRef.current.get(channelId));
+    const state = statesRef.current.get(channelId);
+    trimIfMobile(state);
     const before = cursorsRef.current.read(channelId);
+    // Provisional stream frames advance the durable read cursor but never draw
+    // a rail badge. Publishing a second React render for every such frame used
+    // to nearly double the main-thread work while an agent was answering.
+    const changesVisibleUnread = unreadCount(state, before, rosterRef.current?.self(channelId) || '') > 0;
     const next = cursorsRef.current.markRead(channelId, seq);
-    if (next !== before) setVersion((value) => value + 1);
+    if (next !== before && changesVisibleUnread) setVersion((value) => value + 1);
     return next;
+  }, [rosterRef]);
+  const cancel = useCallback(() => {
+    liveBatchRef.current.flushNow();
+    schedulerRef.current.disconnected();
   }, []);
-  const cancel = useCallback(() => schedulerRef.current.disconnected(), []);
   const clear = useCallback(() => {
     // 缓冲里的行先落地再清:恒不留下一批"清完之后才醒过来"的行,把刚清空的表又
     // 填出半张。
@@ -272,6 +281,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
 
   const resetPersistent = useCallback(async () => {
+    liveBatchRef.current.flushNow();
     await cacheRef.current.clear();
     statesRef.current = new Map();
     cursorsRef.current.reconcile({});

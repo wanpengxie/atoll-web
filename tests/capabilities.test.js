@@ -74,4 +74,14 @@ describe('actor capabilities', () => {
     expect([...entry.describe.types.keys()]).toEqual(['agent.ask', 'agent.steer']);
     expect(entry.loading).toBe(false);
   });
+
+  it('有本连接 request id 时直接查对应 turn，不遍历频道全部 turn', () => {
+    const rows = [
+      envelope('d1', 'request', 'actor.describe', {}, {}),
+      envelope('d1-done', 'response', 'actor.describe', { status: 'completed', class: 'codex', words: { 'agent.ask': {} } }, { parent_id: 'd1' }),
+    ].map((value, index) => ({ channel_id: 'c0', seq: index + 1, envelope: value }));
+    const state = fold(rows);
+    state.turns.values = () => { throw new Error('不应扫描全部 turn'); };
+    expect(capabilityIndexFromState(state, new Set(['d1'])).get('agent')?.describe?.className).toBe('codex');
+  });
 });

@@ -91,7 +91,12 @@ function mergeDescribe(current, incoming) {
 // 集合易失清空，活状态自然重新现问。
 export function capabilityIndexFromState(state, liveRequestIds = null) {
   const index = new Map();
-  const turns = [...(state?.turns?.values?.() || [])].sort((left, right) => left.requestSeq - right.requestSeq);
+  // 活能力只认本连接主动发出的 describe。调用方已经给了精确 request id，直接
+  // 查 turn 即可；旧实现仍把频道里几万条 turn 全拷出来排序，再丢掉几乎全部。
+  const turns = liveRequestIds && state?.turns?.get
+    ? [...liveRequestIds].map((requestId) => state.turns.get(requestId)).filter(Boolean)
+    : [...(state?.turns?.values?.() || [])];
+  turns.sort((left, right) => left.requestSeq - right.requestSeq);
   for (const turn of turns) {
     if (turn.request?.type !== TYPES.describe) continue;
     if (liveRequestIds && !liveRequestIds.has(turn.requestId)) continue;

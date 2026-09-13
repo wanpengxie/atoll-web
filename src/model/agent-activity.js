@@ -56,8 +56,10 @@ export function createAgentActivityTracker({ onChange = () => {}, now = () => Da
   let boot = '';
   let generation = 0;
   let connected = false;
+  let cachedSnapshot = null;
 
   function changed() {
+    cachedSnapshot = null;
     onChange();
   }
 
@@ -159,6 +161,7 @@ export function createAgentActivityTracker({ onChange = () => {}, now = () => Da
   }
 
   function snapshot() {
+    if (cachedSnapshot) return cachedSnapshot;
     const byChannel = {};
     for (const entry of entries.values()) {
       const visibleActive = entry.state === 'active' && connected && entry.generation === generation;
@@ -178,7 +181,8 @@ export function createAgentActivityTracker({ onChange = () => {}, now = () => Da
       channel.active.sort((left, right) => right.updatedAt - left.updatedAt || right.startedAt - left.startedAt);
       for (const agent of Object.values(channel.agents)) agent.state = agent.active > 0 ? 'active' : 'settled';
     }
-    return { boot, generation, connected, byChannel };
+    cachedSnapshot = { boot, generation, connected, byChannel };
+    return cachedSnapshot;
   }
 
   return { attach, disconnect, observe, acknowledge, clear, snapshot };

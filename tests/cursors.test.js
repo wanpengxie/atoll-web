@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createCursors, unreadCount, unreadCounts } from '../src/model/cursors.js';
+import { apply, createChannelState } from '../src/model/fold.js';
 
 class MemoryStorage {
   data = new Map();
@@ -104,5 +105,37 @@ describe('channel cursors', () => {
       [4, { id: 'root-done', kind: 'response', parent_id: 'root', audience: ['me'], payload: { status: 'completed' }, sender: { id: 'agent' } }],
     ]) };
     expect(unreadCounts(state, 1, 'me')).toEqual({ related: 1, total: 1 });
+  });
+
+  it('reuses the fold id index instead of rebuilding it for every unread projection', () => {
+    const root = { id: 'root', kind: 'request', audience: ['agent'], sender: { id: 'me' } };
+    const reply = { id: 'reply', kind: 'response', parent_id: 'root', audience: ['me'], payload: { status: 'completed' }, sender: { id: 'agent' } };
+    const rows = new Map([[1, root], [2, reply]]);
+    rows.values = () => { throw new Error('unread projection rebuilt the id index'); };
+    const state = {
+      rows,
+      _rowOrder: [1, 2],
+      _envelopesById: new Map([[root.id, root], [reply.id, reply]]),
+    };
+
+    expect(unreadCounts(state, 0, 'me', { incremental: true })).toEqual({ related: 1, total: 1 });
+  });
+
+  it('reads only the cursor tail even when an older history page was inserted later', () => {
+    const state = createChannelState('c0');
+    const row = (seq) => ({
+      channel_id: 'c0', seq,
+      envelope: { id: `m-${seq}`, kind: 'request', visibility: 'public', sender: { id: 'other' } },
+    });
+    apply(state, row(100));
+    apply(state, row(101));
+    apply(state, row(1)); // history arrived after the live tail
+    apply(state, row(102));
+    const get = state.rows.get.bind(state.rows);
+    let reads = 0;
+    state.rows.get = (seq) => { reads += 1; return get(seq); };
+
+    expect(unreadCount(state, 100, 'me')).toBe(2);
+    expect(reads).toBe(2);
   });
 });

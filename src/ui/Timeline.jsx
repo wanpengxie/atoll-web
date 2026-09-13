@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoMockContext } from 'react-virtuoso';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
-import { isMobileProfile } from '../model/device-profile.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
 import { attachmentFromFileReference } from '../model/file-references.js';
@@ -10,7 +9,7 @@ import { messagePresentation } from '../model/message-presentation.js';
 import { replyTargetOf } from '../model/reply-target.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { controlLabel, controlPayload, extraControls, taskControlContext } from '../model/task-controls.js';
-import { agentFrozenState, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
+import { agentFrozenStates, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { selectSystemNote } from '../model/agent-selection.js';
 import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { projectTimeline } from '../model/timeline-projection.js';
@@ -32,6 +31,7 @@ import { FoldableBody } from './timeline/FoldableBody.jsx';
 // 每次 agent 干活就刷出一串，把人要读的东西淹掉。数据仍然在 state.narration 里，
 // 什么都没丢——等它有了合适的落位（侧栏或频道信息页）再接回来。
 const SHOW_CHANNEL_NARRATION = false;
+const EMPTY_FROZEN_STATES = new Map();
 // firstItemIndex must remain non-negative while prepending. A billion leaves
 // ample room for repeated 32-row reveals even in six-figure histories.
 const VIRTUAL_INDEX_BASE = 1_000_000_000;
@@ -771,14 +771,16 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
   // 保存/放弃后钉住不放（resumePin），直到账上真正回到处理中——否则解冻帧到达前
   // 的空窗里消息会闪跳进等待区。
   const editingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
+  const projectionVersion = state._timelineProjectionVersion ?? state.lastSeq;
+  const controlVersion = state._timelineControlVersion ?? state.lastSeq;
   const projection = useMemo(() => projectTimeline(state, {
     scope,
     selfId,
     actorFilter,
     editingTargetId,
     showNarration: SHOW_CHANNEL_NARRATION,
-    incremental: isMobileProfile(),
-  }), [state, state.lastSeq, state.turns.size, state.standalone.length, state.orphans.length, scope, selfId, actorFilter, editingTargetId]);
+    incremental: true,
+  }), [state, projectionVersion, scope, selfId, actorFilter, editingTargetId]);
   const { filtered: entries, actorFilterApplies } = projection;
   // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。
   const filterableAgents = useMemo(() => (roster || []).filter((row) => row.kind === 'agent'), [roster]);
@@ -824,38 +826,53 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     total: withNarration.length,
     hasOlder: windowStart > 0,
   };
-	// Day separators used to scan all preceding entries for every row (O(n²)).
-	// Keep the last meaningful timestamp in one pass; virtualization then only
-	// has to construct DOM for the viewport.
-	const previousTimestampByIndex = [];
-	let previousTimestampCursor = 0;
-	for (let index = 0; index < windowed.items.length; index += 1) {
-	  previousTimestampByIndex[index] = previousTimestampCursor;
-	  previousTimestampCursor = entryTimestamp(windowed.items[index]) || previousTimestampCursor;
+	// Virtuoso 只会请求视口附近的 item。日期分隔也在那时向前找最近时间戳，恒不
+	// 为屏幕外几万条记录提前造一张同长度数组。
+	function previousTimestampAt(index) {
+	  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+		const timestamp = entryTimestamp(windowed.items[cursor]);
+		if (timestamp) return timestamp;
+	  }
+	  return 0;
 	}
-  const queuedTurns = [...state.turns.values()]
-    .filter((turn) => agentMessageStage(turn) === 'queued' && turn.requestId !== editingTargetId)
-    .sort((left, right) => {
+  const timelineControl = useMemo(() => {
+    const queued = [];
+    const actorIds = new Set();
+    const preempted = new Map();
+    const merged = new Map();
+    let hasFreezeOperations = false;
+    for (const turn of state.turns.values()) {
+      const actorId = turn.request?.audience?.length === 1 ? turn.request.audience[0] : '';
+      if (actorId) actorIds.add(actorId);
+      if (agentMessageStage(turn) === 'queued' && turn.requestId !== editingTargetId) queued.push(turn);
+      const replacement = preemptedBy(turn);
+      if (replacement) preempted.set(replacement, [...(preempted.get(replacement) || []), turn]);
+      const owner = mergedInto(turn);
+      if (owner) merged.set(owner, (merged.get(owner) || 0) + 1);
+      if (argsOf(turn.terminal)?.status === 'completed'
+        && (turn.request?.type === TYPES.agentHold || turn.request?.type === TYPES.agentInterrupt)) {
+        hasFreezeOperations = true;
+      }
+    }
+    queued.sort((left, right) => {
       const leftTarget = argsOf(left.request).target;
       const rightTarget = argsOf(right.request).target;
       const leftSeq = left.request.type === TYPES.agentReplace ? state.turns.get(leftTarget)?.requestSeq || left.requestSeq : left.requestSeq;
       const rightSeq = right.request.type === TYPES.agentReplace ? state.turns.get(rightTarget)?.requestSeq || right.requestSeq : right.requestSeq;
       return leftSeq - rightSeq;
     });
-  const frozenByActor = new Map();
-  for (const turn of state.turns.values()) {
-    const actorId = turn.request?.audience?.length === 1 ? turn.request.audience[0] : '';
-    if (actorId && !frozenByActor.has(actorId)) frozenByActor.set(actorId, agentFrozenState(state, actorId, presentationNow));
-  }
+    return { queued, actorIds, preempted, merged, hasFreezeOperations };
+  }, [state, controlVersion, editingTargetId]);
+  const queuedTurns = timelineControl.queued;
+  const frozenByActor = useMemo(
+    () => timelineControl.hasFreezeOperations
+      ? agentFrozenStates(state, timelineControl.actorIds, presentationNow)
+      : EMPTY_FROZEN_STATES,
+    [state, controlVersion, timelineControl.actorIds, timelineControl.hasFreezeOperations, presentationNow],
+  );
   const nextFreezeDeadline = Math.min(...[...frozenByActor.values()].filter(Boolean).map((value) => value.until));
-  const preemptedSources = new Map();
-  const mergedCounts = new Map();
-  for (const turn of state.turns.values()) {
-    const replacement = preemptedBy(turn);
-    if (replacement) preemptedSources.set(replacement, [...(preemptedSources.get(replacement) || []), turn]);
-    const owner = mergedInto(turn);
-    if (owner) mergedCounts.set(owner, (mergedCounts.get(owner) || 0) + 1);
-  }
+	const preemptedSources = timelineControl.preempted;
+	const mergedCounts = timelineControl.merged;
 	function scrollerIsAtBottom() {
 	  const scroller = messageListScrollerRef.current;
 	  return scroller
@@ -996,7 +1013,9 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     setScope(TIMELINE_SCOPE.mine);
     setEditNotice('');
   }, [state.channelId]);
-  useEffect(() => setPresentationNow(Date.now()), [state.lastSeq]);
+  // presentationNow 只服务冻结期限。普通正文帧不会改变冻结事实；每帧都 setState
+  // 会让一次 live publish 额外再渲染整棵 Timeline 一次。
+  useEffect(() => setPresentationNow(Date.now()), [controlVersion]);
   useEffect(() => {
     if (!Number.isFinite(nextFreezeDeadline)) return undefined;
     const timer = window.setTimeout(() => setPresentationNow(Date.now()), Math.max(1, nextFreezeDeadline - Date.now() + 1));
@@ -1049,13 +1068,13 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
       if (editing.location === 'processing') setResumePin(editing.replacementId);
       setEditing(null);
     }
-  }, [state.lastSeq, editing?.phase, editing?.contextId, editing?.replacementId]);
+  }, [controlVersion, editing?.phase, editing?.contextId, editing?.replacementId]);
 
   useEffect(() => {
     if (!resumePin) return;
     const turn = state.turns.get(resumePin);
     if (!turn || turn.terminal || agentMessageStage(turn) === 'timeline') setResumePin('');
-  }, [state.lastSeq, resumePin]);
+  }, [controlVersion, resumePin]);
 
   useEffect(() => {
     const reconnected = previousAccess.current !== 'member_active' && access === 'member_active';
@@ -1160,8 +1179,8 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
         {history?.error && <p className="bounded-list-note" role="alert">{history.error}</p>}
 	  </div>
 	  <TimelineVirtualList>
-		{/* Folding changes one visible item's height. Deliver its measurement before
-		    paint so FoldableBody can keep the clicked control pinned in that frame. */}
+			{/* Virtuoso 也在 ResizeObserver 里改项高。让它保持默认的按帧交付；
+			    同步交付会和 FoldableBody 的高度变化互相触发，形成 observer loop。 */}
 		<Virtuoso
 		  key={messageListKey}
 		  ref={messageListRef}
@@ -1170,15 +1189,15 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 		  firstItemIndex={firstItemIndex}
 		  initialTopMostItemIndex={import.meta.env.MODE === 'test' ? undefined : { index: 'LAST', align: 'end' }}
 		  alignToBottom
-		  skipAnimationFrameInResizeObserver
 		  atBottomThreshold={24}
 		  increaseViewportBy={480}
-		  data={windowed.items.map((entry, index) => {
-			const id = entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`;
-			return { id, render: () => {
-          const continuation = isContinuation(windowed.items, index);
+		  data={windowed.items}
+		  computeItemKey={(_index, entry) => entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`}
+		  itemContent={(index, entry) => {
+		  const itemIndex = index - firstItemIndex;
+          const continuation = isContinuation(windowed.items, itemIndex);
           const timestamp = entryTimestamp(entry);
-          const previousTimestamp = previousTimestampByIndex[index] || 0;
+          const previousTimestamp = previousTimestampAt(itemIndex);
           const showDay = timestamp > 0 && (!previousTimestamp || dayKey(timestamp) !== dayKey(previousTimestamp));
           let content;
           if (entry.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
@@ -1204,7 +1223,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const fold = { latest: index === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold };
+            const fold = { latest: itemIndex === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold };
             const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onReply };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
@@ -1220,13 +1239,10 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: index === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: itemIndex === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
           }
-		  return <>{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</>;
-			} };
-		})}
-		  computeItemKey={(_index, item) => item.id}
-		  itemContent={(_index, item) => <div className="timeline-virtual-item">{item.render()}</div>}
+		  return <div className="timeline-virtual-item">{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</div>;
+		  }}
 		  startReached={handleStartReached}
 		  atTopStateChange={handleAtTopChange}
 		  atBottomStateChange={handleAtBottomChange}

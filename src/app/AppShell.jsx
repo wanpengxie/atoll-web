@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, isMemberAccess } from '../model/channel-access.js';
 import { ChannelList } from '../ui/ChannelList.jsx';
 import { ArtifactsView } from '../ui/ArtifactsView.jsx';
@@ -32,6 +32,26 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const [composerEdit, setComposerEdit] = useState(null);
   const [replyTargets, setReplyTargets] = useState({});
+  // App 的 workspace 外壳随每一批 feed 重建，里面的 inline callback 也会换身份。
+  // Composer 真正需要的是最新行为，不需要因为函数对象换了就重渲。用稳定端口转发
+  // 到本次 render 的实现，让 React.memo 可以把输入 DOM 与 feed 更新彻底隔开。
+  const composerActionTargetsRef = useRef({});
+  const composerActionsRef = useRef(null);
+  if (!composerActionsRef.current) {
+    const call = (name) => (...args) => composerActionTargetsRef.current[name]?.(...args);
+    composerActionsRef.current = {
+      onDraftChange: call('onDraftChange'),
+      onSend: call('onSend'),
+      onRetry: call('onRetry'),
+      onPreviewAttachment: call('onPreviewAttachment'),
+      onRemoveAttachment: call('onRemoveAttachment'),
+      onClearAttachments: call('onClearAttachments'),
+      onUploadAttachments: call('onUploadAttachments'),
+      onOpenChannelFiles: call('onOpenChannelFiles'),
+      onCancelReply: call('onCancelReply'),
+      onReplySent: call('onReplySent'),
+    };
+  }
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
@@ -79,7 +99,12 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   const dynamicTabView = () => (filesOpenRef.current.get(navigation.activeChannelId) ? 'artifacts' : 'dynamic');
   const writeDisabled = session.wireState !== 'open' || !canWriteChannel(workspace.access);
   const contentVisible = canViewChannelContent(workspace.access);
-  const runningAgentTurn = activeAgentTurn(workspace.state, workspace.roster, workspace.selfId);
+  // AppShell 会跟随每批 live feed 重渲。activeAgentTurn 原先每次都复制、过滤、
+  // 排序整个 turns Map；同一 processing 阶段追加正文并不会改变“当前运行任务”。
+  const runningAgentTurn = useMemo(
+    () => activeAgentTurn(workspace.state, workspace.roster, workspace.selfId),
+    [workspace.state, workspace.state?._timelineControlVersion, workspace.roster, workspace.selfId],
+  );
   const disabledReason = session.wireState !== 'open'
     ? '等待连接…'
     : workspace.access === CHANNEL_ACCESS.discoverable || workspace.access === CHANNEL_ACCESS.accessDenied
@@ -195,6 +220,20 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     });
   }
 
+  composerActionTargetsRef.current = {
+    onDraftChange: workspace.onDraftChange,
+    onSend: workspace.onSend,
+    onRetry: workspace.onRetry,
+    onPreviewAttachment: workspace.onPreviewAttachment,
+    onRemoveAttachment: workspace.onRemoveAttachment,
+    onClearAttachments: workspace.onClearAttachments,
+    onUploadAttachments: workspace.onUploadAttachments,
+    onOpenChannelFiles: workspace.onOpenChannelFiles,
+    onCancelReply: clearReply,
+    onReplySent: clearReply,
+  };
+  const composerActions = composerActionsRef.current;
+
   function moveViewTab(event, index) {
     const views = WORKSPACE_TABS;
     let next = index;
@@ -275,7 +314,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
             重挂，让残影随旧节点一起消失——Composer 早就是这么做的。 */}
         <div className="dynamic-message-pane">
           {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} state={workspace.state} history={workspace.history} roster={workspace.roster} selfId={workspace.selfId} agentActivity={workspace.agentActivity} onAcknowledgeAgentActivity={workspace.onAcknowledgeAgentActivity} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} onFocusAgentChange={workspace.onFocusAgentChange} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
-          <Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={workspace.onDraftChange} disabled={writeDisabled} disabledReason={disabledReason} onSend={workspace.onSend} onRetry={workspace.onRetry} attachments={workspace.attachments} onPreviewAttachment={workspace.onPreviewAttachment} onRemoveAttachment={workspace.onRemoveAttachment} onClearAttachments={workspace.onClearAttachments} onUploadAttachments={workspace.onUploadAttachments} onOpenChannelFiles={workspace.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={clearReply} onReplySent={clearReply} />
+          <Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={composerActions.onDraftChange} disabled={writeDisabled} disabledReason={disabledReason} onSend={composerActions.onSend} onRetry={composerActions.onRetry} attachments={workspace.attachments} onPreviewAttachment={composerActions.onPreviewAttachment} onRemoveAttachment={composerActions.onRemoveAttachment} onClearAttachments={composerActions.onClearAttachments} onUploadAttachments={composerActions.onUploadAttachments} onOpenChannelFiles={composerActions.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={composerActions.onCancelReply} onReplySent={composerActions.onReplySent} />
         </div>
         {/* 文件分屏。跟终端一样：开过就恒不卸载，收起只是 hidden——目录、滚动和
             选中都在这棵树里，卸一次人就得从根目录重新点回来。按频道 key 重挂，

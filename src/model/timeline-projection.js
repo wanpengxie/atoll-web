@@ -1,7 +1,13 @@
 import { argsOf } from '../protocol/envelope.js';
 import { agentMessageStage, isAgentMessageTurn } from './agent-control.js';
 import { orderedTimeline } from './fold.js';
-import { filterEntriesByActors, scopeEntries, TIMELINE_SCOPE } from './timeline-scope.js';
+import {
+  entryMatchesActors,
+  entryMatchesScope,
+  relatedEnvelopeIds,
+  relatedEnvelopeIdsIncremental,
+  TIMELINE_SCOPE,
+} from './timeline-scope.js';
 import { TYPES } from '../protocol/vocab.js';
 
 const HIDDEN_TURN_TYPES = new Set([
@@ -28,13 +34,10 @@ function isUiProtocolTurn(turn) {
 // ui.* is an operation stream between an agent and one browser tab, not a
 // conversation with the person. Keep it in "all" for ledger inspection, but
 // remove both root UI turns and nested UI calls from the person's chat view.
-function withoutUiProtocol(entries) {
-  return entries
-    .filter((entry) => entry.kind !== 'turn' || !isUiProtocolTurn(entry.turn))
-    .map((entry) => {
-      if (!entry.thread?.some((item) => isUiProtocolTurn(item.turn))) return entry;
-      return { ...entry, thread: entry.thread.filter((item) => !isUiProtocolTurn(item.turn)) };
-    });
+function withoutUiProtocol(entry) {
+  if (entry.kind === 'turn' && isUiProtocolTurn(entry.turn)) return null;
+  if (!entry.thread?.some((item) => isUiProtocolTurn(item.turn))) return entry;
+  return { ...entry, thread: entry.thread.filter((item) => !isUiProtocolTurn(item.turn)) };
 }
 
 function timelineEntryVisible(entry, editingTargetId) {
@@ -60,11 +63,27 @@ export function projectTimeline(state, {
   // 整本账"降到"每帧只判新来的那几行"。
   incremental = false,
 } = {}) {
-  const allEntries = orderedTimeline(state).filter((entry) => timelineEntryVisible(entry, editingTargetId));
-  const conversationalEntries = scope === TIMELINE_SCOPE.mine ? withoutUiProtocol(allEntries) : allEntries;
-  const scoped = scopeEntries(conversationalEntries, { scope, state, selfId, incremental });
   const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
-  const filtered = actorFilterApplies ? filterEntriesByActors(scoped, actorFilter) : scoped;
+  const mine = scope === TIMELINE_SCOPE.mine;
+  const related = mine && selfId
+    ? (incremental ? relatedEnvelopeIdsIncremental(state, selfId) : relatedEnvelopeIds(state, selfId))
+    : null;
+  const allEntries = [];
+  const scoped = [];
+  const filtered = [];
+
+  // 一条 live frame 到达时这段会跑在输入同一条主线程上。过去先 filter、再 map、
+  // 再 scope filter、再 actor filter，老频道每帧会把整条时间线复制四遍。这里保持
+  // 三层结果供历史判断和 UI 使用，但在一次顺序扫描里同时生成它们。
+  for (const rawEntry of orderedTimeline(state)) {
+    if (!timelineEntryVisible(rawEntry, editingTargetId)) continue;
+    allEntries.push(rawEntry);
+    const entry = mine ? withoutUiProtocol(rawEntry) : rawEntry;
+    if (!entry || (related && !entryMatchesScope(entry, related))) continue;
+    scoped.push(entry);
+    if (actorFilterApplies && actorFilter?.size && !entryMatchesActors(entry, actorFilter)) continue;
+    filtered.push(entry);
+  }
 
   const latestTransient = new Map();
   for (const entry of filtered) {
@@ -77,9 +96,14 @@ export function projectTimeline(state, {
     || latestTransient.get(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`) === entry
   ));
   const narrationSeq = state.narration?.[0]?.seq ?? Number.POSITIVE_INFINITY;
-  const items = [...visible, ...(showNarration && state.narration?.length
-    ? [{ kind: 'narration', seq: narrationSeq }]
-    : [])].sort((left, right) => left.seq - right.seq);
+  let items = visible;
+  if (showNarration && state.narration?.length) {
+    const narration = { kind: 'narration', seq: narrationSeq };
+    const insertion = visible.findIndex((entry) => entry.seq > narrationSeq);
+    items = insertion < 0
+      ? [...visible, narration]
+      : [...visible.slice(0, insertion), narration, ...visible.slice(insertion)];
+  }
 
   return {
     items,

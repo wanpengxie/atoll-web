@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { fold, orderedTimeline } from '../src/model/fold.js';
-import { relatedEnvelopeIds, scopeEntries, TIMELINE_SCOPE } from '../src/model/timeline-scope.js';
+import { apply, createChannelState, fold, orderedTimeline } from '../src/model/fold.js';
+import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental, scopeEntries, TIMELINE_SCOPE } from '../src/model/timeline-scope.js';
 
 const base = {
   ts: 1,
@@ -80,6 +80,17 @@ describe('timeline scope', () => {
     // An unknown self must not silently empty the channel — showing everything is
     // the honest answer to "related to whom?".
     expect(scopeEntries(entries, { scope: TIMELINE_SCOPE.mine, state, selfId: '' })).toBe(entries);
+  });
+
+  it('增量索引在基线后只消费新行，不再每帧遍历 rows Map', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 1, envelope: env('first', 'event', 'human.note') }, 'me');
+    expect(relatedEnvelopeIdsIncremental(state, 'me').has('first')).toBe(true);
+    const iterate = state.rows[Symbol.iterator].bind(state.rows);
+    state.rows[Symbol.iterator] = () => { throw new Error('rows Map should not be rescanned'); };
+    apply(state, { channel_id: 'c0', seq: 2, envelope: env('second', 'event', 'human.note') }, 'me');
+    expect(relatedEnvelopeIdsIncremental(state, 'me').has('second')).toBe(true);
+    state.rows[Symbol.iterator] = iterate;
   });
 });
 

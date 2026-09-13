@@ -38,6 +38,17 @@ describe('内存窗口', () => {
     for (const id of state._seenIds) expect(state._envelopesById.has(id)).toBe(true);
     expect(state._seenIds.size).toBe(state._envelopesById.size);
     expect(state._envelopesById.size).toBe(state.rows.size);
+    expect(state._rowMaxSeq).toHaveLength(state._rowOrder.length);
+    expect(state._rowMaxSeq.every((value, index) => index === 0 || value >= state._rowMaxSeq[index - 1])).toBe(true);
+  });
+
+  it('低水位只决定一次保留多少,不会让每条新消息都触发裁剪', () => {
+    const state = channelWith(21);
+    trimChannelState(state, { maxRows: 40, maxBytes: 1e9 });
+    expect(state.rows.size).toBeLessThan(40);
+    const next = Math.max(...state.rows.keys()) + 1;
+    apply(state, { channel_id: 'c', seq: next, envelope: { id: 'tail', kind: 'event', type: 'human.note', payload: { text: 'tail' } } }, ME);
+    expect(trimChannelState(state, { maxRows: 40, maxBytes: 1e9 })).toBe(0);
   });
 
   // 半段 turn 恒不能渲染:开着的那一段整段留住,哪怕它比水位老。

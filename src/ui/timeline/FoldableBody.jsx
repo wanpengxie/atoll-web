@@ -7,6 +7,7 @@ export const FOLD_LINES = 14;
 // 却多一次点击。
 const FOLD_SLACK_LINES = 4;
 const HEURISTIC_CHARS = 1200;
+const DEFINITELY_SHORT_CHARS = 96;
 
 // 量不到布局时（测试环境）的判据：源文本行数或字符数。生产里恒以真实渲染高度为准，
 // 因为表格、代码块的行数和字符数对不上。
@@ -20,6 +21,13 @@ function countLines(value) {
   let count = 1;
   for (let index = 0; index < value.length; index += 1) if (value.charCodeAt(index) === 10) count += 1;
   return count;
+}
+
+// 这些正文在最窄的支持屏幕上也不可能超过折叠阈值。它们占时间线的
+// 绝大多数，恒不为了得到“不折”这个已知答案去读 scrollHeight、创建 observer。
+function definitelyShort(text) {
+  const value = String(text || '');
+  return value.length <= DEFINITELY_SHORT_CHARS && countLines(value) <= 4;
 }
 
 function scrollParentOf(element) {
@@ -44,59 +52,69 @@ function foldLinesOf(element) {
 // 只有 overflow 成立才会出现按钮；exempt 的正文默认展开，但读者仍可手动收起。
 export function FoldableBody({ id, text = '', exempt = false, expanded, onToggle, className = '', children }) {
   const contentRef = useRef(null);
-  const wrapperRef = useRef(null);
   // 首次渲染就按源文本先判一次，明显超长的正文第一帧就是折叠态。这不只是少一次
-  // 闪动：Virtuoso 开着 skipAnimationFrameInResizeObserver，会在 ResizeObserver
-  // 回调里同步挂载条目；如果条目挂载后在 layout effect 里才切成折叠、尺寸又变一次，
-  // 浏览器就报 "ResizeObserver loop completed with undelivered notifications"。
+  // 闪动：条目挂载后若在 layout effect 里才切成折叠，尺寸会立即再变一次，
+  // 虚拟列表的 observer 也会跟着重算。
   // 真实高度量出来后仍以量到的为准，只在临界情况下会纠正这次预判。
-  const [measure, setMeasure] = useState(() => (text ? { overflow: foldCandidate(text), lines: countLines(String(text)) } : { overflow: null, lines: 0 }));
+  const [measure, setMeasure] = useState(() => (text ? { text, overflow: foldCandidate(text), lines: countLines(String(text)) } : { text: '', overflow: null, lines: 0 }));
+  const textRef = useRef(text);
+  textRef.current = text;
+  const measureFrameRef = useRef(0);
   const toggleRef = useRef(null);
   const foldAnchorRef = useRef(null);
   const foldObserverRef = useRef(null);
+  const needsMeasurement = !definitelyShort(text);
 
   useLayoutEffect(() => {
     const element = contentRef.current;
-    if (!element) return undefined;
+    if (!element || !needsMeasurement) return undefined;
     const evaluate = () => {
+      measureFrameRef.current = 0;
+      const currentText = String(textRef.current || '');
       // scrollHeight 是内容的真实高度，折起时 max-height 截掉的部分也算在内；用
       // offsetHeight 会在折起后量到截断值，判成"不超行"，展开，再折——来回振荡。
       const height = element.scrollHeight;
       const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight);
       if (!height || !Number.isFinite(lineHeight) || lineHeight <= 0) {
         // 量不到（jsdom 没有布局）：退回文本启发式，保证测试确定。
-        setMeasure({ overflow: foldCandidate(text), lines: countLines(String(text || '')) });
+        setMeasure({ text: currentText, overflow: foldCandidate(currentText), lines: countLines(currentText) });
         return;
       }
       const limit = foldLinesOf(element);
       const lines = Math.round(height / lineHeight);
       setMeasure((current) => {
         const overflow = lines > limit + FOLD_SLACK_LINES;
-        return current.overflow === overflow && current.lines === lines ? current : { overflow, lines };
+        return current.text === currentText && current.overflow === overflow && current.lines === lines
+          ? current
+          : { text: currentText, overflow, lines };
       });
     };
-    evaluate();
-    if (typeof ResizeObserver !== 'function') return undefined;
+    const schedule = () => {
+      cancelAnimationFrame(measureFrameRef.current);
+      measureFrameRef.current = requestAnimationFrame(evaluate);
+    };
+    schedule();
+    if (typeof ResizeObserver !== 'function') return () => cancelAnimationFrame(measureFrameRef.current);
     // 两处都推到下一帧，原因相同："ResizeObserver loop completed with undelivered
-    // notifications" 报的是同一轮投递里又冒出了新通知。Virtuoso 开着
-    // skipAnimationFrameInResizeObserver，会在它的观察回调里同步挂载条目；条目一
-    // 挂载就 observe() 自己，等于在投递中途登记新观察，浏览器只能报错。回调里直接
-    // setState 改高度是同一个坑。所以：登记观察延到下一帧，量高度也延到下一帧。
-    let frame = 0;
+    // notifications" 报的是同一轮投递里又冒出了新通知。回调里直接
+    // setState 改高度也会重入布局。所以登记观察和高度测量都延到下一帧。
     let attach = 0;
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(evaluate);
+    const observer = new ResizeObserver(schedule);
+    attach = requestAnimationFrame(() => {
+      observer.observe(element);
+      schedule();
     });
-    attach = requestAnimationFrame(() => observer.observe(element));
     return () => {
       cancelAnimationFrame(attach);
-      cancelAnimationFrame(frame);
+      cancelAnimationFrame(measureFrameRef.current);
+      measureFrameRef.current = 0;
       observer.disconnect();
     };
-  }, [text]);
+  }, [needsMeasurement]);
 
-  const canFold = measure.overflow === true;
+  // DOM 还没量到新文本时，先用同一个确定性启发式：长文第一帧便折起，不等
+  // observer 再改高度。量完后仍以真实布局为准。
+  const canFold = (measure.text === text ? measure.overflow : foldCandidate(text)) === true;
   const folded = canFold && (expanded === false || (expanded !== true && !exempt));
   // 按钮上报的行数用源文本的行数：人贴了 40 行就说 40 行。渲染行数（段落间距、
   // 表格、代码块都算进去）只在没有源文本时兜底。
@@ -161,7 +179,6 @@ export function FoldableBody({ id, text = '', exempt = false, expanded, onToggle
           foldAnchorRef.current = null;
         })
         : null;
-      foldObserverRef.current?.disconnect();
       foldAnchorRef.current?.cleanup?.();
       foldObserverRef.current = observer;
       foldAnchorRef.current = observer
@@ -173,7 +190,7 @@ export function FoldableBody({ id, text = '', exempt = false, expanded, onToggle
     }
   }, [folded, id, onToggle]);
 
-  return <div ref={wrapperRef} className={`message-fold${folded ? ' is-folded' : ''} ${className}`.trim()}>
+  return <div className={`message-fold${folded ? ' is-folded' : ''} ${className}`.trim()}>
     <div ref={contentRef} className="message-fold-content">{children}</div>
     {canFold && <button ref={toggleRef} type="button" className="message-fold-toggle" aria-expanded={!folded} onClick={toggle}>
       <span aria-hidden="true">⌄</span>

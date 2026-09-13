@@ -50,7 +50,7 @@ export function trimChannelState(state, { maxRows, maxBytes } = MOBILE_WINDOW) {
   // 那趟排序 + 逐行估字节恒不能每条消息跑一遍。行数没到水位就什么都不做——工具
   // 输出已经在源头缩过了(payload-abbreviate.js),所以"行数还很少但字节已经爆了"
   // 这一格恒不成立,字节水位只需要在行数逼近时量。
-  if (!state?.rows?.size || state.rows.size <= keep) return 0;
+  if (!state?.rows?.size || state.rows.size < maxRows) return 0;
   const seqs = [...state.rows.keys()].sort((left, right) => left - right);
   // 从最新的一头往回数,行数和字节谁先到就在哪儿断。两条水位都要真的能拦住:
   // 只数行数,一条几百 KB 的工具输出会把窗口撑爆;只数字节,一堆小状态帧又会把
@@ -80,6 +80,16 @@ export function trimChannelState(state, { maxRows, maxBytes } = MOBILE_WINDOW) {
     removed += 1;
   }
   if (!removed) return 0;
+  if (Array.isArray(state._rowOrder)) {
+    state._rowOrder = state._rowOrder.filter((seq) => state.rows.has(seq));
+    if (Array.isArray(state._rowMaxSeq)) {
+      let maximum = 0;
+      state._rowMaxSeq = state._rowOrder.map((seq) => {
+        maximum = Math.max(maximum, seq);
+        return maximum;
+      });
+    }
+  }
   for (const [id, turn] of state.turns) {
     // 闭合了、且整段都在窗口外的才摘;开着的上面已经用 floor 保住了。
     if (turn.terminal && Math.max(turn.requestSeq, turn.terminalSeq || 0, turn.lastSeq || 0) < cut) state.turns.delete(id);
@@ -101,6 +111,11 @@ export function trimChannelState(state, { maxRows, maxBytes } = MOBILE_WINDOW) {
   // 低水位:窗口的下沿在哪儿。它是一条记录事实,恒不当拦截条件——历史回读本来就
   // 要把水位以下的行补回来,拦掉它等于把"往回翻"一起拦掉。
   state.evictedThrough = Math.max(state.evictedThrough || 0, cut - 1);
+  // 上层派生值按这些语义版本复用。窗口移动删除了 turn/response，即使 lastSeq
+  // 没变，旧的能力、参数或控制投影也不再属于当前内存窗口。
+  for (const key of ['_timelineProjectionVersion', '_timelineControlVersion', '_requestVersion', '_terminalVersion']) {
+    if (Number.isFinite(state[key])) state[key] += 1;
+  }
   // 「我的往来」索引是按 seq 单向增量长起来的,窗口一动它的基线就不成立了。
   invalidateScopeIndex(state);
   return removed;

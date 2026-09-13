@@ -119,7 +119,7 @@ export function slashCommand(value) {
   return null;
 }
 
-export function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
+export const Composer = React.memo(function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
   const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
@@ -996,4 +996,4 @@ export function Composer({ channelId, roster, selfId, attachments = [], pending 
       {(error || editMode?.session?.error) && <p className="composer-error" role="alert">{error || editMode.session.error}</p>}
     </section>
   );
-}
+});

@@ -70,10 +70,9 @@ const scopeIndexes = new WeakMap();
 // 未决表,所以一条行比它的因由先到也不会丢(late correlation 恒能补上)。
 function ingestScopeRows(index, state) {
   const fresh = [];
-  for (const [seq, envelope] of state.rows) {
-    if (index.processed.has(seq)) continue;
+  const ingest = (seq, envelope) => {
     index.processed.add(seq);
-    if (isSelfOperation(envelope)) continue;
+    if (isSelfOperation(envelope)) return;
     if (directlyMine(envelope, index.self) || isSelfCommission(envelope)) {
       if (envelope.id) {
         index.ids.add(envelope.id);
@@ -81,9 +80,25 @@ function ingestScopeRows(index, state) {
       }
       const correlation = correlationOf(envelope);
       if (correlation) index.correlations.add(correlation);
-      continue;
+      return;
     }
     fresh.push(envelope);
+  };
+  if (Array.isArray(state._rowOrder)) {
+    // createChannelState/apply 给出真正的增量游标。历史回读即使带来更小的
+    // seq，也会按它进入内存的顺序追加到这里，所以恒不会被水位跳过。
+    while (index.rowOffset < state._rowOrder.length) {
+      const seq = state._rowOrder[index.rowOffset++];
+      const envelope = state.rows.get(seq);
+      if (!envelope) return null;
+      ingest(seq, envelope);
+    }
+  } else {
+    // 兼容单元测试和外部构造的旧 state 形状。
+    for (const [seq, envelope] of state.rows) {
+      if (index.processed.has(seq)) continue;
+      ingest(seq, envelope);
+    }
   }
   // 处理过的比表里还多 = 有行被摘走了,这张索引的基线不再成立。
   if (index.processed.size !== state.rows.size) return null;
@@ -108,7 +123,7 @@ export function invalidateScopeIndex(state) {
 }
 
 function freshScopeIndex(self) {
-  return { self, processed: new Set(), ids: new Set(), correlations: new Set(), visible: new Set(), unresolved: [] };
+  return { self, rowOffset: 0, processed: new Set(), ids: new Set(), correlations: new Set(), visible: new Set(), unresolved: [] };
 }
 
 export function relatedEnvelopeIdsIncremental(state, self) {
@@ -154,11 +169,56 @@ export function entryEnvelopes(entry, out = []) {
   return out;
 }
 
+function visitEntryEnvelopes(entry, visit) {
+  if (!entry) return false;
+  if (entry.envelope && visit(entry.envelope)) return true;
+  if (entry.turn && visitTurnEnvelopes(entry.turn, visit)) return true;
+  for (const child of entry.thread || []) {
+    if (visitTurnEnvelopes(child.turn, visit)) return true;
+  }
+  return false;
+}
+
+function visitTurnEnvelopes(turn, visit) {
+  if (!turn) return false;
+  if (turn.request && visit(turn.request)) return true;
+  for (const item of turn.provisional || []) {
+    if (item?.envelope && visit(item.envelope)) return true;
+  }
+  return Boolean(turn.terminal && visit(turn.terminal));
+}
+
 function turnEnvelopes(turn, out) {
   if (!turn) return;
   if (turn.request) out.push(turn.request);
   for (const item of turn.provisional || []) if (item?.envelope) out.push(item.envelope);
   if (turn.terminal) out.push(turn.terminal);
+}
+
+// Timeline 的热路径只需要回答“这个条目是否命中”，不需要真的摊出一张临时数组。
+// 保留 entryEnvelopes 给外部检查使用；投影本身走 visitor，避免每一帧为账上的每个
+// turn 分配一次数组。
+export function entryMatchesScope(entry, visible) {
+  if (entry?.kind === 'narration') return true;
+  let count = 0;
+  let selfOperations = 0;
+  let related = false;
+  visitEntryEnvelopes(entry, (envelope) => {
+    count += 1;
+    if (isSelfOperation(envelope)) selfOperations += 1;
+    if (envelope?.id && visible.has(envelope.id)) related = true;
+    return false;
+  });
+  return count > 0 && selfOperations !== count && related;
+}
+
+export function entryMatchesActors(entry, actorIds) {
+  if (!actorIds?.size) return true;
+  if (entry?.kind === 'narration') return false;
+  return visitEntryEnvelopes(entry, (envelope) => (
+    actorIds.has(envelope?.sender?.id)
+    || (Array.isArray(envelope?.audience) && envelope.audience.some((id) => actorIds.has(id)))
+  ));
 }
 
 // scopeEntries 判的是条目，不是信封：一段对话里只要有一条与我相关，整段都留下。
@@ -168,13 +228,7 @@ function turnEnvelopes(turn, out) {
 export function scopeEntries(entries, { scope, state, selfId, incremental = false }) {
   if (scope !== TIMELINE_SCOPE.mine || !selfId) return entries;
   const visible = incremental ? relatedEnvelopeIdsIncremental(state, selfId) : relatedEnvelopeIds(state, selfId);
-  return entries.filter((entry) => {
-    if (entry.kind === 'narration') return true;
-    const envelopes = entryEnvelopes(entry);
-    // 整条都是我自己的操作 → 恒不出现；混在一段对话里则跟随那段对话。
-    if (envelopes.length > 0 && envelopes.every(isSelfOperation)) return false;
-    return envelopes.some((envelope) => envelope?.id && visible.has(envelope.id));
-  });
+  return entries.filter((entry) => entryMatchesScope(entry, visible));
 }
 
 // 一个 workspace 里常有好几个 agent，往来混在一条流里。按成员过滤要的是「我跟他
@@ -185,11 +239,5 @@ export function scopeEntries(entries, { scope, state, selfId, incremental = fals
 // 两个范围下都留它）；一旦挑明了「只看我跟某某」，它就不在那个问题的答案里。
 export function filterEntriesByActors(entries, actorIds) {
   if (!actorIds?.size) return entries;
-  return entries.filter((entry) => {
-    if (entry.kind === 'narration') return false;
-    return entryEnvelopes(entry).some((envelope) => (
-      actorIds.has(envelope?.sender?.id)
-      || (Array.isArray(envelope?.audience) && envelope.audience.some((id) => actorIds.has(id)))
-    ));
-  });
+  return entries.filter((entry) => entryMatchesActors(entry, actorIds));
 }
