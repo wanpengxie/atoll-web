@@ -1,16 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, isMemberAccess } from '../model/channel-access.js';
 import { ChannelList } from '../ui/ChannelList.jsx';
-import { ArtifactsView } from '../ui/ArtifactsView.jsx';
-import { TerminalView } from '../ui/TerminalView.jsx';
-import { TasksView } from '../ui/TasksView.jsx';
-import { Composer } from '../ui/Composer.jsx';
 import { Timeline } from '../ui/Timeline.jsx';
-import { RightPanelHost } from './RightPanelHost.jsx';
 import { activeAgentTurn } from '../model/agent-control.js';
 import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex } from '../model/channel-navigation.js';
 import { PaneResizer } from '../ui/primitives/PaneResizer.jsx';
 import { readPaneWidth, writePaneWidth } from '../model/pane-sizes.js';
+
+// 首屏可读内容只需要频道与消息。输入框、文件管理、终端、任务和右侧详情以前虽
+// 不可见，仍全部进入入口 chunk；移动端要先下载/解析完才会执行 session 请求。
+// 这些边界都有明确的用户动作，正好作为按需加载点。
+const ArtifactsView = lazy(() => import('../ui/ArtifactsView.jsx').then((module) => ({ default: module.ArtifactsView })));
+const Composer = lazy(() => import('../ui/Composer.jsx').then((module) => ({ default: module.Composer })));
+const TerminalView = lazy(() => import('../ui/TerminalView.jsx').then((module) => ({ default: module.TerminalView })));
+const TasksView = lazy(() => import('../ui/TasksView.jsx').then((module) => ({ default: module.TasksView })));
+const RightPanelHost = lazy(() => import('./RightPanelHost.jsx').then((module) => ({ default: module.RightPanelHost })));
 
 // 主视图 tab 只剩两个：文件已经从「整屏替换动态区」改成「与动态并排的分屏」，
 // 由 workspace-quick-actions 里的开关控制（见 filesOpen）。artifacts 仍是合法路由
@@ -18,7 +22,7 @@ import { readPaneWidth, writePaneWidth } from '../model/pane-sizes.js';
 const WORKSPACE_TABS = ['dynamic', 'tasks'];
 
 const ACCESS_MESSAGE = {
-  member_stale: '连接已中断，当前显示本地缓存；恢复连接前不能发送。',
+  member_stale: '正在同步频道状态。',
   member_unavailable: '频道暂不可用，历史记录仍可查看。',
   observer_active: '正在只读旁观此频道。',
   observer_stale: '旁观连接已中断，当前显示本地缓存。',
@@ -98,6 +102,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }, [dynamicVisible, filesOpen, navigation.activeChannelId]);
   const dynamicTabView = () => (filesOpenRef.current.get(navigation.activeChannelId) ? 'artifacts' : 'dynamic');
   const writeDisabled = session.wireState !== 'open' || !canWriteChannel(workspace.access);
+  const composerDisabled = !workspace.channel || !isMemberAccess(workspace.access);
   const contentVisible = canViewChannelContent(workspace.access);
   // AppShell 会跟随每批 live feed 重渲。activeAgentTurn 原先每次都复制、过滤、
   // 排序整个 turns Map；同一 processing 阶段追加正文并不会改变“当前运行任务”。
@@ -314,22 +319,23 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
             重挂，让残影随旧节点一起消失——Composer 早就是这么做的。 */}
         <div className="dynamic-message-pane">
           {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} state={workspace.state} history={workspace.history} roster={workspace.roster} selfId={workspace.selfId} agentActivity={workspace.agentActivity} onAcknowledgeAgentActivity={workspace.onAcknowledgeAgentActivity} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} onFocusAgentChange={workspace.onFocusAgentChange} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
-          <Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={composerActions.onDraftChange} disabled={writeDisabled} disabledReason={disabledReason} onSend={composerActions.onSend} onRetry={composerActions.onRetry} attachments={workspace.attachments} onPreviewAttachment={composerActions.onPreviewAttachment} onRemoveAttachment={composerActions.onRemoveAttachment} onClearAttachments={composerActions.onClearAttachments} onUploadAttachments={composerActions.onUploadAttachments} onOpenChannelFiles={composerActions.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={composerActions.onCancelReply} onReplySent={composerActions.onReplySent} />
+          <Suspense fallback={<section className="composer-wrap composer-loading" role="status"><div className="composer-surface">正在加载输入框…</div></section>}><Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={composerActions.onDraftChange} disabled={composerDisabled} disabledReason={disabledReason} onSend={composerActions.onSend} onRetry={composerActions.onRetry} attachments={workspace.attachments} onPreviewAttachment={composerActions.onPreviewAttachment} onRemoveAttachment={composerActions.onRemoveAttachment} onClearAttachments={composerActions.onClearAttachments} onUploadAttachments={composerActions.onUploadAttachments} onOpenChannelFiles={composerActions.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={composerActions.onCancelReply} onReplySent={composerActions.onReplySent} /></Suspense>
         </div>
         {/* 文件分屏。跟终端一样：开过就恒不卸载，收起只是 hidden——目录、滚动和
             选中都在这棵树里，卸一次人就得从根目录重新点回来。按频道 key 重挂，
             所以换频道时位置从 fileLocationsRef 里恢复，而不是靠这棵树活着。 */}
         {filesEverOpened[navigation.activeChannelId] && workspace.channel && contentVisible
-          && <ArtifactsView key={`files-${navigation.activeChannelId}`} channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} visible={filesOpen} initialLocation={fileLocationsRef.current.get(navigation.activeChannelId) || null} onLocationChange={rememberFileLocation} onClose={toggleFiles} />}
+          && <Suspense fallback={<section className="split-loading" role="status">正在加载文件…</section>}><ArtifactsView key={`files-${navigation.activeChannelId}`} channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} recentFiles={workspace.resources.recentFiles} visible={filesOpen} initialLocation={fileLocationsRef.current.get(navigation.activeChannelId) || null} onLocationChange={rememberFileLocation} onClose={toggleFiles} /></Suspense>}
         {/* 恒只挂当前频道这一块。切走就卸载——**这是安全的**，因为终端的真相
             恒在服务端：shell 由宽限期保住，屏幕由会话的回放环保住，attach 时
             先回放再转直播。上一版为了不黑屏把 N 块常驻在 DOM 里，那是把真相
             放在浏览器里的补丁，回放做掉之后它恒无必要。 */}
         {terminalEverOpened && workspace.channel && contentVisible
-          && <TerminalView channelId={navigation.activeChannelId} devices={workspace.resources.devices || []} canWrite={!writeDisabled} visible={terminalOpen} />}
+          && <Suspense fallback={<section id="workspace-panel-terminal" className="terminal-view split-loading" role="status" hidden={!terminalOpen}>正在加载终端…</section>}><TerminalView channelId={navigation.activeChannelId} devices={workspace.resources.devices || []} canWrite={!writeDisabled} visible={terminalOpen} /></Suspense>}
       </div>}
-      {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}
+      {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <Suspense fallback={<section className="split-loading" role="status">正在加载任务…</section>}><TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /></Suspense> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}
     </main>
-    <RightPanelHost {...panel.host} />
+    {workspace.channel && contentVisible && <button type="button" className={`reading-history-edge-tab${panel.value === 'reading-history' ? ' active' : ''}`} aria-label="打开最近阅读" title="最近阅读" onClick={() => panel.open('reading-history')}>最近</button>}
+    {panel.value && <Suspense fallback={null}><RightPanelHost {...panel.host} /></Suspense>}
   </div>;
 }

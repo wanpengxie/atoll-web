@@ -718,6 +718,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	const [messageListUnseen, setMessageListUnseen] = useState(0);
 	const historyInteractionReadyRef = useRef('');
 	const historyLoadRef = useRef(null);
+	const historyRequestRef = useRef(null);
 	const historyOperationSerialRef = useRef(0);
 	const historyControllerRef = useRef(null);
 	historyLoadRef.current = history?.loadOlder || null;
@@ -745,10 +746,27 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 		return;
 	  }
 	  const handleScroll = () => {
-		if (node.scrollTop > 1) historyControllerRef.current?.leaveTop();
+		// Prepending a historical segment makes Virtuoso move scrollTop to keep
+		// the reader's anchor fixed. That is layout compensation, not the reader
+		// abandoning the top intent. Let the bounded operation finish; its owner
+		// below closes the top epoch after projection has settled.
+		const controller = historyControllerRef.current;
+		if (node.scrollTop > 1 && !controller?.snapshot().active) controller?.leaveTop();
+	  };
+	  // A scroll event alone cannot distinguish a person's gesture from
+	  // Virtuoso's prepend compensation. Input events can. They preserve one
+	  // additional top demand while a slow cache/network batch is in flight.
+	  const handleTopInput = () => {
+		if (node.scrollTop <= 1) historyRequestRef.current?.('top-input', { continuation: true, queueWhileActive: true });
 	  };
 	  node.addEventListener('scroll', handleScroll, { passive: true });
-	  messageListScrollCleanupRef.current = () => node.removeEventListener('scroll', handleScroll);
+	  node.addEventListener('wheel', handleTopInput, { passive: true });
+	  node.addEventListener('touchmove', handleTopInput, { passive: true });
+	  messageListScrollCleanupRef.current = () => {
+		node.removeEventListener('scroll', handleScroll);
+		node.removeEventListener('wheel', handleTopInput);
+		node.removeEventListener('touchmove', handleTopInput);
+	  };
 	}, []);
 	useLayoutEffect(() => {
 	  // React StrictMode intentionally performs setup → cleanup → setup in
@@ -928,7 +946,8 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	  }
 	}
 
-	function requestHistoryAtTop(trigger, { continuation = false } = {}) {
+	function requestHistoryAtTop(trigger, { continuation = false, queueWhileActive = false } = {}) {
+	  if (history?.localReplicaReady === false) return;
 	  const scroller = messageListScrollerRef.current;
 	  const physicallyAtTop = !scroller || scroller.scrollTop <= 1;
 	  const controller = historyControllerRef.current;
@@ -967,13 +986,24 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 		? 'timeline.history_top_ignored'
 		: 'timeline.history_top_observed', detail);
 	  const operationId = `${state.channelId}:${++historyOperationSerialRef.current}`;
+	  const ownedView = historyProjectionKey;
 	  void controller.enterTop({
 		operationId,
 		anchorSeq: firstVisibleSeq,
 		topEpoch: controllerState.epoch,
 		viewSpec: { scope, selfId, actorFilter, editingTargetId, showNarration: SHOW_CHANNEL_NARRATION },
-	  }, { continuation });
+	  }, { continuation, queueWhileActive }).then(() => {
+		// A completed operation may have caused Virtuoso to move away from the
+		// physical top while preserving the visible anchor. Close that visit now,
+		// after the operation rather than from the synthetic scroll event. A later
+		// real visit can then own exactly one new operation.
+		if (historyControllerRef.current === controller
+		  && controller.snapshot().viewKey === ownedView
+		  && !controller.snapshot().active
+		  && !scrollerIsAtTop()) controller.leaveTop();
+	  });
 	}
+	historyRequestRef.current = requestHistoryAtTop;
 
 	function handleStartReached() {
 	  requestHistoryAtTop('start-reached');
@@ -996,7 +1026,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 
 	useLayoutEffect(() => {
 	  const controller = historyControllerRef.current;
-	  if (!controller) return;
+	  if (!controller || history?.localReplicaReady === false) return;
 	  controller.setView(historyProjectionKey);
 	  const scroller = messageListScrollerRef.current;
 	  if (!scroller || historyInteractionReadyRef.current !== messageListKey || scroller.scrollTop > 1) return;
@@ -1007,7 +1037,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	  if (!canLoad) return;
 	  const short = scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 1;
 	  requestHistoryAtTop(short ? 'short-list-layout' : 'top-level-state', { continuation: short });
-	}, [historyProjectionKey, messageListKey, history?.attached, history?.loading, history?.hasOlder, history?.buffered, firstVisibleSeq, withNarration.length]);
+	}, [historyProjectionKey, messageListKey, history?.localReplicaReady, history?.attached, history?.loading, history?.hasOlder, history?.buffered, firstVisibleSeq, withNarration.length]);
 
   useEffect(() => {
     setScope(TIMELINE_SCOPE.mine);
@@ -1180,7 +1210,9 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	  </div>
 	  <TimelineVirtualList>
 			{/* Virtuoso 也在 ResizeObserver 里改项高。让它保持默认的按帧交付；
-			    同步交付会和 FoldableBody 的高度变化互相触发，形成 observer loop。 */}
+			    同步交付会和 FoldableBody 的高度变化互相触发，形成 observer loop。
+			    动态 Markdown/图表首绘后还可能让尾部测量漂移几像素，因此 Virtuoso
+			    的 follow latch 用 64px；已读确认仍走上面的严格 24px 判据。 */}
 		<Virtuoso
 		  key={messageListKey}
 		  ref={messageListRef}
@@ -1189,7 +1221,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 		  firstItemIndex={firstItemIndex}
 		  initialTopMostItemIndex={import.meta.env.MODE === 'test' ? undefined : { index: 'LAST', align: 'end' }}
 		  alignToBottom
-		  atBottomThreshold={24}
+		  atBottomThreshold={64}
 		  increaseViewportBy={480}
 		  data={windowed.items}
 		  computeItemKey={(_index, entry) => entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`}

@@ -45,10 +45,12 @@ export function createTopIntentController({ load, onState = () => {} } = {}) {
   let disposed = false;
   let epoch = 0;
   let active = null;
+  let queued = null;
   let consumed = false;
   let lastResult = null;
 
   function cancel(reason = 'cancelled') {
+    queued = null;
     if (!active) return;
     active.controller.abort(reason);
     active = null;
@@ -66,12 +68,13 @@ export function createTopIntentController({ load, onState = () => {} } = {}) {
 
   function leaveTop() {
     atTop = false;
+    queued = null;
     consumed = false;
     lastResult = null;
     cancel('left-top');
   }
 
-  function enterTop(goal, { continuation = false } = {}) {
+  function enterTop(goal, { continuation = false, queueWhileActive = false } = {}) {
     if (disposed) return Promise.resolve({ kind: HISTORY_OPERATION.cancelled });
     if (!atTop) {
       atTop = true;
@@ -79,7 +82,13 @@ export function createTopIntentController({ load, onState = () => {} } = {}) {
       consumed = false;
       lastResult = null;
     }
-    if (active) return active.promise;
+    if (active) {
+      // Repeated observer callbacks merely join the current operation. A real
+      // scroll event may explicitly queue one coalesced follow-up while I/O is
+      // in flight instead of being dropped.
+      if (queueWhileActive) queued = { ...goal };
+      return active.promise;
+    }
     if (consumed && !continuation) return Promise.resolve(lastResult || { kind: HISTORY_OPERATION.cancelled });
     const controller = new AbortController();
     const ownedEpoch = epoch;
@@ -106,6 +115,12 @@ export function createTopIntentController({ load, onState = () => {} } = {}) {
       consumed = true;
       lastResult = result;
       onState({ state: result.kind, epoch: ownedEpoch, viewKey: ownedView, result });
+      const continuationGoal = queued;
+      queued = null;
+      if (continuationGoal && atTop && !disposed && epoch === ownedEpoch && viewKey === ownedView) {
+        consumed = false;
+        void enterTop(continuationGoal, { continuation: true, queueWhileActive: true });
+      }
       return result;
       });
     owned.promise = promise;
@@ -124,6 +139,6 @@ export function createTopIntentController({ load, onState = () => {} } = {}) {
     leaveTop,
     dispose,
     active: () => active?.promise || null,
-    snapshot: () => ({ viewKey, atTop, disposed, epoch, active: Boolean(active), consumed }),
+    snapshot: () => ({ viewKey, atTop, disposed, epoch, active: Boolean(active), queued: Boolean(queued), consumed }),
   };
 }

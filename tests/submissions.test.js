@@ -25,4 +25,11 @@ describe('submission state', () => {
     expect(isUncertainWireError({ code: 'timeout' })).toBe(true);
     expect(isUncertainWireError({ code: 'forbidden' })).toBe(false);
   });
+
+  it('persists a never-transmitted offline submission as queued', () => {
+    const storage = new MemoryStorage();
+    const item = createSubmission({ id: 'm2', channelId: 'c0', frame: { id: 'm2' }, state: 'queued' });
+    saveSubmissions('root', [item], storage);
+    expect(restoreSubmissions('root', storage)[0]).toMatchObject({ messageId: 'm2', state: 'queued' });
+  });
 });

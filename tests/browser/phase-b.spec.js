@@ -63,6 +63,33 @@ test('B-BR-02 断线时进入 stale、保留账本并在重连后恢复', async 
   await expect(page.getByLabel('消息')).toBeEnabled();
 });
 
+test('B-BR-02b 慢 OBS 不阻塞缓存首屏，档案补全不重建消息连接', async ({ page, request }) => {
+  await reset(request, 'multi-channel', 811);
+  await login(page);
+  await expect(page.getByText(/c0 history 1/)).toBeVisible();
+
+  const fault = await request.post(`${MOCK_ORIGIN}/mock/control/fault`, {
+    data: { target: 'obs', mode: 'delay', delay_ms: 2_500, count: 20 },
+  });
+  expect(fault.ok()).toBe(true);
+  const sockets = [];
+  page.on('websocket', (socket) => {
+    if (new URL(socket.url()).pathname === '/ws') sockets.push(socket.url());
+  });
+
+  await page.reload();
+  // Session identity + attach membership are enough to show the IndexedDB tail.
+  // Neither principal presentation nor the channel profile may sit on this path.
+  await expect(page.getByText('OPEN', { exact: true })).toBeVisible({ timeout: 1_500 });
+  await expect(page.getByText(/c0 history 1/)).toBeVisible({ timeout: 1_500 });
+
+  // The delayed principal profile now lands and replaces the presentation
+  // object. The stable principal id must keep the original socket and history.
+  await page.waitForTimeout(2_700);
+  expect(sockets).toHaveLength(1);
+  await expect(page.getByText(/c0 history 1/)).toBeVisible();
+});
+
 test('B-BR-02a 刷新进入频道后固定在最新处，后台历史预取不推动页面', async ({ page, request }) => {
   await reset(request, 'multi-channel', 812);
   await login(page);
@@ -70,8 +97,9 @@ test('B-BR-02a 刷新进入频道后固定在最新处，后台历史预取不�
   await page.reload();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
   await expect(page.locator('.timeline')).toBeVisible();
-  // 虚拟列表首屏挂载晚于 .timeline 可见：第一采样可能落在 0 行。等首行出现再采，
-  // 之后的任何增长才是"后台历史推动页面"。
+  // 虚拟列表首屏挂载晚于 .timeline 可见：第一采样可能落在 0 行。等首行出现再采。
+  // 缓存先画、attach 后补齐权威网络缺口时，行数和高度允许增量增长；不变量是
+  // 阅读位置始终钉在真实尾部，后台水合不能把人推离最新消息。
   await expect(page.locator('.timeline-entry').first()).toBeVisible();
   const samples = await page.evaluate(async () => {
     const viewport = document.querySelector('.timeline');
@@ -88,8 +116,7 @@ test('B-BR-02a 刷新进入频道后固定在最新处，后台历史预取不�
     return rows;
   });
   expect(samples.every((row) => Math.abs(row.bottom - row.top) <= 2)).toBe(true);
-  expect(new Set(samples.map((row) => row.height)).size).toBe(1);
-  expect(new Set(samples.map((row) => row.entries)).size).toBe(1);
+  expect(samples.every((row) => row.entries > 0)).toBe(true);
 });
 
 test('B-BR-03 unavailable、partial OBS、权限撤销和退役分别收敛', async ({ page, request }) => {

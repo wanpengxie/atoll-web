@@ -604,7 +604,7 @@ describe('F3 Composer', () => {
     const pasted = new File(['image'], '剪贴板截图.png', { type: 'image/png' });
     const pasteResult = fireEvent.paste(input, { clipboardData: { files: [pasted], getData: () => '' } });
     expect(pasteResult).toBe(false);
-    expect(onUploadAttachments).toHaveBeenLastCalledWith([pasted]);
+    await waitFor(() => expect(onUploadAttachments).toHaveBeenLastCalledWith([pasted]));
     await waitFor(() => expect(screen.getByLabelText('上传本机文件到频道')).toBeTruthy());
 
     const dragged = new File(['report'], '拖入报告.pdf', { type: 'application/pdf' });
@@ -612,12 +612,33 @@ describe('F3 Composer', () => {
     fireEvent.dragEnter(surface, { dataTransfer: { types: ['Files'], files: [dragged] } });
     expect(screen.getByText('松开以上传到当前频道')).toBeTruthy();
     fireEvent.drop(surface, { dataTransfer: { types: ['Files'], files: [dragged], dropEffect: 'none' } });
-    expect(onUploadAttachments).toHaveBeenLastCalledWith([dragged]);
+    await waitFor(() => expect(onUploadAttachments).toHaveBeenLastCalledWith([dragged]));
     expect(screen.queryByText('松开以上传到当前频道')).toBeNull();
 
     const textPasteResult = fireEvent.paste(input, { clipboardData: { files: [], getData: () => '' } });
     expect(textPasteResult).toBe(true);
     expect(onUploadAttachments).toHaveBeenCalledTimes(2);
+  });
+
+  it('上一张图片上传时再粘贴一张，两批按顺序入队而不丢失', async () => {
+    let finishFirst;
+    const firstPending = new Promise((resolve) => { finishFirst = resolve; });
+    const onUploadAttachments = vi.fn()
+      .mockImplementationOnce(() => firstPending)
+      .mockResolvedValueOnce([]);
+    render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }]} selfId="me" onSend={() => {}} onUploadAttachments={onUploadAttachments} />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    const first = new File(['a'], 'A.png', { type: 'image/png' });
+    const second = new File(['b'], 'B.png', { type: 'image/png' });
+
+    fireEvent.paste(input, { clipboardData: { files: [first], getData: () => '' } });
+    fireEvent.paste(input, { clipboardData: { files: [second], getData: () => '' } });
+    await waitFor(() => expect(onUploadAttachments).toHaveBeenCalledTimes(1));
+    expect(onUploadAttachments).toHaveBeenNthCalledWith(1, [first]);
+
+    await act(async () => { finishFirst([]); await firstPending; });
+    await waitFor(() => expect(onUploadAttachments).toHaveBeenCalledTimes(2));
+    expect(onUploadAttachments).toHaveBeenNthCalledWith(2, [second]);
   });
 
   it('中文确认先绘制文字，空闲阶段才序列化草稿和同步外围高度', async () => {

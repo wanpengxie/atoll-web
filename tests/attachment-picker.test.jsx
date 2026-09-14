@@ -3,12 +3,18 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { uploadChannelFile } from '../src/model/channel-file-transfer.js';
+import { availableUploadName, uploadChannelFile } from '../src/model/channel-file-transfer.js';
 import { ChannelFilePickerModal } from '../src/ui/ChannelFilePickerModal.jsx';
 
 afterEach(cleanup);
 
 describe('Composer 附件来源', () => {
+  it('连续粘贴同名文件时分配可读后缀，不覆盖前一个附件', () => {
+    expect(availableUploadName('image.png', ['image.png'])).toBe('image-2.png');
+    expect(availableUploadName('image.png', ['IMAGE.PNG', 'image-2.png'])).toBe('image-3.png');
+    expect(availableUploadName('README', ['README'])).toBe('README-2');
+  });
+
   it('本机文件先以当前频道 resource ticket 上传，再形成可发送附件', async () => {
     const file = new File(['可信内容'], '研究 文档.md', { type: 'text/markdown' });
     const onResource = vi.fn().mockResolvedValue({ status: 'ok', ticket: 'put-once', resource_id: 'file:uploaded:1' });

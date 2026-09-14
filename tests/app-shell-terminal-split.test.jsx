@@ -34,6 +34,13 @@ function props(view = 'dynamic', channelId = 'c0') {
 afterEach(cleanup);
 
 describe('终端分屏开关', () => {
+  it('右侧边缘提供最近阅读抽屉入口', () => {
+    const input = props();
+    render(<AppShell {...input} />);
+    fireEvent.click(screen.getByRole('button', { name: '打开最近阅读' }));
+    expect(input.panel.open).toHaveBeenCalledWith('reading-history');
+  });
+
   it('终端不属于主视图 tab，按钮按下时与消息同时显示，再按只收起终端', () => {
     render(<AppShell {...props()} />);
     expect(screen.queryByRole('tab', { name: '终端' })).toBeNull();

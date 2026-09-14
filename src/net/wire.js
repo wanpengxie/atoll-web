@@ -43,6 +43,13 @@ export function createWire({
   onError = () => {},
   onObserveEnded = () => {},
   onState = () => {},
+  // The socket handshake may run while IndexedDB opens, but attach cannot
+  // claim a resume cursor until the local replica manifest is ready.
+  beforeAttach = () => null,
+  // The attach receipt carries the server epoch. Keep downstream feed frames
+  // behind this barrier until the local cache has atomically selected that
+  // epoch; otherwise a late cache clear can erase rows from the new stream.
+  onAttach = () => null,
   // label 是这条连接的自称,给人看的,由调用方给——wire 是传输,"这块屏叫什么"
   // 是应用层的决定,而且在这里嗅探 navigator 会让传输层的测试跟着运行环境走。
   label = '',
@@ -67,6 +74,8 @@ export function createWire({
   let reconnectTimer = null;
   let counter = 0;
   let attachRef = '';
+  let attachBarrier = false;
+  let bufferedDownstream = [];
   // 这条连接自己的名字,attach 回执给的。人发给 agent 的消息盖上它:总有一个端
   // 发出了这条消息,那个端有身份,而 agent 要操作某块屏时必须能点名它。
   //
@@ -141,7 +150,11 @@ export function createWire({
       pending.delete(incoming.ref);
       entry.resolve(payload);
       if (incoming.ref === attachRef) {
+        // Permit control/history requests issued while the application installs
+        // attach metadata, but hold downstream data until that installation is
+        // complete. WebSocket event ordering then makes the barrier atomic.
         attached = true;
+        attachBarrier = true;
         reconnectAttempt = 0;
         diagnostic('info', 'wire.attached', {
           generation,
@@ -153,9 +166,7 @@ export function createWire({
         });
         sessionID = payload.session || '';
         sessionLabel = payload.label || '';
-        sessionID = payload.session || '';
-        sessionLabel = payload.label || '';
-        onState('attached', {
+        const detail = {
           // 这条连接自己的名字。一个人的手机和网页同时连着,两条都在,所以任何
           // 冲着"这个人的屏幕"来的东西都得说清是哪一块——而这块屏得知道自己
           // 叫什么,才认得出被点到的是不是自己。
@@ -170,7 +181,29 @@ export function createWire({
           history_meta: payload.history_meta || [],
           attach_ref: incoming.ref,
           generation,
-        });
+        };
+        const finishAttach = () => {
+          if (stopped || !attached || Number(detail.generation) !== generation) return;
+          attachBarrier = false;
+          onState('attached', detail);
+          const queued = bufferedDownstream;
+          bufferedDownstream = [];
+          for (const buffered of queued) handleMessage(buffered);
+        };
+        const failAttach = (error) => {
+          attachBarrier = false;
+          bufferedDownstream = [];
+          diagnostic('error', 'wire.attach_barrier_failed', { generation, error });
+          onError(error);
+          socket?.close(1011, 'attach initialization failed');
+        };
+        try {
+          const barrier = onAttach(detail);
+          if (barrier && typeof barrier.then === 'function') Promise.resolve(barrier).then(finishAttach, failAttach);
+          else finishAttach();
+        } catch (error) {
+          failAttach(error);
+        }
       }
       return;
     }
@@ -273,6 +306,8 @@ export function createWire({
   function connect() {
     if (stopped) return;
     attached = false;
+    attachBarrier = false;
+    bufferedDownstream = [];
     attachRef = '';
     generation += 1;
     diagnostic('info', 'wire.connecting', { generation, url: websocketURL(url) });
@@ -288,22 +323,42 @@ export function createWire({
       if (stopped) return;
       onState('open');
       diagnostic('info', 'wire.open', { generation });
-      const attachSince = since() || {};
-      const attachFocus = focus() || '';
-      // 空标签不占位:这条帧的形状是契约,不该为了一个没人填的字段多一个键。
-      sessionID = '';
-      sessionLabel = '';
-      const attachPayload = { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation };
-      if (label) attachPayload.label = label;
-      const attachPromise = transmit(UP.attach, attachPayload, { allowBeforeAttach: true });
-      attachRef = `${UP.attach}-${counter}`;
-      diagnostic('info', 'wire.attach_sent', { generation, ref: attachRef, focus: attachFocus, cursorChannels: Object.keys(attachSince).length });
-      attachPromise.catch((error) => {
-        if (!stopped) onError(error);
-      });
+      const openGeneration = generation;
+      const sendAttach = (prepared = null) => {
+        if (stopped || openGeneration !== generation || socket?.readyState !== WebSocketImpl.OPEN) return;
+        const attachSince = prepared?.since || since() || {};
+        const attachFocus = prepared?.focus || focus() || '';
+        // 空标签不占位:这条帧的形状是契约,不该为了一个没人填的字段多一个键。
+        sessionID = '';
+        sessionLabel = '';
+        const attachPayload = { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation };
+        if (label) attachPayload.label = label;
+        const attachPromise = transmit(UP.attach, attachPayload, { allowBeforeAttach: true });
+        attachRef = `${UP.attach}-${counter}`;
+        diagnostic('info', 'wire.attach_sent', { generation, ref: attachRef, focus: attachFocus, cursorChannels: Object.keys(attachSince).length });
+        attachPromise.catch((error) => {
+          if (!stopped) onError(error);
+        });
+      };
+      const failed = (error) => {
+        diagnostic('error', 'wire.before_attach_failed', { generation: openGeneration, error });
+        onError(error);
+        sendAttach(null);
+      };
+      try {
+        const prepared = beforeAttach();
+        if (prepared && typeof prepared.then === 'function') Promise.resolve(prepared).then(sendAttach, failed);
+        else sendAttach(prepared);
+      } catch (error) {
+        failed(error);
+      }
     });
     socket.addEventListener('message', (event) => {
       try {
+        if (attachBarrier) {
+          bufferedDownstream.push(event);
+          return;
+        }
         handleMessage(event);
       } catch (error) {
         diagnostic('error', 'wire.message_handler_failed', { generation, error });
@@ -403,6 +458,8 @@ export function createWire({
     close() {
       if (stopped) return;
       stopped = true;
+      attachBarrier = false;
+      bufferedDownstream = [];
       releaseWake?.();
       releaseWake = null;
       if (reconnectTimer != null) {
@@ -418,4 +475,3 @@ export function createWire({
     },
   };
 }
-

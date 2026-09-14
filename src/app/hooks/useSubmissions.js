@@ -4,11 +4,14 @@ import { reconcileApprovals } from '../../model/fold.js';
 import { createSubmission, isUncertainWireError, reconcileLanded, restoreSubmissions, saveSubmissions, transitionSubmission } from '../../model/submissions.js';
 import { newId } from '../../util/id.js';
 
-export function useSubmissions({ principalId, activeChannelId, wireRef, rosterRef, accessRef, channelStatesRef, onError, onNotice, onFeedChanged, onAccessChanged }) {
+export function useSubmissions({ principalId, activeChannelId, wireState, wireRef, rosterRef, accessRef, channelStatesRef, onError, onNotice, onFeedChanged, onAccessChanged }) {
   const [pending, setPending] = useState([]);
   const [approvalStates, setApprovalStates] = useState({});
   const [controlStates, setControlStates] = useState({});
   const timersRef = useRef(new Map());
+  const transmittingRef = useRef(new Set());
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
 
   useEffect(() => {
     setPending(principalId ? restoreSubmissions(principalId) : []);
@@ -28,10 +31,16 @@ export function useSubmissions({ principalId, activeChannelId, wireRef, rosterRe
 
   const transmit = useCallback(async (submission) => {
     const { channelId, messageId, key } = submission;
+    if (!wireRef.current) {
+      setPending((current) => current.map((item) => item.key === key ? transitionSubmission(item, 'queued') : item));
+      return;
+    }
+    if (transmittingRef.current.has(key)) return;
+    transmittingRef.current.add(key);
+    setPending((current) => current.map((item) => item.key === key ? transitionSubmission(item, 'transmit') : item));
     rosterRef.current?.recordSubmission(channelId, messageId);
     try {
       const receipt = await wireRef.current.submit(submission.frame);
-      accessRef.current?.receipt(channelId);
       if (receipt.message_id !== messageId) onError(`协议异常：回执消息编号 ${receipt.message_id} 与客户端编号 ${messageId} 不一致`);
       const state = channelStatesRef.current.get(channelId);
       const landedEnvelope = state ? [...state.rows.values()].find((envelope) => envelope.id === messageId) : null;
@@ -39,7 +48,6 @@ export function useSubmissions({ principalId, activeChannelId, wireRef, rosterRe
         const learnedSelf = rosterRef.current?.observeFeed(channelId, landedEnvelope);
         if (learnedSelf) {
           reconcileApprovals(state, learnedSelf);
-          accessRef.current?.self(channelId, learnedSelf);
         }
         setPending((current) => current.filter((item) => item.key !== key));
         onFeedChanged();
@@ -62,21 +70,37 @@ export function useSubmissions({ principalId, activeChannelId, wireRef, rosterRe
       if (uncertain) onNotice('发送结果待确认，正在通过重连账本核对。');
       setPending((current) => current.map((item) => item.key === key ? transitionSubmission(item, uncertain ? 'uncertain' : 'rejected', error) : item));
       onAccessChanged();
+    } finally {
+      transmittingRef.current.delete(key);
     }
   }, [accessRef, channelStatesRef, onAccessChanged, onError, onFeedChanged, onNotice, rosterRef, wireRef]);
 
   const send = useCallback(async ({ channelId: requestedChannelId, text, msgType, audience, targetLabel, payload, parentId = '', expiresAtMs }) => {
     const channelId = requestedChannelId || activeChannelId;
-    if (!channelId || !wireRef.current) return '';
+    if (!channelId) return '';
     const messageId = newId();
     // origin(这条消息从哪块屏发出)不在这里盖——它盖在 wire.submit,那是这条
     // 连接唯一的出口,盖在那里才漏不掉。
     const frame = { channel_id: channelId, id: messageId, msg_type: msgType, kind: 'request', payload: payload || { text }, audience, visibility: 'public', ...(parentId ? { parent_id: parentId } : {}), ...(expiresAtMs ? { expires_at_ms: expiresAtMs } : {}) };
-    const submission = createSubmission({ id: messageId, channelId, text, targetLabel, frame });
-    setPending((current) => [...current, submission]);
-    await transmit(submission);
+    const connected = wireState === 'open' && Boolean(wireRef.current);
+    const submission = createSubmission({ id: messageId, channelId, text, targetLabel, frame, state: connected ? 'transmitting' : 'queued' });
+    // The outbox write is part of accepting the user's send action, not a later
+    // rendering side effect. Closing the tab immediately after tapping send
+    // must still leave a durable queued item with this exact message id.
+    const nextPending = [...pendingRef.current, submission];
+    pendingRef.current = nextPending;
+    if (principalId) saveSubmissions(principalId, nextPending);
+    setPending(nextPending);
+    if (connected) await transmit(submission);
     return messageId;
-  }, [activeChannelId, transmit, wireRef]);
+  }, [activeChannelId, principalId, transmit, wireRef, wireState]);
+
+  useEffect(() => {
+    if (wireState !== 'open' || !wireRef.current) return;
+    for (const submission of pending) {
+      if (submission.state === 'queued') void transmit(submission);
+    }
+  }, [pending, transmit, wireRef, wireState]);
 
   const retry = useCallback(async (submission) => {
     const timer = timersRef.current.get(submission.key);

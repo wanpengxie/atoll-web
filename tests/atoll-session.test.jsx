@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { renderHook, waitFor } from '@testing-library/react';
+import { cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const doubles = vi.hoisted(() => ({
@@ -12,7 +12,11 @@ vi.mock('../src/net/obs.js', () => ({ createObsClient: () => doubles.obs }));
 
 import { useAtollSession } from '../src/app/hooks/useAtollSession.js';
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  localStorage.clear();
+});
 
 describe('Atoll session identity recovery', () => {
   it('recovers the authoritative principal without browser storage', async () => {
@@ -28,6 +32,21 @@ describe('Atoll session identity recovery', () => {
     await waitFor(() => expect(result.current.principal).toEqual({ id: 'root', display_name: 'Root' }));
     expect(doubles.identity.session).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('atoll.principal')).toBeNull();
+  });
+
+  it('releases boot from identity before slow profile enrichment', async () => {
+    let resolvePrincipals;
+    doubles.identity.session.mockResolvedValue({ id: 'root' });
+    doubles.obs.spacePrincipals.mockReturnValue(new Promise((resolve) => { resolvePrincipals = resolve; }));
+
+    const { result } = renderHook(() => useAtollSession({ onError: vi.fn() }));
+
+    await waitFor(() => expect(result.current).toMatchObject({
+      booting: false,
+      principal: { id: 'root', display_name: '' },
+    }));
+    resolvePrincipals({ items: [{ declared: { id: 'root', display_name: 'Root' } }] });
+    await waitFor(() => expect(result.current.principal.display_name).toBe('Root'));
   });
 
   it('still recovers the principal when profile observation is temporarily unavailable', async () => {

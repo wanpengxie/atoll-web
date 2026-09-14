@@ -184,7 +184,11 @@ export function unreadCounts(channelState, readSeq, selfId, { incremental = fals
     while (current?.parent_id && !seen.has(current.parent_id)) {
       seen.add(current.parent_id);
       const parent = byId.get(current.parent_id);
-      if (!parent) break;
+      // Live terminal frames can beat the historical request body into the
+      // local replica. correlation_id/parent_id still names the root turn, so
+      // missing hydration must not temporarily count every terminal frame as
+      // a separate notification.
+      if (!parent) return current.correlation_id || envelope?.correlation_id || current.parent_id;
       current = parent;
     }
     return current?.id || envelope?.id || '';

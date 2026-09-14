@@ -35,14 +35,12 @@ export function deriveChannelMode(state, { connected = true } = {}) {
   if (state.existence === 'retired') return CHANNEL_ACCESS.retired;
   if (state.relationship === 'denied') return CHANNEL_ACCESS.accessDenied;
   if (state.relationship === 'member') {
-    if (!connected || state.freshness !== 'fresh') return CHANNEL_ACCESS.memberStale;
     if (state.unavailable) return CHANNEL_ACCESS.memberUnavailable;
-    // 成员资格由 attach 回执带来,频道档案要另走一趟 /obs/space/channels——回执先到
-    // 是常态(尤其手机上)。而 runtime 只能从档案里来,**没拿到档案 ≠ 频道不可用**,
-    // 它只是还不知道。把"还不知道"说成"暂不可用"是一句会被打脸的断言:下一秒档案
-    // 到了,它就变回可用。宁可说"确认中"。
-    if (!state.profile) return CHANNEL_ACCESS.loading;
-    if (state.runtime !== 'open') return CHANNEL_ACCESS.memberUnavailable;
+    // Membership and transport freshness are orthogonal. The cached working
+    // copy remains the current relationship until a newer server fact replaces
+    // it; CONNECTING/RECONNECTING is rendered from wireState, not smuggled into
+    // authorization. A known closed runtime is still a real server fact.
+    if (state.profile && state.runtime !== 'open') return CHANNEL_ACCESS.memberUnavailable;
     return CHANNEL_ACCESS.memberActive;
   }
   if (state.relationship === 'observer') {
@@ -123,9 +121,9 @@ export const canWriteChannel = (access) => access === CHANNEL_ACCESS.memberActiv
 export const canReadLiveChannel = (access) => [CHANNEL_ACCESS.memberActive, CHANNEL_ACCESS.observerActive].includes(access);
 export const canViewChannelContent = (access) => isMemberAccess(access) || [CHANNEL_ACCESS.observerActive, CHANNEL_ACCESS.observerStale].includes(access);
 
-// 访问关系是活状态读数，恒只活在内存：attach 回执每次连接权威交付成员清单，
-// 页面刷新即全量重取。恒不落 localStorage——持久化只会让上一个生命期的旧
-// 关系还魂（正是"重启后端后前端不知道自己在 c0"一族病的温床）。
+// Tracker 合并“本地工作副本”和连接后的权威观察。持久化由启动清单负责，
+// tracker 本身不做 I/O；attach 回执到达后以新的完整 membership 快照覆盖关系。
+// 连接状态只描述传输，不把仍可使用的本地关系降级成另一套权限语义。
 export function createChannelAccessTracker({
   principalId = '',
   now = () => Date.now(),
@@ -199,6 +197,7 @@ export function createChannelAccessTracker({
       const state = ensure(row.channel_id);
       if (row.status === 'active') {
         active.add(row.channel_id);
+        if (state.existence !== 'retired') state.existence = 'present';
         state.relationship = 'member';
         state.freshness = connected ? 'fresh' : 'stale';
         state.unavailable = false;
@@ -226,22 +225,26 @@ export function createChannelAccessTracker({
     }
   }
 
-  function memberEvidence(channelId, source, selfActorId = '') {
+  // A live delivery proves only that the server considered this connection
+  // eligible to read this channel at that instant. It does NOT prove a
+  // membership: the gateway's delivery set also contains read/observe grants.
+  // Membership and the channel-local self actor come exclusively from the
+  // attach/control-plane snapshot.
+  function liveEvidence(channelId) {
     const state = ensure(channelId);
+    const before = `${state.existence}:${state.relationship}:${state.freshness}:${state.unavailable}:${state.selfActorId}`;
     if (state.existence !== 'retired') state.existence = 'present';
-    state.relationship = 'member';
-    state.freshness = connected ? 'fresh' : 'stale';
+    if (state.relationship !== 'member') state.relationship = 'observer';
+    state.freshness = 'fresh';
     state.unavailable = false;
-    if (selfActorId) state.selfActorId = selfActorId;
-    stamp(state, source);
+    stamp(state, 'live');
+    return before !== `${state.existence}:${state.relationship}:${state.freshness}:${state.unavailable}:${state.selfActorId}`;
   }
 
   return {
     channelsObserved,
     membershipsObserved,
-    feed(channelId) { memberEvidence(channelId, 'feed'); },
-    receipt(channelId) { memberEvidence(channelId, 'receipt'); },
-    self(channelId, actorId) { memberEvidence(channelId, 'feed', actorId); },
+    live(channelId) { return liveEvidence(channelId); },
     forbidden(channelId) {
       const state = ensure(channelId);
       state.relationship = 'denied';
@@ -269,7 +272,7 @@ export function createChannelAccessTracker({
       if (connected) {
         sessionEpoch = epoch || `${now()}`;
         for (const value of states.values()) {
-          if (['membership', 'feed', 'receipt', 'root_owner'].includes(value.source)) value.freshness = 'fresh';
+          if (['membership', 'live', 'root_owner'].includes(value.source)) value.freshness = 'fresh';
         }
       } else {
         for (const value of states.values()) {
@@ -280,6 +283,12 @@ export function createChannelAccessTracker({
     clearSelf(channelId) {
       const state = states.get(channelId);
       if (state) state.selfActorId = '';
+    },
+    reset() {
+      states.clear();
+      connected = false;
+      sessionEpoch = '';
+      membershipSupported = false;
     },
     state(channelId) { return states.get(channelId) || null; },
     rows({ includeRetired = false } = {}) {

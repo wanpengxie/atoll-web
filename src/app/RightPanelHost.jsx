@@ -12,6 +12,7 @@ import { ChannelAutomation } from '../ui/ChannelAutomation.jsx';
 import { ActivityCenter } from '../ui/ActivityCenter.jsx';
 import { ChannelResources } from '../ui/ChannelResources.jsx';
 import { MarkdownFileReferenceProvider } from '../ui/MarkdownContent.jsx';
+import { RecentFilesContext } from '../ui/context/RecentFilesContext.jsx';
 
 function ContextHost({ type, focusKey, onClose, children }) {
   const hostRef = useRef(null);
@@ -53,7 +54,7 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
     content = <Roster rows={active.roster} selfId={active.selfId} identityPending={isMemberAccess(active.access) && !active.selfId} busy={roster.busy} focused onClosePanel={close} onRefresh={roster.onRefresh} selectedActor={roster.selectedActor} capability={roster.capability} disabled={!canWriteChannel(active.access)} onSelectActor={roster.onSelectActor} onCloseActor={roster.onCloseActor} onDescribe={roster.onDescribe} onInvoke={roster.onInvoke} />;
   }
   else if (panel.value === 'artifact-focus' && artifacts.selected) {
-    content = <ArtifactContext artifact={artifacts.selected} authorName={artifacts.authorName} onResource={artifacts.onResource} onDownload={artifacts.onDownload} onAttach={artifacts.onAttach} onSource={artifacts.onSource} onClose={close} />;
+    content = <ArtifactContext key={`${artifacts.selected.channelId}:${artifacts.selected.resourceId}:${artifacts.selected.line || 0}`} artifact={artifacts.selected} authorName={artifacts.authorName} onResource={artifacts.onResource} onDownload={artifacts.onDownload} onAttach={artifacts.onAttach} onSource={artifacts.onSource} canGoBack={artifacts.canGoBack} onBack={artifacts.onBack} onClose={artifacts.onClose || close} />;
   }
   else if (panel.value === 'work-item-focus' && workItems.selected) {
     content = <WorkItemContext item={workItems.selected} roster={workItems.roster} onSource={workItems.onSource} onResolve={workItems.onResolve} onOpenTurn={workItems.onOpenTurn} onRetry={workItems.onRetry} onCancelAutomation={workItems.onCancelAutomation} onClose={close} />;
@@ -66,6 +67,9 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
   }
   else if (panel.value === 'activity') {
     content = <ActivityCenter activities={activity.activities} operations={activity.operations} onOpen={activity.onOpen} onClose={close} />;
+  }
+  else if (panel.value === 'reading-history') {
+    content = <RecentFilesContext files={artifacts.recentFiles} onOpen={artifacts.onPreview} onClose={close} />;
   }
   if (!content) return null;
   const contextType = panel.value === 'artifact-focus' ? 'artifact' : panel.focus?.type;

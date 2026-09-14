@@ -91,6 +91,46 @@ describe('wire client', () => {
     wire.close();
   });
 
+  it('opens the socket while local metadata loads and attaches after the resume manifest is ready', async () => {
+    let release;
+    const ready = new Promise((resolve) => { release = resolve; });
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      beforeAttach: () => ready,
+      since: () => ({ stale: 1 }),
+    });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+    expect(socket.sent).toEqual([]);
+    release({ since: { c0: 42 }, focus: 'c0' });
+    await Promise.resolve();
+    expect(socket.sent[0]).toMatchObject({ frame_type: 'attach', payload: { since: { c0: 42 }, focus: 'c0' } });
+    wire.close();
+  });
+
+  it('buffers feed until the attach epoch barrier is committed', async () => {
+    let release;
+    const barrier = new Promise((resolve) => { release = resolve; });
+    const events = [];
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      onAttach: () => barrier,
+      onState: (state) => events.push(`state:${state}`),
+      onFeed: (_channelId, seq) => events.push(`feed:${seq}`),
+    });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    receipt(socket, socket.sent[0], { boot: 'new-world' });
+    socket.message({ v: 5, frame_type: 'feed', payload: { source: 'live', generation: 1, channel_id: 'c0', seq: 11, envelope: { id: 'm11' } } });
+    expect(events).toEqual(['state:open']);
+    release();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toEqual(['state:open', 'state:attached', 'feed:11']);
+    wire.close();
+  });
+
 	it('rejects feed before the v5 attach receipt instead of emulating the old wire', () => {
     const events = [];
     const wire = createWire({

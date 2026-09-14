@@ -246,6 +246,20 @@
 .code-block.is-numbered .code-block-line { display: grid; grid-template-columns: 34px minmax(0, 1fr); }
 .code-block-line-number { padding-right: 12px; color: var(--text-dim); text-align: right; user-select: none; }
 .code-block-line-code { min-width: 0; }
+.mermaid-block { min-width: 0; max-width: 100%; margin: 9px 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--raised); }
+.mermaid-block-bar { display: flex; min-height: 30px; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 6px 3px 11px; border-bottom: 1px solid var(--border); background: var(--surface-code); }
+.mermaid-block-bar > span { color: var(--text-muted); font: 500 10.5px/1.4 var(--mono); letter-spacing: .02em; }
+.mermaid-mode-toggle { min-height: 24px; padding: 2px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10.5px; }
+.mermaid-mode-toggle:hover, .mermaid-mode-toggle:focus-visible { background: var(--surface-muted); color: var(--text); }
+.mermaid-block.is-source { position: relative; border: 0; background: transparent; }
+.mermaid-block.is-source > .mermaid-mode-toggle { position: absolute; z-index: 1; top: 3px; right: 6px; }
+.mermaid-block.is-source > .code-block { margin: 0; }
+.mermaid-diagram { max-width: 100%; padding: 14px; overflow: auto; background: var(--workspace); }
+.mermaid-diagram > svg { display: block; height: auto; margin: 0 auto; }
+.mermaid-status { padding: 24px 14px; color: var(--text-muted); text-align: center; }
+.mermaid-error { display: grid; gap: 5px; padding: 12px; color: var(--danger); }
+.mermaid-error > span { overflow-wrap: anywhere; color: var(--text-muted); font: 11px/1.5 var(--mono); }
+.mermaid-error > .code-block { margin-bottom: 0; }
 .markdown-content .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
 .markdown-content .katex-display > .katex { min-width: max-content; }
 .markdown-table-scroll { max-width: 100%; overflow-x: auto; margin: 7px 0; }

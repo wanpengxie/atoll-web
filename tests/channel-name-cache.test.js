@@ -39,16 +39,16 @@ describe('频道名缓存', () => {
   });
 });
 
-describe('拿到档案之前不说"暂不可用"', () => {
+describe('拿到档案之前先显示已确认成员的缓存', () => {
   // 成员资格由 attach 回执带来,频道档案另走一趟 HTTP——回执先到是常态。
   // 那一刻 runtime 还是 unknown,旧代码据此报 member_unavailable,是一句会被
   // 下一秒打脸的断言。
-  it('有成员资格、还没有档案 → 确认中,不是暂不可用', () => {
+  it('有成员资格、还没有档案 → 沿用本地关系正常读写,不是暂不可用', () => {
     const tracker = createChannelAccessTracker({ principalId: 'root' });
     tracker.wire('attached', 'epoch-1');
-    tracker.feed('c-1');
+    tracker.membershipsObserved([{ channel_id: 'c-1', actor_id: 'human:root:1', status: 'active' }]);
     const row = tracker.rows().find((item) => item.id === 'c-1');
-    expect(row.access).toBe(CHANNEL_ACCESS.loading);
+    expect(row.access).toBe(CHANNEL_ACCESS.memberActive);
   });
 
   it('档案到了、频道确实没开 → 才是暂不可用', () => {

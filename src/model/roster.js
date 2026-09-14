@@ -70,6 +70,14 @@ export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
 
   return {
     refresh,
+    seed(rowsByChannel = {}) {
+      for (const [channelId, rows] of Object.entries(rowsByChannel || {})) {
+        if (!channelId || !Array.isArray(rows)) continue;
+        cache.set(channelId, rows);
+        const principalMatch = me ? rows.find((row) => row.kind === 'human' && row.principal === me) : null;
+        if (principalMatch) saveSelf(channelId, principalMatch.id);
+      }
+    },
     get(channelId) {
       return cache.get(channelId) || [];
     },
@@ -115,6 +123,13 @@ export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
     },
     clearSelf(channelId) {
       selves.delete(channelId);
+    },
+    reset() {
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+      cache.clear();
+      pendingSubmissions.clear();
+      selves.clear();
     },
     handleEnvelope(channelId, envelope, onRefresh) {
       if (!invalidatesRoster(envelope)) return;

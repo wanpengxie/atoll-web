@@ -1,7 +1,7 @@
 const PREFIX = 'atoll.submissions.v1.';
-const ACTIVE = new Set(['transmitting', 'accepted', 'delayed', 'uncertain', 'rejected']);
+const ACTIVE = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain', 'rejected']);
 
-export function createSubmission({ id, channelId, text = '', targetLabel = '', frame }) {
+export function createSubmission({ id, channelId, text = '', targetLabel = '', frame, state = 'transmitting' }) {
   if (!id || !channelId || !frame) throw new TypeError('submission requires id, channelId and frame');
   return {
     key: id,
@@ -10,7 +10,7 @@ export function createSubmission({ id, channelId, text = '', targetLabel = '', f
     text,
     targetLabel,
     frame,
-    state: 'transmitting',
+    state,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     error: null,
@@ -20,6 +20,8 @@ export function createSubmission({ id, channelId, text = '', targetLabel = '', f
 export function transitionSubmission(item, event, error = null) {
   const next = { ...item, updatedAt: Date.now() };
   if (event === 'accepted' && item.state !== 'landed') next.state = 'accepted';
+  else if (event === 'queued' && item.state !== 'landed') next.state = 'queued';
+  else if (event === 'transmit' && item.state !== 'landed') next.state = 'transmitting';
   else if (event === 'delayed' && item.state === 'accepted') next.state = 'delayed';
   else if (event === 'uncertain' && item.state !== 'landed') next.state = 'uncertain';
   else if (event === 'rejected' && item.state !== 'landed') next.state = 'rejected';

@@ -8,6 +8,7 @@ import 'katex/dist/katex.min.css';
 import { parseFileReference } from '../model/file-references.js';
 import { normalizeMathMarkdown } from '../model/math-markdown.js';
 import { CodeBlock, fenceLanguageOf, textOfNode } from './CodeBlock.jsx';
+import { MermaidBlock } from './MermaidBlock.jsx';
 
 const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks];
 const REHYPE_PLUGINS = [[rehypeKatex, { strict: false, throwOnError: false, trust: false }]];
@@ -40,7 +41,11 @@ export const MarkdownContent = React.memo(function MarkdownContent({ text, class
     pre: ({ node }) => {
       const codeNode = (node?.children || []).find((child) => child.type === 'element' && child.tagName === 'code');
       const className = Array.isArray(codeNode?.properties?.className) ? codeNode.properties.className.join(' ') : String(codeNode?.properties?.className || '');
-      return <CodeBlock code={textOfNode(codeNode || node)} language={fenceLanguageOf(className)} />;
+      const language = fenceLanguageOf(className);
+      const code = textOfNode(codeNode || node);
+      return language.toLowerCase() === 'mermaid'
+        ? <MermaidBlock code={code} />
+        : <CodeBlock code={code} language={language} />;
     },
   }), [onOpenFileReference]);
   return (

@@ -107,6 +107,23 @@ describe('channel cursors', () => {
     expect(unreadCounts(state, 1, 'me')).toEqual({ related: 1, total: 1 });
   });
 
+  it('deduplicates live terminal frames before their historical root is hydrated', () => {
+    const terminal = (id) => ({
+      id,
+      kind: 'response',
+      type: 'agent.ask',
+      parent_id: 'request-late',
+      correlation_id: 'request-late',
+      sender: { id: 'agent' },
+      audience: ['me'],
+      payload: { status: 'completed' },
+    });
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 10, envelope: terminal('terminal-1') }, 'me');
+    apply(state, { channel_id: 'c0', seq: 11, envelope: terminal('terminal-2') }, 'me');
+    expect(unreadCounts(state, 9, 'me')).toEqual({ related: 1, total: 1 });
+  });
+
   it('reuses the fold id index instead of rebuilding it for every unread projection', () => {
     const root = { id: 'root', kind: 'request', audience: ['agent'], sender: { id: 'me' } };
     const reply = { id: 'reply', kind: 'response', parent_id: 'root', audience: ['me'], payload: { status: 'completed' }, sender: { id: 'agent' } };

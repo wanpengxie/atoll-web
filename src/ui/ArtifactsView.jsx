@@ -7,7 +7,7 @@ import { FileBreadcrumbs, FileBrowserRows } from './files/ChannelFileBrowser.jsx
 import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 
-export function ArtifactsView({ channel, devices = [], disabled, onResource, onAttach, onPreview, visible = true, initialLocation = null, onLocationChange, onClose }) {
+export function ArtifactsView({ channel, devices = [], disabled, onResource, onAttach, onPreview, recentFiles = [], visible = true, initialLocation = null, onLocationChange, onClose }) {
   const browser = useChannelFileBrowser({ channel, devices, disabled, onResource, initialLocation, onLocationChange });
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [uploading, setUploading] = useState(false);
@@ -121,6 +121,10 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
     </form>}
     <div className="workspace-view-scroll channel-files-scroll">
       {browser.error && <p className="governance-error" role="alert">{browser.error}</p>}
+      {recentFiles.length > 0 && <section className="recent-files" aria-label="最近查看的文件">
+        <strong>最近查看</strong>
+        <div>{recentFiles.slice(0, 8).map((file) => <button type="button" title={file.resourceId} key={`${file.channelId}:${file.resourceId}`} onClick={() => onPreview?.(file)}>{file.name}</button>)}</div>
+      </section>}
       {!browser.daemonId
         ? <div className="artifact-empty"><strong>这个频道还没有可用的文件挂载</strong><p>连接设备后，这里会显示频道的默认目录。</p></div>
         : <FileBrowserRows browser={browser} onActivateFile={previewFile} renderActions={actions} />}

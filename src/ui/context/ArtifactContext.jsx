@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { ArrowLeft } from 'lucide-react';
 import { Highlight, themes } from 'prism-react-renderer';
 import { artifactKindForMediaType, formatArtifactSize, previewForMediaType } from '../../model/artifacts.js';
 import { fileTransferURL, mediaTypeFromFileName } from '../../model/channel-file-transfer.js';
@@ -188,6 +189,7 @@ export function textPreviewFormat(artifact = {}) {
   const extension = fileExtension(artifact.name);
   const mediaType = String(artifact.mediaType || '').toLowerCase().split(';')[0];
   const markdown = mediaType === 'text/markdown' || ['md', 'markdown', 'mdown'].includes(extension);
+  const html = mediaType === 'text/html' || ['html', 'htm'].includes(extension);
   let language = SOURCE_LANGUAGE_BY_EXTENSION[extension] || 'plain';
   if (language === 'plain') {
     if (/json/.test(mediaType)) language = 'json';
@@ -197,7 +199,12 @@ export function textPreviewFormat(artifact = {}) {
     else if (/ya?ml/.test(mediaType)) language = 'yaml';
     else if (/sql/.test(mediaType)) language = 'sql';
   }
-  return { markdown, language };
+  return { markdown, html, rich: markdown || html, language };
+}
+
+// sandbox 留空：不跑脚本、不同源、不能导航父页，文件里的内容只能画自己。
+function HtmlArtifactPreview({ text, name }) {
+  return <iframe className="artifact-html-preview" sandbox="" srcDoc={String(text || '')} title={name || 'HTML 预览'} />;
 }
 
 function SourceArtifactPreview({ text, line, language }) {
@@ -227,25 +234,27 @@ function SourceArtifactPreview({ text, line, language }) {
 }
 
 function TextArtifactPreview({ artifact, text, mode: controlledMode, onModeChange, showModeControls = true }) {
-  const { markdown, language } = textPreviewFormat(artifact);
+  const { markdown, html, rich, language } = textPreviewFormat(artifact);
   const targetLine = Number.isSafeInteger(artifact.line) && artifact.line > 0 ? artifact.line : 0;
-  const [localMode, setLocalMode] = useState(markdown && !targetLine ? 'preview' : 'source');
+  const [localMode, setLocalMode] = useState(rich && !targetLine ? 'preview' : 'source');
   const mode = controlledMode || localMode;
   const changeMode = (nextMode) => {
     setLocalMode(nextMode);
     onModeChange?.(nextMode);
   };
   useEffect(() => {
-    setLocalMode(markdown && !targetLine ? 'preview' : 'source');
-  }, [artifact.resourceId, markdown, targetLine]);
+    setLocalMode(rich && !targetLine ? 'preview' : 'source');
+  }, [artifact.resourceId, rich, targetLine]);
   return <div className="artifact-text-preview">
-    {markdown && showModeControls && <div className="artifact-preview-mode" role="group" aria-label="Markdown 查看方式">
+    {rich && showModeControls && <div className="artifact-preview-mode" role="group" aria-label={markdown ? 'Markdown 查看方式' : 'HTML 查看方式'}>
       <button type="button" className={mode === 'preview' ? 'active' : ''} aria-pressed={mode === 'preview'} onClick={() => changeMode('preview')}>预览</button>
       <button type="button" className={mode === 'source' ? 'active' : ''} aria-pressed={mode === 'source'} onClick={() => changeMode('source')}>源码</button>
     </div>}
     {markdown && mode === 'preview'
       ? <MarkdownContent text={text} className="artifact-markdown-preview" />
-      : <SourceArtifactPreview text={text} line={targetLine} language={language} />}
+      : html && mode === 'preview'
+        ? <HtmlArtifactPreview text={text} name={artifact.name} />
+        : <SourceArtifactPreview text={text} line={targetLine} language={language} />}
   </div>;
 }
 
@@ -267,19 +276,20 @@ export function ArtifactPreviewBody({ artifact: rawArtifact, preview, textMode, 
   </>;
 }
 
-export function ArtifactContext({ artifact: rawArtifact, onResource, onClose }) {
+export function ArtifactContext({ artifact: rawArtifact, onResource, canGoBack = false, onBack, onClose }) {
   const artifact = resolveArtifact(rawArtifact);
   const preview = useArtifactPreview(artifact, onResource);
   const format = textPreviewFormat(artifact || {});
   const targetLine = Number.isSafeInteger(artifact?.line) && artifact.line > 0 ? artifact.line : 0;
-  const [textMode, setTextMode] = useState(format.markdown && !targetLine ? 'preview' : 'source');
+  const [textMode, setTextMode] = useState(format.rich && !targetLine ? 'preview' : 'source');
   useEffect(() => {
-    setTextMode(format.markdown && !targetLine ? 'preview' : 'source');
-  }, [artifact?.resourceId, format.markdown, targetLine]);
+    setTextMode(format.rich && !targetLine ? 'preview' : 'source');
+  }, [artifact?.resourceId, format.rich, targetLine]);
   if (!artifact) return null;
   const copyable = previewText(artifact, preview);
-  const modeActions = (format.markdown || copyable !== null) ? <div className="artifact-preview-mode artifact-preview-mode-header" role="group" aria-label="文件操作">
-    {format.markdown && <>
+  const modeActions = (canGoBack || format.rich || copyable !== null) ? <div className="artifact-preview-mode artifact-preview-mode-header" role="group" aria-label="文件操作">
+    {canGoBack && <button type="button" className="artifact-back" aria-label="返回上一个文件" title="返回上一个文件" onClick={onBack}><ArrowLeft size={15} /></button>}
+    {format.rich && <>
       <button type="button" className={textMode === 'preview' ? 'active' : ''} aria-pressed={textMode === 'preview'} onClick={() => setTextMode('preview')}>预览</button>
       <button type="button" className={textMode === 'source' ? 'active' : ''} aria-pressed={textMode === 'source'} onClick={() => setTextMode('source')}>源码</button>
     </>}

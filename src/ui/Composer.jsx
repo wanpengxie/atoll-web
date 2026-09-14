@@ -163,6 +163,8 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   const [activeCandidate, setActiveCandidate] = useState(0);
   const [activeCommandCandidate, setActiveCommandCandidate] = useState(0);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const attachmentQueueRef = useRef(Promise.resolve());
+  const attachmentJobsRef = useRef(0);
   const [fileDragActive, setFileDragActive] = useState(false);
   // 正文归 ProseMirror DOM 所有，不在 React 中维护第二份 text 镜像。
   // 外壳只关心空/非空边界和当前光标处是否正在输入 @ 查询。
@@ -643,7 +645,8 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     }
     const inFlight = tracked.filter((row) => row.submission);
     if (inFlight.length) {
-      if (inFlight.some((row) => row.submission.state === 'uncertain')) setSendState('uncertain');
+      if (inFlight.some((row) => row.submission.state === 'queued')) setSendState('queued');
+      else if (inFlight.some((row) => row.submission.state === 'uncertain')) setSendState('uncertain');
       else if (inFlight.some((row) => row.submission.state === 'delayed')) setSendState('delayed');
       else setSendState(inFlight.some((row) => row.submission.state === 'transmitting') ? 'sending' : 'accepted');
       return undefined;
@@ -817,14 +820,20 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
 
   async function uploadFiles(files) {
     if (!files.length || !onUploadAttachments) return;
+    attachmentJobsRef.current += 1;
     setAttachmentBusy(true);
     setError('');
+    const job = attachmentQueueRef.current
+      .catch(() => {})
+      .then(() => onUploadAttachments(files));
+    attachmentQueueRef.current = job;
     try {
-      await onUploadAttachments(files);
+      await job;
     } catch (failure) {
       setError(failure.message || String(failure));
     } finally {
-      setAttachmentBusy(false);
+      attachmentJobsRef.current = Math.max(0, attachmentJobsRef.current - 1);
+      if (attachmentJobsRef.current === 0) setAttachmentBusy(false);
     }
   }
 
@@ -839,14 +848,14 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   }
 
   function onDragEnter(event) {
-    if (disabled || attachmentBusy || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
+    if (disabled || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
     event.preventDefault();
     dragDepthRef.current += 1;
     setFileDragActive(true);
   }
 
   function onDragOver(event) {
-    if (disabled || attachmentBusy || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
+    if (disabled || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
   }
@@ -863,13 +872,13 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     event.preventDefault();
     dragDepthRef.current = 0;
     setFileDragActive(false);
-    if (disabled || attachmentBusy || !onUploadAttachments) return;
+    if (disabled || !onUploadAttachments) return;
     await uploadFiles([...(event.dataTransfer.files || [])]);
   }
 
   async function onPaste(event) {
     const files = [...(event.clipboardData?.files || [])];
-    if (!files.length || disabled || attachmentBusy || !onUploadAttachments) return;
+    if (!files.length || disabled || !onUploadAttachments) return;
     // 只有剪贴板确实带文件时才接管；普通文字和 Markdown 仍由 Tiptap 处理。
     event.preventDefault();
     await uploadFiles(files);
@@ -991,7 +1000,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
           </div>
         </div>
       </div>
-      {['delayed', 'uncertain'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对' }[sendState]}{sendState === 'uncertain' && activeSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(activeSubmission)}>使用原编号重试</button>}</p>}
+      {['queued', 'delayed', 'uncertain'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ queued: '已保存到本机，连接可用后自动发送', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对' }[sendState]}{sendState === 'uncertain' && activeSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(activeSubmission)}>使用原编号重试</button>}</p>}
       {disabled && <p className="composer-disabled-reason">{disabledReason}；草稿仍保留在当前设备。</p>}
       {(error || editMode?.session?.error) && <p className="composer-error" role="alert">{error || editMode.session.error}</p>}
     </section>

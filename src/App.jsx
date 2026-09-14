@@ -11,11 +11,9 @@ import { describeClient } from './model/client-label.js';
 import { openFromPreview, snapshot as uiSnapshot } from './model/ui-words.js';
 import { UiActivityOverlay } from './ui/UiActivityOverlay.jsx';
 import { useUiWords } from './app/hooks/useUiWords.js';
-import { fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
+import { availableUploadName, fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
 import { availableDefaultStorageDeviceId } from './model/channel-files.js';
-import { unreadCounts } from './model/cursors.js';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
-import { resumeSnapshot } from './model/feed-cache.js';
 import { createChannelState, reconcileApprovals } from './model/fold.js';
 import { createRoster } from './model/roster.js';
 import { readFileTicket } from './model/resources.js';
@@ -44,6 +42,9 @@ import { useChannelDirectory } from './app/hooks/useChannelDirectory.js';
 import { useChannelFeed } from './app/hooks/useChannelFeed.js';
 import { useNodeUpdate } from './app/hooks/useNodeUpdate.js';
 import { diagnostic } from './model/diagnostics.js';
+import { readFileReadingHistory, rememberFileRead, writeFileReadingHistory } from './model/file-reading-history.js';
+import { popFilePreview, pushFilePreview } from './model/file-preview-stack.js';
+import { readWorkspaceBootstrap, writeWorkspaceBootstrap } from './model/workspace-bootstrap-cache.js';
 
 function displayError(error) {
   if (error instanceof ObsError && error.status === 503) return '频道未在服务';
@@ -52,23 +53,38 @@ function displayError(error) {
 
 async function loadChannelTree(obs) {
   const found = new Map();
-  const queue = [undefined];
+  let level = [undefined];
   const expanded = new Set();
   let complete = true;
-  while (queue.length) {
-    const parentId = queue.shift();
-    const marker = parentId || '__root__';
-    if (expanded.has(marker)) continue;
-    expanded.add(marker);
-    const observation = await obs.spaceChannels(parentId);
-    if (observation.complete === false) complete = false;
-    for (const item of observation.items || []) {
-      const row = item.declared || {};
-      if (row.status !== 'present' || !row.id) continue;
-      const openMeasure = (item.actual?.measures || []).find((measure) => measure.name === 'open');
-      found.set(row.id, { ...row, open: openMeasure?.unknown ? undefined : openMeasure?.value });
-      if (!expanded.has(row.id)) queue.push(row.id);
+  // Parent discovery is ordered, siblings are independent. Fetching one whole
+  // level concurrently avoids an RTT per channel without guessing descendants
+  // or changing the resulting tree.
+  while (level.length) {
+    const parents = level.filter((parentId) => {
+      const marker = parentId || '__root__';
+      if (expanded.has(marker)) return false;
+      expanded.add(marker);
+      return true;
+    });
+    const observations = [];
+    for (let offset = 0; offset < parents.length; offset += 6) {
+      observations.push(...await Promise.all(parents.slice(offset, offset + 6).map(async (parentId) => ({
+        parentId,
+        observation: await obs.spaceChannels(parentId),
+      }))));
     }
+    const next = [];
+    for (const { observation } of observations) {
+      if (observation.complete === false) complete = false;
+      for (const item of observation.items || []) {
+        const row = item.declared || {};
+        if (row.status !== 'present' || !row.id) continue;
+        const openMeasure = (item.actual?.measures || []).find((measure) => measure.name === 'open');
+        found.set(row.id, { ...row, open: openMeasure?.unknown ? undefined : openMeasure?.value });
+        if (!expanded.has(row.id)) next.push(row.id);
+      }
+    }
+    level = next;
   }
   return { channels: found, complete };
 }
@@ -154,13 +170,18 @@ export default function App() {
   const [spaceDaemons, setSpaceDaemons] = useState([]);
   const [channelDevices, setChannelDevices] = useState([]);
   const [draftAttachments, setDraftAttachments] = useState({});
+  const draftAttachmentsRef = useRef(draftAttachments);
+  draftAttachmentsRef.current = draftAttachments;
+  const attachmentUploadQueuesRef = useRef(new Map());
   // 草稿是编辑器私有的临时状态，不是工作区渲染状态。这里仅用 ref 做跨频道、
   // 跨主视图的本地持久化；逐字输入不得触发 App/Timeline 重渲染。
   const draftTextsRef = useRef({});
   const [taskCreateSource, setTaskCreateSource] = useState(undefined);
   const [channelCreateOpen, setChannelCreateOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
-  const [mountedFilePreview, setMountedFilePreview] = useState(null);
+  const [filePreviewStack, setFilePreviewStack] = useState([]);
+  const mountedFilePreview = filePreviewStack.at(-1) || null;
+  const [recentFiles, setRecentFiles] = useState([]);
   const [uiSession, setUiSession] = useState({ id: '', label: '' });
   // 频道对这块屏做过什么。只留最近几条:这是一条回执,不是审计日志——
   // 完整的记录本来就在账本里,这里只回答"刚才那一下是什么"。
@@ -192,13 +213,18 @@ export default function App() {
   const wireRef = useRef(null);
   const rosterRef = useRef(null);
   const accessRef = useRef(null);
-  const activeChannelRef = useRef('');
+  const activeChannelRef = useRef(initialRouteRef.current.channelId || '');
   const showSessionError = useCallback((error) => {
     diagnostic('error', 'session.failed', { error });
     setTopError(displayError(error));
   }, []);
   const { booting, principal: me, identity, accept: handleAuthed, clear: clearSession, logoutRemote } = useAtollSession({ onError: showSessionError });
+  const principalId = me?.id || '';
   const nodeUpdate = useNodeUpdate({ principalId: me?.id, wireState });
+
+  useEffect(() => {
+    setRecentFiles(readFileReadingHistory(me?.id));
+  }, [me?.id]);
 
   useEffect(() => {
     if (!me || !import.meta.env.DEV) return undefined;
@@ -213,7 +239,9 @@ export default function App() {
   const directoryActionsRef = useRef({});
   const submissionActionsRef = useRef({});
   const accessRefreshActionsRef = useRef({});
-  const receiveRoster = useCallback((channelId, rows) => setRosters((current) => new Map(current).set(channelId, rows)), []);
+  const receiveRoster = useCallback((channelId, rows) => {
+    setRosters((current) => new Map(current).set(channelId, rows));
+  }, []);
   const receiveFeedError = useCallback((error) => {
     diagnostic('error', 'feed.failed', { error });
     setTopError(displayError(error));
@@ -223,9 +251,9 @@ export default function App() {
   const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
   const forwardAgentActivity = useCallback((payload, context) => agentActivityRef.current.observe(payload, context), []);
-  const { statesRef: channelStatesRef, cursorsRef, version: feedVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, resetPersistent: resetFeedCache, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, historyFor, loadHistory, markRead } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
-  const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(null); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
-  const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice });
+  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, historyFor, loadHistory, markRead, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
+  const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setFilePreviewStack([]); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
+  const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice, initialChannelId: initialRouteRef.current.channelId });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
 
   useEffect(() => {
@@ -279,7 +307,7 @@ export default function App() {
       writeWorkspaceRoute({ channelId: activeChannelId, view }, { replace: true });
     }
   }, [activeChannelId, workspaceView]);
-  const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireRef, rosterRef, accessRef, channelStatesRef, onError: (error) => {
+  const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireState, wireRef, rosterRef, accessRef, channelStatesRef, onError: (error) => {
     diagnostic('error', 'submission.failed', { error });
     setTopError(displayError(error));
   }, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
@@ -316,7 +344,7 @@ export default function App() {
     setChannelNotice('');
     setSelectedActor(null);
     setContextFocus(null);
-    setMountedFilePreview(null);
+    setFilePreviewStack([]);
     clearSubmissions();
     setRightPanel('');
     setSpacePrincipals([]);
@@ -335,23 +363,41 @@ export default function App() {
   }, [clearDirectory, clearFeed, clearSession, clearSubmissions, clearTimers]);
 
   useEffect(() => {
-	// Realtime is never gated by IndexedDB hydration. Cache metadata and body
-	// batches may finish later; the v5 attach head gives the live stream its
-	// atomic starting seam immediately.
-    if (!me) return undefined;
+    // Startup is parallel but ordered at one explicit seam: the socket handshake
+    // runs beside local metadata recovery; attach waits for the durable resume
+    // manifest, and downstream data waits for the server-epoch barrier.
+    if (!principalId) return undefined;
     setTopError('');
     const obs = createObsClient({ onUnauthorized: expireSession });
-    const roster = createRoster({ obs, me: me.id });
-    const access = createChannelAccessTracker({ principalId: me.id });
+    const roster = createRoster({ obs, me: principalId });
+    const access = createChannelAccessTracker({ principalId });
     obsRef.current = obs;
     rosterRef.current = roster;
     accessRef.current = access;
 
+    const cachedBootstrap = readWorkspaceBootstrap(principalId);
+    let localFocus = activeChannelRef.current;
+    if (cachedBootstrap.memberships.length) {
+      roster.seed(cachedBootstrap.rosters);
+      for (const entry of cachedBootstrap.memberships) roster.noteSelf(entry.channel_id, entry.actor_id);
+      setRosters(new Map(Object.entries(cachedBootstrap.rosters)));
+      access.channelsObserved(cachedBootstrap.profiles, { complete: false });
+      access.membershipsObserved(cachedBootstrap.memberships, { complete: false, supported: true });
+      access.wire('disconnected');
+      setChannels(new Map(cachedBootstrap.profiles.map((row) => [row.id, row])));
+      if (!localFocus) {
+        localFocus = cachedBootstrap.memberships[0]?.channel_id || '';
+        activeChannelRef.current = localFocus;
+        if (localFocus) setActiveChannelId(localFocus);
+      }
+      bumpAccess();
+    }
     let alive = true;
     let refreshTimer = null;
     let refreshInFlight = null;
     let refreshQueued = false;
     let attachedOnce = false;
+    let wire = null;
     const refreshAccess = () => {
       if (refreshInFlight) {
         refreshQueued = true;
@@ -364,6 +410,7 @@ export default function App() {
       const profiles = [...result.channels.values()];
       rememberChannelNames(profiles);
       access.channelsObserved(profiles, { complete: result.complete });
+      writeWorkspaceBootstrap(principalId, access.snapshot());
       setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
       bumpAccess();
       }).catch((error) => {
@@ -392,14 +439,47 @@ export default function App() {
     refreshAccess();
 
     setWireState('connecting');
-    const wire = createWire({
+    const localReplicaPromise = prepareLocalReplica(principalId, { focus: localFocus });
+    wire = createWire({
       label: describeClient(),
       // 手机上断线是常态,回来得快才是要紧的:退避压到 5 秒,并且一回到前台/网络
       // 恢复就立刻重连,恒不在退避表上干等。PC 维持原样。
       maxReconnectDelayMs: isMobileProfile() ? 5_000 : 30_000,
       wake: foregroundWake(),
-      since: () => resumeSnapshot(channelStatesRef.current),
+      since: resumeLocalReplica,
       focus: () => activeChannelRef.current,
+      beforeAttach: async () => {
+        await localReplicaPromise;
+        return { since: resumeLocalReplica(), focus: activeChannelRef.current };
+      },
+      onAttach: (detail) => {
+        // The server epoch owns every persisted browser projection, including
+        // read positions and the workspace bootstrap. Clear the old epoch
+        // before the feed coordinator restores/baselines the new one; doing it
+        // afterwards silently erased the state we had just recovered.
+        const sameServerWorld = ensureServerBoot(detail?.boot);
+        return setHistoryGrants(detail?.history_meta || [], {
+          ...detail,
+          focus: activeChannelRef.current,
+          forceReset: !sameServerWorld,
+        }).then((result) => {
+          if (!result.changed) return result;
+          // A changed boot is a rebuilt ledger world, not a process restart.
+          // Clear every in-memory projection of the old ledger before the
+          // attach snapshot below is applied. Pure text drafts survive; file
+          // handles, outbox operations and timers name objects in the old world.
+          access.reset();
+          roster.reset();
+          clearSubmissions();
+          clearTimers();
+          setRosters(new Map());
+          setChannels(new Map());
+          setDraftAttachments({});
+          setRecentFiles([]);
+          bumpAccess();
+          return result;
+        });
+      },
       onFeed: enqueueFeed,
       onCheckpoint: finishLiveCheckpoint,
       onPageEnd: finishHistoryPage,
@@ -417,19 +497,10 @@ export default function App() {
       },
       onState: (state, detail) => {
         if (state === 'attached') {
-          // 服务器世代变了：本地缓存整体作废后重载一次，恒不要求用户手清。
-          if (!ensureServerBoot(detail?.boot)) {
-            // Stop this generation before clearing. Otherwise attach tail frames
-            // can race the IndexedDB clear and repopulate it with the old boot.
-            wire.close();
-            resetFeedCache().finally(() => window.location.reload());
-            return;
-          }
           // 这条连接自己的名字。服务端铸的 id 是寻址用的唯一依据;label 只给
           // 人看,因为选屏幕是人用话做的事。
           setUiSession({ id: detail?.session || '', label: detail?.session_label || '' });
 		  agentActivityRef.current.attach(detail);
-		  setHistoryGrants(detail?.history_meta || [], { ...detail, focus: activeChannelRef.current });
           access.wire('attached', newId());
           // attach 回执携带的成员清单是权威来源：连上即得，重连即刷新。
           // memberships_complete=false 表示服务器这一轮没查成（清单不可信为
@@ -440,6 +511,7 @@ export default function App() {
               .map((entry) => ({ channel_id: entry.channel_id, status: 'active', actor_id: entry.actor_id || '' }));
             const memberedBefore = access.rows().filter((row) => row.accessState?.relationship === 'member').map((row) => row.id);
             access.membershipsObserved(rows, { complete: detail.memberships_complete === true, supported: true });
+            writeWorkspaceBootstrap(principalId, access.snapshot());
             // 同一份清单也回答了"我在每个频道是谁"。fold 用它判断一条消息是不是
             // 发给我的,所以它到得晚,消息就被丢掉且不再捡回——把已经在手里的答案
             // 立刻交给 roster,并把此前折错的那些重折一遍。
@@ -479,7 +551,7 @@ export default function App() {
       alive = false;
       if (refreshTimer != null) clearTimeout(refreshTimer);
       accessRefreshActionsRef.current = {};
-      wire.close();
+      wire?.close();
       roster.close();
       cancelFeedTask();
       obsRef.current = null;
@@ -487,7 +559,7 @@ export default function App() {
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [bumpAccess, cancelFeedTask, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, me, resetFeedCache, setHistoryGrants]);
+  }, [bumpAccess, cancelFeedTask, clearSubmissions, clearTimers, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, prepareLocalReplica, principalId, resumeLocalReplica, setHistoryGrants]);
 
   const refreshRoster = useCallback(async (channelId, force = false) => {
     if (!channelId || !rosterRef.current) return;
@@ -724,7 +796,7 @@ export default function App() {
         return;
       }
     }
-  }, [pendingSelect, feedVersion, pending]);
+  }, [pendingSelect, feedIndexVersion, pending]);
 
   // 手选目标（判据链 §2.1.2）：per-channel 内存态。
   // 动态过滤条选中的那一个 agent。它住在 Timeline（按频道 key 挂载，切频道天然
@@ -782,7 +854,7 @@ export default function App() {
     setWorkspaceView(view);
     setSelectedActor(null);
     setContextFocus(null);
-    setMountedFilePreview(null);
+    setFilePreviewStack([]);
     setRightPanel('');
     writeWorkspaceRoute({ channelId: activeChannelId, view });
   }, [activeChannelId]);
@@ -830,7 +902,7 @@ export default function App() {
 
   useUiWords({
     channelStatesRef,
-    version: feedVersion,
+    version: feedIndexVersion,
     session: uiSession,
     selfIdFor: uiSelfIdFor,
     wireRef,
@@ -859,7 +931,7 @@ export default function App() {
 
   const openContext = useCallback((value, focus = null) => {
     setSelectedActor(null);
-    setMountedFilePreview(null);
+    setFilePreviewStack([]);
     setRightPanel(value);
     setContextFocus(focus);
     if (focus && activeChannelId) {
@@ -870,7 +942,7 @@ export default function App() {
   const closeContext = useCallback(() => {
     setSelectedActor(null);
     setContextFocus(null);
-    setMountedFilePreview(null);
+    setFilePreviewStack([]);
     setRightPanel('');
     if (window.history.state?.atollContextEntry) window.history.back();
     else if (activeChannelId) writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView }, { replace: true });
@@ -1048,7 +1120,7 @@ export default function App() {
       ? buildGlobalSearchIndex({ channels: channelData, operations: rawOperations })
       : EMPTY_INDEX;
     return { channelData, activities, operations, searchIndex };
-  }, [globalProjection, channelList, feedVersion, pending, rosters, timerRecords]);
+  }, [globalProjection, channelList, feedIndexVersion, pending, rosters, timerRecords]);
 
   if (booting) return <div className="boot-screen"><span className="brand-dot" />正在恢复会话…</div>;
   if (!me) return <Auth identity={identity} onAuthed={handleAuthed} />;
@@ -1068,22 +1140,17 @@ export default function App() {
   );
   const activeHistory = {
     ...historyFor(activeChannelId),
+    localReplicaReady,
     onReadLatest: readActiveLatest,
     loadOlder: loadActiveOlder,
   };
   const activeRow = channelList.find((channel) => channel.id === activeChannelId);
   const activeRoster = isMemberAccess(activeRow?.access) ? rosters.get(activeChannelId) || [] : [];
   const selfId = activeRow?.selfActorId || rosterRef.current?.self(activeChannelId) || '';
-  // 未读数是账本 + 游标的纯函数,却在每次渲染时对**每个频道**各算一遍,而每一遍
-  // 都要把那个频道的整本账走两趟。改读的游标变化会 bump feedVersion,所以这组依赖
-  // 是齐的。恒不是行为改动——同一个答案,只是不再算 N 遍。
-  const unread = derived('unread', [channelList, feedVersion, rosters], () => Object.fromEntries(channelList.map((channel) => {
-    const loaded = unreadCounts(
-      channelStatesRef.current.get(channel.id),
-      cursorsRef.current.read(channel.id),
-      channel.selfActorId || rosterRef.current?.self(channel.id) || '',
-      { incremental: true },
-    );
+  // ChannelReplica 按频道 revision/read cursor 缓存未读投影。频道栏仍遍历轻量
+  // channel 列表，但后台一条 live 不再让每个频道各自重扫整本账。
+  const unread = derived('unread', [channelList, feedIndexVersion, rosters], () => Object.fromEntries(channelList.map((channel) => {
+    const loaded = unreadFor(channel.id, channel.selfActorId || rosterRef.current?.self(channel.id) || '');
     return [channel.id, loaded];
   })));
   const activeChannel = activeRow || channels.get(activeChannelId);
@@ -1167,25 +1234,67 @@ export default function App() {
   const uploadComposerAttachments = async (files) => {
     const channel = activeChannel;
     if (!channel?.id) throw new TypeError('请先选择频道');
-    // OPEN 只代表消息通道已就绪，daemon OBS 可能仍在路上。粘贴/拖入不应
-    // 因这个短暂竞态失败，所以首次上传可就地等待一次 daemon observation。
-    const devices = channelDevices.length ? channelDevices : await refreshChannelDeviceData(channel.id);
-    const daemonId = availableDefaultStorageDeviceId(channel, devices);
-    const daemon = devices.find((row) => row.id === daemonId);
-    if (!daemon) throw new TypeError('频道没有可用的默认文件存储设备');
-    if (daemon.online === false) throw new TypeError(`频道默认文件存储设备 ${daemon.name || daemon.id} 当前离线`);
-    const uploaded = [];
-    for (const file of files) uploaded.push(await uploadChannelFile({ file, channel, deviceName: daemon.name, onResource: handleResource }));
-    setDraftAttachments((current) => {
-      const rows = [...(current[channel.id] || [])];
-      for (const attachment of uploaded) {
-        const index = rows.findIndex((row) => row.resource_id === attachment.resource_id);
-        if (index >= 0) rows[index] = attachment;
-        else rows.push(attachment);
+    const previous = attachmentUploadQueuesRef.current.get(channel.id) || Promise.resolve();
+    const task = previous.catch(() => {}).then(async () => {
+      // OPEN 只代表消息通道已就绪，daemon OBS 可能仍在路上。粘贴/拖入不应
+      // 因这个短暂竞态失败，所以首次上传可就地等待一次 daemon observation。
+      const devices = channelDevices.length ? channelDevices : await refreshChannelDeviceData(channel.id);
+      const daemonId = availableDefaultStorageDeviceId(channel, devices);
+      const daemon = devices.find((row) => row.id === daemonId);
+      if (!daemon) throw new TypeError('频道没有可用的默认文件存储设备');
+      if (daemon.online === false) throw new TypeError(`频道默认文件存储设备 ${daemon.name || daemon.id} 当前离线`);
+      const uploaded = [];
+      const occupiedNames = new Set((draftAttachmentsRef.current[channel.id] || []).map((row) => row.name));
+      for (const file of files) {
+        const uploadName = availableUploadName(file.name, occupiedNames);
+        occupiedNames.add(uploadName);
+        uploaded.push(await uploadChannelFile({ file, channel, deviceName: daemon.name, uploadName, onResource: handleResource }));
       }
-      return { ...current, [channel.id]: rows };
+      setDraftAttachments((current) => {
+        const rows = [...(current[channel.id] || [])];
+        for (const attachment of uploaded) {
+          const index = rows.findIndex((row) => row.resource_id === attachment.resource_id);
+          if (index >= 0) rows[index] = attachment;
+          else rows.push(attachment);
+        }
+        const next = { ...current, [channel.id]: rows };
+        draftAttachmentsRef.current = next;
+        return next;
+      });
+      return uploaded;
     });
-    return uploaded;
+    attachmentUploadQueuesRef.current.set(channel.id, task);
+    try {
+      return await task;
+    } finally {
+      if (attachmentUploadQueuesRef.current.get(channel.id) === task) attachmentUploadQueuesRef.current.delete(channel.id);
+    }
+  };
+
+  const rememberFilePreview = (artifact) => {
+    if (!artifact?.channelId || !artifact?.resourceId) return;
+    setRecentFiles((current) => {
+      const next = rememberFileRead(current, artifact);
+      writeFileReadingHistory(me?.id, next);
+      return next;
+    });
+  };
+
+  const showFilePreview = (artifact) => {
+    if (!artifact) return;
+    rememberFilePreview(artifact);
+    setSelectedActor(null);
+    setFilePreviewStack((current) => pushFilePreview(current, artifact, selectedArtifact));
+    setRightPanel('artifact-focus');
+  };
+
+  const backFilePreview = () => {
+    setFilePreviewStack((current) => popFilePreview(current));
+  };
+
+  const closeFilePreview = () => {
+    if (filePreviewStack.length > 1) backFilePreview();
+    else closeContext();
   };
 
   const previewMessageAttachment = (channelId, attachment) => {
@@ -1211,10 +1320,7 @@ export default function App() {
       provenance: { source: 'feed' },
       ...referenceFields,
     };
-    setSelectedActor(null);
-    setContextFocus(null);
-    setMountedFilePreview(artifact);
-    setRightPanel('artifact-focus');
+    showFilePreview(artifact);
   };
 
   const openArtifactSource = (source) => {
@@ -1325,8 +1431,8 @@ export default function App() {
     panel: { value: rightPanel, focus: contextFocus, close: closeContext, turn: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource } },
     active: { channel: activeChannel, state: activeState, roster: activeRoster, access: activeAccess, selfId, wireState, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } },
     directory: { channels: channelList },
-    governance: { principals: spacePrincipals, declarations: spaceDeclarations, daemons: spaceDaemons, channelDevices, registrarRoster: rosters.get('c0') || (activeChannelId === 'c0' ? activeRoster : []), rootState: channelStatesRef.current.get('c0'), version: feedVersion, onSubmit: handleSend, onRefresh: refreshGovernanceData },
-    artifacts: { selected: previewArtifact || selectedArtifact, authorName: activeRoster.find((row) => row.id === (previewArtifact || selectedArtifact)?.authorActorId)?.name, onResource: handleResource, onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onAttach: attachToDraft, onSource: openArtifactSource, onFileReference: (reference) => previewMessageAttachment(activeChannelId, attachmentFromFileReference(reference)) },
+    governance: { principals: spacePrincipals, declarations: spaceDeclarations, daemons: spaceDaemons, channelDevices, registrarRoster: rosters.get('c0') || (activeChannelId === 'c0' ? activeRoster : []), rootState: channelStatesRef.current.get('c0'), version: feedIndexVersion, onSubmit: handleSend, onRefresh: refreshGovernanceData },
+    artifacts: { selected: previewArtifact || selectedArtifact, authorName: activeRoster.find((row) => row.id === (previewArtifact || selectedArtifact)?.authorActorId)?.name, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), canGoBack: filePreviewStack.length > 1, onBack: backFilePreview, onClose: closeFilePreview, onPreview: showFilePreview, onResource: handleResource, onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onAttach: attachToDraft, onSource: openArtifactSource, onFileReference: (reference) => previewMessageAttachment(activeChannelId, attachmentFromFileReference(reference)) },
     workItems: { selected: selectedWorkItem, roster: activeRoster, onSource: openWorkItemSource, onResolve: (item, decision) => handleResolve(activeChannelId, item.nativeId, decision, {}), onOpenTurn: openTurnDetail, onRetry: (item) => { const submission = pending.find((row) => row.key === item.diagnostic?.submissionKey); if (submission) handleRetry(submission); }, onCancelAutomation: handleCancelTimer },
     roster: { busy: rosterBusy, onRefresh: () => refreshRoster(activeChannelId, true), selectedActor, capability: selectedCapability, onSelectActor: handleSelectActor, onCloseActor: () => {
       setSelectedActor(null);
@@ -1340,7 +1446,7 @@ export default function App() {
   <AppShell
     session={{ me, wireState, update: nodeUpdate, onLogout: handleLogout }}
     navigation={{ channels: channelList, activeChannelId, unread, agentActivity, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
-    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, onOpen: (artifact) => openContext('artifact-focus', { type: 'artifact', key: artifact.key }), onPreview: (artifact) => { setSelectedActor(null); setContextFocus(null); setMountedFilePreview(artifact); setRightPanel('artifact-focus'); } }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), onOpen: (artifact) => { rememberFilePreview(artifact); openContext('artifact-focus', { type: 'artifact', key: artifact.key }); }, onPreview: showFilePreview }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     panel={{ value: rightPanel, open: openContext, host }}
   />

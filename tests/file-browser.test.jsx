@@ -68,6 +68,15 @@ describe('channel file browser', () => {
     expect(click).toHaveBeenCalledOnce();
   });
 
+  it('reopens a recently viewed file without navigating back to its directory', async () => {
+    const user = userEvent.setup();
+    const onPreview = vi.fn();
+    const recent = { channelId: 'c0', resourceId: `${root}deep/report.md`, name: 'report.md', mediaType: 'text/markdown' };
+    render(<ArtifactsView channel={channel} devices={daemons} recentFiles={[recent]} onResource={vi.fn(async () => ({ items: [] }))} onAttach={vi.fn()} onPreview={onPreview} />);
+    await user.click(await screen.findByRole('button', { name: 'report.md' }));
+    expect(onPreview).toHaveBeenCalledWith(recent);
+  });
+
   it('creates a directory through resource create and then refreshes', async () => {
     const user = userEvent.setup();
     const onResource = vi.fn(async (payload) => payload.op === 'list' ? { items: [] } : { status: 'ok' });

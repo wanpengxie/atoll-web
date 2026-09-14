@@ -22,10 +22,22 @@ describe('server boot guard', () => {
     const storage = new MemoryStorage([
       ['atoll.server.boot.v1', 'boot-a'],
       ['atoll.cursor.v3.c0', '9'],
+      ['atoll.history.priority.v1.root', '{"views":{"c0":1}}'],
+      ['atoll.web.pane.right', '420'],
+      ['atoll.terminal.theme', 'dark'],
       ['unrelated', 'keep'],
     ]);
     expect(ensureServerBoot('boot-b', storage)).toBe(false);
     expect(storage.getItem('atoll.cursor.v3.c0')).toBeNull();
+    expect(storage.getItem('atoll.history.priority.v1.root')).toBeNull();
+    expect(storage.getItem('atoll.web.pane.right')).toBe('420');
+    expect(storage.getItem('atoll.terminal.theme')).toBe('dark');
     expect(storage.getItem('unrelated')).toBe('keep');
+  });
+
+  it('reports an epoch change even when there were no projection keys to remove', () => {
+    const storage = new MemoryStorage([['atoll.server.boot.v1', 'boot-a']]);
+    expect(ensureServerBoot('boot-b', storage)).toBe(false);
+    expect(storage.getItem('atoll.server.boot.v1')).toBe('boot-b');
   });
 });

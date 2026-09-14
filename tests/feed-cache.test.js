@@ -19,6 +19,32 @@ function envelope(id, text) {
 }
 
 describe('feed cache', () => {
+	it('changes principal ownership in place instead of requiring a page reload', async () => {
+	  const storage = new MemoryStorage();
+	  const databaseName = `feed-cache-owner-${crypto.randomUUID()}`;
+	  const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName, legacyStorage: storage });
+	  await cache.ensureOwner('alice');
+	  await cache.saveRows([{ channel_id: 'c0', seq: 1, envelope: envelope('m-1', 'alice') }]);
+	  await cache.saveCoverage('c0', 1, 1);
+	  await cache.idle();
+	  expect((await cache.readBefore('c0', 0, 20)).rows).toHaveLength(1);
+
+	  await expect(cache.ensureOwner('bob')).resolves.toMatchObject({ changed: true });
+	  expect((await cache.readBefore('c0', 0, 20)).rows).toHaveLength(0);
+	});
+
+	it('does not assign ownerless legacy rows to whichever principal opens them first', async () => {
+	  const databaseName = `feed-cache-ownerless-${crypto.randomUUID()}`;
+	  const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	  await cache.openMeta();
+	  await cache.saveRows([{ channel_id: 'c0', seq: 1, envelope: envelope('legacy', 'unknown owner') }]);
+	  await cache.saveCoverage('c0', 1, 1);
+	  await cache.idle();
+
+	  await expect(cache.ensureOwner('alice')).resolves.toMatchObject({ changed: true });
+	  expect((await cache.readBefore('c0', 0, 20)).rows).toHaveLength(0);
+	});
+
 	it('derives the resume cursor from lightweight channel metadata', () => {
 	expect(resumeSnapshot(new Map([['c0', { newestSeq: 7 }]]))).toEqual({ c0: 7 });
 	expect(resumeSnapshot(new Map([['quiet', { newestSeq: 7, coverage: [{ lowSeq: 8, highSeq: 20 }] }]]))).toEqual({ quiet: 20 });

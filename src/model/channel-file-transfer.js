@@ -5,6 +5,21 @@ export function safeUploadName(name) {
   return String(name || 'upload').replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+/, '') || 'upload';
 }
 
+// Composer 是“追加附件”，不能因为两次粘贴都被浏览器命名为 image.png 就把
+// 前一份原地覆盖。文件面板仍保留显式同名覆盖语义；这里只给调用方一个稳定的
+// 不冲突名字生成器。比较不区分大小写，兼容挂载到大小写不敏感的设备。
+export function availableUploadName(name, occupiedNames = []) {
+  const original = safeUploadName(name);
+  const occupied = new Set([...occupiedNames].map((value) => safeUploadName(value).toLocaleLowerCase()));
+  if (!occupied.has(original.toLocaleLowerCase())) return original;
+  const dot = original.lastIndexOf('.');
+  const stem = dot > 0 ? original.slice(0, dot) : original;
+  const extension = dot > 0 ? original.slice(dot) : '';
+  let copy = 2;
+  while (occupied.has(`${stem}-${copy}${extension}`.toLocaleLowerCase())) copy += 1;
+  return `${stem}-${copy}${extension}`;
+}
+
 // "application/octet-stream" 不算声明：它是"我不知道"的写法，不是一种类型。消息附件
 // 和 agent 引用的文件经常只带这个值，按它判就什么都预览不了；扩展名比它更可信。
 export const UNKNOWN_MEDIA_TYPE = 'application/octet-stream';
@@ -50,9 +65,11 @@ export function fileTransferURL(channelId, ticket) {
 }
 
 // resource create 由当前登录会话发送，因此账本中的上传主体是用户，而不是 agent。
-export async function uploadChannelFile({ file, channel, deviceName, directory = '', onResource, fetchImpl = fetch }) {
+export async function uploadChannelFile({ file, channel, deviceName, directory = '', uploadName = '', onResource, fetchImpl = fetch }) {
   if (!file || !channel?.id || !deviceName || !onResource) throw new TypeError('上传上下文不完整');
-  const path = `${normalizeDirectory(directory)}${safeUploadName(file.name)}`;
+  const storedName = safeUploadName(uploadName || file.name);
+  const displayName = uploadName ? storedName : file.name;
+  const path = `${normalizeDirectory(directory)}${storedName}`;
   const address = fileAddress({ deviceName, channelName: channel.qualified_name || channel.name || channel.id, path });
   const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
   if (!ticket?.ticket) throw new TypeError('服务端没有返回上传凭据');
@@ -62,6 +79,6 @@ export async function uploadChannelFile({ file, channel, deviceName, directory =
     // 文件资源的 id 就是它的地址；服务端在回执里把它回述一遍，对不上就以服务端为准。
     resourceId: ticket.resource_id || address,
     address,
-    file: { name: file.name, type: file.type || mediaTypeFromFileName(file.name), size: file.size },
+    file: { name: displayName, type: file.type || mediaTypeFromFileName(displayName), size: file.size },
   });
 }

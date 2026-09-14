@@ -3,6 +3,26 @@
 // 账本 reset），旧账、旧游标全是另一个世界的真相，整体作废——恒不把"清缓存"
 // 转嫁给使用者。不报 boot 的服务器（旧后端）视为恒同世界，零行为变化。
 const BOOT_KEY = 'atoll.server.boot.v1';
+const WORLD_SCOPED_KEYS = [
+  'atoll.channel.names.v1',
+];
+const WORLD_SCOPED_PREFIXES = [
+  'atoll.workspace.bootstrap.v1.',
+  'atoll.history.priority.v1.',
+  'atoll.feed.v5.',
+  'atoll.feed.owner.v1',
+  'atoll.cursor.v3.',
+  'atoll.read.v4.',
+  'atoll.submissions.v1.',
+  'atoll.controls.v1.',
+  'atoll.timers.',
+  'atoll.web.file-reading-history.v1.',
+  'atoll.terminal.session.',
+];
+
+function belongsToServerWorld(key) {
+  return WORLD_SCOPED_KEYS.includes(key) || WORLD_SCOPED_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
 
 export function ensureServerBoot(boot, storage = globalThis.localStorage) {
   if (!boot || !storage) return true;
@@ -18,9 +38,15 @@ export function ensureServerBoot(boot, storage = globalThis.localStorage) {
   const stale = [];
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
-    if (key && key.startsWith('atoll.') && key !== BOOT_KEY) stale.push(key);
+	// The authenticated principal belongs to the browser session, not to one
+	// ledger incarnation. Keep it so a server restart can reconcile in place
+	// instead of bringing the remote login gate back into the next startup.
+    if (key && belongsToServerWorld(key)) stale.push(key);
   }
   for (const key of stale) storage.removeItem(key);
   storage.setItem(BOOT_KEY, boot);
-  return stale.length === 0;
+  // false means "the established server world changed", independently of how
+  // many browser keys happened to exist. Callers use this as an epoch boundary
+  // for in-memory projections too, so basing it on stale.length was incorrect.
+  return false;
 }

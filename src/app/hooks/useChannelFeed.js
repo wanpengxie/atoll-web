@@ -4,15 +4,16 @@ import { isMobileProfile } from '../../model/device-profile.js';
 import { abbreviateToolRow } from '../../model/payload-abbreviate.js';
 import { createFrameBatcher } from '../../model/frame-batcher.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createCursors, unreadCount } from '../../model/cursors.js';
+import { createCursors, unreadCount, unreadCounts } from '../../model/cursors.js';
 import { createFeedCache, resumeSnapshot } from '../../model/feed-cache.js';
-import { apply, createChannelState, reconcileApprovals } from '../../model/fold.js';
+import { createChannelState, reconcileApprovals } from '../../model/fold.js';
 import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
 import { createHistoryScheduler, HISTORY_RESERVOIR_SIZE } from '../../model/history-scheduler.js';
 import { diagnostic } from '../../model/diagnostics.js';
 import { loadUntilVisible } from '../../model/history-interaction.js';
 import { projectTimeline } from '../../model/timeline-projection.js';
 import { turnStartObservation } from '../../model/turn-process.js';
+import { createChannelReplicaStore } from '../../model/channel-replica.js';
 
 export { HISTORY_RESERVOIR_SIZE };
 
@@ -20,25 +21,44 @@ export { HISTORY_RESERVOIR_SIZE };
 // ——后台频道随时可收;当前频道只在人贴着底部时收(markRead 恰好就是这个事实:
 // 它只在页面可见且滚到底时才报)。人往上翻的时候恒不收,否则刚读回来的又被丢掉。
 function trimIfMobile(state) {
-  if (!state || !isMobileProfile()) return;
-  trimChannelState(state, MOBILE_WINDOW);
+  if (!state || !isMobileProfile()) return 0;
+  return trimChannelState(state, MOBILE_WINDOW);
 }
 
 export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster, onError, onChannelsDiscovered, onDirectoryInvalidated, onTimerFired, onSubmissionFeed, onAccessChanged, onAgentActivity }) {
   const [version, setVersion] = useState(0);
-  const [ready, setReady] = useState(false);
+  const [indexVersion, setIndexVersion] = useState(0);
+  const [localReplicaReady, setLocalReplicaReady] = useState(false);
   const cursorsRef = useRef(createCursors());
   const cacheRef = useRef(null);
   if (cacheRef.current === null) cacheRef.current = createFeedCache();
   const cacheMetaRef = useRef(new Map());
-  const statesRef = useRef(new Map());
+	const cacheOwnerReadyRef = useRef(Promise.resolve());
+  const replicaRef = useRef(null);
+  if (replicaRef.current === null) replicaRef.current = createChannelReplicaStore();
+  const statesRef = useRef(replicaRef.current.states());
   const applyRowsRef = useRef(null);
   const schedulerRef = useRef(null);
   const lifecycleRef = useRef(0);
+  const localReplicaSerialRef = useRef(0);
+  const liveBatchRef = useRef(null);
+  const unreadCacheRef = useRef(new Map());
 
-  const applyRows = useCallback((rows, { publish = true, persist = true } = {}) => {
+  const unreadFor = useCallback((channelId, selfId = '') => {
+    const state = replicaRef.current.state(channelId);
+    const revision = replicaRef.current.revision(channelId);
+    const readSeq = cursorsRef.current.read(channelId);
+    const cached = unreadCacheRef.current.get(channelId);
+    if (cached && cached.revision === revision && cached.readSeq === readSeq && cached.selfId === selfId) return cached.counts;
+    const counts = unreadCounts(state, readSeq, selfId, { incremental: true });
+    unreadCacheRef.current.set(channelId, { revision, readSeq, selfId, counts });
+    return counts;
+  }, []);
+
+  const applyRows = useCallback((rows, { publish = true, persist = true, source = 'replay' } = {}) => {
     if (!rows?.length) return 0;
     let rosterChanged = false;
+    let accessChanged = false;
     let changed = 0;
     const unseenChannels = new Set();
     const dirtyChannels = new Set();
@@ -48,33 +68,42 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       const channelId = row.channel_id;
       const seq = Number(row.seq);
       if (!channelId || !Number.isSafeInteger(seq)) continue;
-      let state = statesRef.current.get(channelId);
-      if (!state) {
-        state = createChannelState(channelId);
-        statesRef.current.set(channelId, state);
-      }
-      if (state.rows.has(seq)) continue;
       const roster = rosterRef.current;
       const selfId = roster?.self(channelId) || '';
       // 工具输出在手机上只进头部(见 payload-abbreviate.js);落缓存的仍是原样,
       // 所以这里恒不是把内容丢了。
-      apply(state, isMobileProfile() ? abbreviateToolRow(row) : row, selfId);
+      const landed = replicaRef.current.commit(
+        row,
+        selfId,
+        isMobileProfile() ? abbreviateToolRow : (value) => value,
+      );
+      if (!landed.accepted) continue;
+      const state = landed.record.state;
       changed += 1;
-      accessRef.current?.feed(channelId);
+      // Cache/history rows are immutable ledger facts, not current control-plane
+      // evidence. Only a frame delivered live by this attached generation proves
+      // current read eligibility, and even that is not membership.
+      if (source === 'live') accessChanged = Boolean(accessRef.current?.live(channelId)) || accessChanged;
       dirtyChannels.add(channelId);
-      cursorsRef.current.advance(channelId, seq);
-      if (channelId !== activeChannelRef.current) trimIfMobile(state);
+      // Durable resume is derived from IndexedDB coverage, not a per-row
+      // localStorage cursor. Writing localStorage here made every live token and
+      // every historical row perform synchronous storage I/O on the main thread.
+      if (channelId !== activeChannelRef.current && trimIfMobile(state)) replicaRef.current.afterTrim(channelId);
       const learnedSelf = roster?.observeFeed(channelId, row.envelope);
       if (learnedSelf) {
         reconcileApprovals(state, learnedSelf);
-        accessRef.current?.self(channelId, learnedSelf);
         rosterChanged = true;
       }
-      roster?.handleEnvelope(channelId, row.envelope, (rosterRows, error) => {
-        if (rosterRows) onRoster(channelId, rosterRows);
-        if (error) onError(error);
-      });
-      if (invalidatesChannelDirectory(row.envelope)) onDirectoryInvalidated(row.envelope);
+      // Replaying an old governance row must not fire a new network refresh.
+      // Startup already fetches the current OBS snapshot; only a new live row
+      // invalidates that snapshot.
+      if (source === 'live') {
+        roster?.handleEnvelope(channelId, row.envelope, (rosterRows, error) => {
+          if (rosterRows) onRoster(channelId, rosterRows);
+          if (error) onError(error);
+        });
+        if (invalidatesChannelDirectory(row.envelope)) onDirectoryInvalidated(row.envelope);
+      }
       unseenChannels.add(channelId);
       if (row.envelope?.id) {
         landedMessageIds.add(row.envelope.id);
@@ -87,17 +116,22 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     if (!changed) return 0;
     onChannelsDiscovered(unseenChannels);
     onSubmissionFeed(landedMessageIds, closedRequestIds);
-    onAccessChanged();
+    if (accessChanged) onAccessChanged();
     if (persist) cacheRef.current.saveRows(rows).catch((error) => {
       diagnostic('error', 'feed.cache_save_failed', { channels: [...dirtyChannels], error });
       onError(error);
     });
-    if (publish) setVersion((value) => value + 1 + Number(rosterChanged));
+    if (publish) {
+      // Rail/global indexes observe every channel. The expensive active
+      // workspace only advances when its own replica changed.
+      setIndexVersion((value) => value + 1 + Number(rosterChanged));
+      if (dirtyChannels.has(activeChannelRef.current)) setVersion((value) => value + 1 + Number(rosterChanged));
+    }
     return changed;
   }, [accessRef, activeChannelRef, onAccessChanged, onChannelsDiscovered, onDirectoryInvalidated, onError, onRoster, onSubmissionFeed, onTimerFired, rosterRef]);
   applyRowsRef.current = applyRows;
 
-  if (schedulerRef.current === null) {
+  if (schedulerRef.current === null || schedulerRef.current.isDestroyed?.()) {
     schedulerRef.current = createHistoryScheduler({
       requestPage: (channelId, beforeSeq, limit, options) => {
         const wire = wireRef.current;
@@ -111,28 +145,43 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	  },
 	  readCache: (channelId, beforeSeq, limit, byteLimit) => cacheRef.current.readBefore(channelId, beforeSeq, limit, byteLimit),
 	  persistRows: (rows, options) => cacheRef.current.saveRows(rows, options),
-      hasVisibleRow: (channelId, seq) => statesRef.current.get(channelId)?.rows.has(seq) === true,
-	  revealRows: (channelId, entries) => applyRowsRef.current?.(
-		entries.map(([seq, envelope]) => ({ channel_id: channelId, seq, envelope })),
-		{ persist: false },
-	  ),
+      hasVisibleRow: (channelId, seq) => replicaRef.current.hasRow(channelId, seq),
+	  visibleOldestSeq: (channelId) => replicaRef.current.visibleOldest(channelId),
+	  revealRows: (channelId, entries) => {
+		// A push frame that arrived first must merge first even if a pull page
+		// completes in the same browser frame.
+		liveBatchRef.current?.flushNow();
+		return applyRowsRef.current?.(
+		  entries.map(([seq, envelope]) => ({ channel_id: channelId, seq, envelope })),
+		  { persist: false, source: 'replay' },
+		);
+	  },
       onChange: () => setVersion((value) => value + 1),
       onError,
+	  flushRealtime: () => liveBatchRef.current?.flushNow(),
     });
   }
 
   const landLiveRows = useCallback((payloads) => {
-    applyRowsRef.current?.(payloads.map((payload) => ({ channel_id: payload.channel_id, seq: Number(payload.seq), envelope: payload.envelope })));
+    applyRowsRef.current?.(
+      payloads.map((payload) => ({ channel_id: payload.channel_id, seq: Number(payload.seq), envelope: payload.envelope })),
+      { source: 'live' },
+    );
     for (const payload of payloads) {
-      const turn = statesRef.current.get(payload.channel_id)?.turns?.get(payload.envelope?.parent_id);
+      const state = statesRef.current.get(payload.channel_id);
+      const turn = state?.turns?.get(payload.envelope?.parent_id);
       const startedAt = turnStartObservation(turn)?.envelope?.ts || turn?.request?.ts;
       onAgentActivity?.(payload, { startedAt });
-      schedulerRef.current.observeLive(payload.channel_id, payload.envelope?.ts);
+      const selfId = rosterRef.current?.self(payload.channel_id) || '';
+      const counts = unreadFor(payload.channel_id, selfId);
+      schedulerRef.current.observeLive(payload.channel_id, payload.envelope?.ts, {
+        related: counts.related > 0,
+        seq: payload.seq,
+      });
     }
-  }, [onAgentActivity]);
+  }, [onAgentActivity, rosterRef, unreadFor]);
   const landLiveRowsRef = useRef(landLiveRows);
   landLiveRowsRef.current = landLiveRows;
-  const liveBatchRef = useRef(null);
   if (!liveBatchRef.current) liveBatchRef.current = createFrameBatcher((batch) => landLiveRowsRef.current(batch));
 
   // 页面要走了就把缓冲落地。这不是上面那条不变量的替代(那条靠 checkpoint 前 flush
@@ -166,11 +215,17 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 
   const setHistoryGrants = useCallback((grants = [], detail = {}) => {
     const generation = detail.generation;
-    // Live WS delivery is already active. Only historical scheduling waits for
-    // this metadata-only IndexedDB generation check, never message bodies.
-    void cacheRef.current.ensureBoot(detail.boot).then(({ changed, meta }) => {
+    // createWire keeps this generation's downstream frames behind its attach
+    // barrier until this promise settles. Selecting the server epoch and
+    // installing its historical seam is therefore one atomic transition.
+	return cacheOwnerReadyRef.current.then(() => cacheRef.current.ensureBoot(detail.boot)).then(({ changed, meta }) => {
       cacheMetaRef.current = meta;
-      if (changed) {
+	  const replicaChanged = changed || detail.forceReset === true;
+      if (replicaChanged) {
+		replicaRef.current.reset();
+		statesRef.current = replicaRef.current.states();
+		unreadCacheRef.current.clear();
+		schedulerRef.current.resetReplica();
         cursorsRef.current.reconcile({});
         cursorsRef.current.resetReads();
       }
@@ -178,21 +233,36 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       // a read fact starts observing after that snapshot; body hydration at or
       // below the head can never manufacture unread notifications.
       for (const entry of grants) {
-        if (entry?.channel_id) cursorsRef.current.baselineRead(entry.channel_id, entry.head_seq);
+        if (!entry?.channel_id) continue;
+        cursorsRef.current.baselineRead(entry.channel_id, entry.head_seq);
+        replicaRef.current.installMeta(entry.channel_id, {
+          headSeq: entry.head_seq,
+          coverage: meta.get(entry.channel_id)?.coverage,
+        });
       }
       schedulerRef.current.attach(grants, {
         generation,
         focus: detail.focus || activeChannelRef.current || '',
 		localMeta: meta,
       });
+      return { changed: replicaChanged, meta };
     }).catch((error) => {
       diagnostic('error', 'feed.cache_boot_check_failed', { generation, error });
       onError(error);
+	  if (detail.forceReset === true) {
+		replicaRef.current.reset();
+		statesRef.current = replicaRef.current.states();
+		unreadCacheRef.current.clear();
+		schedulerRef.current.resetReplica();
+		cursorsRef.current.reconcile({});
+		cursorsRef.current.resetReads();
+	  }
       schedulerRef.current.attach(grants, {
         generation,
         focus: detail.focus || activeChannelRef.current || '',
 		localMeta: new Map(),
       });
+      return { changed: detail.forceReset === true, meta: new Map(), error };
     });
   }, [activeChannelRef]);
 
@@ -220,7 +290,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	  const nextMeta = cacheRef.current.metaSnapshot();
 	  cacheMetaRef.current = nextMeta;
 	  const channelMeta = nextMeta.get(channelId);
-	  if (channelMeta) schedulerRef.current.setLocalMeta(new Map([[channelId, channelMeta]]));
+	  if (channelMeta) schedulerRef.current.setLocalMeta(new Map([[channelId, channelMeta]]), { publishChange: false });
 	}).catch((error) => {
       diagnostic('error', 'feed.live_checkpoint_failed', { channelId, lowSeq, highSeq, error });
       onError(error);
@@ -253,18 +323,26 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	}
   }, []);
   const historyFor = useCallback((channelId) => schedulerRef.current.snapshot(channelId), []);
-  const bump = useCallback(() => setVersion((value) => value + 1), []);
+  const bump = useCallback(() => {
+    setVersion((value) => value + 1);
+    setIndexVersion((value) => value + 1);
+  }, []);
   const markRead = useCallback((channelId, seq) => {
     if (!channelId) return 0;
     const state = statesRef.current.get(channelId);
-    trimIfMobile(state);
+    if (trimIfMobile(state)) replicaRef.current.afterTrim(channelId);
     const before = cursorsRef.current.read(channelId);
     // Provisional stream frames advance the durable read cursor but never draw
     // a rail badge. Publishing a second React render for every such frame used
     // to nearly double the main-thread work while an agent was answering.
     const changesVisibleUnread = unreadCount(state, before, rosterRef.current?.self(channelId) || '') > 0;
     const next = cursorsRef.current.markRead(channelId, seq);
-    if (next !== before && changesVisibleUnread) setVersion((value) => value + 1);
+    schedulerRef.current.markRead(channelId);
+	if (next !== before && changesVisibleUnread) {
+	  unreadCacheRef.current.delete(channelId);
+	  setVersion((value) => value + 1);
+	  setIndexVersion((value) => value + 1);
+	}
     return next;
   }, [rosterRef]);
   const cancel = useCallback(() => {
@@ -276,47 +354,103 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     // 填出半张。
     liveBatchRef.current.flushNow();
     schedulerRef.current.clear();
-    statesRef.current = new Map();
+	replicaRef.current.reset();
+	statesRef.current = replicaRef.current.states();
+	unreadCacheRef.current.clear();
     setVersion((value) => value + 1);
+    setIndexVersion((value) => value + 1);
   }, []);
 
   const resetPersistent = useCallback(async () => {
     liveBatchRef.current.flushNow();
     await cacheRef.current.clear();
-    statesRef.current = new Map();
+	replicaRef.current.reset();
+	statesRef.current = replicaRef.current.states();
+	unreadCacheRef.current.clear();
     cursorsRef.current.reconcile({});
     setVersion((value) => value + 1);
+    setIndexVersion((value) => value + 1);
   }, []);
+
+  const prepareLocalReplica = useCallback(async (principalId, { focus = '' } = {}) => {
+    const serial = ++localReplicaSerialRef.current;
+    if (!principalId) {
+      setLocalReplicaReady(true);
+      return { resume: {} };
+    }
+    setLocalReplicaReady(false);
+    schedulerRef.current.setPriorityScope(principalId);
+    const ownerReady = cacheRef.current.ensureOwner(principalId);
+    cacheOwnerReadyRef.current = ownerReady.then(() => undefined);
+    try {
+      const { changed, meta } = await ownerReady;
+      if (serial !== localReplicaSerialRef.current) return { resume: {} };
+      if (changed) {
+		replicaRef.current.reset();
+		statesRef.current = replicaRef.current.states();
+		unreadCacheRef.current.clear();
+		schedulerRef.current.resetReplica();
+        cursorsRef.current.reconcile({});
+      }
+      cacheMetaRef.current = meta;
+      cursorsRef.current.reconcile(resumeSnapshot(meta));
+      // Meta defines the in-memory channel queues. Message bodies are decoded
+      // by the pull scheduler afterwards; opening the push lane never waits for
+      // a body page to finish.
+      for (const channelId of meta.keys()) {
+		replicaRef.current.installMeta(channelId, meta.get(channelId));
+      }
+      if (focus) schedulerRef.current.focus(focus);
+      schedulerRef.current.setLocalMeta(meta, { publishChange: false });
+
+      // Start the selected local decode immediately, but do not await it. Push
+      // is the realtime lane; cache decode and remote history are both pull.
+      const focusedMeta = meta.get(focus);
+      if (focus && focusedMeta && (Number(focusedMeta.rowCount) > 0 || focusedMeta.coverage?.length > 0)) {
+        void schedulerRef.current.nextSegment(focus, { projectionBarrier: false });
+      }
+      if (serial !== localReplicaSerialRef.current) return { resume: {} };
+      diagnostic('info', 'feed.local_replica_ready', {
+        channels: meta.size,
+        focus,
+        cursors: Object.keys(resumeSnapshot(meta)).length,
+      });
+      setVersion((value) => value + 1);
+      setIndexVersion((value) => value + 1);
+      setLocalReplicaReady(true);
+      return { resume: resumeSnapshot(meta) };
+    } catch (error) {
+      if (serial !== localReplicaSerialRef.current) return { resume: {} };
+      onError(error);
+      diagnostic('error', 'feed.restore_failed', { error });
+      setLocalReplicaReady(true);
+      return { resume: {} };
+    }
+  }, [onError]);
+
+  // Attach/reconnect cursors must describe durable local coverage. The folded
+  // React model can be ahead of disk by one animation frame and is therefore
+  // not a safe resume claim.
+  const resumeLocalReplica = useCallback(() => resumeSnapshot(cacheRef.current.metaSnapshot()), []);
 
   useEffect(() => {
     const lifecycle = ++lifecycleRef.current;
-    let alive = true;
-    cacheRef.current.openMeta().then((meta) => {
-      if (!alive) return;
-	  cacheMetaRef.current = meta;
-	  cursorsRef.current.reconcile(resumeSnapshot(meta));
-	  schedulerRef.current.setLocalMeta(meta);
-      setReady(true);
-	  diagnostic('info', 'feed.meta_ready', { channels: meta.size, cursors: Object.keys(resumeSnapshot(meta)).length });
-      setVersion((value) => value + 1);
-    }).catch((error) => {
-      if (!alive) return;
-      onError(error);
-      diagnostic('error', 'feed.restore_failed', { error });
-      setReady(true);
-    });
+	const ownedScheduler = schedulerRef.current;
     return () => {
-      alive = false;
+      localReplicaSerialRef.current += 1;
       // React StrictMode immediately mounts the same hook again after its
       // development cleanup probe. Defer irreversible destruction for one
       // microtask and cancel it implicitly when a new lifecycle has begun.
       queueMicrotask(() => {
-        if (lifecycleRef.current === lifecycle) schedulerRef.current.destroy();
+		if (lifecycleRef.current === lifecycle) ownedScheduler.destroy();
       });
     };
   }, []);
   return {
-    statesRef, cursorsRef, version, ready, bump, enqueue, cancel, clear, resetPersistent,
+    statesRef, cursorsRef, version, indexVersion, bump, enqueue, cancel, clear, resetPersistent,
+	revisionFor: (channelId) => replicaRef.current.revision(channelId),
+	unreadFor,
+	prepareLocalReplica, resumeLocalReplica, localReplicaReady,
     setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, focusHistory, historyFor, loadHistory, markRead,
   };
 }

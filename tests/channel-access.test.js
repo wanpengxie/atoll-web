@@ -51,7 +51,7 @@ describe('channel access model', () => {
     expect(tracker.rows().find((row) => row.id === 'c0').access).toBe('member_active');
 
     tracker.wire('disconnected');
-    expect(tracker.rows().find((row) => row.id === 'c0').access).toBe('member_stale');
+    expect(tracker.rows().find((row) => row.id === 'c0').access).toBe('member_active');
     tracker.wire('attached', 'epoch-2');
     tracker.unavailable('c0');
     expect(tracker.rows().find((row) => row.id === 'c0').access).toBe('member_unavailable');
@@ -67,15 +67,39 @@ describe('channel access model', () => {
     expect(tracker.rows().some((row) => row.id === 'c0')).toBe(false);
   });
 
+  it('shows confirmed member history while the independent channel profile is pending', () => {
+    const tracker = createChannelAccessTracker({ principalId: 'root' });
+    tracker.wire('attached', 'epoch');
+    tracker.membershipsObserved([{ channel_id: 'c0.project', actor_id: 'human-root', status: 'active' }]);
+
+    expect(tracker.state('c0.project')).toMatchObject({ existence: 'present', relationship: 'member' });
+    expect(tracker.rows()).toEqual([
+      expect.objectContaining({ id: 'c0.project', access: CHANNEL_ACCESS.memberActive }),
+    ]);
+    expect(canWriteChannel(tracker.rows()[0].access)).toBe(true);
+  });
+
   it('访问关系恒不跨实例还魂：新 tracker 对上一个生命期一无所知', () => {
     const first = createChannelAccessTracker({ principalId: 'root' });
     first.channelsObserved([{ id: 'c0', status: 'present', open: true }]);
     first.wire('attached', 'epoch');
-    first.feed('c0');
-    // 活状态恒只活在内存：重建（= 页面刷新）后一切重新从 attach/obs 现取，
-    // 恒不从任何持久层恢复旧关系。
+    first.live('c0');
+    // tracker 是纯内存合并器；由启动清单决定是否把关系重新喂给新实例。
     const rebuilt = createChannelAccessTracker({ principalId: 'root' });
     expect(rebuilt.rows()).toEqual([]);
     expect(rebuilt.state('c0')).toBe(null);
+  });
+
+  it('live delivery proves read eligibility but never invents membership or a self actor', () => {
+    const tracker = createChannelAccessTracker({ principalId: 'root' });
+    tracker.channelsObserved([{ id: 'public', status: 'present', open: true }]);
+    tracker.wire('attached', 'epoch');
+
+    tracker.live('public');
+
+    expect(tracker.state('public')).toMatchObject({
+      relationship: 'observer', freshness: 'fresh', selfActorId: '', source: 'live',
+    });
+    expect(tracker.rows()[0].access).toBe(CHANNEL_ACCESS.observerActive);
   });
 });

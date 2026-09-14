@@ -57,4 +57,32 @@ describe('右侧预览面板里的文件链接', () => {
     expect(onFileReference).toHaveBeenCalledTimes(1);
     expect(external.getAttribute('target')).toBe('_blank');
   });
+
+  it('嵌套文件显示返回动作，关闭当前文件也使用同一返回语义', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, headers: { get: () => '4' }, body: null, text: async () => '正文' }));
+    const onBack = vi.fn();
+    const onClose = vi.fn();
+    const props = panelProps(vi.fn());
+    props.artifacts.canGoBack = true;
+    props.artifacts.onBack = onBack;
+    props.artifacts.onClose = onClose;
+    render(<RightPanelHost {...props} />);
+
+    (await screen.findByRole('button', { name: '返回上一个文件' })).click();
+    screen.getByRole('button', { name: '关闭文件详情' }).click();
+    expect(onBack).toHaveBeenCalledOnce();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('最近阅读面板可以直接重新打开文件', () => {
+    const onPreview = vi.fn();
+    const props = panelProps(vi.fn());
+    props.panel.value = 'reading-history';
+    props.artifacts.selected = null;
+    props.artifacts.recentFiles = [{ channelId: 'c0', resourceId: '/tmp/a.md', name: 'a.md', lastOpenedAt: 1 }];
+    props.artifacts.onPreview = onPreview;
+    render(<RightPanelHost {...props} />);
+    screen.getByRole('button', { name: /a\.md/ }).click();
+    expect(onPreview).toHaveBeenCalledWith(props.artifacts.recentFiles[0]);
+  });
 });

@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CHANNEL_ACCESS } from '../../model/channel-access.js';
 import { withCachedChannelName } from '../../model/channel-name-cache.js';
 
-export function useChannelDirectory({ accessRef, rosterRef, onChannelChanged, onNotice }) {
+export function useChannelDirectory({ accessRef, rosterRef, onChannelChanged, onNotice, initialChannelId = '' }) {
   const [channels, setChannels] = useState(new Map());
   const [version, setVersion] = useState(0);
-  const [activeChannelId, setActiveChannelId] = useState('');
+  const [activeChannelId, setActiveChannelId] = useState(initialChannelId);
   const rows = useMemo(() => (accessRef.current?.rows() || []).map(withCachedChannelName).sort((left, right) => {
     if (left.id === 'c0') return -1;
     if (right.id === 'c0') return 1;
@@ -16,7 +16,7 @@ export function useChannelDirectory({ accessRef, rosterRef, onChannelChanged, on
     if (!activeChannelId && rows.length) {
       const initial = rows.find((channel) => channel.access === CHANNEL_ACCESS.memberActive);
       setActiveChannelId(initial?.id || rows[0].id);
-    } else if (activeChannelId && !rows.some((channel) => channel.id === activeChannelId)) {
+    } else if (activeChannelId && rows.length && !rows.some((channel) => channel.id === activeChannelId)) {
       if (accessRef.current?.state(activeChannelId)?.existence === 'retired') onNotice(`${activeChannelId} 已退役，已切换到其他可用频道。`);
       const next = rows.find((channel) => channel.access === CHANNEL_ACCESS.memberActive) || rows[0];
       setActiveChannelId(next?.id || '');

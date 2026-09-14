@@ -14,6 +14,17 @@ const observation = {
 };
 
 describe('roster self fallback', () => {
+  it('seeds the cached roster and self mapping before OBS is available', () => {
+    const roster = createRoster({ obs: {}, me: 'principal-root' });
+    roster.seed({ c0: [
+      { id: 'human:root', kind: 'human', principal: 'principal-root', name: 'Root' },
+      { id: 'agent:a', kind: 'agent', name: 'A' },
+    ] });
+    expect(roster.get('c0')).toHaveLength(2);
+    expect(roster.self('c0')).toBe('human:root');
+    roster.close();
+  });
+
   it('does not mistake a missing principal field for the current human', async () => {
     const roster = createRoster({
       obs: { channelActors: async () => observation },

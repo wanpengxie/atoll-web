@@ -48,6 +48,19 @@ function encodedRecord(channelId, seq, envelope) {
   };
 }
 
+async function encodeRecords(rows = []) {
+  const records = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    records.push(encodedRecord(row.channelId, row.seq, row.envelope));
+    // Redaction and JSON sizing of large tool payloads are main-thread work.
+    // Yield between small chunks so realtime/input tasks are not trapped behind
+    // a complete history page or live burst.
+    if (index > 0 && index % 16 === 0) await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+  }
+  return records;
+}
+
 function normalizeMeta(value = {}) {
   return {
     channelId: value.channelId || '',
@@ -107,6 +120,7 @@ export function createFeedCache({
   let pendingCoverage = [];
   let pendingWaiters = [];
   let flushTimer = null;
+  let owner = '';
 
   function open() {
     if (openPromise) return openPromise;
@@ -261,7 +275,8 @@ export function createFeedCache({
     await trimGlobal();
   }
 
-  async function writeBatch(records, coverageEntries) {
+  async function writeBatch(rawRows, coverageEntries) {
+	const records = await encodeRecords(rawRows);
 	const coverageByChannel = new Map();
 	for (const [channelId, coverage] of coverageEntries) {
 	  if (!channelId || !coverage) continue;
@@ -320,11 +335,11 @@ export function createFeedCache({
   }
 
   function saveRows(rows, { coverageByChannel = new Map() } = {}) {
-	const records = (rows || []).flatMap((row) => {
-	  const channelId = row?.channel_id;
-	  const seq = Number(row?.seq);
-	  return channelId && Number.isSafeInteger(seq) && seq > 0 ? [encodedRecord(channelId, seq, row.envelope)] : [];
-	});
+    const records = (rows || []).flatMap((row) => {
+      const channelId = row?.channel_id;
+      const seq = Number(row?.seq);
+      return channelId && Number.isSafeInteger(seq) && seq > 0 ? [{ channelId, seq, envelope: row.envelope }] : [];
+    });
 	const coverageEntries = coverageByChannel instanceof Map
 	  ? [...coverageByChannel]
 	  : Object.entries(coverageByChannel || {});
@@ -382,7 +397,7 @@ export function createFeedCache({
     let changed = false;
     await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
       const global = await database.globalMeta.get(GLOBAL_META_ID)
-        || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '' };
+        || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '', owner };
       if (global.serverBoot && global.serverBoot !== serverBoot) {
         await database.rows.clear();
         await database.channelMeta.clear();
@@ -390,6 +405,7 @@ export function createFeedCache({
         changed = true;
       }
       global.serverBoot = serverBoot;
+      global.owner = owner || global.owner || '';
       global.schemaVersion = 2;
       await database.globalMeta.put(global);
     });
@@ -400,7 +416,43 @@ export function createFeedCache({
     return { changed, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
   }
 
+  async function ensureOwner(principalId) {
+    const requested = String(principalId || '');
+    if (!requested) return { changed: false, meta: new Map() };
+    await flushPending().catch(() => {});
+    if (!(await open())) return { changed: false, meta: new Map() };
+    let changed = false;
+    await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
+      const global = await database.globalMeta.get(GLOBAL_META_ID)
+        || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '', owner: '' };
+      const legacyOwner = String(legacyStorage?.getItem('atoll.feed.owner.v1') || '');
+      const previous = String(global.owner || legacyOwner || '');
+      // Databases created before owner scoping contain rows but no owner. There
+      // is no trustworthy way to assign those rows to the first principal that
+      // happens to open the upgraded app, so treat that state as foreign too.
+      const ownerlessData = !previous && (
+        Number(global.totalBytes || 0) > 0
+        || await database.rows.count() > 0
+        || await database.channelMeta.count() > 0
+      );
+      if (ownerlessData || (previous && previous !== requested)) {
+        await database.rows.clear();
+        await database.channelMeta.clear();
+        global.totalBytes = 0;
+        changed = true;
+      }
+      owner = requested;
+      global.owner = requested;
+      global.schemaVersion = 2;
+      await database.globalMeta.put(global);
+    });
+    try { legacyStorage?.removeItem('atoll.feed.owner.v1'); } catch { /* migration only */ }
+    if (changed) meta.clear();
+    return { changed, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
+  }
+
   return {
+    ensureOwner,
     openMeta: async () => { await open(); return new Map([...meta].map(([id, value]) => [id, { ...value }])); },
     metaSnapshot: () => new Map([...meta].map(([id, value]) => [id, { ...value }])),
     readBefore,
