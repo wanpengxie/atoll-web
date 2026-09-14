@@ -258,7 +258,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }
 
   function onChannelMenuKeyDown(event) {
-    const items = [...(channelMenuRef.current?.querySelectorAll('[role="menuitem"]') || [])];
+    const items = [...(channelMenuRef.current?.querySelectorAll('[role="menuitem"]') || [])].filter((item) => item.offsetParent !== null);
     if (event.key === 'Escape') {
       event.preventDefault();
       setChannelMenuOpen(false);
@@ -288,6 +288,9 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
               <button type="button" role="menuitem" onClick={() => { setChannelMenuOpen(false); panel.open('governance', { type: 'channel', key: workspace.channel.id }); }}>频道详情</button>
               <button type="button" role="menuitem" onClick={() => { setChannelMenuOpen(false); panel.open('resources', { type: 'channel_resources', key: workspace.channel.id }); }}>高级资源工具</button>
               <button type="button" role="menuitem" onClick={() => { setChannelMenuOpen(false); navigation.onCreate(); }}>新建子频道</button>
+              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || !contentVisible} onClick={() => { setChannelMenuOpen(false); toggleFiles(); }}>{filesOpen ? '关闭文件分屏' : '打开文件分屏'}</button>
+              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || !contentVisible} onClick={() => { setChannelMenuOpen(false); toggleTerminal(); }}>{terminalOpen ? '关闭终端分屏' : '打开终端分屏'}</button>
+              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || writeDisabled || restarting} onClick={() => { setChannelMenuOpen(false); restartChannel(); }}>{restarting ? '重启中…' : '重启频道'}</button>
             </div>}
           </div>
         </div>

@@ -51,20 +51,23 @@ test('LAYOUT-02 320px 下频道列表、工作区和 Context 是可返回的单�
   await login(page);
 
   for (const name of ['成员', '频道操作']) await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
-  await expect(page.locator('#workspace-files-toggle')).toBeVisible();
+  await expect(page.locator('.workspace-quick-actions')).toBeHidden();
   await expect(page.getByRole('tab', { name: '任务' })).toBeVisible();
   await page.getByRole('button', { name: '频道操作' }).click();
   await expect(page.getByRole('menuitem', { name: '频道详情' })).toBeVisible();
+  for (const name of ['打开文件分屏', '打开终端分屏', '重启频道']) await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
   await page.getByRole('button', { name: '频道操作' }).click();
   const shellGeometry = await page.evaluate(() => {
     const workspace = document.querySelector('.workspace').getBoundingClientRect();
+    const identity = document.querySelector('.channel-identity').getBoundingClientRect();
     const actions = [...document.querySelectorAll('.channel-header-actions .header-action')].map((node) => {
       const rect = node.getBoundingClientRect();
       return { left: rect.left, right: rect.right };
     });
-    return { viewport: innerWidth, documentWidth: document.documentElement.scrollWidth, workspace: { left: workspace.left, right: workspace.right }, actions };
+    return { viewport: innerWidth, documentWidth: document.documentElement.scrollWidth, workspace: { left: workspace.left, right: workspace.right }, headerHeight: identity.height, actions };
   });
   expect(shellGeometry.documentWidth).toBeLessThanOrEqual(shellGeometry.viewport);
+  expect(shellGeometry.headerHeight).toBe(44);
   for (const action of shellGeometry.actions) {
     expect(action.left).toBeGreaterThanOrEqual(shellGeometry.workspace.left);
     expect(action.right).toBeLessThanOrEqual(shellGeometry.workspace.right);
