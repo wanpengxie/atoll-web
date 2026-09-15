@@ -159,6 +159,12 @@ Meta 安装与内容供水分开：
 
 本轮没有新建第二份消息 Meta 数据库。workspace/control Meta 继续走轻量 bootstrap；coverage/checkpoint 继续与消息行同属 FeedCache 一致性域。这个选择是所有权边界，不是暂缓拆库。
 
+### 移动端前台再校准
+
+移动浏览器从后台恢复时，客户端不能把仍标记为 `OPEN/attached` 的旧 WebSocket 当作新鲜性证明。`visibilitychange → visible` 与网络恢复会立即结束旧 session 并重新 attach；attach 返回的轻量 channel head Meta 随即驱动当前频道 Scheduler 比较 Replica frontier，并主动拉取缺口。live push 是常驻低延迟路径，不是发现遗漏消息的唯一触发器。
+
+这次再校准不开放移动端后台历史预热：当前频道的 Meta 缺口是前台同步需求；其他频道的新 live 仍正常接收，但深历史只在获得 focus 后读取，避免后台历史批次再次占住移动链路。
+
 ## 12. 集中验证
 
 架构施工全部完成后统一执行验证，没有在施工中启动浏览器测试：

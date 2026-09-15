@@ -69,6 +69,7 @@ export function createWire({
   let attached = false;
   let reconnectAttempt = 0;
   let reconnectTimer = null;
+  let foregroundResyncReason = '';
   let counter = 0;
   let attachRef = '';
   // 这条连接自己的名字,attach 回执给的。人发给 agent 的消息盖上它:总有一个端
@@ -275,10 +276,20 @@ export function createWire({
 
   // 被叫醒:退避表上还剩多久已经不重要了——刚才那段等待的前提(网络还是坏的、
   // 屏幕没人看)已经不成立。取消定时器、把次数清零、立刻重连。
-  // 已经连着的不动:半死的连接由服务端 60 秒的读超时判,恒不在这里猜。
+  //
+  // 手机上“仍是 OPEN/attached”不是新鲜性的证明：页面被冻结时 socket close、
+  // ping 和 feed 都可能尚未被 JS 消费。回到前台必须重新经过 attach Meta seam，
+  // 让当前 head 与本地 Replica 比较并主动补齐；否则会一直等旧连接自行超时。
   function wakeNow(reason) {
-    if (stopped || attached) return;
+    if (stopped) return;
     const state = socket?.readyState;
+    if (attached && state === WebSocketImpl.OPEN) {
+      foregroundResyncReason = reason || 'foreground';
+      reconnectAttempt = 0;
+      diagnostic('info', 'wire.foreground_resync', { generation, reason: foregroundResyncReason });
+      socket.close(4000, 'foreground resync');
+      return;
+    }
     if (state === WebSocketImpl.CONNECTING || state === WebSocketImpl.OPEN) return;
     if (reconnectTimer != null) {
       clearTimeoutImpl(reconnectTimer);
@@ -346,12 +357,18 @@ export function createWire({
       if (socket?.readyState !== WebSocketImpl.CLOSED) socket.close();
     });
     socket.addEventListener('close', () => {
+      const resyncReason = foregroundResyncReason;
+      foregroundResyncReason = '';
       attached = false;
       rejectPending('closed', 'connection closed');
       onState('disconnected', { generation });
       diagnostic(stopped ? 'info' : 'warn', 'wire.closed', { generation, stopped, pending: pending.size });
       if (stopped) {
         onState('closed');
+      } else if (resyncReason) {
+        reconnectAttempt = 0;
+        onState('reconnecting', { delay: 0, reason: resyncReason });
+        connect();
       } else {
         scheduleReconnect();
       }

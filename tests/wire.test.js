@@ -248,6 +248,35 @@ describe('wire client', () => {
     wire.close();
   });
 
+  it('reattaches immediately on mobile foreground wake even when the old socket still looks attached', () => {
+    let fireWake = null;
+    let cursor = 3;
+    const states = [];
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      since: () => ({ c0: cursor }),
+      focus: () => 'c0',
+      wake: (fire) => { fireWake = fire; return () => {}; },
+      onState: (state, detail) => states.push([state, detail]),
+    });
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    receipt(first, first.sent[0], { history_meta: [{ channel_id: 'c0', head_seq: 3, has_rows: true }] });
+
+    cursor = 9;
+    fireWake('visible');
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const second = FakeWebSocket.instances[1];
+    second.open();
+    expect(second.sent[0]).toMatchObject({
+      frame_type: 'attach',
+      payload: { since: { c0: 9 }, focus: 'c0', generation: 2 },
+    });
+    expect(states).toContainEqual(['reconnecting', { delay: 0, reason: 'visible' }]);
+    wire.close();
+  });
+
   it('rejects every pending request on close', async () => {
     const wire = createWire({ WebSocketImpl: FakeWebSocket });
     const socket = FakeWebSocket.instances[0];
