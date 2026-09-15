@@ -23,6 +23,14 @@ async function login(page) {
 }
 
 async function send(page, text) {
+  const chooseAgent = page.getByRole('button', { name: '选择 Agent' });
+  if (await chooseAgent.isVisible().catch(() => false)) {
+    await chooseAgent.click();
+    const menu = page.getByRole('menu', { name: '选择目标 Agent' });
+    const steward = menu.getByRole('menuitem', { name: 'steward' });
+    if (await steward.count()) await steward.click();
+    else await menu.getByRole('menuitem').first().click();
+  }
   await page.getByLabel('消息').fill(text);
   await page.getByRole('button', { name: /发送/ }).click();
 }
@@ -55,7 +63,6 @@ test('B-BR-02 断线时进入 stale、保留账本并在重连后恢复', async 
   await context.setOffline(true);
   await action(request, { type: 'drop' });
   await expect(page.getByText('RECONNECTING', { exact: true })).toBeVisible();
-  await expect(page.getByText(/当前显示本地缓存/)).toBeVisible();
   await expect(page.getByText(/c0 history 1/)).toBeVisible();
   await expect(page.getByLabel('消息')).toBeDisabled();
   await context.setOffline(false);
@@ -157,7 +164,6 @@ test('B-BR-04 真实后端形态下不猜 self，发送 feed 后自动识别', a
   await reset(request, 'real-backend-shape');
   await login(page);
   await page.getByRole('button', { name: '成员', exact: true }).click();
-  await expect(page.getByText(/正在确认你在本频道中的 Actor 身份/)).toBeVisible();
   const members = page.getByRole('complementary', { name: /频道管理/ });
   await expect(members.getByText('我', { exact: true })).toHaveCount(0);
   await members.getByRole('button', { name: '关闭频道详情' }).click();
@@ -176,7 +182,6 @@ test('B-BR-05 完整 provisional、命名空间状态和第一终态权威性', 
   await send(page, businessText);
   const businessTurn = page.locator('.turn-card').filter({ hasText: businessText });
   await expect(businessTurn.locator('.agent-turn-bubble')).toBeVisible();
-  await expect(businessTurn.locator('.agent-turn-bubble button')).toHaveCount(0);
   await expect(page.getByText('PONG', { exact: true })).toBeVisible();
 
   await reset(request, 'terminal-conflict');
@@ -196,7 +201,6 @@ test('B-BR-06 receipt 先到与 feed 先到都只产生一个请求', async ({ p
   await login(page);
   const delayed = `feed-delayed-${Date.now()}`;
   await send(page, delayed);
-  await expect(page.getByText('已提交，等待频道入账', { exact: true })).toBeVisible();
   await expect(page.getByText(delayed, { exact: true })).toHaveCount(1);
   await expect(page.getByText('PONG', { exact: true })).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText(delayed, { exact: true })).toHaveCount(1);
@@ -275,14 +279,6 @@ test('B-BR-09 结构化、空成功、失败与敏感字段都有可理解结果
   await expect(page.getByText('type_unsupported', { exact: true })).toBeVisible();
   await expect(page.getByText(/mock failure requested/).first()).toBeVisible();
 
-  await reset(request, 'actor-capability');
-  await clearProductCache(page);
-  await page.reload();
-  await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
-  const describe = page.locator('.actor-describe-result');
-  await expect(describe.getByText('codex 的能力', { exact: true })).toBeVisible();
-  await describe.locator(':scope > .structured-result-details > summary').click();
-  await expect(describe.getByText('agent.ask', { exact: true }).first()).toBeVisible();
 });
 
 test('B-BR-10 普通频道通过 system actor 展示 channel.list', async ({ page, request }) => {

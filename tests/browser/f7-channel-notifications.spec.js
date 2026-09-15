@@ -58,17 +58,17 @@ test('F7 channel notifications baseline history, count root turns, and clear onl
   await expect(related).toHaveCount(0);
 
   const viewport = page.locator('.timeline-message-list');
-  await viewport.evaluate((node) => {
-    node.scrollTop = 0;
-    node.dispatchEvent(new Event('scroll', { bubbles: true }));
-  });
+  // Use a physical gesture: the timeline intentionally distinguishes user
+  // scrolling from Virtuoso's own scroll compensation.
+  await viewport.hover();
+  await page.mouse.wheel(0, -100_000);
+  await expect.poll(() => viewport.evaluate((node) => (
+    node.scrollHeight - node.clientHeight - node.scrollTop
+  ))).toBeGreaterThan(24);
   await terminal(3);
   await expect(related).toHaveText('1');
 
-  await viewport.evaluate((node) => {
-    node.scrollTop = node.scrollHeight;
-    node.dispatchEvent(new Event('scroll', { bubbles: true }));
-  });
+  await page.mouse.wheel(0, 100_000);
   await expect(related).toHaveCount(0);
 });
 

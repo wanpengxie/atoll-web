@@ -75,7 +75,7 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
     }
   }, [accessRef, channelStatesRef, onAccessChanged, onError, onFeedChanged, onNotice, rosterRef, wireRef]);
 
-  const send = useCallback(async ({ channelId: requestedChannelId, text, msgType, audience, targetLabel, payload, parentId = '', expiresAtMs }) => {
+  const send = useCallback(({ channelId: requestedChannelId, text, msgType, audience, targetLabel, payload, parentId = '', expiresAtMs }) => {
     const channelId = requestedChannelId || activeChannelId;
     if (!channelId) return '';
     const messageId = newId();
@@ -91,7 +91,10 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
     pendingRef.current = nextPending;
     if (principalId) saveSubmissions(principalId, nextPending);
     setPending(nextPending);
-    if (connected) await transmit(submission);
+    // The interaction is accepted once the durable outbox owns the frame.
+    // Network acknowledgement is a later fact represented by submission
+    // state and the channel ledger; it must never hold the composer open.
+    if (connected) void transmit(submission);
     return messageId;
   }, [activeChannelId, principalId, transmit, wireRef, wireState]);
 

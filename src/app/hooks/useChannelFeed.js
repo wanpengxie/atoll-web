@@ -305,13 +305,25 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	diagnostic('info', 'feed.connection_reset', { generation });
     schedulerRef.current.disconnected(generation);
   }, []);
-  const loadHistory = useCallback(async (channelId, { anchorSeq = 0, viewSpec = {}, signal, operationId = '', topEpoch = 0 } = {}) => {
-	const operation = schedulerRef.current.beginOperation(channelId, { signal });
+  const loadHistory = useCallback(async (channelId, {
+    anchorSeq = 0,
+    revealRows,
+    viewSpec = {},
+    signal,
+    operationId = '',
+    topEpoch = 0,
+    intent = 'scroll-history',
+    urgency = 'interactive',
+  } = {}) => {
+	const operation = schedulerRef.current.beginOperation(channelId, { signal, intent, urgency });
 	try {
 	  return await loadUntilVisible({
       anchorSeq,
       signal,
-	  next: ({ signal: nextSignal }) => operation.next({ signal: nextSignal }),
+	  next: ({ signal: nextSignal }) => operation.next({
+        signal: nextSignal,
+        count: Number.isSafeInteger(revealRows) && revealRows > 0 ? revealRows : undefined,
+      }),
       project: () => projectTimeline(statesRef.current.get(channelId) || createChannelState(channelId), viewSpec),
       onCheck: ({ firstVisibleSeq, step }) => diagnostic('debug', 'history.projection_checked', {
         channelId, operationId, topEpoch, anchorSeq, firstVisibleSeq,

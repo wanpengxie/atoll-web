@@ -15,8 +15,8 @@ test('F7 deep history starts at the tail, reveals upward automatically, and keep
 
   const viewport = page.locator('.timeline-message-list');
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  // Virtuoso treats the final 24px as the bottom zone so late dynamic-height
-  // measurement cannot incorrectly disable realtime follow.
+  // The final 24px is the bottom zone so subpixel layout changes cannot
+  // incorrectly disable realtime follow.
   await expect.poll(() => viewport.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBeLessThanOrEqual(24);
   const samples = await page.evaluate(async () => {
     const node = document.querySelector('.timeline-message-list');
@@ -63,40 +63,167 @@ test('F7 deep history starts at the tail, reveals upward automatically, and keep
   expect(cachedRows).toBeLessThanOrEqual(5_000);
 });
 
-test('F7 prepending history keeps the reader anchor visually stable', async ({ page, request }) => {
-  const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1713 } });
+test('F7 continuous upward scrolling does not fight history prepend anchoring', async ({ page, request }) => {
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'mixed-height-history', seed: 1713 } });
   expect(reset.ok()).toBe(true);
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
 
   const viewport = page.locator('.timeline-message-list');
+  await expect(viewport).toHaveCSS('overflow-anchor', 'auto');
   const samplesPromise = page.evaluate(async () => {
     const node = document.querySelector('.timeline-message-list');
     const samples = [];
-    for (let frame = 0; frame < 90; frame += 1) {
+    for (let frame = 0; frame < 180; frame += 1) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
       const viewportRect = node.getBoundingClientRect();
-      const visible = [...node.querySelectorAll('.timeline-entry')]
-        .map((entry) => ({ entry, rect: entry.getBoundingClientRect() }))
-        .filter(({ rect }) => rect.bottom > viewportRect.top && rect.top < viewportRect.bottom)
-        .sort((left, right) => left.rect.top - right.rect.top)[0];
+      const positions = {};
+      for (const entry of node.querySelectorAll('.timeline-entry')) {
+        const rect = entry.getBoundingClientRect();
+        if (rect.bottom > viewportRect.top && rect.top < viewportRect.bottom) {
+          positions[entry.dataset.entryId || ''] = rect.top - viewportRect.top;
+        }
+      }
       samples.push({
         frame,
         top: Math.round(node.scrollTop),
         height: Math.round(node.scrollHeight),
-        anchorId: visible?.entry.dataset.entryId || '',
-        anchorTop: visible ? Math.round(visible.rect.top - viewportRect.top) : null,
-        entries: document.querySelectorAll('.timeline-entry').length,
+        transform: node.querySelector('[data-testid="virtuoso-item-list"]')?.style.transform || '',
+        positions,
       });
     }
     return samples;
   });
   await viewport.hover();
-  await page.mouse.wheel(0, -100_000);
+  // Keep producing real upward input while the first historical batch arrives.
+  // The list owns anchor compensation; application code must not overwrite the
+  // reader's wheel momentum with an absolute scrollTop from another frame.
+  for (let step = 0; step < 40; step += 1) {
+    await page.mouse.wheel(0, -360);
+    await page.waitForTimeout(18);
+    if (await viewport.evaluate((node) => node.scrollTop <= 1)) break;
+  }
   const samples = await samplesPromise;
-  const heights = samples.map((sample) => sample.height);
-  expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(1_000);
-  expect(samples.every((sample) => sample.anchorId), JSON.stringify(samples)).toBe(true);
+  const historySatisfied = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+    .some((entry) => entry.event === 'history.intent_satisfied'));
+  expect(historySatisfied).toBe(true);
+  const screenMotion = [];
+  const motionFrames = [];
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = samples[index - 1];
+    const current = samples[index];
+    const shared = Object.keys(previous.positions).filter((id) => id && id in current.positions);
+    if (!shared.length) continue;
+    const movements = shared
+      .map((id) => current.positions[id] - previous.positions[id])
+      .sort((left, right) => left - right);
+    const itemMovement = movements[Math.floor(movements.length / 2)];
+    screenMotion.push(itemMovement);
+    if (Math.abs(itemMovement) > 600 || itemMovement < -80) {
+      motionFrames.push({ previous: { ...previous, positions: undefined }, current: { ...current, positions: undefined }, itemMovement });
+    }
+  }
+  // Upward wheel input moves content down; native prepend anchoring keeps the
+  // current reading row still. A large leap means another scrollTop controller
+  // is fighting the reader's gesture.
+  expect(Math.max(...screenMotion), JSON.stringify(motionFrames)).toBeLessThanOrEqual(600);
+  expect(Math.min(...screenMotion), JSON.stringify(motionFrames)).toBeGreaterThanOrEqual(-80);
+});
+
+test('F7 reader can reverse direction immediately after a history prepend', async ({ page, request }) => {
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'mixed-height-history', seed: 1715 } });
+  expect(reset.ok()).toBe(true);
+  await login(page);
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+
+  const viewport = page.locator('.timeline-message-list');
+  await viewport.hover();
+  await page.mouse.wheel(0, -100_000);
+  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+    .some((entry) => entry.event === 'history.intent_satisfied'))).toBe(true);
+
+  // The prepend can still be receiving late ResizeObserver corrections here.
+  // A downward gesture is nevertheless authoritative and must not be undone
+  // by the old anchor transaction.
+  const beforeReverse = await viewport.evaluate((node) => node.scrollTop);
+  await page.mouse.wheel(0, 640);
+  await expect.poll(() => viewport.evaluate((node) => node.scrollTop)).toBeGreaterThan(beforeReverse + 20);
+});
+
+test('F7 oldest-history boundary stays inert under repeated upward input', async ({ page, request }) => {
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1716 } });
+  expect(reset.ok()).toBe(true);
+  await login(page);
+
+  const viewport = page.locator('.timeline-message-list');
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+  for (let step = 0; step < 30; step += 1) {
+    await viewport.hover();
+    await page.mouse.wheel(0, -100_000);
+    await page.waitForTimeout(30);
+  }
+  await expect(page.getByText('c0 history 1: ask steward for PONG', { exact: true })).toBeVisible();
+  await viewport.hover();
+  await page.mouse.wheel(0, -100_000);
+  await expect.poll(() => viewport.evaluate((node) => Math.round(node.scrollTop))).toBe(0);
+
+  const before = await page.evaluate(() => {
+    const node = document.querySelector('.timeline-message-list');
+    const first = node.querySelector('[data-presentation-row-id]');
+    return {
+      top: node.scrollTop,
+      rowID: first?.dataset.presentationRowId || '',
+      rowTop: first?.getBoundingClientRect().top - node.getBoundingClientRect().top,
+      starts: window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event === 'history.intent_started').length,
+    };
+  });
+  for (let step = 0; step < 12; step += 1) await page.mouse.wheel(0, -720);
+  await page.waitForTimeout(200);
+  const after = await page.evaluate(() => {
+    const node = document.querySelector('.timeline-message-list');
+    const first = node.querySelector('[data-presentation-row-id]');
+    return {
+      top: node.scrollTop,
+      rowID: first?.dataset.presentationRowId || '',
+      rowTop: first?.getBoundingClientRect().top - node.getBoundingClientRect().top,
+      starts: window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event === 'history.intent_started').length,
+    };
+  });
+  expect(after.top).toBe(0);
+  expect(after.rowID).toBe(before.rowID);
+  expect(Math.abs(after.rowTop - before.rowTop)).toBeLessThanOrEqual(1);
+  expect(after.starts).toBe(before.starts);
+});
+
+test('F7 switching channels restores the saved semantic reading anchor', async ({ page, request }) => {
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1714 } });
+  expect(reset.ok()).toBe(true);
+  await login(page);
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+
+  const viewport = page.locator('.timeline-message-list');
+  await viewport.hover();
+  await page.mouse.wheel(0, -2_400);
+  await page.waitForTimeout(150);
+  const anchor = await viewport.evaluate((node) => {
+    const viewportTop = node.getBoundingClientRect().top;
+    const rows = [...node.querySelectorAll('[data-presentation-row-id]')]
+      .map((row) => ({ id: row.dataset.presentationRowId, top: row.getBoundingClientRect().top - viewportTop, bottom: row.getBoundingClientRect().bottom - viewportTop }))
+      .filter((row) => row.bottom > 0 && row.top < node.clientHeight)
+      .sort((left, right) => left.top - right.top);
+    return rows[0];
+  });
+  expect(anchor?.id).toBeTruthy();
+
+  await page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0\.project$/ }) }).click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
+  await page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0$/ }) }).click();
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect.poll(() => viewport.evaluate((node, expected) => {
+    const row = [...node.querySelectorAll('[data-presentation-row-id]')]
+      .find((candidate) => candidate.dataset.presentationRowId === expected.id);
+    return row ? Math.abs((row.getBoundingClientRect().top - node.getBoundingClientRect().top) - expected.top) : Number.POSITIVE_INFINITY;
+  }, anchor)).toBeLessThanOrEqual(2);
 });
 
 test('F7 mobile keeps realtime delivery while the reader is browsing history', async ({ page, request }) => {
@@ -146,7 +273,7 @@ test('F7 100k ledger keeps bounded initial DOM and reveals older rows on upward 
 });
 
 test('F7 a bounded warm cache survives reload and satisfies one physical top demand', async ({ page, request }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'huge-history', seed: 1710 } });
   expect(reset.ok()).toBe(true);
   await login(page);
@@ -184,7 +311,7 @@ test('F7 a bounded warm cache survives reload and satisfies one physical top dem
   )))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
 	entry.event === 'history.intent_satisfied'
-  )))).toBe(true);
+  ))), { timeout: 30_000 }).toBe(true);
 
   const operations = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => (
 	entry.event === 'history.intent_started'

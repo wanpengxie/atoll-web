@@ -30,6 +30,11 @@ const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 30_000;
 const FAIRNESS_DISPATCHES = 8;
 const HISTORY_PRIORITY_KEY = 'atoll.history.priority.v1';
+const DEMAND_URGENCY_SCORE = Object.freeze({
+  anticipatory: 0,
+  interactive: 4,
+  blocking: 8,
+});
 // Weighted round-robin is the cadence, not a permanent score. After every
 // dispatched small page the next token is reconsidered against the latest
 // focus/LRU/live facts. Missing tiers are skipped immediately.
@@ -111,6 +116,22 @@ function purposeFor(state, focus) {
   if (state.foregroundOwners.size > 0 || state.foregroundWaiters.length > 0) return 'user-demand';
   if (!state.tailVisible) return 'initial-tail';
   return 'hydrate';
+}
+
+function foregroundDemand(state) {
+  let selected = null;
+  for (const owner of state?.foregroundOwners || []) {
+    const urgency = Object.hasOwn(DEMAND_URGENCY_SCORE, owner?.urgency)
+      ? owner.urgency
+      : 'interactive';
+    const candidate = {
+      intent: owner?.intent || 'scroll-history',
+      urgency,
+      score: DEMAND_URGENCY_SCORE[urgency],
+    };
+    if (!selected || candidate.score > selected.score) selected = candidate;
+  }
+  return selected;
 }
 
 export function createHistoryScheduler({
@@ -335,6 +356,7 @@ export function createHistoryScheduler({
 	if (state.projectionPending) return null;
 	if (state.tier >= 3) return null;
 	const purpose = purposeFor(state, focus);
+	const demand = purpose === 'user-demand' ? foregroundDemand(state) : null;
 	// Buffered rows already satisfy the foreground operation. Do not open a
 	// second network page before nextSegment has projected and consumed them.
 	if (purpose === 'user-demand' && state.reservoir.size > 0) return null;
@@ -381,6 +403,7 @@ export function createHistoryScheduler({
     // class. Background hydration can become the next background batch, but
     // it can never jump ahead of a person's active top operation.
     priorityClass += Math.min(9, Math.floor(state.waitDispatches / FAIRNESS_DISPATCHES));
+    priorityClass += demand?.score || 0;
     const source = sourceFor(state, taskBeforeSeq);
 	const sourceStats = transportStats[source] || transportStats.network;
     const rowDeficit = purpose === 'user-demand' || !state.tailVisible
@@ -400,6 +423,8 @@ export function createHistoryScheduler({
       channelId: state.id,
       source,
       purpose,
+      intent: demand?.intent || '',
+      urgency: demand?.urgency || '',
       rangeKind,
       priority,
       beforeSeq: taskBeforeSeq,
@@ -522,6 +547,7 @@ export function createHistoryScheduler({
     try {
       accepted = requestPage(batch.channelId, batch.beforeSeq, batch.limit, {
         purpose: batch.purpose, priority: batch.priority,
+        intent: batch.intent, urgency: batch.urgency,
         generation: batch.generation, byteLimit: batch.byteLimit,
         rangeKind: batch.rangeKind,
       });
@@ -917,13 +943,16 @@ export function createHistoryScheduler({
     });
   }
 
-  function beginOperation(channelId, { signal } = {}) {
+  function beginOperation(channelId, { signal, intent = 'scroll-history', urgency = 'interactive' } = {}) {
 	let state = channels.get(channelId);
 	if (!state) {
 	  state = schedulerState(channelId);
 	  channels.set(channelId, state);
 	}
-	const owner = {};
+	const owner = {
+	  intent: intent || 'scroll-history',
+	  urgency: Object.hasOwn(DEMAND_URGENCY_SCORE, urgency) ? urgency : 'interactive',
+	};
 	let released = false;
 	state.foregroundOwners.add(owner);
 	promoteChannel(state, 'history channel promoted by user intent');

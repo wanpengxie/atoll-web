@@ -36,7 +36,7 @@ export async function loadUntilVisible({ anchorSeq = 0, next, project, signal, o
   }
 }
 
-// One physical visit to the top owns one operation. Duplicate Virtuoso signals
+// One physical visit to the top owns one operation. Duplicate geometry signals
 // join it. The controller stores continuation outside React effects; an effect
 // may report geometry, but cleanup cannot erase an in-flight goal accidentally.
 export function createTopIntentController({ load, onState = () => {} } = {}) {

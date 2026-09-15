@@ -23,6 +23,7 @@ vi.mock('../src/ui/Timeline.jsx', () => ({
 
 const { AppShell } = await import('../src/app/AppShell.jsx');
 const { Timeline } = await vi.importActual('../src/ui/Timeline.jsx');
+const { createViewSessionStore } = await import('../src/model/view-session.js');
 
 function shellProps(channelId) {
   return {
@@ -184,5 +185,27 @@ describe('历史自动懒加载', () => {
     expect(screen.getByTitle('取消只看 agent-a').getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByText('来自 agent-a')).toBeTruthy();
     expect(screen.queryByText('来自 agent-b')).toBeNull();
+  });
+
+  it('频道 DOM 重挂后从 View Session 恢复阅读范围', async () => {
+    const sessions = createViewSessionStore();
+    const props = {
+      state: historyState(4),
+      history: { attached: true, hasOlder: false },
+      viewSessions: sessions,
+      roster: [],
+      selfId: 'me',
+      pending: [],
+      approvalStates: {},
+      access: 'member_active',
+    };
+    const first = render(<Timeline {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: '@我' }));
+    expect(await screen.findByRole('button', { name: '全部' })).toBeTruthy();
+    await vi.waitFor(() => expect(sessions.read('c0').scope).toBe('all'));
+    first.unmount();
+
+    render(<Timeline {...props} />);
+    expect(await screen.findByRole('button', { name: '全部' })).toBeTruthy();
   });
 });

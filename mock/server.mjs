@@ -253,6 +253,12 @@ function seededHistory(channelId, behavior = {}) {
       : `${channelId} history ${index}: ask ${responderId} for PONG`;
     const responseText = behavior.file_reference_demo && channelId === 'c0' && index === 3
       ? '文件已经生成，点击 [path-preview-demo.go 第 4 行](/mock/atoll/local-device/channels/c0/workspace/path-preview-demo.go:4) 在 Atoll 内预览。'
+      : behavior.history_variable_heights && index % 4 === 0
+        ? `${channelId} PONG ${index}\n\n${Array.from({ length: 11 }, (_, line) => `- 第 ${line + 1} 项检查包含长度不同的说明，用来模拟真实频道里的 Markdown 回复。`).join('\n')}`
+        : behavior.history_variable_heights && index % 4 === 1
+          ? `${channelId} PONG ${index}\n\n\`\`\`text\n${Array.from({ length: 9 }, (_, line) => `diagnostic line ${line + 1}: ${'x'.repeat(18 + line * 3)}`).join('\n')}\n\`\`\``
+          : behavior.history_variable_heights && index % 4 === 2
+            ? `${channelId} PONG ${index}：${'这是一段宽度变化明显但不会被折叠的正文。'.repeat(13)}`
       : isLobby ? `Lobby coordination check ${index} complete` : `${channelId} PONG ${index}`;
     const toolName = isLobby ? 'mock.lobby.status' : 'mock.echo';
     const demoAttachments = behavior.demo_attachments && channelId === 'c0.project' && index === 3
@@ -668,6 +674,21 @@ export function createMockServer({
     }));
   }
 
+  // Test controls mutate the mock's current projection directly. Mirror the
+  // ledger invalidation that a real system.channel.* operation would emit so
+  // connected clients know to pull the new OBS snapshot.
+  function invalidateChannelDirectory(reason) {
+    append('c0', envelope({
+      id: domain.nextId('c0-directory-invalidated'),
+      channelId: 'c0',
+      sender: { kind: 'system', id: SYSTEM_ACTOR_ID },
+      kind: 'event',
+      type: 'system.channel.set',
+      payload: { reason },
+      audience: [ROOT_ACTOR_ID],
+    }));
+  }
+
   function hasTerminal(channelId, requestId) {
     return (histories.get(channelId) || []).some((row) => row.envelope.kind === 'response'
       && row.envelope.parent_id === requestId
@@ -1008,6 +1029,10 @@ export function createMockServer({
 						if (!Object.hasOwn(body, 'initial_actor_ids')) throw new TypeError('initial_actor_ids is required; send [] for an empty channel');
 						const created = domain.createChannel(channelId, body.name, principal, body.initial_actor_ids);
             complete({ channel_id: created.id });
+            // attach carries the authoritative membership snapshot. Creating a
+            // channel changes that snapshot, so reconnect after the response
+            // has landed just like explicit grant/revoke does below.
+            later(75, () => { for (const socket of sockets) socket.close(1012, 'membership changed'); });
             return;
           }
           case 'system.channel.list': {
@@ -2092,26 +2117,34 @@ export function createMockServer({
         }
         if (body.type === 'revoke_membership') {
           const changed = domain.revokeMembership(ROOT_ID, body.channel_id);
+          // Membership is an attach-time authority snapshot. Force a fresh
+          // attach after the test mutates it out of band, just as a gateway
+          // entitlement change invalidates the existing delivery session.
+          if (changed) later(0, () => { for (const socket of sockets) socket.close(1012, 'membership changed'); });
           json(response, 200, { type: body.type, changed });
           return;
         }
         if (body.type === 'grant_membership') {
           const membership = domain.grantMembership(ROOT_ID, body.channel_id, body.actor_id);
+          later(0, () => { for (const socket of sockets) socket.close(1012, 'membership changed'); });
           json(response, 200, { type: body.type, membership });
           return;
         }
         if (body.type === 'set_channel_open') {
           const channel = domain.setChannelOpen(body.channel_id, body.open);
+          invalidateChannelDirectory(body.open ? 'channel_opened' : 'channel_closed');
           json(response, 200, { type: body.type, channel });
           return;
         }
         if (body.type === 'set_obs_complete') {
           domain.obsComplete = Boolean(body.complete);
+          invalidateChannelDirectory('obs_completeness_changed');
           json(response, 200, { type: body.type, complete: domain.obsComplete });
           return;
         }
         if (body.type === 'retire_channel') {
           const changed = domain.retireChannel(body.channel_id);
+          if (changed) invalidateChannelDirectory('channel_retired');
           json(response, 200, { type: body.type, changed });
           return;
         }

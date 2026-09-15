@@ -9,6 +9,9 @@ import {
   TIMELINE_SCOPE,
 } from './timeline-scope.js';
 import { TYPES } from '../protocol/vocab.js';
+import { projectPresentationRows } from './conversation-presentation.js';
+
+export { presentationEntryId } from './conversation-presentation.js';
 
 const HIDDEN_TURN_TYPES = new Set([
   TYPES.agentHold,
@@ -59,6 +62,7 @@ export function projectTimeline(state, {
   actorFilter = new Set(),
   editingTargetId = '',
   showNarration = false,
+  presentationProjector = null,
   // 「我的往来」用增量索引算(见 timeline-scope.js)。输出相同,代价从"每帧走一遍
   // 整本账"降到"每帧只判新来的那几行"。
   incremental = false,
@@ -107,6 +111,9 @@ export function projectTimeline(state, {
 
   return {
     items,
+    presentationRows: presentationProjector?.project
+      ? presentationProjector.project(items)
+      : projectPresentationRows(items),
     allEntries,
     scoped,
     filtered,

@@ -112,6 +112,7 @@ test('C-BR-02/03/04 Schema 表单跨 OBS 刷新保留输入并原样调用', asy
 
   const turn = page.locator('.turn-card').filter({ hasText: 'mock.order.create' }).last();
   const result = turn.locator('.structured-result').last();
+  await result.locator('summary').click();
   await expect(result.getByText('name', { exact: true })).toBeVisible();
   await expect(result.getByText('阶段C结构化订单', { exact: true })).toBeVisible();
   await expect(result.getByText('count', { exact: true })).toBeVisible();
@@ -127,9 +128,9 @@ test('C-BR-03/05 处理中只暴露编辑与停止，停止后按钮随 turn 消
   const turn = await sendTask(page, '阶段C取消长任务');
   const controls = turn.getByRole('region', { name: '任务控制' });
   await expect(controls.getByRole('button', { name: '编辑' })).toBeVisible();
-  await expect(controls.getByRole('button', { name: '停止' })).toBeVisible();
+  await expect(controls.getByRole('button', { name: '停止', exact: true })).toBeVisible();
   await expect(controls.getByRole('button', { name: '取消任务' })).toHaveCount(0);
-  await controls.getByRole('button', { name: '停止' }).click();
+  await controls.getByRole('button', { name: '停止', exact: true }).click();
   await expect(turn.getByText('✗ 已停止 · 发消息即继续', { exact: true })).toBeVisible();
   await expect(turn.getByRole('region', { name: '任务控制' })).toHaveCount(0);
 });
@@ -141,7 +142,7 @@ test('C-BR-04 interrupt 冻结只在 Agent 气泡呈现，恒无继续按钮', a
   await page.getByLabel('消息').fill('等待中的后续任务');
   await page.getByRole('button', { name: /发送/ }).click();
   await expect(page.getByRole('region', { name: '等待区' })).toContainText('等待中的后续任务');
-  await turn.getByRole('button', { name: '停止' }).click();
+  await turn.getByRole('button', { name: '停止', exact: true }).click();
   await expect(page.getByRole('region', { name: '等待区' })).not.toContainText('已暂停');
   await expect(page.getByRole('button', { name: '继续' })).toHaveCount(0);
   await page.getByLabel('消息').fill('直接发消息恢复');
@@ -161,7 +162,7 @@ test('C-BR-04a 编辑等待消息时停止当前任务会退出编辑，下一�
   await waiting.getByRole('button', { name: '编辑' }).click();
   await expect(page.getByRole('button', { name: '取消编辑' })).toBeVisible();
 
-  await running.getByRole('button', { name: '停止' }).click();
+  await running.getByRole('button', { name: '停止', exact: true }).click();
   await expect(running.getByText('✗ 已停止 · 发消息即继续', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '取消编辑' })).toHaveCount(0);
   await expect(page.getByRole('alert')).toContainText('编辑已被另一项控制终止');
@@ -180,7 +181,7 @@ test('C-BR-05/07 等待行用 target 形插入当前 turn', async ({ page, reque
   await page.getByRole('button', { name: /发送/ }).click();
   const waiting = page.getByRole('region', { name: '等待区' });
   await expect(waiting).toContainText('只输出风险清单');
-  await waiting.getByRole('button', { name: '插入' }).click();
+  await waiting.getByRole('button', { name: '插入', exact: true }).click();
   const inserted = page.locator('.turn-card').filter({ hasText: '只输出风险清单' });
   await expect(inserted).toBeVisible();
   await expect(waiting).toHaveCount(0);
@@ -196,7 +197,7 @@ test('C-BR-06/08 queued 恒住等待浮层，interrupt 定格 Agent 气泡', asy
   const waiting = page.getByRole('region', { name: '等待区' });
   await expect(waiting).toContainText('队列中的后续任务');
   await expect(page.locator('.timeline')).not.toContainText('队列中的后续任务');
-  await original.getByRole('button', { name: '停止' }).click();
+  await original.getByRole('button', { name: '停止', exact: true }).click();
   await expect(original).toContainText('✗ 已停止 · 发消息即继续');
   await expect(waiting).not.toContainText('已暂停');
   await expect(page.getByRole('button', { name: '继续' })).toHaveCount(0);
@@ -275,13 +276,13 @@ test('C-BR-10/13 刷新重放后处理气泡与控制资格只保留一份', asy
   await openSteward(page);
   const taskText = '阶段C刷新恢复长任务';
   let turn = await sendTask(page, taskText);
-  await expect(turn.getByRole('button', { name: '停止' })).toBeVisible();
+  await expect(turn.getByRole('button', { name: '停止', exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
   turn = page.locator('.turn-card').filter({ hasText: taskText });
   await expect(turn).toHaveCount(1);
   await expect(turn.locator('.agent-turn-bubble')).toHaveCount(1);
   await expect(turn.locator('.agent-turn-bubble button')).toHaveCount(0);
-  await expect(turn.getByRole('button', { name: '停止' })).toBeVisible();
+  await expect(turn.getByRole('button', { name: '停止', exact: true })).toBeVisible();
   await expect(turn.getByRole('button', { name: '编辑' })).toBeVisible();
 });

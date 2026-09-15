@@ -44,6 +44,7 @@ import { useNodeUpdate } from './app/hooks/useNodeUpdate.js';
 import { diagnostic } from './model/diagnostics.js';
 import { readFileReadingHistory, rememberFileRead, writeFileReadingHistory } from './model/file-reading-history.js';
 import { popFilePreview, pushFilePreview } from './model/file-preview-stack.js';
+import { createHistoryDemandPort, HISTORY_INTENT, HISTORY_URGENCY } from './model/history-demand.js';
 import { readWorkspaceBootstrap, writeWorkspaceBootstrap } from './model/workspace-bootstrap-cache.js';
 
 function displayError(error) {
@@ -440,7 +441,7 @@ export default function App() {
 
     setWireState('connecting');
     const localReplicaPromise = prepareLocalReplica(principalId, { focus: localFocus });
-    wire = createWire({
+    const wireOptions = {
       label: describeClient(),
       // 手机上断线是常态,回来得快才是要紧的:退避压到 5 秒,并且一回到前台/网络
       // 恢复就立刻重连,恒不在退避表上干等。PC 维持原样。
@@ -500,7 +501,7 @@ export default function App() {
           // 这条连接自己的名字。服务端铸的 id 是寻址用的唯一依据;label 只给
           // 人看,因为选屏幕是人用话做的事。
           setUiSession({ id: detail?.session || '', label: detail?.session_label || '' });
-		  agentActivityRef.current.attach(detail);
+          agentActivityRef.current.attach(detail);
           access.wire('attached', newId());
           // attach 回执携带的成员清单是权威来源：连上即得，重连即刷新。
           // memberships_complete=false 表示服务器这一轮没查成（清单不可信为
@@ -544,8 +545,15 @@ export default function App() {
         else if (state === 'open') setWireState((current) => current === 'open' ? current : 'connecting');
         bumpAccess();
       },
+    };
+    // React StrictMode mounts effects once speculatively, immediately cleans them
+    // up, then mounts the durable tree. Defer the external connection by one
+    // microtask so the speculative lifetime cannot open a throwaway socket.
+    queueMicrotask(() => {
+      if (!alive) return;
+      wire = createWire(wireOptions);
+      wireRef.current = wire;
     });
-    wireRef.current = wire;
 
     return () => {
       alive = false;
@@ -1009,12 +1017,15 @@ export default function App() {
       }
       const entry = { requestId: '', failed: false };
       registry.current.set(probeKey, entry);
-      handleSend({ channelId, text: '', msgType: type, audience: [actorId], targetLabel: actorId, payload: {} })
-        .then((requestId) => {
-          entry.requestId = requestId || '';
-          setManualAgentVersion((current) => current + 1);
-        })
-        .catch(() => { entry.failed = true; });
+      try {
+        // send returns the id synchronously once the durable outbox owns it.
+        // Submission/ledger updates below determine the eventual result.
+        entry.requestId = handleSend({ channelId, text: '', msgType: type, audience: [actorId], targetLabel: actorId, payload: {} }) || '';
+        entry.failed = !entry.requestId;
+        setManualAgentVersion((current) => current + 1);
+      } catch {
+        entry.failed = true;
+      }
     };
     probeWord(TYPES.agentOptions, optionsProbedRef);
     probeWord(TYPES.agentContext, contextProbedRef);
@@ -1081,6 +1092,24 @@ export default function App() {
   // 都关着，也会在每个流式响应上遍历所有频道、重建 work/artifact/activity/
   // search 四套数据；这会直接和 Composer 在主线程上抢时间。
   const globalProjection = globalSearchOpen ? 'search' : rightPanel === 'activity' ? 'activity' : '';
+  const searchDemandChannels = globalSearchOpen
+    ? channelList.filter((channel) => canViewChannelContent(channel.access)).map((channel) => channel.id).sort().join('\u0000')
+    : '';
+  useEffect(() => {
+    if (!globalSearchOpen || !searchDemandChannels) return undefined;
+    const controller = new AbortController();
+    // Search asks the data plane for visible channel material; it never scans
+    // ledgers or schedules pages itself. The scheduler remains free to choose
+    // local/remote sources, batch sizes and execution order.
+    for (const channelId of searchDemandChannels.split('\u0000')) {
+      void loadHistory(channelId, {
+        intent: HISTORY_INTENT.searchContext,
+        urgency: HISTORY_URGENCY.interactive,
+        signal: controller.signal,
+      });
+    }
+    return () => controller.abort('search-closed');
+  }, [globalSearchOpen, searchDemandChannels, loadHistory]);
   const globalData = useMemo(() => {
     if (!globalProjection) return EMPTY_GLOBAL_DATA;
     const channelData = channelList.map((channel) => {
@@ -1138,12 +1167,12 @@ export default function App() {
     [activeChannelId, loadHistory],
     () => (options) => loadHistory(activeChannelId, options),
   );
-  const activeHistory = {
-    ...historyFor(activeChannelId),
-    localReplicaReady,
-    onReadLatest: readActiveLatest,
-    loadOlder: loadActiveOlder,
-  };
+  const activeHistory = createHistoryDemandPort({
+    channelId: activeChannelId,
+    status: { ...historyFor(activeChannelId), localReplicaReady },
+    open: loadActiveOlder,
+    markRead: readActiveLatest,
+  });
   const activeRow = channelList.find((channel) => channel.id === activeChannelId);
   const activeRoster = isMemberAccess(activeRow?.access) ? rosters.get(activeChannelId) || [] : [];
   const selfId = activeRow?.selfActorId || rosterRef.current?.self(activeChannelId) || '';

@@ -85,10 +85,8 @@ export function isResizeObserverLoop(message) {
 export function installGlobalDiagnostics() {
   if (!globalThis.addEventListener) return () => {};
   const onError = (event) => {
-    // 这一条不是错误：时间线的 Virtuoso 开着 skipAnimationFrameInResizeObserver
-    // （收起长消息时的锚定要靠它同步量高度），浏览器就会在同一帧里又冒出新尺寸
-    // 通知时报这句。Virtuoso 自己下一轮会补量，页面没有任何坏结果。降到 debug 记
-    // 一笔，别再当错误刷屏。
+    // ResizeObserver 的交付循环可能在第三方布局组件同一帧继续改变尺寸时触发。
+    // 浏览器会在下一帧继续投递；保留诊断但不要把这个可恢复通知升级成页面错误。
     if (isResizeObserverLoop(event.message)) {
       diagnostic('debug', 'window.resize_observer_loop', { source: event.filename });
       return;

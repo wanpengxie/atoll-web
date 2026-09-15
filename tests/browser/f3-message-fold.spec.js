@@ -18,7 +18,7 @@ async function sendToSteward(page, text) {
   await page.getByRole('button', { name: /发送/ }).click();
 }
 
-test('收起虚拟列表里的长消息时，读者点下的控件不跳出原位', async ({ page, request }) => {
+test('F7 收起虚拟列表里的长消息时，读者点下的控件不跳出原位', async ({ page, request }) => {
   const reset = await request.post(`${MOCK}/mock/control/reset`, { data: { scenario: 'deep-history', seed: 1311 } });
   expect(reset.ok()).toBe(true);
   await login(page);
@@ -36,6 +36,10 @@ test('收起虚拟列表里的长消息时，读者点下的控件不跳出原�
   await expect(collapse).toBeVisible();
   await collapse.evaluate((node) => node.scrollIntoView({ block: 'center' }));
   await page.waitForTimeout(100);
+  const rowID = await collapse.evaluate((node) => node.closest('[data-presentation-row-id]')?.dataset.presentationRowId || '');
+  const row = page.locator(`[data-presentation-row-id=${JSON.stringify(rowID)}]`);
+  const scroller = page.locator('.timeline-message-list');
+  const expandedHeight = await row.evaluate((node) => node.getBoundingClientRect().height);
   const anchorTop = await collapse.evaluate((node) => node.getBoundingClientRect().top);
   await collapse.evaluate((node) => {
     window.__foldPaintTops = [];
@@ -50,6 +54,7 @@ test('收起虚拟列表里的长消息时，读者点下的控件不跳出原�
 
   await collapse.click();
   await expect(page.getByRole('button', { name: /展开全文 · 45 行/ }).last()).toBeVisible();
+  await expect.poll(() => row.evaluate((node) => node.getBoundingClientRect().height)).toBeLessThan(expandedHeight * 0.75);
   await page.waitForTimeout(150);
   const frames = await page.evaluate(() => {
     window.__foldPaintRunning = false;
@@ -58,4 +63,12 @@ test('收起虚拟列表里的长消息时，读者点下的控件不跳出原�
 
   expect(frames.length).toBeGreaterThan(1);
   expect(frames.every((frame) => frame.connected && Math.abs(frame.top - anchorTop) <= 1)).toBe(true);
+
+  // Collapsing must remove the physical height, not merely hide its content
+  // inside an expanded virtual item. The next user gesture must immediately
+  // move the real scroller.
+  const beforeWheel = await scroller.evaluate((node) => node.scrollTop);
+  await scroller.hover();
+  await page.mouse.wheel(0, -320);
+  await expect.poll(() => scroller.evaluate((node) => node.scrollTop)).toBeLessThan(beforeWheel - 20);
 });

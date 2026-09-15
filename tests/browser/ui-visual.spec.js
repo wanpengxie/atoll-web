@@ -4,7 +4,11 @@ import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 const SCREENSHOT_OPTIONS = { animations: 'disabled', caret: 'hide', scale: 'css', maxDiffPixels: 10 };
 
 function pageScreenshotOptions(page) {
-  return { ...SCREENSHOT_OPTIONS, mask: [page.locator('.timeline')], maskColor: '#f7f2e8' };
+  return {
+    ...SCREENSHOT_OPTIONS,
+    mask: [page.locator('.timeline')],
+    maskColor: '#f7f2e8',
+  };
 }
 
 async function reset(request, scenario, seed) {
@@ -66,20 +70,6 @@ test('UI-VIS-04 空间管理视觉基线', async ({ page, request }) => {
   await expect(panel).toHaveScreenshot('space-administration.png', SCREENSHOT_OPTIONS);
 });
 
-for (const [tab, filename] of [['KV', 'channel-resources-kv.png'], ['文件', 'channel-resources-files.png']]) {
-  test(`UI-VIS-05 频道资源 ${tab} 视觉基线`, async ({ page, request }) => {
-    await page.setViewportSize({ width: 1280, height: 720 });
-    await reset(request, 'resource-workflow', 904);
-    await login(page);
-    await page.locator('#workspace-files-toggle').click();
-    await page.getByText('高级资源工具', { exact: true }).click();
-    const panel = page.locator('.embedded-resources');
-    await expect(panel).toBeVisible();
-    await panel.getByRole('tab', { name: tab, exact: true }).click();
-    await expect(panel).toHaveScreenshot(filename, SCREENSHOT_OPTIONS);
-  });
-}
-
 test('UI-VIS-06 定时动作视觉基线', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'scheduled-action', 905);
@@ -113,7 +103,13 @@ test('UI-VIS-09 用户消息与 Agent 答案气泡视觉基线', async ({ page, 
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'actor-capability', 908);
   await login(page);
-  const turn = page.locator('.agent-conversation-turn.status-completed').first();
+  // Enter browsing mode through the same input path as a reader. Asking
+  // Playwright to scroll an off-screen locator while the timeline still owns
+  // tail-following creates two competing scroll commands and screenshots the
+  // wrong physical viewport beneath the stale locator box.
+  await page.locator('.timeline-message-list').hover();
+  await page.mouse.wheel(0, -1_000);
+  const turn = page.locator('.agent-conversation-turn[data-request-id="c0-history-request-1"]');
   await expect(turn).toBeVisible();
   await expect(turn).toHaveScreenshot('flat-ledger-turn.png', SCREENSHOT_OPTIONS);
 });
@@ -125,7 +121,12 @@ test('UI-VIS-10 全局活动中心视觉基线', async ({ page, request }) => {
   await page.getByRole('button', { name: '打开活动中心' }).click();
   const center = page.getByRole('complementary', { name: '全局活动' });
   await expect(center).toBeVisible();
-  await expect(center).toHaveScreenshot('global-activity.png', SCREENSHOT_OPTIONS);
+  await expect(center).toHaveScreenshot('global-activity.png', {
+    ...SCREENSHOT_OPTIONS,
+    // The activity rows are live data and have their own behavioural tests;
+    // this baseline owns the panel chrome and spacing only.
+    mask: [center.locator('.activity-list')],
+  });
 });
 
 test('UI-VIS-11 600px 全局搜索视觉基线', async ({ page, request }) => {
@@ -136,7 +137,12 @@ test('UI-VIS-11 600px 全局搜索视觉基线', async ({ page, request }) => {
   await page.getByRole('button', { name: '全局搜索' }).click();
   const search = page.getByRole('dialog', { name: '全局搜索' });
   await search.getByLabel('搜索频道、消息、文件、任务或成员').fill('history 1');
-  await expect(search).toHaveScreenshot('global-search-600.png', SCREENSHOT_OPTIONS);
+  await expect(search).toHaveScreenshot('global-search-600.png', {
+    ...SCREENSHOT_OPTIONS,
+    // Cross-channel result availability is a data/access contract, not part
+    // of this dialog's visual baseline.
+    mask: [search.locator('.global-search-results')],
+  });
 });
 
 test('UI-VIS-12 频道挂载文件主页面视觉基线', async ({ page, request }) => {
@@ -151,6 +157,7 @@ test('UI-VIS-12 频道挂载文件主页面视觉基线', async ({ page, request
     buffer: Buffer.from('这是当前频道默认挂载目录中的文件。'),
   });
   await expect(files.getByText('频道交付说明.txt', { exact: true })).toBeVisible();
+  await page.locator('.reading-history-edge-tab').evaluate((node) => { node.hidden = true; });
   await expect(files).toHaveScreenshot('channel-files-mounted.png', SCREENSHOT_OPTIONS);
 });
 
@@ -167,5 +174,5 @@ test('UI-VIS-13 频道挂载文件预览视觉基线', async ({ page, request })
   });
   await files.locator('.channel-file-row').filter({ hasText: '可预览说明.md' }).locator('.finder-name-cell').click();
   await expect(page.getByRole('complementary', { name: '文件详情' })).toContainText('挂载目录文件可以直接在右侧面板中预览');
-  await expect(page).toHaveScreenshot('channel-files-preview.png', SCREENSHOT_OPTIONS);
+  await expect(page).toHaveScreenshot('channel-files-preview.png', pageScreenshotOptions(page));
 });

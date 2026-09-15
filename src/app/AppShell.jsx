@@ -6,6 +6,8 @@ import { activeAgentTurn } from '../model/agent-control.js';
 import { adjacentChannelId, channelShortcutDirection, channelShortcutIndex } from '../model/channel-navigation.js';
 import { PaneResizer } from '../ui/primitives/PaneResizer.jsx';
 import { readPaneWidth, writePaneWidth } from '../model/pane-sizes.js';
+import { createViewSessionStore } from '../model/view-session.js';
+import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 
 // 首屏可读内容只需要频道与消息。输入框、文件管理、终端、任务和右侧详情以前虽
 // 不可见，仍全部进入入口 chunk；移动端要先下载/解析完才会执行 session 请求。
@@ -32,10 +34,29 @@ const ACCESS_MESSAGE = {
 };
 
 export function AppShell({ session, navigation, workspace, notices, panel }) {
+  const shellTopology = useSurfaceTopology();
+  const mobileShell = shellTopology === 'mobile';
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const [composerEdit, setComposerEdit] = useState(null);
   const [replyTargets, setReplyTargets] = useState({});
+  const viewSessionsRef = useRef(null);
+  if (!viewSessionsRef.current) viewSessionsRef.current = createViewSessionStore();
+  useEffect(() => {
+    const channelId = navigation.activeChannelId;
+    if (!channelId) return;
+    viewSessionsRef.current.writeSurface(channelId, workspace.view === 'tasks' ? 'tasks' : 'conversation');
+  }, [navigation.activeChannelId, workspace.view]);
+  useEffect(() => {
+    const channelId = navigation.activeChannelId;
+    if (!channelId) return;
+    const focus = panel.host?.panel?.focus;
+    viewSessionsRef.current.writeContext(channelId, panel.value ? {
+      kind: panel.value,
+      key: focus?.key || focus?.objectId || focus?.requestId || panel.value,
+      ...(focus?.sourceRowID ? { sourceRowID: focus.sourceRowID } : {}),
+    } : null);
+  }, [navigation.activeChannelId, panel.value, panel.host?.panel?.focus]);
   // App 的 workspace 外壳随每一批 feed 重建，里面的 inline callback 也会换身份。
   // Composer 真正需要的是最新行为，不需要因为函数对象换了就重渲。用稳定端口转发
   // 到本次 render 的实现，让 React.memo 可以把输入 DOM 与 feed 更新彻底隔开。
@@ -102,7 +123,6 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }, [dynamicVisible, filesOpen, navigation.activeChannelId]);
   const dynamicTabView = () => (filesOpenRef.current.get(navigation.activeChannelId) ? 'artifacts' : 'dynamic');
   const writeDisabled = session.wireState !== 'open' || !canWriteChannel(workspace.access);
-  const composerDisabled = !workspace.channel || !isMemberAccess(workspace.access);
   const contentVisible = canViewChannelContent(workspace.access);
   // AppShell 会跟随每批 live feed 重渲。activeAgentTurn 原先每次都复制、过滤、
   // 排序整个 turns Map；同一 processing 阶段追加正文并不会改变“当前运行任务”。
@@ -272,9 +292,9 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }
 
   const shellClass = ['shell', panel.value && 'has-context', mobileChannelsOpen && 'mobile-channels-open'].filter(Boolean).join(' ');
-  return <div ref={railRef} className={shellClass} data-workspace-view={workspace.view} style={railWidth ? { '--rail-width': `${railWidth}px` } : undefined}>
+  return <SurfaceShell topology={shellTopology} ref={railRef} className={shellClass} data-workspace-view={workspace.view} style={railWidth ? { '--rail-width': `${railWidth}px` } : undefined}>
     <ChannelList channels={navigation.channels} activeChannelId={navigation.activeChannelId} unread={navigation.unread} agentActivity={navigation.agentActivity} wireState={session.wireState} me={session.me} update={session.update} onSelect={(channelId) => { navigation.onSelect(channelId); setMobileChannelsOpen(false); }} onCreate={() => { setMobileChannelsOpen(false); navigation.onCreate(); }} onSearch={() => { setMobileChannelsOpen(false); navigation.onSearch(); }} onActivity={() => { setMobileChannelsOpen(false); navigation.onActivity(); }} onSpaceManage={() => { setMobileChannelsOpen(false); navigation.onSpaceManage(); }} onLogout={session.onLogout} onCloseMobile={mobileChannelsOpen ? closeMobileChannels : undefined} />
-    <PaneResizer kind="rail" grows="right" width={railWidth} measure={() => railRef.current?.querySelector('.channel-rail')?.getBoundingClientRect().width} onResize={setRailWidth} onCommit={commitRailWidth} onReset={resetRailWidth} label="调整频道栏宽度" />
+    {shellTopology === 'desktop' && <PaneResizer kind="rail" grows="right" width={railWidth} measure={() => railRef.current?.querySelector('.channel-rail')?.getBoundingClientRect().width} onResize={setRailWidth} onCommit={commitRailWidth} onReset={resetRailWidth} label="调整频道栏宽度" />}
     <main className="workspace">
       <header className="channel-header">
         <div className="channel-identity"><button type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button><div><p className="eyebrow">频道</p><h1>{workspace.channel?.qualified_name || workspace.channel?.name || navigation.activeChannelId || '选择频道'}</h1></div></div>
@@ -321,8 +341,8 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
             永久压在新内容上，表现为文字重叠、且此后切任何频道都看到同一屏。按频道 key
             重挂，让残影随旧节点一起消失——Composer 早就是这么做的。 */}
         <div className="dynamic-message-pane">
-          {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} state={workspace.state} history={workspace.history} roster={workspace.roster} selfId={workspace.selfId} agentActivity={workspace.agentActivity} onAcknowledgeAgentActivity={workspace.onAcknowledgeAgentActivity} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} onFocusAgentChange={workspace.onFocusAgentChange} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
-          <Suspense fallback={<section className="composer-wrap composer-loading" role="status"><div className="composer-surface">正在加载输入框…</div></section>}><Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={composerActions.onDraftChange} disabled={composerDisabled} disabledReason={disabledReason} onSend={composerActions.onSend} onRetry={composerActions.onRetry} attachments={workspace.attachments} onPreviewAttachment={composerActions.onPreviewAttachment} onRemoveAttachment={composerActions.onRemoveAttachment} onClearAttachments={composerActions.onClearAttachments} onUploadAttachments={composerActions.onUploadAttachments} onOpenChannelFiles={composerActions.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={composerActions.onCancelReply} onReplySent={composerActions.onReplySent} /></Suspense>
+          {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} viewSessions={viewSessionsRef.current} state={workspace.state} history={workspace.history} roster={workspace.roster} selfId={workspace.selfId} agentActivity={workspace.agentActivity} onAcknowledgeAgentActivity={workspace.onAcknowledgeAgentActivity} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} onFocusAgentChange={workspace.onFocusAgentChange} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
+          <Suspense fallback={<section className="composer-wrap composer-loading" role="status"><div className="composer-surface">正在加载输入框…</div></section>}><Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={composerActions.onDraftChange} disabled={!workspace.channel || writeDisabled} disabledReason={disabledReason} onSend={composerActions.onSend} onRetry={composerActions.onRetry} attachments={workspace.attachments} onPreviewAttachment={composerActions.onPreviewAttachment} onRemoveAttachment={composerActions.onRemoveAttachment} onClearAttachments={composerActions.onClearAttachments} onUploadAttachments={composerActions.onUploadAttachments} onOpenChannelFiles={composerActions.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={composerActions.onCancelReply} onReplySent={composerActions.onReplySent} /></Suspense>
         </div>
         {/* 文件分屏。跟终端一样：开过就恒不卸载，收起只是 hidden——目录、滚动和
             选中都在这棵树里，卸一次人就得从根目录重新点回来。按频道 key 重挂，
@@ -340,5 +360,5 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     </main>
     {workspace.channel && contentVisible && <button type="button" className={`reading-history-edge-tab${panel.value === 'reading-history' ? ' active' : ''}`} aria-label="打开最近阅读" title="最近阅读" onClick={() => panel.open('reading-history')}>最近</button>}
     {panel.value && <Suspense fallback={null}><RightPanelHost {...panel.host} /></Suspense>}
-  </div>;
+  </SurfaceShell>;
 }

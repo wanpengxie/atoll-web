@@ -401,6 +401,26 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
+  it('carries visual intent and urgency into the scheduler-owned batch', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'restore-position',
+      urgency: 'blocking',
+    });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({
+      purpose: 'user-demand',
+      priority: 'foreground',
+      intent: 'restore-position',
+      urgency: 'blocking',
+    });
+    operation.release();
+    scheduler.destroy();
+  });
+
   it('settles pending foreground work when the local replica epoch is reset', async () => {
     const scheduler = createHistoryScheduler({ requestPage: vi.fn(), revealRows: () => {} });
     const operation = scheduler.beginOperation('c0');

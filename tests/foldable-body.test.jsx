@@ -22,6 +22,11 @@ describe('foldCandidate（量不到布局时的判据）', () => {
     expect(foldCandidate('x'.repeat(1200))).toBe(true);
     expect(foldCandidate(Array.from({ length: 17 }, () => 'a').join('\n'))).toBe(false);
   });
+
+  it('无换行的中英文长段落也按稳定的显示宽度估算', () => {
+    expect(foldCandidate('中文段落'.repeat(160))).toBe(true);
+    expect(foldCandidate('wrapped words '.repeat(90))).toBe(true);
+  });
 });
 
 describe('FoldableBody', () => {
@@ -45,23 +50,16 @@ describe('FoldableBody', () => {
     expect(document.querySelector('.message-fold.is-folded')).toBeNull();
   });
 
-  it('明确不可能超限的短正文不读布局也不创建 observer', () => {
+  it('折叠资格不读布局也不创建 observer', () => {
     const observe = vi.fn();
     const ResizeObserver = vi.fn(function Observer() { this.observe = observe; this.disconnect = vi.fn(); });
     vi.stubGlobal('ResizeObserver', ResizeObserver);
     const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get');
-    render(<FoldableBody id="short-fast" text="一句话"><p>一句话</p></FoldableBody>);
+    const view = render(<FoldableBody id="stable-fold" text="一句话"><p>一句话</p></FoldableBody>);
+    view.rerender(<FoldableBody id="stable-fold" text={LONG}><pre>{LONG}</pre></FoldableBody>);
     expect(ResizeObserver).not.toHaveBeenCalled();
     expect(scrollHeight).not.toHaveBeenCalled();
     scrollHeight.mockRestore();
-  });
-
-  it('长正文流式变化时复用同一个高度 observer', () => {
-    const ResizeObserver = vi.fn(function Observer() { this.observe = vi.fn(); this.disconnect = vi.fn(); });
-    vi.stubGlobal('ResizeObserver', ResizeObserver);
-    const view = render(<FoldableBody id="stream" text={LONG}><pre>{LONG}</pre></FoldableBody>);
-    view.rerender(<FoldableBody id="stream" text={`${LONG}\n新一行`}><pre>{LONG}\n新一行</pre></FoldableBody>);
-    expect(ResizeObserver).toHaveBeenCalledTimes(1);
   });
 
   it('例外位置（最新一轮）默认展开但仍可手动收起', () => {

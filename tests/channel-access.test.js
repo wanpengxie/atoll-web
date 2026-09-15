@@ -57,6 +57,7 @@ describe('channel access model', () => {
     expect(tracker.rows().find((row) => row.id === 'c0').access).toBe('member_unavailable');
 
     tracker.channelsObserved([{ id: 'c0', status: 'present', open: true }], { complete: false });
+    expect(tracker.rows().find((row) => row.id === 'c0').access).toBe('member_active');
     expect(tracker.state('c1').existence).toBe('present');
     tracker.membershipsObserved([{ channel_id: 'c0', actor_id: 'human-root', status: 'revoked' }]);
     expect(tracker.state('c0')).toMatchObject({ relationship: 'denied', selfActorId: '' });

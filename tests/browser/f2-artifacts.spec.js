@@ -19,6 +19,7 @@ test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯�
   await reset(request, 1201); await login(page);
   await page.locator('#workspace-files-toggle').click();
   const view = page.getByRole('region', { name: '频道文件' });
+  await expect(view).toBeVisible();
   // 列表吃满的是**它那一格**，不再是整个工作区——文件区已经是与动态并排的分屏。
   // 判据没变（列表恒不自己留白、恒无圆角、表头恒贴着工具条），只是量的对象换了。
   const fileGeometry = await page.evaluate(() => {

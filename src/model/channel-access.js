@@ -162,6 +162,9 @@ export function createChannelAccessTracker({
       state.profile = profile;
       state.existence = profile.status === 'retired' ? 'retired' : 'present';
       state.runtime = profile.open === true ? 'open' : profile.open === false ? 'closed' : 'unknown';
+      // unavailable is a remembered delivery error. A newer channel profile
+      // that says the runtime is serving supersedes that error.
+      if (profile.open === true) state.unavailable = false;
       if (profile.id === 'c0' && profile.owner_principal === principalId) {
         // Atoll 的 c0 是节点 owner 的既定 home/root 频道。这里仅承认这一个
         // 启动不变式，不把普通频道的 owner_principal 泛化成 membership。

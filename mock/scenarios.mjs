@@ -53,6 +53,7 @@ export const SCENARIOS = Object.freeze({
   'first-login': standard({ memberships: [], history: false }),
   'multi-channel': standard({ files: DEMO_FILES, behavior: { demo_attachments: true } }),
   'deep-history': standard({ behavior: { history_turns: 120 } }),
+  'mixed-height-history': standard({ behavior: { history_turns: 120, history_variable_heights: true } }),
   // 14,286 turns × 7 ledger rows + 4 non-turn rows = 100,006 rows (~100k).
   // Keep this scenario to one membership channel so the fixture measures one
   // genuinely deep ledger rather than spending the same memory on a background

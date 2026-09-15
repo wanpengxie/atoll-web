@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Virtuoso, VirtuosoMockContext } from 'react-virtuoso';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
@@ -12,11 +11,10 @@ import { controlLabel, controlPayload, extraControls, taskControlContext } from 
 import { agentFrozenStates, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { selectSystemNote } from '../model/agent-selection.js';
 import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
-import { projectTimeline } from '../model/timeline-projection.js';
+import { presentationEntryId, projectTimeline } from '../model/timeline-projection.js';
+import { createPresentationProjector } from '../model/conversation-presentation.js';
 import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { conversationTextObservations, processCount, turnStartObservation, withoutFinalEcho } from '../model/turn-process.js';
-import { diagnostic } from '../model/diagnostics.js';
-import { createTopIntentController, HISTORY_OPERATION } from '../model/history-interaction.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { messageTimeLabel } from '../util/time.js';
@@ -26,16 +24,15 @@ import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
 import { FoldableBody } from './timeline/FoldableBody.jsx';
+import { useConversationViewport } from './timeline/useConversationViewport.js';
+import { ViewportLayoutProvider } from './timeline/ViewportLayoutContext.jsx';
+import { VirtualTimelineAdapter } from './timeline/VirtualTimelineAdapter.jsx';
 
 // 平台叙事（成员进出、跨频道入站）暂时不进时间线。它和真正的往来平铺在同一条流里，
 // 每次 agent 干活就刷出一串，把人要读的东西淹掉。数据仍然在 state.narration 里，
 // 什么都没丢——等它有了合适的落位（侧栏或频道信息页）再接回来。
 const SHOW_CHANNEL_NARRATION = false;
 const EMPTY_FROZEN_STATES = new Map();
-// firstItemIndex must remain non-negative while prepending. A billion leaves
-// ample room for repeated 32-row reveals even in six-figure histories.
-const VIRTUAL_INDEX_BASE = 1_000_000_000;
-
 // During a rolling frontend/backend upgrade, older actors reject unknown
 // fields. Use the lease CAS as soon as actor.describe advertises it; the UI
 // invalidation rules below remain the compatibility guard for older actors.
@@ -44,11 +41,6 @@ function withExpectedHold(capabilityIndex, actorId, type, payload, holdId) {
   return holdId && schema?.properties?.expected_hold_id
     ? { ...payload, expected_hold_id: holdId }
     : payload;
-}
-
-function TimelineVirtualList({ children }) {
-  if (import.meta.env.MODE !== 'test') return children;
-  return <VirtuosoMockContext.Provider value={{ viewportHeight: 720, itemHeight: 96 }}>{children}</VirtuosoMockContext.Provider>;
 }
 
 const ERROR_LABELS = {
@@ -465,7 +457,7 @@ function AgentRequestQuote({ request, names, onDownload, onPreview }) {
   </blockquote>;
 }
 
-function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, fold = null, onDownload, onPreview, onReply, compact = false, compactExpanded = false, onCompactToggle = null, hasThreadChildren = false }) {
+function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, fold = null, onDownload, onPreview, onReply, onCreateTask, compact = false, compactExpanded = false, onCompactToggle = null, hasThreadChildren = false }) {
   const request = turn.request;
   const terminal = turn.terminal;
   const responseFoldId = `${turn.requestId}:response`;
@@ -502,7 +494,7 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
   const replyTarget = terminal && argsOf(terminal)?.status === 'completed'
     ? replyTargetOf(terminal, { roster, selfId, fallbackSenderId: request.audience?.[0], fallbackSenderKind: 'agent' })
     : null;
-  return <ReplyableMessageFrame replyTarget={replyTarget} copyText={terminal ? messagePresentation(terminal).text : ''} onReply={onReply} className={className} contentClassName="response-body" identity={identity}>{heading}{content}</ReplyableMessageFrame>;
+  return <ReplyableMessageFrame replyTarget={replyTarget} copyText={terminal ? messagePresentation(terminal).text : ''} onReply={onReply} onCreateTask={onCreateTask} className={className} contentClassName="response-body" identity={identity}>{heading}{content}</ReplyableMessageFrame>;
 }
 
 function hasLaterThreadSibling(items, index, depth) {
@@ -563,7 +555,7 @@ function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
   </ol>;
 }
 
-function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, frozen, fold = null, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply }) {
+function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, frozen, fold = null, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const requestText = requestView.text;
@@ -580,7 +572,7 @@ function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount 
       <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
     </MessageFrame>
     {!turn.terminal && !editSession && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
-    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} roster={roster} selfId={selfId} fold={fold} onReply={onReply} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
+    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} roster={roster} selfId={selfId} fold={fold} onReply={onReply} onCreateTask={onCreateTask} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
     <AgentThreadMessages thread={thread} names={names} onDownload={onDownload} onPreview={onPreview} />
   </section>;
 }
@@ -670,29 +662,6 @@ function WireErrorLine({ error }) {
   );
 }
 
-function entryAuthor(entry) {
-  return entry.kind === 'turn' ? entry.turn.request?.sender?.id : entry.kind === 'standalone' ? entry.envelope.sender?.id : '';
-}
-
-function entryEndAuthor(entry) {
-  if (entry.kind === 'turn') return entry.turn.terminal?.sender?.id || entry.turn.request?.sender?.id;
-  return entry.kind === 'standalone' ? entry.envelope.sender?.id : '';
-}
-
-function entryTimestamp(entry) {
-  return Number(entry.kind === 'turn' ? entry.turn.request?.ts : entry.kind === 'standalone' ? entry.envelope.ts : 0) || 0;
-}
-
-function isContinuation(entries, index) {
-  const isConversational = (entry) => entry?.kind === 'standalone'
-    || (entry?.kind === 'turn' && ![TYPES.humanAsk, TYPES.humanApprove].includes(entry.turn.request.type));
-  if (index <= 0 || !isConversational(entries[index]) || !isConversational(entries[index - 1])) return false;
-  const current = entries[index];
-  const previous = entries[index - 1];
-  const delta = entryTimestamp(current) - entryTimestamp(previous);
-  return entryAuthor(current) && entryAuthor(current) === entryEndAuthor(previous) && delta >= 0 && delta <= 5 * 60_000;
-}
-
 function dayKey(ts) {
   if (!ts) return '';
   const date = new Date(ts);
@@ -708,14 +677,18 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
-  const [scope, setScope] = useState(TIMELINE_SCOPE.mine);
+export function Timeline({ state, history = {}, viewSessions, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
+  const initialViewSessionRef = useRef(null);
+  if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
+  const presentationProjectorRef = useRef(null);
+  if (!presentationProjectorRef.current) presentationProjectorRef.current = createPresentationProjector();
+  const [scope, setScope] = useState(() => initialViewSessionRef.current.scope || TIMELINE_SCOPE.mine);
   // 选中的 agent。空集 = 不过滤（常态）。Timeline 按频道 key 挂载，所以切频道
   // 天然重置，恒不需要自己清。
-  const [actorFilter, setActorFilter] = useState(() => new Set());
+  const [actorFilter, setActorFilter] = useState(() => new Set(initialViewSessionRef.current.actorFilter || []));
   // 读者手动展开 / 收起过的正文，按正文 id 记（true 展开、false 收起）。没记的按
   // 默认规则：超阈值即折，最新一轮和正在查看过程的那轮例外。按频道重挂自然重置。
-  const [foldOverrides, setFoldOverrides] = useState(() => new Map());
+  const [foldOverrides, setFoldOverrides] = useState(() => new Map(initialViewSessionRef.current.foldOverrides || []));
   const toggleFold = useCallback((id, expanded) => setFoldOverrides((current) => new Map(current).set(id, expanded)), []);
   const [editing, setEditing] = useState(null);
   const editSessionSerialRef = useRef(0);
@@ -726,221 +699,10 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
-	const messageListRef = useRef(null);
-	const messageListScrollerRef = useRef(null);
-	const messageListScrollCleanupRef = useRef(() => {});
-	const messageListPinFrameRef = useRef(0);
-	const messageListPrependVisualRef = useRef(null);
-	// This is the reader's intent, not Virtuoso's latest geometric verdict.
-	// A newly mounted row is first laid out with an estimate and measured later;
-	// during that interval the scroller is temporarily away from the physical
-	// bottom even though the reader never left it.
-	const messageListFollowLatestRef = useRef(true);
-	const messageListPointerActiveRef = useRef(false);
-	const messageListTouchYRef = useRef(null);
-	const listTransitionRef = useRef({ key: '', firstSeq: 0, lastSeq: 0, length: 0, firstItemIndex: VIRTUAL_INDEX_BASE });
-	const [messageListAtBottom, setMessageListAtBottom] = useState(true);
-	const [messageListUnseen, setMessageListUnseen] = useState(0);
-	const historyInteractionReadyRef = useRef('');
-	const historyLoadRef = useRef(null);
-	const historyRequestRef = useRef(null);
-	const historyOperationSerialRef = useRef(0);
-	const historyControllerRef = useRef(null);
-	function clearHistoryPrependVisual() {
-	  const visual = messageListPrependVisualRef.current;
-	  if (!visual) return;
-	  visual.observer?.disconnect();
-	  clearTimeout(visual.timeout);
-	  if (visual.applied && visual.itemList?.isConnected) {
-		visual.itemList.style.transform = visual.originalTransform;
-	  }
-	  messageListPrependVisualRef.current = null;
-	}
-	async function prepareHistoryPrependVisual() {
-	  clearHistoryPrependVisual();
-	  const scroller = messageListScrollerRef.current;
-	  if (!scroller || scroller.scrollTop > 1) return;
-	  let anchor;
-	  // A large wheel/touch gesture can put the scroller at zero one frame before
-	  // Virtuoso replaces the former bottom window with the current top window.
-	  // Wait for that existing top row before loading older data; otherwise there
-	  // is no real reader anchor to preserve across the prepend.
-	  for (let frame = 0; frame < 3 && !anchor; frame += 1) {
-		const viewportRect = scroller.getBoundingClientRect();
-		anchor = [...scroller.querySelectorAll('.timeline-entry')]
-		  .map((entry) => ({ entry, rect: entry.getBoundingClientRect() }))
-		  .filter(({ rect }) => rect.bottom > viewportRect.top && rect.top < viewportRect.bottom)
-		  .sort((left, right) => left.rect.top - right.rect.top)[0];
-		if (!anchor) await new Promise((resolve) => requestAnimationFrame(resolve));
-	  }
-	  if (messageListScrollerRef.current !== scroller || !scroller.isConnected) return;
-	  const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]');
-	  if (!anchor || !itemList) return;
-	  const viewportTop = scroller.getBoundingClientRect().top;
-	  const visual = {
-		anchorId: anchor.entry.dataset.entryId || '',
-		anchorTop: anchor.rect.top - viewportTop,
-		itemList,
-		originalTransform: itemList.style.transform,
-		baseScrollTop: scroller.scrollTop,
-		delta: 0,
-		applied: false,
-		observer: null,
-		timeout: 0,
-	  };
-	  const observer = new MutationObserver(() => {
-		if (messageListPrependVisualRef.current !== visual || visual.applied) return;
-		const currentAnchor = [...scroller.querySelectorAll('.timeline-entry')]
-		  .find((entry) => entry.dataset.entryId === visual.anchorId);
-		if (!currentAnchor) return;
-		const delta = currentAnchor.getBoundingClientRect().top
-		  - scroller.getBoundingClientRect().top
-		  - visual.anchorTop;
-		if (Math.abs(delta) <= 1) return;
-		// Virtuoso compensates firstItemIndex on its next measurement frame. The
-		// newly prepended DOM has already moved the old rows by then, so preserve
-		// their painted position until that logical scroll correction arrives.
-		observer.disconnect();
-		visual.itemList.style.transform = `${visual.originalTransform} translateY(${-delta}px)`.trim();
-		visual.delta = delta;
-		visual.applied = true;
-	  });
-	  visual.observer = observer;
-	  observer.observe(itemList, { attributes: true, characterData: true, childList: true, subtree: true });
-	  visual.timeout = setTimeout(clearHistoryPrependVisual, 2_000);
-	  messageListPrependVisualRef.current = visual;
-	}
-	historyLoadRef.current = history?.loadOlder || null;
-	function newHistoryController() {
-	  return createTopIntentController({
-		load: async (goal) => {
-		  await prepareHistoryPrependVisual();
-		  return historyLoadRef.current
-			? historyLoadRef.current(goal)
-			: Promise.resolve({ kind: HISTORY_OPERATION.exhausted });
-		},
-		onState: ({ state: operationState, epoch, viewKey, result, reason }) => diagnostic('debug', `history.intent_${operationState}`, {
-		  channelId: state.channelId, epoch, viewKey, reason: reason || result?.kind || '',
-		}),
-	  });
-	}
-	if (historyControllerRef.current === null) historyControllerRef.current = newHistoryController();
 	const previousAccess = useRef(access);
 	const openFileReference = useCallback((reference) => {
 	  onPreviewResource?.(state.channelId, attachmentFromFileReference(reference));
 	}, [onPreviewResource, state.channelId]);
-	const setMessageListScroller = useCallback((node) => {
-	  if (messageListScrollerRef.current === node) return;
-	  messageListScrollCleanupRef.current();
-	  messageListScrollerRef.current = node;
-	  if (!node) {
-		messageListScrollCleanupRef.current = () => {};
-		return;
-	  }
-	  const distanceFromBottom = () => node.scrollHeight - node.clientHeight - node.scrollTop;
-	  const handleScroll = () => {
-		const prependVisual = messageListPrependVisualRef.current;
-		if (prependVisual?.applied && node.scrollTop > 1) {
-		  // Virtuoso compensates by the size of the prepended segment. Preserve
-		  // the exact row offset the reader had (including a partially visible row),
-		  // then remove the temporary paint-only transform in the same scroll task.
-		  const anchoredTop = prependVisual.baseScrollTop + prependVisual.delta;
-		  if (Math.abs(node.scrollTop - anchoredTop) > 1) node.scrollTop = anchoredTop;
-		  clearHistoryPrependVisual();
-		}
-		if (distanceFromBottom() <= 2) messageListFollowLatestRef.current = true;
-		else if (messageListPointerActiveRef.current) messageListFollowLatestRef.current = false;
-		else if (messageListFollowLatestRef.current) {
-		  // Virtuoso can apply its estimated follow position after the measured
-		  // height callback. Correct that synthetic scroll synchronously; waiting
-		  // for another frame would paint one frame at the estimated position.
-		  node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
-		}
-		// Prepending a historical segment makes Virtuoso move scrollTop to keep
-		// the reader's anchor fixed. That is layout compensation, not the reader
-		// abandoning the top intent. Let the bounded operation finish; its owner
-		// below closes the top epoch after projection has settled.
-		const controller = historyControllerRef.current;
-		if (node.scrollTop > 1 && !controller?.snapshot().active) controller?.leaveTop();
-	  };
-	  // A scroll event alone cannot distinguish a person's gesture from
-	  // Virtuoso's prepend compensation. Input events can. They preserve one
-	  // additional top demand while a slow cache/network batch is in flight.
-	  const handleTopInput = () => {
-		if (node.scrollTop <= 1) historyRequestRef.current?.('top-input', { continuation: true, queueWhileActive: true });
-	  };
-	  const handleWheel = (event) => {
-		if (event.deltaY < 0) messageListFollowLatestRef.current = false;
-		handleTopInput();
-	  };
-	  const handlePointerDown = () => { messageListPointerActiveRef.current = true; };
-	  const handlePointerUp = () => { messageListPointerActiveRef.current = false; };
-	  const handleTouchStart = (event) => {
-		messageListTouchYRef.current = event.touches[0]?.clientY ?? null;
-	  };
-	  const handleTouchMove = (event) => {
-		const nextY = event.touches[0]?.clientY;
-		if (nextY != null && messageListTouchYRef.current != null && nextY > messageListTouchYRef.current + 2) {
-		  messageListFollowLatestRef.current = false;
-		}
-		messageListTouchYRef.current = nextY ?? null;
-		handleTopInput();
-	  };
-	  const handleKeyDown = (event) => {
-		if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) messageListFollowLatestRef.current = false;
-	  };
-	  node.addEventListener('scroll', handleScroll, { passive: true });
-	  node.addEventListener('wheel', handleWheel, { passive: true });
-	  node.addEventListener('pointerdown', handlePointerDown, { passive: true });
-	  window.addEventListener('pointerup', handlePointerUp, { passive: true });
-	  node.addEventListener('touchstart', handleTouchStart, { passive: true });
-	  node.addEventListener('touchmove', handleTouchMove, { passive: true });
-	  node.addEventListener('keydown', handleKeyDown);
-	  messageListScrollCleanupRef.current = () => {
-		clearHistoryPrependVisual();
-		node.removeEventListener('scroll', handleScroll);
-		node.removeEventListener('wheel', handleWheel);
-		node.removeEventListener('pointerdown', handlePointerDown);
-		window.removeEventListener('pointerup', handlePointerUp);
-		node.removeEventListener('touchstart', handleTouchStart);
-		node.removeEventListener('touchmove', handleTouchMove);
-		node.removeEventListener('keydown', handleKeyDown);
-	  };
-	}, []);
-	const keepMessageListPinned = useCallback(() => {
-	  const scroller = messageListScrollerRef.current;
-	  if (!scroller || !messageListFollowLatestRef.current) return;
-	  const pin = () => {
-		const current = messageListScrollerRef.current;
-		if (!current || !messageListFollowLatestRef.current) return;
-		const bottom = Math.max(0, current.scrollHeight - current.clientHeight);
-		if (Math.abs(current.scrollTop - bottom) > 1) current.scrollTop = bottom;
-	  };
-	  pin();
-	  cancelAnimationFrame(messageListPinFrameRef.current);
-	  // Virtuoso reports its new logical height before React has necessarily
-	  // committed that height to the scroller. Pin once more before the next
-	  // paint, using the committed scrollHeight.
-	  messageListPinFrameRef.current = requestAnimationFrame(pin);
-	}, []);
-	useEffect(() => () => {
-	  cancelAnimationFrame(messageListPinFrameRef.current);
-	  clearHistoryPrependVisual();
-	}, []);
-	useLayoutEffect(() => {
-	  // React StrictMode intentionally performs setup → cleanup → setup in
-	  // development. A controller disposed by the simulated cleanup must be
-	  // replaced; otherwise every later physical-top callback becomes a no-op.
-	  let controller = historyControllerRef.current;
-	  if (!controller || controller.snapshot().disposed) {
-		controller = newHistoryController();
-		historyControllerRef.current = controller;
-	  }
-	  return () => {
-		controller.dispose();
-		if (historyControllerRef.current === controller) historyControllerRef.current = null;
-	  };
-	}, []);
   const names = useMemo(() => actorNameMap(roster), [roster]);
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
   // 但呈现上必须留在用户点下"编辑"的位置原地变可编辑——恒不在编辑中途瞬移。
@@ -957,6 +719,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     editingTargetId,
     showNarration: SHOW_CHANNEL_NARRATION,
     incremental: true,
+    presentationProjector: presentationProjectorRef.current,
   }), [state, projectionVersion, scope, selfId, actorFilter, editingTargetId]);
   const { filtered: entries, actorFilterApplies } = projection;
   // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。
@@ -970,28 +733,28 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     return filterableAgents.some((row) => row.id === only) ? only : '';
   }, [actorFilterApplies, actorFilter, filterableAgents]);
   useEffect(() => { onFocusAgentChange?.(focusAgentId); }, [focusAgentId, onFocusAgentChange]);
-	const withNarration = projection.items;
-  const latestVisibleSeq = projection.lastVisibleSeq;
-	const firstVisibleSeq = projection.firstVisibleSeq;
+	const withNarration = projection.presentationRows;
+  // The virtual index and the lookup used after a prepend must describe the
+  // same presentation rows. A turn can span several ledger sequences, so the
+  // raw entry seq is not interchangeable with its semantic row bounds.
+  const firstVisibleSeq = Number(withNarration[0]?.seqLow || 0);
+  const latestVisibleSeq = Number(withNarration.at(-1)?.seqHigh || 0);
 	const historyProjectionKey = `${state.channelId}:${scope}:${selfId}:${editingTargetId}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
-	const previousList = listTransitionRef.current;
 	const messageListKey = `${state.channelId}:${scope}`;
-	let firstItemIndex = previousList.firstItemIndex;
-	if (previousList.key !== messageListKey) firstItemIndex = VIRTUAL_INDEX_BASE;
-	else if (firstVisibleSeq && previousList.firstSeq && firstVisibleSeq < previousList.firstSeq) {
-	  const prepended = withNarration.findIndex((entry) => entry.seq === previousList.firstSeq);
-	  if (prepended > 0) firstItemIndex = previousList.firstItemIndex - prepended;
-	}
-	const nextListTransition = {
-	  key: messageListKey,
-	  firstSeq: firstVisibleSeq,
-	  lastSeq: latestVisibleSeq,
-	  length: withNarration.length,
-	  firstItemIndex,
-	};
-	useLayoutEffect(() => {
-	  listTransitionRef.current = nextListTransition;
-	}, [messageListKey, firstVisibleSeq, latestVisibleSeq, withNarration.length, firstItemIndex]);
+	const viewport = useConversationViewport({
+	  channelId: state.channelId,
+	  lastSeq: state.lastSeq,
+	  history,
+	  viewKey: historyProjectionKey,
+	  listKey: messageListKey,
+	  items: withNarration,
+	  firstVisibleSeq,
+	  latestVisibleSeq,
+	  viewSpec: { scope, selfId, actorFilter, editingTargetId, showNarration: SHOW_CHANNEL_NARRATION },
+	  initialSession: initialViewSessionRef.current,
+	  onSessionChange: (change) => viewSessions?.writeConversation(state.channelId, change),
+	});
+	const firstItemIndex = viewport.firstItemIndex;
   // The fold's visible window can now be large: Message List virtualizes it.
   // Older historical batches remain outside React in the scheduler reservoir
   // until a top demand releases 32 rows.
@@ -1003,15 +766,6 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     total: withNarration.length,
     hasOlder: windowStart > 0,
   };
-	// Virtuoso 只会请求视口附近的 item。日期分隔也在那时向前找最近时间戳，恒不
-	// 为屏幕外几万条记录提前造一张同长度数组。
-	function previousTimestampAt(index) {
-	  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-		const timestamp = entryTimestamp(windowed.items[cursor]);
-		if (timestamp) return timestamp;
-	  }
-	  return 0;
-	}
   const timelineControl = useMemo(() => {
     const queued = [];
     const actorIds = new Set();
@@ -1076,159 +830,15 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
   const nextFreezeDeadline = Math.min(...[...frozenByActor.values()].filter(Boolean).map((value) => value.until));
 	const preemptedSources = timelineControl.preempted;
 	const mergedCounts = timelineControl.merged;
-	function scrollerIsAtBottom() {
-	  const scroller = messageListScrollerRef.current;
-	  return scroller
-		? scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 24
-		: messageListAtBottom;
-	}
-
-	function scrollerIsAtTop() {
-	  const scroller = messageListScrollerRef.current;
-	  return Boolean(scroller) && scroller.scrollTop <= 1;
-	}
-
-	function markLatestRead() {
-	  if (!state.lastSeq || !messageListScrollerRef.current) return;
-	  if (document.visibilityState === 'hidden' || !scrollerIsAtBottom()) return;
-	  history?.onReadLatest?.(state.lastSeq);
-	}
-
-	useEffect(() => {
-	  markLatestRead();
-	  const handleVisibility = () => markLatestRead();
-	  document.addEventListener('visibilitychange', handleVisibility);
-	  return () => document.removeEventListener('visibilitychange', handleVisibility);
-	}, [state.lastSeq, messageListAtBottom, history?.onReadLatest]);
-
-	useEffect(() => {
-	  const physicallyAtBottom = scrollerIsAtBottom();
-	  if (previousList.key !== messageListKey || physicallyAtBottom) {
-		setMessageListUnseen(0);
-		return;
-	  }
-	  const added = Math.max(0, withNarration.length - previousList.length);
-	  if (added > 0 && latestVisibleSeq > previousList.lastSeq) {
-		diagnostic('debug', 'timeline.realtime_arrived_while_reading', {
-		  channelId: state.channelId, added, latestVisibleSeq, previousLastSeq: previousList.lastSeq,
-		});
-		setMessageListUnseen((value) => value + added);
-	  }
-	}, [messageListKey, latestVisibleSeq, withNarration.length]);
-
-	function handleAtBottomChange(isAtBottom) {
-	  // Measurement and prepend compensation can transiently report atBottom
-	  // using the previous range. Never let that erase an unread marker while
-	  // the actual scroller is still in history.
-	  const confirmed = isAtBottom && scrollerIsAtBottom();
-	  setMessageListAtBottom(confirmed);
-	  if (confirmed) {
-		messageListFollowLatestRef.current = true;
-		historyInteractionReadyRef.current = messageListKey;
-		setMessageListUnseen(0);
-		if (scrollerIsAtTop()) requestHistoryAtTop('short-list-ready', { continuation: true });
-		else historyControllerRef.current?.leaveTop();
-		markLatestRead();
-	  }
-	}
-
-	function requestHistoryAtTop(trigger, { continuation = false, queueWhileActive = false } = {}) {
-	  if (history?.localReplicaReady === false) return;
-	  const scroller = messageListScrollerRef.current;
-	  const physicallyAtTop = !scroller || scroller.scrollTop <= 1;
-	  const controller = historyControllerRef.current;
-	  if (!controller) return;
-	  controller.setView(historyProjectionKey);
-	  const controllerState = controller.snapshot();
-	  const detail = {
-		channelId: state.channelId,
-		trigger,
-		demandPending: controllerState.active,
-		demandArmed: !controllerState.consumed || continuation,
-		demandAnchorSeq: firstVisibleSeq,
-		firstVisibleSeq,
-		latestVisibleSeq,
-		visibleItems: withNarration.length,
-		buffered: Number(history?.buffered || 0),
-		hasOlder: Boolean(history?.hasOlder),
-		loading: Boolean(history?.loading),
-		attached: Boolean(history?.attached),
-		generation: Number(history?.generation || 0),
-		scrollTop: Math.round(Number(scroller?.scrollTop || 0)),
-		scrollHeight: Math.round(Number(scroller?.scrollHeight || 0)),
-		clientHeight: Math.round(Number(scroller?.clientHeight || 0)),
-		physicallyAtTop,
-		interactionReady: historyInteractionReadyRef.current === messageListKey,
-	  };
-	  if (historyInteractionReadyRef.current !== messageListKey) {
-		diagnostic('info', 'timeline.history_top_not_ready', detail);
-		return;
-	  }
-	  if (!physicallyAtTop) {
-		diagnostic('info', 'timeline.history_top_stale', detail);
-		return;
-	  }
-	  diagnostic('info', controllerState.active || (controllerState.consumed && !continuation)
-		? 'timeline.history_top_ignored'
-		: 'timeline.history_top_observed', detail);
-	  const operationId = `${state.channelId}:${++historyOperationSerialRef.current}`;
-	  const ownedView = historyProjectionKey;
-	  void controller.enterTop({
-		operationId,
-		anchorSeq: firstVisibleSeq,
-		topEpoch: controllerState.epoch,
-		viewSpec: { scope, selfId, actorFilter, editingTargetId, showNarration: SHOW_CHANNEL_NARRATION },
-	  }, { continuation, queueWhileActive }).then(() => {
-		// A completed operation may have caused Virtuoso to move away from the
-		// physical top while preserving the visible anchor. Close that visit now,
-		// after the operation rather than from the synthetic scroll event. A later
-		// real visit can then own exactly one new operation.
-		if (historyControllerRef.current === controller
-		  && controller.snapshot().viewKey === ownedView
-		  && !controller.snapshot().active
-		  && !scrollerIsAtTop()) controller.leaveTop();
-	  });
-	}
-	historyRequestRef.current = requestHistoryAtTop;
-
-	function handleStartReached() {
-	  requestHistoryAtTop('start-reached');
-	}
-
-	function handleAtTopChange(isAtTop) {
-	  if (isAtTop) {
-		requestHistoryAtTop('at-top-state');
-		return;
-	  }
-	  if (!scrollerIsAtTop()) {
-		historyControllerRef.current?.leaveTop();
-		diagnostic('debug', 'timeline.history_top_left', {
-		  channelId: state.channelId,
-		  pending: historyControllerRef.current?.snapshot().active,
-		  scrollTop: Math.round(Number(messageListScrollerRef.current?.scrollTop || 0)),
-		});
-	  }
-	}
-
-	useLayoutEffect(() => {
-	  const controller = historyControllerRef.current;
-	  if (!controller || history?.localReplicaReady === false) return;
-	  controller.setView(historyProjectionKey);
-	  const scroller = messageListScrollerRef.current;
-	  if (!scroller || historyInteractionReadyRef.current !== messageListKey || scroller.scrollTop > 1) return;
-	  const canLoad = Number(history?.buffered || 0) > 0
-		|| Boolean(history?.hasOlder)
-		|| Boolean(history?.loading)
-		|| !history?.attached;
-	  if (!canLoad) return;
-	  const short = scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 1;
-	  requestHistoryAtTop(short ? 'short-list-layout' : 'top-level-state', { continuation: short });
-	}, [historyProjectionKey, messageListKey, history?.localReplicaReady, history?.attached, history?.loading, history?.hasOlder, history?.buffered, firstVisibleSeq, withNarration.length]);
 
   useEffect(() => {
-    setScope(TIMELINE_SCOPE.mine);
-    setEditNotice('');
-  }, [state.channelId]);
+    viewSessions?.writeConversation(state.channelId, {
+      scope,
+      actorFilter: [...actorFilter],
+      foldOverrides: [...foldOverrides],
+    });
+  }, [viewSessions, state.channelId, scope, actorFilter, foldOverrides]);
+  useEffect(() => { setEditNotice(''); }, [state.channelId]);
   // presentationNow 只服务冻结期限。普通正文帧不会改变冻结事实；每帧都 setState
   // 会让一次 live publish 额外再渲染整棵 Timeline 一次。
   useEffect(() => setPresentationNow(Date.now()), [controlVersion]);
@@ -1382,7 +992,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
   }, [onComposerEditChange, state.channelId]);
 
   return <MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost>
-	<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text">
+	<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" data-viewport-mode={viewport.mode} data-has-initial-anchor={viewport.hasInitialAnchor || undefined}>
       <div className={state.rows.size ? 'timeline-inner timeline-controls-overlay' : 'timeline-inner'}>
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">
@@ -1427,32 +1037,21 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
           // none of it is theirs.
           <div className="empty-ledger"><span>@</span><h2>这个频道里还没有与你相关的往来</h2><p>切回「全部」可以看到频道里其他人的动态。</p></div>
         )}
-        {history?.loading && <span className="sr-only" role="status">正在读取更早动态</span>}
-        {history?.error && <p className="bounded-list-note" role="alert">{history.error}</p>}
+        {viewport.status.loading && <span className="sr-only" role="status">正在读取更早动态</span>}
+        {viewport.status.error && <p className="bounded-list-note" role="alert">{viewport.status.error}</p>}
 	  </div>
-	  <TimelineVirtualList>
-			{/* Virtuoso 也在 ResizeObserver 里改项高。让它保持默认的按帧交付；
-			    同步交付会和 FoldableBody 的高度变化互相触发，形成 observer loop。
-			    follow 和已读共用同一个 24px 尾部边界：放宽到 64px 会让 Virtuoso
-			    在还差几十像素时就停止追尾，下一次测量再纠正时就是一次可见抖动。 */}
-		<Virtuoso
-		  key={messageListKey}
-		  ref={messageListRef}
-		  scrollerRef={setMessageListScroller}
-		  className="timeline-message-list"
-		  firstItemIndex={firstItemIndex}
-		  initialTopMostItemIndex={import.meta.env.MODE === 'test' ? undefined : { index: 'LAST', align: 'end' }}
-		  alignToBottom
-		  atBottomThreshold={24}
-		  increaseViewportBy={480}
-		  data={windowed.items}
-		  computeItemKey={(_index, entry) => entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`}
-		  itemContent={(index, entry) => {
+	  <ViewportLayoutProvider port={viewport.layoutPort}>
+		<VirtualTimelineAdapter
+		  listKey={messageListKey}
+		  rows={windowed.items}
+		  viewport={viewport}
+		  itemKey={(_index, row) => presentationEntryId(row)}
+		  renderRow={(index, row) => {
 		  const itemIndex = index - firstItemIndex;
-          const continuation = isContinuation(windowed.items, itemIndex);
-          const timestamp = entryTimestamp(entry);
-          const previousTimestamp = previousTimestampAt(itemIndex);
-          const showDay = timestamp > 0 && (!previousTimestamp || dayKey(timestamp) !== dayKey(previousTimestamp));
+          const entry = row.body;
+          const continuation = row.continuation;
+          const timestamp = row.timestamp;
+          const showDay = row.startsDay;
           let content;
           if (entry.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
           if (
@@ -1478,7 +1077,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
             const fold = { latest: itemIndex === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold };
-            const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onReply };
+            const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onCreateTask: onCreateTask ? () => onCreateTask(source) : null, onReply };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
             } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} fold={fold} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onReply={onReply} onOpen={() => {
@@ -1497,18 +1096,9 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
           }
 		  return <div className="timeline-virtual-item">{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</div>;
 		  }}
-		  startReached={handleStartReached}
-		  atTopStateChange={handleAtTopChange}
-		  atBottomStateChange={handleAtBottomChange}
-		  followOutput={(atBottom) => atBottom ? 'auto' : false}
-		  totalListHeightChanged={keepMessageListPinned}
 		/>
-	  </TimelineVirtualList>
-	  {messageListUnseen > 0 && <button type="button" className="timeline-jump-latest" onClick={() => {
-		setMessageListUnseen(0);
-		messageListFollowLatestRef.current = true;
-		messageListRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' });
-	  }}>↓ {messageListUnseen} 条新动态</button>}
+	  </ViewportLayoutProvider>
+	  {viewport.unseen > 0 && <button type="button" className="timeline-jump-latest" onClick={viewport.jumpToLatest}>↓ {viewport.unseen} 条新动态</button>}
     </section>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
     <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />

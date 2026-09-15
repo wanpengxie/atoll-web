@@ -742,7 +742,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
           if (!member) throw new TypeError('请 @ 一个 Agent，或在右下角选择目标 Agent');
           payload = { ...payload, member: member.id };
         }
-        const messageId = await onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload });
+        const messageId = onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload });
         setSentMessageId(messageId || '');
         editor?.commands.clearContent(true);
         recipientsRef.current = [];
@@ -781,7 +781,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       const sent = [];
       for (const row of recipients) {
         try {
-          const id = await onSend({
+          const id = onSend({
             text: body,
             msgType: row.kind === 'human' ? TYPES.humanMessage : TYPES.agentAsk,
             audience: [row.id],
