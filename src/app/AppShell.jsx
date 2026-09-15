@@ -18,9 +18,8 @@ const TerminalView = lazy(() => import('../ui/TerminalView.jsx').then((module) =
 const TasksView = lazy(() => import('../ui/TasksView.jsx').then((module) => ({ default: module.TasksView })));
 const RightPanelHost = lazy(() => import('./RightPanelHost.jsx').then((module) => ({ default: module.RightPanelHost })));
 
-// 主视图 tab 只剩两个：文件已经从「整屏替换动态区」改成「与动态并排的分屏」，
-// 由 workspace-quick-actions 里的开关控制（见 filesOpen）。artifacts 仍是合法路由
-// 视图，含义变成"动态 + 文件分屏"——URL、ui.navigate、按频道记忆全部照旧。
+// 主视图 tab 只剩两个。文件在桌面是与动态并排的工作面，在窄屏是互斥的完整
+// Surface；artifacts 仍是合法路由，因此 URL、ui.navigate 和按频道记忆不变。
 const WORKSPACE_TABS = ['dynamic', 'tasks'];
 
 const ACCESS_MESSAGE = {
@@ -36,27 +35,13 @@ const ACCESS_MESSAGE = {
 export function AppShell({ session, navigation, workspace, notices, panel }) {
   const shellTopology = useSurfaceTopology();
   const mobileShell = shellTopology === 'mobile';
+  const singleSurfaceShell = shellTopology !== 'desktop';
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const [composerEdit, setComposerEdit] = useState(null);
   const [replyTargets, setReplyTargets] = useState({});
   const viewSessionsRef = useRef(null);
   if (!viewSessionsRef.current) viewSessionsRef.current = createViewSessionStore();
-  useEffect(() => {
-    const channelId = navigation.activeChannelId;
-    if (!channelId) return;
-    viewSessionsRef.current.writeSurface(channelId, workspace.view === 'tasks' ? 'tasks' : 'conversation');
-  }, [navigation.activeChannelId, workspace.view]);
-  useEffect(() => {
-    const channelId = navigation.activeChannelId;
-    if (!channelId) return;
-    const focus = panel.host?.panel?.focus;
-    viewSessionsRef.current.writeContext(channelId, panel.value ? {
-      kind: panel.value,
-      key: focus?.key || focus?.objectId || focus?.requestId || panel.value,
-      ...(focus?.sourceRowID ? { sourceRowID: focus.sourceRowID } : {}),
-    } : null);
-  }, [navigation.activeChannelId, panel.value, panel.host?.panel?.focus]);
   // App 的 workspace 外壳随每一批 feed 重建，里面的 inline callback 也会换身份。
   // Composer 真正需要的是最新行为，不需要因为函数对象换了就重渲。用稳定端口转发
   // 到本次 render 的实现，让 React.memo 可以把输入 DOM 与 feed 更新彻底隔开。
@@ -79,8 +64,10 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
+  const filesButtonRef = useRef(null);
+  const terminalButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
-  // 终端分屏是**按频道**记的：键在 = 这个频道开过终端，值 = 此刻是否展开。
+  // 终端工作面是**按频道**记的：键在 = 这个频道开过终端，值 = 此刻是否展开。
   //
   // 恒不为没用过终端的人起 shell（没开过的频道不在这张表里），开过之后就恒不
   // 卸载——收起分屏只是隐藏，切走频道也只是隐藏。上一版用的是一个布尔加一个
@@ -89,7 +76,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   // 单槽装不下两个，来回切等于把两边轮流拆掉。
   const [terminalSplits, setTerminalSplits] = useState({});
   const terminalOpen = Boolean(terminalSplits[navigation.activeChannelId]);
-  // 键在 = 这个频道开过：收起分屏恒只是隐藏（恒不断线），切走频道才卸载。
+  // 键在 = 这个频道开过：收起工作面恒只是隐藏（恒不断线），切走频道才卸载。
   const terminalEverOpened = navigation.activeChannelId in terminalSplits;
   // 文件区跟终端同形，但开合态**不另立一份**：它就是路由的 artifacts 视图。
   // 这样它免费拿到三件已经建好的事——URL 里带得走、刷新后还在、按频道记住
@@ -113,8 +100,8 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   const rememberFileLocation = useCallback((location) => {
     fileLocationsRef.current.set(navigation.activeChannelId, location);
   }, [navigation.activeChannelId]);
-  // 分屏开着没开着，也按频道记一份。路由只有一个 view 字段，去了「任务」就把
-  // 「动态 + 文件分屏」这件事挤掉了——不记的话，从任务点回动态分屏就没了，
+  // 文件工作面开着没开着，也按频道记一份。路由只有一个 view 字段，去了「任务」就把
+  // 「动态 + 文件」这件事挤掉了——不记的话，从任务点回动态就没了，
   // 而人并没有关过它。
   const filesOpenRef = useRef(new Map());
   useEffect(() => {
@@ -149,6 +136,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
 
   useEffect(() => {
     if (!mobileChannelsOpen) return undefined;
+    const focusFrame = requestAnimationFrame(() => document.querySelector('.mobile-rail-close')?.focus());
     const escape = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -157,7 +145,10 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
       }
     };
     document.addEventListener('keydown', escape);
-    return () => document.removeEventListener('keydown', escape);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      document.removeEventListener('keydown', escape);
+    };
   }, [mobileChannelsOpen]);
 
   useEffect(() => {
@@ -194,18 +185,32 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
 
   function toggleFiles() {
     if (!workspace.channel || !contentVisible) return;
+    if (!filesOpen && singleSurfaceShell && terminalOpen) {
+      const channelId = navigation.activeChannelId;
+      setTerminalSplits((current) => ({ ...current, [channelId]: false }));
+    }
     workspace.onViewChange(filesOpen ? 'dynamic' : 'artifacts');
+    if (filesOpen) requestAnimationFrame(() => (mobileShell ? channelMenuButtonRef.current : filesButtonRef.current)?.focus());
   }
 
   function toggleTerminal() {
     if (!workspace.channel || !contentVisible) return;
     const channelId = navigation.activeChannelId;
     // 从任务那一格开终端，要先回到动态——终端是挂在动态那块布局里的。但
-    // artifacts 已经**就是**动态布局（动态 + 文件分屏），把它也当成"不在动态"
-    // 会顺手把文件分屏关掉：人只是开了个终端，文件区却没了。
-    if (!terminalSplits[channelId] && !dynamicVisible) workspace.onViewChange('dynamic');
+    // 桌面 artifacts 已经**就是**动态布局（动态 + 文件），把它也当成"不在动态"
+    // 会顺手把文件关掉。窄屏则是互斥 Surface，打开终端必须显式切回动态。
+    if (!terminalSplits[channelId] && (!dynamicVisible || (singleSurfaceShell && filesOpen))) workspace.onViewChange('dynamic');
     setTerminalSplits((current) => ({ ...current, [channelId]: !current[channelId] }));
+    if (terminalSplits[channelId]) requestAnimationFrame(() => (mobileShell ? channelMenuButtonRef.current : terminalButtonRef.current)?.focus());
   }
+
+  // Resizing a desktop two-pane workspace into a narrow topology must also
+  // normalize the interaction state, not merely hide one pane with CSS. The
+  // terminal is the most recently explicit working surface in this ambiguous
+  // legacy state, so keep it and close the files route.
+  useEffect(() => {
+    if (singleSurfaceShell && filesOpen && terminalOpen) workspace.onViewChange('dynamic');
+  }, [singleSurfaceShell, filesOpen, terminalOpen, workspace.onViewChange]);
 
   useEffect(() => {
     const toggleByKey = (event) => {
@@ -308,8 +313,8 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
               <button type="button" role="menuitem" onClick={() => { setChannelMenuOpen(false); panel.open('governance', { type: 'channel', key: workspace.channel.id }); }}>频道详情</button>
               <button type="button" role="menuitem" onClick={() => { setChannelMenuOpen(false); panel.open('resources', { type: 'channel_resources', key: workspace.channel.id }); }}>高级资源工具</button>
               <button type="button" role="menuitem" onClick={() => { setChannelMenuOpen(false); navigation.onCreate(); }}>新建子频道</button>
-              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || !contentVisible} onClick={() => { setChannelMenuOpen(false); toggleFiles(); }}>{filesOpen ? '关闭文件分屏' : '打开文件分屏'}</button>
-              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || !contentVisible} onClick={() => { setChannelMenuOpen(false); toggleTerminal(); }}>{terminalOpen ? '关闭终端分屏' : '打开终端分屏'}</button>
+              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || !contentVisible} onClick={() => { setChannelMenuOpen(false); toggleFiles(); }}>{filesOpen ? '关闭文件' : '打开文件'}</button>
+              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || !contentVisible} onClick={() => { setChannelMenuOpen(false); toggleTerminal(); }}>{terminalOpen ? '关闭终端' : '打开终端'}</button>
               <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || writeDisabled || restarting} onClick={() => { setChannelMenuOpen(false); restartChannel(); }}>{restarting ? '重启中…' : '重启频道'}</button>
             </div>}
           </div>
@@ -317,8 +322,8 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
       </header>
       <nav className="channel-view-tabs" aria-label="频道主视图" role="tablist">
         {WORKSPACE_TABS.map((view, index) => {
-          // 文件不再是一个 tab，但它仍是一个路由视图（artifacts = 动态 + 文件分屏）。
-          // 所以在动态那一格上，开着分屏时也算选中——否则地址栏在 artifacts、
+          // 文件不再是一个 tab，但它仍是一个路由视图（桌面为动态 + 文件，窄屏为文件 Surface）。
+          // 所以在动态那一格上，文件开着时也算选中——否则地址栏在 artifacts、
           // 屏幕上却没有任何一个 tab 是亮的。
           const selected = workspace.view === view || (view === 'dynamic' && filesOpen);
           return <button key={view} ref={(node) => { viewTabRefs.current[index] = node; }} type="button" role="tab" id={`workspace-tab-${view}`} aria-controls={`workspace-panel-${view}`} aria-selected={selected} tabIndex={selected ? 0 : -1} className={selected ? 'active' : ''} onKeyDown={(event) => moveViewTab(event, index)} onClick={() => workspace.onViewChange(view === 'dynamic' ? dynamicTabView() : view)}>{view === 'dynamic' ? '动态' : '任务'}</button>;
@@ -326,8 +331,8 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
       </nav>
       <div className="workspace-quick-actions">
         <button id="workspace-channel-restart" type="button" className="channel-restart-action" disabled={!workspace.channel || writeDisabled || restarting} title="重启本频道内全部成员(agent 与 tool);不会删除频道、账本或文件" onClick={restartChannel}><span aria-hidden="true">⟳</span>{restarting ? '重启中…' : '重启频道'}</button>
-        <button id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} aria-controls="workspace-panel-artifacts" disabled={!workspace.channel || !contentVisible} title="切换文件分屏" onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
-        <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${terminalOpen ? ' active' : ''}`} aria-pressed={terminalOpen} aria-controls="workspace-panel-terminal" disabled={!workspace.channel || !contentVisible} title="切换终端分屏(Ctrl+F12)" onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端<kbd>Ctrl F12</kbd></button>
+        <button ref={filesButtonRef} id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} aria-controls="workspace-panel-artifacts" disabled={!workspace.channel || !contentVisible} title={singleSurfaceShell ? '打开或关闭文件' : '切换文件分屏'} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
+        <button ref={terminalButtonRef} id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${terminalOpen ? ' active' : ''}`} aria-pressed={terminalOpen} aria-controls="workspace-panel-terminal" disabled={!workspace.channel || !contentVisible} title={singleSurfaceShell ? '打开或关闭终端（Ctrl+F12）' : '切换终端分屏（Ctrl+F12）'} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端<kbd>Ctrl F12</kbd></button>
       </div>
       <div className="status-stack">
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}
@@ -335,26 +340,24 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
         {ACCESS_MESSAGE[workspace.access] && <div className={`access-banner access-${workspace.access}`} role="status">{ACCESS_MESSAGE[workspace.access]}{isMemberAccess(workspace.access) && !workspace.selfId && <span> 当前频道中的“我”仍在确认，首次发送入账后会自动识别。</span>}</div>}
       </div>
       {dynamicVisible && <div className={`dynamic-workspace${terminalOpen ? ' terminal-split-open' : ''}${filesOpen ? ' files-split-open' : ''}`}>
-        {/* 切频道恒不复用同一棵消息树：auto-animate 的退场动画会把 React 已删掉的
-            节点按 position:absolute / z-index:100 插回 DOM，靠动画 finish 事件才清掉。
-            整频道换血时那批动画一旦没走完（后台标签页、被下一次 commit 打断），残影就
-            永久压在新内容上，表现为文字重叠、且此后切任何频道都看到同一屏。按频道 key
-            重挂，让残影随旧节点一起消失——Composer 早就是这么做的。 */}
+        {/* 频道是阅读会话和虚拟高度缓存的边界。按频道 key 重挂物理列表，再由
+            ViewSession 用语义 row anchor 恢复；绝不把上一频道的 DOM 测量解释成
+            当前频道的几何。Composer 同样按频道隔离草稿编辑器。 */}
         <div className="dynamic-message-pane">
-          {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} viewSessions={viewSessionsRef.current} state={workspace.state} history={workspace.history} roster={workspace.roster} selfId={workspace.selfId} agentActivity={workspace.agentActivity} onAcknowledgeAgentActivity={workspace.onAcknowledgeAgentActivity} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} onFocusAgentChange={workspace.onFocusAgentChange} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
+          {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} viewSessions={viewSessionsRef.current} state={workspace.state} history={workspace.history} navigationTarget={workspace.timelineTarget} onNavigationTargetConsumed={workspace.onTimelineTargetConsumed} roster={workspace.roster} selfId={workspace.selfId} agentActivity={workspace.agentActivity} onAcknowledgeAgentActivity={workspace.onAcknowledgeAgentActivity} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} onFocusAgentChange={workspace.onFocusAgentChange} /> : <section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section>}
           <Suspense fallback={<section className="composer-wrap composer-loading" role="status"><div className="composer-surface">正在加载输入框…</div></section>}><Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={composerActions.onDraftChange} disabled={!workspace.channel || writeDisabled} disabledReason={disabledReason} onSend={composerActions.onSend} onRetry={composerActions.onRetry} attachments={workspace.attachments} onPreviewAttachment={composerActions.onPreviewAttachment} onRemoveAttachment={composerActions.onRemoveAttachment} onClearAttachments={composerActions.onClearAttachments} onUploadAttachments={composerActions.onUploadAttachments} onOpenChannelFiles={composerActions.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={composerActions.onCancelReply} onReplySent={composerActions.onReplySent} /></Suspense>
         </div>
-        {/* 文件分屏。跟终端一样：开过就恒不卸载，收起只是 hidden——目录、滚动和
+        {/* 文件工作面。跟终端一样：开过就恒不卸载，收起只是 hidden——目录、滚动和
             选中都在这棵树里，卸一次人就得从根目录重新点回来。按频道 key 重挂，
             所以换频道时位置从 fileLocationsRef 里恢复，而不是靠这棵树活着。 */}
         {filesEverOpened[navigation.activeChannelId] && workspace.channel && contentVisible
-          && <Suspense fallback={<section className="split-loading" role="status">正在加载文件…</section>}><ArtifactsView key={`files-${navigation.activeChannelId}`} channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} recentFiles={workspace.resources.recentFiles} visible={filesOpen} initialLocation={fileLocationsRef.current.get(navigation.activeChannelId) || null} onLocationChange={rememberFileLocation} onClose={toggleFiles} /></Suspense>}
+          && <Suspense fallback={<section className="split-loading" role="status">正在加载文件…</section>}><ArtifactsView key={`files-${navigation.activeChannelId}`} channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} recentFiles={workspace.resources.recentFiles} visible={filesOpen} initialLocation={fileLocationsRef.current.get(navigation.activeChannelId) || null} onLocationChange={rememberFileLocation} onClose={toggleFiles} autoFocusOnOpen={singleSurfaceShell} /></Suspense>}
         {/* 恒只挂当前频道这一块。切走就卸载——**这是安全的**，因为终端的真相
             恒在服务端：shell 由宽限期保住，屏幕由会话的回放环保住，attach 时
             先回放再转直播。上一版为了不黑屏把 N 块常驻在 DOM 里，那是把真相
             放在浏览器里的补丁，回放做掉之后它恒无必要。 */}
         {terminalEverOpened && workspace.channel && contentVisible
-          && <Suspense fallback={<section id="workspace-panel-terminal" className="terminal-view split-loading" role="status" hidden={!terminalOpen}>正在加载终端…</section>}><TerminalView channelId={navigation.activeChannelId} devices={workspace.resources.devices || []} canWrite={!writeDisabled} visible={terminalOpen} /></Suspense>}
+          && <Suspense fallback={<section id="workspace-panel-terminal" className="terminal-view split-loading" role="status" hidden={!terminalOpen}>正在加载终端…</section>}><TerminalView channelId={navigation.activeChannelId} devices={workspace.resources.devices || []} canWrite={!writeDisabled} visible={terminalOpen} onClose={toggleTerminal} /></Suspense>}
       </div>}
       {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <Suspense fallback={<section className="split-loading" role="status">正在加载任务…</section>}><TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /></Suspense> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}
     </main>

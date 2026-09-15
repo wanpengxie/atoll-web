@@ -63,6 +63,7 @@ export function projectTimeline(state, {
   editingTargetId = '',
   showNarration = false,
   presentationProjector = null,
+  presentationKey = '',
   // 「我的往来」用增量索引算(见 timeline-scope.js)。输出相同,代价从"每帧走一遍
   // 整本账"降到"每帧只判新来的那几行"。
   incremental = false,
@@ -112,7 +113,7 @@ export function projectTimeline(state, {
   return {
     items,
     presentationRows: presentationProjector?.project
-      ? presentationProjector.project(items)
+      ? presentationProjector.project(items, { viewKey: presentationKey })
       : projectPresentationRows(items),
     allEntries,
     scoped,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { presentationEntryId } from '../src/model/timeline-projection.js';
-import { createPresentationProjector, presentationRow } from '../src/model/conversation-presentation.js';
+import { createPresentationProjector, presentationGeometryKey, presentationRow } from '../src/model/conversation-presentation.js';
 
 describe('timeline presentation identity', () => {
   it('does not depend on array position, filtering, or prepend', () => {
@@ -52,5 +52,47 @@ describe('timeline presentation identity', () => {
     expect(revised[0]).not.toBe(appended[0]);
     expect(revised[1]).toBe(appended[1]);
     expect(revised[0].contentRevision).toBe(4);
+  });
+
+  it('does not reshape an existing window head when an older predecessor arrives', () => {
+    const projector = createPresentationProjector();
+    const older = { kind: 'standalone', seq: 1, envelope: { id: 'older', ts: 1_000, sender: { id: 'agent-a' } } };
+    const current = { kind: 'standalone', seq: 2, envelope: { id: 'current', ts: 2_000, sender: { id: 'agent-a' } } };
+
+    const initial = projector.project([current], { viewKey: 'channel:all' });
+    expect(initial[0].continuation).toBe(false);
+
+    const prepended = projector.project([older, current], { viewKey: 'channel:all' });
+    expect(prepended[1]).toBe(initial[0]);
+    expect(prepended[1].continuation).toBe(false);
+  });
+
+  it('puts a newly discovered day boundary in the prepended segment', () => {
+    const projector = createPresentationProjector();
+    const current = { kind: 'standalone', seq: 2, envelope: { id: 'current', ts: new Date(2026, 8, 15, 9).getTime() } };
+    const older = { kind: 'standalone', seq: 1, envelope: { id: 'older', ts: new Date(2026, 8, 14, 23).getTime() } };
+
+    const initial = projector.project([current], { viewKey: 'channel:all' });
+    const prepended = projector.project([older, current], { viewKey: 'channel:all' });
+
+    expect(prepended[0].boundaryAfterTimestamp).toBe(current.envelope.ts);
+    expect(prepended[1]).toBe(initial[0]);
+  });
+
+  it('recomputes grouping when the visible conversation is replaced', () => {
+    const projector = createPresentationProjector();
+    const older = { kind: 'standalone', seq: 1, envelope: { id: 'older', ts: 1_000, sender: { id: 'agent-a' } } };
+    const current = { kind: 'standalone', seq: 2, envelope: { id: 'current', ts: 2_000, sender: { id: 'agent-a' } } };
+
+    expect(projector.project([older, current], { viewKey: 'channel:all' })[1].continuation).toBe(true);
+    expect(projector.project([current], { viewKey: 'channel:mine' })[0].continuation).toBe(false);
+  });
+
+  it('invalidates renderer measurements when semantic row geometry changes', () => {
+    const rows = [{ id: 'a', contentRevision: 1, layoutClass: 'normal' }];
+    const initial = presentationGeometryKey(rows, 'fold:a:0');
+    expect(presentationGeometryKey(rows, 'fold:a:0')).toBe(initial);
+    expect(presentationGeometryKey([{ ...rows[0], contentRevision: 2 }], 'fold:a:0')).not.toBe(initial);
+    expect(presentationGeometryKey(rows, 'fold:a:1')).not.toBe(initial);
   });
 });

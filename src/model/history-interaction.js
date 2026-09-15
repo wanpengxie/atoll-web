@@ -37,20 +37,19 @@ export async function loadUntilVisible({ anchorSeq = 0, next, project, signal, o
 }
 
 // One physical visit to the top owns one operation. Duplicate geometry signals
-// join it. The controller stores continuation outside React effects; an effect
-// may report geometry, but cleanup cannot erase an in-flight goal accidentally.
+// join it and can never queue another operation. Only an explicit user gesture
+// or a real leave/re-enter transition may rearm the intent.
 export function createTopIntentController({ load, onState = () => {} } = {}) {
   let viewKey = '';
   let atTop = false;
   let disposed = false;
   let epoch = 0;
   let active = null;
-  let queued = null;
   let consumed = false;
   let lastResult = null;
+  let awaitingUserRearm = false;
 
   function cancel(reason = 'cancelled') {
-    queued = null;
     if (!active) return;
     active.controller.abort(reason);
     active = null;
@@ -64,32 +63,46 @@ export function createTopIntentController({ load, onState = () => {} } = {}) {
     epoch += 1;
     consumed = false;
     lastResult = null;
+    awaitingUserRearm = false;
   }
 
   function leaveTop() {
     atTop = false;
-    queued = null;
     consumed = false;
     lastResult = null;
+    awaitingUserRearm = false;
     cancel('left-top');
   }
 
-  function enterTop(goal, { continuation = false, queueWhileActive = false } = {}) {
+  function observePrepend() {
+    // The active demand has already produced rows above the preserved anchor.
+    // We are no longer at the physical top, but the demand may still be
+    // settling. Drop only its queued duplicate; do not abort the owner that
+    // produced the prepend.
+    atTop = false;
+    awaitingUserRearm = true;
+  }
+
+  function rearm() {
+    awaitingUserRearm = false;
+    if (!active) consumed = false;
+  }
+
+  function enterTop(goal) {
     if (disposed) return Promise.resolve({ kind: HISTORY_OPERATION.cancelled });
+    // A prepend can leave Virtuoso reporting the old top edge for one or more
+    // measurement frames. That geometry echo is not a second user demand.
+    // Only a new upward gesture (rearm) or a real leave transition can open
+    // another operation.
+    if (awaitingUserRearm) return active?.promise || Promise.resolve(lastResult || { kind: HISTORY_OPERATION.cancelled });
     if (!atTop) {
       atTop = true;
       epoch += 1;
       consumed = false;
       lastResult = null;
     }
-    if (active) {
-      // Repeated observer callbacks merely join the current operation. A real
-      // scroll event may explicitly queue one coalesced follow-up while I/O is
-      // in flight instead of being dropped.
-      if (queueWhileActive) queued = { ...goal };
-      return active.promise;
-    }
-    if (consumed && !continuation) return Promise.resolve(lastResult || { kind: HISTORY_OPERATION.cancelled });
+    if (active) return active.promise;
+    if (consumed) return Promise.resolve(lastResult || { kind: HISTORY_OPERATION.cancelled });
     const controller = new AbortController();
     const ownedEpoch = epoch;
     const ownedView = viewKey;
@@ -107,21 +120,15 @@ export function createTopIntentController({ load, onState = () => {} } = {}) {
         error,
       }))
       .then((result) => {
-	  // A cancelled operation may settle after a new view/top epoch already owns
-	  // the controller. Its late completion is observationally stale and must not
-	  // overwrite the new epoch's consumed/result state.
-	  if (active !== owned) return result;
-	  active = null;
-      consumed = true;
-      lastResult = result;
-      onState({ state: result.kind, epoch: ownedEpoch, viewKey: ownedView, result });
-      const continuationGoal = queued;
-      queued = null;
-      if (continuationGoal && atTop && !disposed && epoch === ownedEpoch && viewKey === ownedView) {
-        consumed = false;
-        void enterTop(continuationGoal, { continuation: true, queueWhileActive: true });
-      }
-      return result;
+        // A cancelled operation may settle after a new view/top epoch already owns
+        // the controller. Its late completion is observationally stale and must not
+        // overwrite the new epoch's consumed/result state.
+        if (active !== owned) return result;
+        active = null;
+        consumed = true;
+        lastResult = result;
+        onState({ state: result.kind, epoch: ownedEpoch, viewKey: ownedView, result });
+        return result;
       });
     owned.promise = promise;
     active = owned;
@@ -136,9 +143,11 @@ export function createTopIntentController({ load, onState = () => {} } = {}) {
   return {
     setView,
     enterTop,
+    rearm,
     leaveTop,
+    observePrepend,
     dispose,
     active: () => active?.promise || null,
-    snapshot: () => ({ viewKey, atTop, disposed, epoch, active: Boolean(active), queued: Boolean(queued), consumed }),
+    snapshot: () => ({ viewKey, atTop, disposed, epoch, active: Boolean(active), consumed, awaitingUserRearm }),
   };
 }

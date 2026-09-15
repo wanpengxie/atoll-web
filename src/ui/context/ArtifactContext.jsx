@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Download } from 'lucide-react';
 import { Highlight, themes } from 'prism-react-renderer';
 import { artifactKindForMediaType, formatArtifactSize, previewForMediaType } from '../../model/artifacts.js';
 import { fileTransferURL, mediaTypeFromFileName } from '../../model/channel-file-transfer.js';
@@ -258,7 +258,27 @@ function TextArtifactPreview({ artifact, text, mode: controlledMode, onModeChang
   </div>;
 }
 
-export function ArtifactPreviewBody({ artifact: rawArtifact, preview, textMode, onTextModeChange, showTextModeControls = true }) {
+function downloadFact(artifact) {
+  return {
+    resource_id: artifact.resourceId,
+    name: artifact.name,
+    media_type: artifact.mediaType,
+    ...(artifact.size === undefined ? {} : { size: artifact.size }),
+  };
+}
+
+function ArtifactNoPreview({ artifact, title, detail, onDownload }) {
+  return <div className="artifact-no-preview">
+    <strong>{title}</strong>
+    <p>{detail}</p>
+    {onDownload && <button type="button" className="artifact-download-action" aria-label={`下载 ${artifact.name}`} onClick={() => onDownload(downloadFact(artifact))}>
+      <Download size={15} aria-hidden="true" />
+      下载原文件
+    </button>}
+  </div>;
+}
+
+export function ArtifactPreviewBody({ artifact: rawArtifact, preview, textMode, onTextModeChange, showTextModeControls = true, onDownload }) {
   const artifact = resolveArtifact(rawArtifact);
   if (!artifact) return null;
   const textReady = preview.phase === 'ready' && (artifact.preview === 'text' || preview.sniffed);
@@ -269,14 +289,14 @@ export function ArtifactPreviewBody({ artifact: rawArtifact, preview, textMode, 
     {preview.phase === 'ready' && artifact.preview === 'media' && (artifact.kind === 'audio' ? <audio src={preview.url} controls /> : <video src={preview.url} controls />)}
     {preview.phase === 'ready' && artifact.preview === 'inline' && <object className="artifact-pdf" data={preview.url} type="application/pdf" aria-label={artifact.name}>
       {/* 浏览器没有内嵌 PDF 查看器时（部分移动端、无头环境）才会显示这段 */}
-      <div className="artifact-no-preview"><strong>这个浏览器不能内嵌显示 PDF</strong><p>可以下载后用系统查看器打开。</p></div>
+      <ArtifactNoPreview artifact={artifact} title="这个浏览器不能内嵌显示 PDF" detail="可以下载后用系统查看器打开。" onDownload={onDownload} />
     </object>}
-    {(artifact.preview === 'download_only' || preview.phase === 'unsupported') && <div className="artifact-no-preview"><strong>此文件暂不支持站内预览</strong><p>文件事实和来源仍然保留，可以安全下载后打开。</p></div>}
-    {preview.phase === 'error' && <div className="artifact-no-preview"><strong>预览暂不可用</strong><p>{preview.error}</p></div>}
+    {(artifact.preview === 'download_only' || preview.phase === 'unsupported') && <ArtifactNoPreview artifact={artifact} title="此文件暂不支持站内预览" detail="文件事实和来源仍然保留，可以安全下载后打开。" onDownload={onDownload} />}
+    {preview.phase === 'error' && <ArtifactNoPreview artifact={artifact} title="预览暂不可用" detail={preview.error} onDownload={onDownload} />}
   </>;
 }
 
-export function ArtifactContext({ artifact: rawArtifact, onResource, canGoBack = false, onBack, onClose }) {
+export function ArtifactContext({ artifact: rawArtifact, onResource, onDownload, canGoBack = false, onBack, onClose }) {
   const artifact = resolveArtifact(rawArtifact);
   const preview = useArtifactPreview(artifact, onResource);
   const format = textPreviewFormat(artifact || {});
@@ -297,7 +317,7 @@ export function ArtifactContext({ artifact: rawArtifact, onResource, canGoBack =
   </div> : null;
   return <SidePanel className="artifact-context" ariaLabel="文件详情" title={artifact.name} closeLabel="关闭文件详情" headerActions={modeActions} onClose={onClose}>
     <section className="artifact-context-preview" aria-label="文件预览">
-      <ArtifactPreviewBody artifact={artifact} preview={preview} textMode={textMode} onTextModeChange={setTextMode} showTextModeControls={false} />
+      <ArtifactPreviewBody artifact={artifact} preview={preview} textMode={textMode} onTextModeChange={setTextMode} showTextModeControls={false} onDownload={onDownload} />
     </section>
   </SidePanel>;
 }

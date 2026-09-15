@@ -126,6 +126,19 @@ describe('feed cache', () => {
 	expect(cache.metaSnapshot().size).toBe(0);
   });
 
+  it('does not adopt unidentified cached rows into the first observed server world', async () => {
+	const databaseName = `feed-cache-unidentified-world-${crypto.randomUUID()}`;
+	const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	await cache.ensureOwner('alice');
+	await cache.saveRows([{ channel_id: 'c0', seq: 10, envelope: envelope('m-10', 'unknown world') }]);
+	await cache.saveCoverage('c0', 10, 10);
+	await cache.idle();
+
+	await expect(cache.ensureBoot('boot-a')).resolves.toMatchObject({ changed: true, boot: 'boot-a' });
+	expect(cache.metaSnapshot().size).toBe(0);
+	expect((await cache.readBefore('c0', 0, 20)).rows).toHaveLength(0);
+  });
+
 	it('keeps a newer zero-fact checkpoint without claiming an unknown gap', async () => {
 	  const cache = createFeedCache({
 		indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange,

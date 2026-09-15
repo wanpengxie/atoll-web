@@ -64,25 +64,48 @@ describe('top intent controller', () => {
     expect(controller.snapshot()).toMatchObject({ viewKey: 'c0:all', active: false, consumed: true });
   });
 
-  it('coalesces continuation demand received while an operation is in flight', async () => {
+  it('never turns duplicate geometry callbacks into a queued operation', async () => {
     const finishes = [];
     const load = vi.fn(() => new Promise((resolve) => finishes.push(resolve)));
     const states = [];
     const controller = createTopIntentController({ load, onState: (state) => states.push(state.state) });
     controller.setView('c0:mine');
     const first = controller.enterTop({ anchorSeq: 100 });
-    controller.enterTop({ anchorSeq: 100 }, { continuation: true, queueWhileActive: true });
-    controller.enterTop({ anchorSeq: 100 }, { continuation: true, queueWhileActive: true });
+    controller.enterTop({ anchorSeq: 100 });
+    controller.enterTop({ anchorSeq: 100 });
     expect(load).toHaveBeenCalledOnce();
-    expect(controller.snapshot().queued).toBe(true);
 
     finishes[0]({ kind: HISTORY_OPERATION.satisfied, firstVisibleSeq: 50 });
     await first;
+    controller.enterTop({ anchorSeq: 50 });
+    expect(load).toHaveBeenCalledOnce();
+    expect(states).toEqual(['started', HISTORY_OPERATION.satisfied]);
+
+    controller.rearm();
+    const second = controller.enterTop({ anchorSeq: 50 });
     expect(load).toHaveBeenCalledTimes(2);
-    expect(states.slice(0, 3)).toEqual(['started', HISTORY_OPERATION.satisfied, 'started']);
     finishes[1]({ kind: HISTORY_OPERATION.satisfied, firstVisibleSeq: 20 });
-    await controller.active();
-    expect(controller.snapshot()).toMatchObject({ active: false, queued: false, consumed: true });
+    await second;
+    expect(controller.snapshot()).toMatchObject({ active: false, consumed: true });
+  });
+
+  it('drops a duplicate continuation when a real prepend moves the viewport off the top', async () => {
+    let finish;
+    const load = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const controller = createTopIntentController({ load });
+    controller.setView('c0:all');
+    const active = controller.enterTop({ anchorSeq: 100 });
+    controller.enterTop({ anchorSeq: 100 });
+    controller.observePrepend();
+    expect(controller.snapshot()).toMatchObject({ atTop: false, active: true });
+    finish({ kind: HISTORY_OPERATION.satisfied, firstVisibleSeq: 50 });
+    await active;
+    controller.enterTop({ anchorSeq: 50 });
+    expect(load).toHaveBeenCalledOnce();
+    expect(controller.snapshot()).toMatchObject({ awaitingUserRearm: true });
+    controller.rearm();
+    controller.enterTop({ anchorSeq: 50 });
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it('closes the epoch as failed when the loader throws synchronously', async () => {

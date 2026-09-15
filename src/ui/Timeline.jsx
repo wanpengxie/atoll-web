@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
@@ -12,7 +12,7 @@ import { agentFrozenStates, agentMessageStage, editAdmission, editableText, isAg
 import { selectSystemNote } from '../model/agent-selection.js';
 import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
 import { presentationEntryId, projectTimeline } from '../model/timeline-projection.js';
-import { createPresentationProjector } from '../model/conversation-presentation.js';
+import { createPresentationProjector, presentationGeometryKey } from '../model/conversation-presentation.js';
 import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
 import { conversationTextObservations, processCount, turnStartObservation, withoutFinalEcho } from '../model/turn-process.js';
 import { argsOf } from '../protocol/envelope.js';
@@ -25,7 +25,6 @@ import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
 import { FoldableBody } from './timeline/FoldableBody.jsx';
 import { useConversationViewport } from './timeline/useConversationViewport.js';
-import { ViewportLayoutProvider } from './timeline/ViewportLayoutContext.jsx';
 import { VirtualTimelineAdapter } from './timeline/VirtualTimelineAdapter.jsx';
 
 // 平台叙事（成员进出、跨频道入站）暂时不进时间线。它和真正的往来平铺在同一条流里，
@@ -143,27 +142,9 @@ function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) 
   );
 }
 
-const WAIT_HEADER_HEIGHT = 0;
-const WAIT_ROW_HEIGHT = 32;
-const WAIT_MOBILE_ROW_HEIGHT = 32;
-
 function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, frozenByActor, editing, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon }) {
   const [bulk, setBulk] = useState({ actorId: '', error: '' });
   const [collapsed, setCollapsed] = useState(false);
-  const layerRef = useRef(null);
-  useLayoutEffect(() => {
-    const node = layerRef.current;
-    const workspace = node?.closest('.workspace');
-    if (!node || !workspace || typeof ResizeObserver === 'undefined') return undefined;
-    const commit = () => workspace.style.setProperty('--agent-wait-dock-height', `${Math.max(0, Math.ceil(node.getBoundingClientRect().height) - 8)}px`);
-    commit();
-    const observer = new ResizeObserver(commit);
-    observer.observe(node);
-    return () => {
-      observer.disconnect();
-      workspace.style.removeProperty('--agent-wait-dock-height');
-    };
-  }, [state.channelId, turns.length, collapsed, editing?.targetId]);
   if (!turns.length) return null;
   const groups = [];
   const byActor = new Map();
@@ -213,13 +194,8 @@ function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, fr
   const soleGroup = groups.length === 1 ? groups[0] : null;
   const hasQueuedEditor = turns.some((turn) => turn.requestId === editing?.targetId);
   const renderedGroups = groups;
-  const renderedRows = turns.length;
-  const layerStyle = {
-    '--agent-wait-height': `${WAIT_HEADER_HEIGHT + renderedRows * WAIT_ROW_HEIGHT}px`,
-    '--agent-wait-mobile-height': `${WAIT_HEADER_HEIGHT + renderedRows * WAIT_MOBILE_ROW_HEIGHT}px`,
-  };
-  return <div ref={layerRef} className={`agent-wait-dock${collapsed ? ' is-collapsed' : ''}`}>
-    <section className={`agent-wait-layer${collapsed ? ' is-collapsed' : ''}${hasQueuedEditor ? ' is-editing' : ''}`} style={layerStyle} aria-label="等待区">
+  return <div className={`agent-wait-dock${collapsed ? ' is-collapsed' : ''}`}>
+    <section className={`agent-wait-layer${collapsed ? ' is-collapsed' : ''}${hasQueuedEditor ? ' is-editing' : ''}`} aria-label="等待区">
       {collapsed && <div className="agent-wait-collapsed"><span aria-hidden="true">↳</span><strong>{turns.length} 条等待消息</strong><button type="button" aria-expanded="false" onClick={() => setCollapsed(false)}>展开</button></div>}
       {!collapsed && <header className="agent-wait-header" aria-label="等待区操作">
         <div>
@@ -677,7 +653,7 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, viewSessions, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
+export function Timeline({ state, history = {}, viewSessions, navigationTarget = null, onNavigationTargetConsumed, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
   const initialViewSessionRef = useRef(null);
   if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
   const presentationProjectorRef = useRef(null);
@@ -710,6 +686,11 @@ export function Timeline({ state, history = {}, viewSessions, roster, selfId, ag
   // 保存/放弃后钉住不放（resumePin），直到账上真正回到处理中——否则解冻帧到达前
   // 的空窗里消息会闪跳进等待区。
   const editingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
+  const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
+  // Scope and actor filters replace the visible conversation and therefore get
+  // a fresh presentation/geometry identity. Editing only changes an existing
+  // row and deliberately does not reset either identity.
+  const messageListKey = `${state.channelId}:${scope}:${selfId}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
   const projectionVersion = state._timelineProjectionVersion ?? state.lastSeq;
   const controlVersion = state._timelineControlVersion ?? state.lastSeq;
   const projection = useMemo(() => projectTimeline(state, {
@@ -720,8 +701,9 @@ export function Timeline({ state, history = {}, viewSessions, roster, selfId, ag
     showNarration: SHOW_CHANNEL_NARRATION,
     incremental: true,
     presentationProjector: presentationProjectorRef.current,
-  }), [state, projectionVersion, scope, selfId, actorFilter, editingTargetId]);
-  const { filtered: entries, actorFilterApplies } = projection;
+    presentationKey: messageListKey,
+  }), [state, projectionVersion, scope, selfId, actorFilter, editingTargetId, messageListKey]);
+  const { filtered: entries } = projection;
   // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。
   const filterableAgents = useMemo(() => (roster || []).filter((row) => row.kind === 'agent'), [roster]);
   // 过滤条恰好只选中一个 agent 时，屏幕上就只剩「我和他」的往来。此时 composer
@@ -734,38 +716,45 @@ export function Timeline({ state, history = {}, viewSessions, roster, selfId, ag
   }, [actorFilterApplies, actorFilter, filterableAgents]);
   useEffect(() => { onFocusAgentChange?.(focusAgentId); }, [focusAgentId, onFocusAgentChange]);
 	const withNarration = projection.presentationRows;
+  const localGeometryKey = useMemo(() => JSON.stringify({
+    folds: [...foldOverrides].map(([id, expanded]) => [id, Boolean(expanded)]).sort(([left], [right]) => left.localeCompare(right)),
+    detail: turnDetail?.selected?.requestId || '',
+    editing: editing ? [editing.targetId, editing.phase, editing.location] : null,
+    resumePin,
+    access,
+    roster: (roster || []).map((row) => [row.id, row.name || row.display_name || '']),
+    approvals: Object.entries(approvalStates || {}).sort(([left], [right]) => left.localeCompare(right)),
+    controls: Object.entries(controlStates || {}).sort(([left], [right]) => left.localeCompare(right)),
+    capabilities: [...capabilityIndex.entries()]
+      .map(([id, value]) => [id, value?.describe?.revision || value?.describe?.version || ''])
+      .sort(([left], [right]) => left.localeCompare(right)),
+  }), [foldOverrides, turnDetail?.selected?.requestId, editing?.targetId, editing?.phase, editing?.location, resumePin, access, roster, approvalStates, controlStates, capabilityIndex]);
+  const viewportGeometryKey = useMemo(() => presentationGeometryKey(
+    withNarration,
+    localGeometryKey,
+  ), [withNarration, localGeometryKey]);
   // The virtual index and the lookup used after a prepend must describe the
   // same presentation rows. A turn can span several ledger sequences, so the
   // raw entry seq is not interchangeable with its semantic row bounds.
   const firstVisibleSeq = Number(withNarration[0]?.seqLow || 0);
   const latestVisibleSeq = Number(withNarration.at(-1)?.seqHigh || 0);
-	const historyProjectionKey = `${state.channelId}:${scope}:${selfId}:${editingTargetId}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
-	const messageListKey = `${state.channelId}:${scope}`;
 	const viewport = useConversationViewport({
 	  channelId: state.channelId,
 	  lastSeq: state.lastSeq,
 	  history,
-	  viewKey: historyProjectionKey,
+	  viewKey: messageListKey,
 	  listKey: messageListKey,
-	  items: withNarration,
-	  firstVisibleSeq,
-	  latestVisibleSeq,
+		  items: withNarration,
+		  firstVisibleSeq,
+		  latestVisibleSeq,
+		  geometryKey: viewportGeometryKey,
 	  viewSpec: { scope, selfId, actorFilter, editingTargetId, showNarration: SHOW_CHANNEL_NARRATION },
+	  navigationTarget,
+	  onNavigationTargetConsumed,
 	  initialSession: initialViewSessionRef.current,
 	  onSessionChange: (change) => viewSessions?.writeConversation(state.channelId, change),
 	});
 	const firstItemIndex = viewport.firstItemIndex;
-  // The fold's visible window can now be large: Message List virtualizes it.
-  // Older historical batches remain outside React in the scheduler reservoir
-  // until a top demand releases 32 rows.
-  const windowStart = 0;
-  const windowed = {
-	items: withNarration,
-    start: windowStart,
-    end: withNarration.length,
-    total: withNarration.length,
-    hasOlder: windowStart > 0,
-  };
   const timelineControl = useMemo(() => {
     const queued = [];
     const actorIds = new Set();
@@ -830,6 +819,52 @@ export function Timeline({ state, history = {}, viewSessions, roster, selfId, ag
   const nextFreezeDeadline = Math.min(...[...frozenByActor.values()].filter(Boolean).map((value) => value.until));
 	const preemptedSources = timelineControl.preempted;
 	const mergedCounts = timelineControl.merged;
+  const namesRevision = useMemo(() => (roster || [])
+    .map((row) => `${row.id}:${row.name || row.display_name || ''}`)
+    .sort()
+    .join('|'), [roster]);
+  // A live publish must not invalidate every materialized row. Each row gets a
+  // compact revision made only from the local UI facts it actually consumes;
+  // unchanged rows retain their mounted subtree, intrinsic measurements and
+  // nested disclosure state while another request streams or arrives.
+  const rowRenderRevision = useCallback((absoluteIndex, row) => {
+    const entry = row.body;
+    const relativeIndex = absoluteIndex - firstItemIndex;
+    const isLatest = relativeIndex === withNarration.length - 1;
+    if (entry?.kind === 'turn') {
+      const requestId = entry.turn.requestId;
+      const actorId = entry.turn.request.audience?.[0] || '';
+      const controlKey = `${state.channelId}:${requestId}:cancel`;
+      const preempted = (preemptedSources.get(requestId) || [])
+        .map((turn) => `${turn.requestId}:${turn.lastSeq || turn.requestSeq || 0}`)
+        .join(',');
+      return JSON.stringify([
+        namesRevision, access, selfId, isLatest,
+        foldOverrides.get(`${requestId}:request`), foldOverrides.get(`${requestId}:response`),
+        turnDetail?.selected?.requestId === requestId,
+        editing?.targetId === requestId ? [editing.phase, editing.location, editing.text] : Boolean(editing),
+        resumePin === requestId,
+        approvalStates?.[entry.turn.request.id] || null,
+        controlStates?.[controlKey] || null,
+        capabilityIndex.get(actorId)?.describe?.revision || capabilityIndex.get(actorId)?.describe?.version || '',
+        frozenByActor.get(actorId) || null,
+        mergedCounts.get(requestId) || 0,
+        preempted,
+      ]);
+    }
+    if (entry?.kind === 'standalone') {
+      return JSON.stringify([
+        namesRevision, selfId, isLatest,
+        foldOverrides.get(`${entry.envelope.id}:message`),
+      ]);
+    }
+    return `${namesRevision}|${row.contentRevision}|${isLatest ? 1 : 0}`;
+  }, [
+    access, approvalStates, capabilityIndex, controlStates, editing, firstItemIndex,
+    foldOverrides, frozenByActor, mergedCounts, namesRevision, preemptedSources,
+    resumePin, selfId, state.channelId, turnDetail?.selected?.requestId,
+    withNarration.length,
+  ]);
 
   useEffect(() => {
     viewSessions?.writeConversation(state.channelId, {
@@ -992,7 +1027,7 @@ export function Timeline({ state, history = {}, viewSessions, roster, selfId, ag
   }, [onComposerEditChange, state.channelId]);
 
   return <MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost>
-	<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text" data-viewport-mode={viewport.mode} data-has-initial-anchor={viewport.hasInitialAnchor || undefined}>
+		<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" data-viewport-mode={viewport.mode} data-has-initial-anchor={viewport.hasInitialAnchor || undefined}>
       <div className={state.rows.size ? 'timeline-inner timeline-controls-overlay' : 'timeline-inner'}>
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">
@@ -1037,21 +1072,20 @@ export function Timeline({ state, history = {}, viewSessions, roster, selfId, ag
           // none of it is theirs.
           <div className="empty-ledger"><span>@</span><h2>这个频道里还没有与你相关的往来</h2><p>切回「全部」可以看到频道里其他人的动态。</p></div>
         )}
-        {viewport.status.loading && <span className="sr-only" role="status">正在读取更早动态</span>}
-        {viewport.status.error && <p className="bounded-list-note" role="alert">{viewport.status.error}</p>}
 	  </div>
-	  <ViewportLayoutProvider port={viewport.layoutPort}>
+	  {viewport.atTop && viewport.mode === 'loading-before' && <div className="timeline-history-status" role="status">正在读取更早动态…</div>}
+	  {viewport.status.error && <p className="bounded-list-note timeline-history-error" role="alert">{viewport.status.error}</p>}
 		<VirtualTimelineAdapter
 		  listKey={messageListKey}
-		  rows={windowed.items}
+		  rows={withNarration}
 		  viewport={viewport}
+		  rowRevision={rowRenderRevision}
 		  itemKey={(_index, row) => presentationEntryId(row)}
 		  renderRow={(index, row) => {
 		  const itemIndex = index - firstItemIndex;
           const entry = row.body;
           const continuation = row.continuation;
-          const timestamp = row.timestamp;
-          const showDay = row.startsDay;
+          const boundaryAfterTimestamp = row.boundaryAfterTimestamp;
           let content;
           if (entry.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
           if (
@@ -1076,7 +1110,7 @@ export function Timeline({ state, history = {}, viewSessions, roster, selfId, ag
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const fold = { latest: itemIndex === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold };
+            const fold = { latest: itemIndex === withNarration.length - 1, overrides: foldOverrides, onToggle: toggleFold };
             const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onCreateTask: onCreateTask ? () => onCreateTask(source) : null, onReply };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
@@ -1092,12 +1126,11 @@ export function Timeline({ state, history = {}, viewSessions, roster, selfId, ag
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: itemIndex === windowed.items.length - 1, overrides: foldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: itemIndex === withNarration.length - 1, overrides: foldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
           }
-		  return <div className="timeline-virtual-item">{showDay && <div className="timeline-day"><span>{dayLabel(timestamp)}</span></div>}{content}</div>;
+		  return <div className="timeline-virtual-item">{content}{boundaryAfterTimestamp > 0 && <div className="timeline-day"><span>{dayLabel(boundaryAfterTimestamp)}</span></div>}</div>;
 		  }}
 		/>
-	  </ViewportLayoutProvider>
 	  {viewport.unseen > 0 && <button type="button" className="timeline-jump-latest" onClick={viewport.jumpToLatest}>↓ {viewport.unseen} 条新动态</button>}
     </section>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}

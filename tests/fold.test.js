@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fold, orderedTimeline } from '../src/model/fold.js';
+import { apply, createChannelState, fold, orderedTimeline } from '../src/model/fold.js';
 import { processCount } from '../src/model/turn-process.js';
 
 const base = {
@@ -85,5 +85,22 @@ describe('feed fold', () => {
       { channel_id: 'c0', seq: 1, envelope: env('orphaned', 'request', 'system.member.list', { parent_id: 'elsewhere', correlation_id: 'elsewhere', payload: { body: {} } }) },
     ];
     expect(orderedTimeline(fold(rows, 'me')).map((entry) => entry.turn.requestId)).toEqual(['orphaned']);
+  });
+
+  it('does not reparent an exposed root when an older history page reveals its parent', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 20, envelope: env('child', 'request', 'system.member.list', {
+      parent_id: 'parent', correlation_id: 'parent', payload: { body: {} },
+    }) }, 'me');
+
+    expect(orderedTimeline(state).map((entry) => entry.turn.requestId)).toEqual(['child']);
+
+    apply(state, { channel_id: 'c0', seq: 10, envelope: env('parent', 'request', 'agent.ask', {
+      correlation_id: 'parent', payload: { text: 'older parent' },
+    }) }, 'me');
+
+    const entries = orderedTimeline(state);
+    expect(entries.map((entry) => entry.turn.requestId)).toEqual(['parent', 'child']);
+    expect(entries[0].thread).toEqual([]);
   });
 });

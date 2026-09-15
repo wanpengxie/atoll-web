@@ -150,6 +150,8 @@ export function createHistoryScheduler({
   clearTimeoutImpl = globalThis.clearTimeout,
   now = () => Date.now(),
   priorityStorage = globalThis.localStorage,
+  batchBytes = HISTORY_BATCH_BYTES,
+  maxBackgroundInflight = HISTORY_MAX_BACKGROUND_INFLIGHT,
 } = {}) {
   // PQueue is deliberately only the bounded executor. Candidate ownership and
   // priority stay in this coordinator, which re-scores after every batch.
@@ -385,12 +387,12 @@ export function createHistoryScheduler({
 	// reservoir, but a second foreground batch must wait. This keeps the global
 	// overshoot bounded by exactly one batch instead of one per active channel.
 	const globalAllowance = urgent && !foregroundInflight
-	  ? Math.max(globalAvailable, HISTORY_BATCH_BYTES)
+	  ? Math.max(globalAvailable, batchBytes)
 	  : globalAvailable;
     const targetByteDeficit = purpose === 'user-demand' || (!state.tailVisible && state.id === focus)
-      ? HISTORY_BATCH_BYTES
+      ? batchBytes
       : Math.max(1, targetBytes - state.reservoirBytes);
-    const byteLimit = Math.min(HISTORY_BATCH_BYTES, targetByteDeficit, channelAvailable, globalAllowance);
+    const byteLimit = Math.min(batchBytes, targetByteDeficit, channelAvailable, globalAllowance);
     if (byteLimit <= 0) return null;
     // Partial final batches are valid. Requiring a whole 1 MiB quantum here
     // left every P1/P2 reservoir permanently below its configured byte target.
@@ -454,7 +456,7 @@ export function createHistoryScheduler({
   function choose() {
     const backgroundInflight = [...inflightByChannel.values()].filter((batch) => batch.priority === 'background').length;
     const candidates = [...channels.values()].map(candidate).filter((batch) => (
-      batch && (batch.priority === 'foreground' || backgroundInflight < HISTORY_MAX_BACKGROUND_INFLIGHT)
+      batch && (batch.priority === 'foreground' || backgroundInflight < maxBackgroundInflight)
     ));
     if (!candidates.length) return null;
     // A person explicitly paging always wins the next free executor regardless

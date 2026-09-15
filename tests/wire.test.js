@@ -91,31 +91,30 @@ describe('wire client', () => {
     wire.close();
   });
 
-  it('opens the socket while local metadata loads and attaches after the resume manifest is ready', async () => {
-    let release;
-    const ready = new Promise((resolve) => { release = resolve; });
+  it('attaches immediately without waiting for local Replica metadata', () => {
+    let localMetaReady = false;
     const wire = createWire({
       WebSocketImpl: FakeWebSocket,
-      beforeAttach: () => ready,
-      since: () => ({ stale: 1 }),
+      since: () => (localMetaReady ? { c0: 42 } : {}),
     });
     const socket = FakeWebSocket.instances[0];
     socket.open();
     expect(socket.readyState).toBe(FakeWebSocket.OPEN);
-    expect(socket.sent).toEqual([]);
-    release({ since: { c0: 42 }, focus: 'c0' });
-    await Promise.resolve();
-    expect(socket.sent[0]).toMatchObject({ frame_type: 'attach', payload: { since: { c0: 42 }, focus: 'c0' } });
+    expect(socket.sent[0]).toMatchObject({ frame_type: 'attach', payload: { since: {}, focus: '' } });
+    localMetaReady = true;
     wire.close();
   });
 
-  it('buffers feed until the attach epoch barrier is committed', async () => {
+  it('delivers live immediately while attach persistence remains unfinished', async () => {
     let release;
-    const barrier = new Promise((resolve) => { release = resolve; });
+    const persistence = new Promise((resolve) => { release = resolve; });
     const events = [];
     const wire = createWire({
       WebSocketImpl: FakeWebSocket,
-      onAttach: () => barrier,
+      onAttach: () => {
+        events.push('meta');
+        return persistence;
+      },
       onState: (state) => events.push(`state:${state}`),
       onFeed: (_channelId, seq) => events.push(`feed:${seq}`),
     });
@@ -123,11 +122,10 @@ describe('wire client', () => {
     socket.open();
     receipt(socket, socket.sent[0], { boot: 'new-world' });
     socket.message({ v: 5, frame_type: 'feed', payload: { source: 'live', generation: 1, channel_id: 'c0', seq: 11, envelope: { id: 'm11' } } });
-    expect(events).toEqual(['state:open']);
+    expect(events).toEqual(['state:open', 'meta', 'state:attached', 'feed:11']);
     release();
     await Promise.resolve();
-    await Promise.resolve();
-    expect(events).toEqual(['state:open', 'state:attached', 'feed:11']);
+    expect(events).toEqual(['state:open', 'meta', 'state:attached', 'feed:11']);
     wire.close();
   });
 

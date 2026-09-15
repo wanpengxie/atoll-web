@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkBreaks from 'remark-breaks';
@@ -19,6 +19,28 @@ export function MarkdownFileReferenceProvider({ onOpen, children }) {
   return <FileReferenceContext.Provider value={onOpen || null}>{children}</FileReferenceContext.Provider>;
 }
 
+// Remote Markdown media must not acquire geometry after it becomes visible.
+// The frame owns one stable aspect ratio from the first paint; decoding only
+// replaces pixels inside it. This is deliberately presentation policy rather
+// than a viewport compensation callback.
+const StableMarkdownImage = React.memo(function StableMarkdownImage({ src = '', alt = '', title = '', ...props }) {
+  const [phase, setPhase] = useState('loading');
+  useEffect(() => setPhase('loading'), [src]);
+  return <span className="markdown-image-frame" data-image-phase={phase} data-viewport-stable-media="image">
+    <span className="markdown-image-status" aria-hidden="true">{phase === 'error' ? '图片无法加载' : '正在加载图片…'}</span>
+    <img
+      {...props}
+      src={src}
+      alt={alt}
+      title={title || undefined}
+      loading="lazy"
+      decoding="async"
+      onLoad={(event) => { props.onLoad?.(event); setPhase('ready'); }}
+      onError={(event) => { props.onError?.(event); setPhase('error'); }}
+    />
+  </span>;
+});
+
 // 消息正文只接受 CommonMark/GFM AST。react-markdown 默认不会执行原始 HTML，
 // 因而账本中的文本不会穿透为 DOM 或脚本。
 export const MarkdownContent = React.memo(function MarkdownContent({ text, className = '' }) {
@@ -36,6 +58,7 @@ export const MarkdownContent = React.memo(function MarkdownContent({ text, class
       }} />;
     },
     input: ({ node: _node, ...props }) => <input {...props} disabled />,
+    img: ({ node: _node, ...props }) => <StableMarkdownImage {...props} />,
     table: ({ node: _node, ...props }) => <div className="markdown-table-scroll"><table {...props} /></div>,
     // 围栏代码块：<pre> 整个换成 CodeBlock。行内 code 没有 pre 父级，不经这里。
     pre: ({ node }) => {

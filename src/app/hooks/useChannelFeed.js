@@ -14,6 +14,7 @@ import { loadUntilVisible } from '../../model/history-interaction.js';
 import { projectTimeline } from '../../model/timeline-projection.js';
 import { turnStartObservation } from '../../model/turn-process.js';
 import { createChannelReplicaStore } from '../../model/channel-replica.js';
+import { cacheWorldMismatch, createPersistenceEpochFence } from '../../model/sync-session.js';
 
 export { HISTORY_RESERVOIR_SIZE };
 
@@ -33,7 +34,16 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const cacheRef = useRef(null);
   if (cacheRef.current === null) cacheRef.current = createFeedCache();
   const cacheMetaRef = useRef(new Map());
-	const cacheOwnerReadyRef = useRef(Promise.resolve());
+  const cacheBootRef = useRef('');
+  const remoteBootRef = useRef('');
+  const resumeReadyRef = useRef(false);
+  const cacheOwnerReadyRef = useRef(Promise.resolve());
+  // Persistence follows the selected (principal, server boot) epoch, but live
+  // delivery never does. Every row/checkpoint captures this fence and writes
+  // only after old-world cleanup has completed.
+  const cacheEpochFenceRef = useRef(null);
+  if (cacheEpochFenceRef.current === null) cacheEpochFenceRef.current = createPersistenceEpochFence();
+  const attachMetaSerialRef = useRef(0);
   const replicaRef = useRef(null);
   if (replicaRef.current === null) replicaRef.current = createChannelReplicaStore();
   const statesRef = useRef(replicaRef.current.states());
@@ -41,6 +51,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const schedulerRef = useRef(null);
   const lifecycleRef = useRef(0);
   const localReplicaSerialRef = useRef(0);
+  const preparedPrincipalRef = useRef('');
   const liveBatchRef = useRef(null);
   const unreadCacheRef = useRef(new Map());
 
@@ -117,7 +128,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     onChannelsDiscovered(unseenChannels);
     onSubmissionFeed(landedMessageIds, closedRequestIds);
     if (accessChanged) onAccessChanged();
-    if (persist) cacheRef.current.saveRows(rows).catch((error) => {
+    if (persist) cacheEpochFenceRef.current.run(() => cacheRef.current.saveRows(rows)).catch((error) => {
       diagnostic('error', 'feed.cache_save_failed', { channels: [...dirtyChannels], error });
       onError(error);
     });
@@ -132,7 +143,15 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   applyRowsRef.current = applyRows;
 
   if (schedulerRef.current === null || schedulerRef.current.isDestroyed?.()) {
+    const mobile = isMobileProfile();
     schedulerRef.current = createHistoryScheduler({
+      // Live feed and history share one ordered WebSocket. Several MiB of
+      // speculative history already written to a slow mobile connection cannot
+      // be overtaken by a later live frame, regardless of server-side lane
+      // priority. Keep the active channel warm in small quanta and leave other
+      // channels to IndexedDB until the person focuses them.
+      batchBytes: mobile ? 128 * 1024 : undefined,
+      maxBackgroundInflight: mobile ? 0 : undefined,
       requestPage: (channelId, beforeSeq, limit, options) => {
         const wire = wireRef.current;
         if (!wire) return Promise.reject(new Error('消息连接尚未就绪'));
@@ -144,7 +163,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 		return wire.cancelHistory(channelId, ref, generation);
 	  },
 	  readCache: (channelId, beforeSeq, limit, byteLimit) => cacheRef.current.readBefore(channelId, beforeSeq, limit, byteLimit),
-	  persistRows: (rows, options) => cacheRef.current.saveRows(rows, options),
+	  persistRows: (rows, options) => cacheEpochFenceRef.current.run(() => cacheRef.current.saveRows(rows, options)),
       hasVisibleRow: (channelId, seq) => replicaRef.current.hasRow(channelId, seq),
 	  visibleOldestSeq: (channelId) => replicaRef.current.visibleOldest(channelId),
 	  revealRows: (channelId, entries) => {
@@ -214,55 +233,67 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	}, [onAgentActivity]);
 
   const setHistoryGrants = useCallback((grants = [], detail = {}) => {
+    const serial = ++attachMetaSerialRef.current;
     const generation = detail.generation;
-    // createWire keeps this generation's downstream frames behind its attach
-    // barrier until this promise settles. Selecting the server epoch and
-    // installing its historical seam is therefore one atomic transition.
-	return cacheOwnerReadyRef.current.then(() => cacheRef.current.ensureBoot(detail.boot)).then(({ changed, meta }) => {
+    const remoteBoot = String(detail.boot || '');
+    remoteBootRef.current = remoteBoot;
+    const worldMismatch = cacheWorldMismatch(remoteBoot, cacheBootRef.current, cacheMetaRef.current);
+    const replicaChanged = detail.forceReset === true || worldMismatch;
+
+    // This is the only synchronous attach seam. Reset an obsolete in-memory
+    // world before Wire can deliver the next frame, then install remote Meta
+    // immediately. Disk selection continues below without holding transport.
+    if (replicaChanged) {
+      localReplicaSerialRef.current += 1;
+      cacheMetaRef.current = new Map();
+      cacheBootRef.current = remoteBoot;
+      resumeReadyRef.current = false;
+      replicaRef.current.reset();
+      statesRef.current = replicaRef.current.states();
+      unreadCacheRef.current.clear();
+      schedulerRef.current.resetReplica();
+      cursorsRef.current.reconcile({});
+      cursorsRef.current.resetReads();
+      setLocalReplicaReady(true);
+    }
+    const localMeta = replicaChanged ? new Map() : cacheMetaRef.current;
+    for (const entry of grants) {
+      if (!entry?.channel_id) continue;
+      cursorsRef.current.baselineRead(entry.channel_id, entry.head_seq);
+      replicaRef.current.installMeta(entry.channel_id, {
+        headSeq: entry.head_seq,
+        coverage: localMeta.get(entry.channel_id)?.coverage,
+      });
+    }
+    schedulerRef.current.attach(grants, {
+      generation,
+      focus: detail.focus || activeChannelRef.current || '',
+      localMeta,
+    });
+
+    const selectedEpoch = cacheEpochFenceRef.current.select(() => (
+      cacheOwnerReadyRef.current.then(() => cacheRef.current.ensureBoot(remoteBoot))
+    ));
+    return selectedEpoch.then(({ changed, boot, meta }) => {
+      if (serial !== attachMetaSerialRef.current) return { changed, meta, stale: true };
+      cacheBootRef.current = String(boot || remoteBoot);
       cacheMetaRef.current = meta;
-	  const replicaChanged = changed || detail.forceReset === true;
-      if (replicaChanged) {
-		replicaRef.current.reset();
-		statesRef.current = replicaRef.current.states();
-		unreadCacheRef.current.clear();
-		schedulerRef.current.resetReplica();
-        cursorsRef.current.reconcile({});
-        cursorsRef.current.resetReads();
-      }
-      // The attach head is the exact historical/live seam. A browser without
-      // a read fact starts observing after that snapshot; body hydration at or
-      // below the head can never manufacture unread notifications.
-      for (const entry of grants) {
-        if (!entry?.channel_id) continue;
-        cursorsRef.current.baselineRead(entry.channel_id, entry.head_seq);
-        replicaRef.current.installMeta(entry.channel_id, {
-          headSeq: entry.head_seq,
-          coverage: meta.get(entry.channel_id)?.coverage,
-        });
-      }
-      schedulerRef.current.attach(grants, {
-        generation,
-        focus: detail.focus || activeChannelRef.current || '',
-		localMeta: meta,
-      });
-      return { changed: replicaChanged, meta };
+      resumeReadyRef.current = true;
+      // A disk-only mismatch discovered after attach cannot invalidate live
+      // rows already committed in memory. ensureBoot has cleared that obsolete
+      // disk world; publish only its now-safe (normally empty) metadata.
+      for (const [channelId, value] of meta) replicaRef.current.installMeta(channelId, value);
+      schedulerRef.current.setLocalMeta(meta, { publishChange: false });
+      setLocalReplicaReady(true);
+      return { changed: replicaChanged || changed, meta };
     }).catch((error) => {
-      diagnostic('error', 'feed.cache_boot_check_failed', { generation, error });
-      onError(error);
-	  if (detail.forceReset === true) {
-		replicaRef.current.reset();
-		statesRef.current = replicaRef.current.states();
-		unreadCacheRef.current.clear();
-		schedulerRef.current.resetReplica();
-		cursorsRef.current.reconcile({});
-		cursorsRef.current.resetReads();
-	  }
-      schedulerRef.current.attach(grants, {
-        generation,
-        focus: detail.focus || activeChannelRef.current || '',
-		localMeta: new Map(),
-      });
-      return { changed: detail.forceReset === true, meta: new Map(), error };
+      if (serial === attachMetaSerialRef.current) {
+        resumeReadyRef.current = false;
+        diagnostic('error', 'feed.cache_boot_check_failed', { generation, error });
+        onError(error);
+        setLocalReplicaReady(true);
+      }
+      return { changed: replicaChanged, meta: new Map(), error };
     });
   }, [activeChannelRef]);
 
@@ -286,7 +317,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       diagnostic('warn', 'feed.live_checkpoint_invalid', payload);
       return false;
     }
-	void cacheRef.current.saveCoverage(channelId, lowSeq, highSeq).then(() => {
+	void cacheEpochFenceRef.current.run(() => cacheRef.current.saveCoverage(channelId, lowSeq, highSeq)).then(() => {
 	  const nextMeta = cacheRef.current.metaSnapshot();
 	  cacheMetaRef.current = nextMeta;
 	  const channelMeta = nextMeta.get(channelId);
@@ -375,7 +406,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 
   const resetPersistent = useCallback(async () => {
     liveBatchRef.current.flushNow();
-    await cacheRef.current.clear();
+    await cacheEpochFenceRef.current.run(() => cacheRef.current.clear());
 	replicaRef.current.reset();
 	statesRef.current = replicaRef.current.states();
 	unreadCacheRef.current.clear();
@@ -386,17 +417,51 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 
   const prepareLocalReplica = useCallback(async (principalId, { focus = '' } = {}) => {
     const serial = ++localReplicaSerialRef.current;
+    // A principal change invalidates both any detached attach completion and
+    // every resume claim from the preceding owner before a new socket can ask
+    // for it. The cache may still be physically open; it is not trusted until
+    // owner and remote boot have both crossed the epoch fence.
+    attachMetaSerialRef.current += 1;
+    resumeReadyRef.current = false;
+    cacheMetaRef.current = new Map();
+    cacheBootRef.current = '';
+    remoteBootRef.current = '';
     if (!principalId) {
+      preparedPrincipalRef.current = '';
       setLocalReplicaReady(true);
       return { resume: {} };
     }
+    if (preparedPrincipalRef.current && preparedPrincipalRef.current !== principalId) {
+      // Actor ids and unread cursors are channel-local facts of one principal.
+      // Never render the preceding principal's in-memory world while the new
+      // owner check is still waiting on IndexedDB.
+      liveBatchRef.current?.flushNow();
+      replicaRef.current.reset();
+      statesRef.current = replicaRef.current.states();
+      unreadCacheRef.current.clear();
+      schedulerRef.current.resetReplica();
+      cursorsRef.current.reconcile({});
+      cursorsRef.current.resetReads();
+      setVersion((value) => value + 1);
+      setIndexVersion((value) => value + 1);
+    }
+    preparedPrincipalRef.current = principalId;
     setLocalReplicaReady(false);
     schedulerRef.current.setPriorityScope(principalId);
-    const ownerReady = cacheRef.current.ensureOwner(principalId);
+    const ownerReady = cacheEpochFenceRef.current.select(() => cacheRef.current.ensureOwner(principalId));
     cacheOwnerReadyRef.current = ownerReady.then(() => undefined);
     try {
-      const { changed, meta } = await ownerReady;
+      const { changed, boot, meta } = await ownerReady;
       if (serial !== localReplicaSerialRef.current) return { resume: {} };
+      cacheBootRef.current = String(boot || '');
+      const remoteBoot = remoteBootRef.current;
+      if (cacheWorldMismatch(remoteBoot, cacheBootRef.current, meta)) {
+        // Attach won the race. Old-world Meta must not enter the active
+        // scheduler while ensureBoot clears it behind the persistence fence.
+        cacheMetaRef.current = new Map();
+        setLocalReplicaReady(true);
+        return { resume: {} };
+      }
       if (changed) {
 		replicaRef.current.reset();
 		statesRef.current = replicaRef.current.states();
@@ -443,7 +508,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   // Attach/reconnect cursors must describe durable local coverage. The folded
   // React model can be ahead of disk by one animation frame and is therefore
   // not a safe resume claim.
-  const resumeLocalReplica = useCallback(() => resumeSnapshot(cacheRef.current.metaSnapshot()), []);
+  const resumeLocalReplica = useCallback(() => (
+    resumeReadyRef.current ? resumeSnapshot(cacheRef.current.metaSnapshot()) : {}
+  ), []);
 
   useEffect(() => {
     const lifecycle = ++lifecycleRef.current;

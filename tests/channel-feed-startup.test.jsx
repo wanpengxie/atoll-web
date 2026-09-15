@@ -31,6 +31,48 @@ afterEach(() => {
 });
 
 describe('channel feed startup lanes', () => {
+  it('commits live before owner/boot persistence is ready and fences the disk write', async () => {
+    let resolveOwner;
+    let resolveBoot;
+    const owner = new Promise((resolve) => { resolveOwner = resolve; });
+    const boot = new Promise((resolve) => { resolveBoot = resolve; });
+    const meta = new Map();
+    const saveRows = vi.fn(async () => {});
+    doubles.cache = {
+      ensureOwner: vi.fn(() => owner),
+      ensureBoot: vi.fn(() => boot),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      saveRows,
+      saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta),
+      clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+
+    let preparation;
+    act(() => { preparation = hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    act(() => {
+      void hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+      hook.result.current.enqueue({
+        source: 'live', generation: 1, channel_id: 'c0', seq: 1,
+        envelope: { id: 'live-1', kind: 'event', type: 'human.note', payload: { text: 'now' } },
+      });
+    });
+
+    await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(1)).toBe(true));
+    expect(saveRows).not.toHaveBeenCalled();
+    resolveOwner({ changed: false, boot: 'boot-a', meta });
+    await act(async () => { await Promise.resolve(); });
+    expect(doubles.cache.ensureBoot).toHaveBeenCalledWith('boot-a');
+    expect(saveRows).not.toHaveBeenCalled();
+    resolveBoot({ changed: false, boot: 'boot-a', meta });
+    await act(async () => { await preparation; });
+    await waitFor(() => expect(saveRows).toHaveBeenCalledOnce());
+    hook.unmount();
+  });
+
   it('returns after meta creates queues without waiting for the selected cache body', async () => {
     let resolveBody;
     const body = new Promise((resolve) => { resolveBody = resolve; });

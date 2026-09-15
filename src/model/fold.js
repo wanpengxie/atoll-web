@@ -344,6 +344,7 @@ export function orderedTimeline(state) {
       timelineCache.set(state, {
         signature,
         entries,
+        stableRoots: cached.stableRoots || new Set(),
         turnCount: state.turns.size,
         standaloneCount: state.standalone.length,
         orphanCount: state.orphans.length,
@@ -355,11 +356,20 @@ export function orderedTimeline(state) {
 
   const childrenByParent = new Map();
   const roots = [];
+  // A request whose parent was not available when it first entered the
+  // presentation is a stable root for this projector cache. Keep that visual
+  // history out of the channel replica: the ledger still retains parent_id,
+  // while pagination cannot turn a prepend into remove+reparent.
+  const stableRoots = cached?.stableRoots || new Set();
   for (const turn of state.turns.values()) {
     const parentId = turn.request?.parent_id;
-    // 父必须是本频道见过的另一个请求；父不在（跨频道来的、还没回放到）就按根处理，
-    // 宁可平铺也不让它消失。
-    if (parentId && parentId !== turn.requestId && state.turns.has(parentId)) {
+    const parentAvailable = parentId && parentId !== turn.requestId && state.turns.has(parentId);
+    if (!parentAvailable) stableRoots.add(turn.requestId);
+    // Presentation topology is monotonic. Once a request was exposed as a
+    // root, an older history page is not allowed to move it under its parent.
+    // The relationship remains available on request.parent_id for detail and
+    // diagnostics; only the visual ownership is frozen.
+    if (parentAvailable && !stableRoots.has(turn.requestId)) {
       pushMap(childrenByParent, parentId, turn);
     } else roots.push(turn);
   }
@@ -373,6 +383,7 @@ export function orderedTimeline(state) {
   timelineCache.set(state, {
     signature,
     entries,
+    stableRoots,
     turnCount: state.turns.size,
     standaloneCount: state.standalone.length,
     orphanCount: state.orphans.length,

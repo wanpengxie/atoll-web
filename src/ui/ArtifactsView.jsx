@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Download, FolderPlus, Paperclip, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { artifactKindForMediaType, previewForMediaType } from '../model/artifacts.js';
 import { fileTransferURL, mediaTypeFromFileName, uploadChannelFile } from '../model/channel-file-transfer.js';
@@ -7,12 +7,19 @@ import { FileBreadcrumbs, FileBrowserRows } from './files/ChannelFileBrowser.jsx
 import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 
-export function ArtifactsView({ channel, devices = [], disabled, onResource, onAttach, onPreview, recentFiles = [], visible = true, initialLocation = null, onLocationChange, onClose }) {
+export function ArtifactsView({ channel, devices = [], disabled, onResource, onAttach, onPreview, recentFiles = [], visible = true, initialLocation = null, onLocationChange, onClose, autoFocusOnOpen = false }) {
+  const surfaceRef = useRef(null);
   const browser = useChannelFileBrowser({ channel, devices, disabled, onResource, initialLocation, onLocationChange });
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [uploading, setUploading] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderName, setFolderName] = useState('');
+
+  useEffect(() => {
+    if (!visible || !autoFocusOnOpen) return undefined;
+    const frame = requestAnimationFrame(() => surfaceRef.current?.querySelector('button[aria-label="关闭文件"]')?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [visible, autoFocusOnOpen]);
 
   async function chooseFile(event) {
     const file = event.target.files?.[0];
@@ -97,7 +104,7 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
   //
   // 名字只用 aria-label：aria-labelledby 与 aria-label 同在时无障碍名恒取前者，
   // 指向开关按钮就会让这一整块叫"文件"，与按钮同名。
-  return <section id="workspace-panel-artifacts" className="workspace-view artifacts-view channel-files-view" hidden={!visible} role="region" aria-label="频道文件">
+  return <section ref={surfaceRef} id="workspace-panel-artifacts" className="workspace-view artifacts-view channel-files-view" hidden={!visible} role="region" aria-label="频道文件">
     <div className="finder-toolbar">
       <button type="button" className="finder-nav-button" aria-label="返回上一级" disabled={!browser.directory} onClick={browser.parent}>‹</button>
       <FileBreadcrumbs browser={browser} />
@@ -111,7 +118,7 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
           <input aria-label="选择要上传到当前目录的文件" type="file" disabled={disabled || !browser.daemonId || uploading} onChange={chooseFile} />
           <span aria-hidden="true"><Upload size={14} />{uploading ? '上传中…' : '上传'}</span>
         </span>
-        {onClose && <button type="button" className="finder-tool-button" aria-label="收起文件分屏" title="收起文件分屏" onClick={onClose}><X size={15} /></button>}
+        {onClose && <button type="button" className="finder-tool-button" aria-label="关闭文件" title="关闭文件" onClick={onClose}><X size={15} /></button>}
       </div>
     </div>
     {creatingFolder && <form className="new-folder-form" onSubmit={submitFolder}>

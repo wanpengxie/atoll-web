@@ -21,6 +21,23 @@
 .compact-shell .context-host .side-panel, .compact-shell .context-host .roster-panel,
 .mobile-shell .context-host .side-panel, .mobile-shell .context-host .roster-panel { position: static; display: grid; width: 100%; box-shadow: none; }
 
+/* 窄屏与移动端都使用单 Surface。641–900px 的 compact 布局仍有频道栏，若再
+   把剩余宽度一分为二，文件和终端同样不可用。内部状态继续常驻，切回对话时恢复。 */
+.compact-shell .dynamic-workspace.terminal-split-open,
+.compact-shell .dynamic-workspace.files-split-open,
+.mobile-shell .dynamic-workspace.terminal-split-open,
+.mobile-shell .dynamic-workspace.files-split-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.compact-shell .dynamic-workspace.terminal-split-open > .dynamic-message-pane,
+.compact-shell .dynamic-workspace.files-split-open > .dynamic-message-pane,
+.mobile-shell .dynamic-workspace.terminal-split-open > .dynamic-message-pane,
+.mobile-shell .dynamic-workspace.files-split-open > .dynamic-message-pane { visibility: hidden; pointer-events: none; }
+.compact-shell .dynamic-workspace.terminal-split-open > .terminal-view,
+.mobile-shell .dynamic-workspace.terminal-split-open > .terminal-view { grid-row: 1; grid-column: 1; border-top: 0; border-left: 0; }
+.compact-shell .dynamic-workspace.files-split-open > .artifacts-view,
+.mobile-shell .dynamic-workspace.files-split-open > .artifacts-view { grid-row: 1; grid-column: 1; border-top: 0; border-left: 0; }
+.compact-shell .dynamic-workspace.files-split-open.terminal-split-open > .artifacts-view,
+.mobile-shell .dynamic-workspace.files-split-open.terminal-split-open > .artifacts-view { display: none; }
+
 .shell.mobile-shell, .shell.mobile-shell.has-context { grid-template-columns: minmax(0, 1fr); }
   /* 标题只占一行。控件仍保持 44px 点击面；放不下的 workspace 动作进入 ••• 菜单，
      恒不再为了三个图标给 header 追加第二条工具栏。 */
@@ -28,7 +45,11 @@
   .mobile-shell .channel-rail { display: none; }
   .shell.mobile-shell.mobile-channels-open .channel-rail { display: flex; grid-column: 1; grid-row: 1; }
   .shell.mobile-shell.mobile-channels-open .mobile-rail-close { display: grid; }
-  .shell.mobile-shell.mobile-channels-open .workspace, .shell.mobile-shell.mobile-channels-open .context-host { display: none; }
+  /* Navigation replaces the active Surface visually but does not remove its
+     layout box. Keeping the same viewport prevents a virtual Conversation
+     from being measured at 0px and then correcting itself when Nav closes. */
+  .shell.mobile-shell.mobile-channels-open .workspace,
+  .shell.mobile-shell.mobile-channels-open .context-host { visibility: hidden; pointer-events: none; }
   .mobile-shell .context-host { inset: 0; width: 100%; grid-template-columns: minmax(0, 1fr); }
   .mobile-shell .context-host[data-context-type="artifact"] { grid-template-columns: minmax(0, 1fr); }
   .mobile-shell .context-pane { grid-column: 1; }
@@ -47,15 +68,8 @@
   .mobile-shell .workspace-quick-actions { display: none; }
   .mobile-shell .status-stack { grid-row: 2; grid-column: 1 / -1; }
   .mobile-shell .dynamic-workspace { grid-row: 3; grid-column: 1 / -1; }
-  .mobile-shell .dynamic-workspace.terminal-split-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
-  .mobile-shell .dynamic-workspace.terminal-split-open > .dynamic-message-pane { grid-row: 1; }
-  .mobile-shell .dynamic-workspace.terminal-split-open > .terminal-view { grid-row: 2; grid-column: 1; border-top: 1px solid var(--terminal-line); border-left: 0; }
-  /* 窄屏没有并排的余地：文件分屏改成上下，且恒不与终端同时占位——两块都开时
-     文件让位给终端（终端里正在跑的东西比目录更怕被挤没）。 */
-  .mobile-shell .dynamic-workspace.files-split-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
-  .mobile-shell .dynamic-workspace.files-split-open > .dynamic-message-pane { grid-row: 1; }
-  .mobile-shell .dynamic-workspace.files-split-open > .artifacts-view { grid-row: 2; grid-column: 1; border-top: 1px solid var(--line-structural); border-left: 0; }
-  .mobile-shell .dynamic-workspace.files-split-open.terminal-split-open > .artifacts-view { display: none; }
+  /* 移动端一次只展示一个主 Surface。文件和终端不是把 Conversation 挤成半屏的
+     “分屏”，而是占满 header 以下的完整可用区域；关闭后原消息树仍在并恢复阅读态。 */
   /* Only page-level surfaces belong on the workspace's third row. Timeline and
      the private placeholder live one grid deeper, inside dynamic-message-pane;
      assigning them row 3 creates implicit empty rows and can collapse the real
@@ -71,6 +85,8 @@
   .mobile-shell .timeline-inner { padding: 8px 7px 18px; }
 	.mobile-shell .timeline-virtual-item { padding-right: 7px; padding-left: 7px; }
   .mobile-shell .agent-wait-dock { right: 16px; left: 16px; width: calc(100% - 32px); }
+  .mobile-shell .agent-wait-dock { bottom: 112px; }
+  .mobile-shell .timeline-overlay-clearance { height: 128px; min-height: 128px; }
   .mobile-shell .agent-wait-layer { height: auto; }
   .mobile-shell .agent-wait-layer.is-collapsed { height: auto; }
   .mobile-shell .agent-wait-item { height: 32px; grid-template-columns: minmax(0, 1fr) auto; }
@@ -80,6 +96,7 @@
   .mobile-shell .request-text, .mobile-shell .audience-line, .mobile-shell .message-attachments, .mobile-shell .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .mobile-shell .composer-wrap { padding: 10px; }
   .mobile-shell .composer-tools > button, .mobile-shell .composer-file-control, .mobile-shell .composer-cancel-edit { width: 44px; height: 44px; }
+  .mobile-shell .terminal-status button { min-width: 44px; min-height: 44px; }
   .mobile-shell .timeline-scope-bar { top: 4px; min-height: 29px; flex-basis: 29px; margin-bottom: 0; }
   .mobile-shell .timeline-scope > button { min-height: 26px; padding: 2px 9px; font-size: 10px; }
   .mobile-shell .timeline-actor-filter button { min-height: 20px; max-width: 7em; padding: 1px 7px; font-size: 9px; }

@@ -101,20 +101,30 @@ function continues(previous, current) {
     && delta <= 5 * 60_000;
 }
 
-export function presentationRow(entry, { previous = null } = {}) {
+export function presentationRow(entry, { previous = null, next = null, continuation } = {}) {
   const bounds = entry?.kind === 'turn'
     ? turnBounds(entry)
     : { low: finiteSeq(entry?.seq), high: finiteSeq(entry?.seq) };
+  const timestamp = entryTimestamp(entry);
+  const nextTimestamp = entryTimestamp(next);
   return Object.freeze({
     id: entryIdentity(entry),
     seqLow: bounds.low,
     get seqHigh() { return entry?.kind === 'turn' ? turnBounds(entry).high : bounds.high; },
     kind: entry?.kind === 'narration' ? 'boundary' : entry?.kind === 'turn' ? 'turn' : 'notice',
     actorID: actorID(entry),
-    timestamp: entryTimestamp(entry),
-    dayKey: localDayKey(entryTimestamp(entry)),
-    startsDay: Boolean(entryTimestamp(entry)) && localDayKey(entryTimestamp(entry)) !== localDayKey(entryTimestamp(previous)),
-    continuation: continues(previous, entry),
+    timestamp,
+    dayKey: localDayKey(timestamp),
+    // A day boundary belongs to the older row and labels the day that follows.
+    // That makes prepend monotonic: discovering an older predecessor never
+    // removes layout from a row that is already on screen.
+    boundaryAfterTimestamp: timestamp && nextTimestamp && localDayKey(timestamp) !== localDayKey(nextTimestamp)
+      ? nextTimestamp
+      : 0,
+    // Once a row has appeared, whether it carries its own identity header is
+    // presentation history. Filling a previously unknown predecessor must not
+    // make that settled row lose its avatar/header and change height.
+    continuation: typeof continuation === 'boolean' ? continuation : continues(previous, entry),
     // Every content-changing ledger fact advances seqHigh. Local reading state
     // (folds, filters, panels) deliberately does not.
     get contentRevision() { return entry?.kind === 'turn' ? turnBounds(entry).high : bounds.high; },
@@ -125,7 +135,10 @@ export function presentationRow(entry, { previous = null } = {}) {
 }
 
 export function projectPresentationRows(entries = []) {
-  return entries.map((entry, index) => presentationRow(entry, { previous: entries[index - 1] || null }));
+  return entries.map((entry, index) => presentationRow(entry, {
+    previous: entries[index - 1] || null,
+    next: entries[index + 1] || null,
+  }));
 }
 
 function rowSignature(row) {
@@ -137,7 +150,7 @@ function rowSignature(row) {
     row.actorID,
     row.timestamp,
     row.dayKey,
-    row.startsDay ? 1 : 0,
+    row.boundaryAfterTimestamp,
     row.continuation ? 1 : 0,
     row.contentRevision,
     row.layoutClass,
@@ -151,13 +164,22 @@ function rowSignature(row) {
 // not change retain the exact same object identity for the render adapter.
 export function createPresentationProjector() {
   let cache = new Map();
+  let activeViewKey = '';
   return Object.freeze({
-    project(entries = []) {
+    project(entries = [], { viewKey = '' } = {}) {
+      if (viewKey !== activeViewKey) {
+        cache.clear();
+        activeViewKey = viewKey;
+      }
       const next = new Map();
       const rows = entries.map((entry, index) => {
-        const candidate = presentationRow(entry, { previous: entries[index - 1] || null });
+        const cached = cache.get(entryIdentity(entry));
+        const candidate = presentationRow(entry, {
+          previous: entries[index - 1] || null,
+          next: entries[index + 1] || null,
+          continuation: cached?.row.continuation,
+        });
         const signature = rowSignature(candidate);
-        const cached = cache.get(candidate.id);
         const row = cached?.signature === signature ? cached.row : candidate;
         next.set(candidate.id, { row, signature });
         return row;
@@ -165,11 +187,32 @@ export function createPresentationProjector() {
       cache = next;
       return rows;
     },
-    clear() { cache.clear(); },
+    clear() {
+      cache.clear();
+      activeViewKey = '';
+    },
     get size() { return cache.size; },
   });
 }
 
 export function presentationEntryId(entryOrRow) {
   return entryOrRow?.id || entryIdentity(entryOrRow);
+}
+
+// Compact identity for a disposable virtual-list measurement snapshot. It is
+// sensitive to every row's semantic id, content revision and layout class,
+// while remaining separate from durable data cursors.
+export function presentationGeometryKey(rows = [], localLayoutKey = '') {
+  let hash = 2166136261;
+  const feed = (token) => {
+    for (let index = 0; index < token.length; index += 1) {
+      hash ^= token.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+  };
+  for (const row of rows) {
+    feed(`${row.id}\u001f${row.contentRevision}\u001f${row.layoutClass}\u001e`);
+  }
+  feed(`\u001d${localLayoutKey}`);
+  return `${rows.length}:${(hash >>> 0).toString(36)}`;
 }

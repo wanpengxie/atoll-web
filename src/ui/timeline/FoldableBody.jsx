@@ -1,5 +1,4 @@
-import React, { useCallback, useLayoutEffect, useRef } from 'react';
-import { useViewportLayout } from './ViewportLayoutContext.jsx';
+import React, { useCallback } from 'react';
 
 // 正文默认露出的行数。真值在 tokens.css 的 --message-fold-lines，这里只是量不到
 // 样式时（jsdom）的后备。
@@ -67,35 +66,19 @@ function countLines(value) {
 //   overflow  —— 源文本按稳定规则超过阈值。
 // 只有 overflow 成立才会出现按钮；exempt 的正文默认展开，但读者仍可手动收起。
 export function FoldableBody({ id, text = '', exempt = false, expanded, onToggle, className = '', children }) {
-  const toggleRef = useRef(null);
-  const viewportLayout = useViewportLayout();
   const value = String(text || '');
   const canFold = foldCandidate(value);
   const folded = canFold && (expanded === false || (expanded !== true && !exempt));
   const sourceLines = value ? countLines(value) : 0;
   const reportedLines = sourceLines > 1 ? sourceLines : estimatedVisualLines(value);
 
-  // This component only reports the layout transaction. The conversation
-  // viewport owns every scroll/transform mutation and settles it after the
-  // virtualizer has measured the changed row.
-  useLayoutEffect(() => {
-    if (folded && toggleRef.current) viewportLayout?.commit({ key: id, anchor: toggleRef.current });
-  }, [folded, id, viewportLayout]);
-
-  useLayoutEffect(() => () => viewportLayout?.cancel(id), [id, viewportLayout]);
-
   const toggle = useCallback(() => {
-    if (folded) onToggle?.(id, true);
-    else {
-      const button = toggleRef.current;
-      if (button) viewportLayout?.begin({ key: id, anchor: button });
-      onToggle?.(id, false);
-    }
-  }, [folded, id, onToggle, viewportLayout]);
+    onToggle?.(id, folded);
+  }, [folded, id, onToggle]);
 
   return <div className={`message-fold${folded ? ' is-folded' : ''} ${className}`.trim()}>
     <div className="message-fold-content">{children}</div>
-    {canFold && <button ref={toggleRef} type="button" className="message-fold-toggle" aria-expanded={!folded} onClick={toggle}>
+    {canFold && <button type="button" className="message-fold-toggle" aria-expanded={!folded} onClick={toggle}>
       <span aria-hidden="true">⌄</span>
       {folded ? `展开全文 · ${reportedLines} 行` : '收起'}
     </button>}

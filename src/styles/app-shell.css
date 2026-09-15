@@ -7,7 +7,7 @@
 .context-pane { position: relative; z-index: 1; min-width: 0; min-height: 0; grid-column: 2; grid-row: 1; overflow: hidden; background: var(--channel-rail); box-shadow: var(--shadow-context); }
 .context-pane > * { height: 100%; }
 .channel-rail { min-width: 0; min-height: 0; display: flex; height: 100%; flex-direction: column; overflow: hidden; border-right: 1px solid var(--line-structural); background: var(--channel-rail); color: var(--text); }
-.rail-header { display: flex; min-height: 58px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--line-structural); }
+.rail-header { display: flex; height: 58px; min-height: 58px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 14px; overflow: hidden; padding: 12px 16px; border-bottom: 1px solid var(--line-structural); }
 .mobile-rail-close { display: none; width: 36px; height: 36px; flex: 0 0 auto; place-content: center; border: 1px solid var(--line-control-strong); border-radius: 7px; background: var(--raised); color: var(--text); cursor: pointer; font-size: 20px; }
 .rail-header .brand-lockup { color: var(--text); font-size: 14px; }
 .connection-state { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font: 600 8px var(--mono); letter-spacing: .06em; }
@@ -64,7 +64,7 @@
 
 /* Main channel */
 .workspace { position: relative; min-width: 0; min-height: 0; display: grid; height: 100%; grid-template-rows: auto auto auto minmax(0, 1fr) auto; overflow: hidden; background: var(--workspace); }
-.channel-header { grid-row: 1; display: flex; min-height: 58px; align-items: center; justify-content: space-between; padding: 9px 18px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
+.channel-header { grid-row: 1; display: flex; height: 58px; min-height: 58px; align-items: center; justify-content: space-between; overflow: hidden; padding: 9px 18px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
 .channel-header .eyebrow { color: var(--text-dim); }
 .channel-identity { min-width: 0; display: flex; align-items: center; gap: 8px; }
 .channel-identity > div { min-width: 0; }
@@ -108,7 +108,7 @@
 .dynamic-message-pane > .channel-private-empty { grid-row: 1; }
 .dynamic-workspace > .terminal-view { grid-row: 1; }
 .dynamic-workspace.terminal-split-open > .terminal-view { grid-column: 2; border-left: 1px solid var(--terminal-line); }
-/* 文件分屏。.workspace-view 的 grid-row: 4/6 是它当整屏 tab 时的位置，在这里要还
+/* 桌面文件工作面。.workspace-view 的 grid-row: 4/6 是它当整屏 tab 时的位置，在这里要还
    回来——它现在是 .dynamic-workspace 网格里的一格。[hidden] 那条是必须的：
    .workspace-view 自己声明了 display: grid，会盖掉 hidden 属性的默认样式。 */
 .dynamic-workspace > .artifacts-view { grid-row: 1; grid-column: 1; min-width: 0; min-height: 0; }

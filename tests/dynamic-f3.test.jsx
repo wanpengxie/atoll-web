@@ -641,19 +641,11 @@ describe('F3 Composer', () => {
     expect(onUploadAttachments).toHaveBeenNthCalledWith(2, [second]);
   });
 
-  it('中文确认先绘制文字，空闲阶段才序列化草稿和同步外围高度', async () => {
-    const originalResizeObserver = globalThis.ResizeObserver;
+  it('中文确认先绘制文字，空闲阶段才序列化草稿', async () => {
     const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
     const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
-    let notifyResize = () => {};
     let nextFrameId = 1;
     const frames = [];
-    class TestResizeObserver {
-      constructor(callback) { notifyResize = callback; }
-      observe() {}
-      disconnect() {}
-    }
-    globalThis.ResizeObserver = TestResizeObserver;
     globalThis.requestAnimationFrame = (callback) => {
       const id = nextFrameId++;
       frames.push({ id, callback });
@@ -667,38 +659,27 @@ describe('F3 Composer', () => {
       const frame = frames.shift();
       if (frame && !frame.cancelled) frame.callback(performance.now());
     };
-    let height = 116;
     const onDraftChange = vi.fn();
-    const { container, unmount } = render(<main className="workspace"><section className="timeline" /><Composer channelId="c0" roster={[{ id: 'agent-1', kind: 'agent', name: '研究员' }]} onDraftChange={onDraftChange} onSend={() => {}} /></main>);
-    const wrap = container.querySelector('.composer-wrap');
-    wrap.getBoundingClientRect = () => ({ width: 800, height, top: 0, right: 800, bottom: height, left: 0, x: 0, y: 0, toJSON: () => ({}) });
-    act(() => notifyResize([]));
-    expect(container.querySelector('.workspace').style.getPropertyValue('--composer-overlay-height')).toBe('116px');
+    const { unmount } = render(<Composer channelId="c0" roster={[{ id: 'agent-1', kind: 'agent', name: '研究员' }]} onDraftChange={onDraftChange} onSend={() => {}} />);
 
     frames.length = 0;
     const input = screen.getByRole('textbox', { name: '消息' });
     fireEvent.compositionStart(input, { data: '中' });
     await userEvent.setup().type(input, '中');
-    height = 138;
-    act(() => notifyResize([]));
-    expect(container.querySelector('.workspace').style.getPropertyValue('--composer-overlay-height')).toBe('116px');
     expect(onDraftChange).not.toHaveBeenCalled();
 
     fireEvent.compositionEnd(input, { data: '中' });
-    // 第一帧只允许浏览器绘制 ProseMirror 已确认的文字，不提交外围布局。
+    // 第一帧只允许浏览器绘制 ProseMirror 已确认的文字。
     act(runFrame);
-    expect(container.querySelector('.workspace').style.getPropertyValue('--composer-overlay-height')).toBe('116px');
     expect(onDraftChange).not.toHaveBeenCalled();
-    // 第二帧只更新发送按钮等轻量状态；序列化与强制布局仍不能进入该帧。
+    // 第二帧只更新发送按钮等轻量状态；序列化仍不能进入该帧。
     act(runFrame);
-    expect(container.querySelector('.workspace').style.getPropertyValue('--composer-overlay-height')).toBe('116px');
     expect(onDraftChange).not.toHaveBeenCalled();
-    // 浏览器获得一次绘制机会后，fallback macrotask 才做草稿 JSON 与高度同步。
-    await waitFor(() => expect(container.querySelector('.workspace').style.getPropertyValue('--composer-overlay-height')).toBe('138px'));
+    // 浏览器获得一次绘制机会后，fallback macrotask 才做草稿 JSON。
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalled());
     expect(onDraftChange).toHaveBeenLastCalledWith(expect.objectContaining({ text: '中' }));
 
     unmount();
-    globalThis.ResizeObserver = originalResizeObserver;
     globalThis.requestAnimationFrame = originalRequestAnimationFrame;
     globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
   });

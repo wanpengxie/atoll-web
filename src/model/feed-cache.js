@@ -398,7 +398,14 @@ export function createFeedCache({
     await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
       const global = await database.globalMeta.get(GLOBAL_META_ID)
         || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '', owner };
-      if (global.serverBoot && global.serverBoot !== serverBoot) {
+      // A cache containing rows without a world identity is not assignable to
+      // whichever server happens to answer next. Treat it exactly like a boot
+      // mismatch. Clearing conservatively can cause a refetch; adopting it can
+      // make a false resume claim and permanently hide ledger rows.
+      const hasData = Number(global.totalBytes || 0) > 0
+        || await database.rows.count() > 0
+        || await database.channelMeta.count() > 0;
+      if (hasData && global.serverBoot !== serverBoot) {
         await database.rows.clear();
         await database.channelMeta.clear();
         global.totalBytes = 0;
@@ -413,7 +420,7 @@ export function createFeedCache({
       meta.clear();
       diagnostic('warn', 'feed_cache.boot_reset', { databaseName, serverBoot });
     }
-    return { changed, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
+    return { changed, boot: serverBoot, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
   }
 
   async function ensureOwner(principalId) {
@@ -422,6 +429,7 @@ export function createFeedCache({
     await flushPending().catch(() => {});
     if (!(await open())) return { changed: false, meta: new Map() };
     let changed = false;
+    let boot = '';
     await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
       const global = await database.globalMeta.get(GLOBAL_META_ID)
         || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '', owner: '' };
@@ -444,11 +452,12 @@ export function createFeedCache({
       owner = requested;
       global.owner = requested;
       global.schemaVersion = 2;
+      boot = String(global.serverBoot || '');
       await database.globalMeta.put(global);
     });
     try { legacyStorage?.removeItem('atoll.feed.owner.v1'); } catch { /* migration only */ }
     if (changed) meta.clear();
-    return { changed, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
+    return { changed, boot, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
   }
 
   return {

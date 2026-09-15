@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { MarkdownContent, MarkdownFileReferenceProvider } from '../src/ui/MarkdownContent.jsx';
@@ -72,5 +72,15 @@ describe('MarkdownContent', () => {
     const onOpen = vi.fn();
     const { container } = render(<MarkdownFileReferenceProvider onOpen={onOpen}><MarkdownContent text={'/srv/a.go:2 `/srv/b.go:3` [相对](docs/a.md) [站点](//example.com/a)'} /></MarkdownFileReferenceProvider>);
     expect(container.querySelectorAll('.markdown-file-reference')).toHaveLength(0);
+  });
+
+  it('远程图片解码前后复用同一个稳定媒体外框', () => {
+    const { container } = render(<MarkdownContent text={'![架构图](https://example.com/diagram.png)'} />);
+    const frame = container.querySelector('[data-viewport-stable-media="image"]');
+    const image = frame.querySelector('img');
+    expect(frame.dataset.imagePhase).toBe('loading');
+    fireEvent.load(image);
+    expect(frame.dataset.imagePhase).toBe('ready');
+    expect(container.querySelector('[data-viewport-stable-media="image"]')).toBe(frame);
   });
 });

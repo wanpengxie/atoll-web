@@ -19,7 +19,7 @@
 .structured-result-details > summary small { color: var(--text-dim); font-size: 9px; font-weight: 400; }
 .structured-result-action { color: var(--text-muted); font-size: 9px; font-weight: 400; }
 .structured-result-details:not([open]) > .structured-result-scroll { display: none; }
-.structured-result-scroll { max-height: min(30vh, 280px); overflow: auto; overscroll-behavior: contain; padding: 9px 10px; border-top: 1px solid var(--line-structural); scrollbar-gutter: stable; }
+.structured-result-scroll { max-height: min(30vh, 280px); overflow: auto; padding: 9px 10px; border-top: 1px solid var(--line-structural); scrollbar-gutter: stable; }
 .structured-object { display: grid; gap: 5px; margin: 0; }
 .structured-object > div { display: grid; grid-template-columns: minmax(90px, .35fr) 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); }
 .structured-object dt { color: var(--text-muted); font: 9px var(--mono); }

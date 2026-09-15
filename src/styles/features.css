@@ -127,6 +127,8 @@
 .artifact-preview-mode .artifact-back { margin-right: 2px; color: var(--text); }
 .artifact-no-preview strong { font-size: 13px; }
 .artifact-no-preview p { margin: 6px 0 0; line-height: 1.5; }
+.artifact-download-action { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 6px; margin-top: 16px; padding: 7px 13px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--text); cursor: pointer; font-weight: 600; }
+.artifact-download-action:hover, .artifact-download-action:focus-visible { border-color: var(--accent); color: var(--accent); }
 
 /* The channel mount is a file browser, not a resource dashboard. */
 .channel-files-view { position: relative; grid-template-rows: auto minmax(0, 1fr); background: var(--workspace); }

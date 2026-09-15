@@ -3,10 +3,8 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// 切频道时消息区必须换一棵新的树。auto-animate 的退场动画会把 React 已经删掉的
-// 节点按 position:absolute / z-index:100 插回容器，只靠动画的 finish 事件回收；
-// 整频道换血时那批动画一旦没走完，残影就永久压在新内容上（表现为文字重叠，且
-// 此后切任何频道都是同一屏）。这两条测试锁住两道防线：按频道重挂、卸载时清残影。
+// 频道是物理虚拟列表与其高度测量的边界。切频道必须换一棵树，阅读位置则由
+// ViewSession 的语义 anchor 恢复；绝不把上一频道的 DOM 几何解释成当前频道。
 
 let mounts = [];
 vi.mock('../src/ui/ChannelList.jsx', () => ({ ChannelList: () => null }));

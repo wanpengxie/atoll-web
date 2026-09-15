@@ -1,5 +1,5 @@
 /* Composer */
-.composer-wrap { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; padding: 7px 26px 10px; overflow-anchor: none; pointer-events: none; }
+.composer-wrap { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; padding: 7px 26px 8px; overflow-anchor: none; pointer-events: none; }
 .composer-surface { position: relative; width: min(100%, var(--timeline-track)); margin: 0 auto; padding: 6px 8px 5px; border: 1px solid var(--line-control); border-radius: 16px; background: var(--input); box-shadow: 0 7px 26px var(--shadow-2), 0 1px 3px var(--shadow); transition: border-color .15s, box-shadow .15s, background .15s; pointer-events: auto; }
 .composer-surface:focus-within { border-color: var(--line-control-strong); box-shadow: 0 1px 3px var(--shadow), 0 0 0 2px var(--accent-bg); }
 .composer-surface.is-editing-message { border-color: var(--line-control-strong); background: var(--raised); box-shadow: 0 4px 18px var(--shadow-2); }
@@ -87,8 +87,10 @@
 .composer-file-control:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .composer-file-control > svg, .composer-file-control > .attachment-tool-busy { pointer-events: none; }
 .attachment-tool-busy { width: 14px; height: 14px; border: 2px solid var(--line-control-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
-.composer-error { padding-top: 6px; }
-.composer-status, .composer-disabled-reason { width: min(100%, var(--timeline-track)); margin: 6px auto 0; color: var(--online); font-size: 10px; }
+.composer-state-rail { position: relative; width: min(100%, var(--timeline-track)); height: 18px; margin: 0 auto; overflow: visible; pointer-events: auto; }
+.composer-state-rail > p { position: absolute; inset: 4px 0 auto; margin: 0; overflow: hidden; font-size: 10px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.composer-error { color: var(--danger); }
+.composer-status, .composer-disabled-reason { color: var(--online); }
 .composer-status.state-delayed, .composer-status.state-uncertain { color: var(--warning); }
 .composer-retry { margin-left: 8px; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-decoration: underline; }
 .composer-disabled-reason { color: var(--text-muted); }

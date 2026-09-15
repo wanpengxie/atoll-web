@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Extension } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -120,17 +120,11 @@ export function slashCommand(value) {
 }
 
 export const Composer = React.memo(function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
-  const wrapRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
   const composingRef = useRef(false);
   const compositionFrameRef = useRef(0);
   const draftIdleRef = useRef(null);
-  const commitComposerHeightRef = useRef(() => {});
-  const editTransitionStartRectRef = useRef(null);
-  const lastEditActiveRef = useRef(null);
-  const layoutAnimationRef = useRef(null);
-  const layoutTransitionTimerRef = useRef(0);
   const lastDraftFingerprintRef = useRef(JSON.stringify(initialDraft.doc));
   const editModeRef = useRef(editMode);
   const replyTargetRef = useRef(replyTarget);
@@ -216,13 +210,12 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     setSendState('idle');
   }
 
-  function persistDraftWhenIdle(current, { measure = false } = {}) {
+  function persistDraftWhenIdle(current) {
     cancelDraftIdle();
     const persist = () => {
       draftIdleRef.current = null;
       if (!current || current.isDestroyed || composingRef.current || current.view.composing) return;
       syncEditorSnapshot(current);
-      if (measure) commitComposerHeightRef.current();
     };
     if (typeof globalThis.requestIdleCallback === 'function') {
       draftIdleRef.current = {
@@ -252,7 +245,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
         compositionFrameRef.current = 0;
         composingRef.current = false;
         syncEditorPresentation(current);
-        persistDraftWhenIdle(current, { measure: true });
+        persistDraftWhenIdle(current);
       });
     };
     compositionFrameRef.current = requestAnimationFrame(waitForEditor);
@@ -563,8 +556,6 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   useEffect(() => () => {
     cancelAnimationFrame(compositionFrameRef.current);
     cancelDraftIdle();
-    clearTimeout(layoutTransitionTimerRef.current);
-    layoutAnimationRef.current?.cancel?.();
   }, []);
 
   useEffect(() => {
@@ -573,66 +564,6 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     editor.setEditable(editable);
     editor.view.dom.setAttribute('aria-disabled', String(!editable));
   }, [channelId, disabled, editor, editMode, editBusy]);
-
-  // Composer 浮在时间线上方，自身增高不能改变时间线 viewport。高度只用于给
-  // 账本末尾留出安全空间；用户本来就在底部时，再把滚动位置贴回最新消息。
-  useLayoutEffect(() => {
-    const wrap = wrapRef.current;
-    const workspace = wrap?.closest('.workspace');
-    if (!wrap || !workspace || typeof ResizeObserver === 'undefined') return undefined;
-    let committedHeight = 0;
-    const commitHeight = () => {
-      const rect = wrap.getBoundingClientRect();
-      const height = Math.ceil(rect.height);
-      if (!height || height === committedHeight) return;
-      // 中文输入法确认时，字体 fallback/composition DOM 可能短暂产生 1–2px 的
-      // 高度波动。这不是一次真实换行，不能据此重排 Timeline。
-      if (committedHeight && Math.abs(height - committedHeight) < 8) return;
-      committedHeight = height;
-      workspace.style.setProperty('--composer-overlay-height', `${height}px`);
-    };
-    commitComposerHeightRef.current = commitHeight;
-    const observer = new ResizeObserver(() => {
-      if (!composingRef.current) commitHeight();
-    });
-    observer.observe(wrap);
-    return () => {
-      observer.disconnect();
-      commitComposerHeightRef.current = () => {};
-      workspace.style.removeProperty('--composer-overlay-height');
-    };
-  }, [channelId]);
-
-  // 编辑提交后，普通 Composer 的工具栏会重新出现，容器高度随之改变。只在
-  // 编辑态边界做一次 FLIP，让 Composer、等待区和时间线共同移动；输入和输入法
-  // 引起的日常高度变化不进入这条动画路径。
-  useLayoutEffect(() => {
-    const wrap = wrapRef.current;
-    const workspace = wrap?.closest('.workspace');
-    if (!wrap || !workspace) return;
-    const editActive = Boolean(editMode);
-    const previousActive = lastEditActiveRef.current;
-    const previousRect = editTransitionStartRectRef.current;
-    const nextRect = wrap.getBoundingClientRect();
-    lastEditActiveRef.current = editActive;
-    if (previousActive == null || previousActive === editActive || !previousRect) return;
-    editTransitionStartRectRef.current = null;
-    const deltaY = previousRect.top - nextRect.top;
-    if (Math.abs(deltaY) < 1 || globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
-    clearTimeout(layoutTransitionTimerRef.current);
-    layoutAnimationRef.current?.cancel?.();
-    workspace.classList.add('is-composer-layout-transitioning');
-    if (typeof wrap.animate === 'function') {
-      layoutAnimationRef.current = wrap.animate(
-        [{ transform: `translateY(${deltaY}px)` }, { transform: 'translateY(0)' }],
-        { duration: 180, easing: 'cubic-bezier(.22, 1, .36, 1)' },
-      );
-    }
-    layoutTransitionTimerRef.current = setTimeout(() => {
-      workspace.classList.remove('is-composer-layout-transitioning');
-      layoutAnimationRef.current = null;
-    }, 210);
-  }, [Boolean(editMode)]);
 
   useEffect(() => {
     if (!sentRows.length) return undefined;
@@ -690,32 +621,17 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     editor?.commands.focus();
   }
 
-  function beginEditLayoutTransition() {
-    const wrap = wrapRef.current;
-    const workspace = wrap?.closest('.workspace');
-    if (!wrap || !workspace) return null;
-    editTransitionStartRectRef.current = wrap.getBoundingClientRect();
-    clearTimeout(layoutTransitionTimerRef.current);
-    workspace.classList.add('is-composer-layout-transitioning');
-    // 协议失败或后端长时间没有退出编辑态时，安全移除临时动效状态。
-    layoutTransitionTimerRef.current = setTimeout(() => workspace.classList.remove('is-composer-layout-transitioning'), 1200);
-    return workspace;
-  }
-
   async function submit() {
     // 提交读取编辑器真相，而不是可能刻意晚一帧同步的 React 草稿快照。
     // 这样中文刚确认就按 Enter，也不会丢掉最后一个字。
     const value = editorText(editor).trim();
     if (editMode) {
       if (!value || !channelId || disabled || editBusy || sendState === 'sending') return;
-      const workspace = beginEditLayoutTransition();
       setError('');
       setSendState('sending');
       try {
         await editMode.onSave(value);
       } catch (failure) {
-        workspace?.classList.remove('is-composer-layout-transitioning');
-        editTransitionStartRectRef.current = null;
         setError(failure.message || String(failure));
         setSendState('error');
       }
@@ -885,7 +801,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   }
 
   return (
-    <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}`} ref={wrapRef}>
+    <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}`}>
       <div
         className={`composer-surface${fileDragActive ? ' is-file-dragging' : ''}${editMode ? ' is-editing-message' : ''}`}
         onDragEnter={onDragEnter}
@@ -985,7 +901,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
                 onPickAgent={agentSelection?.onPickAgent}
                 onOpen={agentSelection?.onOpen}
               />}
-            {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={() => { beginEditLayoutTransition(); editMode.onAbandon(); }}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
+            {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" title="取消编辑" disabled={editBusy} onClick={editMode.onAbandon}><X size={14} strokeWidth={2} aria-hidden="true" /></button>}
             {/* composer 的这个按钮恒只有一个含义：发送。
                 它曾经在"框是空的 + 有任务在跑"时变成停止（■），而"框是不是空的"读的是
                 hasText —— 一面故意晚一拍的镜子（onUpdate 在输入法合成期间直接返回）。
@@ -1000,9 +916,15 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
           </div>
         </div>
       </div>
-      {['queued', 'delayed', 'uncertain'].includes(sendState) && <p className={`composer-status state-${sendState}`} role="status">{{ queued: '已保存到本机，连接可用后自动发送', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对' }[sendState]}{sendState === 'uncertain' && activeSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(activeSubmission)}>使用原编号重试</button>}</p>}
-      {disabled && <p className="composer-disabled-reason">{disabledReason}；草稿仍保留在当前设备。</p>}
-      {(error || editMode?.session?.error) && <p className="composer-error" role="alert">{error || editMode.session.error}</p>}
+      <div className="composer-state-rail">
+        {(error || editMode?.session?.error)
+          ? <p className="composer-error" role="alert">{error || editMode.session.error}</p>
+          : disabled
+            ? <p className="composer-disabled-reason">{disabledReason}；草稿仍保留在当前设备。</p>
+            : ['queued', 'delayed', 'uncertain'].includes(sendState)
+              ? <p className={`composer-status state-${sendState}`} role="status">{{ queued: '已保存到本机，连接可用后自动发送', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对' }[sendState]}{sendState === 'uncertain' && activeSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(activeSubmission)}>使用原编号重试</button>}</p>
+              : null}
+      </div>
     </section>
   );
 });

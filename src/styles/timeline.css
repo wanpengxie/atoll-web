@@ -1,17 +1,20 @@
 /* Flat collaborative ledger: identity first, cards only for structured objects */
-.timeline { grid-row: 4; min-width: 0; min-height: 0; max-width: 100%; margin-bottom: calc(var(--composer-overlay-height, 88px) + var(--agent-wait-dock-height, 0px)); overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scrollbar-gutter: stable; background: var(--workspace); }
+.timeline { grid-row: 4; min-width: 0; min-height: 0; max-width: 100%; margin-bottom: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scrollbar-gutter: stable; background: var(--workspace); }
 .timeline.timeline-virtualized { position: relative; display: flex; overflow: hidden; flex-direction: column; scrollbar-gutter: auto; }
 .timeline-virtualized > .timeline-inner { min-height: 0; flex: 0 0 auto; padding-bottom: 0; }
-.timeline-message-list { min-width: 0; min-height: 0; max-width: 100%; flex: 1 1 auto; overflow-x: hidden !important; overflow-anchor: none; overscroll-behavior-y: none; background: var(--workspace); }
+.timeline-message-list { min-width: 0; min-height: 0; max-width: 100%; flex: 1 1 auto; overflow-x: hidden !important; overflow-anchor: none; overscroll-behavior-y: none; scrollbar-gutter: stable; background: var(--workspace); }
+.timeline-message-list:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.timeline-overlay-clearance { height: 112px; min-height: 112px; pointer-events: none; }
 /* A presentation row is the scheduler's layout unit. Keep every descendant
  * margin inside it so its DOM box is the complete row geometry. */
 .timeline-virtual-item { display: flow-root; width: 100%; min-width: 0; max-width: 100%; padding: 0 26px; }
 .timeline-virtualized > .timeline-jump-latest { position: absolute; right: 50%; bottom: 8px; margin: 0; transform: translateX(50%); }
+.timeline-history-status, .timeline-history-error { position: absolute; z-index: 4; top: 8px; left: 50%; width: max-content; max-width: min(calc(100% - 32px), 420px); margin: 0; transform: translateX(-50%); border: 1px solid var(--line-control); border-radius: var(--pill); background: var(--raised); box-shadow: 0 3px 12px var(--shadow); color: var(--text-muted); font-size: 10px; line-height: 1.3; text-align: center; pointer-events: none; }
+.timeline-history-status { padding: 5px 10px; }
+.timeline-history-error { padding: 6px 11px; border-color: var(--danger-line); color: var(--danger); }
 .timeline .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; white-space: nowrap; }
-.workspace.is-composer-layout-transitioning .timeline { transition: margin-bottom 180ms cubic-bezier(.22, 1, .36, 1); }
 .timeline-inner { display: flex; position: relative; width: 100%; min-width: 0; min-height: 100%; max-width: 100%; flex-direction: column; gap: 0; padding: 24px 26px; }
-.agent-wait-dock { position: absolute; z-index: 2; right: 46px; bottom: calc(var(--composer-overlay-height, 88px) - 8px); left: 46px; display: block; width: min(calc(100% - 92px), calc(var(--timeline-track) - 40px)); margin: 0 auto; }
-.workspace.is-composer-layout-transitioning .agent-wait-dock { transition: bottom 180ms cubic-bezier(.22, 1, .36, 1); }
+.agent-wait-dock { position: absolute; z-index: 2; right: 46px; bottom: 96px; left: 46px; display: block; width: min(calc(100% - 92px), calc(var(--timeline-track) - 40px)); margin: 0 auto; }
 .agent-wait-layer { position: relative; width: 100%; height: auto; overflow: hidden; border: 1px solid var(--line-control); border-radius: 15px 15px 0 0; background: var(--raised); box-shadow: 0 -4px 18px var(--shadow); contain: layout paint; }
 .agent-wait-header { display: flex; min-height: 28px; align-items: center; justify-content: flex-end; padding: 2px 8px; border-bottom: 1px solid var(--line-subtle); background: var(--raised); }
 .agent-wait-header > div { display: flex; align-items: center; gap: 4px; }
@@ -179,7 +182,7 @@
 .progress-drawer-body { overflow: auto; padding: 14px; font-size: 13.5px; line-height: 1.6; color: var(--text); }
 .progress-drawer-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.55 var(--mono, monospace); }
 .progress-tool-data { display: grid; gap: 10px; }
-.progress-json-shell { max-height: min(52vh, 460px); overflow: auto; padding: 9px 10px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-code); overscroll-behavior: contain; }
+.progress-json-shell { max-height: min(52vh, 460px); overflow: auto; padding: 9px 10px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-code); }
 .progress-json-tree { margin: 0; color: var(--text); font: 11.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .progress-json-children { margin: 0 0 0 7px; padding: 0 0 0 12px; border-left: 1px solid var(--line-structural); list-style: none; }
 .progress-json-row { min-width: 0; margin: 0; padding: 1px 0; list-style: none; }
@@ -226,6 +229,11 @@
 .request-text, .response-content { max-width: 74ch; color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
+.markdown-image-frame { position: relative; display: block; inline-size: min(100%, 640px); aspect-ratio: 16 / 9; margin: 8px 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-muted); }
+.markdown-image-frame > img { position: absolute; inset: 0; display: block; inline-size: 100%; block-size: 100%; object-fit: contain; background: var(--workspace); opacity: 0; }
+.markdown-image-frame[data-image-phase="ready"] > img { opacity: 1; }
+.markdown-image-status { position: absolute; inset: 0; display: grid; place-items: center; padding: 12px; color: var(--text-muted); font-size: 11px; text-align: center; }
+.markdown-image-frame[data-image-phase="ready"] > .markdown-image-status { visibility: hidden; }
 .request-text p, .response-content p { margin: 2px 0 8px; white-space: pre-wrap; }
 .request-text p:last-child, .response-content p:last-child { margin-bottom: 0; }
 .request-text .message-detail, .standalone-row .message-detail { margin-top: 2px; color: var(--text-muted); font-size: 12px; }
@@ -256,10 +264,11 @@
 .mermaid-block.is-source { position: relative; border: 0; background: transparent; }
 .mermaid-block.is-source > .mermaid-mode-toggle { position: absolute; z-index: 1; top: 3px; right: 6px; }
 .mermaid-block.is-source > .code-block { margin: 0; }
-.mermaid-diagram { max-width: 100%; padding: 14px; overflow: auto; background: var(--workspace); }
-.mermaid-diagram > svg { display: block; height: auto; margin: 0 auto; }
-.mermaid-status { padding: 24px 14px; color: var(--text-muted); text-align: center; }
-.mermaid-error { display: grid; gap: 5px; padding: 12px; color: var(--danger); }
+.mermaid-stage { position: relative; block-size: clamp(220px, 42vw, 360px); min-block-size: 0; overflow: auto; background: var(--workspace); }
+.mermaid-diagram { display: grid; inline-size: 100%; block-size: 100%; padding: 14px; place-items: center; }
+.mermaid-diagram > svg { display: block; max-inline-size: 100%; max-block-size: 100%; inline-size: 100%; block-size: 100%; margin: 0 auto; }
+.mermaid-status { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px 14px; color: var(--text-muted); text-align: center; }
+.mermaid-error { display: grid; gap: 5px; min-block-size: 100%; padding: 12px; color: var(--danger); }
 .mermaid-error > span { overflow-wrap: anywhere; color: var(--text-muted); font: 11px/1.5 var(--mono); }
 .mermaid-error > .code-block { margin-bottom: 0; }
 .markdown-content .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
@@ -356,7 +365,7 @@
 .turn-inline-header small { color: var(--text-muted); font-size: 9px; }
 .turn-inline-header button { min-height: 30px; padding: 5px 8px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
 .turn-inline-header button:hover, .turn-inline-header button:focus-visible { background: var(--surface-muted); color: var(--text); }
-.turn-inline-body { max-height: min(56vh, 520px); overflow-y: auto; overscroll-behavior: contain; padding: 4px 11px 12px; scrollbar-gutter: stable; }
+.turn-inline-body { max-height: min(56vh, 520px); overflow-y: auto; padding: 4px 11px 12px; scrollbar-gutter: stable; }
 .turn-context-source { display: grid; gap: 6px; padding: 11px; border: 1px solid var(--line-structural); border-radius: var(--radius-object); background: var(--raised); }
 .turn-context-source span, .turn-context-source small { color: var(--text-muted); font-size: 10px; }
 .turn-context-source p { margin: 0; color: var(--text); font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
@@ -380,7 +389,7 @@
 .turn-audit-row p { grid-column: 2 / -1; margin: 3px 0 0; color: var(--text-muted); font-size: 10px; }
 .turn-context-technical > summary, .turn-context-diagnostics > summary { cursor: pointer; color: var(--text-muted); font-size: 11px; font-weight: 650; }
 .turn-context-technical > summary span { color: var(--text-dim); }
-.turn-context-process-scroll { max-height: min(28vh, 240px); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.turn-context-process-scroll { max-height: min(28vh, 240px); overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
 .turn-context-controls > div { display: flex; flex-wrap: wrap; gap: 6px; }
 .turn-context-controls button.danger { border-color: var(--accent-glow); color: var(--danger); }
 .turn-context-controls p { margin-top: 7px; }

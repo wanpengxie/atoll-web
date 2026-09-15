@@ -114,7 +114,7 @@ export function MermaidBlock({ code = '' }) {
 
   if (mode === 'source') {
     return <div className="mermaid-block is-source">
-      <button type="button" className="mermaid-mode-toggle" onClick={() => setMode('diagram')}>查看图表</button>
+      <button type="button" className="mermaid-mode-toggle" data-viewport-layout-action onClick={() => setMode('diagram')}>查看图表</button>
       <CodeBlock code={source} language="mermaid" />
     </div>;
   }
@@ -122,14 +122,16 @@ export function MermaidBlock({ code = '' }) {
   return <figure className="mermaid-block">
     <div className="mermaid-block-bar">
       <span>mermaid</span>
-      <button type="button" className="mermaid-mode-toggle" onClick={() => setMode('source')}>查看源码</button>
+      <button type="button" className="mermaid-mode-toggle" data-viewport-layout-action onClick={() => setMode('source')}>查看源码</button>
     </div>
-    {rendered.status === 'loading' && <div className="mermaid-status" role="status">正在绘图…</div>}
-    {rendered.status === 'error' && <div className="mermaid-error" role="alert">
-      <strong>图表语法有误</strong>
-      <span>{rendered.error}</span>
-      <CodeBlock code={source} language="mermaid" />
-    </div>}
-    {rendered.status === 'ready' && <div className="mermaid-diagram" role="img" aria-label="Mermaid 图表" dangerouslySetInnerHTML={{ __html: rendered.svg }} />}
+    <div className="mermaid-stage" data-mermaid-phase={rendered.status} data-viewport-stable-media="mermaid">
+      {rendered.status === 'loading' && <div className="mermaid-status" role="status">正在绘图…</div>}
+      {rendered.status === 'error' && <div className="mermaid-error" role="alert">
+        <strong>图表语法有误</strong>
+        <span>{rendered.error}</span>
+        <CodeBlock code={source} language="mermaid" />
+      </div>}
+      {rendered.status === 'ready' && <div className="mermaid-diagram" role="img" aria-label="Mermaid 图表" dangerouslySetInnerHTML={{ __html: rendered.svg }} />}
+    </div>
   </figure>;
 }

@@ -153,7 +153,7 @@ function preferredTerminalDevice(devices) {
   return devices.length === 1 ? devices[0].id : '';
 }
 
-export function TerminalView({ channelId, devices = EMPTY_DEVICES, canWrite = true, visible = true }) {
+export function TerminalView({ channelId, devices = EMPTY_DEVICES, canWrite = true, visible = true, onClose }) {
   const hostRef = useRef(null);
   // canWrite is read through a ref, never a dependency: a momentary
   // permission flicker must not tear the terminal down and abandon the
@@ -385,6 +385,7 @@ export function TerminalView({ channelId, devices = EMPTY_DEVICES, canWrite = tr
             title={themeMode === 'dark' ? '切到浅色' : '切到暗色'}
             onClick={() => setThemeMode((m) => (m === 'dark' ? 'light' : 'dark'))}
           >{themeMode === 'dark' ? '浅色' : '暗色'}</button>
+          {onClose && <button type="button" aria-label="关闭终端" title="关闭终端" onClick={onClose}>×</button>}
         </span>
       </div>
       <div className="terminal-host" ref={hostRef} />

@@ -68,9 +68,12 @@ describe('预览面板', () => {
 
   it('嗅探出二进制则维持"不支持预览"，没有复制按钮', async () => {
     vi.stubGlobal('fetch', fetchBytes(new Uint8Array([0x00, 0x01, 0x02, 0x03])));
-    render(<ArtifactContext artifact={{ name: 'blob.bin', mediaType: 'application/octet-stream', preview: 'unsupported', resourceId: 'r2', channelId: 'c0', size: 4 }} onResource={() => Promise.resolve({ ticket: 't' })} onClose={() => {}} />);
+    const onDownload = vi.fn();
+    render(<ArtifactContext artifact={{ name: 'blob.bin', mediaType: 'application/octet-stream', preview: 'unsupported', resourceId: 'r2', channelId: 'c0', size: 4 }} onResource={() => Promise.resolve({ ticket: 't' })} onDownload={onDownload} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText('此文件暂不支持站内预览')).toBeTruthy());
     expect(screen.queryByRole('button', { name: '复制' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '下载 blob.bin' }));
+    expect(onDownload).toHaveBeenCalledWith({ resource_id: 'r2', name: 'blob.bin', media_type: 'application/octet-stream', size: 4 });
   });
 
   it('PDF 用 object 内嵌并带回退文案；没带类型的 .pdf 也能进这条路', () => {
