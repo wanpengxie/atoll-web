@@ -54,6 +54,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const preparedPrincipalRef = useRef('');
   const liveBatchRef = useRef(null);
   const unreadCacheRef = useRef(new Map());
+  const channelRefreshRef = useRef(new Map());
 
   const unreadFor = useCallback((channelId, selfId = '') => {
     const state = replicaRef.current.state(channelId);
@@ -166,6 +167,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	  persistRows: (rows, options) => cacheEpochFenceRef.current.run(() => cacheRef.current.saveRows(rows, options)),
       hasVisibleRow: (channelId, seq) => replicaRef.current.hasRow(channelId, seq),
 	  visibleOldestSeq: (channelId) => replicaRef.current.visibleOldest(channelId),
+	  visibleNewestSeq: (channelId) => replicaRef.current.visibleNewest(channelId),
 	  revealRows: (channelId, entries) => {
 		// A push frame that arrived first must merge first even if a pull page
 		// completes in the same browser frame.
@@ -331,6 +333,28 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, [onError]);
 
   const focusHistory = useCallback((channelId) => schedulerRef.current.focus(channelId), []);
+  const refreshChannel = useCallback((channelId) => {
+	if (!channelId) return Promise.resolve(false);
+	const wire = wireRef.current;
+	if (!wire?.channelMeta) return Promise.resolve(false);
+	const current = channelRefreshRef.current.get(channelId);
+	if (current) return current;
+	const request = wire.channelMeta(channelId).then((entry) => {
+	  if (!entry || entry.channel_id !== channelId) return false;
+	  replicaRef.current.installMeta(channelId, { headSeq: entry.head_seq });
+	  return schedulerRef.current.refreshRemoteMeta(entry, { generation: entry.generation });
+	}).catch((error) => {
+	  // Entering a channel must never be blocked by the freshness probe. Attach
+	  // already supplies the initial seam; a disconnected probe will be retried
+	  // by the next attach or the next explicit focus action.
+	  diagnostic(error?.code === 'unavailable' ? 'debug' : 'warn', 'feed.channel_meta_failed', { channelId, error });
+	  return false;
+	}).finally(() => {
+	  if (channelRefreshRef.current.get(channelId) === request) channelRefreshRef.current.delete(channelId);
+	});
+	channelRefreshRef.current.set(channelId, request);
+	return request;
+  }, [wireRef]);
   const disconnectHistory = useCallback((generation) => {
 	liveBatchRef.current.flushNow();
 	diagnostic('info', 'feed.connection_reset', { generation });
@@ -530,6 +554,6 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	revisionFor: (channelId) => replicaRef.current.revision(channelId),
 	unreadFor,
 	prepareLocalReplica, resumeLocalReplica, localReplicaReady,
-    setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, focusHistory, historyFor, loadHistory, markRead,
+    setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, focusHistory, refreshChannel, historyFor, loadHistory, markRead,
   };
 }

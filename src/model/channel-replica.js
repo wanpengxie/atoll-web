@@ -104,5 +104,6 @@ export function createChannelReplicaStore() {
     revision: (channelId) => records.get(channelId)?.revision || 0,
     hasRow: (channelId, seq) => records.get(channelId)?.state.rows.has(numeric(seq)) === true,
     visibleOldest: (channelId) => rowBounds(records.get(channelId)?.state).lowSeq,
+    visibleNewest: (channelId) => rowBounds(records.get(channelId)?.state).highSeq,
   };
 }

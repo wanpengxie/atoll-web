@@ -1621,6 +1621,33 @@ export function createMockServer({
       socket.close(1012, 'injected mock drop');
       return;
     }
+    if (type === 'channel_meta') {
+      const principal = socketPrincipals.get(socket) || '';
+      const observed = socketObserved.get(socket) || new Set();
+      if (!domain.canRead(principal, payload.channel_id, observed)) {
+        sendError(socket, { ref, frame: type, code: 'forbidden', detail: 'no eligibility for channel' });
+        return;
+      }
+      const history = histories.get(payload.channel_id);
+      if (!history) {
+        sendError(socket, { ref, frame: type, code: 'channel_not_found', detail: 'channel does not exist' });
+        return;
+      }
+      const generation = socketGenerations.get(socket) || 0;
+      if (payload.generation !== generation) {
+        sendError(socket, { ref, frame: type, code: 'unavailable', detail: 'stale connection generation' });
+        return;
+      }
+      const page = rawHistoryPage(history, { beforeSeq: 0, limit: 1 });
+      sendReceipt(socket, ref, {
+        channel_id: payload.channel_id,
+        head_seq: page.headSeq,
+        has_rows: page.rows.length > 0,
+        last_activity: page.rows.at(-1)?.envelope?.ts || 0,
+        generation,
+      });
+      return;
+    }
     if (type === 'history_before') {
       const principal = socketPrincipals.get(socket) || '';
       const observed = socketObserved.get(socket) || new Set();

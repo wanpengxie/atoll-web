@@ -194,6 +194,23 @@ describe('wire client', () => {
     wire.close();
   });
 
+  it('checks one channel head immediately over the control lane', async () => {
+    const wire = createWire({ WebSocketImpl: FakeWebSocket });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    receipt(socket, socket.sent[0]);
+
+    const metaPromise = wire.channelMeta('c0');
+    const request = socket.sent.at(-1);
+    expect(request).toMatchObject({
+      frame_type: 'channel_meta',
+      payload: { channel_id: 'c0', generation: 1 },
+    });
+    receipt(socket, request, { channel_id: 'c0', head_seq: 44, has_rows: true, generation: 1 });
+    await expect(metaPromise).resolves.toMatchObject({ channel_id: 'c0', head_seq: 44, generation: 1 });
+    wire.close();
+  });
+
   it('cancels a correlated history batch without overloading request cancel', async () => {
     const wire = createWire({ WebSocketImpl: FakeWebSocket });
     const socket = FakeWebSocket.instances[0];

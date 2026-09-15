@@ -602,6 +602,40 @@ describe('v5 history batch coordinator', () => {
     await waitFor(() => expect(scheduler.snapshot('c0').loading).toBe(false));
     scheduler.destroy();
   });
+
+  it('uses a focused Meta refresh to catch up the latest tail without moving the deep-history cursor', async () => {
+    const harness = requestHarness();
+    const visible = new Set();
+    const revealRows = vi.fn((_channelId, entries) => entries.forEach(([seq]) => visible.add(seq)));
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      revealRows,
+      hasVisibleRow: (_channelId, seq) => visible.has(seq),
+      visibleNewestSeq: () => Math.max(0, ...visible),
+    });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 10, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 9, rows: 2, hasOlder: false });
+    await waitFor(() => expect(scheduler.snapshot('c0').loading).toBe(false));
+    const deepFrontier = scheduler.snapshot('c0').oldestSeq;
+
+    expect(scheduler.refreshRemoteMeta({
+      channel_id: 'c0', head_seq: 13, has_rows: true, generation: 1,
+    })).toBe(true);
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    const refresh = harness.calls[1];
+    expect(refresh).toMatchObject({
+      channelId: 'c0', beforeSeq: 14, priority: 'foreground', rangeKind: 'tail-refresh',
+    });
+    finish(scheduler, refresh, { oldest: 11, rows: 3, hasOlder: true });
+    await waitFor(() => expect(scheduler.snapshot('c0').loading).toBe(false));
+    expect([...visible].sort((left, right) => left - right)).toEqual([9, 10, 11, 12, 13]);
+    expect(scheduler.snapshot('c0').oldestSeq).toBe(deepFrontier);
+    expect(revealRows).toHaveBeenLastCalledWith('c0', [
+      [11, expect.any(Object)], [12, expect.any(Object)], [13, expect.any(Object)],
+    ], { initial: false });
+    scheduler.destroy();
+  });
 });
 
 describe('live feed priority', () => {

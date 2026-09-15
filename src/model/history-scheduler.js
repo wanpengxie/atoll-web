@@ -85,6 +85,11 @@ function createState(id, previous = {}) {
     // immutable beforeSeq and never mutates this value; IndexedDB/network are
     // interchangeable providers for either range kind.
     beforeSeq: 0,
+    // A foreground freshness check owns a separate backwards cursor. It fills
+    // the gap from the newly observed remote head down to the materialized tail
+    // without corrupting the deep-history frontier above.
+    tailRefreshBeforeSeq: 0,
+    tailRefreshFloorSeq: 0,
     cacheBypassBeforeSeq: 0,
     localMeta: null,
     hasRows: false,
@@ -141,6 +146,7 @@ export function createHistoryScheduler({
   revealRows,
   hasVisibleRow = () => false,
   visibleOldestSeq = () => 0,
+  visibleNewestSeq = () => 0,
   persistRows = () => Promise.resolve(),
   onChange = () => {},
   onError = () => {},
@@ -357,14 +363,15 @@ export function createHistoryScheduler({
 	if (!state || (!remoteAttached && !localAttached) || inflightByChannel.has(state.id) || state.retryAt > now()) return null;
 	if (state.projectionPending) return null;
 	if (state.tier >= 3) return null;
-	const purpose = purposeFor(state, focus);
+	const tailRefresh = numeric(state.tailRefreshBeforeSeq) > 0;
+	const purpose = tailRefresh ? 'initial-tail' : purposeFor(state, focus);
 	const demand = purpose === 'user-demand' ? foregroundDemand(state) : null;
 	// Buffered rows already satisfy the foreground operation. Do not open a
 	// second network page before nextSegment has projected and consumed them.
 	if (purpose === 'user-demand' && state.reservoir.size > 0) return null;
 	const gapBeforeSeq = purpose === 'user-demand' ? visibleGapBefore(state) : 0;
-	const rangeKind = gapBeforeSeq ? 'visible-gap' : 'backfill';
-	const taskBeforeSeq = gapBeforeSeq || state.beforeSeq;
+	const rangeKind = tailRefresh ? 'tail-refresh' : gapBeforeSeq ? 'visible-gap' : 'backfill';
+	const taskBeforeSeq = tailRefresh ? state.tailRefreshBeforeSeq : gapBeforeSeq || state.beforeSeq;
 	const targetRows = state.tier === 0
 	  ? HISTORY_P0_TARGET_ROWS
 	  : state.tier === 1 ? HISTORY_P1_TARGET_ROWS : HISTORY_P2_TARGET_ROWS;
@@ -374,11 +381,11 @@ export function createHistoryScheduler({
 	const scanBudget = state.tier === 0
 	  ? HISTORY_P0_SCAN_BUDGET
 	  : state.tier === 1 ? HISTORY_P1_SCAN_BUDGET : HISTORY_P2_SCAN_BUDGET;
-	if (purpose !== 'user-demand'
+	if (!tailRefresh && purpose !== 'user-demand'
 	  && (state.tailVisible || state.id !== focus)
 	  && (state.reservoir.size >= targetRows || state.reservoirBytes >= targetBytes || state.warmScanned >= scanBudget)) return null;
     if (state.reservoir.size >= HISTORY_RESERVOIR_SIZE || state.reservoirBytes >= HISTORY_RESERVOIR_CHANNEL_BYTES) return null;
-    const priority = state.tier === 0 ? 'foreground' : 'background';
+	const priority = tailRefresh || state.tier === 0 ? 'foreground' : 'background';
     const urgent = priority === 'foreground';
     const channelAvailable = Math.max(0, HISTORY_RESERVOIR_CHANNEL_BYTES - state.reservoirBytes);
     const globalAvailable = Math.max(0, HISTORY_RESERVOIR_GLOBAL_BYTES - globalReservoirBytes - reservedInflightBytes);
@@ -389,26 +396,27 @@ export function createHistoryScheduler({
 	const globalAllowance = urgent && !foregroundInflight
 	  ? Math.max(globalAvailable, batchBytes)
 	  : globalAvailable;
-    const targetByteDeficit = purpose === 'user-demand' || (!state.tailVisible && state.id === focus)
+	const targetByteDeficit = tailRefresh || purpose === 'user-demand' || (!state.tailVisible && state.id === focus)
       ? batchBytes
       : Math.max(1, targetBytes - state.reservoirBytes);
     const byteLimit = Math.min(batchBytes, targetByteDeficit, channelAvailable, globalAllowance);
     if (byteLimit <= 0) return null;
     // Partial final batches are valid. Requiring a whole 1 MiB quantum here
     // left every P1/P2 reservoir permanently below its configured byte target.
-    if (!state.hasRows && !state.hasOlder && !hasLocalKnowledge(state.localMeta) && !gapBeforeSeq) return null;
-    if (!gapBeforeSeq && state.completedPages > 0 && !state.hasOlder) return null;
+	if (!tailRefresh && !state.hasRows && !state.hasOlder && !hasLocalKnowledge(state.localMeta) && !gapBeforeSeq) return null;
+	if (!tailRefresh && !gapBeforeSeq && state.completedPages > 0 && !state.hasOlder) return null;
     let priorityClass = priority === 'foreground' ? 100 : 0;
     if (purpose === 'user-demand') priorityClass += 20;
     else if (purpose === 'initial-tail') priorityClass += 10;
+	if (tailRefresh) priorityClass += 40;
     // Starvation promotion is deliberately confined to the same transport
     // class. Background hydration can become the next background batch, but
     // it can never jump ahead of a person's active top operation.
     priorityClass += Math.min(9, Math.floor(state.waitDispatches / FAIRNESS_DISPATCHES));
     priorityClass += demand?.score || 0;
-    const source = sourceFor(state, taskBeforeSeq);
+	const source = tailRefresh ? 'network' : sourceFor(state, taskBeforeSeq);
 	const sourceStats = transportStats[source] || transportStats.network;
-    const rowDeficit = purpose === 'user-demand' || !state.tailVisible
+	const rowDeficit = tailRefresh || purpose === 'user-demand' || !state.tailVisible
       ? sourceStats.rowLimit
       : Math.max(1, targetRows - state.reservoir.size);
     const limit = Math.max(1, Math.min(sourceStats.rowLimit, rowDeficit, HISTORY_RESERVOIR_SIZE - state.reservoir.size));
@@ -440,6 +448,7 @@ export function createHistoryScheduler({
       activity: state.activity,
       waterDeficit: HISTORY_RESERVOIR_SIZE - state.reservoir.size,
       waitDispatches: state.waitDispatches,
+	  visibleNewestAtDispatch: numeric(visibleNewestSeq(state.id)),
     };
   }
 
@@ -459,6 +468,11 @@ export function createHistoryScheduler({
       batch && (batch.priority === 'foreground' || backgroundInflight < maxBackgroundInflight)
     ));
     if (!candidates.length) return null;
+    // A focused head check has proved that the current screen is stale. This
+    // is the highest-priority data demand: it wins before ordinary top-scroll
+    // and before the hydration wheel.
+    const freshness = candidates.filter((batch) => batch.rangeKind === 'tail-refresh').sort(compare)[0];
+    if (freshness) return freshness;
     // A person explicitly paging always wins the next free executor regardless
     // of the wheel. Ordinary hydration then follows 3:2:1 weighted RR.
     const demanded = candidates.filter((batch) => batch.purpose === 'user-demand').sort(compare)[0];
@@ -628,7 +642,7 @@ export function createHistoryScheduler({
       // advance truth; it only bypasses this cache claim at the same frontier.
       if (result.cacheMiss) {
         state.cacheBypassBeforeSeq = batch.beforeSeq;
-        if (!state.attachedGeneration && batch.rangeKind !== 'visible-gap') state.hasOlder = false;
+        if (!state.attachedGeneration && batch.rangeKind === 'backfill') state.hasOlder = false;
         diagnostic('warn', 'history.cache_claim_missed', {
           channelId: state.id, beforeSeq: batch.beforeSeq, generation,
         });
@@ -636,18 +650,26 @@ export function createHistoryScheduler({
         return;
       }
       validateCachePage(batch, result, rows);
-      if (batch.rangeKind !== 'visible-gap') state.beforeSeq = Number(result.nextBeforeSeq);
+      if (batch.rangeKind === 'backfill') state.beforeSeq = Number(result.nextBeforeSeq);
       state.cacheBypassBeforeSeq = 0;
-	  if (!state.attachedGeneration && result.exhausted && batch.rangeKind !== 'visible-gap') state.hasOlder = false;
+	  if (!state.attachedGeneration && result.exhausted && batch.rangeKind === 'backfill') state.hasOlder = false;
     } else {
 	  validateNetworkPage(batch, result, rows);
       state.headSeq = Math.max(state.headSeq, numeric(result.head_seq));
-	  if (batch.rangeKind !== 'visible-gap') state.beforeSeq = Number(result.next_before_seq);
+	  if (batch.rangeKind === 'backfill') state.beforeSeq = Number(result.next_before_seq);
 	  state.cacheBypassBeforeSeq = 0;
 	  // Cursor zero is the ledger origin and therefore authoritative exhaustion,
 	  // even if an older server/mocked projector conservatively reports
 	  // has_older=true because only hidden housekeeping remains.
-	  if (batch.rangeKind !== 'visible-gap') state.hasOlder = Boolean(result.has_older) && state.beforeSeq > 0;
+	  if (batch.rangeKind === 'backfill') state.hasOlder = Boolean(result.has_older) && state.beforeSeq > 0;
+	  if (batch.rangeKind === 'tail-refresh') {
+		const nextBefore = numeric(result.next_before_seq);
+		const floor = numeric(state.tailRefreshFloorSeq);
+		state.tailRefreshBeforeSeq = Boolean(result.has_older) && nextBefore > floor + 1
+		  ? nextBefore
+		  : 0;
+		if (!state.tailRefreshBeforeSeq) state.tailRefreshFloorSeq = 0;
+	  }
       const lowSeq = numeric(result.scan_low_seq);
       const highSeq = numeric(result.scan_high_seq);
       const coverageByChannel = lowSeq && highSeq >= lowSeq
@@ -669,7 +691,10 @@ export function createHistoryScheduler({
     const visibleIntent = state.id === focus
       || state.foregroundWaiters.length > 0
       || state.foregroundOwners.size > 0;
-    if (!state.tailVisible && visibleIntent) {
+    if (batch.rangeKind === 'tail-refresh' && visibleIntent && remembered.accepted > 0) {
+	  initialReleased = release(state, remembered.accepted, { initial: false, byteLimit: batch.byteLimit });
+	  state.tailVisible = true;
+	} else if (!state.tailVisible && visibleIntent) {
       initialReleased = release(state, HISTORY_REVEAL_SIZE, { initial: true });
       state.tailVisible = true;
     }
@@ -1011,6 +1036,45 @@ export function createHistoryScheduler({
     schedule();
   }
 
+  function refreshRemoteMeta(entry = {}, detail = {}) {
+	const id = entry.channel_id;
+	const responseGeneration = numeric(detail.generation ?? entry.generation);
+	if (!id || !generation || responseGeneration !== generation) return false;
+	const state = channels.get(id);
+	if (!state || state.attachedGeneration !== generation || entry.error_code) return false;
+	const headSeq = numeric(entry.head_seq);
+	state.remoteKnown = true;
+	state.remoteEligible = true;
+	state.headSeq = Math.max(state.headSeq, headSeq);
+	state.hasRows = Boolean(entry.has_rows) || state.hasRows || headSeq > 0;
+	state.activity = Math.max(state.activity, numeric(entry.last_activity));
+	const localNewest = numeric(visibleNewestSeq(id));
+	if (headSeq > localNewest && id === focus) {
+	  if (!state.tailRefreshBeforeSeq) state.tailRefreshFloorSeq = localNewest;
+	  else state.tailRefreshFloorSeq = Math.min(state.tailRefreshFloorSeq, localNewest);
+	  state.tailRefreshBeforeSeq = Math.max(state.tailRefreshBeforeSeq, headSeq + 1);
+	  state.retryAt = 0;
+	  state.error = '';
+	  const batch = inflightByChannel.get(id);
+	  if (batch?.priority === 'background') cancelBatch(batch, 'foreground freshness check superseded background history');
+	  for (const other of inflightByChannel.values()) {
+		if (other.channelId !== id && other.priority === 'background') {
+		  cancelBatch(other, 'foreground freshness check preempted background hydration');
+		}
+	  }
+	}
+	diagnostic('debug', 'history.channel_meta', {
+	  channelId: id,
+	  generation,
+	  headSeq,
+	  localNewest,
+	  catchup: headSeq > localNewest && id === focus,
+	});
+	publish();
+	schedule();
+	return true;
+  }
+
   function setLocalMeta(nextMeta = new Map(), { publishChange = true } = {}) {
     for (const [id, value] of nextMeta) {
 	  let state = channels.get(id);
@@ -1138,5 +1202,5 @@ export function createHistoryScheduler({
     disconnected(generation + 1);
   }
 
-  return { attach, setLocalMeta, setPriorityScope, historyRow, pageEnd, nextSegment, beginOperation, focus: setFocus, observeLive, markRead, disconnected, clear, resetReplica, destroy, isDestroyed: () => destroyed, snapshot, tick: schedule };
+  return { attach, refreshRemoteMeta, setLocalMeta, setPriorityScope, historyRow, pageEnd, nextSegment, beginOperation, focus: setFocus, observeLive, markRead, disconnected, clear, resetReplica, destroy, isDestroyed: () => destroyed, snapshot, tick: schedule };
 }

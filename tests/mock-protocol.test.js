@@ -12,7 +12,7 @@ describe('mock protocol layer', () => {
 	expect(FRAME_VERSION).toBe(5);
     expect(MAX_FRAME_BYTES).toBe(512 * 1024);
     expect(Object.keys(PAYLOAD_FIELDS).sort()).toEqual([
-      'after', 'attach', 'cancel', 'cancel_timer', 'history_before', 'history_cancel', 'observe', 'resolve', 'resource', 'submit', 'unobserve',
+      'after', 'attach', 'cancel', 'cancel_timer', 'channel_meta', 'history_before', 'history_cancel', 'observe', 'resolve', 'resource', 'submit', 'unobserve',
     ]);
     expect(downstreamFrame('receipt', 'r1', { message_id: 'm1' })).toEqual({
 	  v: 5,
@@ -40,6 +40,7 @@ describe('mock protocol layer', () => {
       resource: { channel_id: 'c0', op: 'list' },
       observe: { channel_id: 'c1' },
       unobserve: { channel_id: 'c1' },
+	  channel_meta: { channel_id: 'c1', generation: 1 },
 	  history_before: { channel_id: 'c1', before_seq: 10, limit: 50, generation: 1, purpose: 'hydrate', priority: 'background' },
 	  history_cancel: { channel_id: 'c1', target_ref: 'history_before-1', generation: 1 },
     };

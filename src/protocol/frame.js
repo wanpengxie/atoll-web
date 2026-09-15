@@ -11,6 +11,7 @@ export const UP = Object.freeze({
   resource: 'resource',
   observe: 'observe',
   unobserve: 'unobserve',
+  channel_meta: 'channel_meta',
   history_before: 'history_before',
   history_cancel: 'history_cancel',
 });
@@ -86,6 +87,7 @@ const PAYLOAD_FIELDS = Object.freeze({
   ],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
+  channel_meta: ['channel_id', 'generation'],
   history_before: ['channel_id', 'before_seq', 'limit', 'byte_limit', 'generation', 'purpose', 'priority'],
   history_cancel: ['channel_id', 'target_ref', 'generation'],
 });
@@ -100,6 +102,7 @@ const REQUIRED_PAYLOAD_FIELDS = Object.freeze({
   resource: ['channel_id', 'op'],
   observe: ['channel_id'],
   unobserve: ['channel_id'],
+  channel_meta: ['channel_id', 'generation'],
   history_before: ['channel_id', 'generation', 'purpose', 'priority'],
   history_cancel: ['channel_id', 'target_ref', 'generation'],
 });
@@ -156,6 +159,9 @@ export function validateUpstreamPayload(type, payload) {
 	if (!['foreground', 'background'].includes(payload.priority)) {
 	  throw new FrameValidationError('history_before priority is invalid');
 	}
+  }
+  if (type === UP.channel_meta && (!Number.isSafeInteger(payload.generation) || payload.generation < 1)) {
+    throw new FrameValidationError('channel_meta generation must be a positive safe integer');
   }
   if (type === UP.history_cancel) {
 	if (typeof payload.target_ref !== 'string' || !payload.target_ref) {

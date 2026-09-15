@@ -259,14 +259,15 @@ export default function App() {
   const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
   const forwardAgentActivity = useCallback((payload, context) => agentActivityRef.current.observe(payload, context), []);
-  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, historyFor, loadHistory, markRead, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
+  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, refreshChannel, historyFor, loadHistory, markRead, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setFilePreviewStack([]); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice, initialChannelId: initialRouteRef.current.channelId });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
 
   useEffect(() => {
     focusHistory(activeChannelId);
-  }, [activeChannelId, focusHistory]);
+    void refreshChannel(activeChannelId);
+  }, [activeChannelId, focusHistory, refreshChannel]);
 
   useEffect(() => {
     const applyRoute = () => {
@@ -873,9 +874,11 @@ export default function App() {
     const view = workspaceViewsRef.current.get(channelId) || 'dynamic';
     setTimelineTarget(null);
     selectChannel(channelId);
+	focusHistory(channelId);
+	void refreshChannel(channelId);
     setWorkspaceView(view);
     writeWorkspaceRoute({ channelId, view });
-  }, [selectChannel]);
+  }, [focusHistory, refreshChannel, selectChannel]);
 
   // ui.* —— 频道可以反过来操作 UI。实验性原型（DEV_BACKLOG 附录 A）。
   //
@@ -1441,6 +1444,8 @@ export default function App() {
       ? { type: focusType, key: source.objectId }
       : null;
     selectChannel(channel.id);
+	focusHistory(channel.id);
+	void refreshChannel(channel.id);
     workspaceViewsRef.current.set(channel.id, view);
     setWorkspaceView(view);
     setSelectedActor(null);

@@ -143,7 +143,6 @@ Meta 安装与内容供水分开：
 - 真正的 IndexedDB outbox 与时间线 local echo。
 - 长期声明式 History Demand。
 - 跨设备阅读位置同步。
-- 后端新增独立 Meta frame；当前 attach receipt 已足够承担首次 Meta 同步。
 
 ## 11. 实现对账
 
@@ -153,6 +152,7 @@ Meta 安装与内容供水分开：
 | principal/boot epoch、持久写排序 | `src/model/sync-session.js`、`src/app/hooks/useChannelFeed.js` |
 | Replica 行与 coverage 原子权威 | `src/model/feed-cache.js` |
 | remote Meta 与 local Meta 合流 | `src/model/history-scheduler.js`、`src/app/hooks/useChannelFeed.js` |
+| 进入频道的当前 head 校准 | `channel_meta`、`refreshRemoteMeta` |
 | 启动三路并行 | `src/App.jsx` |
 | UI 不以 local hydrate 阻断 history | `src/ui/timeline/useConversationViewport.js` |
 | 乱序、重复、epoch 边界验证 | `tests/sync-data-fuzz.test.js` |
@@ -164,6 +164,18 @@ Meta 安装与内容供水分开：
 移动浏览器从后台恢复时，客户端不能把仍标记为 `OPEN/attached` 的旧 WebSocket 当作新鲜性证明。`visibilitychange → visible` 与网络恢复会立即结束旧 session 并重新 attach；attach 返回的轻量 channel head Meta 随即驱动当前频道 Scheduler 比较 Replica frontier，并主动拉取缺口。live push 是常驻低延迟路径，不是发现遗漏消息的唯一触发器。
 
 这次再校准不开放移动端后台历史预热：当前频道的 Meta 缺口是前台同步需求；其他频道的新 live 仍正常接收，但深历史只在获得 focus 后读取，避免后台历史批次再次占住移动链路。
+
+### 进入频道即同步
+
+页面生命周期不是新鲜性的唯一触发器。每次用户进入或重新选择一个频道，客户端立即发送最高优先级、正文为空的 `channel_meta`，服务端只读取该频道当前 head。若远端 head 超过内存 Replica 的最新 seq，Scheduler 立即建立独立的 `tail-refresh` 前台游标，从最新消息向本地 frontier 补齐；这个游标不覆盖向上阅读使用的深历史 cursor。
+
+因此三件事彼此独立：
+
+- live push 负责常态低延迟；
+- 频道进入 Meta 负责主动证明“没有错过”；
+- history runway 负责向上阅读。
+
+Meta 查询与回执走控制/实时 lane，不排在历史批次后面；消息正文仍由可抢占、可分批的 history lane 传输。这样 Meta 保持轻量，也不制造第二份消息真相。
 
 ## 12. 集中验证
 

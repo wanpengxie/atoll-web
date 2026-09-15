@@ -429,6 +429,12 @@ export function createWire({
     unobserve(channelId) {
       return transmit(UP.unobserve, { channel_id: channelId });
     },
+    channelMeta(channelId, requestedGeneration = generation) {
+      return transmit(UP.channel_meta, {
+        channel_id: channelId,
+        generation: requestedGeneration,
+      });
+    },
     historyBefore(channelId, beforeSeq = 0, limit = 200, { purpose = 'hydrate', priority = 'background', generation: requestedGeneration = generation, byteLimit = 4 * 1024 * 1024 } = {}) {
       return transmit(UP.history_before, {
 		channel_id: channelId,
