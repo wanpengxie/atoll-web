@@ -51,6 +51,18 @@ function capabilitiesFor(...actorIds) {
 const roster = [{ id: 'me', kind: 'human', name: '我' }, { id: 'agent', kind: 'agent', name: 'Agent' }];
 
 describe('agent control v7 information architecture', () => {
+  it('does not resurrect cached queued controls before the backend tail is current', () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('cached-queued', '旧缓存中的等待请求'));
+    add(state, 2, response('cached-queued-q', 'cached-queued', { status: 'queued' }));
+    const history = (controlCurrent) => ({ status: { controlCurrent }, open: vi.fn(), markRead: vi.fn() });
+    const view = render(<Timeline state={state} history={history(false)} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} />);
+
+    expect(screen.queryByRole('region', { name: '等待区' })).toBeNull();
+    view.rerender(<Timeline state={state} history={history(true)} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} />);
+    expect(screen.getByRole('region', { name: '等待区' })).toBeTruthy();
+  });
+
   it('semantic history keeps a completed request visible without progress frames', () => {
     const state = createChannelState('c0');
     add(state, 1, request('historical', '历史中的完整问句'));

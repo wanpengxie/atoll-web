@@ -102,6 +102,12 @@ Meta 安装与内容供水分开：
 - live 永远不进入历史 executor/reservoir；
 - 当前频道可在 local Meta 尚未完成时先从网络取得 tail；本地 Meta 后到只改变后续 source 选择。
 
+历史事实与当前控制状态的可用门槛不同。缓存消息可以立即进入 Conversation；缓存中
+没有 terminal 只表示“当时尚未看到终态”，不能证明请求现在仍在 queued。Scheduler
+只有在 attach/channel Meta 给出当前 head，且从本地连续 coverage 到该 head 的尾部已经
+确认或补齐后，才发布 `controlCurrent=true`。等待区等运行态投影只消费这一状态；断线、
+切换 generation 或发现更高 head 时立即撤销，不从旧缓存恢复。
+
 本轮不把 HistoryDemandPort 改造成长期声明式 demand；那是供水策略的下一层，不得再次与连接状态耦合。
 
 ## 7. 失败语义
@@ -121,7 +127,7 @@ Meta 安装与内容供水分开：
 5. principal 或 boot/world 改变时先同步隔离内存，再按序异步清磁盘；未确认 epoch 时 resume 必须为空。
 6. local Meta 无论先到还是后到，都能加入同一个 Scheduler；不重置已收到的 live。
 7. 保留 Replica 行与 coverage 的同事务权威，不另造“消息 Meta”第二真相。
-8. 不修改视觉、Composer、等待区和消息展示合同。
+8. 不修改 Composer 和消息展示合同；等待区只增加 `controlCurrent` 新鲜性门槛，不改变视觉结构。
 
 ## 9. 验收不变量
 
@@ -137,6 +143,7 @@ Meta 安装与内容供水分开：
 6. 旧 generation 的异步 Meta 完成不能覆盖新 generation。
 7. local Meta 先到、attach 先到、二者同时到，最终 head/coverage 与可见行集合等价。
 8. 任意缓存失败都不能把 `sessionAttached` 降回 false 或关闭传输。
+9. 未校准的缓存尾部不得产生 queued/active 等当前控制状态；发现更高 head 后必须先撤销当前性，再补齐缺口。
 
 ## 10. 明确后置
 

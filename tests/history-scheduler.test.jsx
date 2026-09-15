@@ -95,6 +95,7 @@ describe('v5 history batch coordinator', () => {
     scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], {
       generation: 1, focus: 'c0', localMeta: meta,
     });
+    expect(scheduler.snapshot('c0').controlCurrent).toBe(true);
     await waitFor(() => expect(harness.calls).toHaveLength(1));
     expect(harness.calls[0]).toMatchObject({ channelId: 'c0', beforeSeq: 20 });
     expect(readCache).toHaveBeenCalledOnce();
@@ -634,6 +635,25 @@ describe('v5 history batch coordinator', () => {
     expect(revealRows).toHaveBeenLastCalledWith('c0', [
       [11, expect.any(Object)], [12, expect.any(Object)], [13, expect.any(Object)],
     ], { initial: false });
+    scheduler.destroy();
+  });
+
+  it('treats attach Meta as an immediate tail fence before exposing cached controls', async () => {
+    const harness = requestHarness();
+    const visible = new Set([100]);
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      revealRows: (_channelId, entries) => entries.forEach(([seq]) => visible.add(seq)),
+      visibleNewestSeq: () => Math.max(0, ...visible),
+    });
+
+    scheduler.attach([{ channel_id: 'c0', head_seq: 105, has_rows: true }], { generation: 1, focus: 'c0' });
+    expect(scheduler.snapshot('c0').controlCurrent).toBe(false);
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({ beforeSeq: 106, rangeKind: 'tail-refresh', priority: 'foreground' });
+
+    finish(scheduler, harness.calls[0], { oldest: 101, rows: 5, hasOlder: true });
+    await waitFor(() => expect(scheduler.snapshot('c0').controlCurrent).toBe(true));
     scheduler.destroy();
   });
 });

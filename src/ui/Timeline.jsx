@@ -811,7 +811,11 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     });
     return { queued, actorIds, preempted, merged, hasFreezeOperations };
   }, [state, controlVersion, editingTargetId]);
-  const queuedTurns = timelineControl.queued;
+  // Cached conversation rows are safe to show immediately; cached open-state
+  // deductions are not. A missing terminal in the unsynchronised tail must
+  // never resurrect an already-finished request in the waiting layer.
+  const controlCurrent = history.status ? history.status.controlCurrent === true : true;
+  const queuedTurns = controlCurrent ? timelineControl.queued : [];
   const frozenByActor = useMemo(
     () => timelineControl.hasFreezeOperations
       ? agentFrozenStates(state, timelineControl.actorIds, presentationNow)

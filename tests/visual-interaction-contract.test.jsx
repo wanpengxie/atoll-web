@@ -103,6 +103,12 @@ describe('visual interaction architecture', () => {
     expect(responsive).toContain('.mobile-shell .dynamic-workspace.files-split-open > .artifacts-view { grid-row: 1; grid-column: 1;');
     expect(responsive).toContain('.mobile-shell .dynamic-workspace.terminal-split-open > .terminal-view { grid-row: 1; grid-column: 1;');
   });
+
+  it('keeps the mobile channel directory as an independent viewport surface', () => {
+    const responsive = source('src/styles/responsive.css');
+    expect(responsive).toMatch(/\.shell\.mobile-shell\.mobile-channels-open \.channel-rail\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0[^}]*width:\s*100%[^}]*height:\s*100%/s);
+    expect(responsive).toMatch(/\.shell\.mobile-shell\.mobile-channels-open \.workspace,[\s\S]*visibility:\s*hidden/s);
+  });
 });
 
 describe('semantic navigation', () => {

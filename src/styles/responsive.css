@@ -43,13 +43,24 @@
      恒不再为了三个图标给 header 追加第二条工具栏。 */
   .mobile-shell .workspace { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: 44px auto minmax(0, 1fr); }
   .mobile-shell .channel-rail { display: none; }
-  .shell.mobile-shell.mobile-channels-open .channel-rail { display: flex; grid-column: 1; grid-row: 1; }
+  /* Channel navigation is an independent mobile Surface. Conversation stays
+     mounted underneath, but its grid must not size or stack the nav page. */
+  .shell.mobile-shell.mobile-channels-open .channel-rail {
+    position: absolute;
+    z-index: 60;
+    inset: 0;
+    display: flex;
+    width: 100%;
+    height: 100%;
+    border-right: 0;
+  }
   .shell.mobile-shell.mobile-channels-open .mobile-rail-close { display: grid; }
   /* Navigation replaces the active Surface visually but does not remove its
      layout box. Keeping the same viewport prevents a virtual Conversation
      from being measured at 0px and then correcting itself when Nav closes. */
   .shell.mobile-shell.mobile-channels-open .workspace,
   .shell.mobile-shell.mobile-channels-open .context-host { visibility: hidden; pointer-events: none; }
+  .shell.mobile-shell.mobile-channels-open .rail-header { height: auto; min-height: 58px; overflow: visible; }
   .mobile-shell .context-host { inset: 0; width: 100%; grid-template-columns: minmax(0, 1fr); }
   .mobile-shell .context-host[data-context-type="artifact"] { grid-template-columns: minmax(0, 1fr); }
   .mobile-shell .context-pane { grid-column: 1; }

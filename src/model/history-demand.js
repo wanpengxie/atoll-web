@@ -22,6 +22,7 @@ const EMPTY_STATUS = Object.freeze({
   bufferedNewest: 0,
   revealVersion: 0,
   attached: false,
+  controlCurrent: false,
   tier: 3,
   completedPages: 0,
   generation: 0,

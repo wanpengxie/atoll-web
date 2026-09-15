@@ -95,6 +95,10 @@ function createState(id, previous = {}) {
     hasRows: false,
     hasOlder: false,
     tailVisible: false,
+    // Historical rows may paint from cache immediately. Derived operational
+    // controls may not: an absent terminal beyond the cached frontier would
+    // otherwise resurrect an already-finished queued request.
+    controlCurrent: false,
     reservoir: new Map(),
     reservoirBytes: 0,
     revealVersion: 0,
@@ -668,7 +672,14 @@ export function createHistoryScheduler({
 		state.tailRefreshBeforeSeq = Boolean(result.has_older) && nextBefore > floor + 1
 		  ? nextBefore
 		  : 0;
-		if (!state.tailRefreshBeforeSeq) state.tailRefreshFloorSeq = 0;
+		if (!state.tailRefreshBeforeSeq) {
+		  // A stale-tail attach initially points the deep cursor at head + 1.
+		  // Once the gap is bridged, continue below the former local tail rather
+		  // than requesting the just-verified range a second time.
+		  if (floor > 0 && state.beforeSeq === state.headSeq + 1) state.beforeSeq = floor + 1;
+		  state.tailRefreshFloorSeq = 0;
+		  state.controlCurrent = true;
+		}
 	  }
       const lowSeq = numeric(result.scan_low_seq);
       const highSeq = numeric(result.scan_high_seq);
@@ -698,6 +709,12 @@ export function createHistoryScheduler({
       initialReleased = release(state, HISTORY_REVEAL_SIZE, { initial: true });
       state.tailVisible = true;
     }
+	if (batch.source === 'network' && batch.rangeKind === 'backfill' && batch.purpose === 'initial-tail') {
+	  state.controlCurrent = true;
+	}
+	if (state.attachedGeneration && state.tailVisible && coverageContains(state.localMeta, state.headSeq)) {
+	  state.controlCurrent = true;
+	}
     state.retryAt = 0;
     state.retryCount = 0;
     state.error = '';
@@ -827,6 +844,7 @@ export function createHistoryScheduler({
       const state = schedulerState(id, previous);
 	  const meta = localMeta.get?.(id) || localMeta[id] || null;
 	  const cachedHead = localHead(meta);
+	  const visibleHead = numeric(visibleNewestSeq(id));
 	  const seamBatch = seamBatches.get(id);
 	  const compatibleLocalBatch = Boolean(seamBatch?.source === 'indexeddb'
 		&& cachedHead >= numeric(entry.head_seq)
@@ -846,6 +864,14 @@ export function createHistoryScheduler({
 	  state.hasOlder = state.hasRows && state.beforeSeq > 0;
       state.activity = Math.max(numeric(entry.last_activity), numeric(state.localMeta?.lastActivity));
 	  state.tailVisible = Boolean(canKeepLocalFrontier && previous?.tailVisible);
+	  state.controlCurrent = Boolean(!state.hasRows || (canKeepLocalFrontier && state.tailVisible));
+	  // Attach Meta already gives the authoritative remote head. When an older
+	  // local tail is on screen, bridge that gap now; do not wait for a second
+	  // focus probe while stale controls are visible.
+	  state.tailRefreshBeforeSeq = !canKeepLocalFrontier && visibleHead > 0 && state.headSeq > visibleHead
+	    ? state.headSeq + 1
+	    : 0;
+	  state.tailRefreshFloorSeq = state.tailRefreshBeforeSeq ? visibleHead : 0;
 	  if (!canKeepLocalFrontier) state.completedPages = 0;
 	  if (!canKeepLocalFrontier && state.reservoir.size) {
 		globalReservoirBytes = Math.max(0, globalReservoirBytes - state.reservoirBytes);
@@ -1050,6 +1076,7 @@ export function createHistoryScheduler({
 	state.activity = Math.max(state.activity, numeric(entry.last_activity));
 	const localNewest = numeric(visibleNewestSeq(id));
 	if (headSeq > localNewest && id === focus) {
+	  state.controlCurrent = false;
 	  if (!state.tailRefreshBeforeSeq) state.tailRefreshFloorSeq = localNewest;
 	  else state.tailRefreshFloorSeq = Math.min(state.tailRefreshFloorSeq, localNewest);
 	  state.tailRefreshBeforeSeq = Math.max(state.tailRefreshBeforeSeq, headSeq + 1);
@@ -1083,6 +1110,9 @@ export function createHistoryScheduler({
 		channels.set(id, state);
 	  }
       state.localMeta = value;
+	  if (state.attachedGeneration && state.tailVisible && coverageContains(value, state.headSeq)) {
+		state.controlCurrent = true;
+	  }
       state.cacheBypassBeforeSeq = 0;
       state.activity = Math.max(state.activity, numeric(value?.lastActivity));
 	  if (!state.attachedGeneration && !state.tailVisible && hasLocalKnowledge(value)) {
@@ -1111,6 +1141,7 @@ export function createHistoryScheduler({
 	  if (inflightByChannel.get(channelId) === batch) inflightByChannel.delete(channelId);
     }
     for (const state of channels.values()) {
+	  state.controlCurrent = false;
       const localCanContinue = !destroyed && (state.reservoir.size > 0 || sourceFor(state) === 'indexeddb');
 	  if (!localCanContinue) {
 		settleForeground(state, { kind: 'cancelled' });
@@ -1128,7 +1159,7 @@ export function createHistoryScheduler({
 
   function snapshot(channelId) {
     const state = channels.get(channelId);
-    if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, buffered: 0, bufferedNewest: 0, revealVersion: 0, attached: false, tier: 3, completedPages: 0, generation, error: '' };
+    if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, buffered: 0, bufferedNewest: 0, revealVersion: 0, attached: false, controlCurrent: false, tier: 3, completedPages: 0, generation, error: '' };
     return {
       headSeq: state.headSeq,
       oldestSeq: state.beforeSeq,
@@ -1139,6 +1170,7 @@ export function createHistoryScheduler({
       bufferedNewest: Math.max(0, ...state.reservoir.keys()),
       revealVersion: state.revealVersion,
       attached: generation > 0 && state.attachedGeneration === generation,
+      controlCurrent: generation > 0 && state.attachedGeneration === generation && state.controlCurrent,
       tier: state.tier,
       completedPages: state.completedPages,
       generation,

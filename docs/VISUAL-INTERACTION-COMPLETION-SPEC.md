@@ -76,6 +76,10 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 
 窄屏（compact/mobile）Conversation、Files、Preview、Tasks、Terminal 是互斥的完整 Surface。打开一个辅助 Surface 必须关闭另一个的 active 状态，不得出现按钮显示“两块都开”而屏幕只展示一块。不得把桌面两栏或上下分屏压进窄屏。关闭 Preview/Files/Terminal 后恢复原 Conversation 阅读会话和合理的触发点焦点。
 
+频道目录同样是独立的全视口 Navigation Surface。它可以覆盖仍挂载的 Conversation 以
+保留测量和阅读状态，但必须脱离 Conversation/Workspace 的 Grid，独占自身尺寸、层叠、
+滚动和头尾布局；隐藏工作区不得参与频道目录的布局计算。
+
 ### V9 消息视口与悬浮层边界
 
 - 消息行不得测量或控制 Composer、等待队列和页面 Shell。
