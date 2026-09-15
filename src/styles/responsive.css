@@ -78,6 +78,7 @@
   .mobile-shell .workspace > .channel-private-empty { grid-row: 3; grid-column: 1 / -1; }
   .mobile-shell .dynamic-message-pane > .timeline,
   .mobile-shell .dynamic-message-pane > .channel-private-empty { grid-row: 1; grid-column: 1; }
+  .mobile-shell .dynamic-message-pane { --conversation-composer-lane: 128px; }
   .mobile-shell .send-button, .mobile-shell .task-create-modal > header button, .mobile-shell .task-create-modal footer button,
   .mobile-shell .global-search > header button, .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
   .mobile-shell .task-create-modal > header button, .mobile-shell .global-search > header button { min-width: 44px; }
@@ -86,7 +87,6 @@
 	.mobile-shell .timeline-virtual-item { padding-right: 7px; padding-left: 7px; }
   .mobile-shell .agent-wait-dock { right: 16px; left: 16px; width: calc(100% - 32px); }
   .mobile-shell .agent-wait-dock { bottom: 112px; }
-  .mobile-shell .timeline-overlay-clearance { height: 128px; min-height: 128px; }
   .mobile-shell .agent-wait-layer { height: auto; }
   .mobile-shell .agent-wait-layer.is-collapsed { height: auto; }
   .mobile-shell .agent-wait-item { height: 32px; grid-template-columns: minmax(0, 1fr) auto; }

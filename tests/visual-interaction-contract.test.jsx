@@ -42,6 +42,8 @@ describe('visual interaction architecture', () => {
   it('keeps Composer and waiting state as overlays that cannot resize Conversation', () => {
     const composer = source('src/ui/Composer.jsx');
     const timelineComponent = source('src/ui/Timeline.jsx');
+    const adapter = source('src/ui/timeline/VirtualTimelineAdapter.jsx');
+    const shell = source('src/styles/app-shell.css');
     const timeline = source('src/styles/timeline.css');
     const composerStyles = source('src/styles/composer.css');
 
@@ -49,7 +51,10 @@ describe('visual interaction architecture', () => {
     expect(timelineComponent).not.toMatch(/ResizeObserver|agent-wait-dock-height/);
     expect(timeline).not.toMatch(/composer-overlay-height|agent-wait-dock-height|is-composer-layout-transitioning/);
     expect(timeline).toMatch(/\.timeline\s*\{[^}]*margin-bottom:\s*0/s);
-    expect(timeline).toMatch(/\.timeline-overlay-clearance\s*\{[^}]*height:\s*112px/s);
+    expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*--conversation-composer-lane:\s*112px/s);
+    expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s*var\(--conversation-composer-lane\)/s);
+    expect(adapter).not.toMatch(/TimelineFooter|timeline-overlay-clearance/);
+    expect(timeline).not.toContain('timeline-overlay-clearance');
     expect(composerStyles).toMatch(/\.composer-state-rail\s*\{[^}]*height:\s*18px/s);
   });
 

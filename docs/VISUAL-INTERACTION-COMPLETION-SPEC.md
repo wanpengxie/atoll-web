@@ -11,7 +11,7 @@
 3. `ConversationViewport` 保存阅读意图：following、browsing、loading-before。
 4. `VirtualTimelineAdapter` 是唯一接触 Virtuoso、DOM 尺寸和物理滚动的模块。
 
-消息列表、Composer 和等待队列属于同一块屏幕，但不是同一个布局系统。Composer 和等待队列保持既有视觉、默认展开状态和操作入口；两者作为固定悬浮层叠在 Conversation 上方，不参与消息 viewport 的尺寸计算。
+消息列表、Composer 和等待队列属于同一块屏幕，但不是同一个布局系统。Shell 给消息 viewport 和 Composer 各自一条恒定边界：消息 viewport 到固定底线为止，Composer 固定悬浮在底部保留带中。Composer 和等待队列保持既有视觉、默认展开状态和操作入口；它们的内容与状态不参与消息 viewport 的动态尺寸计算。
 
 数据到达只能改变 presentation rows，不能直接改变阅读位置。内容组件只能改变自身内容，不能寻找滚动父级、写 `scrollTop`、设置占位高度或启动锚点修正循环。
 
@@ -79,7 +79,8 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 
 - 消息行不得测量或控制 Composer、等待队列和页面 Shell。
 - Composer、等待队列也不得测量自身后回写 Conversation 的 margin、padding、viewport 高度或滚动位置。
-- Conversation 永远占满自己的 Surface。列表尾部只有一个恒定的 overlay clearance，让最后一条消息能够滚到悬浮层上方；它不随 Composer、连接、发送、等待数量或折叠状态变化。
+- Conversation 的消息 viewport 到 Shell 规定的固定底线为止；底线以下是恒定的 Composer 保留带。最后一条消息在 viewport 内完整可见、可点击，列表不能继续滚入 Composer 背后。
+- Composer 保留带是 Shell 的静态几何合同，不从 Composer 实际高度反推，也不随连接、发送、等待数量、折叠状态或文案变化。
 - Composer 底边固定。编辑器内容可以在自身上限内向上生长，但不得挪动 Conversation，也不得触发联动位移动画。
 - 连接、排队、发送失败等状态使用 Composer 内恒定高度的 state rail；状态切换只替换 rail 内容，不改变 Composer 外框位置或高度。
 - 等待队列使用固定的 overlay anchor；出现、消失、展开、收起只改变悬浮层自身，不改变消息区几何。
@@ -171,7 +172,7 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 - [x] scope/filter 进入 adapter identity；编辑沿用当前 identity 和阅读位置。
 - [x] “新动态”按新 presentation 内容计算，不把 prepend 算进去。
 - [x] Composer 与等待队列改为固定悬浮层；删除两套高度 ResizeObserver、CSS 变量回写和联动 FLIP 动画。
-- [x] Composer 状态收敛到恒定高度 rail；Conversation 使用恒定尾部 clearance，不随外围状态重排。
+- [x] Composer 状态收敛到恒定高度 rail；Shell 为 Conversation 与 Composer 划定恒定底部边界，不使用列表 Footer 假造尾部留白，也不随外围状态重排。
 - [x] 历史分页投影单调：既有根 request 不因较早父 request 到达而重挂。
 - [x] 图片和 Mermaid 使用首帧稳定 media frame；异步完成不改变 row 外部几何。
 - [x] ViewSession 仅在 browsing + 语义 anchor + geometry key 完全一致时复用 renderer measurement snapshot；following 清除 snapshot 并恢复最新。

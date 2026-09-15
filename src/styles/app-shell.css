@@ -103,7 +103,7 @@
 .workspace-view { grid-row: 4 / 6; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; background: var(--workspace); }
 .dynamic-workspace { grid-row: 4 / 6; display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
 .dynamic-workspace.terminal-split-open { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.dynamic-message-pane { position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); overflow: hidden; background: var(--workspace); }
+.dynamic-message-pane { --conversation-composer-lane: 112px; position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr) var(--conversation-composer-lane); overflow: hidden; background: var(--workspace); }
 .dynamic-message-pane > .timeline { grid-row: 1; }
 .dynamic-message-pane > .channel-private-empty { grid-row: 1; }
 .dynamic-workspace > .terminal-view { grid-row: 1; }

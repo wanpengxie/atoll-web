@@ -10,10 +10,7 @@ const INITIAL_MATERIALIZATION_RUNWAY = Object.freeze({ top: 1_800, bottom: 600 }
 const TimelineScroller = forwardRef(function TimelineScroller({ children, tabIndex: _tabIndex, ...props }, ref) {
   return <div {...props} ref={ref} tabIndex={0} role="region" aria-label="频道动态">{children}</div>;
 });
-function TimelineFooter() {
-  return <div className="timeline-overlay-clearance" aria-hidden="true" />;
-}
-const TIMELINE_COMPONENTS = Object.freeze({ Scroller: TimelineScroller, Footer: TimelineFooter });
+const TIMELINE_COMPONENTS = Object.freeze({ Scroller: TimelineScroller });
 
 function TestViewport({ children }) {
   if (import.meta.env.MODE !== 'test') return children;
