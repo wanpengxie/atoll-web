@@ -4,7 +4,7 @@
   .shell.has-context { grid-template-columns: var(--rail-width, 220px) minmax(0, 1fr); }
   .timeline-inner { padding: 16px; }
 	.timeline-virtual-item { padding-right: 16px; padding-left: 16px; }
-  .agent-wait-dock { right: 28px; left: 28px; width: calc(100% - 56px); }
+  .agent-wait-dock { width: calc(100% - 56px); }
   .turn-card, .standalone-row, .information-flow-row:not(.contained) { width: 90%; }
 }
 
@@ -85,8 +85,7 @@
   .mobile-shell .seq-label { display: none; }
   .mobile-shell .timeline-inner { padding: 8px 7px 18px; }
 	.mobile-shell .timeline-virtual-item { padding-right: 7px; padding-left: 7px; }
-  .mobile-shell .agent-wait-dock { right: 16px; left: 16px; width: calc(100% - 32px); }
-  .mobile-shell .agent-wait-dock { bottom: 112px; }
+  .mobile-shell .agent-wait-dock { width: calc(100% - 32px); }
   .mobile-shell .agent-wait-layer { height: auto; }
   .mobile-shell .agent-wait-layer.is-collapsed { height: auto; }
   .mobile-shell .agent-wait-item { height: 32px; grid-template-columns: minmax(0, 1fr) auto; }
@@ -94,7 +93,7 @@
   .mobile-shell .agent-wait-actions { justify-content: flex-end; }
   .mobile-shell .turn-card, .mobile-shell .standalone-row, .mobile-shell .information-flow-row:not(.contained) { width: 100%; }
   .mobile-shell .request-text, .mobile-shell .audience-line, .mobile-shell .message-attachments, .mobile-shell .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
-  .mobile-shell .composer-wrap { padding: 10px; }
+  .mobile-shell .composer-wrap { padding: 0 10px 10px; }
   .mobile-shell .composer-tools > button, .mobile-shell .composer-file-control, .mobile-shell .composer-cancel-edit { width: 44px; height: 44px; }
   .mobile-shell .terminal-status button { min-width: 44px; min-height: 44px; }
   .mobile-shell .timeline-scope-bar { top: 4px; min-height: 29px; flex-basis: 29px; margin-bottom: 0; }

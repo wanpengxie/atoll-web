@@ -83,7 +83,8 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 - Composer 保留带是 Shell 的静态几何合同，不从 Composer 实际高度反推，也不随连接、发送、等待数量、折叠状态或文案变化。
 - Composer 底边固定。编辑器内容可以在自身上限内向上生长，但不得挪动 Conversation，也不得触发联动位移动画。
 - 连接、排队、发送失败等状态使用 Composer 内恒定高度的 state rail；状态切换只替换 rail 内容，不改变 Composer 外框位置或高度。
-- 等待队列使用固定的 overlay anchor；出现、消失、展开、收起只改变悬浮层自身，不改变消息区几何。
+- Composer 与等待队列同属一个自下而上的悬浮栈。回复条、附件或编辑器内容使 Composer 自然向上生长时，等待队列由正常 CSS 布局始终贴住 Composer 顶边；不通过测量、CSS 变量或固定 `bottom` 猜位置。
+- 等待队列出现、消失、展开、收起只改变悬浮栈自身，不改变消息 viewport 的固定底线。
 
 ### V10 导航是一次性命令
 

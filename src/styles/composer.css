@@ -1,5 +1,5 @@
 /* Composer */
-.composer-wrap { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; padding: 7px 26px 8px; overflow-anchor: none; pointer-events: none; }
+.composer-wrap { position: relative; z-index: 3; min-width: 0; padding: 0 26px 8px; overflow-anchor: none; pointer-events: none; }
 .composer-surface { position: relative; width: min(100%, var(--timeline-track)); margin: 0 auto; padding: 6px 8px 5px; border: 1px solid var(--line-control); border-radius: 16px; background: var(--input); box-shadow: 0 7px 26px var(--shadow-2), 0 1px 3px var(--shadow); transition: border-color .15s, box-shadow .15s, background .15s; pointer-events: auto; }
 .composer-surface:focus-within { border-color: var(--line-control-strong); box-shadow: 0 1px 3px var(--shadow), 0 0 0 2px var(--accent-bg); }
 .composer-surface.is-editing-message { border-color: var(--line-control-strong); background: var(--raised); box-shadow: 0 4px 18px var(--shadow-2); }

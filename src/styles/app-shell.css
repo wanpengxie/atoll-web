@@ -106,6 +106,7 @@
 .dynamic-message-pane { --conversation-composer-lane: 112px; position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr) var(--conversation-composer-lane); overflow: hidden; background: var(--workspace); }
 .dynamic-message-pane > .timeline { grid-row: 1; }
 .dynamic-message-pane > .channel-private-empty { grid-row: 1; }
+.conversation-bottom-overlay { position: absolute; z-index: 2; right: 0; bottom: 0; left: 0; display: flex; min-width: 0; flex-direction: column; align-items: stretch; pointer-events: none; }
 .dynamic-workspace > .terminal-view { grid-row: 1; }
 .dynamic-workspace.terminal-split-open > .terminal-view { grid-column: 2; border-left: 1px solid var(--terminal-line); }
 /* 桌面文件工作面。.workspace-view 的 grid-row: 4/6 是它当整屏 tab 时的位置，在这里要还

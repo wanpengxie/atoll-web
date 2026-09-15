@@ -49,12 +49,16 @@ describe('visual interaction architecture', () => {
 
     expect(composer).not.toMatch(/ResizeObserver|composer-overlay-height|is-composer-layout-transitioning/);
     expect(timelineComponent).not.toMatch(/ResizeObserver|agent-wait-dock-height/);
+    expect(timelineComponent).toMatch(/conversation-bottom-overlay[\s\S]*<WaitingLayer[\s\S]*\{composer\}/);
     expect(timeline).not.toMatch(/composer-overlay-height|agent-wait-dock-height|is-composer-layout-transitioning/);
+    expect(timeline).toMatch(/\.agent-wait-dock\s*\{[^}]*position:\s*relative/s);
     expect(timeline).toMatch(/\.timeline\s*\{[^}]*margin-bottom:\s*0/s);
     expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*--conversation-composer-lane:\s*112px/s);
     expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s*var\(--conversation-composer-lane\)/s);
+    expect(shell).toMatch(/\.conversation-bottom-overlay\s*\{[^}]*position:\s*absolute[^}]*flex-direction:\s*column/s);
     expect(adapter).not.toMatch(/TimelineFooter|timeline-overlay-clearance/);
     expect(timeline).not.toContain('timeline-overlay-clearance');
+    expect(composerStyles).toMatch(/\.composer-wrap\s*\{[^}]*position:\s*relative/s);
     expect(composerStyles).toMatch(/\.composer-state-rail\s*\{[^}]*height:\s*18px/s);
   });
 

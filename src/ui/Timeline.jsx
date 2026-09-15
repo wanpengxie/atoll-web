@@ -653,7 +653,7 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, viewSessions, navigationTarget = null, onNavigationTargetConsumed, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
+export function Timeline({ state, history = {}, composer = null, viewSessions, navigationTarget = null, onNavigationTargetConsumed, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
   const initialViewSessionRef = useRef(null);
   if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
   const presentationProjectorRef = useRef(null);
@@ -1133,7 +1133,10 @@ export function Timeline({ state, history = {}, viewSessions, navigationTarget =
 		/>
 	  {viewport.unseen > 0 && <button type="button" className="timeline-jump-latest" onClick={viewport.jumpToLatest}>↓ {viewport.unseen} 条新动态</button>}
     </section>
-    {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
-    <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
+    <div className="conversation-bottom-overlay">
+      {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
+      <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
+      {composer}
+    </div>
   </ProgressTrailHost></MarkdownFileReferenceProvider>;
 }
