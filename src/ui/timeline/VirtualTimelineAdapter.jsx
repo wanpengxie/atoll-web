@@ -1,11 +1,45 @@
 import React, { cloneElement, forwardRef, isValidElement, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoMockContext } from 'react-virtuoso';
+import { diagnostic } from '../../model/diagnostics.js';
 
 // The history scheduler keeps data ahead of the reader; the adapter separately
 // keeps DOM ahead of the compositor. Two screens in the older direction let a
 // trackpad fling consume already materialized rows instead of exposing the
 // background while rich Markdown is mounted.
 const INITIAL_MATERIALIZATION_RUNWAY = Object.freeze({ top: 1_800, bottom: 600 });
+
+function presentationRows(scroller) {
+  return scroller ? [...scroller.querySelectorAll('[data-presentation-row-id]')] : [];
+}
+
+// A prepend starts while the old suffix is still the only visible geometry.
+// Record one semantic row and its viewport-relative pixel offset. After React
+// and Virtuoso have committed the new prefix, the adapter removes only the
+// residual displacement left by heterogeneous cold row measurement. Both
+// reads and the single write happen in the layout phase, before browser paint.
+export function capturePrependAnchor(scroller) {
+  if (!scroller) return null;
+  const viewportRect = scroller.getBoundingClientRect();
+  const row = presentationRows(scroller)
+    .find((candidate) => candidate.getBoundingClientRect().bottom > viewportRect.top);
+  if (!row?.dataset.presentationRowId) return null;
+  return {
+    rowID: row.dataset.presentationRowId,
+    offset: row.getBoundingClientRect().top - viewportRect.top,
+  };
+}
+
+export function restorePrependAnchor(scroller, anchor) {
+  if (!scroller || !anchor?.rowID) return null;
+  const row = presentationRows(scroller)
+    .find((candidate) => candidate.dataset.presentationRowId === anchor.rowID);
+  if (!row) return null;
+  const viewportTop = scroller.getBoundingClientRect().top;
+  const currentOffset = row.getBoundingClientRect().top - viewportTop;
+  const correction = currentOffset - Number(anchor.offset || 0);
+  if (Math.abs(correction) >= 0.5) scroller.scrollTop += correction;
+  return correction;
+}
 
 const TimelineScroller = forwardRef(function TimelineScroller({ children, tabIndex: _tabIndex, ...props }, ref) {
   return <div {...props} ref={ref} tabIndex={0} role="region" aria-label="频道动态">{children}</div>;
@@ -25,6 +59,8 @@ export function VirtualTimelineAdapter({ listKey, rows, viewport, itemKey, rende
   const scrollerRef = useRef(null);
   const cleanupRef = useRef(() => {});
   const anchorFrameRef = useRef(0);
+  const prependTransactionRef = useRef(null);
+  const committedListRef = useRef({ listKey, firstItemIndex: viewport.firstItemIndex });
   const handlersRef = useRef(viewport);
   const renderRowRef = useRef(renderRow);
   const [materializationRunway, setMaterializationRunway] = useState(INITIAL_MATERIALIZATION_RUNWAY);
@@ -59,7 +95,38 @@ export function VirtualTimelineAdapter({ listKey, rows, viewport, itemKey, rende
     latest: ({ behavior = 'auto' } = {}) => virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior }),
     restore: ({ index, offset = 0 } = {}) => virtuosoRef.current?.scrollToIndex({ index, align: 'start', offset, behavior: 'auto' }),
     focus: ({ index } = {}) => virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' }),
-  }), []);
+    beginPrepend: () => {
+      const anchor = capturePrependAnchor(scrollerRef.current);
+      prependTransactionRef.current = anchor ? {
+        ...anchor,
+        listKey,
+        firstItemIndex: Number(handlersRef.current.firstItemIndex || 0),
+      } : null;
+    },
+    cancelPrepend: () => { prependTransactionRef.current = null; },
+  }), [listKey]);
+
+  useLayoutEffect(() => {
+    const previous = committedListRef.current;
+    const current = { listKey, firstItemIndex: Number(viewport.firstItemIndex || 0) };
+    committedListRef.current = current;
+    if (previous.listKey !== current.listKey) {
+      prependTransactionRef.current = null;
+      return;
+    }
+    if (current.firstItemIndex >= Number(previous.firstItemIndex || 0)) return;
+
+    const transaction = prependTransactionRef.current;
+    if (!transaction || transaction.listKey !== listKey) return;
+    const correction = restorePrependAnchor(scrollerRef.current, transaction);
+    prependTransactionRef.current = null;
+    diagnostic('debug', 'viewport.prepend_committed', {
+      listKey,
+      rowID: transaction.rowID,
+      prepended: Number(previous.firstItemIndex || 0) - current.firstItemIndex,
+      correction: correction == null ? null : Math.round(correction * 100) / 100,
+    });
+  }, [listKey, viewport.firstItemIndex, rows]);
 
   const observeAnchor = useCallback(() => {
     cancelAnimationFrame(anchorFrameRef.current);
@@ -124,6 +191,14 @@ export function VirtualTimelineAdapter({ listKey, rows, viewport, itemKey, rende
       lastScrollTop = nextScrollTop;
       lastScrollAt = now;
       expandMaterializationRunway(node.clientHeight, velocity);
+      const transaction = prependTransactionRef.current;
+      // An anticipatory demand can be open while the reader keeps moving. Keep
+      // its semantic anchor current only until the new prefix is committed;
+      // Virtuoso-generated scroll events after that point must not rewrite it.
+      if (transaction && Number(handlersRef.current.firstItemIndex || 0) === transaction.firstItemIndex) {
+        const anchor = capturePrependAnchor(node);
+        if (anchor) prependTransactionRef.current = { ...transaction, ...anchor };
+      }
       observeAnchor();
     };
     const touchStart = (event) => { touchY = event.touches[0]?.clientY ?? null; };
@@ -169,6 +244,7 @@ export function VirtualTimelineAdapter({ listKey, rows, viewport, itemKey, rende
   useEffect(() => () => {
     cleanupRef.current();
     cancelAnimationFrame(anchorFrameRef.current);
+    prependTransactionRef.current = null;
   }, []);
 
   // Capture the renderer's measured ranges before a channel Surface leaves.

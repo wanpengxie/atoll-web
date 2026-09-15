@@ -17,9 +17,10 @@ describe('per-channel view sessions', () => {
       scope: 'all',
       actorFilter: ['agent-a', 'agent-b'],
       foldOverrides: [['turn-1', true]],
+      foldDefaults: [],
       viewportSnapshot: null,
     });
-    expect(sessions.read('b')).toEqual({ mode: 'following', anchor: null, unseenTail: 0, scope: 'mine', actorFilter: [], foldOverrides: [], viewportSnapshot: null });
+    expect(sessions.read('b')).toEqual({ mode: 'following', anchor: null, unseenTail: 0, scope: 'mine', actorFilter: [], foldOverrides: [], foldDefaults: [], viewportSnapshot: null });
   });
 
   it('merges semantic reading updates without becoming a second route store', () => {
@@ -34,6 +35,7 @@ describe('per-channel view sessions', () => {
       scope: 'all',
       actorFilter: [],
       foldOverrides: [],
+      foldDefaults: [],
       viewportSnapshot: null,
     });
   });

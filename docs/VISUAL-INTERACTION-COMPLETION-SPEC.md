@@ -34,9 +34,9 @@ Atoll 与普通 IM 的区别是消息行会持续生长：agent progress、工�
 
 只有 `VirtualTimelineAdapter` 可以调用虚拟列表滚动 API。产品组件和 viewport 状态机不读写 `scrollTop`。原生滚动事件只能被解释为用户意图，不能触发反向物理纠正。
 
-### V2 一次变化只有一次补偿
+### V2 一次变化只有一个原子事务
 
-- prepend 只由 Virtuoso 的 `firstItemIndex` 补偿。
+- prepend 以 Virtuoso 的 `firstItemIndex` 改变虚拟坐标，并由 Adapter 在同一个 layout phase 对一个语义 row 消除冷测量残差；提交、真实测量和这一次最终校准都发生在浏览器 paint 之前。它不是 Controller 发起的第二轮恢复，也不得形成循环。
 - 已经展示的 row 不得因随后补齐了它的前驱而改形：身份头一经展示即保持稳定；日期分界归属于新 prepend 的较早 row，而不是回头删改旧窗口头。
 - 已经作为根展示的 request 不得在父 request 随历史到达后搬进父 thread；分页只允许增加前缀，不允许 remove + reparent 既有 row。
 - 回到最新只执行一次 `scrollToIndex(LAST)`。
@@ -45,8 +45,9 @@ Atoll 与普通 IM 的区别是消息行会持续生长：agent progress、工�
 - 异构消息不得套用一个全局猜测行高后直接展示。冷挂载先用真实 row 完成 probe；后续 ResizeObserver 测量在同一帧提交，不把“估算一帧、纠正一帧”的中间态暴露给用户。
 - 数据 runway 与 DOM runway 是两个契约：Scheduler 维持可用历史，adapter 按实际 viewport 与滚动速度在上滑方向维持 3–6 个视口的已物化 row，并分块回收。滚动不得先回收旧 DOM、再等待富内容挂载而露出背景。
 - live publish 只重绘 `contentRevision` 或局部 UI revision 变化的 presentation row；不得因为父级生成了新的 render closure 就重绘整个已物化窗口。
+- `latest` 只决定正文首次进入阅读会话时的默认展开形态。新消息到达后，原末尾长文不得因失去 `latest` 身份而自动收起；其稳定默认值随 ViewSession 保留，直到用户显式展开或收起。
 
-禁止同步 + microtask + rAF 多次钉底，禁止逐帧读取 DOM 再修正 `scrollTop`。
+禁止同步 + microtask + rAF 多次钉底，禁止 paint 后逐帧读取 DOM 再修正 `scrollTop`。
 跨越虚拟窗口的语义导航使用一次原子定位，不播放经过大量回收行的长距离 smooth scroll。
 
 ### V3 用户输入拥有最高优先级
@@ -81,6 +82,7 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 - Composer、等待队列也不得测量自身后回写 Conversation 的 margin、padding、viewport 高度或滚动位置。
 - Conversation 的消息 viewport 到 Shell 规定的固定底线为止；底线以下是恒定的 Composer 保留带。最后一条消息在 viewport 内完整可见、可点击，列表不能继续滚入 Composer 背后。
 - Composer 保留带是 Shell 的静态几何合同，不从 Composer 实际高度反推，也不随连接、发送、等待数量、折叠状态或文案变化。
+- 消息 viewport 的固定底线比 Composer 基础高度额外高出 `32px`，作为最后一条消息的阅读与点击间距；该间距属于 Shell，不从悬浮栈测量。
 - Composer 底边固定。编辑器内容可以在自身上限内向上生长，但不得挪动 Conversation，也不得触发联动位移动画。
 - 连接、排队、发送失败等状态使用 Composer 内恒定高度的 state rail；状态切换只替换 rail 内容，不改变 Composer 外框位置或高度。
 - Composer 与等待队列同属一个自下而上的悬浮栈。回复条、附件或编辑器内容使 Composer 自然向上生长时，等待队列由正常 CSS 布局始终贴住 Composer 顶边；不通过测量、CSS 变量或固定 `bottom` 猜位置。
@@ -139,7 +141,7 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 | following | 用户向上输入 | 立即停止程序跟随 | browsing |
 | browsing | live append | 屏幕不动，累计“新动态” | browsing |
 | browsing | row resize / 展开收起 | 由 Virtuoso 重测，不发自定义滚动 | browsing |
-| browsing | prepend | `firstItemIndex` 补偿一次 | browsing |
+| browsing | prepend | Adapter 在 paint 前完成一次语义锚点事务 | browsing |
 | browsing | 带向下意图到达真实尾部 | 清空“新动态”并标记已读 | following |
 | browsing | 收起内容使物理底部进入视口 | 屏幕不被继续钉底 | browsing |
 | 任意 | 点击“回到最新” | 一次定位 LAST | following |
@@ -168,15 +170,16 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 
 - [x] 删除 viewport 内全部直接 `scrollTop` 写入和逐帧锚点修正。
 - [x] 删除 `ViewportLayoutContext` 以及正文组件的局部布局事务。
-- [x] prepend 只保留 `firstItemIndex`；尾随只保留 Virtuoso `followOutput`。
+- [x] prepend 由 `firstItemIndex` 与 Adapter 的一次 paint 前语义锚点提交共同闭合；尾随只保留 Virtuoso `followOutput`。
 - [x] range/start/top 观察只进入同一个合并控制器，不各自创建加载流程。
 - [x] scope/filter 进入 adapter identity；编辑沿用当前 identity 和阅读位置。
 - [x] “新动态”按新 presentation 内容计算，不把 prepend 算进去。
 - [x] Composer 与等待队列改为固定悬浮层；删除两套高度 ResizeObserver、CSS 变量回写和联动 FLIP 动画。
-- [x] Composer 状态收敛到恒定高度 rail；Shell 为 Conversation 与 Composer 划定恒定底部边界，不使用列表 Footer 假造尾部留白，也不随外围状态重排。
+- [x] Composer 状态收敛到恒定高度 rail；Shell 为 Conversation 与 Composer 划定恒定底部边界，并在 Composer 基础高度之上保留固定 `32px` 阅读间距；不使用列表 Footer 假造尾部留白，也不随外围状态重排。
 - [x] 历史分页投影单调：既有根 request 不因较早父 request 到达而重挂。
 - [x] 图片和 Mermaid 使用首帧稳定 media frame；异步完成不改变 row 外部几何。
 - [x] ViewSession 仅在 browsing + 语义 anchor + geometry key 完全一致时复用 renderer measurement snapshot；following 清除 snapshot 并恢复最新。
+- [x] 末尾长文的初始展开形态进入 ViewSession；live 到达不再通过 `latest` 改写既有 row 高度。
 - [x] DOM materialization runway 按 viewport 与滚动速度扩展，不使用固定设备阈值。
 - [x] 清理嵌套纵向滚动的手势陷阱。
 - [x] 移动端 Files/Preview 改成单 Surface 全屏拓扑。
@@ -192,7 +195,7 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 | 总设计项 | 本轮结论 | 实现边界 |
 |---|---|---|
 | P0-1 Sync Session | 后续专项已完成 | 视觉专项未改该边界；完成实现与不变量见 `SYNC-DATA-ARCHITECTURE.md` |
-| P0-2 Atomic Viewport | 完成 | `ConversationViewport` 只持语义；`VirtualTimelineAdapter` 独占物理滚动；prepend 只有 `firstItemIndex` |
+| P0-2 Atomic Viewport | 完成 | `ConversationViewport` 只持语义；`VirtualTimelineAdapter` 独占物理滚动；prepend 在 paint 前完成一次语义锚点事务 |
 | P0-3 Content Height | 消息区完成 | 删除消息正文的局部 layout port；异步 media 首帧定框；正文 resize 只有 Virtuoso 一套测量；Composer/等待区维持既有合同 |
 | P0-4 Declarative History Demand | 明确后置 | 当前仍是有限 `open()` operation，不冒充持续 demand |
 | P0-5 Local-first Submission | 明确后置 | 本轮不把现有 pending/outbox 宣称为 IndexedDB local echo |
@@ -202,7 +205,7 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 
 ### 旧视觉设计中被纠正的两项
 
-1. 第一版要求 prepend 后再捕获并恢复一次 anchor。当前实现改为只使用 Virtuoso 的 `firstItemIndex`；额外恢复会成为第二次补偿。
+1. 第一版要求 prepend 后再启动一轮异步 anchor 恢复，这会成为第二次可见补偿。当前实现是在旧后缀尚可见时捕获语义 anchor，并在同一次 React layout commit 中对 `firstItemIndex` 的冷测量残差校准一次；用户看不到中间帧，也没有后续恢复循环。
 2. 第一版要求每个内容高度变化发 `layoutChange` 给 Controller。当前实现改为内容只改变自身 DOM，Virtuoso keyed ResizeObserver 统一重测；逐组件 layout transaction 会制造第二份几何真相。
 
 这两项属于架构纠错，不是遗漏。语义恢复只用于频道重挂或明确导航，不用于普通 prepend/resize。

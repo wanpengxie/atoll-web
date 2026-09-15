@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
@@ -653,6 +653,15 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
+function foldIDsForPresentationRow(row) {
+  const entry = row?.body;
+  if (entry?.kind === 'turn' && entry.turn?.requestId) {
+    return [`${entry.turn.requestId}:request`, `${entry.turn.requestId}:response`];
+  }
+  if (entry?.kind === 'standalone' && entry.envelope?.id) return [`${entry.envelope.id}:message`];
+  return [];
+}
+
 export function Timeline({ state, history = {}, composer = null, viewSessions, navigationTarget = null, onNavigationTargetConsumed, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
   const initialViewSessionRef = useRef(null);
   if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
@@ -663,8 +672,13 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
   // 天然重置，恒不需要自己清。
   const [actorFilter, setActorFilter] = useState(() => new Set(initialViewSessionRef.current.actorFilter || []));
   // 读者手动展开 / 收起过的正文，按正文 id 记（true 展开、false 收起）。没记的按
-  // 默认规则：超阈值即折，最新一轮和正在查看过程的那轮例外。按频道重挂自然重置。
+  // 默认规则：超阈值即折，最新一轮和正在查看过程的那轮例外；手动选择跨频道重挂保留。
   const [foldOverrides, setFoldOverrides] = useState(() => new Map(initialViewSessionRef.current.foldOverrides || []));
+  // “最新一轮”只决定正文第一次进入当前阅读会话时的默认形态。后续 live
+  // 不能因为它不再是最后一条就把已经展示的长文自动折起；否则消息事实会
+  // 直接改写屏幕几何。自动保留与手动选择分开，手动选择恒优先。
+  const foldDefaultsRef = useRef(new Set(initialViewSessionRef.current.foldDefaults || []));
+  const previousTailRef = useRef({ listKey: '', rowID: '', foldIDs: [] });
   const toggleFold = useCallback((id, expanded) => setFoldOverrides((current) => new Map(current).set(id, expanded)), []);
   const [editing, setEditing] = useState(null);
   const editSessionSerialRef = useRef(0);
@@ -716,8 +730,22 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
   }, [actorFilterApplies, actorFilter, filterableAgents]);
   useEffect(() => { onFocusAgentChange?.(focusAgentId); }, [focusAgentId, onFocusAgentChange]);
 	const withNarration = projection.presentationRows;
+  const tailRow = withNarration.at(-1);
+  const tailRowID = tailRow ? presentationEntryId(tailRow) : '';
+  const previousTail = previousTailRef.current;
+  const nextFoldDefaults = new Set(foldDefaultsRef.current);
+  if (previousTail.listKey === messageListKey && previousTail.rowID && previousTail.rowID !== tailRowID) {
+    for (const id of previousTail.foldIDs) nextFoldDefaults.add(id);
+  }
+  const nextTail = { listKey: messageListKey, rowID: tailRowID, foldIDs: foldIDsForPresentationRow(tailRow) };
+  useLayoutEffect(() => {
+    foldDefaultsRef.current = nextFoldDefaults;
+    previousTailRef.current = nextTail;
+  }, [messageListKey, tailRowID]);
+  const effectiveFoldOverrides = new Map([...nextFoldDefaults].map((id) => [id, true]));
+  for (const [id, expanded] of foldOverrides) effectiveFoldOverrides.set(id, expanded);
   const localGeometryKey = useMemo(() => JSON.stringify({
-    folds: [...foldOverrides].map(([id, expanded]) => [id, Boolean(expanded)]).sort(([left], [right]) => left.localeCompare(right)),
+    folds: [...effectiveFoldOverrides].map(([id, expanded]) => [id, Boolean(expanded)]).sort(([left], [right]) => left.localeCompare(right)),
     detail: turnDetail?.selected?.requestId || '',
     editing: editing ? [editing.targetId, editing.phase, editing.location] : null,
     resumePin,
@@ -728,7 +756,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     capabilities: [...capabilityIndex.entries()]
       .map(([id, value]) => [id, value?.describe?.revision || value?.describe?.version || ''])
       .sort(([left], [right]) => left.localeCompare(right)),
-  }), [foldOverrides, turnDetail?.selected?.requestId, editing?.targetId, editing?.phase, editing?.location, resumePin, access, roster, approvalStates, controlStates, capabilityIndex]);
+  }), [tailRowID, foldOverrides, turnDetail?.selected?.requestId, editing?.targetId, editing?.phase, editing?.location, resumePin, access, roster, approvalStates, controlStates, capabilityIndex]);
   const viewportGeometryKey = useMemo(() => presentationGeometryKey(
     withNarration,
     localGeometryKey,
@@ -840,7 +868,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
         .join(',');
       return JSON.stringify([
         namesRevision, access, selfId, isLatest,
-        foldOverrides.get(`${requestId}:request`), foldOverrides.get(`${requestId}:response`),
+        effectiveFoldOverrides.get(`${requestId}:request`), effectiveFoldOverrides.get(`${requestId}:response`),
         turnDetail?.selected?.requestId === requestId,
         editing?.targetId === requestId ? [editing.phase, editing.location, editing.text] : Boolean(editing),
         resumePin === requestId,
@@ -855,13 +883,13 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     if (entry?.kind === 'standalone') {
       return JSON.stringify([
         namesRevision, selfId, isLatest,
-        foldOverrides.get(`${entry.envelope.id}:message`),
+        effectiveFoldOverrides.get(`${entry.envelope.id}:message`),
       ]);
     }
     return `${namesRevision}|${row.contentRevision}|${isLatest ? 1 : 0}`;
   }, [
     access, approvalStates, capabilityIndex, controlStates, editing, firstItemIndex,
-    foldOverrides, frozenByActor, mergedCounts, namesRevision, preemptedSources,
+    tailRowID, foldOverrides, frozenByActor, mergedCounts, namesRevision, preemptedSources,
     resumePin, selfId, state.channelId, turnDetail?.selected?.requestId,
     withNarration.length,
   ]);
@@ -871,8 +899,9 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
       scope,
       actorFilter: [...actorFilter],
       foldOverrides: [...foldOverrides],
+      foldDefaults: [...foldDefaultsRef.current],
     });
-  }, [viewSessions, state.channelId, scope, actorFilter, foldOverrides]);
+  }, [viewSessions, state.channelId, scope, actorFilter, foldOverrides, tailRowID]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
   // presentationNow 只服务冻结期限。普通正文帧不会改变冻结事实；每帧都 setState
   // 会让一次 live publish 额外再渲染整棵 Timeline 一次。
@@ -1110,7 +1139,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const fold = { latest: itemIndex === withNarration.length - 1, overrides: foldOverrides, onToggle: toggleFold };
+            const fold = { latest: itemIndex === withNarration.length - 1, overrides: effectiveFoldOverrides, onToggle: toggleFold };
             const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onCreateTask: onCreateTask ? () => onCreateTask(source) : null, onReply };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
@@ -1126,7 +1155,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: itemIndex === withNarration.length - 1, overrides: foldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: itemIndex === withNarration.length - 1, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
           }
 		  return <div className="timeline-virtual-item">{content}{boundaryAfterTimestamp > 0 && <div className="timeline-day"><span>{dayLabel(boundaryAfterTimestamp)}</span></div>}</div>;
 		  }}

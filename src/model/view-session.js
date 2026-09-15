@@ -9,6 +9,7 @@ function defaultConversation() {
     scope: TIMELINE_SCOPE.mine,
     actorFilter: [],
     foldOverrides: [],
+    foldDefaults: [],
     viewportSnapshot: null,
   };
 }
@@ -46,6 +47,7 @@ function copyConversation(value = {}) {
     foldOverrides: [...(value.foldOverrides || [])]
       .filter((entry) => Array.isArray(entry) && entry.length === 2 && entry[0])
       .map(([id, expanded]) => [id, Boolean(expanded)]),
+    foldDefaults: [...new Set(value.foldDefaults || [])].filter(Boolean).map(String),
     // Physical measurements are subordinate to semantic reading intent. A
     // following session has exactly one valid destination—the live tail—so a
     // cached scrollTop/range must never override it. Snapshots are useful only

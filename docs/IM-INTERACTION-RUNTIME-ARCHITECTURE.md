@@ -105,7 +105,7 @@ historyReady
 → 闭合
 ```
 
-对于 Virtuoso，prepend 的原子事务由稳定 row identity 与 `firstItemIndex` 完成；普通 row resize 由其 keyed ResizeObserver 完成。上层不得在它完成后再做一轮像素恢复。
+对于 Virtuoso，prepend 的原子事务由稳定 row identity、`firstItemIndex` 与 Adapter 内一次 paint 前语义锚点提交完成；普通 row resize 由其 keyed ResizeObserver 完成。上层不得在它完成后再做一轮像素恢复。
 
 稳定 identity 还不够，旧 row 的几何也必须对 prepend 单调。分页窗口头最初不知道自己的前驱；更早历史到达后，投影不得据此从旧 row 删除日期分界、头像或作者头。连续分组一经展示即冻结，日期分界由较早一侧的新增 row 持有，保证 prepend 只增加前缀、不重塑已经在屏幕上的后缀。
 

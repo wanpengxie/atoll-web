@@ -78,7 +78,7 @@
   .mobile-shell .workspace > .channel-private-empty { grid-row: 3; grid-column: 1 / -1; }
   .mobile-shell .dynamic-message-pane > .timeline,
   .mobile-shell .dynamic-message-pane > .channel-private-empty { grid-row: 1; grid-column: 1; }
-  .mobile-shell .dynamic-message-pane { --conversation-composer-lane: 128px; }
+  .mobile-shell .dynamic-message-pane { --conversation-composer-height: 128px; }
   .mobile-shell .send-button, .mobile-shell .task-create-modal > header button, .mobile-shell .task-create-modal footer button,
   .mobile-shell .global-search > header button, .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
   .mobile-shell .task-create-modal > header button, .mobile-shell .global-search > header button { min-width: 44px; }

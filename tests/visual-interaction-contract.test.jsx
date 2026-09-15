@@ -5,6 +5,7 @@ import React from 'react';
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useConversationViewport, VIRTUAL_INDEX_BASE } from '../src/ui/timeline/useConversationViewport.js';
+import { capturePrependAnchor, restorePrependAnchor } from '../src/ui/timeline/VirtualTimelineAdapter.jsx';
 
 const repoRoot = process.cwd();
 const source = (relative) => readFileSync(resolve(repoRoot, relative), 'utf8');
@@ -53,13 +54,35 @@ describe('visual interaction architecture', () => {
     expect(timeline).not.toMatch(/composer-overlay-height|agent-wait-dock-height|is-composer-layout-transitioning/);
     expect(timeline).toMatch(/\.agent-wait-dock\s*\{[^}]*position:\s*relative/s);
     expect(timeline).toMatch(/\.timeline\s*\{[^}]*margin-bottom:\s*0/s);
-    expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*--conversation-composer-lane:\s*112px/s);
+    expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*--conversation-composer-height:\s*112px/s);
+    expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*--conversation-reading-gap:\s*32px/s);
+    expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*--conversation-composer-lane:\s*calc\(var\(--conversation-composer-height\)\s*\+\s*var\(--conversation-reading-gap\)\)/s);
     expect(shell).toMatch(/\.dynamic-message-pane\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s*var\(--conversation-composer-lane\)/s);
     expect(shell).toMatch(/\.conversation-bottom-overlay\s*\{[^}]*position:\s*absolute[^}]*flex-direction:\s*column/s);
     expect(adapter).not.toMatch(/TimelineFooter|timeline-overlay-clearance/);
     expect(timeline).not.toContain('timeline-overlay-clearance');
     expect(composerStyles).toMatch(/\.composer-wrap\s*\{[^}]*position:\s*relative/s);
     expect(composerStyles).toMatch(/\.composer-state-rail\s*\{[^}]*height:\s*18px/s);
+  });
+
+  it('closes a cold prepend against one semantic row before paint', () => {
+    const scroller = document.createElement('div');
+    const older = document.createElement('div');
+    const anchorRow = document.createElement('div');
+    older.dataset.presentationRowId = 'older';
+    anchorRow.dataset.presentationRowId = 'anchor';
+    scroller.append(older, anchorRow);
+    let anchorTop = 84;
+    scroller.scrollTop = 300;
+    scroller.getBoundingClientRect = () => ({ top: 40, bottom: 640 });
+    older.getBoundingClientRect = () => ({ top: -40, bottom: 20 });
+    anchorRow.getBoundingClientRect = () => ({ top: anchorTop, bottom: anchorTop + 96 });
+
+    const anchor = capturePrependAnchor(scroller);
+    expect(anchor).toEqual({ rowID: 'anchor', offset: 44 });
+    anchorTop = 137.25;
+    expect(restorePrependAnchor(scroller, anchor)).toBe(53.25);
+    expect(scroller.scrollTop).toBe(353.25);
   });
 
   it('gives asynchronously decoded rich media stable first-paint geometry', () => {

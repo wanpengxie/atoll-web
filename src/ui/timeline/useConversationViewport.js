@@ -130,10 +130,13 @@ export function useConversationViewport({
         });
         if (operationState === 'started') transitionMode(VIEWPORT_EVENT.demandStarted);
         else if (operationState === HISTORY_OPERATION.satisfied) {
-          // firstItemIndex is the sole prepend compensation.
+          // firstItemIndex changes the virtual coordinate system. The adapter
+          // closes the same transaction before paint against a semantic row,
+          // removing cold-measurement residual without a correction loop.
           transitionMode(VIEWPORT_EVENT.demandSatisfied);
           transitionMode(VIEWPORT_EVENT.anchorRestored);
         } else if ([HISTORY_OPERATION.exhausted, HISTORY_OPERATION.failed, HISTORY_OPERATION.cancelled].includes(operationState)) {
+          adapterRef.current?.cancelPrepend?.();
           transitionMode(VIEWPORT_EVENT.demandClosed, { followsTail: followsTailRef.current });
         }
       },
@@ -296,6 +299,9 @@ export function useConversationViewport({
     const exhausted = current.status.attached && !current.status.loading
       && !current.status.hasOlder && Number(current.status.buffered || 0) === 0;
     if (exhausted) return;
+    if (!controllerState.active && !controllerState.consumed && !controllerState.awaitingUserRearm) {
+      adapterRef.current?.beginPrepend?.();
+    }
     const ownedView = current.viewKey;
     void controller.enterTop({
       operationId: `${current.channelId}:${++operationSerialRef.current}`,

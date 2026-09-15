@@ -105,6 +105,20 @@ describe('Timeline 正文自动折叠', () => {
     expect(latest.querySelector('.message-fold-toggle').textContent).toContain('收起');
   });
 
+  it('live 到达后不把刚刚展示的末尾长文自动折起', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '第一问') });
+    apply(state, { channel_id: 'c0', seq: 2, envelope: done('r1-done', 'r1', LONG) });
+    const props = { roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex };
+    const view = render(<Timeline {...props} state={state} />);
+    expect(document.querySelector('[data-entry-id="r1"] .message-fold.is-folded')).toBeNull();
+
+    apply(state, { channel_id: 'c0', seq: 3, envelope: request('r2', '第二问') });
+    apply(state, { channel_id: 'c0', seq: 4, envelope: done('r2-done', 'r2', SHORT) });
+    view.rerender(<Timeline {...props} state={state} />);
+    expect(document.querySelector('[data-entry-id="r1"] .message-fold.is-folded')).toBeNull();
+  });
+
   it('手动展开的正文在重渲后仍是展开的', () => {
     const state = createChannelState('c0');
     apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '第一问') });
