@@ -221,9 +221,9 @@ function mockDescribe(actorId, { taskCapability = false } = {}) {
       } } : {}),
       'agent.steer': { description: '调整当前回合方向', error_codes: ['cas_mismatch'] },
       'agent.interrupt': { description: '打断当前回合' },
-      'agent.hold': { description: '暂停等待区' },
-      'agent.unhold': { description: '继续等待区' },
-      'agent.replace': { description: '修改排队任务' },
+      'agent.hold': { description: '暂停等待区', input_schema: { type: 'object', properties: { target: { type: 'string' }, duration_ms: { type: 'integer' } }, additionalProperties: false } },
+      'agent.unhold': { description: '继续等待区', input_schema: { type: 'object', properties: { expected_hold_id: { type: 'string', minLength: 1 } }, additionalProperties: false } },
+      'agent.replace': { description: '修改排队任务', input_schema: { type: 'object', properties: { target: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' }, expected_hold_id: { type: 'string', minLength: 1 } }, additionalProperties: false } },
       'agent.queue': { description: '排队一个新任务' },
       'agent.compact': { description: '压缩上下文' },
       'agent.new': { description: '新建对话' },
@@ -1269,7 +1269,10 @@ export function createMockServer({
           const unknownKeys = Object.keys(holdArgs).filter((key) => !['target', 'duration_ms'].includes(key));
           const duration = holdArgs.duration_ms;
           if (unknownKeys.length || (duration != null && (!Number.isInteger(duration) || duration < 1 || duration > 1_800_000))) { fail('invalid_args', 'hold accepts only target and duration_ms (1..1800000)'); return; }
-        } else if (Object.keys(holdArgs).length) { fail('invalid_args', 'unhold takes no arguments'); return; }
+        } else {
+          const unknownKeys = Object.keys(holdArgs).filter((key) => key !== 'expected_hold_id');
+          if (unknownKeys.length || ('expected_hold_id' in holdArgs && !String(holdArgs.expected_hold_id || '').trim())) { fail('invalid_args', 'unhold accepts only a non-empty expected_hold_id'); return; }
+        }
         const holdTarget = payload.msg_type === 'agent.hold' ? String(holdArgs.target || '') : '';
         const targetRequest = holdTarget ? history.find((row) => row.envelope.id === holdTarget)?.envelope : null;
         if (holdTarget && targetRequest && targetRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'hold target belongs to another sender'); return; }
@@ -1277,28 +1280,33 @@ export function createMockServer({
           const previous = agentHolds.get(holdKey);
           // hold 恢复前任冻结（协议 §4.4.16）：前任是停止冻结则记标记，后写覆盖继承。
           const restoreInterrupt = previous?.source === 'interrupt' || previous?.restoreInterrupt === true;
+          const restoreInterruptBy = previous?.source === 'interrupt' ? previous.holdId : previous?.restoreInterruptBy;
           const effectiveDuration = holdArgs.duration_ms ?? 1_800_000;
-          agentHolds.set(holdKey, { holdId: messageId, source: 'hold', targetId: holdTarget, restoreInterrupt, until: domain.now() + effectiveDuration });
+          agentHolds.set(holdKey, { holdId: messageId, source: 'hold', targetId: holdTarget, restoreInterrupt, restoreInterruptBy, until: domain.now() + effectiveDuration });
           // 到期与 unhold 同语义：恢复前任停止冻结，或清锁续跑。
           later(effectiveDuration, () => {
             if (agentHolds.get(holdKey)?.holdId !== messageId) return;
-            if (restoreInterrupt) { agentHolds.set(holdKey, { holdId: messageId, source: 'interrupt' }); return; }
+            if (restoreInterrupt) { agentHolds.set(holdKey, { holdId: restoreInterruptBy, source: 'interrupt' }); return; }
             agentHolds.delete(holdKey);
             resumeQueueHead(10);
           });
         } else {
           const released = agentHolds.get(holdKey);
+          if (released?.source !== 'hold') {
+            append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', released: false } }));
+            return;
+          }
+          if (holdArgs.expected_hold_id && holdArgs.expected_hold_id !== released.holdId) { fail('cas_mismatch', 'agent hold was superseded by a newer control'); return; }
           agentHolds.delete(holdKey);
           if (released?.restoreInterrupt) {
             // 管理动作收尾恒不惊动停止状态：恢复 interrupt 冻结、恒不续跑。
-            agentHolds.set(holdKey, { holdId: released.holdId, source: 'interrupt' });
+            agentHolds.set(holdKey, { holdId: released.restoreInterruptBy, source: 'interrupt' });
           }
+          append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', released: true, hold_id: released.holdId } }));
+          if (agentHolds.get(holdKey)?.source !== 'interrupt') resumeQueueHead(30);
+          return;
         }
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed' } }));
-        if (payload.msg_type === 'agent.unhold' && agentHolds.get(holdKey)?.source !== 'interrupt') {
-          // unhold 无目标参数；真正的续跑对象由 Resumed/FIFO 队首决定。
-          resumeQueueHead(30);
-        }
         // hold 带 target 且目标正在处理：打断当前 turn，目标消息回到队列头（Resumed）。
         if (targetRequest) {
           const targetPosition = [...history].reverse().map((value) => value.envelope).find((value) => value.kind === 'response' && value.parent_id === holdTarget)?.payload?.status;
@@ -1314,6 +1322,9 @@ export function createMockServer({
         // 协议校验：目标存在且在队列中、归属发起人、old_text 与当前缓冲内容 CAS。
         const replaceTarget = String(payload.payload?.target || '');
         const replaceRequest = history.find((row) => row.envelope.id === replaceTarget)?.envelope;
+        const expectedHold = String(payload.payload?.expected_hold_id || '');
+        const currentHold = agentHolds.get(`${channelId}:${respondingAgent.id}`);
+        if (expectedHold && (currentHold?.source !== 'hold' || currentHold.holdId !== expectedHold)) { fail('cas_mismatch', 'agent hold was superseded before replacement'); return; }
         if (!replaceRequest) { fail('cas_mismatch', 'replace target not found'); return; }
         if (replaceRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'replace target belongs to another sender'); return; }
         const replacePosition = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === replaceTarget)?.payload?.status;

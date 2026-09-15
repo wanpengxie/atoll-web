@@ -63,6 +63,42 @@ test('F7 deep history starts at the tail, reveals upward automatically, and keep
   expect(cachedRows).toBeLessThanOrEqual(5_000);
 });
 
+test('F7 prepending history keeps the reader anchor visually stable', async ({ page, request }) => {
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1713 } });
+  expect(reset.ok()).toBe(true);
+  await login(page);
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+
+  const viewport = page.locator('.timeline-message-list');
+  const samplesPromise = page.evaluate(async () => {
+    const node = document.querySelector('.timeline-message-list');
+    const samples = [];
+    for (let frame = 0; frame < 90; frame += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const viewportRect = node.getBoundingClientRect();
+      const visible = [...node.querySelectorAll('.timeline-entry')]
+        .map((entry) => ({ entry, rect: entry.getBoundingClientRect() }))
+        .filter(({ rect }) => rect.bottom > viewportRect.top && rect.top < viewportRect.bottom)
+        .sort((left, right) => left.rect.top - right.rect.top)[0];
+      samples.push({
+        frame,
+        top: Math.round(node.scrollTop),
+        height: Math.round(node.scrollHeight),
+        anchorId: visible?.entry.dataset.entryId || '',
+        anchorTop: visible ? Math.round(visible.rect.top - viewportRect.top) : null,
+        entries: document.querySelectorAll('.timeline-entry').length,
+      });
+    }
+    return samples;
+  });
+  await viewport.hover();
+  await page.mouse.wheel(0, -100_000);
+  const samples = await samplesPromise;
+  const heights = samples.map((sample) => sample.height);
+  expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(1_000);
+  expect(samples.every((sample) => sample.anchorId), JSON.stringify(samples)).toBe(true);
+});
+
 test('F7 mobile keeps realtime delivery while the reader is browsing history', async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1708 } });

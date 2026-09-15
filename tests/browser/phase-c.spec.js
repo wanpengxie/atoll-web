@@ -60,7 +60,16 @@ function capability(details, type) {
 
 async function sendTask(page, text) {
   const contextClose = page.getByRole('button', { name: '关闭上下文' });
-  if (await contextClose.isVisible().catch(() => false)) await contextClose.click();
+  for (let depth = 0; depth < 4 && await contextClose.isVisible().catch(() => false); depth += 1) {
+    await contextClose.click();
+    await page.waitForTimeout(50);
+  }
+  await expect(contextClose).toBeHidden();
+  const chooseAgent = page.getByRole('button', { name: '选择 Agent' });
+  if (await chooseAgent.isVisible().catch(() => false)) {
+    await chooseAgent.click();
+    await page.getByRole('menu', { name: '选择目标 Agent' }).getByRole('menuitem', { name: 'steward' }).click();
+  }
   await page.getByLabel('消息').fill(text);
   await page.getByRole('button', { name: /发送/ }).click();
   const turn = page.locator('.turn-card').filter({ hasText: text });
@@ -138,6 +147,28 @@ test('C-BR-04 interrupt 冻结只在 Agent 气泡呈现，恒无继续按钮', a
   await page.getByLabel('消息').fill('直接发消息恢复');
   await page.getByRole('button', { name: /发送/ }).click();
   await expect(page.getByRole('region', { name: '等待区' })).not.toContainText('已暂停');
+});
+
+test('C-BR-04a 编辑等待消息时停止当前任务会退出编辑，下一条消息仍可发送', async ({ page, request }) => {
+  await reset(request, 'long-running', 140);
+  await login(page);
+  await openSteward(page);
+  const running = await sendTask(page, '编辑冲突中的当前任务');
+  await page.getByLabel('消息').fill('准备编辑的等待消息');
+  await page.getByRole('button', { name: /发送/ }).click();
+  const waiting = page.getByRole('region', { name: '等待区' });
+  await expect(waiting).toContainText('准备编辑的等待消息');
+  await waiting.getByRole('button', { name: '编辑' }).click();
+  await expect(page.getByRole('button', { name: '取消编辑' })).toBeVisible();
+
+  await running.getByRole('button', { name: '停止' }).click();
+  await expect(running.getByText('✗ 已停止 · 发消息即继续', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '取消编辑' })).toHaveCount(0);
+  await expect(page.getByRole('alert')).toContainText('编辑已被另一项控制终止');
+
+  await page.getByLabel('消息').fill('停止后仍能正常发送');
+  await page.getByRole('button', { name: /发送/ }).click();
+  await expect(page.getByText('停止后仍能正常发送', { exact: true })).toBeVisible();
 });
 
 test('C-BR-05/07 等待行用 target 形插入当前 turn', async ({ page, request }) => {

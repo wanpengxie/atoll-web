@@ -87,6 +87,9 @@ function requestTimestamp(request) {
 }
 
 function freezeDeadline(turn) {
+  // An interrupt is a stopped state, not a timed editing lease. The backend
+  // keeps it until a content action explicitly resumes the queue.
+  if (turn?.request?.type === TYPES.agentInterrupt) return Number.POSITIVE_INFINITY;
   const requested = argsOf(turn?.request).duration_ms;
   const duration = Number.isSafeInteger(requested) && requested >= 1 && requested <= DEFAULT_HOLD_DURATION_MS
     ? requested
@@ -99,23 +102,36 @@ function reduceFrozenOperations(operations, now) {
   operations.sort((left, right) => left.seq - right.seq);
   for (const operation of operations) {
     if (operation.kind === 'freeze') {
+      // A hold temporarily overlays a prior interrupt. Replacing one hold with
+      // another keeps that same restore point; an interrupt arriving later is
+      // stronger and discards the editing lease entirely.
+      const restore = operation.turn.request.type === TYPES.agentHold
+        ? (frozen?.source === TYPES.agentInterrupt ? frozen : frozen?._restore || null)
+        : null;
       frozen = {
         held_by: operation.turn.requestId,
         until: freezeDeadline(operation.turn),
         source: operation.turn.request.type,
         target_id: operation.turn.request.parent_id || '',
+        _restore: restore,
         _seq: operation.turn.requestSeq,
       };
-    } else if (operation.kind === 'clear' || operation.kind === 'advanced') {
+    } else if (operation.kind === 'release') {
+      if (frozen?.source === TYPES.agentHold) frozen = frozen._restore || null;
+    } else if (operation.kind === 'advanced') {
       frozen = null;
     } else if (operation.kind === 'new-content' && frozen && operation.seq > frozen._seq) {
       frozen = null;
     } else if (operation.kind === 'fire' && frozen && argsOf(operation.envelope)?.hold_id === frozen.held_by) {
-      frozen = null;
+      frozen = frozen._restore || null;
     }
   }
+  // The local deadline is enough to stop presenting an expired hold while its
+  // event is in flight, but expiry must reveal a prior interrupt rather than
+  // pretending the Agent resumed.
+  if (frozen?.source === TYPES.agentHold && !(Number(now) < frozen.until)) frozen = frozen._restore || null;
   if (!frozen || !(Number(now) < frozen.until)) return null;
-  const { _seq: _ignored, ...visible } = frozen;
+  const { _seq: _ignored, _restore: _ignoredRestore, ...visible } = frozen;
   return visible;
 }
 
@@ -144,12 +160,15 @@ export function agentFrozenStates(state, actorIds = null, now = Date.now()) {
       operations.push({ seq: turn.requestSeq, kind: 'freeze', turn });
       holdOwner.set(turn.requestId, actorId);
     } else if (terminalCompleted(turn) && type === TYPES.agentUnhold) {
-      operations.push({ seq: turn.requestSeq, kind: 'clear' });
+      // New agents report whether a hold was actually released. Old ledger
+      // rows have no flag and retain their historical clear behavior.
+      if (terminalValue(turn, 'released') !== false) operations.push({ seq: turn.requestSeq, kind: 'release' });
     }
     if (CONTENT_TYPES.has(type)) {
       const enteredBuffer = (turn.provisional || []).some((item) => argsOf(item.envelope)?.status === 'queued' && argsOf(item.envelope)?.resumed !== true);
       const capacityFailure = argsOf(turn.terminal)?.status === 'failed' && argsOf(turn.terminal)?.error_code === 'base_capacity';
-      if (enteredBuffer || capacityFailure) operations.push({ seq: turn.requestSeq, kind: 'new-content' });
+      // replace is admitted in place without releasing the editing hold.
+      if (type !== TYPES.agentReplace && (enteredBuffer || capacityFailure)) operations.push({ seq: turn.requestSeq, kind: 'new-content' });
       for (const item of turn.provisional || []) {
         if (argsOf(item.envelope)?.status === 'processing') operations.push({ seq: item.seq, kind: 'advanced' });
       }

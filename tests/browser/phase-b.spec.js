@@ -116,7 +116,9 @@ test('B-BR-02a 刷新进入频道后固定在最新处，后台历史预取不�
     return rows;
   });
   expect(samples.every((row) => Math.abs(row.bottom - row.top) <= 2)).toBe(true);
-  expect(samples.every((row) => row.entries > 0)).toBe(true);
+  expect(samples.every((row) => row.entries > 0), JSON.stringify(samples)).toBe(true);
+  expect(new Set(samples.map((row) => row.height)).size, JSON.stringify(samples)).toBe(1);
+  expect(new Set(samples.map((row) => row.entries)).size, JSON.stringify(samples)).toBe(1);
 });
 
 test('B-BR-03 unavailable、partial OBS、权限撤销和退役分别收敛', async ({ page, request }) => {

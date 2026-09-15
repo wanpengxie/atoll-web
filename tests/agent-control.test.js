@@ -66,4 +66,44 @@ describe('agent control v7 presentation', () => {
     apply(state, { channel_id: 'c0', seq: 4, envelope: envelope('fire-current', 'event', 'agent.hold_expired', { hold_id: 'h2' }, { sender: { kind: 'agent', id: 'agent' }, audience: ['agent'] }) });
     expect(agentFrozenState(state, 'agent', 100)).toBeNull();
   });
+
+  it('34 restores an interrupt after an overlaid edit hold is released or expires', () => {
+    const released = stateOf([
+      envelope('stop', 'request', 'agent.interrupt', {}),
+      envelope('stop-d', 'response', 'agent.interrupt', { status: 'completed' }, { parent_id: 'stop' }),
+      envelope('hold', 'request', 'agent.hold', { duration_ms: 1000 }),
+      envelope('hold-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'hold' }),
+      envelope('release', 'request', 'agent.unhold', { expected_hold_id: 'hold' }),
+      envelope('release-d', 'response', 'agent.unhold', { status: 'completed', released: true, hold_id: 'hold' }, { parent_id: 'release' }),
+    ]);
+    expect(agentFrozenState(released, 'agent', 10)).toMatchObject({ held_by: 'stop', source: 'agent.interrupt' });
+
+    const expired = stateOf([
+      envelope('stop', 'request', 'agent.interrupt', {}),
+      envelope('stop-d', 'response', 'agent.interrupt', { status: 'completed' }, { parent_id: 'stop' }),
+      envelope('hold', 'request', 'agent.hold', { duration_ms: 1000 }),
+      envelope('hold-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'hold' }),
+    ]);
+    expect(agentFrozenState(expired, 'agent', 1001)).toMatchObject({ held_by: 'stop', source: 'agent.interrupt' });
+  });
+
+  it('35 keeps replace under its edit hold and ignores stale unhold after interrupt', () => {
+    const replacing = stateOf([
+      envelope('hold', 'request', 'agent.hold', { target: 'old' }),
+      envelope('hold-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'hold' }),
+      envelope('replacement', 'request', 'agent.replace', { target: 'old', old_text: 'old', new_text: 'new' }),
+      envelope('replacement-q', 'response', 'agent.replace', { status: 'queued', resumed: true }, { parent_id: 'replacement' }),
+    ]);
+    expect(agentFrozenState(replacing, 'agent', 10)).toMatchObject({ held_by: 'hold', source: 'agent.hold' });
+
+    const interrupted = stateOf([
+      envelope('hold', 'request', 'agent.hold', { target: 'old' }),
+      envelope('hold-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'hold' }),
+      envelope('stop', 'request', 'agent.interrupt', {}),
+      envelope('stop-d', 'response', 'agent.interrupt', { status: 'completed' }, { parent_id: 'stop' }),
+      envelope('stale-release', 'request', 'agent.unhold', { expected_hold_id: 'hold' }),
+      envelope('stale-release-d', 'response', 'agent.unhold', { status: 'completed', released: false }, { parent_id: 'stale-release' }),
+    ]);
+    expect(agentFrozenState(interrupted, 'agent', 31 * 60 * 1000)).toMatchObject({ held_by: 'stop', source: 'agent.interrupt' });
+  });
 });

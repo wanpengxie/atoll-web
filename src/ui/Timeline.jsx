@@ -36,6 +36,16 @@ const EMPTY_FROZEN_STATES = new Map();
 // ample room for repeated 32-row reveals even in six-figure histories.
 const VIRTUAL_INDEX_BASE = 1_000_000_000;
 
+// During a rolling frontend/backend upgrade, older actors reject unknown
+// fields. Use the lease CAS as soon as actor.describe advertises it; the UI
+// invalidation rules below remain the compatibility guard for older actors.
+function withExpectedHold(capabilityIndex, actorId, type, payload, holdId) {
+  const schema = capabilityIndex.get(actorId)?.describe?.types?.get(type)?.inputSchema;
+  return holdId && schema?.properties?.expected_hold_id
+    ? { ...payload, expected_hold_id: holdId }
+    : payload;
+}
+
 function TimelineVirtualList({ children }) {
   if (import.meta.env.MODE !== 'test') return children;
   return <VirtuosoMockContext.Provider value={{ viewportHeight: 720, itemHeight: 96 }}>{children}</VirtuosoMockContext.Provider>;
@@ -145,7 +155,7 @@ const WAIT_HEADER_HEIGHT = 0;
 const WAIT_ROW_HEIGHT = 32;
 const WAIT_MOBILE_ROW_HEIGHT = 32;
 
-function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, editing, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon }) {
+function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, frozenByActor, editing, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon }) {
   const [bulk, setBulk] = useState({ actorId: '', error: '' });
   const [collapsed, setCollapsed] = useState(false);
   const layerRef = useRef(null);
@@ -181,9 +191,10 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
     if (!cancellable.length) return;
     setBulk({ actorId: group.actorId, error: '' });
     let held = false;
+    let holdId = '';
     const failures = [];
     try {
-      const holdId = await onControl(cancellable[0], group.actorId, TYPES.agentHold, {});
+      holdId = await onControl(cancellable[0], group.actorId, TYPES.agentHold, {});
       if (!holdId) throw new Error('暂停等待区失败');
       held = true;
       for (const turn of cancellable) {
@@ -198,7 +209,7 @@ function WaitingLayer({ turns, state, names, selfId, access, frozenByActor, edit
     } finally {
       if (held) {
         try {
-          await onControl(cancellable[0], group.actorId, TYPES.agentUnhold, {});
+          await onControl(cancellable[0], group.actorId, TYPES.agentUnhold, withExpectedHold(capabilityIndex, group.actorId, TYPES.agentUnhold, {}, holdId));
         } catch (error) {
           failures.push(error?.message || String(error));
         }
@@ -707,12 +718,26 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
   const [foldOverrides, setFoldOverrides] = useState(() => new Map());
   const toggleFold = useCallback((id, expanded) => setFoldOverrides((current) => new Map(current).set(id, expanded)), []);
   const [editing, setEditing] = useState(null);
+  const editSessionSerialRef = useRef(0);
+  const editingRef = useRef(null);
+  const editReleasePendingRef = useRef(new Set());
+  const editReleaseSentRef = useRef(new Set());
+  const editRuntimeRef = useRef(null);
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
 	const messageListRef = useRef(null);
 	const messageListScrollerRef = useRef(null);
 	const messageListScrollCleanupRef = useRef(() => {});
+	const messageListPinFrameRef = useRef(0);
+	const messageListPrependVisualRef = useRef(null);
+	// This is the reader's intent, not Virtuoso's latest geometric verdict.
+	// A newly mounted row is first laid out with an estimate and measured later;
+	// during that interval the scroller is temporarily away from the physical
+	// bottom even though the reader never left it.
+	const messageListFollowLatestRef = useRef(true);
+	const messageListPointerActiveRef = useRef(false);
+	const messageListTouchYRef = useRef(null);
 	const listTransitionRef = useRef({ key: '', firstSeq: 0, lastSeq: 0, length: 0, firstItemIndex: VIRTUAL_INDEX_BASE });
 	const [messageListAtBottom, setMessageListAtBottom] = useState(true);
 	const [messageListUnseen, setMessageListUnseen] = useState(0);
@@ -721,12 +746,79 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	const historyRequestRef = useRef(null);
 	const historyOperationSerialRef = useRef(0);
 	const historyControllerRef = useRef(null);
+	function clearHistoryPrependVisual() {
+	  const visual = messageListPrependVisualRef.current;
+	  if (!visual) return;
+	  visual.observer?.disconnect();
+	  clearTimeout(visual.timeout);
+	  if (visual.applied && visual.itemList?.isConnected) {
+		visual.itemList.style.transform = visual.originalTransform;
+	  }
+	  messageListPrependVisualRef.current = null;
+	}
+	async function prepareHistoryPrependVisual() {
+	  clearHistoryPrependVisual();
+	  const scroller = messageListScrollerRef.current;
+	  if (!scroller || scroller.scrollTop > 1) return;
+	  let anchor;
+	  // A large wheel/touch gesture can put the scroller at zero one frame before
+	  // Virtuoso replaces the former bottom window with the current top window.
+	  // Wait for that existing top row before loading older data; otherwise there
+	  // is no real reader anchor to preserve across the prepend.
+	  for (let frame = 0; frame < 3 && !anchor; frame += 1) {
+		const viewportRect = scroller.getBoundingClientRect();
+		anchor = [...scroller.querySelectorAll('.timeline-entry')]
+		  .map((entry) => ({ entry, rect: entry.getBoundingClientRect() }))
+		  .filter(({ rect }) => rect.bottom > viewportRect.top && rect.top < viewportRect.bottom)
+		  .sort((left, right) => left.rect.top - right.rect.top)[0];
+		if (!anchor) await new Promise((resolve) => requestAnimationFrame(resolve));
+	  }
+	  if (messageListScrollerRef.current !== scroller || !scroller.isConnected) return;
+	  const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]');
+	  if (!anchor || !itemList) return;
+	  const viewportTop = scroller.getBoundingClientRect().top;
+	  const visual = {
+		anchorId: anchor.entry.dataset.entryId || '',
+		anchorTop: anchor.rect.top - viewportTop,
+		itemList,
+		originalTransform: itemList.style.transform,
+		baseScrollTop: scroller.scrollTop,
+		delta: 0,
+		applied: false,
+		observer: null,
+		timeout: 0,
+	  };
+	  const observer = new MutationObserver(() => {
+		if (messageListPrependVisualRef.current !== visual || visual.applied) return;
+		const currentAnchor = [...scroller.querySelectorAll('.timeline-entry')]
+		  .find((entry) => entry.dataset.entryId === visual.anchorId);
+		if (!currentAnchor) return;
+		const delta = currentAnchor.getBoundingClientRect().top
+		  - scroller.getBoundingClientRect().top
+		  - visual.anchorTop;
+		if (Math.abs(delta) <= 1) return;
+		// Virtuoso compensates firstItemIndex on its next measurement frame. The
+		// newly prepended DOM has already moved the old rows by then, so preserve
+		// their painted position until that logical scroll correction arrives.
+		observer.disconnect();
+		visual.itemList.style.transform = `${visual.originalTransform} translateY(${-delta}px)`.trim();
+		visual.delta = delta;
+		visual.applied = true;
+	  });
+	  visual.observer = observer;
+	  observer.observe(itemList, { attributes: true, characterData: true, childList: true, subtree: true });
+	  visual.timeout = setTimeout(clearHistoryPrependVisual, 2_000);
+	  messageListPrependVisualRef.current = visual;
+	}
 	historyLoadRef.current = history?.loadOlder || null;
 	function newHistoryController() {
 	  return createTopIntentController({
-		load: (goal) => historyLoadRef.current
-		  ? historyLoadRef.current(goal)
-		  : Promise.resolve({ kind: HISTORY_OPERATION.exhausted }),
+		load: async (goal) => {
+		  await prepareHistoryPrependVisual();
+		  return historyLoadRef.current
+			? historyLoadRef.current(goal)
+			: Promise.resolve({ kind: HISTORY_OPERATION.exhausted });
+		},
 		onState: ({ state: operationState, epoch, viewKey, result, reason }) => diagnostic('debug', `history.intent_${operationState}`, {
 		  channelId: state.channelId, epoch, viewKey, reason: reason || result?.kind || '',
 		}),
@@ -745,7 +837,25 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 		messageListScrollCleanupRef.current = () => {};
 		return;
 	  }
+	  const distanceFromBottom = () => node.scrollHeight - node.clientHeight - node.scrollTop;
 	  const handleScroll = () => {
+		const prependVisual = messageListPrependVisualRef.current;
+		if (prependVisual?.applied && node.scrollTop > 1) {
+		  // Virtuoso compensates by the size of the prepended segment. Preserve
+		  // the exact row offset the reader had (including a partially visible row),
+		  // then remove the temporary paint-only transform in the same scroll task.
+		  const anchoredTop = prependVisual.baseScrollTop + prependVisual.delta;
+		  if (Math.abs(node.scrollTop - anchoredTop) > 1) node.scrollTop = anchoredTop;
+		  clearHistoryPrependVisual();
+		}
+		if (distanceFromBottom() <= 2) messageListFollowLatestRef.current = true;
+		else if (messageListPointerActiveRef.current) messageListFollowLatestRef.current = false;
+		else if (messageListFollowLatestRef.current) {
+		  // Virtuoso can apply its estimated follow position after the measured
+		  // height callback. Correct that synthetic scroll synchronously; waiting
+		  // for another frame would paint one frame at the estimated position.
+		  node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+		}
 		// Prepending a historical segment makes Virtuoso move scrollTop to keep
 		// the reader's anchor fixed. That is layout compensation, not the reader
 		// abandoning the top intent. Let the bounded operation finish; its owner
@@ -759,14 +869,63 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	  const handleTopInput = () => {
 		if (node.scrollTop <= 1) historyRequestRef.current?.('top-input', { continuation: true, queueWhileActive: true });
 	  };
-	  node.addEventListener('scroll', handleScroll, { passive: true });
-	  node.addEventListener('wheel', handleTopInput, { passive: true });
-	  node.addEventListener('touchmove', handleTopInput, { passive: true });
-	  messageListScrollCleanupRef.current = () => {
-		node.removeEventListener('scroll', handleScroll);
-		node.removeEventListener('wheel', handleTopInput);
-		node.removeEventListener('touchmove', handleTopInput);
+	  const handleWheel = (event) => {
+		if (event.deltaY < 0) messageListFollowLatestRef.current = false;
+		handleTopInput();
 	  };
+	  const handlePointerDown = () => { messageListPointerActiveRef.current = true; };
+	  const handlePointerUp = () => { messageListPointerActiveRef.current = false; };
+	  const handleTouchStart = (event) => {
+		messageListTouchYRef.current = event.touches[0]?.clientY ?? null;
+	  };
+	  const handleTouchMove = (event) => {
+		const nextY = event.touches[0]?.clientY;
+		if (nextY != null && messageListTouchYRef.current != null && nextY > messageListTouchYRef.current + 2) {
+		  messageListFollowLatestRef.current = false;
+		}
+		messageListTouchYRef.current = nextY ?? null;
+		handleTopInput();
+	  };
+	  const handleKeyDown = (event) => {
+		if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) messageListFollowLatestRef.current = false;
+	  };
+	  node.addEventListener('scroll', handleScroll, { passive: true });
+	  node.addEventListener('wheel', handleWheel, { passive: true });
+	  node.addEventListener('pointerdown', handlePointerDown, { passive: true });
+	  window.addEventListener('pointerup', handlePointerUp, { passive: true });
+	  node.addEventListener('touchstart', handleTouchStart, { passive: true });
+	  node.addEventListener('touchmove', handleTouchMove, { passive: true });
+	  node.addEventListener('keydown', handleKeyDown);
+	  messageListScrollCleanupRef.current = () => {
+		clearHistoryPrependVisual();
+		node.removeEventListener('scroll', handleScroll);
+		node.removeEventListener('wheel', handleWheel);
+		node.removeEventListener('pointerdown', handlePointerDown);
+		window.removeEventListener('pointerup', handlePointerUp);
+		node.removeEventListener('touchstart', handleTouchStart);
+		node.removeEventListener('touchmove', handleTouchMove);
+		node.removeEventListener('keydown', handleKeyDown);
+	  };
+	}, []);
+	const keepMessageListPinned = useCallback(() => {
+	  const scroller = messageListScrollerRef.current;
+	  if (!scroller || !messageListFollowLatestRef.current) return;
+	  const pin = () => {
+		const current = messageListScrollerRef.current;
+		if (!current || !messageListFollowLatestRef.current) return;
+		const bottom = Math.max(0, current.scrollHeight - current.clientHeight);
+		if (Math.abs(current.scrollTop - bottom) > 1) current.scrollTop = bottom;
+	  };
+	  pin();
+	  cancelAnimationFrame(messageListPinFrameRef.current);
+	  // Virtuoso reports its new logical height before React has necessarily
+	  // committed that height to the scroller. Pin once more before the next
+	  // paint, using the committed scrollHeight.
+	  messageListPinFrameRef.current = requestAnimationFrame(pin);
+	}, []);
+	useEffect(() => () => {
+	  cancelAnimationFrame(messageListPinFrameRef.current);
+	  clearHistoryPrependVisual();
 	}, []);
 	useLayoutEffect(() => {
 	  // React StrictMode intentionally performs setup → cleanup → setup in
@@ -888,6 +1047,32 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
       : EMPTY_FROZEN_STATES,
     [state, controlVersion, timelineControl.actorIds, timelineControl.hasFreezeOperations, presentationNow],
   );
+  editingRef.current = editing;
+  editRuntimeRef.current = { state, frozenByActor, capabilityIndex, onTaskControl };
+
+  function releaseEditSession(session, targetTurn = null) {
+    if (!session || editReleaseSentRef.current.has(session.sessionId)) return;
+    if (!session.holdId) {
+      editReleasePendingRef.current.add(session.sessionId);
+      return;
+    }
+    editReleasePendingRef.current.delete(session.sessionId);
+    editReleaseSentRef.current.add(session.sessionId);
+    const runtime = editRuntimeRef.current;
+    const observed = runtime?.frozenByActor?.get(session.actorId);
+    // Against an older backend that has not advertised lease CAS yet, this
+    // front-side guard still avoids an observed newer interrupt/hold. With a
+    // new backend, expected_hold_id closes the remaining wire race.
+    if (observed && (observed.source !== TYPES.agentHold || observed.held_by !== session.holdId)) return;
+    const turn = targetTurn || runtime?.state?.turns?.get(session.targetId);
+    Promise.resolve(runtime?.onTaskControl?.({
+      channelId: session.channelId,
+      turn,
+      actorId: session.actorId,
+      type: TYPES.agentUnhold,
+      payload: withExpectedHold(runtime?.capabilityIndex || new Map(), session.actorId, TYPES.agentUnhold, {}, session.holdId),
+    })).catch(() => {});
+  }
   const nextFreezeDeadline = Math.min(...[...frozenByActor.values()].filter(Boolean).map((value) => value.until));
 	const preemptedSources = timelineControl.preempted;
 	const mergedCounts = timelineControl.merged;
@@ -938,6 +1123,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	  const confirmed = isAtBottom && scrollerIsAtBottom();
 	  setMessageListAtBottom(confirmed);
 	  if (confirmed) {
+		messageListFollowLatestRef.current = true;
 		historyInteractionReadyRef.current = messageListKey;
 		setMessageListUnseen(0);
 		if (scrollerIsAtTop()) requestHistoryAtTop('short-list-ready', { continuation: true });
@@ -1054,51 +1240,72 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 
   useEffect(() => {
     if (!editing) return;
+    const activeEditSessionId = editing.sessionId;
+    const targetTurn = state.turns.get(editing.targetId);
+    const replacedBy = argsOf(targetTurn?.terminal)?.replaced_by ?? argsOf(targetTurn?.terminal)?.value?.replaced_by;
+    const frozen = frozenByActor.get(editing.actorId);
+    const ownsLiveHold = Boolean(editing.holdId
+      && frozen?.source === TYPES.agentHold
+      && frozen.held_by === editing.holdId);
+    const lockMustBeLive = ['editing', 'checking', 'submitting', 'saving'].includes(editing.phase);
+    const replacementLanded = Boolean(replacedBy);
+    const targetClosed = Boolean(targetTurn?.terminal && !replacementLanded);
+    const lockLost = lockMustBeLive && editing.holdId && !ownsLiveHold;
+    const actorGone = roster.length > 0 && !roster.some((row) => row.id === editing.actorId);
+
+    // Editing is a lease over one still-open buffered request. Any terminal on
+    // the target, or any later control that replaces the hold, ends that lease.
+    // Leaving Timeline.editing alive would keep Composer routing every send to
+    // this dead edit forever. Release only when the ledger still says this edit
+    // owns the hold; a stale cleanup must never clear a newer interrupt/hold.
+    if (replacementLanded || targetClosed || lockLost || actorGone) {
+      const session = editing;
+      if (replacementLanded && session.location === 'processing') setResumePin(replacedBy);
+      setEditing((current) => current?.sessionId === session.sessionId ? null : current);
+      if (!replacementLanded) setEditNotice(targetClosed ? '原消息已经停止或取消，已退出编辑' : actorGone ? 'Agent 已重启或离开，已退出编辑' : '编辑已被另一项控制终止');
+      if (actorGone) editReleaseSentRef.current.add(session.sessionId);
+      else releaseEditSession(session, targetTurn);
+      return;
+    }
     if (editing.phase === 'locking') {
       const admission = editAdmission(state, editing);
       if (admission.error) {
         setEditing(null);
         setEditNotice(admission.error);
       }
-      else if (admission.ready) setEditing((current) => current && ({ ...current, phase: 'editing', error: '' }));
+      else if (admission.ready) setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'editing', error: '' }) : current);
       return;
     }
     if (editing.phase === 'checking') {
       const contextTurn = state.turns.get(editing.contextId);
       if (!contextTurn?.terminal) return;
       if (argsOf(contextTurn.terminal)?.status !== 'completed') {
-        setEditing((current) => current && ({ ...current, phase: 'editing', error: argsOf(contextTurn.terminal)?.detail || '编辑锁已失效' }));
+        setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'editing', error: argsOf(contextTurn.terminal)?.detail || '编辑锁已失效' }) : current);
         return;
       }
       const lock = lockFromContext(argsOf(contextTurn.terminal), editing.holdId);
       if (!lock.valid) {
-        setEditing((current) => current && ({ ...current, phase: 'editing', error: lock.error }));
+        setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'editing', error: lock.error }) : current);
         return;
       }
-      const targetTurn = state.turns.get(editing.targetId);
-      setEditing((current) => current && ({ ...current, phase: 'submitting', error: '' }));
-      Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentReplace, payload: { target: editing.targetId, old_text: editing.oldText, new_text: editing.text, ...(editing.attachments.length ? { attachments: editing.attachments } : {}) } }))
-        .then((replacementId) => setEditing((current) => current && ({ ...current, phase: 'saving', replacementId: replacementId || '', error: replacementId ? '' : '修改请求未发出' })))
-        .catch((failure) => setEditing((current) => current && ({ ...current, phase: 'editing', error: failure.message || String(failure) })));
+      setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'submitting', error: '' }) : current);
+      const sessionId = editing.sessionId;
+      const replacementPayload = withExpectedHold(capabilityIndex, editing.actorId, TYPES.agentReplace, { target: editing.targetId, old_text: editing.oldText, new_text: editing.text, ...(editing.attachments.length ? { attachments: editing.attachments } : {}) }, editing.holdId);
+      Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentReplace, payload: replacementPayload }))
+        .then((replacementId) => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'saving', replacementId: replacementId || '', error: replacementId ? '' : '修改请求未发出' }) : current))
+        .catch((failure) => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: failure.message || String(failure) }) : current));
       return;
     }
     if (editing.phase === 'saving' && editing.replacementId) {
-      // 协议形（§4.6）：替换生效的账面事实 = 原行终态 replaced_by 指向 replace 请求；
-      // replace 请求自身即新行（入队，不立刻终态）。失败才落在 replace 请求的终态上。
+      // 成功由上面的 target.replaced_by 分支收尾；这里只处理 replacement
+      // 请求自身的失败终态。
       const replacement = state.turns.get(editing.replacementId);
       if (argsOf(replacement?.terminal)?.status === 'failed') {
-        setEditing((current) => current && ({ ...current, phase: 'editing', error: argsOf(replacement.terminal)?.detail || argsOf(replacement.terminal)?.error_code || '修改失败' }));
-        return;
+        const sessionId = editing.sessionId;
+        setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: argsOf(replacement.terminal)?.detail || argsOf(replacement.terminal)?.error_code || '修改失败' }) : current);
       }
-      const target = state.turns.get(editing.targetId);
-      const replacedBy = argsOf(target?.terminal)?.replaced_by ?? argsOf(target?.terminal)?.value?.replaced_by;
-      if (replacedBy !== editing.replacementId) return;
-      // 替换已生效，立即解冻让队列续跑——编辑收尾恒不把消息留在暂停的等待区。
-      Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: target, actorId: editing.actorId, type: TYPES.agentUnhold, payload: {} })).catch(() => {});
-      if (editing.location === 'processing') setResumePin(editing.replacementId);
-      setEditing(null);
     }
-  }, [controlVersion, editing?.phase, editing?.contextId, editing?.replacementId]);
+  }, [controlVersion, editing?.sessionId, editing?.phase, editing?.contextId, editing?.replacementId, editing?.holdId, frozenByActor, roster]);
 
   useEffect(() => {
     if (!resumePin) return;
@@ -1110,46 +1317,57 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     const reconnected = previousAccess.current !== 'member_active' && access === 'member_active';
     previousAccess.current = access;
     if (!reconnected || !editing || editing.phase !== 'editing') return;
+    const sessionId = editing.sessionId;
     const targetTurn = state.turns.get(editing.targetId);
-    setEditing((current) => current && ({ ...current, phase: 'checking', error: '' }));
+    setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'checking', error: '' }) : current);
     Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentContext, payload: {} }))
-      .then((contextId) => setEditing((current) => current && ({ ...current, contextId: contextId || '', error: contextId ? '' : '编辑锁已失效' })))
-      .catch(() => setEditing((current) => current && ({ ...current, phase: 'editing', error: '编辑锁已失效' })));
+      .then((contextId) => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, contextId: contextId || '', error: contextId ? '' : '编辑锁已失效' }) : current))
+      .catch(() => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: '编辑锁已失效' }) : current));
   }, [access]);
 
   async function startEditing(turn, actorId) {
     if (editing) return;
     setEditNotice('');
     const location = taskControlContext(turn, { selfId, access }).location;
-    const draft = { targetId: turn.requestId, actorId, holdId: '', location, oldText: editableText(turn), text: editableText(turn), attachments: argsOf(turn.request).attachments || [], phase: 'requesting_lock', error: '' };
+    const sessionId = ++editSessionSerialRef.current;
+    const draft = { sessionId, channelId: state.channelId, targetId: turn.requestId, actorId, holdId: '', location, oldText: editableText(turn), text: editableText(turn), attachments: argsOf(turn.request).attachments || [], phase: 'requesting_lock', error: '' };
     setEditing(draft);
     try {
       const holdId = await onTaskControl?.({ channelId: state.channelId, turn, actorId, type: TYPES.agentHold, payload: { target: turn.requestId } });
       if (!holdId) {
-        setEditing((current) => current?.targetId === turn.requestId ? ({ ...current, phase: 'editing', error: '无法锁定这条任务' }) : current);
+        setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: '无法锁定这条任务' }) : current);
         return;
       }
-      setEditing((current) => current?.targetId === turn.requestId ? ({ ...current, holdId, phase: 'locking', error: '' }) : current);
+      if (editReleasePendingRef.current.has(sessionId)) {
+        releaseEditSession({ ...draft, holdId }, turn);
+        return;
+      }
+      setEditing((current) => current?.sessionId === sessionId ? ({ ...current, holdId, phase: 'locking', error: '' }) : current);
     } catch (failure) {
-      setEditing((current) => current?.targetId === turn.requestId ? ({ ...current, phase: 'editing', error: failure?.message || String(failure) || '无法锁定这条任务' }) : current);
+      setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: failure?.message || String(failure) || '无法锁定这条任务' }) : current);
     }
   }
 
   async function verifyAndSave(nextText) {
     if (!editing || editing.phase !== 'editing') return;
+    const sessionId = editing.sessionId;
     const targetTurn = state.turns.get(editing.targetId);
     const text = typeof nextText === 'string' ? nextText : editing.text;
-    setEditing((current) => current && ({ ...current, text, phase: 'checking', error: '' }));
-    const contextId = await onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentContext, payload: {} });
-    setEditing((current) => current && ({ ...current, contextId: contextId || '', error: contextId ? '' : '编辑锁已失效' }));
+    setEditing((current) => current?.sessionId === sessionId ? ({ ...current, text, phase: 'checking', error: '' }) : current);
+    try {
+      const contextId = await onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentContext, payload: {} });
+      setEditing((current) => current?.sessionId === sessionId ? ({ ...current, contextId: contextId || '', error: contextId ? '' : '编辑锁已失效' }) : current);
+    } catch (failure) {
+      setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: failure?.message || String(failure) || '无法确认编辑锁' }) : current);
+    }
   }
 
   async function abandonEditing() {
     if (!editing) return;
     const targetTurn = state.turns.get(editing.targetId);
     if (editing.location === 'processing') setResumePin(editing.targetId);
+    releaseEditSession(editing, targetTurn);
     setEditing(null);
-    await onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentUnhold, payload: {} });
   }
 
   useEffect(() => {
@@ -1157,7 +1375,11 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
     onComposerEditChange(editing ? { session: editing, onSave: verifyAndSave, onAbandon: abandonEditing } : null);
   }, [onComposerEditChange, editing?.targetId, editing?.phase, editing?.error]);
 
-  useEffect(() => () => onComposerEditChange?.(null), [onComposerEditChange, state.channelId]);
+  useEffect(() => () => {
+    const session = editingRef.current;
+    if (session) releaseEditSession(session);
+    onComposerEditChange?.(null);
+  }, [onComposerEditChange, state.channelId]);
 
   return <MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost>
 	<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" aria-live="polite" aria-atomic="false" aria-relevant="additions text">
@@ -1211,8 +1433,8 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 	  <TimelineVirtualList>
 			{/* Virtuoso 也在 ResizeObserver 里改项高。让它保持默认的按帧交付；
 			    同步交付会和 FoldableBody 的高度变化互相触发，形成 observer loop。
-			    动态 Markdown/图表首绘后还可能让尾部测量漂移几像素，因此 Virtuoso
-			    的 follow latch 用 64px；已读确认仍走上面的严格 24px 判据。 */}
+			    follow 和已读共用同一个 24px 尾部边界：放宽到 64px 会让 Virtuoso
+			    在还差几十像素时就停止追尾，下一次测量再纠正时就是一次可见抖动。 */}
 		<Virtuoso
 		  key={messageListKey}
 		  ref={messageListRef}
@@ -1221,7 +1443,7 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 		  firstItemIndex={firstItemIndex}
 		  initialTopMostItemIndex={import.meta.env.MODE === 'test' ? undefined : { index: 'LAST', align: 'end' }}
 		  alignToBottom
-		  atBottomThreshold={64}
+		  atBottomThreshold={24}
 		  increaseViewportBy={480}
 		  data={windowed.items}
 		  computeItemKey={(_index, entry) => entry.kind === 'turn' ? entry.turn.request.id : entry.kind === 'narration' ? 'narration' : `${entry.kind}-${entry.envelope.id}`}
@@ -1279,14 +1501,16 @@ export function Timeline({ state, history = {}, roster, selfId, agentActivity, o
 		  atTopStateChange={handleAtTopChange}
 		  atBottomStateChange={handleAtBottomChange}
 		  followOutput={(atBottom) => atBottom ? 'auto' : false}
+		  totalListHeightChanged={keepMessageListPinned}
 		/>
 	  </TimelineVirtualList>
 	  {messageListUnseen > 0 && <button type="button" className="timeline-jump-latest" onClick={() => {
 		setMessageListUnseen(0);
+		messageListFollowLatestRef.current = true;
 		messageListRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' });
 	  }}>↓ {messageListUnseen} 条新动态</button>}
     </section>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
-    <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
+    <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
   </ProgressTrailHost></MarkdownFileReferenceProvider>;
 }

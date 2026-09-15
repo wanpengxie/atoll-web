@@ -74,16 +74,29 @@ test('F2-006 长文件名与不支持预览安全降级，窄屏无横向溢出'
   await reset(request, 1202); await login(page);
   await page.locator('#workspace-files-toggle').click();
   const longName = `${'非常长的交付文件名称'.repeat(12)}.bin`;
-  await page.getByLabel('选择要上传到当前目录的文件').setInputFiles({ name: longName, mimeType: 'application/octet-stream', buffer: Buffer.from([1, 2, 3]) });
+  await page.getByLabel('选择要上传到当前目录的文件').setInputFiles({ name: longName, mimeType: 'application/octet-stream', buffer: Buffer.from([0, 1, 2, 3]) });
   await page.locator('.channel-file-row').filter({ hasText: longName }).getByRole('button', { name: '附加' }).click();
   await page.getByRole('button', { name: /发送/ }).click();
   const messageAttachment = page.getByRole('button', { name: new RegExp(`预览 ${longName.slice(0, 12)}`) });
   await messageAttachment.click();
   const preview = page.getByRole('complementary', { name: '文件详情' });
   await expect(preview).toContainText('此文件暂不支持站内预览');
+  await page.setViewportSize({ width: 800, height: 720 });
+  const tabletGeometry = await page.evaluate(() => {
+    const pane = document.querySelector('.context-pane').getBoundingClientRect();
+    return { viewportWidth: innerWidth, paneLeft: pane.left, paneRight: pane.right, paneWidth: pane.width };
+  });
+  expect(tabletGeometry.paneLeft).toBe(0);
+  expect(tabletGeometry.paneRight).toBe(tabletGeometry.viewportWidth);
+  expect(tabletGeometry.paneWidth).toBe(tabletGeometry.viewportWidth);
   await page.setViewportSize({ width: 320, height: 720 });
-  const geometry = await page.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth }));
+  const geometry = await page.evaluate(() => {
+    const pane = document.querySelector('.context-pane').getBoundingClientRect();
+    return { width: innerWidth, scrollWidth: document.documentElement.scrollWidth, paneLeft: pane.left, paneRight: pane.right };
+  });
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
+  expect(geometry.paneLeft).toBe(0);
+  expect(geometry.paneRight).toBe(geometry.width);
   await expect(preview.getByRole('button', { name: '下载' })).toHaveCount(0);
   await expect(preview.getByRole('button', { name: '关闭文件详情' })).toBeVisible();
 });
@@ -118,7 +131,8 @@ test('Composer 直接区分本机上传与 daemon 频道文件选择', async ({ 
   expect(daemonPickerBounds?.width).toBeGreaterThanOrEqual(44);
   expect(daemonPickerBounds?.height).toBeGreaterThanOrEqual(44);
 
-  await page.locator('#workspace-files-toggle').click();
+  await page.getByRole('button', { name: '频道操作' }).click();
+  await page.getByRole('menuitem', { name: '打开文件分屏' }).click();
   const mountedUploadBounds = await page.getByLabel('选择要上传到当前目录的文件').boundingBox();
   expect(mountedUploadBounds?.width).toBeGreaterThanOrEqual(44);
   expect(mountedUploadBounds?.height).toBeGreaterThanOrEqual(44);

@@ -32,7 +32,14 @@ function add(state, seq, envelope) {
 function capabilities() {
   return new Map([['agent', { describe: normalizeDescribe({
     class: 'agent', capabilities: { steer: true, interrupt: true },
-    words: { 'agent.ask': {}, 'agent.steer': {}, 'agent.hold': {}, 'agent.interrupt': {} },
+    words: {
+      'agent.ask': {},
+      'agent.steer': {},
+      'agent.hold': {},
+      'agent.interrupt': {},
+      'agent.replace': { input_schema: { type: 'object', properties: { expected_hold_id: { type: 'string' } } } },
+      'agent.unhold': { input_schema: { type: 'object', properties: { expected_hold_id: { type: 'string' } } } },
+    },
   }) }]]);
 }
 
@@ -151,6 +158,7 @@ describe('agent control v7 information architecture', () => {
     expect(screen.getByRole('region', { name: '等待区' }).contains(waitingActions)).toBe(true);
     fireEvent.click(within(waitingActions).getByRole('button', { name: '取消 Agent 全部' }));
     await waitFor(() => expect(calls).toEqual(['agent.hold', 'cancel:a1', 'cancel:a2', 'agent.unhold']));
+    expect(onTaskControl).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'agent.unhold', payload: { expected_hold_id: 'agent.hold-id' } }));
   });
 
   it('returns to non-editing state with a prompt when hold admission fails', async () => {
@@ -174,6 +182,75 @@ describe('agent control v7 information architecture', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('稍后重试'));
     expect(screen.queryByText('正在编辑')).toBeNull();
     expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy();
+  });
+
+  it('ends editing and conditionally releases its hold when the target is cancelled', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'edit then cancel'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    const onTaskControl = vi.fn(async ({ type }) => type === 'agent.hold' ? 'hold-edit' : `${type}-id`);
+    const onComposerEditChange = vi.fn();
+    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex: capabilities(), onTaskControl, onComposerEditChange };
+    const view = render(<Timeline {...props} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
+    add(state, 3, { ...request('hold-edit', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 4, { ...response('hold-edit-d', 'hold-edit', { status: 'completed' }), type: 'agent.hold' });
+    view.rerender(<Timeline {...props} />);
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
+
+    add(state, 5, response('queued-cancelled', 'queued', { status: 'failed', error_code: 'cancelled' }));
+    view.rerender(<Timeline {...props} />);
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(null));
+    expect(screen.getByRole('alert').textContent).toContain('已退出编辑');
+    expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'agent.unhold', payload: { expected_hold_id: 'hold-edit' },
+    }));
+  });
+
+  it('ends editing without releasing a newer interrupt that superseded its hold', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'edit then stop'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    const onTaskControl = vi.fn(async ({ type }) => type === 'agent.hold' ? 'hold-edit' : `${type}-id`);
+    const onComposerEditChange = vi.fn();
+    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex: capabilities(), onTaskControl, onComposerEditChange };
+    const view = render(<Timeline {...props} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControl).toHaveBeenCalled());
+    add(state, 3, { ...request('hold-edit', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 4, { ...response('hold-edit-d', 'hold-edit', { status: 'completed' }), type: 'agent.hold' });
+    view.rerender(<Timeline {...props} />);
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
+
+    add(state, 5, { ...request('stop', '', 'agent'), type: 'agent.interrupt', payload: {} });
+    add(state, 6, { ...response('stop-d', 'stop', { status: 'completed' }), type: 'agent.interrupt' });
+    view.rerender(<Timeline {...props} />);
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(null));
+    expect(screen.getByRole('alert').textContent).toContain('另一项控制');
+    expect(onTaskControl.mock.calls.some(([value]) => value.type === 'agent.unhold')).toBe(false);
+  });
+
+  it('releases a late hold receipt after the editor is unmounted', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'leave while locking'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    let resolveHold;
+    const holdReceipt = new Promise((resolve) => { resolveHold = resolve; });
+    const onTaskControl = vi.fn(({ type }) => type === 'agent.hold' ? holdReceipt : Promise.resolve(`${type}-id`));
+    const onComposerEditChange = vi.fn();
+    const view = render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} onTaskControl={onTaskControl} onComposerEditChange={onComposerEditChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
+    view.unmount();
+    resolveHold('late-hold');
+
+    await waitFor(() => expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({
+      channelId: 'c0', type: 'agent.unhold', payload: { expected_hold_id: 'late-hold' },
+    })));
   });
 
   it('switches the wait layer to one editor state without pushing later queued rows down', () => {

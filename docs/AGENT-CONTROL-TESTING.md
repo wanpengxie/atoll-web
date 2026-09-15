@@ -90,7 +90,7 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
 | （无按钮） | `agent.steer`（文本形 `{text, expected_turn_id?}`） | 文本并入当前 turn，终态 `merged_into` |
 | 全部插入 | `agent.steer`（all 形 `{all:true}`） | 把等待区里**发起人自己的**消息全部并入：有 turn 整批卷入（owner=tail），无 turn 解冻整批续跑，空 buffer 不动作 |
 | 取消 | channel 层消息撤回（cancel 帧） | 不是 agent 词，只对 queued 可用 |
-| （内部） | `agent.hold`/`agent.unhold` | 冻结/解冻队列；hold 可带 `target`（打断该消息回队）与 `duration_ms`(1..1800000，默认30min，到期自动解冻)；unhold 幂等 |
+| （内部） | `agent.hold`/`agent.unhold` | 冻结/解冻队列；hold 可带 `target`（打断该消息回队）与 `duration_ms`(1..1800000，默认30min，到期自动解冻)；编辑流的 unhold 带 `expected_hold_id`，只释放自己的 hold，不能解除更新的 hold/interrupt；无 hold 时幂等 no-op |
 | （内部） | `agent.context` | 只读自省，终态带 `frozen: {held_by, until}` |
 
 关键行为不变量：
@@ -103,7 +103,8 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
   `{status:"completed", merged_into: <lead 的请求 id>}`。恒不存在"定向 unhold"
   这种参数——分流全由队首行的 Resumed 标记决定。
 - **replace 校验**：目标必须自己发的（`target_not_owned`）、必须在队列中、
-  `old_text` 必须与当前缓冲文本一致（`cas_mismatch`，编辑竞态保护）。可反复编辑同一条。
+  `old_text` 必须与当前缓冲文本一致；编辑流还带 `expected_hold_id`，在真正替换时再次
+  校验锁仍归本次编辑（`cas_mismatch`，避免 context→replace 间的 TOCTOU）。可反复编辑同一条。
 - **容量**：缓冲满 8 条，新的占格请求整体拒绝 `base_capacity`；replace 不占新格。
 - **打断恒不排队**：turn 启动窗口内 interrupt 直接 `busy` 失败零效果，不留待发槽。
 - **停止态动词表（协议 §4.4.16）**：内容动作（发消息 / 插入 / 全体插入）恒解除停止、
@@ -119,12 +120,13 @@ terminal；若有等待消息，完成时按协议（§4.4.5）恢复：队首�
 1. `agent.hold {target}` → completed；
 2. 目标消息账上出现 `{status:"queued", resumed:true}`（被打断、回队首原下标）；
 3. （断线重连时）`agent.context` 验锁：`frozen.held_by` 必须等于第 1 步 hold 的请求 id；
-4. `agent.replace {target, old_text, new_text}`——**替换生效的账面事实是原行终态
+4. `agent.replace {target, old_text, new_text, expected_hold_id}`——**替换生效的账面事实是原行终态
    `{status:"completed", replaced_by:<replace请求id>}`**；replace 请求**自身就是新行**：
    以原下标入队（`{status:"queued", resumed:true}`，继承 Resumed），呈现文本 = 其
    payload 的 `new_text`。原行终态后从呈现中消失，新行原地接替。校验失败（cas_mismatch
    / target_not_owned）落在 replace 请求自己的 failed 终态上；
-5. `agent.unhold {}` → completed（保存成功后前端自动发）；
+5. `agent.unhold {expected_hold_id}` → completed（保存成功后前端自动发；若锁已被更新控制
+   取代则不释放它）；
 6. 新行账上出现 `{status:"processing"}`——Resumed 单件成批，独跑续起。
 
 **再次编辑的目标是新行**（replace 请求），其"当前文本"= `new_text`——old_text CAS

@@ -23,11 +23,14 @@ const KNOWN_CONTROL_FIELDS = Object.freeze({
     { name: 'target', required: false, description: '要冻结并编辑的请求编号', type: 'string' },
     { name: 'duration_ms', required: false, description: '冻结时长（最多 1800000 毫秒）', type: 'integer' },
   ],
-  [TYPES.agentUnhold]: [],
+  [TYPES.agentUnhold]: [
+    { name: 'expected_hold_id', required: false, description: '只释放仍由这次暂停持有的等待区', type: 'string' },
+  ],
   [TYPES.agentReplace]: [
     { name: 'target', required: true, description: '被替换的请求编号', type: 'string' },
     { name: 'old_text', required: true, description: '编辑前全文', type: 'string', multiline: true },
     { name: 'new_text', required: true, description: '编辑后全文', type: 'string', multiline: true },
+    { name: 'expected_hold_id', required: false, description: '只在这次编辑暂停仍有效时替换', type: 'string' },
     { name: 'attachments', required: false, description: '更新后的附件', type: 'array' },
   ],
   [TYPES.agentCompact]: [],

@@ -193,7 +193,7 @@ test('新条目到达时，固定在底部的信息流不反向抖动', async ({
   await expect(page.locator('.approval-card')).toBeAttached();
 
   const sampling = page.evaluate(async () => {
-    const viewport = document.querySelector('.timeline');
+    const viewport = document.querySelector('.timeline-message-list');
     viewport.scrollTo(0, viewport.scrollHeight);
     const rows = [];
     for (let index = 0; index < 30; index += 1) {
@@ -212,5 +212,5 @@ test('新条目到达时，固定在底部的信息流不反向抖动', async ({
 
   expect(rows.at(-1).approvals).toBeGreaterThan(rows[0].approvals);
   expect(rows.filter((row, index) => index > 0 && row.top + 1 < rows[index - 1].top)).toHaveLength(0);
-  expect(rows.every((row) => Math.abs(row.bottom - row.top) <= 2)).toBe(true);
+  expect(rows.every((row) => Math.abs(row.bottom - row.top) <= 2), JSON.stringify(rows)).toBe(true);
 });
