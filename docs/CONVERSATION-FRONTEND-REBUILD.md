@@ -199,7 +199,9 @@ UI只维护 `{channel, view, anchor/range, intent, urgency, deadline, demandRevi
 
 ### 7.4 后端性能边界
 
-现有web.go在receipt/live前调用PrepareHistoryMetadata。客户端可以拆掉自身等待、记录各段延迟、并行恢复内容；不能据此宣称消除了服务端等待。仅在证据表明此等待影响目标时提出BE-01，未经审批不得提前LaunchFeed、改变订阅seam或增加协议版本。
+源码已确认：web.go:129起先PrimeFeed，再PrepareHistoryMetadata，收齐后发送receipt并LaunchFeed。session.go:291起对所有非temporary订阅用4个worker读取Meta，共享默认5秒读期限；focus仅在结果收齐后排序，不是优先返回。生产Home的ReadVisibleMeta只读head/可见活动序号和时间，不读消息正文。这里存在全体结果等待，不应再描述为逐频道反序列化正文，也不能把5秒读期限说成整个attach耗时上限。
+
+客户端可以拆掉自身等待、主动消费既有channel_meta、保留失败后的同步需求、并行恢复内容；不能据此宣称消除了服务端等待。是否实际成为此次慢的主因尚未测量。若目标要求移除该等待，则确需后端实现调整，先提出BE-01取得批准；这不自动意味着需要改协议。未经审批不得提前LaunchFeed或改变订阅seam。
 
 ## 8. TaskView：权威输入与完成义务
 
@@ -207,9 +209,13 @@ UI只维护 `{channel, view, anchor/range, intent, urgency, deadline, demandRevi
 
 证据路径按成本与能力选择：
 
-1. 已存在且语义明确的actor view/request响应可证明指定任务/集合时，按实际能力发现、权限、响应范围和新鲜度消费；不得凭空写出一个假设存在的查询word。
+1. 已核验两类不同能力：Native Agent提供agent.status，可按work_id/submission_key查询或分页列举该actor的work；Base Agent不提供该word，agent.queue是入队命令，agent.context不是任务列表。必须按现有manifest发现能力，不得对所有agent硬调agent.status，也不能把Native分页当全频道原子快照。work_id不跨actor incarnation恢复。
 2. 对已知任务，从请求到有限H的可见生命周期有完整扫描证据、且现有语义规定这些事件足以决定状态时，可以得出该任务的known-at(H)。终态不被旧queued或迟到cache反转。
 3. 要声明整个活跃任务集合完整，需要已有完整集合响应，或从合法起点到H完整可见历史且生命周期语义足够。仅几个已知任务已对账不能宣称整个等待区无遗漏。
+
+Base Agent的现成事实来自queued/processing/terminal响应；带status的进度帧携带全量controls，后帧替换，终态清除。重连后可通过普通request调用既有system.log.query，以related_to和raw视图核对已知request，在返回head_seq边界获取其终态优先、否则最新进度的关联响应；新一轮校准不能沿用过期head。分段payload按既有next_read补全。该查询是消息事实，不是运行队列接口：logprojection对无回复request也默认标processing，故该state绝不能直接用于宣布运行中；需要读取实际响应的status和terminal，未取得证据仍为未知。旧queued和迟到缓存不能覆盖更新边界或终态。actor更替不能把旧incarnation的进度变成新actor当前状态。
+
+system.log.query也支持按participant/message_type分页发现请求，但没有活跃队列全集索引；空的scan-limited页不是没有任务。已知任务核对和未知任务发现分开预算，增量维护已确认索引，保留冷启动集合完整性状态。Base的queued心跳由运行事件触发且有60秒间隔门槛，不是每60秒必达的定时快照，不能把等下一次push当恢复策略。以上路径均使用既有view/request，不需新增channel_control；“任意历史规模下固定成本拿到Base完整运行队列”的能力没有从现有接口得到保证，不能冒称已解决。
 
 校准状态机为 `needs-evidence → probing/reconciling → known-at(boundary)`，失败进入可见可重试/不支持状态；跨连接证据陈旧立即降为stale。正在校准保留历史信息的明确标签，不伪装current或空队列。终态事实可保持终态，不能因未确认新鲜度把它复活为活跃。
 
@@ -223,7 +229,9 @@ Composer独占当前草稿、回复、附件、IME和selection；消息更新不
 
 本地事务状态：`draft → durable-queued → transmitting → accepted → landed`，另有uncertain/rejected/cancelled。IndexedDB将outbox记录与对应草稿版本接受原子提交；失败不清稿，后续新输入不被旧版本成功回调清空。附件引用和内容的可恢复性必须纳入接受条件；临时object URL不能算持久附件。
 
-现有submit包含客户端ID、receipt包含message_id，可作为身份映射基础；**不因此直接证明所有不确定重试都有端到端幂等保证**。需核验相同ID和payload重复提交/冲突的现有执行语义。成立时按同一ID重试；缺证据时保留uncertain并通过已有view对账，不能换新ID盲重发。仍有缺口按BE-03提案，不能偷偷修改后端。
+已核验现有持久化幂等路径：humancell.interpretSubmit以submitFingerprint规范化客户端语义，随Post/Emit经Harness传入Store；同频道同ID且指纹相同返回原seq/Replayed，不重复落账或触发onCommit，指纹冲突映射idempotency_conflict。指纹随消息事务持久化，已有并发和数据库重开测试。无需为客户端可靠重试新增后端协议或去重表。
+
+Outbox接受时固定ID、频道和完整客户端语义，包括payload、audience、parent、visibility及显式expires_at；重试不得重新生成ID、期限或修改正文。回执丢失可同ID重试；冲突明确失败，不换ID盲发。重试仍经过现有权限、时效等校验，失败保留uncertain并经现有view对账，不能将账本去重夸大为任意外部副作用exactly-once。相关源码和已存在测试位置见审核文档§6，本轮未运行测试。
 
 local echo用同一呈现身份合流，receipt/feed任意次序都不重复气泡，landed不回退accepted；正式seq改变排序时按真实变化保位，不能因确认而整行remount。本地发送队列与后端任务等待区分开。本地多tab发送用IDB条件租约协调发送者，崩溃接管仍依赖服务端实际幂等语义，不宣称仅靠租约实现exactly-once。
 
@@ -293,7 +301,7 @@ Preview限制自身溢出、不撑宽移动页面；不支持预览仍保留合�
 |---|---|---|---|
 | BE-01启动服务端等待 | 实测服务端Meta收集成为进入性能瓶颈 | 客户端并行、既有focus/head快路、延迟分段 | 保留后端seam；不得声称该延迟已消除 |
 | BE-02任务完整性 | 既有view/request与有限补证不能满足J7 | 列出实际可用能力、响应语义、可见生命周期证据与成本 | 状态诚实显示；J7不签全通过；不得新增控制投影 |
-| BE-03发送幂等 | 相同ID重试/冲突的现有语义不能保证可靠发送 | 查执行路径与既有view对账，不换ID盲发 | 保留uncertain与可恢复稿；相关保证未满足 |
+| BE-03发送幂等（既有能力已确认，无需申请） | 当前同ID同语义重试已受持久化指纹保护 | 前端保存稳定ID和语义，按receipt/feed/冲突对账 | 不新增协议或去重表；不扩大为副作用exactly-once |
 | BE-04跨设备读/草稿 | 无既有授权读写能力却要求多设备连续 | 列出现有能力，先兑现本地/跨tab版本隔离 | 不将本地持久化宣传为跨设备同步 |
 
 任何其他后端变更也受同样规则约束。提案必须含：未满足的具体行为/场景、源码或复现证据、现有能力为何不够、最小后端文件/协议/schema变更、兼容与数据影响、验证、回退、替代方案和明确审批状态。初始均为“未申请/未批准”；前端架构同意、测试通过或笼统“继续做”不代替对后端具体范围的同意。
@@ -316,4 +324,4 @@ Preview限制自身溢出、不撑宽移动页面；不支持预览仍保留合�
 
 需求覆盖、权威边界、前端内部合同、后端审批和验证模型已按原目标修订。R2的“新增后端控制协议/改attach就是已批准工作”和“描述库扩展等于组件能力闭合”结论撤回；纯前端也不能通过删需求获得通过。
 
-仍需证据才能完成实施准入：C1–C5组件能力、J7既有权威输入/集合完整性、发送重试语义、跨设备能力及目标设备性能预算。这些有具体关闭条件和责任，不交给用户枚举，也不视为自动后端改造理由。**当前可用作不降级的架构与审核基线；尚不能称全部组件选型、全部后端能力映射或运行验收通过。**
+仍需证据才能完成实施准入：C1–C5组件能力、J7冷态任务集合完整性与成本、跨设备能力及目标设备性能预算。发送持久化去重语义已由源码核实；任务现有查询路径与attach等待链已明确，不再笼统列为待查。这些门槛不交给用户枚举，也不视为自动后端改造理由。**当前可用作不降级的架构与审核基线；尚不能称全部组件选型或运行验收通过。**

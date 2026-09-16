@@ -19,8 +19,8 @@
 | R02过度收缩 | 先前纯前端回复宣称公共API足够；unknown可被误当J7完成 | 取消无证据组件承诺，J7写明主动补证、完整集合边界与未满足状态 |
 | R03基线误判 | main的frame.go已有FrameVersion=5、FrameChannelMeta；wire.js已有channelMeta | 明确现有接口可消费，禁止将“不得新增”误解为必须删除现有能力 |
 | R04数据世界误判 | frame.go AttachReceipt注释：Boot为c0 genesis，重装改变，普通重启不变 | 分离世界、transport generation、activation和content/layout版本；新增N11 |
-| R05任务全集证明缺失 | ChannelMetaReceipt只有head/has_rows/activity/generation；尾部不含全集证明 | 单任务known-at与全集完整性分开；现有view优先、有限生命周期补证，无法满足则BE-02，不伪造快照接口 |
-| R06发送保证跳步 | SubmitPayload有ID；SubmitReceipt有message_id，但这两个字段不独自证明重试幂等 | 本地原子接受保留；要求核验重复/冲突实际执行语义，uncertain对账和BE-03不吞需求 |
+| R05任务全集证明缺失 | Native已有agent.status；Base有状态响应，system.log.query可核对请求关联终态；channel head不含任务全集证明 | 现有路径已核实，按actor能力消费；Base冷态完整集合和固定成本不能凭单任务查询证明，详见§6 |
+| R06发送保证跳步 | 已追踪submitFingerprint→Harness→Store事务，重复返回原seq，冲突明确拒绝，持久指纹支持重开 | 发送去重已有能力，不需BE-03后端变更；前端固定ID和完整语义，权限/过期等失败仍需对账 |
 | R07服务端瓶颈越权修复 | web.go:129起在receipt/live前PrepareHistoryMetadata | 客户端并行可做；服务端改seam只列BE-01待证据与批准，不能称前端已消除此等待 |
 | R08组件证明缺口 | index.d.ts公开handle未列通用cancel；index.mjs定位含延后重试/1200ms清理 | C1单列已issued用户接管；auto、一次调用或应用token均不是取消证明 |
 | R09混合更新/段内保位 | firstItemIndex规定prepend索引，不能单独证明中间insert/remove及长文文本保位 | C3/C4必须具体能力映射，禁止外层反向补偿、冻结正文或自动批准fork |
@@ -39,8 +39,8 @@
 | 布局产品约束 | 已按先前用户同意保留 | 内容增长可重分配，状态不改外框；32px与极小窗口真实可达 |
 | 后端授权边界 | 已明确 | 具体文件/协议/schema/验证回退提案经用户明确批准才能写 |
 | 成熟列表选型C1–C5 | 尚未取得完整能力证据 | 逐项public机制/行为证据；不能用一句“交给组件”签字 |
-| J7完整任务状态 | 现有能力映射仍需核验 | 证明响应范围、新鲜度、全集完整性与有限成本；缺口BE-02 |
-| 可靠重试与跨设备 | 部分接口语义未核验 | 重复ID/冲突、现有远端读写能力核验；缺口BE-03/04 |
+| J7完整任务状态 | 现有状态及查询路径已核验；Base冷态集合成本未闭合 | 不将消息processing默认值或单任务查询冒充完整运行队列；具体边界见§6 |
+| 可靠重试与跨设备 | 持久化重复ID/冲突语义已确认；跨设备读写仍独立核验 | BE-03无需后端变更；前端稳定ID重试及异常对账，跨设备不借此宣称完成 |
 | 性能支持负载 | 指标与采样方法已定义，预算未实测 | 参考设备、恢复后基线与目标负载固定后验收 |
 | 代码/运行/用户故障修复 | 本轮未实施或验证 | 完整替换后集中review、行为fuzz、真实组件/集成/设备验证 |
 
@@ -57,3 +57,30 @@
 复查需求覆盖与权限矩阵；逐一代入原42条及新增12条合法轨迹；核对每项有事实owner、意图owner、执行owner、失败终态与推进义务；用独立的可见行为而非内部字段作验收依据。检查归档与当前基线分离，并对文档变更做diff检查。
 
 本轮未执行runtime测试；不将54条设计轨迹写成54项测试通过。后续行为模糊测试必须保存seed、缩减轨迹、转移覆盖，并以生产组件的可见内容、选择/焦点、点击命中、草稿和请求结果作为oracle。
+
+## 6. 三项后端源码核验（同一main基线，只读）
+
+### 6.1 等候状态：已有输入，不需要先造新协议
+
+- `drivers/agents/native/native.go:695` handleStatus支持work_id、submission_key和分页列举；`drivers/agents/workapi/work.go`定义协议及incarnation范围。它不是所有Agent统一具备的全频道快照。
+- `drivers/agents/base/base.go:50`列出Base控制words，没有agent.status；`loop.go:622`的agent.queue确实调用enqueue，不能拿来查询。`loop.go:1340`明确status进度附带controls全量替换、终态不带controls。
+- `platform/internal/sysactor/sysactor.go:170`已有普通request的system.log.query派发；`platform/home/logprojection.go:153` related_to精确读取关联；`runtime/internal/store/logquery.go:103` ReadVisibleReply按is_terminal DESC、seq DESC选终态优先/否则最新进度。这能为已知request找回不在当前历史页中的终态，无需前端加载全部正文或新增channel_control。
+- `logprojection.go:95`对没有回复的request也默认state=processing。该字段是日志展示分类，不是运行证明；排队/执行状态必须来自实际响应payload。查询返回的是head_seq处可见消息事实，后续live仍需合流；不可用旧head去证明新鲜度。
+- 分页搜索可发现未知请求，但没有固定成本的Base活跃全集接口。必须尊重scan_limited/has_more及分页边界；逐任务对账不证明全队列无遗漏。Base心跳由运行事件触发，不能保证刷新后立即送达。这是已确定的能力边界，不是“还没读代码”。需要完整冷态恢复时先落实既有分页/持久索引方案并核算成本，只有确实不满足目标才提出BE-02；本次不授权、不实施任何后端变更。
+
+### 6.2 重试：已有持久化幂等，不需要改后端
+
+- `platform/internal/humancell/humancell.go:237` interpretSubmit，`:335` submitFingerprint：规范化kind/type/payload/visibility/parent以及显式audience/expires_at。
+- `lib/actorbase/engine.go:640`与`runtime/harness/chain.go`将指纹送入账本Append；`runtime/internal/store/messages.go:182`重复ID相同指纹返回原seq/Replayed，不同指纹拒绝；同文件onCommit排除Replayed。
+- `platform/internal/humancell/humancell_verbs.go`将ID冲突映射idempotency_conflict。前端不能在重试时更换ID或期限、正文，不能把鉴权/过期拒绝当成未落账证明。
+- 已有`runtime/internal/store/messages_test.go:202/227/270`分别覆盖重复及冲突、12写入者并发、数据库重开。这里只阅读测试，没有执行。证明范围为提交去重，不是任意工具外部副作用exactly-once。
+
+### 6.3 attach：存在服务端集合等待，但不能仅凭源码断言实际耗时
+
+- `drivers/gateway/connector/web/web.go:129`：PrimeFeed→PrepareHistoryMetadata→receipt→LaunchFeed。
+- `drivers/gateway/session.go:291`：4 worker覆盖非temporary订阅，共享读期限，收完全部结果才返回；focus只影响收集后的排序。
+- `drivers/gateway/gateway.go:57`默认读期限5秒。PrimeFeed/reconcile在前，5秒不是整个启动上限。
+- `platform/home/view.go:199`→`runtime/internal/store/messages.go:218`已经走不读payload的Meta查询。之前将现状说成必须反序列化各频道正文不准确。
+- 消息阅读/滚动重构不要求改这条后端链；移除这条服务端集合等待本身则需后端实现变更，必须在计时证据和具体方案得到批准后进行，未必需要协议变更。客户端主动同步和需求重试能使用现成能力，不能代替服务端优化，也不能把所有移动端延迟归因于这里。
+
+本次仅修改独立文档工作树；运行前端、后端代码、用户TUI变更、服务和数据库均未修改。消息不见F29仍未经过运行诊断，不据上述代码核验宣称已修复。
