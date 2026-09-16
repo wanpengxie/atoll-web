@@ -1,6 +1,6 @@
 # Atoll Web 视觉与交互完成规格
 
-> 状态：消息视觉专项结构实现与统一代码验证完成，真实设备体感待验收，2026-09-16。只约束视觉、交互和 DOM 几何；连接、缓存、账本与 History Scheduler 的数据语义不在本轮修改范围内。
+> 状态：阅读视口执行层重构与受控验证完成，2026-09-16。用户仍反馈未完全解决，因此滚动问题保持未关闭。此前 Atomic Viewport 完成依据撤回。执行设计及验证边界见 [READING-VIEWPORT-REFACTOR.md](./READING-VIEWPORT-REFACTOR.md)。
 
 ## 1. 完成态
 
@@ -9,7 +9,7 @@
 1. `ConversationProjector` 把账本状态投影成稳定的 presentation rows。
 2. `ViewSession` 保存用户当前在看什么：视图、筛选、折叠和语义阅读位置。
 3. `ConversationViewport` 保存阅读意图：following、browsing、loading-before。
-4. `VirtualTimelineAdapter` 是唯一接触 Virtuoso、DOM 尺寸和物理滚动的模块。
+4. `VirtualTimelineAdapter` 独占有界渲染窗口、DOM 尺寸与物理滚动；消息时间线不再使用 Virtuoso。
 
 消息列表、Composer 和等待队列属于同一块屏幕，但不是同一个布局系统。Shell 给消息 viewport 和 Composer 各自一条恒定边界：消息 viewport 到固定底线为止，Composer 固定悬浮在底部保留带中。Composer 和等待队列保持既有视觉、默认展开状态和操作入口；它们的内容与状态不参与消息 viewport 的动态尺寸计算。
 
@@ -36,14 +36,14 @@ Atoll 与普通 IM 的区别是消息行会持续生长：agent progress、工�
 
 ### V2 一次变化只有一个原子事务
 
-- prepend 以 Virtuoso 的 `firstItemIndex` 改变虚拟坐标，并由 Adapter 在同一个 layout phase 对一个语义 row 消除冷测量残差；提交、真实测量和这一次最终校准都发生在浏览器 paint 之前。它不是 Controller 发起的第二轮恢复，也不得形成循环。
+- prepend、append、resize 共享 Adapter 的一次布局提交：提交前读取当前阅读锚点，准备并测量物化窗口，更新占位后只提交一次位置。历史请求不保存或恢复屏幕位置。
 - 已经展示的 row 不得因随后补齐了它的前驱而改形：身份头一经展示即保持稳定；日期分界归属于新 prepend 的较早 row，而不是回头删改旧窗口头。
 - 已经作为根展示的 request 不得在父 request 随历史到达后搬进父 thread；分页只允许增加前缀，不允许 remove + reparent 既有 row。
-- 回到最新只执行一次 `scrollToIndex(LAST)`。
-- 恢复阅读位置只执行一次带 offset 的 `scrollToIndex(row)`。
-- 展开、收起、代码和字体变化只由 Virtuoso 的 ResizeObserver 重测。远程图片与 Mermaid 在首帧获得稳定 frame，异步完成只替换 frame 内部像素，不改变 row 几何。
-- 异构消息不得套用一个全局猜测行高后直接展示。冷挂载先用真实 row 完成 probe；后续 ResizeObserver 测量在同一帧提交，不把“估算一帧、纠正一帧”的中间态暴露给用户。
-- 数据 runway 与 DOM runway 是两个契约：Scheduler 维持可用历史，adapter 按实际 viewport 与滚动速度在上滑方向维持 3–6 个视口的已物化 row，并分块回收。滚动不得先回收旧 DOM、再等待富内容挂载而露出背景。
+- 回到最新只执行一次显式尾部命令；新输入使未执行命令失效。
+- 恢复阅读位置只接受 `rowID + offset`，尺寸缓存不包含可重放的 scrollTop。
+- 展开、收起、代码和字体变化只由 Adapter 的 ResizeObserver 统一重测。远程图片与 Mermaid 在首帧获得稳定 frame，异步完成只替换 frame 内部像素，不改变 row 几何。
+- 未物化区域允许估计滚动条长度；显示窗口在绘制前按真实 DOM 测量。估计不能作为已显示内容的最终几何。测量表变化、上下占位与阅读锚点必须一并提交。
+- 数据 runway 与 DOM runway 分开：Scheduler 供给数据，Adapter 以视口范围维持有界 DOM 窗口，在用户接近边界时物化下一窗口，不随速度突增到六屏富文本。
 - live publish 只重绘 `contentRevision` 或局部 UI revision 变化的 presentation row；不得因为父级生成了新的 render closure 就重绘整个已物化窗口。
 - `latest` 只决定正文首次进入阅读会话时的默认展开形态。新消息到达后，原末尾长文不得因失去 `latest` 身份而自动收起；其稳定默认值随 ViewSession 保留，直到用户显式展开或收起。
 
@@ -144,11 +144,11 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 | following | live append | 尾部自然跟随 | following |
 | following | 用户向上输入 | 立即停止程序跟随 | browsing |
 | browsing | live append | 屏幕不动，累计“新动态” | browsing |
-| browsing | row resize / 展开收起 | 由 Virtuoso 重测，不发自定义滚动 | browsing |
+| browsing | row resize / 展开收起 | Adapter 统一测量并保住当前阅读锚点 | browsing |
 | browsing | prepend | Adapter 在 paint 前完成一次语义锚点事务 | browsing |
 | browsing | 带向下意图到达真实尾部 | 清空“新动态”并标记已读 | following |
 | browsing | 收起内容使物理底部进入视口 | 屏幕不被继续钉底 | browsing |
-| 任意 | 点击“回到最新” | 一次定位 LAST | following |
+| 任意 | 点击“回到最新” | 一次定位尾部 | following |
 | 任意 | scope / 成员筛选 | 新列表 identity，明确到尾部 | following |
 | browsing | 编辑当前旧消息 | 原 row 原地变化 | browsing |
 | 任意 | 查看来源 | 一次定位目标 row，随后消费命令 | browsing |
@@ -159,14 +159,14 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 ```text
 ConversationViewport                 VirtualTimelineAdapter
 --------------------                 ----------------------
-following / browsing                 Virtuoso ref
-unseen count                         firstItemIndex
-history intent                       followOutput
-session anchor              command  scrollToIndex
+following / browsing                 rowID → measurement table
+unseen count                         bounded materialized window
+history intent                       single layout commit
+session anchor              command  rowID / offset / alignment
 user intent observation    <-------  range / top / bottom / input
 ```
 
-Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentation row id 和 Virtuoso index 完成唯一一次导航；普通 resize 完全交给 Virtuoso。
+Viewport 不接收 DOM。Adapter 以 rowID 执行可取消导航；普通 resize 和数据更新走同一个布局提交机制，不发导航。
 
 ## 6. 本轮施工清单
 
@@ -174,7 +174,7 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 
 - [x] 删除 viewport 内全部直接 `scrollTop` 写入和逐帧锚点修正。
 - [x] 删除 `ViewportLayoutContext` 以及正文组件的局部布局事务。
-- [x] prepend 由 `firstItemIndex` 与 Adapter 的一次 paint 前语义锚点提交共同闭合；尾随只保留 Virtuoso `followOutput`。
+- [x] 本轮重构：移除 Virtuoso 自动滚动路径，prepend/resize/append 收敛成单一布局提交；生命周期测试和隔离浏览器逐帧检查通过。
 - [x] range/start/top 观察只进入同一个合并控制器，不各自创建加载流程。
 - [x] scope/filter 进入 adapter identity；编辑沿用当前 identity 和阅读位置。
 - [x] “新动态”按新 presentation 内容计算，不把 prepend 算进去。
@@ -184,13 +184,13 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 - [x] 图片和 Mermaid 使用首帧稳定 media frame；异步完成不改变 row 外部几何。
 - [x] ViewSession 仅在 browsing + 语义 anchor + geometry key 完全一致时复用 renderer measurement snapshot；following 清除 snapshot 并恢复最新。
 - [x] 末尾长文的初始展开形态进入 ViewSession；live 到达不再通过 `latest` 改写既有 row 高度。
-- [x] DOM materialization runway 按 viewport 与滚动速度扩展，不使用固定设备阈值。
+- [x] 本轮重构：有界窗口按实际视口供给，异构测量与真实自然换行文本的窗口回收、锚点检查通过。
 - [x] 清理嵌套纵向滚动的手势陷阱。
 - [x] 移动端 Files/Preview 改成单 Surface 全屏拓扑。
 - [x] 窄屏 Files/Terminal active 状态互斥，各 Surface 自带关闭出口并恢复焦点。
 - [x] 增加纯状态、组件合同与静态边界测试；不依赖浏览器像素脚本证明正确性。
 
-统一验证结果：111 个测试文件、630 项测试全部通过；production build 与 `git diff --check` 通过。验证未启动浏览器自动化，也未重启宿主服务。
+历史验证记录：曾有 111 个文件、630 项测试通过，但它们不足以证明滚动稳定。本轮验证记录见 READING-VIEWPORT-REFACTOR.md，不能继承历史完成结论。
 
 ## 6.1 与交互运行层总设计逐项对账
 
@@ -199,20 +199,17 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 | 总设计项 | 本轮结论 | 实现边界 |
 |---|---|---|
 | P0-1 Sync Session | 后续专项已完成 | 视觉专项未改该边界；完成实现与不变量见 `SYNC-DATA-ARCHITECTURE.md` |
-| P0-2 Atomic Viewport | 完成 | `ConversationViewport` 只持语义；`VirtualTimelineAdapter` 独占物理滚动；prepend 在 paint 前完成一次语义锚点事务 |
-| P0-3 Content Height | 消息区完成 | 删除消息正文的局部 layout port；异步 media 首帧定框；正文 resize 只有 Virtuoso 一套测量；Composer/等待区维持既有合同 |
+| P0-2 Atomic Viewport | 实现与受控验证完成；真机待验收 | `ConversationViewport` 只持语义；`VirtualTimelineAdapter` 独占物理滚动；prepend/resize/append 共用实测布局提交 |
+| P0-3 Content Height | 消息区完成 | 删除消息正文的局部 layout port；异步 media 首帧定框；正文 resize 只有 Adapter 一套测量；Composer/等待区维持既有合同 |
 | P0-4 Declarative History Demand | 明确后置 | 当前仍是有限 `open()` operation，不冒充持续 demand |
 | P0-5 Local-first Submission | 明确后置 | 本轮不把现有 pending/outbox 宣称为 IndexedDB local echo |
 | P1-1 Presentation Model | 稳定视觉模型已落位；完整计算增量化后置 | row identity/revision 稳定，token delta 不重扫；结构变化仍可能顺序扫描 |
 | P1-2 统一导航事务 | 完成 | channel/scope/filter rebase；source/latest/restore 单 token 单消费；仅 browsing 会话可用匹配的 measurement snapshot 加速，following 始终恢复最新 |
 | P1-3 跨生命周期连续性 | 明确后置 | 当前 ViewSession 为可丢弃内存态，不承诺刷新或跨设备恢复 |
 
-### 旧视觉设计中被纠正的两项
+### 被撤回的完成判断
 
-1. 第一版要求 prepend 后再启动一轮异步 anchor 恢复，这会成为第二次可见补偿。当前实现是在旧后缀尚可见时捕获语义 anchor，并在同一次 React layout commit 中对 `firstItemIndex` 的冷测量残差校准一次；用户看不到中间帧，也没有后续恢复循环。
-2. 第一版要求每个内容高度变化发 `layoutChange` 给 Controller。当前实现改为内容只改变自身 DOM，Virtuoso keyed ResizeObserver 统一重测；逐组件 layout transaction 会制造第二份几何真相。
-
-这两项属于架构纠错，不是遗漏。语义恢复只用于频道重挂或明确导航，不用于普通 prepend/resize。
+`firstItemIndex + layoutEffect` 并非原子事务，库内跨帧补偿仍会继续。函数式 followOutput 返回 false 也不等于关闭库内全部定位分支。本轮移除这些执行路径，改用当前阅读锚点和实测窗口的一次位置提交。之前“用户看不到中间帧”的断言未经真实几何验证，撤回。
 
 ### 所有权核对
 
@@ -221,10 +218,10 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 | ledger → presentation rows | `ConversationProjector` | render loop、DOM |
 | 每频道 scope/filter/fold/anchor | `ViewSession` | Router、Scheduler |
 | active Surface/Context route | App routing + `SurfaceShell` | `ViewSession`（已删除未读取的副本） |
-| following/browsing/loading | `ConversationViewport` | Virtuoso 回调、正文组件 |
+| following/browsing/loading | `ConversationViewport` | 渲染测量回调、正文组件 |
 | DOM 测量与物理滚动 | `VirtualTimelineAdapter` | Viewport、Timeline、FoldableBody |
 | desktop/compact/mobile 拓扑 | `SurfaceShell` + Shell CSS | 各业务 Surface |
-| 消息行高度 | row DOM + Virtuoso | Composer、等待区、页面 Shell |
+| 消息行高度 | row DOM + Adapter | Composer、等待区、页面 Shell |
 
 ## 7. 明确不接受的回归
 
@@ -241,4 +238,4 @@ Viewport 不接收裸 DOM node，不暴露 layout port。Adapter 用 presentatio
 - 本视觉专项不改变 WebSocket attach、IndexedDB、缓存 epoch 或 history wire；这些边界随后由 `SYNC-DATA-ARCHITECTURE.md` 独立重构，不能反向侵入视觉合同。
 - 不改变 History Scheduler 的批次、并发、重试和预热策略。
 - 不实现跨设备阅读位置或离线 outbox。
-- 不通过无语义调大 overscan、延迟、timeout 或增加补偿次数掩盖几何冲突；DOM runway 只能由 renderer 根据 viewport 与输入速度决定。
+- 不通过无语义调大 overscan、延迟、timeout 或增加补偿次数掩盖几何冲突；DOM runway 只能由 renderer 根据实际 viewport 与已测量窗口决定。

@@ -105,7 +105,7 @@ historyReady
 → 闭合
 ```
 
-对于 Virtuoso，prepend 的原子事务由稳定 row identity、`firstItemIndex` 与 Adapter 内一次 paint 前语义锚点提交完成；普通 row resize 由其 keyed ResizeObserver 完成。上层不得在它完成后再做一轮像素恢复。
+旧方案将 Virtuoso 的 `firstItemIndex` 加上 Adapter 的 paint 前修正当成原子事务，这个判断已撤回：库内仍有独立的跨帧补偿。消息区现改用 Adapter 自有的测量表与有界窗口，prepend/resize/append 共用一次实测布局提交；上层只提交语义意图，不做第二轮像素恢复。执行合同与验证边界见 [READING-VIEWPORT-REFACTOR.md](./READING-VIEWPORT-REFACTOR.md)。
 
 稳定 identity 还不够，旧 row 的几何也必须对 prepend 单调。分页窗口头最初不知道自己的前驱；更早历史到达后，投影不得据此从旧 row 删除日期分界、头像或作者头。连续分组一经展示即冻结，日期分界由较早一侧的新增 row 持有，保证 prepend 只增加前缀、不重塑已经在屏幕上的后缀。
 
@@ -196,12 +196,12 @@ IndexedDB 原子写入 outbox
 | 优先级 | 工作 | 当前状态 | 完成判据 |
 |---|---|---|---|
 | P0-1 | 解除 attach/live 对 IndexedDB 和历史初始化的等待 | 完成 | Wire 不等待 IndexedDB；attach Meta 同步安装；缓存失败不挡 live；持久写受 `(principal, boot)` epoch fence 约束 |
-| P0-2 | 收敛屏幕几何为单一原子事务 | 完成 | 无第二套 `scrollTop`/anchor 修正；prepend、resize 各只有一个物理 owner |
+| P0-2 | 收敛屏幕几何为单一原子事务 | 完成（实现与受控验证；真机待验收） | 无第二套 `scrollTop`/anchor 修正；prepend、resize 各只有一个物理 owner |
 | P0-3 | 补齐消息内容高度合同 | 消息区完成 | 内容组件不控制祖先几何；异步富内容首帧定框；Composer/等待区另案 |
 | P0-4 | 有 deadline 的持续 demand 与动态 runway | 明确后置 | Visual 维护需求，不调用“下一段”；Scheduler 自主闭合 |
 | P0-5 | IndexedDB outbox 与时间线 local echo | 明确后置 | 离线可提交；本地回显；receipt/feed 对账 |
 | P1-1 | 增量 Presentation Model | 本轮施工中（稳定模型已落位，完整计算增量化后置） | 稳定 row identity；live 不使稳定历史 row 重建；避免无条件全量重投影 |
-| P1-2 | 筛选、切频道、Preview 返回的统一导航事务 | 完成 | rebase identity 明确；命令单次消费；阅读会话可恢复 |
+| P1-2 | 筛选、切频道、Preview 返回的统一导航事务 | 完成（实现与受控验证；真机待验收） | rowID 导航；用户意图取消过期命令；rebase identity 明确；阅读会话可恢复 |
 | P1-3 | 持久草稿、阅读位置和跨设备 read frontier | 明确后置 | 刷新/崩溃/跨设备连续性有独立协议 |
 
 仍标为“明确后置”的项目尚未施工；P0-1 已由后续同步数据专项闭合，不再沿用视觉专项当时的范围判断。
@@ -217,3 +217,5 @@ IndexedDB 原子写入 outbox
 完整交互运行层只有在以下四项全部完成后才可称为完成：Sync Session、Declarative History Demand、Atomic Viewport 与 Content Height、Local-first Submission。
 
 本轮只允许把视觉合同及其直接依赖标为完成；不得把“视觉专项完成”写成“总设计完成”。
+
+2026-09-16：用户仍遇到滚动定位变化，撤回 P0-2 的旧完成判断。整体执行层重构与验收见 [READING-VIEWPORT-REFACTOR.md](./READING-VIEWPORT-REFACTOR.md)。

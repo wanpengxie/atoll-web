@@ -15,17 +15,16 @@ function defaultConversation() {
 }
 
 function copyViewportSnapshot(value) {
-  if (!value?.listKey || !value?.geometryKey || !value?.state || !Array.isArray(value.state.ranges)) return null;
+  if (!value?.listKey || !value?.geometryKey || value?.state?.version !== 1 || !Array.isArray(value.state.rows)) return null;
   return {
     listKey: String(value.listKey),
     geometryKey: String(value.geometryKey),
-    firstItemIndex: Number(value.firstItemIndex || 0),
     state: {
-      scrollTop: Number(value.state.scrollTop || 0),
-      ranges: value.state.ranges.map((range) => ({
-        startIndex: Number(range.startIndex || 0),
-        endIndex: Number(range.endIndex || 0),
-        size: Number(range.size || 0),
+      version: 1,
+      width: Number(value.state.width || 0),
+      rows: value.state.rows.map((row) => ({
+        id: String(row.id),
+        size: Number(row.size || 0),
       })),
     },
   };
@@ -50,7 +49,7 @@ function copyConversation(value = {}) {
     foldDefaults: [...new Set(value.foldDefaults || [])].filter(Boolean).map(String),
     // Physical measurements are subordinate to semantic reading intent. A
     // following session has exactly one valid destination—the live tail—so a
-    // cached scrollTop/range must never override it. Snapshots are useful only
+    // cached measurements must never override it. Snapshots are useful only
     // as an acceleration for a browsing session that also has a durable row
     // anchor to fall back to.
     viewportSnapshot: mode === VIEWPORT_MODE.browsing && anchor
@@ -64,7 +63,7 @@ function copyConversation(value = {}) {
 // active Surface/Context; copying those values here would create an unread
 // second truth. This store only survives Conversation remounts caused by
 // channel navigation and responsive topology changes. It may also retain a
-// disposable renderer measurement snapshot. Restoration is allowed only when
+// disposable row measurement snapshot (never a pixel destination). Reuse is allowed only when
 // the exact presentation geometry key still matches, so pixels never become
 // a second ledger or navigation truth.
 export function createViewSessionStore() {

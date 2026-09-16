@@ -42,3 +42,27 @@ if (typeof HTMLElement !== 'undefined' && !HTMLElement.prototype.scrollBy) {
     this.scrollTop = Number(this.scrollTop || 0) + delta;
   };
 }
+
+// The owned timeline uses the browser's actual DOM boxes, with no test-only
+// runtime branch. Legacy rendering tests get a deterministic surface here;
+// geometry regressions supply heterogeneous data-test-height values per row.
+if (typeof HTMLElement !== 'undefined') {
+  const rect = HTMLElement.prototype.getBoundingClientRect;
+  const height = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+  const width = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get() {
+    return this.classList.contains('timeline-message-list') ? 720 : height?.get?.call(this) || 0;
+  } });
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get() {
+    return this.classList.contains('timeline-message-list') ? 800 : width?.get?.call(this) || 0;
+  } });
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    if (!this.classList.contains('presentation-row')) return rect.call(this);
+    const rowHeight = Number(this.dataset.testHeight || 96);
+    let top = -(this.parentElement?.scrollTop || 0);
+    for (let node = this.previousElementSibling; node; node = node.previousElementSibling) {
+      top += node.classList.contains('presentation-row') ? Number(node.dataset.testHeight || 96) : parseFloat(node.style.height) || 0;
+    }
+    return { ...emptyRect(), top, bottom: top + rowHeight, height: rowHeight, width: 800, right: 800 };
+  };
+}

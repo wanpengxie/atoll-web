@@ -93,7 +93,7 @@ describe('历史自动懒加载', () => {
 
   it('后台蓄水池增长不推动可见列表，且不存在手动加载按钮', async () => {
     const view = render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 0 }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    expect(await screen.findByText('历史 1')).toBeTruthy();
+    expect(await screen.findByText('历史 120')).toBeTruthy();
     const before = view.container.querySelectorAll('.standalone-row').length;
     view.rerender(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 5_000 }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     expect(view.container.querySelectorAll('.standalone-row').length).toBe(before);
@@ -114,7 +114,7 @@ describe('历史自动懒加载', () => {
     const view = render(<Timeline state={state} history={{ attached: false, hasOlder: false, buffered: 0, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
 
-    // Meta/IDB settles after Virtuoso has already reported both top and bottom.
+    // Meta/IDB settles after 消息视口 has already reported both top and bottom.
     // The original operation remains the sole owner; rerender cannot replace it.
     view.rerender(<Timeline state={state} history={{ attached: true, hasOlder: true, buffered: 5_000, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -155,7 +155,7 @@ describe('历史自动懒加载', () => {
     finish({ kind: 'exhausted' });
   });
 
-  it('成员过滤按钮在 Virtuoso 时间线中可点击并收窄条目', async () => {
+  it('成员过滤按钮在 消息视口 时间线中可点击并收窄条目', async () => {
     const standalone = ['agent-a', 'agent-b'].map((agentId, index) => ({
       seq: index + 1,
       envelope: {

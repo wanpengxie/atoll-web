@@ -56,15 +56,15 @@ describe('per-channel view sessions', () => {
       mode: 'browsing',
       anchor: { rowID: 'row-1', offset: -8, seq: 1 },
       viewportSnapshot: {
-        listKey: 'a:mine', geometryKey: '2:hash:', firstItemIndex: 999_998,
-        state: { scrollTop: 120, ranges: [{ startIndex: 0, endIndex: 1, size: 84 }] },
+        listKey: 'a:mine', geometryKey: '2:hash:',
+        state: { version: 1, width: 800, rows: [{ id: 'row-1', size: 84 }] },
       },
     });
     const first = sessions.read('a');
-    first.viewportSnapshot.state.ranges[0].size = 999;
+    first.viewportSnapshot.state.rows[0].size = 999;
     expect(sessions.read('a').viewportSnapshot).toEqual({
-      listKey: 'a:mine', geometryKey: '2:hash:', firstItemIndex: 999_998,
-      state: { scrollTop: 120, ranges: [{ startIndex: 0, endIndex: 1, size: 84 }] },
+      listKey: 'a:mine', geometryKey: '2:hash:',
+      state: { version: 1, width: 800, rows: [{ id: 'row-1', size: 84 }] },
     });
   });
 
@@ -74,8 +74,8 @@ describe('per-channel view sessions', () => {
       mode: 'browsing',
       anchor: { rowID: 'row-1', offset: -8, seq: 1 },
       viewportSnapshot: {
-        listKey: 'a:mine', geometryKey: '2:hash:', firstItemIndex: 999_998,
-        state: { scrollTop: 120, ranges: [{ startIndex: 0, endIndex: 1, size: 84 }] },
+        listKey: 'a:mine', geometryKey: '2:hash:',
+        state: { version: 1, width: 800, rows: [{ id: 'row-1', size: 84 }] },
       },
     });
     sessions.writeConversation('a', { mode: 'following', anchor: null });

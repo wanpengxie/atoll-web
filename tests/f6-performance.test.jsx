@@ -50,23 +50,23 @@ describe('F6 长列表预算', () => {
     const started = performance.now();
     const view = render(<Timeline state={state} roster={[{ id: 'alice', name: 'Alice' }]} pending={[]} approvalStates={{}} />);
     expect(performance.now() - started).toBeLessThan(2_000);
-    expect(await screen.findByText('动态 1')).toBeTruthy();
+    expect(await screen.findByText('动态 5000')).toBeTruthy();
     const rendered = view.container.querySelectorAll('.standalone-row').length;
     expect(rendered).toBeGreaterThan(0);
     expect(rendered).toBeLessThan(100);
-    expect(screen.queryByText('动态 5000')).toBeNull();
+    expect(screen.queryByText('动态 1')).toBeNull();
   });
 
-  it('向前 prepend 时由 Virtuoso 保持窗口且 DOM 仍有界', async () => {
+  it('向前 prepend 保持尾部阅读窗口且 DOM 仍有界', async () => {
     const makeState = (from) => {
       const standalone = Array.from({ length: 501 - from }, (_, index) => ({ seq: from + index, envelope: envelope(`m-${from + index}`, from + index) }));
       return { channelId: 'c0', rows: new Map(standalone.map((row) => [row.seq, row.envelope])), turns: new Map(), standalone, orphans: [], narration: [], lastSeq: 500 };
     };
     const view = render(<Timeline state={makeState(201)} roster={[{ id: 'alice', name: 'Alice' }]} pending={[]} approvalStates={{}} />);
-    expect(await screen.findByText('动态 201')).toBeTruthy();
+    expect(await screen.findByText('动态 500')).toBeTruthy();
     const before = view.container.querySelectorAll('.standalone-row').length;
     view.rerender(<Timeline state={makeState(169)} roster={[{ id: 'alice', name: 'Alice' }]} pending={[]} approvalStates={{}} />);
-    await waitFor(() => expect(screen.getByText('动态 201')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('动态 500')).toBeTruthy());
     expect(view.container.querySelectorAll('.standalone-row').length).toBeLessThanOrEqual(before + 4);
   });
 
@@ -79,7 +79,7 @@ describe('F6 长列表预算', () => {
       return { channelId: 'c0', rows: new Map(standalone.map((row) => [row.seq, row.envelope])), turns: new Map(), standalone, orphans: [], narration: [], lastSeq: to };
     };
     const view = render(<Timeline state={makeState(201, 500)} roster={[{ id: 'alice', name: 'Alice' }]} pending={[]} approvalStates={{}} />);
-    expect(await screen.findByText('动态 201')).toBeTruthy();
+    expect(await screen.findByText('动态 500')).toBeTruthy();
     const before = view.container.querySelectorAll('.standalone-row').length;
     view.rerender(<Timeline state={makeState(201, 500)} history={{ buffered: 5_000 }} roster={[{ id: 'alice', name: 'Alice' }]} pending={[]} approvalStates={{}} />);
     expect(view.container.querySelectorAll('.standalone-row').length).toBe(before);

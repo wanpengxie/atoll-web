@@ -127,7 +127,7 @@ it('agent.new 成功后只显示一条轻量确认，不伪装成用户聊天消
   const turn = { requestId: request.id, request, requestSeq: 1, status: 'completed', provisional: [], anomalies: [], terminal: { id: 'new-1-terminal', type: 'agent.new', ts: 110, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed' } } };
   const state = { channelId: 'c0', rows: new Map([[1, request], [2, turn.terminal]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 2 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} />);
-  expect(screen.getByRole('status').textContent).toBe('研究员 已开始新对话');
+  expect(screen.getByText('研究员 已开始新对话').getAttribute('role')).toBe('status');
   expect(document.querySelector('.request-message')).toBeNull();
 });
 

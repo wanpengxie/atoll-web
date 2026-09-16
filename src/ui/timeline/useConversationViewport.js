@@ -4,10 +4,9 @@ import { diagnostic } from '../../model/diagnostics.js';
 import { HISTORY_INTENT, HISTORY_URGENCY, normalizeHistoryDemandPort } from '../../model/history-demand.js';
 import { createTopIntentController, HISTORY_OPERATION } from '../../model/history-interaction.js';
 
-export const VIRTUAL_INDEX_BASE = 1_000_000_000;
 const HISTORY_RUNWAY_ROWS = 96;
 
-// Reading intent only. Virtuoso and DOM geometry belong exclusively to the
+// Reading intent only. Measurements and DOM geometry belong exclusively to the
 // adapter; this hook sends semantic commands and consumes semantic observations.
 export function useConversationViewport({
   channelId, lastSeq, history, viewKey, listKey, items, firstVisibleSeq,
@@ -22,20 +21,20 @@ export function useConversationViewport({
     initialSession.mode === VIEWPORT_MODE.browsing ? VIEWPORT_MODE.browsing : VIEWPORT_MODE.following
   );
   const initialViewportSnapshotRef = useRef(initialSession.viewportSnapshot || null);
-  const canRestoreViewportSnapshot = Boolean(
+  const canRestoreMeasurements = Boolean(
     initialMode !== VIEWPORT_MODE.following
     && initialSession.anchor?.rowID
     && initialViewportSnapshotRef.current?.listKey === listKey
     && initialViewportSnapshotRef.current?.geometryKey === geometryKey
-    && initialViewportSnapshotRef.current?.state,
+    && initialViewportSnapshotRef.current?.state?.version === 1,
   );
   const initialAnchorRef = useRef(initialSession.anchor || null);
-  const restoreIssuedRef = useRef(canRestoreViewportSnapshot);
+  const restoreIssuedRef = useRef(false);
   const restoreRequestRef = useRef(null);
   const navigationIssuedRef = useRef(null);
   const followsTailRef = useRef(initialMode === VIEWPORT_MODE.following);
   // Physical geometry is not reading intent. A row collapse or late media
-  // measurement can make Virtuoso report the bottom without the reader ever
+  // measurement can expose the bottom without the reader ever
   // asking to return there. Only a downward gesture or an explicit jump arms
   // the transition back to following.
   const tailArrivalArmedRef = useRef(followsTailRef.current);
@@ -43,14 +42,11 @@ export function useConversationViewport({
   const atTopRef = useRef(false);
   const atBottomRef = useRef(followsTailRef.current);
   const transitionRef = useRef({
-    key: canRestoreViewportSnapshot ? listKey : '',
+    key: listKey,
     firstID: items[0]?.id || '',
     firstSeq: firstVisibleSeq,
     lastSeq: latestVisibleSeq,
     length: items.length,
-    firstItemIndex: canRestoreViewportSnapshot
-      ? Number(initialViewportSnapshotRef.current.firstItemIndex || VIRTUAL_INDEX_BASE)
-      : VIRTUAL_INDEX_BASE,
   });
   const operationSerialRef = useRef(0);
   const controllerRef = useRef(null);
@@ -95,7 +91,7 @@ export function useConversationViewport({
 
   function handleAdapterSnapshot(stateSnapshot) {
     const current = runtimeRef.current;
-    if (!current?.onSessionChange || !Array.isArray(stateSnapshot?.ranges)) return;
+    if (!current?.onSessionChange || stateSnapshot?.version !== 1 || !Array.isArray(stateSnapshot.rows)) return;
     if (followsTailRef.current || !currentAnchorRef.current?.rowID) {
       current.onSessionChange({ viewportSnapshot: null });
       return;
@@ -104,7 +100,6 @@ export function useConversationViewport({
       viewportSnapshot: {
         listKey: current.listKey,
         geometryKey: current.geometryKey,
-        firstItemIndex: Number(transitionRef.current.firstItemIndex || VIRTUAL_INDEX_BASE),
         state: stateSnapshot,
       },
     });
@@ -130,13 +125,10 @@ export function useConversationViewport({
         });
         if (operationState === 'started') transitionMode(VIEWPORT_EVENT.demandStarted);
         else if (operationState === HISTORY_OPERATION.satisfied) {
-          // firstItemIndex changes the virtual coordinate system. The adapter
-          // closes the same transaction before paint against a semantic row,
-          // removing cold-measurement residual without a correction loop.
-          transitionMode(VIEWPORT_EVENT.demandSatisfied);
-          transitionMode(VIEWPORT_EVENT.anchorRestored);
+          // Data availability does not initiate navigation. Layout commits
+          // preserve the reader independently of the history operation.
+          transitionMode(VIEWPORT_EVENT.demandClosed, { followsTail: followsTailRef.current });
         } else if ([HISTORY_OPERATION.exhausted, HISTORY_OPERATION.failed, HISTORY_OPERATION.cancelled].includes(operationState)) {
-          adapterRef.current?.cancelPrepend?.();
           transitionMode(VIEWPORT_EVENT.demandClosed, { followsTail: followsTailRef.current });
         }
       },
@@ -158,19 +150,16 @@ export function useConversationViewport({
   }, [channelId]);
 
   const previousList = transitionRef.current;
-  let firstItemIndex = previousList.firstItemIndex;
   let prepended = 0;
-  if (previousList.key !== listKey) firstItemIndex = VIRTUAL_INDEX_BASE;
-  else if (previousList.firstID && items[0]?.id !== previousList.firstID) {
+  if (previousList.key === listKey && previousList.firstID && items[0]?.id !== previousList.firstID) {
     // Preserve a semantic row, not a ledger sequence. A presentation row may
     // span multiple ledger facts, so its seqLow can change while its identity
     // and place in the conversation remain stable.
     prepended = items.findIndex((entry) => entry.id === previousList.firstID);
-    if (prepended > 0) firstItemIndex = previousList.firstItemIndex - prepended;
   }
   const nextTransition = {
     key: listKey, firstID: items[0]?.id || '', firstSeq: firstVisibleSeq, lastSeq: latestVisibleSeq,
-    length: items.length, firstItemIndex,
+    length: items.length,
   };
 
   useLayoutEffect(() => {
@@ -180,7 +169,7 @@ export function useConversationViewport({
       setAtTop(false);
       controllerRef.current?.observePrepend();
     }
-  }, [listKey, nextTransition.firstID, firstVisibleSeq, latestVisibleSeq, items.length, firstItemIndex, prepended]);
+  }, [listKey, nextTransition.firstID, firstVisibleSeq, latestVisibleSeq, items.length, prepended]);
 
   // Changing scope/filter changes the list's meaning. It is explicit
   // navigation, not prepend, and always starts from the latest item.
@@ -205,7 +194,8 @@ export function useConversationViewport({
     persistSession();
   }, [viewKey, navigationTarget?.rowID, navigationTarget?.channelId, navigationTarget?.token, channelId, onNavigationTargetConsumed]);
 
-  // Restore is one adapter command. No DOM polling or repeated pixel correction.
+  // Restore is one cancellable message-ID command. Measurements can accelerate
+  // it but never replace this semantic destination with a saved pixel position.
   useLayoutEffect(() => {
     const anchor = initialAnchorRef.current;
     if (!anchor || restoreIssuedRef.current || !items.length) return;
@@ -215,9 +205,9 @@ export function useConversationViewport({
     followsTailRef.current = false;
     tailArrivalArmedRef.current = false;
     currentAnchorRef.current = anchor;
-    adapterRef.current?.restore({ index: firstItemIndex + itemIndex, offset: Number(anchor.offset || 0) });
+    adapterRef.current?.restore({ rowID: anchor.rowID, offset: Number(anchor.offset || 0) });
     transitionMode(VIEWPORT_EVENT.anchorRestored);
-  }, [listKey, firstItemIndex, items]);
+  }, [listKey, items]);
 
   useLayoutEffect(() => {
     if (!navigationTarget?.rowID || navigationTarget.channelId !== channelId) return;
@@ -232,9 +222,9 @@ export function useConversationViewport({
     tailArrivalArmedRef.current = false;
     setAtBottom(false);
     transitionMode(VIEWPORT_EVENT.userBrowse);
-    adapterRef.current?.focus({ index: firstItemIndex + itemIndex });
+    adapterRef.current?.focus({ rowID: navigationTarget.rowID });
     onNavigationTargetConsumed?.(navigationTarget.token);
-  }, [navigationTarget?.token, navigationTarget?.rowID, navigationTarget?.channelId, channelId, firstItemIndex, items, onNavigationTargetConsumed]);
+  }, [navigationTarget?.token, navigationTarget?.rowID, navigationTarget?.channelId, channelId, items, onNavigationTargetConsumed]);
 
   useEffect(() => {
     const anchor = initialAnchorRef.current;
@@ -299,10 +289,6 @@ export function useConversationViewport({
     const exhausted = current.status.attached && !current.status.loading
       && !current.status.hasOlder && Number(current.status.buffered || 0) === 0;
     if (exhausted) return;
-    if (!controllerState.active && !controllerState.consumed && !controllerState.awaitingUserRearm) {
-      adapterRef.current?.beginPrepend?.();
-    }
-    const ownedView = current.viewKey;
     void controller.enterTop({
       operationId: `${current.channelId}:${++operationSerialRef.current}`,
       anchorSeq: current.firstVisibleSeq,
@@ -312,24 +298,14 @@ export function useConversationViewport({
       urgency,
       revealRows,
       trigger,
-    }).then(() => {
-      if (controllerRef.current === controller && controller.snapshot().viewKey === ownedView && !controller.snapshot().active) {
-        transitionMode(VIEWPORT_EVENT.anchorRestored);
-      }
     });
   }
 
   function handleRangeChanged(range) {
-    const relativeStart = Math.max(0, Number(range?.startIndex || 0) - Number(transitionRef.current.firstItemIndex || 0));
+    const relativeStart = Math.max(0, Number(range?.startIndex || 0));
     if (relativeStart <= HISTORY_RUNWAY_ROWS) {
       requestHistory('range-runway', { urgency: HISTORY_URGENCY.anticipatory, revealRows: HISTORY_RUNWAY_ROWS });
     }
-  }
-
-  function handleStartReached() {
-    atTopRef.current = true;
-    setAtTop(true);
-    requestHistory('start-reached');
   }
 
   function handleAtTopChange(value) {
@@ -339,6 +315,7 @@ export function useConversationViewport({
   }
 
   function handleUserIntent(intent) {
+    adapterRef.current?.cancelNavigation?.();
     if (initialAnchorRef.current && !restoreIssuedRef.current) {
       initialAnchorRef.current = null;
       restoreIssuedRef.current = true;
@@ -358,7 +335,7 @@ export function useConversationViewport({
     } else if (intent === 'newer') {
       tailArrivalArmedRef.current = true;
       controllerRef.current?.leaveTop();
-      // When geometry already says we are at the tail, Virtuoso need not emit
+      // When geometry already says we are at the tail, the adapter need not emit
       // another atBottomStateChange. The downward gesture itself completes the
       // transition instead of leaving the reader stranded in browsing.
       if (atBottomRef.current && !followsTailRef.current) enterFollowing();
@@ -377,13 +354,16 @@ export function useConversationViewport({
   }
 
   function handleAtBottomChange(value) {
-    // Virtuoso can briefly report both edges while the initial anchor's local
+    // A short list can report both edges while the initial anchor's local
     // window is still being restored. That measurement is not a user action
     // and must not turn a saved browsing session into following.
     if (value && initialAnchorRef.current && !restoreIssuedRef.current) return;
     atBottomRef.current = Boolean(value);
     setAtBottom(Boolean(value));
     if (!value) return;
+    // Reporting the tail while already following must not cancel an active
+    // short-window history demand. Only a change of reader intent does that.
+    if (followsTailRef.current) { markLatestRead(); return; }
     if (!followsTailRef.current && !tailArrivalArmedRef.current) return;
     enterFollowing();
   }
@@ -410,23 +390,16 @@ export function useConversationViewport({
 
   return {
     adapterRef,
-    firstItemIndex,
     hasInitialAnchor: Boolean(initialAnchorRef.current && !restoreIssuedRef.current),
-    hasPendingNavigation: Boolean(
-      navigationTarget?.rowID
-      && navigationTarget.channelId === channelId
-      && navigationIssuedRef.current !== `${navigationTarget.channelId}:${navigationTarget.rowID}:${navigationTarget.token ?? ''}`
-    ),
     atTop,
     mode,
     unseen,
     status,
-    restoreStateFrom: canRestoreViewportSnapshot ? initialViewportSnapshotRef.current.state : null,
-    followOutput: () => (followsTailRef.current ? 'auto' : false),
+    measurementSnapshot: canRestoreMeasurements ? initialViewportSnapshotRef.current.state : null,
+    isFollowing: () => followsTailRef.current,
     handleAdapterSnapshot,
     handleAnchorObserved,
     handleUserIntent,
-    handleStartReached,
     handleAtTopChange,
     handleAtBottomChange,
     handleRangeChanged,

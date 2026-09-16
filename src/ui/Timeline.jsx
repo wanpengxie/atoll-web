@@ -761,9 +761,8 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     withNarration,
     localGeometryKey,
   ), [withNarration, localGeometryKey]);
-  // The virtual index and the lookup used after a prepend must describe the
-  // same presentation rows. A turn can span several ledger sequences, so the
-  // raw entry seq is not interchangeable with its semantic row bounds.
+  // History demand uses presentation bounds; navigation uses row IDs. A turn
+  // can span several ledger sequences, so raw entry seq is not a row address.
   const firstVisibleSeq = Number(withNarration[0]?.seqLow || 0);
   const latestVisibleSeq = Number(withNarration.at(-1)?.seqHigh || 0);
 	const viewport = useConversationViewport({
@@ -782,7 +781,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
 	  initialSession: initialViewSessionRef.current,
 	  onSessionChange: (change) => viewSessions?.writeConversation(state.channelId, change),
 	});
-	const firstItemIndex = viewport.firstItemIndex;
   const timelineControl = useMemo(() => {
     const queued = [];
     const actorIds = new Set();
@@ -859,10 +857,9 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
   // compact revision made only from the local UI facts it actually consumes;
   // unchanged rows retain their mounted subtree, intrinsic measurements and
   // nested disclosure state while another request streams or arrives.
-  const rowRenderRevision = useCallback((absoluteIndex, row) => {
+  const rowRenderRevision = useCallback((_index, row) => {
     const entry = row.body;
-    const relativeIndex = absoluteIndex - firstItemIndex;
-    const isLatest = relativeIndex === withNarration.length - 1;
+    const isLatest = row.id === tailRowID;
     if (entry?.kind === 'turn') {
       const requestId = entry.turn.requestId;
       const actorId = entry.turn.request.audience?.[0] || '';
@@ -892,7 +889,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     }
     return `${namesRevision}|${row.contentRevision}|${isLatest ? 1 : 0}`;
   }, [
-    access, approvalStates, capabilityIndex, controlStates, editing, firstItemIndex,
+    access, approvalStates, capabilityIndex, controlStates, editing,
     tailRowID, foldOverrides, frozenByActor, mergedCounts, namesRevision, preemptedSources,
     resumePin, selfId, state.channelId, turnDetail?.selected?.requestId,
     withNarration.length,
@@ -1113,9 +1110,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
 		  rows={withNarration}
 		  viewport={viewport}
 		  rowRevision={rowRenderRevision}
-		  itemKey={(_index, row) => presentationEntryId(row)}
-		  renderRow={(index, row) => {
-		  const itemIndex = index - firstItemIndex;
+		  renderRow={(_index, row) => {
           const entry = row.body;
           const continuation = row.continuation;
           const boundaryAfterTimestamp = row.boundaryAfterTimestamp;
@@ -1143,7 +1138,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const fold = { latest: itemIndex === withNarration.length - 1, overrides: effectiveFoldOverrides, onToggle: toggleFold };
+            const fold = { latest: row.id === tailRowID, overrides: effectiveFoldOverrides, onToggle: toggleFold };
             const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onCreateTask: onCreateTask ? () => onCreateTask(source) : null, onReply };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
@@ -1159,7 +1154,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: itemIndex === withNarration.length - 1, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.id === tailRowID, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
           }
 		  return <div className="timeline-virtual-item">{content}{boundaryAfterTimestamp > 0 && <div className="timeline-day"><span>{dayLabel(boundaryAfterTimestamp)}</span></div>}</div>;
 		  }}

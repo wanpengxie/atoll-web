@@ -4,8 +4,7 @@ import { resolve } from 'node:path';
 import React from 'react';
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useConversationViewport, VIRTUAL_INDEX_BASE } from '../src/ui/timeline/useConversationViewport.js';
-import { capturePrependAnchor, restorePrependAnchor } from '../src/ui/timeline/VirtualTimelineAdapter.jsx';
+import { useConversationViewport } from '../src/ui/timeline/useConversationViewport.js';
 
 const repoRoot = process.cwd();
 const source = (relative) => readFileSync(resolve(repoRoot, relative), 'utf8');
@@ -23,11 +22,10 @@ describe('visual interaction architecture', () => {
     const adapter = source('src/ui/timeline/VirtualTimelineAdapter.jsx');
     const timeline = source('src/ui/Timeline.jsx');
     const fold = source('src/ui/timeline/FoldableBody.jsx');
-    expect(adapter).toContain("from 'react-virtuoso'");
-    expect(adapter).toContain('scrollToIndex');
-    expect(adapter).toContain('skipAnimationFrameInResizeObserver');
-    expect(adapter).not.toContain('defaultItemHeight');
-    expect(adapter).toContain('MATERIALIZATION_RUNWAY');
+    expect(adapter).not.toContain("from 'react-virtuoso'");
+    expect(adapter).not.toMatch(/scrollToIndex|requestAnimationFrame|setTimeout/);
+    expect(adapter.match(/scrollTop\s*=/g)).toHaveLength(1);
+    expect(adapter).toContain('getSnapshotBeforeUpdate');
     expect(adapter).toContain('memo(function PresentationRow');
     expect(timeline).not.toMatch(/scrollIntoView|scrollTop\s*[+\-]?=|scrollToIndex/);
     expect(fold).not.toMatch(/scrollIntoView|scrollTop|getBoundingClientRect|requestAnimationFrame/);
@@ -63,26 +61,6 @@ describe('visual interaction architecture', () => {
     expect(timeline).not.toContain('timeline-overlay-clearance');
     expect(composerStyles).toMatch(/\.composer-wrap\s*\{[^}]*position:\s*relative/s);
     expect(composerStyles).toMatch(/\.composer-state-rail\s*\{[^}]*height:\s*18px/s);
-  });
-
-  it('closes a cold prepend against one semantic row before paint', () => {
-    const scroller = document.createElement('div');
-    const older = document.createElement('div');
-    const anchorRow = document.createElement('div');
-    older.dataset.presentationRowId = 'older';
-    anchorRow.dataset.presentationRowId = 'anchor';
-    scroller.append(older, anchorRow);
-    let anchorTop = 84;
-    scroller.scrollTop = 300;
-    scroller.getBoundingClientRect = () => ({ top: 40, bottom: 640 });
-    older.getBoundingClientRect = () => ({ top: -40, bottom: 20 });
-    anchorRow.getBoundingClientRect = () => ({ top: anchorTop, bottom: anchorTop + 96 });
-
-    const anchor = capturePrependAnchor(scroller);
-    expect(anchor).toEqual({ rowID: 'anchor', offset: 44 });
-    anchorTop = 137.25;
-    expect(restorePrependAnchor(scroller, anchor)).toBe(53.25);
-    expect(scroller.scrollTop).toBe(353.25);
   });
 
   it('gives asynchronously decoded rich media stable first-paint geometry', () => {
@@ -142,7 +120,7 @@ describe('semantic navigation', () => {
     const target = { channelId: 'c0', rowID: 'row-1', token: 7 };
     const withTarget = { ...props(target), onNavigationTargetConsumed: initial.onNavigationTargetConsumed };
     rerender(withTarget);
-    expect(focus).toHaveBeenCalledOnce();
+    expect(focus).toHaveBeenCalledExactlyOnceWith({ rowID: 'row-1' });
     expect(initial.onNavigationTargetConsumed).toHaveBeenCalledWith(7);
 
     rerender({
@@ -156,14 +134,14 @@ describe('semantic navigation', () => {
 
   it('requires downward intent before physical tail geometry can resume following', () => {
     const { result } = renderHook(() => useConversationViewport(props()));
-    expect(result.current.followOutput()).toBe('auto');
+    expect(result.current.isFollowing()).toBe(true);
     act(() => result.current.handleUserIntent('older'));
-    expect(result.current.followOutput()).toBe(false);
+    expect(result.current.isFollowing()).toBe(false);
     // A collapse/resize may put the bottom into view; geometry alone is not intent.
     act(() => result.current.handleAtBottomChange(true));
-    expect(result.current.followOutput()).toBe(false);
+    expect(result.current.isFollowing()).toBe(false);
     act(() => result.current.handleUserIntent('newer'));
-    expect(result.current.followOutput()).toBe('auto');
+    expect(result.current.isFollowing()).toBe(true);
   });
 
   it('never lets a stale physical snapshot override following intent', () => {
@@ -179,13 +157,12 @@ describe('semantic navigation', () => {
       },
     }));
 
-    expect(result.current.restoreStateFrom).toBeNull();
-    expect(result.current.firstItemIndex).toBe(VIRTUAL_INDEX_BASE);
-    expect(result.current.followOutput()).toBe('auto');
+    expect(result.current.measurementSnapshot).toBeNull();
+    expect(result.current.isFollowing()).toBe(true);
   });
 
-  it('uses a matching physical snapshot only to accelerate semantic browsing restore', () => {
-    const state = { scrollTop: 480, ranges: [{ startIndex: 0, endIndex: 1, size: 84 }] };
+  it('uses matching measurements only to accelerate semantic browsing restore', () => {
+    const state = { version: 1, width: 800, rows: [{ id: 'row-1', size: 84 }] };
     const { result } = renderHook(() => useConversationViewport({
       ...props(),
       initialSession: {
@@ -197,8 +174,7 @@ describe('semantic navigation', () => {
       },
     }));
 
-    expect(result.current.restoreStateFrom).toEqual(state);
-    expect(result.current.firstItemIndex).toBe(999_998);
-    expect(result.current.followOutput()).toBe(false);
+    expect(result.current.measurementSnapshot).toEqual(state);
+    expect(result.current.isFollowing()).toBe(false);
   });
 });
