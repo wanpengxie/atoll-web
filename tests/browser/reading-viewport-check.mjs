@@ -60,8 +60,44 @@ try {
       return Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) <= 1;
     }));
     assert.ok(await page.locator('[data-presentation-row-id]').count() < 100);
+    // Unlike fixture.scroll(), these are browser-delivered wheel inputs. Watch
+    // common DOM rows every frame for reverse motion while scrolling upward.
+    await page.evaluate(() => window.readingFixture.focus('row-250'));
+    await settle();
+    await page.evaluate(() => {
+      const node = document.querySelector('.timeline-message-list');
+      const trace = { reversals: [], samples: 0 };
+      let previous = new Map();
+      function sample() {
+        const bounds = node.getBoundingClientRect();
+        const current = new Map([...node.querySelectorAll('[data-presentation-row-id]')]
+          .map((row) => [row.dataset.presentationRowId, row.getBoundingClientRect()])
+          .filter(([, rect]) => rect.bottom > bounds.top && rect.top < bounds.bottom)
+          .map(([id, rect]) => [id, rect.top]));
+        for (const [id, top] of current) {
+          if (previous.has(id) && top - previous.get(id) < -1) trace.reversals.push({ id, delta: top - previous.get(id) });
+        }
+        previous = current;
+        trace.samples++;
+        trace.frame = requestAnimationFrame(sample);
+      }
+      window.nativeWheelTrace = trace;
+      trace.frame = requestAnimationFrame(sample);
+    });
+    await page.mouse.move(width / 2, 300);
+    for (let step = 0; step < 30; step++) {
+      await page.mouse.wheel(0, -260);
+      await page.waitForTimeout(18);
+    }
+    await settle();
+    const trace = await page.evaluate(() => {
+      cancelAnimationFrame(window.nativeWheelTrace.frame);
+      return window.nativeWheelTrace;
+    });
+    assert.ok(trace.samples > 10);
+    assert.deepEqual(trace.reversals, [], `width=${width}, native upward wheel must not reverse visible rows`);
     await page.close();
-    console.log(`PASS: ${width}px, cold history/live frame stability, resize, navigation cancellation, bounded DOM`);
+    console.log(`PASS: ${width}px, cold history/live frame stability, resize, navigation cancellation, bounded DOM, native wheel (${trace.samples} frames)`);
   }
   assert.deepEqual(failures, []);
 } finally {

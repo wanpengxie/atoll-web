@@ -5,6 +5,7 @@ import { executionProcessObservations } from '../../model/turn-process.js';
 import { useModalFocus } from '../primitives/useModalFocus.js';
 import { useSecondTick } from '../../app/hooks/useSecondTick.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
+import { useMessageLayoutState } from './MessageLayoutState.jsx';
 
 // 回合的过程痕迹：工具调用行与 agent 的思考/计划是同一量级的东西，
 // 合成一条按序的轨迹。进行中滚动显示末几条，回合落定后仍可展开回看——
@@ -190,7 +191,7 @@ function PreviewRow({ row, active, now }) {
 // running=true：处理中，默认滚动显示末几条，可展开成全列表。
 // running=false：回合已落定，收成一行入口，展开后是同一个列表。
 export function ProgressTrail({ turn, running, title = '', startedAt = 0, mergedCount = 0 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useMessageLayoutState(`progress:${turn.requestId}`, false);
   const detail = useProgressDetail();
   const rows = progressRows(turn);
   const now = useSecondTick(Boolean(running && rows.length), `${rows.at(-1)?.key || ''}:${rows.at(-1)?.lastSeq || ''}`);

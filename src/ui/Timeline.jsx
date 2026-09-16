@@ -23,6 +23,7 @@ import { MarkdownContent, MarkdownFileReferenceProvider } from './MarkdownConten
 import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
+import { createMessageLayoutStore, MessageLayoutProvider, useMessageLayoutState } from './timeline/MessageLayoutState.jsx';
 import { FoldableBody } from './timeline/FoldableBody.jsx';
 import { useConversationViewport } from './timeline/useConversationViewport.js';
 import { VirtualTimelineAdapter } from './timeline/VirtualTimelineAdapter.jsx';
@@ -365,7 +366,7 @@ function ReplyableMessageFrame({ replyTarget, copyText = '', onReply, onCreateTa
 // 一次被叫出来的调用。行本身就是它的开关：点开看它自己的结果，就地展开，不劫持
 // 整页的选中态——否则点一下什么都不发生，那比不能点更糟。
 function ThreadCall({ item, names }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useMessageLayoutState(`thread-call:${item.turn.requestId}`, false);
   const child = item.turn;
   const view = messagePresentation(child.request);
   const receivers = (child.request.audience || []).map((id) => nameOf(id, names)).join('、');
@@ -386,7 +387,7 @@ function ThreadCall({ item, names }) {
 // 回合里被叫出来的那些调用。默认收起：读的人先看到"这一问的答案"，需要时才展开
 // "为了答它做了什么"。展开后按深度缩进，孙代看得出是谁叫出来的。
 function ThreadCalls({ thread, names }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useMessageLayoutState('thread-calls', false);
   if (!thread?.length) return null;
   const failed = thread.filter((item) => item.turn.status === 'failed').length;
   const running = thread.filter((item) => !item.turn.terminal).length;
@@ -505,7 +506,7 @@ function threadRails(items, index) {
 }
 
 function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
-  const [expanded, setExpanded] = useState(() => new Set());
+  const [expanded, setExpanded] = useMessageLayoutState('agent-thread-expanded', []);
   const collaborative = thread.filter((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent');
   if (!collaborative.length) return null;
   return <ol className="agent-message-thread" role="tree" aria-label="Agent 协作消息">
@@ -515,7 +516,7 @@ function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
       const requestView = messagePresentation(request);
       const rails = threadRails(collaborative, index);
       const hasChildren = collaborative[index + 1]?.depth === item.depth + 1;
-      const nodeExpanded = expanded.has(child.requestId);
+      const nodeExpanded = expanded.includes(child.requestId);
       return <li key={child.requestId} className={`agent-thread-node status-${child.status}${hasChildren ? ' has-children' : ''}`} style={{ '--thread-depth': item.depth }} role="treeitem" aria-level={item.depth + 1}>
         <span className="agent-thread-elbow" aria-hidden="true" />
         {rails.map((rail) => <span key={rail.level} className={`agent-thread-rail ${rail.continues ? 'continues' : 'ends'}`} style={{ '--thread-rail-level': rail.level }} aria-hidden="true" />)}
@@ -524,7 +525,7 @@ function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
           const next = new Set(current);
           if (next.has(child.requestId)) next.delete(child.requestId);
           else next.add(child.requestId);
-          return next;
+          return [...next];
         })} /></div>
       </li>;
     })}
@@ -601,7 +602,7 @@ function SystemEventRow({ envelope, presentation, names }) {
 }
 
 function Narration({ rows, names }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useMessageLayoutState('narration', false);
   const presentedRows = rows
     .map((row) => ({ ...row, presentation: systemEventPresentation(row.envelope, names) }))
     .filter((row) => !row.presentation.hidden);
@@ -665,6 +666,11 @@ function foldIDsForPresentationRow(row) {
 export function Timeline({ state, history = {}, composer = null, viewSessions, navigationTarget = null, onNavigationTargetConsumed, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
   const initialViewSessionRef = useRef(null);
   if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
+  const messageLayoutStoreRef = useRef(null);
+  if (!messageLayoutStoreRef.current) messageLayoutStoreRef.current = createMessageLayoutStore(
+    initialViewSessionRef.current.layoutChoices,
+    (layoutChoices) => viewSessions?.writeConversation(state.channelId, { layoutChoices }),
+  );
   const presentationProjectorRef = useRef(null);
   if (!presentationProjectorRef.current) presentationProjectorRef.current = createPresentationProjector();
   const [scope, setScope] = useState(() => initialViewSessionRef.current.scope || TIMELINE_SCOPE.mine);
@@ -1056,7 +1062,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     onComposerEditChange?.(null);
   }, [onComposerEditChange, state.channelId]);
 
-  return <MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost>
+  return <MessageLayoutProvider store={messageLayoutStoreRef.current}><MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost>
 		<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" data-viewport-mode={viewport.mode} data-has-initial-anchor={viewport.hasInitialAnchor || undefined}>
       <div className={state.rows.size ? 'timeline-inner timeline-controls-overlay' : 'timeline-inner'}>
         {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
@@ -1166,5 +1172,5 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
       <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
       {composer}
     </div>
-  </ProgressTrailHost></MarkdownFileReferenceProvider>;
+  </ProgressTrailHost></MarkdownFileReferenceProvider></MessageLayoutProvider>;
 }

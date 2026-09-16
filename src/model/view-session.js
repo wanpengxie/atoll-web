@@ -10,6 +10,7 @@ function defaultConversation() {
     actorFilter: [],
     foldOverrides: [],
     foldDefaults: [],
+    layoutChoices: [],
     viewportSnapshot: null,
   };
 }
@@ -47,6 +48,11 @@ function copyConversation(value = {}) {
       .filter((entry) => Array.isArray(entry) && entry.length === 2 && entry[0])
       .map(([id, expanded]) => [id, Boolean(expanded)]),
     foldDefaults: [...new Set(value.foldDefaults || [])].filter(Boolean).map(String),
+    layoutChoices: (value.layoutChoices || []).filter((entry) => (
+      Array.isArray(entry) && typeof entry[0] === 'string'
+      && (typeof entry[1] === 'boolean' || typeof entry[1] === 'string'
+        || (Array.isArray(entry[1]) && entry[1].every((item) => typeof item === 'string')))
+    )).map(([key, choice]) => [key, Array.isArray(choice) ? [...choice] : choice]),
     // Physical measurements are subordinate to semantic reading intent. A
     // following session has exactly one valid destination—the live tail—so a
     // cached measurements must never override it. Snapshots are useful only

@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useState } from 'react';
 import { CodeBlock } from './CodeBlock.jsx';
+import { useMessageLayoutState } from './timeline/MessageLayoutState.jsx';
 
 let mermaidPromise;
 const diagramCache = new Map();
@@ -90,11 +91,11 @@ export function clearMermaidDiagramCache() {
   diagramCache.clear();
 }
 
-export function MermaidBlock({ code = '' }) {
+export function MermaidBlock({ code = '', layoutKey = code }) {
   const source = String(code).replace(/\n$/, '');
   const reactId = useId();
   const instanceScope = `mermaid-instance-${reactId.replace(/[^\w-]/g, '')}`;
-  const [mode, setMode] = useState('diagram');
+  const [mode, setMode] = useMessageLayoutState(`mermaid:${layoutKey}`, 'diagram');
   const [rendered, setRendered] = useState(() => resultForInstance(source, instanceScope));
 
   useEffect(() => {

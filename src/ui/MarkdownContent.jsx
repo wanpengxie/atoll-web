@@ -67,7 +67,7 @@ export const MarkdownContent = React.memo(function MarkdownContent({ text, class
       const language = fenceLanguageOf(className);
       const code = textOfNode(codeNode || node);
       return language.toLowerCase() === 'mermaid'
-        ? <MermaidBlock code={code} />
+        ? <MermaidBlock code={code} layoutKey={node?.position?.start?.offset ?? code} />
         : <CodeBlock code={code} language={language} />;
     },
   }), [onOpenFileReference]);

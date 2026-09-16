@@ -1,5 +1,6 @@
 import React, { Component, cloneElement, isValidElement, memo, useCallback } from 'react';
 import { flushSync } from 'react-dom';
+import { MessageLayoutScope } from './MessageLayoutState.jsx';
 import { clampPosition, materializedRange, measuredLayout, readingAnchor, readingPosition, rowAt, survivingAnchor } from '../../model/measured-layout.js';
 
 // One renderer owns measurements AND position. No third-party prepend,
@@ -257,11 +258,11 @@ const PresentationRow = memo(function PresentationRow({ row, contentRevision, la
   const ref = useCallback((node) => register(row.id, node), [register, row.id]);
   const children = renderRowRef.current(null, row);
   if (!isValidElement(children)) return children;
-  return cloneElement(children, {
+  return <MessageLayoutScope rowID={row.id}>{cloneElement(children, {
     ref,
     className: [children.props.className, 'presentation-row', 'presentation-row-' + layoutClass].filter(Boolean).join(' '),
     'data-presentation-row-id': row.id,
     'data-content-revision': contentRevision,
     'data-settled': settled || undefined,
-  });
+  })}</MessageLayoutScope>;
 });
