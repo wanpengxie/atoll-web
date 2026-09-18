@@ -11,6 +11,9 @@ Execution status on `refactor/frontend-subtractive-cleanup`:
   continuity; they do not enter business projection.
 - C8 complete: `fold.js` is the ledger fold; live-arrival provenance now has a
   dedicated owner in `live-arrivals.js`, with no compatibility re-export.
+- C2 notification receipt extraction complete: Timeline now consumes the
+  dedicated `useLiveArrivalReceipts` adapter and no longer owns consumer
+  registration, visibility disposal, or arrival acknowledgement effects.
 - E partially complete: tracked browser prototypes and diagnostic-only specs
   are deleted; the vendor directory now keeps one final package and one
   reproducible source patch instead of intermediate generations.
