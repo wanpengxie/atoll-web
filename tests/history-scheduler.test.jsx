@@ -774,6 +774,38 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
+  it('does not expose a partial current-tail page when focus lands during cooperative ingestion', async () => {
+    const harness = requestHarness();
+    let enteredYield;
+    let resumeYield;
+    const yieldEntered = new Promise((resolve) => { enteredYield = resolve; });
+    const yieldGate = new Promise((resolve) => { resumeYield = resolve; });
+    const revealed = [];
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      revealRows: (_channelId, entries) => revealed.push(entries.map(([seq]) => seq)),
+      yieldTask: () => {
+        enteredYield();
+        return yieldGate;
+      },
+    });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 63, rows: 38, headSeq: 100 });
+
+    await yieldEntered;
+    // React may commit the focus effect while rememberRows is yielding after a
+    // transport chunk. The focus edge must not release that incomplete prefix.
+    scheduler.focus('c0');
+    expect(revealed).toEqual([]);
+    resumeYield();
+
+    await waitFor(() => expect(revealed).toHaveLength(1));
+    expect(revealed[0]).toEqual(Array.from({ length: 32 }, (_, index) => 69 + index));
+    expect(scheduler.snapshot('c0')).toMatchObject({ buffered: 6, bufferedNewest: 68 });
+    scheduler.destroy();
+  });
+
   it('does not make the new focus wait for cancellation of the old focus', async () => {
     const harness = requestHarness();
     let acknowledge;

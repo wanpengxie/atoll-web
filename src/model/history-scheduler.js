@@ -551,7 +551,9 @@ export function createHistoryScheduler({
   }
 
   async function rememberRows(state, rows, { allowGlobalOverflow = false } = {}) {
-    let accepted = 0;
+    const staged = [];
+    const stagedSeqs = new Set();
+    let stagedBytes = 0;
     let measuredBytes = 0;
     for (let index = 0; index < rows.length; index += 1) {
       // Pull work is cooperative. A live frame received between chunks is
@@ -563,14 +565,30 @@ export function createHistoryScheduler({
       }
       const row = rows[index];
       const seq = numeric(row.seq);
-      if (!seq || hasVisibleRow(state.id, seq) || state.reservoir.has(seq)) continue;
+      if (!seq || hasVisibleRow(state.id, seq) || state.reservoir.has(seq) || stagedSeqs.has(seq)) continue;
       const bytes = rowBytes(row.envelope);
       measuredBytes += bytes;
+      if (state.reservoir.size + staged.length >= HISTORY_RESERVOIR_SIZE
+        || state.reservoirBytes + stagedBytes + bytes > HISTORY_RESERVOIR_CHANNEL_BYTES
+        || (!allowGlobalOverflow && globalReservoirBytes + stagedBytes + bytes > HISTORY_RESERVOIR_GLOBAL_BYTES)
+        || (allowGlobalOverflow && globalReservoirBytes + stagedBytes + bytes > HISTORY_RESERVOIR_GLOBAL_BYTES + HISTORY_BATCH_BYTES)) break;
+      staged.push({ seq, envelope: row.envelope, bytes });
+      stagedSeqs.add(seq);
+      stagedBytes += bytes;
+    }
+    // Do not expose a half-ingested page through setFocus/nextSegment while a
+    // cooperative yield is in progress. In particular, releasing the first
+    // 16/32 records of a current-tail page marks tailVisible and strands the
+    // newer suffix in the reservoir. Recheck concurrent live/release changes,
+    // then install the complete bounded staging set in one synchronous step.
+    let accepted = 0;
+    for (const { seq, envelope, bytes } of staged) {
+      if (hasVisibleRow(state.id, seq) || state.reservoir.has(seq)) continue;
       if (state.reservoir.size >= HISTORY_RESERVOIR_SIZE
         || state.reservoirBytes + bytes > HISTORY_RESERVOIR_CHANNEL_BYTES
         || (!allowGlobalOverflow && globalReservoirBytes + bytes > HISTORY_RESERVOIR_GLOBAL_BYTES)
         || (allowGlobalOverflow && globalReservoirBytes + bytes > HISTORY_RESERVOIR_GLOBAL_BYTES + HISTORY_BATCH_BYTES)) break;
-      state.reservoir.set(seq, { envelope: row.envelope, bytes });
+      state.reservoir.set(seq, { envelope, bytes });
       state.reservoirBytes += bytes;
       globalReservoirBytes += bytes;
       accepted += 1;
