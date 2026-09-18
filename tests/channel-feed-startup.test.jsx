@@ -1397,6 +1397,11 @@ describe('canonical waiting read path', () => {
       access="member_active" capabilityIndex={new Map()}
     />);
     expect(screen.queryByRole('region', { name: '等待区' })).toBeNull();
+    // Compact closure is a lifecycle proof, not a final response body.  The
+    // turn may show as completed, but Presentation must wait for the exact
+    // terminal envelope before mounting an answer slot.
+    expect(document.querySelector('.agent-final-text')).toBeNull();
+    expect(document.querySelector('.final-answer')).toBeNull();
     hook.unmount();
   });
 

@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Composer } from '../src/ui/Composer.jsx';
-import { fold } from '../src/model/fold.js';
+import { apply, createChannelState, fold } from '../src/model/fold.js';
+import { trimChannelState } from '../src/model/memory-window.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { TurnContext } from '../src/ui/context/TurnContext.jsx';
 
@@ -250,6 +251,41 @@ it('agent 回合中调用的其它 actor 不铺进对话时间线', () => {
   expect(document.querySelectorAll('.turn-card')).toHaveLength(1);
   expect(screen.queryByText('邀请成员加入')).toBeNull();
   expect(screen.queryByRole('button', { name: /关联调用/ })).toBeNull();
+});
+
+it('裁剪后的 nested compact closure 只关闭调用，不渲染成调用结果正文', () => {
+  const state = createChannelState('c0');
+  const append = (seq, envelope) => apply(state, { channel_id: 'c0', seq, envelope }, 'me');
+  append(300, {
+    id: 'child-final', parent_id: 'child-request', kind: 'response', type: 'tool.lookup', ts: 300,
+    sender: { id: 'tool-1', kind: 'tool' }, audience: ['agent-1'], visibility: 'public',
+    payload: { status: 'completed', text: '不应由 compact closure 显示的结果' },
+  });
+  for (let seq = 401; seq < 425; seq += 1) append(seq, {
+    id: `noise-${seq}`, kind: 'event', type: 'human.note', ts: seq,
+    sender: { id: 'other', kind: 'human' }, visibility: 'public', payload: { text: 'noise' },
+  });
+  trimChannelState(state, { maxRows: 8, maxBytes: 1e9 });
+  append(100, {
+    id: 'root-request', kind: 'request', type: 'report.generate', ts: 100,
+    sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], visibility: 'public',
+    payload: { text: '生成报告' },
+  });
+  append(110, {
+    id: 'child-request', parent_id: 'root-request', kind: 'request', type: 'tool.lookup', ts: 110,
+    sender: { id: 'agent-1', kind: 'agent' }, audience: ['tool-1'], visibility: 'public',
+    payload: { text: '查找资料' },
+  });
+  expect(state.turns.get('child-request')).toMatchObject({ terminalClosureOnly: true });
+
+  render(<Timeline state={state} roster={[
+    { id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }, { id: 'tool-1', name: '检索工具' },
+  ]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+  fireEvent.click(screen.getByRole('button', { name: /1 次关联调用/ }));
+  fireEvent.click(screen.getByRole('button', { name: /查找资料/ }));
+  expect(screen.getByText('终态内容尚未装入。')).toBeTruthy();
+  expect(document.querySelector('.turn-thread-result')?.textContent).not.toContain('✓ 已完成');
+  expect(document.body.textContent).not.toContain('不应由 compact closure 显示的结果');
 });
 
 it('Agent 调用按 parent_id 渲染消息树，每个子节点独立折叠且子过程只留在自己的节点', async () => {

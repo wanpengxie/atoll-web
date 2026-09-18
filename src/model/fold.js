@@ -373,6 +373,12 @@ function newTurn(request, seq) {
     provisional: [],
     terminal: null,
     terminalSeq: 0,
+    // A compact terminal retained by the memory window is sufficient to
+    // prove that this request is closed, but it is not the terminal's content
+    // envelope.  Keep that provenance on the turn so a later reread of the
+    // exact ledger row can restore the full body instead of being rejected as
+    // a second terminal.
+    terminalClosureOnly: false,
     phase: 'open',
     status: 'open',
     latestStatus: '',
@@ -502,7 +508,11 @@ export function requestClosure(state, requestId) {
   const id = String(requestId || '');
   if (!id) return null;
   const turn = state?.turns?.get?.(id);
-  if (turn?.terminal) return { seq: turn.terminalSeq || 0, envelope: turn.terminal, source: 'turn' };
+  if (turn?.terminal) return {
+    seq: turn.terminalSeq || 0,
+    envelope: turn.terminal,
+    source: turn.terminalClosureOnly ? 'closure' : 'turn',
+  };
   const closure = state?._unmatchedTerminalClosures?.get?.(id);
   if (closure) return { seq: closure.seq, envelope: closure.envelope, source: 'closure' };
   return null;
@@ -510,6 +520,15 @@ export function requestClosure(state, requestId) {
 
 export function isRequestClosed(state, requestId) {
   return requestClosure(state, requestId) !== null;
+}
+
+// Lifecycle consumers may use `turn.terminal` (including a compact closure)
+// to know that work is closed.  Presentation consumers that render an answer
+// body use this boundary: a compact closure intentionally forgot the terminal
+// body and is not a presentable final response.  Other model projections may
+// still distinguish retained lifecycle fields from optional business fields.
+export function terminalContentEnvelope(turn) {
+  return turn?.terminal && turn.terminalClosureOnly !== true ? turn.terminal : null;
 }
 
 function findTurn(state, envelope) {
@@ -556,13 +575,52 @@ function applyProvisional(state, turn, seq, envelope) {
   turn.status = turn.phase;
 }
 
-function applyTerminal(state, turn, seq, envelope) {
+function sameTerminalLedgerFact(turn, seq, envelope) {
+  if (Number(turn.terminalSeq) !== Number(seq)) return false;
+  // A closure deliberately forgot only the large terminal body.  Every fact
+  // it did retain (identity, provenance, routing and final status) must still
+  // agree before a full envelope may upgrade it.  Once full content exists,
+  // idempotence requires exact envelope equality.
+  return turn.terminalClosureOnly
+    ? sameEnvelope(turn.terminal, compactTerminalClosure(envelope))
+    : sameEnvelope(turn.terminal, envelope);
+}
+
+function applyTerminal(state, turn, seq, envelope, { closureOnly = false } = {}) {
   if (turn.terminal) {
+    if (sameTerminalLedgerFact(turn, seq, envelope)) {
+      if (turn.terminalClosureOnly && !closureOnly) {
+        // The compact closure carried lifecycle evidence only.  Re-reading
+        // the exact row upgrades it to the full immutable content fact.
+        turn.terminal = envelope;
+        turn.terminalClosureOnly = false;
+        turn.text = terminalText(argsOf(envelope));
+      }
+      // The same full row (or the same compact proof) is idempotent.
+      return;
+    }
+    if (turn.terminalClosureOnly && !closureOnly && seq < turn.terminalSeq) {
+      // The closure can be absorbed before an older history page arrives.
+      // Preserve the same earliest-ledger-terminal rule used while responses
+      // are still unmatched: the older full fact becomes canonical, while the
+      // displaced compact terminal remains visible as a protocol conflict.
+      anomaly(state, 'terminal_conflict', turn.terminalSeq, turn.terminal, turn);
+      turn.terminal = envelope;
+      turn.terminalSeq = seq;
+      turn.terminalClosureOnly = false;
+      turn.phase = argsOf(envelope).status;
+      turn.status = turn.phase;
+      turn.latestStatus = argsOf(envelope).status;
+      turn.text = terminalText(argsOf(envelope));
+      if (envelope.parent_id) { state.approvals.delete(envelope.parent_id); state.uiRequests.delete(envelope.parent_id); }
+      return;
+    }
     anomaly(state, 'terminal_conflict', seq, envelope, turn);
     return;
   }
   turn.terminal = envelope;
   turn.terminalSeq = seq;
+  turn.terminalClosureOnly = closureOnly;
   turn.phase = argsOf(envelope).status;
   turn.status = turn.phase;
   turn.latestStatus = argsOf(envelope).status;
@@ -571,14 +629,14 @@ function applyTerminal(state, turn, seq, envelope) {
   if (envelope.parent_id) { state.approvals.delete(envelope.parent_id); state.uiRequests.delete(envelope.parent_id); }
 }
 
-function attachResponse(state, turn, seq, envelope) {
+function attachResponse(state, turn, seq, envelope, options) {
   // Every response routed to this turn belongs to the semantic row's ledger
   // range even when it is an invalid late provisional or a conflicting second
   // terminal. The accepted terminal/content remain unchanged, but a reader at
   // the visible row tail must be able to advance the read cursor past that
   // installed fact instead of leaving an unread badge that no row can clear.
   turn.lastSeq = Math.max(turn.lastSeq, seq);
-  if (FINAL.has(argsOf(envelope)?.status)) applyTerminal(state, turn, seq, envelope);
+  if (FINAL.has(argsOf(envelope)?.status)) applyTerminal(state, turn, seq, envelope, options);
   else applyProvisional(state, turn, seq, envelope);
 }
 
@@ -591,7 +649,7 @@ function drainRequestMatches(state, turn) {
     item.seq === closure.seq && item.envelope?.id === closure.envelope?.id
   ))) byParent.push(closure);
   for (const item of byParent.sort((left, right) => left.seq - right.seq)) {
-    attachResponse(state, turn, item.seq, item.envelope);
+    attachResponse(state, turn, item.seq, item.envelope, { closureOnly: item.closureOnly === true });
   }
 }
 

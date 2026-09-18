@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { apply } from '../src/model/fold.js';
-import { createChannelState } from '../src/model/fold.js';
+import { apply, createChannelState, requestClosure } from '../src/model/fold.js';
 import { estimateRowBytes, MOBILE_WINDOW, trimChannelState } from '../src/model/memory-window.js';
+import { notificationDisposition } from '../src/model/notification-policy.js';
 import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from '../src/model/timeline-scope.js';
 import { selectWaitingPresentation } from '../src/model/waiting-presentation.js';
 
@@ -131,8 +131,81 @@ describe('内存窗口', () => {
     apply(state, ask(100, 'closed-request'), ME);
     expect(state._unmatchedTerminalClosures.has('closed-request')).toBe(false);
     apply(state, progress(101, 'closed-queued', 'closed-request'), ME);
-    expect(state.turns.get('closed-request')).toMatchObject({ terminalSeq: 300, latestStatus: 'completed' });
+    expect(state.turns.get('closed-request')).toMatchObject({
+      terminalSeq: 300,
+      latestStatus: 'completed',
+      terminalClosureOnly: true,
+      terminal: { payload: { status: 'completed' } },
+    });
+    expect(state.turns.get('closed-request').terminal.payload).not.toHaveProperty('text');
+    expect(requestClosure(state, 'closed-request')?.source).toBe('closure');
     expect(selectWaitingPresentation(state, { controlCurrent: true })).toEqual([]);
+
+    // The exact terminal row may be restored by a later history/cache page.
+    // It upgrades lifecycle-only evidence to the full body; it is not a
+    // conflicting second terminal.
+    const restoredTerminal = answer(300, 'closed-terminal', 'closed-request');
+    apply(state, restoredTerminal, ME);
+    expect(state.turns.get('closed-request')).toMatchObject({
+      terminalSeq: 300,
+      terminalClosureOnly: false,
+      terminal: { id: 'closed-terminal', payload: { status: 'completed', text: 'ok' } },
+      text: 'ok',
+    });
+    expect(requestClosure(state, 'closed-request')?.source).toBe('turn');
+    expect(notificationDisposition(state, restoredTerminal.envelope, ME)).toBe('final');
+    expect(state.anomalies.filter((entry) => entry.code === 'terminal_conflict')).toEqual([]);
+  });
+
+  it('compact closure 只接受同一 ledger terminal 的 full envelope 升级', () => {
+    const state = createChannelState('c');
+    apply(state, answer(300, 'canonical-terminal', 'work'), ME);
+    forceTrimPast(state, 401);
+    apply(state, ask(100, 'work'), ME);
+
+    const closure = state.turns.get('work').terminal;
+    expect(state.turns.get('work').terminalClosureOnly).toBe(true);
+
+    // A distinct terminal cannot use the upgrade path merely because it has
+    // the same parent and terminal status.
+    apply(state, answer(301, 'conflicting-terminal', 'work'), ME);
+    expect(state.turns.get('work').terminal).toBe(closure);
+    expect(state.turns.get('work').terminalClosureOnly).toBe(true);
+    expect(state.anomalies.filter((entry) => entry.code === 'terminal_conflict')).toHaveLength(1);
+
+    // The canonical row still upgrades after the conflicting row, and an
+    // exact repeat remains idempotent rather than becoming another conflict.
+    apply(state, answer(300, 'canonical-terminal', 'work'), ME);
+    const canonical = state.turns.get('work').terminal;
+    expect(state.turns.get('work').terminalClosureOnly).toBe(false);
+    expect(canonical.payload.text).toBe('ok');
+    state._seenIds.delete('canonical-terminal');
+    state._envelopesById.delete('canonical-terminal');
+    apply(state, answer(300, 'canonical-terminal', 'work'), ME);
+    expect(state.turns.get('work').terminal).toBe(canonical);
+    expect(state.anomalies.filter((entry) => entry.code === 'terminal_conflict')).toHaveLength(1);
+  });
+
+  it('compact closure 已吸收后仍由更早 ledger terminal 取得 canonical 位置', () => {
+    const state = createChannelState('c');
+    apply(state, answer(300, 'later-terminal', 'work'), ME);
+    forceTrimPast(state, 401);
+    apply(state, ask(100, 'work'), ME);
+    expect(state.turns.get('work')).toMatchObject({
+      terminalSeq: 300,
+      terminalClosureOnly: true,
+      terminal: { id: 'later-terminal' },
+    });
+
+    apply(state, answer(200, 'earlier-terminal', 'work'), ME);
+    expect(state.turns.get('work')).toMatchObject({
+      terminalSeq: 200,
+      terminalClosureOnly: false,
+      terminal: { id: 'earlier-terminal', payload: { status: 'completed', text: 'ok' } },
+    });
+    expect(state.anomalies.filter((entry) => entry.code === 'terminal_conflict')).toMatchObject([
+      { seq: 300, envelopeId: 'later-terminal', requestId: 'work' },
+    ]);
   });
 
   it('terminal closure retention is isolated by channel state even for the same request id', () => {

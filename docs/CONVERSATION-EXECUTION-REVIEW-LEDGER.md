@@ -4,6 +4,14 @@
 
 ### 最新状态（本段覆盖以下旧快照；监督周期已依用户改为20分钟）
 
+#### 2026-09-19 00:37：进入诊断落地与闭合证据/正文分离整合
+
+- main `505ebad` 已合用户要求的 entry-only 调度诊断，实际5173模块已核；无wheel/touch/key监听。主树106/106及build通过（旧rail测试补上已有notificationHighWater字段），每次activation打印现状/计划，已有状态变化报告数据与展示结果。`01cf146`已合零Presentation扫描后source失败不再隐藏，主19通过。用户最新现场仍未关闭，不能拼局部绿；EOF提示意味着至少有Presentation且remote current，mine与actorFiltered文案漏判已证，尚不证明是二次进入恢复的唯一根因。
+- 本轮root亲读并整合closure候选9295的全部7文件，主79/79、build、diff-check通过。compact只证明closed/Waiting，不作为最终答复正文；full同账本事实恢复正文，吸收closure后更早terminal继续按ledger顺序裁决。包含nested ThreadCall。global capability/work-items/activity/governance业务投影不在本cut签署范围。
+- r5 a6b的append/save/fold独立实际画面有限通过：自动展开归当前Browsing visual slot生命周期，不因新latest到来主动折掉正在读的正文；未合库。verify已续同cut prepend/continuous/width/public-target，impl并行准备当前main最小hunk集成，必须保cold诊断及本轮terminal正文边界。
+- submission r2再次被审拒：跨server-world旧accepted回执可吞新retry，messageId级inflight Set可卡新admission；实现/审核已续闭环。Composer/EOF候选仍整改，FeedCache跨实例候选已派独审，不能作为已交付上线。
+- timer已续20分钟。无后端改动、部署或共享服务重启。
+
 #### 2026-09-19 00:14：前台调度抢占整合与候选边界
 
 - 已合前序 `e5ce29f` 本地历史义务完成及 `057ce6d` 后台 source failure 向前台交接。本轮 root 亲读并整合调度抢占37行及两文件回归，主树93/93通过、diff-check通过。仅在真实 focused candidate 可派且容量满时取消一个离焦且无当前前台义务的批次；不改已dispatch priority/预算，不抢 user-demand/tail-refresh，已有取消释放时不再取消第二批，迟到数据拒写。不是扩大并发数，内存容量背压仍保守不抢。

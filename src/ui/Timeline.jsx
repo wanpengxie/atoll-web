@@ -39,6 +39,7 @@ import {
   liveTimelineArrivals,
   registerLivePresentationArrivalConsumer,
   registerLiveTimelineArrivalConsumer,
+  terminalContentEnvelope,
 } from '../model/fold.js';
 import { selectLocalWaitingTurns, selectWaitingPresentation } from '../model/waiting-presentation.js';
 import { diagnostic } from '../model/diagnostics.js';
@@ -114,6 +115,7 @@ function nameOf(id, names) {
 
 function ApprovalCard({ turn, state, onResolve, names }) {
   const request = turn.request;
+  const terminal = terminalContentEnvelope(turn);
   const busy = state === 'sending';
   const settled = state === 'resolved' || Boolean(turn.terminal);
   const error = typeof state === 'object' ? state.error : null;
@@ -151,11 +153,11 @@ function ApprovalCard({ turn, state, onResolve, names }) {
         {settled && <span>已回执</span>}
       </div>
       {formError && <p className="approval-form-error" role="alert">{formError}</p>}
-      {turn.terminal && (
+      {terminal && (
         <footer className={turn.status === 'failed' ? 'final-answer failed' : 'final-answer'}>
-          <p className="answer-label">RESPONSE · {String(argsOf(turn.terminal)?.status || '').toUpperCase()}</p>
-          <p className="approval-resolver">处理者：{nameOf(turn.terminal.sender?.id, names)}{argsOf(turn.terminal)?.decision && ` · ${argsOf(turn.terminal).decision}`}</p>
-          <StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${turn.terminal.id || turn.requestId}:body`} text={text} />} />
+          <p className="answer-label">RESPONSE · {String(argsOf(terminal)?.status || '').toUpperCase()}</p>
+          <p className="approval-resolver">处理者：{nameOf(terminal.sender?.id, names)}{argsOf(terminal)?.decision && ` · ${argsOf(terminal).decision}`}</p>
+          <StructuredResult requestType={request.type} payload={argsOf(terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || turn.requestId}:body`} text={text} />} />
         </footer>
       )}
       {error && <WireErrorLine error={error} />}
@@ -526,6 +528,7 @@ function ReplyableMessageFrame({ replyTarget, copyText = '', onReply, onCreateTa
 function ThreadCall({ item, names }) {
   const [open, setOpen] = useMessageLayoutState(`thread-call:${item.turn.requestId}`, false);
   const child = item.turn;
+  const terminal = terminalContentEnvelope(child);
   const view = messagePresentation(child.request);
   const receivers = (child.request.audience || []).map((id) => nameOf(id, names)).join('、');
   return (
@@ -535,9 +538,9 @@ function ThreadCall({ item, names }) {
         {view.detail && <span className="turn-thread-detail">{view.detail}</span>}
         <small>{nameOf(child.request.sender?.id, names)} → {receivers || '—'} · {turnStatusLabel(child)} · {timeLabel(child.request.ts)}</small>
       </button>
-      {open && (child.terminal
-        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={argsOf(child.terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${child.terminal.id || child.requestId}:body`} text={text} />} /></div>
-        : <p className="turn-thread-result empty">还没有终态。</p>)}
+      {open && (terminal
+        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={argsOf(terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || child.requestId}:body`} text={text} />} /></div>
+        : <p className="turn-thread-result empty">{child.terminal ? '终态内容尚未装入。' : '还没有终态。'}</p>)}
     </li>
   );
 }
@@ -620,20 +623,21 @@ function ConversationAnswerSlot({ requestType, text, terminalPayload = null, con
 
 function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, fold = null, onDownload, onPreview, onReply, onCreateTask, compact = false, compactExpanded = false, onCompactToggle = null, hasThreadChildren = false }) {
   const request = turn.request;
-  const terminal = turn.terminal;
+  const closed = Boolean(turn.terminal);
+  const terminal = terminalContentEnvelope(turn);
   const responseFoldId = `${turn.requestId}:response`;
   const stopped = argsOf(terminal)?.status === 'failed' && argsOf(terminal)?.error_code === 'interrupted';
   const resumable = stopped && frozen?.source === TYPES.agentInterrupt && (!frozen.target_id || frozen.target_id === turn.requestId);
   const liveEnvelope = latestTurnEnvelope(turn);
-  const agentId = terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0];
-  const bubbleTs = terminal?.ts || liveEnvelope?.ts;
+  const agentId = turn.terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0];
+  const bubbleTs = turn.terminal?.ts || liveEnvelope?.ts;
   const processStartedTs = turnStartedAt(turn);
   const terminalText = terminal && !stopped ? messagePresentation(terminal).text : '';
   const allConversationTexts = conversationTextObservations(turn);
   const echoObservation = terminal && !stopped ? finalEchoObservation(allConversationTexts, terminalText) : null;
   const conversationTexts = withoutFinalEcho(allConversationTexts, terminalText);
   const foldText = [...conversationTexts.map(({ process }) => process.text), terminalText].filter(Boolean).join('\n\n');
-  const className = `agent-turn-bubble${terminal ? ' settled' : ' processing'}${compact ? ' compact' : ''}${hasThreadChildren ? ' has-thread-children' : ''}`;
+  const className = `agent-turn-bubble${closed ? ' settled' : ' processing'}${compact ? ' compact' : ''}${hasThreadChildren ? ' has-thread-children' : ''}`;
   const identity = <span className="actor-icon kind-agent">A</span>;
   const heading = <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>;
   const conversationSlots = conversationTexts.map(({ seq, envelope, process }) => {
@@ -650,9 +654,9 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
     {hasConversationBody && <div className="response-content">{compact
       ? conversationBody
       : <FoldableBody id={responseFoldId} text={foldText} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}>{conversationBody}</FoldableBody>}</div>}
-    {!terminal && <ProgressTrail turn={turn} running title={title} startedAt={processStartedTs} mergedCount={mergedCount} />}
+    {!closed && <ProgressTrail turn={turn} running title={title} startedAt={processStartedTs} mergedCount={mergedCount} />}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
-    {terminal && <ProgressTrail turn={turn} running={false} />}
+    {closed && <ProgressTrail turn={turn} running={false} />}
   </>;
   if (compact) return <article className={`agent-thread-message ${className}${compactExpanded ? ' is-expanded' : ' is-collapsed'}`} tabIndex="0">
     <div className="agent-thread-identity-row">{identity}{heading}{onCompactToggle && <button type="button" className="agent-thread-collapse-toggle" aria-label={`${compactExpanded ? '收起' : '展开'} ${nameOf(agentId, names)} 的协作消息`} aria-expanded={compactExpanded} onClick={onCompactToggle}><span aria-hidden="true">⌄</span></button>}</div>
@@ -746,6 +750,7 @@ function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount 
 
 function TurnCard({ turn, thread = [], roster, names, selfId, access, targetAuthority, capability, controlState, continuation = false, detailsOpen = false, fold = null, editSession = null, editActive = false, queuePosition = 0, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview, onOpen, onCreateTask, onReply, onCloseDetail }) {
   const request = turn.request;
+  const terminal = terminalContentEnvelope(turn);
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
   const controlContext = taskControlContext(turn, { selfId, access, targetAuthority });
@@ -774,9 +779,9 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, targetAuth
       {detailsOpen && <ContentFrame contained><TurnInlineDetail turn={turn} roster={roster} selfId={selfId} access={access} capability={capability} controlState={controlState} onCancel={onCancel} onControl={onControl} onDownload={onDownload} onCreateTask={onCreateTask} onClose={onCloseDetail} /></ContentFrame>}
       {!turn.local && !turn.terminal && !detailsOpen && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
       {editSession && <ContentFrame contained><p className="message-editing-state">正在输入框中编辑</p></ContentFrame>}
-      {turn.terminal && (
-        <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
-          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(turn.terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${turn.terminal.id || turn.requestId}:body`} text={text} />} /></FoldableBody></div>
+      {terminal && (
+        <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${terminal.sender?.kind || 'agent'}`}>{(terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
+          <header><strong>{nameOf(terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={argsOf(terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || turn.requestId}:body`} text={text} />} /></FoldableBody></div>
         </MessageFrame>
       )}
     </section>

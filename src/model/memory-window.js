@@ -99,7 +99,9 @@ export function trimChannelState(state, { maxRows, maxBytes } = MOBILE_WINDOW) {
       // removes those seqs from rows, so pageEnd would otherwise admit the
       // stale batch and reopen Waiting. Keep the compact closure until that
       // parent is re-materialized and drains it; coverage alone cannot prove
-      // that every pre-terminal producer has retired.
+      // that every pre-terminal producer has retired. Fold marks the absorbed
+      // value as closure-only, so this lifecycle proof cannot permanently
+      // displace the full terminal body when its exact row is read again.
       retainTerminalClosure(state, turn.terminalSeq, turn.terminal);
       state.turns.delete(id);
     }
