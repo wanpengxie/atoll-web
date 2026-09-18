@@ -424,6 +424,53 @@ export function createHistoryScheduler({
     return frontier > 0 && coverageContains(local, frontier) ? 'indexeddb' : 'network';
   }
 
+  function sourceBlockIdentity(state) {
+	const tailRefresh = numeric(state?.tailRefreshBeforeSeq) > 0;
+	const purpose = tailRefresh ? 'initial-tail' : purposeFor(state, focus);
+	const gapBeforeSeq = purpose === 'user-demand' ? visibleGapBefore(state) : 0;
+	const beforeSeq = tailRefresh ? state.tailRefreshBeforeSeq : gapBeforeSeq || state.beforeSeq;
+	const source = tailRefresh ? 'network' : sourceFor(state, beforeSeq);
+	return {
+	  source,
+	  beforeSeq,
+	  replicaEpoch,
+	  localMetaEpoch,
+	  stateLease: state.stateLease,
+	  generation: source === 'network' ? generation : 0,
+	};
+  }
+
+  function blockedSourceMatches(state, identity = sourceBlockIdentity(state)) {
+	const blocked = state?.blockedSource;
+	return Boolean(blocked
+	  && blocked.source === identity.source
+	  && blocked.beforeSeq === identity.beforeSeq
+	  && blocked.replicaEpoch === identity.replicaEpoch
+	  && blocked.localMetaEpoch === identity.localMetaEpoch
+	  && blocked.stateLease === identity.stateLease
+	  && blocked.generation === identity.generation);
+  }
+
+  function beginVisibleDemand(state, { explicitRetry = false } = {}) {
+	state.foregroundDemandRevision += 1;
+	state.retryAt = 0;
+	const blockedCurrent = blockedSourceMatches(state);
+	if (blockedCurrent && !explicitRetry) {
+	  // The background lane already produced the terminal failure for this
+	  // exact source/frontier. Promoting it to a visible obligation transfers
+	  // that same failure into the sole foreground error authority; it must not
+	  // erase the error while leaving candidate() blocked forever.
+	  state.foregroundError = state.error;
+	  return;
+	}
+	// Explicit Retry opens this exact source once. A source/frontier lease that
+	// no longer matches also makes the old block inapplicable without a click.
+	state.blockedSource = null;
+	state.error = '';
+	state.errorCode = '';
+	state.foregroundError = '';
+  }
+
   function reclassify() {
     for (const state of channels.values()) state.tier = 3;
     const focused = channels.get(focus);
@@ -530,14 +577,14 @@ export function createHistoryScheduler({
     priorityClass += Math.min(9, Math.floor(state.waitDispatches / FAIRNESS_DISPATCHES));
     priorityClass += demand?.score || 0;
 	const source = tailRefresh ? 'network' : sourceFor(state, taskBeforeSeq);
-	const blocked = state.blockedSource;
-	if (blocked
-	  && blocked.source === source
-	  && blocked.beforeSeq === taskBeforeSeq
-	  && blocked.replicaEpoch === replicaEpoch
-	  && blocked.localMetaEpoch === localMetaEpoch
-	  && blocked.stateLease === state.stateLease
-	  && blocked.generation === (source === 'network' ? generation : 0)) return null;
+	if (blockedSourceMatches(state, {
+	  source,
+	  beforeSeq: taskBeforeSeq,
+	  replicaEpoch,
+	  localMetaEpoch,
+	  stateLease: state.stateLease,
+	  generation: source === 'network' ? generation : 0,
+	})) return null;
 	const sourceStats = transportStats[source] || transportStats.network;
 	const rowDeficit = tailRefresh || purpose === 'user-demand' || !state.tailVisible
       ? sourceStats.rowLimit
@@ -1434,6 +1481,9 @@ export function createHistoryScheduler({
       return { kind: 'segment', released };
     }
     if (authoritativeExhausted(state)) return { kind: 'exhausted' };
+	if (state.error && (state.retryAt > now() || blockedSourceMatches(state))) {
+	  return { kind: 'failed', error: new Error(state.error) };
+	}
 	const remoteAttached = Boolean(generation && state.attachedGeneration === generation);
 	if (remoteUnavailable && !remoteAttached && sourceFor(state) !== 'indexeddb' && !inflightByChannel.has(channelId)) {
 	  // The local replica has reached its proven frontier. More history may exist
@@ -1441,9 +1491,6 @@ export function createHistoryScheduler({
 	  // unfulfillable waiter spinning until a future reconnect.
 	  return { kind: 'exhausted', localOnly: true };
 	}
-    if (state.error && (state.retryAt > now() || state.blockedSource)) {
-      return { kind: 'failed', error: new Error(state.error) };
-    }
     return new Promise((resolve) => {
       let timer = null;
       const waiter = { resolve, cleanup: null, projectionBarrier };
@@ -1530,13 +1577,7 @@ export function createHistoryScheduler({
 	let released = false;
 	state.foregroundOwners.add(owner);
 	if (owner.presentation && !hadVisibleDemand) {
-	  state.foregroundDemandRevision += 1;
-	  // A visible Retry action is an explicit attempt, so it may bypass the
-	  // automatic backoff once. Repeated automatic work still obeys retryAt.
-	  state.retryAt = 0;
-	  state.error = '';
-	  state.foregroundError = '';
-	  if (explicitRetry) state.blockedSource = null;
+	  beginVisibleDemand(state, { explicitRetry });
 	}
 	promoteChannel(state, 'history channel promoted by user intent');
 	const release = () => {
@@ -1580,10 +1621,7 @@ export function createHistoryScheduler({
 	  }
 	  if (!changed) return false;
 	  if (owner.presentation && !hadVisibleDemand) {
-		state.foregroundDemandRevision += 1;
-		state.retryAt = 0;
-		state.error = '';
-		state.foregroundError = '';
+		beginVisibleDemand(state);
 	  }
 	  promoteChannel(state, 'history operation promoted by interactive demand');
 	  diagnostic('debug', 'history.operation_promoted', {

@@ -378,6 +378,41 @@ it('零行筛选供给失败后由 scheduler 状态推进恢复并保留前台�
   });
 });
 
+it('已缓存正文在前台历史失败时保持可读并显示同一 Retry 入口', async () => {
+  const state = timelineState([{
+    seq: 9,
+    envelope: {
+      id: 'cached-visible', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'me', kind: 'human' }, audience: ['me'], payload: { text: 'Cached body stays' },
+    },
+  }]);
+  const request = vi.fn(() => new Promise(() => {}));
+  render(<Timeline
+    state={state}
+    roster={[]}
+    selfId="me"
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+    history={{
+      request,
+      status: {
+        attached: true, generation: 5, messageCurrent: true, headSeq: 90,
+        localReplicaReady: true, loading: false, hasOlder: true, completedPages: 1,
+        presentationRevision: state._timelineRevision,
+        error: 'background source unavailable',
+        historyDemand: { revision: 2, phase: 'error', error: 'background source unavailable' },
+      },
+    }}
+  />);
+
+  expect(await screen.findByText('Cached body stays')).toBeTruthy();
+  expect(screen.getByRole('alert').textContent).toContain('background source unavailable');
+  fireEvent.click(screen.getByRole('button', { name: '重试' }));
+  await waitFor(() => expect(request).toHaveBeenCalledOnce());
+  expect(screen.getByText('Cached body stays')).toBeTruthy();
+});
+
 it('opaque actor ID 与系统事实尾下，名册迟到后显示唯一 agent chip 且保留同 principal 旧回合', async () => {
   const { state, claude } = incarnationAndSystemHeavyState();
   const currentSelf = 'human:root:1900000000000';

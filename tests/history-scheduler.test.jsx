@@ -245,6 +245,90 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
+  it('transfers an exact background source failure to the first visible owner and Retry opens it once', async () => {
+    const harness = requestHarness();
+    const requestPage = vi.fn()
+      .mockRejectedValueOnce(new Error('history unavailable before entry'))
+      .mockImplementation(harness.requestPage);
+    const scheduler = createHistoryScheduler({ requestPage, revealRows: () => {}, onError: () => {} });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(scheduler.snapshot('c0')).toMatchObject({
+      loading: false,
+      error: 'history unavailable before entry',
+      historyDemand: { phase: 'idle', error: '' },
+    }));
+    expect(requestPage).toHaveBeenCalledTimes(1);
+
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'interactive',
+    });
+    expect(scheduler.snapshot('c0').historyDemand).toMatchObject({
+      phase: 'error', error: 'history unavailable before entry',
+    });
+    await expect(operation.next()).resolves.toMatchObject({
+      kind: 'failed', error: { message: 'history unavailable before entry' },
+    });
+    expect(requestPage).toHaveBeenCalledTimes(1);
+    operation.release();
+
+    const retry = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'interactive', explicitRetry: true,
+    });
+    const retryResult = retry.next({ count: 1 });
+    await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(2));
+    expect(scheduler.snapshot('c0').historyDemand).toMatchObject({ phase: 'pending', error: '' });
+    finish(scheduler, harness.calls[0], { oldest: 99, rows: 1, hasOlder: true });
+    await expect(retryResult).resolves.toMatchObject({ kind: 'segment', released: 1 });
+    retry.release();
+    scheduler.destroy();
+  });
+
+  it('preserves the same blocked failure when an anticipatory owner is promoted to presentation', async () => {
+    let rejectPage;
+    const requestPage = vi.fn(() => new Promise((_, reject) => { rejectPage = reject; }));
+    const scheduler = createHistoryScheduler({ requestPage, revealRows: () => {}, onError: () => {} });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(1));
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'anticipatory',
+    });
+    rejectPage(new Error('promoted source failed'));
+    await waitFor(() => expect(scheduler.snapshot('c0')).toMatchObject({
+      error: 'promoted source failed', historyDemand: { phase: 'idle', error: '' },
+    }));
+
+    expect(operation.promote({ intent: 'scroll-history', urgency: 'interactive' })).toBe(true);
+    expect(scheduler.snapshot('c0').historyDemand).toMatchObject({
+      phase: 'error', error: 'promoted source failed',
+    });
+    await expect(operation.next()).resolves.toMatchObject({ kind: 'failed' });
+    expect(requestPage).toHaveBeenCalledTimes(1);
+    operation.release();
+    scheduler.destroy();
+  });
+
+  it('lets a replacement source authority run without clearing the old block by Retry', async () => {
+    const harness = requestHarness();
+    const requestPage = vi.fn()
+      .mockRejectedValueOnce(new Error('generation one failed'))
+      .mockImplementation(harness.requestPage);
+    const scheduler = createHistoryScheduler({ requestPage, revealRows: () => {}, onError: () => {} });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(scheduler.snapshot('c0')).toMatchObject({
+      loading: false, error: 'generation one failed',
+    }));
+    expect(requestPage).toHaveBeenCalledTimes(1);
+
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 2, focus: 'c0' });
+    await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(2));
+    expect(harness.calls[0]).toMatchObject({ generation: 2, beforeSeq: 101 });
+    finish(scheduler, harness.calls[0], { oldest: 99, rows: 1, hasOlder: true });
+    await waitFor(() => expect(scheduler.snapshot('c0')).toMatchObject({
+      loaded: true, error: '',
+    }));
+    scheduler.destroy();
+  });
+
   it('aggregates a page trace without losing arrival order or flooding the ring', async () => {
     let clock = 10;
     const harness = requestHarness();
