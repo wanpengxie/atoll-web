@@ -45,7 +45,10 @@ describe('conversation architecture boundaries', () => {
     const surface = source('src/ui/conversation/ConversationSurface.jsx');
     const timeline = source('src/ui/Timeline.jsx');
     const css = source('src/styles/app-shell.css');
-    expect(surface.match(/ResizeObserver/g)).toHaveLength(2);
+    // 要守的是「只有一个观察器实例」，所以数 new，不数这个词的出现次数。
+    // 原写法把注释里提到 ResizeObserver 的句子也算进去，于是解释性注释一多
+    // 就红，红的却不是它想守的东西（2026-09-18 接手时实测：实例始终只有一个）。
+    expect(surface.match(/new ResizeObserver/g)).toHaveLength(1);
     expect(surface).toMatch(/ref=\{inputRef\} className="conversation-bottom-stack"/);
     expect(surface).not.toMatch(/floatingRef|waiting.*height/i);
     expect(timeline).toMatch(/<ConversationSurface input=\{composer\} floating=\{floatingInput\}>/);
