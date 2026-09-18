@@ -346,10 +346,15 @@ test('F7 cold uncached channel gives stable feedback while current metadata and 
     sample.heading === 'c0.project'
       && sample.at < trace.milestones.cachedPaint
   )).every((sample) => Boolean(sample.status || sample.message))).toBe(true);
+  const acquisitionStatuses = new Set([
+    '正在确认频道内容…',
+    '正在等待历史请求响应…',
+    '正在接收历史数据…',
+  ]);
   expect(trace.samples.filter((sample) => (
     sample.heading === 'c0.project' && sample.at < trace.milestones.cachedPaint
   )).every((sample) => (
-    sample.statuses.length === 1 && sample.statuses[0] === '正在确认频道内容…'
+    sample.statuses.length === 1 && acquisitionStatuses.has(sample.statuses[0])
   ))).toBe(true);
   expect(trace.samples.filter((sample) => (
     sample.heading === 'c0.project' && Boolean(sample.empty)
@@ -358,6 +363,22 @@ test('F7 cold uncached channel gives stable feedback while current metadata and 
     entry.event === 'history.segment-requested'
       && entry.detail?.channelId === 'c0.project'
   ));
+  const underfillStarts = trace.reading.filter((entry) => (
+    entry.event === 'history.intent-started'
+      && entry.detail?.channelId === 'c0.project'
+      && entry.detail?.reason === 'projection-underfill'
+  ));
+  const underfillSettles = trace.reading.filter((entry) => (
+    entry.event === 'history.intent-settled'
+      && entry.detail?.channelId === 'c0.project'
+      && entry.detail?.reason === 'projection-underfill'
+  ));
+  // Startup may install the owner snapshot and then one complete local-Meta
+  // snapshot before Wire attach. Each is a distinct source authority, but a
+  // pending→idle foreground revision must not manufacture another attempt.
+  expect(underfillStarts.length).toBeGreaterThan(0);
+  expect(underfillStarts.length).toBeLessThanOrEqual(2);
+  expect(underfillSettles).toHaveLength(underfillStarts.length);
   expect(uncachedSegments[0]?.detail?.source).toBe('network');
   expect(trace.sent.some((frame) => frame.type === 'channel_meta' && frame.channelId === 'c0.project')).toBe(true);
 });

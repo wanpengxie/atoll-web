@@ -92,6 +92,21 @@ function historySourceAuthorityKey(historyStatus = {}) {
   ]);
 }
 
+// A local-only exhausted result completes one semantic obligation against one
+// exact cache frontier. Foreground pending/idle revisions are consequences of
+// executing that obligation, not new supply. Only source ownership or actual
+// cache/page/reveal progress may make the same obligation runnable again.
+function historySupplyProgressKey(historyStatus = {}) {
+  return JSON.stringify([
+    historySourceAuthorityKey(historyStatus),
+    Number(historyStatus.oldestSeq || 0),
+    Number(historyStatus.completedPages || 0),
+    Number(historyStatus.revealVersion || 0),
+    Number(historyStatus.buffered || 0),
+    historyStatus.hasOlder === true,
+  ]);
+}
+
 function ownsHistoryOperation(currentOwner, requestOwner, controller, activePromise, promise) {
   return currentOwner.controller === controller
     && currentOwner.activationID === requestOwner.activationID
@@ -624,6 +639,7 @@ export function useReadingSession({
   const deferredAdmissionDemandRef = useRef(null);
   const failedAnticipatoryRequestRef = useRef(null);
   const exhaustedHistoryKeyRef = useRef(null);
+  const localExhaustedHistoryKeyRef = useRef(null);
   const arrivalBaseline = Number.isSafeInteger(Number(arrivals?.acknowledgedRevision))
     ? Number(arrivals.acknowledgedRevision)
     : Number(arrivals?.revision || 0);
@@ -790,6 +806,7 @@ export function useReadingSession({
     deferredAdmissionDemandRef.current = null;
     failedAnticipatoryRequestRef.current = null;
     exhaustedHistoryKeyRef.current = null;
+    localExhaustedHistoryKeyRef.current = null;
     return () => {
       if (runwayRequestRef.current?.controller === controller) {
         runwayRequestRef.current.abortController?.abort();
@@ -945,6 +962,13 @@ export function useReadingSession({
       && exhausted.key === obligationKey) {
       return Promise.resolve({ kind: 'exhausted', deduplicated: true });
     }
+    const localExhausted = localExhaustedHistoryKeyRef.current;
+    const supplyProgressKey = historySupplyProgressKey(historyStatusRef.current);
+    if (localExhausted?.controller === controller
+      && localExhausted.key === obligationKey
+      && localExhausted.progressKey === supplyProgressKey) {
+      return Promise.resolve({ kind: 'exhausted', localOnly: true, deduplicated: true });
+    }
     const failedAnticipatory = failedAnticipatoryRequestRef.current;
     if (urgency !== HISTORY_URGENCY.interactive
       && failedAnticipatory?.controller === controller
@@ -1041,6 +1065,7 @@ export function useReadingSession({
     const epoch = historyEpochRef.current + 1;
     historyEpochRef.current = epoch;
     const attemptProgressKey = historySourceAuthorityKey(historyStatusRef.current);
+    const attemptSupplyProgressKey = historySupplyProgressKey(historyStatusRef.current);
     diagnostic('debug', 'history.intent_started', {
       channelId: channelID,
       epoch,
@@ -1130,6 +1155,16 @@ export function useReadingSession({
           controller,
           generation: Number(currentStatus.generation || 0),
           key: obligationKey,
+        };
+      }
+      if (operationStillCurrent
+        && result?.kind === 'exhausted'
+        && result?.localOnly === true
+        && historySupplyProgressKey(currentStatus) === attemptSupplyProgressKey) {
+        localExhaustedHistoryKeyRef.current = {
+          controller,
+          key: obligationKey,
+          progressKey: attemptSupplyProgressKey,
         };
       }
       if (operationStillCurrent && result?.kind === 'failed'

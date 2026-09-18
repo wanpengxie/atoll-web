@@ -1542,6 +1542,64 @@ it('旧请求先结算后 source A→B→C 仍只为当前 C 重获一次供给'
   expect(request).toHaveBeenCalledTimes(2);
 });
 
+it('local-only exhausted 完成当前供给义务且只由真实 source/cache 进度重开', async () => {
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  const request = vi.fn()
+    .mockImplementationOnce(() => first)
+    .mockResolvedValue({ kind: 'exhausted', localOnly: true });
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const snapshot = { rows: [], entities: new Map(), revision: 1, sourceRevision: 1 };
+  function Harness({ status }) {
+    useReadingSession({
+      channelID: 'local-frontier', viewKey: 'local-frontier:mine', snapshot,
+      history: { status, request }, viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    return null;
+  }
+  const status = (overrides = {}) => ({
+    attached: false, generation: 0, messageCurrent: false, headSeq: 90,
+    oldestSeq: 61, localReplicaReady: true, hasOlder: true,
+    completedPages: 1, revealVersion: 1, buffered: 0,
+    presentationRevision: 1, sourceLease: '1:2:9',
+    historyDemand: { revision: 0, phase: 'idle', error: '' },
+    ...overrides,
+  });
+
+  const view = render(<Harness status={status()} />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+  view.rerender(<Harness status={status({
+    historyDemand: { revision: 1, phase: 'pending', error: '' },
+  })} />);
+  await act(async () => { settleFirst({ kind: 'exhausted', localOnly: true }); await first; });
+  view.rerender(<Harness status={status({
+    historyDemand: { revision: 2, phase: 'idle', error: '' },
+  })} />);
+  await act(async () => { await Promise.resolve(); });
+  expect(request).toHaveBeenCalledTimes(1);
+
+  // A committed page/frontier move names new local supply even when the
+  // foreground pending/idle lifecycle remains otherwise identical.
+  view.rerender(<Harness status={status({ completedPages: 2, oldestSeq: 41 })} />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+
+  // A complete local-Meta/source lease replacement and a later Wire attach
+  // are distinct authorities; neither is sealed by the gen-0 local result.
+  view.rerender(<Harness status={status({
+    completedPages: 2, oldestSeq: 41, sourceLease: '1:3:10',
+  })} />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(3));
+  view.rerender(<Harness status={status({
+    attached: true, generation: 1, messageCurrent: true,
+    completedPages: 2, oldestSeq: 41, sourceLease: '1:3:10',
+  })} />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(4));
+});
+
 it('保存书签的 gen0 结果在 gen1 source lease 已渲染后落定时重获同一目标', async () => {
   let settleFirst;
   const first = new Promise((resolve) => { settleFirst = resolve; });
