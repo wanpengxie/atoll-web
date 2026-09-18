@@ -724,7 +724,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     // non-settling cache operation keep HistoryScheduler's local-meta gate
     // closed forever: start from the already-selected in-memory Meta (possibly
     // empty), then merge the epoch-fenced disk result below if it arrives.
-    schedulerRef.current.setLocalMeta(localMeta, { publishChange: false, localReady: true, replace: true });
+    schedulerRef.current.setLocalMeta(localMeta, {
+      publishChange: false,
+      localReady: true,
+      replace: true,
+      selectionPending: localMeta.size === 0,
+    });
     beginNotificationHydration(
       localMeta,
       localReplicaSerialRef.current,
@@ -771,7 +776,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       for (const [channelId, value] of meta) {
         if (grantedChannelIds.has(channelId)) replicaRef.current.installMeta(channelId, value);
       }
-      schedulerRef.current.setLocalMeta(meta, { publishChange: false, localReady: true, replace: true });
+      schedulerRef.current.setLocalMeta(meta, {
+        publishChange: false,
+        localReady: true,
+        replace: true,
+        selectionPending: false,
+      });
       beginNotificationHydration(
         meta,
         localReplicaSerialRef.current,
@@ -782,7 +792,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     }).catch((error) => {
       if (serial === attachMetaSerialRef.current) {
         resumeReadyRef.current = false;
-        schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true, replace: true });
+        schedulerRef.current.setLocalMeta(new Map(), {
+          publishChange: false,
+          localReady: true,
+          replace: true,
+          selectionPending: false,
+        });
         diagnostic('error', 'feed.cache_boot_check_failed', { generation, error });
         onError(error);
         setLocalReplicaReady(true);
@@ -1051,7 +1066,11 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	if (principalChanged) {
 	  attachedGenerationRef.current = 0;
 	}
-	schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: false });
+	schedulerRef.current.setLocalMeta(new Map(), {
+	  publishChange: false,
+	  localReady: false,
+	  selectionPending: true,
+	});
     // A principal change invalidates both any detached attach completion and
     // every resume claim from the preceding owner before a new socket can ask
     // for it. The cache may still be physically open; it is not trusted until
@@ -1065,7 +1084,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       preparedPrincipalRef.current = '';
       notificationHydrationRef.current = { serial, channels: new Map() };
       cursorsRef.current.clearReadAuthority();
-	  schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true, replace: true });
+	  schedulerRef.current.setLocalMeta(new Map(), {
+	    publishChange: false,
+	    localReady: true,
+	    replace: true,
+	    selectionPending: false,
+	  });
       setLocalReplicaReady(true);
       return { resume: {} };
     }
@@ -1137,7 +1161,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       }
       beginNotificationHydration(meta, serial, focus);
       if (focus) schedulerRef.current.focus(focus);
-      schedulerRef.current.setLocalMeta(meta, { publishChange: false, localReady: true, replace: true });
+      schedulerRef.current.setLocalMeta(meta, {
+        publishChange: false,
+        localReady: true,
+        replace: true,
+        selectionPending: false,
+      });
 
       // Start the selected local decode immediately, but do not await it. Push
       // is the realtime lane; cache decode and remote history are both pull.
@@ -1159,7 +1188,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       if (serial !== localReplicaSerialRef.current) return { resume: {} };
       onError(error);
       diagnostic('error', 'feed.restore_failed', { error });
-	  schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true, replace: true });
+	  schedulerRef.current.setLocalMeta(new Map(), {
+	    publishChange: false,
+	    localReady: true,
+	    replace: true,
+	    selectionPending: false,
+	  });
       setLocalReplicaReady(true);
       return { resume: {} };
     }

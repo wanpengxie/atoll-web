@@ -6,6 +6,7 @@ import { useChannelFeed } from '../src/app/hooks/useChannelFeed.js';
 import {
   createHistoryScheduler,
   HISTORY_BATCH_BYTES,
+  HISTORY_MAX_INFLIGHT,
   HISTORY_PAGE_SIZE,
 } from '../src/model/history-scheduler.js';
 import {
@@ -355,6 +356,141 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
+  it('keeps focused network available while a complete cache selection defers off-screen work', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    scheduler.setLocalMeta(new Map(), {
+      localReady: true,
+      replace: true,
+      selectionPending: true,
+    });
+    scheduler.attach([
+      { channel_id: 'a', head_seq: 100, has_rows: true },
+      { channel_id: 'b', head_seq: 100, has_rows: true },
+    ], { generation: 1, focus: 'a' });
+
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({ channelId: 'a', priority: 'foreground' });
+    expect(harness.calls.some((call) => call.channelId === 'b')).toBe(false);
+
+    scheduler.focus('b');
+    await waitFor(() => expect(harness.calls.some((call) => call.channelId === 'b')).toBe(true));
+    expect(harness.calls.find((call) => call.channelId === 'b')).toMatchObject({ priority: 'foreground' });
+    scheduler.destroy();
+  });
+
+  it('adopts an exact durable cold tail and cancels only its redundant remote fallback', async () => {
+    let resolveReceipt;
+    const remoteCalls = [];
+    const requestPage = vi.fn((channelId, beforeSeq, limit, options) => {
+      const ref = 'slow-receipt';
+      const receipt = new Promise((resolve) => { resolveReceipt = resolve; });
+      receipt.ref = ref;
+      remoteCalls.push({ ref, channelId, beforeSeq, limit, ...options });
+      return receipt;
+    });
+    const cancelPage = vi.fn(async () => ({ cancelled: true }));
+    const readCache = vi.fn(async (channelId) => ({
+      rows: [{ channel_id: channelId, seq: 100, envelope: { id: 'cached-100', kind: 'event', type: 'human.note' } }],
+      nextBeforeSeq: 69,
+      exhausted: false,
+      bytes: 10,
+    }));
+    const revealRows = vi.fn();
+    const scheduler = createHistoryScheduler({
+      requestPage,
+      cancelPage,
+      readCache,
+      revealRows,
+      hasPresentedRows: () => false,
+    });
+    scheduler.setLocalMeta(new Map(), {
+      localReady: true,
+      replace: true,
+      selectionPending: true,
+    });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], {
+      generation: 1,
+      focus: 'c0',
+    });
+    await waitFor(() => expect(remoteCalls).toHaveLength(1));
+    const remoteFallback = remoteCalls[0];
+
+    scheduler.setLocalMeta(new Map([['c0', {
+      newestSeq: 100,
+      rowCount: 32,
+      coverage: [{ lowSeq: 69, highSeq: 100 }],
+    }]]), {
+      localReady: true,
+      replace: true,
+      selectionPending: false,
+    });
+
+    await waitFor(() => expect(cancelPage).toHaveBeenCalledWith('c0', remoteFallback.ref, 1));
+    await waitFor(() => expect(readCache).toHaveBeenCalledWith('c0', 101, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES));
+    await waitFor(() => expect(revealRows).toHaveBeenCalledWith('c0', [
+      [100, expect.objectContaining({ id: 'cached-100' })],
+    ], { initial: true, materializesCurrentTail: true }));
+    resolveReceipt({
+      accepted: true,
+      channel_id: 'c0',
+      generation: 1,
+      purpose: 'initial-tail',
+    });
+    expect(scheduler.historyRow({
+      source: 'history', ref: remoteFallback.ref, generation: 1,
+      channel_id: 'c0', seq: 100,
+      envelope: { id: 'late-network-100', kind: 'event', type: 'human.note' },
+    })).toBe(true);
+    expect(scheduler.pageEnd({
+      source: 'history', ref: remoteFallback.ref, generation: 1,
+      channel_id: 'c0', purpose: 'initial-tail', head_seq: 100,
+      scan_low_seq: 69, scan_high_seq: 100, next_before_seq: 69,
+      rows: 1, bytes: 10, has_older: true,
+    })).toBe(true);
+    expect(revealRows).not.toHaveBeenCalledWith('c0', [
+      [100, expect.objectContaining({ id: 'late-network-100' })],
+    ], expect.anything());
+    scheduler.destroy();
+  });
+
+  it('does not revive durable rows above an authoritative empty remote head', async () => {
+    const readCache = vi.fn();
+    const scheduler = createHistoryScheduler({
+      requestPage: requestHarness().requestPage,
+      readCache,
+      revealRows: () => {},
+      hasPresentedRows: () => false,
+    });
+    scheduler.setLocalMeta(new Map(), {
+      localReady: true,
+      replace: true,
+      selectionPending: true,
+    });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 0, has_rows: false }], {
+      generation: 1,
+      focus: 'c0',
+    });
+    scheduler.setLocalMeta(new Map([['c0', {
+      newestSeq: 100,
+      rowCount: 32,
+      coverage: [{ lowSeq: 69, highSeq: 100 }],
+    }]]), {
+      localReady: true,
+      replace: true,
+      selectionPending: false,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(readCache).not.toHaveBeenCalled();
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      headSeq: 0,
+      hasOlder: false,
+      loaded: false,
+    });
+    scheduler.destroy();
+  });
+
   it('keeps the local cursor when remote attach confirms the same cached head', async () => {
     const harness = requestHarness();
     const readCache = vi.fn(async (channelId) => ({
@@ -616,6 +752,45 @@ describe('v5 history batch coordinator', () => {
     scheduler.focus('offline');
     scheduler.disconnected();
     await expect(scheduler.nextSegment('offline')).resolves.toEqual({ kind: 'exhausted', localOnly: true });
+    scheduler.destroy();
+  });
+
+  it('disconnect releases network receipt waits before local cache work executes', async () => {
+    const networkReceipts = [];
+    const requestPage = vi.fn((channelId, _beforeSeq, _limit, options) => {
+      let resolve;
+      const promise = new Promise((yes) => { resolve = yes; });
+      promise.ref = `slow-${channelId}`;
+      networkReceipts.push({ channelId, generation: options.generation, promise, resolve });
+      return promise;
+    });
+    const readCache = vi.fn(async (channelId) => ({
+      rows: [{ channel_id: channelId, seq: 100, envelope: { id: `${channelId}-cached`, kind: 'event', type: 'human.note' } }],
+      nextBeforeSeq: 69,
+      exhausted: false,
+      bytes: 10,
+    }));
+    const scheduler = createHistoryScheduler({
+      requestPage,
+      readCache,
+      revealRows: () => {},
+      maxBackgroundInflight: HISTORY_MAX_INFLIGHT,
+    });
+    scheduler.attach([
+      { channel_id: 'a', head_seq: 100, has_rows: true, last_activity: 2 },
+      { channel_id: 'b', head_seq: 100, has_rows: true, last_activity: 1 },
+    ], { generation: 1, focus: '' });
+    await waitFor(() => expect(networkReceipts).toHaveLength(HISTORY_MAX_INFLIGHT));
+
+    scheduler.disconnected();
+    scheduler.focus('a');
+    scheduler.setLocalMeta(new Map([
+      ['a', { newestSeq: 100, rowCount: 32, coverage: [{ lowSeq: 69, highSeq: 100 }] }],
+      ['b', { newestSeq: 100, rowCount: 32, coverage: [{ lowSeq: 69, highSeq: 100 }] }],
+    ]), { localReady: true, replace: true, selectionPending: false });
+
+    await waitFor(() => expect(readCache).toHaveBeenCalled());
+    expect(networkReceipts.every(({ promise }) => promise instanceof Promise)).toBe(true);
     scheduler.destroy();
   });
 

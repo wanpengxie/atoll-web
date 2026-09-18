@@ -254,6 +254,11 @@ export function createHistoryScheduler({
   // and live delivery remain independent, but history must not choose the
   // network merely because IndexedDB has not answered yet.
   let localMetaReady = true;
+  // Transport attach must never wait for IndexedDB, so the focused channel
+  // can use the network immediately. While a complete cache selection is
+  // still pending, however, speculative work for channels off screen would
+  // occupy the same per-channel lane and prevent a later local-first focus.
+  let localSelectionPending = false;
   const transportStats = {
     indexeddb: { durationMs: 80, rowsPerMs: 1.6, bytesPerMs: 16 * 1024, averageRowBytes: 2 * 1024, rowLimit: HISTORY_PAGE_SIZE },
     network: { durationMs: 400, rowsPerMs: 0.32, bytesPerMs: 4 * 1024, averageRowBytes: 2 * 1024, rowLimit: HISTORY_PAGE_SIZE },
@@ -462,6 +467,10 @@ export function createHistoryScheduler({
 
   function candidate(state) {
 	if (!localMetaReady) return null;
+	if (localSelectionPending && state?.id !== focus
+	  && state?.foregroundOwners.size === 0
+	  && state?.foregroundWaiters.length === 0
+	  && state?.currentWaiters.size === 0) return null;
 	const remoteAttached = Boolean(generation && state?.attachedGeneration === generation);
 	const localAttached = Boolean(!remoteAttached && state?.remoteEligible !== false && hasLocalKnowledge(state?.localMeta));
 	if (!state || (!remoteAttached && !localAttached) || inflightByChannel.has(state.id) || state.retryAt > now()) return null;
@@ -771,11 +780,17 @@ export function createHistoryScheduler({
     // still observes the same rejection.
     void terminal.promise.catch(() => {});
     inflightByRef.set(batch.ref, batch);
-    const receipt = await accepted;
+    const receipt = await Promise.race([
+      accepted,
+      batch.sourceCancellation.promise,
+    ]);
     if (!receipt?.accepted || receipt.generation !== batch.generation || receipt.channel_id !== batch.channelId) {
       throw new Error('历史批次回执不匹配');
     }
-    const page = await terminal.promise;
+    const page = await Promise.race([
+      terminal.promise,
+      batch.sourceCancellation.promise,
+    ]);
 	return { ...page, declaredRows: page.rows, rows: batch.rows };
   }
 
@@ -1014,13 +1029,12 @@ export function createHistoryScheduler({
     batch.createdAt = now();
     batch.createdDispatch = dispatchSerial;
     inflightByChannel.set(batch.channelId, batch);
-    if (batch.source === 'indexeddb') {
-      batch.sourceCancellation = deferred();
-      // execute() races this signal with the physical IndexedDB promise. The
-      // latter may still settle later, but it no longer occupies a scheduler
-      // executor or regains authority after its Meta source was replaced.
-      void batch.sourceCancellation.promise.catch(() => {});
-    }
+    batch.sourceCancellation = deferred();
+    // Physical IndexedDB reads and a network request's receipt/page phases can
+    // both settle after ownership moved. Race the shared cancellation signal
+    // so neither source keeps the executor/channel lane occupied; late results
+    // remain unable to commit through batchIsCurrent/cancelledRefs.
+    void batch.sourceCancellation.promise.catch(() => {});
     reservedInflightBytes += batch.reservedBytes;
     for (const state of channels.values()) {
       if (state.id === batch.channelId) state.waitDispatches = 0;
@@ -1589,9 +1603,15 @@ export function createHistoryScheduler({
 	});
   }
 
-  function setLocalMeta(nextMeta = new Map(), { publishChange = true, localReady, replace = false } = {}) {
+  function setLocalMeta(nextMeta = new Map(), {
+    publishChange = true,
+    localReady,
+    replace = false,
+    selectionPending,
+  } = {}) {
     const activatingLocalMeta = localReady === true && !localMetaReady;
     if (typeof localReady === 'boolean') localMetaReady = localReady;
+    if (typeof selectionPending === 'boolean') localSelectionPending = selectionPending;
     if (replace) {
       localMetaEpoch += 1;
       for (const batch of inflightByChannel.values()) {
@@ -1629,6 +1649,31 @@ export function createHistoryScheduler({
       state.localMeta = value;
 	  state.localCoverage = mergedCoverage(value?.coverage || []);
 	  const cachedHead = localHead(value);
+	  const coldLocalTail = Boolean(replace
+	    && state.attachedGeneration
+	    && state.headSeq > 0
+	    && state.completedPages === 0
+	    && !state.tailVisible
+	    && !hasPresentedRows(id)
+	    && cachedHead >= state.headSeq
+	    && tailWindowCovered(value, state.headSeq));
+	  if (coldLocalTail) {
+	    // Attach may have opened the remote fallback while the complete cache
+	    // snapshot was still selecting. Once the exact authoritative tail is
+	    // proven durable, make that local frontier the cold-start source and
+	    // retire only the redundant, not-yet-presented initial-tail request.
+	    state.beforeSeq = cachedHead + 1;
+	    state.hasRows = cachedHead > 0 || state.hasRows;
+	    state.hasOlder = state.hasRows;
+	    state.tailRefreshBeforeSeq = 0;
+	    state.tailRefreshFloorSeq = 0;
+	    const batch = inflightByChannel.get(id);
+	    if (batch?.source === 'network'
+	      && batch.purpose === 'initial-tail'
+	      && batch.beforeSeq === state.headSeq + 1) {
+	      cancelBatch(batch, 'durable local tail replaced cold remote fallback');
+	    }
+	  }
 	  if (activatingLocalMeta && state.attachedGeneration && !state.tailVisible && state.completedPages === 0 && cachedHead > 0) {
 		// Local-first startup begins at the newest durable local interval. Once
 		// that segment paints, commit() bridges any remote-only tail above it.
@@ -1669,6 +1714,7 @@ export function createHistoryScheduler({
 	  }
 	  batch.cancelled = true;
 	  batch.terminal?.reject(new Error('connection closed'));
+	  batch.sourceCancellation?.reject(new Error('connection closed'));
 	  if (batch.ref) inflightByRef.delete(batch.ref);
 	  if (inflightByChannel.get(channelId) === batch) inflightByChannel.delete(channelId);
     }
