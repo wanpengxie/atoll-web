@@ -37,6 +37,25 @@ describe('test evidence integrity contracts', () => {
     expect(offenders).toEqual([]);
   });
 
+  // Chromium reports "ResizeObserver loop completed with undelivered
+  // notifications" only through the page's own `error` event. Playwright's
+  // `pageerror` and `console` channels stay silent — measured on 2026-09-18 by
+  // the positive control in tests/browser/input-resize-observer-loop.spec.js:
+  // 20 in-page errors and 20 app diagnostics for 0 Playwright reports. A spec
+  // that claims the error is absent while watching only those two channels
+  // asserts nothing at all.
+  test('a spec may only claim a ResizeObserver loop is absent from a channel that sees it', () => {
+    const detects = /addEventListener\(\s*['"]error['"]|resize_observer_loop/;
+    const offenders = globSync('tests/browser/**/*.{js,jsx,mjs}', {
+      cwd: new URL('..', import.meta.url),
+    }).filter((path) => {
+      const source = read(path);
+      return /ResizeObserver loop/.test(source) && !detects.test(source);
+    });
+
+    expect(offenders).toEqual([]);
+  });
+
   test('the unit runner excludes durable evidence sources', () => {
     const config = read('vite.config.js');
 
