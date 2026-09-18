@@ -125,6 +125,28 @@ describe('ContentPlan', () => {
     expect(store.get('candidate')).toBe(prepared);
   });
 
+  it('reuses an exact unpublished render candidate without exposing it as committed identity', () => {
+    const store = createContentPlanStore({ limit: 2 });
+    const metrics = {};
+    const first = store.prepare('strict-candidate', 'one\n\ntwo', { metrics });
+    const replay = store.prepare('strict-candidate', 'one\n\ntwo', { metrics });
+    expect(replay).toBe(first);
+    expect(metrics.parseCount).toBe(1);
+    expect(store.get('strict-candidate')).toBeNull();
+
+    store.commit(replay);
+    expect(store.get('strict-candidate')).toBe(first);
+  });
+
+  it('never treats a different abandoned candidate as committed previous identity', () => {
+    const store = createContentPlanStore({ limit: 2 });
+    const abandoned = store.prepare('concurrent-candidate', 'abandoned');
+    const replacement = store.prepare('concurrent-candidate', 'replacement');
+    expect(abandoned.revision).toBe(1);
+    expect(replacement.revision).toBe(1);
+    expect(store.get('concurrent-candidate')).toBeNull();
+  });
+
   it('bounds prepared AST retention by bytes without discarding durable block identity', () => {
     const store = createContentPlanStore({ limit: 4, preparedByteLimit: 1 });
     const committed = createContentPlan({ contentKey: 'bounded-prepared', source: 'one\n\ntwo' });

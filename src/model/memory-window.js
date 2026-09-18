@@ -94,11 +94,12 @@ export function trimChannelState(state, { maxRows, maxBytes } = MOBILE_WINDOW) {
   for (const [id, turn] of state.turns) {
     // 闭合了、且整段都在窗口外的才摘;开着的上面已经用 floor 保住了。
     if (turn.terminal && Math.max(turn.requestSeq, turn.terminalSeq || 0, turn.lastSeq || 0) < cut) {
-      // Keep the terminal in Fold's existing compact closure authority before
-      // dropping the heavy request/response record. A later history page can
-      // contain the older request and queued position without repeating the
-      // already-scanned terminal; drainRequestMatches must still close that
-      // turn before Waiting derives from it.
+      // A same-generation history/cache batch can already have this turn's
+      // older request/queued rows buffered when the live terminal lands. Trim
+      // removes those seqs from rows, so pageEnd would otherwise admit the
+      // stale batch and reopen Waiting. Keep the compact closure until that
+      // parent is re-materialized and drains it; coverage alone cannot prove
+      // that every pre-terminal producer has retired.
       retainTerminalClosure(state, turn.terminalSeq, turn.terminal);
       state.turns.delete(id);
     }

@@ -472,29 +472,54 @@ it('过滤后的首个物理批次显示稳定partial说明，后台分页不冒
   expect(screen.queryByText('正在确认频道内容…')).toBeNull();
 });
 
-it('身份迟到前诚实显示全部且不重挂消息列表，Mine 只由用户明确选择', async () => {
+it('身份迟到前临时显示全部但保留 Mine 偏好，身份到达后原地恢复 Mine', async () => {
   const standalone = [
     { seq: 1, envelope: { id: 'mine', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: '我的动态' } } },
     { seq: 2, envelope: { id: 'other', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other', kind: 'human' }, payload: { text: '其他动态' } } },
   ];
   const state = timelineState(standalone);
-  const base = { state, history: { attached: true, hasOlder: false }, roster: [], pending: [], approvalStates: {}, access: 'member_active' };
+  const viewSessions = createViewSessionStore();
+  viewSessions.writeConversation('c0', { scope: 'mine' });
+  const base = { state, history: { attached: true, hasOlder: false }, viewSessions, roster: [], pending: [], approvalStates: {}, access: 'member_active' };
   const view = render(<Timeline {...base} selfId="" />);
 
   expect(await screen.findByText('正在确认你的频道身份，当前显示全部动态。')).toBeTruthy();
   expect(screen.getByText('我的动态')).toBeTruthy();
   expect(screen.getByText('其他动态')).toBeTruthy();
   expect(screen.queryByRole('button', { name: '@我' })).toBeNull();
+  await waitFor(() => expect(viewSessions.read('c0').scope).toBe('mine'));
   const listBeforeIdentity = view.container.querySelector('.timeline-message-list');
 
   view.rerender(<Timeline {...base} selfId="me" />);
-  const scopeButton = await screen.findByRole('button', { name: '全部' });
+  const scopeButton = await screen.findByRole('button', { name: '@我' });
   expect(view.container.querySelector('.timeline-message-list')).toBe(listBeforeIdentity);
   expect(screen.queryByText('正在确认你的频道身份，当前显示全部动态。')).toBeNull();
-  expect(screen.getByText('其他动态')).toBeTruthy();
-
-  fireEvent.click(scopeButton);
-  expect(await screen.findByRole('button', { name: '@我' })).toBeTruthy();
   expect(screen.getByText('我的动态')).toBeTruthy();
   expect(screen.queryByText('其他动态')).toBeNull();
+  expect(viewSessions.read('c0').scope).toBe('mine');
+
+  fireEvent.click(scopeButton);
+  expect(await screen.findByRole('button', { name: '全部' })).toBeTruthy();
+  expect(screen.getByText('其他动态')).toBeTruthy();
+  await waitFor(() => expect(viewSessions.read('c0').scope).toBe('all'));
+});
+
+it('身份迟到不覆盖用户明确保存的 All 偏好', async () => {
+  const standalone = [
+    { seq: 1, envelope: { id: 'mine-all', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: '我的 All 动态' } } },
+    { seq: 2, envelope: { id: 'other-all', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other', kind: 'human' }, payload: { text: '其他 All 动态' } } },
+  ];
+  const viewSessions = createViewSessionStore();
+  viewSessions.writeConversation('c0', { scope: 'all' });
+  const base = {
+    state: timelineState(standalone), history: { attached: true, hasOlder: false }, viewSessions,
+    roster: [], pending: [], approvalStates: {}, access: 'member_active',
+  };
+  const view = render(<Timeline {...base} selfId="" />);
+  expect(await screen.findByText('其他 All 动态')).toBeTruthy();
+
+  view.rerender(<Timeline {...base} selfId="me" />);
+  expect(await screen.findByRole('button', { name: '全部' })).toBeTruthy();
+  expect(screen.getByText('其他 All 动态')).toBeTruthy();
+  expect(viewSessions.read('c0').scope).toBe('all');
 });

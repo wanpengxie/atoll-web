@@ -1,5 +1,9 @@
 import { argsOf } from '../protocol/envelope.js';
-import { agentMessageStage, isAgentMessageTurn } from './agent-control.js';
+import {
+  HIDDEN_TURN_TYPES,
+  isUiProtocolType,
+  timelineTurnVisible,
+} from './conversation-visibility.js';
 import { orderedTimeline } from './fold.js';
 import {
   entryMatchesActors,
@@ -12,17 +16,6 @@ import { TYPES } from '../protocol/vocab.js';
 
 export { presentationEntryId } from './conversation-presentation.js';
 
-const HIDDEN_TURN_TYPES = new Set([
-  TYPES.agentHold,
-  TYPES.agentUnhold,
-  TYPES.agentInterrupt,
-  TYPES.agentContext,
-  TYPES.agentOptions,
-  TYPES.agentFork,
-  TYPES.describe,
-]);
-
-const SELECT_OR_NEW = new Set([TYPES.agentSelect, TYPES.agentNew]);
 const LOCAL_ECHO_HIDDEN_TYPES = new Set([
   ...HIDDEN_TURN_TYPES,
   TYPES.agentSelect,
@@ -35,27 +28,19 @@ function isTransientEntry(entry) {
     && (argsOf(entry.envelope)?.transient === true || entry.envelope?.type === 'mock.channel.pulse');
 }
 
-function isUiProtocolTurn(turn) {
-  return typeof turn?.request?.type === 'string' && turn.request.type.startsWith('ui.');
-}
-
 // ui.* is an operation stream between an agent and one browser tab, not a
 // conversation with the person. Keep it in "all" for ledger inspection, but
 // remove both root UI turns and nested UI calls from the person's chat view.
 function withoutUiProtocol(entry) {
-  if (entry.kind === 'turn' && isUiProtocolTurn(entry.turn)) return null;
-  if (!entry.thread?.some((item) => isUiProtocolTurn(item.turn))) return entry;
-  return { ...entry, thread: entry.thread.filter((item) => !isUiProtocolTurn(item.turn)) };
+  if (entry.kind === 'turn' && isUiProtocolType(entry.turn?.request?.type)) return null;
+  if (!entry.thread?.some((item) => isUiProtocolType(item.turn?.request?.type))) return entry;
+  return { ...entry, thread: entry.thread.filter((item) => !isUiProtocolType(item.turn?.request?.type)) };
 }
 
 function timelineEntryVisible(entry, editingTargetId) {
   if (entry.kind === 'standalone' && entry.envelope?.type === 'terminal.session') return false;
   if (entry.kind !== 'turn') return true;
-  if (HIDDEN_TURN_TYPES.has(entry.turn.request.type)) return false;
-  if (SELECT_OR_NEW.has(entry.turn.request.type)) return argsOf(entry.turn.terminal)?.status === 'completed';
-  if (entry.turn.requestId === editingTargetId) return true;
-  if (isAgentMessageTurn(entry.turn)) return agentMessageStage(entry.turn) === 'timeline';
-  return true;
+  return timelineTurnVisible(entry.turn, editingTargetId);
 }
 
 // This is the only semantic visibility projection for Timeline. Rendering and

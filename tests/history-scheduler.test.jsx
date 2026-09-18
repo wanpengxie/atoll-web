@@ -1126,13 +1126,14 @@ describe('live feed priority', () => {
     const version = hook.result.current.version;
     act(() => hook.result.current.markRead('c0', { physicalSeq: 101, identities: [] }));
     expect(hook.result.current.cursorsRef.current.read('c0')).toBe(101);
-    // This event cannot create a channel badge, so marking it read updates the
-    // cursor without publishing a second application render.
+    // A readable standalone event belongs to the open viewport's dynamics,
+    // not the request/final-only channel rail. Advancing the physical cursor
+    // therefore does not publish a spurious rail-cache revision.
     expect(hook.result.current.version).toBe(version);
     hook.unmount();
   });
 
-  it('invalidates the rail cache when marking a weak/system notification read', async () => {
+  it('invalidates the rail cache when marking a weak public notification read', async () => {
     const historyBefore = vi.fn((channelId, _before, _limit, options) => accepted('history-system', channelId, options.generation, options.purpose));
     const hook = renderHook(() => useChannelFeed({
       wireRef: { current: { historyBefore } },
@@ -1149,8 +1150,8 @@ describe('live feed priority', () => {
     act(() => hook.result.current.enqueue({
       source: 'live', generation: 1, channel_id: 'c0', seq: 101,
       envelope: {
-        id: 'system-notice', kind: 'request', type: 'system.member.created', visibility: 'system',
-        sender: { id: 'system', kind: 'system' }, audience: ['me'], payload: {},
+        id: 'weak-tool-call', kind: 'request', type: 'tool.run', visibility: 'public',
+        sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['tool:runner:1'], payload: {},
       },
     }));
     await waitFor(() => expect(hook.result.current.unreadFor('c0', 'me').total).toBe(1));

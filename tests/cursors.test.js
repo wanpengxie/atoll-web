@@ -30,7 +30,7 @@ describe('channel cursors', () => {
     apply(state, { channel_id: 'c0', seq: 2, envelope: progress }, 'me');
     expect(recordLiveTimelineArrival(state, progress, 2, 'me')).toBeNull();
 
-    const terminal = { id: 'terminal', kind: 'response', parent_id: 'root', sender: { id: 'agent' }, payload: { status: 'completed' } };
+    const terminal = { id: 'terminal', kind: 'response', parent_id: 'root', sender: { id: 'agent' }, payload: { status: 'completed', text: 'answer' } };
     apply(state, { channel_id: 'c0', seq: 3, envelope: terminal }, 'me');
     expect(recordLiveTimelineArrival(state, terminal, 3, 'me')).toMatchObject({ key: 'root', rowID: 'root', seq: 3 });
     expect(state._liveArrivalLog).toHaveLength(1);
@@ -41,7 +41,7 @@ describe('channel cursors', () => {
     expect(state._liveArrivalLog).toHaveLength(1);
 
     const orphanState = createChannelState('c0');
-    const orphan = { id: 'terminal-first', kind: 'response', parent_id: 'late-root', correlation_id: 'late-root', sender: { id: 'agent' }, payload: { status: 'completed' } };
+    const orphan = { id: 'terminal-first', kind: 'response', parent_id: 'late-root', correlation_id: 'late-root', sender: { id: 'agent' }, payload: { status: 'completed', text: 'answer before request' } };
     apply(orphanState, { channel_id: 'c0', seq: 9, envelope: orphan }, 'me');
     expect(recordLiveTimelineArrival(orphanState, orphan, 9, 'me')).toMatchObject({
       key: 'late-root', rowID: 'terminal-first', seq: 9,
@@ -49,7 +49,58 @@ describe('channel cursors', () => {
     release();
   });
 
-  it('shares the correlation root identity when a nested request beats its parent into Replica', () => {
+  it('creates a viewport arrival only when queued work produces terminal user content', () => {
+    const state = createChannelState('c0');
+    registerLiveTimelineArrivalConsumer(state);
+    const agent = { id: 'agent:worker:1', kind: 'agent' };
+    const request = { id: 'work', kind: 'request', type: 'agent.ask', sender: agent, audience: [agent.id] };
+    const queued = { id: 'queued', kind: 'response', type: 'agent.ask', parent_id: 'work', sender: agent, audience: [agent.id], payload: { status: 'queued' } };
+    const processing = { id: 'processing', kind: 'response', type: 'agent.ask', parent_id: 'work', sender: agent, audience: [agent.id], payload: { status: 'processing' } };
+    const progress = { ...processing, id: 'progress', payload: { status: 'processing', process: { kind: 'stage' } } };
+
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request }, 'human:root:1');
+    expect(recordLiveTimelineArrival(state, request, 1, 'human:root:1')).toBeNull();
+    apply(state, { channel_id: 'c0', seq: 2, envelope: queued }, 'human:root:1');
+    expect(recordLiveTimelineArrival(state, queued, 2, 'human:root:1')).toBeNull();
+    apply(state, { channel_id: 'c0', seq: 3, envelope: processing }, 'human:root:1');
+    expect(recordLiveTimelineArrival(state, processing, 3, 'human:root:1')).toBeNull();
+    apply(state, { channel_id: 'c0', seq: 4, envelope: progress }, 'human:root:1');
+    expect(recordLiveTimelineArrival(state, progress, 4, 'human:root:1')).toBeNull();
+    const terminal = { ...processing, id: 'terminal', payload: { status: 'completed', text: 'done' } };
+    apply(state, { channel_id: 'c0', seq: 5, envelope: terminal }, 'human:root:1');
+    expect(recordLiveTimelineArrival(state, terminal, 5, 'human:root:1'))
+      .toMatchObject({ key: 'work', rowID: 'work', seq: 5 });
+  });
+
+  it('creates viewport arrivals only for independently readable public events', () => {
+    const state = createChannelState('c0');
+    registerLiveTimelineArrivalConsumer(state);
+    const uiRequest = {
+      id: 'ui-op', kind: 'request', type: 'ui.state', visibility: 'public',
+      sender: { id: 'agent:steward:1', kind: 'agent' }, audience: ['human:root:1'], payload: { text: 'release is ready' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: uiRequest }, 'human:root:1');
+    expect(recordLiveTimelineArrival(state, uiRequest, 1, 'human:root:1')).toBeNull();
+
+    const event = {
+      id: 'public-event', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'agent:steward:1', kind: 'agent' }, audience: ['human:root:1'], payload: { text: 'release is ready' },
+    };
+    apply(state, { channel_id: 'c0', seq: 2, envelope: event }, 'human:root:1');
+    expect(recordLiveTimelineArrival(state, event, 2, 'human:root:1'))
+      .toMatchObject({ key: 'public-event', rowID: 'public-event', seq: 2 });
+    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 0, total: 0 });
+
+    const activity = {
+      id: 'agent-activity', kind: 'event', type: 'agent.resume', visibility: 'public',
+      sender: { id: 'agent:steward:1', kind: 'agent' }, audience: ['agent:steward:1'],
+      payload: { task: 'resume work' },
+    };
+    apply(state, { channel_id: 'c0', seq: 3, envelope: activity }, 'human:root:1');
+    expect(recordLiveTimelineArrival(state, activity, 3, 'human:root:1')).toBeNull();
+  });
+
+  it('does not wake an acknowledged root for a nested tool lifecycle', () => {
     const state = createChannelState('c0');
     registerLiveTimelineArrivalConsumer(state);
     const child = {
@@ -58,14 +109,30 @@ describe('channel cursors', () => {
       sender: { id: 'agent' }, audience: ['tool'],
     };
     apply(state, { channel_id: 'c0', seq: 5, envelope: child }, 'me');
-    expect(recordLiveTimelineArrival(state, child, 5, 'me')).toMatchObject({
-      key: 'root-request',
-      rowID: 'child-request',
-      seq: 5,
-    });
-    expect(unreadCounts(state, 0, 'me')).toEqual({ related: 0, total: 1 });
+    expect(recordLiveTimelineArrival(state, child, 5, 'me')).toBeNull();
+    expect(unreadCounts(state, 0, 'me')).toEqual({ related: 0, total: 0 });
     expect(unreadCountDiagnostics(state, 0, 'me').rows)
-      .toContainEqual(expect.objectContaining({ id: 'root-request', seq: 5, ackReason: 'counted_other' }));
+      .toContainEqual(expect.objectContaining({ id: 'child-request', seq: 5, ackReason: 'nested_tool_lifecycle' }));
+  });
+
+  it('keeps a top-level readable tool turn as one legitimate notification', () => {
+    const state = createChannelState('c0');
+    const request = {
+      id: 'tool-root', kind: 'request', type: 'tool.report', visibility: 'public',
+      sender: { id: 'tool:reporter:1', kind: 'tool' }, audience: ['human:root:1'],
+      payload: { text: 'Report requested' },
+    };
+    const terminal = {
+      id: 'tool-root-done', kind: 'response', type: 'tool.report', parent_id: 'tool-root', visibility: 'public',
+      sender: { id: 'tool:reporter:1', kind: 'tool' }, audience: ['human:root:1'],
+      payload: { status: 'completed', text: 'Report ready' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request }, 'human:root:1');
+    apply(state, { channel_id: 'c0', seq: 2, envelope: terminal }, 'human:root:1');
+
+    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 1, total: 1 });
+    expect(recordLiveTimelineArrival(state, terminal, 2, 'human:root:1'))
+      .toMatchObject({ key: 'tool-root', rowID: 'tool-root', seq: 2 });
   });
 
   it('keeps more than one hot-journal window exact until consumption, then releases it', () => {
@@ -78,6 +145,7 @@ describe('channel cursors', () => {
         type: 'human.note',
         visibility: 'public',
         sender: { id: 'other' },
+        payload: { text: `message ${index}` },
       }, index, 'me');
     }
     const pending = liveTimelineArrivals(state);
@@ -102,7 +170,7 @@ describe('channel cursors', () => {
         parent_id: 'stable-root',
         correlation_id: 'stable-root',
         sender: { id: 'agent' },
-        payload: { status: 'completed' },
+        payload: { status: 'completed', text: `answer ${revision}` },
       }, revision, 'me');
     }
     expect(state._liveArrivalLog).toHaveLength(1_024);
@@ -117,7 +185,8 @@ describe('channel cursors', () => {
     expect(liveTimelineArrivals(state).events).toHaveLength(0);
 
     recordLiveTimelineArrival(state, {
-      id: 'unique-tail', kind: 'event', visibility: 'public', sender: { id: 'other' },
+      id: 'unique-tail', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'other' }, payload: { text: 'unique tail' },
     }, 1_101, 'me');
     expect(liveTimelineArrivals(state)).toMatchObject({
       revision: 1_101,
@@ -134,7 +203,8 @@ describe('channel cursors', () => {
     for (let revision = 1; revision <= 2_000; revision += 1) {
       recordLiveTimelineArrival(state, {
         id: `background-${revision}`,
-        kind: 'event', visibility: 'public', sender: { id: 'other' },
+        kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other' },
+        payload: { text: `background ${revision}` },
       }, revision, 'me');
     }
     expect(state._liveArrivalRevision).toBe(2_000);
@@ -150,7 +220,8 @@ describe('channel cursors', () => {
     expect(state._liveArrivalConsumers).toBe(1);
 
     recordLiveTimelineArrival(state, {
-      id: 'while-mounted', kind: 'event', visibility: 'public', sender: { id: 'other' },
+      id: 'while-mounted', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'other' }, payload: { text: 'while mounted' },
     }, 1, 'me');
     expect(liveTimelineArrivals(state).events).toHaveLength(1);
 
@@ -168,11 +239,13 @@ describe('channel cursors', () => {
     const state = createChannelState('c0');
     const release = registerLiveTimelineArrivalConsumer(state, Symbol('timeline'));
     recordLiveTimelineArrival(state, {
-      id: 'pending-handoff', kind: 'event', visibility: 'public', sender: { id: 'other' },
+      id: 'pending-handoff', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'other' }, payload: { text: 'pending handoff' },
     }, 1, 'me');
     release();
     recordLiveTimelineArrival(state, {
-      id: 'background-after-switch', kind: 'event', visibility: 'public', sender: { id: 'other' },
+      id: 'background-after-switch', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'other' }, payload: { text: 'background after switch' },
     }, 2, 'me');
     expect(liveTimelineArrivals(state)).toMatchObject({
       acknowledgedRevision: 0,
@@ -200,7 +273,7 @@ describe('channel cursors', () => {
       [2, { id: 'already-read', kind: 'request', visibility: 'public', sender: { id: 'other' } }],
       [3, { id: 'system-row', kind: 'request', visibility: 'system', sender: { id: 'system' } }],
       [4, { id: 'mine', kind: 'request', visibility: 'public', sender: { id: 'me' } }],
-      [5, { id: 'reply', kind: 'response', visibility: 'public', payload: { status: 'completed' }, sender: { id: 'other' } }],
+      [5, { id: 'reply', kind: 'response', visibility: 'public', payload: { status: 'completed', text: 'reply' }, sender: { id: 'other' } }],
     ]) };
     expect(unreadCount(state, cursors.read('c0'), 'me')).toBe(1);
   });
@@ -326,17 +399,114 @@ describe('channel cursors', () => {
     expect(unreadCounts(state, 2, 'me')).toEqual({ related: 1, total: 1 });
   });
 
-  it('keeps an agent self-audience turn weak unless a human edge relates it', () => {
+  it('waits for terminal user content from an agent self-audience task', () => {
     const agent = { id: 'agent:steward:1', kind: 'agent' };
-    const state = { rows: new Map([
-      [1, { id: 'peer-task', kind: 'request', type: 'agent.ask', audience: [agent.id], sender: agent, correlation_id: 'peer-task' }],
-      [2, { id: 'peer-task-done', kind: 'response', type: 'agent.ask', parent_id: 'peer-task', correlation_id: 'peer-task', audience: [agent.id], sender: agent, payload: { status: 'completed' } }],
-    ]) };
+    const state = createChannelState('c0');
+    const request = { id: 'peer-task', kind: 'request', type: 'agent.ask', audience: [agent.id], sender: agent, correlation_id: 'peer-task' };
+    const queued = { id: 'peer-task-queued', kind: 'response', type: 'agent.ask', parent_id: 'peer-task', correlation_id: 'peer-task', audience: [agent.id], sender: agent, payload: { status: 'queued' } };
+    const processing = { id: 'peer-task-processing', kind: 'response', type: 'agent.ask', parent_id: 'peer-task', correlation_id: 'peer-task', audience: [agent.id], sender: agent, payload: { status: 'processing' } };
+    const progress = { ...processing, id: 'peer-task-progress', payload: { status: 'processing', process: { kind: 'stage' } } };
+    const completed = { id: 'peer-task-done', kind: 'response', type: 'agent.ask', parent_id: 'peer-task', correlation_id: 'peer-task', audience: [agent.id], sender: agent, payload: { status: 'completed', text: 'finished work' } };
 
-    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 0, total: 1 });
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request }, 'human:root:1');
+    apply(state, { channel_id: 'c0', seq: 2, envelope: queued }, 'human:root:1');
+    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 0, total: 0 });
+
+    apply(state, { channel_id: 'c0', seq: 3, envelope: processing }, 'human:root:1');
+    expect(unreadCounts(state, 2, 'human:root:1')).toEqual({ related: 0, total: 0 });
+    expect(unreadCount(state, 0, 'human:root:1')).toBe(0);
+    apply(state, { channel_id: 'c0', seq: 4, envelope: progress }, 'human:root:1');
+    expect(unreadCounts(state, 3, 'human:root:1')).toEqual({ related: 0, total: 0 });
+
+    apply(state, { channel_id: 'c0', seq: 5, envelope: completed }, 'human:root:1');
+    expect(unreadCounts(state, 3, 'human:root:1')).toEqual({ related: 0, total: 1 });
+
+    const acknowledgementOnly = createChannelState('c0');
+    apply(acknowledgementOnly, { channel_id: 'c0', seq: 1, envelope: request }, 'human:root:1');
+    const statusOnly = { ...completed, payload: { status: 'completed', detail: 'internal metadata' } };
+    apply(acknowledgementOnly, { channel_id: 'c0', seq: 2, envelope: statusOnly }, 'human:root:1');
+    expect(unreadCounts(acknowledgementOnly, 0, 'human:root:1')).toEqual({ related: 0, total: 0 });
+    expect(recordLiveTimelineArrival(acknowledgementOnly, statusOnly, 2, 'human:root:1')).toBeNull();
   });
 
-  it('counts a canonical agent timer commission as related without admitting generic self-audience traffic', () => {
+  it('never turns browser ui operation streams or system narration into rail notifications', () => {
+    const state = createChannelState('c0');
+    const uiRequest = {
+      id: 'ui-op', kind: 'request', type: 'ui.state', visibility: 'public',
+      sender: { id: 'agent:steward:1', kind: 'agent' }, audience: ['human:root:1'], payload: {},
+    };
+    const narration = {
+      id: 'system-narration', kind: 'request', type: 'system.member.created', visibility: 'system',
+      sender: { id: 'system', kind: 'system' }, audience: [], payload: {},
+    };
+    const uiResponse = {
+      id: 'ui-op-done', kind: 'response', parent_id: 'ui-op', visibility: 'public',
+      sender: { id: 'human:root:2', kind: 'human' }, audience: ['agent:steward:1'],
+      payload: { status: 'completed' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: uiRequest }, 'human:root:1');
+    apply(state, { channel_id: 'c0', seq: 2, envelope: narration }, 'human:root:1');
+    apply(state, { channel_id: 'c0', seq: 3, envelope: uiResponse }, 'human:root:1');
+
+    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 0, total: 0 });
+    expect(unreadCountDiagnostics(state, 0, 'human:root:1').rows).toEqual([
+      expect.objectContaining({ id: 'ui-op-done', ackReason: 'self' }),
+      expect.objectContaining({ id: 'system-narration', ackReason: 'system_narration' }),
+      expect.objectContaining({ id: 'ui-op', ackReason: 'ui_protocol' }),
+    ]);
+  });
+
+  it('does not turn this human own request entering processing into a new notification', () => {
+    const state = createChannelState('c0');
+    const request = {
+      id: 'mine', kind: 'request', type: 'agent.ask', visibility: 'public',
+      sender: { id: 'human:root:1', kind: 'human' }, audience: ['agent:steward:1'], payload: {},
+    };
+    const processing = {
+      id: 'mine-processing', kind: 'response', type: 'agent.ask', parent_id: 'mine', visibility: 'public',
+      sender: { id: 'agent:steward:1', kind: 'agent' }, audience: ['human:root:1'],
+      payload: { status: 'processing' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request }, 'human:root:1');
+    apply(state, { channel_id: 'c0', seq: 2, envelope: processing }, 'human:root:1');
+
+    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 0, total: 0 });
+    expect(recordLiveTimelineArrival(state, processing, 2, 'human:root:1')).toBeNull();
+  });
+
+  it('does not resurrect an earlier human incarnation in rail but preserves another-session live arrival', () => {
+    const state = createChannelState('c0');
+    const historicalSelfRequest = {
+      id: 'mine-before-restart', kind: 'request', type: 'human.note', visibility: 'public',
+      sender: { id: 'human:root:1700000000000', kind: 'human' },
+      audience: ['agent:steward:1'], payload: { text: 'sent from my earlier session' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: historicalSelfRequest }, 'human:root:1900000000000');
+
+    expect(unreadCounts(state, 0, 'human:root:1900000000000')).toEqual({ related: 0, total: 0 });
+    expect(recordLiveTimelineArrival(state, historicalSelfRequest, 1, 'human:root:1900000000000'))
+      .toMatchObject({ key: 'mine-before-restart', rowID: 'mine-before-restart', seq: 1 });
+  });
+
+  it('does not notify for a terminal that leaves no canonical conversation row', () => {
+    const state = createChannelState('c0');
+    const request = {
+      id: 'replaced', kind: 'request', type: 'agent.ask', visibility: 'public',
+      sender: { id: 'agent:steward:1', kind: 'agent' }, audience: ['agent:worker:1'], payload: {},
+    };
+    const terminal = {
+      id: 'replaced-done', kind: 'response', type: 'agent.ask', parent_id: 'replaced', visibility: 'public',
+      sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['agent:steward:1'],
+      payload: { status: 'completed', replaced_by: 'successor' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request }, 'human:root:1');
+    apply(state, { channel_id: 'c0', seq: 2, envelope: terminal }, 'human:root:1');
+
+    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 0, total: 0 });
+    expect(recordLiveTimelineArrival(state, terminal, 2, 'human:root:1')).toBeNull();
+  });
+
+  it('keeps canonical timer activity visible without turning wake transport into unread content', () => {
     const agent = { id: 'agent:steward:1', kind: 'agent' };
     const state = { rows: new Map([
       [1, { id: 'timer:t1', kind: 'event', type: 'standup', audience: [agent.id], sender: agent, correlation_id: 'timer:t1' }],
@@ -344,7 +514,19 @@ describe('channel cursors', () => {
       [3, { id: 'timer-done', kind: 'response', type: 'agent.timer.wake', parent_id: 'timer-wake', correlation_id: 'timer:t1', audience: [agent.id], sender: agent, payload: { status: 'completed' } }],
     ]) };
 
-    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 1, total: 1 });
+    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 0, total: 0 });
+
+    const readableResult = { ...state.rows.get(3), id: 'timer-readable-result', payload: { status: 'completed', text: 'Scheduled work finished' } };
+    const resultState = { rows: new Map([...state.rows].slice(0, 2).concat([[4, readableResult]])) };
+    expect(unreadCounts(resultState, 0, 'human:root:1')).toEqual({ related: 1, total: 1 });
+
+    const structuredResult = { ...readableResult, id: 'timer-structured-result', payload: { status: 'completed', value: { answer: 42 } } };
+    const structuredState = { rows: new Map([...state.rows].slice(0, 2).concat([[4, structuredResult]])) };
+    expect(unreadCounts(structuredState, 0, 'human:root:1')).toEqual({ related: 1, total: 1 });
+
+    const failedResult = { ...readableResult, id: 'timer-failed-result', payload: { status: 'failed', error_code: 'boom', detail: 'failed visibly' } };
+    const failedState = { rows: new Map([...state.rows].slice(0, 2).concat([[4, failedResult]])) };
+    expect(unreadCounts(failedState, 0, 'human:root:1')).toEqual({ related: 1, total: 1 });
   });
 
   it('counts requests and protocol-final answers but ignores every provisional/unknown response status', () => {
@@ -445,7 +627,7 @@ describe('channel cursors', () => {
       correlation_id: 'request-late',
       sender: { id: 'agent' },
       audience: ['me'],
-      payload: { status: 'completed' },
+      payload: { status: 'completed', text: 'late answer' },
     });
     const state = createChannelState('c0');
     apply(state, { channel_id: 'c0', seq: 10, envelope: terminal('terminal-1') }, 'me');
@@ -455,7 +637,7 @@ describe('channel cursors', () => {
 
   it('reuses the fold id index instead of rebuilding it for every unread projection', () => {
     const root = { id: 'root', kind: 'request', audience: ['agent'], sender: { id: 'me' } };
-    const reply = { id: 'reply', kind: 'response', parent_id: 'root', audience: ['me'], payload: { status: 'completed' }, sender: { id: 'agent' } };
+    const reply = { id: 'reply', kind: 'response', parent_id: 'root', audience: ['me'], payload: { status: 'completed', text: 'answer' }, sender: { id: 'agent' } };
     const rows = new Map([[1, root], [2, reply]]);
     rows.values = () => { throw new Error('unread projection rebuilt the id index'); };
     const state = {

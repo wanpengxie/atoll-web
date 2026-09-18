@@ -109,6 +109,13 @@
 .conversation-reading-slot > .timeline, .conversation-reading-slot > .channel-private-empty { width: 100%; height: 100%; min-height: 0; }
 .conversation-bottom-stack { position: relative; z-index: 3; grid-row: 2; min-width: 0; max-height: var(--conversation-input-max-height); }
 .conversation-input-slot { min-width: 0; max-height: var(--conversation-input-max-height); pointer-events: none; }
+@property --input-resize-progress-height { syntax: '<length>'; inherits: true; initial-value: 0px; }
+.conversation-input-slot[data-input-resize-transition] { display: flex; flex-direction: column; justify-content: flex-end; block-size: calc(var(--input-resize-from-height) + var(--input-resize-progress-height)); overflow: hidden; }
+.conversation-surface[data-input-resize-transition="armed"] { transition: none; }
+.conversation-surface[data-input-resize-transition="running"] { --input-resize-progress-height: var(--input-resize-delta-height); transition: --input-resize-progress-height 160ms linear; }
+.conversation-input-slot[data-input-resize-transition] > * { width: 100%; flex: 0 0 auto; }
+.conversation-surface[data-input-resize-growth="true"] .timeline-input-resize-content { transform: translateY(calc(var(--input-resize-spacer-from-height) - var(--input-resize-progress-height))); }
+.conversation-surface[data-input-resize-growth="true"] .timeline-input-resize-content::after { display: block; block-size: calc(var(--input-resize-spacer-from-height) - var(--input-resize-progress-height)); content: ''; pointer-events: none; }
 .conversation-input-slot[data-send-clear-transition] { display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
 .conversation-input-slot[data-send-clear-transition="prepared"] { block-size: var(--send-clear-from-height); transition: none; }
 .conversation-input-slot[data-send-clear-transition="armed"] { block-size: var(--send-clear-from-height); transition: none; }
@@ -118,6 +125,7 @@
 .conversation-surface.is-compact-height .conversation-reading-slot { min-height: 0; }
 .conversation-floating-slot { position: absolute; z-index: 2; right: 0; bottom: 100%; left: 0; min-width: 0; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
+  .conversation-surface[data-input-resize-transition="running"] { transition-duration: 0ms; }
   .conversation-input-slot[data-send-clear-transition="running"] { transition-duration: 0ms; }
 }
 .dynamic-workspace > .terminal-view { grid-row: 1; }

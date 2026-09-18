@@ -36,9 +36,22 @@ test('F7 channel notifications baseline history, count roots, and acknowledge on
   await expect(related).toHaveCount(0);
   await expect(other).toHaveCount(0);
 
+  // Keep the two roots physically above the initial tail viewport. The old
+  // three-turn fixture now fits in one viewport, which would correctly exact-
+  // acknowledge both roots immediately and no longer exercise this boundary.
+  const tail = await request.post('/mock/control/action', {
+    data: { type: 'notification_lifecycle', channel_id: 'c0.project', phase: 'tail', count: 24 },
+  });
+  expect(tail.ok()).toBe(true);
+
   const terminal = async (index) => {
     const response = await request.post('/mock/control/action', {
-      data: { type: 'push_terminal', channel_id: 'c0.project', request_id: `c0.project-history-request-${index}` },
+      data: {
+        type: 'push_terminal',
+        channel_id: 'c0.project',
+        request_id: `c0.project-history-request-${index}`,
+        payload: { text: `answer ${index}` },
+      },
     });
     expect(response.ok()).toBe(true);
   };
@@ -55,10 +68,15 @@ test('F7 channel notifications baseline history, count roots, and acknowledge on
 
   await channel.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
-  // `mine` is a filtered semantic view: entering at its tail must not clear
-  // unread roots which are still above the viewport. They are acknowledged by
-  // exact identity only after the user exposes those rows.
-  await expect(related).toHaveText('2');
+  // `mine` is a filtered semantic view: entering may acknowledge a root that
+  // is physically visible at the restored boundary, but must retain every root
+  // still above the viewport. Exact font metrics decide whether one is already
+  // exposed here.
+  await expect.poll(async () => (
+    await related.count() ? Number(await related.textContent()) : 0
+  )).toBeGreaterThan(0);
+  const remainingOnEntry = Number(await related.textContent());
+  expect(remainingOnEntry).toBeLessThanOrEqual(2);
 
   const viewport = page.locator('.timeline-message-list');
   // Use a physical gesture: the timeline intentionally distinguishes user
@@ -68,7 +86,19 @@ test('F7 channel notifications baseline history, count roots, and acknowledge on
   await expect.poll(() => viewport.evaluate((node) => (
     node.scrollHeight - node.clientHeight - node.scrollTop
   ))).toBeGreaterThan(24);
-  await expect(related).toHaveCount(0);
+  // The first viewport can expose one or both roots depending on exact font
+  // metrics. Every root actually seen must clear; if one sits under the
+  // floating controls, reveal that exact still-unread identity next.
+  expect(await related.count()).toBeLessThanOrEqual(1);
+  if (await related.count()) {
+    const unreadID = await page.evaluate(() => (
+      window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0]?.rows
+        ?.find((row) => row.ackReason === 'counted_related')?.id || ''
+    ));
+    expect(unreadID).toBeTruthy();
+    await page.locator(`[data-entry-id="${unreadID}"]`).evaluate((node) => node.scrollIntoView({ block: 'center' }));
+    await expect(related).toHaveCount(0);
+  }
   await terminal(3);
   // Root 3 is already exposed in this viewport. Its later final revision is
   // real answer content, but it is acknowledged immediately by that exact

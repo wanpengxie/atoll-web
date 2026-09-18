@@ -87,11 +87,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const liveBatchRef = useRef(null);
   const unreadCacheRef = useRef(new Map());
   const unreadDiagnosticSignatureRef = useRef(new Map());
+  const notificationHydrationRef = useRef({ serial: 0, channels: new Map() });
   const syncCoordinatorRef = useRef(null);
   const attachedGenerationRef = useRef(0);
 
   const unreadFor = useCallback((channelId, selfId = '') => {
-    if (!cursorsRef.current.isReadAuthorityReady()) return { related: 0, total: 0 };
+    if (!cursorsRef.current.isReadAuthorityReady()) return { related: 0, total: 0, pending: true };
     const state = replicaRef.current.state(channelId);
     const revision = replicaRef.current.revision(channelId);
     const readSeq = cursorsRef.current.read(channelId);
@@ -122,6 +123,11 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         }));
       }
     }
+    const hydration = notificationHydrationRef.current.serial === localReplicaSerialRef.current
+      ? notificationHydrationRef.current.channels.get(channelId)
+      : '';
+    if (hydration === 'pending') return { ...counts, pending: true };
+    if (hydration === 'unknown') return { ...counts, unknown: true };
     return counts;
   }, []);
 
@@ -133,6 +139,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       channels.push(Object.freeze({
         channelId,
         authorityReady: cursorsRef.current.isReadAuthorityReady(),
+        notificationHydration: notificationHydrationRef.current.serial === localReplicaSerialRef.current
+          ? notificationHydrationRef.current.channels.get(channelId) || 'ready'
+          : 'stale',
         readSeq,
         ...unreadCountDiagnostics(
           state,
@@ -261,6 +270,74 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     return changed;
   }, [accessRef, activeChannelRef, onAccessChanged, onChannelsDiscovered, onDirectoryInvalidated, onError, onRoster, onSubmissionFeed, onTimerFired, rosterRef]);
   applyRowsRef.current = applyRows;
+
+  const beginNotificationHydration = useCallback((meta, serial, focus = '') => {
+    if (serial !== localReplicaSerialRef.current) return;
+    const channels = new Map();
+    const queue = [];
+    for (const [channelId, channelMeta] of meta) {
+      const newest = Math.max(
+        Number(channelMeta?.newestSeq || 0),
+        ...(channelMeta?.coverage || []).map((range) => Number(range?.highSeq || 0)),
+      );
+      const readSeq = cursorsRef.current.read(channelId);
+      if (newest <= readSeq || channelId === focus) continue;
+      channels.set(channelId, 'pending');
+      queue.push({ channelId, readSeq });
+    }
+    notificationHydrationRef.current = { serial, channels };
+    if (!queue.length) return;
+    // Publish the unknown state once. Cache pages and fold commits below stay
+    // off the React lane; a second publication exposes all completed badges.
+    setIndexVersion((value) => value + 1);
+    void (async () => {
+      for (const { channelId, readSeq } of queue) {
+        if (serial !== localReplicaSerialRef.current) return;
+        // Once a person opens the channel, its ordinary scheduler owns history
+        // admission. Notification hydration must never become a second visible
+        // history-advance path.
+        if (activeChannelRef.current === channelId) {
+          channels.delete(channelId);
+          continue;
+        }
+        try {
+          const result = typeof cacheRef.current.readNotificationContext === 'function'
+            ? await cacheRef.current.readNotificationContext(channelId, readSeq, {
+              isCurrent: () => serial === localReplicaSerialRef.current
+                && activeChannelRef.current !== channelId,
+            })
+            : { complete: false, cancelled: false, rows: [], missingParents: [] };
+          if (serial !== localReplicaSerialRef.current || result.cancelled) return;
+          if (activeChannelRef.current === channelId) {
+            channels.delete(channelId);
+            continue;
+          }
+          if (!result.complete) {
+            channels.set(channelId, 'unknown');
+            diagnostic('warn', 'feed.notification_cache_incomplete', {
+              channelId,
+              readSeq,
+              missingParents: result.missingParents || [],
+            });
+            continue;
+          }
+          applyRows(result.rows, { publish: false, persist: false, source: 'replay' });
+          unreadCacheRef.current.delete(channelId);
+          channels.delete(channelId);
+        } catch (error) {
+          if (serial !== localReplicaSerialRef.current) return;
+          channels.set(channelId, 'unknown');
+          diagnostic('warn', 'feed.notification_cache_failed', { channelId, readSeq, error });
+          onError(error);
+        }
+        // Keep multiple inactive channels from becoming one long main-thread
+        // cache/fold task even when IndexedDB answers from memory.
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      }
+      if (serial !== localReplicaSerialRef.current) return;
+      setIndexVersion((value) => value + 1);
+    })();
+  }, [activeChannelRef, applyRows, onError]);
 
   if (schedulerRef.current === null || schedulerRef.current.isDestroyed?.()) {
     const mobile = isMobileProfile();
@@ -484,7 +561,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     // world before Wire can deliver the next frame, then install remote Meta
     // immediately. Disk selection continues below without holding transport.
     if (replicaChanged) {
-      localReplicaSerialRef.current += 1;
+      const replicaSerial = ++localReplicaSerialRef.current;
+      notificationHydrationRef.current = { serial: replicaSerial, channels: new Map() };
       cacheMetaRef.current = new Map();
       cacheBootRef.current = remoteBoot;
       resumeReadyRef.current = false;
@@ -498,6 +576,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     }
     const localMeta = replicaChanged ? new Map() : cacheMetaRef.current;
     const grantedChannelIds = new Set();
+    let notificationStatusChanged = false;
     for (const entry of grants) {
       if (!entry?.channel_id) continue;
       grantedChannelIds.add(entry.channel_id);
@@ -506,7 +585,15 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         headSeq: entry.head_seq,
         coverage: localMeta.get(entry.channel_id)?.coverage,
       });
+      if (entry.channel_id !== (detail.focus || activeChannelRef.current || '')
+        && Number(entry.head_seq || 0) > cursorsRef.current.read(entry.channel_id)
+        && !localMeta.has(entry.channel_id)
+        && notificationHydrationRef.current.serial === localReplicaSerialRef.current) {
+        notificationHydrationRef.current.channels.set(entry.channel_id, 'unknown');
+        notificationStatusChanged = true;
+      }
     }
+    if (notificationStatusChanged) setIndexVersion((value) => value + 1);
     schedulerRef.current.attach(grants, {
       generation,
       focus: detail.focus || activeChannelRef.current || '',
@@ -749,6 +836,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       acknowledgement.identities,
     );
     const seq = Number(acknowledgement.physicalSeq || 0);
+    const notificationHydrationChanged = seq > 0
+      && notificationHydrationRef.current.serial === localReplicaSerialRef.current
+      && notificationHydrationRef.current.channels.delete(channelId);
     if (seq > 0 && trimIfMobile(state)) replicaRef.current.afterTrim(channelId);
     // Provisional stream frames advance the durable read cursor but never draw
     // a rail badge. Publishing a second React render for every such frame used
@@ -768,8 +858,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         acknowledged: cursorsRef.current.acknowledgedReadIdentities(channelId),
       },
     );
-	if ((next !== before || exactChanged)
-      && (afterCounts.related !== beforeCounts.related || afterCounts.total !== beforeCounts.total)) {
+	if (notificationHydrationChanged || ((next !== before || exactChanged)
+      && (afterCounts.related !== beforeCounts.related || afterCounts.total !== beforeCounts.total))) {
 	  unreadCacheRef.current.delete(channelId);
 	  setVersion((value) => value + 1);
 	  setIndexVersion((value) => value + 1);
@@ -786,6 +876,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     // 缓冲里的行先落地再清:恒不留下一批"清完之后才醒过来"的行,把刚清空的表又
     // 填出半张。
     liveBatchRef.current.flushNow();
+    const serial = ++localReplicaSerialRef.current;
+    notificationHydrationRef.current = { serial, channels: new Map() };
     schedulerRef.current.clear();
 	replicaRef.current.reset();
 	statesRef.current = replicaRef.current.states();
@@ -797,6 +889,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 
   const resetPersistent = useCallback(async () => {
     liveBatchRef.current.flushNow();
+    const serial = ++localReplicaSerialRef.current;
+    notificationHydrationRef.current = { serial, channels: new Map() };
     await cacheEpochFenceRef.current.run(() => cacheRef.current.clear());
 	replicaRef.current.reset();
 	statesRef.current = replicaRef.current.states();
@@ -824,6 +918,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     remoteBootRef.current = '';
     if (!principalId) {
       preparedPrincipalRef.current = '';
+      notificationHydrationRef.current = { serial, channels: new Map() };
       cursorsRef.current.clearReadAuthority();
 	  schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true });
       setLocalReplicaReady(true);
@@ -887,6 +982,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       for (const channelId of meta.keys()) {
 		replicaRef.current.installMeta(channelId, meta.get(channelId));
       }
+      beginNotificationHydration(meta, serial, focus);
       if (focus) schedulerRef.current.focus(focus);
       schedulerRef.current.setLocalMeta(meta, { publishChange: false, localReady: true });
 
@@ -914,7 +1010,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       setLocalReplicaReady(true);
       return { resume: {} };
     }
-  }, [onError]);
+  }, [beginNotificationHydration, onError]);
 
   // Attach/reconnect cursors must describe durable local coverage. The folded
   // React model can be ahead of disk by one animation frame and is therefore

@@ -835,14 +835,12 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   if (!roleFinalizerRef.current) roleFinalizerRef.current = createConversationRoleFinalizer();
   const [presentationCommitVersion, setPresentationCommitVersion] = useState(0);
   const requestedInitialScope = initialViewSessionRef.current.scope || TIMELINE_SCOPE.mine;
-  // An unresolved identity cannot truthfully project "@ me". Start from the
-  // complete ledger and let the reader opt into Mine once identity is known;
-  // a late roster/session hand-off must not silently replace the visible tree.
-  const [scope, setScope] = useState(() => (
-    requestedInitialScope === TIMELINE_SCOPE.mine && !selfId
-      ? TIMELINE_SCOPE.all
-      : requestedInitialScope
-  ));
+  // Scope is the reader's durable preference, not a derivative of whether the
+  // current roster has resolved this browser's actor id yet. With no self id,
+  // Mine temporarily projects the complete ledger (the only honest answer),
+  // but it must remain Mine so identity arrival restores the requested view
+  // and the temporary fallback is never persisted as an explicit All choice.
+  const [scope, setScope] = useState(() => requestedInitialScope);
   const [knownSelfId, setKnownSelfId] = useState(() => selfId || '');
   // 选中的 agent。空集 = 不过滤（常态）。Timeline 按频道 key 挂载，所以切频道
   // 天然重置，恒不需要自己清。
@@ -873,13 +871,16 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   }, [selfId]);
   const projectionSelfId = selfId || knownSelfId;
   const identityPending = !projectionSelfId;
+  const projectionScope = identityPending && scope === TIMELINE_SCOPE.mine
+    ? TIMELINE_SCOPE.all
+    : scope;
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
   // 但呈现上必须留在用户点下"编辑"的位置原地变可编辑——恒不在编辑中途瞬移。
   // 只钉"从处理中进入编辑"的：等待区消息的编辑本来就发生在等待区原地。
   // 保存/放弃后钉住不放（resumePin），直到账上真正回到处理中——否则解冻帧到达前
   // 的空窗里消息会闪跳进等待区。
   const editingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
-  const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
+  const actorFilterApplies = projectionScope === TIMELINE_SCOPE.mine;
   // Scope and actor filters replace the visible conversation and therefore get
   // a fresh presentation/geometry identity. Editing only changes an existing
   // row and deliberately does not reset either identity.
@@ -888,13 +889,13 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   const contentVersion = state._timelineRevision ?? state.lastSeq;
   const controlVersion = state._timelineControlVersion ?? state.lastSeq;
   const historyViewSpec = useMemo(() => ({
-    scope,
+    scope: projectionScope,
     selfId: projectionSelfId,
     actorFilter,
     editingTargetId,
     showNarration: SHOW_CHANNEL_NARRATION,
     incremental: true,
-  }), [actorFilter, editingTargetId, projectionSelfId, scope]);
+  }), [actorFilter, editingTargetId, projectionScope, projectionSelfId]);
   const localWaitingTurns = useMemo(
     () => selectLocalWaitingTurns(pending || [], projectionSelfId),
     [pending, projectionSelfId],

@@ -42,6 +42,123 @@ afterEach(() => {
 });
 
 describe('channel feed startup lanes', () => {
+  it('keeps an inactive rail unknown until cached unread context and its parent are folded', async () => {
+    let resolveContext;
+    const context = new Promise((resolve) => { resolveContext = resolve; });
+    const meta = new Map([['c1', {
+      newestSeq: 3, rowCount: 3, coverage: [{ lowSeq: 1, highSeq: 3 }],
+    }]]);
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      readNotificationContext: vi.fn(() => context),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+    act(() => {
+      hook.result.current.cursorsRef.current.selectReadAuthority({ principalId: 'root', serverBoot: 'boot-a' });
+      hook.result.current.cursorsRef.current.markRead('c1', 1);
+    });
+    await act(async () => { await hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    expect(hook.result.current.unreadFor('c1')).toMatchObject({ related: 0, total: 0, pending: true });
+
+    await act(async () => {
+      resolveContext({
+        complete: true, cancelled: false, missingParents: [],
+        rows: [
+          {
+            channel_id: 'c1', seq: 1,
+            envelope: {
+              id: 'cached-request', kind: 'request', type: 'human.ask', visibility: 'public',
+              sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:root:1'], payload: { text: 'question' },
+            },
+          },
+          {
+            channel_id: 'c1', seq: 3,
+            envelope: {
+              id: 'cached-final', parent_id: 'cached-request', kind: 'response', type: 'human.ask', visibility: 'public',
+              sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'], payload: { status: 'completed', text: 'answer' },
+            },
+          },
+        ],
+      });
+      await context;
+    });
+    await waitFor(() => expect(hook.result.current.unreadFor('c1').total).toBe(1));
+    expect(hook.result.current.unreadFor('c1')).not.toHaveProperty('pending');
+    expect(hook.result.current.statesRef.current.get('c1')?.turns.has('cached-request')).toBe(true);
+    hook.unmount();
+  });
+
+  it('rejects a cached notification completion after a boot replacement revokes its Replica epoch', async () => {
+    let resolveContext;
+    const context = new Promise((resolve) => { resolveContext = resolve; });
+    const oldMeta = new Map([['c1', {
+      newestSeq: 3, rowCount: 2, coverage: [{ lowSeq: 1, highSeq: 3 }],
+    }]]);
+    const emptyMeta = new Map();
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta: oldMeta })),
+      ensureBoot: vi.fn(async () => ({ changed: true, boot: 'boot-b', meta: emptyMeta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      readNotificationContext: vi.fn(() => context),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => emptyMeta), clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+    act(() => {
+      hook.result.current.cursorsRef.current.selectReadAuthority({ principalId: 'root', serverBoot: 'boot-a' });
+      hook.result.current.cursorsRef.current.markRead('c1', 1);
+    });
+    await act(async () => { await hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    expect(hook.result.current.unreadFor('c1')).toMatchObject({ pending: true });
+
+    await act(async () => {
+      await hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'c0', boot: 'boot-b' });
+    });
+    await act(async () => {
+      resolveContext({
+        complete: true, cancelled: false, missingParents: [],
+        rows: [{ channel_id: 'c1', seq: 3, envelope: { id: 'stale-final', kind: 'event', type: 'human.note' } }],
+      });
+      await context;
+    });
+    await waitFor(() => expect(hook.result.current.statesRef.current.get('c1')?.rows.has(3)).not.toBe(true));
+    expect(hook.result.current.unreadFor('c1')).not.toHaveProperty('pending');
+    hook.unmount();
+  });
+
+  it('keeps incomplete notification context unknown until the ordinary viewport physically reads it', async () => {
+    const meta = new Map([['c1', {
+      newestSeq: 3, rowCount: 1, coverage: [{ lowSeq: 3, highSeq: 3 }],
+    }]]);
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      readNotificationContext: vi.fn(async () => ({
+        complete: false, cancelled: false, rows: [], missingParents: ['missing-request'],
+      })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+    act(() => {
+      hook.result.current.cursorsRef.current.selectReadAuthority({ principalId: 'root', serverBoot: 'boot-a' });
+      hook.result.current.cursorsRef.current.markRead('c1', 1);
+    });
+    await act(async () => { await hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    await waitFor(() => expect(hook.result.current.unreadFor('c1')).toMatchObject({ unknown: true }));
+
+    act(() => hook.result.current.markRead('c1', { physicalSeq: 3, identities: [] }));
+    expect(hook.result.current.unreadFor('c1')).not.toHaveProperty('unknown');
+    hook.unmount();
+  });
+
   it('carries the committed producer owner through rAF batching and delayed roster callbacks', async () => {
     const meta = new Map();
     doubles.cache = {

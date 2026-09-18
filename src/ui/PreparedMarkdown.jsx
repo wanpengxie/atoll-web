@@ -14,6 +14,13 @@ const HAST_PROCESSOR = unified()
   .use(remarkRehype, { allowDangerousHtml: true })
   .use(rehypeKatex, { strict: false, throwOnError: false, trust: false });
 
+// ContentPlan owns the bounded lifetime of every prepared root. This weak
+// cache therefore cannot keep evicted content alive, while an exact
+// StrictMode replay or virtual-list remount can reuse the immutable React
+// description instead of rebuilding the complete HAST/JSX tree.
+const PREPARED_RENDERS = new WeakMap();
+const NO_COMPONENTS = Object.freeze({});
+
 function protectHast(tree, urlTransform) {
   visit(tree, (node, index, parent) => {
     if (node.type === 'raw' && parent && typeof index === 'number') {
@@ -34,11 +41,24 @@ function protectHast(tree, urlTransform) {
 // document. This component performs only mdast→hast, KaTeX, URL protection,
 // and React element creation. It intentionally mirrors the subset of
 // react-markdown options used by MarkdownContent.
-export function PreparedMarkdown({ root, components, urlTransform = defaultUrlTransform }) {
+export function prepareMarkdownTree(root, components, urlTransform = defaultUrlTransform) {
   if (!root || root.type !== 'root') throw new TypeError('PreparedMarkdown requires a prepared mdast root');
+  const componentKey = components || NO_COMPONENTS;
+  let byComponents = PREPARED_RENDERS.get(root);
+  if (!byComponents) {
+    byComponents = new WeakMap();
+    PREPARED_RENDERS.set(root, byComponents);
+  }
+  let byTransform = byComponents.get(componentKey);
+  if (!byTransform) {
+    byTransform = new WeakMap();
+    byComponents.set(componentKey, byTransform);
+  }
+  const cached = byTransform.get(urlTransform);
+  if (cached) return cached;
   const tree = HAST_PROCESSOR.runSync(root);
   protectHast(tree, urlTransform);
-  return toJsxRuntime(tree, {
+  const prepared = toJsxRuntime(tree, {
     Fragment,
     components,
     ignoreInvalidStyle: true,
@@ -47,4 +67,10 @@ export function PreparedMarkdown({ root, components, urlTransform = defaultUrlTr
     passKeys: true,
     passNode: true,
   });
+  byTransform.set(urlTransform, prepared);
+  return prepared;
+}
+
+export function PreparedMarkdown({ root, components, urlTransform = defaultUrlTransform }) {
+  return prepareMarkdownTree(root, components, urlTransform);
 }

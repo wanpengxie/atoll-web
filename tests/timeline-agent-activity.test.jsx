@@ -148,6 +148,7 @@ it('balances consumers without treating A→B→A replacement as visible-arrival
   expect(stateA._liveArrivalConsumers).toBe(0);
   recordLiveTimelineArrival(stateA, {
     id: 'a-background', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other' },
+    payload: { text: 'background message' },
   }, 3, 'human:root:1');
   expect(stateA._liveArrivalAckRevision).toBe(2);
   expect(stateA._liveArrivalLog).toHaveLength(0);

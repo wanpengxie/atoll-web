@@ -42,7 +42,7 @@ function humanPrincipal(actorId) {
 // not. "@ me" is a reading scope for that person, so historical rows from an
 // older incarnation remain mine. Participant filters below deliberately keep
 // exact actor-id semantics: only the self scope crosses human incarnations.
-function isSelfActor(actorId, selfId) {
+export function isSelfActor(actorId, selfId) {
   if (!actorId || !selfId) return false;
   if (actorId === selfId) return true;
   const selfPrincipal = humanPrincipal(selfId);
@@ -62,7 +62,7 @@ function directlyMine(envelope, selfId) {
 // one audience member equal to the agent author. Seed only that closed shape;
 // the ordinary parent/correlation pass below then carries agent.timer.wake and
 // its progress/terminal frames without admitting generic agent self-traffic.
-function isCanonicalAgentTimerFire(envelope) {
+export function isCanonicalAgentTimerFire(envelope) {
   const sender = envelope?.sender;
   return envelope?.kind === 'event'
     && typeof envelope.id === 'string'

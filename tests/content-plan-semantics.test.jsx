@@ -7,7 +7,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { describe, expect, it } from 'vitest';
 import { createContentPlan } from '../src/model/content-plan.js';
-import { PreparedMarkdown } from '../src/ui/PreparedMarkdown.jsx';
+import { PreparedMarkdown, prepareMarkdownTree } from '../src/ui/PreparedMarkdown.jsx';
 
 const remarkPlugins = [remarkGfm, remarkMath, remarkBreaks];
 const rehypePlugins = [[rehypeKatex, { strict: false, throwOnError: false, trust: false }]];
@@ -31,6 +31,14 @@ function preparedHTML(source) {
 }
 
 describe('ContentPlan semantic boundaries', () => {
+  it('reuses one immutable prepared React description for exact render options', () => {
+    const plan = createContentPlan({ contentKey: 'prepared-cache', source: '**stable** [link](https://example.test)' });
+    const root = plan.blocks[0].preparedRoot;
+    const components = {};
+    expect(prepareMarkdownTree(root, components)).toBe(prepareMarkdownTree(root, components));
+    expect(prepareMarkdownTree(root, {})).not.toBe(prepareMarkdownTree(root, components));
+  });
+
   it.each([
     ['reference definitions', '[official][docs]\n\nplain\n\n[docs]: https://example.test/docs "Docs"'],
     ['one continued list', '- first\n  continued line\n- second\n\n  second paragraph'],

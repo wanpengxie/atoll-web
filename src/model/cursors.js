@@ -1,6 +1,6 @@
-import { argsOf, FINAL, KIND } from '../protocol/envelope.js';
-import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from './timeline-scope.js';
-import { TYPES } from '../protocol/vocab.js';
+import { argsOf } from '../protocol/envelope.js';
+import { isRailNotifiableDisposition, notificationDisposition } from './notification-policy.js';
+import { isSelfActor, relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from './timeline-scope.js';
 
 const CURSOR_PREFIX = 'atoll.cursor.v3.';
 // v4 changes the meaning from "every loaded envelope after this seq" to
@@ -203,38 +203,15 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
 // Channel badges are notifications, not a ledger row counter. One request may
 // produce many queued/processing/deferred response frames while an agent works;
 // those frames update the existing turn and must not look like new messages.
-// Keep only conversational requests and protocol-final responses. Fold also
-// accepts namespaced business provisional statuses (for example
-// provider.waiting); a negative "not core provisional" check would turn those
-// progress frames, missing statuses, and future statuses into notifications.
-// Events remain in the complete timeline, but are deliberately too noisy for
-// the channel rail.
-const HIDDEN_CONTROL_TYPES = new Set([
-  TYPES.agentHold,
-  TYPES.agentUnhold,
-  TYPES.agentInterrupt,
-  TYPES.agentContext,
-  TYPES.agentOptions,
-  TYPES.agentFork,
-  TYPES.describe,
-]);
-
-function notificationDisposition(channelState, envelope) {
-  if (HIDDEN_CONTROL_TYPES.has(envelope?.type)) return 'hidden_control';
-  if (envelope?.kind === KIND.request) return 'request';
-  if (envelope?.kind !== KIND.response) return 'not_message';
-  if (!FINAL.has(argsOf(envelope)?.status)) return 'not_final';
-  const directTurn = envelope.parent_id ? channelState?.turns?.get?.(envelope.parent_id) : null;
-  if (directTurn?.terminal && directTurn.terminal !== envelope) return 'terminal_conflict';
-  const unmatched = envelope.parent_id
-    ? channelState?._unmatchedTerminalClosures?.get?.(envelope.parent_id)
-    : null;
-  if (unmatched?.envelope && unmatched.envelope.id !== envelope.id) return 'terminal_conflict';
-  return 'final';
-}
-
-function isNotifiable(channelState, envelope) {
-  return ['request', 'final'].includes(notificationDisposition(channelState, envelope));
+// Keep only requests that already have a conversation row, protocol-final
+// responses with actual readable content whose canonical turn remains visible.
+// Standalone public events can become viewport dynamics, but remain too noisy
+// for channel badges under the established rail contract.
+// Processing remains a lifecycle update even when Presentation installs the
+// row. A positive classification prevents namespaced progress, missing/future
+// statuses, timer transport, and internal tool turns from becoming badges.
+function isNotifiable(channelState, envelope, selfId = '') {
+  return isRailNotifiableDisposition(notificationDisposition(channelState, envelope, selfId));
 }
 
 function visitUnreadRows(channelState, readSeq, visit) {
@@ -268,8 +245,8 @@ export function unreadCount(channelState, readSeq, selfId, { acknowledged = new 
   let count = 0;
   visitUnreadRows(channelState, readSeq, (seq, envelope) => {
     if (envelope?.visibility === 'system') return;
-    if (selfId && envelope?.sender?.id === selfId) return;
-    if (!isNotifiable(channelState, envelope)) return;
+    if (isSelfActor(envelope?.sender?.id, selfId)) return;
+    if (!isNotifiable(channelState, envelope, selfId)) return;
     if (acknowledgedAt(acknowledged, envelope?.id, seq)
       || acknowledgedAt(acknowledged, envelope?.parent_id, seq)
       || acknowledgedAt(acknowledged, envelope?.correlation_id, seq)) return;
@@ -340,12 +317,12 @@ function projectUnreadCounts(channelState, readSeq, selfId, {
     }));
   };
   visitUnreadRows(channelState, readSeq, (seq, envelope) => {
-    if (selfId && envelope?.sender?.id === selfId) {
+    if (isSelfActor(envelope?.sender?.id, selfId)) {
       recordDiagnostic(seq, envelope, '', 'self');
       return;
     }
-    const disposition = notificationDisposition(channelState, envelope);
-    if (!['request', 'final'].includes(disposition)) {
+    const disposition = notificationDisposition(channelState, envelope, selfId);
+    if (!isRailNotifiableDisposition(disposition)) {
       recordDiagnostic(seq, envelope, '', disposition);
       return;
     }

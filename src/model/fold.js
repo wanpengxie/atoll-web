@@ -1,5 +1,6 @@
 import { argsOf, correlationOf, FINAL, PROVISIONAL } from '../protocol/envelope.js';
 import { isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
+import { isViewportNotifiableDisposition, notificationDisposition } from './notification-policy.js';
 
 // subjectgate 只让这两个词走 resolve 帧（platform/internal/humancell）。
 const RESOLVABLE = new Set([TYPES.humanAsk, TYPES.humanApprove]);
@@ -101,34 +102,31 @@ function rootTurnID(state, envelope) {
 }
 
 // Arrival provenance belongs to the Replica commit seam, not to Presentation.
-// The caller invokes this only after an accepted live commit. Provisional
-// progress mutates an existing turn and is deliberately not a new dynamic;
-// terminal responses reuse the root's stable presentation identity.
+// The caller invokes this only after an accepted live commit. Queued and
+// processing/progress mutate an existing turn and are deliberately not new
+// dynamics. Terminal responses reuse the root's stable presentation identity;
+// independently readable standalone events retain their own identity.
 export function recordLiveTimelineArrival(state, envelope, seq, selfId = '') {
   if (!state || !envelope) return null;
   if (selfId && envelope.sender?.id === selfId) return null;
+  const disposition = notificationDisposition(state, envelope, selfId);
   let rowID = '';
   let key = '';
-  if (envelope.kind === 'request') {
+  if (disposition === 'request') {
     key = rootTurnID(state, envelope);
     rowID = state.turns?.has?.(key) ? key : envelope.id || key;
   }
-  else if (envelope.kind === 'response') {
-    if (!FINAL.has(argsOf(envelope)?.status)) return null;
-    const directTurn = envelope.parent_id ? state.turns?.get?.(envelope.parent_id) : null;
-    // Fold is the lifecycle owner. A second terminal frame for an already
-    // closed turn is retained as an anomaly/ledger fact, but it did not create
-    // new presentation content and therefore cannot create another arrival.
-    if (directTurn?.terminal && directTurn.terminal !== envelope) return null;
+  else if (disposition === 'final') {
     key = rootTurnID(state, envelope);
     // A live terminal can precede its historical request. Until hydration
     // supplies that root, Presentation exposes the orphan by envelope id; use
     // that visible row while retaining the root as the notification identity.
     rowID = state.turns?.has?.(key) ? key : envelope.id || key;
-  } else if (envelope.visibility !== 'system') {
+  } else if (disposition === 'event') {
     rowID = envelope.id || '';
     key = rowID;
   }
+  if (!isViewportNotifiableDisposition(disposition)) return null;
   if (!rowID) return null;
   const previousRevision = Number(state._liveArrivalRevision || 0);
   const hadUndisposedArrival = Number(state._liveArrivalAckRevision || 0) < previousRevision;

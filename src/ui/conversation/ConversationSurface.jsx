@@ -45,6 +45,13 @@ export function ConversationSurface({ children, input, floating = null, classNam
     transitionFrame: 0,
     active: false,
   });
+  const inputResizeTransitionRef = useRef({
+    paintedHeight: 0,
+    targetHeight: 0,
+    paintFrame: 0,
+    transitionFrame: 0,
+    active: false,
+  });
   const [geometry, setGeometry] = useState({
     inputMaxHeight: null,
     constrained: false,
@@ -56,8 +63,113 @@ export function ConversationSurface({ children, input, floating = null, classNam
     const inputSlot = inputMeasureRef.current;
     if (!surface || !inputSlot) return undefined;
     const transition = sendClearTransitionRef.current;
+    const inputResize = inputResizeTransitionRef.current;
     const composerWrap = () => inputSlot.querySelector('.composer-wrap');
     const naturalInputHeight = () => nonNegativeHeight(composerWrap()) || nonNegativeHeight(inputSlot);
+    const presentedInputHeight = () => {
+      const natural = naturalInputHeight();
+      const maximum = Number.parseFloat(getComputedStyle(inputSlot).maxHeight);
+      return Number.isFinite(maximum) ? Math.min(natural, maximum) : natural;
+    };
+    const clearInputResizeStyle = () => {
+      inputSlot.removeAttribute('data-input-resize-transition');
+      inputSlot.style.removeProperty('--input-resize-from-height');
+      inputSlot.style.removeProperty('--input-resize-to-height');
+      surface.removeAttribute('data-input-resize-transition');
+      surface.removeAttribute('data-input-resize-growth');
+      surface.style.removeProperty('--input-resize-delta-height');
+      surface.style.removeProperty('--input-resize-progress-height');
+      surface.style.removeProperty('--input-resize-spacer-from-height');
+      surface.style.removeProperty('--input-resize-spacer-to-height');
+    };
+    const finishInputResizeTransition = () => {
+      if (inputResize.transitionFrame) cancelAnimationFrame(inputResize.transitionFrame);
+      if (inputResize.paintFrame) cancelAnimationFrame(inputResize.paintFrame);
+      inputResize.transitionFrame = 0;
+      inputResize.paintFrame = 0;
+      inputResize.active = false;
+      inputResize.targetHeight = 0;
+      clearInputResizeStyle();
+      inputResize.paintedHeight = nonNegativeHeight(inputSlot);
+    };
+    const takeInputResizeForSend = () => {
+      const rendered = nonNegativeHeight(inputSlot);
+      if (inputResize.transitionFrame) cancelAnimationFrame(inputResize.transitionFrame);
+      if (inputResize.paintFrame) cancelAnimationFrame(inputResize.paintFrame);
+      inputResize.transitionFrame = 0;
+      inputResize.paintFrame = 0;
+      inputResize.active = false;
+      inputResize.targetHeight = 0;
+      clearInputResizeStyle();
+      inputResize.paintedHeight = rendered;
+      return rendered;
+    };
+    const armInputResizeTransition = () => {
+      if (inputResize.transitionFrame) cancelAnimationFrame(inputResize.transitionFrame);
+      inputResize.transitionFrame = 0;
+      inputSlot.setAttribute('data-input-resize-transition', 'armed');
+      surface.setAttribute('data-input-resize-transition', 'armed');
+      inputSlot.getBoundingClientRect();
+      inputResize.transitionFrame = requestAnimationFrame(() => {
+        inputResize.transitionFrame = 0;
+        if (!inputResize.active) return;
+        surface.style.removeProperty('--input-resize-progress-height');
+        inputSlot.setAttribute('data-input-resize-transition', 'running');
+        surface.setAttribute('data-input-resize-transition', 'running');
+      });
+    };
+    const startInputResizeTransition = (from, to) => {
+      if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+        || !(Math.abs(from - to) > 0.5)) {
+        finishInputResizeTransition();
+        return;
+      }
+      if (inputResize.transitionFrame) cancelAnimationFrame(inputResize.transitionFrame);
+      if (inputResize.paintFrame) cancelAnimationFrame(inputResize.paintFrame);
+      inputResize.transitionFrame = 0;
+      inputResize.paintFrame = 0;
+      inputResize.active = true;
+      inputResize.targetHeight = to;
+      inputResize.paintedHeight = from;
+      inputSlot.style.setProperty('--input-resize-from-height', `${from}px`);
+      inputSlot.style.setProperty('--input-resize-to-height', `${to}px`);
+      // Growth would otherwise make the viewport observer issue one bottom
+      // write per animation frame. Install the total delta as a temporary
+      // tail spacer before the first write and consume it while the viewport
+      // shrinks. scrollHeight - clientHeight therefore stays constant after
+      // that single authorized write; deletion needs no spacer because the
+      // browser's native max-scroll clamp follows the growing viewport.
+      const spacer = Math.max(0, to - from);
+      surface.style.setProperty('--input-resize-delta-height', `${to - from}px`);
+      surface.style.setProperty('--input-resize-progress-height', '0px');
+      surface.style.setProperty('--input-resize-spacer-from-height', `${spacer}px`);
+      surface.style.setProperty('--input-resize-spacer-to-height', '0px');
+      if (spacer > 0) surface.setAttribute('data-input-resize-growth', 'true');
+      else surface.removeAttribute('data-input-resize-growth');
+      inputSlot.setAttribute('data-input-resize-transition', 'prepared');
+      surface.setAttribute('data-input-resize-transition', 'prepared');
+      // FLIP the already-laid-out editor back to its last painted block size
+      // before this render opportunity, then let CSS interpolate the one
+      // in-flow geometry owner. The list keeps using its existing viewport
+      // authorization and sole scroll writer throughout the interpolation.
+      const scroller = surface.querySelector('.timeline-message-list');
+      if (!(spacer > 0)
+        || surface.querySelector('.timeline')?.dataset.viewportMode !== 'following'
+        || !scroller) {
+        armInputResizeTransition();
+        return;
+      }
+      // The temporary spacer changes scrollHeight, not the scroller's border
+      // box, so its ResizeObserver cannot authorize the initial write. Publish
+      // the prepared geometry to the same adapter authority explicitly. Its
+      // synchronous before-write handshake arms the equal visual transform;
+      // the adapter remains the sole scroll writer.
+      scroller.getBoundingClientRect();
+      scroller.dispatchEvent(new CustomEvent('atoll:input-resize-prepared'));
+      if (inputSlot.dataset.inputResizeTransition === 'armed') return;
+      surface.style.setProperty('--input-resize-spacer-from-height', '0px');
+      armInputResizeTransition();
+    };
     const clearTransitionStyle = () => {
       inputSlot.removeAttribute('data-send-clear-transition');
       inputSlot.style.removeProperty('--send-clear-from-height');
@@ -73,6 +185,7 @@ export function ConversationSurface({ children, input, floating = null, classNam
       transition.preparedHeight = 0;
       clearTransitionStyle();
       transition.paintedHeight = naturalInputHeight();
+      inputResize.paintedHeight = nonNegativeHeight(inputSlot);
     };
     const startSendClearTransition = (from, to) => {
       if (!(from > to + 0.5)
@@ -103,7 +216,7 @@ export function ConversationSurface({ children, input, floating = null, classNam
       if (!preparedRevision
         || globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true) return false;
       if (transition.active) finishSendClearTransition();
-      const from = nonNegativeHeight(inputSlot);
+      const from = inputResize.active ? takeInputResizeForSend() : nonNegativeHeight(inputSlot);
       if (!(from > 0)) return false;
       transition.transitionFrame = 0;
       transition.active = true;
@@ -121,6 +234,7 @@ export function ConversationSurface({ children, input, floating = null, classNam
       if (surfaceHeight == null || rendered == null) return;
       const revision = composerWrap()?.dataset.sendClearRevision || '0';
       const targetNaturalHeight = naturalInputHeight();
+      if (!inputResize.paintedHeight) inputResize.paintedHeight = rendered;
       if (!transition.revision) {
         transition.revision = revision;
         transition.paintedHeight = targetNaturalHeight;
@@ -132,6 +246,15 @@ export function ConversationSurface({ children, input, floating = null, classNam
         transition.preparedRevision = '';
         transition.preparedHeight = 0;
         startSendClearTransition(from, targetNaturalHeight);
+      }
+      if (!transition.active && !inputResize.active) {
+        if (inputResize.paintFrame) cancelAnimationFrame(inputResize.paintFrame);
+        inputResize.paintFrame = requestAnimationFrame(() => {
+          inputResize.paintFrame = 0;
+          if (!inputResize.active && !transition.active) {
+            inputResize.paintedHeight = nonNegativeHeight(inputSlot);
+          }
+        });
       }
       if (!transition.active) {
         if (transition.paintFrame) cancelAnimationFrame(transition.paintFrame);
@@ -165,25 +288,58 @@ export function ConversationSurface({ children, input, floating = null, classNam
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(commit) : null;
     observer?.observe(surface);
     observer?.observe(inputSlot);
+    const animateInputMutation = () => {
+      if (transition.active) return;
+      // ProseMirror publishes its final DOM after the native input event. A
+      // subtree mutation is therefore the last pre-paint boundary at which we
+      // can read the new natural height without writing from ResizeObserver.
+      const target = presentedInputHeight();
+      if (inputResize.active && Math.abs(inputResize.targetHeight - target) <= 0.5) return;
+      const from = inputResize.active
+        ? nonNegativeHeight(inputSlot)
+        : inputResize.paintedHeight || nonNegativeHeight(inputSlot);
+      if (Math.abs(from - target) > 0.5) startInputResizeTransition(from, target);
+    };
     const inputMutationObserver = typeof MutationObserver === 'function'
-      ? new MutationObserver(commit)
+      ? new MutationObserver((records) => {
+        if (records.some((record) => record.type === 'attributes')) commit();
+        if (records.some((record) => record.type === 'characterData' || record.type === 'childList')) {
+          animateInputMutation();
+        }
+      })
       : null;
     inputMutationObserver?.observe(inputSlot, {
       attributes: true,
       subtree: true,
       attributeFilter: ['data-send-clear-revision'],
+      characterData: true,
+      childList: true,
     });
+    const onTimelineBottomWrite = (event) => {
+      if (!inputResize.active
+        || inputSlot.dataset.inputResizeTransition !== 'prepared'
+        || !event.target?.classList?.contains('timeline-message-list')) return;
+      armInputResizeTransition();
+    };
     const onTransitionComplete = (event) => {
-      if (event.target !== inputSlot
-        || !['block-size', 'height'].includes(event.propertyName)
-        || !transition.active) return;
-      finishSendClearTransition();
+      if (event.target === inputSlot
+        && ['block-size', 'height'].includes(event.propertyName)
+        && transition.active) {
+        finishSendClearTransition();
+      } else if (event.target === surface
+        && event.propertyName === '--input-resize-progress-height'
+        && inputResize.active) {
+        finishInputResizeTransition();
+      }
     };
     const takePresentationControl = (event) => {
       if (event.isTrusted && transition.active) finishSendClearTransition();
     };
     inputSlot.addEventListener('transitionend', onTransitionComplete);
     inputSlot.addEventListener('transitioncancel', onTransitionComplete);
+    surface.addEventListener('transitionend', onTransitionComplete);
+    surface.addEventListener('transitioncancel', onTransitionComplete);
+    surface.addEventListener('atoll:timeline-bottom-write', onTimelineBottomWrite);
     for (const type of ['wheel', 'pointerdown', 'touchstart', 'beforeinput', 'keydown']) {
       surface.addEventListener(type, takePresentationControl, { capture: true, passive: true });
     }
@@ -193,10 +349,15 @@ export function ConversationSurface({ children, input, floating = null, classNam
       inputMutationObserver?.disconnect();
       inputSlot.removeEventListener('transitionend', onTransitionComplete);
       inputSlot.removeEventListener('transitioncancel', onTransitionComplete);
+      surface.removeEventListener('transitionend', onTransitionComplete);
+      surface.removeEventListener('transitioncancel', onTransitionComplete);
+      surface.removeEventListener('atoll:timeline-bottom-write', onTimelineBottomWrite);
       for (const type of ['wheel', 'pointerdown', 'touchstart', 'beforeinput', 'keydown']) {
         surface.removeEventListener(type, takePresentationControl, { capture: true });
       }
       if (transition.paintFrame) cancelAnimationFrame(transition.paintFrame);
+      if (inputResize.paintFrame) cancelAnimationFrame(inputResize.paintFrame);
+      finishInputResizeTransition();
       finishSendClearTransition();
     };
   }, []);

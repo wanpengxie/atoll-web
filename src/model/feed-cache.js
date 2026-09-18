@@ -388,6 +388,95 @@ export function createFeedCache({
     };
   }
 
+  // Restore only the raw ledger context needed to classify facts newer than a
+  // durable read cursor. The query walks backwards in the same bounded pages
+  // as ordinary history. It stops once the unread suffix is covered and every
+  // referenced parent request is present; a trimmed/missing parent leaves the
+  // result explicitly incomplete instead of turning an empty Replica into a
+  // false zero badge.
+  async function readNotificationContext(channelId, afterSeq = 0, {
+    limit = FEED_CACHE_BATCH_SIZE,
+    byteLimit = FEED_CACHE_BATCH_BYTES,
+    isCurrent = () => true,
+  } = {}) {
+    const cursor = Math.max(0, Number(afterSeq) || 0);
+    const collected = new Map();
+    const tail = new Map();
+    let beforeSeq = 0;
+    let boundaryReached = false;
+    let cacheMiss = false;
+    let exhausted = false;
+    let batches = 0;
+    const batchLimit = Math.max(1, Number(limit) || FEED_CACHE_BATCH_SIZE);
+    const maximumBatches = Math.ceil(Math.max(1, rowsPerChannel) / batchLimit) + 1;
+
+    const context = () => {
+      const unread = [...collected.values()].filter((row) => Number(row.seq) > cursor);
+      const required = new Set(unread.map((row) => String(row.envelope?.parent_id || '')).filter(Boolean));
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const row of collected.values()) {
+          const id = String(row.envelope?.id || '');
+          if (!id || !required.has(id)) continue;
+          const parent = String(row.envelope?.parent_id || '');
+          if (parent && !required.has(parent)) {
+            required.add(parent);
+            changed = true;
+          }
+        }
+      }
+      const available = new Set([...collected.values()].map((row) => String(row.envelope?.id || '')).filter(Boolean));
+      const missingParents = [...required].filter((id) => !available.has(id));
+      return { unread, required, missingParents };
+    };
+
+    while (batches < maximumBatches) {
+      if (!isCurrent()) return { rows: [], complete: false, cancelled: true, missingParents: [] };
+      const page = await readBefore(channelId, beforeSeq, batchLimit, byteLimit);
+      if (!isCurrent()) return { rows: [], complete: false, cancelled: true, missingParents: [] };
+      batches += 1;
+      cacheMiss = Boolean(page.cacheMiss);
+      exhausted = Boolean(page.exhausted);
+      for (const row of page.rows || []) {
+        collected.set(Number(row.seq), row);
+        if (batches === 1) tail.set(Number(row.seq), row);
+      }
+      const nextBeforeSeq = Number(page.nextBeforeSeq) || 0;
+      boundaryReached = boundaryReached
+        || (nextBeforeSeq > 0 && nextBeforeSeq <= cursor + 1)
+        || (Number(page.scanLowSeq) > 0 && Number(page.scanLowSeq) <= cursor + 1 && exhausted);
+      const currentContext = context();
+      if (boundaryReached && currentContext.missingParents.length === 0) break;
+      if (cacheMiss || exhausted || nextBeforeSeq <= 0 || (beforeSeq > 0 && nextBeforeSeq >= beforeSeq)) break;
+      beforeSeq = nextBeforeSeq;
+    }
+
+    const { unread, required, missingParents } = context();
+    // Keep the newest ordinary cache page intact. This is the same bounded
+    // tail the history scheduler would initially reveal when the channel is
+    // opened, so notification hydration neither creates a sparse one-row
+    // presentation nor advances into older history. Older pages contribute
+    // only lifecycle context for unread roots.
+    const selected = new Map(tail);
+    for (const row of unread) selected.set(Number(row.seq), row);
+    for (const row of collected.values()) {
+      const id = String(row.envelope?.id || '');
+      const parent = String(row.envelope?.parent_id || '');
+      if ((id && required.has(id)) || (parent && required.has(parent))) selected.set(Number(row.seq), row);
+    }
+    const complete = boundaryReached && missingParents.length === 0 && !cacheMiss;
+    return {
+      rows: [...selected.values()].sort((left, right) => Number(left.seq) - Number(right.seq)),
+      complete,
+      cancelled: false,
+      missingParents,
+      boundaryReached,
+      exhausted,
+      batches,
+    };
+  }
+
   async function ensureBoot(serverBoot = '') {
 	// Finish the previous connection's ordered journal before deciding whether
 	// this server boot owns it. If the boot changed, the transaction below then
@@ -465,6 +554,7 @@ export function createFeedCache({
     openMeta: async () => { await open(); return new Map([...meta].map(([id, value]) => [id, { ...value }])); },
     metaSnapshot: () => new Map([...meta].map(([id, value]) => [id, { ...value }])),
     readBefore,
+    readNotificationContext,
     saveRows,
     saveCoverage(channelId, lowSeq, highSeq) {
       if (!channelId || !Number.isSafeInteger(lowSeq) || !Number.isSafeInteger(highSeq) || lowSeq <= 0 || highSeq < lowSeq) return writeTail;

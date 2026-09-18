@@ -12,6 +12,97 @@ afterEach(() => {
 });
 
 describe('waiting layout ownership', () => {
+  it('retargets user-authored input growth from the current painted height', () => {
+    let naturalHeight = 100;
+    let renderedHeight = 100;
+    let nextFrame = 1;
+    const frames = new Map();
+    const observers = [];
+    const mutationObservers = [];
+    class TestResizeObserver {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', TestResizeObserver);
+    vi.stubGlobal('MutationObserver', class TestMutationObserver {
+      constructor(callback) { this.callback = callback; mutationObservers.push(this); }
+      observe() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback) => {
+      const id = nextFrame++;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id) => frames.delete(id));
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
+      const height = this.classList.contains('conversation-surface')
+        ? 640
+        : this.classList.contains('composer-wrap')
+          ? naturalHeight
+          : this.classList.contains('conversation-input-slot')
+            ? renderedHeight
+            : 0;
+      return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: height, width: 800, height, toJSON: () => ({}) };
+    });
+    function Subject() {
+      return <ConversationSurface input={<section className="composer-wrap" data-send-clear-revision="0"><div className="composer-editor">message</div></section>}>
+        <div className="timeline" data-viewport-mode="following"><div className="timeline-message-list">reading</div></div>
+      </ConversationSurface>;
+    }
+
+    const view = render(<Subject />);
+    const inputSlot = view.container.querySelector('.conversation-input-slot');
+    const scroller = view.container.querySelector('.timeline-message-list');
+    let preparedCount = 0;
+    scroller.addEventListener('atoll:input-resize-prepared', () => {
+      preparedCount += 1;
+      scroller.dispatchEvent(new CustomEvent('atoll:timeline-bottom-write', { bubbles: true }));
+    });
+    naturalHeight = 121;
+    renderedHeight = 121;
+    act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
+    expect(preparedCount).toBe(1);
+    expect(inputSlot.dataset.inputResizeTransition).toBe('armed');
+    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('100px');
+    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('121px');
+    act(() => {
+      for (const [id, callback] of [...frames]) {
+        frames.delete(id);
+        callback();
+      }
+    });
+    expect(inputSlot.dataset.inputResizeTransition).toBe('running');
+    act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
+    expect(preparedCount).toBe(1);
+
+    naturalHeight = 142;
+    renderedHeight = 111;
+    act(() => mutationObservers[0].callback([{ type: 'childList' }]));
+    expect(preparedCount).toBe(2);
+    expect(inputSlot.dataset.inputResizeTransition).toBe('armed');
+    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('111px');
+    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('142px');
+
+    naturalHeight = 142;
+    renderedHeight = 142;
+    const end = new Event('transitionend', { bubbles: true });
+    Object.defineProperty(end, 'propertyName', { value: '--input-resize-progress-height' });
+    act(() => view.container.querySelector('.conversation-surface').dispatchEvent(end));
+    expect(inputSlot.hasAttribute('data-input-resize-transition')).toBe(false);
+    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('');
+    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('');
+
+    inputSlot.style.maxHeight = '150px';
+    naturalHeight = 180;
+    renderedHeight = 142;
+    act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
+    expect(preparedCount).toBe(3);
+    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('142px');
+    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('150px');
+  });
+
   it('releases a synchronous clear preparation when the committed input did not shrink', () => {
     const observers = [];
     class TestResizeObserver {

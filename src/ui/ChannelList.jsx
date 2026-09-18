@@ -40,6 +40,8 @@ export function ChannelList({ channels, activeChannelId, unread, agentActivity, 
       {rows.map((channel) => {
         const active = agentActivity?.byChannel?.[channel.id]?.active || [];
         const shown = active.slice(0, 2);
+        const unreadStatus = unread[channel.id];
+        const unreadUnknown = unreadStatus?.pending || unreadStatus?.unknown;
         return (
         <button
           type="button"
@@ -63,6 +65,7 @@ export function ChannelList({ channels, activeChannelId, unread, agentActivity, 
             {accessLabel(channel.access) && <span className={`channel-access-label label-${channel.access}`}>{accessLabel(channel.access)}</span>}
             {unread[channel.id]?.related > 0 && <span className="unread-badge unread-related" aria-label={`${unread[channel.id].related} 条与我相关的未读消息`} title="与我相关的未读消息">{unread[channel.id].related > 99 ? '99+' : unread[channel.id].related}</span>}
             {otherUnread(channel.id) > 0 && <span className="unread-total" aria-label={`${otherUnread(channel.id)} 条其他未读消息`} title="其他未读消息">{otherUnread(channel.id) > 999 ? '999+' : otherUnread(channel.id)}</span>}
+            {unreadUnknown && <span className="unread-total unread-pending" aria-label={unreadStatus.unknown ? '未读状态待同步' : '正在恢复未读状态'} title={unreadStatus.unknown ? '未读状态待同步' : '正在恢复未读状态'}>{unreadStatus.unknown ? '?' : '…'}</span>}
           </span>
         </button>
         );

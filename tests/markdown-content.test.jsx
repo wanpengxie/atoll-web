@@ -73,6 +73,17 @@ describe('MarkdownContent', () => {
     expect(screen.getByRole('link', { name: '网页' }).getAttribute('target')).toBe('_blank');
   });
 
+  it('prepared内容复用后仍读取当前文件打开上下文', async () => {
+    const user = userEvent.setup();
+    const firstOpen = vi.fn();
+    const nextOpen = vi.fn();
+    const view = render(<MarkdownFileReferenceProvider onOpen={firstOpen}><MarkdownContent contentKey="message:context-refresh:body" text={'[代码](/srv/atoll/work/main.go:42)'} /></MarkdownFileReferenceProvider>);
+    view.rerender(<MarkdownFileReferenceProvider onOpen={nextOpen}><MarkdownContent contentKey="message:context-refresh:body" text={'[代码](/srv/atoll/work/main.go:42)'} /></MarkdownFileReferenceProvider>);
+    await user.click(view.container.querySelector('a.markdown-file-reference'));
+    expect(firstOpen).not.toHaveBeenCalled();
+    expect(nextOpen).toHaveBeenCalledWith({ path: '/srv/atoll/work/main.go', line: 42 });
+  });
+
   it('不猜测普通文本、行内代码、相对链接和协议相对链接', () => {
     const onOpen = vi.fn();
     const { container } = render(<MarkdownFileReferenceProvider onOpen={onOpen}><MarkdownContent text={'/srv/a.go:2 `/srv/b.go:3` [相对](docs/a.md) [站点](//example.com/a)'} /></MarkdownFileReferenceProvider>);

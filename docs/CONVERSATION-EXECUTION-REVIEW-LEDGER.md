@@ -4,6 +4,16 @@
 
 ### 最新状态（本段覆盖以下旧快照；监督周期已依用户改为20分钟）
 
+#### 20分钟监督更新：d450400 后候选与独立复核裁决
+
+- 已提交快照为 `d450400`；875 正常 installed 解析 startup/continuous 已有有界通过。以下工作树候选尚不能拼成完整交付。
+- Waiting 去 matched closure 候选拒绝合入：独立审计用真实 Scheduler 复现“旧页在途→live matched terminal→trim→旧页释放”恢复 queued。当前共享 `memory-window.js` 保留 compact closure，root已亲读确认。实现者续补永久反例和安全生命周期分析，不以999绿代替该反例。
+- 通知分类175定向/F7 8轨通过；inactive频道 reload 时 IDB正文存在但 Replica 空，真实 final badge 1→0仍开。通知owner已获 feed-cache/useChannelFeed 最小相关区段施工权，不能只恢复48行或忽略父request。
+- 输入r9为7高度目标/7原writer，逐帧约5px，98定向/build通过；旧35writer动画候选不签。接续发送脱尾：d450 formal extent瞬减228引发native clamp，恢复高度后留下gap，已有因果原件，owner继续核当前版本并修，禁止第二writer兜底。
+- 撤回上一轮将旧 +329 归为当前失败：clean d450 A→B→A repeat8通过，旧artifact库绑定不同。fixed48按用户取舍有界通过，不恢复已取消的展开无遮挡门。
+- 历史缓存优化同轨最大长任务357→144ms；冷首显raw738ms仍慢，数据先到、React/list协调为后续诊断方向，不能声称冷性能已修。
+- 完整审计38需求行已完成历史证据归档；后续行为核验与4路修复并行。所有结果必须标明基线/候选，旧报告留作历史，不作为当前完成声明。
+
 #### 当前：875已workspace接入，正常installed解析门正在执行
 
 - root实核installed ESM `87560b6dc8dbfda5b88b2df457ca2bf735a0e58c97da7e0635a1c3f828620742`、Legend `10260969385a4877c30d31bee97aec2ffc8bc77394094f662564e1681bbe0f5c`；npm/pnpm锁同步，990全测/build据实现通过，未部署/重启/提交。

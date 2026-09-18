@@ -106,6 +106,54 @@ describe('feed cache', () => {
 	expect(cache.metaSnapshot().get('c0')).toMatchObject({ oldestSeq: 4, newestSeq: 8, rowCount: 5 });
   });
 
+	it('restores an unread suffix beyond one presentation batch with its older parent lifecycle', async () => {
+	  const cache = createFeedCache({
+		indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange,
+		databaseName: `feed-cache-notification-context-${crypto.randomUUID()}`,
+	  });
+	  const request = envelope('task-root', 'background task');
+	  const rows = [
+		{ channel_id: 'c0', seq: 2, envelope: request },
+		{ channel_id: 'c0', seq: 3, envelope: { ...envelope('task-processing', 'processing'), kind: 'response', parent_id: request.id, payload: { status: 'processing' } } },
+		...Array.from({ length: 260 }, (_, index) => ({
+		  channel_id: 'c0', seq: index + 4, envelope: envelope(`noise-${index}`, `noise ${index}`),
+		})),
+		{ channel_id: 'c0', seq: 264, envelope: { ...envelope('task-final', 'done'), kind: 'response', parent_id: request.id, payload: { status: 'completed' } } },
+	  ];
+	  await cache.openMeta();
+	  await cache.saveRows(rows);
+	  await cache.saveCoverage('c0', 1, 264);
+	  await cache.idle();
+
+	  const restored = await cache.readNotificationContext('c0', 180, { limit: 48 });
+	  expect(restored).toMatchObject({ complete: true, cancelled: false, boundaryReached: true });
+	  expect(restored.batches).toBeGreaterThan(1);
+	  expect(restored.rows.some((row) => row.seq === 2 && row.envelope.id === request.id)).toBe(true);
+	  expect(restored.rows.some((row) => row.seq === 3 && row.envelope.id === 'task-processing')).toBe(true);
+	  expect(restored.rows.some((row) => row.seq === 264 && row.envelope.id === 'task-final')).toBe(true);
+	  expect(restored.rows.some((row) => row.seq === 100)).toBe(false);
+	});
+
+	it('keeps notification restoration unknown when a cached terminal has no parent request', async () => {
+	  const cache = createFeedCache({
+		indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange,
+		databaseName: `feed-cache-notification-missing-parent-${crypto.randomUUID()}`,
+	  });
+	  await cache.openMeta();
+	  await cache.saveRows([{
+		channel_id: 'c0', seq: 50,
+		envelope: { ...envelope('orphan-final', 'done'), kind: 'response', parent_id: 'trimmed-request', payload: { status: 'completed' } },
+	  }]);
+	  await cache.saveCoverage('c0', 50, 50);
+	  await cache.idle();
+
+	  await expect(cache.readNotificationContext('c0', 49)).resolves.toMatchObject({
+		complete: false,
+		cancelled: false,
+		missingParents: ['trimmed-request'],
+	  });
+	});
+
   it('persists empty projected scan coverage and resets IndexedDB on boot change', async () => {
 	const databaseName = `feed-cache-boot-${crypto.randomUUID()}`;
 	const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });

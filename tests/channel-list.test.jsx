@@ -27,6 +27,13 @@ describe('channel notification badges', () => {
     expect(screen.getByLabelText('2 条与我相关的未读消息')).toBeTruthy();
     expect(screen.queryByTitle('其他未读消息')).toBeNull();
   });
+
+  it('shows cache restoration as unknown instead of presenting a false zero', () => {
+    const { rerender } = render(<ChannelList {...props} unread={{ c0: { related: 0, total: 0, pending: true } }} />);
+    expect(screen.getByLabelText('正在恢复未读状态').textContent).toBe('…');
+    rerender(<ChannelList {...props} unread={{ c0: { related: 0, total: 0, unknown: true } }} />);
+    expect(screen.getByLabelText('未读状态待同步').textContent).toBe('?');
+  });
 });
 
 describe('channel Agent timers', () => {

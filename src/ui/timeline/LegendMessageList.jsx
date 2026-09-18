@@ -55,7 +55,8 @@ const CommitAwareList = forwardRef(function CommitAwareList({ children, context,
   useLayoutEffect(() => {
     context?.onListCommit?.();
   });
-  return <div {...props} ref={ref}>{children}</div>;
+  const className = [props.className, 'timeline-input-resize-content'].filter(Boolean).join(' ');
+  return <div {...props} className={className} ref={ref}>{children}</div>;
 });
 
 function WaitingObstructionFooter() {
@@ -187,6 +188,17 @@ function visibleRowEvidence(root, rows) {
     const messageID = String(node.dataset.presentationRowId || '');
     const row = rowByID.get(messageID);
     if (!row) continue;
+    const style = globalThis.getComputedStyle?.(node);
+    const hiddenAncestor = node.closest?.('[hidden], [inert], [aria-hidden="true"]');
+    const painted = !hiddenAncestor
+      && style?.display !== 'none'
+      && style?.visibility !== 'hidden'
+      && Number.parseFloat(style?.opacity || '1') > 0
+      && (typeof node.checkVisibility !== 'function' || node.checkVisibility({
+        checkOpacity: true,
+        checkVisibilityCSS: true,
+      }));
+    if (!painted) continue;
     const rect = node.getBoundingClientRect();
     const left = Math.max(rootRect.left, rect.left);
     const right = Math.min(rootRect.right, rect.right);
@@ -825,6 +837,7 @@ export function MessageList({
     // This is the only continuous geometry write in the adapter. It runs
     // synchronously from a committed public list/layout acknowledgement and
     // leaves no queued library request that can outlive a later user input.
+    root.dispatchEvent(new CustomEvent('atoll:timeline-bottom-write', { bubbles: true }));
     root.scrollTo({ top: root.scrollHeight, behavior: 'auto' });
     // A bottom write is not itself read evidence. Schedule the normal public
     // viewport observation so unseen is acknowledged only after the installed
@@ -1515,6 +1528,27 @@ export function MessageList({
 
   useLayoutEffect(() => {
     const root = scrollerRef.current;
+    if (!root || root !== scrollerNode) return undefined;
+    const onInputResizePrepared = () => {
+      const owner = readingRef.current;
+      const current = owner.getSession?.() || owner.session;
+      if (current.mode !== READING_MODE.following) return;
+      geometryRevisionRef.current += 1;
+      viewportAuthorizationRef.current = {
+        activationID: current.activationID,
+        inputEpoch: current.inputEpoch,
+        geometryRevision: geometryRevisionRef.current,
+        tokenID: `input-resize:${current.activationID}:${current.inputEpoch}:${geometryRevisionRef.current}`,
+      };
+      scheduleObserve('layout');
+      issueBottomIfCurrent('viewport-layout');
+    };
+    root.addEventListener('atoll:input-resize-prepared', onInputResizePrepared);
+    return () => root.removeEventListener('atoll:input-resize-prepared', onInputResizePrepared);
+  }, [issueBottomIfCurrent, scheduleObserve, scrollerNode]);
+
+  useLayoutEffect(() => {
+    const root = scrollerRef.current;
     if (!root || typeof ResizeObserver !== 'function') return undefined;
     const observer = new ResizeObserver(() => {
       traceReadingAdapter('scroller-resize', () => ({
@@ -1528,7 +1562,11 @@ export function MessageList({
       viewportSizeRef.current = nextSize;
       const owner = readingRef.current;
       const current = owner.getSession?.() || owner.session;
-      if (previousSize && previousSize !== nextSize && current.mode === READING_MODE.following) {
+      const inputResizeOwned = root.closest('.conversation-surface')
+        ?.hasAttribute('data-input-resize-transition') === true;
+      if (previousSize && previousSize !== nextSize
+        && current.mode === READING_MODE.following
+        && !inputResizeOwned) {
         viewportAuthorizationRef.current = {
           activationID: current.activationID,
           inputEpoch: current.inputEpoch,
@@ -1537,7 +1575,7 @@ export function MessageList({
       }
       scheduleObserve('layout');
       scheduleCoverageCheck();
-      issueBottomIfCurrent('viewport-layout');
+      if (!inputResizeOwned) issueBottomIfCurrent('viewport-layout');
     });
     observer.observe(root);
     return () => observer.disconnect();
@@ -1621,10 +1659,16 @@ export function MessageList({
     const token = ++listCommitMicrotaskRef.current;
     queueMicrotask(() => {
       if (listCommitMicrotaskRef.current !== token) return;
+      // Formal preparation and promotion can replace inert measurement rows
+      // without changing the public data revision or scroll geometry. The
+      // committed List is the authority that a new paintable subtree exists;
+      // sample it on the normal rAF path so a short, non-scrollable list still
+      // publishes exact visible identities after promotion.
+      scheduleObserve('layout');
       positionDelayedBookmark('list-commit');
       issueBottomIfCurrent('list-commit');
     });
-  }, [issueBottomIfCurrent, positionDelayedBookmark]);
+  }, [issueBottomIfCurrent, positionDelayedBookmark, scheduleObserve]);
   const listContext = useMemo(() => ({
     onListCommit,
   }), [onListCommit]);

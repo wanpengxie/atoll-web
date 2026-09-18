@@ -2102,7 +2102,7 @@ export function createMockServer({
     }
 
     if (request.method === 'GET' && path === '/mock/control/catalog') {
-      json(response, 200, { scenarios: scenarioIds(), agent_advance: true, actions: ['drop', 'approval', 'revoke_membership', 'grant_membership', 'retire_channel', 'set_channel_open', 'set_obs_complete', 'pulse', 'push_provisional', 'push_terminal', 'replay_envelope', 'terminal_conflict', 'resolve_approval'] });
+      json(response, 200, { scenarios: scenarioIds(), agent_advance: true, actions: ['drop', 'approval', 'revoke_membership', 'grant_membership', 'retire_channel', 'set_channel_open', 'set_obs_complete', 'pulse', 'push_provisional', 'push_terminal', 'replay_envelope', 'terminal_conflict', 'resolve_approval', 'notification_lifecycle'] });
       return;
     }
 
@@ -2185,6 +2185,116 @@ export function createMockServer({
         if (body.type === 'pulse') {
           pushLiveDemo();
           json(response, 200, { type: body.type, tick: liveTick });
+          return;
+        }
+        if (body.type === 'notification_lifecycle') {
+          const channelId = body.channel_id || 'c0.project';
+          const phase = String(body.phase || '');
+          const selfActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
+          const agentId = channelId === 'c0.project' ? 'project-agent' : STEWARD_ACTOR_ID;
+          const requestId = `${channelId}-notification-agent-task`;
+          const nestedToolId = `${channelId}-notification-nested-tool`;
+          const topToolId = `${channelId}-notification-top-tool`;
+          let rows = [];
+          if (phase === 'tail') {
+            const count = Math.max(1, Math.min(64, Number(body.count) || 24));
+            for (let index = 1; index <= count; index += 1) rows.push(append(channelId, envelope({
+              id: domain.nextId(`${channelId}-notification-tail-${index}`), channelId,
+              sender: { kind: 'human', id: selfActorId }, kind: 'event', type: 'human.note',
+              payload: { text: `notification tail ${index}` }, audience: [agentId],
+            })));
+          } else if (phase === 'ui') {
+            rows = [append(channelId, envelope({
+              id: domain.nextId(`${channelId}-notification-ui`), channelId,
+              sender: { kind: 'agent', id: agentId }, kind: 'request', type: 'ui.state',
+              payload: { session: 'notification-policy-browser' }, audience: ['human:notification-observer:1'],
+            }))];
+          } else if (phase === 'request') {
+            rows = [append(channelId, envelope({
+              id: requestId, channelId,
+              sender: { kind: 'agent', id: agentId }, kind: 'request', type: 'agent.ask',
+              payload: { text: 'background agent task' }, audience: [agentId],
+            }))];
+          } else if (['queued', 'processing', 'progress', 'final'].includes(phase)) {
+            const request = histories.get(channelId)?.find((row) => row.envelope.id === requestId)?.envelope;
+            if (!request) throw new TypeError('notification request does not exist');
+            const status = phase === 'final' ? 'completed' : phase === 'queued' ? 'queued' : 'processing';
+            rows = [append(channelId, envelope({
+              id: domain.nextId(`${requestId}-${phase}`), channelId,
+              sender: { kind: 'agent', id: agentId }, kind: 'response', type: request.type,
+              payload: {
+                status,
+                ...(status === 'completed' ? { text: 'background agent task completed' } : { controls: [] }),
+                ...(phase === 'progress' ? { process: { kind: 'stage', label: 'later progress' } } : {}),
+              },
+              parentId: requestId, correlationId: requestId, audience: [agentId],
+            }))];
+          } else if (phase === 'nested_tool') {
+            rows = [append(channelId, envelope({
+              id: nestedToolId, channelId,
+              sender: { kind: 'agent', id: agentId }, kind: 'request', type: 'tool.run',
+              payload: { text: 'internal tool call' }, parentId: requestId,
+              correlationId: requestId, audience: ['tool:runner:1'],
+            }))];
+          } else if (phase === 'nested_tool_final') {
+            rows = [append(channelId, envelope({
+              id: `${nestedToolId}-done`, channelId,
+              sender: { kind: 'tool', id: 'tool:runner:1' }, kind: 'response', type: 'tool.run',
+              payload: { status: 'completed', text: 'internal tool result' }, parentId: nestedToolId,
+              correlationId: requestId, audience: [agentId],
+            }))];
+          } else if (phase === 'top_tool') {
+            rows = [append(channelId, envelope({
+              id: topToolId, channelId,
+              sender: { kind: 'tool', id: 'tool:reporter:1' }, kind: 'request', type: 'tool.report',
+              payload: { text: 'independent report requested' }, audience: [selfActorId],
+            }))];
+          } else if (phase === 'top_tool_final') {
+            rows = [append(channelId, envelope({
+              id: `${topToolId}-done`, channelId,
+              sender: { kind: 'tool', id: 'tool:reporter:1' }, kind: 'response', type: 'tool.report',
+              payload: { status: 'completed', text: 'independent report ready' }, parentId: topToolId,
+              correlationId: topToolId, audience: [selfActorId],
+            }))];
+          } else if (phase === 'activity_event') {
+            rows = [append(channelId, envelope({
+              id: `${channelId}-notification-activity`, channelId,
+              sender: { kind: 'agent', id: agentId }, kind: 'event', type: 'agent.resume',
+              payload: { task: 'resume internal work' }, audience: [agentId],
+            }))];
+          } else if (phase === 'readable_event') {
+            rows = [append(channelId, envelope({
+              id: `${channelId}-notification-readable-event`, channelId,
+              sender: { kind: 'agent', id: agentId }, kind: 'event', type: 'human.note',
+              payload: { text: 'independent public note' }, audience: [selfActorId],
+            }))];
+          } else if (phase === 'timer_control' || phase === 'timer_result') {
+            const suffix = phase === 'timer_control' ? 'control' : 'result';
+            const fireId = `timer:${channelId}-notification-${suffix}`;
+            const wakeId = `${fireId}-wake`;
+            rows = [
+              append(channelId, envelope({
+                id: fireId, channelId,
+                sender: { kind: 'agent', id: agentId }, kind: 'event', type: 'agent.resume',
+                payload: { task: 'scheduled work' }, correlationId: fireId, audience: [agentId],
+              })),
+              append(channelId, envelope({
+                id: wakeId, channelId,
+                sender: { kind: 'agent', id: agentId }, kind: 'request', type: 'agent.timer.wake',
+                payload: { text: 'timer wake transport' }, parentId: fireId,
+                correlationId: fireId, audience: [agentId],
+              })),
+              append(channelId, envelope({
+                id: `${wakeId}-done`, channelId,
+                sender: { kind: 'agent', id: agentId }, kind: 'response', type: 'agent.timer.wake',
+                payload: phase === 'timer_result'
+                  ? { status: 'completed', text: 'scheduled work produced a readable result' }
+                  : { status: 'completed' },
+                parentId: wakeId, correlationId: fireId, audience: [agentId],
+              })),
+            ];
+          } else throw new TypeError('unknown notification lifecycle phase');
+          json(response, 200, { type: body.type, phase, rows });
           return;
         }
         if (body.type === 'dense_progress') {

@@ -446,7 +446,29 @@ export function createContentPlanStore({ limit = 128, preparedByteLimit = Number
   if (!Number.isInteger(limit) || limit < 1) throw new RangeError('ContentPlan store limit must be a positive integer');
   if (!(preparedByteLimit >= 0)) throw new RangeError('ContentPlan prepared byte limit must be non-negative');
   const plans = new Map();
+  // React StrictMode deliberately invokes render-phase memo calculators twice.
+  // Keep exact, unpublished candidates separate from committed identity so the
+  // replay can reuse immutable parser output without making an abandoned
+  // source the previous plan for a later edit.
+  const candidates = new Map();
   let preparedBytes = 0;
+  let candidatePreparedBytes = 0;
+  const forgetCandidate = (contentKey) => {
+    const record = candidates.get(contentKey);
+    if (!record) return false;
+    candidatePreparedBytes -= record.plan.preparedBytes || 0;
+    return candidates.delete(contentKey);
+  };
+  const retainCandidate = (contentKey, plan, previous) => {
+    forgetCandidate(contentKey);
+    candidates.set(contentKey, { plan, previous });
+    candidatePreparedBytes += plan.preparedBytes || 0;
+    while (candidates.size > limit || candidatePreparedBytes > preparedByteLimit) {
+      const oldestKey = candidates.keys().next().value;
+      forgetCandidate(oldestKey);
+    }
+    return plan;
+  };
   const retain = (contentKey, plan) => {
     preparedBytes -= plans.get(contentKey)?.preparedBytes || 0;
     plans.delete(contentKey);
@@ -469,6 +491,32 @@ export function createContentPlanStore({ limit = 128, preparedByteLimit = Number
     return plans.get(contentKey) || plan;
   };
   return {
+    prepare(contentKey, source, options = {}) {
+      const parserRevision = options.parserRevision || CONTENT_PARSER_REVISION;
+      const committed = plans.get(contentKey) || null;
+      const previous = Object.hasOwn(options, 'previous') ? options.previous : committed;
+      if (previous?.source === source && previous.parserRevision === parserRevision) return previous;
+      const record = candidates.get(contentKey) || null;
+      const candidate = record?.plan || null;
+      if (record?.previous === previous
+        && candidate.source === source
+        && candidate.parserRevision === parserRevision) {
+        // Touch the exact candidate so interleaved sibling renders cannot
+        // evict the StrictMode replay that is about to consume it.
+        forgetCandidate(contentKey);
+        candidates.set(contentKey, record);
+        candidatePreparedBytes += candidate.preparedBytes || 0;
+        return candidate;
+      }
+      const { previous: _previous, ...planOptions } = options;
+      return retainCandidate(contentKey, createContentPlan({
+        contentKey,
+        source,
+        previous,
+        ...planOptions,
+        parserRevision,
+      }), previous);
+    },
     plan(contentKey, source, options = {}) {
       const previous = plans.get(contentKey) || null;
       const next = createContentPlan({ contentKey, source, previous, ...options });
@@ -479,18 +527,22 @@ export function createContentPlanStore({ limit = 128, preparedByteLimit = Number
     // effect once the corresponding DOM commit exists.
     commit(plan) {
       if (!plan?.contentKey || !Object.isFrozen(plan)) throw new TypeError('ContentPlan store commit requires a frozen plan');
+      if (candidates.get(plan.contentKey)?.plan === plan) forgetCandidate(plan.contentKey);
       return retain(plan.contentKey, plan);
     },
     get(contentKey) {
       return plans.get(contentKey) || null;
     },
     delete(contentKey) {
+      forgetCandidate(contentKey);
       preparedBytes -= plans.get(contentKey)?.preparedBytes || 0;
       return plans.delete(contentKey);
     },
     clear() {
       plans.clear();
+      candidates.clear();
       preparedBytes = 0;
+      candidatePreparedBytes = 0;
     },
     get size() {
       return plans.size;

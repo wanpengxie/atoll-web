@@ -718,6 +718,74 @@ it('materializes a fixed Waiting reserve and excludes rows behind its readable b
   }
 });
 
+it('resamples a promoted short-list row from the List commit without accepting its viewport wrapper', async () => {
+  const observations = [];
+  const owner = reading((observation) => observations.push(observation));
+  render(
+    <MessageList
+      snapshot={snapshot([row('short-row', 1)], 1)}
+      reading={owner}
+      surfaceVisible
+      renderRow={(value) => <article>{value.id}</article>}
+    />,
+  );
+  const scroller = screen.getByRole('region', { name: '频道动态' });
+  setScrollerGeometry(scroller, { clientHeight: 600, scrollHeight: 600, scrollTop: 0 });
+  scroller.getBoundingClientRect = () => ({
+    top: 0, bottom: 600, left: 0, right: 800, width: 800, height: 600,
+  });
+  const rowNode = scroller.querySelector('[data-presentation-row-id]');
+  rowNode.getBoundingClientRect = () => ({
+    top: 0, bottom: 132, left: 0, right: 800, width: 800, height: 132,
+  });
+  const viewport = scroller.firstElementChild;
+  viewport.setAttribute('data-viewport-type', 'element');
+  const obstruction = document.createElement('div');
+  scroller.append(obstruction);
+  const originalElementFromPoint = document.elementFromPoint;
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    value: vi.fn(() => viewport),
+  });
+
+  observations.length = 0;
+  await act(async () => {
+    legendHarness.props.rangeChanged({ startIndex: 99, endIndex: 99 });
+    await new Promise(requestAnimationFrame);
+  });
+  expect(observations.at(-1)?.visibleRows).toEqual([]);
+
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    value: vi.fn(() => rowNode),
+  });
+  await act(async () => {
+    legendHarness.props.context.onListCommit();
+    await Promise.resolve();
+    await new Promise(requestAnimationFrame);
+  });
+  expect(observations.at(-1)?.visibleRows).toEqual([{ messageID: 'short-row', seqHigh: 1 }]);
+
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    value: vi.fn(() => obstruction),
+  });
+  await act(async () => {
+    legendHarness.props.rangeChanged({ startIndex: 99, endIndex: 99 });
+    await new Promise(requestAnimationFrame);
+  });
+  expect(observations.at(-1)?.visibleRows).toEqual([]);
+
+  if (originalElementFromPoint) {
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: originalElementFromPoint,
+    });
+  } else {
+    delete document.elementFromPoint;
+  }
+});
+
 it('rechecks one committed list height at the microtask boundary when root geometry publishes late', async () => {
   const owner = followingReading();
   render(
