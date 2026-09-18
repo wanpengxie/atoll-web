@@ -1652,6 +1652,52 @@ it('保存书签的 gen0 结果在 gen1 source lease 已渲染后落定时重获
   }
 });
 
+it('保存书签在同source供给推进且旧attempt迟到结束时重验同一immutable目标', async () => {
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  let initialViewCalls = 0;
+  const request = vi.fn((options) => {
+    if (options.intent !== 'initial-view') return new Promise(() => {});
+    initialViewCalls += 1;
+    return initialViewCalls === 1 ? first : new Promise(() => {});
+  });
+  const viewSessions = {
+    readView: () => ({
+      mode: 'browsing', revision: 1,
+      bookmark: { messageID: 'saved-target', seq: 3, rowViewportOffset: 8 },
+    }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const snapshot = { rows: [], entities: new Map(), revision: 1, sourceRevision: 1 };
+  const status = (completedPages) => ({
+    attached: true, generation: 1, messageCurrent: true, headSeq: 90,
+    localReplicaReady: true, hasOlder: true, oldestSeq: completedPages === 1 ? 61 : 41,
+    completedPages, revealVersion: completedPages, buffered: completedPages === 1 ? 0 : 8,
+    presentationRevision: 1, sourceLease: '1:3:10',
+  });
+  function Harness({ completedPages }) {
+    useReadingSession({
+      channelID: 'restore-supply', viewKey: 'restore-supply:all', snapshot,
+      history: { status: status(completedPages), request }, viewSessions,
+      historyViewSpec: { scope: 'all', selfId: 'me', actorFilter: new Set() },
+    });
+    return null;
+  }
+
+  const view = render(<Harness completedPages={1} />);
+  await waitFor(() => expect(initialViewCalls).toBe(1));
+  view.rerender(<Harness completedPages={2} />);
+  expect(initialViewCalls).toBe(1);
+  await act(async () => { settleFirst({ kind: 'exhausted' }); await first; });
+  await waitFor(() => expect(initialViewCalls).toBe(2));
+  for (const [options] of request.mock.calls.filter(([value]) => value.intent === 'initial-view')) {
+    expect(options).toMatchObject({
+      targetSeq: 3,
+      requiredVisibleCoverage: { messageID: 'saved-target', seq: 3 },
+    });
+  }
+});
+
 it('保存书签 attempt 在 view 卸载时取消，失败后的 Retry 重放同一 immutable target', async () => {
   let port;
   const signals = [];
@@ -2026,6 +2072,348 @@ it('真实上滚会把同一个anticipatory历史operation升级为可见interac
   act(() => { port.onAtTop(); });
   expect(promote).toHaveBeenCalledTimes(1);
   await act(async () => { settle({ kind: 'exhausted' }); await interactive; });
+});
+
+it('同generation的远端EOF只封住原供给证书，后到reservoir仍重开同一可见义务', async () => {
+  let port;
+  const request = vi.fn().mockResolvedValue({ kind: 'exhausted' });
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row = { id: 'visible-tail', seqLow: 100, seqHigh: 101 };
+  const snapshot = {
+    revision: 2,
+    sourceRevision: 211,
+    rows: [row],
+    entities: new Map([[row.id, row]]),
+  };
+  const baseStatus = {
+    attached: true, generation: 7, messageCurrent: true, headSeq: 1_101,
+    localReplicaReady: true, hasOlder: true, completedPages: 3,
+    revealVersion: 0, buffered: 0, presentationRevision: 211,
+    sourceLease: '1:2:9',
+    historyDemand: { revision: 1, phase: 'idle', error: '' },
+  };
+  function Harness({ status }) {
+    const reading = useReadingSession({
+      channelID: 'cortex', viewKey: 'cortex:mine', snapshot,
+      history: { status, request }, viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+
+  const view = render(<Harness status={baseStatus} />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  await act(async () => { await port.onUnderfill(); });
+  expect(request).toHaveBeenCalledTimes(1);
+
+  view.rerender(<Harness status={{ ...baseStatus, completedPages: 4, buffered: 148 }} />);
+  await act(async () => { await port.onUnderfill(); });
+  expect(request).toHaveBeenCalledTimes(2);
+
+  view.rerender(<Harness status={{
+    ...baseStatus,
+    completedPages: 4,
+    buffered: 148,
+    historyDemand: { revision: 2, phase: 'idle', error: '' },
+  }} />);
+  await act(async () => { await port.onUnderfill(); });
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+it('同供给active attempt期间viewport预算变化在settle后交回DOM owner重验', async () => {
+  let port;
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  const request = vi.fn(() => first);
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row = { id: 'visible-tail', seqLow: 100, seqHigh: 101 };
+  function Harness() {
+    const reading = useReadingSession({
+      channelID: 'viewport-recheck', viewKey: 'viewport-recheck:mine',
+      snapshot: {
+        revision: 2, sourceRevision: 211, rows: [row],
+        entities: new Map([[row.id, row]]),
+      },
+      history: {
+        status: {
+          attached: true, generation: 7, messageCurrent: true, headSeq: 1_101,
+          localReplicaReady: true, hasOlder: true, completedPages: 3,
+          revealVersion: 0, buffered: 0, presentationRevision: 211,
+          sourceLease: '1:2:9',
+        },
+        request,
+      },
+      viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  render(<Harness />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  let active;
+  let resized;
+  act(() => { active = port.onUnderfill({ demandUnits: 2 }); });
+  act(() => { resized = port.onUnderfill({ demandUnits: 7 }); });
+  expect(request).toHaveBeenCalledTimes(1);
+  await act(async () => { settleFirst({ kind: 'exhausted' }); await active; });
+  await expect(resized).resolves.toMatchObject({
+    kind: 'consumer-recheck',
+    reason: 'attempt-settled',
+  });
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it('reservoir在旧EOF settle前发布时保留一个同义务successor且不缓存迟到EOF', async () => {
+  let port;
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  const request = vi.fn()
+    .mockImplementationOnce(() => first)
+    .mockResolvedValue({ kind: 'exhausted' });
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row = { id: 'visible-tail', seqLow: 100, seqHigh: 101 };
+  const snapshot = {
+    revision: 2,
+    sourceRevision: 211,
+    rows: [row],
+    entities: new Map([[row.id, row]]),
+  };
+  const baseStatus = {
+    attached: true, generation: 7, messageCurrent: true, headSeq: 1_101,
+    localReplicaReady: true, hasOlder: true, completedPages: 3,
+    revealVersion: 0, buffered: 0, presentationRevision: 211,
+    sourceLease: '1:2:9',
+    historyDemand: { revision: 1, phase: 'idle', error: '' },
+  };
+  function Harness({ status }) {
+    const reading = useReadingSession({
+      channelID: 'cortex-race', viewKey: 'cortex-race:mine', snapshot,
+      history: { status, request }, viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+
+  const view = render(<Harness status={baseStatus} />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  let firstAttempt;
+  act(() => { firstAttempt = port.onUnderfill(); });
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+
+  view.rerender(<Harness status={{ ...baseStatus, completedPages: 4, buffered: 148 }} />);
+  let successor;
+  act(() => { successor = port.onUnderfill(); });
+  expect(request).toHaveBeenCalledTimes(1);
+  await act(async () => { settleFirst({ kind: 'exhausted' }); await firstAttempt; });
+  await act(async () => { await successor; });
+  expect(request).toHaveBeenCalledTimes(1);
+  await act(async () => { await port.onUnderfill(); });
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+
+  // The late K0 EOF cannot be relabelled as K1. Once the K1 attempt records
+  // its own EOF, repeated calls at K1 remain bounded.
+  await act(async () => { await port.onUnderfill(); });
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+it('新供给不能继承旧attempt的anticipatory失败且successor仍执行', async () => {
+  let port;
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  const request = vi.fn()
+    .mockImplementationOnce(() => first)
+    .mockResolvedValue({ kind: 'exhausted' });
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row = { id: 'visible-tail', seqLow: 100, seqHigh: 101 };
+  const snapshot = {
+    revision: 2, sourceRevision: 211, rows: [row],
+    entities: new Map([[row.id, row]]),
+  };
+  const baseStatus = {
+    attached: true, generation: 7, messageCurrent: true, headSeq: 1_101,
+    localReplicaReady: true, hasOlder: true, completedPages: 3,
+    revealVersion: 0, buffered: 0, presentationRevision: 211,
+    sourceLease: '1:2:9',
+    historyDemand: { revision: 1, phase: 'idle', error: '' },
+  };
+  function Harness({ status }) {
+    const reading = useReadingSession({
+      channelID: 'cortex-failure-race', viewKey: 'cortex-failure-race:mine', snapshot,
+      history: { status, request }, viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+
+  const view = render(<Harness status={baseStatus} />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  let firstAttempt;
+  act(() => { firstAttempt = port.onUnderfill(); });
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+
+  view.rerender(<Harness status={{ ...baseStatus, completedPages: 4, buffered: 148 }} />);
+  let successor;
+  act(() => { successor = port.onUnderfill(); });
+  await act(async () => {
+    settleFirst({ kind: 'failed', error: new Error('old source failed') });
+    await firstAttempt;
+  });
+  await act(async () => { await successor; });
+  expect(request).toHaveBeenCalledTimes(1);
+  await act(async () => { await port.onUnderfill(); });
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+});
+
+it('blocking admission结束后把anticipatory underfill交回DOM owner重验而不直接取数', async () => {
+  let port;
+  let liveAdmission = { phase: 'idle', token: null };
+  const presentationAdmission = { snapshot: vi.fn(() => liveAdmission) };
+  const request = vi.fn().mockResolvedValue({ kind: 'exhausted' });
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row = { id: 'visible-tail', seqLow: 100, seqHigh: 101 };
+  const snapshot = {
+    revision: 2, sourceRevision: 211, rows: [row],
+    entities: new Map([[row.id, row]]),
+  };
+  function Harness({ phase }) {
+    const reading = useReadingSession({
+      channelID: 'admission-underfill', viewKey: 'admission-underfill:mine', snapshot,
+      history: {
+        status: {
+          attached: true, generation: 7, messageCurrent: true, headSeq: 1_101,
+          localReplicaReady: true, hasOlder: true, completedPages: 3,
+          presentationRevision: 211, sourceLease: '1:2:9',
+          presentationAdmission,
+          presentationAdmissionState: { phase, token: liveAdmission.token },
+        },
+        request,
+      },
+      viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+
+  const view = render(<Harness phase="idle" />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  liveAdmission = {
+    phase: 'pending-baseline-commit',
+    token: {
+      activationID: port.activationID,
+      viewID: 'admission-underfill:mine',
+      epoch: 'admission-underfill:7',
+      operationID: 'history:existing:1',
+    },
+  };
+  view.rerender(<Harness phase="pending-baseline-commit" />);
+  let debt;
+  act(() => { debt = port.onUnderfill({ demandUnits: 3 }); });
+  expect(request).not.toHaveBeenCalled();
+
+  liveAdmission = { phase: 'idle', token: null };
+  view.rerender(<Harness phase="idle" />);
+  await expect(debt).resolves.toMatchObject({
+    kind: 'consumer-recheck',
+    reason: 'admission-settled',
+  });
+  expect(request).not.toHaveBeenCalled();
+});
+
+it('underfill satisfied后Admission拒绝仍把同一DOM欠账交回并开启下一attempt', async () => {
+  let port;
+  let settleFirst;
+  let liveAdmission = { phase: 'idle', token: null };
+  const presentationAdmission = { snapshot: vi.fn(() => liveAdmission) };
+  const request = vi.fn()
+    .mockImplementationOnce(() => new Promise((resolve) => { settleFirst = resolve; }))
+    .mockResolvedValue({ kind: 'exhausted' });
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row = { id: 'baseline', seqLow: 100, seqHigh: 101 };
+  const snapshot = {
+    revision: 2, sourceRevision: 211, rows: [row],
+    entities: new Map([[row.id, row]]),
+  };
+  function Harness({ phase }) {
+    const reading = useReadingSession({
+      channelID: 'admission-reject', viewKey: 'admission-reject:mine', snapshot,
+      history: {
+        status: {
+          attached: true, generation: 7, messageCurrent: true, headSeq: 1_101,
+          localReplicaReady: true, hasOlder: true, completedPages: 3,
+          presentationRevision: 211, sourceLease: '1:2:9',
+          presentationAdmission,
+          presentationAdmissionState: { phase, token: liveAdmission.token },
+        },
+        request,
+      },
+      viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+
+  const view = render(<Harness phase="idle" />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  let first;
+  act(() => { first = port.onUnderfill({ demandUnits: 3 }); });
+  expect(request).toHaveBeenCalledTimes(1);
+
+  liveAdmission = {
+    phase: 'pending-baseline-commit',
+    token: {
+      activationID: port.activationID,
+      viewID: 'admission-reject:mine',
+      epoch: 'admission-reject:7',
+      operationID: 'history:admission-reject:1',
+    },
+  };
+  view.rerender(<Harness phase="pending-baseline-commit" />);
+  await act(async () => { settleFirst({ kind: 'satisfied' }); });
+  await expect(first).resolves.toEqual({
+    kind: 'consumer-recheck', reason: 'acquisition-satisfied',
+  });
+
+  // The DOM owner remeasures the unchanged baseline. Blocking Admission owns
+  // the staged transaction, so this becomes one durable deferred wake rather
+  // than a second acquisition yet.
+  let deferred;
+  act(() => { deferred = port.onUnderfill({ demandUnits: 3 }); });
+  expect(request).toHaveBeenCalledTimes(1);
+
+  // Structural precommit rejection moves Admission to holding. It must not
+  // consume the viewport debt; the current DOM rechecks and starts exactly
+  // one new attempt, whose Feed-side begin inherits the held staged IDs.
+  liveAdmission = { phase: 'holding', token: null };
+  view.rerender(<Harness phase="holding" />);
+  await expect(deferred).resolves.toEqual({
+    kind: 'consumer-recheck', reason: 'admission-settled',
+  });
+  await act(async () => { await port.onUnderfill({ demandUnits: 3 }); });
+  expect(request).toHaveBeenCalledTimes(2);
 });
 
 it('零行供给settle后的live admission事务先提交首批，再续发排队的interactive demand', async () => {

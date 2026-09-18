@@ -589,6 +589,36 @@ function setScrollerGeometry(node, { clientHeight = 600, scrollHeight = 1000, sc
   });
 }
 
+it('returns a typed acquisition wake to the current virtualized DOM owner for remeasurement', async () => {
+  let settle;
+  const pending = new Promise((resolve) => { settle = resolve; });
+  const owner = reading(vi.fn());
+  owner.bottomReady = true;
+  owner.status = {
+    attached: true, generation: 7, messageCurrent: true, headSeq: 0,
+    hasOlder: true, completedPages: 2, revealVersion: 1,
+  };
+  owner.onUnderfill = vi.fn()
+    .mockImplementationOnce(() => pending)
+    .mockResolvedValueOnce({ kind: 'exhausted' });
+  render(<MessageList
+    snapshot={snapshot([row('first', 1), row('second', 2)], 2)}
+    reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const scroller = screen.getByRole('region', { name: '频道动态' });
+  setScrollerGeometry(scroller, { clientHeight: 600, scrollHeight: 500, scrollTop: 0 });
+  act(() => legendHarness.props.rangeChanged({ startIndex: 98, endIndex: 99 }));
+  await waitFor(() => expect(owner.onUnderfill).toHaveBeenCalledTimes(1));
+
+  await act(async () => {
+    settle({ kind: 'consumer-recheck', reason: 'supply-progressed' });
+    await pending;
+  });
+  await waitFor(() => expect(owner.onUnderfill).toHaveBeenCalledTimes(2));
+  expect(owner.onUnderfill.mock.calls[1][0]).toMatchObject({ demandUnits: expect.any(Number) });
+});
+
 it('disables built-in follow and lets the committed following owner issue one synchronous DOM bottom write', async () => {
   const owner = followingReading();
   const renderRow = (value) => <article>{value.id}</article>;

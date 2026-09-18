@@ -31,6 +31,7 @@ const EMPTY_REQUEST = () => Promise.resolve({ kind: 'exhausted' });
 const IDLE_HISTORY_DEMAND = Object.freeze({ revision: 0, phase: 'idle', error: '' });
 const BLOCKING_ADMISSION_PHASES = new Set(['pending-baseline-commit', 'committed-awaiting-layout']);
 const ADDRESSABLE_ADMISSION_PHASES = new Set(['pending', 'pending-baseline-commit', 'committed-awaiting-layout']);
+const HISTORY_CONSUMER = Object.freeze({ viewportUnderfill: 'viewport-underfill' });
 
 function currentBlockingAdmission(historyStatus, channelID, activationID, viewKey) {
   const authority = historyStatus?.presentationAdmission;
@@ -637,9 +638,12 @@ export function useReadingSession({
     : snapshot.rows.length > 0;
   const runwayRequestRef = useRef(null);
   const deferredAdmissionDemandRef = useRef(null);
+  const deferredConsumerRecheckRef = useRef(null);
   const failedAnticipatoryRequestRef = useRef(null);
-  const exhaustedHistoryKeyRef = useRef(null);
-  const localExhaustedHistoryKeyRef = useRef(null);
+  // A source terminal suppresses only an identical acquisition attempt. It is
+  // not semantic-view or viewport completion; those remain Presentation/DOM
+  // obligations and reopen on any source or supply-progress replacement.
+  const sourceTerminalAttemptRef = useRef(null);
   const arrivalBaseline = Number.isSafeInteger(Number(arrivals?.acknowledgedRevision))
     ? Number(arrivals.acknowledgedRevision)
     : Number(arrivals?.revision || 0);
@@ -673,6 +677,7 @@ export function useReadingSession({
     Number(syncStatus.targetHead || 0),
   );
   const historySourceKey = historySourceAuthorityKey(historyStatus);
+  const historySupplyKey = historySupplyProgressKey(historyStatus);
   const authoritativeEmpty = hasManagedHistoryLifecycle
     && historyStatus.attached === true
     && Number(historyStatus.generation || 0) > 0
@@ -797,16 +802,12 @@ export function useReadingSession({
   }, [controller]);
 
   useEffect(() => {
-    // A non-local exhausted operation is the Scheduler's authoritative EOF
-    // receipt for this attachment generation. The React hasOlder snapshot can
-    // still be true for one commit after that receipt, so it cannot revoke the
-    // cache. Only a new controller/generation names a different authority.
-    const exhausted = exhaustedHistoryKeyRef.current;
-    if (exhausted && (exhausted.controller !== controller
-      || exhausted.generation !== Number(historyStatus.generation || 0))) {
-      exhaustedHistoryKeyRef.current = null;
+    const terminal = sourceTerminalAttemptRef.current;
+    if (terminal && (terminal.controller !== controller
+      || terminal.sourceKey !== historySourceAuthorityKey(historyStatus))) {
+      sourceTerminalAttemptRef.current = null;
     }
-  }, [controller, historyStatus.generation]);
+  }, [controller, historySourceKey]);
 
   useEffect(() => {
     // Exhaustion and request coalescing are properties of one semantic view,
@@ -816,9 +817,13 @@ export function useReadingSession({
     runwayRequestRef.current?.abortController?.abort();
     runwayRequestRef.current = null;
     deferredAdmissionDemandRef.current = null;
+    deferredConsumerRecheckRef.current?.resolve?.({
+      kind: 'cancelled',
+      reason: 'underfill-owner-replaced',
+    });
+    deferredConsumerRecheckRef.current = null;
     failedAnticipatoryRequestRef.current = null;
-    exhaustedHistoryKeyRef.current = null;
-    localExhaustedHistoryKeyRef.current = null;
+    sourceTerminalAttemptRef.current = null;
     return () => {
       if (runwayRequestRef.current?.controller === controller) {
         runwayRequestRef.current.abortController?.abort();
@@ -826,6 +831,13 @@ export function useReadingSession({
       }
       if (deferredAdmissionDemandRef.current?.controller === controller) {
         deferredAdmissionDemandRef.current = null;
+      }
+      if (deferredConsumerRecheckRef.current?.controller === controller) {
+        deferredConsumerRecheckRef.current.resolve({
+          kind: 'cancelled',
+          reason: 'underfill-owner-unmounted',
+        });
+        deferredConsumerRecheckRef.current = null;
       }
       if (failedAnticipatoryRequestRef.current?.controller === controller) {
         failedAnticipatoryRequestRef.current = null;
@@ -953,6 +965,7 @@ export function useReadingSession({
       intent = HISTORY_INTENT.scrollHistory,
       targetSeq = 0,
       requiredVisibleCoverage = null,
+      consumer = '',
     } = {},
   ) => {
     if (committedOwnerRef.current !== commitOwnerCandidate) {
@@ -968,18 +981,18 @@ export function useReadingSession({
       Number(requiredVisibleCoverage?.seq || 0),
       key,
     ]);
-    const exhausted = exhaustedHistoryKeyRef.current;
-    if (exhausted?.controller === controller
-      && exhausted.generation === Number(historyStatusRef.current.generation || 0)
-      && exhausted.key === obligationKey) {
-      return Promise.resolve({ kind: 'exhausted', deduplicated: true });
-    }
-    const localExhausted = localExhaustedHistoryKeyRef.current;
     const supplyProgressKey = historySupplyProgressKey(historyStatusRef.current);
-    if (localExhausted?.controller === controller
-      && localExhausted.key === obligationKey
-      && localExhausted.progressKey === supplyProgressKey) {
-      return Promise.resolve({ kind: 'exhausted', localOnly: true, deduplicated: true });
+    const currentSourceKey = historySourceAuthorityKey(historyStatusRef.current);
+    const sourceTerminal = sourceTerminalAttemptRef.current;
+    if (sourceTerminal?.controller === controller
+      && sourceTerminal.key === obligationKey
+      && sourceTerminal.sourceKey === currentSourceKey
+      && sourceTerminal.progressKey === supplyProgressKey) {
+      return Promise.resolve({
+        kind: 'exhausted',
+        localOnly: sourceTerminal.localOnly === true,
+        deduplicated: true,
+      });
     }
     const failedAnticipatory = failedAnticipatoryRequestRef.current;
     if (urgency !== HISTORY_URGENCY.interactive
@@ -994,7 +1007,7 @@ export function useReadingSession({
     if (urgency === HISTORY_URGENCY.interactive) failedAnticipatoryRequestRef.current = null;
     if (runwayRequestRef.current) {
       const active = runwayRequestRef.current;
-      const currentSourceKey = historySourceAuthorityKey(historyStatusRef.current);
+      const currentSupplyProgressKey = historySupplyProgressKey(historyStatusRef.current);
       if (active.controller === controller
         && (active.sourceKey !== currentSourceKey || active.key !== obligationKey)) {
         const sourceChanged = active.sourceKey !== currentSourceKey;
@@ -1018,6 +1031,84 @@ export function useReadingSession({
           intent,
           targetSeq,
           requiredVisibleCoverage,
+          consumer,
+        }));
+      }
+      if (active.controller === controller
+        && active.key === obligationKey
+        && active.sourceKey === currentSourceKey
+        && active.supplyProgressKey !== currentSupplyProgressKey) {
+        // Supply can advance while the preceding consumer attempt is still
+        // settling. Never let that old Promise consume the new wake edge, but
+        // also never start a DOM underfill successor without remeasuring the
+        // current committed viewport. The Following owner handles the typed
+        // recheck below. A zero-row semantic projection has no DOM edge, so it
+        // can validate its current declarative predicate here before chaining.
+        if (reason === 'projection-underfill') {
+          return active.promise.then(() => {
+            const owner = committedOwnerRef.current;
+            const current = owner.historyStatus || {};
+            if (owner.controller !== controller
+              || owner.channelID !== channelID
+              || owner.viewKey !== viewKey
+              || owner.snapshot?.rows?.length > 0
+              || current.hasOlder !== true
+              || current.historyDemand?.phase === 'error') {
+              return { kind: 'cancelled', reason: 'projection-demand-retired' };
+            }
+            return requestHistory(reason, urgency, {
+              revealRows,
+              revealBytes,
+              demandUnits,
+              intent,
+              targetSeq,
+              requiredVisibleCoverage,
+            });
+          });
+        }
+        if (intent === HISTORY_INTENT.initialView) {
+          return active.promise.then(() => {
+            const owner = committedOwnerRef.current;
+            const current = owner.historyStatus || {};
+            const currentBookmark = owner.session?.bookmark;
+            if (owner.controller !== controller
+              || owner.channelID !== channelID
+              || owner.viewKey !== viewKey
+              || owner.session?.mode === READING_MODE.following
+              || !currentBookmark
+              || currentBookmark.messageID !== requiredVisibleCoverage?.messageID
+              || owner.snapshot?.rows?.some((row) => row.id === currentBookmark.messageID)
+              || current.hasOlder !== true
+              || current.historyDemand?.phase === 'error') {
+              return { kind: 'cancelled', reason: 'restore-demand-retired' };
+            }
+            return requestHistory(reason, urgency, {
+              revealRows,
+              revealBytes,
+              demandUnits,
+              intent,
+              targetSeq,
+              requiredVisibleCoverage,
+            });
+          });
+        }
+        if (consumer === HISTORY_CONSUMER.viewportUnderfill) {
+          return active.promise.then(() => ({
+            kind: 'consumer-recheck',
+            reason: 'supply-progressed',
+          }));
+        }
+      }
+      if (active.controller === controller
+        && active.key === obligationKey
+        && active.sourceKey === currentSourceKey
+        && consumer === HISTORY_CONSUMER.viewportUnderfill) {
+        // Geometry/demandUnits can change without any source or supply key.
+        // The active attempt owns acquisition only; after it settles the DOM
+        // owner must remeasure its still-current consumer wake.
+        return active.promise.then(() => ({
+          kind: 'consumer-recheck',
+          reason: 'attempt-settled',
         }));
       }
       if (urgency === HISTORY_URGENCY.interactive
@@ -1054,6 +1145,26 @@ export function useReadingSession({
       viewKey,
     );
     if (admission) {
+      if (consumer === HISTORY_CONSUMER.viewportUnderfill) {
+        const pending = deferredConsumerRecheckRef.current;
+        if (pending?.controller === controller
+          && pending.activationID === controller.activationID
+          && pending.channelID === channelID
+          && pending.viewKey === viewKey) return pending.promise;
+        pending?.resolve?.({ kind: 'cancelled', reason: 'underfill-owner-replaced' });
+        let resolveWake;
+        const wake = new Promise((resolve) => { resolveWake = resolve; });
+        deferredConsumerRecheckRef.current = {
+          controller,
+          activationID: controller.activationID,
+          channelID,
+          viewKey,
+          generation: Number(historyStatusRef.current.generation || 0),
+          promise: wake,
+          resolve: resolveWake,
+        };
+        return wake;
+      }
       if (urgency === HISTORY_URGENCY.interactive) {
         const previous = deferredAdmissionDemandRef.current;
         deferredAdmissionDemandRef.current = {
@@ -1076,8 +1187,9 @@ export function useReadingSession({
     }
     const epoch = historyEpochRef.current + 1;
     historyEpochRef.current = epoch;
-    const attemptProgressKey = historySourceAuthorityKey(historyStatusRef.current);
+    const attemptSourceKey = historySourceAuthorityKey(historyStatusRef.current);
     const attemptSupplyProgressKey = historySupplyProgressKey(historyStatusRef.current);
+    const attemptHistoryProgressKey = historyProgressKey(historyStatusRef.current);
     diagnostic('debug', 'history.intent_started', {
       channelId: channelID,
       epoch,
@@ -1160,34 +1272,29 @@ export function useReadingSession({
       // exhaustion. Cache only the attached generation's explicit boundary.
       if (operationStillCurrent
         && result?.kind === 'exhausted'
-        && currentStatus.attached === true
-        && Number(currentStatus.generation || 0) > 0
-        && result?.localOnly !== true) {
-        exhaustedHistoryKeyRef.current = {
-          controller,
-          generation: Number(currentStatus.generation || 0),
-          key: obligationKey,
-        };
-      }
-      if (operationStillCurrent
-        && result?.kind === 'exhausted'
-        && result?.localOnly === true
+        && (result?.localOnly === true || (
+          currentStatus.attached === true
+          && Number(currentStatus.generation || 0) > 0
+        ))
         && historySupplyProgressKey(currentStatus) === attemptSupplyProgressKey) {
-        localExhaustedHistoryKeyRef.current = {
+        sourceTerminalAttemptRef.current = {
           controller,
           key: obligationKey,
+          sourceKey: attemptSourceKey,
           progressKey: attemptSupplyProgressKey,
+          localOnly: result?.localOnly === true,
         };
       }
       if (operationStillCurrent && result?.kind === 'failed'
-        && urgency !== HISTORY_URGENCY.interactive) {
+        && urgency !== HISTORY_URGENCY.interactive
+        && historyProgressKey(currentStatus) === attemptHistoryProgressKey) {
         failedAnticipatoryRequestRef.current = {
           controller,
           activationID: requestOwner.activationID,
           channelID,
           viewKey,
           key: obligationKey,
-          progressKey: historyProgressKey(currentStatus),
+          progressKey: attemptHistoryProgressKey,
         };
       } else if (operationStillCurrent && result?.kind !== 'failed') {
         failedAnticipatoryRequestRef.current = null;
@@ -1212,6 +1319,17 @@ export function useReadingSession({
         anchorSeq: Number(first?.seqLow || 0),
         result: result?.kind || 'failed',
       });
+      // `satisfied` closes only this acquisition/admission attempt. The DOM
+      // that declared viewport underfill still owns a persistent consumer
+      // debt: it must remeasure after Admission either publishes or rejects
+      // the staged rows. Returning the typed receipt also lets a blocking
+      // Admission register the one deferred wake instead of silently
+      // consuming the list's wake key.
+      if (operationStillCurrent
+        && consumer === HISTORY_CONSUMER.viewportUnderfill
+        && result?.kind === 'satisfied') {
+        return { kind: 'consumer-recheck', reason: 'acquisition-satisfied' };
+      }
       return result;
     }, (error) => {
       const currentOwner = committedOwnerRef.current;
@@ -1222,14 +1340,16 @@ export function useReadingSession({
         runwayRequestRef.current?.promise,
         promise,
       );
-      if (operationStillCurrent && urgency !== HISTORY_URGENCY.interactive) {
+      if (operationStillCurrent
+        && urgency !== HISTORY_URGENCY.interactive
+        && historyProgressKey(currentOwner.historyStatus) === attemptHistoryProgressKey) {
         failedAnticipatoryRequestRef.current = {
           controller,
           activationID: requestOwner.activationID,
           channelID,
           viewKey,
           key: obligationKey,
-          progressKey: historyProgressKey(currentOwner.historyStatus),
+          progressKey: attemptHistoryProgressKey,
         };
       }
       diagnostic('warn', 'history.intent_failed', { channelId: channelID, epoch, viewKey, reason, error });
@@ -1250,7 +1370,8 @@ export function useReadingSession({
     });
     runwayRequestRef.current = {
       key: obligationKey,
-      sourceKey: attemptProgressKey,
+      sourceKey: attemptSourceKey,
+      supplyProgressKey: attemptSupplyProgressKey,
       promise,
       abortController,
       controller,
@@ -1284,6 +1405,7 @@ export function useReadingSession({
   }, [
     authoritativeEmpty,
     historySourceKey,
+    historySupplyKey,
     requestHistory,
     semanticExhausted,
     session.bookmark,
@@ -1292,6 +1414,27 @@ export function useReadingSession({
   ]);
 
   useEffect(() => {
+    const underfill = deferredConsumerRecheckRef.current;
+    if (underfill) {
+      const currentGeneration = Number(historyStatus.generation || 0);
+      const ownerCurrent = underfill.controller === controller
+        && underfill.activationID === controller.activationID
+        && underfill.channelID === channelID
+        && underfill.viewKey === viewKey
+        && underfill.generation === currentGeneration;
+      if (!ownerCurrent) {
+        deferredConsumerRecheckRef.current = null;
+        underfill.resolve({ kind: 'cancelled', reason: 'underfill-owner-replaced' });
+      } else if (!currentBlockingAdmission(
+        historyStatus,
+        channelID,
+        controller.activationID,
+        viewKey,
+      )) {
+        deferredConsumerRecheckRef.current = null;
+        underfill.resolve({ kind: 'consumer-recheck', reason: 'admission-settled' });
+      }
+    }
     const deferred = deferredAdmissionDemandRef.current;
     if (!deferred) return;
     const currentGeneration = Number(historyStatus.generation || 0);
@@ -2066,6 +2209,20 @@ export function useReadingSession({
     return requestHistory('retry', HISTORY_URGENCY.interactive);
   }, [controller, requestHistory]);
 
+  // Timeline's Admission commit runs in a parent layout effect, after this
+  // hook's insertion effect has published the exact Reading owner. Expose a
+  // read-only receipt instead of letting Timeline infer currentness from its
+  // render candidate.
+  const currentAdmissionAuthority = useCallback(() => {
+    const owner = committedOwnerRef.current;
+    return Object.freeze({
+      activationID: String(owner?.activationID || ''),
+      inputEpoch: Number(owner?.session?.inputEpoch || 0),
+      viewID: String(owner?.viewKey || ''),
+      epoch: `${owner?.channelID || ''}:${Number(owner?.historyStatus?.generation || 0)}`,
+    });
+  }, []);
+
   return useMemo(() => ({
     activationID: controller.activationID,
     session,
@@ -2095,6 +2252,7 @@ export function useReadingSession({
     historyDemand,
     historyBoundary,
     historyReveal: historyStatus.historyReveal || null,
+    currentAdmissionAuthority,
     acknowledgeHistoryReveal(commitID) {
       return historyStatus.presentationAdmission?.acknowledge?.(channelID, commitID) === true;
     },
@@ -2126,7 +2284,10 @@ export function useReadingSession({
       });
     },
     onUnderfill(detail = {}) {
-      return requestHistory('underfill', HISTORY_URGENCY.anticipatory, detail);
+      return requestHistory('underfill', HISTORY_URGENCY.anticipatory, {
+        ...detail,
+        consumer: HISTORY_CONSUMER.viewportUnderfill,
+      });
     },
     beginNavigation,
     updateNavigation,
@@ -2259,5 +2420,5 @@ export function useReadingSession({
     revokeBottomIntent,
     isFollowing() { return controller.getSnapshot().session.mode === READING_MODE.following; },
     getSession() { return controller.getSnapshot().session; },
-  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, beginNavigation, bindBottomIntentTargets, blockingHistoryError, bottomReady, cachePhase, cancelNavigation, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, finishNavigation, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, localReplicaError, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, retryCurrentHistory, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen, updateNavigation]);
+  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, beginNavigation, bindBottomIntentTargets, blockingHistoryError, bottomReady, cachePhase, cancelNavigation, captureBottomIntent, channelID, commitOwnerCandidate, controller, currentAdmissionAuthority, emptyReason, finishNavigation, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, localReplicaError, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, retryCurrentHistory, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen, updateNavigation]);
 }

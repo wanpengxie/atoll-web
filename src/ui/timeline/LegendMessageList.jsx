@@ -24,6 +24,7 @@ import {
   useReadingNavigationHost,
   useReadingNavigationOwner,
 } from './ReadingNavigationOwner.jsx';
+import { consumeHistoryConsumerResult } from './history-consumer-demand.js';
 
 function traceReadingAdapter(stage, detail = {}) {
   const sink = globalThis.__ATOLL_READING_TRACE__;
@@ -380,6 +381,7 @@ function MessageListBody({
   const observationFrameRef = useRef(0);
   const coverageFrameRef = useRef(0);
   const coverageDemandKeyRef = useRef('');
+  const coverageForceRef = useRef('');
   const topDemandKeyRef = useRef('');
   const pendingObservationRef = useRef(null);
   const atBottomRef = useRef(false);
@@ -1304,27 +1306,42 @@ function MessageListBody({
   }, [observe]);
   scheduleObserveRef.current = scheduleObserve;
 
-  const scheduleCoverageCheck = useCallback(() => {
-    if (handoffPendingRef.current) return;
+  const scheduleCoverageCheck = useCallback((expectedWakeKey = '') => {
+    if (handoffPendingRef.current) {
+      coverageDemandKeyRef.current = '';
+      return;
+    }
+    if (expectedWakeKey) coverageForceRef.current = expectedWakeKey;
     if (coverageFrameRef.current) return;
     coverageFrameRef.current = requestAnimationFrame(() => {
       coverageFrameRef.current = 0;
+      const expectedCurrent = coverageForceRef.current;
+      coverageForceRef.current = '';
       const root = scrollerRef.current;
       const owner = readingRef.current;
       const rows = snapshotRef.current.rows;
       const status = owner.status || {};
-      if (!root || !rows.length || root.clientHeight <= 0) return;
+      if (!root || !rows.length || root.clientHeight <= 0) {
+        coverageDemandKeyRef.current = '';
+        return;
+      }
       // Under-fill is a persistent history obligation only after the scheduler
       // has installed positive evidence that older data exists. A pre-attach
       // `hasOlder:false` is unknown, not permission to synthesize a request;
       // the published status transition re-runs this check after attach.
-      if (status.attached !== true || status.messageCurrent !== true || status.hasOlder !== true) return;
+      if (status.attached !== true || status.messageCurrent !== true || status.hasOlder !== true) {
+        coverageDemandKeyRef.current = '';
+        return;
+      }
       // `messageCurrent` describes the Replica. Presentation can still be one
       // commit behind it. A real remote head must also be installed in this
       // view before short partial content can prove an under-fill obligation.
       // Tests without a remote-head contract keep using the explicit
       // attached/hasOlder evidence above.
-      if (Number(status.headSeq || 0) > 0 && owner.bottomReady !== true) return;
+      if (Number(status.headSeq || 0) > 0 && owner.bottomReady !== true) {
+        coverageDemandKeyRef.current = '';
+        return;
+      }
       // A virtualizer's initial zero window and a partially materialized long
       // list are not evidence that history is under-supplied. Only a committed
       // window containing both data boundaries can prove that the available
@@ -1332,9 +1349,13 @@ function MessageListBody({
       const materialized = [...root.querySelectorAll('[data-presentation-row-id]')];
       const first = materialized.find((node) => node.dataset.presentationRowId === rows[0].id);
       const last = materialized.find((node) => node.dataset.presentationRowId === rows.at(-1).id);
-      if (!first || !last || root.scrollHeight > root.clientHeight + 1) return;
+      if (!first || !last || root.scrollHeight > root.clientHeight + 1) {
+        coverageDemandKeyRef.current = '';
+        return;
+      }
       const key = `${owner.activationID}:${snapshotRef.current.revision}:${root.clientHeight}:${root.scrollHeight}:${coverageStatusKey}`;
-      if (coverageDemandKeyRef.current === key) return;
+      if (expectedCurrent && coverageDemandKeyRef.current !== expectedCurrent) return;
+      if (!expectedCurrent && coverageDemandKeyRef.current === key) return;
       coverageDemandKeyRef.current = key;
       diagnostic('debug', 'history.viewport_underfilled', {
         channelId: status.channelId || '',
@@ -1346,7 +1367,15 @@ function MessageListBody({
         bottomReady: owner.bottomReady === true,
         hasOlder: status.hasOlder === true,
       });
-      (owner.onUnderfill || owner.onAtTop)({ demandUnits: completeViewportUnits(root) });
+      const pending = (owner.onUnderfill || owner.onAtTop)({
+        demandUnits: completeViewportUnits(root),
+      });
+      void consumeHistoryConsumerResult(pending, () => {
+        // The current MessageList, not Reading, owns the virtualized DOM fact.
+        // Re-enter the existing rAF measurement path so a filled/retired list
+        // drops the debt and a still-short list uses the latest viewport budget.
+        scheduleCoverageCheck(key);
+      });
     });
   }, [coverageStatusKey]);
 

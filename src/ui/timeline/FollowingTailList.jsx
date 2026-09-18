@@ -21,6 +21,7 @@ import {
   topVisibleBookmark,
   visibleRowEvidence,
 } from './reading-geometry.js';
+import { consumeHistoryConsumerResult } from './history-consumer-demand.js';
 
 // The following container.
 //
@@ -131,7 +132,13 @@ export function FollowingTailList({
 }) {
   const rootRef = useRef(null);
   const [rootNode, setRootNode] = useState(null);
-  const committedRef = useRef({ reading, snapshot, active, surfaceVisible: surfaceVisible === true });
+  const committedRef = useRef({
+    reading,
+    snapshot,
+    active,
+    surfaceVisible: surfaceVisible === true,
+    windowSize,
+  });
   const observationFrameRef = useRef(0);
   const consumedIntentRef = useRef('');
   const underfillKeyRef = useRef('');
@@ -277,9 +284,46 @@ export function FollowingTailList({
       snapshot,
       active,
       surfaceVisible: surfaceVisible === true,
+      windowSize,
     };
     if (active && surfaceVisible !== true) reading.onSurfaceVisibilityChange?.(false);
-  }, [active, reading, snapshot, surfaceVisible]);
+  }, [active, reading, snapshot, surfaceVisible, windowSize]);
+
+  const issueUnderfillIfCurrent = useCallback((expectedWakeKey = '') => {
+    const root = rootRef.current;
+    const committed = committedRef.current;
+    const owner = committed.reading;
+    const status = owner?.status || {};
+    if (!committed.active
+      || committed.surfaceVisible !== true
+      || !root
+      || !owner
+      || status.hasOlder !== true
+      || committed.snapshot.rows.length > Number(committed.windowSize || FOLLOWING_TAIL_WINDOW)
+      || Number(root.scrollHeight || 0) > Number(root.clientHeight || 0) + 1) {
+      underfillKeyRef.current = '';
+      return;
+    }
+    // A typed receipt belongs to the exact consumer wake that issued it. If a
+    // newer supply/geometry edge has already become the DOM owner's debt, the
+    // older receipt must not replay over that newer measurement.
+    if (expectedWakeKey && underfillKeyRef.current !== expectedWakeKey) return;
+    const wakeKey = JSON.stringify([
+      owner.activationID,
+      committed.snapshot.revision,
+      String(status.sourceLease || ''),
+      Number(status.completedPages || 0),
+      Number(status.revealVersion || 0),
+      Number(status.buffered || 0),
+      status.hasOlder === true,
+      Number(root.clientHeight || 0),
+      Number(root.scrollHeight || 0),
+    ]);
+    if (!expectedWakeKey && underfillKeyRef.current === wakeKey) return;
+    underfillKeyRef.current = wakeKey;
+    const pending = owner.onUnderfill?.({ demandUnits: completeViewportUnits(root) });
+    void consumeHistoryConsumerResult(pending, () => issueUnderfillIfCurrent(wakeKey));
+  }, []);
 
   // A visual-entry transaction decorates only exact live identities that this
   // committed Presentation appended at the back. The row DOM and final layout
@@ -417,12 +461,15 @@ export function FollowingTailList({
   useEffect(() => {
     const root = rootRef.current;
     if (!active || !root || typeof globalThis.ResizeObserver !== 'function') return undefined;
-    const observer = new globalThis.ResizeObserver(() => scheduleObservation('layout'));
+    const observer = new globalThis.ResizeObserver(() => {
+      scheduleObservation('layout');
+      issueUnderfillIfCurrent();
+    });
     observer.observe(root);
     const content = root.firstElementChild;
     if (content) observer.observe(content);
     return () => observer.disconnect();
-  }, [active, scheduleObservation]);
+  }, [active, issueUnderfillIfCurrent, scheduleObservation]);
 
   useEffect(() => () => {
     if (observationFrameRef.current) globalThis.cancelAnimationFrame?.(observationFrameRef.current);
@@ -448,31 +495,13 @@ export function FollowingTailList({
     reading.consumeBottomIntent?.({ id: bottomIntentID, inputEpoch: current.inputEpoch });
   }, [active, bottomIntentID, reading, snapshot.revision, snapshot.rows]);
 
-  // Underfill is a DATA demand, not a position. If the whole projection is
-  // shorter than the viewport and older content exists, ask for more.
+  // Underfill is a persistent DOM-owned DATA demand, not a position. Supply,
+  // admission settlement and viewport resize all return here to remeasure the
+  // current committed surface before any acquisition is started.
   const hasOlder = reading.status?.hasOlder === true;
   useEffect(() => {
-    const root = rootRef.current;
-    if (!active || !root || !hasOlder || windowTruncated || surfaceVisible !== true) return;
-    if (Number(root.scrollHeight || 0) > Number(root.clientHeight || 0) + 1) return;
-    // Presentation can stay at the same revision while another cache/network
-    // page installs only filtered rows into the Scheduler reservoir. Key this
-    // edge obligation by supply progress as well as visible geometry; otherwise
-    // the first short-list attempt permanently suppresses the later reservoir
-    // and a focus transition is the only thing that happens to release it.
-    const key = JSON.stringify([
-      reading.activationID,
-      snapshot.revision,
-      String(reading.status?.sourceLease || ''),
-      Number(reading.status?.completedPages || 0),
-      Number(reading.status?.revealVersion || 0),
-      Number(reading.status?.buffered || 0),
-      reading.status?.hasOlder === true,
-    ]);
-    if (underfillKeyRef.current === key) return;
-    underfillKeyRef.current = key;
-    reading.onUnderfill?.({ demandUnits: completeViewportUnits(root) });
-  }, [active, hasOlder, reading, snapshot.revision, surfaceVisible, windowTruncated]);
+    issueUnderfillIfCurrent();
+  }, [active, hasOlder, issueUnderfillIfCurrent, reading, snapshot.revision, surfaceVisible, windowTruncated]);
 
   if (reading.restorePending && !snapshot.rows.length) {
     return <div className="timeline-message-list timeline-reading-restore" role="status">正在恢复上次阅读位置…</div>;

@@ -31,6 +31,14 @@ const meta = (sourceRevision, operationID = 'history:activation-1:1') => ({
   sourceRevision,
 });
 
+const viewportAuthority = (overrides = {}) => ({
+  activationID: 'activation-1',
+  inputEpoch: 2,
+  viewID: 'channel:mine:agent',
+  epoch: 'channel:7',
+  ...overrides,
+});
+
 // Model scenarios below describe committed UI renders. Production performs
 // the same publication from Timeline's layout effect; keeping it explicit in
 // this helper prevents render evaluation itself from acquiring authority.
@@ -104,6 +112,137 @@ describe('history presentation admission', () => {
     admission.settle('channel');
     admission.prepareCommit('channel', { revision: 1, sourceRevision: 13, rows: [] });
     expect(ids(admission.admit('channel', second, meta(13)))).toEqual(['x', 'a']);
+  });
+
+  it('atomically acknowledges an exact first publish from an empty baseline', () => {
+    const admission = createHistoryPresentationAdmission();
+    admission.begin('channel', token({ baselineIDs: [], demandUnits: 1 }));
+    const first = [item('a', 10)];
+    admission.admit('channel', first, meta(12));
+    expect(admission.observe('channel', first, meta(12))).toMatchObject({
+      stagedIDs: ['a'], fulfilled: true,
+    });
+    admission.settle('channel');
+    expect(admission.prepareCommit('channel', {
+      revision: 1, sourceRevision: 12, rows: [],
+    })).toBe(true);
+    const release = admission.evaluate('channel', first, meta(12));
+    expect(ids(release.items)).toEqual(['a']);
+    const validation = admission.validatePresentation('channel', release, {
+      revision: 2,
+      rows: [{ id: 'a' }],
+      changes: {
+        kind: 'mixed', inserted: ['a'], frontInsertedIDs: [], backInsertedIDs: [],
+        updated: [], removed: [],
+      },
+    }, viewportAuthority());
+    expect(validation.accepted).toBe(true);
+    expect(admission.commitPresentationGrant('channel', validation.grant)).toBe(true);
+    expect(admission.snapshot('channel').phase).toBe('idle');
+  });
+
+  it('rejects a polluted release atomically instead of binding an impossible revision', () => {
+    const admission = createHistoryPresentationAdmission();
+    const baseline = [item('b', 20), item('c', 30)];
+    const withOlder = [item('a', 10), ...baseline];
+    admission.begin('channel', token({ demandUnits: 1 }));
+    admission.admit('channel', baseline, meta(11));
+    admission.observe('channel', withOlder, meta(12));
+    admission.settle('channel');
+    admission.admit('channel', withOlder, meta(12));
+    expect(admission.prepareCommit('channel', {
+      revision: 11, sourceRevision: 12,
+      rows: baseline.map((body) => ({ id: body.envelope.id, body })),
+    })).toBe(true);
+
+    const release = admission.evaluate('channel', withOlder, meta(12));
+    const currentToken = admission.snapshot('channel').committed;
+    expect(admission.validatePresentation('channel', release, {
+      revision: 12,
+      rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      changes: {
+        kind: 'mixed', inserted: ['a'], frontInsertedIDs: [], backInsertedIDs: [],
+        updated: [], removed: ['live-d'],
+      },
+    }, viewportAuthority())).toEqual({ accepted: false, reason: 'identity-mismatch' });
+    expect(admission.rejectPresentation('channel', currentToken)).toBe(true);
+    expect(admission.snapshot('channel')).toMatchObject({
+      phase: 'holding', committed: null, stagedIDs: ['a'],
+    });
+  });
+
+  it('lets no stale layout receipt complete or reject a renewed transaction', () => {
+    const admission = createHistoryPresentationAdmission();
+    const baseline = [item('b', 20), item('c', 30)];
+    const withOlder = [item('a', 10), ...baseline];
+    admission.begin('channel', token({ demandUnits: 1 }));
+    admission.admit('channel', baseline, meta(11));
+    admission.observe('channel', withOlder, meta(12));
+    admission.settle('channel');
+    admission.admit('channel', withOlder, meta(12));
+    admission.prepareCommit('channel', {
+      revision: 11, sourceRevision: 12,
+      rows: baseline.map((body) => ({ id: body.envelope.id, body })),
+    });
+    const staleToken = admission.snapshot('channel').committed;
+    const staleCandidate = admission.evaluate('channel', withOlder, meta(12));
+    admission.advanceInputEpoch('channel', {
+      operationID: staleToken.operationID,
+      activationID: staleToken.activationID,
+      direction: 'older',
+      inputEpoch: 3,
+      currentInputEpoch: 3,
+    });
+    const presentation = {
+      revision: 12,
+      rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      changes: {
+        kind: 'prepend', inserted: ['a'], frontInsertedIDs: ['a'], backInsertedIDs: [],
+        updated: [], removed: [],
+      },
+    };
+
+    expect(admission.validatePresentation('channel', staleCandidate, presentation, viewportAuthority({ inputEpoch: 3 })))
+      .toEqual({ accepted: false, reason: 'stale-transaction' });
+    expect(admission.snapshot('channel')).toMatchObject({
+      phase: 'committed-awaiting-layout', committed: { inputEpoch: 3 },
+    });
+    const currentCandidate = admission.evaluate('channel', withOlder, meta(12));
+    const current = admission.validatePresentation('channel', currentCandidate, presentation, viewportAuthority({ inputEpoch: 3 }));
+    expect(current.accepted).toBe(true);
+    expect(admission.commitPresentationGrant('channel', current.grant)).toBe(true);
+  });
+
+  it('grants publication only to the exact committed Reading viewport owner', () => {
+    const admission = createHistoryPresentationAdmission();
+    const baseline = [item('b', 20)];
+    const withOlder = [item('a', 10), ...baseline];
+    admission.begin('channel', token({ baselineIDs: ['b'], demandUnits: 1 }));
+    admission.admit('channel', baseline, meta(11));
+    admission.observe('channel', withOlder, meta(12));
+    admission.settle('channel');
+    admission.admit('channel', withOlder, meta(12));
+    admission.prepareCommit('channel', {
+      revision: 11, sourceRevision: 12,
+      rows: [{ id: 'b', body: baseline[0] }],
+    });
+    const candidate = admission.evaluate('channel', withOlder, meta(12));
+    const presentation = {
+      revision: 12,
+      rows: [{ id: 'a' }, { id: 'b' }],
+      changes: {
+        kind: 'prepend', inserted: ['a'], frontInsertedIDs: ['a'], backInsertedIDs: [],
+        updated: [], removed: [],
+      },
+    };
+
+    expect(admission.validatePresentation(
+      'channel', candidate, presentation, viewportAuthority({ inputEpoch: 3 }),
+    )).toEqual({ accepted: false, reason: 'stale-viewport-owner' });
+    expect(admission.snapshot('channel').phase).toBe('committed-awaiting-layout');
+    expect(admission.validatePresentation(
+      'channel', candidate, presentation, viewportAuthority(),
+    ).accepted).toBe(true);
   });
 
   it('keeps cancelled facts staged and lets the next same-view intent inherit them', () => {

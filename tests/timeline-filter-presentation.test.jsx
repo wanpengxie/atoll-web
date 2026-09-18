@@ -101,6 +101,49 @@ function incarnationAndSystemHeavyState() {
   return { state, claude };
 }
 
+it('same-phase Admission authority advance forces a fresh projection after stale receipt rejection', async () => {
+  const state = timelineState([{
+    seq: 1,
+    envelope: {
+      id: 'baseline', kind: 'event', type: 'message.posted', ts: 1,
+      sender: { id: 'agent:test:1', kind: 'agent' },
+      payload: { text: 'baseline' },
+    },
+  }]);
+  const admission = {
+    evaluate: vi.fn((_channelID, items) => ({
+      items,
+      receipt: { authorityRevision: admission.evaluate.mock.calls.length },
+    })),
+    sourceFence: vi.fn(() => null),
+    commitCandidate: vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValue(true),
+    snapshot: vi.fn(() => ({ phase: 'pending', token: null, committed: null })),
+    reconcileCurrent: vi.fn(() => false),
+    reset: vi.fn(),
+  };
+
+  render(<Timeline
+    state={state}
+    history={{ status: {
+      attached: true, generation: 1, messageCurrent: true, headSeq: 1,
+      localReplicaReady: true, loading: false, hasOlder: false,
+      presentationRevision: 1,
+      presentationAdmission: admission,
+      presentationAdmissionState: { phase: 'pending', token: null },
+    } }}
+    roster={[]}
+    selfId="human:root:1"
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+  />);
+
+  await waitFor(() => expect(admission.commitCandidate).toHaveBeenCalledTimes(2));
+  expect(admission.evaluate).toHaveBeenCalledTimes(2);
+});
+
 it('混合 Codex/Claude 已加载回合按精确成员 ID 立即保留完整问答', async () => {
   const { state, selfId } = mixedAgentTurns();
   render(<Timeline

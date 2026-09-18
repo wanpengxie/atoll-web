@@ -979,23 +979,116 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     history.status?.presentationAdmissionState?.phase,
     presentationCommitVersion, timelineLocalEchoes,
   ]);
+  const historyReveal = history.status?.presentationAdmissionState?.phase === 'committed-awaiting-layout'
+    ? history.status.presentationAdmissionState.committed
+    : null;
+	const viewport = useReadingSession({
+	  channelID: state.channelId,
+	  viewKey: messageListKey,
+	  snapshot: projection.presentation,
+	  history: {
+	    ...history,
+	    status: { ...history.status, historyReveal },
+	  },
+	  viewSessions,
+	  historyViewSpec,
+	  surfaceVisible,
+	  arrivals: {
+	    ...liveTimelineArrivals(state),
+	    acknowledge(revision) {
+	      acknowledgeLiveTimelineArrivals(state, revision);
+	    },
+	  },
+	});
   useLayoutEffect(() => {
-    if (!projection.presentationCandidate) return;
-    const committed = presentationRef.current.commitCandidate(projection.presentationCandidate);
-    if (!committed && presentationRef.current.current() !== projection.presentation) {
-      setPresentationCommitVersion((value) => value + 1);
+    const admission = history.status?.presentationAdmission;
+    const admissionState = admission?.snapshot?.(state.channelId);
+    let presentationGrant = null;
+    if (admissionState?.phase === 'committed-awaiting-layout') {
+      const validation = admission.validatePresentation?.(
+        state.channelId,
+        projection.admissionCandidate,
+        projection.presentationCandidate?.snapshot,
+        viewport.currentAdmissionAuthority?.(),
+      );
+      diagnostic('debug', 'history.admission_commit_check', {
+        channelId: state.channelId,
+        operationID: admissionState.committed?.operationID || '',
+        accepted: validation?.accepted === true,
+        reason: validation?.reason || '',
+        presentationRevision: projection.presentationCandidate?.snapshot?.revision || 0,
+        inserted: projection.presentationCandidate?.snapshot?.changes?.frontInsertedIDs || [],
+        staged: admissionState.committed?.stagedIDs || [],
+        backInsertedIDs: projection.presentationCandidate?.snapshot?.changes?.backInsertedIDs || [],
+        updated: projection.presentationCandidate?.snapshot?.changes?.updated || [],
+        removed: projection.presentationCandidate?.snapshot?.changes?.removed || [],
+        tokenInputEpoch: admissionState.committed?.inputEpoch,
+      });
+      if (validation?.accepted !== true) {
+        if (validation?.reason !== 'stale-transaction') {
+          admission.rejectPresentation?.(state.channelId, admissionState.committed);
+        }
+        setPresentationCommitVersion((value) => value + 1);
+        return;
+      }
+      presentationGrant = validation.grant;
     }
-  }, [projection.presentationCandidate]);
-  useLayoutEffect(() => {
-    if (!projection.admissionCandidate) return;
-    history.status?.presentationAdmission?.commitCandidate?.(
+    let presentationCommitted = true;
+    if (projection.presentationCandidate) {
+      presentationCommitted = presentationRef.current.commitCandidate(projection.presentationCandidate);
+      if (!presentationCommitted && presentationRef.current.current() !== projection.presentation) {
+        setPresentationCommitVersion((value) => value + 1);
+      }
+    }
+    // Admission evaluated the same render candidate. It may publish only if
+    // that candidate actually became ConversationPresentation's owner; doing
+    // so after a stale commit failure freezes a baseline that never existed.
+    if (!presentationCommitted || !projection.admissionCandidate) return;
+    if (presentationGrant) {
+      if (admission.commitPresentationGrant?.(state.channelId, presentationGrant) !== true) {
+        setPresentationCommitVersion((value) => value + 1);
+        return;
+      }
+      diagnostic('debug', 'history.admission_commit', {
+        channelId: state.channelId,
+        operationID: presentationGrant.commitToken.operationID,
+        activationID: presentationGrant.commitToken.activationID,
+        inputEpoch: presentationGrant.commitToken.inputEpoch,
+        presentationRevision: presentationGrant.presentationRevision,
+        stagedIDs: presentationGrant.commitToken.stagedIDs || [],
+      });
+      return;
+    }
+    const admissionCommitted = admission?.commitCandidate?.(
       state.channelId,
       projection.admissionCandidate,
     );
+    if (admissionCommitted !== true && projection.admissionCandidate?.receipt) {
+      // Admission can advance within the same phase after render (for example
+      // Feed.observe publishes a newer authority revision). Phase-only memo
+      // dependencies cannot invalidate that stale receipt, so explicitly ask
+      // React for a fresh projection rather than leaving `pending` ownerless.
+      setPresentationCommitVersion((value) => value + 1);
+      return;
+    }
+    // A stale Presentation candidate can fail while the admission transaction
+    // is already pending-baseline. The retry may commit only admission
+    // bookkeeping against an unchanged Presentation snapshot, so no snapshot
+    // identity change exists to retrigger the separate phase effect. Prepare
+    // from the actual owner in this same layout transaction.
+    if (admissionCommitted === true
+      && admission.snapshot?.(state.channelId)?.phase === 'pending-baseline-commit') {
+      admission.prepareCommit?.(state.channelId, presentationRef.current.current());
+    }
   }, [
     history.status?.presentationAdmission,
     projection.admissionCandidate,
+    projection.presentation,
+    projection.presentationCandidate,
     state.channelId,
+    viewport.activationID,
+    viewport.currentAdmissionAuthority,
+    viewport.session.inputEpoch,
   ]);
   useLayoutEffect(() => {
     history.status?.presentationAdmission?.reconcileCurrent?.(state.channelId, {
@@ -1015,7 +1108,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     if (history.status?.presentationAdmissionState?.phase !== 'pending-baseline-commit') return;
     history.status?.presentationAdmission?.prepareCommit?.(
       state.channelId,
-      projection.presentation,
+      presentationRef.current.current(),
     );
   }, [
     history.status?.presentationAdmission,
@@ -1023,9 +1116,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     projection.presentation,
     state.channelId,
   ]);
-  const historyReveal = history.status?.presentationAdmissionState?.phase === 'committed-awaiting-layout'
-    ? history.status.presentationAdmissionState.committed
-    : null;
   // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。
   const filterableAgents = useMemo(() => (roster || []).filter((row) => row.kind === 'agent'), [roster]);
   const currentFilterActorIDs = useMemo(() => new Set(filterableAgents.map((row) => row.id)), [filterableAgents]);
@@ -1095,24 +1185,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   // 没有任何一处改写它。再复制一份既是每帧一次白白的分配，也让行拿到的
   // overrides 身份每帧都变——那恰好废掉行子树的保留判据。
   const effectiveFoldOverrides = foldOverrides;
-	const viewport = useReadingSession({
-	  channelID: state.channelId,
-	  viewKey: messageListKey,
-	  snapshot: projection.presentation,
-	  history: {
-	    ...history,
-	    status: { ...history.status, historyReveal },
-	  },
-	  viewSessions,
-	  historyViewSpec,
-	  surfaceVisible,
-	  arrivals: {
-	    ...liveTimelineArrivals(state),
-	    acknowledge(revision) {
-	      acknowledgeLiveTimelineArrivals(state, revision);
-	    },
-	  },
-	});
   // 通知兜底的唯一上报口：把"活动频道此刻已追平"这条只读读数交给 App，频道栏
   // 徽标据此在派生层压成 0。这里不改任何未读真相，也不接收任何回调。
   useLayoutEffect(() => {
@@ -1120,62 +1192,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     onTailCaughtUp(viewport.tailCaughtUp);
     return () => onTailCaughtUp({ ...viewport.tailCaughtUp, caughtUp: false });
   }, [onTailCaughtUp, viewport.tailCaughtUp]);
-  useLayoutEffect(() => {
-    if (!historyReveal?.commitID) return;
-    const bound = history.status?.presentationAdmission?.bindPresentation?.(
-      state.channelId,
-      Number(projection.presentation?.revision || 0),
-    );
-    if (!bound?.commitID) return;
-    const changes = projection.presentation?.changes || {};
-    const inserted = changes.frontInsertedIDs || [];
-    const staged = bound.stagedIDs || [];
-    const exactIDs = inserted.length === staged.length
-      && inserted.every((id, index) => id === staged[index]);
-    const exactRevision = Number(projection.presentation?.revision || 0)
-      === Number(bound.candidatePresentationRevision || 0);
-    const pureStructuralCommit = changes.kind === 'prepend'
-      && (changes.backInsertedIDs || []).length === 0
-      && (changes.removed || []).length === 0
-      && (changes.updated || []).length === 0;
-    const exactOwner = viewport.activationID === bound.activationID
-      && viewport.session.inputEpoch === bound.inputEpoch;
-    diagnostic('debug', 'history.admission_commit_check', {
-      channelId: state.channelId,
-      operationID: bound.operationID,
-      exactIDs,
-      exactRevision,
-      exactOwner,
-      pureStructuralCommit,
-      presentationRevision: projection.presentation?.revision || 0,
-      candidatePresentationRevision: bound.candidatePresentationRevision || 0,
-      inserted,
-      staged,
-      backInsertedIDs: changes.backInsertedIDs || [],
-      updated: changes.updated || [],
-      removed: changes.removed || [],
-      ownerInputEpoch: viewport.session.inputEpoch,
-      tokenInputEpoch: bound.inputEpoch,
-    });
-    if (!exactIDs || !exactRevision || !exactOwner || !pureStructuralCommit) return;
-    diagnostic('debug', 'history.admission_commit', {
-      channelId: state.channelId,
-      operationID: bound.operationID,
-      activationID: bound.activationID,
-      inputEpoch: bound.inputEpoch,
-      presentationRevision: projection.presentation.revision,
-      stagedIDs: staged,
-    });
-    history.status?.presentationAdmission?.acknowledge?.(state.channelId, bound.commitID);
-  }, [
-    history.status?.presentationAdmission,
-    historyReveal,
-    projection.presentation?.changes,
-    projection.presentation?.revision,
-    state.channelId,
-    viewport.activationID,
-    viewport.session.inputEpoch,
-  ]);
   const roleCandidate = useMemo(
     () => roleFinalizerRef.current.evaluate(projection.presentation, viewport.presentationAuthority),
     [projection.presentation, viewport.presentationAuthority],

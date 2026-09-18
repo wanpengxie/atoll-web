@@ -242,6 +242,138 @@ it('reopens one short-list demand when supply advances without a Presentation re
   expect(onUnderfill).toHaveBeenCalledTimes(2);
 });
 
+it('remeasures the committed DOM before replaying a supply-progressed wake', async () => {
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  let calls = 0;
+  const onUnderfill = vi.fn(() => {
+    calls += 1;
+    if (calls === 1) return first;
+    if (calls === 2) {
+      return first.then(() => ({ kind: 'consumer-recheck', reason: 'supply-progressed' }));
+    }
+    return Promise.resolve({ kind: 'exhausted' });
+  });
+  const baseStatus = {
+    hasOlder: true,
+    sourceLease: '1:2:9',
+    completedPages: 1,
+    revealVersion: 1,
+    buffered: 0,
+  };
+  const props = {
+    snapshot: snapshot(2),
+    rowRevision: (index) => String(index),
+    renderRow: (row) => <div>{row.id}</div>,
+    surfaceVisible: true,
+    active: true,
+  };
+  const view = render(<FollowingTailList
+    {...props}
+    reading={readingPort({ status: baseStatus, onUnderfill })}
+  />);
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(1));
+  view.rerender(<FollowingTailList
+    {...props}
+    reading={readingPort({
+      status: { ...baseStatus, completedPages: 2, buffered: 148 },
+      onUnderfill,
+    })}
+  />);
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(2));
+
+  await act(async () => { settleFirst({ kind: 'exhausted' }); await first; });
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(3));
+  expect(onUnderfill.mock.calls[2][0]).toMatchObject({ demandUnits: expect.any(Number) });
+});
+
+it('retires a queued supply wake when the committed DOM fills before settlement', async () => {
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  let calls = 0;
+  const onUnderfill = vi.fn(() => {
+    calls += 1;
+    if (calls === 1) return first;
+    return first.then(() => ({ kind: 'consumer-recheck', reason: 'supply-progressed' }));
+  });
+  const baseStatus = {
+    hasOlder: true,
+    sourceLease: '1:2:9',
+    completedPages: 1,
+    revealVersion: 1,
+    buffered: 0,
+  };
+  const props = {
+    snapshot: snapshot(2),
+    rowRevision: (index) => String(index),
+    renderRow: (row) => <div>{row.id}</div>,
+    surfaceVisible: true,
+    active: true,
+  };
+  const view = render(<FollowingTailList
+    {...props}
+    reading={readingPort({ status: baseStatus, onUnderfill })}
+  />);
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(1));
+  view.rerender(<FollowingTailList
+    {...props}
+    reading={readingPort({
+      status: { ...baseStatus, completedPages: 2, buffered: 148 },
+      onUnderfill,
+    })}
+  />);
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(2));
+  const root = view.container.querySelector('.timeline-message-list');
+  Object.defineProperty(root, 'clientHeight', { configurable: true, value: 400 });
+  Object.defineProperty(root, 'scrollHeight', { configurable: true, value: 900 });
+
+  await act(async () => { settleFirst({ kind: 'satisfied' }); await first; });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(onUnderfill).toHaveBeenCalledTimes(2);
+});
+
+it('remeasures a resize-only filled-to-underfilled transition without polling', async () => {
+  let resize;
+  vi.stubGlobal('ResizeObserver', class ResizeObserver {
+    constructor(callback) { resize = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  const onUnderfill = vi.fn().mockResolvedValue({ kind: 'exhausted' });
+  const view = render(<FollowingTailList
+    snapshot={snapshot(2)}
+    reading={readingPort({
+      status: {
+        hasOlder: true, sourceLease: '1:2:9', completedPages: 2,
+        revealVersion: 1, buffered: 148,
+      },
+      onUnderfill,
+    })}
+    rowRevision={(index) => String(index)}
+    renderRow={(row) => <div>{row.id}</div>}
+    surfaceVisible
+    active
+  />);
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(1));
+  onUnderfill.mockClear();
+  const root = view.container.querySelector('.timeline-message-list');
+  Object.defineProperties(root, {
+    clientHeight: { configurable: true, value: 400 },
+    scrollHeight: { configurable: true, value: 900 },
+  });
+  act(() => resize([]));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(onUnderfill).not.toHaveBeenCalled();
+
+  Object.defineProperties(root, {
+    clientHeight: { configurable: true, value: 1_000 },
+    scrollHeight: { configurable: true, value: 900 },
+  });
+  act(() => resize([]));
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(1));
+  expect(onUnderfill).toHaveBeenCalledWith({ demandUnits: expect.any(Number) });
+});
+
 function presentation(rows, revision, changes) {
   return {
     rows,

@@ -396,6 +396,101 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
     return state.committed;
   }
 
+  // Grant publication before ConversationPresentation commits it. The grant
+  // binds the exact Admission candidate, token and authority revision; it does
+  // not mutate either owner. Timeline may publish only a granted candidate.
+  function validatePresentation(channelId, candidate, presentationSnapshot = {}, viewportAuthority = {}) {
+    const state = channels.get(channelId);
+    if (!state?.committed || state.phase !== 'committed-awaiting-layout') {
+      return Object.freeze({ accepted: false, reason: 'not-awaiting-layout' });
+    }
+    const receipt = candidate?.receipt;
+    if (!receipt
+      || receipt.state !== state
+      || receipt.authorityRevision !== state.authorityRevision
+      || receipt.phase !== state.phase
+      || receipt.viewID !== state.viewID
+      || receipt.epoch !== state.epoch) {
+      return Object.freeze({ accepted: false, reason: 'stale-transaction' });
+    }
+    const currentOwner = viewportAuthority || {};
+    if (String(currentOwner.activationID || '') !== String(state.committed.activationID || '')
+      || Number(currentOwner.inputEpoch) !== Number(state.committed.inputEpoch)
+      || String(currentOwner.viewID || '') !== state.viewID
+      || String(currentOwner.epoch || '') !== state.epoch) {
+      return Object.freeze({ accepted: false, reason: 'stale-viewport-owner' });
+    }
+    const changes = presentationSnapshot.changes || {};
+    const stagedIDs = state.committed.stagedIDs || [];
+    const emptyBaseline = state.uiBaselineIDs.length === 0;
+    const insertedIDs = emptyBaseline
+      ? (changes.inserted || [])
+      : (changes.frontInsertedIDs || []);
+    const exactIDs = insertedIDs.length === stagedIDs.length
+      && insertedIDs.every((id, index) => id === stagedIDs[index]);
+    const noPollution = (changes.backInsertedIDs || []).length === 0
+      && (changes.removed || []).length === 0
+      && (changes.updated || []).length === 0;
+    const structuralCommit = emptyBaseline
+      ? noPollution
+        && (presentationSnapshot.rows || []).length === stagedIDs.length
+        && (presentationSnapshot.rows || []).every((row, index) => row?.id === stagedIDs[index])
+      : changes.kind === 'prepend' && noPollution;
+    if (!exactIDs || !structuralCommit) {
+      return Object.freeze({
+        accepted: false,
+        reason: !exactIDs ? 'identity-mismatch' : 'structure-mismatch',
+      });
+    }
+    return Object.freeze({
+      accepted: true,
+      grant: Object.freeze({
+        state,
+        authorityRevision: state.authorityRevision,
+        commitToken: state.committed,
+        candidate,
+        presentationRevision: Number(presentationSnapshot.revision || 0),
+      }),
+    });
+  }
+
+  function rejectPresentation(channelId, commitToken) {
+    const state = channels.get(channelId);
+    if (!state?.committed
+      || state.phase !== 'committed-awaiting-layout'
+      || state.committed !== commitToken) return false;
+    state.phase = 'holding';
+    state.committed = null;
+    state.releaseBaselineItems = Object.freeze([]);
+    state.releaseSourceRevision = 0;
+    advanceAuthority(state);
+    onChange(channelId);
+    return true;
+  }
+
+  // ConversationPresentation has committed the exact granted candidate. Now
+  // publish the matching Admission bookkeeping and finish the transaction in
+  // the same layout turn. A stale grant is a no-op; it cannot reject a newer
+  // token or roll back rows that another owner already published.
+  function commitPresentationGrant(channelId, grant) {
+    const state = channels.get(channelId);
+    if (!grant
+      || !state
+      || grant.state !== state
+      || grant.authorityRevision !== state.authorityRevision
+      || grant.commitToken !== state.committed
+      || state.phase !== 'committed-awaiting-layout') return false;
+    if (commitCandidate(channelId, grant.candidate) !== true) return false;
+    if (state.committed !== grant.commitToken || state.phase !== 'committed-awaiting-layout') return false;
+    state.committed = frozenToken(state.committed, {
+      candidatePresentationRevision: grant.presentationRevision,
+    });
+    finishCommitted(state);
+    if (channels.has(channelId)) advanceAuthority(state);
+    onChange(channelId);
+    return true;
+  }
+
   function acknowledge(channelId, commitID) {
     const state = channels.get(channelId);
     if (!state?.committed
@@ -420,6 +515,8 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
 
   return Object.freeze({
     begin, observe, evaluate, admit, commitCandidate, settle, cancel, advanceInputEpoch,
-    prepareCommit, sourceFence, bindPresentation, acknowledge, snapshot, reset, reconcileCurrent,
+    prepareCommit, sourceFence, bindPresentation, validatePresentation,
+    rejectPresentation, commitPresentationGrant, acknowledge,
+    snapshot, reset, reconcileCurrent,
   });
 }
