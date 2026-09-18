@@ -11,6 +11,7 @@ import React, {
   useState,
 } from 'react';
 import { isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
+import { READING_MODE } from '../../model/reading-session.js';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
 import { useReadingNavigationHost } from './ReadingNavigationOwner.jsx';
 import {
@@ -46,10 +47,23 @@ export const FOLLOWING_TAIL_WINDOW = 80;
 // scrollTop is 0 at the tail and NEGATIVE going up. A couple of pixels of
 // sub-pixel/elastic noise must not be read as "the user left".
 const LEAVE_TAIL_THRESHOLD = 3;
+const LIVE_ENTRY_DURATION_MS = 180;
 
 function isAtTail(root) {
   if (!root) return false;
   return Math.abs(Number(root.scrollTop || 0)) <= 1;
+}
+
+function ownsActiveInteraction(root) {
+  if (!root) return false;
+  const activeElement = globalThis.document?.activeElement;
+  if (activeElement && (activeElement === root || root.contains(activeElement))) return true;
+  const selection = globalThis.getSelection?.();
+  if (!selection || selection.isCollapsed) return false;
+  return Boolean(
+    (selection.anchorNode && root.contains(selection.anchorNode))
+    || (selection.focusNode && root.contains(selection.focusNode)),
+  );
 }
 
 class RowErrorBoundary extends Component {
@@ -113,6 +127,7 @@ export function FollowingTailList({
   window: windowSize = FOLLOWING_TAIL_WINDOW,
   active = true,
   focusOnMount = false,
+  livePresentationArrivals = null,
 }) {
   const rootRef = useRef(null);
   const [rootNode, setRootNode] = useState(null);
@@ -120,6 +135,9 @@ export function FollowingTailList({
   const observationFrameRef = useRef(0);
   const consumedIntentRef = useRef('');
   const underfillKeyRef = useRef('');
+  const liveEntryAnimationsRef = useRef(new Map());
+  const liveEntryRevisionRef = useRef({ revision: -1, ids: new Set() });
+  const liveEntryOwnerRef = useRef('');
   const bindRoot = useCallback((node) => {
     rootRef.current = node;
     setRootNode(node);
@@ -135,6 +153,24 @@ export function FollowingTailList({
   const tailStartIndex = rows.length - tailRows.length;
   const firstItemIndex = Number(snapshot.firstItemIndex || 0);
   const windowTruncated = rows.length > tailRows.length;
+
+  const settleLiveEntries = useCallback((reason = 'settled') => {
+    const activeEntries = liveEntryAnimationsRef.current;
+    const settledCount = activeEntries.size;
+    for (const [rowID, entry] of activeEntries) {
+      activeEntries.delete(rowID);
+      try { entry.animation.finish(); } catch { /* already idle/replaced */ }
+      try { entry.animation.cancel(); } catch { /* detached animation */ }
+      if (entry.node?.dataset) delete entry.node.dataset.liveEntryTransition;
+    }
+    if (settledCount > 0 && isReadingTraceEnabled()) {
+      readingTrace('reading.live-entry-settled', {
+        activationID: committedRef.current.reading?.activationID || '',
+        reason,
+        count: settledCount,
+      });
+    }
+  }, []);
 
   // ---- observation (read-only) --------------------------------------------
 
@@ -182,6 +218,10 @@ export function FollowingTailList({
   }, [scheduleObservation]);
 
   const navigationHost = useMemo(() => ({
+    // ReadingNavigationOwner calls this synchronously before the one canonical
+    // bookmark read for real physical navigation. Settling changes no scroll
+    // position; it only releases the visual layout effect to final geometry.
+    prepareNavigationRead: () => settleLiveEntries('physical-navigation'),
     readBookmark: () => topVisibleBookmark(rootRef.current, committedRef.current.snapshot.rows),
     presentationRevision: () => Number(committedRef.current.snapshot.revision || 0),
     ownsFocus: () => {
@@ -226,7 +266,7 @@ export function FollowingTailList({
         });
       }
     },
-  }), []);
+  }), [settleLiveEntries]);
   useReadingNavigationHost('following', navigationHost, rootNode);
 
   // ---- lifecycle -----------------------------------------------------------
@@ -240,6 +280,106 @@ export function FollowingTailList({
     };
     if (active && surfaceVisible !== true) reading.onSurfaceVisibilityChange?.(false);
   }, [active, reading, snapshot, surfaceVisible]);
+
+  // A visual-entry transaction decorates only exact live identities that this
+  // committed Presentation appended at the back. The row DOM and final layout
+  // already exist. Animating a grid fraction makes that one box contribute
+  // continuously from zero to its natural height; if late content changes the
+  // natural height during the effect, the same effect follows it rather than
+  // freezing a stale pixel target or starting another queue item.
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const current = reading.getSession?.() || reading.session;
+    const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+    const presentationRevision = Number(snapshot.revision || 0);
+    const ownerKey = `${reading.activationID}\u001f${snapshot.epoch || ''}\u001f${snapshot.viewID || ''}`;
+    if (liveEntryOwnerRef.current !== ownerKey) {
+      settleLiveEntries('owner-replaced');
+      liveEntryOwnerRef.current = ownerKey;
+      liveEntryRevisionRef.current = { revision: -1, ids: new Set() };
+    }
+    if (liveEntryRevisionRef.current.revision !== presentationRevision) {
+      liveEntryRevisionRef.current = { revision: presentationRevision, ids: new Set() };
+    }
+    if (!active
+      || !root
+      || surfaceVisible !== true
+      || globalThis.document?.visibilityState === 'hidden'
+      || current.mode !== READING_MODE.following
+      || !isAtTail(root)
+      || ownsActiveInteraction(root)
+      || reduced
+      || typeof root.animate !== 'function') {
+      settleLiveEntries('ineligible');
+      return;
+    }
+    const liveIDs = new Set((livePresentationArrivals?.events || [])
+      .flatMap((event) => event.rowIDs || []));
+    if (!liveIDs.size) return;
+    const tailIDs = new Set(tailRows.map((row) => row.id));
+    const appended = snapshot.changes?.backInsertedIDs || [];
+    for (const rowID of appended) {
+      if (!liveIDs.has(rowID)
+        || !tailIDs.has(rowID)
+        || liveEntryRevisionRef.current.ids.has(rowID)) continue;
+      const row = snapshot.entities?.get?.(rowID)
+        || tailRows.find((candidate) => candidate.id === rowID);
+      // Waiting already owns an explicit handoff for this stable identity.
+      // Keep that state untouched and never stack a second entry treatment.
+      if (!row || rowPresentationState?.(row)) continue;
+      const node = [...root.querySelectorAll('[data-presentation-row-id]')]
+        .find((candidate) => candidate.dataset.presentationRowId === rowID);
+      if (!node) continue;
+      liveEntryRevisionRef.current.ids.add(rowID);
+      node.dataset.liveEntryTransition = 'running';
+      const animation = node.animate([
+        { gridTemplateRows: '0fr' },
+        { gridTemplateRows: '1fr' },
+      ], {
+        duration: LIVE_ENTRY_DURATION_MS,
+        easing: 'cubic-bezier(.2, .75, .25, 1)',
+        fill: 'none',
+      });
+      const entry = { animation, node };
+      liveEntryAnimationsRef.current.set(rowID, entry);
+      const release = () => {
+        if (liveEntryAnimationsRef.current.get(rowID) !== entry) return;
+        liveEntryAnimationsRef.current.delete(rowID);
+        // fill:none releases visual authority at the timeline boundary even if
+        // no event callback arrives; cancel only drops the completed object.
+        try { animation.cancel(); } catch { /* detached animation */ }
+        if (node.dataset) delete node.dataset.liveEntryTransition;
+        scheduleObservation('layout');
+      };
+      animation.finished.then(release, release);
+    }
+  }, [
+    active,
+    livePresentationArrivals,
+    reading,
+    rowPresentationState,
+    scheduleObservation,
+    settleLiveEntries,
+    snapshot,
+    surfaceVisible,
+    tailRows,
+  ]);
+
+  useLayoutEffect(() => {
+    const media = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
+    const onVisibility = () => {
+      if (globalThis.document?.visibilityState === 'hidden') settleLiveEntries('document-hidden');
+    };
+    const onMotion = (event) => {
+      if (event.matches) settleLiveEntries('reduced-motion');
+    };
+    globalThis.document?.addEventListener?.('visibilitychange', onVisibility);
+    media?.addEventListener?.('change', onMotion);
+    return () => {
+      globalThis.document?.removeEventListener?.('visibilitychange', onVisibility);
+      media?.removeEventListener?.('change', onMotion);
+    };
+  }, [settleLiveEntries]);
 
   useLayoutEffect(() => {
     if (!active || !focusOnMount) return;
@@ -286,7 +426,8 @@ export function FollowingTailList({
 
   useEffect(() => () => {
     if (observationFrameRef.current) globalThis.cancelAnimationFrame?.(observationFrameRef.current);
-  }, []);
+    settleLiveEntries('unmounted');
+  }, [settleLiveEntries]);
 
   // A bottom intent (send-start, jump-to-latest) asks for the tail. Mounted
   // here the answer is already true, so the intent is retired rather than
@@ -337,6 +478,9 @@ export function FollowingTailList({
     data-tail-truncated={windowTruncated || undefined}
     tabIndex={active ? 0 : -1}
     onScroll={active ? onScroll : undefined}
+    onFocusCapture={active ? () => {
+      if (liveEntryAnimationsRef.current.size > 0) settleLiveEntries('focus-entered');
+    } : undefined}
   >
     {/* One wrapper child keeps DOM order natural (oldest -> newest) while the
       * scroller's column-reverse still puts the scroll origin at the bottom.

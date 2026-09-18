@@ -232,16 +232,24 @@ export function ReadingNavigationOwner({
     if (!stack) return undefined;
     const coordinator = coordinatorRef.current;
     const hostForVisibleRole = () => hostsRef.current.get(committedRef.current.visibleRole);
-    const eventDetail = (host, extra = {}) => ({
-      activationID: committedRef.current.activationID,
-      hostRole: host.role,
-      hostToken: host.token,
-      bookmark: host.readBookmark?.() || null,
-      canFollowTail: host.canFollowTail !== false,
-      canRequestHistory: host.canRequestHistory !== false,
-      at: globalThis.performance?.now?.() || Date.now(),
-      ...extra,
-    });
+    const eventDetail = (host, extra = {}, { prepare = true, bookmark = true } = {}) => {
+      // The renderer may have a visual-only layout transition in flight. The
+      // unique physical-input owner synchronously settles it before reading
+      // geometry, so a NavigationTarget can never capture an intermediate
+      // animated bookmark. Mere touch/selection contact is still potential and
+      // deliberately does neither until real motion arrives.
+      if (prepare) host.prepareNavigationRead?.(extra);
+      return {
+        activationID: committedRef.current.activationID,
+        hostRole: host.role,
+        hostToken: host.token,
+        bookmark: bookmark ? host.readBookmark?.() || null : null,
+        canFollowTail: host.canFollowTail !== false,
+        canRequestHistory: host.canRequestHistory !== false,
+        at: globalThis.performance?.now?.() || Date.now(),
+        ...extra,
+      };
+    };
     const shouldDeferFollowing = (host) => host.role === 'following'
       && (committedRef.current.reading.getSession?.()
         || committedRef.current.reading.session).mode === READING_MODE.following;
@@ -270,7 +278,7 @@ export function ReadingNavigationOwner({
       };
       coordinator.beginPotential(eventDetail(host, {
         source: 'touch', sourceID: touch.identifier,
-      }));
+      }, { prepare: true, bookmark: false }));
     };
     const onTouchMove = (event) => {
       const contact = touchRef.current;
@@ -337,15 +345,18 @@ export function ReadingNavigationOwner({
         hostRole: host.role, hostToken: host.token,
         pointerID: event.pointerId, x: event.clientX, y: event.clientY, scrollbar,
       };
-      const detail = eventDetail(host, {
+      const detail = {
         source: scrollbar ? 'scrollbar' : 'selection',
         sourceID: event.pointerId,
         direction: 'browse',
         canFollowTail: scrollbar,
         canRequestHistory: scrollbar,
-      });
+      };
       if (scrollbar) recordInput(host, detail);
-      else coordinator.beginPotential(detail);
+      else coordinator.beginPotential(eventDetail(host, detail, {
+        prepare: true,
+        bookmark: false,
+      }));
     };
     const onPointerMove = (event) => {
       const pointer = pointerRef.current;
@@ -364,7 +375,7 @@ export function ReadingNavigationOwner({
       if (!host || host.token !== pointer.hostToken || event.pointerId !== pointer.pointerID) return;
       coordinator.endContact(eventDetail(host, {
         source: pointer.scrollbar ? 'scrollbar' : 'selection', sourceID: pointer.pointerID,
-      }));
+      }, { prepare: false, bookmark: false }));
       pointerRef.current = null;
     };
     const onPointerCancel = (event) => {
@@ -388,18 +399,23 @@ export function ReadingNavigationOwner({
       if (direction === 'browse') return;
       const current = coordinator.getSnapshot().transaction;
       if (!current || current.hostRole !== host.role) return;
-      const detail = eventDetail(host, {
-        direction,
-        source: current.source,
-        sourceID: current.sourceID,
-        canFollowTail: current.canFollowTail,
-        canRequestHistory: current.canRequestHistory,
-      });
       if (current.phase === 'potential') {
         if (direction === 'browse' || host.isEffectiveMotion?.(previous, next) === false) return;
-        coordinator.recordInput(detail);
+        coordinator.recordInput(eventDetail(host, {
+          direction,
+          source: current.source,
+          sourceID: current.sourceID,
+          canFollowTail: current.canFollowTail,
+          canRequestHistory: current.canRequestHistory,
+        }));
       } else {
-        coordinator.recordScroll(detail);
+        coordinator.recordScroll(eventDetail(host, {
+          direction,
+          source: current.source,
+          sourceID: current.sourceID,
+          canFollowTail: current.canFollowTail,
+          canRequestHistory: current.canRequestHistory,
+        }));
       }
     };
     const onScrollEnd = (event) => {

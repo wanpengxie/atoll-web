@@ -31,7 +31,14 @@ import { useReadingSession } from './timeline/useReadingSession.js';
 import { ReadingContainerHandoff } from './timeline/ReadingContainerHandoff.jsx';
 import { ConversationSurface } from './conversation/ConversationSurface.jsx';
 import { ReadingIntentProvider } from './conversation/ReadingIntentContext.jsx';
-import { acknowledgeLiveTimelineArrivals, liveTimelineArrivals, registerLiveTimelineArrivalConsumer } from '../model/fold.js';
+import {
+  acknowledgeLivePresentationArrivals,
+  acknowledgeLiveTimelineArrivals,
+  livePresentationArrivals,
+  liveTimelineArrivals,
+  registerLivePresentationArrivalConsumer,
+  registerLiveTimelineArrivalConsumer,
+} from '../model/fold.js';
 import { selectLocalWaitingTurns, selectWaitingPresentation } from '../model/waiting-presentation.js';
 import { diagnostic } from '../model/diagnostics.js';
 
@@ -1043,6 +1050,41 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     () => registerLiveTimelineArrivalConsumer(state, liveArrivalConsumerTokenRef.current),
     [state],
   );
+  const livePresentationConsumerTokenRef = useRef(null);
+  if (!livePresentationConsumerTokenRef.current) {
+    livePresentationConsumerTokenRef.current = Symbol('timeline-live-presentation-consumer');
+  }
+  useLayoutEffect(() => {
+    let release = null;
+    const reconcile = () => {
+      const eligible = surfaceVisible === true
+        && globalThis.document?.visibilityState !== 'hidden';
+      if (eligible && !release) {
+        release = registerLivePresentationArrivalConsumer(
+          state,
+          livePresentationConsumerTokenRef.current,
+        );
+      } else if (!eligible && release) {
+        release();
+        release = null;
+      } else if (!eligible) {
+        // A hidden/inactive Timeline is not guaranteed another React commit.
+        // Clear its ephemeral visual baseline synchronously instead of letting
+        // those rows impersonate fresh arrivals when the surface returns.
+        acknowledgeLivePresentationArrivals(state, state._livePresentationArrivalRevision);
+      }
+    };
+    reconcile();
+    globalThis.document?.addEventListener?.('visibilitychange', reconcile);
+    return () => {
+      globalThis.document?.removeEventListener?.('visibilitychange', reconcile);
+      release?.();
+    };
+  }, [messageListKey, state, surfaceVisible]);
+  const livePresentationArrivalSnapshot = livePresentationArrivals(
+    state,
+    Number(projection.presentation?.sourceRevision || 0),
+  );
   // foldOverrides 已经是不可变替换的 Map（toggleFold 用 new Map(current).set），
   // 没有任何一处改写它。再复制一份既是每帧一次白白的分配，也让行拿到的
   // overrides 身份每帧都变——那恰好废掉行子树的保留判据。
@@ -1145,6 +1187,18 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       setPresentationCommitVersion((value) => value + 1);
     }
   }, [projection.presentation, roleCandidate, rolePresentation]);
+	useLayoutEffect(() => {
+	  // Visual provenance is one-commit evidence, not a backlog. Consume every
+	  // live batch after its exact Presentation candidate commits, including a
+	  // batch filtered out of this view, rendered while hidden, or observed in
+	  // browsing mode. None of those may replay on a later presentation choice.
+	  if (presentationRef.current.current() !== projection.presentation) return;
+	  acknowledgeLivePresentationArrivals(state, livePresentationArrivalSnapshot.revision);
+	}, [
+	  livePresentationArrivalSnapshot.revision,
+	  projection.presentation,
+	  state,
+	]);
 	const withNarration = rolePresentation.rows;
   // 展开/收起只提交 Presentation choice。它不表示读者离开尾部，也不创建
   // navigation epoch；following 与 browsing 都继续使用动作前的容器。
@@ -1934,8 +1988,9 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 		  surfaceVisible={surfaceVisible}
 		  bottomIntentPresentation={bottomIntentPresentation}
 		  rowRevision={rowRenderRevision}
-		  rowPresentationState={rowPresentationState}
-		  renderRow={renderRow}
+			  rowPresentationState={rowPresentationState}
+			  livePresentationArrivals={livePresentationArrivalSnapshot}
+			  renderRow={renderRow}
 		/>
 	  {viewport.unseenNotice > 0 && <button type="button" className="timeline-jump-latest" onClick={viewport.jumpToLatest}>↓ {viewport.unseenNotice} 条新动态</button>}
     </section>

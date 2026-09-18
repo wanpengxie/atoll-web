@@ -12,6 +12,7 @@ const BUSINESS_PROVISIONAL = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*$/;
 const timelineCache = new WeakMap();
 const TIMELINE_CHANGE_LIMIT = 1_024;
 const LIVE_ARRIVAL_LIMIT = 1_024;
+const LIVE_PRESENTATION_ARRIVAL_LIMIT = 1_024;
 
 // The mutable replica may grow a processing turn in place without changing
 // timeline membership. Publish that fact as a small semantic change stream so
@@ -97,6 +98,15 @@ export function createChannelState(channelId = '') {
     // stable identity instead of silently dropping the notification or
     // growing a second unbounded row log.
     _liveArrivalOverflow: new Map(),
+    // Ephemeral paint provenance for a currently mounted Timeline. This is
+    // deliberately separate from notification/read truth above: it carries no
+    // payload or status, is never persisted, and only says which stable row
+    // identities were accepted from the live transport while a visual consumer
+    // existed. Presentation still decides whether any identity became a new row.
+    _livePresentationArrivalRevision: 0,
+    _livePresentationArrivalAckRevision: 0,
+    _livePresentationArrivalLog: [],
+    _livePresentationArrivalConsumerTokens: new Set(),
     _requestVersion: 0,
     _terminalVersion: 0,
   };
@@ -245,6 +255,110 @@ export function registerLiveTimelineArrivalConsumer(state, consumerToken = Symbo
     active = false;
     consumers.delete(consumerToken);
     state._liveArrivalConsumers = consumers.size;
+  };
+}
+
+function livePresentationRowIDs(state, envelope, seq) {
+  if (!envelope) return Object.freeze([]);
+  const ids = new Set();
+  if (isNarrationEnvelope(envelope)) {
+    const narrationSeq = Number(state.narration?.[0]?.seq || seq || 0);
+    if (narrationSeq > 0) ids.add(`narration:${narrationSeq}`);
+  }
+  if (envelope.kind === 'request' || envelope.kind === 'response') {
+    const rootID = rootTurnID(state, envelope);
+    if (rootID) ids.add(String(rootID));
+  }
+  if (envelope.id) ids.add(String(envelope.id));
+  return Object.freeze([...ids]);
+}
+
+// A live transport fact is only a CANDIDATE for visual entry. The Timeline
+// intersects these exact stable identities with the committed Presentation's
+// backInsertedIDs, so progress/content updates and already-present roots never
+// become entry animations. No consumer means no backlog: returning to a cold
+// channel must never replay old pixels as if they just arrived.
+export function recordLivePresentationArrival(state, envelope, seq) {
+  if (!state?._livePresentationArrivalConsumerTokens?.size) return null;
+  const rowIDs = livePresentationRowIDs(state, envelope, seq);
+  if (!rowIDs.length) return null;
+  const revision = Number(state._livePresentationArrivalRevision || 0) + 1;
+  const event = Object.freeze({
+    revision,
+    rowIDs,
+    seq: Math.max(0, Number(seq) || 0),
+    sourceRevision: Number(state._timelineRevision || 0),
+  });
+  state._livePresentationArrivalRevision = revision;
+  state._livePresentationArrivalLog.push(event);
+  if (state._livePresentationArrivalLog.length > LIVE_PRESENTATION_ARRIVAL_LIMIT) {
+    const removed = state._livePresentationArrivalLog.splice(
+      0,
+      state._livePresentationArrivalLog.length - LIVE_PRESENTATION_ARRIVAL_LIMIT,
+    );
+    state._livePresentationArrivalAckRevision = Math.max(
+      Number(state._livePresentationArrivalAckRevision || 0),
+      Number(removed.at(-1)?.revision || 0),
+    );
+  }
+  return event;
+}
+
+export function livePresentationArrivals(state, throughSourceRevision = Number.POSITIVE_INFINITY) {
+  const acknowledgedRevision = Number(state?._livePresentationArrivalAckRevision || 0);
+  const events = [];
+  let revision = acknowledgedRevision;
+  // Replica and Presentation use the same monotone timeline source clock. Only
+  // expose the contiguous event prefix already represented by this committed
+  // Presentation candidate; a newer live fact may land between render and
+  // layout-effect consumption and must remain for the next commit.
+  for (const event of state?._livePresentationArrivalLog || []) {
+    if (Number(event.revision) <= acknowledgedRevision) continue;
+    if (Number(event.sourceRevision) > Number(throughSourceRevision)) break;
+    events.push(event);
+    revision = Number(event.revision);
+  }
+  return Object.freeze({
+    revision,
+    headRevision: Number(state?._livePresentationArrivalRevision || 0),
+    acknowledgedRevision,
+    events: Object.freeze(events),
+  });
+}
+
+export function acknowledgeLivePresentationArrivals(state, throughRevision) {
+  if (!state) return 0;
+  const revision = Math.min(
+    Number(state._livePresentationArrivalRevision || 0),
+    Math.max(
+      Number(state._livePresentationArrivalAckRevision || 0),
+      Number(throughRevision || 0),
+    ),
+  );
+  state._livePresentationArrivalAckRevision = revision;
+  state._livePresentationArrivalLog = (state._livePresentationArrivalLog || [])
+    .filter((event) => Number(event.revision) > revision);
+  return revision;
+}
+
+export function registerLivePresentationArrivalConsumer(
+  state,
+  consumerToken = Symbol('live-presentation-arrival-consumer'),
+) {
+  if (!state) return () => {};
+  const consumers = state._livePresentationArrivalConsumerTokens instanceof Set
+    ? state._livePresentationArrivalConsumerTokens
+    : new Set();
+  state._livePresentationArrivalConsumerTokens = consumers;
+  if (consumers.size === 0) {
+    acknowledgeLivePresentationArrivals(state, state._livePresentationArrivalRevision);
+  }
+  consumers.add(consumerToken);
+  return () => {
+    consumers.delete(consumerToken);
+    if (consumers.size === 0) {
+      acknowledgeLivePresentationArrivals(state, state._livePresentationArrivalRevision);
+    }
   };
 }
 

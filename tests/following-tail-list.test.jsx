@@ -8,6 +8,7 @@ import { FollowingTailList } from '../src/ui/timeline/FollowingTailList.jsx';
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  delete Element.prototype.animate;
 });
 
 function readingPort(overrides = {}) {
@@ -191,4 +192,196 @@ it('focuses following when a real handoff requests focus from outside the adapte
   />);
 
   expect(document.activeElement).toBe(container.querySelector('.timeline-following-tail'));
+});
+
+function presentation(rows, revision, changes) {
+  return {
+    rows,
+    entities: new Map(rows.map((row) => [row.id, row])),
+    revision,
+    sourceRevision: revision,
+    roleRevision: 1,
+    firstItemIndex: 900,
+    epoch: 'c0:1',
+    viewID: 'c0:mine',
+    changes,
+  };
+}
+
+it('grows only exact live back inserts in the existing row DOM and settles before navigation', () => {
+  const animations = [];
+  Element.prototype.animate = vi.fn(function animate(keyframes, options) {
+    let resolveFinished;
+    const finished = new Promise((resolve) => { resolveFinished = resolve; });
+    const animation = {
+      node: this,
+      keyframes,
+      options,
+      finished,
+      finish: vi.fn(() => resolveFinished()),
+      cancel: vi.fn(),
+    };
+    animations.push(animation);
+    return animation;
+  });
+  const reading = readingPort();
+  const oldRow = snapshot(1).rows[0];
+  const initial = presentation([oldRow], 1, {
+    kind: 'rebase', backInsertedIDs: [], frontInsertedIDs: [], updated: [], removed: [],
+  });
+  const props = {
+    reading,
+    rowRevision: (index) => String(index),
+    rowPresentationState: () => '',
+    renderRow: (row) => <button type="button">{row.id}</button>,
+    surfaceVisible: true,
+    active: true,
+  };
+  const view = render(<FollowingTailList
+    {...props}
+    snapshot={initial}
+    livePresentationArrivals={{ revision: 0, events: [] }}
+  />);
+  const oldNode = view.container.querySelector('[data-presentation-row-id="row-0"]');
+  const liveRow = { ...oldRow, id: 'live-row', contentRevision: 2, seqLow: 2, seqHigh: 2 };
+  const appended = presentation([oldRow, liveRow], 2, {
+    kind: 'append', backInsertedIDs: ['live-row'], frontInsertedIDs: [],
+    inserted: ['live-row'], updated: [], removed: [],
+  });
+  view.rerender(<FollowingTailList
+    {...props}
+    snapshot={appended}
+    livePresentationArrivals={{
+      revision: 1,
+      events: [{ revision: 1, rowIDs: ['live-row'], sourceRevision: 2 }],
+    }}
+  />);
+
+  expect(view.container.querySelector('[data-presentation-row-id="row-0"]')).toBe(oldNode);
+  expect(Element.prototype.animate).toHaveBeenCalledTimes(1);
+  expect(animations[0].keyframes).toEqual([
+    { gridTemplateRows: '0fr' },
+    { gridTemplateRows: '1fr' },
+  ]);
+  expect(animations[0].node.dataset.liveEntryTransition).toBe('running');
+
+  view.getByRole('button', { name: 'live-row' }).focus();
+  expect(animations[0].finish).toHaveBeenCalledTimes(1);
+  expect(animations[0].node.dataset.liveEntryTransition).toBeUndefined();
+
+  const browsing = readingPort({
+    session: { ...reading.session, mode: 'browsing' },
+    getSession: () => ({ ...reading.session, mode: 'browsing' }),
+  });
+  view.rerender(<FollowingTailList
+    {...props}
+    reading={browsing}
+    snapshot={appended}
+    livePresentationArrivals={{ revision: 1, events: [] }}
+  />);
+  expect(animations[0].finish).toHaveBeenCalledTimes(1);
+  expect(animations[0].cancel).toHaveBeenCalledTimes(1);
+  expect(animations[0].node.dataset.liveEntryTransition).toBeUndefined();
+});
+
+it('does not animate progress, history prepend, or a row owned by Waiting handoff', () => {
+  Element.prototype.animate = vi.fn(() => ({
+    finished: new Promise(() => {}), finish: vi.fn(), cancel: vi.fn(),
+  }));
+  const reading = readingPort();
+  const row = snapshot(1).rows[0];
+  const progress = presentation([{ ...row, contentRevision: 2 }], 2, {
+    kind: 'revise', backInsertedIDs: [], frontInsertedIDs: [],
+    inserted: [], updated: ['row-0'], removed: [],
+  });
+  const view = render(<FollowingTailList
+    snapshot={progress}
+    reading={reading}
+    rowRevision={(index) => String(index)}
+    rowPresentationState={() => ''}
+    renderRow={(item) => <div>{item.id}</div>}
+    livePresentationArrivals={{ revision: 1, events: [{ rowIDs: ['row-0'] }] }}
+    surfaceVisible
+  />);
+  const history = { ...row, id: 'history', seqLow: 0, seqHigh: 0 };
+  view.rerender(<FollowingTailList
+    snapshot={presentation([history, row], 3, {
+      kind: 'prepend', backInsertedIDs: [], frontInsertedIDs: ['history'],
+      inserted: ['history'], updated: [], removed: [],
+    })}
+    reading={reading}
+    rowRevision={(index) => String(index)}
+    rowPresentationState={() => ''}
+    renderRow={(item) => <div>{item.id}</div>}
+    livePresentationArrivals={{ revision: 2, events: [{ rowIDs: ['history'] }] }}
+    surfaceVisible
+  />);
+  const waiting = { ...row, id: 'waiting', seqLow: 3, seqHigh: 3 };
+  view.rerender(<FollowingTailList
+    snapshot={presentation([history, row, waiting], 4, {
+      kind: 'append', backInsertedIDs: ['waiting'], frontInsertedIDs: [],
+      inserted: ['waiting'], updated: [], removed: [],
+    })}
+    reading={reading}
+    rowRevision={(index) => String(index)}
+    rowPresentationState={(item) => item.id === 'waiting' ? 'handoff-enter' : ''}
+    renderRow={(item) => <div>{item.id}</div>}
+    livePresentationArrivals={{ revision: 3, events: [{ rowIDs: ['waiting'] }] }}
+    surfaceVisible
+  />);
+  expect(Element.prototype.animate).not.toHaveBeenCalled();
+});
+
+it('installs directly when an existing row owns focus or a text selection', () => {
+  Element.prototype.animate = vi.fn(() => ({
+    finished: new Promise(() => {}), finish: vi.fn(), cancel: vi.fn(),
+  }));
+  const reading = readingPort();
+  const oldRow = snapshot(1).rows[0];
+  const initial = presentation([oldRow], 1, {
+    kind: 'rebase', backInsertedIDs: [], frontInsertedIDs: [], updated: [], removed: [],
+  });
+  const props = {
+    reading,
+    rowRevision: (index) => String(index),
+    rowPresentationState: () => '',
+    renderRow: (row) => <button type="button">selectable {row.id}</button>,
+    livePresentationArrivals: { revision: 0, events: [] },
+    surfaceVisible: true,
+  };
+  const view = render(<FollowingTailList {...props} snapshot={initial} />);
+  const oldButton = view.getByRole('button', { name: 'selectable row-0' });
+  oldButton.focus();
+  const focusedLive = { ...oldRow, id: 'focused-live', contentRevision: 2 };
+  view.rerender(<FollowingTailList
+    {...props}
+    snapshot={presentation([oldRow, focusedLive], 2, {
+      kind: 'append', backInsertedIDs: ['focused-live'], frontInsertedIDs: [],
+      inserted: ['focused-live'], updated: [], removed: [],
+    })}
+    livePresentationArrivals={{ revision: 1, events: [{ rowIDs: ['focused-live'] }] }}
+  />);
+  expect(document.activeElement).toBe(oldButton);
+  expect(Element.prototype.animate).not.toHaveBeenCalled();
+
+  oldButton.blur();
+  const text = oldButton.firstChild;
+  const range = document.createRange();
+  range.setStart(text, 0);
+  range.setEnd(text, Math.min(6, text.textContent.length));
+  const selection = globalThis.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const selectedLive = { ...oldRow, id: 'selected-live', contentRevision: 3 };
+  view.rerender(<FollowingTailList
+    {...props}
+    snapshot={presentation([oldRow, focusedLive, selectedLive], 3, {
+      kind: 'append', backInsertedIDs: ['selected-live'], frontInsertedIDs: [],
+      inserted: ['selected-live'], updated: [], removed: [],
+    })}
+    livePresentationArrivals={{ revision: 2, events: [{ rowIDs: ['selected-live'] }] }}
+  />);
+  expect(selection.toString()).toContain('select');
+  expect(Element.prototype.animate).not.toHaveBeenCalled();
+  selection.removeAllRanges();
 });

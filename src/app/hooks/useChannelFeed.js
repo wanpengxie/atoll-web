@@ -6,7 +6,12 @@ import { createFrameBatcher } from '../../model/frame-batcher.js';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createCursors, unreadCountDiagnostics, unreadCounts } from '../../model/cursors.js';
 import { createFeedCache, resumeSnapshot } from '../../model/feed-cache.js';
-import { createChannelState, reconcileApprovals, recordLiveTimelineArrival } from '../../model/fold.js';
+import {
+  createChannelState,
+  reconcileApprovals,
+  recordLivePresentationArrival,
+  recordLiveTimelineArrival,
+} from '../../model/fold.js';
 import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
 import { createHistoryScheduler, HISTORY_RESERVOIR_SIZE } from '../../model/history-scheduler.js';
 import {
@@ -246,6 +251,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         && seq > cursorsRef.current.notificationHighWater(channelId)) {
         const arrivalSelfId = ownedSubmission ? row.envelope?.sender?.id || selfId : selfId;
         recordLiveTimelineArrival(state, row.envelope, seq, arrivalSelfId);
+      }
+      if (source === 'live' && materializesCurrentTail) {
+        recordLivePresentationArrival(state, row.envelope, seq);
       }
       changed += 1;
       // Cache/history rows are immutable ledger facts, not current control-plane

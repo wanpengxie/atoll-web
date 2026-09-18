@@ -33,15 +33,18 @@ function reading(mode = 'browsing') {
   return port;
 }
 
-function Host({ role, readBookmark }) {
+function Host({ role, readBookmark, navigationEvents }) {
   const [node, setNode] = useState(null);
   const adapter = useMemo(() => ({
-    readBookmark: () => readBookmark?.(node)
-      || ({ messageID: `${role}-anchor`, rowViewportOffset: -12 }),
+    prepareNavigationRead: () => navigationEvents?.push('prepare'),
+    readBookmark: () => {
+      navigationEvents?.push('read');
+      return readBookmark?.(node) || { messageID: `${role}-anchor`, rowViewportOffset: -12 };
+    },
     presentationRevision: () => 7,
     atTail: () => Number(node?.scrollTop || 0) === 0,
     isEffectiveMotion: (_previous, next) => role !== 'following' || next <= -3,
-  }), [node, readBookmark, role]);
+  }), [node, readBookmark, role, navigationEvents]);
   useReadingNavigationHost(role, adapter, node);
   return <div ref={setNode} role="region" data-testid={role} tabIndex={0}>
     <span data-testid={`${role}-content`} />
@@ -53,6 +56,7 @@ function Subject({
   role,
   onFollowingNavigationTarget = vi.fn(),
   readBookmark,
+  navigationEvents,
 }) {
   const stackRef = useRef(null);
   return <ReadingNavigationOwner
@@ -61,7 +65,7 @@ function Subject({
     stackRef={stackRef}
     visibleRole={role}
     onFollowingNavigationTarget={onFollowingNavigationTarget}
-  ><div ref={stackRef}><Host role={role} readBookmark={readBookmark} /></div></ReadingNavigationOwner>;
+  ><div ref={stackRef}><Host role={role} readBookmark={readBookmark} navigationEvents={navigationEvents} /></div></ReadingNavigationOwner>;
 }
 
 function touch(type, { identifier = 7, y = 0, active = true } = {}) {
@@ -104,6 +108,19 @@ it('routes an ordinary browsing touch sequence through one stable input generati
     inputGeneration: 5,
     reason: 'quiet-deadline',
   }));
+});
+
+it('settles presentation on potential contact but defers bookmark capture until actual motion', () => {
+  const port = reading('browsing');
+  const navigationEvents = [];
+  const view = render(<Subject port={port} role="browsing" navigationEvents={navigationEvents} />);
+  const host = view.getByTestId('browsing');
+  act(() => host.dispatchEvent(touch('touchstart', { y: 120 })));
+  expect(navigationEvents).toEqual(['prepare']);
+  expect(port.beginNavigation).not.toHaveBeenCalled();
+  act(() => host.dispatchEvent(touch('touchmove', { y: 160 })));
+  expect(navigationEvents).toEqual(['prepare', 'prepare', 'read']);
+  expect(port.beginNavigation).toHaveBeenCalledTimes(1);
 });
 
 it('keeps following input potential until native displacement supplies its bookmark', () => {

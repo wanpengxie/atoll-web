@@ -22,6 +22,12 @@
  * 阅读顺序 / Tab 序 / 跨行选区因此都不受 column-reverse 影响。 */
 .timeline-following-tail { display: flex; flex-direction: column-reverse; overflow-y: auto; }
 .timeline-following-tail > .timeline-following-tail-content { display: flex; width: 100%; min-width: 0; max-width: 100%; flex: 0 0 auto; flex-direction: column; }
+/* A live row is mounted exactly once at its final semantic identity. During
+ * the short Following-only entry transaction its existing outer shell becomes
+ * a one-track grid, so the browser contributes the row's natural height
+ * continuously. There is no opacity cover, cloned content or scroll write. */
+.timeline-following-tail .presentation-row-shell[data-live-entry-transition="running"] { display: grid; grid-template-rows: 1fr; }
+.timeline-following-tail .presentation-row-shell[data-live-entry-transition="running"] > * { min-height: 0; overflow: clip; }
 /* A presentation row is the scheduler's layout unit. Keep every descendant
  * margin inside it so its DOM box is the complete row geometry. */
 .timeline-virtual-item { display: flow-root; width: 100%; min-width: 0; max-width: 100%; padding: 0 26px; }
