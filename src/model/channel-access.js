@@ -27,6 +27,7 @@ function initialState(channelId, profile = null) {
     reason: '',
     observedAt: 0,
     sessionEpoch: '',
+    authorityEpoch: 0,
   };
 }
 
@@ -132,12 +133,26 @@ export function createChannelAccessTracker({
   let connected = false;
   let sessionEpoch = '';
   let membershipSupported = false;
+  let authorityEpoch = 0;
+  const authorityFingerprints = new WeakMap();
+
+  function authorityFingerprint(state) {
+    // Availability/runtime is a retryable transport fact. Only facts that can
+    // revoke and later regrant authority advance this epoch; otherwise a
+    // transient 503 would masquerade as an access lifetime replacement.
+    return [
+      state.existence,
+      state.relationship,
+      state.selfActorId,
+    ].join('\u0000');
+  }
 
   function ensure(channelId, profile = null) {
     let state = states.get(channelId);
     if (!state) {
       state = initialState(channelId, profile);
       states.set(channelId, state);
+      authorityFingerprints.set(state, authorityFingerprint(state));
     } else if (profile) {
       state.profile = profile;
     }
@@ -149,6 +164,11 @@ export function createChannelAccessTracker({
     state.reason = reason;
     state.observedAt = now();
     state.sessionEpoch = sessionEpoch;
+    const nextAuthority = authorityFingerprint(state);
+    if (authorityFingerprints.get(state) !== nextAuthority) {
+      authorityFingerprints.set(state, nextAuthority);
+      state.authorityEpoch = ++authorityEpoch;
+    }
     return state;
   }
 

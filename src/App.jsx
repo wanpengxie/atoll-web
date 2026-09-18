@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { capabilityIndexFromState } from './model/capabilities.js';
 import { attachmentFromFileReference } from './model/file-references.js';
 import { rememberChannelNames } from './model/channel-name-cache.js';
-import { ensureServerBoot } from './model/server-boot.js';
+import { ensureServerBoot, readServerBoot } from './model/server-boot.js';
 import { isMobileProfile } from './model/device-profile.js';
 import { foregroundWake } from './net/wake.js';
 import { artifactKindForMediaType, buildArtifactIndex, previewForMediaType } from './model/artifacts.js';
@@ -11,7 +11,11 @@ import { describeClient } from './model/client-label.js';
 import { openFromPreview, snapshot as uiSnapshot } from './model/ui-words.js';
 import { UiActivityOverlay } from './ui/UiActivityOverlay.jsx';
 import { useUiWords } from './app/hooks/useUiWords.js';
-import { availableUploadName, fileTransferURL, uploadChannelFile } from './model/channel-file-transfer.js';
+import {
+  availableUploadName,
+  fileTransferURL,
+  uploadChannelFile,
+} from './model/channel-file-transfer.js';
 import { availableDefaultStorageDeviceId } from './model/channel-files.js';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
 import { createChannelState, reconcileApprovals } from './model/fold.js';
@@ -59,6 +63,13 @@ import { readFileReadingHistory, rememberFileRead, writeFileReadingHistory } fro
 import { popFilePreview, pushFilePreview } from './model/file-preview-stack.js';
 import { createHistoryDemandPort, HISTORY_INTENT, HISTORY_URGENCY } from './model/history-demand.js';
 import { readWorkspaceBootstrap, writeWorkspaceBootstrap } from './model/workspace-bootstrap-cache.js';
+import {
+  assessRequestOwner,
+  captureRequestOwner,
+  executeOwnedPhase,
+  REQUEST_PHASE,
+  requestAccessError,
+} from './model/request-owner.js';
 
 function displayError(error) {
   if (error instanceof ObsError && error.status === 503) return '频道未在服务';
@@ -156,6 +167,7 @@ export default function App() {
   const initialRouteRef = useRef(parseWorkspaceHash(window.location.hash));
   const routeInitializedRef = useRef(false);
   const [wireState, setWireState] = useState('closed');
+  const [serverWorld, setServerWorld] = useState(() => readServerBoot());
   const [topError, setTopError] = useState('');
   const [rosters, setRosters] = useState(new Map());
   const [rosterAuthorities, setRosterAuthorities] = useState(new Map());
@@ -192,6 +204,17 @@ export default function App() {
   const attachmentDraftEpochsRef = useRef(new Map());
   const attachmentWorldRevisionRef = useRef(0);
   const attachmentUploadQueuesRef = useRef(new Map());
+  const attachmentActiveUploadsRef = useRef(new Map());
+  const editReleaseObligationsRef = useRef(new Map());
+  const serverWorldCommittedRef = useRef(serverWorld);
+  const wireStateCommittedRef = useRef(wireState);
+  const abortAttachmentUploads = useCallback((channelId = '') => {
+    for (const [key, active] of attachmentActiveUploadsRef.current) {
+      if (channelId && active.owner.channelId !== channelId) continue;
+      active.controller.abort();
+      attachmentActiveUploadsRef.current.delete(key);
+    }
+  }, []);
   // 草稿是编辑器私有的临时状态，不是工作区渲染状态。这里仅用 ref 做跨频道、
   // 跨主视图的本地持久化；逐字输入不得触发 App/Timeline 重渲染。
   const [taskCreateSource, setTaskCreateSource] = useState(undefined);
@@ -370,8 +393,8 @@ export default function App() {
       writeWorkspaceRoute({ channelId: activeChannelId, view }, { replace: true });
     }
   }, [activeChannelId, workspaceView]);
-  const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion: directory.version, channelStatesRef, onError: receiveSubmissionError, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
-  const { pending, drafts, draftFor, updateDraft, approvalStates, controlStates, send: handleSend, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions, resetWorld: resetSubmissionWorld } = submissions;
+  const submissions = useSubmissions({ principalId: me?.id, serverWorld, activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion: directory.version, channelStatesRef, onError: receiveSubmissionError, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
+  const { pending, drafts, draftFor, updateDraft, persistDraftAttachments, approvalStates, controlStates, send: handleSend, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions, resetWorld: resetSubmissionWorld } = submissions;
   const feedOwnerCandidate = useMemo(() => ({
     principalId,
     producerOwnerToken: feedProducerOwnerToken,
@@ -381,10 +404,47 @@ export default function App() {
   useLayoutEffect(() => {
     const committed = feedOwnerCandidate;
     committedFeedOwnerRef.current = committed;
+    serverWorldCommittedRef.current = serverWorld;
+    wireStateCommittedRef.current = wireState;
     return () => {
       if (committedFeedOwnerRef.current === committed) committedFeedOwnerRef.current = null;
     };
-  }, [feedOwnerCandidate]);
+  }, [feedOwnerCandidate, serverWorld, wireState]);
+  const currentAttachmentOwnerFacts = useCallback((owner) => {
+    const committed = committedFeedOwnerRef.current;
+    const access = accessRef.current?.state?.(owner.channelId);
+    return {
+      principalId: committed?.principalId || '',
+      principalEpoch: committed?.producerOwnerToken || null,
+      channelId: owner.channelId,
+      worldEpoch: serverWorldCommittedRef.current,
+      attemptEpoch: attachmentWorldRevisionRef.current,
+      access: {
+        epoch: Number(access?.authorityEpoch || 0),
+        relationship: String(access?.relationship || ''),
+        existence: String(access?.existence || ''),
+        runtime: String(access?.runtime || ''),
+        unavailable: access?.unavailable === true,
+      },
+      transport: wireRef.current,
+      transportEpoch: Number(committed?.generationFor?.(owner.channelId) || 0),
+      transportOpen: wireStateCommittedRef.current === 'open' && Boolean(wireRef.current),
+      draft: { epoch: Number(attachmentDraftEpochsRef.current.get(owner.channelId) || 0) },
+    };
+  }, []);
+  useEffect(() => {
+    for (const [key, active] of attachmentActiveUploadsRef.current) {
+      const assessment = assessRequestOwner(
+        active.owner,
+        currentAttachmentOwnerFacts(active.owner),
+        REQUEST_PHASE.submit,
+        { requireDraft: true },
+      );
+      if (assessment.current) continue;
+      active.controller.abort();
+      attachmentActiveUploadsRef.current.delete(key);
+    }
+  }, [currentAttachmentOwnerFacts, directory.version, serverWorld, wireState]);
   directoryActionsRef.current.bump = bumpAccess;
   directoryActionsRef.current.discover = (channelIds) => setChannels((current) => {
     const missing = [...channelIds].filter((channelId) => !current.has(channelId));
@@ -426,16 +486,21 @@ export default function App() {
     clearTimers();
     agentActivityRef.current.clear();
     attachmentWorldRevisionRef.current += 1;
+    abortAttachmentUploads();
     attachmentDraftEpochsRef.current.clear();
     draftAttachmentLedgerRef.current.clear();
     attachmentUploadQueuesRef.current.clear();
+    for (const obligation of editReleaseObligationsRef.current.values()) {
+      if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
+    }
+    editReleaseObligationsRef.current.clear();
     setDraftAttachments({});
     setTaskCreateSource(undefined);
     setChannelCreateOpen(false);
     setGlobalSearchOpen(false);
     clearSession();
     setWireState('closed');
-  }, [clearDirectory, clearFeed, clearSession, clearSubmissions, clearTimers]);
+  }, [abortAttachmentUploads, clearDirectory, clearFeed, clearSession, clearSubmissions, clearTimers]);
 
   useEffect(() => {
     // Startup has three independent lanes: lightweight workspace/attach Meta,
@@ -529,6 +594,7 @@ export default function App() {
         // next frame. FeedCache cleanup itself remains asynchronous behind the
         // coordinator's epoch fence and never delays sessionAttached.
         const sameServerWorld = ensureServerBoot(detail?.boot);
+        setServerWorld(String(detail?.boot || readServerBoot()));
         if (!sameServerWorld) {
           // A changed boot is a rebuilt ledger world, not a process restart.
           // Pure text drafts survive; file handles, outbox operations and
@@ -541,9 +607,14 @@ export default function App() {
           setRosterAuthorities(new Map());
           setChannels(new Map());
           attachmentWorldRevisionRef.current += 1;
+          abortAttachmentUploads();
           attachmentDraftEpochsRef.current.clear();
           draftAttachmentLedgerRef.current.clear();
           attachmentUploadQueuesRef.current.clear();
+          for (const obligation of editReleaseObligationsRef.current.values()) {
+            if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
+          }
+          editReleaseObligationsRef.current.clear();
           setDraftAttachments({});
           setRecentFiles([]);
           bumpAccess();
@@ -640,7 +711,7 @@ export default function App() {
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [bumpAccess, cancelFeedTask, clearTimers, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, prepareLocalReplica, principalId, resetSubmissionWorld, resumeLocalReplica, setHistoryGrants]);
+  }, [abortAttachmentUploads, bumpAccess, cancelFeedTask, clearTimers, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, prepareLocalReplica, principalId, resetSubmissionWorld, resumeLocalReplica, setHistoryGrants]);
 
   const refreshRoster = useCallback(async (channelId, force = false) => {
     if (!channelId || !rosterRef.current) return;
@@ -819,9 +890,70 @@ export default function App() {
     } catch (error) { setTopError(displayError(error)); }
   }, [handleResource]);
 
-  const handleTaskControl = useCallback(async ({ channelId, turn, actorId, type, payload }) => {
+  const runEditReleaseObligation = useCallback((obligation) => {
+    if (obligation.inFlight) return obligation.inFlight;
+    if (committedFeedOwnerRef.current?.principalId !== obligation.principalId) {
+      if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
+      editReleaseObligationsRef.current.delete(obligation.messageId);
+      const error = new Error('编辑锁释放义务的登录身份已变化');
+      error.code = 'identity_changed';
+      return Promise.reject(error);
+    }
+    const attempt = handleSend({
+      ...obligation.request,
+      messageId: obligation.messageId,
+    }).then((messageId) => {
+      if (!messageId) throw new Error('解除编辑锁请求未进入发送队列');
+      if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
+      editReleaseObligationsRef.current.delete(obligation.messageId);
+      return messageId;
+    }).catch((error) => {
+      obligation.error = error;
+      setChannelNotice(`解除编辑锁未持久：${displayError(error)}；保留原请求编号等待重试。`);
+      const access = accessRef.current?.state?.(obligation.request.channelId);
+      if (editReleaseObligationsRef.current.get(obligation.messageId) === obligation
+        && wireStateCommittedRef.current === 'open'
+        && access?.relationship === 'member'
+        && access?.existence !== 'retired'
+        && obligation.retryTimer == null) {
+        obligation.retryTimer = setTimeout(() => {
+          obligation.retryTimer = null;
+          void runEditReleaseObligation(obligation).catch((retryError) => {
+            diagnostic('warn', 'edit.release_retry_failed', {
+              channelId: obligation.request.channelId,
+              messageId: obligation.messageId,
+              error: retryError,
+            });
+          });
+        }, 2_000);
+      }
+      throw error;
+    }).finally(() => {
+      if (obligation.inFlight === attempt) obligation.inFlight = null;
+    });
+    obligation.inFlight = attempt;
+    return attempt;
+  }, [handleSend]);
+
+  useEffect(() => {
+    if (wireState !== 'open') return;
+    for (const obligation of editReleaseObligationsRef.current.values()) {
+      if (obligation.inFlight) continue;
+      const access = accessRef.current?.state?.(obligation.request.channelId);
+      if (access?.relationship !== 'member' || access?.existence === 'retired') continue;
+      void runEditReleaseObligation(obligation).catch((error) => {
+        diagnostic('warn', 'edit.release_retry_failed', {
+          channelId: obligation.request.channelId,
+          messageId: obligation.messageId,
+          error,
+        });
+      });
+    }
+  }, [directory.version, runEditReleaseObligation, wireState]);
+
+  const handleTaskControl = useCallback(async ({ channelId, turn, actorId, type, payload, messageId = '' }) => {
     if (!channelId || !actorId) return '';
-    return handleSend({
+    const request = {
       channelId,
       text: payload?.text || `${type} → ${actorId}`,
       msgType: type,
@@ -831,8 +963,16 @@ export default function App() {
       // replace 请求受理后自身就是队列新行（协议 §4.6）——它是根消息，恒不挂父；
       // 挂父会被时间线折成目标卡的子调用，随原行终态一起消失。其余控制词照旧归属目标。
       parentId: type === TYPES.agentReplace ? '' : (turn?.requestId || ''),
-    });
-  }, [handleSend]);
+    };
+    if (type !== TYPES.agentUnhold) return handleSend({ ...request, ...(messageId ? { messageId } : {}) });
+    const fixedId = messageId || newId();
+    let obligation = editReleaseObligationsRef.current.get(fixedId);
+    if (!obligation) {
+      obligation = { messageId: fixedId, principalId, request, inFlight: null, retryTimer: null, error: null };
+      editReleaseObligationsRef.current.set(fixedId, obligation);
+    }
+    return runEditReleaseObligation(obligation);
+  }, [handleSend, principalId, runEditReleaseObligation]);
 
   // 「取消」按钮背后的两条路。自己发的那条走 wire.cancel（调用方给自己开的账写
   // 终态）；别人发的没有那一臂——第三方不是合法的终态作者——所以改为请**持有它
@@ -1459,6 +1599,7 @@ export default function App() {
   );
 
   const clearDraftAttachments = (channelId) => {
+    abortAttachmentUploads(channelId);
     attachmentDraftEpochsRef.current.set(
       channelId,
       Number(attachmentDraftEpochsRef.current.get(channelId) || 0) + 1,
@@ -1481,45 +1622,149 @@ export default function App() {
     const committedOwner = committedFeedOwnerRef.current;
     const producerOwnerToken = committedOwner?.producerOwnerToken;
     if (!producerOwnerToken) throw new TypeError('上传会话尚未提交');
-    const worldRevision = attachmentWorldRevisionRef.current;
     const draftEpoch = Number(attachmentDraftEpochsRef.current.get(channel.id) || 0);
+    const capturedDraftRevision = Number(drafts.get(channel.id)?.revision || 0);
+    const owner = captureRequestOwner({
+      principalId: committedOwner.principalId,
+      principalEpoch: producerOwnerToken,
+      channelId: channel.id,
+      worldEpoch: serverWorldCommittedRef.current,
+      attemptEpoch: attachmentWorldRevisionRef.current,
+      accessState: accessRef.current?.state?.(channel.id),
+      transport: wireRef.current,
+      transportEpoch: Number(committedOwner.generationFor?.(channel.id) || 0),
+      draft: { epoch: draftEpoch },
+    });
+    const assessUpload = (phase, options = {}) => assessRequestOwner(
+      owner,
+      currentAttachmentOwnerFacts(owner),
+      phase,
+      { requireDraft: true, ...options },
+    );
     // `draftFor` belongs to the committed callback installed in AppShell. It
     // is only a fallback until the first attachment command creates a ledger
     // entry; render candidates never publish into that ledger.
     const readDraft = draftFor;
-    const isCurrentUploadOwner = () => (
-      committedFeedOwnerRef.current?.producerOwnerToken === producerOwnerToken
-      && attachmentWorldRevisionRef.current === worldRevision
-      && Number(attachmentDraftEpochsRef.current.get(channel.id) || 0) === draftEpoch
-    );
     const previous = attachmentUploadQueuesRef.current.get(channel.id) || Promise.resolve();
     const task = previous.catch(() => {}).then(async () => {
-      if (!isCurrentUploadOwner()) return [];
       // OPEN 只代表消息通道已就绪，daemon OBS 可能仍在路上。粘贴/拖入不应
       // 因这个短暂竞态失败，所以首次上传可就地等待一次 daemon observation。
-      const devices = channelDevices.length ? channelDevices : await refreshChannelDeviceData(channel.id);
-      if (!isCurrentUploadOwner()) return [];
+      const acquire = await executeOwnedPhase({
+        owner,
+        current: () => currentAttachmentOwnerFacts(owner),
+        phase: REQUEST_PHASE.acquire,
+        options: { requireDraft: true },
+        effect: () => channelDevices.length ? channelDevices : refreshChannelDeviceData(channel.id),
+      });
+      if (!acquire.started || !acquire.current) throw requestAccessError(acquire.invalidation);
+      const devices = acquire.value;
       const daemonId = availableDefaultStorageDeviceId(channel, devices);
       const daemon = devices.find((row) => row.id === daemonId);
       if (!daemon) throw new TypeError('频道没有可用的默认文件存储设备');
       if (daemon.online === false) throw new TypeError(`频道默认文件存储设备 ${daemon.name || daemon.id} 当前离线`);
       const uploaded = [];
+      let uploadFailure = null;
       const occupiedNames = new Set(currentDraftAttachments(channel.id, readDraft).map((row) => row.name));
-      for (const file of files) {
-        if (!isCurrentUploadOwner()) return [];
-        const uploadName = availableUploadName(file.name, occupiedNames);
-        occupiedNames.add(uploadName);
-        uploaded.push(await uploadChannelFile({ file, channel, deviceName: daemon.name, uploadName, onResource: handleResource }));
-        if (!isCurrentUploadOwner()) return [];
-      }
-      mutateDraftAttachments(channel.id, (rows) => {
-        for (const attachment of uploaded) {
-          const index = rows.findIndex((row) => row.resource_id === attachment.resource_id);
-          if (index >= 0) rows[index] = attachment;
-          else rows.push(attachment);
+      try {
+        for (const file of files) {
+          const uploadName = availableUploadName(file.name, occupiedNames);
+          occupiedNames.add(uploadName);
+          const controller = new AbortController();
+          const uploadKey = `${channel.id}:${newId()}`;
+          attachmentActiveUploadsRef.current.set(uploadKey, { owner, controller });
+          try {
+            const submitted = await executeOwnedPhase({
+              owner,
+              current: () => currentAttachmentOwnerFacts(owner),
+              phase: REQUEST_PHASE.submit,
+              options: { requireDraft: true },
+              effect: () => uploadChannelFile({
+                file,
+                channel,
+                deviceName: daemon.name,
+                uploadName,
+                onResource: handleResource,
+                signal: controller.signal,
+                authorize: (phase) => {
+                  const assessment = assessUpload(
+                    phase === 'settle' ? REQUEST_PHASE.submit : phase,
+                  );
+                  if (!assessment.current) throw requestAccessError(assessment);
+                },
+              }),
+            });
+            // A completed PUT is an immutable channel resource even when the
+            // post-await authority check fails. Keep its identity so the
+            // association attempt and any orphan report remain truthful.
+            if (submitted.started && submitted.value) uploaded.push(submitted.value);
+            if (!submitted.started || !submitted.current) throw requestAccessError(submitted.invalidation);
+          } finally {
+            attachmentActiveUploadsRef.current.delete(uploadKey);
+          }
         }
-        return rows;
-      }, readDraft);
+      } catch (error) {
+        if (error.completedAttachment
+          && !uploaded.some((row) => row.resource_id === error.completedAttachment.resource_id)) {
+          uploaded.push(error.completedAttachment);
+        }
+        uploadFailure = error;
+      }
+      if (uploaded.length) {
+        const authorizeAssociation = () => assessUpload(
+          REQUEST_PHASE.persist,
+          { requireTransport: false },
+        ).current;
+        try {
+          if (typeof persistDraftAttachments === 'function') {
+            const record = await persistDraftAttachments(channel.id, uploaded, {
+              expectedRevision: capturedDraftRevision,
+              authorize: authorizeAssociation,
+            });
+            if (!authorizeAssociation()) {
+              const stale = new Error('草稿在附件关联完成前已变化');
+              stale.code = 'attachment_unassociated';
+              throw stale;
+            }
+            commitDraftAttachments(channel.id, record?.draft?.attachments || []);
+          } else {
+            // Test/embedding adapters predating the durable attachment port
+            // retain the previous in-memory projection behavior. Production
+            // useSubmissions always provides the transactional port above.
+            if (!authorizeAssociation()) throw requestAccessError(assessUpload(
+              REQUEST_PHASE.persist,
+              { requireTransport: false },
+            ));
+            mutateDraftAttachments(channel.id, (rows) => {
+              for (const attachment of uploaded) {
+                const index = rows.findIndex((row) => row.resource_id === attachment.resource_id);
+                if (index >= 0) rows[index] = attachment;
+                else rows.push(attachment);
+              }
+              return rows;
+            }, readDraft);
+          }
+        } catch (error) {
+          error.code ||= 'attachment_unassociated';
+          error.attachments = uploaded;
+          const orphanDetail = `${error.message || '附件关联失败'}；已上传但未关联的资源：${uploaded.map((row) => row.resource_id).join('、')}`;
+          error.detail = orphanDetail;
+          error.message = orphanDetail;
+          diagnostic('warn', 'attachment.resources_unassociated', {
+            channelId: channel.id,
+            resources: uploaded.map((row) => row.resource_id),
+            error,
+          });
+          if (['draft_changed', 'identity_changed', 'attempt_changed', 'world_changed'].includes(error.code)) {
+            if (error.code !== 'identity_changed') setChannelNotice(orphanDetail);
+            return [];
+          }
+          throw error;
+        }
+      }
+      if (uploadFailure) {
+        uploadFailure.attachments = uploaded;
+        throw uploadFailure;
+      }
       return uploaded;
     });
     attachmentUploadQueuesRef.current.set(channel.id, task);

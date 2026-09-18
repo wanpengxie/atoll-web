@@ -50,3 +50,7 @@ export function ensureServerBoot(boot, storage = globalThis.localStorage) {
   // for in-memory projections too, so basing it on stale.length was incorrect.
   return false;
 }
+
+export function readServerBoot(storage = globalThis.localStorage) {
+  return String(storage?.getItem?.(BOOT_KEY) || '');
+}

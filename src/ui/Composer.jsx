@@ -664,6 +664,12 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     const fingerprint = JSON.stringify(attachments.map((row) => row.resource_id || row.id || row.name));
     if (fingerprint === attachmentFingerprintRef.current) return;
     attachmentFingerprintRef.current = fingerprint;
+    const durableFingerprint = JSON.stringify((draft?.attachments || [])
+      .map((row) => row.resource_id || row.id || row.name));
+    // Upload completion publishes only after the same attachment set has been
+    // merged into the durable draft. That committed projection must not turn
+    // around and create a redundant second draft writer.
+    if (fingerprint === durableFingerprint) return;
     editorRevisionRef.current += 1;
     if (!editModeRef.current && editor && !editor.isDestroyed) onDraftChangeRef.current?.({
       text: editorText(editor),
@@ -673,7 +679,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       replyTarget: replyTargetRef.current,
       editorRevision: editorRevisionRef.current,
     });
-  }, [attachments]);
+  }, [attachments, draft?.attachments]);
 
   useEffect(() => {
     const fingerprint = JSON.stringify(replyTarget || null);

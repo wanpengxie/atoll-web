@@ -65,7 +65,7 @@ export function fileTransferURL(channelId, ticket) {
 }
 
 // resource create 由当前登录会话发送，因此账本中的上传主体是用户，而不是 agent。
-export async function uploadChannelFile({ file, channel, deviceName, directory = '', uploadName = '', onResource, fetchImpl = fetch }) {
+export async function prepareChannelFileUpload({ file, channel, deviceName, directory = '', uploadName = '', onResource }) {
   if (!file || !channel?.id || !deviceName || !onResource) throw new TypeError('上传上下文不完整');
   const storedName = safeUploadName(uploadName || file.name);
   const displayName = uploadName ? storedName : file.name;
@@ -73,7 +73,15 @@ export async function uploadChannelFile({ file, channel, deviceName, directory =
   const address = fileAddress({ deviceName, channelName: channel.qualified_name || channel.name || channel.id, path });
   const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
   if (!ticket?.ticket) throw new TypeError('服务端没有返回上传凭据');
-  const response = await fetchImpl(fileTransferURL(channel.id, ticket.ticket), { method: 'PUT', credentials: 'include', body: file });
+  return { file, channel, ticket, address, displayName };
+}
+
+export async function putChannelFileUpload(prepared, { fetchImpl = fetch, signal } = {}) {
+  const { file, channel, ticket, address, displayName } = prepared || {};
+  if (!file || !channel?.id || !ticket?.ticket || !address) throw new TypeError('上传票据上下文不完整');
+  const response = await fetchImpl(fileTransferURL(channel.id, ticket.ticket), {
+    method: 'PUT', credentials: 'include', body: file, signal,
+  });
   if (!response.ok) throw new TypeError(`上传失败 (${response.status})`);
   return attachmentFromResource({
     // 文件资源的 id 就是它的地址；服务端在回执里把它回述一遍，对不上就以服务端为准。
@@ -81,4 +89,19 @@ export async function uploadChannelFile({ file, channel, deviceName, directory =
     address,
     file: { name: displayName, type: file.type || mediaTypeFromFileName(displayName), size: file.size },
   });
+}
+
+export async function uploadChannelFile(options) {
+  options.authorize?.('acquire');
+  const prepared = await prepareChannelFileUpload(options);
+  options.authorize?.('persist');
+  options.authorize?.('submit');
+  const attachment = await putChannelFileUpload(prepared, options);
+  try {
+    options.authorize?.('settle');
+  } catch (error) {
+    error.completedAttachment = attachment;
+    throw error;
+  }
+  return attachment;
 }

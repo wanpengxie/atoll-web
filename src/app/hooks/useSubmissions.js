@@ -13,6 +13,14 @@ import {
 import { createOutboxStore } from '../../model/outbox-store.js';
 import { diagnostic } from '../../model/diagnostics.js';
 import { newId } from '../../util/id.js';
+import {
+  assessRequestOwner,
+  captureRequestOwner,
+  executeOwnedGroupPhase,
+  executeOwnedPhase,
+  REQUEST_PHASE,
+  requestAccessError,
+} from '../../model/request-owner.js';
 
 function emptyDraft() { return { text: '', doc: null, recipients: [] }; }
 
@@ -32,7 +40,7 @@ function queuedAccessRejection(access) {
   return null;
 }
 
-export function useSubmissions({ principalId, activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion = 0, channelStatesRef, onError, onNotice, onFeedChanged, onAccessChanged }) {
+export function useSubmissions({ principalId, serverWorld = '', activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion = 0, channelStatesRef, onError, onNotice, onFeedChanged, onAccessChanged }) {
   const [pending, setPending] = useState([]);
   const [drafts, setDrafts] = useState(new Map());
   const [approvalStates, setApprovalStates] = useState({});
@@ -52,8 +60,11 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
   const hydratedPrincipalRef = useRef('');
   const restoreAttemptRef = useRef({ principalId: '', epoch: 0, promise: null });
   const leaseOwnerRef = useRef(`tab:${newId()}`);
+  const requestSessionRef = useRef(`request-session:${newId()}`);
   const lifecycleRef = useRef(0);
   const openEpochRef = useRef(0);
+  const worldEpochRef = useRef(0);
+  const serverWorldRef = useRef(serverWorld);
   // User actions are forwarded through AppShell's stable Composer port. Read
   // transport authority at execution time so a callback captured by the last
   // open render cannot transmit after the UI has already entered reconnecting.
@@ -76,13 +87,18 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
   // short window before the passive IndexedDB restore starts.
   useLayoutEffect(() => {
     const principalChanged = committedPrincipalRef.current !== principalId;
+    const worldChanged = serverWorldRef.current !== serverWorld;
     committedPrincipalRef.current = principalId;
+    if (principalChanged || worldChanged) {
+      requestSessionRef.current = `request-session:${newId()}`;
+    }
     if (principalChanged) {
       pendingLedgerRef.current = [];
       draftLedgerRef.current = new Map();
     }
     wireStateRef.current = wireState;
-  }, [principalId, wireState]);
+    serverWorldRef.current = serverWorld;
+  }, [principalId, serverWorld, wireState]);
 
   const enqueueWrite = useCallback((operation) => {
     const next = writeTailRef.current.catch(() => {}).then(operation);
@@ -108,6 +124,79 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
     const access = accessRef.current?.state?.(channelId);
     return access?.relationship === 'member' && access.existence !== 'retired';
   }, [accessRef, principalId]);
+
+  const currentOwnerFacts = useCallback((owner) => {
+    const access = accessRef.current?.state?.(owner.channelId);
+    return {
+      principalId: committedPrincipalRef.current,
+      principalEpoch: restoreEpochRef.current,
+      channelId: owner.channelId,
+      worldEpoch: serverWorldRef.current,
+      attemptEpoch: worldEpochRef.current,
+      access: {
+        epoch: Number(access?.authorityEpoch || 0),
+        relationship: String(access?.relationship || ''),
+        existence: String(access?.existence || ''),
+        runtime: String(access?.runtime || ''),
+        unavailable: access?.unavailable === true,
+      },
+      transport: wireRef.current,
+      transportEpoch: openEpochRef.current,
+      transportOpen: wireStateRef.current === 'open' && Boolean(wireRef.current),
+    };
+  }, [accessRef, wireRef]);
+
+  const requestOwner = useCallback((channelId, draft = null) => captureRequestOwner({
+    principalId,
+    principalEpoch: restoreEpochRef.current,
+    channelId,
+    worldEpoch: serverWorldRef.current,
+    attemptEpoch: worldEpochRef.current,
+    accessState: accessRef.current?.state?.(channelId),
+    transport: wireRef.current,
+    transportEpoch: openEpochRef.current,
+    draft,
+  }), [accessRef, principalId, wireRef]);
+
+  const submissionAuthority = useCallback((owner) => Object.freeze({
+    principalId: owner.principalId,
+    channelId: owner.channelId,
+    worldEpoch: owner.worldEpoch,
+    attemptEpoch: owner.attemptEpoch,
+    accessEpoch: owner.access.epoch,
+    access: owner.access,
+    requestSession: requestSessionRef.current,
+    draft: owner.draft,
+  }), []);
+
+  const ownerForSubmission = useCallback((submission) => {
+    const accessState = accessRef.current?.state?.(submission.channelId);
+    const admission = submission.authority;
+    const sameRequestSession = admission?.requestSession === requestSessionRef.current;
+    return captureRequestOwner({
+      principalId: admission?.principalId || principalId,
+      principalEpoch: restoreEpochRef.current,
+      channelId: admission?.channelId || submission.channelId,
+      worldEpoch: admission?.worldEpoch || serverWorldRef.current,
+      // The server boot is durable. The local reset counter only fences work
+      // started by this mounted hook; a restored record joins the new attempt
+      // incarnation instead of persisting a counter that resets on reload.
+      attemptEpoch: sameRequestSession
+        ? Number(admission?.attemptEpoch || 0)
+        : worldEpochRef.current,
+      accessState: sameRequestSession ? {
+        ...accessState,
+        authorityEpoch: Number(admission?.accessEpoch || 0),
+        relationship: admission?.access?.relationship || accessState?.relationship,
+        existence: admission?.access?.existence || accessState?.existence,
+        runtime: admission?.access?.runtime || accessState?.runtime,
+        unavailable: admission?.access?.unavailable === true,
+      } : accessState,
+      transport: wireRef.current,
+      transportEpoch: openEpochRef.current,
+      draft: admission?.draft || null,
+    });
+  }, [accessRef, principalId, wireRef]);
 
   const hydratePrincipal = useCallback(() => {
     if (!principalId) return Promise.resolve();
@@ -260,6 +349,41 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
     });
   }, [canDurablyOwnChannel, enqueueWrite, hydratePrincipal, principalId, publishDraft]);
 
+  const persistDraftAttachments = useCallback((channelId, attachments, {
+    expectedRevision = 0,
+    authorize,
+  } = {}) => {
+    if (!channelId || !principalId) return Promise.resolve(null);
+    return enqueueWrite(async () => {
+      await hydratePrincipal();
+      if (hydratedPrincipalRef.current !== principalId) throw new Error('当前身份的草稿尚未就绪');
+      const result = await outboxRef.current.mergeDraftAttachments({
+        principalId,
+        channelId,
+        attachments,
+        expectedRevision,
+        authorize,
+      });
+      if (result.conflict || !result.record) {
+        const error = new Error(result.reason === 'draft_consumed'
+          ? '草稿已被发送，已上传资源未自动关联'
+          : '草稿版本已变化，已上传资源未自动关联');
+        error.code = 'attachment_unassociated';
+        error.attachments = attachments;
+        throw error;
+      }
+      if (authorize && authorize() !== true) {
+        const error = new Error('草稿在附件关联完成前已变化，已上传资源未发布到当前草稿');
+        error.code = 'attachment_unassociated';
+        error.attachments = attachments;
+        throw error;
+      }
+      persistedDraftRevisionRef.current.set(channelId, result.record.revision);
+      publishDraft(channelId, result.record);
+      return result.record;
+    });
+  }, [enqueueWrite, hydratePrincipal, principalId, publishDraft]);
+
   const persistTransition = useCallback((next, expectedStates) => {
     if (!principalId || !next?.messageId) return Promise.resolve(null);
     return enqueueWrite(() => outboxRef.current.patch(principalId, next.messageId, expectedStates, next));
@@ -277,6 +401,7 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
   }, []);
 
   const resetWorld = useCallback(() => {
+    worldEpochRef.current += 1;
     clear();
     const worldError = { code: 'world_changed', detail: '服务端数据世界已更换，请确认后重新发送' };
     const currentPending = [...pendingLedgerRef.current];
@@ -309,28 +434,58 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
       await persistTransition(queued).catch(onError);
       return;
     }
-    const access = accessRef.current?.state?.(channelId);
-    // Reconnect is not write authority. Keep the immutable outbox record for a
-    // later eligible generation, but do not replay it while membership is
-    // denied or the channel is known unavailable.
-    if (access?.relationship !== 'member' || access.unavailable || access.runtime === 'closed') return;
+    const owner = ownerForSubmission(submission);
+    const stopInvalidAttempt = async (invalidation, source = submission) => {
+      if (!currentIdentity()) return;
+      const accessError = queuedAccessRejection(accessRef.current?.state?.(channelId));
+      // Transport replacement preserves the durable user intent. An access
+      // epoch replacement does not: it may contain revoke -> regrant between
+      // two observations and requires an explicit user retry under a new owner.
+      const transportOnly = ['transport_changed', 'channel_unavailable'].includes(invalidation?.code)
+        && !accessError;
+      const next = transitionSubmission(
+        source,
+        transportOnly ? 'queued' : 'rejected',
+        accessError || requestAccessError(invalidation),
+      );
+      const persisted = await persistTransition(next, ['queued', 'transmitting', 'uncertain']).catch((error) => {
+        onError(error);
+        return null;
+      });
+      if (!persisted || !currentIdentity()) return;
+      mutatePending((current) => current.map((item) => (
+        item.key === key && ['queued', 'transmitting', 'uncertain'].includes(item.state) ? next : item
+      )));
+    };
+    const initialAuthority = assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.acquire);
+    if (!initialAuthority.current) {
+      await stopInvalidAttempt(initialAuthority);
+      return;
+    }
     if (transmittingRef.current.has(key)) return;
     // Reserve inside this tab before the asynchronous lease transaction. A
     // lease deliberately permits renewal by the same owner, so using it alone
     // would let the send path and the pending-state effect both submit the same
     // immutable frame while the first acquire was still waiting.
     transmittingRef.current.add(key);
-    let leased;
+    let leasePhase;
     try {
-      leased = await outboxRef.current.acquireLease(principalId, messageId, leaseOwnerRef.current);
+      leasePhase = await executeOwnedPhase({
+        owner,
+        current: () => currentOwnerFacts(owner),
+        phase: REQUEST_PHASE.acquire,
+        effect: () => outboxRef.current.acquireLease(principalId, messageId, leaseOwnerRef.current),
+      });
     } catch (error) {
       transmittingRef.current.delete(key);
       onError(error);
       return;
     }
-    if (!leased || !currentIdentity()) {
+    const leased = leasePhase.value;
+    if (!leasePhase.started || !leased || !leasePhase.current) {
       if (leased) await outboxRef.current.releaseLease(principalId, messageId, leaseOwnerRef.current).catch(onError);
       transmittingRef.current.delete(key);
+      if (leasePhase.invalidation) await stopInvalidAttempt(leasePhase.invalidation);
       return;
     }
     const renewLease = globalThis.setInterval?.(() => {
@@ -348,8 +503,12 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
       transmittingRef.current.delete(key);
       await outboxRef.current.releaseLease(principalId, messageId, leaseOwnerRef.current).catch(onError);
       const failed = transitionSubmission(submission, 'rejected', error);
-      if (currentIdentity()) mutatePending((current) => current.map((item) => item.key === key ? failed : item));
-      await persistTransition(failed).catch(onError);
+      const persisted = await persistTransition(failed, ['queued', 'uncertain', 'transmitting']).catch(onError);
+      if (persisted && assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.settle).current) {
+        mutatePending((current) => current.map((item) => (
+          item.key === key && ['queued', 'uncertain', 'transmitting'].includes(item.state) ? failed : item
+        )));
+      }
       diagnostic('warn', 'submission.prepare_rejected', { channelId, messageId, code: error?.code || 'prepare_failed' });
       return;
     }
@@ -359,56 +518,97 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
     // reconnect backoff; this map is only per-id dedupe for that generation.
     attemptedOpenEpochRef.current.set(key, openEpochRef.current);
     const transmitting = transitionSubmission({ ...submission, frame: preparedFrame }, 'transmit');
-    mutatePending((current) => current.map((item) => item.key === key ? transmitting : item));
+    let persistPhase;
     try {
-      await persistTransition(transmitting);
+      persistPhase = await executeOwnedPhase({
+        owner,
+        current: () => currentOwnerFacts(owner),
+        phase: REQUEST_PHASE.persist,
+        effect: () => persistTransition(transmitting, ['queued', 'uncertain', 'transmitting']),
+      });
     } catch (error) {
       if (renewLease != null) globalThis.clearInterval?.(renewLease);
       transmittingRef.current.delete(key);
       await outboxRef.current.releaseLease(principalId, messageId, leaseOwnerRef.current).catch(onError);
       const queued = transitionSubmission(submission, 'queued', error);
-      if (currentIdentity()) mutatePending((current) => current.map((item) => item.key === key ? queued : item));
+      const persisted = await persistTransition(queued, ['queued', 'uncertain', 'transmitting']).catch(onError);
+      if (persisted && assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.settle).current) {
+        mutatePending((current) => current.map((item) => (
+          item.key === key && ['queued', 'uncertain', 'transmitting'].includes(item.state) ? queued : item
+        )));
+      }
       onError(error);
       diagnostic('warn', 'submission.transition_persist_failed', { channelId, messageId, phase: 'transmitting', error });
       return;
     }
+    if (!persistPhase.started || !persistPhase.value || !persistPhase.current) {
+      if (renewLease != null) globalThis.clearInterval?.(renewLease);
+      transmittingRef.current.delete(key);
+      await outboxRef.current.releaseLease(principalId, messageId, leaseOwnerRef.current).catch(onError);
+      if (persistPhase.invalidation) await stopInvalidAttempt(persistPhase.invalidation, transmitting);
+      return;
+    }
+    if (currentIdentity()) mutatePending((current) => current.map((item) => (
+      item.key === key && ['queued', 'uncertain', 'transmitting'].includes(item.state) ? transmitting : item
+    )));
     diagnostic('debug', 'submission.transmit_started', { channelId, messageId, openEpoch: openEpochRef.current });
     rosterRef.current?.recordSubmission(channelId, messageId);
+    const settleCurrent = () => assessRequestOwner(
+      owner,
+      currentOwnerFacts(owner),
+      REQUEST_PHASE.settle,
+    ).current;
     try {
-      const receipt = await wireRef.current.submit(transmitting.frame);
+      const submitPhase = await executeOwnedPhase({
+        owner,
+        current: () => currentOwnerFacts(owner),
+        phase: REQUEST_PHASE.submit,
+        effect: () => owner.transport.submit(transmitting.frame),
+      });
+      if (!submitPhase.started) {
+        await stopInvalidAttempt(submitPhase.invalidation, transmitting);
+        return;
+      }
+      const receipt = submitPhase.value;
       if (receipt.message_id !== messageId) throw new Error(`协议异常：回执消息编号 ${receipt.message_id} 与客户端编号 ${messageId} 不一致`);
       diagnostic('debug', 'submission.receipt_accepted', { channelId, messageId, openEpoch: openEpochRef.current });
-      const state = channelStatesRef.current.get(channelId);
+      const state = settleCurrent() ? channelStatesRef.current.get(channelId) : null;
       const landedEnvelope = state?._envelopesById?.get?.(messageId)
         || [...(state?.rows?.values?.() || [])].find((envelope) => envelope.id === messageId);
       if (landedEnvelope) {
-        if (currentIdentity()) {
+        if (settleCurrent()) {
           const learnedSelf = rosterRef.current?.observeFeed(channelId, landedEnvelope);
           if (learnedSelf) reconcileApprovals(state, learnedSelf);
         }
-        if (currentIdentity()) mutatePending((current) => current.filter((item) => item.key !== key));
-        await outboxRef.current.remove(principalId, messageId);
-        if (currentIdentity()) {
+        if (settleCurrent()) mutatePending((current) => current.filter((item) => item.key !== key));
+        await outboxRef.current.remove(principalId, messageId, ['transmitting', 'accepted', 'delayed', 'uncertain']);
+        if (settleCurrent()) {
           onFeedChanged();
           onAccessChanged();
         }
         return;
       }
       const accepted = transitionSubmission(transmitting, 'accepted');
-      if (currentIdentity()) mutatePending((current) => current.map((item) => item.key === key ? accepted : item));
       try {
-        await persistTransition(accepted);
+        const persisted = await persistTransition(accepted, ['transmitting']);
+        if (!persisted) return;
+        if (settleCurrent()) mutatePending((current) => current.map((item) => (
+          item.key === key && item.state === 'transmitting' ? accepted : item
+        )));
       } catch (error) {
         const uncertain = transitionSubmission(transmitting, 'uncertain', {
           code: 'local_persistence',
           detail: '回执已收到，本机发送状态保存失败，需通过账本确认',
         });
-        if (currentIdentity()) mutatePending((current) => current.map((item) => item.key === key ? uncertain : item));
+        const persisted = await persistTransition(uncertain, ['transmitting']).catch(() => null);
+        if (persisted && settleCurrent()) mutatePending((current) => current.map((item) => (
+          item.key === key && item.state === 'transmitting' ? uncertain : item
+        )));
         onError(error);
         diagnostic('warn', 'submission.transition_persist_failed', { channelId, messageId, phase: 'accepted', error });
         return;
       }
-      if (!currentIdentity()) return;
+      if (!settleCurrent()) return;
       const timer = setTimeout(() => {
         mutatePending((current) => current.map((item) => {
           if (item.key !== key || item.state !== 'accepted') return item;
@@ -422,18 +622,18 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
       // A live feed can win the race against a lost receipt. The feed is the
       // durable fact, so do not turn an already-landed submission back into an
       // uncertain one merely because the socket closes a moment later.
-      const state = channelStatesRef.current.get(channelId);
+      const state = settleCurrent() ? channelStatesRef.current.get(channelId) : null;
       // `_envelopesById` contains committed Replica facts only; presentation
       // rows may also contain the local echo and therefore are not evidence.
       const landedEnvelope = state?._envelopesById?.get?.(messageId);
-      if (isUncertainWireError(error) && landedEnvelope && currentIdentity()) {
+      if (isUncertainWireError(error) && landedEnvelope && settleCurrent()) {
         const learnedSelf = rosterRef.current?.observeFeed(channelId, landedEnvelope);
         if (learnedSelf) reconcileApprovals(state, learnedSelf);
         // The principal+message id is the immutable submission identity. The
         // state predicate makes deletion a CAS with a concurrent retry rather
         // than an unconditional cleanup of whatever now occupies the key.
         await outboxRef.current.remove(principalId, messageId, ['queued', 'transmitting', 'accepted', 'delayed', 'uncertain']);
-        if (currentIdentity()) {
+        if (settleCurrent()) {
           mutatePending((current) => current.filter((item) => item.key !== key || item.messageId !== messageId || item.channelId !== channelId));
           onFeedChanged();
           onAccessChanged();
@@ -441,12 +641,12 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
         return;
       }
       const retryableUnavailable = ['unavailable', 'channel_unavailable'].includes(error?.code);
-      if (currentIdentity() && error?.code === 'forbidden') {
+      if (settleCurrent() && error?.code === 'forbidden') {
         accessRef.current?.forbidden(channelId);
         rosterRef.current?.clearSelf(channelId);
-      } else if (currentIdentity() && error?.code === 'channel_not_found') {
+      } else if (settleCurrent() && error?.code === 'channel_not_found') {
         accessRef.current?.retire?.(channelId, error.code);
-      } else if (currentIdentity() && retryableUnavailable) {
+      } else if (settleCurrent() && retryableUnavailable) {
         accessRef.current?.unavailable(channelId, error.code);
       }
       if (retryableUnavailable) {
@@ -456,21 +656,21 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
         // the pending-state effect may run immediately, but it will observe the
         // unavailable channel and cannot resubmit on this transport epoch.
         const queued = transitionSubmission(transmitting, 'queued', error);
-        if (currentIdentity()) {
+        const persisted = await persistTransition(queued, ['transmitting']).catch(onError);
+        if (persisted && settleCurrent()) {
           rosterRef.current?.forgetSubmission?.(channelId, messageId);
           mutatePending((current) => current.map((item) => (
             item.key === key && item.state === 'transmitting' ? queued : item
           )));
           onNotice('频道暂不可用，消息已保存在本机；服务恢复后将自动发送。');
         }
-        await persistTransition(queued, ['transmitting']).catch(onError);
         diagnostic('info', 'submission.transmit_deferred', {
           channelId,
           messageId,
           code: error?.code || 'unavailable',
           openEpoch: openEpochRef.current,
         });
-        if (currentIdentity()) onAccessChanged();
+        if (settleCurrent()) onAccessChanged();
         return;
       }
       const uncertain = isUncertainWireError(error);
@@ -478,18 +678,20 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
       // so its ownership proof must survive reconnect. A definitive rejection
       // cannot: release that exact channel+message id rather than leaking a
       // stale local-ownership token for the rest of the session.
-      if (!uncertain && currentIdentity()) rosterRef.current?.forgetSubmission?.(channelId, messageId);
-      if (uncertain && currentIdentity()) onNotice('发送结果待确认，正在通过重连账本核对。');
+      if (!uncertain && settleCurrent()) rosterRef.current?.forgetSubmission?.(channelId, messageId);
+      if (uncertain && settleCurrent()) onNotice('发送结果待确认，正在通过重连账本核对。');
       const failed = transitionSubmission(transmitting, uncertain ? 'uncertain' : 'rejected', error);
-      if (currentIdentity()) mutatePending((current) => current.map((item) => item.key === key ? failed : item));
-      await persistTransition(failed).catch(onError);
+      const persisted = await persistTransition(failed, ['transmitting']).catch(onError);
+      if (persisted && settleCurrent()) mutatePending((current) => current.map((item) => (
+        item.key === key && item.state === 'transmitting' ? failed : item
+      )));
       diagnostic(uncertain ? 'info' : 'warn', uncertain ? 'submission.transmit_uncertain' : 'submission.transmit_rejected', {
         channelId,
         messageId,
         code: error?.code || 'unknown',
         openEpoch: openEpochRef.current,
       });
-      if (currentIdentity()) onAccessChanged();
+      if (settleCurrent()) onAccessChanged();
     } finally {
       if (renewLease != null) globalThis.clearInterval?.(renewLease);
       transmittingRef.current.delete(key);
@@ -499,10 +701,9 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
         onError(error);
       }
     }
-  }, [accessRef, channelStatesRef, mutatePending, onAccessChanged, onError, onFeedChanged, onNotice, persistTransition, principalId, rosterRef, wireRef, wireState]);
+  }, [accessRef, channelStatesRef, currentOwnerFacts, mutatePending, onAccessChanged, onError, onFeedChanged, onNotice, ownerForSubmission, persistTransition, principalId, rosterRef, wireRef, wireState]);
 
   const send = useCallback(async (request) => {
-    const identityEpoch = restoreEpochRef.current;
     const requests = request?.batch?.length ? request.batch : [request];
     const channelId = request?.channelId || requests[0]?.channelId || activeChannelId;
     if (!channelId) return request?.batch ? [] : '';
@@ -511,15 +712,33 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
     if ([...requestedChannels].some((id) => !canDurablyOwnChannel(id))) {
       throw new Error('当前身份没有已确认的频道成员权限，无法保存到发送队列');
     }
-    await hydratePrincipal();
-    await writeTailRef.current.catch(() => {});
-    if (restoreEpochRef.current !== identityEpoch || hydratedPrincipalRef.current !== principalId) throw new Error('当前身份的发送队列尚未就绪');
-    if ([...requestedChannels].some((id) => !canDurablyOwnChannel(id))) {
-      throw new Error('频道成员权限已变化，未保存到发送队列');
-    }
+    let owners = [...requestedChannels].map((id) => requestOwner(id));
+    const acquirePhase = await executeOwnedGroupPhase({
+      owners,
+      current: currentOwnerFacts,
+      phase: REQUEST_PHASE.acquire,
+      options: { requireTransport: false },
+      effect: async () => {
+        await hydratePrincipal();
+        await writeTailRef.current.catch(() => {});
+        if (hydratedPrincipalRef.current !== principalId) throw new Error('当前身份的发送队列尚未就绪');
+      },
+    });
+    if (!acquirePhase.started || !acquirePhase.current) throw requestAccessError(acquirePhase.invalidation);
+    owners = [...requestedChannels].map((id) => requestOwner(id, id === channelId ? {
+      revision: Number(request?.draftRevision || 0),
+      editorRevision: Number(request?.editorRevision || 0),
+    } : null));
+    const authorizePersist = () => owners.every((owner) => assessRequestOwner(
+      owner,
+      currentOwnerFacts(owner),
+      REQUEST_PHASE.persist,
+      { requireTransport: false },
+    ).current);
+    const ownerByChannel = new Map(owners.map((owner) => [owner.channelId, owner]));
     const connected = wireStateRef.current === 'open' && Boolean(wireRef.current);
     let submissions = requests.map((item) => {
-      const messageId = newId();
+      const messageId = item.messageId || newId();
       const resolvedChannel = item.channelId || channelId;
       const frame = {
         channel_id: resolvedChannel,
@@ -532,7 +751,15 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
         ...(item.parentId ? { parent_id: item.parentId } : {}),
         ...(item.expiresAtMs ? { expires_at_ms: item.expiresAtMs } : {}),
       };
-      return createSubmission({ id: messageId, channelId: resolvedChannel, text: item.text, targetLabel: item.targetLabel, frame, state: 'queued' });
+      return createSubmission({
+        id: messageId,
+        channelId: resolvedChannel,
+        text: item.text,
+        targetLabel: item.targetLabel,
+        frame,
+        state: 'queued',
+        authority: submissionAuthority(ownerByChannel.get(resolvedChannel)),
+      });
     });
     if (request?.draftRevision != null) {
       const result = await outboxRef.current.acceptDraft({
@@ -541,6 +768,7 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
         expectedRevision: request.draftRevision,
         editorRevision: request.editorRevision,
         submissions,
+        authorize: authorizePersist,
       });
       if (!result.accepted) throw new Error('草稿在发送前已被其他页面修改，请确认内容后重试');
       submissions = result.submissions || submissions;
@@ -548,10 +776,10 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
       const current = draftLedgerRef.current.get(channelId);
       if (result.consumed && Number(current?.editorRevision || 0) === Number(request.editorRevision || 0)) publishDraft(channelId, result.record);
     } else {
-      submissions = await outboxRef.current.putMany(principalId, submissions);
+      submissions = await outboxRef.current.putMany(principalId, submissions, { authorize: authorizePersist });
     }
     const ids = new Set(submissions.map((item) => item.messageId));
-    if (restoreEpochRef.current !== identityEpoch || hydratedPrincipalRef.current !== principalId) return request?.batch ? [] : '';
+    if (committedPrincipalRef.current !== principalId || hydratedPrincipalRef.current !== principalId) return request?.batch ? [] : '';
     const nextPending = [...pendingLedgerRef.current.filter((item) => !ids.has(item.messageId)), ...submissions];
     pendingLedgerRef.current = nextPending;
     setPending(nextPending);
@@ -564,7 +792,7 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
     if (connected) for (const submission of submissions) void transmit(submission);
     const messageIds = submissions.map((item) => item.messageId);
     return request?.batch ? messageIds : messageIds[0];
-  }, [activeChannelId, canDurablyOwnChannel, hydratePrincipal, principalId, publishDraft, transmit, wireRef, wireState]);
+  }, [activeChannelId, canDurablyOwnChannel, currentOwnerFacts, hydratePrincipal, principalId, publishDraft, requestOwner, submissionAuthority, transmit, wireRef, wireState]);
 
   useEffect(() => {
     const opened = wireState === 'open' && previousWireStateRef.current !== 'open';
@@ -614,7 +842,13 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
   }, [accessRef, accessVersion, mutatePending, onError, pending, persistTransition, rosterRef, transmit, wireRef, wireState]);
 
   const retry = useCallback(async (submission) => {
-    const next = transitionSubmission(submission, 'retry');
+    const owner = requestOwner(submission.channelId);
+    const authority = assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.persist);
+    if (!authority.current) return false;
+    const next = {
+      ...transitionSubmission(submission, 'retry'),
+      authority: submissionAuthority(owner),
+    };
     if (next === submission) return false;
     const timer = timersRef.current.get(submission.key);
     if (timer) clearTimeout(timer);
@@ -624,43 +858,66 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
       messageId: submission.messageId,
       previousState: submission.state,
     });
-    mutatePending((current) => current.map((item) => item.key === next.key ? next : item));
-    await persistTransition(next);
+    const persisted = await persistTransition(next, ['uncertain', 'rejected']);
+    if (!persisted) return false;
+    mutatePending((current) => current.map((item) => (
+      item.key === next.key && ['uncertain', 'rejected'].includes(item.state) ? next : item
+    )));
     await transmit(next);
     return true;
-  }, [mutatePending, persistTransition, transmit]);
+  }, [currentOwnerFacts, mutatePending, persistTransition, requestOwner, submissionAuthority, transmit]);
 
   const resolve = useCallback(async (channelId, reqId, decision, payload) => {
     setApprovalStates((current) => ({ ...current, [reqId]: 'sending' }));
+    const owner = requestOwner(channelId);
     try {
       const frame = { channel_id: channelId, req_id: reqId };
       if (decision) frame.decision = decision;
       if (typeof payload?.text === 'string') frame.text = payload.text;
       if (typeof payload?.note === 'string' && payload.note) frame.note = payload.note;
-      await wireRef.current.resolve(frame);
-      setApprovalStates((current) => ({ ...current, [reqId]: 'resolved' }));
+      const phase = await executeOwnedPhase({
+        owner,
+        current: () => currentOwnerFacts(owner),
+        phase: REQUEST_PHASE.submit,
+        effect: () => owner.transport.resolve(frame),
+      });
+      if (!phase.started) throw requestAccessError(phase.invalidation);
+      const settled = assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.settle);
+      if (settled.current) setApprovalStates((current) => ({ ...current, [reqId]: 'resolved' }));
     } catch (error) {
-      setApprovalStates((current) => ({ ...current, [reqId]: { error } }));
+      const settled = assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.settle);
+      if (settled.current) setApprovalStates((current) => ({ ...current, [reqId]: { error } }));
       onAccessChanged();
     }
-  }, [onAccessChanged, wireRef]);
+  }, [currentOwnerFacts, onAccessChanged, requestOwner]);
 
   const cancel = useCallback(async (channelId, reqId) => {
     const key = `${channelId}:${reqId}:cancel`;
     setControlStates((current) => ({ ...current, [key]: createControlState('sending') }));
+    const owner = requestOwner(channelId);
     try {
-      await wireRef.current.cancel({ channel_id: channelId, req_id: reqId });
+      const phase = await executeOwnedPhase({
+        owner,
+        current: () => currentOwnerFacts(owner),
+        phase: REQUEST_PHASE.submit,
+        effect: () => owner.transport.cancel({ channel_id: channelId, req_id: reqId }),
+      });
+      if (!phase.started) throw requestAccessError(phase.invalidation);
+      const settled = assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.settle);
+      if (!settled.current) return;
       const terminal = channelStatesRef.current.get(channelId)?.turns.get(reqId)?.terminal;
       setControlStates((current) => {
         if (!terminal) return { ...current, [key]: createControlState('accepted') };
         const next = { ...current }; delete next[key]; return next;
       });
     } catch (error) {
+      const settled = assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.settle);
+      if (!settled.current) return;
       const uncertain = isUncertainWireError(error);
       setControlStates((current) => ({ ...current, [key]: createControlState(uncertain ? 'uncertain' : 'error', error) }));
       onAccessChanged();
     }
-  }, [channelStatesRef, onAccessChanged, wireRef]);
+  }, [channelStatesRef, currentOwnerFacts, onAccessChanged, requestOwner]);
 
   const reconcileFeed = useCallback((landedMessageIds, closedRequestIds) => {
     if (landedMessageIds.size) {
@@ -703,6 +960,7 @@ export function useSubmissions({ principalId, activeChannelId, wireState, wireRe
       return record?.draft ? { ...record.draft, editorRevision: record.editorRevision } : emptyDraft();
     },
     updateDraft,
+    persistDraftAttachments,
     approvalStates,
     controlStates,
     send,

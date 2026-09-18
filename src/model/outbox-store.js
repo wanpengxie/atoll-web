@@ -116,13 +116,14 @@ export function createOutboxStore({
       const db = await open();
       return db.drafts.where('principalId').equals(principalId).toArray();
     },
-    async putMany(principalId, submissions) {
+    async putMany(principalId, submissions, { authorize } = {}) {
       if (!principalId) throw new TypeError('outbox write requires principal');
       const durable = durableSubmissions(submissions);
       const db = await open();
-      await db.transaction('rw', db.submissions, () => db.submissions.bulkPut(
-        durable.map((submission) => ({ ...submission, principalId })),
-      ));
+      await db.transaction('rw', db.submissions, () => {
+        if (authorize && authorize() !== true) throw new Error('发送授权已变化，未保存到发送队列');
+        return db.submissions.bulkPut(durable.map((submission) => ({ ...submission, principalId })));
+      });
       return durable;
     },
     async patch(principalId, messageId, expectedStates, change) {
@@ -170,16 +171,62 @@ export function createOutboxStore({
         return { conflict: false, record: next };
       });
     },
-    async acceptDraft({ principalId, channelId, expectedRevision, editorRevision, submissions }) {
+    async mergeDraftAttachments({ principalId, channelId, attachments, expectedRevision = 0, authorize }) {
+      if (!principalId || !channelId) throw new TypeError('draft attachment merge requires principal and channel');
+      const durableAttachments = (attachments || [])
+        .filter(isDurablyRecoverableAttachment)
+        .map(withoutRendererHandles);
+      if (durableAttachments.length !== (attachments || []).length) {
+        throw new TypeError('附件尚未成为可恢复的频道资源');
+      }
+      const db = await open();
+      return db.transaction('rw', db.drafts, async () => {
+        if (authorize && authorize() !== true) throw new Error('草稿附件授权已变化');
+        const key = [principalId, channelId];
+        const current = await db.drafts.get(key);
+        const revision = Number(current?.revision || 0);
+        if (revision < Number(expectedRevision || 0)) return { conflict: true, current, reason: 'revision_rewound' };
+        // A consumed row is the durable send boundary. An upload captured
+        // before that boundary may not recreate the just-sent draft.
+        if (current && current.draft == null && revision > Number(expectedRevision || 0)) {
+          return { conflict: true, current, reason: 'draft_consumed' };
+        }
+        const base = current?.draft || {};
+        const merged = [...(base.attachments || [])];
+        for (const attachment of durableAttachments) {
+          const index = merged.findIndex((row) => row.resource_id === attachment.resource_id);
+          if (index >= 0) merged[index] = attachment;
+          else merged.push(attachment);
+        }
+        if (authorize && authorize() !== true) throw new Error('草稿附件授权已变化');
+        const draft = durableDraft({ ...base, attachments: merged });
+        const next = {
+          principalId,
+          channelId,
+          revision: revision + 1,
+          editorRevision: Math.max(0, Number(current?.editorRevision || 0)) + 1,
+          draft: meaningfulDraft(draft) ? draft : null,
+          updatedAt: now(),
+        };
+        await db.drafts.put(next);
+        return { conflict: false, record: next };
+      });
+    },
+    async acceptDraft({ principalId, channelId, expectedRevision, editorRevision, submissions, authorize }) {
       if (!principalId || !channelId || !submissions?.length) throw new TypeError('acceptDraft requires draft identity and frames');
       const durable = durableSubmissions(submissions);
       const db = await open();
       return db.transaction('rw', db.drafts, db.submissions, async () => {
+        if (authorize && authorize() !== true) throw new Error('发送授权已变化，未保存到发送队列');
         const key = [principalId, channelId];
         const current = await db.drafts.get(key);
         const revision = Number(current?.revision || 0);
         const expected = Number(expectedRevision || 0);
         if (revision < expected) return { accepted: false, conflict: current || null };
+        // `get` yields. Revalidate inside the same transaction immediately
+        // before its first durable submission write so revoke/retire cannot
+        // slip between the entry check and bulkPut/consume.
+        if (authorize && authorize() !== true) throw new Error('发送授权已变化，未保存到发送队列');
         await db.submissions.bulkPut(durable.map((submission) => ({ ...submission, principalId })));
         // The editor may advance while the acceptance transaction waits for
         // IndexedDB. The immutable frames still belong in the outbox, but a

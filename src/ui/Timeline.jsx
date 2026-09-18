@@ -19,6 +19,7 @@ import { conversationTextObservations, finalEchoObservation, processCount, turnS
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { messageTimeLabel } from '../util/time.js';
+import { newId } from '../util/id.js';
 import { StructuredResult, terminalPresentation } from './StructuredResult.jsx';
 import { MarkdownContent, MarkdownFileReferenceProvider } from './MarkdownContent.jsx';
 import { TurnInlineDetail } from './context/TurnContext.jsx';
@@ -868,7 +869,8 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   const editSessionSerialRef = useRef(0);
   const editingRef = useRef(null);
   const editReleasePendingRef = useRef(new Set());
-  const editReleaseSentRef = useRef(new Set());
+  const editReleaseAcceptedRef = useRef(new Set());
+  const editReleaseInFlightRef = useRef(new Map());
   const editRuntimeRef = useRef(null);
   const editSessionOwnersRef = useRef(new Map());
   const rowActionsRef = useRef(null);
@@ -1275,16 +1277,17 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   }
 
   function releaseEditSession(session, targetTurn = null, ownerRuntime = null) {
-    if (!session || editReleaseSentRef.current.has(session.sessionId)) return;
+    if (!session) return Promise.resolve(false);
+    if (editReleaseAcceptedRef.current.has(session.sessionId)) return Promise.resolve(true);
+    const inFlight = editReleaseInFlightRef.current.get(session.sessionId);
+    if (inFlight) return inFlight;
     if (!session.holdId) {
       editReleasePendingRef.current.add(session.sessionId);
-      return;
+      return Promise.resolve(false);
     }
     editReleasePendingRef.current.delete(session.sessionId);
-    editReleaseSentRef.current.add(session.sessionId);
     const resolved = editSessionRuntimes(session);
     const runtime = ownerRuntime || resolved.owner;
-    editSessionOwnersRef.current.delete(session.sessionId);
     // The callback belongs to the runtime that acquired the hold, but a later
     // committed render of the same channel carries the newest revocation fact.
     // A different channel must never authorize or route this release.
@@ -1293,17 +1296,43 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     // Against an older backend that has not advertised lease CAS yet, this
     // front-side guard still avoids an observed newer interrupt/hold. With a
     // new backend, expected_hold_id closes the remaining wire race.
-    if (!runtime
-      || (observed && (observed.source !== TYPES.agentHold || observed.held_by !== session.holdId))) return;
+    if (!runtime) return Promise.reject(new Error('编辑锁释放 owner 已失效'));
+    if (observed && (observed.source !== TYPES.agentHold || observed.held_by !== session.holdId)) {
+      // A newer ledger control already superseded this lease. There is no hold
+      // left for this session to release, and no unhold request is fabricated.
+      editSessionOwnersRef.current.delete(session.sessionId);
+      return Promise.resolve(true);
+    }
     const turn = authorityRuntime?.state?.turns?.get(session.targetId) || targetTurn;
-    Promise.resolve(runtime?.onTaskControl?.({
+    const release = Promise.resolve(runtime?.onTaskControl?.({
       channelId: session.channelId,
       turn,
       actorId: session.actorId,
       type: TYPES.agentUnhold,
+      messageId: session.releaseMessageId,
       payload: withExpectedHold(authorityRuntime?.capabilityIndex || new Map(), session.actorId, TYPES.agentUnhold, {}, session.holdId),
-    })).catch(() => {});
+    })).then((releaseId) => {
+      if (!releaseId) throw new Error('解除编辑锁请求未进入发送队列');
+      // handleTaskControl resolves only after the immutable unhold frame has a
+      // durable outbox id. Ledger terminal remains the only fact that the hold
+      // was actually released; this set only deduplicates local submission.
+      editReleaseAcceptedRef.current.add(session.sessionId);
+      editSessionOwnersRef.current.delete(session.sessionId);
+      return true;
+    }).finally(() => {
+      if (editReleaseInFlightRef.current.get(session.sessionId) === release) {
+        editReleaseInFlightRef.current.delete(session.sessionId);
+      }
+    });
+    editReleaseInFlightRef.current.set(session.sessionId, release);
+    return release;
   }
+  useEffect(() => {
+    const liveSessionId = editing?.sessionId;
+    for (const sessionId of editReleaseAcceptedRef.current) {
+      if (sessionId !== liveSessionId) editReleaseAcceptedRef.current.delete(sessionId);
+    }
+  }, [editing?.sessionId]);
   const nextFreezeDeadline = Math.min(...[...frozenByActor.values()].filter(Boolean).map((value) => value.until));
 	const preemptedSources = timelineControl.preempted;
 	const mergedCounts = timelineControl.merged;
@@ -1557,15 +1586,22 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       setEditing((current) => current?.sessionId === session.sessionId ? null : current);
       if (!replacementLanded) setEditNotice(targetClosed ? '原消息已经停止或取消，已退出编辑' : actorGone ? 'Agent 已重启或离开，已退出编辑' : '编辑已被另一项控制终止');
       if (actorGone) {
-        editReleaseSentRef.current.add(session.sessionId);
         editSessionOwnersRef.current.delete(session.sessionId);
       }
-      else releaseEditSession(session, targetTurn);
+      else void releaseEditSession(session, targetTurn).catch((error) => {
+        diagnostic('warn', 'timeline.edit_release_failed', {
+          channelId: session.channelId,
+          targetId: session.targetId,
+          holdId: session.holdId,
+          error,
+        });
+      });
       return;
     }
     if (editing.phase === 'locking') {
       const admission = editAdmission(state, editing);
       if (admission.error) {
+        editSessionOwnersRef.current.delete(activeEditSessionId);
         setEditing(null);
         setEditNotice(admission.error);
       }
@@ -1631,7 +1667,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       viewport.takeFocusedContentControl({ source: 'user', reason: 'edit-message' });
     }
     const sessionId = ++editSessionSerialRef.current;
-    const draft = { sessionId, channelId: state.channelId, targetId: turn.requestId, actorId, holdId: '', location, oldText: editableText(turn), text: editableText(turn), attachments: argsOf(turn.request).attachments || [], phase: 'requesting_lock', error: '' };
+    const draft = { sessionId, releaseMessageId: newId(), channelId: state.channelId, targetId: turn.requestId, actorId, holdId: '', location, oldText: editableText(turn), text: editableText(turn), attachments: argsOf(turn.request).attachments || [], phase: 'requesting_lock', error: '' };
     const ownerRuntime = editRuntimeRef.current;
     if (ownerRuntime?.channelId === draft.channelId) {
       editSessionOwnersRef.current.set(sessionId, ownerRuntime);
@@ -1645,7 +1681,14 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
         return;
       }
       if (editReleasePendingRef.current.has(sessionId)) {
-        releaseEditSession({ ...draft, holdId }, turn, ownerRuntime);
+        void releaseEditSession({ ...draft, holdId }, turn, ownerRuntime).catch((error) => {
+          diagnostic('warn', 'timeline.edit_release_failed', {
+            channelId: draft.channelId,
+            targetId: draft.targetId,
+            holdId,
+            error,
+          });
+        });
         return;
       }
       setEditing((current) => current?.sessionId === sessionId ? ({ ...current, holdId, phase: 'locking', error: '' }) : current);
@@ -1671,11 +1714,32 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   }
 
   async function abandonEditing() {
-    if (!editing) return;
+    if (!editing || editing.phase === 'releasing') return;
+    const sessionId = editing.sessionId;
+    if (!editing.holdId) {
+      // The hold request is already in flight. Record the release obligation
+      // before hiding the editor; a late hold receipt must submit the fixed-id
+      // unhold instead of leaving an orphaned lease.
+      editReleasePendingRef.current.add(sessionId);
+      setEditing((current) => current?.sessionId === sessionId ? null : current);
+      return;
+    }
     const targetTurn = state.turns.get(editing.targetId);
     if (editing.location === 'processing') setResumePin(editing.targetId);
-    releaseEditSession(editing, targetTurn);
-    setEditing(null);
+    setEditing((current) => current?.sessionId === sessionId
+      ? ({ ...current, phase: 'releasing', error: '' })
+      : current);
+    try {
+      const released = await releaseEditSession(editing, targetTurn);
+      if (!released) throw new Error('正在等待编辑锁编号，稍后会自动解除');
+      setEditing((current) => current?.sessionId === sessionId ? null : current);
+    } catch (failure) {
+      setEditing((current) => current?.sessionId === sessionId ? ({
+        ...current,
+        phase: 'editing',
+        error: failure?.message || String(failure) || '解除编辑锁失败，请重试',
+      }) : current);
+    }
   }
 
   useEffect(() => {
@@ -1685,7 +1749,14 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 
   useEffect(() => () => {
     const session = editingRef.current;
-    if (session) releaseEditSession(session);
+    if (session) void releaseEditSession(session).catch((error) => {
+      diagnostic('warn', 'timeline.edit_release_failed', {
+        channelId: session.channelId,
+        targetId: session.targetId,
+        holdId: session.holdId,
+        error,
+      });
+    });
     onComposerEditChange?.(null);
   }, [onComposerEditChange, state.channelId]);
 

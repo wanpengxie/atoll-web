@@ -1,7 +1,7 @@
 const PREFIX = 'atoll.submissions.v1.';
 const ACTIVE = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain', 'rejected']);
 
-export function createSubmission({ id, channelId, text = '', targetLabel = '', frame, state = 'transmitting' }) {
+export function createSubmission({ id, channelId, text = '', targetLabel = '', frame, state = 'transmitting', authority = null }) {
   if (!id || !channelId || !frame) throw new TypeError('submission requires id, channelId and frame');
   return {
     key: id,
@@ -10,6 +10,7 @@ export function createSubmission({ id, channelId, text = '', targetLabel = '', f
     text,
     targetLabel,
     frame,
+    ...(authority ? { authority } : {}),
     state,
     createdAt: Date.now(),
     updatedAt: Date.now(),
