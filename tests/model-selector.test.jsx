@@ -130,6 +130,31 @@ describe('Model/Effort 选择器', () => {
     expect(onOpen).toHaveBeenCalledOnce();
   });
 
+  // 手动刷新的一瞬 view 会短暂为 null，随后同一个 actor 的新值域回来。
+  // 这不是换目标，面板不许关（2026-09-18 "又不能切换了"）。
+  it('值域暂时缺席再回到同一目标：面板保持打开', async () => {
+    const user = userEvent.setup();
+    const ready = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    const { rerender } = render(<ModelSelector target={single} actorName="Steward" view={ready} onChange={async () => {}} />);
+    await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
+    expect(screen.getByRole('menu')).toBeTruthy();
+
+    rerender(<ModelSelector target={single} actorName="Steward" view={null} onChange={async () => {}} />);
+    rerender(<ModelSelector target={single} actorName="Steward" view={ready} onChange={async () => {}} />);
+    expect(screen.getByRole('menu')).toBeTruthy();
+  });
+
+  it('真的换了目标才收起', async () => {
+    const user = userEvent.setup();
+    const a = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    const b = agentSelectionView({ actorId: 'other', describe: DESCRIBE, usage: null });
+    const { rerender } = render(<ModelSelector target={single} actorName="Steward" view={a} onChange={async () => {}} />);
+    await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
+    expect(screen.getByRole('menu')).toBeTruthy();
+    rerender(<ModelSelector target={{ kind: 'single', actorId: 'other' }} actorName="Other" view={b} onChange={async () => {}} />);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
   it('没点过就拿到值域时不自作主张展开', async () => {
     const onOpen = vi.fn();
     const { rerender } = render(<ModelSelector target={single} actorName="Steward" view={null} onOpen={onOpen} />);

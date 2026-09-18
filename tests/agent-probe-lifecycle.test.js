@@ -4,11 +4,13 @@ import {
   advanceAgentProbeGeneration,
   agentProbeEntry,
   beginAgentProbe,
+  clearProbeSlots,
   createAgentProbeLifecycle,
   failAgentProbe,
   observeAgentProbe,
   PROBE_MIN_INTERVAL_MS,
   PROBE_TIMEOUT_MS,
+  releaseAgentProbe,
   retryFailedAgentProbe,
 } from '../src/model/agent-probe-lifecycle.js';
 
@@ -106,6 +108,41 @@ describe('automatic actor probe lifecycle', () => {
     expect(allowed).not.toBeNull();
     acceptAgentProbe(lifecycle, allowed, send());
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  // 2026-09-18 "又不能切换了"的根因：手动刷新把上一条的 requestId 从 liveRequestIds
+  // 摘掉，能力索引只认活请求，于是新结果到达前能力先变空，面板刚开就被重置关掉。
+  // 刷新是追加证据，不是先清空再取。
+  it('a manual release keeps the last good request id live until a newer probe lands', () => {
+    const lifecycle = createAgentProbeLifecycle();
+    const t0 = 1_700_000_000_000;
+    advanceAgentProbeGeneration(lifecycle);
+    const first = beginAgentProbe(lifecycle, 'c0:agent', { now: t0 });
+    acceptAgentProbe(lifecycle, first, 'describe-1');
+    expect([...lifecycle.liveRequestIds]).toEqual(['describe-1']);
+
+    // App 的 authorizeProbe 是 clearProbeSlots + releaseAgentProbe 一起调：真人不受闸门。
+    clearProbeSlots(lifecycle, 'c0:agent');
+    releaseAgentProbe(lifecycle, 'c0:agent');
+    expect([...lifecycle.liveRequestIds]).toEqual(['describe-1']);
+
+    const second = beginAgentProbe(lifecycle, 'c0:agent', { now: t0 + 1 });
+    expect(second).not.toBeNull();
+    // 发出但尚未回执：旧证据仍在。
+    expect([...lifecycle.liveRequestIds]).toEqual(['describe-1']);
+    acceptAgentProbe(lifecycle, second, 'describe-2');
+    // 新旧并存，由索引按 requestSeq 合并决定谁是当前值。
+    expect([...lifecycle.liveRequestIds].sort()).toEqual(['describe-1', 'describe-2']);
+  });
+
+  it('a forced probe (roster "刷新能力" button) also keeps the previous id live', () => {
+    const lifecycle = createAgentProbeLifecycle();
+    advanceAgentProbeGeneration(lifecycle);
+    const first = beginAgentProbe(lifecycle, 'c0:agent');
+    acceptAgentProbe(lifecycle, first, 'describe-1');
+    const forced = beginAgentProbe(lifecycle, 'c0:agent', { force: true });
+    acceptAgentProbe(lifecycle, forced, 'describe-2');
+    expect([...lifecycle.liveRequestIds].sort()).toEqual(['describe-1', 'describe-2']);
   });
 
   it('fails a probe the ledger never answers after one minute', () => {

@@ -33,12 +33,17 @@ function Harness() {
 
   // onOpen = 手动挡的取数。真实应用里它发 actor.describe / agent.options，
   // 这里用一个 80ms 的延迟代表那一个来回。
+  //
+  // ?blank=1 时复现 2026-09-18 的回归：刷新那一瞬旧证据被清空（view→null），
+  // 80ms 后同一个 actor 的新值域回来。面板不许因此关掉。
+  const blankOnRefresh = new URLSearchParams(window.location.search).get('blank') === '1';
   const onOpen = useCallback(() => {
     setProbes((n) => n + 1);
+    if (blankOnRefresh) setView(null);
     setTimeout(() => {
       setView(agentSelectionView({ actorId: 'claude', describe: DESCRIBE, usage: null }));
     }, 80);
-  }, []);
+  }, [blankOnRefresh]);
 
   return <div>
     <div data-testid="probe-count">{probes}</div>

@@ -70,14 +70,25 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
     };
   }, [open, section]);
 
+  // 只有"真的换了目标"才收起面板。值域暂时缺席（view 变 null）不是换目标：
+  // 手动刷新的那一瞬、旧证据被新证据替换的那一帧，都会让 view 短暂为空；
+  // 若把它当成换目标，面板会在用户眼前刚开就关（2026-09-18 实测症状）。
+  const lastTargetRef = useRef('');
   useEffect(() => {
-    setSection('');
-    // 等的那份值域到了就直接展开，把用户那一下点击补完；否则换目标一律收起。
+    const actorId = view?.actorId || '';
+    // 等的那份值域到了就直接展开，把用户那一下点击补完。
     if (awaitingViewRef.current && view) {
       awaitingViewRef.current = false;
+      lastTargetRef.current = `${target.kind}:${actorId}`;
+      setSection('');
       setOpen(true);
       return;
     }
+    if (!actorId) return;
+    const key = `${target.kind}:${actorId}`;
+    if (key === lastTargetRef.current) return;
+    lastTargetRef.current = key;
+    setSection('');
     setOpen(false);
   }, [target.kind, view?.actorId]);
 

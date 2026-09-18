@@ -163,6 +163,18 @@ describe('agent.options incarnation 快照', () => {
     expect(latestAgentOptions(state, 'steward', 'live-probe')).toMatchObject({ provider: 'codex', source: 'native', current: { model: 'gpt-new', effort: 'high' } });
   });
 
+  // 手动刷新期间新旧探测并存：新的还没回，读数继续从上一份完成的取值，恒不变空
+  // （2026-09-18 "又不能切换了"：删掉旧 id 让值域瞬间为 null，面板刚开就被关）。
+  it('按"新在前"的 id 列表取第一份完成的 options', () => {
+    const state = stateOf([
+      { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload },
+    ]);
+    expect(latestAgentOptions(state, 'steward', ['newer-still-in-flight', 'live-probe']))
+      .toMatchObject({ current: { model: 'gpt-new', effort: 'high' } });
+    expect(latestAgentOptions(state, 'steward', ['', 'live-probe'])).not.toBeNull();
+    expect(latestAgentOptions(state, 'steward', [])).toBeNull();
+  });
+
   it('按模型保留各自 effort，无码 effort 的模型仍可选择', () => {
     const options = normalizeAgentOptions(payload);
     expect(options.selections).toEqual([

@@ -56,7 +56,10 @@ export function beginAgentProbe(lifecycle, key, { force = false, now = Date.now(
   if (current?.generation === lifecycle.generation && !force) return null;
   // 同代闸门放行后仍要过频次闸门：换代恰恰是风暴的入口。
   if (!reserveProbeSlot(lifecycle, key, { force, now })) return null;
-  if (current?.requestId) lifecycle.liveRequestIds.delete(current.requestId);
+  // 上一条的 requestId 恒不从 liveRequestIds 里摘掉：能力索引只认活请求，摘掉
+  // 就等于在新结果到达前把已有能力清空，面板会先变空再被"换目标"重置关掉
+  // （2026-09-18 用户实测"又不能切换了"的根因）。新旧并存，索引按 requestSeq
+  // 排序后合并，新的自然覆盖旧的；整张表在换代时清空，所以不会无限增长。
   const entry = {
     key,
     generation: lifecycle.generation,
@@ -116,8 +119,8 @@ export function retryFailedAgentProbe(lifecycle, key) {
 // 结果真人连点第二下被同代去重吃掉，表现就是点了没反应。去重是给自动探测防
 // 自激用的，不该反过来管人。连点产生的重复请求由点的人自己负责。
 export function releaseAgentProbe(lifecycle, key) {
-  const entry = lifecycle.entries.get(key);
-  if (entry?.requestId) lifecycle.liveRequestIds.delete(entry.requestId);
+  // 只让位，不销毁证据：上一条的 requestId 留在 liveRequestIds 里，它拿到的
+  // 能力在新一条落地前仍是当前真值。刷新是"追加一份新证据"，不是"先清空再取"。
   lifecycle.entries.delete(key);
   return true;
 }

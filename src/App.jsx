@@ -938,8 +938,13 @@ export default function App() {
     // 反过来管人就变成了「点了没反应」（2026-09-18 实测到第二下被吃）。
     clearProbeSlots(describeProbesRef.current, probeKey);
     releaseAgentProbe(describeProbesRef.current, probeKey);
-    contextProbedRef.current.delete(probeKey);
-    optionsProbedRef.current.delete(probeKey);
+    // 两个词的记录标记为 stale，而不是删掉：删掉等于在新回答到达前把值域和用量
+    // 读数清空，selection view 变 null，面板刚开就被重置关掉。stale 的记录仍然
+    // 供着上一份完成的证据，probeWord 看到 stale 才知道要再发一条。
+    for (const registry of [contextProbedRef, optionsProbedRef]) {
+      const record = registry.current.get(probeKey);
+      if (record) record.stale = true;
+    }
     setManualAgentVersion((current) => current + 1);
   }, []);
 
@@ -1159,7 +1164,7 @@ export default function App() {
     const probeWord = (type, registry) => {
       if (!capability.describe.types?.has?.(type)) return;
       const probe = registry.current.get(probeKey);
-      if (probe) {
+      if (probe && !probe.stale) {
         if (!probe.failed && probe.requestId) {
           const failedRow = argsOf(state?.turns?.get?.(probe.requestId)?.terminal)?.status === 'failed';
           const rejected = pending.some((item) => item.messageId === probe.requestId && item.state === 'rejected');
@@ -1170,7 +1175,9 @@ export default function App() {
       // 与 describe 同一道频次闸门，按词分桶；registry 会在重连时被清空，
       // 闸门不会，所以断线重连不再等于解除限流。
       if (!reserveProbeSlot(describeProbesRef.current, `${probeKey}:${type}`)) return;
-      const entry = { requestId: '', failed: false };
+      // 手动刷新（stale）时，上一份完成的 requestId 作为 previousRequestId 随行：
+      // 新的一条回来之前，读数继续从它取值。
+      const entry = { requestId: '', previousRequestId: probe?.requestId || probe?.previousRequestId || '', failed: false, stale: false };
       registry.current.set(probeKey, entry);
       void handleSend({ channelId, text: '', msgType: type, audience: [actorId], targetLabel: actorId, payload: {}, expiresAtMs: Date.now() + PROBE_TIMEOUT_MS })
         .then((requestId) => {
@@ -1357,17 +1364,24 @@ export default function App() {
   // manualAgentVersion 只为触发重渲染（手选存 ref）。
   void manualAgentVersion;
   const composerAgentId = composerAgent.channelId === activeChannelId ? composerAgent.actorId : '';
-  const composerProbeId = composerAgentId ? (contextProbedRef.current.get(`${activeChannelId}:${composerAgentId}`)?.requestId || '') : '';
-  const composerOptionsProbeId = composerAgentId ? (optionsProbedRef.current.get(`${activeChannelId}:${composerAgentId}`)?.requestId || '') : '';
+  // 读数按"新在前"的一列探测 id 取第一份完成的：手动刷新期间新的还没回、旧的
+  // 仍是当前真值。derived 按 Object.is 比较依赖，所以这里传拼接后的字符串键。
+  const probeIdKey = (registry) => {
+    if (!composerAgentId) return '';
+    const record = registry.current.get(`${activeChannelId}:${composerAgentId}`);
+    return [record?.requestId, record?.previousRequestId].filter(Boolean).join('|');
+  };
+  const composerProbeKey = probeIdKey(contextProbedRef);
+  const composerOptionsProbeKey = probeIdKey(optionsProbedRef);
   const composerAgentUsage = derived(
     'composerAgentUsage',
-    [activeState, terminalVersion, composerAgentId, composerProbeId],
-    () => composerAgentId ? latestAgentUsage(activeState, composerAgentId, composerProbeId) : null,
+    [activeState, terminalVersion, composerAgentId, composerProbeKey],
+    () => composerAgentId ? latestAgentUsage(activeState, composerAgentId, composerProbeKey.split('|')) : null,
   );
   const composerAgentOptions = derived(
     'composerAgentOptions',
-    [activeState, terminalVersion, composerAgentId, composerOptionsProbeId],
-    () => composerAgentId ? latestAgentOptions(activeState, composerAgentId, composerOptionsProbeId) : null,
+    [activeState, terminalVersion, composerAgentId, composerOptionsProbeKey],
+    () => composerAgentId ? latestAgentOptions(activeState, composerAgentId, composerOptionsProbeKey.split('|')) : null,
   );
   const composerSelectionView = derived(
     'composerSelectionView',

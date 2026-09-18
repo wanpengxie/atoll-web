@@ -65,7 +65,22 @@ export function normalizeAgentOptions(value) {
   };
 }
 
-export function latestAgentOptions(state, actorId, liveRequestId = '') {
+// liveRequestIds 可以是一个 id，也可以是一列（新在前）。手动刷新期间新旧探测并存：
+// 新的还没回、旧的仍是当前真值，读数按顺序取第一份完成的，恒不因为"正在刷新"变空。
+export function latestAgentOptions(state, actorId, liveRequestIds = '') {
+  for (const id of asRequestIds(liveRequestIds)) {
+    const found = latestAgentOptionsFor(state, actorId, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function asRequestIds(value) {
+  if (Array.isArray(value)) return value.filter((id) => typeof id === 'string' && id);
+  return typeof value === 'string' && value ? [value] : [];
+}
+
+function latestAgentOptionsFor(state, actorId, liveRequestId) {
   if (!state?.rows || !actorId || !liveRequestId) return null;
   const liveTurn = state?.turns?.get?.(liveRequestId);
   if (liveTurn) {
@@ -123,7 +138,15 @@ function mergeUsage(current, next) {
 // 恒不挡本连接的 context 探测。证据链：本连接 agent.context 探测（liveRequestId）
 // 的 completed 响应起算，其后新完成的 terminal response（usage 带非空 model/effort；
 // 缺字段的帧跳过，不得把显示清空）逐步覆盖。无本连接证据恒返回 null。
-export function latestAgentUsage(state, actorId, liveRequestId = '') {
+export function latestAgentUsage(state, actorId, liveRequestIds = '') {
+  for (const id of asRequestIds(liveRequestIds)) {
+    const found = latestAgentUsageFor(state, actorId, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function latestAgentUsageFor(state, actorId, liveRequestId) {
   if (!state?.rows || !actorId || !liveRequestId) return null;
   const liveTurn = state?.turns?.get?.(liveRequestId);
   const order = state?._rowOrder;
