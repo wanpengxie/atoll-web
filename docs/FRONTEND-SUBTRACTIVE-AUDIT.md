@@ -7,7 +7,7 @@ passing tests are evidence, not a reason to retain a second authority.
 Execution status on `refactor/frontend-subtractive-cleanup`:
 
 - A1–A2 deleted.
-- B1–B10 removed from the current runtime. Flat ledger rows remain inert for
+- B1–B11 removed from the current runtime. Flat ledger rows remain inert for
   continuity; they do not enter business projection.
 - C8 complete: `fold.js` is the ledger fold; live-arrival provenance now has a
   dedicated owner in `live-arrivals.js`, with no compatibility re-export.
@@ -177,6 +177,13 @@ records.
 
 Target: version the persisted record at its read boundary. Reject/reset an old
 version once; downstream reading code receives only the canonical shape.
+
+### B11. Retired control-action persistence
+
+The old `atoll.controls.v1` localStorage reader/writer had no production
+caller; only its isolated compatibility test kept it alive. It is deleted.
+Control feedback is now session-local UI state and the ledger terminal remains
+the durable fact.
 
 ## C. Consolidate ownership before deleting code
 

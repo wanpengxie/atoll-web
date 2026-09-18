@@ -11,7 +11,6 @@ const WORLD_SCOPED_PREFIXES = [
   'atoll.history.priority.v1.',
   'atoll.cursor.v3.',
   'atoll.read.v4.',
-  'atoll.controls.v1.',
   'atoll.timers.',
   'atoll.web.file-reading-history.v1.',
   'atoll.terminal.session.',
