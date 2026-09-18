@@ -356,6 +356,14 @@ test('one continuous touch gesture keeps ownership across the following handoff'
   const followingScrolls = io.events.filter((entry) => (
     entry.type === 'scroll' && entry.container === 'following-tail'
   ));
+  // The first effective native scroll activates the potential touch
+  // transaction, so its target is labelled `begin`. Only later effective
+  // scrolls are labelled `scroll`. Compare the full position-bearing stream
+  // with actual Following scroll events instead of assuming every movement is
+  // a post-begin update; Chromium may coalesce the dispatched touch points.
+  const positionTargets = targets.filter((entry) => (
+    entry.detail?.reason === 'begin' || entry.detail?.reason === 'scroll'
+  ));
   const motion = commonMotion(frames);
   const reveal = motion.find((entry) => (
     entry.previousContainer === 'following-tail' && entry.container === 'virtuoso'
@@ -383,10 +391,14 @@ test('one continuous touch gesture keeps ownership across the following handoff'
 
   expect(touchEvents.length).toBeGreaterThanOrEqual(3);
   expect(touchEvents.every((entry) => entry.container === 'following-tail')).toBe(true);
-  expect(followingScrolls.length).toBeGreaterThan(0);
+  expect(followingScrolls.length).toBeGreaterThanOrEqual(2);
   expect(new Set(targets.map((entry) => entry.detail?.transactionID)).size).toBe(1);
   expect(new Set(targets.map((entry) => entry.detail?.inputEpoch)).size).toBe(1);
-  expect(targets.filter((entry) => entry.detail?.reason === 'scroll').length).toBeGreaterThanOrEqual(2);
+  expect(positionTargets.length).toBeGreaterThanOrEqual(followingScrolls.length);
+  expect(new Set(positionTargets.map((entry) => entry.detail?.targetRevision)).size)
+    .toBeGreaterThanOrEqual(2);
+  expect(new Set(positionTargets.map((entry) => entry.detail?.targetViewportOffset)).size)
+    .toBeGreaterThanOrEqual(2);
   expect(targets.at(-1)?.detail?.phase).toBe('settled');
   expect(reveal?.shared || 0).toBeGreaterThan(0);
   expect(Math.abs(Number(reveal?.median || 0))).toBeLessThanOrEqual(2);

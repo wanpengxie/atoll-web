@@ -33,21 +33,27 @@ function reading(mode = 'browsing') {
   return port;
 }
 
-function Host({ role }) {
+function Host({ role, readBookmark }) {
   const [node, setNode] = useState(null);
   const adapter = useMemo(() => ({
-    readBookmark: () => ({ messageID: `${role}-anchor`, rowViewportOffset: -12 }),
+    readBookmark: () => readBookmark?.(node)
+      || ({ messageID: `${role}-anchor`, rowViewportOffset: -12 }),
     presentationRevision: () => 7,
     atTail: () => Number(node?.scrollTop || 0) === 0,
     isEffectiveMotion: (_previous, next) => role !== 'following' || next <= -3,
-  }), [node, role]);
+  }), [node, readBookmark, role]);
   useReadingNavigationHost(role, adapter, node);
   return <div ref={setNode} role="region" data-testid={role} tabIndex={0}>
     <span data-testid={`${role}-content`} />
   </div>;
 }
 
-function Subject({ port, role, onFollowingNavigationTarget = vi.fn() }) {
+function Subject({
+  port,
+  role,
+  onFollowingNavigationTarget = vi.fn(),
+  readBookmark,
+}) {
   const stackRef = useRef(null);
   return <ReadingNavigationOwner
     activationID={port.activationID}
@@ -55,7 +61,7 @@ function Subject({ port, role, onFollowingNavigationTarget = vi.fn() }) {
     stackRef={stackRef}
     visibleRole={role}
     onFollowingNavigationTarget={onFollowingNavigationTarget}
-  ><div ref={stackRef}><Host role={role} /></div></ReadingNavigationOwner>;
+  ><div ref={stackRef}><Host role={role} readBookmark={readBookmark} /></div></ReadingNavigationOwner>;
 }
 
 function touch(type, { identifier = 7, y = 0, active = true } = {}) {
@@ -144,6 +150,40 @@ it('keeps following input potential until native displacement supplies its bookm
     targetRevision: firstTarget.targetRevision,
     phase: 'settled',
   });
+});
+
+it('publishes the activating scroll and every later effective scroll in one following transaction', () => {
+  vi.useFakeTimers();
+  const port = reading('following');
+  const target = vi.fn();
+  const readBookmark = (node) => ({
+    messageID: 'following-anchor',
+    rowViewportOffset: Number(node?.scrollTop || 0),
+  });
+  const view = render(<Subject
+    port={port}
+    role="following"
+    readBookmark={readBookmark}
+    onFollowingNavigationTarget={target}
+  />);
+  const host = view.getByTestId('following');
+  Object.defineProperty(host, 'scrollTop', { configurable: true, writable: true, value: 0 });
+
+  act(() => host.dispatchEvent(touch('touchstart', { y: 120 })));
+  act(() => host.dispatchEvent(touch('touchmove', { y: 160 })));
+  expect(target).not.toHaveBeenCalled();
+
+  for (const scrollTop of [-24, -48, -72]) {
+    host.scrollTop = scrollTop;
+    act(() => host.dispatchEvent(new Event('scroll')));
+  }
+
+  const positionTargets = target.mock.calls.map(([entry]) => entry);
+  expect(positionTargets.map((entry) => entry.reason)).toEqual(['begin', 'scroll', 'scroll']);
+  expect(positionTargets.map((entry) => entry.bookmark.rowViewportOffset)).toEqual([-24, -48, -72]);
+  expect(new Set(positionTargets.map((entry) => entry.transactionID)).size).toBe(1);
+  expect(new Set(positionTargets.map((entry) => entry.inputGeneration)).size).toBe(1);
+  expect(positionTargets.map((entry) => entry.targetRevision)).toEqual([1, 2, 3]);
 });
 
 it('ends touch ownership only when the tracked contact ends', () => {
