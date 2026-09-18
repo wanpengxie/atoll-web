@@ -194,6 +194,54 @@ it('focuses following when a real handoff requests focus from outside the adapte
   expect(document.activeElement).toBe(container.querySelector('.timeline-following-tail'));
 });
 
+it('reopens one short-list demand when supply advances without a Presentation revision', async () => {
+  const onUnderfill = vi.fn();
+  const baseStatus = {
+    hasOlder: true,
+    sourceLease: '1:2:9',
+    completedPages: 1,
+    revealVersion: 1,
+    buffered: 0,
+  };
+  const props = {
+    snapshot: snapshot(2),
+    rowRevision: (index) => String(index),
+    renderRow: (row) => <div>{row.id}</div>,
+    surfaceVisible: true,
+    active: true,
+  };
+  const view = render(<FollowingTailList
+    {...props}
+    reading={readingPort({ status: baseStatus, onUnderfill })}
+  />);
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(1));
+
+  view.rerender(<FollowingTailList
+    {...props}
+    reading={readingPort({
+      status: { ...baseStatus, completedPages: 2, buffered: 148 },
+      onUnderfill,
+    })}
+  />);
+  await waitFor(() => expect(onUnderfill).toHaveBeenCalledTimes(2));
+
+  // Demand phase/owner rerenders do not consume the same supply twice.
+  view.rerender(<FollowingTailList
+    {...props}
+    reading={readingPort({
+      status: {
+        ...baseStatus,
+        completedPages: 2,
+        buffered: 148,
+        historyDemand: { revision: 7, phase: 'idle' },
+      },
+      onUnderfill,
+    })}
+  />);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(onUnderfill).toHaveBeenCalledTimes(2);
+});
+
 function presentation(rows, revision, changes) {
   return {
     rows,

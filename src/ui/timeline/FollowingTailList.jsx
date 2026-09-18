@@ -455,7 +455,20 @@ export function FollowingTailList({
     const root = rootRef.current;
     if (!active || !root || !hasOlder || windowTruncated || surfaceVisible !== true) return;
     if (Number(root.scrollHeight || 0) > Number(root.clientHeight || 0) + 1) return;
-    const key = `${reading.activationID}:${snapshot.revision}`;
+    // Presentation can stay at the same revision while another cache/network
+    // page installs only filtered rows into the Scheduler reservoir. Key this
+    // edge obligation by supply progress as well as visible geometry; otherwise
+    // the first short-list attempt permanently suppresses the later reservoir
+    // and a focus transition is the only thing that happens to release it.
+    const key = JSON.stringify([
+      reading.activationID,
+      snapshot.revision,
+      String(reading.status?.sourceLease || ''),
+      Number(reading.status?.completedPages || 0),
+      Number(reading.status?.revealVersion || 0),
+      Number(reading.status?.buffered || 0),
+      reading.status?.hasOlder === true,
+    ]);
     if (underfillKeyRef.current === key) return;
     underfillKeyRef.current = key;
     reading.onUnderfill?.({ demandUnits: completeViewportUnits(root) });
