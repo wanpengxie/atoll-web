@@ -14,10 +14,22 @@ const envelope = (id, kind, body, extra = {}) => ({
 });
 
 describe('wrapped ledger payloads', () => {
-  it.each(['request', 'response', 'event'])('reads %s bodies and historical flat payloads', (kind) => {
+  it.each(['request', 'response', 'event'])('reads canonical %s bodies and quietly ignores historical flat payloads', (kind) => {
     const body = { text: 'hello', status: 'completed' };
     expect(argsOf(envelope('a', kind, body))).toEqual(body);
-    expect(argsOf({ kind, payload: body })).toEqual(body);
+    expect(argsOf({ kind, payload: body })).toEqual({});
+  });
+
+  it('keeps historical flat rows out of every business projection', () => {
+    const state = fold([{ channel_id: 'dev', seq: 1, envelope: {
+      id: 'old-development-row', kind: 'event', type: 'human.note',
+      sender: { kind: 'human', id: 'me' }, payload: { text: 'old' },
+    } }]);
+    expect(state.rows.size).toBe(1);
+    expect(state.turns.size).toBe(0);
+    expect(state.standalone).toHaveLength(0);
+    expect(state.orphans).toHaveLength(0);
+    expect(state.narration).toHaveLength(0);
   });
 
   it('folds progress and final errors without creating empty standalone cards', () => {

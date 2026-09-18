@@ -1,4 +1,4 @@
-import { argsOf, correlationOf, FINAL, PROVISIONAL } from '../protocol/envelope.js';
+import { argsOf, correlationOf, FINAL, hasCanonicalBody, PROVISIONAL } from '../protocol/envelope.js';
 import { isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
 import { isViewportNotifiableDisposition, notificationDisposition } from './notification-policy.js';
 import { isSelfActor, relatedEnvelopeIdsIncremental } from './timeline-scope.js';
@@ -723,6 +723,11 @@ export function apply(state, row, selfId = '') {
   state.rows.set(seq, envelope);
   state._rowOrder?.push(seq);
   state._rowMaxSeq?.push(Math.max(seq, state._rowMaxSeq.at(-1) || 0));
+
+  // Pre-canonical development rows remain part of raw ledger continuity but
+  // do not enter any business projection. They are neither errors nor UI
+  // records and cannot create empty cards, turns, or notifications.
+  if (!hasCanonicalBody(envelope)) return state;
 
   if (isNarrationEnvelope(envelope)) {
     state.narration.push({ seq, envelope });

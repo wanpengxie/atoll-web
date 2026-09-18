@@ -147,16 +147,10 @@ aliases in one change. Do not leave indefinite alias chains.
 
 File: `src/protocol/envelope.js`
 
-Debt: `argsOf()` accepts both `{ body }` and historical flat payloads.
-
-Target decision: this is persisted ledger compatibility, not a browser-version
-bridge. Choose one explicit boundary:
-
-- migrate stored ledger rows server-side and remove flat parsing; or
-- declare old rows unsupported and render a stable “historical format
-  unavailable” record.
-
-Do not silently let every business consumer accept both shapes forever.
+Decision: historical flat payloads are unsupported internal-development data.
+The envelope may remain in the ledger, but `argsOf()` returns an empty business
+body for it: no migration, no error UI, and no downstream compatibility path.
+Only canonical `{ body }` payloads enter the presentation model.
 
 ### B10. Older view-session payloads
 

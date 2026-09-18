@@ -49,13 +49,20 @@ export function correlationOf(envelope) {
   return envelope?.correlation_id || envelope?.id || '';
 }
 
-// Requests, responses and events carry {_context?, body}. Older ledger rows
-// have a flat payload. Read the business body without changing the raw envelope.
+export function hasCanonicalBody(envelope) {
+  const payload = envelope?.payload;
+  return Boolean(payload
+    && typeof payload === 'object'
+    && !Array.isArray(payload)
+    && Object.prototype.hasOwnProperty.call(payload, 'body'));
+}
+
+// Requests, responses and events carry {_context?, body}. Historical flat
+// payloads are unsupported development data: keep accepting the ledger row at
+// the transport boundary, but expose no business body and render nothing.
 export function argsOf(envelope) {
   const payload = envelope?.payload;
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
-  // 更早的账本行没有这层包装，原样返回，历史消息照样读得出。
-  if (!Object.prototype.hasOwnProperty.call(payload, 'body')) return payload;
+  if (!hasCanonicalBody(envelope)) return {};
   const body = payload.body;
   return body && typeof body === 'object' && !Array.isArray(body) ? body : {};
 }
