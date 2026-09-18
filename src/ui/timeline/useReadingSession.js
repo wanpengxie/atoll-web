@@ -15,6 +15,33 @@ import {
 import { readerCaughtUp, viewportUnseenNotice } from '../../model/notification-policy.js';
 import { newId } from '../../util/id.js';
 import { diagnostic, readingTrace } from '../../model/diagnostics.js';
+import {
+  admissionOperationID,
+  blockingAdmission,
+  HISTORY_CONSUMER,
+  historyConsumerObligation,
+  historyProgressKey,
+  historyRevealIntent,
+  historySourceKey as sourceAuthorityKey,
+  historySupplyKey as supplyProgressKey,
+  ownsHistoryOperation,
+} from './history-consumer-obligation.js';
+import {
+  currentEntryAuthority,
+  emptyDOMEvidence,
+  evidenceBelongsTo,
+  installedTailReadRows,
+  observedDOMEvidence,
+  pendingArrivalEvents,
+  transferDOMEvidence,
+} from './dom-evidence-adapter.js';
+import {
+  createNotificationConfirmation,
+  nextNotificationConfirmation,
+  queuePresentedConfirmation,
+  reconcileNotificationConfirmation,
+  settleNotificationConfirmation,
+} from './notification-confirmation-port.js';
 
 // Anticipatory reveal is deliberately smaller than the Scheduler's warm raw
 // reservoir. These are raw ledger records/bytes, not rendered message rows;
@@ -29,158 +56,6 @@ const RESTORE_INITIALIZATION_BUDGET_MS = 500;
 const PENDING_ARRIVAL_LIMIT = 1_024;
 const EMPTY_REQUEST = () => Promise.resolve({ kind: 'exhausted' });
 const IDLE_HISTORY_DEMAND = Object.freeze({ revision: 0, phase: 'idle', error: '' });
-const BLOCKING_ADMISSION_PHASES = new Set(['pending-baseline-commit', 'committed-awaiting-layout']);
-const ADDRESSABLE_ADMISSION_PHASES = new Set(['pending', 'pending-baseline-commit', 'committed-awaiting-layout']);
-const HISTORY_CONSUMER = Object.freeze({ viewportUnderfill: 'viewport-underfill' });
-
-function currentBlockingAdmission(historyStatus, channelID, activationID, viewKey) {
-  const authority = historyStatus?.presentationAdmission;
-  // The render snapshot can lag a synchronous Scheduler settle by one React
-  // commit. Prefer the authority's live state so another zero-row under-fill
-  // cannot replace the just-settled transaction before Timeline publishes it.
-  const live = authority?.snapshot?.(channelID);
-  const state = live || historyStatus?.presentationAdmissionState;
-  if (!state || !BLOCKING_ADMISSION_PHASES.has(state.phase)) return null;
-  const token = state.token || state.committed;
-  if (!token) return authority?.snapshot ? null : state;
-  const expectedEpoch = `${channelID}:${Number(historyStatus?.generation || 0)}`;
-  return token.activationID === activationID
-    && token.viewID === viewKey
-    && token.epoch === expectedEpoch
-    ? state
-    : null;
-}
-
-// The admission authority owns a reveal operation after begin; the transport
-// request merely carries the same handle while its promise is alive. Read the
-// live authority first so every caller uses the operation's lifetime, while
-// fencing retired activation/view/generation owners before exposing it.
-function currentAdmissionOperationID(historyStatus, channelID, activationID, viewKey) {
-  const state = historyStatus?.presentationAdmission?.snapshot?.(channelID);
-  const token = state?.token || state?.committed;
-  const expectedEpoch = `${channelID}:${Number(historyStatus?.generation || 0)}`;
-  return state && ADDRESSABLE_ADMISSION_PHASES.has(state.phase)
-    && token?.activationID === activationID
-    && token?.viewID === viewKey
-    && token?.epoch === expectedEpoch
-    ? String(token.operationID || '')
-    : '';
-}
-
-function historyProgressKey(historyStatus = {}) {
-  return JSON.stringify([
-    Number(historyStatus.generation || 0),
-    historyStatus.attached === true,
-    historyStatus.messageCurrent === true,
-    historyStatus.hasOlder === true,
-    historyStatus.loading === true,
-    Number(historyStatus.completedPages || 0),
-    Number(historyStatus.revealVersion || 0),
-    Number(historyStatus.presentationRevision || 0),
-    Number(historyStatus.retryAt || 0),
-    String(historyStatus.error || ''),
-    Number(historyStatus.historyDemand?.revision || 0),
-    String(historyStatus.sourceLease || ''),
-  ]);
-}
-
-function historySourceAuthorityKey(historyStatus = {}) {
-  return JSON.stringify([
-    Number(historyStatus.generation || 0),
-    historyStatus.attached === true,
-    historyStatus.localReplicaReady === true,
-    String(historyStatus.sourceLease || ''),
-  ]);
-}
-
-// A local-only exhausted result completes one semantic obligation against one
-// exact cache frontier. Foreground pending/idle revisions are consequences of
-// executing that obligation, not new supply. Only source ownership or actual
-// cache/page/reveal progress may make the same obligation runnable again.
-function historySupplyProgressKey(historyStatus = {}) {
-  return JSON.stringify([
-    historySourceAuthorityKey(historyStatus),
-    Number(historyStatus.oldestSeq || 0),
-    Number(historyStatus.completedPages || 0),
-    Number(historyStatus.revealVersion || 0),
-    Number(historyStatus.buffered || 0),
-    historyStatus.hasOlder === true,
-  ]);
-}
-
-function ownsHistoryOperation(currentOwner, requestOwner, controller, activePromise, promise) {
-  return currentOwner.controller === controller
-    && currentOwner.activationID === requestOwner.activationID
-    && currentOwner.channelID === requestOwner.channelID
-    && currentOwner.viewKey === requestOwner.viewKey
-    && Number(currentOwner.historyStatus?.generation || 0)
-      === Number(requestOwner.historyStatus?.generation || 0)
-    && activePromise === promise;
-}
-
-function rangeCovers(ranges = [], low, high) {
-  const start = Number(low || 0);
-  const end = Number(high || 0);
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start) return false;
-  return ranges.some((range) => Number(range?.lowSeq || 0) <= start && Number(range?.highSeq || 0) >= end);
-}
-
-export function currentEntryAuthority({ snapshot, historyStatus, bottomReady, availability, authoritativeEmpty }) {
-  const candidate = snapshot?.currentEntryCandidate;
-  const durableCandidateCovered = Boolean(
-    candidate
-    && candidate.local !== true
-    && rangeCovers(historyStatus?.coverage, candidate.seqHigh, historyStatus?.headSeq),
-  );
-  const localEchoTailCovered = Boolean(
-    candidate?.local === true
-    && (
-      authoritativeEmpty
-      || (bottomReady && rangeCovers(historyStatus?.coverage, historyStatus?.headSeq, historyStatus?.headSeq))
-    ),
-  );
-  if (availability !== 'readable'
-    || !candidate
-    || (!((bottomReady && durableCandidateCovered) || localEchoTailCovered))) return null;
-  return Object.freeze({
-    epoch: snapshot.epoch,
-    viewID: snapshot.viewID,
-    sourceRevision: Number(snapshot.sourceRevision || 0),
-    candidateID: candidate.id,
-  });
-}
-
-export function pendingArrivalEvents(arrivals, previousRevision) {
-  const revision = Number(arrivals?.revision || 0);
-  const events = arrivals?.events || [];
-  const baseRevision = Math.max(0, revision - events.length);
-  const firstIndex = Math.max(0, Number(previousRevision || 0) - baseRevision);
-  return events.slice(firstIndex)
-    .filter((event) => Number(event?.revision || 0) > previousRevision && Number(event?.revision || 0) <= revision);
-}
-
-// Reaching the latest content of one semantic view acknowledges the backlog
-// that view has actually installed, not only the rows that happen to be inside
-// the viewport at that instant. The set is bounded by the DOM-derived
-// installed high-water so a row that lands after the observation (seqHigh
-// above it) is never swept into this older receipt. Local echo rows carry no
-// durable identity and are excluded.
-export function installedTailReadRows(rows = [], installedHighSeq = 0, visibleRows = []) {
-  const high = Number(installedHighSeq || 0);
-  const byID = new Map();
-  const admit = (messageID, seqHigh) => {
-    const id = String(messageID || '');
-    const seq = Number(seqHigh || 0);
-    if (!id || !Number.isSafeInteger(seq) || seq <= 0 || seq > high) return;
-    byID.set(id, Math.max(byID.get(id) || 0, seq));
-  };
-  for (const row of visibleRows || []) admit(row?.messageID, row?.seqHigh);
-  for (const row of rows || []) {
-    if (!row || row.localState || row.body?.local === true) continue;
-    admit(row.id, row.seqHigh);
-  }
-  return Object.freeze([...byID].map(([messageID, seqHigh]) => Object.freeze({ messageID, seqHigh })));
-}
 
 function createController({ channelID, viewKey, viewSessions }) {
   const activationID = newId();
@@ -593,35 +468,21 @@ export function useReadingSession({
   const resolveArrivalsRef = useRef(null);
   const acknowledgeArrivalsRef = useRef(null);
   const arrivalsRef = useRef(arrivals);
-  const visibleTailEvidenceRef = useRef({
+  const visibleTailEvidenceRef = useRef(emptyDOMEvidence({
     owner: commitOwnerCandidate,
     controller,
     activationID: controller.activationID,
-    atTail: false,
-    surfaceVisible: false,
-    installedHighSeq: 0,
-    presentationRevision: 0,
-    sourceRevision: 0,
-    generation: 0,
-    headSeq: 0,
     notificationAuthorityRevision: 0,
     observationRevision: 0,
-    visibleRows: Object.freeze([]),
-    readPending: false,
-  });
+  }));
   // One channel mount owns one notification confirmation lifecycle even when
   // its semantic filter replaces the Reading controller. A backlog boundary
   // is born only from a legal committed DOM tail observation; follow events
   // are presentation-bounded. Pending delivery retains the immutable object.
-  const notificationConfirmationRef = useRef({
-    authorityRevision: Number(historyStatus.notificationAuthorityRevision || 0),
-    generation: Number(historyStatus.generation || 0),
-    needsBacklog: true,
-    requiredObservationRevision: 1,
-    confirmedBoundary: 0,
-    queuedPresented: null,
-    pending: null,
-  });
+  const notificationConfirmationRef = useRef(createNotificationConfirmation(
+    historyStatus.notificationAuthorityRevision,
+    historyStatus.generation,
+  ));
   const notificationObservationRevisionRef = useRef(0);
   const acknowledgeChannelNotificationsRef = useRef(null);
   const [viewabilityState, setViewabilityState] = useState(() => ({
@@ -676,8 +537,8 @@ export function useReadingSession({
     Number(historyStatus.headSeq || 0),
     Number(syncStatus.targetHead || 0),
   );
-  const historySourceKey = historySourceAuthorityKey(historyStatus);
-  const historySupplyKey = historySupplyProgressKey(historyStatus);
+  const historySourceKey = sourceAuthorityKey(historyStatus);
+  const historySupplyKey = supplyProgressKey(historyStatus);
   const authoritativeEmpty = hasManagedHistoryLifecycle
     && historyStatus.attached === true
     && Number(historyStatus.generation || 0) > 0
@@ -805,7 +666,7 @@ export function useReadingSession({
   useEffect(() => {
     const terminal = sourceTerminalAttemptRef.current;
     if (terminal && (terminal.controller !== controller
-      || terminal.sourceKey !== historySourceAuthorityKey(historyStatus))) {
+      || terminal.sourceKey !== sourceAuthorityKey(historyStatus))) {
       sourceTerminalAttemptRef.current = null;
     }
   }, [controller, historySourceKey]);
@@ -974,21 +835,15 @@ export function useReadingSession({
     }
     const requestOwner = committedOwnerRef.current;
     const first = snapshotRef.current.rows[0];
-    const key = `${first?.id || ''}:${first?.seqLow || 0}`;
-    const obligationKey = JSON.stringify([
-      intent,
-      Number(targetSeq || 0),
-      String(requiredVisibleCoverage?.messageID || ''),
-      Number(requiredVisibleCoverage?.seq || 0),
-      key,
-    ]);
-    const supplyProgressKey = historySupplyProgressKey(historyStatusRef.current);
-    const currentSourceKey = historySourceAuthorityKey(historyStatusRef.current);
+    const obligation = historyConsumerObligation({
+      intent, targetSeq, requiredVisibleCoverage, firstRow: first, status: historyStatusRef.current,
+    });
+    const { key: obligationKey, sourceKey: currentSourceKey, supplyKey: currentSupplyKey } = obligation;
     const sourceTerminal = sourceTerminalAttemptRef.current;
     if (sourceTerminal?.controller === controller
       && sourceTerminal.key === obligationKey
       && sourceTerminal.sourceKey === currentSourceKey
-      && sourceTerminal.progressKey === supplyProgressKey) {
+      && sourceTerminal.progressKey === currentSupplyKey) {
       return Promise.resolve({
         kind: 'exhausted',
         localOnly: sourceTerminal.localOnly === true,
@@ -1008,7 +863,7 @@ export function useReadingSession({
     if (urgency === HISTORY_URGENCY.interactive) failedAnticipatoryRequestRef.current = null;
     if (runwayRequestRef.current) {
       const active = runwayRequestRef.current;
-      const currentSupplyProgressKey = historySupplyProgressKey(historyStatusRef.current);
+      const currentSupplyProgressKey = supplyProgressKey(historyStatusRef.current);
       if (active.controller === controller
         && (active.sourceKey !== currentSourceKey || active.key !== obligationKey)) {
         const sourceChanged = active.sourceKey !== currentSourceKey;
@@ -1139,12 +994,9 @@ export function useReadingSession({
       }
       return active.promise;
     }
-    const admission = currentBlockingAdmission(
-      historyStatusRef.current,
-      channelID,
-      controller.activationID,
-      viewKey,
-    );
+    const admission = blockingAdmission(historyStatusRef.current, {
+      channelID, activationID: controller.activationID, viewKey,
+    });
     if (admission) {
       if (consumer === HISTORY_CONSUMER.viewportUnderfill) {
         const pending = deferredConsumerRecheckRef.current;
@@ -1188,9 +1040,11 @@ export function useReadingSession({
     }
     const epoch = historyEpochRef.current + 1;
     historyEpochRef.current = epoch;
-    const attemptSourceKey = historySourceAuthorityKey(historyStatusRef.current);
-    const attemptSupplyProgressKey = historySupplyProgressKey(historyStatusRef.current);
-    const attemptHistoryProgressKey = historyProgressKey(historyStatusRef.current);
+    const {
+      sourceKey: attemptSourceKey,
+      supplyKey: attemptSupplyProgressKey,
+      progressKey: attemptHistoryProgressKey,
+    } = obligation;
     diagnostic('debug', 'history.intent_started', {
       channelId: channelID,
       epoch,
@@ -1224,23 +1078,11 @@ export function useReadingSession({
     const abortController = new AbortController();
     let historyOperation = null;
     const activeSession = controller.getSnapshot().session;
-    const uiBaselineIDs = Object.freeze(snapshotRef.current.rows.map((row) => row.id));
-    const durableBaselineIDs = Object.freeze(snapshotRef.current.rows
-      .filter((row) => !row.localState && row.body?.local !== true)
-      .map((row) => row.id));
-    const historyRevealIntent = intent === HISTORY_INTENT.scrollHistory ? {
-      activationID: controller.activationID,
-      inputEpoch: activeSession.inputEpoch,
-      operationID: `history:${controller.activationID}:${epoch}`,
-      viewID: viewKey,
-      epoch: `${channelID}:${Number(historyStatusRef.current.generation || 0)}`,
-      baselinePresentationRevision: Number(snapshotRef.current.revision || 0),
-      uiBaselineIDs,
-      durableBaselineIDs,
-      anchorID: first?.id || '',
-      anchorSeq: Number(first?.seqLow || 0),
-      demandUnits: Math.max(1, Math.min(24, Number(demandUnits) || 1)),
-    } : null;
+    const revealIntent = historyRevealIntent({
+      intent, activationID: controller.activationID, inputEpoch: activeSession.inputEpoch,
+      epoch, viewKey, channelID,
+      status: historyStatusRef.current, snapshot: snapshotRef.current, demandUnits,
+    });
     const promise = Promise.resolve(requestPort({
       intent,
       urgency,
@@ -1253,7 +1095,7 @@ export function useReadingSession({
       reason,
       explicitRetry: reason === 'retry' || reason === 'retry-restore',
       viewSpec: historyViewSpec,
-      historyRevealIntent,
+      historyRevealIntent: revealIntent,
       onOperation(operation) {
         historyOperation = operation;
         const active = runwayRequestRef.current;
@@ -1277,7 +1119,7 @@ export function useReadingSession({
           currentStatus.attached === true
           && Number(currentStatus.generation || 0) > 0
         ))
-        && historySupplyProgressKey(currentStatus) === attemptSupplyProgressKey) {
+        && supplyProgressKey(currentStatus) === attemptSupplyProgressKey) {
         sourceTerminalAttemptRef.current = {
           controller,
           key: obligationKey,
@@ -1379,7 +1221,7 @@ export function useReadingSession({
       epoch,
       urgency,
       operation: historyOperation,
-      operationID: historyRevealIntent?.operationID || '',
+      operationID: revealIntent?.operationID || '',
     };
     return promise;
   }, [channelID, commitOwnerCandidate, controller, historyViewSpec, requestPort, viewKey]);
@@ -1426,12 +1268,9 @@ export function useReadingSession({
       if (!ownerCurrent) {
         deferredConsumerRecheckRef.current = null;
         underfill.resolve({ kind: 'cancelled', reason: 'underfill-owner-replaced' });
-      } else if (!currentBlockingAdmission(
-        historyStatus,
-        channelID,
-        controller.activationID,
-        viewKey,
-      )) {
+      } else if (!blockingAdmission(historyStatus, {
+        channelID, activationID: controller.activationID, viewKey,
+      })) {
         deferredConsumerRecheckRef.current = null;
         underfill.resolve({ kind: 'consumer-recheck', reason: 'admission-settled' });
       }
@@ -1448,12 +1287,9 @@ export function useReadingSession({
       deferredAdmissionDemandRef.current = null;
       return;
     }
-    if (currentBlockingAdmission(
-      historyStatus,
-      channelID,
-      controller.activationID,
-      viewKey,
-    )) return;
+    if (blockingAdmission(historyStatus, {
+      channelID, activationID: controller.activationID, viewKey,
+    })) return;
     deferredAdmissionDemandRef.current = null;
     void requestHistory(deferred.reason, deferred.urgency, {
       revealRows: deferred.revealRows,
@@ -1664,9 +1500,7 @@ export function useReadingSession({
     const current = controller.getSnapshot().session;
     const evidence = visibleTailEvidenceRef.current;
     if (owner.controller !== controller
-      || evidence.owner !== owner
-      || evidence.controller !== controller
-      || evidence.activationID !== current.activationID
+      || !evidenceBelongsTo(evidence, { owner, controller, activationID: current.activationID })
       || evidence.surfaceVisible !== true
       || !evidence.visibleRows?.length
       || document.visibilityState !== 'visible') return false;
@@ -1716,9 +1550,7 @@ export function useReadingSession({
     const current = controller.getSnapshot().session;
     const evidence = visibleTailEvidenceRef.current;
     if (owner.controller !== controller
-      || evidence.owner !== owner
-      || evidence.controller !== controller
-      || evidence.activationID !== current.activationID
+      || !evidenceBelongsTo(evidence, { owner, controller, activationID: current.activationID })
       || evidence.atTail !== true
       || evidence.surfaceVisible !== true
       || current.mode !== READING_MODE.following
@@ -1772,107 +1604,39 @@ export function useReadingSession({
     const current = controller.getSnapshot().session;
     const evidence = visibleTailEvidenceRef.current;
     if (owner.controller !== controller
-      || evidence.owner !== owner
-      || evidence.controller !== controller
-      || evidence.activationID !== current.activationID
+      || !evidenceBelongsTo(evidence, { owner, controller, activationID: current.activationID })
       || evidence.atTail !== true
       || evidence.surfaceVisible !== true
       || current.mode !== READING_MODE.following
       || document.visibilityState !== 'visible') return false;
-    const confirmation = notificationConfirmationRef.current;
-    const authorityRevision = Number(evidence.notificationAuthorityRevision || 0);
-    if (confirmation.authorityRevision !== authorityRevision) return false;
-
-    // A continuous confirmation is born only from an eligible related
-    // arrival that the current Presentation/DOM disposition has proved
-    // installed at this tail. Freeze that observation now; later retries do
-    // not borrow a newer Meta head or Presentation revision.
-    const proposedBoundary = Math.min(
-      Number(presentedBoundary || 0),
-      Number(evidence.installedHighSeq || 0),
-      Number(evidence.headSeq || 0),
-    );
-    if (proposedBoundary > confirmation.confirmedBoundary
-      && owner.historyStatus.messageCurrent === true
-      && Number(evidence.sourceRevision || 0) === Number(owner.historyStatus.presentationRevision || 0)) {
-      const proposed = Object.freeze({
-        channelId: channelID,
-        viewKey,
-        activationID: current.activationID,
-        authorityRevision,
-        generation: Number(evidence.generation || 0),
-        cause: 'presented-follow',
-        boundary: proposedBoundary,
-        presentationRevision: Number(evidence.presentationRevision || 0),
-        sourceRevision: Number(evidence.sourceRevision || 0),
-        installedHighSeq: Number(evidence.installedHighSeq || 0),
-        atTail: true,
-        following: true,
-        surfaceVisible: true,
-      });
-      if (!confirmation.queuedPresented
-        || proposed.boundary > confirmation.queuedPresented.boundary) {
-        confirmation.queuedPresented = proposed;
-      }
-    }
-
+    let confirmation = notificationConfirmationRef.current;
+    if (confirmation.authorityRevision !== Number(evidence.notificationAuthorityRevision || 0)) return false;
+    const context = {
+      channelID, viewKey, activationID: current.activationID, evidence,
+      attached: owner.historyStatus.attached,
+      messageCurrent: owner.historyStatus.messageCurrent,
+      presentationRevision: owner.historyStatus.presentationRevision,
+    };
+    confirmation = queuePresentedConfirmation(confirmation, context, presentedBoundary);
     let delivered = false;
-    // A rejected event is always retried first. A later browsing departure may
-    // meanwhile have armed one newer backlog observation, and one presented
-    // follow boundary can also be queued behind it, hence the bounded three
-    // deliveries through the same scalar reducer.
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      let event = confirmation.pending;
-      if (!event
-        && confirmation.needsBacklog
-        && Number(evidence.observationRevision || 0) >= confirmation.requiredObservationRevision
-        && owner.historyStatus.attached === true
-        && Number(evidence.generation || 0) > 0) {
-        // The backlog fact is born here, at the first legal committed DOM tail
-        // observation after it was armed. Freeze this observation's Meta head;
-        // attach/insertion renders before the tail cannot preselect a boundary.
-        confirmation.needsBacklog = false;
-        event = Object.freeze({
-          channelId: channelID,
-          viewKey,
-          activationID: current.activationID,
-          authorityRevision,
-          generation: Number(evidence.generation || 0),
-          cause: 'tail-backlog',
-          boundary: Math.max(0, Number(evidence.headSeq || 0)),
-          presentationRevision: Number(evidence.presentationRevision || 0),
-          sourceRevision: Number(evidence.sourceRevision || 0),
-          installedHighSeq: Number(evidence.installedHighSeq || 0),
-          atTail: true,
-          following: true,
-          surfaceVisible: true,
-        });
-      } else if (!event
-        && confirmation.queuedPresented?.boundary > confirmation.confirmedBoundary) {
-        event = confirmation.queuedPresented;
-      }
+      const next = nextNotificationConfirmation(confirmation, context);
+      confirmation = next.state;
+      notificationConfirmationRef.current = confirmation;
+      const { event } = next;
       if (!event) return delivered;
-      if (event.boundary <= 0 && event.cause === 'tail-backlog') {
-        confirmation.pending = null;
-        delivered = true;
-        continue;
-      }
-      const accepted = owner.markNotificationsRead?.(event, Object.freeze({
-        viewKey: event.viewKey,
-        activationID: event.activationID,
-      }));
-      if (accepted === false || accepted == null) {
-        confirmation.pending = event;
-        return false;
-      }
-      confirmation.pending = null;
-      confirmation.confirmedBoundary = Math.max(confirmation.confirmedBoundary, event.boundary);
-      if (confirmation.queuedPresented === event
-        || confirmation.queuedPresented?.boundary <= confirmation.confirmedBoundary) {
-        confirmation.queuedPresented = null;
-      }
+      const accepted = event.boundary <= 0 && event.cause === 'tail-backlog'
+        ? true
+        : owner.markNotificationsRead?.(event, Object.freeze({
+          viewKey: event.viewKey, activationID: event.activationID,
+        }));
+      const confirmed = accepted !== false && accepted != null;
+      confirmation = settleNotificationConfirmation(confirmation, event, confirmed);
+      notificationConfirmationRef.current = confirmation;
+      if (!confirmed) return false;
       delivered = true;
     }
+    notificationConfirmationRef.current = confirmation;
     return delivered;
   }, [channelID, controller, viewKey]);
   acknowledgeChannelNotificationsRef.current = acknowledgeChannelNotifications;
@@ -1883,9 +1647,7 @@ export function useReadingSession({
     const evidence = visibleTailEvidenceRef.current;
     const currentSnapshot = owner.snapshot;
     if (owner.controller !== controller
-      || evidence.owner !== owner
-      || evidence.controller !== controller
-      || evidence.activationID !== current.activationID
+      || !evidenceBelongsTo(evidence, { owner, controller, activationID: current.activationID })
       || evidence.atTail !== true
       || evidence.surfaceVisible !== true
       || current.mode !== READING_MODE.following
@@ -1956,83 +1718,29 @@ export function useReadingSession({
     const controllerChanged = previous.controller !== controller;
     const notificationAuthorityRevision = Number(historyStatus.notificationAuthorityRevision || 0);
     const notificationGeneration = Number(historyStatus.generation || 0);
-    let confirmation = notificationConfirmationRef.current;
-    if (confirmation.authorityRevision !== notificationAuthorityRevision
-      || confirmation.generation !== notificationGeneration) {
-      confirmation = {
+    notificationConfirmationRef.current = reconcileNotificationConfirmation(
+      notificationConfirmationRef.current,
+      {
         authorityRevision: notificationAuthorityRevision,
         generation: notificationGeneration,
-        needsBacklog: true,
-        requiredObservationRevision: notificationObservationRevisionRef.current + 1,
-        confirmedBoundary: 0,
-        queuedPresented: null,
-        pending: null,
-      };
-      notificationConfirmationRef.current = confirmation;
-    }
-    // A semantic activation replacement invalidates receipts owned by its
-    // predecessor. A deliberate departure from Following only arms a future
-    // backlog observation: any receipt that was already born remains the same
-    // immutable retry obligation while the person is browsing.
-    if (controllerChanged) {
-      confirmation.needsBacklog = true;
-      confirmation.requiredObservationRevision = notificationObservationRevisionRef.current + 1;
-      confirmation.queuedPresented = null;
-      confirmation.pending = null;
-    } else if (previous.session?.mode === READING_MODE.following
-      && session.mode !== READING_MODE.following) {
-      confirmation.needsBacklog = true;
-      confirmation.requiredObservationRevision = notificationObservationRevisionRef.current + 1;
-    }
-    if (confirmation.pending
-      && (confirmation.pending.activationID !== controller.activationID
-        || confirmation.pending.generation !== notificationGeneration)) {
-      confirmation.pending = null;
-    }
-    if (confirmation.queuedPresented
-      && (confirmation.queuedPresented.activationID !== controller.activationID
-        || confirmation.queuedPresented.generation !== notificationGeneration)) {
-      confirmation.queuedPresented = null;
-    }
-    const sameObservationAuthority = !controllerChanged
-      && previous.activationID === commitOwnerCandidate.activationID
-      && previous.channelID === commitOwnerCandidate.channelID
-      && previous.viewKey === commitOwnerCandidate.viewKey
-      && Number(previous.session?.inputEpoch || 0) === Number(session?.inputEpoch || 0)
-      && Number(previous.snapshot?.revision || 0) === Number(snapshot?.revision || 0)
-      && Number(previous.snapshot?.sourceRevision || 0) === Number(snapshot?.sourceRevision || 0)
-      && Number(previous.historyStatus?.generation || 0) === Number(historyStatus?.generation || 0);
-    if (sameObservationAuthority
-      && visibleTailEvidenceRef.current.owner === previous) {
-      // Controller persistence/geometry updates can render a new session
-      // object without changing what the DOM actually presents. Transfer the
-      // evidence only across that exact authority tuple.
-      visibleTailEvidenceRef.current = {
-        ...visibleTailEvidenceRef.current,
-        owner: commitOwnerCandidate,
-      };
-    } else if (controllerChanged
-      || (surfaceVisible !== true && visibleTailEvidenceRef.current.surfaceVisible !== true)) {
-      // A hidden committed surface is definitive negative visibility evidence
-      // for its own projection. A visible new projection deliberately keeps
-      // the preceding owner token, forcing a fresh DOM observation.
-      visibleTailEvidenceRef.current = {
-        owner: commitOwnerCandidate,
-        controller,
+        observationRevision: notificationObservationRevisionRef.current,
+        controllerChanged,
+        previousMode: previous.session?.mode,
+        currentMode: session.mode,
         activationID: controller.activationID,
-        atTail: false,
-        surfaceVisible: false,
-        installedHighSeq: 0,
-        presentationRevision: 0,
-        sourceRevision: 0,
-        generation: 0,
-        headSeq: 0,
+      },
+    );
+    visibleTailEvidenceRef.current = transferDOMEvidence(
+      visibleTailEvidenceRef.current,
+      previous,
+      commitOwnerCandidate,
+      {
+        controller,
+        surfaceVisible,
         notificationAuthorityRevision,
         observationRevision: notificationObservationRevisionRef.current,
-        visibleRows: Object.freeze([]),
-        readPending: false,
-      };
-    }
+      },
+    );
     if (controllerChanged) {
       arrivalCursorRef.current = { controller, revision: arrivalBaseline };
       arrivalDispositionRef.current = {
@@ -2116,12 +1824,9 @@ export function useReadingSession({
     const requestOperationID = activeRequest?.controller === controller
       ? String(activeRequest.operationID || '')
       : '';
-    const operationID = currentAdmissionOperationID(
-      historyStatus,
-      channelID,
-      controller.activationID,
-      viewKey,
-    ) || requestOperationID;
+    const operationID = admissionOperationID(historyStatus, {
+      channelID, activationID: controller.activationID, viewKey,
+    }) || requestOperationID;
     if (input.direction !== 'older') {
       activeRequest?.abortController?.abort('trusted-reverse-input');
       if (operationID) historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
@@ -2153,9 +1858,9 @@ export function useReadingSession({
       const requestOperationID = activeRequest?.controller === controller
         ? String(activeRequest.operationID || '')
         : '';
-      const operationID = currentAdmissionOperationID(
-        historyStatus, channelID, controller.activationID, viewKey,
-      ) || requestOperationID;
+      const operationID = admissionOperationID(historyStatus, {
+        channelID, activationID: controller.activationID, viewKey,
+      }) || requestOperationID;
       if (operationID) historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
       runwayRequestRef.current = null;
     }
@@ -2179,9 +1884,9 @@ export function useReadingSession({
     const requestOperationID = activeRequest?.controller === controller
       ? String(activeRequest.operationID || '')
       : '';
-    const operationID = currentAdmissionOperationID(
-      historyStatus, channelID, controller.activationID, viewKey,
-    ) || requestOperationID;
+    const operationID = admissionOperationID(historyStatus, {
+      channelID, activationID: controller.activationID, viewKey,
+    }) || requestOperationID;
     activeRequest?.abortController?.abort(`trusted-navigation-cancel:${input.reason || 'cancelled'}`);
     if (operationID) historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
     runwayRequestRef.current = null;
@@ -2324,22 +2029,15 @@ export function useReadingSession({
       }));
       const observationRevision = notificationObservationRevisionRef.current + 1;
       notificationObservationRevisionRef.current = observationRevision;
-      visibleTailEvidenceRef.current = {
+      visibleTailEvidenceRef.current = observedDOMEvidence({
         owner: commitOwnerCandidate,
         controller,
         activationID,
-        atTail: Boolean(observation.atTail),
-        surfaceVisible: observation.surfaceVisible === true,
-        installedHighSeq: Number(observation.installedHighSeq || 0),
-        presentationRevision: Number(snapshotRef.current.revision || 0),
-        sourceRevision: Number(snapshotRef.current.sourceRevision || 0),
-        generation: Number(historyStatusRef.current.generation || 0),
-        headSeq: Number(historyStatusRef.current.headSeq || 0),
-        notificationAuthorityRevision: Number(historyStatusRef.current.notificationAuthorityRevision || 0),
+        observation,
+        snapshot: snapshotRef.current,
+        historyStatus: historyStatusRef.current,
         observationRevision,
-        visibleRows: Object.freeze([...(observation.visibleRows || [])]),
-        readPending: false,
-      };
+      });
       // Installed-tail acknowledgement runs before arrival resolution so a
       // candidate at or below the reached tail is never first published as
       // unseen and then retracted inside the same observation.
@@ -2373,22 +2071,13 @@ export function useReadingSession({
     },
     onSurfaceVisibilityChange(visible) {
       if (committedOwnerRef.current !== commitOwnerCandidate || visible === true) return;
-      visibleTailEvidenceRef.current = {
+      visibleTailEvidenceRef.current = emptyDOMEvidence({
         owner: commitOwnerCandidate,
         controller,
         activationID: controller.getSnapshot().session.activationID,
-        atTail: false,
-        surfaceVisible: false,
-        installedHighSeq: 0,
-        presentationRevision: 0,
-        sourceRevision: 0,
-        generation: 0,
-        headSeq: 0,
         notificationAuthorityRevision: Number(historyStatusRef.current.notificationAuthorityRevision || 0),
         observationRevision: notificationObservationRevisionRef.current,
-        visibleRows: Object.freeze([]),
-        readPending: false,
-      };
+      });
       // Once the surface is hidden, the current committed projection is
       // definitive negative visibility evidence; do not leave its candidates
       // waiting for a layout observation that a hidden adapter will not emit.

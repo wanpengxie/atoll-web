@@ -14,10 +14,13 @@ Execution status on `refactor/frontend-subtractive-cleanup`:
 - C2 notification receipt extraction complete: Timeline now consumes the
   dedicated `useLiveArrivalReceipts` adapter and no longer owns consumer
   registration, visibility disposal, or arrival acknowledgement effects.
+- C3 complete: ReadingSession remains the sole semantic/persistent owner while
+  history obligations, notification confirmation, and DOM evidence are pure
+  value ports with explicit inputs and receipts.
 - E partially complete: tracked browser prototypes and diagnostic-only specs
   are deleted; the vendor directory now keeps one final package and one
   reproducible source patch instead of intermediate generations.
-- C1–C7 and E remain the active subtractive work. They require owner movement
+- C1, C4–C7, and E remain the active subtractive work. They require owner movement
   and deletion, not compatibility wrappers.
 
 ## Acceptance rule

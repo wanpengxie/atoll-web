@@ -4,7 +4,8 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { createHistoryDemandPort } from '../src/model/history-demand.js';
-import { currentEntryAuthority, installedTailReadRows, pendingArrivalEvents, useReadingSession } from '../src/ui/timeline/useReadingSession.js';
+import { useReadingSession } from '../src/ui/timeline/useReadingSession.js';
+import { currentEntryAuthority, installedTailReadRows, pendingArrivalEvents } from '../src/ui/timeline/dom-evidence-adapter.js';
 
 vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => {
   const { PresentationMessageList } = await import('./helpers/PresentationMessageList.jsx');
