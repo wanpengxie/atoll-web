@@ -10,7 +10,7 @@ const PAGE_SIZE = 100;
 // 个实例。谁活得比实例长，谁就该记——所以由 AppShell 拿着一张按频道的表，挂载时
 // 交进来、变了再交回去。文件区从整屏 tab 改成分屏之后这条才成立：以前每次切走
 // 都是真卸载，人回来恒从根目录重新往下点。
-export function useChannelFileBrowser({ channel, devices = [], disabled = false, onResource, initialLocation = null, onLocationChange }) {
+export function useChannelFileBrowser({ channel, devices = [], disabled = false, onResource, onFileOperation, initialLocation = null, onLocationChange }) {
   const defaultDaemonId = availableDefaultStorageDeviceId(channel, devices);
   const [daemonId, setDaemonId] = useState(initialLocation?.daemonId || defaultDaemonId);
   const [directory, setDirectory] = useState(initialLocation?.directory || '');
@@ -33,6 +33,11 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
   locationRef.current = locationKey;
   const entries = useMemo(() => directoryEntries(items, prefix), [items, prefix]);
   const selected = entries.find((entry) => entry.key === selectedKey) || null;
+  const performResource = useCallback((payload, access = 'read') => (
+    onFileOperation
+      ? onFileOperation({ channelId: channel?.id, access }, ({ resource }) => resource(payload))
+      : onResource(payload)
+  ), [channel?.id, onFileOperation, onResource]);
 
   // 下面两条都判"变了没有"而不是无条件写。挂载时无条件写等于把恢复来的位置立刻
   // 冲掉——恢复与重置会在同一次提交里打架，而重置恒在后面。频道换了是整个实例换
@@ -72,7 +77,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
 
   const load = useCallback(async ({ append = false, cursor = '', expectedLocation = locationKey } = {}) => {
     if (locationRef.current !== expectedLocation) return false;
-    if (!channel?.id || !daemonId || !deviceName || !channelName || disabled || !onResource) {
+    if (!channel?.id || !daemonId || !deviceName || !channelName || !onResource) {
       setItems([]); setNext(''); setStatus('ready');
       return true;
     }
@@ -80,9 +85,9 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
     setStatus(append ? 'loading-more' : 'loading');
     setError('');
     try {
-      const page = await onResource(fileListCommand({
+      const page = await performResource(fileListCommand({
         channelId: channel.id, deviceName, channelName, directory, cursor, limit: PAGE_SIZE,
-      }));
+      }), 'read');
       if (generation !== requestGeneration.current || locationRef.current !== expectedLocation) return false;
       const incoming = Array.isArray(page?.items) ? page.items : [];
       setItems((current) => {
@@ -105,7 +110,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
       setError(failure?.message || String(failure));
       return false;
     }
-  }, [channel?.id, channelName, daemonId, deviceName, directory, disabled, locationKey, onResource]);
+  }, [channel?.id, channelName, daemonId, deviceName, directory, locationKey, onResource, performResource]);
 
   useEffect(() => {
     setItems([]); setNext(''); setSelectedKey('');
@@ -128,12 +133,13 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
   const loadMore = useCallback(() => next && load({ append: true, cursor: next }), [load, next]);
 
   const createDirectory = useCallback(async (value) => {
+    if (disabled) throw new TypeError('当前频道不可写');
     const mutationLocation = locationKey;
     const name = directoryName(value);
     const address = fileAddress({ deviceName, channelName, path: `${normalizeDirectory(directory)}${name}` });
     setStatus('mutating'); setError('');
     try {
-      await onResource(createDirectoryResource({ channelId: channel.id, address }));
+      await performResource(createDirectoryResource({ channelId: channel.id, address }), 'write');
       await load({ expectedLocation: mutationLocation });
     } catch (failure) {
       if (locationRef.current === mutationLocation) {
@@ -141,14 +147,15 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
       }
       throw failure;
     }
-  }, [channel?.id, channelName, deviceName, directory, load, locationKey, onResource]);
+  }, [channel?.id, channelName, deviceName, directory, disabled, load, locationKey, performResource]);
 
   const deleteEntry = useCallback(async (entry) => {
     if (!entry?.resourceId) return;
+    if (disabled) throw new TypeError('当前频道不可写');
     const mutationLocation = locationKey;
     setStatus('mutating'); setError('');
     try {
-      await onResource(deleteFileResource({ channelId: channel.id, resourceId: entry.resourceId }));
+      await performResource(deleteFileResource({ channelId: channel.id, resourceId: entry.resourceId }), 'write');
       if (locationRef.current === mutationLocation) setSelectedKey('');
       await load({ expectedLocation: mutationLocation });
     } catch (failure) {
@@ -157,7 +164,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
       }
       throw failure;
     }
-  }, [channel?.id, load, locationKey, onResource]);
+  }, [channel?.id, disabled, load, locationKey, performResource]);
 
   return {
     daemonId, setDaemonId, activeDaemon, channelLabel: channelName || channel?.id || '', directory, prefix, locationKey,

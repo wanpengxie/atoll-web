@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { boundedPage, LIST_WINDOW_SIZE } from '../src/model/list-window.js';
 import { buildArtifactIndex } from '../src/model/artifacts.js';
@@ -135,7 +135,7 @@ describe('F6 预览生命周期预算', () => {
     expect(createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('关闭预览会取消 fetch，并释放晚到的 Object URL', async () => {
+  it('关闭预览会取消 fetch，且不为晚到的 Blob 创建 Object URL', async () => {
     let resolveBlob;
     const blobPromise = new Promise((resolve) => { resolveBlob = resolve; });
     let fetchSignal;
@@ -151,6 +151,8 @@ describe('F6 预览生命周期预算', () => {
     view.unmount();
     expect(fetchSignal.aborted).toBe(true);
     resolveBlob(new Blob(['1234567890'], { type: 'image/png' }));
-    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview'));
+    await act(async () => blobPromise);
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(revokeObjectURL).not.toHaveBeenCalled();
   });
 });

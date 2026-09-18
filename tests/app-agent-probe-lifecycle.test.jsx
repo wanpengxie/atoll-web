@@ -144,6 +144,19 @@ vi.mock('../src/app/hooks/useSubmissions.js', async () => {
         drafts: harness.drafts,
         draftFor: harness.stable.draftFor,
         updateDraft: harness.stable.no,
+        persistDraftAttachments: async (channelId, attachments, options = {}) => {
+          if (options.authorize && options.authorize() !== true) throw new Error('草稿附件授权已变化');
+          const current = harness.drafts.get(channelId) || { text: '', attachments: [] };
+          const merged = [...(current.attachments || [])];
+          for (const attachment of attachments) {
+            const index = merged.findIndex((row) => row.resource_id === attachment.resource_id);
+            if (index >= 0) merged[index] = attachment;
+            else merged.push(attachment);
+          }
+          const draft = { ...current, attachments: merged };
+          harness.drafts.set(channelId, draft);
+          return { revision: Number(current.revision || 0) + 1, draft };
+        },
         approvalStates: {},
         controlStates: {},
         send: harness.send,
@@ -264,6 +277,7 @@ async function mountOpenApp({ selectAgent = true, suspense = false } = {}) {
 
 describe('App automatic describe wiring', () => {
   beforeEach(() => {
+    localStorage.clear();
     harness.appShell = null;
     harness.wireOptions = null;
     harness.unauthorized = null;
@@ -397,12 +411,56 @@ describe('App automatic describe wiring', () => {
     await waitFor(() => expect(harness.uploadChannelFile).toHaveBeenCalledOnce());
     expect(harness.uploadChannelFile.mock.calls[0][0].uploadName).toBe('report-2.txt');
 
-    act(() => harness.appShell.workspace.resources.onAttach({ resource_id: 'manual', name: 'manual.txt' }));
+    await act(() => harness.appShell.workspace.resources.onAttach({ resource_id: 'manual', name: 'manual.txt' }));
     await act(async () => uploaded.resolve({ resource_id: 'uploaded', name: 'report-2.txt' }));
     await expect(upload).resolves.toEqual([{ resource_id: 'uploaded', name: 'report-2.txt' }]);
     await waitFor(() => expect(harness.appShell.workspace.attachments.map((row) => row.resource_id)).toEqual([
       'existing', 'manual', 'uploaded',
     ]));
+    expect(JSON.stringify(harness.appShell.workspace.attachments)).not.toContain('_atoll_world_epoch');
+    expect(JSON.stringify(harness.appShell.workspace.draft)).not.toContain('_atoll_world_epoch');
+    view.unmount();
+  });
+
+  it('does not project a persisted draft attachment from an older server world', async () => {
+    localStorage.setItem('atoll.server.boot.v1', 'boot-old');
+    harness.drafts.set('c1', {
+      text: '',
+      attachments: [{ resource_id: 'old-world', name: 'old.txt', _atoll_world_epoch: 'boot-old' }],
+    });
+    const view = await mountOpenApp({ selectAgent: false });
+    expect(harness.appShell.workspace.attachments.map((row) => row.resource_id)).toEqual(['old-world']);
+    await act(async () => harness.wireOptions.onAttach({ boot: 'boot-new', history_meta: [] }));
+    await waitFor(() => expect(harness.appShell.workspace.attachments).toEqual([]));
+    view.unmount();
+  });
+
+  it('retires a settled file preview when the server world changes', async () => {
+    localStorage.setItem('atoll.server.boot.v1', 'boot-old');
+    const view = await mountOpenApp({ selectAgent: false });
+    act(() => harness.appShell.workspace.resources.onPreview({
+      key: 'artifact-old', channelId: 'c1', resourceId: 'old-resource', name: 'old.txt',
+    }));
+    await waitFor(() => expect(harness.appShell.panel.value).toBe('artifact-focus'));
+    expect(harness.appShell.panel.host.artifacts.selected?.resourceId).toBe('old-resource');
+
+    await act(async () => harness.wireOptions.onAttach({ boot: 'boot-new', history_meta: [] }));
+    await waitFor(() => expect(harness.appShell.panel.value).toBe(''));
+    expect(harness.appShell.panel.host.artifacts.selected).toBeFalsy();
+    view.unmount();
+  });
+
+  it('retires settled file surfaces when channel content access is revoked', async () => {
+    const view = await mountOpenApp({ selectAgent: false });
+    act(() => harness.appShell.workspace.resources.onPreview({
+      key: 'artifact-revoked', channelId: 'c1', resourceId: 'revoked-resource', name: 'private.txt',
+    }));
+    await waitFor(() => expect(harness.appShell.panel.value).toBe('artifact-focus'));
+
+    harness.channelRows = [{ id: 'c1', name: 'Channel', open: true, access: 'access_denied', selfActorId: '' }];
+    act(() => harness.bumpFeed());
+    await waitFor(() => expect(harness.appShell.panel.value).toBe(''));
+    expect(harness.appShell.panel.host.artifacts.selected).toBeFalsy();
     view.unmount();
   });
 
@@ -419,6 +477,25 @@ describe('App automatic describe wiring', () => {
     await act(async () => uploaded.resolve({ resource_id: 'cancelled', name: 'cancelled.txt' }));
     await expect(upload).resolves.toEqual([]);
     expect(harness.appShell.workspace.attachments).toEqual([]);
+    view.unmount();
+  });
+
+  it('treats entering message edit as cancellation authority for a queued normal-draft upload', async () => {
+    const uploaded = deferred();
+    harness.uploadChannelFile.mockReturnValueOnce(uploaded.promise);
+    const view = await mountOpenApp({ selectAgent: false });
+
+    const upload = harness.appShell.workspace.onUploadAttachments([
+      new File(['upload'], 'must-not-attach.txt', { type: 'text/plain' }),
+    ]);
+    await waitFor(() => expect(harness.uploadChannelFile).toHaveBeenCalledOnce());
+    act(() => harness.appShell.workspace.onComposerEditChange({ sessionId: 'edit-1' }));
+    await act(async () => uploaded.resolve({ resource_id: 'edit-race', name: 'must-not-attach.txt' }));
+    await expect(upload).resolves.toEqual([]);
+    expect(harness.appShell.workspace.attachments).toEqual([]);
+    await expect(harness.appShell.workspace.onUploadAttachments([new File(['x'], 'x.txt')]))
+      .rejects.toThrow('编辑已有消息时不能上传普通草稿附件');
+    expect(harness.uploadChannelFile).toHaveBeenCalledOnce();
     view.unmount();
   });
 

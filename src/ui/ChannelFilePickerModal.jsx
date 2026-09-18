@@ -6,19 +6,24 @@ import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 import { useModalFocus } from './primitives/useModalFocus.js';
 
-export function ChannelFilePickerModal({ channel, devices = [], disabled = false, onResource, onChoose, onClose }) {
-  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource });
+export function ChannelFilePickerModal({ channel, devices = [], disabled = false, onResource, onFileOperation, onChoose, onClose }) {
+  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource, onFileOperation });
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
   useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
 
-  function choose(entry) {
+  async function choose(entry) {
+    if (disabled) { browser.setError('当前频道不可写'); return; }
     const mediaType = mediaTypeFromFileName(entry.name, entry.mediaType);
-    onChoose(attachmentFromResource({
-      resourceId: entry.resourceId, address: entry.resourceId,
-      file: { name: entry.name, type: mediaType, size: entry.size || 0 },
-    }));
-    onClose();
+    try {
+      await onChoose(attachmentFromResource({
+        resourceId: entry.resourceId, address: entry.resourceId,
+        file: { name: entry.name, type: mediaType, size: entry.size || 0 },
+      }));
+      onClose();
+    } catch (failure) {
+      browser.setError(failure?.message || String(failure));
+    }
   }
 
   return <div className="modal-backdrop attachment-picker-backdrop" data-modal-layer role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>

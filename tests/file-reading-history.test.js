@@ -24,9 +24,10 @@ describe('文件阅读历史', () => {
     for (let index = 0; index < FILE_READING_HISTORY_LIMIT + 3; index += 1) {
       rows = rememberFileRead(rows, { channelId: 'c0', resourceId: `file-${index}`, name: `${index}.txt`, ticket: 'secret' }, index);
     }
-    writeFileReadingHistory('alice', rows, storage);
-    expect(readFileReadingHistory('alice', storage)).toHaveLength(FILE_READING_HISTORY_LIMIT);
-    expect(readFileReadingHistory('bob', storage)).toEqual([]);
-    expect(JSON.stringify(readFileReadingHistory('alice', storage))).not.toContain('secret');
+    writeFileReadingHistory('alice', 'boot-a', rows, storage);
+    expect(readFileReadingHistory('alice', 'boot-a', storage)).toHaveLength(FILE_READING_HISTORY_LIMIT);
+    expect(readFileReadingHistory('bob', 'boot-a', storage)).toEqual([]);
+    expect(JSON.stringify(readFileReadingHistory('alice', 'boot-a', storage))).not.toContain('secret');
+    expect(readFileReadingHistory('alice', 'boot-b', storage)).toEqual([]);
   });
 });

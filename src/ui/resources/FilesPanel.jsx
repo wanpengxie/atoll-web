@@ -6,7 +6,7 @@ import { PanelCard } from '../primitives/PanelCard.jsx';
 import { SelectMenu } from '../primitives/SelectMenu.jsx';
 
 
-export function FilesPanel({ channel, devices = [], disabled, onResource, onAttach }) {
+export function FilesPanel({ channel, devices = [], disabled, attachDisabled = disabled, attachDisabledReason = '', onResource, onFileOperation, onAttach }) {
   const [error, setError] = useState('');
   const defaultDaemonId = availableDefaultStorageDeviceId(channel, devices);
   const [daemonId, setDaemonId] = useState(defaultDaemonId);
@@ -14,6 +14,9 @@ export function FilesPanel({ channel, devices = [], disabled, onResource, onAtta
   const [path, setPath] = useState('uploads/demo.txt');
   const [files, setFiles] = useState([]);
   const [uploadState, setUploadState] = useState('idle');
+  const runOperation = (options, effect) => (onFileOperation
+    ? onFileOperation({ channelId: channel.id, ...options }, effect)
+    : effect({ resource: onResource, fetch: (input, init) => fetch(input, init) }));
 
   useEffect(() => {
     setDaemonId(defaultDaemonId);
@@ -28,17 +31,21 @@ export function FilesPanel({ channel, devices = [], disabled, onResource, onAtta
     setError('');
     setUploadState('ticket');
     try {
-      const deviceName = devices.find((row) => row.id === daemonId)?.name;
-      const address = fileAddress({ deviceName, channelName: channel.qualified_name || channel.name || channel.id, path });
-      const ticket = await onResource(createFileTicket({ channelId: channel.id, address }));
-      if (!ticket?.ticket) throw new TypeError('服务端没有返回上传 ticket');
-      setUploadState('uploading');
-      const response = await fetch(fileTransferURL(channel.id, ticket.ticket), { method: 'PUT', credentials: 'include', body: file });
-      if (!response.ok) { const body = await response.json().catch(() => ({})); throw new TypeError(body.detail || `上传失败 (${response.status})`); }
-      setUploadState('confirming');
-      const id = ticket.resource_id || ticket.id || address;
-      const readable = await onResource(readFileTicket({ channelId: channel.id, resourceId: id }));
-      if (!readable?.ticket) throw new TypeError('PUT 已完成，但资源尚未返回可读 ticket；不会重复上传字节');
+      const completed = await runOperation({ access: 'write' }, async (operation) => {
+        const deviceName = devices.find((row) => row.id === daemonId)?.name;
+        const address = fileAddress({ deviceName, channelName: channel.qualified_name || channel.name || channel.id, path });
+        const ticket = await operation.resource(createFileTicket({ channelId: channel.id, address }));
+        if (!ticket?.ticket) throw new TypeError('服务端没有返回上传 ticket');
+        setUploadState('uploading');
+        const response = await operation.fetch(fileTransferURL(channel.id, ticket.ticket), { method: 'PUT', credentials: 'include', body: file });
+        if (!response.ok) { const body = await response.json().catch(() => ({})); throw new TypeError(body.detail || `上传失败 (${response.status})`); }
+        setUploadState('confirming');
+        const id = ticket.resource_id || ticket.id || address;
+        const readable = await operation.resource(readFileTicket({ channelId: channel.id, resourceId: id }));
+        if (!readable?.ticket) throw new TypeError('PUT 已完成，但资源尚未返回可读 ticket；不会重复上传字节');
+        return { id, address };
+      });
+      const { id, address } = completed;
       const row = { resourceId: id, address, file: { name: file.name, type: file.type, size: file.size }, state: 'available' };
       setFiles((current) => [row, ...current.filter((item) => item.resourceId !== id)]);
       setUploadState('completed');
@@ -48,14 +55,25 @@ export function FilesPanel({ channel, devices = [], disabled, onResource, onAtta
     }
   }
 
+  async function attach(row) {
+    setError('');
+    try {
+      await onAttach(attachmentFromResource(row), channel.id);
+    } catch (failure) {
+      setError(failure?.message || String(failure));
+    }
+  }
+
   async function download(row) {
     setError('');
     try {
-      const ticket = await onResource(readFileTicket({ channelId: channel.id, resourceId: row.resourceId }));
-      if (!ticket?.ticket) throw new TypeError('服务端没有返回下载 ticket');
-      const response = await fetch(fileTransferURL(channel.id, ticket.ticket), { credentials: 'include' });
-      if (!response.ok) { const body = await response.json().catch(() => ({})); throw new TypeError(body.detail || `下载失败 (${response.status})`); }
-      const blob = await response.blob();
+      const blob = await runOperation({ access: 'read' }, async (operation) => {
+        const ticket = await operation.resource(readFileTicket({ channelId: channel.id, resourceId: row.resourceId }));
+        if (!ticket?.ticket) throw new TypeError('服务端没有返回下载 ticket');
+        const response = await operation.fetch(fileTransferURL(channel.id, ticket.ticket), { credentials: 'include' });
+        if (!response.ok) { const body = await response.json().catch(() => ({})); throw new TypeError(body.detail || `下载失败 (${response.status})`); }
+        return response.blob();
+      });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -78,7 +96,7 @@ export function FilesPanel({ channel, devices = [], disabled, onResource, onAtta
       {uploadState !== 'idle' && <p className={`upload-state state-${uploadState}`}>{({ ticket: '正在创建票据', uploading: '正在上传字节', confirming: 'PUT 已完成，确认资源可读', completed: '上传完成', error: '上传失败，可重新获取票据' })[uploadState]}</p>}
     </PanelCard>
     <PanelCard title="本次会话文件">
-      {files.map((row) => <div className="file-row" key={row.resourceId}><div><strong>{row.file.name}</strong><small>{row.file.type || 'application/octet-stream'} · {row.file.size} bytes</small><code>{row.resourceId}</code></div><div><button type="button" onClick={() => download(row)}>下载</button><button type="button" className="primary-button" onClick={() => onAttach(attachmentFromResource(row))}>附加到消息</button></div></div>)}
+      {files.map((row) => <div className="file-row" key={row.resourceId}><div><strong>{row.file.name}</strong><small>{row.file.type || 'application/octet-stream'} · {row.file.size} bytes</small><code>{row.resourceId}</code></div><div><button type="button" onClick={() => download(row)}>下载</button><button type="button" className="primary-button" disabled={attachDisabled} title={attachDisabled ? attachDisabledReason : ''} onClick={() => void attach(row)}>附加到消息</button></div></div>)}
       {!files.length && <p className="governance-empty">本次会话还没有上传文件。</p>}
     </PanelCard>
   </>;

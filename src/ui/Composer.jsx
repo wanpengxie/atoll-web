@@ -970,7 +970,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   }
 
   async function uploadFiles(files) {
-    if (!files.length || !onUploadAttachments) return;
+    if (!files.length || !onUploadAttachments || editModeRef.current) return;
     attachmentJobsRef.current += 1;
     setAttachmentBusy(true);
     setError('');
@@ -999,14 +999,14 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   }
 
   function onDragEnter(event) {
-    if (!canTransmit || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
+    if (editMode || !canTransmit || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
     event.preventDefault();
     dragDepthRef.current += 1;
     setFileDragActive(true);
   }
 
   function onDragOver(event) {
-    if (!canTransmit || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
+    if (editMode || !canTransmit || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
   }
@@ -1023,13 +1023,13 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     event.preventDefault();
     dragDepthRef.current = 0;
     setFileDragActive(false);
-    if (!canTransmit || !onUploadAttachments) return;
+    if (editMode || !canTransmit || !onUploadAttachments) return;
     await uploadFiles([...(event.dataTransfer.files || [])]);
   }
 
   async function onPaste(event) {
     const files = [...(event.clipboardData?.files || [])];
-    if (!files.length || !canTransmit || !onUploadAttachments) return;
+    if (!files.length || editMode || !canTransmit || !onUploadAttachments) return;
     // 只有剪贴板确实带文件时才接管；普通文字和 Markdown 仍由 Tiptap 处理。
     event.preventDefault();
     await uploadFiles(files);
@@ -1110,17 +1110,17 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
         </div>
         <div className="composer-toolbar">
           <div className="composer-tools" aria-label="附件操作">
-            <span className={`composer-file-control${!canTransmit || attachmentBusy || !onUploadAttachments ? ' is-disabled' : ''}`} title={canTransmit ? '上传本机文件到频道' : '连接可用后才能上传本机文件'}>
+            <span className={`composer-file-control${editMode || !canTransmit || attachmentBusy || !onUploadAttachments ? ' is-disabled' : ''}`} title={editMode ? '完成或取消编辑后才能上传普通草稿附件' : canTransmit ? '上传本机文件到频道' : '连接可用后才能上传本机文件'}>
               <input
                 type="file"
                 multiple
                 aria-label={attachmentBusy ? '正在上传本机文件' : '上传本机文件到频道'}
-                disabled={!canTransmit || attachmentBusy || !onUploadAttachments}
+                disabled={Boolean(editMode) || !canTransmit || attachmentBusy || !onUploadAttachments}
                 onChange={chooseLocalFiles}
               />
               {attachmentBusy ? <span className="attachment-tool-busy" aria-hidden="true" /> : <Upload size={17} strokeWidth={1.8} aria-hidden="true" />}
             </span>
-            <button type="button" aria-label="从频道文件选择" title="从频道文件选择" disabled={!canTransmit || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
+            <button type="button" aria-label="从频道文件选择" title={editMode ? '完成或取消编辑后才能附加频道文件' : '从频道文件选择'} disabled={Boolean(editMode) || !canTransmit || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <div className="composer-submit-actions">
             {replyTarget?.senderKind === 'human'

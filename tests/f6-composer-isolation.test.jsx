@@ -427,3 +427,18 @@ it('does not send a text-only snapshot while a selected attachment is still uplo
   await uploading;
   await vi.waitFor(() => expect(screen.getByRole('button', { name: '发送' }).disabled).toBe(false));
 });
+
+it('disables every normal-draft attachment entry while editing an existing message', () => {
+  const onUploadAttachments = vi.fn();
+  render(<Composer
+    channelId="c0"
+    roster={[{ id: 'me', kind: 'human', name: '我' }]}
+    selfId="me"
+    onUploadAttachments={onUploadAttachments}
+    onOpenChannelFiles={vi.fn()}
+    editMode={{ session: { id: 'edit-1', targetId: 'target-1', phase: 'editing', text: '旧消息' }, onSave: vi.fn(), onAbandon: vi.fn() }}
+  />);
+  expect(screen.getByLabelText('上传本机文件到频道').disabled).toBe(true);
+  expect(screen.getByRole('button', { name: '从频道文件选择' }).disabled).toBe(true);
+  expect(onUploadAttachments).not.toHaveBeenCalled();
+});

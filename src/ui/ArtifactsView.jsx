@@ -7,13 +7,21 @@ import { FileBreadcrumbs, FileBrowserRows } from './files/ChannelFileBrowser.jsx
 import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 
-export function ArtifactsView({ channel, devices = [], disabled, onResource, onAttach, onPreview, recentFiles = [], visible = true, initialLocation = null, onLocationChange, onClose, autoFocusOnOpen = false }) {
+export function ArtifactsView({ channel, devices = [], disabled, attachDisabled = disabled, attachDisabledReason = '', onResource, onFileOperation, onAttach, onPreview, recentFiles = [], visible = true, initialLocation = null, onLocationChange, onClose, autoFocusOnOpen = false }) {
   const surfaceRef = useRef(null);
-  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource, initialLocation, onLocationChange });
+  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource, onFileOperation, initialLocation, onLocationChange });
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [uploading, setUploading] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderName, setFolderName] = useState('');
+  const runOperation = (options, effect) => (onFileOperation
+    ? onFileOperation({ channelId: channel.id, ...options }, effect)
+    : effect({
+      signal: undefined,
+      authorize: () => true,
+      resource: onResource,
+      fetch: (input, init) => fetch(input, init),
+    }));
 
   useEffect(() => {
     if (!visible || !autoFocusOnOpen) return undefined;
@@ -28,7 +36,15 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
     const uploadLocation = browser.locationKey;
     browser.setError(''); setUploading(true);
     try {
-      const attachment = await uploadChannelFile({ file, channel, deviceName: browser.activeDaemon?.name, directory: browser.directory, onResource });
+      const attachment = await runOperation({ access: 'write' }, (operation) => uploadChannelFile({
+        file,
+        channel,
+        deviceName: browser.activeDaemon?.name,
+        directory: browser.directory,
+        onResource: operation.resource,
+        signal: operation.signal,
+        authorize: (phase) => operation.authorize(phase === 'settle' ? 'submit' : phase, { requireTransport: phase !== 'settle' }),
+      }));
       setUploadedMeta((current) => new Map(current).set(attachment.address, { name: file.name, type: attachment.media_type, size: file.size }));
       await browser.refreshLocation(uploadLocation);
     } catch (failure) {
@@ -42,11 +58,14 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
     const actionLocation = browser.locationKey;
     browser.setError('');
     try {
-      const receipt = await onResource(readFileTicket({ channelId: channel.id, resourceId: entry.resourceId }));
-      if (!receipt?.ticket) throw new TypeError('服务端没有返回下载凭据');
-      const response = await fetch(fileTransferURL(channel.id, receipt.ticket), { credentials: 'include' });
-      if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
-      const url = URL.createObjectURL(await response.blob());
+      const blob = await runOperation({ access: 'read' }, async (operation) => {
+        const receipt = await operation.resource(readFileTicket({ channelId: channel.id, resourceId: entry.resourceId }));
+        if (!receipt?.ticket) throw new TypeError('服务端没有返回下载凭据');
+        const response = await operation.fetch(fileTransferURL(channel.id, receipt.ticket), { credentials: 'include' });
+        if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
+        return response.blob();
+      });
+      const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url; anchor.download = entry.name; anchor.click();
       setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -67,12 +86,16 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
     });
   }
 
-  function attachFile(entry) {
+  async function attachFile(entry) {
     const meta = uploadedMeta.get(entry.resourceId);
-    onAttach(attachmentFromResource({
-      resourceId: entry.resourceId, address: entry.resourceId,
-      file: { name: meta?.name || entry.name, type: mediaTypeFromFileName(entry.name, meta?.type || entry.mediaType), size: meta?.size ?? entry.size ?? 0 },
-    }));
+    try {
+      await onAttach(attachmentFromResource({
+        resourceId: entry.resourceId, address: entry.resourceId,
+        file: { name: meta?.name || entry.name, type: mediaTypeFromFileName(entry.name, meta?.type || entry.mediaType), size: meta?.size ?? entry.size ?? 0 },
+      }), channel.id);
+    } catch (failure) {
+      browser.setError(failure?.message || String(failure));
+    }
   }
 
   async function submitFolder(event) {
@@ -92,9 +115,9 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
     return <div className="channel-file-actions" role="cell">
       {entry.kind === 'file' && <>
         <button type="button" aria-label="下载" title={`下载 ${entry.name}`} onClick={(event) => { event.stopPropagation(); void download(entry); }}><Download size={15} /></button>
-        <button type="button" aria-label="附加" title={`附加 ${entry.name}`} onClick={(event) => { event.stopPropagation(); attachFile(entry); }}><Paperclip size={15} /></button>
+        <button type="button" aria-label="附加" disabled={attachDisabled} title={attachDisabled ? attachDisabledReason : `附加 ${entry.name}`} onClick={(event) => { event.stopPropagation(); void attachFile(entry); }}><Paperclip size={15} /></button>
       </>}
-      <button type="button" className="danger" aria-label="删除" title={`删除 ${entry.name}`} onClick={(event) => { event.stopPropagation(); void remove(entry); }}><Trash2 size={15} /></button>
+      <button type="button" className="danger" aria-label="删除" disabled={disabled} title={`删除 ${entry.name}`} onClick={(event) => { event.stopPropagation(); void remove(entry); }}><Trash2 size={15} /></button>
     </div>;
   }
 
@@ -113,7 +136,7 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
           ? <SelectMenu ariaLabel="文件挂载设备" value={browser.daemonId} placeholder="没有可用设备" options={devices.map((row) => ({ value: row.id, label: row.name || row.id, description: row.id }))} onChange={browser.setDaemonId} />
           : browser.activeDaemon && <span className="finder-device" title={browser.activeDaemon.id}>{browser.activeDaemon.name || browser.activeDaemon.id}</span>}
         <button type="button" className="finder-tool-button labeled" disabled={disabled || !browser.daemonId || browser.busy} onClick={() => setCreatingFolder(true)}><FolderPlus size={15} />新建文件夹</button>
-        <button type="button" className="finder-tool-button" aria-label="刷新文件目录" disabled={disabled || !browser.daemonId || browser.busy} onClick={browser.refresh}><RefreshCw size={15} /></button>
+        <button type="button" className="finder-tool-button" aria-label="刷新文件目录" disabled={!browser.daemonId || browser.busy} onClick={browser.refresh}><RefreshCw size={15} /></button>
         <span className={`finder-upload finder-native-upload${disabled || !browser.daemonId || uploading ? ' is-disabled' : ''}`}>
           <input aria-label="选择要上传到当前目录的文件" type="file" disabled={disabled || !browser.daemonId || uploading} onChange={chooseFile} />
           <span aria-hidden="true"><Upload size={14} />{uploading ? '上传中…' : '上传'}</span>
@@ -123,7 +146,7 @@ export function ArtifactsView({ channel, devices = [], disabled, onResource, onA
     </div>
     {creatingFolder && <form className="new-folder-form" onSubmit={submitFolder}>
       <label>新文件夹名称<input autoFocus value={folderName} onChange={(event) => setFolderName(event.target.value)} /></label>
-      <button type="submit" disabled={!folderName.trim() || browser.busy}>创建</button>
+      <button type="submit" disabled={disabled || !folderName.trim() || browser.busy}>创建</button>
       <button type="button" onClick={() => { setCreatingFolder(false); setFolderName(''); }}>取消</button>
     </form>}
     <div className="workspace-view-scroll channel-files-scroll">

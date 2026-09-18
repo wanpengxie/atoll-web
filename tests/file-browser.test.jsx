@@ -180,4 +180,54 @@ describe('channel file browser', () => {
     expect(rowNames()[0]).toContain('zulu.txt');
     expect(screen.getByRole('columnheader', { name: /大小/ }).getAttribute('aria-sort')).toBe('ascending');
   });
+
+  it('keeps reads available while disabling every mutating row action', async () => {
+    const onResource = vi.fn(async () => ({ items: [
+      { id: `${root}read-only.txt`, meta: { node_type: 'regular', size: 1 } },
+    ] }));
+    render(<ArtifactsView channel={channel} devices={daemons} disabled attachDisabled onResource={onResource} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    await screen.findByRole('row', { name: /read-only.txt/ });
+    expect(screen.getByRole('button', { name: '附加' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '删除' }).disabled).toBe(true);
+    expect(onResource).toHaveBeenCalledWith(expect.objectContaining({ op: 'list' }));
+  });
+
+  it('routes directory reads through the file operation owner port', async () => {
+    const onResource = vi.fn(async () => ({ items: [] }));
+    const onFileOperation = vi.fn(async (identity, effect) => effect({ resource: onResource }));
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onFileOperation={onFileOperation} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    await screen.findByText('当前目录为空');
+    expect(onFileOperation).toHaveBeenCalledWith(
+      { channelId: 'c0', access: 'read' },
+      expect.any(Function),
+    );
+  });
+
+  it('does not issue a delete when the captured file owner is stale', async () => {
+    const user = userEvent.setup();
+    const onResource = vi.fn(async () => ({ items: [
+      { id: `${root}owned.txt`, meta: { node_type: 'regular' } },
+    ] }));
+    const onFileOperation = vi.fn(async (identity, effect) => {
+      if (identity.access === 'write') throw new Error('服务端数据世界已变化');
+      return effect({ resource: onResource });
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onFileOperation={onFileOperation} onAttach={vi.fn()} onPreview={vi.fn()} />);
+    await user.click((await screen.findByRole('row', { name: /owned.txt/ })).querySelector('button[title^="删除"]'));
+    expect((await screen.findByRole('alert')).textContent).toContain('服务端数据世界已变化');
+    expect(onResource).not.toHaveBeenCalledWith(expect.objectContaining({ op: 'delete' }));
+  });
+
+  it('keeps a rejected durable attachment out of the composer projection', async () => {
+    const user = userEvent.setup();
+    const onAttach = vi.fn(async () => { throw new Error('草稿所有权已变化'); });
+    const onResource = vi.fn(async () => ({ items: [
+      { id: `${root}draft.txt`, meta: { node_type: 'regular' } },
+    ] }));
+    render(<ArtifactsView channel={channel} devices={daemons} onResource={onResource} onAttach={onAttach} onPreview={vi.fn()} />);
+    await user.click(await screen.findByRole('button', { name: '附加' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('草稿所有权已变化');
+    expect(onAttach).toHaveBeenCalledOnce();
+  });
 });

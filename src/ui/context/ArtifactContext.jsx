@@ -89,7 +89,7 @@ export function looksLikeText(bytes) {
   }
 }
 
-export function useArtifactPreview(rawArtifact, onResource) {
+export function useArtifactPreview(rawArtifact, onResource, onFileOperation) {
   const [preview, setPreview] = useState({ phase: 'idle', url: '', text: '', error: '' });
   const artifact = resolveArtifact(rawArtifact);
   const previewKind = artifact?.preview;
@@ -107,40 +107,49 @@ export function useArtifactPreview(rawArtifact, onResource) {
       return () => controller.abort();
     }
     setPreview({ phase: 'loading', url: '', text: '', error: '' });
-    onResource(readFileTicket({ channelId: artifact.channelId, resourceId: artifact.resourceId })).then(async (receipt) => {
-      if (!alive) return;
+    const load = async (operation) => {
+      const receipt = await operation.resource(readFileTicket({ channelId: artifact.channelId, resourceId: artifact.resourceId }));
       // 只需要票。地址是调用方自己带来的（消息里存的就是路径），回执不必再说一遍。
       if (!receipt?.ticket) throw new TypeError('服务端没有返回可读凭据');
-      const response = await fetch(fileTransferURL(artifact.channelId, receipt.ticket), { credentials: 'include', signal: controller.signal });
+      const response = await operation.fetch(fileTransferURL(artifact.channelId, receipt.ticket), { credentials: 'include' });
       if (!response.ok) throw new TypeError(`预览读取失败 (${response.status})`);
       const declared = Number(response.headers?.get?.('content-length') || 0);
       if (declared > limit) throw new RangeError(sizeError(limit));
       if (previewKind === 'text') {
-        const value = await readBoundedText(response, limit, controller.signal);
-        if (alive) setPreview({ phase: 'ready', text: value, url: '', error: '' });
-      } else if (sniff) {
+        return { phase: 'ready', text: await readBoundedText(response, limit, operation.signal), url: '', error: '' };
+      }
+      if (sniff) {
         const buffer = await response.arrayBuffer();
         if (buffer.byteLength > limit) throw new RangeError(sizeError(limit));
         const value = looksLikeText(new Uint8Array(buffer));
-        if (!alive) return;
-        if (value === null) setPreview({ phase: 'unsupported', url: '', text: '', error: '' });
-        else setPreview({ phase: 'ready', text: value, url: '', error: '', sniffed: true });
-      } else {
-        // 节点的 /files 下载口一律回 application/octet-stream 加 attachment（那是
-        // 下载安全的刻意设计），照单全收的 blob 就是 octet-stream，浏览器拿它喂
-        // <object>/<img> 会当成"不知道是什么"直接下载。预览要的是我们判定出的类型，
-        // 所以 blob 按 artifact.mediaType 重新打上 type。
-        const raw = await response.blob();
-        if (raw.size > limit) throw new RangeError(sizeError(limit));
-        const blob = typedBlob(raw, artifact.mediaType);
-        objectURL = URL.createObjectURL(blob);
-        if (!alive) URL.revokeObjectURL(objectURL);
-        else setPreview({ phase: 'ready', url: objectURL, text: '', error: '' });
+        return value === null
+          ? { phase: 'unsupported', url: '', text: '', error: '' }
+          : { phase: 'ready', text: value, url: '', error: '', sniffed: true };
       }
+      const raw = await response.blob();
+      if (raw.size > limit) throw new RangeError(sizeError(limit));
+      return { phase: 'ready', raw };
+    };
+    const pending = onFileOperation
+      ? onFileOperation({ channelId: artifact.channelId, access: 'read', signal: controller.signal }, load)
+      : load({
+        signal: controller.signal,
+        resource: onResource,
+        fetch: (input, init = {}) => fetch(input, { ...init, signal: controller.signal }),
+      });
+    pending.then((result) => {
+      if (!alive) return;
+      if (!result.raw) { setPreview(result); return; }
+      // 节点的 /files 下载口一律回 application/octet-stream 加 attachment（那是
+      // 下载安全的刻意设计）；预览只在 owner settle 后创建 renderer handle。
+      const blob = typedBlob(result.raw, artifact.mediaType);
+      objectURL = URL.createObjectURL(blob);
+      if (!alive) URL.revokeObjectURL(objectURL);
+      else setPreview({ phase: 'ready', url: objectURL, text: '', error: '' });
     }).catch((error) => { if (alive && error?.name !== 'AbortError') setPreview({ phase: 'error', url: '', text: '', error: error.message || String(error) }); });
     return () => { alive = false; controller.abort(); if (objectURL) URL.revokeObjectURL(objectURL); };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- resolveArtifact 每次返回新对象，按稳定键重跑
-  }, [resourceKey, onResource]);
+  }, [resourceKey, onFileOperation, onResource]);
   return preview;
 }
 
@@ -296,9 +305,9 @@ export function ArtifactPreviewBody({ artifact: rawArtifact, preview, textMode, 
   </>;
 }
 
-export function ArtifactContext({ artifact: rawArtifact, onResource, onDownload, canGoBack = false, onBack, onClose }) {
+export function ArtifactContext({ artifact: rawArtifact, onResource, onFileOperation, onDownload, canGoBack = false, onBack, onClose }) {
   const artifact = resolveArtifact(rawArtifact);
-  const preview = useArtifactPreview(artifact, onResource);
+  const preview = useArtifactPreview(artifact, onResource, onFileOperation);
   const format = textPreviewFormat(artifact || {});
   const targetLine = Number.isSafeInteger(artifact?.line) && artifact.line > 0 ? artifact.line : 0;
   const [textMode, setTextMode] = useState(format.rich && !targetLine ? 'preview' : 'source');

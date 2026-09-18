@@ -8,10 +8,12 @@ const harness = vi.hoisted(() => ({
   promise: null,
   resolve: null,
   composerProps: new Map(),
+  artifactsProps: null,
+  timelineProps: null,
 }));
 
 vi.mock('../src/ui/ChannelList.jsx', () => ({ ChannelList: () => null }));
-vi.mock('../src/ui/ArtifactsView.jsx', () => ({ ArtifactsView: () => null }));
+vi.mock('../src/ui/ArtifactsView.jsx', () => ({ ArtifactsView: (props) => { harness.artifactsProps = props; return null; } }));
 vi.mock('../src/ui/TasksView.jsx', () => ({ TasksView: () => null }));
 vi.mock('../src/ui/TerminalView.jsx', () => ({ TerminalView: () => null }));
 vi.mock('../src/app/RightPanelHost.jsx', () => ({ RightPanelHost: () => null }));
@@ -22,7 +24,9 @@ vi.mock('../src/ui/Composer.jsx', () => ({
   },
 }));
 vi.mock('../src/ui/Timeline.jsx', () => ({
-  Timeline: ({ state, composer }) => {
+  Timeline: (props) => {
+    const { state, composer } = props;
+    harness.timelineProps = props;
     if (state.channelId === harness.blockChannel && harness.promise) throw harness.promise;
     return <section id="workspace-panel-dynamic" role="tabpanel" aria-labelledby="workspace-tab-dynamic">{composer}</section>;
   },
@@ -36,6 +40,7 @@ function owner(channelId, principal = 'principal-a') {
     onPreviewAttachment: vi.fn(), onRemoveAttachment: vi.fn(), onClearAttachments: vi.fn(),
     onUploadAttachments: vi.fn(), onOpenChannelFiles: vi.fn(),
   };
+  const resourceActions = { onAttach: vi.fn(), onFileOperation: vi.fn(), onResource: vi.fn() };
   return {
     actions,
     props: {
@@ -49,7 +54,7 @@ function owner(channelId, principal = 'principal-a') {
         channel: { id: channelId, name: channelId }, view: 'dynamic', onViewChange: vi.fn(), access: 'member_active',
         state: { channelId, turns: new Map(), lastSeq: 0 }, history: {}, roster: [], selfId: principal, pending: [],
         approvalStates: {}, controlStates: {}, capabilityIndex: new Map(), attachments: [], draft: {}, draftRevision: 0,
-        resources: {}, tasks: { items: [] }, agentSelection: {},
+        resources: resourceActions, tasks: { items: [] }, agentSelection: {},
         ...actions,
       },
       notices: {},
@@ -64,6 +69,8 @@ afterEach(() => {
   harness.promise = null;
   harness.resolve = null;
   harness.composerProps.clear();
+  harness.artifactsProps = null;
+  harness.timelineProps = null;
 });
 
 describe('AppShell committed Composer action port', () => {
@@ -147,5 +154,20 @@ describe('AppShell committed Composer action port', () => {
     expect(a1.actions.onDraftChange).toHaveBeenCalledTimes(1);
     expect(b.actions.onDraftChange).toHaveBeenCalledTimes(1);
     expect(a2.actions.onDraftChange).toHaveBeenCalledWith({ text: 'a2' });
+  });
+
+  it('rejects channel-file attachment while an existing message edit owns the composer', async () => {
+    const current = owner('c0');
+    current.props.workspace.view = 'artifacts';
+    render(<AppShell {...current.props} />);
+    await waitFor(() => expect(harness.artifactsProps).toBeTruthy());
+    act(() => harness.timelineProps.onComposerEditChange({ sessionId: 'edit-1' }));
+    await waitFor(() => expect(harness.artifactsProps.attachDisabled).toBe(true));
+    await expect(harness.artifactsProps.onAttach({ resource_id: 'file-1' }, 'c0'))
+      .rejects.toThrow('编辑已有消息时不能附加频道文件');
+    await expect(harness.composerProps.get('c0').onUploadAttachments([new File(['x'], 'x.txt')]))
+      .rejects.toThrow('编辑已有消息时不能上传普通草稿附件');
+    expect(current.props.workspace.resources.onAttach).not.toHaveBeenCalled();
+    expect(current.actions.onUploadAttachments).not.toHaveBeenCalled();
   });
 });

@@ -1,8 +1,8 @@
 const STORAGE_PREFIX = 'atoll.web.file-reading-history.v1.';
 export const FILE_READING_HISTORY_LIMIT = 24;
 
-function storageKey(principalId) {
-  return `${STORAGE_PREFIX}${encodeURIComponent(String(principalId || ''))}`;
+function storageKey(principalId, worldEpoch) {
+  return `${STORAGE_PREFIX}${encodeURIComponent(String(principalId || ''))}.${encodeURIComponent(String(worldEpoch || ''))}`;
 }
 
 function safeEntry(value) {
@@ -34,20 +34,20 @@ export function rememberFileRead(history, artifact, openedAt = Date.now()) {
   return [next, ...rows].slice(0, FILE_READING_HISTORY_LIMIT);
 }
 
-export function readFileReadingHistory(principalId, storage = globalThis.localStorage) {
-  if (!principalId) return [];
+export function readFileReadingHistory(principalId, worldEpoch, storage = globalThis.localStorage) {
+  if (!principalId || !worldEpoch) return [];
   try {
-    const value = JSON.parse(storage?.getItem(storageKey(principalId)) || '[]');
+    const value = JSON.parse(storage?.getItem(storageKey(principalId, worldEpoch)) || '[]');
     return (Array.isArray(value) ? value : []).map(safeEntry).filter(Boolean).slice(0, FILE_READING_HISTORY_LIMIT);
   } catch {
     return [];
   }
 }
 
-export function writeFileReadingHistory(principalId, history, storage = globalThis.localStorage) {
-  if (!principalId) return;
+export function writeFileReadingHistory(principalId, worldEpoch, history, storage = globalThis.localStorage) {
+  if (!principalId || !worldEpoch) return;
   try {
     const rows = (Array.isArray(history) ? history : []).map(safeEntry).filter(Boolean).slice(0, FILE_READING_HISTORY_LIMIT);
-    storage?.setItem(storageKey(principalId), JSON.stringify(rows));
+    storage?.setItem(storageKey(principalId, worldEpoch), JSON.stringify(rows));
   } catch { /* private mode / quota: 当前标签页内的 React 状态仍然可用 */ }
 }

@@ -83,6 +83,32 @@ describe('预览面板', () => {
     expect(object.getAttribute('data')).toBe('blob:x');
     expect(object.textContent).toContain('不能内嵌显示 PDF');
   });
+
+  it('does not publish a renderer handle when owner settlement rejects the completed read', async () => {
+    const createObjectURL = vi.fn(() => 'blob:stale');
+    vi.stubGlobal('URL', Object.assign(Object.create(URL), { createObjectURL, revokeObjectURL: vi.fn() }));
+    const onFileOperation = vi.fn(async (identity, effect) => {
+      await effect({
+        signal: identity.signal,
+        resource: async () => ({ ticket: 'read-ticket' }),
+        fetch: async () => ({
+          ok: true,
+          headers: { get: () => null },
+          blob: async () => new Blob(['image'], { type: 'image/png' }),
+        }),
+      });
+      throw new Error('频道授权事实已变化');
+    });
+    render(<ArtifactContext
+      artifact={{ name: 'stale.png', mediaType: 'image/png', preview: 'image', resourceId: 'r-stale', channelId: 'c0', size: 5 }}
+      onResource={vi.fn()}
+      onFileOperation={onFileOperation}
+      onClose={() => {}}
+    />);
+    expect(await screen.findByText('频道授权事实已变化')).toBeTruthy();
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(onFileOperation.mock.calls[0][0]).toMatchObject({ channelId: 'c0', access: 'read' });
+  });
 });
 
 describe('blob 类型', () => {

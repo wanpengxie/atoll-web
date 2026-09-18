@@ -330,6 +330,10 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }, [workspace.channel, workspace.view, dynamicVisible, terminalActionReady, navigation.activeChannelId]);
 
   useEffect(() => setComposerEdit(null), [navigation.activeChannelId]);
+  useLayoutEffect(() => {
+    workspace.onComposerEditChange?.(composerEdit);
+    return () => workspace.onComposerEditChange?.(null);
+  }, [composerEdit, workspace.onComposerEditChange]);
   useEffect(() => {
     if (!composerEdit || !navigation.activeChannelId) return;
     setReplyTargets((current) => ({ ...current, [navigation.activeChannelId]: null }));
@@ -354,10 +358,20 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     onPreviewAttachment: workspace.onPreviewAttachment,
     onRemoveAttachment: workspace.onRemoveAttachment,
     onClearAttachments: workspace.onClearAttachments,
-    onUploadAttachments: workspace.onUploadAttachments,
-    onOpenChannelFiles: workspace.onOpenChannelFiles,
+    onUploadAttachments: (files) => (composerEdit
+      ? Promise.reject(new TypeError('编辑已有消息时不能上传普通草稿附件；请先完成或取消编辑'))
+      : workspace.onUploadAttachments?.(files)),
+    onOpenChannelFiles: () => workspace.onOpenChannelFiles?.({ editing: Boolean(composerEdit) }),
     onCancelReply: clearReply,
     onReplySent: clearReply,
+  };
+  const fileAttachDisabled = writeDisabled || Boolean(composerEdit);
+  const fileAttachDisabledReason = composerEdit
+    ? '编辑已有消息时不能附加频道文件；请先完成或取消编辑'
+    : disabledReason;
+  const attachFileToDraft = (attachment, channelId = navigation.activeChannelId) => {
+    if (composerEdit) return Promise.reject(new TypeError(fileAttachDisabledReason));
+    return workspace.resources.onAttach?.(attachment, channelId);
   };
   useLayoutEffect(() => {
     const committed = Object.freeze({ ownerKey: composerPort.ownerKey, ...composerActionTargets });
@@ -459,7 +473,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
             选中都在这棵树里，卸一次人就得从根目录重新点回来。按频道 key 重挂，
             所以换频道时位置从 fileLocationsRef 里恢复，而不是靠这棵树活着。 */}
         {filesEverOpened[navigation.activeChannelId] && workspace.channel && contentVisible
-          && <Suspense fallback={<section className="split-loading" role="status">正在加载文件…</section>}><ArtifactsView key={`files-${navigation.activeChannelId}`} channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} onResource={workspace.resources.onResource} onAttach={workspace.resources.onAttach} onPreview={workspace.resources.onPreview} recentFiles={workspace.resources.recentFiles} visible={filesOpen} initialLocation={fileLocationsRef.current.get(navigation.activeChannelId) || null} onLocationChange={rememberFileLocation} onClose={toggleFiles} autoFocusOnOpen={singleSurfaceShell} /></Suspense>}
+          && <Suspense fallback={<section className="split-loading" role="status">正在加载文件…</section>}><ArtifactsView key={`files-${navigation.activeChannelId}`} channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} attachDisabled={fileAttachDisabled} attachDisabledReason={fileAttachDisabledReason} onResource={workspace.resources.onResource} onFileOperation={workspace.resources.onFileOperation} onAttach={attachFileToDraft} onPreview={workspace.resources.onPreview} recentFiles={workspace.resources.recentFiles} visible={filesOpen} initialLocation={fileLocationsRef.current.get(navigation.activeChannelId) || null} onLocationChange={rememberFileLocation} onClose={toggleFiles} autoFocusOnOpen={singleSurfaceShell} /></Suspense>}
         {/* 恒只挂当前频道这一块。切走就卸载——**这是安全的**，因为终端的真相
             恒在服务端：shell 由宽限期保住，屏幕由会话的回放环保住，attach 时
             先回放再转直播。上一版为了不黑屏把 N 块常驻在 DOM 里，那是把真相
@@ -470,6 +484,6 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
       {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <Suspense fallback={<section className="split-loading" role="status">正在加载任务…</section>}><TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /></Suspense> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}
     </main>
     {workspace.channel && contentVisible && <button type="button" className={`reading-history-edge-tab${panel.value === 'reading-history' ? ' active' : ''}`} aria-label="打开最近阅读" title="最近阅读" onClick={() => panel.open('reading-history')}>最近</button>}
-    {panel.value && <Suspense fallback={null}><RightPanelHost {...panel.host} /></Suspense>}
+    {panel.value && <Suspense fallback={null}><RightPanelHost {...panel.host} artifacts={{ ...panel.host.artifacts, onAttach: attachFileToDraft, attachDisabled: fileAttachDisabled, attachDisabledReason: fileAttachDisabledReason }} /></Suspense>}
   </SurfaceShell>;
 }
