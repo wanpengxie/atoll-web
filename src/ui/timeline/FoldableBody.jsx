@@ -77,7 +77,7 @@ function countLines(value) {
 //   exempt    —— 当前阅读上下文明确要求展开的位置（例如已打开过程详情的那轮）；
 //   overflow  —— 源文本按稳定规则超过阈值。
 // 只有 overflow 成立才会出现按钮；exempt 的正文默认展开，但读者仍可手动收起。
-export function FoldableBody({ id, text = '', exempt = false, expanded, onToggle, className = '', children }) {
+export function FoldableBody({ id, text = '', exempt = false, automaticExpanded = false, expanded, onToggle, className = '', children }) {
   const value = String(text || '');
   const canFold = foldCandidate(value);
   const folded = canFold && (expanded === false || (expanded !== true && !exempt));
@@ -148,7 +148,10 @@ export function FoldableBody({ id, text = '', exempt = false, expanded, onToggle
     onToggle?.(id, folded, event.currentTarget);
   }, [folded, id, onToggle]);
 
-  return <div className={`message-fold${folded ? ' is-folded' : ''} ${className}`.trim()}>
+  return <div
+    className={`message-fold${folded ? ' is-folded' : ''} ${className}`.trim()}
+    data-automatic-expanded={canFold && automaticExpanded && expanded !== false ? 'true' : undefined}
+  >
     <div ref={contentRef} className="message-fold-content">{children}</div>
     {canFold && <button ref={toggleRef} type="button" className="message-fold-toggle" data-fold-id={id} aria-expanded={!folded} onClick={toggle}>
       <span aria-hidden="true">⌄</span>

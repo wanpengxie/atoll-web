@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { apply, createChannelState, fold, orderedTimeline } from '../src/model/fold.js';
 import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental, scopeEntries, TIMELINE_SCOPE } from '../src/model/timeline-scope.js';
+import { projectTimeline } from '../src/model/timeline-projection.js';
 
 const base = {
   ts: 1,
@@ -91,6 +92,29 @@ describe('timeline scope', () => {
     apply(state, { channel_id: 'c0', seq: 2, envelope: env('second', 'event', 'human.note') }, 'me');
     expect(relatedEnvelopeIdsIncremental(state, 'me').has('second')).toBe(true);
     state.rows[Symbol.iterator] = iterate;
+  });
+
+  it('keeps the exact edit replacement candidate out until reciprocal handoff', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 1, envelope: env('old', 'request', 'agent.ask', { payload: { text: 'old' } }) });
+    apply(state, { channel_id: 'c0', seq: 2, envelope: env('old-p', 'response', 'agent.ask', {
+      parent_id: 'old', sender: { kind: 'agent', id: 'agent' }, payload: { status: 'processing' },
+    }) });
+    apply(state, { channel_id: 'c0', seq: 3, envelope: env('replacement', 'request', 'agent.replace', {
+      payload: { target: 'old', old_text: 'old', new_text: 'new' },
+    }) });
+    apply(state, { channel_id: 'c0', seq: 4, envelope: env('replacement-p', 'response', 'agent.replace', {
+      parent_id: 'replacement', sender: { kind: 'agent', id: 'agent' }, payload: { status: 'processing' },
+    }) });
+
+    const unrestricted = projectTimeline(state, { scope: TIMELINE_SCOPE.all, editingTargetId: 'old' });
+    const pending = projectTimeline(state, {
+      scope: TIMELINE_SCOPE.all,
+      editingTargetId: 'old',
+      editingReplacementId: 'replacement',
+    });
+    expect(unrestricted.items.map((entry) => entry.turn?.requestId)).toEqual(['old', 'replacement']);
+    expect(pending.items.map((entry) => entry.turn?.requestId)).toEqual(['old']);
   });
 });
 

@@ -37,9 +37,13 @@ function withoutUiProtocol(entry) {
   return { ...entry, thread: entry.thread.filter((item) => !isUiProtocolType(item.turn?.request?.type)) };
 }
 
-function timelineEntryVisible(entry, editingTargetId) {
+function timelineEntryVisible(entry, editingTargetId, editingReplacementId) {
   if (entry.kind === 'standalone' && entry.envelope?.type === 'terminal.session') return false;
   if (entry.kind !== 'turn') return true;
+  // The edit command may be materialized before the target's reciprocal
+  // terminal arrives. Keep that exact candidate out of Presentation until the
+  // edit transaction can replace old→new in one committed visual slot.
+  if (editingReplacementId && entry.turn?.requestId === editingReplacementId) return false;
   return timelineTurnVisible(entry.turn, editingTargetId);
 }
 
@@ -51,6 +55,7 @@ export function projectTimeline(state, {
   selfId = '',
   actorFilter = new Set(),
   editingTargetId = '',
+  editingReplacementId = '',
   showNarration = false,
   presentation = null,
   presentationAdmission = null,
@@ -64,7 +69,7 @@ export function projectTimeline(state, {
   const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
   const mine = scope === TIMELINE_SCOPE.mine;
   const cacheKey = JSON.stringify([
-    scope, selfId, [...(actorFilter || [])].sort(), editingTargetId, showNarration, incremental,
+    scope, selfId, [...(actorFilter || [])].sort(), editingTargetId, editingReplacementId, showNarration, incremental,
   ]);
   let stateCache = projectionCache.get(state);
   if (!stateCache) {
@@ -81,7 +86,7 @@ export function projectTimeline(state, {
     const scoped = [];
     const filtered = [];
     for (const rawEntry of orderedTimeline(state)) {
-      if (!timelineEntryVisible(rawEntry, editingTargetId)) continue;
+      if (!timelineEntryVisible(rawEntry, editingTargetId, editingReplacementId)) continue;
       allEntries.push(rawEntry);
       const entry = mine ? withoutUiProtocol(rawEntry) : rawEntry;
       if (!entry || (related && !entryMatchesScope(entry, related))) continue;

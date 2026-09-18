@@ -169,13 +169,14 @@ function readonlyIndex(source) {
   return Object.freeze(api);
 }
 
-function candidateOf(entry, previous, next, preservedContinuation, contentVersion) {
+function candidateOf(entry, previous, next, preservedContinuation, contentVersion, visualSlotID = '') {
   const bounds = boundsOf(entry);
   const timestamp = timestampOf(entry);
   const nextTimestamp = timestampOf(next);
   const localState = entry?.local ? String((entry.turn?.request || entry.envelope)?.local_submission_state || 'queued') : '';
   const candidate = {
     id: identityOf(entry),
+    visualSlotID: visualSlotID || identityOf(entry),
     seqLow: bounds.low,
     seqHigh: bounds.high,
     kind: entry?.kind === 'narration' ? 'boundary' : entry?.kind === 'turn' ? 'turn' : 'notice',
@@ -195,12 +196,58 @@ function candidateOf(entry, previous, next, preservedContinuation, contentVersio
     currentEntryEligible: currentEntryEligible(entry),
   };
   candidate.signature = [
-    candidate.id, candidate.seqLow, candidate.seqHigh, candidate.kind, candidate.actorID,
+    candidate.id, candidate.visualSlotID, candidate.seqLow, candidate.seqHigh, candidate.kind, candidate.actorID,
     candidate.timestamp, candidate.dayKey, candidate.boundaryAfterTimestamp,
     candidate.continuation ? 1 : 0, candidate.contentRevision, candidate.layoutClass,
     candidate.settled ? 1 : 0, candidate.localState, candidate.currentEntryEligible ? 1 : 0,
   ].join('\u001f');
   return candidate;
+}
+
+function reciprocalReplacement(oldEntry, newEntry, oldID, newID) {
+  if (oldEntry?.kind !== 'turn' || newEntry?.kind !== 'turn') return false;
+  if (newEntry.turn?.request?.type !== TYPES.agentReplace) return false;
+  const target = String(argsOf(newEntry.turn.request)?.target || '');
+  const terminal = argsOf(oldEntry.turn?.terminal);
+  const replacedBy = String(terminal?.replaced_by ?? terminal?.value?.replaced_by ?? '');
+  return target === oldID && replacedBy === newID;
+}
+
+// A replacement is allowed to inherit geometry only when Presentation itself
+// observes one committed row leave and its reciprocal successor enter the same
+// visual position in the same view/epoch. Protocol ancestry alone is not
+// enough: a filtered successor or one folded into another stable root is not a
+// replacement row in this Presentation and receives no slot handoff.
+function replacementSlots(owner, entries, ordered, viewChanged, epoch) {
+  if (viewChanged || owner.snapshot.epoch !== epoch || ordered.length === 0) return new Map();
+  const previousIDs = owner.snapshot.orderedIDs;
+  const previousCounts = new Map();
+  const nextCounts = new Map();
+  for (const id of previousIDs) previousCounts.set(id, (previousCounts.get(id) || 0) + 1);
+  for (const id of ordered) nextCounts.set(id, (nextCounts.get(id) || 0) + 1);
+  const slots = new Map();
+  const neighbour = (ids, index, admitted, direction) => {
+    for (let cursor = index + direction; cursor >= 0 && cursor < ids.length; cursor += direction) {
+      if (admitted.has(ids[cursor])) return ids[cursor];
+    }
+    return '';
+  };
+  for (let index = 0; index < ordered.length; index += 1) {
+    const newID = ordered[index];
+    const newEntry = entries[index];
+    const oldID = String(argsOf(newEntry?.turn?.request)?.target || '');
+    const oldIndex = owner.indexesByID.get(oldID);
+    if (!oldID || !Number.isInteger(oldIndex) || oldID === newID) continue;
+    if (previousCounts.get(oldID) !== 1 || nextCounts.get(newID) !== 1) continue;
+    if (nextCounts.has(oldID) || previousCounts.has(newID)) continue;
+    const oldEntry = owner.entriesByID.get(oldID);
+    if (!reciprocalReplacement(oldEntry, newEntry, oldID, newID)) continue;
+    const sameVisualPosition = neighbour(previousIDs, oldIndex, nextCounts, -1) === neighbour(ordered, index, previousCounts, -1)
+      && neighbour(previousIDs, oldIndex, nextCounts, 1) === neighbour(ordered, index, previousCounts, 1);
+    if (!sameVisualPosition) continue;
+    slots.set(newID, owner.rowsByID.get(oldID)?.visualSlotID || oldID);
+  }
+  return slots;
 }
 
 function materialize(candidate, entry) {
@@ -314,7 +361,14 @@ function evaluatePresentation(owner, entries = [], {
       const entry = entriesByID.get(id);
       const previousRow = rowsByID.get(id);
       if (!Number.isInteger(index) || !entry || !previousRow) continue;
-      const candidate = candidateOf(entry, entries[index - 1], entries[index + 1], previousRow.continuation, contentVersions.get(id));
+      const candidate = candidateOf(
+        entry,
+        entries[index - 1],
+        entries[index + 1],
+        previousRow.continuation,
+        contentVersions.get(id),
+        previousRow.visualSlotID || id,
+      );
       if (nextSignatures.get(id) === candidate.signature) continue;
       nextRows.set(id, materialize(candidate, entry));
       nextSignatures.set(id, candidate.signature);
@@ -359,14 +413,23 @@ function evaluatePresentation(owner, entries = [], {
   const nextEntries = new Map();
   const nextIndexes = new Map();
   const nextEligibility = new Map();
-  const ordered = [];
+  const preparedEntries = [...entries];
+  const ordered = preparedEntries.map(identityOf);
+  const visualSlots = replacementSlots(owner, preparedEntries, ordered, viewChanged, epoch);
   const inserted = [];
   const updated = [];
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
+  for (let index = 0; index < preparedEntries.length; index += 1) {
+    const entry = preparedEntries[index];
     const id = identityOf(entry);
     const previousRow = rowsByID.get(id);
-    const candidate = candidateOf(entry, entries[index - 1], entries[index + 1], previousRow?.continuation, contentVersions.get(id));
+    const candidate = candidateOf(
+      entry,
+      preparedEntries[index - 1],
+      preparedEntries[index + 1],
+      previousRow?.continuation,
+      contentVersions.get(id),
+      visualSlots.get(id) || previousRow?.visualSlotID || id,
+    );
     const unchanged = signatures.get(id) === candidate.signature;
     const row = unchanged ? previousRow : materialize(candidate, entry);
     if (!previousRow) inserted.push(id);
@@ -376,7 +439,6 @@ function evaluatePresentation(owner, entries = [], {
     nextEntries.set(id, entry);
     nextIndexes.set(id, index);
     nextEligibility.set(id, candidate.currentEntryEligible);
-    ordered.push(id);
   }
   const removed = [...rowsByID.keys()].filter((id) => !nextRows.has(id));
   const orderChanged = ordered.length !== snapshot.orderedIDs.length

@@ -278,24 +278,50 @@ function RowContent({ row, revision, renderRow }) {
   });
 }
 
-const MessageRow = memo(function MessageRow({ row, revision, renderRow, presentationState }) {
+const MessageRow = memo(function MessageRow({ row, revision, renderRow, presentationState, preserveReplacementGeometry }) {
+  const shellRef = useRef(null);
+  const visualSlotID = String(row.visualSlotID || row.id);
+  // This ref is commit evidence only. An abandoned render may read the last
+  // committed shell geometry, but it cannot publish a new slot or height.
+  const committedGeometryRef = useRef({ semanticID: String(row.id), visualSlotID, blockSize: 0, heldBlockSize: 0 });
+  const committed = committedGeometryRef.current;
+  const inheritsCommittedSlot = preserveReplacementGeometry === true
+    && committed.visualSlotID === visualSlotID
+    && committed.semanticID !== String(row.id);
+  const heldBlockSize = preserveReplacementGeometry !== true
+    ? 0
+    : inheritsCommittedSlot
+      ? committed.blockSize
+      : committed.semanticID === String(row.id) && committed.visualSlotID === visualSlotID
+        ? committed.heldBlockSize
+        : 0;
   useLayoutEffect(() => {
     traceReadingAdapter('row-commit', { rowID: row.id, revision });
-  }, [revision, row.id]);
+    committedGeometryRef.current = {
+      semanticID: String(row.id),
+      visualSlotID,
+      blockSize: Number(shellRef.current?.getBoundingClientRect?.().height || 0),
+      heldBlockSize,
+    };
+  }, [heldBlockSize, revision, row.id, visualSlotID]);
   return <MessageLayoutScope rowID={row.id}>
     <div
+      ref={shellRef}
       data-presentation-row-id={row.id}
+      data-visual-slot-id={visualSlotID}
       data-presentation-state={presentationState || undefined}
       className="presentation-row-shell"
+      style={heldBlockSize > 0 ? { minBlockSize: `${heldBlockSize}px` } : undefined}
     >
-      <RowErrorBoundary revision={revision}>
+      <RowErrorBoundary key={row.id} revision={revision}>
         <RowContent row={row} revision={revision} renderRow={renderRow} />
       </RowErrorBoundary>
     </div>
   </MessageLayoutScope>;
 }, (left, right) => left.row === right.row
   && left.revision === right.revision
-  && left.presentationState === right.presentationState);
+  && left.presentationState === right.presentationState
+  && left.preserveReplacementGeometry === right.preserveReplacementGeometry);
 
 function initialLocation(rows, session) {
   if (session.mode === 'following' || !session.bookmark) return { atEnd: true };
@@ -1907,6 +1933,7 @@ function MessageListBody({
         revision={itemMeasurementKey(index, row)}
         renderRow={renderRow}
         presentationState={rowPresentationState?.(row) || ''}
+        preserveReplacementGeometry={reading.session.mode === READING_MODE.browsing}
       />
     </>
   ) : null, [
@@ -1915,10 +1942,11 @@ function MessageListBody({
     frontierRowID,
     historyStartBoundary,
     itemMeasurementKey,
+    reading.session.mode,
     renderRow,
     rowPresentationState,
   ]);
-  const keyExtractor = useCallback((_index, row) => row.id, []);
+  const keyExtractor = useCallback((_index, row) => row.visualSlotID || row.id, []);
   const onFormalRangeStateChange = useCallback((state) => {
     const previous = formalRangeStatesRef.current.get(formalRangeOwner);
     if (previous?.generation === state.generation

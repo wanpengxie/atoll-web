@@ -232,6 +232,36 @@ describe('agent control v7 information architecture', () => {
     expect(document.querySelector('[data-virtuoso-scroller]')).toBeNull();
   });
 
+  it('keeps the editor until replaced_by has its reciprocal replacement request', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('work', 'reciprocal edit'));
+    add(state, 2, response('work-p', 'work', { status: 'processing', turn_id: 'turn-edit' }));
+    const onComposerEditChange = vi.fn();
+    const props = {
+      state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active',
+      capabilityIndex: capabilities(), onTaskControl: vi.fn(async () => 'hold-edit'), onComposerEditChange,
+    };
+    const view = render(<Timeline {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      session: expect.objectContaining({ targetId: 'work' }),
+    })));
+
+    add(state, 3, response('work-replaced', 'work', { status: 'completed', replaced_by: 'replacement' }));
+    view.rerender(<Timeline {...props} />);
+    expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      session: expect.objectContaining({ targetId: 'work' }),
+    }));
+
+    add(state, 4, {
+      ...request('replacement', 'replacement text'),
+      type: 'agent.replace',
+      payload: { target: 'work', old_text: 'reciprocal edit', new_text: 'replacement text' },
+    });
+    view.rerender(<Timeline {...props} />);
+    expect(onComposerEditChange).toHaveBeenLastCalledWith(null);
+  });
+
   it('groups queue positions per agent and cancels a group through hold, cancels, unhold', async () => {
     const state = createChannelState('c0');
     add(state, 1, request('a1', 'A first', 'agent'));

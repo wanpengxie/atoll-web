@@ -12,6 +12,31 @@ const message = (id, seq, text = id, sender = 'agent-a') => ({
   envelope: { id, seq, ts: seq * 1_000, sender: { id: sender }, payload: { text } },
 });
 
+const turnEntry = (id, seq, {
+  target = '',
+  replacedBy = '',
+  type = target ? 'agent.replace' : 'project.task',
+  thread = [],
+} = {}) => ({
+  kind: 'turn', seq, thread,
+  turn: {
+    requestId: id,
+    requestSeq: seq,
+    lastSeq: replacedBy ? seq + 1 : seq,
+    provisional: [],
+    request: {
+      id, seq, kind: 'request', type, ts: seq * 1_000,
+      sender: { id: 'human-a' }, audience: ['agent-a'],
+      payload: target ? { target } : {},
+    },
+    terminal: replacedBy ? {
+      id: `${id}:terminal`, seq: seq + 1, kind: 'response', type,
+      parent_id: id, sender: { id: 'agent-a' }, payload: { status: 'completed', replaced_by: replacedBy },
+    } : null,
+    terminalSeq: replacedBy ? seq + 1 : 0,
+  },
+});
+
 describe('immutable conversation presentation', () => {
   it('uses semantic identities independent from array position', () => {
     const current = message('m2', 2);
@@ -30,6 +55,94 @@ describe('immutable conversation presentation', () => {
     expect(append.changes.kind).toBe('append');
     const mixed = projector.project([m3, m2], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 4 });
     expect(mixed.changes.kind).toBe('mixed');
+  });
+
+  it('hands a visual slot only to a reciprocal replacement at the same committed row position', () => {
+    const projector = createConversationPresentation();
+    const old = turnEntry('old', 2, { replacedBy: 'new' });
+    const initial = projector.project([message('before', 1), old, message('after', 4)], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 4,
+    });
+    const replacement = turnEntry('new', 5, { target: 'old' });
+    const next = projector.project([message('before', 1), replacement, message('after', 4)], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 5,
+    });
+
+    expect(initial.entities.get('old')).toMatchObject({ id: 'old', visualSlotID: 'old' });
+    expect(next.entities.get('new')).toMatchObject({ id: 'new', visualSlotID: 'old' });
+    expect(next.changes).toMatchObject({ inserted: ['new'], removed: ['old'] });
+  });
+
+  it('keeps the replacement position relative to surviving rows across an unrelated prepend', () => {
+    const projector = createConversationPresentation();
+    projector.project([message('before', 2), turnEntry('old', 3, { replacedBy: 'new' }), message('after', 4)], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 4,
+    });
+    const next = projector.project([
+      message('prepended', 1), message('before', 2), turnEntry('new', 5, { target: 'old' }), message('after', 4),
+    ], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 5,
+    });
+    expect(next.entities.get('new')).toMatchObject({ id: 'new', visualSlotID: 'old' });
+  });
+
+  it('does not infer a visual slot from one-way protocol facts, reorders, or a new view epoch', () => {
+    const oneWay = createConversationPresentation();
+    oneWay.project([turnEntry('old', 1)], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
+    });
+    const incomplete = oneWay.project([turnEntry('new', 2, { target: 'old' })], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
+    });
+    expect(incomplete.entities.get('new').visualSlotID).toBe('new');
+
+    const reorder = createConversationPresentation();
+    const a = turnEntry('a', 1, { replacedBy: 'b' });
+    const b = turnEntry('b', 2, { target: 'a' });
+    reorder.project([a, b], { nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2 });
+    const swapped = reorder.project([b, a], { nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 3 });
+    expect(swapped.entities.get('a').visualSlotID).toBe('a');
+    expect(swapped.entities.get('b').visualSlotID).toBe('b');
+
+    const rebase = createConversationPresentation();
+    rebase.project([turnEntry('old', 1, { replacedBy: 'new' })], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
+    });
+    const rebased = rebase.project([turnEntry('new', 2, { target: 'old' })], {
+      nextViewID: 'c0:all', epoch: 'generation:2', sourceRevision: 2,
+    });
+    expect(rebased.entities.get('new').visualSlotID).toBe('new');
+  });
+
+  it('retains the original visual slot across committed reciprocal replacement chains', () => {
+    const projector = createConversationPresentation();
+    projector.project([turnEntry('a', 1, { replacedBy: 'b' })], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
+    });
+    const b = projector.project([turnEntry('b', 2, { target: 'a', replacedBy: 'c' })], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
+    });
+    const c = projector.project([turnEntry('c', 3, { target: 'b' })], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 3,
+    });
+    expect(b.entities.get('b').visualSlotID).toBe('a');
+    expect(c.entities.get('c').visualSlotID).toBe('a');
+  });
+
+  it('does not hand a stable child root slot to a replacement folded into another visual root', () => {
+    const projector = createConversationPresentation();
+    projector.project([turnEntry('child', 2, { replacedBy: 'replacement' })], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
+    });
+    const replacement = turnEntry('replacement', 4, { target: 'child' });
+    const parent = turnEntry('parent', 1, { thread: [replacement] });
+    const next = projector.project([parent], {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 4,
+    });
+
+    expect(next.orderedIDs).toEqual(['parent']);
+    expect(next.entities.get('parent')).toMatchObject({ id: 'parent', visualSlotID: 'parent' });
+    expect(next.entities.has('replacement')).toBe(false);
   });
 
   it('reports simultaneous front and back insertions as orthogonal mixed structure', () => {

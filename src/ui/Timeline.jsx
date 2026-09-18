@@ -5,6 +5,7 @@ import { formatArtifactSize } from '../model/artifacts.js';
 import { attachmentFromFileReference } from '../model/file-references.js';
 import { LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
+import { emptyBrowsingFoldLease, reconcileBrowsingFoldLease } from '../model/browsing-fold-lease.js';
 import { replyTargetOf } from '../model/reply-target.js';
 import { READING_MODE } from '../model/reading-session.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
@@ -657,7 +658,7 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
     {quotedRequest && <AgentRequestQuote request={quotedRequest} names={names} onDownload={onDownload} onPreview={onPreview} />}
     {hasConversationBody && <div className="response-content">{compact
       ? conversationBody
-      : <FoldableBody id={responseFoldId} text={foldText} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}>{conversationBody}</FoldableBody>}</div>}
+      : <FoldableBody id={responseFoldId} text={foldText} exempt={Boolean(fold?.latest)} automaticExpanded={fold?.automaticExpanded} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}>{conversationBody}</FoldableBody>}</div>}
     {!closed && <ProgressTrail turn={turn} running title={title} startedAt={processStartedTs} mergedCount={mergedCount} />}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
     {closed && !terminal && <p className="terminal-result-unavailable">{terminalResultState(turn).error}</p>}
@@ -743,7 +744,7 @@ function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount 
   return <section className={`turn-card agent-conversation-turn self status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
     <MessageFrame className="request-message" identity={<span className="actor-icon kind-human">H</span>}>
       <header><strong>{nameOf(request.sender?.id, names)}</strong><time>{timeLabel(request.ts)}</time></header>
-      <div className="request-text"><FoldableBody id={requestFoldId} text={requestText} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`request:${request.id}:body`} text={requestText} /></FoldableBody></div>
+      <div className="request-text"><FoldableBody id={requestFoldId} text={requestText} exempt={Boolean(fold?.latest)} automaticExpanded={fold?.automaticExpanded} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`request:${request.id}:body`} text={requestText} /></FoldableBody></div>
       {editSession && <small className="message-editing-state">正在输入框中编辑</small>}
       <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
     </MessageFrame>
@@ -771,7 +772,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, targetAuth
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
       <ReplyableMessageFrame replyTarget={replyTarget} copyText={requestView.text} onReply={onReply} onCreateTask={onCreateTask} className="request-message" identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
-          <div className="request-text"><FoldableBody id={requestFoldId} text={requestView.text} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`request:${request.id}:body`} text={requestView.text} /></FoldableBody>{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
+          <div className="request-text"><FoldableBody id={requestFoldId} text={requestView.text} exempt={Boolean(fold?.latest)} automaticExpanded={fold?.automaticExpanded} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`request:${request.id}:body`} text={requestView.text} /></FoldableBody>{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
       </ReplyableMessageFrame>
       <ThreadCalls thread={thread} names={names} />
@@ -786,7 +787,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, targetAuth
       {editSession && <ContentFrame contained><p className="message-editing-state">正在输入框中编辑</p></ContentFrame>}
       {terminal && (
         <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${terminal.sender?.kind || 'agent'}`}>{(terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
-          <header><strong>{nameOf(terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={argsOf(terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || turn.requestId}:body`} text={text} />} /></FoldableBody></div>
+          <header><strong>{nameOf(terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(terminal).text} exempt={foldExempt} automaticExpanded={fold?.automaticExpanded} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={argsOf(terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || turn.requestId}:body`} text={text} />} /></FoldableBody></div>
         </MessageFrame>
       )}
       {turn.terminalClosureOnly && <ContentFrame contained><p className="terminal-result-unavailable">{terminalResultState(turn).error}</p></ContentFrame>}
@@ -826,7 +827,7 @@ function Standalone({ envelope, names, roster, selfId, continuation = false, fol
   const foldId = `${envelope.id}:message`;
   return (
     <ReplyableMessageFrame replyTarget={replyTarget} copyText={view.text} onReply={onReply} onCreateTask={onCreateTask} className={`standalone-row ${continuation ? 'continuation' : ''} ${self ? 'self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
-      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<FoldableBody id={foldId} text={view.text} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(foldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`message:${envelope.id}:body`} text={view.text} /></FoldableBody>{view.detail && <p className="message-detail">{view.detail}</p>}
+      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<FoldableBody id={foldId} text={view.text} exempt={Boolean(fold?.latest)} automaticExpanded={fold?.automaticExpanded} expanded={fold?.overrides?.get(foldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`message:${envelope.id}:body`} text={view.text} /></FoldableBody>{view.detail && <p className="message-detail">{view.detail}</p>}
     </ReplyableMessageFrame>
   );
 }
@@ -915,7 +916,28 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   // 只钉"从处理中进入编辑"的：等待区消息的编辑本来就发生在等待区原地。
   // 保存/放弃后钉住不放（resumePin），直到账上真正回到处理中——否则解冻帧到达前
   // 的空窗里消息会闪跳进等待区。
-  const editingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
+  const declaredReplacementId = editing
+    ? String(
+      argsOf(state.turns.get(editing.targetId)?.terminal)?.replaced_by
+      ?? argsOf(state.turns.get(editing.targetId)?.terminal)?.value?.replaced_by
+      ?? '',
+    )
+    : '';
+  const declaredReplacement = declaredReplacementId
+    ? state.turns.get(declaredReplacementId)
+    : null;
+  const committedReplacementId = declaredReplacement?.request?.type === TYPES.agentReplace
+    && String(argsOf(declaredReplacement.request)?.target || '') === editing?.targetId
+    ? declaredReplacementId
+    : '';
+  // Fold has already committed the reciprocal replacement in this render.
+  // Do not expose one intermediate frame that still renders the terminal old
+  // request as the active editor while the passive lease cleanup catches up.
+  const presentationEditing = committedReplacementId ? null : editing;
+  const presentationResumePin = committedReplacementId || resumePin;
+  const editingTargetId = presentationEditing?.location === 'processing'
+    ? presentationEditing.targetId
+    : presentationResumePin;
   const actorFilterApplies = projectionScope === TIMELINE_SCOPE.mine;
   // Scope and actor filters replace the visible conversation and therefore get
   // a fresh presentation/geometry identity. Editing only changes an existing
@@ -929,9 +951,10 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     selfId: projectionSelfId,
     actorFilter,
     editingTargetId,
+    editingReplacementId: presentationEditing?.replacementId || '',
     showNarration: SHOW_CHANNEL_NARRATION,
     incremental: true,
-  }), [actorFilter, editingTargetId, projectionScope, projectionSelfId]);
+  }), [actorFilter, editingTargetId, presentationEditing?.replacementId, projectionScope, projectionSelfId]);
   const localWaitingTurns = useMemo(
     () => selectLocalWaitingTurns(pending || [], projectionSelfId),
     [pending, projectionSelfId],
@@ -1237,6 +1260,26 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 	  state,
 	]);
 	const withNarration = rolePresentation.rows;
+  const [browsingFoldLease, setBrowsingFoldLease] = useState(emptyBrowsingFoldLease);
+  useLayoutEffect(() => {
+    setBrowsingFoldLease((current) => reconcileBrowsingFoldLease(current, {
+      activationID: viewport.activationID,
+      mode: viewport.session.mode,
+      rows: rolePresentation.rows,
+      bookmarkID: viewport.session.bookmark?.messageID || '',
+    }));
+  }, [
+    rolePresentation,
+    viewport.activationID,
+    viewport.session.bookmark?.messageID,
+    viewport.session.mode,
+  ]);
+  const browsingExpandedSlots = useMemo(() => (
+    viewport.session.mode === READING_MODE.browsing
+      && browsingFoldLease.activationID === viewport.activationID
+      ? new Set(browsingFoldLease.visualSlotIDs)
+      : new Set()
+  ), [browsingFoldLease, viewport.activationID, viewport.session.mode]);
   // 展开/收起只提交 Presentation choice。它不表示读者离开尾部，也不创建
   // navigation epoch；following 与 browsing 都继续使用动作前的容器。
   const toggleFold = useCallback((id, expanded) => {
@@ -1485,6 +1528,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   const rowRenderRevision = useCallback((_index, row) => {
     const entry = row.body;
     const isLatest = row.role?.latest === true ? 1 : 0;
+    const browsingExpanded = browsingExpandedSlots.has(row.visualSlotID || row.id) ? 1 : 0;
     if (entry?.kind === 'turn') {
       const requestId = entry.turn.requestId;
       const actorId = entry.turn.request.audience?.[0] || '';
@@ -1511,12 +1555,12 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       const approval = hasApprovalStates ? approvalStates[entry.turn.request.id] : undefined;
       const controlState = hasControlStates ? controlStates[`${state.channelId}:${requestId}:cancel`] : undefined;
       const frozen = frozenByActor.get(actorId);
-      const edit = editing
-        ? (editing.targetId === requestId
-          ? `2${REVISION_SEP}${editing.phase}${REVISION_SEP}${editing.location}${REVISION_SEP}${revisionText(editing.text)}`
+      const edit = presentationEditing
+        ? (presentationEditing.targetId === requestId
+          ? `2${REVISION_SEP}${presentationEditing.phase}${REVISION_SEP}${presentationEditing.location}${REVISION_SEP}${revisionText(presentationEditing.text)}`
           : '1')
         : '0';
-      return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${targetCurrentness}${REVISION_SEP}${isLatest}`
+      return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${targetCurrentness}${REVISION_SEP}${isLatest}${REVISION_SEP}${browsingExpanded}`
         + `${REVISION_SEP}${effectiveFoldOverrides.get(`${requestId}:request`)}${REVISION_SEP}${effectiveFoldOverrides.get(`${requestId}:response`)}`
         + `${REVISION_SEP}${turnDetail?.selected?.requestId === requestId}${REVISION_SEP}${resumePin === requestId}`
         + `${REVISION_SEP}${capabilityRevisions.get(actorId) || ''}${REVISION_SEP}${mergedCounts.get(requestId) || 0}${REVISION_SEP}${preempted}`
@@ -1524,13 +1568,13 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
         + `${REVISION_SEP}${revisionText(selectNote)}${REVISION_SEP}${edit}`;
     }
     if (entry?.kind === 'standalone') {
-      return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${isLatest}`
+      return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${isLatest}${REVISION_SEP}${browsingExpanded}`
         + `${REVISION_SEP}${effectiveFoldOverrides.get(`${entry.envelope.id}:message`)}`;
     }
-    return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${isLatest}`;
+    return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${isLatest}${REVISION_SEP}${browsingExpanded}`;
   }, [
-    approvalStates, capabilityIndex, capabilityRevisions, controlStates, editing,
-    effectiveFoldOverrides, frozenByActor, hasApprovalStates, hasControlStates,
+    approvalStates, capabilityIndex, capabilityRevisions, controlStates, presentationEditing,
+    browsingExpandedSlots, effectiveFoldOverrides, frozenByActor, hasApprovalStates, hasControlStates,
     mergedCounts, names, preemptedSources, resumePin, sharedRowRevision,
     state.channelId, targetAuthorityRevision, turnDetail?.selected?.requestId,
   ]);
@@ -1641,19 +1685,26 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
       const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
       const detailsOpen = rowSelectedTurnID === entry.turn.requestId;
-      const fold = { latest: row.role?.latest === true, overrides: effectiveFoldOverrides, onToggle: toggleFold };
-      const common = { turn: entry.turn, names, roster, selfId, access, targetAuthority: waitingRosterAuthority, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => rowActions.control(entry.turn, actorId, type, payload), onEdit: () => rowActions.startEditing(entry.turn, actorId), onEditText: rowActions.editText, onEditSave: rowActions.saveEdit, onEditAbandon: rowActions.abandonEdit, onDownload: rowActions.download, onPreview: rowActions.preview, onCreateTask: hasCreateTask ? () => rowActions.createTask(source) : null, onReply: rowReply };
+      const browsingExpanded = browsingExpandedSlots.has(row.visualSlotID || row.id);
+      const fold = {
+        latest: row.role?.latest === true || browsingExpanded,
+        automaticExpanded: browsingExpanded,
+        overrides: effectiveFoldOverrides,
+        onToggle: toggleFold,
+      };
+      const common = { turn: entry.turn, names, roster, selfId, access, targetAuthority: waitingRosterAuthority, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(presentationEditing && presentationEditing.targetId !== entry.turn.requestId), editSession: presentationEditing?.targetId === entry.turn.requestId ? presentationEditing : null, onControl: (type, payload) => rowActions.control(entry.turn, actorId, type, payload), onEdit: () => rowActions.startEditing(entry.turn, actorId), onEditText: rowActions.editText, onEditSave: rowActions.saveEdit, onEditAbandon: rowActions.abandonEdit, onDownload: rowActions.download, onPreview: rowActions.preview, onCreateTask: hasCreateTask ? () => rowActions.createTask(source) : null, onReply: rowReply };
       if (isAgentMessageTurn(entry.turn)) {
         content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
-      } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} fold={fold} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => rowActions.cancel(entry.turn.requestId)} onControl={(type, payload) => rowActions.control(entry.turn, actorId, type, payload)} onEdit={() => rowActions.startEditing(entry.turn, actorId)} onEditText={rowActions.editText} onEditSave={rowActions.saveEdit} onEditAbandon={rowActions.abandonEdit} onDownload={rowActions.download} onPreview={rowActions.preview} onReply={rowReply} onOpen={() => rowActions.openTurnDetails(entry.turn, detailsOpen)} onCloseDetail={rowActions.closeTurnDetails} onCreateTask={hasCreateTask ? () => rowActions.createTask(source) : null} /></div>;
+      } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} fold={fold} editSession={presentationEditing?.targetId === entry.turn.requestId ? presentationEditing : null} editActive={Boolean(presentationEditing && presentationEditing.targetId !== entry.turn.requestId)} onCancel={() => rowActions.cancel(entry.turn.requestId)} onControl={(type, payload) => rowActions.control(entry.turn, actorId, type, payload)} onEdit={() => rowActions.startEditing(entry.turn, actorId)} onEditText={rowActions.editText} onEditSave={rowActions.saveEdit} onEditAbandon={rowActions.abandonEdit} onDownload={rowActions.download} onPreview={rowActions.preview} onReply={rowReply} onOpen={() => rowActions.openTurnDetails(entry.turn, detailsOpen)} onCloseDetail={rowActions.closeTurnDetails} onCreateTask={hasCreateTask ? () => rowActions.createTask(source) : null} /></div>;
     }
     if (!content) {
       const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-      content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.role?.latest === true, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={hasCreateTask ? () => rowActions.createTask(source) : null} onReply={rowReply} /></div>;
+      const browsingExpanded = browsingExpandedSlots.has(row.visualSlotID || row.id);
+      content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.role?.latest === true || browsingExpanded, automaticExpanded: browsingExpanded, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={hasCreateTask ? () => rowActions.createTask(source) : null} onReply={rowReply} /></div>;
     }
     return <div className="timeline-virtual-item">{content}{boundaryAfterTimestamp > 0 && <div className="timeline-day"><span>{dayLabel(boundaryAfterTimestamp)}</span></div>}</div>;
   }, [
-    access, approvalStates, capabilityIndex, controlStates, editing,
+    access, approvalStates, browsingExpandedSlots, capabilityIndex, controlStates, presentationEditing,
     effectiveFoldOverrides, frozenByActor, hasCreateTask, mergedCounts, names,
     preemptedSources, roster, rowActions, rowReply, rowSelectedTurnID, selfId,
     state, toggleFold, waitingRosterAuthority,
@@ -1682,14 +1733,17 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     const activeEditSessionId = editing.sessionId;
     const targetTurn = state.turns.get(editing.targetId);
     const replacedBy = terminalRetainedValue(targetTurn, 'replaced_by');
+    const replacementTurn = replacedBy ? state.turns.get(String(replacedBy)) : null;
+    const replacementLanded = replacementTurn?.request?.type === TYPES.agentReplace
+      && String(argsOf(replacementTurn.request)?.target || '') === editing.targetId;
     const frozen = frozenByActor.get(editing.actorId);
     const ownsLiveHold = Boolean(editing.holdId
       && frozen?.source === TYPES.agentHold
       && frozen.held_by === editing.holdId);
     const lockMustBeLive = ['editing', 'checking', 'submitting', 'saving'].includes(editing.phase);
-    const replacementLanded = Boolean(replacedBy);
-    const targetClosed = Boolean(targetTurn?.terminal && !replacementLanded);
-    const lockLost = lockMustBeLive && editing.holdId && !ownsLiveHold;
+    const replacementDeclared = Boolean(replacedBy);
+    const targetClosed = Boolean(targetTurn?.terminal && !replacementDeclared);
+    const lockLost = !replacementDeclared && lockMustBeLive && editing.holdId && !ownsLiveHold;
     const actorGone = roster.length > 0 && !roster.some((row) => row.id === editing.actorId);
 
     // Editing is a lease over one still-open buffered request. Any terminal on
@@ -1874,10 +1928,10 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     }
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!onComposerEditChange) return;
-    onComposerEditChange(editing ? { session: editing, onSave: verifyAndSave, onAbandon: abandonEditing } : null);
-  }, [onComposerEditChange, editing?.targetId, editing?.phase, editing?.error]);
+    onComposerEditChange(presentationEditing ? { session: presentationEditing, onSave: verifyAndSave, onAbandon: abandonEditing } : null);
+  }, [onComposerEditChange, presentationEditing?.targetId, presentationEditing?.phase, presentationEditing?.error]);
 
   useEffect(() => () => {
     const session = editingRef.current;
@@ -1895,7 +1949,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 
   const floatingInput = <>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
-    <WaitingLayer turns={queuedTurns} handoffs={waitingHandoff.exiting} state={state} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
+    <WaitingLayer turns={queuedTurns} handoffs={waitingHandoff.exiting} state={state} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={presentationEditing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
   </>;
 
   const acceptedComposerTokensRef = useRef(new WeakSet());

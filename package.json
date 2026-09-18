@@ -47,7 +47,7 @@
     "react-dom": "^19.2.6",
     "react-json-view-lite": "^2.5.0",
     "react-markdown": "^10.1.0",
-    "react-virtuoso": "file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-440c6f4d.tgz",
+    "react-virtuoso": "file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-a6b71abd.tgz",
     "rehype-katex": "^7.0.1",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
