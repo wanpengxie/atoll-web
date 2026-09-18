@@ -106,8 +106,13 @@ export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open
     markRead: (receipt, authority) => {
       const physicalSeq = physicalReadSeq({ channelId, status: currentStatus, authority, receipt });
       const identities = exactReadIdentities({ channelId, status: currentStatus, authority, receipt });
-      if (physicalSeq <= 0 && identities.length === 0) return 0;
-      return markRead?.(Object.freeze({ physicalSeq, identities, receipt })) || 0;
+      if (physicalSeq <= 0 && identities.length === 0) return false;
+      if (typeof markRead !== 'function') return false;
+      const accepted = markRead(Object.freeze({ physicalSeq, identities, receipt }));
+      // Void observer/test ports accepted delivery. Production rejection is
+      // explicit false; keeping that distinction lets ReadingSession retain
+      // exactly one retry obligation without duplicating successful calls.
+      return accepted === undefined ? true : accepted;
     },
   });
 }

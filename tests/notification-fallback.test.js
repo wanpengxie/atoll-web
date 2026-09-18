@@ -35,16 +35,18 @@ describe('IM 读侧兜底', () => {
     })).toEqual({ related: 0, total: 0, pending: false, unknown: false });
   });
 
-  it('@我视图只覆盖与我相关的那一层，其他未读照旧显示', () => {
+  it('@我视图只覆盖 related，过滤外 other 仍显示', () => {
     expect(projectChannelUnread(counts, 'c0', {
       channelId: 'c0', caughtUp: true, scope: 'mine', actorFiltered: false,
     })).toEqual({ related: 0, total: 2 });
   });
 
-  it('带 actorFilter 的视图不压任何一格', () => {
-    expect(projectChannelUnread(counts, 'c0', {
+  it('actorFilter 不用聚合显示兜底掩盖过滤外真值', () => {
+    const caughtUp = {
       channelId: 'c0', caughtUp: true, scope: 'all', actorFiltered: true,
-    })).toBe(counts);
+    };
+    expect(projectChannelUnread(counts, 'c0', caughtUp)).toBe(counts);
+    expect(projectChannelUnread(counts, 'c0', { ...caughtUp, caughtUp: false })).toBe(counts);
   });
 
   it('只清活动频道：别的频道与未追平时原样返回', () => {

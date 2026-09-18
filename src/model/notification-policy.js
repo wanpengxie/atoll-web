@@ -97,9 +97,10 @@ export function viewportUnseenNotice(unseen, caughtUp = false) {
   return Math.max(0, Number(unseen) || 0);
 }
 
-// 频道栏徽标的覆盖边界与 scope 隔离裁定一致：一条视图只能替它自己覆盖的那一层
-// 说话。无过滤的「全部」覆盖整条频道；「@我」覆盖的正是 related 那一层（两者是
-// 同一个两层关系）；带 actorFilter 的视图只是其中一小块，不能替任何一格说话。
+// 在场兜底只能覆盖它能证明的 scope。all 覆盖频道；mine 只覆盖 related，且 total
+// 同步扣掉这一层，避免把同一批 related 重标成 other。actorFilter 是 related/other
+// 两层里的任意子集，现有 rail 聚合无法无损拆出它，因此绝不以显示双零掩盖过滤外真值；
+// 它只靠 ReadingSession 的 exact identities 清自身已安装行。
 export function projectChannelUnread(counts, channelId, caughtUp) {
   if (!counts
     || caughtUp?.caughtUp !== true
@@ -110,8 +111,6 @@ export function projectChannelUnread(counts, channelId, caughtUp) {
     return { ...counts, related: 0, total: 0, pending: false, unknown: false };
   }
   if (caughtUp.scope === TIMELINE_SCOPE.mine) {
-    // `total` includes `related`; clearing only related would relabel the same
-    // in-scope notifications as "other" in ChannelList.
     const related = Math.max(0, Number(counts.related) || 0);
     return { ...counts, related: 0, total: Math.max(0, (Number(counts.total) || 0) - related) };
   }

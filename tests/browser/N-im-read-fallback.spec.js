@@ -11,7 +11,9 @@ import { readFile, writeFile } from 'node:fs/promises';
 const SOURCE_PATHS = [
   'src/App.jsx',
   'src/app/AppShell.jsx',
+  'src/app/hooks/useChannelFeed.js',
   'src/model/cursors.js',
+  'src/model/history-demand.js',
   'src/model/notification-policy.js',
   'src/ui/ChannelList.jsx',
   'src/ui/Timeline.jsx',
@@ -350,4 +352,103 @@ test('N3 页面不可见时到达计入未读，恢复可见并在底部后清�
   expect(afterVisible.related).toBe(0);
   expect(afterVisible.other).toBe(0);
   expect(afterVisible.jump).toBe(0);
+});
+
+test('N4 成员过滤视图真实到底时本 scope 计数为 0，过滤外未读始终保留', async ({ page, request }, testInfo) => {
+  await reset(request, 0x4e_04);
+  await login(page);
+  await fillTail(request, 'c0', 24);
+  await reachBottom(page);
+
+  const stewardFilter = page.getByTitle('只看我与 steward 的往来');
+  await expect(stewardFilter).toBeVisible();
+  await stewardFilter.click();
+  await expect(page.getByTitle('取消只看 steward')).toHaveAttribute('aria-pressed', 'true');
+  await reachBottom(page);
+  await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'following');
+
+  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'N4-actor-filter' }));
+  await startCapture(page, 'c0');
+  const outside = await request.post('/mock/control/action', {
+    data: { type: 'dense_progress', channel_id: 'c0', related: false, count: 1 },
+  });
+  expect(outside.ok()).toBe(true);
+  for (let index = 0; index < 6; index += 1) await arrive(request, 'c0', 1);
+  await page.waitForTimeout(700);
+  const frames = await stopCapture(page);
+  const atTailInScopeNotices = frames.filter((frame) => frame.gap !== null && frame.gap <= 2 && (
+    frame.jumpShown || frame.badgeRelated > 0 || frame.badgePending
+  ));
+  const atTailOutsideNotices = frames.filter((frame) => (
+    frame.gap !== null && frame.gap <= 2 && frame.badgeOther > 0
+  ));
+
+  // Display fallback is not the persistence oracle. Raw rail truth must prove
+  // both halves at once: every installed steward approval was acknowledged,
+  // while the unrelated turn excluded by this actor filter stayed unread.
+  try {
+    await expect.poll(() => page.evaluate(() => {
+      const channel = window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0')?.channels?.[0];
+      const rows = channel?.rows || [];
+      const counted = (row) => String(row?.ackReason || '').startsWith('counted_');
+      return {
+        authorityReady: channel?.authorityReady === true,
+        installedScopeCleared: rows
+          .filter((row) => String(row?.id || '').includes('-approval-'))
+          .every((row) => !counted(row)),
+        outsideFilterPreserved: rows
+          .some((row) => String(row?.id || '').includes('-unrelated-') && counted(row)),
+      };
+    }), { timeout: 15_000 }).toEqual({
+      authorityReady: true,
+      installedScopeCleared: true,
+      outsideFilterPreserved: true,
+    });
+  } catch (error) {
+    const failureTruth = await page.evaluate(() => ({
+      rail: window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0'),
+      reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.(),
+      reads: Object.fromEntries(Object.keys(localStorage)
+        .filter((key) => key.startsWith('atoll.read'))
+        .map((key) => [key, localStorage.getItem(key)])),
+    }));
+    await attachJSON(testInfo, 'N4-persistence-failure.json', { failureTruth });
+    throw error;
+  }
+  const settledAtTail = await readCounts(page, 'c0');
+
+  const viewport = readingViewport(page);
+  await viewport.hover();
+  await page.mouse.wheel(0, -900);
+  await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
+  await page.waitForTimeout(500);
+  const afterLeaving = await readCounts(page, 'c0');
+  const truth = await page.evaluate(() => ({
+    rail: window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0'),
+    reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.(),
+    reads: Object.fromEntries(Object.keys(localStorage)
+      .filter((key) => key.startsWith('atoll.read'))
+      .map((key) => [key, localStorage.getItem(key)])),
+  }));
+  await attachJSON(testInfo, 'N4-actor-filter.json', {
+    frameCount: frames.length,
+    atTailInScopeNotices: atTailInScopeNotices.slice(0, 20),
+    atTailOutsideNotices: atTailOutsideNotices.slice(0, 20),
+    settledAtTail,
+    afterLeaving,
+    truth,
+  });
+
+  expect(frames.length).toBeGreaterThan(20);
+  // Raw arrival may precede installation by a few frames. Once the production
+  // projection has installed the scope tail, no in-scope residue remains;
+  // the filter-external badge is deliberately still visible.
+  expect(settledAtTail.mode).toBe('following');
+  expect(settledAtTail.gap).toBeLessThanOrEqual(2);
+  expect(settledAtTail.related).toBe(0);
+  expect(settledAtTail.jump).toBe(0);
+  expect(settledAtTail.other).toBeGreaterThan(0);
+  expect(atTailOutsideNotices.length).toBeGreaterThan(0);
+  expect(afterLeaving.jump).toBe(0);
+  expect(afterLeaving.related + afterLeaving.other).toBeGreaterThan(0);
 });

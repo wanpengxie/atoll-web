@@ -70,6 +70,14 @@ function rangesContain(ranges, seq) {
   ));
 }
 
+function rangesCover(ranges, lowSeq, highSeq) {
+  const low = numeric(lowSeq);
+  const high = numeric(highSeq);
+  return low > 0 && high >= low && Array.isArray(ranges) && ranges.some((entry) => (
+    numeric(entry?.lowSeq) <= low && numeric(entry?.highSeq) >= high
+  ));
+}
+
 function tailWindowCovered(meta, head) {
   const target = numeric(head);
   if (!target) return true;
@@ -1557,19 +1565,48 @@ export function createHistoryScheduler({
     };
   }
 
-  function observeLive(channelId, timestamp = 0, { related = false, seq = 0 } = {}) {
+  function observeLive(channelId, timestamp = 0, { related = false, seq = 0, generation: rowGeneration = 0 } = {}) {
     if (!channelId) return;
     let state = channels.get(channelId);
     if (!state) {
       state = schedulerState(channelId);
       channels.set(channelId, state);
     }
+    const declaredGeneration = numeric(rowGeneration);
+    if (declaredGeneration > 0
+      && (declaredGeneration !== generation || state.attachedGeneration !== generation)) return;
+    const liveIsCurrent = declaredGeneration > 0;
     state.headSeq = Math.max(state.headSeq, numeric(seq));
     if (numeric(seq) > 0) state.verifiedCoverage = mergedCoverage(state.verifiedCoverage, { lowSeq: numeric(seq), highSeq: numeric(seq) });
     if (numeric(seq) > 0) state.hasRows = true;
+    const filledRefreshGap = liveIsCurrent
+      && state.tailRefreshBeforeSeq > 0
+      && rangesCover(
+        state.verifiedCoverage,
+        numeric(state.tailRefreshFloorSeq) + 1,
+        state.headSeq,
+      );
+    const wasCurrent = state.controlCurrent;
+    if (filledRefreshGap) {
+      // Remote Meta and realtime rows share one ordered wire, but the feed
+      // deliberately frame-batches rows. Meta can therefore open a tail gap
+      // just before that same wire's already-received rows enter Replica. Once
+      // the current generation's accepted rows cover the whole gap, they are
+      // the freshness proof; do not leave messageCurrent waiting on a redundant
+      // history page.
+      state.tailRefreshBeforeSeq = 0;
+      state.tailRefreshFloorSeq = 0;
+      state.controlCurrent = true;
+      settleCurrentWaiters(state);
+    } else if (liveIsCurrent && !state.tailRefreshBeforeSeq
+      && currentTargetInstalled(state, state.headSeq)) {
+      state.controlCurrent = true;
+      settleCurrentWaiters(state);
+    }
     state.activity = Math.max(state.activity, numeric(timestamp));
     state.liveOrder = ++liveSerial;
     if (related) state.relatedUnreadOrder = state.liveOrder;
+    if (state.controlCurrent !== wasCurrent) publish();
     schedule();
   }
 

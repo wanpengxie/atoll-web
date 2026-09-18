@@ -972,6 +972,36 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
+  it('lets current-generation realtime coverage close a Meta tail gap after frame batching', async () => {
+    const harness = requestHarness();
+    const visible = new Set();
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      revealRows: (_channelId, entries) => entries.forEach(([seq]) => visible.add(seq)),
+      hasVisibleRow: (_channelId, seq) => visible.has(seq),
+      visibleNewestSeq: () => Math.max(0, ...visible),
+    });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 10, has_rows: true }], { generation: 3, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 1, rows: 10, hasOlder: false });
+    await waitFor(() => expect(scheduler.snapshot('c0').messageCurrent).toBe(true));
+
+    expect(scheduler.refreshRemoteMeta({
+      channel_id: 'c0', head_seq: 12, has_rows: true, generation: 3,
+    })).toBe(true);
+    expect(scheduler.snapshot('c0').messageCurrent).toBe(false);
+
+    scheduler.observeLive('c0', 1_000, { seq: 11, generation: 2 });
+    scheduler.observeLive('c0', 1_001, { seq: 12, generation: 2 });
+    expect(scheduler.snapshot('c0').messageCurrent).toBe(false);
+
+    scheduler.observeLive('c0', 1_002, { seq: 11, generation: 3 });
+    expect(scheduler.snapshot('c0').messageCurrent).toBe(false);
+    scheduler.observeLive('c0', 1_003, { seq: 12, generation: 3 });
+    expect(scheduler.snapshot('c0').messageCurrent).toBe(true);
+    scheduler.destroy();
+  });
+
   it('treats attach Meta as an immediate tail fence before exposing cached controls', async () => {
     const harness = requestHarness();
     const visible = new Set([100]);

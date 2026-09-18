@@ -1069,7 +1069,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 	});
   // 通知兜底的唯一上报口：把"活动频道此刻已追平"这条只读读数交给 App，频道栏
   // 徽标据此在派生层压成 0。这里不改任何未读真相，也不接收任何回调。
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof onTailCaughtUp !== 'function') return undefined;
     onTailCaughtUp(viewport.tailCaughtUp);
     return () => onTailCaughtUp({ ...viewport.tailCaughtUp, caughtUp: false });

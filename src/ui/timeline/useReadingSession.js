@@ -562,6 +562,7 @@ export function useReadingSession({
     sourceRevision: 0,
     generation: 0,
     visibleRows: Object.freeze([]),
+    readPending: false,
   });
   const [viewabilityState, setViewabilityState] = useState(() => ({
     controller,
@@ -1455,10 +1456,20 @@ export function useReadingSession({
       observedRows: evidence.visibleRows,
       tailAcknowledged: true,
     });
-    return owner.markRead?.(receipt, Object.freeze({
+    const accepted = owner.markRead?.(receipt, Object.freeze({
       viewKey,
       activationID: current.activationID,
-    })) || false;
+    }));
+    if (visibleTailEvidenceRef.current === evidence) {
+      visibleTailEvidenceRef.current = {
+        ...evidence,
+        // The already fenced DOM evidence remains ReadingSession's single
+        // delivery obligation until every downstream currentness/authority
+        // gate accepts it. No lower layer stores a retry copy.
+        readPending: accepted === false,
+      };
+    }
+    return accepted || false;
   }, [channelID, controller, historyViewSpec, viewKey]);
 
   // Publish every authority-bearing input and callback as one commit-owned
@@ -1483,8 +1494,7 @@ export function useReadingSession({
       && Number(previous.session?.inputEpoch || 0) === Number(session?.inputEpoch || 0)
       && Number(previous.snapshot?.revision || 0) === Number(snapshot?.revision || 0)
       && Number(previous.snapshot?.sourceRevision || 0) === Number(snapshot?.sourceRevision || 0)
-      && Number(previous.historyStatus?.generation || 0) === Number(historyStatus?.generation || 0)
-      && previous.markRead === markReadPort;
+      && Number(previous.historyStatus?.generation || 0) === Number(historyStatus?.generation || 0);
     if (sameObservationAuthority
       && visibleTailEvidenceRef.current.owner === previous) {
       // Controller persistence/geometry updates can render a new session
@@ -1510,6 +1520,7 @@ export function useReadingSession({
         sourceRevision: 0,
         generation: 0,
         visibleRows: Object.freeze([]),
+        readPending: false,
       };
     }
     if (controllerChanged) {
@@ -1552,8 +1563,20 @@ export function useReadingSession({
 
   // 提交后的兜底发布。观测/可见性事件已经各自发布过一次；这一条负责那些不经过
   // 事件的变化——surfaceVisible 入参翻转、insertion effect 因 owner 更替作废了
-  // 旧证据。observeTailPresence 只在读数真的变了时才 emit，所以这里是幂等的。
+  // 旧证据。它也重投一次被 current/read-authority 门明确拒绝的同一份回执；证据
+  // 仍由 ReadingSession 单持有，并重新通过所有围栏。observeTailPresence 只在读数
+  // 真的变了时才 emit，所以这里是幂等的。
   useEffect(() => {
+    const evidence = visibleTailEvidenceRef.current;
+    if (evidence.readPending === true) {
+      if (evidence.owner === committedOwnerRef.current
+        && evidence.controller === controller
+        && evidence.activationID === controller.getSnapshot().session.activationID) {
+        markVisibleTailRead();
+      } else if (visibleTailEvidenceRef.current === evidence) {
+        visibleTailEvidenceRef.current = { ...evidence, readPending: false };
+      }
+    }
     publishTailPresence();
   });
 
@@ -1720,6 +1743,7 @@ export function useReadingSession({
         sourceRevision: Number(snapshotRef.current.sourceRevision || 0),
         generation: Number(historyStatusRef.current.generation || 0),
         visibleRows: Object.freeze([...(observation.visibleRows || [])]),
+        readPending: false,
       };
       // Installed-tail acknowledgement runs before arrival resolution so a
       // candidate at or below the reached tail is never first published as
@@ -1764,6 +1788,7 @@ export function useReadingSession({
         sourceRevision: 0,
         generation: 0,
         visibleRows: Object.freeze([]),
+        readPending: false,
       };
       // Once the surface is hidden, the current committed projection is
       // definitive negative visibility evidence; do not leave its candidates

@@ -135,6 +135,157 @@ it('filtered tail clears its exact visible notice without advancing the physical
   }));
 });
 
+it('retries one fenced receipt when HistoryDemand becomes current without new geometry', async () => {
+  let port;
+  const physicalMarkRead = vi.fn((acknowledgement) => acknowledgement.identities.length > 0);
+  const row = { id: 'demand-current-late', seqLow: 12, seqHigh: 12 };
+  const snapshot = {
+    revision: 4,
+    sourceRevision: 12,
+    rows: [row],
+    entities: new Map([[row.id, row]]),
+  };
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  function Harness({ presentationRevision }) {
+    const history = createHistoryDemandPort({
+      channelId: 'c0',
+      status: {
+        attached: true, messageCurrent: true, generation: 4,
+        presentationRevision,
+      },
+      markRead: physicalMarkRead,
+    });
+    const reading = useReadingSession({
+      channelID: 'c0', viewKey: 'c0:mine:steward', snapshot, history, viewSessions,
+      historyViewSpec: { scope: 'mine', actorFilter: new Set(['steward']) },
+      surfaceVisible: true,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  const view = render(<Harness presentationRevision={11} />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 12,
+    visibleRows: [{ messageID: row.id, seqHigh: 12 }],
+  }));
+  expect(physicalMarkRead).not.toHaveBeenCalled();
+
+  view.rerender(<Harness presentationRevision={12} />);
+  await waitFor(() => expect(physicalMarkRead).toHaveBeenCalledOnce());
+  expect(physicalMarkRead).toHaveBeenCalledWith(expect.objectContaining({
+    physicalSeq: 0,
+    identities: [{ messageID: row.id, seqHigh: 12 }],
+  }));
+});
+
+it('keeps the rejected receipt in ReadingSession until Cursors accepts it exactly once', async () => {
+  let port;
+  const accepted = { current: false };
+  const physicalMarkRead = vi.fn((acknowledgement) => (
+    accepted.current ? acknowledgement.identities.length > 0 : false
+  ));
+  const row = { id: 'cursor-authority-late', seqLow: 13, seqHigh: 13 };
+  const snapshot = {
+    revision: 5,
+    sourceRevision: 13,
+    rows: [row],
+    entities: new Map([[row.id, row]]),
+  };
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  function Harness({ authorityRevision }) {
+    const history = createHistoryDemandPort({
+      channelId: 'c0',
+      status: {
+        attached: true, messageCurrent: true, generation: 5,
+        presentationRevision: 13, authorityRevision,
+      },
+      markRead: physicalMarkRead,
+    });
+    const reading = useReadingSession({
+      channelID: 'c0', viewKey: 'c0:mine:steward', snapshot, history, viewSessions,
+      historyViewSpec: { scope: 'mine', actorFilter: new Set(['steward']) },
+      surfaceVisible: true,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  const view = render(<Harness authorityRevision={0} />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 13,
+    visibleRows: [{ messageID: row.id, seqHigh: 13 }],
+  }));
+  expect(physicalMarkRead).toHaveBeenCalledTimes(2);
+
+  accepted.current = true;
+  view.rerender(<Harness authorityRevision={1} />);
+  await waitFor(() => expect(physicalMarkRead).toHaveBeenCalledTimes(3));
+  await act(async () => { await Promise.resolve(); });
+  expect(physicalMarkRead).toHaveBeenCalledTimes(3);
+  expect(physicalMarkRead.mock.calls[2][0]).toMatchObject({
+    physicalSeq: 0,
+    identities: [{ messageID: row.id, seqHigh: 13 }],
+  });
+});
+
+it('does not carry a rejected receipt across a generation or semantic-scope replacement', async () => {
+  let port;
+  const physicalMarkRead = vi.fn(() => false);
+  const row = { id: 'stale-retry', seqLow: 14, seqHigh: 14 };
+  const snapshot = {
+    revision: 6,
+    sourceRevision: 14,
+    rows: [row],
+    entities: new Map([[row.id, row]]),
+  };
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  function Harness({ generation, viewKey }) {
+    const history = createHistoryDemandPort({
+      channelId: 'c0',
+      status: {
+        attached: true, messageCurrent: true, generation,
+        presentationRevision: 14,
+      },
+      markRead: physicalMarkRead,
+    });
+    const reading = useReadingSession({
+      channelID: 'c0', viewKey, snapshot, history, viewSessions,
+      historyViewSpec: { scope: 'mine', actorFilter: new Set([viewKey]) },
+      surfaceVisible: true,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  const view = render(<Harness generation={6} viewKey="steward" />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 14,
+    visibleRows: [{ messageID: row.id, seqHigh: 14 }],
+  }));
+  expect(physicalMarkRead).toHaveBeenCalledTimes(2);
+
+  view.rerender(<Harness generation={7} viewKey="steward" />);
+  view.rerender(<Harness generation={7} viewKey="claude" />);
+  await act(async () => { await Promise.resolve(); });
+  expect(physicalMarkRead).toHaveBeenCalledTimes(2);
+});
+
 it('unfiltered all advances physical read and acknowledges the exact current identity', async () => {
   let port;
   const physicalMarkRead = vi.fn((acknowledgement) => acknowledgement.physicalSeq);

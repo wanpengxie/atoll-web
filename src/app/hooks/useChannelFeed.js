@@ -453,6 +453,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       schedulerRef.current.observeLive(row.channel_id, row.envelope?.ts, {
         related: counts.related > 0,
         seq: row.seq,
+        generation: row.generation,
       });
     }
     if (rows.length || checkpoints.length) {
@@ -820,6 +821,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
   const markRead = useCallback((channelId, acknowledgement = {}) => {
     if (!channelId) return 0;
+    // ReadingSession retains the exact fenced receipt until every downstream
+    // authority is current. Feed never keeps a second retry copy.
+    if (!cursorsRef.current.isReadAuthorityReady()) return false;
     const state = statesRef.current.get(channelId);
     const before = cursorsRef.current.read(channelId);
     const beforeCounts = unreadCounts(
@@ -864,7 +868,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	  setVersion((value) => value + 1);
 	  setIndexVersion((value) => value + 1);
 	}
-    return seq > 0 ? next : exactChanged;
+    // The demand port needs acceptance, not mutation: an exact receipt that
+    // was already persisted is idempotently accepted and must not be retried.
+    return seq > 0 ? next : (exactChanged || (acknowledgement.identities?.length || 0) > 0);
   }, [rosterRef]);
   const cancel = useCallback(() => {
     liveBatchRef.current.flushNow();

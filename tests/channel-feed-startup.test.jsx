@@ -701,6 +701,11 @@ describe('channel feed startup lanes', () => {
 
     let preparation;
     act(() => { preparation = hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    expect(hook.result.current.markRead('c0', {
+      physicalSeq: 0,
+      identities: [{ messageID: 'tail-before-meta', seqHigh: 1 }],
+      receipt: { generation: 1, viewKey: 'c0:mine:steward' },
+    })).toBe(false);
     act(() => {
       void hook.result.current.setHistoryGrants([
         { channel_id: 'c0', head_seq: 0, has_rows: false },
@@ -712,6 +717,11 @@ describe('channel feed startup lanes', () => {
     });
 
     await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(1)).toBe(true));
+    expect(hook.result.current.markRead('c0', {
+      physicalSeq: 0,
+      identities: [{ messageID: 'tail-before-meta', seqHigh: 1 }],
+      receipt: { generation: 1, viewKey: 'c0:mine:steward' },
+    })).toBe(true);
     expect(saveRows).not.toHaveBeenCalled();
     // A brand-new cache has no boot yet. The already-attached remote boot is
     // nevertheless the current read authority while ensureBoot is pending.
@@ -719,10 +729,58 @@ describe('channel feed startup lanes', () => {
     await act(async () => { await Promise.resolve(); });
     expect(doubles.cache.ensureBoot).toHaveBeenCalledWith('boot-a');
     expect(hook.result.current.cursorsRef.current.isReadAuthorityReady()).toBe(true);
+    await waitFor(() => expect(
+      hook.result.current.cursorsRef.current.acknowledgedReadIdentities('c0').get('tail-before-meta'),
+    ).toBe(1));
+    expect(hook.result.current.cursorsRef.current.read('c0')).toBe(0);
+    expect(hook.result.current.cursorsRef.current.acknowledgedReadIdentities('c0')
+      .has('outside-filter-or-future')).toBe(false);
     expect(saveRows).not.toHaveBeenCalled();
     resolveBoot({ changed: false, boot: 'boot-a', meta });
     await act(async () => { await preparation; });
     await waitFor(() => expect(saveRows).toHaveBeenCalledOnce());
+    hook.unmount();
+  });
+
+  it('does not retain rejected pre-Meta receipts across a revoked channel or successor generation', async () => {
+    let resolveOwner;
+    const owner = new Promise((resolve) => { resolveOwner = resolve; });
+    const meta = new Map();
+    doubles.cache = {
+      ensureOwner: vi.fn(() => owner),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+    let preparation;
+    act(() => { preparation = hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    expect(hook.result.current.markRead('c0', {
+      physicalSeq: 0,
+      identities: [{ messageID: 'revoked-generation-one', seqHigh: 10 }],
+      receipt: { generation: 1 },
+    })).toBe(false);
+    expect(hook.result.current.markRead('c1', {
+      physicalSeq: 0,
+      identities: [{ messageID: 'stale-generation-one', seqHigh: 11 }],
+      receipt: { generation: 1 },
+    })).toBe(false);
+
+    let grants;
+    act(() => {
+      grants = hook.result.current.setHistoryGrants([
+        { channel_id: 'c1', head_seq: 0, has_rows: false },
+      ], { generation: 2, focus: 'c1', boot: 'boot-a' });
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(hook.result.current.cursorsRef.current.acknowledgedReadIdentities('c0')
+      .has('revoked-generation-one')).toBe(false);
+    expect(hook.result.current.cursorsRef.current.acknowledgedReadIdentities('c1')
+      .has('stale-generation-one')).toBe(false);
+
+    resolveOwner({ changed: false, boot: '', meta });
+    await act(async () => { await Promise.all([preparation, grants]); });
     hook.unmount();
   });
 
