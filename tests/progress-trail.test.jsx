@@ -5,11 +5,11 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { Timeline } from '../src/ui/Timeline.jsx';
 
 // This suite asserts progress semantics, not virtual-list geometry.
-vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => ({
-  MessageList: (await import('./helpers/PresentationMessageList.jsx')).PresentationMessageList,
+vi.mock('../src/ui/timeline/ReadingContainerHandoff.jsx', async () => ({
+  ReadingContainerHandoff: (await import('./helpers/PresentationMessageList.jsx')).PresentationMessageList,
 }));
 
-afterEach(() => { cleanup(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 const roster = [{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }];
 const LONG = '这是一段很长的思考记录，'.repeat(12);
@@ -99,6 +99,7 @@ it('运行气泡默认两行、整块展开，每行有时间且最后一行持�
   vi.useFakeTimers();
   const now = new Date('2026-08-23T12:00:10Z');
   vi.setSystemTime(now);
+  const perTimestampLocaleSetup = vi.spyOn(Date.prototype, 'toLocaleTimeString');
   const turn = turnWith();
   turn.provisional[1].envelope.ts = now.getTime() - 8_000;
   turn.provisional[2].envelope.ts = now.getTime() - 4_000;
@@ -109,6 +110,7 @@ it('运行气泡默认两行、整块展开，每行有时间且最后一行持�
   const bubble = document.querySelector('.progress-trail.running');
   expect(bubble.querySelectorAll('.progress-row')).toHaveLength(2);
   expect(bubble.querySelectorAll('.progress-row time')).toHaveLength(2);
+  expect(perTimestampLocaleSetup).not.toHaveBeenCalled();
   expect(bubble.querySelector('.progress-row-duration').textContent).toBe('00:02');
   act(() => vi.advanceTimersByTime(2_000));
   expect(bubble.querySelector('.progress-row-duration').textContent).toBe('00:04');

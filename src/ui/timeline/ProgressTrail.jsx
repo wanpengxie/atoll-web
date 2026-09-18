@@ -13,12 +13,18 @@ import { useMessageLayoutState } from './MessageLayoutState.jsx';
 const NOTE_LABEL = Object.freeze({ thinking: '思考', plan: '计划' });
 const THINKING_ONLY = '思考中…';
 const SCROLL_ROWS = 2;
+const TIMESTAMP_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  hour12: false,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
 
 function timestampLabel(ts) {
   if (!ts) return '';
   const value = new Date(ts);
   if (Number.isNaN(value.getTime())) return '';
-  return value.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return TIMESTAMP_FORMATTER.format(value);
 }
 
 function durationLabel(start, now) {
