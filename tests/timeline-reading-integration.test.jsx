@@ -1454,6 +1454,229 @@ it('同频道语义view切换会为未安装的保存书签重新开启初始化
   })));
 });
 
+it('gen0 缓存请求在 gen1 source lease 已渲染后才取消时重获零行投影供给', async () => {
+  let port;
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  const request = vi.fn()
+    .mockImplementationOnce(() => first)
+    .mockImplementation(() => new Promise(() => {}));
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const snapshot = { rows: [], entities: new Map(), revision: 1, sourceRevision: 1 };
+  function Harness({ status }) {
+    const reading = useReadingSession({
+      channelID: 'lease-handoff', viewKey: 'lease-handoff:mine', snapshot,
+      history: { status, request }, viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return <p>{reading.availability}</p>;
+  }
+
+  const localStatus = {
+    attached: false, generation: 0, messageCurrent: false, headSeq: 90,
+    localReplicaReady: true, hasOlder: true, completedPages: 1,
+    presentationRevision: 1, sourceLease: '1:2:9',
+  };
+  const attachedStatus = {
+    ...localStatus,
+    attached: true, generation: 1, messageCurrent: true, sourceLease: '1:3:10',
+  };
+  const view = render(<Harness status={localStatus} />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+  expect(request.mock.calls[0][0]).toMatchObject({ reason: 'projection-underfill' });
+  // Consume the bounded presentation timer first. The stale source completion
+  // below must not rely on that unrelated one-shot timer to wake data supply.
+  await waitFor(() => expect(port.initializing).toBe(false));
+
+  view.rerender(<Harness status={attachedStatus} />);
+  expect(request).toHaveBeenCalledTimes(1);
+  // Let the gen1 render/effects consume the new status while the gen0 Promise
+  // still owns the request slot; this is the production lost-edge ordering.
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { settleFirst({ kind: 'cancelled' }); await first; });
+
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  expect(request.mock.calls[1][0]).toMatchObject({
+    reason: 'projection-underfill',
+    viewSpec: expect.objectContaining({ scope: 'mine', selfId: 'me' }),
+  });
+  expect(['syncing', 'partial']).toContain(port.availability);
+});
+
+it('旧请求先结算后 source A→B→C 仍只为当前 C 重获一次供给', async () => {
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  const request = vi.fn()
+    .mockImplementationOnce(() => first)
+    .mockImplementation(() => new Promise(() => {}));
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const snapshot = { rows: [], entities: new Map(), revision: 1, sourceRevision: 1 };
+  function Harness({ status }) {
+    useReadingSession({
+      channelID: 'reverse-lease', viewKey: 'reverse-lease:mine', snapshot,
+      history: { status, request }, viewSessions,
+      historyViewSpec: { scope: 'mine', selfId: 'me', actorFilter: new Set() },
+    });
+    return null;
+  }
+  const status = (generation, sourceLease) => ({
+    attached: generation > 0, generation, messageCurrent: generation > 0,
+    headSeq: 90, localReplicaReady: true, hasOlder: true, completedPages: 1,
+    presentationRevision: 1, sourceLease,
+  });
+  const view = render(<Harness status={status(0, '1:2:9')} />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+  await act(async () => { settleFirst({ kind: 'cancelled' }); await first; });
+
+  view.rerender(<Harness status={status(1, '1:3:10')} />);
+  view.rerender(<Harness status={status(2, '1:4:11')} />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  await act(async () => { await Promise.resolve(); });
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+it('保存书签的 gen0 结果在 gen1 source lease 已渲染后落定时重获同一目标', async () => {
+  let settleFirst;
+  const first = new Promise((resolve) => { settleFirst = resolve; });
+  let initialViewCalls = 0;
+  const request = vi.fn((options) => {
+    if (options.intent !== 'initial-view') return new Promise(() => {});
+    initialViewCalls += 1;
+    return initialViewCalls === 1 ? first : new Promise(() => {});
+  });
+  const viewSessions = {
+    readView: () => ({
+      mode: 'browsing', revision: 1,
+      bookmark: { messageID: 'saved-target', seq: 3, rowViewportOffset: 8 },
+    }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const snapshot = { rows: [], entities: new Map(), revision: 1, sourceRevision: 1 };
+  function Harness({ status }) {
+    useReadingSession({
+      channelID: 'restore-lease', viewKey: 'restore-lease:all', snapshot,
+      history: { status, request }, viewSessions,
+      historyViewSpec: { scope: 'all', selfId: 'me', actorFilter: new Set() },
+    });
+    return null;
+  }
+
+  const localStatus = {
+    attached: false, generation: 0, messageCurrent: false, headSeq: 90,
+    localReplicaReady: true, hasOlder: true, completedPages: 1,
+    presentationRevision: 1, sourceLease: '1:2:9',
+  };
+  const attachedStatus = {
+    ...localStatus,
+    attached: true, generation: 1, messageCurrent: true, sourceLease: '1:3:10',
+  };
+  const view = render(<Harness status={localStatus} />);
+  await waitFor(() => expect(initialViewCalls).toBe(1));
+  view.rerender(<Harness status={attachedStatus} />);
+  expect(initialViewCalls).toBe(1);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { settleFirst({ kind: 'exhausted', localOnly: true }); await first; });
+
+  await waitFor(() => expect(initialViewCalls).toBe(2));
+  for (const [options] of request.mock.calls.filter(([options]) => options.intent === 'initial-view')) {
+    expect(options).toMatchObject({
+      intent: 'initial-view',
+      targetSeq: 3,
+      requiredVisibleCoverage: { messageID: 'saved-target', seq: 3 },
+    });
+  }
+});
+
+it('保存书签 attempt 在 view 卸载时取消，失败后的 Retry 重放同一 immutable target', async () => {
+  let port;
+  const signals = [];
+  const request = vi.fn((options) => {
+    signals.push(options.signal);
+    if (request.mock.calls.length === 1) return Promise.resolve({ kind: 'failed', error: new Error('offline') });
+    return new Promise((resolve) => options.signal.addEventListener('abort', () => resolve({ kind: 'cancelled' }), { once: true }));
+  });
+  const viewSessions = {
+    readView: () => ({
+      mode: 'browsing', revision: 1,
+      bookmark: { messageID: 'saved-target', seq: 3, rowViewportOffset: 8 },
+    }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const snapshot = { rows: [], entities: new Map(), revision: 1, sourceRevision: 1 };
+  const status = {
+    attached: true, generation: 1, messageCurrent: true, headSeq: 90,
+    localReplicaReady: true, hasOlder: true, completedPages: 1,
+    presentationRevision: 1, sourceLease: '1:3:10',
+    historyDemand: { revision: 1, phase: 'error', error: 'offline' },
+  };
+  function Harness() {
+    const reading = useReadingSession({
+      channelID: 'restore-retry', viewKey: 'restore-retry:all', snapshot,
+      history: { status, request }, viewSessions,
+      historyViewSpec: { scope: 'all', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  const view = render(<Harness />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { void port.retryHistoryDemand(); });
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  for (const [options] of request.mock.calls) {
+    expect(options).toMatchObject({
+      intent: 'initial-view', targetSeq: 3,
+      requiredVisibleCoverage: { messageID: 'saved-target', seq: 3 },
+    });
+  }
+  view.unmount();
+  expect(signals[1].aborted).toBe(true);
+});
+
+it('detached cache 错误保留已读 rows，并提供独立 typed Retry 状态', async () => {
+  let port;
+  const retryLocalReplica = vi.fn(() => Promise.resolve(true));
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  function Harness() {
+    const reading = useReadingSession({
+      channelID: 'cache-error', viewKey: 'cache-error:all',
+      snapshot: {
+        rows: [{ id: 'cached-row', seqLow: 1, seqHigh: 1 }],
+        entities: new Map([['cached-row', {}]]), revision: 1, sourceRevision: 1,
+      },
+      history: {
+        status: {
+          attached: false, generation: 0, messageCurrent: false, headSeq: 0,
+          localReplicaReady: true, localReplicaError: '本地缓存初始化超时，请重试',
+          localReplicaErrorCode: 'cache_selection_timeout', sourceLease: '1:2:9',
+        },
+        request: vi.fn(), retryLocalReplica,
+      },
+      viewSessions,
+      historyViewSpec: { scope: 'all', selfId: 'me', actorFilter: new Set() },
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  render(<Harness />);
+  await waitFor(() => expect(port?.availability).toBe('readable'));
+  expect(port.cache).toEqual({
+    phase: 'error', error: '本地缓存初始化超时，请重试', code: 'cache_selection_timeout',
+  });
+  await act(async () => { await port.retryAvailability(); });
+  expect(retryLocalReplica).toHaveBeenCalledTimes(1);
+});
+
 it('fresh following 立即显示缓存Projection，但在Replica修订消费前不授权尾随', async () => {
   let port;
   const request = vi.fn();

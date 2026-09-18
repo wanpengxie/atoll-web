@@ -13,7 +13,11 @@ import {
   recordLiveTimelineArrival,
 } from '../../model/fold.js';
 import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
-import { createHistoryScheduler, HISTORY_RESERVOIR_SIZE } from '../../model/history-scheduler.js';
+import {
+  createHistoryScheduler,
+  HISTORY_BATCH_TIMEOUT_MS,
+  HISTORY_RESERVOIR_SIZE,
+} from '../../model/history-scheduler.js';
 import {
   diagnostic,
   isReadingTraceEnabled,
@@ -45,6 +49,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const [version, setVersion] = useState(0);
   const [indexVersion, setIndexVersion] = useState(0);
   const [localReplicaReady, setLocalReplicaReady] = useState(false);
+  const [localReplicaError, setLocalReplicaError] = useState('');
+  const [localReplicaErrorCode, setLocalReplicaErrorCode] = useState('');
   const committedOwnerTokenRef = useRef(null);
   useLayoutEffect(() => {
     const committed = ownerToken;
@@ -796,6 +802,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         detail.focus || activeChannelRef.current || '',
       );
       setLocalReplicaReady(true);
+      setLocalReplicaError('');
+      setLocalReplicaErrorCode('');
       return { changed: replicaChanged || changed, meta };
     }).catch((error) => {
       if (serial === attachMetaSerialRef.current) {
@@ -809,6 +817,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         diagnostic('error', 'feed.cache_boot_check_failed', { generation, error });
         onError(error);
         setLocalReplicaReady(true);
+        setLocalReplicaError(error?.message || '本地缓存初始化失败');
+        setLocalReplicaErrorCode(String(error?.code || 'cache_boot_failed'));
       }
       return { changed: replicaChanged, meta: new Map(), error };
     });
@@ -865,6 +875,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     topEpoch = 0,
     intent = 'scroll-history',
 	urgency = 'interactive',
+	explicitRetry = false,
 	onOperation,
     historyRevealIntent = null,
   } = {}) => {
@@ -897,7 +908,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	  });
 	  return result;
 	};
-	const operation = schedulerRef.current.beginOperation(channelId, { signal, intent, urgency });
+	const operation = schedulerRef.current.beginOperation(channelId, {
+	  signal, intent, urgency, explicitRetry,
+	});
 	try {
 	  onOperation?.(operation);
 	  for (;;) {
@@ -970,7 +983,19 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 			// before asking the existing Scheduler for the next segment. This keeps
 			// scan liveness without draining the reservoir in one microtask chain;
 			// it is not a second scheduler or a geometry-ready acknowledgement.
-			await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+			await new Promise((resolve) => {
+			  let settled = false;
+			  const finish = () => {
+				if (settled) return;
+				settled = true;
+				globalThis.clearTimeout(timer);
+				signal?.removeEventListener('abort', finish);
+				resolve();
+			  };
+			  const timer = globalThis.setTimeout(finish, 0);
+			  signal?.addEventListener('abort', finish, { once: true });
+			  if (signal?.aborted) finish();
+			});
 		  }
 	} finally {
 	  operation.release();
@@ -1118,12 +1143,33 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     preparedPrincipalRef.current = principalId;
     if (principalChanged) cursorsRef.current.clearReadAuthority();
     setLocalReplicaReady(false);
+    setLocalReplicaError('');
+    setLocalReplicaErrorCode('');
     schedulerRef.current.setPriorityScope(principalId);
     const admissionEpochAtSelection = dataAdmissionEpochRef.current;
     const ownerReady = cacheEpochFenceRef.current.select(() => cacheRef.current.ensureOwner(principalId));
-    cacheOwnerReadyRef.current = ownerReady.then(() => undefined);
+    cacheOwnerReadyRef.current = ownerReady.then(() => undefined, () => undefined);
+    let selectionTimer = null;
     try {
-      const { changed, boot, meta } = await ownerReady;
+      const { changed, boot, meta } = await Promise.race([
+        ownerReady,
+        new Promise((_, reject) => {
+          selectionTimer = globalThis.setTimeout(() => {
+            const error = new Error('本地缓存初始化超时，请重试');
+            error.code = 'cache_selection_timeout';
+            // Presentation must not wait for a broken IndexedDB implementation
+            // to acknowledge abort. Physical cancellation continues in the
+            // background, while its persistence fence remains locked until all
+            // old transactions really settle; Retry may queue but cannot cross
+            // that safety boundary.
+            void Promise.resolve(cacheRef.current.cancelOwnerSelection?.()).catch((cancelError) => {
+              diagnostic('error', 'feed.cache_selection_cancel_failed', { error: cancelError });
+            });
+            reject(error);
+          }, HISTORY_BATCH_TIMEOUT_MS);
+        }),
+      ]);
+      if (selectionTimer != null) globalThis.clearTimeout(selectionTimer);
       if (serial !== localReplicaSerialRef.current) return { resume: {} };
       if (admissionEpochAtSelection !== dataAdmissionEpochRef.current) {
         // Remote attach has already selected the active world. Its queued
@@ -1191,8 +1237,11 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       setVersion((value) => value + 1);
       setIndexVersion((value) => value + 1);
       setLocalReplicaReady(true);
+      setLocalReplicaError('');
+      setLocalReplicaErrorCode('');
       return { resume: resumeSnapshot(meta) };
     } catch (error) {
+      if (selectionTimer != null) globalThis.clearTimeout(selectionTimer);
       if (serial !== localReplicaSerialRef.current) return { resume: {} };
       onError(error);
       diagnostic('error', 'feed.restore_failed', { error });
@@ -1201,8 +1250,10 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	    localReady: true,
 	    replace: true,
 	    selectionPending: false,
-	  });
+      });
       setLocalReplicaReady(true);
+      setLocalReplicaError(error?.message || '本地缓存初始化失败');
+      setLocalReplicaErrorCode(String(error?.code || 'cache_selection_failed'));
       return { resume: {} };
     }
   }, [beginNotificationHydration, onError]);
@@ -1232,7 +1283,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     statesRef, cursorsRef, version, indexVersion, bump, enqueue, cancel, clear, resetPersistent,
 	revisionFor: (channelId) => replicaRef.current.revision(channelId),
 	unreadFor,
-		prepareLocalReplica, resumeLocalReplica, localReplicaReady,
+		prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode,
 		setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel,
     historyFor: (channelId) => ({
       ...schedulerRef.current.snapshot(channelId),

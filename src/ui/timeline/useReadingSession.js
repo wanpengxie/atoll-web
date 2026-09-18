@@ -79,6 +79,16 @@ function historyProgressKey(historyStatus = {}) {
     Number(historyStatus.retryAt || 0),
     String(historyStatus.error || ''),
     Number(historyStatus.historyDemand?.revision || 0),
+    String(historyStatus.sourceLease || ''),
+  ]);
+}
+
+function historySourceAuthorityKey(historyStatus = {}) {
+  return JSON.stringify([
+    Number(historyStatus.generation || 0),
+    historyStatus.attached === true,
+    historyStatus.localReplicaReady === true,
+    String(historyStatus.sourceLease || ''),
   ]);
 }
 
@@ -624,7 +634,7 @@ export function useReadingSession({
     acknowledgedRevision: arrivalBaseline,
   });
   const historyEpochRef = useRef(0);
-  const restoreRequestRef = useRef({ controller: null, promise: null, deadline: 0 });
+  const initializationDeadlineRef = useRef({ controller: null, deadline: 0 });
   const lifecycleRef = useRef({ controller: null, epoch: 0 });
   const syncStatus = historyStatus.sync || {};
   const hasManagedSyncLifecycle = Object.prototype.hasOwnProperty.call(historyStatus, 'sync');
@@ -646,6 +656,7 @@ export function useReadingSession({
     Number(historyStatus.headSeq || 0),
     Number(syncStatus.targetHead || 0),
   );
+  const historySourceKey = historySourceAuthorityKey(historyStatus);
   const authoritativeEmpty = hasManagedHistoryLifecycle
     && historyStatus.attached === true
     && Number(historyStatus.generation || 0) > 0
@@ -700,9 +711,15 @@ export function useReadingSession({
   const syncHistoryError = !syncObservationCurrent
     ? String(syncStatus.error || '')
     : '';
+  const localReplicaError = historyStatus.attached !== true
+    ? String(historyStatus.localReplicaError || '')
+    : '';
+  const cachePhase = localReplicaError
+    ? 'error'
+    : historyStatus.localReplicaReady === false ? 'pending' : 'current';
   const availabilityError = foregroundHistoryError
     ? String(historyStatus.historyDemand?.error || historyStatus.error || '')
-    : syncHistoryError || (!semanticRangeEstablished ? String(historyStatus.error || '') : '');
+    : syncHistoryError || localReplicaError || (!semanticRangeEstablished ? String(historyStatus.error || '') : '');
   // Readability and remote freshness are orthogonal. Durable cache rows stay
   // visible while the current connection proves its head; pending/error here
   // explains why Waiting/control remain unavailable without clearing content.
@@ -820,11 +837,13 @@ export function useReadingSession({
       return undefined;
     }
     let active = true;
-    const first = snapshot.rows[0];
-    if (restoreRequestRef.current.controller !== controller) {
-      restoreRequestRef.current = { controller, promise: null, deadline: Date.now() + RESTORE_INITIALIZATION_BUDGET_MS };
+    if (initializationDeadlineRef.current.controller !== controller) {
+      initializationDeadlineRef.current = {
+        controller,
+        deadline: Date.now() + RESTORE_INITIALIZATION_BUDGET_MS,
+      };
     }
-    const remaining = Math.max(0, restoreRequestRef.current.deadline - Date.now());
+    const remaining = Math.max(0, initializationDeadlineRef.current.deadline - Date.now());
     const timer = setTimeout(() => {
       if (!active) return;
       diagnostic('warn', 'reading.initialization_degraded', {
@@ -841,28 +860,11 @@ export function useReadingSession({
       });
       setInitializing(false);
     }, remaining);
-    if (!following && !restoreRequestRef.current.promise) restoreRequestRef.current.promise = Promise.resolve(requestPort({
-        intent: HISTORY_INTENT.initialView,
-        urgency: HISTORY_URGENCY.blocking,
-        viewSpec: historyViewSpec,
-        anchorSeq: Number(first?.seqLow || 0),
-        targetSeq: Number(bookmark.seq || 0),
-        requiredVisibleCoverage: {
-          messageID: bookmark.messageID,
-          seq: Number(bookmark.seq || 0),
-        },
-        reason: 'restore-reading',
-      }));
-    if (restoreRequestRef.current.promise) {
-      void restoreRequestRef.current.promise.catch((error) => {
-        diagnostic('warn', 'history.restore_failed', { channelId: channelID, viewKey, error });
-      });
-    }
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [authoritativeEmpty, channelID, controller, historyViewSpec, initializing, requestPort, semanticExhausted, setInitializing, snapshot, viewKey]);
+  }, [authoritativeEmpty, channelID, controller, initializing, semanticExhausted, setInitializing, snapshot, viewKey]);
 
   useEffect(() => {
     const revision = Number(arrivals?.revision || 0);
@@ -915,7 +917,14 @@ export function useReadingSession({
   const requestHistory = useCallback((
     reason,
     urgency = HISTORY_URGENCY.interactive,
-    { revealRows, revealBytes, demandUnits = 1 } = {},
+    {
+      revealRows,
+      revealBytes,
+      demandUnits = 1,
+      intent = HISTORY_INTENT.scrollHistory,
+      targetSeq = 0,
+      requiredVisibleCoverage = null,
+    } = {},
   ) => {
     if (committedOwnerRef.current !== commitOwnerCandidate) {
       return Promise.resolve({ kind: 'stale-owner', deduplicated: true });
@@ -923,10 +932,17 @@ export function useReadingSession({
     const requestOwner = committedOwnerRef.current;
     const first = snapshotRef.current.rows[0];
     const key = `${first?.id || ''}:${first?.seqLow || 0}`;
+    const obligationKey = JSON.stringify([
+      intent,
+      Number(targetSeq || 0),
+      String(requiredVisibleCoverage?.messageID || ''),
+      Number(requiredVisibleCoverage?.seq || 0),
+      key,
+    ]);
     const exhausted = exhaustedHistoryKeyRef.current;
     if (exhausted?.controller === controller
       && exhausted.generation === Number(historyStatusRef.current.generation || 0)
-      && exhausted.key === key) {
+      && exhausted.key === obligationKey) {
       return Promise.resolve({ kind: 'exhausted', deduplicated: true });
     }
     const failedAnticipatory = failedAnticipatoryRequestRef.current;
@@ -935,17 +951,43 @@ export function useReadingSession({
       && failedAnticipatory.activationID === controller.activationID
       && failedAnticipatory.channelID === channelID
       && failedAnticipatory.viewKey === viewKey
-      && failedAnticipatory.key === key
+      && failedAnticipatory.key === obligationKey
       && failedAnticipatory.progressKey === historyProgressKey(historyStatusRef.current)) {
       return Promise.resolve({ kind: 'failed-pending-progress', deduplicated: true });
     }
     if (urgency === HISTORY_URGENCY.interactive) failedAnticipatoryRequestRef.current = null;
     if (runwayRequestRef.current) {
       const active = runwayRequestRef.current;
+      const currentSourceKey = historySourceAuthorityKey(historyStatusRef.current);
+      if (active.controller === controller
+        && (active.sourceKey !== currentSourceKey || active.key !== obligationKey)) {
+        const sourceChanged = active.sourceKey !== currentSourceKey;
+        active.abortController?.abort(sourceChanged
+          ? 'history-source-replaced'
+          : 'history-obligation-replaced');
+        diagnostic('info', 'history.intent_handoff', {
+          channelId: channelID,
+          viewKey,
+          fromSourceLease: active.sourceKey,
+          toSourceLease: currentSourceKey,
+          sourceChanged,
+        });
+        // The caller's exact immutable obligation is the successor. Chaining
+        // it to the one active attempt makes settlement itself the handoff;
+        // no React refresh edge or second pending/error lifecycle is needed.
+        return active.promise.then(() => requestHistory(reason, urgency, {
+          revealRows,
+          revealBytes,
+          demandUnits,
+          intent,
+          targetSeq,
+          requiredVisibleCoverage,
+        }));
+      }
       if (urgency === HISTORY_URGENCY.interactive
         && active.urgency !== HISTORY_URGENCY.interactive) {
         const promoted = active.operation?.promote?.({
-          intent: HISTORY_INTENT.scrollHistory,
+          intent,
           urgency: HISTORY_URGENCY.interactive,
         }) === true;
         active.urgency = HISTORY_URGENCY.interactive;
@@ -989,12 +1031,16 @@ export function useReadingSession({
           revealRows: Math.max(Number(previous?.revealRows || 0), Number(revealRows || 0)),
           revealBytes: Math.max(Number(previous?.revealBytes || 0), Number(revealBytes || 0)),
           demandUnits: Math.max(Number(previous?.demandUnits || 1), Number(demandUnits || 1)),
+          intent,
+          targetSeq: Number(targetSeq || 0),
+          requiredVisibleCoverage,
         };
       }
       return Promise.resolve({ kind: 'admission-pending', deduplicated: true });
     }
     const epoch = historyEpochRef.current + 1;
     historyEpochRef.current = epoch;
+    const attemptProgressKey = historySourceAuthorityKey(historyStatusRef.current);
     diagnostic('debug', 'history.intent_started', {
       channelId: channelID,
       epoch,
@@ -1005,8 +1051,11 @@ export function useReadingSession({
       installedVisibleRows: snapshotRef.current.rows.length,
       scope: historyViewSpec?.scope || '',
       actorFilterCount: Number(historyViewSpec?.actorFilter?.size || 0),
+      intent,
+      targetSeq: Number(targetSeq || 0),
       revealRows: Number(revealRows || 0),
       revealBytes: Number(revealBytes || 0),
+      sourceLease: String(historyStatusRef.current.sourceLease || ''),
     });
     readingTrace('history.intent-started', {
       activationID: controller.activationID,
@@ -1029,7 +1078,7 @@ export function useReadingSession({
     const durableBaselineIDs = Object.freeze(snapshotRef.current.rows
       .filter((row) => !row.localState && row.body?.local !== true)
       .map((row) => row.id));
-    const historyRevealIntent = {
+    const historyRevealIntent = intent === HISTORY_INTENT.scrollHistory ? {
       activationID: controller.activationID,
       inputEpoch: activeSession.inputEpoch,
       operationID: `history:${controller.activationID}:${epoch}`,
@@ -1041,15 +1090,18 @@ export function useReadingSession({
       anchorID: first?.id || '',
       anchorSeq: Number(first?.seqLow || 0),
       demandUnits: Math.max(1, Math.min(24, Number(demandUnits) || 1)),
-    };
+    } : null;
     const promise = Promise.resolve(requestPort({
-      intent: HISTORY_INTENT.scrollHistory,
+      intent,
       urgency,
       signal: abortController.signal,
       anchorSeq: Number(first?.seqLow || 0),
+      targetSeq: Number(targetSeq || 0),
+      requiredVisibleCoverage: requiredVisibleCoverage || undefined,
       revealRows,
       revealBytes,
       reason,
+      explicitRetry: reason === 'retry' || reason === 'retry-restore',
       viewSpec: historyViewSpec,
       historyRevealIntent,
       onOperation(operation) {
@@ -1077,7 +1129,7 @@ export function useReadingSession({
         exhaustedHistoryKeyRef.current = {
           controller,
           generation: Number(currentStatus.generation || 0),
-          key,
+          key: obligationKey,
         };
       }
       if (operationStillCurrent && result?.kind === 'failed'
@@ -1087,7 +1139,7 @@ export function useReadingSession({
           activationID: requestOwner.activationID,
           channelID,
           viewKey,
-          key,
+          key: obligationKey,
           progressKey: historyProgressKey(currentStatus),
         };
       } else if (operationStillCurrent && result?.kind !== 'failed') {
@@ -1129,7 +1181,7 @@ export function useReadingSession({
           activationID: requestOwner.activationID,
           channelID,
           viewKey,
-          key,
+          key: obligationKey,
           progressKey: historyProgressKey(currentOwner.historyStatus),
         };
       }
@@ -1146,14 +1198,51 @@ export function useReadingSession({
       });
       return { kind: 'failed', error };
     }).finally(() => {
-      if (runwayRequestRef.current?.promise === promise) runwayRequestRef.current = null;
+      if (runwayRequestRef.current?.promise !== promise) return;
+      runwayRequestRef.current = null;
     });
     runwayRequestRef.current = {
-      key, promise, abortController, controller, epoch, urgency, operation: historyOperation,
-      operationID: historyRevealIntent.operationID,
+      key: obligationKey,
+      sourceKey: attemptProgressKey,
+      promise,
+      abortController,
+      controller,
+      epoch,
+      urgency,
+      operation: historyOperation,
+      operationID: historyRevealIntent?.operationID || '',
     };
     return promise;
   }, [channelID, commitOwnerCandidate, controller, historyViewSpec, requestPort, viewKey]);
+
+  useEffect(() => {
+    const bookmark = session.bookmark;
+    if (session.mode === READING_MODE.following
+      || !bookmark
+      || snapshot.rows.some((row) => row.id === bookmark.messageID)
+      || authoritativeEmpty
+      || semanticExhausted) return;
+    // Saved-position recovery is the same activation-owned attempt as every
+    // other history demand. Its immutable target survives presentation-shell
+    // degradation; source replacement cancels the old physical operation and
+    // the single attempt registry hands this exact obligation to the new one.
+    void requestHistory('restore-reading', HISTORY_URGENCY.blocking, {
+      intent: HISTORY_INTENT.initialView,
+      targetSeq: Number(bookmark.seq || 0),
+      requiredVisibleCoverage: {
+        messageID: bookmark.messageID,
+        seq: Number(bookmark.seq || 0),
+      },
+    });
+  }, [
+    authoritativeEmpty,
+    historySourceKey,
+    requestHistory,
+    semanticExhausted,
+    session.bookmark,
+    session.mode,
+    snapshot.rows,
+  ]);
 
   useEffect(() => {
     const deferred = deferredAdmissionDemandRef.current;
@@ -1179,6 +1268,9 @@ export function useReadingSession({
       revealRows: deferred.revealRows,
       revealBytes: deferred.revealBytes,
       demandUnits: deferred.demandUnits,
+      intent: deferred.intent,
+      targetSeq: deferred.targetSeq,
+      requiredVisibleCoverage: deferred.requiredVisibleCoverage,
     });
   }, [
     channelID,
@@ -1215,6 +1307,10 @@ export function useReadingSession({
       || historyStatus.hasOlder !== true
       || historyStatus.historyDemand?.phase === 'error'
       || knownHead <= 0) return;
+    const bookmark = session.bookmark;
+    if (session.mode !== READING_MODE.following
+      && bookmark
+      && !snapshot.rows.some((row) => row.id === bookmark.messageID)) return;
     const explicitlyFiltered = Number(historyViewSpec?.actorFilter?.size || 0) > 0
       || historyViewSpec?.scope === 'mine';
     // A zero-row result after the person selected @me or an actor is visible
@@ -1240,9 +1336,12 @@ export function useReadingSession({
     historyStatus.presentationRevision,
     historyStatus.presentationAdmissionState?.phase,
     historyStatus.revealVersion,
+    historySourceKey,
     knownHead,
     requestHistory,
     snapshot.rows.length,
+    session.bookmark,
+    session.mode,
     historyViewSpec,
     viewKey,
   ]);
@@ -1902,6 +2001,24 @@ export function useReadingSession({
     return after !== before;
   }, [channelID, controller, historyStatus, viewKey]);
 
+  const retryCurrentHistory = useCallback(() => {
+    const current = controller.getSnapshot().session;
+    const bookmark = current.bookmark;
+    if (current.mode !== READING_MODE.following
+      && bookmark
+      && !snapshotRef.current.rows.some((row) => row.id === bookmark.messageID)) {
+      return requestHistory('retry-restore', HISTORY_URGENCY.interactive, {
+        intent: HISTORY_INTENT.initialView,
+        targetSeq: Number(bookmark.seq || 0),
+        requiredVisibleCoverage: {
+          messageID: bookmark.messageID,
+          seq: Number(bookmark.seq || 0),
+        },
+      });
+    }
+    return requestHistory('retry', HISTORY_URGENCY.interactive);
+  }, [controller, requestHistory]);
+
   return useMemo(() => ({
     activationID: controller.activationID,
     session,
@@ -1919,6 +2036,11 @@ export function useReadingSession({
     presentationPending,
     availabilityError,
     freshness: Object.freeze({ phase: freshnessPhase, error: freshnessError }),
+    cache: Object.freeze({
+      phase: cachePhase,
+      error: localReplicaError,
+      code: String(historyStatus.localReplicaErrorCode || ''),
+    }),
     status: historyStatus,
     // This is a semantic edge-demand lifecycle. Physical background batches
     // remain available on status.loading/backgroundLoading for diagnostics,
@@ -1931,15 +2053,18 @@ export function useReadingSession({
     },
     requestHistory,
     retryHistoryDemand() {
-      return requestHistory('retry', HISTORY_URGENCY.interactive);
+      return retryCurrentHistory();
     },
     retryAvailability() {
       const retries = [];
+      if (localReplicaError && typeof history.retryLocalReplica === 'function') {
+        retries.push(Promise.resolve(history.retryLocalReplica()));
+      }
       if (syncHistoryError && typeof history.refreshLatest === 'function') {
         retries.push(Promise.resolve(history.refreshLatest()));
       }
       if (foregroundHistoryError || (historyStatus.error && !semanticRangeEstablished)) {
-        retries.push(Promise.resolve(requestHistory('retry', HISTORY_URGENCY.interactive)));
+        retries.push(Promise.resolve(retryCurrentHistory()));
       }
       return retries.length > 1 ? Promise.all(retries) : retries[0] || Promise.resolve(false);
     },
@@ -2087,5 +2212,5 @@ export function useReadingSession({
     revokeBottomIntent,
     isFollowing() { return controller.getSnapshot().session.mode === READING_MODE.following; },
     getSession() { return controller.getSnapshot().session; },
-  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, beginNavigation, bindBottomIntentTargets, bottomReady, cancelNavigation, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, finishNavigation, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen, updateNavigation]);
+  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, beginNavigation, bindBottomIntentTargets, bottomReady, cachePhase, cancelNavigation, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, finishNavigation, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, localReplicaError, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, retryCurrentHistory, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen, updateNavigation]);
 }

@@ -10,6 +10,13 @@ export const FEED_CACHE_BATCH_SIZE = 200;
 export const FEED_CACHE_BATCH_BYTES = 4 * 1024 * 1024;
 const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 export function redactFeedSecrets(value, key = '') {
   if (key && SENSITIVE_FIELD.test(key)) return '已隐藏';
   if (Array.isArray(value)) return value.map((item) => redactFeedSecrets(item));
@@ -121,6 +128,34 @@ export function createFeedCache({
   let pendingWaiters = [];
   let flushTimer = null;
   let owner = '';
+  let ownerSelection = null;
+  let persistenceEpoch = 0;
+  let persistenceCancellation = deferred();
+  void persistenceCancellation.promise.catch(() => {});
+  const activeWriteTransactions = new Set();
+
+  function assertPersistenceEpoch(selectedEpoch) {
+    if (selectedEpoch !== persistenceEpoch) throw new Error('本地缓存写入世界已取消');
+  }
+
+  async function runWriteTransaction(selectedEpoch, tables, operation) {
+    const record = { transaction: null, settled: deferred() };
+    activeWriteTransactions.add(record);
+    try {
+      const selectedDatabase = database;
+      return await selectedDatabase.transaction('rw', ...tables, async () => {
+        record.transaction = Dexie.currentTransaction;
+        if (selectedEpoch !== persistenceEpoch) {
+          record.transaction?.abort();
+          throw new Error('本地缓存写入世界已取消');
+        }
+        return operation();
+      });
+    } finally {
+      activeWriteTransactions.delete(record);
+      record.settled.resolve();
+    }
+  }
 
   function open() {
     if (openPromise) return openPromise;
@@ -136,14 +171,19 @@ export function createFeedCache({
       channelMeta: '&channelId, lastActivity, newestSeq',
       globalMeta: '&id',
     });
-    openPromise = database.open().then(async () => {
-      const rows = await database.channelMeta.toArray();
+    const openingDatabase = database;
+    openPromise = openingDatabase.open().then(async () => {
+      const rows = await openingDatabase.channelMeta.toArray();
+      // A cancelled owner selection may close this instance and install a new
+      // one while the old open/read is still settling. Never publish the old
+      // world's metadata into the process-local authority.
+      if (database !== openingDatabase) return null;
       for (const row of rows) meta.set(row.channelId, normalizeMeta(row));
       diagnostic('info', 'feed_cache.meta_ready', { databaseName, channels: meta.size });
-      return database;
+      return openingDatabase;
     }).catch((error) => {
       diagnostic('error', 'feed_cache.open_failed', { databaseName, error });
-      database = null;
+      if (database === openingDatabase) database = null;
       throw error;
     });
     return openPromise;
@@ -185,11 +225,11 @@ export function createFeedCache({
     return { reclaimed, removedRows: keys.length, meta: current };
   }
 
-  async function trimGlobal() {
+  async function trimGlobal(selectedEpoch = persistenceEpoch) {
     while (true) {
       let committedMeta = null;
       let stillOverLimit = false;
-      await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
+      await runWriteTransaction(selectedEpoch, [database.rows, database.channelMeta, database.globalMeta], async () => {
         const global = await database.globalMeta.get(GLOBAL_META_ID)
           || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '' };
         if (global.totalBytes <= globalBytes) return;
@@ -209,13 +249,15 @@ export function createFeedCache({
         committedMeta = trimmed.meta;
         stillOverLimit = global.totalBytes > globalBytes;
       });
+      assertPersistenceEpoch(selectedEpoch);
       if (committedMeta) meta.set(committedMeta.channelId, normalizeMeta(committedMeta));
       if (!committedMeta || !stillOverLimit) break;
     }
   }
 
-  async function persist(records, coverageByChannel = new Map()) {
+  async function persist(records, coverageByChannel = new Map(), selectedEpoch = persistenceEpoch) {
 	if (!(await open())) return;
+	assertPersistenceEpoch(selectedEpoch);
 	const byChannel = new Map();
 	for (const row of records) {
 	  if (!byChannel.has(row.channelId)) byChannel.set(row.channelId, []);
@@ -225,7 +267,7 @@ export function createFeedCache({
       let committedMeta = null;
       let committedAddedBytes = 0;
       let committedAddedRows = 0;
-      await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
+      await runWriteTransaction(selectedEpoch, [database.rows, database.channelMeta, database.globalMeta], async () => {
         const current = normalizeMeta(await database.channelMeta.get(channelId));
 		current.channelId = channelId;
         let addedBytes = 0;
@@ -270,6 +312,7 @@ export function createFeedCache({
         committedAddedBytes = addedBytes;
         committedAddedRows = addedRows;
       });
+      assertPersistenceEpoch(selectedEpoch);
       meta.set(channelId, normalizeMeta(committedMeta));
       diagnostic('debug', 'feed_cache.batch_written', {
         channelId, rows: committedAddedRows, bytes: committedAddedBytes,
@@ -284,7 +327,7 @@ export function createFeedCache({
 	for (const [channelId, coverage] of coverageEntries) {
 	  if (!channelId || !coverage || byChannel.has(channelId)) continue;
 	  let committedMeta = null;
-	  await database.transaction('rw', database.channelMeta, async () => {
+	  await runWriteTransaction(selectedEpoch, [database.channelMeta], async () => {
 		const current = normalizeMeta(await database.channelMeta.get(channelId));
 		current.channelId = channelId;
 		// A checkpoint can legitimately cover a zero-fact interval newer than
@@ -300,13 +343,16 @@ export function createFeedCache({
 		await database.channelMeta.put(current);
 		committedMeta = current;
 	  });
+	  assertPersistenceEpoch(selectedEpoch);
 	  meta.set(channelId, normalizeMeta(committedMeta));
 	}
-    await trimGlobal();
+    await trimGlobal(selectedEpoch);
   }
 
-  async function writeBatch(rawRows, coverageEntries) {
+  async function writeBatch(rawRows, coverageEntries, selectedEpoch = persistenceEpoch) {
+	const assertCurrent = () => assertPersistenceEpoch(selectedEpoch);
 	const records = await encodeRecords(rawRows);
+	assertCurrent();
 	const coverageByChannel = new Map();
 	for (const [channelId, coverage] of coverageEntries) {
 	  if (!channelId || !coverage) continue;
@@ -316,22 +362,28 @@ export function createFeedCache({
 	  normalizeCoverage(intervals).map((coverage) => [channelId, coverage])
 	));
 	try {
-	  for (const chunk of chunksOf(records)) await persist(chunk);
+	  for (const chunk of chunksOf(records)) {
+		assertCurrent();
+		await persist(chunk, new Map(), selectedEpoch);
+	  }
 	  // Coverage is committed only after every corresponding fact queued ahead
 	  // of it. A crash may cause a harmless refetch, never a false cache hit.
 	  for (const [channelId, coverage] of compactCoverage) {
-		await persist([], new Map([[channelId, coverage]]));
+		assertCurrent();
+		await persist([], new Map([[channelId, coverage]]), selectedEpoch);
 	  }
 	} catch (error) {
 	  diagnostic('error', 'feed_cache.write_failed', { records: records.length, error });
 	  if (error?.name !== 'QuotaExceededError' || !database) throw error;
 	  for (const channelId of new Set(records.map((row) => row.channelId))) {
+		assertCurrent();
 		const current = normalizeMeta(await database.channelMeta.get(channelId));
+		assertCurrent();
 		let remaining = Math.max(1, Math.ceil((current?.rowCount || 0) / 2));
 		while (remaining > 0) {
 		  const count = Math.min(FEED_CACHE_BATCH_SIZE, remaining);
 		  let committedMeta = null;
-		  await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
+		  await runWriteTransaction(selectedEpoch, [database.rows, database.channelMeta, database.globalMeta], async () => {
 			const durable = normalizeMeta(await database.channelMeta.get(channelId));
 			const trimmed = await trimChannel(channelId, count, durable);
 			const global = await database.globalMeta.get(GLOBAL_META_ID)
@@ -340,13 +392,18 @@ export function createFeedCache({
 			await database.globalMeta.put(global);
 			committedMeta = trimmed.meta;
 		  });
+		  assertCurrent();
 		  if (committedMeta) meta.set(channelId, normalizeMeta(committedMeta));
 		  remaining -= count;
 		}
 	  }
-	  for (const chunk of chunksOf(records)) await persist(chunk);
+	  for (const chunk of chunksOf(records)) {
+		assertCurrent();
+		await persist(chunk, new Map(), selectedEpoch);
+	  }
 	  for (const [channelId, coverage] of compactCoverage) {
-		await persist([], new Map([[channelId, coverage]]));
+		assertCurrent();
+		await persist([], new Map([[channelId, coverage]]), selectedEpoch);
 	  }
 	}
   }
@@ -361,7 +418,10 @@ export function createFeedCache({
 	pendingRecords = [];
 	pendingCoverage = [];
 	pendingWaiters = [];
-	const operation = writeTail.catch(() => {}).then(() => writeBatch(records, coverageEntries));
+	const selectedEpoch = persistenceEpoch;
+	const selectedCancellation = persistenceCancellation.promise;
+	const work = writeTail.catch(() => {}).then(() => writeBatch(records, coverageEntries, selectedEpoch));
+	const operation = Promise.race([work, selectedCancellation]);
 	writeTail = operation;
 	void operation.then(
 	  () => waiters.forEach((waiter) => waiter.resolve()),
@@ -551,11 +611,19 @@ export function createFeedCache({
   async function ensureOwner(principalId) {
     const requested = String(principalId || '');
     if (!requested) return { changed: false, meta: new Map() };
-    await flushPending().catch(() => {});
-    if (!(await open())) return { changed: false, meta: new Map() };
-    let changed = false;
-    let boot = '';
-    await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
+    const selection = { cancelled: false, transaction: null, cancellation: deferred() };
+    void selection.cancellation.promise.catch(() => {});
+    ownerSelection = selection;
+    try {
+      await Promise.race([flushPending().catch(() => {}), selection.cancellation.promise]);
+      if (selection.cancelled) throw new Error('本地缓存所有者选择已取消');
+      if (!(await Promise.race([open(), selection.cancellation.promise]))) return { changed: false, meta: new Map() };
+      if (selection.cancelled) throw new Error('本地缓存所有者选择已取消');
+      let changed = false;
+      let boot = '';
+      await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
+      selection.transaction = Dexie.currentTransaction;
+      if (selection.cancelled) selection.transaction?.abort();
       const global = await database.globalMeta.get(GLOBAL_META_ID)
         || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '', owner: '' };
       const legacyOwner = String(legacyStorage?.getItem('atoll.feed.owner.v1') || '');
@@ -578,15 +646,51 @@ export function createFeedCache({
       global.schemaVersion = 2;
       boot = String(global.serverBoot || '');
       await database.globalMeta.put(global);
-    });
-    owner = requested;
-    try { legacyStorage?.removeItem('atoll.feed.owner.v1'); } catch { /* migration only */ }
-    if (changed) meta.clear();
-    return { changed, boot, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
+      });
+      if (selection.cancelled) throw new Error('本地缓存所有者选择已取消');
+      owner = requested;
+      try { legacyStorage?.removeItem('atoll.feed.owner.v1'); } catch { /* migration only */ }
+      if (changed) meta.clear();
+      return { changed, boot, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
+    } finally {
+      if (ownerSelection === selection) ownerSelection = null;
+    }
+  }
+
+  async function cancelOwnerSelection() {
+    const selection = ownerSelection;
+    if (!selection || selection.cancelled) return false;
+    selection.cancelled = true;
+    const cancellationError = new Error('本地缓存所有者选择已取消');
+    persistenceEpoch += 1;
+    const activeTransactions = [...activeWriteTransactions];
+    for (const record of activeTransactions) {
+      try { record.transaction?.abort(); } catch { /* cancellation is best-effort */ }
+    }
+    try { selection.transaction?.abort(); } catch { /* cancellation is best-effort */ }
+    // Opening IndexedDB can itself stall before a transaction exists. Closing
+    // the selected Dexie instance rejects that open without authorizing a new
+    // world to overtake a still-live owner transaction.
+    if (!selection.transaction && database) {
+      try { database.close(); } catch { /* cancellation is best-effort */ }
+      database = null;
+      openPromise = null;
+    }
+    // Do not unlock the persistence fence until every transaction that could
+    // mutate the preceding world has physically committed or rolled back.
+    // Pre-transaction encode/open work is fenced by persistenceEpoch before it
+    // may enter a transaction; active transactions are aborted and joined.
+    await Promise.all(activeTransactions.map((record) => record.settled.promise));
+    persistenceCancellation.reject(cancellationError);
+    persistenceCancellation = deferred();
+    void persistenceCancellation.promise.catch(() => {});
+    selection.cancellation.reject(cancellationError);
+    return true;
   }
 
   return {
     ensureOwner,
+    cancelOwnerSelection,
     openMeta: async () => { await open(); return new Map([...meta].map(([id, value]) => [id, { ...value }])); },
     metaSnapshot: () => new Map([...meta].map(([id, value]) => [id, { ...value }])),
     readBefore,

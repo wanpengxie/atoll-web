@@ -118,6 +118,25 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
+  it('keeps a blocking initial-view restore attributable after the initialization shell degrades', () => {
+    const scheduler = createHistoryScheduler({ requestPage: vi.fn(), revealRows: () => {} });
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'initial-view', urgency: 'blocking',
+    });
+
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      foregroundLoading: true,
+      historyDemand: { revision: 1, phase: 'pending', error: '' },
+    });
+
+    operation.release();
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      foregroundLoading: false,
+      historyDemand: { revision: 1, phase: 'idle', error: '' },
+    });
+    scheduler.destroy();
+  });
+
   it('promotes one anticipatory operation to interactive presentation without opening a second operation or page', async () => {
     const harness = requestHarness();
     const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
@@ -213,7 +232,9 @@ describe('v5 history batch coordinator', () => {
 
     // An explicit retry starts a new semantic demand immediately; it does not
     // wait behind the automatic retry timer and does not inherit stale error UI.
-    const retry = scheduler.beginOperation('c0', { intent: 'scroll-history' });
+    const retry = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'interactive', explicitRetry: true,
+    });
     const retryResult = retry.next();
     await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(2));
     expect(scheduler.snapshot('c0').error).toBe('');
@@ -261,7 +282,7 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
-  it('自动失败按 scheduler retryAt 有界退避，同一 coverage 不会紧密重发', async () => {
+  it('同一 source authority 失败后停止自动重派，仅显式 Retry 重开一次', async () => {
     let clock = 0;
     let timerSerial = 0;
     const timers = new Map();
@@ -283,21 +304,142 @@ describe('v5 history batch coordinator', () => {
 
     await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-    expect([...timers.values()]).toHaveLength(1);
-    expect([...timers.values()][0].delay).toBe(500);
+    expect([...timers.values()]).toHaveLength(0);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(requestPage).toHaveBeenCalledTimes(1);
 
-    const [firstID, firstWake] = [...timers.entries()][0];
-    timers.delete(firstID);
-    clock += firstWake.delay;
-    firstWake.callback();
+    clock += 60_000;
+    const retry = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'interactive', explicitRetry: true,
+    });
+    const result = retry.next();
     await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
-    expect([...timers.values()]).toHaveLength(1);
-    expect([...timers.values()][0].delay).toBe(1_000);
+    await expect(result).resolves.toMatchObject({ kind: 'failed' });
+    retry.release();
+    expect([...timers.values()]).toHaveLength(0);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(requestPage).toHaveBeenCalledTimes(2);
+    scheduler.destroy();
+  });
+
+  it('无 candidate 的前台义务有界失败，不与已派发 batch 的阶段超时争权', async () => {
+    const scheduler = createHistoryScheduler({
+      requestPage: vi.fn(), revealRows: () => {}, batchTimeoutMs: 20,
+    });
+    const operation = scheduler.beginOperation('offline', {
+      intent: 'initial-view', urgency: 'blocking',
+    });
+    const result = operation.next();
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'failed', error: { code: 'history_source_unavailable' },
+    });
+    expect(scheduler.snapshot('offline').historyDemand).toMatchObject({
+      phase: 'error', error: '等待可用历史数据源超时，请重试',
+    });
+    operation.release();
+    scheduler.destroy();
+  });
+
+  it('网络 receipt 永挂后发布精确阶段错误并停止自动重派，Retry 只重开一次', async () => {
+    let serial = 0;
+    const requestPage = vi.fn((channelId, _before, _limit, options) => {
+      const request = new Promise(() => {});
+      request.ref = `hung-${++serial}`;
+      return request;
+    });
+    const scheduler = createHistoryScheduler({
+      requestPage, revealRows: () => {}, onError: () => {}, batchTimeoutMs: 20,
+    });
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'interactive',
+    });
+    const result = operation.next();
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], {
+      generation: 1, focus: 'c0',
+    });
+
+    await expect(result).resolves.toMatchObject({
+      kind: 'failed', error: { code: 'history_receipt_timeout' },
+    });
+    expect(requestPage).toHaveBeenCalledTimes(1);
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      loading: false,
+      errorCode: 'history_receipt_timeout',
+      historyDemand: { phase: 'error', error: '历史请求回执超时，请重试' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(requestPage).toHaveBeenCalledTimes(1);
+    operation.release();
+
+    const retry = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'interactive', explicitRetry: true,
+    });
+    const retryResult = retry.next();
+    await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(2));
+    await expect(retryResult).resolves.toMatchObject({
+      kind: 'failed', error: { code: 'history_receipt_timeout' },
+    });
+    retry.release();
+    scheduler.destroy();
+  });
+
+  it('本地 cache 永挂时同一 waiter 有界切换到已授权 network，不先发布失败', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      readCache: () => new Promise(() => {}),
+      revealRows: () => {},
+      onError: () => {},
+      batchTimeoutMs: 100,
+    });
+    const localMeta = new Map([['c0', {
+      rowCount: 100, newestSeq: 100, coverage: [{ lowSeq: 1, highSeq: 100 }],
+    }]]);
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'initial-view', urgency: 'blocking',
+    });
+    const result = operation.next();
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], {
+      generation: 1, focus: 'c0', localMeta,
+    });
+    scheduler.setLocalMeta(localMeta, { localReady: true });
+
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({ beforeSeq: 101 });
+    finish(scheduler, harness.calls[0], { oldest: 90, rows: 2, hasOlder: true });
+    await expect(result).resolves.toMatchObject({ kind: 'segment' });
+    expect(scheduler.snapshot('c0')).toMatchObject({ error: '', errorCode: '' });
+    operation.release();
+    scheduler.destroy();
+  });
+
+  it('commit decode yield 取消后立即释放 lane，迟到页不能推进 cursor', async () => {
+    const harness = requestHarness();
+    const neverYield = new Promise(() => {});
+    const controller = new AbortController();
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      revealRows: () => {},
+      yieldTask: () => neverYield,
+      batchTimeoutMs: 5_000,
+    });
+    const operation = scheduler.beginOperation('c0', {
+      signal: controller.signal, intent: 'scroll-history', urgency: 'interactive',
+    });
+    const result = operation.next();
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], {
+      generation: 1, focus: 'c0',
+    });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 70, rows: 20, hasOlder: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    controller.abort();
+    await expect(result).resolves.toMatchObject({ kind: 'cancelled' });
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    expect(scheduler.snapshot('c0').completedPages).toBe(0);
     scheduler.destroy();
   });
 

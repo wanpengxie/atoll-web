@@ -1866,6 +1866,14 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     },
   }), [state.channelId, viewport.bindBottomIntentTargets, viewport.captureBottomIntent, viewport.requestBottom, viewport.revokeBottomIntent]);
 
+  const historyWaitingLabel = viewport.status?.waitingStage === 'cache-read'
+    ? '正在读取本地缓存…'
+    : viewport.status?.waitingStage === 'network-receipt'
+      ? '正在等待历史请求响应…'
+      : viewport.status?.waitingStage === 'network-page'
+        ? '正在接收历史数据…'
+        : '正在确认频道内容…';
+
   return <ReadingIntentProvider value={readingIntent}><MessageLayoutProvider store={messageLayoutStoreRef.current}><MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost><ConversationSurface input={composer} floating={floatingInput}>
 		<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" data-viewport-mode={viewport.session.mode} data-has-initial-anchor={viewport.session.bookmark ? true : undefined}>
       <div className={state.rows.size ? 'timeline-inner timeline-controls-overlay' : 'timeline-inner'}>
@@ -1935,13 +1943,13 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 		    : <><h2>正在查找符合筛选的往来…</h2><p>会继续读取更早内容，找到后自动显示。</p></>}</div>
 		)}
 	  </div>
-		  {((presentationEmpty && ['syncing', 'unknown'].includes(viewport.availability)) || viewport.availability === 'materializing') && <div className="timeline-history-status" role="status">正在确认频道内容…</div>}
+		  {((presentationEmpty && ['syncing', 'unknown'].includes(viewport.availability)) || viewport.availability === 'materializing') && <div className="timeline-history-status" role="status">{historyWaitingLabel}</div>}
 		  {presentationEmpty && viewport.availability === 'partial' && viewport.historyDemand?.phase === 'pending' && <div
 		    className="timeline-history-status timeline-history-demand"
 		    data-phase="pending"
 		    data-revision={viewport.historyDemand.revision}
 		    role="status"
-		  >正在读取更早动态…</div>}
+		  >{viewport.status?.waitingStage ? historyWaitingLabel : '正在读取更早动态…'}</div>}
 		  {presentationEmpty && viewport.availability === 'error' && <div
       className="timeline-history-status timeline-history-demand"
       data-phase="error"
@@ -1949,6 +1957,12 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       role="alert"
     ><span>{viewport.availabilityError || '确认频道内容失败'}</span><button type="button" onClick={() => viewport.retryAvailability()}>重试</button></div>}
 	  {!presentationEmpty && identityPending && <div className="timeline-history-status" role="status">正在确认你的频道身份，当前显示全部动态。</div>}
+	  {!presentationEmpty && viewport.cache?.phase === 'error' && <div
+	    className="timeline-history-status timeline-history-demand"
+	    data-phase="error"
+	    data-error-code={viewport.cache.code || undefined}
+	    role="alert"
+	  ><span>{viewport.cache.error || '本地缓存初始化失败'}</span><button type="button" onClick={() => viewport.retryAvailability()}>重试</button></div>}
 	  {!presentationEmpty && !identityPending && viewport.availability === 'readable'
 	    && viewport.freshness?.phase === 'pending' && <div
 	      className="timeline-history-status timeline-freshness-status"

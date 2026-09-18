@@ -34,9 +34,6 @@ export function createPersistenceEpochFence() {
   });
 }
 
-const RETRY_BASE_MS = 400;
-const RETRY_MAX_MS = 15_000;
-
 function withAbort(operation, signal) {
   if (!signal) return Promise.resolve(operation);
   if (signal.aborted) return Promise.reject(new Error('频道同步已取消'));
@@ -122,18 +119,6 @@ export function createSyncObligationCoordinator({
     state.retryAt = 0;
   }
 
-  function scheduleRetry(state) {
-    clearRetry(state);
-    if (!available || destroyed || state.admitted === false || state.fulfilledRevision >= state.interestRevision) return;
-    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(6, Math.max(0, state.attempt - 1)));
-    state.retryAt = Date.now() + delay;
-    state.timer = setTimeoutImpl(() => {
-      state.timer = null;
-      state.retryAt = 0;
-      void advance(state);
-    }, delay);
-  }
-
   async function advance(state) {
     if (destroyed || !available || state.admitted === false || state.running || state.fulfilledRevision >= state.interestRevision) return false;
     let restartAfterConnectionChange = false;
@@ -217,8 +202,12 @@ export function createSyncObligationCoordinator({
           }
           state.attempt += 1;
           state.error = error?.message || String(error || '同步失败');
+          // A transient failure is observable and retryable, but it is not an
+          // authority to poll forever on the same connection/admission epoch.
+          // Explicit interest (Retry) or a replacement connection/admission
+          // reopens the durable obligation exactly once.
+          clearRetry(state);
           publish(state);
-          scheduleRetry(state);
           return false;
         } finally {
           if (state.activeAbort === controller) state.activeAbort = null;
@@ -233,10 +222,8 @@ export function createSyncObligationCoordinator({
       if (state.running === operation) state.running = null;
       publish(state);
       if (!destroyed && available && state.admitted !== false
-        && state.fulfilledRevision < state.interestRevision && !state.timer) {
-        if (restartAfterConnectionChange) void advance(state);
-        else scheduleRetry(state);
-      }
+        && state.fulfilledRevision < state.interestRevision
+        && restartAfterConnectionChange) void advance(state);
     }
   }
 

@@ -115,6 +115,7 @@ const EMPTY_STATUS = Object.freeze({
   tier: 3,
   completedPages: 0,
   generation: 0,
+  sourceLease: '',
   presentationRevision: 0,
   notificationAuthorityRevision: 0,
   error: '',
@@ -124,7 +125,7 @@ const EMPTY_STATUS = Object.freeze({
 // This is the complete Visual -> Scheduler boundary for one channel. The
 // visual side describes why a range matters; the scheduler still owns source,
 // page size, concurrency, P0/P1/P2 and cancellation of physical batches.
-export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open, refreshLatest, markRead, markNotificationsRead } = {}) {
+export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open, refreshLatest, retryLocalReplica, markRead, markNotificationsRead } = {}) {
   const request = (demand = {}) => open?.({
     intent: demand.intent || HISTORY_INTENT.scrollHistory,
     urgency: demand.urgency || HISTORY_URGENCY.interactive,
@@ -137,6 +138,7 @@ export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open
     request,
     open: request,
     refreshLatest: () => refreshLatest?.(),
+    retryLocalReplica: () => retryLocalReplica?.(),
     markRead: (receipt, authority) => {
       const physicalSeq = physicalReadSeq({ channelId, status: currentStatus, authority, receipt });
       const identities = exactReadIdentities({ channelId, status: currentStatus, authority, receipt });

@@ -19,6 +19,27 @@ function envelope(id, text) {
 }
 
 describe('feed cache', () => {
+	it('cancels pre-transaction owner selection without letting delayed old-world encoding cross the new owner', async () => {
+	  const cache = createFeedCache({
+		indexedDBImpl: indexedDB,
+		IDBKeyRangeImpl: IDBKeyRange,
+		databaseName: `feed-cache-owner-cancel-${crypto.randomUUID()}`,
+	  });
+	  await cache.ensureOwner('alice');
+	  const oldWrite = cache.saveRows(Array.from({ length: 17 }, (_, index) => ({
+		  channel_id: 'c0', seq: index + 1, envelope: envelope(`alice-${index + 1}`, 'old world'),
+	  })));
+	  void oldWrite.catch(() => {});
+	  const selection = cache.ensureOwner('bob');
+	  await Promise.resolve();
+	  await expect(cache.cancelOwnerSelection()).resolves.toBe(true);
+	  await expect(selection).rejects.toThrow('本地缓存所有者选择已取消');
+
+	  await expect(cache.ensureOwner('bob')).resolves.toMatchObject({ changed: true });
+	  await expect(oldWrite).rejects.toThrow(/本地缓存(?:写入世界|所有者选择)已取消/);
+	  expect((await cache.readBefore('c0', 0, 30)).rows).toHaveLength(0);
+	});
+
 	it('publishes in-memory Meta only after its IndexedDB transaction commits', async () => {
 	  const databaseName = `feed-cache-meta-commit-${crypto.randomUUID()}`;
 	  const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });

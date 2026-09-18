@@ -4,6 +4,15 @@
 
 ### 最新状态（本段覆盖以下旧快照；监督周期已依用户改为20分钟）
 
+#### 2026-09-18 23:05：冷入口生命周期整合与真实未闭项
+
+- `ea8e0da` live-tail 入场过渡已合：无新 scroll writer，当前 Following 同 DOM 布局过渡，非 live/cache/history/browsing 不重播。主树113定向/build通过；提交后独立正常440c解析 live-entry/reduced-motion/Q连续touch 3/3通过，接管残差0.53px。`629fde1` Q 首次有效 scroll 归 begin 的测试修正已合，未修改产品绕门。
+- 本轮 root 亲读冷入口最终候选 product `1f913323b11e9a3c2d704e2dce6e07b6e28dc01180ae8228c37e825bc88e12bc` 全部11文件并整合，保留 ea8 live provenance import。整合主树6files201/201、build和diff-check通过；独立机制审准入，真实浏览器整合复核已派，不能以单测替代现场闭合。
+- 冷入口机制：Reading 单一 activation attempt 统一恢复/历史请求，source 更换后旧 attempt 取消并交接同一 immutable obligation；Scheduler 管理排队/回执/页/commit 的有界失败与已授权网络 fallback，同source失败不自动循环；超时不是EOF。FeedCache旧写事务 abort+join 后才释放 fence，事务后本地Meta发布也校验epoch。
+- 已知降级：如果浏览器 IDB 事务连 abort 都永久不结算，30秒 UI 明确报错、已连接网络可独立继续，但持久化 fence 故意保持锁；不宣称 Retry 可以修复浏览器数据库。用户 console 不能证明现场唯一根因。
+- `3be322f6` 库候选仍拒绝整体合入：append actual-paint通过、fold几何通过但401未闭，processing-save Browsing真实3389→3003→3182两跳。首跳与旧row抽换/暂失焦同时，次跳与焦点恢复同时；原件未采writer/native max，不能当确定因果。实现和独立验证已重新启动继续追链；main依赖仍440c。
+- 历史起点提示候选尚未合，正在核 Header 对 vendor prep anchor 的兼容以及 context identity，不能只凭标签滚走通过就准入。未部署、未重启共享服务、未改后端。
+
 #### 2026-09-18 21:52：Q 输入接管实际整合
 
 - 已亲审并整合 exact aca5 pure-Q union f8f8097523a8780c16e24e822347e37f52e07016009379182fc66199e99b36f3；独立机制审核 APPROVE。单一物理输入事务统一 wheel/touch/key，交接期间可见旧容器保留输入权，精确目标物化后原子切换；保留 D 编辑不切模式、冷 freshness 与 Outbox 实现。

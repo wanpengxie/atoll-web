@@ -160,6 +160,7 @@ function createState(id, previous = {}) {
     retryAt: 0,
     retryCount: 0,
     error: '',
+    blockedSource: null,
     activity: 0,
     lastFocusOrder: 0,
     relatedUnreadOrder: 0,
@@ -221,6 +222,7 @@ export function createHistoryScheduler({
   reservoirChannelBytes = HISTORY_RESERVOIR_CHANNEL_BYTES,
   reservoirGlobalBytes = HISTORY_RESERVOIR_GLOBAL_BYTES,
   maxBackgroundInflight = HISTORY_MAX_BACKGROUND_INFLIGHT,
+  batchTimeoutMs = HISTORY_BATCH_TIMEOUT_MS,
 } = {}) {
   // PQueue is deliberately only the bounded executor. Candidate ownership and
   // priority stay in this coordinator, which re-scores after every batch.
@@ -528,6 +530,14 @@ export function createHistoryScheduler({
     priorityClass += Math.min(9, Math.floor(state.waitDispatches / FAIRNESS_DISPATCHES));
     priorityClass += demand?.score || 0;
 	const source = tailRefresh ? 'network' : sourceFor(state, taskBeforeSeq);
+	const blocked = state.blockedSource;
+	if (blocked
+	  && blocked.source === source
+	  && blocked.beforeSeq === taskBeforeSeq
+	  && blocked.replicaEpoch === replicaEpoch
+	  && blocked.localMetaEpoch === localMetaEpoch
+	  && blocked.stateLease === state.stateLease
+	  && blocked.generation === (source === 'network' ? generation : 0)) return null;
 	const sourceStats = transportStats[source] || transportStats.network;
 	const rowDeficit = tailRefresh || purpose === 'user-demand' || !state.tailVisible
       ? sourceStats.rowLimit
@@ -609,7 +619,10 @@ export function createHistoryScheduler({
     return candidates.sort(compare)[0] || null;
   }
 
-  async function stageRows(state, rows, { allowGlobalOverflow = false } = {}) {
+  async function stageRows(state, rows, {
+    allowGlobalOverflow = false,
+    sourceCancellation = null,
+  } = {}) {
     const staged = [];
     const stagedSeqs = new Set();
     let stagedBytes = 0;
@@ -620,7 +633,10 @@ export function createHistoryScheduler({
       // committed before the next chunk rather than waiting behind a whole
       // historical page on the browser's single main thread.
       if (index > 0 && index % 16 === 0) {
-        await yieldTask();
+        await Promise.race([
+          yieldTask(),
+          sourceCancellation || new Promise(() => {}),
+        ]);
         flushRealtime();
       }
       const row = rows[index];
@@ -700,14 +716,21 @@ export function createHistoryScheduler({
     return selected.length;
   }
 
-  function retry(state, error) {
+  function retry(state, error, { automatic = false } = {}) {
     state.retryCount += 1;
     state.error = error?.message || String(error || '历史加载失败');
+    state.errorCode = String(error?.code || 'history_failed');
 	if (visibleForegroundOwners(state).length > 0) state.foregroundError = state.error;
     const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(6, state.retryCount - 1));
-    state.retryAt = now() + delay;
-    diagnostic('warn', 'history.batch_retry', { channelId: state.id, generation, delay, detail: state.error });
-    scheduleWake(state.retryAt);
+    state.retryAt = automatic ? now() + delay : 0;
+    diagnostic('warn', automatic ? 'history.batch_retry' : 'history.batch_blocked', {
+      channelId: state.id,
+      generation,
+      delay: automatic ? delay : 0,
+      detail: state.error,
+      code: error?.code || '',
+    });
+    if (automatic) scheduleWake(state.retryAt);
     settleForeground(state, { kind: 'failed', error: error instanceof Error ? error : new Error(state.error) });
     onError(error instanceof Error ? error : new Error(state.error));
 	for (const waiter of [...state.currentWaiters]) {
@@ -761,6 +784,7 @@ export function createHistoryScheduler({
 
   async function executeNetwork(batch) {
     const terminal = deferred();
+    batch.phase = 'network-receipt';
     let accepted;
     try {
       accepted = requestPage(batch.channelId, batch.beforeSeq, batch.limit, {
@@ -787,6 +811,7 @@ export function createHistoryScheduler({
     if (!receipt?.accepted || receipt.generation !== batch.generation || receipt.channel_id !== batch.channelId) {
       throw new Error('历史批次回执不匹配');
     }
+    batch.phase = 'network-page';
     const page = await Promise.race([
       terminal.promise,
       batch.sourceCancellation.promise,
@@ -797,6 +822,7 @@ export function createHistoryScheduler({
   async function execute(batch) {
     if (batch.cancelled) throw new Error('history batch cancelled');
     if (batch.source === 'indexeddb') {
+      batch.phase = 'cache-read';
       return Promise.race([
         readCache(batch.channelId, batch.beforeSeq, batch.limit, batch.byteLimit),
         batch.sourceCancellation.promise,
@@ -879,6 +905,7 @@ export function createHistoryScheduler({
     // crossed the same state/generation/batch lease below.
     const stagedPage = await stageRows(state, rows, {
       allowGlobalOverflow: batch.priority === 'foreground',
+      sourceCancellation: batch.sourceCancellation?.promise,
     });
     if (!batchIsCurrent(batch) || batch.cancelled) return;
     state = channels.get(batch.channelId);
@@ -1052,14 +1079,60 @@ export function createHistoryScheduler({
       limit: batch.limit,
     });
     let failed = false;
-    executors.add(() => execute(batch), { id: batch.id, timeout: HISTORY_BATCH_TIMEOUT_MS }).then((result) => commit(batch, result)).catch((error) => {
+    // One executor deadline owns receipt/cache read, cooperative staging, and
+    // the atomic commit. A decode yield that never resumes must not retain the
+    // channel lane or reserved bytes outside the timeout domain.
+    executors.add(async () => commit(batch, await execute(batch)), {
+      id: batch.id,
+      timeout: batchTimeoutMs,
+    }).catch((error) => {
       failed = true;
       const state = channels.get(batch.channelId);
-	  if (!batch.cancelled && batch.source === 'network' && batch.ref) {
-		batch.terminal?.reject(error);
-		void cancelPage(batch.channelId, batch.ref, batch.generation).catch(() => {});
+	  const timedOut = error?.name === 'TimeoutError'
+	    || error?.code === 'timeout'
+	    || error?.code === 'history_timeout';
+	  if (!batch.cancelled && batchIsCurrent(batch) && !destroyed && state) {
+		const sourceError = timedOut ? new Error(batch.source === 'indexeddb'
+		  ? '本地缓存读取超时，请重试'
+		  : batch.phase === 'network-page'
+		    ? '历史数据响应超时，请重试'
+		    : '历史请求回执超时，请重试') : error;
+		if (timedOut) sourceError.code = batch.source === 'indexeddb'
+		  ? 'history_cache_timeout'
+		  : batch.phase === 'network-page'
+		    ? 'history_page_timeout'
+		    : 'history_receipt_timeout';
+		state.blockedSource = {
+		  source: batch.source,
+		  beforeSeq: batch.beforeSeq,
+		  replicaEpoch: batch.replicaEpoch,
+		  localMetaEpoch: batch.localMetaEpoch,
+		  stateLease: batch.stateLease,
+		  generation: batch.generation,
+		};
+		const canFallbackToNetwork = batch.source === 'indexeddb'
+		  && generation > 0
+		  && state.attachedGeneration === generation;
+		if (canFallbackToNetwork) {
+		  state.cacheBypassBeforeSeq = batch.beforeSeq;
+		}
+		cancelBatch(batch, sourceError?.message || 'history source failed');
+		if (canFallbackToNetwork) {
+		  diagnostic('warn', 'history.source_fallback', {
+		    channelId: batch.channelId,
+		    from: 'indexeddb',
+		    to: 'network',
+		    beforeSeq: batch.beforeSeq,
+		    detail: sourceError?.message || '',
+		  });
+		} else {
+		  // A source failure is a typed terminal for this exact authority/frontier,
+		  // not EOF and not an automatic retry loop. Explicit Retry clears the
+		  // block once; source-authority replacement makes the fence inapplicable.
+		  retry(state, sourceError, { automatic: false });
+		}
+		return;
 	  }
-	  if (!batch.cancelled && batchIsCurrent(batch) && !destroyed && state) retry(state, error);
     }).finally(() => {
       reservedInflightBytes = Math.max(0, reservedInflightBytes - batch.reservedBytes);
       if (batch.ref) inflightByRef.delete(batch.ref);
@@ -1368,24 +1441,56 @@ export function createHistoryScheduler({
 	  // unfulfillable waiter spinning until a future reconnect.
 	  return { kind: 'exhausted', localOnly: true };
 	}
-    if (state.error && state.retryAt > now()) {
+    if (state.error && (state.retryAt > now() || state.blockedSource)) {
       return { kind: 'failed', error: new Error(state.error) };
     }
     return new Promise((resolve) => {
+      let timer = null;
       const waiter = { resolve, cleanup: null, projectionBarrier };
+      const removeWaiter = () => {
+        const installed = channels.get(channelId) || state;
+        const index = installed.foregroundWaiters.indexOf(waiter);
+        if (index >= 0) installed.foregroundWaiters.splice(index, 1);
+        return installed;
+      };
       if (signal) {
         const abort = () => {
-          const installed = channels.get(channelId) || state;
-          const index = installed.foregroundWaiters.indexOf(waiter);
-          if (index >= 0) installed.foregroundWaiters.splice(index, 1);
+          const installed = removeWaiter();
+          waiter.cleanup?.();
           resolve({ kind: 'cancelled' });
           cancelUnownedForeground(installed);
           publish();
           schedule();
         };
         signal.addEventListener('abort', abort, { once: true });
-        waiter.cleanup = () => signal.removeEventListener('abort', abort);
+        waiter.cleanup = () => {
+          if (timer != null) clearTimeoutImpl(timer);
+          signal.removeEventListener('abort', abort);
+        };
+      } else {
+        waiter.cleanup = () => {
+          if (timer != null) clearTimeoutImpl(timer);
+        };
       }
+      timer = setTimeoutImpl(() => {
+        // Once a physical batch owns the channel, its phase-aware deadline is
+        // the sole timeout authority. This timer covers only the pre-dispatch
+        // wait for any usable source/candidate.
+        if (inflightByChannel.has(channelId)) {
+          timer = null;
+          return;
+        }
+        const installed = removeWaiter();
+        waiter.cleanup?.();
+        const error = new Error('等待可用历史数据源超时，请重试');
+        error.code = 'history_source_unavailable';
+        installed.error = error.message;
+        installed.errorCode = error.code;
+        if (visibleForegroundOwners(installed).length > 0) installed.foregroundError = error.message;
+        resolve({ kind: 'failed', error });
+        publish();
+        schedule();
+      }, batchTimeoutMs);
       state.foregroundWaiters.push(waiter);
       state.retryAt = 0;
       publish();
@@ -1398,7 +1503,12 @@ export function createHistoryScheduler({
     });
   }
 
-  function beginOperation(channelId, { signal, intent = 'scroll-history', urgency = 'interactive' } = {}) {
+  function beginOperation(channelId, {
+    signal,
+    intent = 'scroll-history',
+    urgency = 'interactive',
+    explicitRetry = false,
+  } = {}) {
 	let state = channels.get(channelId);
 	if (!state) {
 	  state = schedulerState(channelId);
@@ -1409,9 +1519,12 @@ export function createHistoryScheduler({
 	  urgency: Object.hasOwn(DEMAND_URGENCY_SCORE, urgency) ? urgency : 'interactive',
 	  // Runway/under-fill work is anticipatory hydration. It may promote the
 	  // existing scheduler lane for latency, but it is not a user-visible wait.
-	  // Only a real interactive edge/retry demand owns foreground presentation.
-	  presentation: (intent || 'scroll-history') === 'scroll-history'
-	    && urgency === 'interactive',
+	  // A saved-position restore is also a visible activation obligation: after
+	  // the bounded initialization shell degrades, its pending/error state must
+	  // remain attributable instead of becoming an idle partial projection.
+	  presentation: ((intent || 'scroll-history') === 'scroll-history'
+	    && urgency === 'interactive')
+	    || (intent || '') === 'initial-view',
 	};
 	const hadVisibleDemand = visibleForegroundOwners(state).length > 0;
 	let released = false;
@@ -1423,6 +1536,7 @@ export function createHistoryScheduler({
 	  state.retryAt = 0;
 	  state.error = '';
 	  state.foregroundError = '';
+	  if (explicitRetry) state.blockedSource = null;
 	}
 	promoteChannel(state, 'history channel promoted by user intent');
 	const release = () => {
@@ -1781,7 +1895,7 @@ export function createHistoryScheduler({
 
   function snapshot(channelId) {
     const state = channels.get(channelId);
-    if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, backgroundLoading: false, foregroundLoading: false, historyDemand: { revision: 0, phase: 'idle', error: '' }, buffered: 0, bufferedNewest: 0, revealVersion: 0, attached: false, messageCurrent: false, controlCurrent: false, tier: 3, completedPages: 0, generation, error: '', coverage: [] };
+    if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, backgroundLoading: false, foregroundLoading: false, historyDemand: { revision: 0, phase: 'idle', error: '' }, waitingStage: '', waitingSince: 0, buffered: 0, bufferedNewest: 0, revealVersion: 0, attached: false, messageCurrent: false, controlCurrent: false, tier: 3, completedPages: 0, generation, error: '', errorCode: '', coverage: [] };
     const batch = inflightByChannel.get(channelId);
     const visibleDemand = visibleForegroundOwners(state).length > 0;
     const historyDemandPhase = state.foregroundError
@@ -1805,6 +1919,8 @@ export function createHistoryScheduler({
 		phase: historyDemandPhase,
 		error: state.foregroundError,
 	  }),
+      waitingStage: String(batch?.phase || ''),
+      waitingSince: numeric(batch?.createdAt),
       buffered: state.reservoir.size,
       bufferedNewest: Math.max(0, ...state.reservoir.keys()),
       revealVersion: state.revealVersion,
@@ -1814,7 +1930,12 @@ export function createHistoryScheduler({
       tier: state.tier,
       completedPages: state.completedPages,
       generation,
+	  // Privacy-free ownership fence for Reading's activation obligation. It is
+	  // intentionally not a content/projection revision: it changes only when
+	  // Replica, complete local-Meta, or per-channel state ownership changes.
+	  sourceLease: `${replicaEpoch}:${localMetaEpoch}:${state.stateLease}`,
       error: state.error,
+      errorCode: state.error ? String(state.errorCode || 'history_failed') : '',
       coverage: installedCoverage(state).map((range) => ({ ...range })),
     };
   }
