@@ -2,7 +2,6 @@ import Dexie from 'dexie';
 import { diagnostic } from './diagnostics.js';
 
 const DB_NAME = 'atoll-feed-v8';
-const LEGACY_PREFIX = 'atoll.feed.v5.';
 const GLOBAL_META_ID = 'global';
 export const FEED_CACHE_ROWS_PER_CHANNEL = 5_000;
 export const FEED_CACHE_GLOBAL_BYTES = 256 * 1024 * 1024;
@@ -33,16 +32,6 @@ export function resumeSnapshot(source) {
     const seq = Math.max(Number(value?.newestSeq ?? value?.newest_seq ?? value?.lastSeq ?? 0), coverageHigh);
     return Number.isSafeInteger(seq) && seq > 0 ? [[channelId, seq]] : [];
   }));
-}
-
-function removeLegacy(storage) {
-  if (!storage) return;
-  const keys = [];
-  for (let index = 0; index < storage.length; index += 1) {
-    const key = storage.key(index);
-    if (key?.startsWith(LEGACY_PREFIX)) keys.push(key);
-  }
-  for (const key of keys) storage.removeItem(key);
 }
 
 function encodedRecord(channelId, seq, envelope) {
@@ -114,7 +103,6 @@ function chunksOf(records, maxRows = FEED_CACHE_BATCH_SIZE, maxBytes = FEED_CACH
 export function createFeedCache({
   indexedDBImpl = globalThis.indexedDB,
   IDBKeyRangeImpl = globalThis.IDBKeyRange,
-  legacyStorage = globalThis.localStorage,
   rowsPerChannel = FEED_CACHE_ROWS_PER_CHANNEL,
   globalBytes = FEED_CACHE_GLOBAL_BYTES,
   databaseName = DB_NAME,
@@ -159,7 +147,6 @@ export function createFeedCache({
 
   function open() {
     if (openPromise) return openPromise;
-    removeLegacy(legacyStorage);
     if (!indexedDBImpl || !IDBKeyRangeImpl) {
       diagnostic('warn', 'feed_cache.unavailable', { databaseName });
       openPromise = Promise.resolve(null);
@@ -626,8 +613,7 @@ export function createFeedCache({
       if (selection.cancelled) selection.transaction?.abort();
       const global = await database.globalMeta.get(GLOBAL_META_ID)
         || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '', owner: '' };
-      const legacyOwner = String(legacyStorage?.getItem('atoll.feed.owner.v1') || '');
-      const previous = String(global.owner || legacyOwner || '');
+      const previous = String(global.owner || '');
       // Databases created before owner scoping contain rows but no owner. There
       // is no trustworthy way to assign those rows to the first principal that
       // happens to open the upgraded app, so treat that state as foreign too.
@@ -649,7 +635,6 @@ export function createFeedCache({
       });
       if (selection.cancelled) throw new Error('本地缓存所有者选择已取消');
       owner = requested;
-      try { legacyStorage?.removeItem('atoll.feed.owner.v1'); } catch { /* migration only */ }
       if (changed) meta.clear();
       return { changed, boot, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
     } finally {
@@ -701,8 +686,6 @@ export function createFeedCache({
       return saveRows([], { coverageByChannel: new Map([[channelId, { lowSeq, highSeq }]]) });
     },
     ensureBoot,
-    // Compatibility during the atomic v5 cutover: metadata only, never bodies.
-    async restore() { await open(); return new Map(); },
     async clear() {
 	  flushPending();
       await writeTail.catch(() => {});

@@ -1758,7 +1758,7 @@ export default function App() {
     'composerSelectionView',
     [composerAgentId, capabilityIndex, composerAgentOptions, composerAgentUsage],
     () => composerAgentId
-      ? agentSelectionView({ actorId: composerAgentId, describe: capabilityIndex.get(composerAgentId)?.describe, options: composerAgentOptions, usage: composerAgentUsage })
+      ? agentSelectionView({ actorId: composerAgentId, options: composerAgentOptions, usage: composerAgentUsage })
       : null,
   );
   const composerSupportedTypes = derived(
@@ -1801,10 +1801,8 @@ export default function App() {
   const selectedWorkItem = contextFocus?.type === 'work_item' ? workItemIndex.get(contextFocus.key) : null;
 
   const attachmentsInCurrentWorld = (rows, worldEpoch = serverWorldCommittedRef.current) => {
-    // Older servers do not publish a boot identity and are explicitly a
-    // single unversioned world. Preserve their legacy drafts; once a server
-    // does publish a world, untagged rows are unknown and therefore hidden.
-    return (rows || []).filter((row) => !worldEpoch || row?.[FILE_ATTACHMENT_WORLD_FIELD] === worldEpoch);
+    if (!worldEpoch) return [];
+    return (rows || []).filter((row) => row?.[FILE_ATTACHMENT_WORLD_FIELD] === worldEpoch);
   };
   const tagAttachmentsForCurrentWorld = (rows) => (rows || []).map((row) => ({
     ...row,

@@ -1,6 +1,6 @@
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; min-width: 320px; height: 100%; margin: 0; }
-body { overflow: hidden; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+body { overflow: hidden; background: var(--canvas); color: var(--text); -webkit-font-smoothing: antialiased; }
 body::after {
   content: "";
   position: fixed;
@@ -31,16 +31,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { border-radius: 10px; background: var(--border-2); }
+::-webkit-scrollbar-thumb { border-radius: 10px; background: var(--line-control); }
 
 /* Shared brand */
 .brand-lockup { display: flex; align-items: center; gap: 10px; font-family: var(--serif); font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
-.brand-dot { display: inline-grid; width: 30px; height: 30px; place-content: center; border-radius: 9px; background: var(--surface); box-shadow: var(--shadow-brand); }
+.brand-dot { display: inline-grid; width: 30px; height: 30px; place-content: center; border-radius: 9px; background: var(--raised); box-shadow: var(--shadow-brand); }
 .brand-dot::after { content: "↯"; color: var(--accent); font-family: var(--serif); font-size: 19px; font-weight: 700; line-height: 1; }
 .eyebrow { margin: 0 0 6px; color: var(--accent); font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
 .boot-screen { display: grid; height: 100%; place-content: center; grid-auto-flow: column; gap: 12px; color: var(--text-muted); font: 12px var(--mono); }
-.version-incompatible { display: grid; min-height: 100%; place-items: center; padding: 24px; background: var(--bg); }
-.version-incompatible-card { width: min(480px, 100%); padding: 28px; border: 1px solid var(--danger-line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-modal); }
+.version-incompatible { display: grid; min-height: 100%; place-items: center; padding: 24px; background: var(--canvas); }
+.version-incompatible-card { width: min(480px, 100%); padding: 28px; border: 1px solid var(--danger-line); border-radius: 16px; background: var(--raised); box-shadow: var(--shadow-modal); }
 .version-incompatible-card .brand-dot { display: block; margin-bottom: 24px; }
 .version-incompatible-card h1 { margin: 6px 0 12px; font-size: clamp(22px, 5vw, 32px); }
 .version-incompatible-card p { margin: 8px 0; color: var(--text-muted); line-height: 1.6; }

@@ -286,7 +286,7 @@ test('UX-A01 stale exact-incarnation filter remains named and removable', async 
   // ViewSession shape, then reload. It remains an applied predicate until the
   // reader explicitly removes it; the roster may not silently remap it.
   await page.evaluate(() => {
-    const key = 'atoll.view-session.v2.root';
+    const key = 'atoll.view-session.v3.root';
     const value = JSON.parse(localStorage.getItem(key) || '{"schema":2,"preferences":{},"readings":{}}');
     value.schema = 2;
     value.preferences ||= {};

@@ -46,7 +46,7 @@ function ContextControls({ context, state = {}, onCancel, onControl }) {
     <h3>控制</h3>
     <div>
       {context.canCancel && <button type="button" disabled={busy} onClick={onCancel}>{state.status === 'sending' ? '正在取消…' : '取消任务'}</button>}
-      {context.canStop && <button type="button" disabled={busy} onClick={() => onControl('agent.interrupt', controlPayload(context, 'agent.interrupt', {}))}>停止</button>}
+      {context.canStop && <button type="button" disabled={busy} onClick={() => onControl('agent.interrupt', controlPayload(context, 'agent.interrupt'))}>停止</button>}
     </div>
     {state.status === 'accepted' && <p>控制请求已受理，最终状态仍以频道账本为准。</p>}
     {state.status === 'uncertain' && <p className="uncertain">结果待确认；重连后会按账本事实恢复。</p>}

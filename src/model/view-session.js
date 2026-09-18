@@ -65,10 +65,6 @@ function copyReading(value = {}) {
     bookmark: mode === READING_MODE.browsing ? copyBookmark(value.bookmark) : null,
     // Viewport-unseen state is derived from one authoritative fact: a stable
     // identity paired with the finite durable sequence that introduced it.
-    // Older v2 payloads also persisted an independent count and key-only
-    // identities. They cannot be acknowledged against an installed tail, so
-    // discard that incomplete derived state at the read boundary while
-    // retaining every valid record (including records absent from unseenKeys).
     unseenTail: unseenRecords.length,
     unseenKeys,
     unseenRecords,
@@ -110,10 +106,10 @@ function readingKey(channelID, viewKey) {
   return `${channelID}\u0000${viewKey}`;
 }
 
-const VIEW_SESSION_SCHEMA = 2;
+const VIEW_SESSION_SCHEMA = 3;
 
 function storageKey(principalID) {
-  return principalID ? `atoll.view-session.v2.${principalID}` : '';
+  return principalID ? `atoll.view-session.v3.${principalID}` : '';
 }
 
 function parseStored(storage, principalID) {

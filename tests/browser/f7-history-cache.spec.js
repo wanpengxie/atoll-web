@@ -5,7 +5,7 @@ test('F7 IndexedDB cache keeps the newest bounded tail and recovers from quota p
   const result = await page.evaluate(async () => {
     const { createFeedCache } = await import('/src/model/feed-cache.js');
     const databaseName = `atoll-feed-browser-${Date.now()}`;
-    const options = { databaseName, rowsPerChannel: 8, globalBytes: 1024 * 1024, legacyStorage: null };
+    const options = { databaseName, rowsPerChannel: 8, globalBytes: 1024 * 1024 };
     const envelope = (seq) => ({
       id: `m-${seq}`,
       kind: 'event',

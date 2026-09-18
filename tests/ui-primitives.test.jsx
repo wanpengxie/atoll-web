@@ -3,7 +3,6 @@ import React, { createRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { FormField } from '../src/ui/primitives/FormField.jsx';
 import { InlineConfirmation } from '../src/ui/primitives/InlineConfirmation.jsx';
 import { PanelCard } from '../src/ui/primitives/PanelCard.jsx';
 import { PanelTabs } from '../src/ui/primitives/PanelTabs.jsx';
@@ -57,21 +56,13 @@ describe('PanelTabs', () => {
   });
 });
 
-describe('SidePanel 与表单 primitives', () => {
+describe('SidePanel 与面板 primitives', () => {
   it('无标签时仍只有一个明确滚动区', () => {
     render(<SidePanel ariaLabel="自动化" eyebrow="LOCAL" title="定时动作" headerActions={<button type="button">预览</button>} onClose={() => {}}><p>内容</p></SidePanel>);
     expect(screen.queryByRole('tablist')).toBeNull();
     expect(document.querySelectorAll('.side-panel-scroll')).toHaveLength(1);
     expect(screen.getByText('内容')).toBeTruthy();
     expect(document.querySelector('.side-panel-header-actions')?.textContent).toContain('预览');
-  });
-
-  it('FormField 关联 label、说明和错误', () => {
-    render(<FormField label="名称" description="公开显示" error="不能为空" required><input /></FormField>);
-    const input = screen.getByLabelText(/^名称/);
-    expect(input.getAttribute('aria-invalid')).toBe('true');
-    expect(input.getAttribute('aria-describedby')).toContain('-description');
-    expect(input.getAttribute('aria-describedby')).toContain('-error');
   });
 
   it('PanelCard 支持语义元素而不拥有业务状态', () => {

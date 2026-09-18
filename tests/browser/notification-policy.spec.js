@@ -102,7 +102,7 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   const processingEvidence = await page.evaluate(() => ({
     rail: window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project'),
     reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.(),
-    viewSession: localStorage.getItem('atoll.view-session.v2.root'),
+    viewSession: localStorage.getItem('atoll.view-session.v3.root'),
     geometry: (() => {
       const root = document.querySelector('.timeline-message-list');
       if (!root) return null;

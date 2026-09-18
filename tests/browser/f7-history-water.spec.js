@@ -55,7 +55,7 @@ async function captureVisibleAnchor(page) {
 
 async function persistedBookmark(page, channelID, viewKeyPrefix) {
   return page.evaluate(({ channelID: channel, prefix }) => {
-    const readings = JSON.parse(localStorage.getItem('atoll.view-session.v2.root') || 'null')?.readings || {};
+    const readings = JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null')?.readings || {};
     const key = Object.keys(readings).find((candidate) => candidate.startsWith(`${channel}\u0000${prefix}`));
     return key ? readings[key]?.bookmark || null : null;
   }, { channelID, prefix: viewKeyPrefix });

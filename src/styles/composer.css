@@ -115,8 +115,8 @@
 .composer-target-remove:disabled { cursor: default; opacity: .35; }
 /* 发不出去时只压暗，恒不卸载——恒不进出，就恒不闪。 */
 .composer-target.is-muted { opacity: .6; }
-.mention-menu { position: absolute; z-index: 1; right: 0; bottom: calc(100% + 5px); left: 0; max-height: min(250px, 40vh); overflow-y: auto; border: 1px solid var(--border-2); border-radius: 10px; background: var(--surface); box-shadow: 0 14px 32px var(--shadow-2); }
-.mention-menu button { display: grid; grid-template-columns: 30px auto 1fr; width: 100%; align-items: center; gap: 8px; padding: 8px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; text-align: left; cursor: pointer; }
+.mention-menu { position: absolute; z-index: 1; right: 0; bottom: calc(100% + 5px); left: 0; max-height: min(250px, 40vh); overflow-y: auto; border: 1px solid var(--line-control); border-radius: 10px; background: var(--raised); box-shadow: 0 14px 32px var(--shadow-2); }
+.mention-menu button { display: grid; grid-template-columns: 30px auto 1fr; width: 100%; align-items: center; gap: 8px; padding: 8px 10px; border: 0; border-bottom: 1px solid var(--line-subtle); background: transparent; text-align: left; cursor: pointer; }
 .mention-menu button:hover, .mention-menu button[aria-selected="true"] { background: var(--accent-bg); }
 .mention-menu strong { font-size: 11px; }
 .mention-menu small { color: var(--text-dim); font: 9px var(--mono); }

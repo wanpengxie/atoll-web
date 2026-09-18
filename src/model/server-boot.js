@@ -9,11 +9,8 @@ const WORLD_SCOPED_KEYS = [
 const WORLD_SCOPED_PREFIXES = [
   'atoll.workspace.bootstrap.v1.',
   'atoll.history.priority.v1.',
-  'atoll.feed.v5.',
-  'atoll.feed.owner.v1',
   'atoll.cursor.v3.',
   'atoll.read.v4.',
-  'atoll.submissions.v1.',
   'atoll.controls.v1.',
   'atoll.timers.',
   'atoll.web.file-reading-history.v1.',

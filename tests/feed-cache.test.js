@@ -219,7 +219,7 @@ describe('feed cache', () => {
 	it('changes principal ownership in place instead of requiring a page reload', async () => {
 	  const storage = new MemoryStorage();
 	  const databaseName = `feed-cache-owner-${crypto.randomUUID()}`;
-	  const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName, legacyStorage: storage });
+	  const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
 	  await cache.ensureOwner('alice');
 	  await cache.saveRows([{ channel_id: 'c0', seq: 1, envelope: envelope('m-1', 'alice') }]);
 	  await cache.saveCoverage('c0', 1, 1);
@@ -245,16 +245,6 @@ describe('feed cache', () => {
 	it('derives the resume cursor from lightweight channel metadata', () => {
 	expect(resumeSnapshot(new Map([['c0', { newestSeq: 7 }]]))).toEqual({ c0: 7 });
 	expect(resumeSnapshot(new Map([['quiet', { newestSeq: 7, coverage: [{ lowSeq: 8, highSeq: 20 }] }]]))).toEqual({ quiet: 20 });
-  });
-
-  it('removes the unbounded localStorage v5 cache during IndexedDB migration', async () => {
-    const storage = new MemoryStorage();
-    storage.setItem('atoll.feed.v5.c0', '[{"stale":true}]');
-    storage.setItem('unrelated', 'keep');
-	const restored = await createFeedCache({ indexedDBImpl: null, IDBKeyRangeImpl: null, legacyStorage: storage }).restore();
-    expect(restored.size).toBe(0);
-    expect(storage.getItem('atoll.feed.v5.c0')).toBeNull();
-    expect(storage.getItem('unrelated')).toBe('keep');
   });
 
   it('redacts device keys and nested credentials before IndexedDB persistence', () => {
@@ -283,7 +273,6 @@ describe('feed cache', () => {
 	const older = await cache.readBefore('c0', newest.nextBeforeSeq, 200);
 	expect(older.rows[0].seq).toBe(51);
 	expect(older.rows.at(-1).seq).toBe(250);
-	expect((await cache.restore()).size).toBe(0);
   });
 
 	it('keeps a transactional per-channel FIFO of the latest rows', async () => {

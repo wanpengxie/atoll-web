@@ -7,7 +7,6 @@ import { useSubmissions } from '../src/app/hooks/useSubmissions.js';
 import { createChannelAccessTracker } from '../src/model/channel-access.js';
 import { clearDiagnostics, diagnosticsSnapshot } from '../src/model/diagnostics.js';
 import { createOutboxStore } from '../src/model/outbox-store.js';
-import { saveSubmissions } from '../src/model/submissions.js';
 
 afterEach(() => {
   clearDiagnostics();
@@ -545,41 +544,6 @@ describe('offline submission outbox', () => {
       error: null,
     }]);
     store.close();
-    const submit = vi.fn().mockResolvedValue({ message_id: messageId });
-    const common = {
-      principalId, activeChannelId: 'c0', wireRef: { current: { submit } },
-      rosterRef: { current: { recordSubmission: vi.fn(), observeFeed: vi.fn() } },
-      accessRef: { current: { state: () => ({ relationship: 'member', runtime: 'open', unavailable: false }) } },
-      channelStatesRef: { current: new Map() },
-      onError: vi.fn(), onNotice: vi.fn(), onFeedChanged: vi.fn(), onAccessChanged: vi.fn(),
-    };
-    const { result, rerender } = renderHook(({ wireState }) => useSubmissions({ ...common, wireState }), {
-      initialProps: { wireState: 'reconnecting' },
-    });
-    act(() => result.current.reconcileFeed(new Set([messageId]), new Set()));
-    await waitFor(() => expect(result.current.pending).toEqual([]));
-
-    rerender({ wireState: 'open' });
-    await act(() => new Promise((resolve) => setTimeout(resolve, 40)));
-    expect(submit).not.toHaveBeenCalled();
-    const verify = createOutboxStore();
-    expect((await verify.restore(principalId)).some((item) => item.messageId === messageId)).toBe(false);
-    verify.close();
-  });
-
-  it('does not resurrect a ledger-confirmed legacy id when feed races its migration', async () => {
-    const principalId = `legacy-hydrate-race-${globalThis.crypto.randomUUID()}`;
-    const messageId = 'already-landed-legacy-message';
-    saveSubmissions(principalId, [{
-      key: messageId,
-      messageId,
-      channelId: 'c0',
-      state: 'queued',
-      frame: { id: messageId, channel_id: 'c0', msg_type: 'agent.ask', payload: { text: 'once' } },
-      createdAt: 1,
-      updatedAt: 1,
-      error: null,
-    }]);
     const submit = vi.fn().mockResolvedValue({ message_id: messageId });
     const common = {
       principalId, activeChannelId: 'c0', wireRef: { current: { submit } },

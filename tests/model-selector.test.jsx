@@ -4,40 +4,25 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
-import { agentSelectionView, selectionsFromDescribe, selectionFor } from '../src/model/agent-selection.js';
+import { agentSelectionView, selectionFor } from '../src/model/agent-selection.js';
 import { ModelSelector } from '../src/ui/ModelSelector.jsx';
 
 afterEach(cleanup);
 
-// describe 的 agent.select 词条（协议 §4.2）：oneOf 组合对 + title。
-const DESCRIBE = {
-  words: {
-    'agent.select': {
-      input_schema: {
-        type: 'object',
-        properties: { model: { type: 'string' }, effort: { type: 'string' } },
-        oneOf: [
-          { required: ['model', 'effort'], properties: { model: { const: 'gpt-5.6-sol', title: '5.6 Sol' }, effort: { const: 'medium', title: '中等' } } },
-          { required: ['model', 'effort'], properties: { model: { const: 'gpt-5.6-sol', title: '5.6 Sol' }, effort: { const: 'high', title: '高' } } },
-          { required: ['model', 'effort'], properties: { model: { const: 'gpt-5.4', title: '5.4' }, effort: { const: 'light', title: '轻量' } } },
-        ],
-      },
-    },
-  },
+const OPTIONS = {
+  models: [{ id: 'gpt-5.6-sol', label: '5.6 Sol' }, { id: 'gpt-5.4', label: '5.4' }],
+  selections: [
+    { model: 'gpt-5.6-sol', effort: 'medium', modelLabel: '5.6 Sol', effortLabel: '中等' },
+    { model: 'gpt-5.6-sol', effort: 'high', modelLabel: '5.6 Sol', effortLabel: '高' },
+    { model: 'gpt-5.4', effort: 'light', modelLabel: '5.4', effortLabel: '轻量' },
+  ],
+  current: null,
 };
 
-const view = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: { model: 'gpt-5.6-sol', effort: 'medium', contextTokens: 42_000, contextWindow: 200_000 } });
+const view = agentSelectionView({ actorId: 'steward', options: OPTIONS, usage: { model: 'gpt-5.6-sol', effort: 'medium', contextTokens: 42_000, contextWindow: 200_000 } });
 const single = { kind: 'single', agent: { id: 'steward', kind: 'agent', name: 'Steward' } };
 
 describe('agent-selection 协议适配', () => {
-  it('从 describe 的 oneOf 提取组合对与 title', () => {
-    expect(selectionsFromDescribe(DESCRIBE)).toEqual([
-      { model: 'gpt-5.6-sol', effort: 'medium', modelLabel: '5.6 Sol', effortLabel: '中等' },
-      { model: 'gpt-5.6-sol', effort: 'high', modelLabel: '5.6 Sol', effortLabel: '高' },
-      { model: 'gpt-5.4', effort: 'light', modelLabel: '5.4', effortLabel: '轻量' },
-    ]);
-  });
-
   it('两级菜单是组合对投影：模型去重；当前值恒来自账本真值', () => {
     expect(view.models).toEqual([{ id: 'gpt-5.6-sol', label: '5.6 Sol' }, { id: 'gpt-5.4', label: '5.4' }]);
     expect(view.current).toEqual({ model: 'gpt-5.6-sol', effort: 'medium' });
@@ -45,20 +30,14 @@ describe('agent-selection 协议适配', () => {
   });
 
   it('无账本真值时 current 为 null——恒不拿 selections[0] 冒充（default 可以不是第一条）', () => {
-    const cold = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    const cold = agentSelectionView({ actorId: 'steward', options: OPTIONS, usage: null });
     expect(cold.current).toBeNull();
     expect(cold.confirmed).toBe(false);
   });
 
-  it('兼容 capabilities.js 归一形（types Map + inputSchema）', () => {
-    const normalized = { types: new Map([[ 'agent.select', { inputSchema: DESCRIBE.words['agent.select'].input_schema } ]]) };
-    expect(selectionsFromDescribe(normalized)).toEqual(selectionsFromDescribe(DESCRIBE));
-  });
-
   it('换 model 时 effort 失配自动落该 model 的第一个合法组合', () => {
-    const selections = selectionsFromDescribe(DESCRIBE);
-    expect(selectionFor(selections, 'gpt-5.4', 'medium')).toEqual({ model: 'gpt-5.4', effort: 'light' });
-    expect(selectionFor(selections, 'gpt-5.6-sol', 'high')).toEqual({ model: 'gpt-5.6-sol', effort: 'high' });
+    expect(selectionFor(OPTIONS.selections, 'gpt-5.4', 'medium')).toEqual({ model: 'gpt-5.4', effort: 'light' });
+    expect(selectionFor(OPTIONS.selections, 'gpt-5.6-sol', 'high')).toEqual({ model: 'gpt-5.6-sol', effort: 'high' });
   });
 });
 
@@ -124,7 +103,7 @@ describe('Model/Effort 选择器', () => {
 
     // 手动挡下取数必须由这一下点击发起，所以面板只能等数据。数据一到就必须
     // 自己展开——否则用户点了一次什么也没发生，看起来就是坏的（2026-09-18 实测）。
-    const ready = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    const ready = agentSelectionView({ actorId: 'steward', options: OPTIONS, usage: null });
     rerender(<ModelSelector target={single} actorName="Steward" view={ready} onOpen={onOpen} />);
     expect(await screen.findByRole('menu')).toBeTruthy();
     expect(onOpen).toHaveBeenCalledOnce();
@@ -134,7 +113,7 @@ describe('Model/Effort 选择器', () => {
   // 这不是换目标，面板不许关（2026-09-18 "又不能切换了"）。
   it('值域暂时缺席再回到同一目标：面板保持打开', async () => {
     const user = userEvent.setup();
-    const ready = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    const ready = agentSelectionView({ actorId: 'steward', options: OPTIONS, usage: null });
     const { rerender } = render(<ModelSelector target={single} actorName="Steward" view={ready} onChange={async () => {}} />);
     await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
     expect(screen.getByRole('menu')).toBeTruthy();
@@ -146,8 +125,8 @@ describe('Model/Effort 选择器', () => {
 
   it('真的换了目标才收起', async () => {
     const user = userEvent.setup();
-    const a = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
-    const b = agentSelectionView({ actorId: 'other', describe: DESCRIBE, usage: null });
+    const a = agentSelectionView({ actorId: 'steward', options: OPTIONS, usage: null });
+    const b = agentSelectionView({ actorId: 'other', options: OPTIONS, usage: null });
     const { rerender } = render(<ModelSelector target={single} actorName="Steward" view={a} onChange={async () => {}} />);
     await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
     expect(screen.getByRole('menu')).toBeTruthy();
@@ -158,7 +137,7 @@ describe('Model/Effort 选择器', () => {
   it('没点过就拿到值域时不自作主张展开', async () => {
     const onOpen = vi.fn();
     const { rerender } = render(<ModelSelector target={single} actorName="Steward" view={null} onOpen={onOpen} />);
-    const ready = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    const ready = agentSelectionView({ actorId: 'steward', options: OPTIONS, usage: null });
     rerender(<ModelSelector target={single} actorName="Steward" view={ready} onOpen={onOpen} />);
     expect(screen.queryByRole('menu')).toBeNull();
     expect(onOpen).not.toHaveBeenCalled();
@@ -167,7 +146,7 @@ describe('Model/Effort 选择器', () => {
   it('current 为 null 时 pill 只显示角色名，菜单仍可设置（选 model 落首组合）', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn().mockResolvedValue(undefined);
-    const cold = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    const cold = agentSelectionView({ actorId: 'steward', options: OPTIONS, usage: null });
     render(<ModelSelector target={single} actorName="Steward" view={cold} onChange={onChange} />);
     await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
     await user.click(screen.getByRole('menuitem', { name: /模型/ }));

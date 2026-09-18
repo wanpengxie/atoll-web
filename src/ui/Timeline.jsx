@@ -73,14 +73,12 @@ function revisionText(value) {
 }
 const WAITING_HANDOFF_DURATION_MS = 180;
 const WAITING_HANDOFF_LEDGER_LIMIT = 512;
-// During a rolling frontend/backend upgrade, older actors reject unknown
-// fields. Use the lease CAS as soon as actor.describe advertises it; the UI
-// invalidation rules below remain the compatibility guard for older actors.
-function withExpectedHold(capabilityIndex, actorId, type, payload, holdId) {
-  const schema = capabilityIndex.get(actorId)?.describe?.types?.get(type)?.inputSchema;
-  return holdId && schema?.properties?.expected_hold_id
-    ? { ...payload, expected_hold_id: holdId }
-    : payload;
+function withExpectedHold(payload, holdId) {
+  return holdId ? { ...payload, expected_hold_id: holdId } : payload;
+}
+
+function supportsLeaseCAS(capability, type) {
+  return Boolean(capability?.describe?.types?.get(type)?.inputSchema?.properties?.expected_hold_id);
 }
 
 const ERROR_LABELS = {
@@ -178,8 +176,8 @@ function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) 
       {context.workId && <div className="task-work-identity"><code>{context.workId}</code><span>{[context.workState, context.workStage, context.executionState].filter(Boolean).join(' · ')}</span></div>}
       <div className="task-control-buttons">
         {context.canEdit && <button type="button" onClick={onEdit} disabled={editActive}>编辑</button>}
-        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, controlPayload(context, TYPES.agentInterrupt, {}))}>停止</button>}
-        {extras.map((entry) => <button key={entry.word} type="button" onClick={() => onControl(entry.word, controlPayload(context, entry.word, { target: context.requestId }))}>{controlLabel(entry)}</button>)}
+        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, controlPayload(context, TYPES.agentInterrupt))}>停止</button>}
+        {extras.map((entry) => <button key={entry.word} type="button" onClick={() => onControl(entry.word, controlPayload(context, entry.word))}>{controlLabel(entry)}</button>)}
       </div>
     </section>
   );
@@ -307,9 +305,12 @@ function WaitingLayer({ turns, handoffs = [], state, names, selfId, access, targ
 
   async function cancelAll(group) {
     if (bulk.actorId) return;
+    const capability = capabilityIndex.get(group.actorId);
     const cancellable = group.turns.filter((turn) => {
       const context = taskControlContext(turn, { selfId, access, targetAuthority });
-      return context.targetControlsEligible && context.canCancel;
+      return context.targetControlsEligible
+        && context.canCancel
+        && supportsLeaseCAS(capability, TYPES.agentUnhold);
     });
     if (!cancellable.length) return;
     setBulk({ actorId: group.actorId, error: '' });
@@ -332,7 +333,7 @@ function WaitingLayer({ turns, handoffs = [], state, names, selfId, access, targ
     } finally {
       if (held) {
         try {
-          await onControl(cancellable[0], group.actorId, TYPES.agentUnhold, withExpectedHold(capabilityIndex, group.actorId, TYPES.agentUnhold, {}, holdId));
+          await onControl(cancellable[0], group.actorId, TYPES.agentUnhold, withExpectedHold({}, holdId));
         } catch (error) {
           failures.push(error?.message || String(error));
         }
@@ -732,12 +733,13 @@ function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
   </ol>;
 }
 
-function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, targetAuthority, frozen, fold = null, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask }) {
+function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, targetAuthority, capability, frozen, fold = null, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const requestText = requestView.text;
   const requestFoldId = `${turn.requestId}:request`;
-  const controlContext = taskControlContext(turn, { selfId, access, targetAuthority });
+  const baseControlContext = taskControlContext(turn, { selfId, access, targetAuthority });
+  const controlContext = { ...baseControlContext, canEdit: baseControlContext.canEdit && supportsLeaseCAS(capability, TYPES.agentReplace) };
   const lead = leadTurns.map((item) => messagePresentation(item.request).text);
   const processingTitle = [...lead, requestText].join(' ＋ ');
   const suppressAgentBubble = Boolean(turn.local || mergedInto(turn) || preemptedBy(turn));
@@ -759,7 +761,8 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, targetAuth
   const terminal = terminalContentEnvelope(turn);
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
-  const controlContext = taskControlContext(turn, { selfId, access, targetAuthority });
+  const baseControlContext = taskControlContext(turn, { selfId, access, targetAuthority });
+  const controlContext = { ...baseControlContext, canEdit: baseControlContext.canEdit && supportsLeaseCAS(capability, TYPES.agentReplace) };
   const replyTarget = replyTargetOf(request, { roster, selfId });
   const requestFoldId = `${turn.requestId}:request`;
   const responseFoldId = `${turn.requestId}:response`;
@@ -1448,9 +1451,8 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     // A different channel must never authorize or route this release.
     const authorityRuntime = resolved.authority || runtime;
     const observed = authorityRuntime?.frozenByActor?.get(session.actorId);
-    // Against an older backend that has not advertised lease CAS yet, this
-    // front-side guard still avoids an observed newer interrupt/hold. With a
-    // new backend, expected_hold_id closes the remaining wire race.
+    // The local observation avoids sending a command for an already-superseded
+    // lease; mandatory expected_hold_id closes the remaining wire race.
     if (!runtime) return Promise.reject(new Error('编辑锁释放 owner 已失效'));
     if (observed && (observed.source !== TYPES.agentHold || observed.held_by !== session.holdId)) {
       // A newer ledger control already superseded this lease. There is no hold
@@ -1465,7 +1467,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       actorId: session.actorId,
       type: TYPES.agentUnhold,
       messageId: session.releaseMessageId,
-      payload: withExpectedHold(authorityRuntime?.capabilityIndex || new Map(), session.actorId, TYPES.agentUnhold, {}, session.holdId),
+      payload: withExpectedHold({}, session.holdId),
     })).then((releaseId) => {
       if (!releaseId) throw new Error('解除编辑锁请求未进入发送队列');
       // handleTaskControl resolves only after the immutable unhold frame has a
@@ -1539,7 +1541,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       const selectNote = entry.turn.request.type === TYPES.agentSelect
         ? selectSystemNote({
           usage: terminalResultPayload(entry.turn)?.usage,
-          describe: capabilityIndex.get(actorId)?.describe,
           agentName: nameOf(actorId, names),
         })
         : '';
@@ -1670,7 +1671,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       const actorId = entry.turn.request.audience?.[0] || '';
       const result = terminalResultPayload(entry.turn);
       const note = result
-        ? selectSystemNote({ usage: result.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) })
+        ? selectSystemNote({ usage: result.usage, agentName: nameOf(actorId, names) })
         : (entry.turn.terminal
           ? `配置${terminalResultState(entry.turn).error}`
           : '');
@@ -1801,7 +1802,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'submitting', error: '' }) : current);
       const sessionId = editing.sessionId;
       const runtime = editSessionRuntimes(editing);
-      const replacementPayload = withExpectedHold(runtime.authority?.capabilityIndex || new Map(), editing.actorId, TYPES.agentReplace, { target: editing.targetId, old_text: editing.oldText, new_text: editing.text, ...(editing.attachments.length ? { attachments: editing.attachments } : {}) }, editing.holdId);
+      const replacementPayload = withExpectedHold({ target: editing.targetId, old_text: editing.oldText, new_text: editing.text, ...(editing.attachments.length ? { attachments: editing.attachments } : {}) }, editing.holdId);
       Promise.resolve(runtime.owner?.onTaskControl?.({ channelId: editing.channelId, turn: runtime.authority?.state?.turns?.get(editing.targetId) || targetTurn, actorId: editing.actorId, type: TYPES.agentReplace, payload: replacementPayload }))
         .then((replacementId) => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'saving', replacementId: replacementId || '', error: replacementId ? '' : '修改请求未发出' }) : current))
         .catch((failure) => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: failure.message || String(failure) }) : current));

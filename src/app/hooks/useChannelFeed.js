@@ -60,12 +60,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     };
   }, [ownerToken]);
   const cursorsRef = useRef(null);
-  // Vite HMR preserves hook refs across module replacement. A page carrying a
-  // pre-authority cursor object must cross the same validation boundary as a
-  // cold start, not crash on the new method or silently trust legacy reads.
-  if (!cursorsRef.current?.isReadAuthorityReady) {
-    cursorsRef.current = createCursors(globalThis.localStorage, { requireReadAuthority: true });
-  }
+  if (cursorsRef.current === null) cursorsRef.current = createCursors(globalThis.localStorage, { requireReadAuthority: true });
   const cacheRef = useRef(null);
   if (cacheRef.current === null) cacheRef.current = createFeedCache();
   const cacheMetaRef = useRef(new Map());
@@ -121,42 +116,29 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     const state = replicaRef.current.state(channelId);
     const revision = replicaRef.current.revision(channelId);
     const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
-    const legacyAcknowledged = cursorsRef.current.notificationLegacyAcknowledged(channelId);
-    const notificationMigrationSignature = [...legacyAcknowledged]
-      .sort(([left], [right]) => String(left).localeCompare(String(right)))
-      .map(([id, seq]) => `${id}:${seq}`)
-      .join('|');
     const cached = unreadCacheRef.current.get(channelId);
     let counts = cached?.revision === revision
       && cached?.notificationHighWater === notificationHighWater
-      && cached?.notificationMigrationSignature === notificationMigrationSignature
       && cached?.selfId === selfId
       ? cached.counts
       : null;
     if (!counts) {
-      counts = unreadCounts(state, notificationHighWater, selfId, {
-        incremental: true,
-        acknowledged: legacyAcknowledged,
-      });
+      counts = unreadCounts(state, notificationHighWater, selfId, { incremental: true });
       unreadCacheRef.current.set(channelId, {
         revision,
         notificationHighWater,
-        notificationMigrationSignature,
         selfId,
         counts,
       });
     }
     if (isReadingTraceEnabled()) {
-      const signature = `${revision}:${notificationHighWater}:${selfId}:${notificationMigrationSignature}`;
+      const signature = `${revision}:${notificationHighWater}:${selfId}`;
       if (unreadDiagnosticSignatureRef.current.get(channelId) !== signature) {
         unreadDiagnosticSignatureRef.current.set(channelId, signature);
         readingTrace('notification.rail-classification', () => ({
           channelId,
           notificationHighWater,
-          ...unreadCountDiagnostics(state, notificationHighWater, selfId, {
-            incremental: true,
-            acknowledged: legacyAcknowledged,
-          }),
+          ...unreadCountDiagnostics(state, notificationHighWater, selfId, { incremental: true }),
         }));
       }
     }
@@ -175,7 +157,6 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       if (requestedChannelId && channelId !== requestedChannelId) continue;
       const readSeq = cursorsRef.current.read(channelId);
       const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
-      const legacyAcknowledged = cursorsRef.current.notificationLegacyAcknowledged(channelId);
       channels.push(Object.freeze({
         channelId,
         authorityReady: cursorsRef.current.isReadAuthorityReady(),
@@ -190,10 +171,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
           state,
           notificationHighWater,
           rosterRef.current?.self(channelId) || '',
-          {
-            incremental: true,
-            acknowledged: legacyAcknowledged,
-          },
+          { incremental: true },
         ),
       }));
     }

@@ -4,6 +4,14 @@ Status: first complete static pass on `refactor/conversation-frontend-r3` at
 `c896b52`. This document audits production ownership and compatibility debt;
 passing tests are evidence, not a reason to retain a second authority.
 
+Execution status on `refactor/frontend-subtractive-cleanup`:
+
+- A1–A2 deleted.
+- B1–B10 removed from the current runtime. Flat ledger rows remain inert for
+  continuity; they do not enter business projection.
+- C1–C8 and E remain the active subtractive work. They require owner movement
+  and deletion, not compatibility wrappers.
+
 ## Acceptance rule
 
 One business fact has exactly one owner, one write boundary, and one lifecycle.

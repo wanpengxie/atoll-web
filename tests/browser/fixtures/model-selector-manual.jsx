@@ -11,20 +11,13 @@ import '../../../src/styles.css';
 
 document.body.style.cssText = 'margin:0;padding:40px;font:14px/1.5 sans-serif';
 
-const DESCRIBE = {
-  words: {
-    'agent.select': {
-      input_schema: {
-        type: 'object',
-        properties: { model: { type: 'string' }, effort: { type: 'string' } },
-        oneOf: [
-          { required: ['model', 'effort'], properties: { model: { const: 'opus', title: 'Opus' }, effort: { const: 'high', title: '高' } } },
-          { required: ['model', 'effort'], properties: { model: { const: 'opus', title: 'Opus' }, effort: { const: 'low', title: '低' } } },
-          { required: ['model', 'effort'], properties: { model: { const: 'sonnet', title: 'Sonnet' }, effort: { const: 'medium', title: '中' } } },
-        ],
-      },
-    },
-  },
+const OPTIONS = {
+  models: [{ id: 'opus', label: 'Opus' }, { id: 'sonnet', label: 'Sonnet' }],
+  selections: [
+    { model: 'opus', effort: 'high', modelLabel: 'Opus', effortLabel: '高' },
+    { model: 'opus', effort: 'low', modelLabel: 'Opus', effortLabel: '低' },
+    { model: 'sonnet', effort: 'medium', modelLabel: 'Sonnet', effortLabel: '中' },
+  ],
 };
 
 function Harness() {
@@ -41,7 +34,7 @@ function Harness() {
     setProbes((n) => n + 1);
     if (blankOnRefresh) setView(null);
     setTimeout(() => {
-      setView(agentSelectionView({ actorId: 'claude', describe: DESCRIBE, usage: null }));
+      setView(agentSelectionView({ actorId: 'claude', options: OPTIONS, usage: null }));
     }, 80);
   }, [blankOnRefresh]);
 

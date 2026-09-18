@@ -90,7 +90,7 @@ describe('view session ownership', () => {
     expect(restored.unseenRecords).toEqual(unseenRecords);
   });
 
-  it('migrates viewport unseen state from finite records and discards legacy derived surplus', () => {
+  it('ignores the retired v2 storage schema', () => {
     const storage = new MemoryStorage();
     storage.setItem('atoll.view-session.v2.me', JSON.stringify({
       schema: 2,
@@ -116,44 +116,7 @@ describe('view session ownership', () => {
     }));
 
     const store = createViewSessionStore({ principalID: 'me', storage });
-    const restored = store.readView('c0', 'all');
-    expect(restored).toMatchObject({
-      revision: 7,
-      mode: 'following',
-      bookmark: null,
-      unseenTail: 2,
-    });
-    expect(restored.unseenKeys).toEqual(['valid-a', 'valid-without-key']);
-    expect(restored.unseenRecords).toEqual([['valid-a', 6], ['valid-without-key', 5]]);
-    expect(store.read('c0')).toMatchObject({
-      scope: 'all', actorFilter: ['agent:a:1'], foldOverrides: [['fold-1', true]],
-    });
-  });
-
-  it('drops count-only and key-only viewport unseen state at the storage boundary', () => {
-    const storage = new MemoryStorage();
-    storage.setItem('atoll.view-session.v2.me', JSON.stringify({
-      schema: 2,
-      preferences: {},
-      readings: {
-        'c0\u0000all': {
-          revision: 3,
-          mode: 'browsing',
-          bookmark: { messageID: 'bookmark-2' },
-          unseenTail: 3,
-          unseenKeys: ['legacy-only'],
-        },
-      },
-    }));
-
-    const restored = createViewSessionStore({ principalID: 'me', storage }).readView('c0', 'all');
-    expect(restored).toMatchObject({
-      revision: 3,
-      mode: 'following',
-      bookmark: null,
-      unseenTail: 0,
-      unseenKeys: [],
-      unseenRecords: [],
-    });
+    expect(store.readView('c0', 'all')).toMatchObject({ revision: 0, mode: 'following', unseenTail: 0 });
+    expect(store.read('c0')).toMatchObject({ scope: 'mine', actorFilter: [], foldOverrides: [] });
   });
 });

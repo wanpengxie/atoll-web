@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  /* F6 canonical Atoll surfaces: aliases below keep older components compatible. */
+  /* Canonical Atoll surfaces. */
   --canvas: #d4c5a9;
   --global-rail: #f5f0e8;
   --channel-rail: #fbf8f1;
@@ -24,12 +24,6 @@
   --line-ledger: #eee9df;
   --line-process: #ece6db;
   --line-warning: #d7b87a;
-  --bg: var(--canvas);
-  --surface: var(--global-rail);
-  --surface-2: #ede6d8;
-  --surface-3: #e5dccc;
-  --border: rgba(58, 50, 38, .12);
-  --border-2: rgba(58, 50, 38, .22);
   --text: #2e2419;
   --text-muted: #6f6252;
   --text-dim: #6f6252;

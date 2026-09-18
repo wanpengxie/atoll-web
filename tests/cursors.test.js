@@ -1,13 +1,54 @@
 import { describe, expect, it } from 'vitest';
-import { createCursors, unreadCount, unreadCountDiagnostics, unreadCounts } from '../src/model/cursors.js';
+import {
+  createCursors,
+  unreadCount as unreadCountCanonical,
+  unreadCountDiagnostics as unreadCountDiagnosticsCanonical,
+  unreadCounts as unreadCountsCanonical,
+} from '../src/model/cursors.js';
 import {
   acknowledgeLiveTimelineArrivals,
-  apply,
+  apply as applyCanonical,
   createChannelState,
   liveTimelineArrivals,
-  recordLiveTimelineArrival,
+  recordLiveTimelineArrival as recordLiveTimelineArrivalCanonical,
   registerLiveTimelineArrivalConsumer,
 } from '../src/model/fold.js';
+
+function canonicalEnvelope(envelope) {
+  if (!envelope) return envelope;
+  if (Object.prototype.hasOwnProperty.call(envelope.payload || {}, 'body')) return envelope;
+  envelope.payload = { body: envelope.payload || {} };
+  return envelope;
+}
+
+function canonicalState(state) {
+  if (!(state?.rows instanceof Map)) return state;
+  for (const [seq, envelope] of state.rows) state.rows.set(seq, canonicalEnvelope(envelope));
+  if (state._envelopesById instanceof Map) {
+    for (const [id, envelope] of state._envelopesById) state._envelopesById.set(id, canonicalEnvelope(envelope));
+  }
+  return state;
+}
+
+function apply(state, row, selfID) {
+  return applyCanonical(state, { ...row, envelope: canonicalEnvelope(row.envelope) }, selfID);
+}
+
+function recordLiveTimelineArrival(state, envelope, seq, selfID) {
+  return recordLiveTimelineArrivalCanonical(state, canonicalEnvelope(envelope), seq, selfID);
+}
+
+function unreadCount(state, ...args) {
+  return unreadCountCanonical(canonicalState(state), ...args);
+}
+
+function unreadCounts(state, ...args) {
+  return unreadCountsCanonical(canonicalState(state), ...args);
+}
+
+function unreadCountDiagnostics(state, ...args) {
+  return unreadCountDiagnosticsCanonical(canonicalState(state), ...args);
+}
 
 class MemoryStorage {
   data = new Map();
@@ -26,11 +67,11 @@ describe('channel cursors', () => {
     apply(state, { channel_id: 'c0', seq: 1, envelope: request }, 'me');
     expect(recordLiveTimelineArrival(state, request, 1, 'me')).toBeNull();
 
-    const progress = { id: 'progress', kind: 'response', parent_id: 'root', sender: { id: 'agent' }, payload: { status: 'processing' } };
+    const progress = { id: 'progress', kind: 'response', parent_id: 'root', sender: { id: 'agent' }, audience: ['me'], payload: { status: 'processing' } };
     apply(state, { channel_id: 'c0', seq: 2, envelope: progress }, 'me');
     expect(recordLiveTimelineArrival(state, progress, 2, 'me')).toBeNull();
 
-    const terminal = { id: 'terminal', kind: 'response', parent_id: 'root', sender: { id: 'agent' }, payload: { status: 'completed', text: 'answer' } };
+    const terminal = { id: 'terminal', kind: 'response', parent_id: 'root', sender: { id: 'agent' }, audience: ['me'], payload: { status: 'completed', text: 'answer' } };
     apply(state, { channel_id: 'c0', seq: 3, envelope: terminal }, 'me');
     expect(recordLiveTimelineArrival(state, terminal, 3, 'me')).toMatchObject({ key: 'root', rowID: 'root', seq: 3 });
     expect(state._liveArrivalLog).toHaveLength(1);
@@ -308,43 +349,6 @@ describe('channel cursors', () => {
     restored.selectReadAuthority({ principalId: 'p1', serverBoot: 'boot-b' });
     restored.baselineRead('c0', 12);
     expect(restored.baselineNotifications('c0', 12)).toBe(12);
-  });
-
-  it('migrates sparse exact acknowledgements without clearing unvisited notification gaps', () => {
-    const storage = new MemoryStorage();
-    const cursors = createCursors(storage, { requireReadAuthority: true });
-    cursors.selectReadAuthority({ principalId: 'p1', serverBoot: 'boot-a' });
-    cursors.baselineRead('c0', 25);
-    cursors.acknowledgeReadIdentities('c0', [
-      { messageID: 'related-27', seqHigh: 27 },
-      { messageID: 'related-29', seqHigh: 29 },
-    ]);
-    cursors.baselineRead('c0', 30);
-    expect(cursors.baselineNotifications('c0', 30)).toBe(25);
-    expect([...cursors.notificationLegacyAcknowledged('c0')]).toEqual([
-      ['related-27', 27],
-      ['related-29', 29],
-    ]);
-
-    const state = createChannelState('c0');
-    for (let seq = 26; seq <= 30; seq += 1) {
-      apply(state, { channel_id: 'c0', seq, envelope: {
-        id: `related-${seq}`, kind: 'request', type: 'human.note',
-        sender: { id: 'agent' }, audience: ['me'], payload: { text: String(seq) },
-      } }, 'me');
-    }
-    expect(unreadCounts(state, cursors.notificationHighWater('c0'), 'me', {
-      acknowledged: cursors.notificationLegacyAcknowledged('c0'),
-    })).toEqual({ related: 3, total: 3 });
-
-    cursors.acknowledgeNotifications('c0', 30);
-    expect(cursors.notificationLegacyAcknowledged('c0').size).toBe(0);
-    expect(unreadCounts(state, cursors.notificationHighWater('c0'), 'me')).toEqual({ related: 0, total: 0 });
-    apply(state, { channel_id: 'c0', seq: 31, envelope: {
-      id: 'related-31', kind: 'request', type: 'human.note',
-      sender: { id: 'agent' }, audience: ['me'], payload: { text: 'future' },
-    } }, 'me');
-    expect(unreadCounts(state, cursors.notificationHighWater('c0'), 'me')).toEqual({ related: 1, total: 1 });
   });
 
   it('tracks read cursors separately and counts non-system, non-self messages', () => {

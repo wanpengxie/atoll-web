@@ -5,9 +5,7 @@ import {
   createSubmission,
   isUncertainWireError,
   reconcileLanded,
-  removeStoredSubmissions,
   restoreSubmissionRecords,
-  restoreSubmissions,
   transitionSubmission,
 } from '../../model/submissions.js';
 import { createOutboxStore } from '../../model/outbox-store.js';
@@ -210,18 +208,10 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       outboxRef.current.restoreDrafts(principalId),
     ]).then(async ([records, draftRecords]) => {
       const landedDuringRestore = landedMessageIdsRef.current;
-      let submissionRecords = records;
-      if (!records.length) {
-        const legacy = restoreSubmissions(principalId);
-        if (legacy.length) {
-          await outboxRef.current.putMany(principalId, legacy);
-          removeStoredSubmissions(principalId);
-          submissionRecords = legacy;
-        }
-      }
-      // Keep feed tombstones authoritative through both IndexedDB restore and
-      // the asynchronous legacy migration. A terminal may land during either
-      // await, so converge over the finite source snapshot before publishing.
+      const submissionRecords = records;
+      // Keep feed tombstones authoritative through IndexedDB restore. A
+      // terminal may land during the await, so converge over the finite source
+      // snapshot before publishing.
       // The final empty check, projection and clear are synchronous: no feed
       // callback can interleave and resurrect an acknowledged request there.
       const removedLanded = new Set();

@@ -19,7 +19,7 @@ async function login(page) {
 
 async function readingState(page) {
   return page.evaluate(() => {
-    const storage = JSON.parse(localStorage.getItem('atoll.view-session.v2.root') || 'null');
+    const storage = JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null');
     const readings = storage?.readings || {};
     const key = Object.keys(readings).find((candidate) => candidate.startsWith('c0\u0000c0:mine:')) || '';
     return { key, value: key ? readings[key] : null };
@@ -29,7 +29,7 @@ async function readingState(page) {
 async function evidence(page, stage) {
   return page.evaluate((label) => {
     const viewport = document.querySelector('.timeline-message-list');
-    const storage = JSON.parse(localStorage.getItem('atoll.view-session.v2.root') || 'null');
+    const storage = JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null');
     const readings = storage?.readings || {};
     const key = Object.keys(readings).find((candidate) => candidate.startsWith('c0\u0000c0:mine:')) || '';
     const trace = window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || {};
@@ -81,7 +81,7 @@ test('reload normalizes malformed legacy unseen around valid seq records, then v
   const cursorBefore = await page.evaluate(() => localStorage.getItem('atoll.read.v4.c0'));
 
   await page.evaluate(({ readingKey, key, seq }) => {
-    const storageKey = 'atoll.view-session.v2.root';
+    const storageKey = 'atoll.view-session.v3.root';
     const stored = JSON.parse(localStorage.getItem(storageKey));
     const current = stored.readings[readingKey];
     stored.readings[readingKey] = {

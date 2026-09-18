@@ -4,32 +4,10 @@ import { terminalResultEnvelope } from './fold.js';
 
 // 协议正形：
 // - actor.describe 只声明 agent.options / agent.select 两个稳定 word；
-// - 值域 = 当前 incarnation 的 agent.options 终态快照；旧服务的 describe.oneOf
-//   仅保留为滚动升级期 fallback。
+// - 值域 = 当前 incarnation 的 agent.options 终态快照。
 // - 当前值 = agent.options 的当前 generation 快照；本连接内后续可确认的
 //   terminal usage / agent.context 再覆盖它。
 // 本文件是协议的唯一适配点：Composer 和选择器恒不感知帧的具体形状。
-
-// —— 值域：describe → 组合对列表 ——————————————————————————————
-
-export function selectionsFromDescribe(describe) {
-  // capabilities.js 的归一形（types Map / inputSchema）优先；原始 wire 形
-  // （words / input_schema）兜底，供直接拿 describe payload 的调用方与测试。
-  const word = describe?.types?.get?.(TYPES.agentSelect) || describe?.words?.[TYPES.agentSelect];
-  const schema = word?.inputSchema || word?.input_schema;
-  const branches = Array.isArray(schema?.oneOf) ? schema.oneOf : [];
-  return branches.map((branch) => {
-    const model = branch?.properties?.model || {};
-    const effort = branch?.properties?.effort || {};
-    if (typeof model.const !== 'string' || !model.const || typeof effort.const !== 'string' || !effort.const) return null;
-    return {
-      model: model.const,
-      effort: effort.const,
-      modelLabel: String(model.title || model.const),
-      effortLabel: String(effort.title || effort.const),
-    };
-  }).filter(Boolean);
-}
 
 export function normalizeAgentOptions(value) {
   if (!value || typeof value !== 'object' || !Array.isArray(value.models)) return null;
@@ -200,8 +178,8 @@ function latestAgentUsageFor(state, actorId, liveRequestId) {
 // effort（逐 model 不同）。current 的基线来自 agent.options，随后由本连接内能
 // 命中 catalog 的 usage/context 覆盖；恒不拿 selections[0] 冒充当前值（decl 的
 // default 可以不是第一条，冒充会长期显示错误参数）。
-export function agentSelectionView({ actorId, describe, options = null, usage }) {
-  const selections = options?.selections?.length ? options.selections : selectionsFromDescribe(describe);
+export function agentSelectionView({ actorId, options = null, usage }) {
+  const selections = options?.selections || [];
   // The displayed current value is the ledger's truth: whatever the latest
   // usage reports is what the agent ran with, even when the provider spells
   // it as a resolved id the catalog does not list (Claude reports
@@ -236,11 +214,11 @@ export function selectedOption(rows, id) {
 }
 
 // select 成功回执的系统行文案（§8：切换不是"说了句话"，是一次配置变更——
-// 请求恒不显示为用户消息，成功终态收成一条系统消息）。label 自 describe 值域
+// 请求恒不显示为用户消息，成功终态收成一条系统消息）。label 自 agent.options 值域
 // 查得，无缓存时显裸值。
-export function selectSystemNote({ usage = {}, describe = null, agentName = '' }) {
+export function selectSystemNote({ usage = {}, options = null, agentName = '' }) {
   if (!usage.model) return '';
-  const selections = selectionsFromDescribe(describe);
+  const selections = options?.selections || [];
   const row = selections.find((item) => item.model === usage.model && item.effort === usage.effort);
   const model = row?.modelLabel || usage.model;
   const effort = row?.effortLabel || usage.effort;

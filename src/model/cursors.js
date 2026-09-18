@@ -66,26 +66,19 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
   }
 
   function notificationState(channelId) {
-    if (!readAuthorityReady) return { highWater: 0, legacyAcknowledged: new Map() };
+    if (!readAuthorityReady) return { highWater: 0 };
     try {
       const parsed = JSON.parse(get(`${NOTIFICATION_PREFIX}${channelId}`) || 'null');
-      if (!parsed || typeof parsed !== 'object') return { highWater: 0, legacyAcknowledged: new Map() };
-      return {
-        highWater: safeNumber(parsed.highWater),
-        legacyAcknowledged: new Map((Array.isArray(parsed.legacyAcknowledged)
-          ? parsed.legacyAcknowledged : []).filter((entry) => (
-          Array.isArray(entry) && entry[0] && safeNumber(entry[1]) > 0
-        )).map(([messageID, seq]) => [String(messageID), safeNumber(seq)])),
-      };
+      if (!parsed || typeof parsed !== 'object') return { highWater: 0 };
+      return { highWater: safeNumber(parsed.highWater) };
     } catch {
-      return { highWater: 0, legacyAcknowledged: new Map() };
+      return { highWater: 0 };
     }
   }
 
   function writeNotificationState(channelId, state) {
     set(`${NOTIFICATION_PREFIX}${channelId}`, JSON.stringify({
       highWater: safeNumber(state.highWater),
-      legacyAcknowledged: [...(state.legacyAcknowledged || [])],
     }));
   }
 
@@ -210,33 +203,15 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
       if (get(key) == null) {
         const head = safeNumber(seq);
         const highWater = Math.min(head, this.read(channelId));
-        // One-time, immutable migration bridge: preserve only the exact rows
-        // that the old model had already confirmed, while leaving every gap as
-        // a real notification. New exact receipts never enter this snapshot.
-        // The first real tail acknowledgement advances highWater and retires
-        // covered bridge entries, after which the boundary is the sole fact.
-        const legacyAcknowledged = exactReadMap(channelId);
-        for (const [messageID, rowSeq] of legacyAcknowledged) {
-          if (rowSeq <= highWater || rowSeq > head) legacyAcknowledged.delete(messageID);
-        }
-        writeNotificationState(channelId, { highWater, legacyAcknowledged });
+        writeNotificationState(channelId, { highWater });
       }
       return this.notificationHighWater(channelId);
-    },
-    notificationLegacyAcknowledged(channelId) {
-      return new Map(notificationState(channelId).legacyAcknowledged);
     },
     acknowledgeNotifications(channelId, seq) {
       if (!readAuthorityReady || !channelId) return 0;
       const current = notificationState(channelId);
       const next = Math.max(current.highWater, safeNumber(seq));
-      for (const [messageID, rowSeq] of current.legacyAcknowledged) {
-        if (rowSeq <= next) current.legacyAcknowledged.delete(messageID);
-      }
-      writeNotificationState(channelId, {
-        highWater: next,
-        legacyAcknowledged: current.legacyAcknowledged,
-      });
+      writeNotificationState(channelId, { highWater: next });
       return next;
     },
     acknowledgeReadIdentities(channelId, identities = []) {

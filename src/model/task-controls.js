@@ -29,7 +29,14 @@ export function taskLocation(turn) {
 
 function controlEntries(frame) {
   if (!Array.isArray(frame?.controls)) return [];
-  return frame.controls.filter((entry) => entry && typeof entry.word === 'string' && entry.word);
+  return frame.controls.filter((entry) => (
+    entry
+    && typeof entry.word === 'string'
+    && entry.word
+    && entry.payload
+    && typeof entry.payload === 'object'
+    && !Array.isArray(entry.payload)
+  ));
 }
 
 // 核心词有前端专属交互（replace→编辑流程、steer→插入、interrupt→停止）。
@@ -47,15 +54,14 @@ export function controlLabel(entry) {
 }
 
 // Work-aware controls carry their stable target in the actor-authored entry.
-// Legacy controls omit payload and keep using the caller's request/turn
-// fallback. The declaration wins so a targeted stop can never degrade into
-// the empty, Agent-wide legacy interrupt.
-export function controlPayload(context, word, fallback = {}) {
+// Missing payload means the control is unavailable; the frontend never
+// reconstructs an older command shape from the current view.
+export function controlPayload(context, word) {
   const entry = context?.controls?.find((candidate) => candidate.word === word);
   const declared = entry?.payload;
   return declared && typeof declared === 'object' && !Array.isArray(declared)
-    ? { ...fallback, ...declared }
-    : fallback;
+    ? { ...declared }
+    : null;
 }
 
 export function taskTargetCurrentness(turn, authority = null) {

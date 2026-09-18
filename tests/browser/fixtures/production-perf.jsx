@@ -17,7 +17,7 @@ window.__ATOLL_READING_TRACE__ = (entry) => adapterTrace.push(entry);
 const targetIndex = Math.max(0, Number(new URLSearchParams(location.search).get('target')) || 0);
 const fixtureStorage = targetIndex ? (() => {
   const values = new Map([[
-    'atoll.view-session.v2.production-perf',
+    'atoll.view-session.v3.production-perf',
     JSON.stringify({
       schema: 2,
       preferences: {},

@@ -1,4 +1,3 @@
-const PREFIX = 'atoll.submissions.v1.';
 const ACTIVE = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain', 'rejected']);
 
 export function createSubmission({ id, channelId, text = '', targetLabel = '', frame, state = 'transmitting', authority = null }) {
@@ -39,35 +38,6 @@ export function transitionSubmission(item, event, error = null) {
 export function reconcileLanded(items, messageIds) {
   const landed = messageIds instanceof Set ? messageIds : new Set(messageIds || []);
   return items.filter((item) => !landed.has(item.messageId));
-}
-
-export function restoreSubmissions(principalId, storage = globalThis.localStorage) {
-  try {
-    const parsed = JSON.parse(storage?.getItem(`${PREFIX}${principalId}`) || '[]');
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item) => item?.messageId && item?.channelId && item?.frame && ACTIVE.has(item.state)).map((item) => ({
-      ...item,
-      state: item.state === 'transmitting' ? 'uncertain' : item.state,
-      error: item.error || null,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-export function saveSubmissions(principalId, items, storage = globalThis.localStorage) {
-  if (!principalId || !storage) return;
-  const active = (items || []).filter((item) => ACTIVE.has(item.state));
-  try {
-    storage.setItem(`${PREFIX}${principalId}`, JSON.stringify(active));
-  } catch {
-    // 持久化失败不改变当前会话中的提交事实。
-  }
-}
-
-export function removeStoredSubmissions(principalId, storage = globalThis.localStorage) {
-  if (!principalId || !storage) return;
-  try { storage.removeItem(`${PREFIX}${principalId}`); } catch { /* keep source for a later migration */ }
 }
 
 export function restoreSubmissionRecords(items = []) {

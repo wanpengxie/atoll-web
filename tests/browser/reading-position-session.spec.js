@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 
 const PRINCIPAL = 'root';
-const STORAGE_KEY = `atoll.view-session.v2.${PRINCIPAL}`;
+const STORAGE_KEY = `atoll.view-session.v3.${PRINCIPAL}`;
 
 async function reset(request, seed) {
   const response = await request.post('/mock/control/reset', {
@@ -75,7 +75,7 @@ async function viewportState(page) {
       visible: rows.filter((row) => row.bottom > 0 && row.top < bounds.height),
       firstVisible: rows.find((row) => row.bottom > 0 && row.top < bounds.height) || null,
       lastVisible: rows.findLast((row) => row.bottom > 0 && row.top < bounds.height) || null,
-      storage: JSON.parse(localStorage.getItem('atoll.view-session.v2.root') || 'null'),
+      storage: JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null'),
     };
   });
 }

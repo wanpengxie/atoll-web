@@ -311,7 +311,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   // Resizing a desktop two-pane workspace into a narrow topology must also
   // normalize the interaction state, not merely hide one pane with CSS. The
   // terminal is the most recently explicit working surface in this ambiguous
-  // legacy state, so keep it and close the files route.
+  // topology, so keep it and close the files route.
   useEffect(() => {
     if (singleSurfaceShell && filesOpen && terminalOpen) workspace.onViewChange('dynamic');
   }, [singleSurfaceShell, filesOpen, terminalOpen, workspace.onViewChange]);

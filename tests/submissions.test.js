@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createSubmission, isUncertainWireError, reconcileLanded, restoreSubmissionRecords, restoreSubmissions, saveSubmissions, transitionSubmission } from '../src/model/submissions.js';
-
-class MemoryStorage {
-  data = new Map();
-  getItem(key) { return this.data.get(key) ?? null; }
-  setItem(key, value) { this.data.set(key, String(value)); }
-}
+import { createSubmission, isUncertainWireError, reconcileLanded, restoreSubmissionRecords, transitionSubmission } from '../src/model/submissions.js';
 
 describe('submission state', () => {
   it('keeps a stable client message id and removes it only when feed lands', () => {
@@ -16,21 +10,10 @@ describe('submission state', () => {
     expect(reconcileLanded([accepted], new Set(['m1']))).toEqual([]);
   });
 
-  it('restores in-flight transmitting as uncertain and distinguishes definitive rejection', () => {
-    const storage = new MemoryStorage();
-    const item = createSubmission({ id: 'm1', channelId: 'c0.project', frame: { id: 'm1' } });
-    saveSubmissions('root', [item], storage);
-    expect(restoreSubmissions('root', storage)[0]).toMatchObject({ channelId: 'c0.project', state: 'uncertain' });
+  it('distinguishes uncertain transport errors from definitive rejection', () => {
     expect(isUncertainWireError({ code: 'closed' })).toBe(true);
     expect(isUncertainWireError({ code: 'timeout' })).toBe(true);
     expect(isUncertainWireError({ code: 'forbidden' })).toBe(false);
-  });
-
-  it('persists a never-transmitted offline submission as queued', () => {
-    const storage = new MemoryStorage();
-    const item = createSubmission({ id: 'm2', channelId: 'c0', frame: { id: 'm2' }, state: 'queued' });
-    saveSubmissions('root', [item], storage);
-    expect(restoreSubmissions('root', storage)[0]).toMatchObject({ messageId: 'm2', state: 'queued' });
   });
 
   it('restores explicit recovery states, clears foreign leases, and never regresses accepted work', () => {
