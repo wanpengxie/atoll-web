@@ -144,11 +144,9 @@ draft epoch 约束。
 
 以上是源码结构事实，不是同一 freeze 的完整 browser/fuzz/build 通过声明。
 
-### 隔离或非生产内容
+### 非生产范围
 
-- [foreground-slab prototype](../tests/browser/prototypes/foreground-slab/) 是 normal-flow 隔离实验，没有接入生产，
-  也不是迁移批准或已选中的 Virtuoso 替代。
-- `@legendapp/list` 只是 package/test/evidence 残留；生产 adapter 是 React Virtuoso。
+- 生产 adapter 只有 React Virtuoso；旧 foreground-slab 隔离原型和 Legend 尝试已删除。
 - [ContentPlanBlocks.jsx](../src/ui/ContentPlanBlocks.jsx) 的 semantic text-point describe/resolve 是可用能力，但按当前
   产品范围不接列表 restore。
 - 旧 TaskEvidence/discovery/hook、自动 `system.log.query` 与 Waiting 专用 cursor 不在当前生产链，不得从历史证据恢复。

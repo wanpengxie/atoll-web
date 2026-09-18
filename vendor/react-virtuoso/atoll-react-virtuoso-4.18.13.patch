@@ -1,3 +1,36 @@
+From b145e6702259dd5de6e6cbbca04a557df920e869 Mon Sep 17 00:00:00 2001
+From: atoll <atoll@local>
+Date: Sat, 19 Sep 2026 03:47:50 +0800
+Subject: [PATCH] Apply Atoll react-virtuoso 4.18.13 patch
+
+---
+ packages/react-virtuoso/src/TableVirtuoso.tsx |    2 +-
+ packages/react-virtuoso/src/Virtuoso.tsx      | 1212 ++++++++++++++++-
+ .../src/component-interfaces/Virtuoso.ts      |   19 +
+ packages/react-virtuoso/src/domIOSystem.ts    |   36 +
+ .../react-virtuoso/src/followOutputSystem.ts  |   32 +-
+ .../hooks/__mocks__/useChangedChildSizes.ts   |   36 +-
+ .../src/hooks/useChangedChildSizes.ts         |  181 ++-
+ packages/react-virtuoso/src/hooks/useSize.ts  |  110 +-
+ packages/react-virtuoso/src/interfaces.ts     |    9 +
+ .../react-virtuoso/src/listStateSystem.ts     |  353 ++++-
+ packages/react-virtuoso/src/listSystem.ts     |    9 +-
+ .../src/measuredHistoryAdmission.ts           |  117 ++
+ .../react-virtuoso/src/scrollToIndexSystem.ts |   31 +-
+ .../react-virtuoso/src/sizeRangeSystem.ts     |    9 +-
+ packages/react-virtuoso/src/sizeSystem.ts     |  134 +-
+ .../src/upwardScrollFixSystem.ts              |  643 ++++++++-
+ .../react-virtuoso/test/Virtuoso.test.tsx     |  480 +++++++
+ .../test/measuredHistoryAdmission.test.ts     |   84 ++
+ .../test/scrollToIndexSystem.test.ts          |   37 +-
+ .../react-virtuoso/test/sizeSystem.test.ts    |   70 +
+ .../test/upwardScrollFixSystem.test.ts        |  673 ++++++++-
+ packages/react-virtuoso/test/useSize.test.tsx |  317 +++++
+ 22 files changed, 4385 insertions(+), 209 deletions(-)
+ create mode 100644 packages/react-virtuoso/src/measuredHistoryAdmission.ts
+ create mode 100644 packages/react-virtuoso/test/measuredHistoryAdmission.test.ts
+ create mode 100644 packages/react-virtuoso/test/useSize.test.tsx
+
 diff --git a/packages/react-virtuoso/src/TableVirtuoso.tsx b/packages/react-virtuoso/src/TableVirtuoso.tsx
 index 26c6b2e..6f8a04a 100644
 --- a/packages/react-virtuoso/src/TableVirtuoso.tsx
@@ -12,10 +45,10 @@ index 26c6b2e..6f8a04a 100644
      trackItemSizes,
      scrollContainerStateCallback,
 diff --git a/packages/react-virtuoso/src/Virtuoso.tsx b/packages/react-virtuoso/src/Virtuoso.tsx
-index 7ec32c5..805454e 100644
+index 7ec32c5..8f55e0c 100644
 --- a/packages/react-virtuoso/src/Virtuoso.tsx
 +++ b/packages/react-virtuoso/src/Virtuoso.tsx
-@@ -1,19 +1,73 @@
+@@ -1,19 +1,74 @@
  import React from 'react'
  
 +import { findMaxKeyValue } from './AATree'
@@ -54,6 +87,7 @@ index 7ec32c5..805454e 100644
 +  ItemContent,
 +  ListItem,
 +  ListRootProps,
++  SizeFunction,
 +} from './interfaces'
 +import type { FormalRangePreparation, ListState } from './listStateSystem'
 +import type { HistoryPreparation } from './measuredHistoryAdmission'
@@ -66,7 +100,7 @@ index 7ec32c5..805454e 100644
 +  inlineSize: number
 +  itemComponent: unknown
 +  itemContent: unknown
-+  itemSize: unknown
++  itemSize: SizeFunction
 +}
 +
 +export interface FormalMeasurementObservation {
@@ -91,7 +125,7 @@ index 7ec32c5..805454e 100644
  
  export function identity<T>(value: T) {
    return value
-@@ -24,6 +78,7 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
+@@ -24,6 +79,7 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
    const groupContent = u.statefulStream<GroupContent<any>>((index: number) => `Group ${index}`)
    const components = u.statefulStream<Components<any>>({})
    const computeItemKey = u.statefulStream<ComputeItemKey<any, any>>(identity)
@@ -99,7 +133,7 @@ index 7ec32c5..805454e 100644
    const HeaderFooterTag = u.statefulStream('div')
    const scrollerRef = u.statefulStream<(ref: HTMLElement | null | Window) => void>(u.noop)
  
-@@ -41,6 +96,7 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
+@@ -41,6 +97,7 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
    return {
      components,
      computeItemKey,
@@ -107,7 +141,7 @@ index 7ec32c5..805454e 100644
      EmptyPlaceholder: distinctProp('EmptyPlaceholder'),
      FooterComponent: distinctProp('Footer'),
      GroupComponent: distinctProp('Group', 'div'),
-@@ -58,10 +114,499 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
+@@ -58,10 +115,534 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
  })
  
  const combinedSystem = /*#__PURE__*/ u.system(
@@ -257,14 +291,19 @@ index 7ec32c5..805454e 100644
 +          if (certificateMatches(item, context, requireConnected)) {
 +            return false
 +          }
-+          // A row already live in this same host is not a future admission. Any
-+          // later image/font/content resize is handled by the ordinary DOM owner.
++          // A semantic row already in the current formal window must remain in
++          // normal flow until the desired state's spacer replaces it in the
++          // same commit. Re-preparing it would turn the active node fixed and
++          // momentarily remove its height. Connected changes are measured by
++          // the ordinary DOM owner and recertified from that live layout.
 +          const liveCertificate = formalCertificates.get(keyFor(item))
 +          return !(
-+            requireConnected &&
 +            liveCertificate?.element.isConnected === true &&
++            liveCertificate.element.dataset.historyPreparing === undefined &&
++            liveCertificate.element.dataset.historyRetained === undefined &&
++            liveCertificate.element.dataset.formalPreparing === undefined &&
 +            sameMeasurementContext(liveCertificate, context) &&
-+            currentFormal.items.some((current) => keyFor(current) === keyFor(item) && Object.is(current.data, item.data))
++            currentFormal.items.some((current) => keyFor(current) === keyFor(item))
 +          )
 +        })
 +        .slice(0, 32)
@@ -283,20 +322,44 @@ index 7ec32c5..805454e 100644
 +        const topItems = formal.topItems.filter((item) => item.index >= first && item.index < end)
 +        return items.length === formal.items.length && topItems.length === formal.topItems.length ? formal : { ...formal, items, topItems }
 +      }
-+      const authority = new Map<string, unknown[]>()
++      const authority = new Map<string, { data: unknown; index: number }[]>()
 +      accepted.data.forEach((data, index) => {
-+        const key = String(u.getValue(propsSystem.computeItemKey)(accepted.firstItemIndex + index, data, u.getValue(listSystem.context)))
++        const externalIndex = accepted.firstItemIndex + index
++        const key = String(u.getValue(propsSystem.computeItemKey)(externalIndex, data, u.getValue(listSystem.context)))
 +        const entries = authority.get(key)
 +        if (entries) {
-+          entries.push(data)
++          entries.push({ data, index: externalIndex })
 +        } else {
-+          authority.set(key, [data])
++          authority.set(key, [{ data, index: externalIndex }])
 +        }
 +      })
-+      const isAuthorized = (item: ListItem<unknown>) => authority.get(keyFor(item))?.some((data) => Object.is(data, item.data)) === true
-+      const items = formal.items.filter(isAuthorized)
-+      const topItems = formal.topItems.filter(isAuthorized)
-+      return items.length === formal.items.length && topItems.length === formal.topItems.length ? formal : { ...formal, items, topItems }
++      const retain = (item: ListItem<unknown>) => {
++        const key = keyFor(item)
++        const acceptedItem = authority.get(key)?.find((entry) => entry.index === item.index)
++        if (!acceptedItem) {
++          return null
++        }
++        if (Object.is(acceptedItem.data, item.data)) {
++          return item
++        }
++        const certificate = formalCertificates.get(key)
++        const context = u.getValue(formalMeasurementContext)
++        return certificate?.element.isConnected === true &&
++          certificate.element.dataset.historyPreparing === undefined &&
++          certificate.element.dataset.historyRetained === undefined &&
++          certificate.element.dataset.formalPreparing === undefined &&
++          sameMeasurementContext(certificate, context)
++          ? item
++          : null
++      }
++      const items = formal.items.flatMap((item) => retain(item) ?? [])
++      const topItems = formal.topItems.flatMap((item) => retain(item) ?? [])
++      return items.length === formal.items.length &&
++        topItems.length === formal.topItems.length &&
++        items.every((item, index) => item === formal.items[index]) &&
++        topItems.every((item, index) => item === formal.topItems[index])
++        ? formal
++        : { ...formal, items, topItems }
 +    })
 +    u.subscribe(observeFormalLiveLayout, ({ context: next, observation }) => {
 +      if (!sameMeasurementContext(lastMeasurementContext, next)) {
@@ -315,7 +378,11 @@ index 7ec32c5..805454e 100644
 +          const key = keyFor(item)
 +          formalCertificates.set(key, {
 +            ...next,
-+            blockSize: measured.bottom - measured.top,
++            // Certificates and the numeric size tree must use one ruler.
++            // DOMRect is fractional while the default itemSize is offsetHeight;
++            // comparing the two directly can turn a connected formal row into
++            // a preparation candidate as it leaves the desired window.
++            blockSize: next.itemSize(measured.element, 'offsetHeight'),
 +            data: item.data,
 +            element: measured.element,
 +            key,
@@ -332,7 +399,9 @@ index 7ec32c5..805454e 100644
 +      u.publish(listSystem.reevaluateFormalRange, undefined)
 +    })
 +    u.subscribe(formalRangeMeasurementEnabled, () => u.publish(listSystem.reevaluateFormalRange, undefined))
-+    u.subscribe(propsSystem.computeItemMeasurementKey, () => u.publish(listSystem.reevaluateFormalRange, undefined))
++    u.subscribe(u.pipe(propsSystem.computeItemMeasurementKey, u.distinctUntilChanged()), () =>
++      u.publish(listSystem.reevaluateFormalRange, undefined)
++    )
 +    u.subscribe(invalidateRetainedFormalCertificate, ({ blockSize, element, key }) => {
 +      const certificate = formalCertificates.get(key)
 +      if (certificate?.element !== element || blockSize <= 0 || Math.abs(certificate.blockSize - blockSize) <= 0.5) {
@@ -610,7 +679,7 @@ index 7ec32c5..805454e 100644
  )
  
  const DefaultScrollSeekPlaceholder = ({ height }: { height: number }) => <div style={{ height }} />
-@@ -71,8 +616,15 @@ const ITEM_STYLE = { overflowAnchor: 'none' } as const
+@@ -71,8 +652,15 @@ const ITEM_STYLE = { overflowAnchor: 'none' } as const
  const HORIZONTAL_ITEM_STYLE = { ...ITEM_STYLE, display: 'inline-block', height: '100%' } as const
  
  const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = false }: { showTopList?: boolean }) {
@@ -626,7 +695,7 @@ index 7ec32c5..805454e 100644
    const sizeRanges = usePublisher('sizeRanges')
    const useWindowScroll = useEmitterValue('useWindowScroll')
    const customScrollParent = useEmitterValue('customScrollParent')
-@@ -81,16 +633,63 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+@@ -81,16 +669,63 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
    const scrollContainerStateCallback =
      customScrollParent || useWindowScroll ? windowScrollContainerStateCallback : _scrollContainerStateCallback
    const itemContent = useEmitterValue('itemContent')
@@ -692,7 +761,7 @@ index 7ec32c5..805454e 100644
      itemSize,
      trackItemSizes,
      showTopList ? u.noop : scrollContainerStateCallback,
-@@ -98,9 +697,32 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+@@ -98,9 +733,56 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
      listGap,
      customScrollParent,
      horizontalDirection,
@@ -713,6 +782,7 @@ index 7ec32c5..805454e 100644
 +  // List host must rebind both observers and invalidate in-flight ownership.
 +  const [listHost, setListHost] = React.useState<HTMLElement | null>(null)
 +  const setFormalListHost = usePublisher('formalListHost')
++  const listFocusAnchor = usePublisher('listFocusAnchor')
 +  const bindNativeList = React.useCallback((element: HTMLElement | null) => {
 +    setListHost((current) => (current === element ? current : element))
 +  }, [])
@@ -724,10 +794,33 @@ index 7ec32c5..805454e 100644
 +    callbackRef(listHost)
 +    return () => callbackRef(null)
 +  }, [callbackRef, listHost])
++  useIsomorphicLayoutEffect(() => {
++    if (!listHost || horizontalDirection || useWindowScroll || customScrollParent) {
++      return
++    }
++    let scroller = listHost.parentElement
++    while (scroller && scroller.dataset.virtuosoScroller === undefined) {
++      scroller = scroller.parentElement
++    }
++    if (!scroller) {
++      return
++    }
++    const recordFocus = (event: FocusEvent) => {
++      const element = event.target
++      if (!(element instanceof scroller.ownerDocument.defaultView!.HTMLElement) || !listHost.contains(element)) {
++        return
++      }
++      const viewportTop = scroller.getBoundingClientRect().top
++      const rect = element.getBoundingClientRect()
++      listFocusAnchor({ bottom: rect.bottom - viewportTop, element, host: listHost, top: rect.top - viewportTop })
++    }
++    listHost.addEventListener('focusin', recordFocus, true)
++    return () => listHost.removeEventListener('focusin', recordFocus, true)
++  }, [customScrollParent, horizontalDirection, listFocusAnchor, listHost, useWindowScroll])
    const [deviation, setDeviation] = React.useState(0)
    useEmitter('deviation', (value) => {
      if (deviation !== value) {
-@@ -117,17 +739,135 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+@@ -117,17 +799,135 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
      deviationCommitted(deviation)
    }, [deviation, deviationCommitted])
  
@@ -866,7 +959,7 @@ index 7ec32c5..805454e 100644
    const containerStyle: React.CSSProperties = showTopList
      ? {}
      : {
-@@ -149,7 +889,13 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+@@ -149,7 +949,13 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
          ...(initialItemFinalLocationReached ? {} : { visibility: 'hidden' }),
        }
  
@@ -881,7 +974,7 @@ index 7ec32c5..805454e 100644
      return <EmptyPlaceholder {...contextPropIfNotDomElement(EmptyPlaceholder, context)} />
    }
  
-@@ -157,58 +903,64 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+@@ -157,58 +963,64 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
      <ListComponent
        {...contextPropIfNotDomElement(ListComponent, context)}
        data-testid={showTopList ? 'virtuoso-top-item-list' : 'virtuoso-item-list'}
@@ -987,7 +1080,7 @@ index 7ec32c5..805454e 100644
      </ListComponent>
    )
  })
-@@ -456,6 +1208,290 @@ const TopItemListContainer: React.FC<React.PropsWithChildren> = ({ children }) =
+@@ -456,6 +1268,290 @@ const TopItemListContainer: React.FC<React.PropsWithChildren> = ({ children }) =
    )
  }
  
@@ -1046,7 +1139,7 @@ index 7ec32c5..805454e 100644
 +        return false
 +      }
 +      const accepted = acceptedData[offset]
-+      return Object.is(accepted, data) && String(computeItemKey(index, accepted, context)) === key
++      return String(computeItemKey(index, accepted, context)) === key
 +    }
 +    // Retention is only a geometry cache, never an authority cache. A row
 +    // removed by replacement/filter/permission projection must leave the DOM
@@ -1278,7 +1371,7 @@ index 7ec32c5..805454e 100644
  const ListRoot: React.FC<ListRootProps> = /*#__PURE__*/ React.memo(function VirtuosoRoot(props) {
    const useWindowScroll = useEmitterValue('useWindowScroll')
    const showTopList = useEmitterValue('topItemsIndexes').length > 0
-@@ -497,15 +1533,16 @@ export const {
+@@ -497,15 +1593,16 @@ export const {
        overscan: 'overscan',
        increaseViewportBy: 'increaseViewportBy',
        minOverscanItemCount: 'minOverscanItemCount',
@@ -1297,7 +1390,7 @@ index 7ec32c5..805454e 100644
        defaultItemHeight: 'defaultItemHeight',
        fixedGroupHeight: 'fixedGroupHeight', // Must be set above 'fixedItemHeight'
        fixedItemHeight: 'fixedItemHeight',
-@@ -513,7 +1550,7 @@ export const {
+@@ -513,7 +1610,7 @@ export const {
        itemSize: 'itemSize',
        scrollSeekConfiguration: 'scrollSeekConfiguration',
        headerFooterTag: 'HeaderFooterTag',
@@ -1306,7 +1399,7 @@ index 7ec32c5..805454e 100644
        initialItemCount: 'initialItemCount',
        initialScrollTop: 'initialScrollTop',
        alignToBottom: 'alignToBottom',
-@@ -542,6 +1579,7 @@ export const {
+@@ -542,6 +1639,7 @@ export const {
        totalListHeightChanged: 'totalListHeightChanged',
        itemsRendered: 'itemsRendered',
        groupIndices: 'groupIndices',
@@ -1359,10 +1452,10 @@ index e6a014e..50d29ea 100644
     * Additional context available in the custom components and content callbacks
     */
 diff --git a/packages/react-virtuoso/src/domIOSystem.ts b/packages/react-virtuoso/src/domIOSystem.ts
-index e19388a..c24325c 100644
+index e19388a..67a77c3 100644
 --- a/packages/react-virtuoso/src/domIOSystem.ts
 +++ b/packages/react-virtuoso/src/domIOSystem.ts
-@@ -1,6 +1,26 @@
+@@ -1,6 +1,38 @@
  import * as u from './urx'
  
  import type { ScrollContainerState } from './interfaces'
@@ -1371,6 +1464,11 @@ index e19388a..c24325c 100644
 +export interface ListLayoutCommit {
 +  clientHeight: number
 +  deviation: number
++  focusAnchor?: {
++    bottom: number
++    element: HTMLElement
++    top: number
++  }
 +  host: HTMLElement
 +  items: {
 +    bottom: number
@@ -1386,22 +1484,31 @@ index e19388a..c24325c 100644
 +  maxScrollTop: number
 +  readScrollTop: () => number
 +}
++
++export interface ListFocusAnchor {
++  bottom: number
++  element: HTMLElement
++  host: HTMLElement
++  top: number
++}
  
  export const domIOSystem = u.system(
    () => {
-@@ -11,6 +31,7 @@ export const domIOSystem = u.system(
+@@ -11,6 +43,8 @@ export const domIOSystem = u.system(
      // has actually reached the DOM. `upwardScrollFixSystem` waits for it before
      // scrolling, so the scroll never runs against the pre-deviation layout.
      const deviationCommitted = u.stream<number>()
 +    const listLayoutCommitted = u.stream<ListLayoutCommit>()
++    const listFocusAnchor = u.stream<ListFocusAnchor>()
      const smoothScrollTargetReached = u.stream<true>()
      const statefulScrollTop = u.statefulStream(0)
      const viewportHeight = u.stream<number>()
-@@ -51,6 +72,7 @@ export const domIOSystem = u.system(
+@@ -51,6 +85,8 @@ export const domIOSystem = u.system(
        footerHeight,
        headerHeight,
        horizontalDirection,
 +      listLayoutCommitted,
++      listFocusAnchor,
        scrollBy,
        // input
        scrollContainerState,
@@ -1554,10 +1661,15 @@ index 58be00f..626c726 100644
 +  return { callbackRef, ref, measure: () => undefined }
  }
 diff --git a/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts b/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts
-index 4dd89f0..a916732 100644
+index 4dd89f0..a98a90d 100644
 --- a/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts
 +++ b/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts
-@@ -6,8 +6,23 @@ import { useSizeWithElRef } from './useSize'
+@@ -2,12 +2,28 @@ import React from 'react'
+ 
+ import { LogLevel } from '../loggerSystem'
+ import { getLogicalScrollLeft } from '../utils/horizontalScroll'
++import useIsomorphicLayoutEffect from './useIsomorphicLayoutEffect'
+ import { useSizeWithElRef } from './useSize'
  
  import type { ScrollContainerState, SizeFunction, SizeRange } from '../interfaces'
  import type { Log } from '../loggerSystem'
@@ -1582,7 +1694,7 @@ index 4dd89f0..a916732 100644
    itemSize: SizeFunction,
    enabled: boolean,
    scrollContainerStateCallback: (state: ScrollContainerState) => void,
-@@ -15,11 +30,19 @@ export default function useChangedListContentsSizes(
+@@ -15,11 +31,13 @@ export default function useChangedListContentsSizes(
    gap: ((gap: number) => void) | undefined,
    customScrollParent: HTMLElement | undefined,
    horizontalDirection: boolean,
@@ -1591,30 +1703,51 @@ index 4dd89f0..a916732 100644
 +  itemKey?: (originalIndex: number) => string,
 +  samePaint = false
  ) {
-+  const samePaintObservation = React.useRef<{ element: HTMLElement; observation: ChildSizeObservation } | null>(null)
-   const memoedCallback = React.useCallback(
-     (el: HTMLElement) => {
+-  const memoedCallback = React.useCallback(
+-    (el: HTMLElement) => {
 -      const ranges = getChangedChildSizes(el.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight', log)
-+      const prepared = samePaintObservation.current
-+      samePaintObservation.current = null
-+      const observation =
-+        prepared?.element === el
-+          ? prepared.observation
-+          : getChangedChildSizes(el.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight', log)
++  const samePaintObservation = React.useRef<{ element: HTMLElement; observation: ChildSizeObservation } | null>(null)
++  const readLayoutObservation = React.useCallback(
++    (el: HTMLElement, observation: ChildSizeObservation | null, publishContainerState: boolean) => {
        let scrollableElement = el.parentElement!
  
        while (scrollableElement.dataset.virtuosoScroller === undefined) {
-@@ -80,17 +103,71 @@ export default function useChangedListContentsSizes(
-           : resolveGapValue('row-gap', getComputedStyle(el).rowGap, log)
-       )
+@@ -68,29 +86,139 @@ export default function useChangedListContentsSizes(
+             ? getLogicalScrollLeft(scrollableElement, scrollableElement.scrollLeft)
+             : scrollableElement.scrollTop
+ 
+-      scrollContainerStateCallback({
+-        scrollHeight,
+-        scrollTop: Math.max(scrollTop, 0),
+-        viewportHeight,
+-      })
++      if (publishContainerState) {
++        scrollContainerStateCallback({
++          scrollHeight,
++          scrollTop: Math.max(scrollTop, 0),
++          viewportHeight,
++        })
+ 
+-      gap?.(
+-        horizontalDirection
+-          ? resolveGapValue('column-gap', getComputedStyle(el).columnGap, log)
+-          : resolveGapValue('row-gap', getComputedStyle(el).rowGap, log)
+-      )
++        gap?.(
++          horizontalDirection
++            ? resolveGapValue('column-gap', getComputedStyle(el).columnGap, log)
++            : resolveGapValue('row-gap', getComputedStyle(el).rowGap, log)
++        )
++      }
  
 -      if (ranges !== null) {
 -        callback(ranges)
 +      if (observation !== null) {
++        const result = { ...observation }
 +        if (!horizontalDirection && !windowScrolling && !customScrollParent) {
 +          const viewportTop = scrollableElement.getBoundingClientRect().top
 +          const hostStyle = getComputedStyle(el)
-+          observation.layout = {
++          result.layout = {
 +            clientHeight: scrollableElement.clientHeight,
 +            host: el,
 +            inlineSize: el.clientWidth - parseFloat(hostStyle.paddingLeft || '0') - parseFloat(hostStyle.paddingRight || '0'),
@@ -1645,33 +1778,86 @@ index 4dd89f0..a916732 100644
 +            }),
 +          }
 +        }
-+        callback(observation)
++        return result
 +      }
++      return null
 +    },
-+    [callback, itemSize, log, gap, customScrollParent, scrollContainerStateCallback, horizontalDirection, itemKey]
++    [customScrollParent, gap, horizontalDirection, itemKey, log, scrollContainerStateCallback]
 +  )
-+
-+  const scheduleSamePaint = React.useCallback(
-+    (element: HTMLElement) => {
-+      const observation = getChangedChildSizes(element.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight')
-+      if (observation !== null && observation.ranges.length > 0) {
-+        samePaintObservation.current = { element, observation }
-+        return true
++  const memoedCallback = React.useCallback(
++    (el: HTMLElement) => {
++      const prepared = samePaintObservation.current
++      samePaintObservation.current = null
++      const observation =
++        prepared?.element === el
++          ? prepared.observation
++          : getChangedChildSizes(el.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight', log)
++      const result = readLayoutObservation(el, observation, true)
++      if (result) {
++        callback(result)
        }
-+      return false
      },
 -    [callback, itemSize, log, gap, customScrollParent, scrollContainerStateCallback, horizontalDirection]
-+    [horizontalDirection, itemSize]
++    [callback, horizontalDirection, itemSize, log, readLayoutObservation]
    )
  
 -  return useSizeWithElRef(memoedCallback, enabled, skipAnimationFrame)
++  const scheduleSamePaint = React.useCallback(
++    (element: HTMLElement) => {
++      samePaintObservation.current = null
++      const observation = getChangedChildSizes(element.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight')
++      if (observation !== null && observation.ranges.length > 0 && containsOnlyGrowth(element.children, observation.ranges)) {
++        samePaintObservation.current = { element, observation }
++        return true
++      }
++      return false
++    },
++    [horizontalDirection, itemSize]
++  )
++  const size = useSizeWithElRef(memoedCallback, enabled, skipAnimationFrame, samePaint ? scheduleSamePaint : false)
++  const sizeCallbackRef = size.callbackRef
++  useIsomorphicLayoutEffect(() => {
++    // `useSizeWithElRef` keeps one native observer across callback revisions.
++    // A prepared child snapshot belongs to the exact callback/list-state
++    // generation that produced it, so never carry it into the new closure.
++    samePaintObservation.current = null
++  }, [memoedCallback, scheduleSamePaint])
++  const callbackRef = React.useCallback(
++    (element: HTMLElement | null) => {
++      samePaintObservation.current = null
++      sizeCallbackRef(element)
++    },
++    [sizeCallbackRef]
++  )
++
 +  return {
-+    ...useSizeWithElRef(memoedCallback, enabled, skipAnimationFrame, samePaint ? scheduleSamePaint : false),
++    ...size,
++    callbackRef,
 +    measure: memoedCallback,
 +  }
  }
  
 -function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction, field: 'offsetHeight' | 'offsetWidth', log: Log) {
++function containsOnlyGrowth(children: HTMLCollection, ranges: SizeRange[]) {
++  let found = false
++  for (let index = 0; index < children.length; index += 1) {
++    const child = children.item(index) as HTMLElement
++    if (child.dataset.index === undefined) {
++      continue
++    }
++    const originalIndex = Number(child.dataset.index)
++    const range = ranges.find(({ startIndex, endIndex }) => originalIndex >= startIndex && originalIndex <= endIndex)
++    if (!range) {
++      continue
++    }
++    found = true
++    if (!(range.size > Number(child.dataset.knownSize))) {
++      return false
++    }
++  }
++  return found
++}
++
 +function getChangedChildSizes(
 +  children: HTMLCollection,
 +  itemSize: SizeFunction,
@@ -1681,7 +1867,7 @@ index 4dd89f0..a916732 100644
    const length = children.length
  
    if (length === 0) {
-@@ -98,6 +175,7 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
+@@ -98,6 +226,7 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
    }
  
    const results: SizeRange[] = []
@@ -1689,7 +1875,7 @@ index 4dd89f0..a916732 100644
  
    for (let i = 0; i < length; i++) {
      const child = children.item(i) as HTMLElement
-@@ -106,11 +184,19 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
+@@ -106,11 +235,19 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
        continue
      }
  
@@ -1710,7 +1896,7 @@ index 4dd89f0..a916732 100644
        log('Zero-sized element, this should not happen', { child }, LogLevel.ERROR)
      }
  
-@@ -126,7 +212,7 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
+@@ -126,7 +263,7 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
      }
    }
  
@@ -1720,10 +1906,17 @@ index 4dd89f0..a916732 100644
  
  function resolveGapValue(property: string, value: string | undefined, log: Log) {
 diff --git a/packages/react-virtuoso/src/hooks/useSize.ts b/packages/react-virtuoso/src/hooks/useSize.ts
-index d55407f..41874ac 100644
+index d55407f..30cfe8c 100644
 --- a/packages/react-virtuoso/src/hooks/useSize.ts
 +++ b/packages/react-virtuoso/src/hooks/useSize.ts
-@@ -6,7 +6,12 @@ export default function useSize(callback: (e: HTMLElement) => void, enabled: boo
+@@ -1,48 +1,110 @@
+ import React from 'react'
+ 
++import useIsomorphicLayoutEffect from './useIsomorphicLayoutEffect'
++
+ export type CallbackRefParam = HTMLElement | null
+ 
+ export default function useSize(callback: (e: HTMLElement) => void, enabled: boolean, skipAnimationFrame: boolean) {
    return useSizeWithElRef(callback, enabled, skipAnimationFrame).callbackRef
  }
  
@@ -1735,34 +1928,122 @@ index d55407f..41874ac 100644
 +  samePaint: boolean | ((element: HTMLElement) => boolean) = false
 +) {
    const ref = React.useRef<CallbackRefParam>(null)
++  const nextGeneration = React.useRef(0)
++  const config = React.useRef({ callback, samePaint, skipAnimationFrame })
  
-   let callbackRef = (_el: CallbackRefParam) => {
-@@ -16,21 +21,23 @@ export function useSizeWithElRef(callback: (e: HTMLElement) => void, enabled: bo
-   const observer = React.useMemo(() => {
+-  let callbackRef = (_el: CallbackRefParam) => {
+-    void 0
+-  }
+-
+-  const observer = React.useMemo(() => {
++  const observerState = React.useMemo(() => {
++    const state: {
++      generation: number
++      observer: ResizeObserver | null
++      pending: { frame: number | null; generation: number } | null
++    } = { generation: 0, observer: null, pending: null }
      if (typeof ResizeObserver !== 'undefined') {
-       return new ResizeObserver((entries: ResizeObserverEntry[]) => {
+-      return new ResizeObserver((entries: ResizeObserverEntry[]) => {
++      state.observer = new ResizeObserver((entries: ResizeObserverEntry[]) => {
 +        const element = entries[0]!.target as HTMLElement
++        if (state.pending?.frame !== null && state.pending?.frame !== undefined) {
++          cancelAnimationFrame(state.pending.frame)
++        }
++        state.pending = null
++        const deliveryGeneration = (state.generation = ++nextGeneration.current)
++        const deliveryConfig = config.current
++        const active = () => deliveryGeneration > 0 && state.generation === deliveryGeneration && ref.current === element
          const code = () => {
 -          const element = entries[0]!.target as HTMLElement
-           if (element.offsetParent !== null) {
-             callback(element)
+-          if (element.offsetParent !== null) {
+-            callback(element)
++          if (state.pending?.generation === deliveryGeneration) {
++            state.pending = null
++          }
++          if (active() && element.offsetParent !== null) {
++            deliveryConfig.callback(element)
            }
          }
-         if (skipAnimationFrame) {
+-        if (skipAnimationFrame) {
++        if (!active()) {
++          return
++        }
++        if (deliveryConfig.skipAnimationFrame) {
            code()
-+        } else if (element.offsetParent !== null && (typeof samePaint === 'function' ? samePaint(element) : samePaint)) {
++        } else if (
++          element.offsetParent !== null &&
++          (typeof deliveryConfig.samePaint === 'function' ? deliveryConfig.samePaint(element) : deliveryConfig.samePaint)
++        ) {
++          state.pending = { frame: null, generation: deliveryGeneration }
 +          queueMicrotask(code)
          } else {
-           requestAnimationFrame(code)
+-          requestAnimationFrame(code)
++          state.pending = { frame: requestAnimationFrame(code), generation: deliveryGeneration }
          }
        })
      }
-     return null
+-    return null
 -  }, [callback, skipAnimationFrame])
-+  }, [callback, samePaint, skipAnimationFrame])
+-
+-  callbackRef = (elRef: CallbackRefParam) => {
+-    if (elRef && enabled) {
+-      observer?.observe(elRef)
+-      ref.current = elRef
+-    } else {
+-      if (ref.current) {
+-        observer?.unobserve(ref.current)
++    return state
++  }, [])
++
++  useIsomorphicLayoutEffect(() => {
++    const previous = config.current
++    if (previous.callback !== callback || previous.samePaint !== samePaint || previous.skipAnimationFrame !== skipAnimationFrame) {
++      config.current = { callback, samePaint, skipAnimationFrame }
++      const element = ref.current
++      if (element && enabled && observerState.pending !== null) {
++        if (observerState.pending.frame !== null) {
++          cancelAnimationFrame(observerState.pending.frame)
++        }
++        const retryGeneration = (observerState.generation = ++nextGeneration.current)
++        const retry = () => {
++          if (observerState.pending?.generation === retryGeneration) {
++            observerState.pending = null
++          }
++          if (observerState.generation === retryGeneration && ref.current === element && element.offsetParent !== null) {
++            config.current.callback(element)
++          }
++        }
++        observerState.pending = { frame: requestAnimationFrame(retry), generation: retryGeneration }
+       }
+-      ref.current = null
+     }
+-  }
++  }, [callback, enabled, observerState, samePaint, skipAnimationFrame])
++
++  const callbackRef = React.useCallback(
++    (elRef: CallbackRefParam) => {
++      if (elRef && enabled) {
++        observerState.generation = ++nextGeneration.current
++        observerState.observer?.observe(elRef)
++        ref.current = elRef
++      } else {
++        if (observerState.pending?.frame !== null && observerState.pending?.frame !== undefined) {
++          cancelAnimationFrame(observerState.pending.frame)
++        }
++        observerState.pending = null
++        if (ref.current) {
++          observerState.observer?.unobserve(ref.current)
++        }
++        observerState.generation = 0
++        nextGeneration.current++
++        ref.current = null
++      }
++    },
++    [enabled, observerState]
++  )
  
-   callbackRef = (elRef: CallbackRefParam) => {
-     if (elRef && enabled) {
+   return { callbackRef, ref }
+ }
 diff --git a/packages/react-virtuoso/src/interfaces.ts b/packages/react-virtuoso/src/interfaces.ts
 index 136e5f3..079b49b 100644
 --- a/packages/react-virtuoso/src/interfaces.ts
@@ -1784,7 +2065,7 @@ index 136e5f3..079b49b 100644
   * Passed to the Components.FillerRow custom component
   * @group TableVirtuoso
 diff --git a/packages/react-virtuoso/src/listStateSystem.ts b/packages/react-virtuoso/src/listStateSystem.ts
-index e6da4ed..913cfc6 100644
+index e6da4ed..3b57994 100644
 --- a/packages/react-virtuoso/src/listStateSystem.ts
 +++ b/packages/react-virtuoso/src/listStateSystem.ts
 @@ -6,7 +6,7 @@ import { propsReadySystem } from './propsReadySystem'
@@ -1796,7 +2077,7 @@ index e6da4ed..913cfc6 100644
  import { stateFlagsSystem } from './stateFlagsSystem'
  import * as u from './urx'
  
-@@ -28,6 +28,16 @@ export interface ListState {
+@@ -28,8 +28,28 @@ export interface ListState {
    totalCount: number
  }
  
@@ -1812,8 +2093,20 @@ index e6da4ed..913cfc6 100644
 +
  export type MinOverscanItemCount = number | { bottom: number; top: number }
  
++function sameInitialTopMostItemIndex(left: InitialTopMostItemIndexLocation, right: InitialTopMostItemIndexLocation) {
++  if (left === right) {
++    return true
++  }
++  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) {
++    return false
++  }
++  return left.index === right.index && left.align === right.align && left.behavior === right.behavior && left.offset === right.offset
++}
++
  function probeItemSet(index: number, sizes: SizeState, data: Data) {
-@@ -182,8 +192,8 @@ export const listStateSystem = u.system(
+   if (hasGroups(sizes)) {
+     const itemIndex = originalIndexFromItemIndex(index, sizes)
+@@ -182,8 +202,8 @@ export const listStateSystem = u.system(
      { data, firstItemIndex, gap, sizes, totalCount },
      groupedListSystem,
      { listBoundary, topListHeight: rangeTopListHeight, visibleRange },
@@ -1824,7 +2117,7 @@ index e6da4ed..913cfc6 100644
      stateFlags,
      { didMount },
      { recalcInProgress },
-@@ -192,10 +202,13 @@ export const listStateSystem = u.system(
+@@ -192,10 +212,13 @@ export const listStateSystem = u.system(
      const initialItemCount = u.statefulStream(0)
      const itemsRendered = u.stream<ListItems>()
      const minOverscanItemCount = u.statefulStream<MinOverscanItemCount>(0)
@@ -1839,7 +2132,14 @@ index e6da4ed..913cfc6 100644
        u.pipe(
          u.combineLatest(
            didMount,
-@@ -209,9 +222,9 @@ export const listStateSystem = u.system(
+@@ -203,15 +226,15 @@ export const listStateSystem = u.system(
+           u.duc(visibleRange, tupleComparator),
+           u.duc(totalCount),
+           u.duc(sizes),
+-          u.duc(initialTopMostItemIndex),
++          u.duc(initialTopMostItemIndex, sameInitialTopMostItemIndex),
+           scrolledToInitialItem,
+           u.duc(topItemsIndexes),
            u.duc(firstItemIndex),
            u.duc(gap),
            u.duc(minOverscanItemCount),
@@ -1851,7 +2151,7 @@ index e6da4ed..913cfc6 100644
            // When data length changes, it is synced to totalCount, both of which trigger a recalc separately.
            // Recalc should be skipped then, as the calculation expects both data and totalCount to be in sync.
            const dataChangeInProgress = data !== undefined && data.length !== totalCount
-@@ -230,7 +243,7 @@ export const listStateSystem = u.system(
+@@ -230,7 +253,7 @@ export const listStateSystem = u.system(
              firstItemIndex,
              gap,
              minOverscanItemCountValue,
@@ -1860,7 +2160,7 @@ index e6da4ed..913cfc6 100644
            ]) => {
              const sizesValue = sizes
              const { offsetTree, sizeTree } = sizesValue
-@@ -291,80 +304,95 @@ export const listStateSystem = u.system(
+@@ -291,80 +314,95 @@ export const listStateSystem = u.system(
  
              const minStartIndex = topItemsIndexes.length > 0 ? topItemsIndexes[topItemsIndexes.length - 1]! + 1 : 0
  
@@ -2017,7 +2317,7 @@ index e6da4ed..913cfc6 100644
            }
          ),
          //@ts-expect-error filter needs to be fixed
-@@ -374,6 +402,167 @@ export const listStateSystem = u.system(
+@@ -374,6 +412,167 @@ export const listStateSystem = u.system(
        EMPTY_LIST_STATE
      )
  
@@ -2185,7 +2485,7 @@ index e6da4ed..913cfc6 100644
      u.connect(
        u.pipe(
          data,
-@@ -412,9 +601,9 @@ export const listStateSystem = u.system(
+@@ -412,9 +611,9 @@ export const listStateSystem = u.system(
        u.pipe(
          listState,
          u.filter(({ items }) => items.length > 0),
@@ -2198,7 +2498,7 @@ index e6da4ed..913cfc6 100644
          u.distinctUntilChanged(tupleComparator),
          u.map(([count]) => count)
        )
-@@ -461,6 +650,16 @@ export const listStateSystem = u.system(
+@@ -461,6 +660,16 @@ export const listStateSystem = u.system(
      )
  
      return {
@@ -2256,6 +2556,129 @@ index 587a8b6..5136b97 100644
        sizes,
        ...stateLoad,
      }
+diff --git a/packages/react-virtuoso/src/measuredHistoryAdmission.ts b/packages/react-virtuoso/src/measuredHistoryAdmission.ts
+new file mode 100644
+index 0000000..663eb45
+--- /dev/null
++++ b/packages/react-virtuoso/src/measuredHistoryAdmission.ts
+@@ -0,0 +1,117 @@
++import * as u from './urx'
++
++import type { Data } from './sizeSystem'
++
++export interface HistoryPreparation {
++  data: readonly unknown[] | undefined
++  firstItemIndex: number
++  generation: number
++  prefixCount: number
++  start: number
++  end: number
++  totalCount: number
++}
++
++/** Private admission gate: requested history is not list geometry until measured. */
++export function measuredHistoryAdmission(options: {
++  admit: (data: Data, firstItemIndex: number, totalCount: number, prefixSizes?: readonly number[]) => void
++  key: (index: number, data: unknown) => unknown
++  fail: (reason: string) => void
++  enabled?: () => boolean
++}) {
++  const preparation = u.statefulStream<HistoryPreparation | null>(null)
++  let acceptedData: Data
++  let acceptedFirst = 0
++  let acceptedTotalCount = 0
++  let generation = 0
++  let pendingPrefixSizes: number[] | null = null
++
++  function request(data: Data, firstItemIndex: number, totalCount = data?.length ?? 0) {
++    const active = u.getValue(preparation)
++    if (active && active.data === data && active.firstItemIndex === firstItemIndex && active.totalCount === totalCount) {
++      return
++    }
++    if (acceptedData === data && acceptedFirst === firstItemIndex && acceptedTotalCount === totalCount && active === null) {
++      return
++    }
++    generation++
++    const prefixCount = acceptedFirst - firstItemIndex
++    if (options.enabled?.() !== false && acceptedTotalCount > 0 && prefixCount > 0) {
++      const suffixMatches =
++        acceptedData !== undefined && data !== undefined
++          ? data.length >= acceptedData.length + prefixCount &&
++            acceptedData.every(
++              (item, index) => options.key(acceptedFirst + index, item) === options.key(acceptedFirst + index, data[prefixCount + index])
++            )
++          : acceptedData === undefined && data === undefined && totalCount === acceptedTotalCount + prefixCount
++      if (!suffixMatches) {
++        u.publish(preparation, null)
++        pendingPrefixSizes = null
++        acceptedData = data
++        acceptedFirst = firstItemIndex
++        acceptedTotalCount = totalCount
++        // A replacement/rebase is not a history-prefix insertion. Preserve its
++        // existing public behavior rather than freezing the requested data.
++        options.admit(data, firstItemIndex, totalCount)
++        return
++      }
++      pendingPrefixSizes = Array.from({ length: prefixCount }, () => 0)
++      u.publish(preparation, {
++        data,
++        firstItemIndex,
++        generation,
++        prefixCount,
++        start: Math.max(0, prefixCount - 32),
++        end: prefixCount,
++        totalCount,
++      })
++      return
++    }
++    u.publish(preparation, null)
++    pendingPrefixSizes = null
++    acceptedData = data
++    acceptedFirst = firstItemIndex
++    acceptedTotalCount = totalCount
++    options.admit(data, firstItemIndex, totalCount)
++  }
++
++  function observe(token: HistoryPreparation, inlineSize: number, heights: readonly number[]) {
++    if (u.getValue(preparation) !== token) {
++      return
++    }
++    if (!(inlineSize > 0) || heights.some((size) => size === 0)) {
++      // No invented placeholder size: keep the request and let its live row
++      // ResizeObservers retry when a zero-sized resource obtains dimensions.
++      return
++    }
++    if (heights.length !== token.end - token.start || heights.some((size) => !Number.isFinite(size) || size < 0)) {
++      options.fail('Measured history received invalid live DOM dimensions')
++      return
++    }
++    if (pendingPrefixSizes === null || pendingPrefixSizes.length !== token.prefixCount) {
++      options.fail('Measured history lost its preparation generation')
++      return
++    }
++    heights.forEach((height, index) => {
++      pendingPrefixSizes![token.start + index] = height
++    })
++    if (token.start > 0) {
++      u.publish(preparation, {
++        ...token,
++        generation: ++generation,
++        start: Math.max(0, token.start - 32),
++        end: token.start,
++      })
++      return
++    }
++    const prefixSizes = pendingPrefixSizes
++    pendingPrefixSizes = null
++    acceptedData = token.data
++    acceptedFirst = token.firstItemIndex
++    acceptedTotalCount = token.totalCount
++    options.admit(acceptedData, acceptedFirst, acceptedTotalCount, prefixSizes)
++    u.publish(preparation, null)
++  }
++
++  return { observe, preparation, request }
++}
 diff --git a/packages/react-virtuoso/src/scrollToIndexSystem.ts b/packages/react-virtuoso/src/scrollToIndexSystem.ts
 index 42a2502..07f5239 100644
 --- a/packages/react-virtuoso/src/scrollToIndexSystem.ts
@@ -2581,10 +3004,10 @@ index b279ac1..116a61f 100644
        shiftWithOffset,
        sizeRanges,
 diff --git a/packages/react-virtuoso/src/upwardScrollFixSystem.ts b/packages/react-virtuoso/src/upwardScrollFixSystem.ts
-index 7fc960c..b399109 100644
+index 7fc960c..4e5f096 100644
 --- a/packages/react-virtuoso/src/upwardScrollFixSystem.ts
 +++ b/packages/react-virtuoso/src/upwardScrollFixSystem.ts
-@@ -1,14 +1,20 @@
+@@ -1,32 +1,646 @@
  import { find } from './AATree'
  import { domIOSystem } from './domIOSystem'
 +import { initialTopMostItemIndexSystem } from './initialTopMostItemIndexSystem'
@@ -2606,12 +3029,67 @@ index 7fc960c..b399109 100644
  
  const isMobileSafari = simpleMemoize(() => {
    return /iP(ad|od|hone)/i.test(navigator.userAgent) && /WebKit/i.test(navigator.userAgent)
-@@ -20,13 +26,539 @@ type UpwardFixState = [number, ListItem<any>[], number, number]
+ })
+ 
+ type UpwardFixState = [number, ListItem<any>[], number, number]
++
++export function isConnectedLiveShrink(observation: DomSizeObservation, baseline: ListLayoutCommit | null) {
++  const layout = observation.layout
++  if (!layout || !baseline) {
++    return false
++  }
++  return baseline.items.some((item) => {
++    const changedRange = observation.ranges.find(
++      ({ startIndex, endIndex }) => item.originalIndex >= startIndex && item.originalIndex <= endIndex
++    )
++    return (
++      changedRange !== undefined &&
++      changedRange.size < item.bottom - item.top - 1 &&
++      layout.items.some((current) => current.element === item.element)
++    )
++  })
++}
++
++export function passiveLayoutGeometryMatches(layout: ListLayoutCommit, previousLayout: ListLayoutCommit | null) {
++  const modelByIndex = new Map(layout.listState.items.map((item) => [item.originalIndex, item]))
++  const comparable = layout.items.flatMap((item) => {
++    const modeled = modelByIndex.get(item.originalIndex)
++    return modeled ? [{ modeled, physical: item }] : []
++  })
++  const sizesMatch = comparable.every(({ modeled, physical }) => Math.abs(physical.bottom - physical.top - modeled.size) <= 1)
++  const relativeRowsMatch =
++    comparable.length >= 2 &&
++    comparable.slice(1).every(({ modeled, physical }, index) => {
++      const previous = comparable[index]!
++      return Math.abs(physical.top - previous.physical.top - (modeled.offset - previous.modeled.offset)) <= 1
++    })
++  const first = comparable[0]
++  const priorContainsOnlyRow =
++    comparable.length === 1 &&
++    previousLayout !== null &&
++    previousLayout.host === layout.host &&
++    previousLayout.items.some((item) => item.element === first?.physical.element && item.element.isConnected)
++  return sizesMatch && (relativeRowsMatch || (comparable.length === 1 && !priorContainsOnlyRow))
++}
+ /**
+  * Fixes upward scrolling by calculating and compensation from changed item heights, using scrollBy.
   */
  export const upwardScrollFixSystem = u.system(
    ([
 -    { deviation, deviationCommitted, scrollBy, scrollingInProgress, scrollTop },
-+    { deviation, deviationCommitted, listLayoutCommitted, scrollBy, scrollingInProgress, scrollTop, headerHeight, fixedHeaderHeight },
++    {
++      deviation,
++      deviationCommitted,
++      listFocusAnchor,
++      listLayoutCommitted,
++      scrollBy,
++      scrollingInProgress,
++      scrollTop,
++      headerHeight,
++      fixedHeaderHeight,
++      fixedFooterHeight,
++      footerHeight,
++    },
      { isAtBottom, isScrolling, lastJumpDueToItemResize, scrollDirection },
 -    { listState },
 -    { beforeUnshiftWith, gap, shiftWithOffset, sizes },
@@ -2657,12 +3135,15 @@ index 7fc960c..b399109 100644
 +    let previousLayout: ListLayoutCommit | null = null
 +    let nativeScrollEpoch = 0
 +    let lastNativeScrollTop: number | null = null
++    let ordinaryLiveShrinkActive: DomSizeObservation | null = null
 +    // One concrete DOM observation owns exactly the size-tree transition it
 +    // starts and the matching React ListState commit. Compensation is performed
 +    // in that commit's layout effect, before paint, and the owner is then gone.
 +    let ordinaryMeasurement: {
 +      observation: DomSizeObservation
 +      anchor: ListLayoutCommit['items'][number]
++      focusAnchor: boolean
++      physicalAnchor: HTMLElement
 +      expectedTop: number
 +      baseTop: number
 +      viewportTop: number
@@ -2685,6 +3166,11 @@ index 7fc960c..b399109 100644
 +    }
 +
 +    u.subscribe(scrollToIndex, cancelOrdinaryMeasurement)
++    u.subscribe(listFocusAnchor, ({ bottom, element, host, top }) => {
++      if (previousLayout?.host === host) {
++        previousLayout = { ...previousLayout, focusAnchor: { bottom, element, top } }
++      }
++    })
 +    u.subscribe(scrollTop, (top) => {
 +      if (lastNativeScrollTop === null || Math.abs(top - lastNativeScrollTop) > 0.5) {
 +        nativeScrollEpoch++
@@ -2693,11 +3179,18 @@ index 7fc960c..b399109 100644
 +    })
 +
 +    u.subscribe(ordinaryDomMeasurementStart, (observation) => {
++      ordinaryLiveShrinkActive = null
 +      if (ordinaryMeasurement?.expectedListState) {
 +        // A second real observation arrived before React committed the first
 +        // tree. Supersede the old exact owner; the new observation includes
 +        // all physical changes and will name the only state allowed to commit.
 +        ordinaryMeasurement = null
++      }
++      const layout = observation.layout
++      const baseline = previousLayout
++      const changed = (index: number) => observation.ranges.some(({ startIndex, endIndex }) => index >= startIndex && index <= endIndex)
++      if (isConnectedLiveShrink(observation, baseline)) {
++        ordinaryLiveShrinkActive = observation
 +      }
 +      const rejection = [
 +        ordinaryMeasurement && 'ordinary-active',
@@ -2716,19 +3209,18 @@ index 7fc960c..b399109 100644
 +      if (rejection.length > 0) {
 +        return
 +      }
-+      const layout = observation.layout!
-+      const baseline = previousLayout!
-+      const nativeDelta = layout.scrollTop - baseline.nativeScrollTop
-+      const changed = (index: number) => observation.ranges.some(({ startIndex, endIndex }) => index >= startIndex && index <= endIndex)
-+      const anchor = baseline.items.find((item) => {
++      const currentLayout = layout!
++      const currentBaseline = baseline!
++      const nativeDelta = currentLayout.scrollTop - currentBaseline.nativeScrollTop
++      const stableRowAnchor = currentBaseline.items.find((item) => {
 +        const expectedTop = item.top - nativeDelta
 +        return (
 +          !changed(item.originalIndex) &&
 +          item.key !== undefined &&
-+          expectedTop < layout.clientHeight &&
++          expectedTop < currentLayout.clientHeight &&
 +          item.bottom - nativeDelta > 0 &&
 +          item.element.isConnected &&
-+          observation.layout!.items.some((current) => current.element === item.element && current.key === String(item.key)) &&
++          currentLayout.items.some((current) => current.element === item.element && current.key === String(item.key)) &&
 +          Number(item.element.dataset.itemIndex) === item.index
 +        )
 +      })
@@ -2736,16 +3228,37 @@ index 7fc960c..b399109 100644
 +      // every following row. Preserve the first stable visible semantic row in
 +      // the existing visual order; if a stable row precedes the resize, its
 +      // zero delta correctly leaves a legitimate below-viewport fold alone.
-+      const current = anchor ? layout.items.find((item) => item.element === anchor.element)! : null
-+      if (!anchor || !current) {
++      const stableCurrent = stableRowAnchor ? currentLayout.items.find((item) => item.element === stableRowAnchor.element)! : null
++      const baselineFocus = currentBaseline.focusAnchor
++      const focusedRow = baselineFocus
++        ? currentBaseline.items.find(
++            (item) =>
++              changed(item.originalIndex) &&
++              item.element.contains(baselineFocus.element) &&
++              baselineFocus.top < currentBaseline.clientHeight &&
++              baselineFocus.bottom > 0
++          )
++        : undefined
++      const focusedCurrent = focusedRow ? currentLayout.items.find((item) => item.element === focusedRow.element) : undefined
++      const focusIsCurrent =
++        baselineFocus !== undefined &&
++        focusedCurrent !== undefined &&
++        baselineFocus.element.isConnected &&
++        baselineFocus.element.ownerDocument.activeElement === baselineFocus.element
++      const anchor = stableRowAnchor ?? (focusIsCurrent ? focusedRow : undefined)
++      const current = stableCurrent ?? (focusIsCurrent ? focusedCurrent : undefined)
++      const physicalAnchor = stableRowAnchor?.element ?? (focusIsCurrent ? baselineFocus?.element : undefined)
++      if (!anchor || !current || !physicalAnchor) {
 +        return
 +      }
 +      ordinaryMeasurement = {
 +        observation,
 +        anchor,
-+        expectedTop: anchor.top - nativeDelta,
-+        baseTop: layout.scrollTop,
-+        viewportTop: anchor.element.getBoundingClientRect().top - current.top,
++        focusAnchor: stableRowAnchor === undefined,
++        physicalAnchor,
++        expectedTop: stableRowAnchor ? anchor.top - nativeDelta : baselineFocus!.top,
++        baseTop: currentLayout.scrollTop,
++        viewportTop: current.element.getBoundingClientRect().top - current.top,
 +        expectedListState: null,
 +        scrollEpoch: nativeScrollEpoch,
 +      }
@@ -2753,25 +3266,7 @@ index 7fc960c..b399109 100644
 +    })
 +
 +    function acceptPassiveLayoutBaseline(layout: ListLayoutCommit) {
-+      const modelByIndex = new Map(layout.listState.items.map((item) => [item.originalIndex, item]))
-+      const comparable = layout.items.flatMap((item) => {
-+        const modeled = modelByIndex.get(item.originalIndex)
-+        return modeled ? [{ modeled, physical: item }] : []
-+      })
-+      const first = comparable[0]
-+      const sizesMatch = comparable.every(({ modeled, physical }) => Math.abs(physical.bottom - physical.top - modeled.size) <= 1)
-+      const relativeRowsMatch =
-+        first !== undefined &&
-+        comparable.length >= 2 &&
-+        comparable.every(
-+          ({ modeled, physical }) => Math.abs(physical.top - first.physical.top - (modeled.offset - first.modeled.offset)) <= 1
-+        )
-+      const priorContainsOnlyRow =
-+        comparable.length === 1 &&
-+        previousLayout !== null &&
-+        previousLayout.host === layout.host &&
-+        previousLayout.items.some((item) => item.element === first?.physical.element && item.element.isConnected)
-+      const geometryIsAuthoritative = sizesMatch && (relativeRowsMatch || (comparable.length === 1 && !priorContainsOnlyRow))
++      const geometryIsAuthoritative = passiveLayoutGeometryMatches(layout, previousLayout)
 +      if (previousLayout === null || previousLayout.host !== layout.host || geometryIsAuthoritative) {
 +        previousLayout = layout
 +        return true
@@ -2806,24 +3301,35 @@ index 7fc960c..b399109 100644
 +            ? Object.is(item.data, ordinaryTransaction.anchor.data)
 +            : String(item.key) === String(ordinaryTransaction.anchor.key))
 +      )
-+      if (!anchor || !anchor.element.isConnected) {
++      if (
++        !anchor ||
++        !anchor.element.isConnected ||
++        !ordinaryTransaction.physicalAnchor.isConnected ||
++        (ordinaryTransaction.focusAnchor &&
++          ordinaryTransaction.physicalAnchor.ownerDocument.activeElement !== ordinaryTransaction.physicalAnchor)
++      ) {
 +        acceptPassiveLayoutBaseline(layout)
 +        return true
 +      }
-+      const delta = anchor.top - ordinaryTransaction.expectedTop
++      const physicalTop = ordinaryTransaction.physicalAnchor.getBoundingClientRect().top - ordinaryTransaction.viewportTop
++      const delta = physicalTop - ordinaryTransaction.expectedTop
 +      const targetTop = Math.min(layout.maxScrollTop, Math.max(0, layout.nativeScrollTop + delta))
 +      const appliedDelta = targetTop - layout.nativeScrollTop
++      const rendersFormalTail = layout.items.some((item) => item.originalIndex === layout.listState.totalCount - 1)
++      const flowFooterHeight = rendersFormalTail ? u.getValue(footerHeight) : 0
 +      const coversViewport =
 +        layout.items.length > 0 &&
 +        Math.min(...layout.items.map((item) => item.top)) - appliedDelta <= 0.5 &&
-+        Math.max(...layout.items.map((item) => item.bottom)) - appliedDelta >= layout.clientHeight - 0.5
++        Math.max(...layout.items.map((item) => item.bottom)) - appliedDelta >=
++          layout.clientHeight - u.getValue(fixedFooterHeight) - flowFooterHeight - 0.5
 +      if (Math.abs(appliedDelta) > 0.5 && coversViewport) {
 +        u.publish(scrollBy, { top: appliedDelta, behavior: 'auto' })
 +      } else if (Math.abs(appliedDelta) > 0.5) {
 +        u.getValue(log)('Ordinary measured layout cannot preserve viewport coverage', { delta, appliedDelta }, LogLevel.ERROR)
 +      }
 +      const actualTop = layout.readScrollTop()
-+      const residual = anchor.element.getBoundingClientRect().top - ordinaryTransaction.viewportTop - ordinaryTransaction.expectedTop
++      const residual =
++        ordinaryTransaction.physicalAnchor.getBoundingClientRect().top - ordinaryTransaction.viewportTop - ordinaryTransaction.expectedTop
 +      if (Math.abs(residual) > 1) {
 +        u.getValue(log)(
 +          'Ordinary measured layout has residual displacement',
@@ -2845,6 +3351,9 @@ index 7fc960c..b399109 100644
 +    }
 +
 +    u.subscribe(ordinaryDomMeasurementEnd, (observation) => {
++      if (ordinaryLiveShrinkActive === observation) {
++        ordinaryLiveShrinkActive = null
++      }
 +      const transaction = ordinaryMeasurement
 +      if (!transaction || transaction.observation !== observation) {
 +        return
@@ -3149,17 +3658,17 @@ index 7fc960c..b399109 100644
      const deviationOffset = u.streamFromEmitter(
        u.pipe(
          listState,
-@@ -75,6 +607,9 @@ export const upwardScrollFixSystem = u.system(
+@@ -75,6 +689,9 @@ export const upwardScrollFixSystem = u.system(
      }
  
      u.subscribe(u.pipe(deviationOffset, u.withLatestFrom(deviation, isScrolling)), ([offset, deviationAmount, isScrolling]) => {
-+      if (preparedMeasurement || measuredTransaction || ordinaryMeasurement) {
++      if (ordinaryLiveShrinkActive || preparedMeasurement || measuredTransaction || ordinaryMeasurement) {
 +        return
 +      }
        if (isScrolling && isMobileSafari()) {
          u.publish(deviation, deviationAmount - offset)
        } else {
-@@ -87,7 +622,7 @@ export const upwardScrollFixSystem = u.system(
+@@ -87,7 +704,7 @@ export const upwardScrollFixSystem = u.system(
      u.subscribe(
        u.pipe(
          u.combineLatest(u.statefulStreamFromEmitter(isScrolling, false), deviation, recalcInProgress),
@@ -3168,7 +3677,7 @@ index 7fc960c..b399109 100644
          u.map(([_, deviation]) => deviation),
          u.throttleTime(1)
        ),
-@@ -147,6 +682,10 @@ export const upwardScrollFixSystem = u.system(
+@@ -147,6 +764,10 @@ export const upwardScrollFixSystem = u.system(
              return itemCount * (defaultItemSize + gap)
            }
            if (groupIndices.length === 0) {
@@ -3179,7 +3688,7 @@ index 7fc960c..b399109 100644
              return getItemOffset(offset)
            }
  
-@@ -217,5 +756,15 @@ export const upwardScrollFixSystem = u.system(
+@@ -217,5 +838,15 @@ export const upwardScrollFixSystem = u.system(
  
      return { deviation }
    },
@@ -3197,7 +3706,7 @@ index 7fc960c..b399109 100644
 +  )
  )
 diff --git a/packages/react-virtuoso/test/Virtuoso.test.tsx b/packages/react-virtuoso/test/Virtuoso.test.tsx
-index 9c97f74..9222307 100644
+index 9c97f74..cff5e79 100644
 --- a/packages/react-virtuoso/test/Virtuoso.test.tsx
 +++ b/packages/react-virtuoso/test/Virtuoso.test.tsx
 @@ -11,6 +11,17 @@ vi.mock('../src/hooks/useChangedChildSizes')
@@ -3218,7 +3727,7 @@ index 9c97f74..9222307 100644
  describe('Virtuoso', () => {
    let container: HTMLDivElement
    beforeEach(() => {
-@@ -24,6 +35,285 @@ describe('Virtuoso', () => {
+@@ -24,6 +35,475 @@ describe('Virtuoso', () => {
      container.remove()
    })
  
@@ -3373,6 +3882,123 @@ index 9c97f74..9222307 100644
 +    raf.mockRestore()
 +  })
 +
++  it('does not remove a connected current-formal row while the desired range moves past it', () => {
++    const resizeCallbacks: (() => void)[] = []
++    const frames: FrameRequestCallback[] = []
++    const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++      frames.push(callback)
++      return frames.length
++    })
++    const NativeResizeObserver = globalThis.ResizeObserver
++    globalThis.ResizeObserver = resizeObserverStub(resizeCallbacks)
++    const commits: { formalPreparing: number; total: number }[] = []
++    let capture = false
++    let data = ['a', 'b', 'c', 'd'].map((id) => ({ id, revision: 0 }))
++    const Item = ({
++      children,
++      context: _context,
++      item: _item,
++      ...props
++    }: React.HTMLAttributes<HTMLDivElement> & { context?: unknown; item?: unknown }) => {
++      const ref = React.useRef<HTMLDivElement>(null)
++      React.useLayoutEffect(() => {
++        if (!capture || !ref.current) {
++          return
++        }
++        const list = ref.current.parentElement!
++        const flow = [...list.children].filter((child) => (child as HTMLElement).style.position !== 'fixed') as HTMLElement[]
++        commits.push({
++          formalPreparing: list.querySelectorAll('[data-formal-preparing]').length,
++          total:
++            parseFloat(list.style.paddingTop || '0') +
++            flow.reduce((sum, child) => sum + Number(child.dataset.knownSize ?? '0'), 0) +
++            parseFloat(list.style.paddingBottom || '0'),
++        })
++      })
++      return (
++        <div {...props} ref={ref}>
++          {children}
++        </div>
++      )
++    }
++    const root = ReactDOM.createRoot(container)
++    act(() => {
++      root.render(
++        <Virtuoso
++          components={{ Item }}
++          computeItemKey={(index, item) => item?.id ?? String(index)}
++          computeItemMeasurementKey={(_index, item) => item?.revision}
++          data={data}
++          defaultItemHeight={471}
++          initialItemCount={4}
++          itemSize={() => 471}
++        />
++      )
++    })
++    const scroller = container.querySelector<HTMLElement>('[data-testid="virtuoso-scroller"]')! as any
++    const viewport = scroller.firstElementChild as any
++    const list = container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!
++    Object.defineProperty(list, 'clientWidth', { configurable: true, value: 800 })
++    for (const [index, row] of [...list.querySelectorAll<HTMLElement>('[data-item-index]')].entries()) {
++      row.getBoundingClientRect = () => ({ bottom: (index + 1) * 471.21875, top: index * 471.21875 }) as DOMRect
++    }
++    act(() => {
++      scroller.triggerScroll({ scrollHeight: 1884, scrollTop: 0, viewportHeight: 471 })
++      viewport.triggerResize({ getBoundingClientRect: () => ({ height: 471 }) })
++      ;(list as any).triggerChangedChildSizes([{ endIndex: 3, size: 471, startIndex: 0 }])
++      for (let count = 0; count < 10; count++) {
++        for (const callback of resizeCallbacks.splice(0)) {
++          callback()
++        }
++        while (frames.length) {
++          frames.shift()!(0)
++        }
++      }
++    })
++    act(() => {
++      scroller.triggerScroll({ scrollHeight: 1884, scrollTop: 1413, viewportHeight: 471 })
++      for (let count = 0; count < 10; count++) {
++        ;(list as any).triggerChangedChildSizes([])
++        for (const callback of resizeCallbacks.splice(0)) {
++          callback()
++        }
++        while (frames.length) {
++          frames.shift()!(0)
++        }
++      }
++    })
++
++    capture = true
++    data = [...data.map((item) => (item.id === 'd' ? { ...item, revision: 1 } : item)), { id: 'e', revision: 0 }]
++    act(() => {
++      root.render(
++        <Virtuoso
++          components={{ Item }}
++          computeItemKey={(index, item) => item?.id ?? String(index)}
++          computeItemMeasurementKey={(_index, item) => item?.revision}
++          data={data}
++          defaultItemHeight={471}
++          initialItemCount={4}
++          itemSize={() => 471}
++        />
++      )
++      viewport.triggerResize({ getBoundingClientRect: () => ({ height: 942 }) })
++      scroller.triggerScroll({ scrollHeight: 2355, scrollTop: 1413, viewportHeight: 942 })
++    })
++
++    expect(commits.length).toBeGreaterThan(0)
++    // Off-flow preparation may continue after B is formal. It must never
++    // remove an A flow row before B's padding assumes the same geometry.
++    expect(commits.some(({ formalPreparing }) => formalPreparing > 0)).toBe(true)
++    expect(
++      commits.every(({ total }) => total === 1884 || total === 2355),
++      JSON.stringify(commits)
++    ).toBe(true)
++    act(() => root.unmount())
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  })
++
 +  it('reports formal admission only after its matching DOM layout commit', () => {
 +    const resizeCallbacks: (() => void)[] = []
 +    const frames: FrameRequestCallback[] = []
@@ -3419,6 +4045,79 @@ index 9c97f74..9222307 100644
 +    act(() => root.unmount())
 +    globalThis.ResizeObserver = NativeResizeObserver
 +    raf.mockRestore()
++  })
++
++  it('does not restart settled formal admission when feedback rerenders the same initial target', () => {
++    const resizeCallbacks: (() => void)[] = []
++    const frames: FrameRequestCallback[] = []
++    const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++      frames.push(callback)
++      return frames.length
++    })
++    const NativeResizeObserver = globalThis.ResizeObserver
++    globalThis.ResizeObserver = resizeObserverStub(resizeCallbacks)
++    const states: { blocking: boolean; generation: number; phase: string; reason?: string }[] = []
++    let renders = 0
++    const Fixture = () => {
++      renders++
++      const previous = React.useRef<(typeof states)[number] | null>(null)
++      const [, setRevision] = React.useState(0)
++      const data = React.useMemo(() => Array.from({ length: 20 }, (_, index) => `row-${index}`), [])
++      const measurementKey = React.useCallback((_index: number, row: string) => row, [])
++      const itemSize = React.useCallback(() => 40, [])
++      const onFormalState = React.useCallback((state: (typeof states)[number]) => {
++        states.push(state)
++        if (
++          previous.current?.generation === state.generation &&
++          previous.current.phase === state.phase &&
++          previous.current.reason === state.reason &&
++          previous.current.blocking === state.blocking
++        ) {
++          return
++        }
++        previous.current = state
++        setRevision((value) => value + 1)
++      }, [])
++      return (
++        <Virtuoso
++          data={data}
++          computeItemMeasurementKey={measurementKey}
++          defaultItemHeight={40}
++          formalRangeStateChange={onFormalState}
++          initialTopMostItemIndex={{ align: 'end', index: 'LAST' }}
++          itemSize={itemSize}
++        />
++      )
++    }
++    const root = ReactDOM.createRoot(container)
++    try {
++      act(() => root.render(<Fixture />))
++      const scroller = container.querySelector<HTMLElement>('[data-testid="virtuoso-scroller"]')! as any
++      const viewport = scroller.firstElementChild as any
++      const list = container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!
++      Object.defineProperty(list, 'clientWidth', { configurable: true, value: 800 })
++      act(() => {
++        scroller.triggerScroll({ scrollHeight: 800, scrollTop: 380, viewportHeight: 420 })
++        viewport.triggerResize({ getBoundingClientRect: () => ({ height: 420 }) })
++        for (let count = 0; count < 10; count++) {
++          ;(list as any).triggerChangedChildSizes([])
++          for (const callback of resizeCallbacks.splice(0)) {
++            callback()
++          }
++          while (frames.length) {
++            frames.shift()!(0)
++          }
++        }
++      })
++      const ready = states.findLast((state) => state.phase === 'ready')
++      expect(ready).toBeDefined()
++      expect(states.some((state) => state.generation > ready!.generation)).toBe(false)
++      expect(renders).toBeLessThan(10)
++    } finally {
++      act(() => root.unmount())
++      globalThis.ResizeObserver = NativeResizeObserver
++      raf.mockRestore()
++    }
 +  })
 +
 +  it('reports duplicate measurement keys as a failed cold admission', () => {
@@ -3504,6 +4203,96 @@ index 9c97f74..9222307 100644
    it('renders a probe item initially', () => {
      act(() => {
        ReactDOM.createRoot(container).render(<Virtuoso totalCount={20000} />)
+diff --git a/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts b/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts
+new file mode 100644
+index 0000000..3579fd9
+--- /dev/null
++++ b/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts
+@@ -0,0 +1,84 @@
++import { describe, expect, it, vi } from 'vitest'
++
++import { measuredHistoryAdmission } from '../src/measuredHistoryAdmission'
++import { getValue } from '../src/urx'
++
++function fixture() {
++  const admit = vi.fn()
++  const fail = vi.fn()
++  const gate = measuredHistoryAdmission({ admit, fail, key: (_index, data) => data })
++  gate.request(['a', 'b'], 100)
++  admit.mockClear()
++  return { ...gate, admit, fail }
++}
++
++describe('real DOM history admission', () => {
++  it('keeps a transient zero-height resource retryable and admits its later real size', () => {
++    const gate = fixture()
++    gate.request(['x', 'a', 'b'], 99)
++    const token = getValue(gate.preparation)!
++    gate.observe(token, 800, [0])
++    expect(getValue(gate.preparation)).toBe(token)
++    expect(gate.admit).not.toHaveBeenCalled()
++    gate.observe(token, 800, [127])
++    expect(gate.admit).toHaveBeenCalledWith(['x', 'a', 'b'], 99, 3, [127])
++  })
++  it('does not admit prefix indexes or heights before exact DOM observation', () => {
++    const gate = fixture()
++    gate.request(['x', 'y', 'a', 'b'], 98)
++    expect(gate.admit).not.toHaveBeenCalled()
++    const token = getValue(gate.preparation)!
++    gate.observe(token, 800, [117, 309])
++    expect(gate.admit).toHaveBeenLastCalledWith(['x', 'y', 'a', 'b'], 98, 4, [117, 309])
++    expect(getValue(gate.preparation)).toBeNull()
++  })
++
++  it('prepares bounded live batches and atomically admits the exact full prefix', () => {
++    const gate = fixture()
++    const prefix = Array.from({ length: 35 }, (_, index) => `p${index}`)
++    gate.request([...prefix, 'a', 'b'], 65)
++    const first = getValue(gate.preparation)!
++    expect(first.start).toBe(3)
++    gate.observe(
++      first,
++      800,
++      Array.from({ length: 32 }, () => 100)
++    )
++    const second = getValue(gate.preparation)!
++    expect(second.start).toBe(0)
++    expect(second.end).toBe(3)
++    expect(gate.admit).not.toHaveBeenCalled()
++    gate.observe(
++      first,
++      800,
++      Array.from({ length: 32 }, () => 1)
++    )
++    expect(getValue(gate.preparation)).toBe(second)
++    gate.observe(second, 700, [90, 90, 90])
++    expect(getValue(gate.preparation)).toBeNull()
++    expect(gate.admit).toHaveBeenLastCalledWith([...prefix, 'a', 'b'], 65, 37, [
++      ...Array.from({ length: 3 }, () => 90),
++      ...Array.from({ length: 32 }, () => 100),
++    ])
++  })
++
++  it('does not freeze a non-prefix replacement in the history gate', () => {
++    const gate = fixture()
++    gate.request(['x', 'b', 'a'], 99)
++    expect(gate.fail).not.toHaveBeenCalled()
++    expect(gate.admit).toHaveBeenCalledWith(['x', 'b', 'a'], 99, 3)
++  })
++
++  it('prepares a data-less totalCount prepend in the same accepted source transaction', () => {
++    const admit = vi.fn()
++    const gate = measuredHistoryAdmission({ admit, fail: vi.fn(), key: (index) => index })
++    gate.request(undefined, 100, 2)
++    admit.mockClear()
++    gate.request(undefined, 98, 4)
++    const token = getValue(gate.preparation)!
++    expect(token).toMatchObject({ firstItemIndex: 98, start: 0, end: 2, totalCount: 4 })
++    expect(admit).not.toHaveBeenCalled()
++    gate.observe(token, 800, [81, 93])
++    expect(admit).toHaveBeenCalledWith(undefined, 98, 4, [81, 93])
++  })
++})
 diff --git a/packages/react-virtuoso/test/scrollToIndexSystem.test.ts b/packages/react-virtuoso/test/scrollToIndexSystem.test.ts
 index fbf23a5..010d321 100644
 --- a/packages/react-virtuoso/test/scrollToIndexSystem.test.ts
@@ -3643,7 +4432,7 @@ index a77544b..c5e0980 100644
  describe.only('benchmarks', () => {
    const COUNT = 20000
 diff --git a/packages/react-virtuoso/test/upwardScrollFixSystem.test.ts b/packages/react-virtuoso/test/upwardScrollFixSystem.test.ts
-index 280c1b2..0e83b47 100644
+index 280c1b2..3326620 100644
 --- a/packages/react-virtuoso/test/upwardScrollFixSystem.test.ts
 +++ b/packages/react-virtuoso/test/upwardScrollFixSystem.test.ts
 @@ -1,10 +1,11 @@
@@ -3653,17 +4442,293 @@ index 280c1b2..0e83b47 100644
 +import { listSystem } from '../src/listSystem'
  import { recalcSystem } from '../src/recalcSystem'
  import { sizeSystem } from '../src/sizeSystem'
- import { upwardScrollFixSystem } from '../src/upwardScrollFixSystem'
+-import { upwardScrollFixSystem } from '../src/upwardScrollFixSystem'
 -import { init, publish, subscribe, system, tup } from '../src/urx'
++import { isConnectedLiveShrink, passiveLayoutGeometryMatches, upwardScrollFixSystem } from '../src/upwardScrollFixSystem'
 +import { getValue, init, publish, subscribe, system, tup } from '../src/urx'
  
  const testSystem = system(
    ([upward, dom, size, recalc]) => ({ ...upward, ...dom, ...size, ...recalc }),
-@@ -15,6 +16,399 @@ const ITEM_SIZE = 30
+@@ -15,6 +16,674 @@ const ITEM_SIZE = 30
  const UNSHIFTED = 10
  const EXPECTED_OFFSET = ITEM_SIZE * UNSHIFTED
  
 +describe('ordinary physical measurement batch', () => {
++  it('does not replay legacy total-height compensation for a connected live shrink', () => {
++    const engine = init(system(([list, size, recalc]) => ({ ...list, ...size, ...recalc }), tup(listSystem, sizeSystem, recalcSystem)))
++    publish(engine.log, vi.fn())
++    publish(engine.viewportHeight, 485)
++    publish(engine.totalCount, 21)
++    publish(engine.sizeRanges, [
++      { startIndex: 0, endIndex: 19, size: 179 },
++      { startIndex: 20, endIndex: 20, size: 3903 },
++    ])
++    publish(engine.propsReady, true)
++    publish(engine.initialItemFinalLocationReached, true)
++    let nativeTop = 6825
++    publish(engine.scrollTop, nativeTop)
++    const host = document.createElement('div')
++    const row = document.createElement('div')
++    row.dataset.itemIndex = '20'
++    host.append(row)
++    document.body.append(host)
++    let rowTop = -3207
++    let rowHeight = 3903
++    row.getBoundingClientRect = () => ({ bottom: rowTop + rowHeight, top: rowTop }) as DOMRect
++    publish(engine.listLayoutCommitted, {
++      clientHeight: 485,
++      deviation: 0,
++      host,
++      items: [{ bottom: rowTop + rowHeight, data: undefined, element: row, index: 20, key: 'tail', originalIndex: 20, top: rowTop }],
++      listState: getValue(engine.listState),
++      maxScrollTop: 7084,
++      nativeScrollTop: nativeTop,
++      readScrollTop: () => nativeTop,
++    })
++    const writes: number[] = []
++    subscribe(engine.scrollBy, ({ top = 0 }) => {
++      writes.push(top)
++      nativeTop += top
++    })
++    nativeTop = 3763
++    rowTop = -143
++    rowHeight = 507
++    publish(engine.scrollTop, nativeTop)
++    publish(engine.domSizeObservation, {
++      listState: getValue(engine.listState),
++      observedIndexes: [20],
++      ranges: [{ startIndex: 20, endIndex: 20, size: rowHeight }],
++      layout: {
++        clientHeight: 485,
++        host,
++        inlineSize: 800,
++        items: [{ bottom: rowTop + rowHeight, element: row, key: 'tail', originalIndex: 20, top: rowTop }],
++        maxScrollTop: 3765,
++        readScrollTop: () => nativeTop,
++        scrollTop: nativeTop,
++      },
++    })
++    expect(writes).toEqual([])
++    host.remove()
++  })
++
++  it('retains a connected baseline when fractional row geometry only drifts cumulatively', () => {
++    const engine = init(system(([list, size, recalc]) => ({ ...list, ...size, ...recalc }), tup(listSystem, sizeSystem, recalcSystem)))
++    publish(engine.log, vi.fn())
++    publish(engine.viewportHeight, 485)
++    publish(engine.totalCount, 21)
++    publish(engine.sizeRanges, [
++      { startIndex: 0, endIndex: 19, size: 179 },
++      { startIndex: 20, endIndex: 20, size: 207 },
++    ])
++    publish(engine.propsReady, true)
++    publish(engine.initialItemFinalLocationReached, true)
++    let nativeTop = 3389
++    publish(engine.scrollTop, nativeTop)
++    const host = document.createElement('div')
++    const rows = Array.from({ length: 8 }, (_, offset) => {
++      const element = document.createElement('div')
++      element.dataset.itemIndex = String(13 + offset)
++      host.append(element)
++      return element
++    })
++    document.body.append(host)
++    const state = getValue(engine.listState)
++    const emptyLayout = {
++      clientHeight: 485,
++      deviation: 0,
++      host,
++      items: [],
++      listState: state,
++      maxScrollTop: nativeTop,
++      nativeScrollTop: nativeTop,
++      readScrollTop: () => nativeTop,
++    }
++    publish(engine.listLayoutCommitted, emptyLayout)
++    let tops = rows.map((_, offset) => offset * 179.1875)
++    const heights: number[] = rows.map((_, offset) => (offset === rows.length - 1 ? 207.09375 : 179.1875))
++    rows.forEach((element, offset) => {
++      element.getBoundingClientRect = () => ({ bottom: tops[offset]! + heights[offset]!, top: tops[offset] }) as DOMRect
++    })
++    const committedItems = rows.map((element, offset) => ({
++      bottom: tops[offset]! + heights[offset]!,
++      data: undefined,
++      element,
++      index: 13 + offset,
++      key: `row-${13 + offset}`,
++      originalIndex: 13 + offset,
++      top: tops[offset]!,
++    }))
++    const fractionalLayout = {
++      clientHeight: 485,
++      deviation: 0,
++      host,
++      items: committedItems,
++      listState: state,
++      maxScrollTop: nativeTop,
++      nativeScrollTop: nativeTop,
++      readScrollTop: () => nativeTop,
++    }
++    const authorityLayout = {
++      ...fractionalLayout,
++      listState: {
++        ...state,
++        items: rows.map((_, offset) => ({
++          index: 13 + offset,
++          offset: offset * 179,
++          originalIndex: 13 + offset,
++          size: offset === rows.length - 1 ? 207 : 179,
++        })),
++      },
++    }
++    expect(passiveLayoutGeometryMatches(authorityLayout, emptyLayout)).toBe(true)
++    publish(engine.listLayoutCommitted, fractionalLayout)
++    const writes: number[] = []
++    subscribe(engine.scrollBy, ({ top = 0 }) => writes.push(top))
++    nativeTop = 3380
++    publish(engine.scrollTop, nativeTop)
++    tops = tops.map((value) => value + 9)
++    heights[heights.length - 1] = 198.09375
++    publish(engine.domSizeObservation, {
++      listState: state,
++      observedIndexes: [20],
++      ranges: [{ startIndex: 20, endIndex: 20, size: 198 }],
++      layout: {
++        clientHeight: 485,
++        host,
++        inlineSize: 800,
++        items: rows.map((element, offset) => ({
++          bottom: tops[offset]! + heights[offset]!,
++          element,
++          key: `row-${13 + offset}`,
++          originalIndex: 13 + offset,
++          top: tops[offset]!,
++        })),
++        maxScrollTop: nativeTop,
++        readScrollTop: () => nativeTop,
++        scrollTop: nativeTop,
++      },
++    })
++    expect(writes).toEqual([])
++    host.remove()
++  })
++
++  it('does not classify first measurement or growth as a connected live shrink', () => {
++    const host = document.createElement('div')
++    const row = document.createElement('div')
++    host.append(row)
++    const baseline = {
++      clientHeight: 485,
++      deviation: 0,
++      host,
++      items: [{ bottom: 507, data: undefined, element: row, index: 20, key: 'tail', originalIndex: 20, top: 0 }],
++      listState: {
++        bottom: 507,
++        firstItemIndex: 0,
++        items: [],
++        offsetBottom: 0,
++        offsetTop: 0,
++        top: 0,
++        topItems: [],
++        topListHeight: 0,
++        totalCount: 21,
++      },
++      maxScrollTop: 0,
++      nativeScrollTop: 0,
++      readScrollTop: () => 0,
++    }
++    const observation = (size: number) => ({
++      observedIndexes: [20],
++      ranges: [{ endIndex: 20, size, startIndex: 20 }],
++      layout: {
++        clientHeight: 485,
++        host,
++        inlineSize: 800,
++        items: [{ bottom: size, element: row, originalIndex: 20, top: 0 }],
++        maxScrollTop: 0,
++        readScrollTop: () => 0,
++        scrollTop: 0,
++      },
++    })
++    expect(isConnectedLiveShrink(observation(507), baseline)).toBe(false)
++    expect(isConnectedLiveShrink(observation(600), baseline)).toBe(false)
++    expect(isConnectedLiveShrink(observation(400), baseline)).toBe(true)
++  })
++
++  it.each([
++    { expectedToggleTop: 366, expectedWrites: [3027], totalCount: 6 },
++    { expectedToggleTop: 3393, expectedWrites: [], totalCount: 7 },
++  ])(
++    'uses footer coverage only when the focused expanding row is the formal tail: $totalCount items',
++    ({ expectedToggleTop, expectedWrites, totalCount }) => {
++      const engine = init(system(([list, size, recalc]) => ({ ...list, ...size, ...recalc }), tup(listSystem, sizeSystem, recalcSystem)))
++      publish(engine.log, vi.fn())
++      publish(engine.viewportHeight, 485)
++      publish(engine.footerHeight, 48)
++      publish(engine.totalCount, totalCount)
++      publish(engine.sizeRanges, [
++        { startIndex: 0, endIndex: 4, size: 100 },
++        { startIndex: 5, endIndex: 5, size: 507 },
++      ])
++      publish(engine.propsReady, true)
++      publish(engine.initialItemFinalLocationReached, true)
++      let nativeTop = 522
++      publish(engine.scrollTop, nativeTop)
++      const host = document.createElement('div')
++      const row = document.createElement('div')
++      const toggle = document.createElement('button')
++      row.dataset.itemIndex = '5'
++      row.append(toggle)
++      host.append(row)
++      document.body.append(host)
++      let rowTop = -69
++      let rowHeight = 507
++      let toggleTop = 366
++      row.getBoundingClientRect = () => ({ bottom: rowTop + rowHeight, top: rowTop }) as DOMRect
++      toggle.getBoundingClientRect = () => ({ bottom: toggleTop + 26, top: toggleTop }) as DOMRect
++      const baselineState = getValue(engine.listState)
++      publish(engine.listLayoutCommitted, {
++        clientHeight: 485,
++        deviation: 0,
++        host,
++        items: [{ bottom: rowTop + rowHeight, data: undefined, element: row, index: 5, key: 'tail', originalIndex: 5, top: rowTop }],
++        listState: baselineState,
++        maxScrollTop: nativeTop,
++        nativeScrollTop: nativeTop,
++        readScrollTop: () => nativeTop,
++      })
++      toggle.focus()
++      publish(engine.listFocusAnchor, { bottom: toggleTop + 26, element: toggle, host, top: toggleTop })
++      const writes: number[] = []
++      subscribe(engine.scrollBy, ({ top = 0 }) => {
++        writes.push(top)
++        nativeTop += top
++        rowTop -= top
++        toggleTop -= top
++      })
++      rowHeight = 3534
++      toggleTop = 3393
++      publish(engine.domSizeObservation, {
++        listState: baselineState,
++        observedIndexes: [5],
++        ranges: [{ startIndex: 5, endIndex: 5, size: rowHeight }],
++        layout: {
++          clientHeight: 485,
++          host,
++          inlineSize: 800,
++          items: [{ bottom: rowTop + rowHeight, element: row, key: 'tail', originalIndex: 5, top: rowTop }],
++          maxScrollTop: 3549,
++          readScrollTop: () => nativeTop,
++          scrollTop: nativeTop,
++        },
++      })
++      expect(writes).toEqual(expectedWrites)
++      expect(toggleTop).toBe(expectedToggleTop)
++      expect(document.activeElement).toBe(toggle)
++      host.remove()
++    }
++  )
++
 +  it('anchors the first stable row after a boundary row grows', () => {
 +    const engine = init(system(([list, size, recalc]) => ({ ...list, ...size, ...recalc }), tup(listSystem, sizeSystem, recalcSystem)))
 +    publish(engine.log, vi.fn())
@@ -4059,294 +5124,12 @@ index 280c1b2..0e83b47 100644
  function setup() {
    const s = init(testSystem)
    // establish a default item size, so the unshift offset is computable
-diff --git a/FUTURE_RANGE_CANDIDATE6.md b/FUTURE_RANGE_CANDIDATE6.md
-new file mode 100644
-index 0000000..7545c30
---- /dev/null
-+++ b/FUTURE_RANGE_CANDIDATE6.md
-@@ -0,0 +1,63 @@
-+# Candidate 6: bounded prepend measurement ownership
-+
-+Historical design record: the negative-deviation/two-phase proposal below was
-+rejected and is **not the current implementation**. It is retained as failure
-+history. Current mechanism and validation state are recorded in
-+`/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/audit-output/virtuoso-physical-anchor-20260918/IMPLEMENTATION.md`.
-+
-+Base: `react-virtuoso@4.18.13` (`ebd6b0f0ff41e1fe003a50fe47b168b3ed698868`).
-+
-+This is an isolated experiment. It does not modify an application dependency.
-+
-+## State
-+
-+- `idle`: DOM measurements use the original resize path.
-+- `owned(generation, pendingIndexes)`: entered only by `unshiftWith(count)` while
-+  the initial item location is complete and no explicit/follow scroll is in
-+  progress. The generation owns the newly prepended original indexes which
-+  have not yet been observed in the DOM.
-+- `prepared`: one DOM observation contains a changed pending index above the
-+  current semantic anchor. Ordinary upward correction is held before applying
-+  that size batch.
-+- `awaiting-render-commit`: the new size tree has produced a future range that
-+  contains the exact anchor data identity at its prior viewport offset. A
-+  layout-effect acknowledgement of that exact `ListState` authorizes the
-+  matching scroll and consumes the measured indexes.
-+
-+Equal-size DOM observations consume pending ownership without a scroll. A
-+later resize of that row is ordinary. A new prepend shifts still-pending
-+indexes and adds the new prefix. Front removal, initial/explicit positioning,
-+or reverse input cancels the unpublished pair. Measurement ownership is not a
-+permanent numeric prefix boundary.
-+
-+## Required gates
-+
-+1. Initial and explicit positioning must never enter `owned`/`prepared` and
-+   must retain the tag's original visibility and scroll liveness.
-+2. A compensation cannot precede the exact future `ListState` layout commit.
-+3. Every sampled paint must preserve the pre-write semantic anchor until a
-+   later trusted input.
-+4. Repeated RO batches update one generation; equal-size observations retire
-+   ownership; non-owned media/body resizes remain on the original path.
-+
-+## Candidate 6c physical handoff
-+
-+`ListState` and `deviation` values are not physical layout acknowledgements.
-+Candidate 6b proved this: the exact state tuple committed, but the first native
-+write still replaced the semantic anchor by exactly the write delta. The next
-+revision therefore uses this state table:
-+
-+| phase | native scroll owner | range coordinate owner | renderer obligation | exit |
-+| --- | --- | --- | --- | --- |
-+| `idle` | browser/user/ordinary Virtuoso | native `scrollTop` | none | exact `unshiftWith` may open ownership |
-+| `awaiting-negative-layout` | browser remains at frozen `S` | native `S` plus `deviation=-d` | connected exact anchor DOM node at frozen viewport offset; native scroll still `S` | physical ack -> clearing; native change/reverse/explicit -> cancel |
-+| `awaiting-clear-layout` | browser still remains at frozen `S` | private range override `S+d`, never the public/native scroll stream | `deviation=0`; connected exact anchor DOM node at frozen offset `+d`; actual row rects shifted by `-d` cover the future viewport | physical ack -> one native `scrollBy(d)`; mismatch/input -> cancel |
-+| `written` | browser at the synchronously written position | native `scrollTop` after the write | no pending renderer obligation | consume exact measured indexes and retire |
-+
-+The range override belongs only to `sizeRangeSystem`. It must never publish a
-+fake native/stateful `scrollTop`, and native scroll events cannot overwrite it.
-+At the final physical acknowledgement the native write happens first, then the
-+real `scrollTop=S+d` is published, then the range override is cleared. The
-+second phase does not require the first phase's `ListState` object: clearing
-+deviation can legitimately produce a new state, and that exact new render is
-+measured. If it never commits, no native write is authorized.
-diff --git a/packages/react-virtuoso/src/measuredHistoryAdmission.ts b/packages/react-virtuoso/src/measuredHistoryAdmission.ts
-new file mode 100644
-index 0000000..663eb45
---- /dev/null
-+++ b/packages/react-virtuoso/src/measuredHistoryAdmission.ts
-@@ -0,0 +1,117 @@
-+import * as u from './urx'
-+
-+import type { Data } from './sizeSystem'
-+
-+export interface HistoryPreparation {
-+  data: readonly unknown[] | undefined
-+  firstItemIndex: number
-+  generation: number
-+  prefixCount: number
-+  start: number
-+  end: number
-+  totalCount: number
-+}
-+
-+/** Private admission gate: requested history is not list geometry until measured. */
-+export function measuredHistoryAdmission(options: {
-+  admit: (data: Data, firstItemIndex: number, totalCount: number, prefixSizes?: readonly number[]) => void
-+  key: (index: number, data: unknown) => unknown
-+  fail: (reason: string) => void
-+  enabled?: () => boolean
-+}) {
-+  const preparation = u.statefulStream<HistoryPreparation | null>(null)
-+  let acceptedData: Data
-+  let acceptedFirst = 0
-+  let acceptedTotalCount = 0
-+  let generation = 0
-+  let pendingPrefixSizes: number[] | null = null
-+
-+  function request(data: Data, firstItemIndex: number, totalCount = data?.length ?? 0) {
-+    const active = u.getValue(preparation)
-+    if (active && active.data === data && active.firstItemIndex === firstItemIndex && active.totalCount === totalCount) {
-+      return
-+    }
-+    if (acceptedData === data && acceptedFirst === firstItemIndex && acceptedTotalCount === totalCount && active === null) {
-+      return
-+    }
-+    generation++
-+    const prefixCount = acceptedFirst - firstItemIndex
-+    if (options.enabled?.() !== false && acceptedTotalCount > 0 && prefixCount > 0) {
-+      const suffixMatches =
-+        acceptedData !== undefined && data !== undefined
-+          ? data.length >= acceptedData.length + prefixCount &&
-+            acceptedData.every(
-+              (item, index) => options.key(acceptedFirst + index, item) === options.key(acceptedFirst + index, data[prefixCount + index])
-+            )
-+          : acceptedData === undefined && data === undefined && totalCount === acceptedTotalCount + prefixCount
-+      if (!suffixMatches) {
-+        u.publish(preparation, null)
-+        pendingPrefixSizes = null
-+        acceptedData = data
-+        acceptedFirst = firstItemIndex
-+        acceptedTotalCount = totalCount
-+        // A replacement/rebase is not a history-prefix insertion. Preserve its
-+        // existing public behavior rather than freezing the requested data.
-+        options.admit(data, firstItemIndex, totalCount)
-+        return
-+      }
-+      pendingPrefixSizes = Array.from({ length: prefixCount }, () => 0)
-+      u.publish(preparation, {
-+        data,
-+        firstItemIndex,
-+        generation,
-+        prefixCount,
-+        start: Math.max(0, prefixCount - 32),
-+        end: prefixCount,
-+        totalCount,
-+      })
-+      return
-+    }
-+    u.publish(preparation, null)
-+    pendingPrefixSizes = null
-+    acceptedData = data
-+    acceptedFirst = firstItemIndex
-+    acceptedTotalCount = totalCount
-+    options.admit(data, firstItemIndex, totalCount)
-+  }
-+
-+  function observe(token: HistoryPreparation, inlineSize: number, heights: readonly number[]) {
-+    if (u.getValue(preparation) !== token) {
-+      return
-+    }
-+    if (!(inlineSize > 0) || heights.some((size) => size === 0)) {
-+      // No invented placeholder size: keep the request and let its live row
-+      // ResizeObservers retry when a zero-sized resource obtains dimensions.
-+      return
-+    }
-+    if (heights.length !== token.end - token.start || heights.some((size) => !Number.isFinite(size) || size < 0)) {
-+      options.fail('Measured history received invalid live DOM dimensions')
-+      return
-+    }
-+    if (pendingPrefixSizes === null || pendingPrefixSizes.length !== token.prefixCount) {
-+      options.fail('Measured history lost its preparation generation')
-+      return
-+    }
-+    heights.forEach((height, index) => {
-+      pendingPrefixSizes![token.start + index] = height
-+    })
-+    if (token.start > 0) {
-+      u.publish(preparation, {
-+        ...token,
-+        generation: ++generation,
-+        start: Math.max(0, token.start - 32),
-+        end: token.start,
-+      })
-+      return
-+    }
-+    const prefixSizes = pendingPrefixSizes
-+    pendingPrefixSizes = null
-+    acceptedData = token.data
-+    acceptedFirst = token.firstItemIndex
-+    acceptedTotalCount = token.totalCount
-+    options.admit(acceptedData, acceptedFirst, acceptedTotalCount, prefixSizes)
-+    u.publish(preparation, null)
-+  }
-+
-+  return { observe, preparation, request }
-+}
-diff --git a/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts b/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts
-new file mode 100644
-index 0000000..3579fd9
---- /dev/null
-+++ b/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts
-@@ -0,0 +1,84 @@
-+import { describe, expect, it, vi } from 'vitest'
-+
-+import { measuredHistoryAdmission } from '../src/measuredHistoryAdmission'
-+import { getValue } from '../src/urx'
-+
-+function fixture() {
-+  const admit = vi.fn()
-+  const fail = vi.fn()
-+  const gate = measuredHistoryAdmission({ admit, fail, key: (_index, data) => data })
-+  gate.request(['a', 'b'], 100)
-+  admit.mockClear()
-+  return { ...gate, admit, fail }
-+}
-+
-+describe('real DOM history admission', () => {
-+  it('keeps a transient zero-height resource retryable and admits its later real size', () => {
-+    const gate = fixture()
-+    gate.request(['x', 'a', 'b'], 99)
-+    const token = getValue(gate.preparation)!
-+    gate.observe(token, 800, [0])
-+    expect(getValue(gate.preparation)).toBe(token)
-+    expect(gate.admit).not.toHaveBeenCalled()
-+    gate.observe(token, 800, [127])
-+    expect(gate.admit).toHaveBeenCalledWith(['x', 'a', 'b'], 99, 3, [127])
-+  })
-+  it('does not admit prefix indexes or heights before exact DOM observation', () => {
-+    const gate = fixture()
-+    gate.request(['x', 'y', 'a', 'b'], 98)
-+    expect(gate.admit).not.toHaveBeenCalled()
-+    const token = getValue(gate.preparation)!
-+    gate.observe(token, 800, [117, 309])
-+    expect(gate.admit).toHaveBeenLastCalledWith(['x', 'y', 'a', 'b'], 98, 4, [117, 309])
-+    expect(getValue(gate.preparation)).toBeNull()
-+  })
-+
-+  it('prepares bounded live batches and atomically admits the exact full prefix', () => {
-+    const gate = fixture()
-+    const prefix = Array.from({ length: 35 }, (_, index) => `p${index}`)
-+    gate.request([...prefix, 'a', 'b'], 65)
-+    const first = getValue(gate.preparation)!
-+    expect(first.start).toBe(3)
-+    gate.observe(
-+      first,
-+      800,
-+      Array.from({ length: 32 }, () => 100)
-+    )
-+    const second = getValue(gate.preparation)!
-+    expect(second.start).toBe(0)
-+    expect(second.end).toBe(3)
-+    expect(gate.admit).not.toHaveBeenCalled()
-+    gate.observe(
-+      first,
-+      800,
-+      Array.from({ length: 32 }, () => 1)
-+    )
-+    expect(getValue(gate.preparation)).toBe(second)
-+    gate.observe(second, 700, [90, 90, 90])
-+    expect(getValue(gate.preparation)).toBeNull()
-+    expect(gate.admit).toHaveBeenLastCalledWith([...prefix, 'a', 'b'], 65, 37, [
-+      ...Array.from({ length: 3 }, () => 90),
-+      ...Array.from({ length: 32 }, () => 100),
-+    ])
-+  })
-+
-+  it('does not freeze a non-prefix replacement in the history gate', () => {
-+    const gate = fixture()
-+    gate.request(['x', 'b', 'a'], 99)
-+    expect(gate.fail).not.toHaveBeenCalled()
-+    expect(gate.admit).toHaveBeenCalledWith(['x', 'b', 'a'], 99, 3)
-+  })
-+
-+  it('prepares a data-less totalCount prepend in the same accepted source transaction', () => {
-+    const admit = vi.fn()
-+    const gate = measuredHistoryAdmission({ admit, fail: vi.fn(), key: (index) => index })
-+    gate.request(undefined, 100, 2)
-+    admit.mockClear()
-+    gate.request(undefined, 98, 4)
-+    const token = getValue(gate.preparation)!
-+    expect(token).toMatchObject({ firstItemIndex: 98, start: 0, end: 2, totalCount: 4 })
-+    expect(admit).not.toHaveBeenCalled()
-+    gate.observe(token, 800, [81, 93])
-+    expect(admit).toHaveBeenCalledWith(undefined, 98, 4, [81, 93])
-+  })
-+})
 diff --git a/packages/react-virtuoso/test/useSize.test.tsx b/packages/react-virtuoso/test/useSize.test.tsx
 new file mode 100644
-index 0000000..09b8879
+index 0000000..17c9a87
 --- /dev/null
 +++ b/packages/react-virtuoso/test/useSize.test.tsx
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,317 @@
 +import { act } from 'react'
 +
 +import ReactDOM from 'react-dom/client'
@@ -4355,16 +5138,18 @@ index 0000000..09b8879
 +import useChangedListContentsSizes from '../src/hooks/useChangedChildSizes'
 +import { useSizeWithElRef } from '../src/hooks/useSize'
 +
++import type { ChildSizeObservation } from '../src/hooks/useChangedChildSizes'
++
 +;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 +
-+function resizeObserverStub(callbacks: ResizeObserverCallback[]) {
++function resizeObserverStub(callbacks: ResizeObserverCallback[], observe = vi.fn(), unobserve = vi.fn()) {
 +  return class {
 +    constructor(callback: ResizeObserverCallback) {
 +      callbacks.push(callback)
 +    }
 +    disconnect() {}
-+    observe() {}
-+    unobserve() {}
++    observe = observe
++    unobserve = unobserve
 +  } as unknown as typeof ResizeObserver
 +}
 +
@@ -4406,6 +5191,166 @@ index 0000000..09b8879
 +      await Promise.resolve()
 +    })
 +    expect(callback).toHaveBeenCalledTimes(2)
++    expect(frames).toHaveLength(0)
++  } finally {
++    act(() => root.unmount())
++    container.remove()
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  }
++})
++
++it('drops queued same-host delivery after its observer generation is replaced', async () => {
++  const callbacks: ResizeObserverCallback[] = []
++  const frames: FrameRequestCallback[] = []
++  const NativeResizeObserver = globalThis.ResizeObserver
++  const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++    frames.push(callback)
++    return frames.length
++  })
++  globalThis.ResizeObserver = resizeObserverStub(callbacks)
++  const firstCallback = vi.fn()
++  const nextCallback = vi.fn()
++  const container = document.createElement('div')
++  document.body.append(container)
++  const root = ReactDOM.createRoot(container)
++
++  function Subject({ callback }: { callback: (element: HTMLElement) => void }) {
++    const { callbackRef } = useSizeWithElRef(callback, true, false, () => true)
++    return <div ref={callbackRef} />
++  }
++
++  try {
++    act(() => root.render(<Subject callback={firstCallback} />))
++    const element = container.firstElementChild as HTMLElement
++    Object.defineProperty(element, 'offsetParent', { configurable: true, value: container })
++    const entry = { target: element } as unknown as ResizeObserverEntry
++
++    callbacks[0]!([entry], {} as ResizeObserver)
++    act(() => root.render(<Subject callback={nextCallback} />))
++    expect(callbacks).toHaveLength(1)
++    await act(async () => {
++      await Promise.resolve()
++    })
++    expect(firstCallback).not.toHaveBeenCalled()
++    expect(nextCallback).not.toHaveBeenCalled()
++    expect(frames).toHaveLength(1)
++    act(() => frames.shift()!(0))
++    expect(nextCallback).toHaveBeenCalledTimes(1)
++    expect(frames).toHaveLength(0)
++  } finally {
++    act(() => root.unmount())
++    container.remove()
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  }
++})
++
++it('keeps the native observer attached when only its callback revision changes', () => {
++  const callbacks: ResizeObserverCallback[] = []
++  const observe = vi.fn()
++  const unobserve = vi.fn()
++  const NativeResizeObserver = globalThis.ResizeObserver
++  globalThis.ResizeObserver = resizeObserverStub(callbacks, observe, unobserve)
++  const firstCallback = vi.fn()
++  const nextCallback = vi.fn()
++  const container = document.createElement('div')
++  document.body.append(container)
++  const root = ReactDOM.createRoot(container)
++
++  function Subject({ callback }: { callback: (element: HTMLElement) => void }) {
++    const { callbackRef } = useSizeWithElRef(callback, true, false)
++    return <div ref={callbackRef} />
++  }
++
++  try {
++    act(() => root.render(<Subject callback={firstCallback} />))
++    const element = container.firstElementChild
++    expect(callbacks).toHaveLength(1)
++    expect(observe).toHaveBeenCalledTimes(1)
++    expect(observe).toHaveBeenLastCalledWith(element)
++
++    act(() => root.render(<Subject callback={nextCallback} />))
++    expect(container.firstElementChild).toBe(element)
++    expect(callbacks).toHaveLength(1)
++    expect(observe).toHaveBeenCalledTimes(1)
++    expect(unobserve).not.toHaveBeenCalled()
++  } finally {
++    act(() => root.unmount())
++    container.remove()
++    globalThis.ResizeObserver = NativeResizeObserver
++  }
++})
++
++it('drops the cached list observation when the same host is rebound to a new callback', async () => {
++  const callbacks: ResizeObserverCallback[] = []
++  const frames: FrameRequestCallback[] = []
++  const NativeResizeObserver = globalThis.ResizeObserver
++  const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++    frames.push(callback)
++    return frames.length
++  })
++  globalThis.ResizeObserver = resizeObserverStub(callbacks)
++  const firstCallback = vi.fn()
++  const nextCallback = vi.fn()
++  const container = document.createElement('div')
++  document.body.append(container)
++  const root = ReactDOM.createRoot(container)
++  let actualSize = 120
++
++  function Subject({ callback }: { callback: (observation: ChildSizeObservation) => void }) {
++    const { callbackRef } = useChangedListContentsSizes(
++      callback,
++      () => actualSize,
++      true,
++      vi.fn(),
++      vi.fn(),
++      undefined,
++      undefined,
++      false,
++      false,
++      undefined,
++      true
++    )
++    return (
++      <div data-virtuoso-scroller>
++        <div ref={callbackRef}>
++          <div data-index="0" data-known-size="100" />
++        </div>
++      </div>
++    )
++  }
++
++  try {
++    act(() => root.render(<Subject callback={firstCallback} />))
++    const host = container.querySelector<HTMLElement>('[data-virtuoso-scroller] > div')!
++    Object.defineProperty(host, 'offsetParent', { configurable: true, value: container })
++    const entry = { target: host } as unknown as ResizeObserverEntry
++
++    callbacks[0]!([entry], {} as ResizeObserver)
++    act(() => root.render(<Subject callback={nextCallback} />))
++    expect(container.querySelector<HTMLElement>('[data-virtuoso-scroller] > div')).toBe(host)
++    await act(() => Promise.resolve())
++    expect(firstCallback).not.toHaveBeenCalled()
++    expect(nextCallback).not.toHaveBeenCalled()
++    expect(frames).toHaveLength(1)
++    act(() => frames.shift()!(0))
++    expect(nextCallback).toHaveBeenLastCalledWith(expect.objectContaining({ ranges: [{ endIndex: 0, size: 120, startIndex: 0 }] }))
++
++    actualSize = 100
++    nextCallback.mockClear()
++    act(() => callbacks.at(-1)!([entry], {} as ResizeObserver))
++    expect(frames).toHaveLength(1)
++    act(() => frames.shift()!(0))
++    expect(nextCallback).toHaveBeenLastCalledWith(expect.objectContaining({ ranges: [] }))
++
++    nextCallback.mockClear()
++    actualSize = 140
++    await act(async () => {
++      callbacks.at(-1)!([entry], {} as ResizeObserver)
++      await Promise.resolve()
++    })
++    expect(nextCallback).toHaveBeenCalledWith(expect.objectContaining({ ranges: [{ endIndex: 0, size: 140, startIndex: 0 }] }))
 +    expect(frames).toHaveLength(0)
 +  } finally {
 +    act(() => root.unmount())
@@ -4475,6 +5420,15 @@ index 0000000..09b8879
 +    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ ranges: [{ endIndex: 0, size: 120, startIndex: 0 }] }))
 +    expect(frames).toHaveLength(0)
 +
++    changed.mockClear()
++    actualSize = 80
++    act(() => callbacks[0]!([entry], {} as ResizeObserver))
++    expect(changed).not.toHaveBeenCalled()
++    expect(frames).toHaveLength(1)
++    act(() => frames.shift()!(0))
++    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ ranges: [{ endIndex: 0, size: 80, startIndex: 0 }] }))
++
++    actualSize = 100
 +    for (const excludedAttribute of ['formalPreparing', 'historyPreparing', 'historyRetained'] as const) {
 +      changed.mockClear()
 +      child.dataset[excludedAttribute] = '1'
@@ -4493,3 +5447,6 @@ index 0000000..09b8879
 +    raf.mockRestore()
 +  }
 +})
+-- 
+2.43.0
+
