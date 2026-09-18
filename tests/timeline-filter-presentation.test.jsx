@@ -258,6 +258,39 @@ it('断线本地首批无匹配行时继续读取更深 IndexedDB 语义供给',
   expect(await screen.findByText('正在查找符合筛选的往来…')).toBeTruthy();
 });
 
+it('频道新鲜度失败显示其真实错误并由重试按钮续同一 sync obligation', async () => {
+  const state = timelineState([]);
+  const request = vi.fn();
+  const refreshLatest = vi.fn(async () => true);
+  render(<Timeline
+    state={state}
+    history={{
+      request,
+      refreshLatest,
+      status: {
+        attached: true, generation: 8, messageCurrent: false, headSeq: 90,
+        localReplicaReady: true, loading: false, hasOlder: true, completedPages: 1,
+        presentationRevision: state._timelineRevision,
+        sync: {
+          interestRevision: 2, fulfilledRevision: 1, targetHead: 90,
+          error: '频道新鲜度响应超时', retryAt: Date.now() + 400,
+        },
+      },
+    }}
+    roster={[]}
+    selfId="me"
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+  />);
+
+  expect((await screen.findByRole('alert')).textContent).toContain('频道新鲜度响应超时');
+  expect(request).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '重试' }));
+  await waitFor(() => expect(refreshLatest).toHaveBeenCalledOnce());
+  expect(request).not.toHaveBeenCalled();
+});
+
 it('零行筛选供给失败后由 scheduler 状态推进恢复并保留前台重试语义', async () => {
   const state = timelineState([{
     seq: 9,

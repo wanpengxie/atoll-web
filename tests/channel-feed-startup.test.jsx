@@ -784,6 +784,45 @@ describe('channel feed startup lanes', () => {
     hook.unmount();
   });
 
+  it('remote attach starts network history even when IndexedDB owner selection never settles', async () => {
+    const owner = new Promise(() => {});
+    const meta = new Map();
+    doubles.cache = {
+      ensureOwner: vi.fn(() => owner),
+      ensureBoot: vi.fn(() => new Promise(() => {})),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const historyBefore = vi.fn(() => {
+      const receipt = new Promise(() => {});
+      receipt.ref = 'history-never';
+      return receipt;
+    });
+    const props = feedProps();
+    props.wireRef.current = {
+      historyBefore,
+      cancelHistory: vi.fn(async () => {}),
+      channelMeta: vi.fn(async (channelId) => ({
+        channel_id: channelId, head_seq: 100, has_rows: true, generation: 1,
+      })),
+    };
+    const hook = renderHook(() => useChannelFeed(props));
+
+    act(() => { void hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    act(() => {
+      void hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 100, has_rows: true },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+
+    await waitFor(() => expect(historyBefore).toHaveBeenCalledWith(
+      'c0', 101, expect.any(Number), expect.objectContaining({ generation: 1 }),
+    ));
+    expect(hook.result.current.localReplicaReady).toBe(true);
+    hook.unmount();
+  });
+
   it('returns after meta creates queues without waiting for the selected cache body', async () => {
     let resolveBody;
     const body = new Promise((resolve) => { resolveBody = resolve; });

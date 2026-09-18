@@ -600,6 +600,13 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       focus: detail.focus || activeChannelRef.current || '',
       localMeta,
     });
+    // Remote attach is an authoritative, safe network seam even while the
+    // optional IndexedDB owner/boot selection is still pending. Do not let a
+    // non-settling cache operation keep HistoryScheduler's local-meta gate
+    // closed forever: start from the already-selected in-memory Meta (possibly
+    // empty), then merge the epoch-fenced disk result below if it arrives.
+    schedulerRef.current.setLocalMeta(localMeta, { publishChange: false, localReady: true });
+    setLocalReplicaReady(true);
     // Attach history_meta is the authoritative read-grant set for this Wire
     // generation. Fence pending freshness work before reconnect availability
     // is published: a selected-but-revoked channel must retain its obligation

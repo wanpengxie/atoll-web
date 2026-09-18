@@ -157,6 +157,40 @@ describe('sync data model properties', () => {
     coordinator.destroy();
   });
 
+  it('disconnect aborts a non-settling probe so reconnect can own the obligation', async () => {
+    let resolveFulfilled;
+    const fulfilled = new Promise((resolve) => { resolveFulfilled = resolve; });
+    const probe = vi.fn((channelID) => (
+      probe.mock.calls.length === 1
+        ? new Promise(() => {})
+        : Promise.resolve({ channel_id: channelID, head_seq: 0, local_head_seq: 0 })
+    ));
+    const coordinator = createSyncObligationCoordinator({
+      probe,
+      catchup: vi.fn(async () => {}),
+      onChange: (_channelID, state) => {
+        if (state.fulfilledRevision === 1) resolveFulfilled();
+      },
+    });
+    coordinator.connection(true);
+    const retiredAttempt = coordinator.interest('c0');
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledOnce());
+
+    coordinator.connection(false);
+    coordinator.connection(true);
+
+    await retiredAttempt;
+    await fulfilled;
+    expect(probe).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(coordinator.snapshot('c0')).toMatchObject({
+      interestRevision: 1,
+      fulfilledRevision: 1,
+      running: false,
+      error: '',
+    }));
+    coordinator.destroy();
+  });
+
   it('does not let an old connection late catchup fulfill the replacement connection', async () => {
     let resolveOldCatchup;
     let resolveCatchupStarted;

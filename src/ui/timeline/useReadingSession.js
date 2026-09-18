@@ -660,9 +660,18 @@ export function useReadingSession({
     && surfaceVisible === true
     && !presentationViewable;
   const foregroundHistoryError = historyStatus.historyDemand?.phase === 'error';
+  // Freshness has its own durable obligation and retry owner. A failed
+  // channel_meta/catch-up attempt must not be flattened into an endless
+  // "syncing" state merely because no physical history page failed.
+  const syncHistoryError = !syncObservationCurrent
+    ? String(syncStatus.error || '')
+    : '';
+  const availabilityError = foregroundHistoryError
+    ? String(historyStatus.historyDemand?.error || historyStatus.error || '')
+    : syncHistoryError || (!semanticRangeEstablished ? String(historyStatus.error || '') : '');
   const availability = snapshot.rows.length > 0
     ? (presentationPending ? 'materializing' : 'readable')
-    : (foregroundHistoryError || (historyStatus.error && !semanticRangeEstablished))
+    : availabilityError
       ? 'error'
       : !hasManagedHistoryLifecycle
         ? 'empty-known'
@@ -1607,6 +1616,7 @@ export function useReadingSession({
     availability,
     emptyReason,
     presentationPending,
+    availabilityError,
     status: historyStatus,
     // This is a semantic edge-demand lifecycle. Physical background batches
     // remain available on status.loading/backgroundLoading for diagnostics,
@@ -1620,6 +1630,16 @@ export function useReadingSession({
     requestHistory,
     retryHistoryDemand() {
       return requestHistory('retry', HISTORY_URGENCY.interactive);
+    },
+    retryAvailability() {
+      const retries = [];
+      if (syncHistoryError && typeof history.refreshLatest === 'function') {
+        retries.push(Promise.resolve(history.refreshLatest()));
+      }
+      if (foregroundHistoryError || (historyStatus.error && !semanticRangeEstablished)) {
+        retries.push(Promise.resolve(requestHistory('retry', HISTORY_URGENCY.interactive)));
+      }
+      return retries.length > 1 ? Promise.all(retries) : retries[0] || Promise.resolve(false);
     },
     onAtTop(detail = {}) {
       return requestHistory('top', HISTORY_URGENCY.interactive, detail);
@@ -1822,5 +1842,5 @@ export function useReadingSession({
     revokeBottomIntent,
     isFollowing() { return controller.getSnapshot().session.mode === READING_MODE.following; },
     getSession() { return controller.getSnapshot().session; },
-  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, session, surfaceVisible, syncStatus.interestRevision, tailCaughtUp, unseen]);
+  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, foregroundHistoryError, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen]);
 }

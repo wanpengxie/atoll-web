@@ -1840,7 +1840,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       data-phase="error"
       data-revision={viewport.historyDemand?.revision || 0}
       role="alert"
-    ><span>{viewport.status.error || '确认频道内容失败'}</span><button type="button" onClick={() => viewport.retryHistoryDemand()}>重试</button></div>}
+    ><span>{viewport.availabilityError || '确认频道内容失败'}</span><button type="button" onClick={() => viewport.retryAvailability()}>重试</button></div>}
 	  {!presentationEmpty && identityPending && <div className="timeline-history-status" role="status">正在确认你的频道身份，当前显示全部动态。</div>}
 	  {!presentationEmpty && !identityPending && viewport.availability === 'readable' && viewport.historyDemand?.phase !== 'idle' && <div
       className="timeline-history-status timeline-history-demand"

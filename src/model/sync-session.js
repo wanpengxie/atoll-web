@@ -255,7 +255,15 @@ export function createSyncObligationCoordinator({
       if (next !== available) connectionEpoch += 1;
       available = next;
       for (const state of channels.values()) {
-        if (!available) clearRetry(state);
+        if (!available) {
+          clearRetry(state);
+          // The transport epoch that owned this probe/catch-up no longer
+          // exists. Abort it at the coordinator boundary so a non-settling
+          // adapter cannot keep `state.running` occupied and suppress the
+          // replacement connection's probe forever. Late completion remains
+          // fenced by connectionEpoch in advance().
+          state.activeAbort?.abort();
+        }
         else if (state.admitted !== false && state.fulfilledRevision < state.interestRevision) void advance(state);
         publish(state);
       }
