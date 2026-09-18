@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { apply, createChannelState, requestClosure } from '../src/model/fold.js';
+import { apply, createChannelState, requestClosure, terminalResultPayload, terminalResultState, terminalRetainedValue } from '../src/model/fold.js';
 import { estimateRowBytes, MOBILE_WINDOW, trimChannelState } from '../src/model/memory-window.js';
 import { notificationDisposition } from '../src/model/notification-policy.js';
 import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from '../src/model/timeline-scope.js';
 import { selectWaitingPresentation } from '../src/model/waiting-presentation.js';
+import { mergedInto, preemptedBy } from '../src/model/agent-control.js';
 
 const ME = 'human:me:1';
 
@@ -139,6 +140,10 @@ describe('内存窗口', () => {
     });
     expect(state.turns.get('closed-request').terminal.payload).not.toHaveProperty('text');
     expect(requestClosure(state, 'closed-request')?.source).toBe('closure');
+    expect(terminalResultPayload(state.turns.get('closed-request'))).toBeNull();
+    expect(terminalResultState(state.turns.get('closed-request'))).toEqual({
+      phase: 'unavailable', error: '终态详情不可用，请刷新或重新进入频道',
+    });
     expect(selectWaitingPresentation(state, { controlCurrent: true })).toEqual([]);
 
     // The exact terminal row may be restored by a later history/cache page.
@@ -153,8 +158,40 @@ describe('内存窗口', () => {
       text: 'ok',
     });
     expect(requestClosure(state, 'closed-request')?.source).toBe('turn');
+    expect(terminalResultPayload(state.turns.get('closed-request'))).toMatchObject({ status: 'completed', text: 'ok' });
+    expect(terminalResultState(state.turns.get('closed-request'))).toEqual({ phase: 'available', error: '' });
     expect(notificationDisposition(state, restoredTerminal.envelope, ME)).toBe('final');
     expect(state.anomalies.filter((entry) => entry.code === 'terminal_conflict')).toEqual([]);
+  });
+
+  it('nested steer 关系在 compact owner 归一后仍可驱动 merge/preempt', () => {
+    const state = createChannelState('c');
+    const request = {
+      channel_id: 'c', seq: 100,
+      envelope: { id: 'steer', kind: 'request', type: 'agent.steer', sender: { id: ME }, audience: ['agent:a:1'], payload: { text: '改道' } },
+    };
+    const terminal = {
+      channel_id: 'c', seq: 300,
+      envelope: {
+        id: 'steer-terminal', parent_id: 'steer', kind: 'response', type: 'agent.steer',
+        sender: { id: 'agent:a:1' }, audience: [ME],
+        payload: { status: 'completed', value: { merged_into: 'turn-7', preempted_by: 'replacement-8', replaced_by: 'turn-9' } },
+      },
+    };
+    apply(state, request, ME);
+    apply(state, terminal, ME);
+    forceTrimPast(state, 401);
+    apply(state, request, ME);
+
+    const turn = state.turns.get('steer');
+    expect(turn).toMatchObject({
+      terminalClosureOnly: true,
+      terminal: { payload: { status: 'completed', merged_into: 'turn-7', preempted_by: 'replacement-8', replaced_by: 'turn-9' } },
+    });
+    expect(turn.terminal.payload).not.toHaveProperty('value');
+    expect(mergedInto(turn)).toBe('turn-7');
+    expect(preemptedBy(turn)).toBe('replacement-8');
+    expect(terminalRetainedValue(turn, 'replaced_by')).toBe('turn-9');
   });
 
   it('compact closure 只接受同一 ledger terminal 的 full envelope 升级', () => {

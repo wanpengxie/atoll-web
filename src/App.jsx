@@ -18,7 +18,7 @@ import {
 } from './model/channel-file-transfer.js';
 import { availableDefaultStorageDeviceId } from './model/channel-files.js';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
-import { createChannelState, reconcileApprovals } from './model/fold.js';
+import { createChannelState, reconcileApprovals, terminalResultPayload, terminalResultState } from './model/fold.js';
 import { createRoster } from './model/roster.js';
 import { readFileTicket } from './model/resources.js';
 import { safeChannelDeviceRows, safeDaemonRows } from './model/space-administration.js';
@@ -140,10 +140,27 @@ function governanceOperationTitle(turn) {
 }
 
 function governanceOperation(channel, turn, channelRows) {
-  const terminal = argsOf(turn.terminal);
-  let state = terminal?.status === 'failed' ? 'failed' : terminal?.status === 'cancelled' ? 'cancelled' : terminal?.status === 'completed' ? 'completed' : 'waiting_ledger';
+  const lifecycle = argsOf(turn.terminal);
+  const terminal = terminalResultPayload(turn);
+  if (turn.terminalClosureOnly) {
+    const resultState = terminalResultState(turn);
+    return {
+      key: turn.requestId,
+      operationId: turn.requestId,
+      requestId: turn.requestId,
+      channelId: channel.id,
+      kind: 'governance',
+      title: governanceOperationTitle(turn),
+      detail: resultState.error,
+      state: 'uncertain',
+      startedAt: turn.request?.ts || turn.requestSeq,
+      updatedAt: turn.terminal?.ts || turn.lastSeq || turn.requestSeq,
+      source: { channelId: channel.id, view: 'dynamic', objectType: 'turn', objectId: turn.requestId, requestId: turn.requestId },
+    };
+  }
+  let state = lifecycle?.status === 'failed' ? 'failed' : lifecycle?.status === 'cancelled' ? 'cancelled' : lifecycle?.status === 'completed' ? 'completed' : 'waiting_ledger';
   let detail = turn.terminal ? '账本已确认' : '等待账本确认';
-  if (turn.request?.type === TYPES.channel.create && terminal?.status === 'completed') {
+  if (turn.request?.type === TYPES.channel.create && lifecycle?.status === 'completed') {
     const expected = `${channel.qualified_name || channel.name || channel.id}.${argsOf(turn.request)?.name || ''}`;
     const created = channelRows.find((row) => row.id === terminal.value?.channel_id || row.qualified_name === expected);
     if (!created) { state = 'waiting_projection'; detail = '等待频道可观察'; }

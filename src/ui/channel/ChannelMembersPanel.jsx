@@ -81,6 +81,7 @@ export function ChannelMembersPanel({ channel, roster, state, principals, declar
       <div className={actorProgress.ledger ? 'done' : 'waiting'}><span>{actorProgress.ledger ? '✓' : '·'}</span><strong>账本确认</strong><small>{actorProgress.ledger ? '已确认' : '等待终态'}</small></div>
       <div className={actorProgress.rosterConverged ? 'done' : 'waiting'}><span>{actorProgress.rosterConverged ? '✓' : '·'}</span><strong>名册与 serving</strong><small>{actorProgress.rosterConverged ? '已收敛' : '等待 OBS'}</small></div>
       {actorProgress.failed && <p className="governance-error">账本失败：{actorProgress.error}</p>}
+      {actorProgress.resultPhase === 'unavailable' && <p className="governance-error">{actorProgress.resultError}</p>}
     </PanelCard>}
     {confirmAction && <InlineConfirmation
       title={`确认${confirmAction.type === GOVERNANCE_TYPES.remove ? '移除' : '重启'} ${actorLabel(confirmAction.actor)}？`}

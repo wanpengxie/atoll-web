@@ -138,6 +138,16 @@ it('agent.new 成功后只显示一条轻量确认，不伪装成用户聊天消
   expect(document.querySelector('.request-message')).toBeNull();
 });
 
+it('agent.select compact closure 不把缺失 usage 当成成功配置', () => {
+  const request = { id: 'select-1', type: 'agent.select', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { model: 'old' } };
+  const terminal = { id: 'select-terminal', type: 'agent.select', kind: 'response', parent_id: 'select-1', ts: 110, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', usage: { model: 'new', effort: 'high' } } };
+  const turn = { requestId: request.id, request, requestSeq: 1, terminalSeq: 2, status: 'completed', latestStatus: 'completed', provisional: [], anomalies: [], terminal, terminalClosureOnly: true };
+  const state = { channelId: 'c0', rows: new Map([[1, request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 2 };
+  render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} capabilityIndex={new Map()} />);
+  expect(screen.getByRole('status').textContent).toBe('配置终态详情不可用，请刷新或重新进入频道');
+  expect(document.body.textContent).not.toContain('new');
+});
+
 it('Turn detail exposes audit identifiers without serializing payload JSON', () => {
   render(<TurnContext turn={runningTurn()} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" access="member_active" capability={null} controlState={{}} onCancel={() => {}} onControl={() => {}} onDownload={() => {}} onSource={() => {}} onClose={() => {}} />);
   expect(screen.getByRole('complementary', { name: '回合详情' })).toBeTruthy();
@@ -283,7 +293,7 @@ it('裁剪后的 nested compact closure 只关闭调用，不渲染成调用结�
   ]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
   fireEvent.click(screen.getByRole('button', { name: /1 次关联调用/ }));
   fireEvent.click(screen.getByRole('button', { name: /查找资料/ }));
-  expect(screen.getByText('终态内容尚未装入。')).toBeTruthy();
+  expect(screen.getByText('终态详情不可用，请刷新或重新进入频道')).toBeTruthy();
   expect(document.querySelector('.turn-thread-result')?.textContent).not.toContain('✓ 已完成');
   expect(document.body.textContent).not.toContain('不应由 compact closure 显示的结果');
 });

@@ -21,7 +21,7 @@ export function DevicesPanel({ channel, states, version, daemons, channelDevices
       const key = result.value?.key;
       if (key) setOneTimeSecret({ key, deviceId: result.value.device_id || result.value.id || '' });
       setSecretRequestId('');
-    } else if (result.phase === 'failed') {
+    } else if (result.phase === 'failed' || result.phase === 'result_unavailable') {
       setSecretRequestId('');
     }
   }, [states, secretRequestId, version]);

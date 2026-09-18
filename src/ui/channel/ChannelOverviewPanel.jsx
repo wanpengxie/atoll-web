@@ -62,6 +62,7 @@ export function ChannelOverviewPanel({ channel, channels, roster, selfId = '', s
     {mode === 'create' && convergence && <PanelCard className="convergence" aria-label="频道创建进度" title={`${createRequest.name} 创建进度`}>
       {STEP_LABELS.map(([key, label]) => <div key={key} className={convergence[key] ? 'done' : 'waiting'}><span>{convergence[key] ? '✓' : '·'}</span><strong>{label}</strong><small>{convergence[key] ? '已确认' : '等待投影'}</small></div>)}
       {convergence.failed && <p className="governance-error">账本失败：{convergence.error}</p>}
+      {convergence.resultPhase === 'unavailable' && <p className="governance-error">{convergence.resultError}</p>}
       {convergence.ready && <p className="ready-message">频道已经可以打开和协作。</p>}
     </PanelCard>}
   </>;

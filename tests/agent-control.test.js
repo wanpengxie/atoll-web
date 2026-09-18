@@ -87,6 +87,21 @@ describe('agent control v7 presentation', () => {
     expect(agentFrozenState(expired, 'agent', 1001)).toMatchObject({ held_by: 'stop', source: 'agent.interrupt' });
   });
 
+  it('compact unhold closure 不把缺失 released 猜成 legacy true', () => {
+    const state = stateOf([
+      envelope('hold', 'request', 'agent.hold', { target: 'old' }),
+      envelope('hold-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'hold' }),
+      envelope('release', 'request', 'agent.unhold', { expected_hold_id: 'hold' }),
+      envelope('release-d', 'response', 'agent.unhold', { status: 'completed', released: true }, { parent_id: 'release' }),
+    ]);
+    state.turns.get('release').terminalClosureOnly = true;
+    expect(agentFrozenState(state, 'agent', 10)).toMatchObject({ held_by: 'hold', source: 'agent.hold' });
+
+    state.turns.get('hold').terminalClosureOnly = true;
+    expect(editAdmission(state, { holdId: 'hold', targetId: 'old', location: 'queued' }))
+      .toEqual({ ready: false, error: '终态详情不可用，请刷新或重新进入频道' });
+  });
+
   it('35 keeps replace under its edit hold and ignores stale unhold after interrupt', () => {
     const replacing = stateOf([
       envelope('hold', 'request', 'agent.hold', { target: 'old' }),

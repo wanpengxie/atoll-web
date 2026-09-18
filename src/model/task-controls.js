@@ -1,4 +1,5 @@
 import { argsOf } from '../protocol/envelope.js';
+import { terminalResultPayload } from './fold.js';
 import { TYPES } from '../protocol/vocab.js';
 
 // 一条消息此刻可被哪些控制词操作，唯一权威是受理方（agent 基座的处理循环）——
@@ -97,7 +98,8 @@ export function taskControlContext(turn, {
   const owned = Boolean(selfId && request?.sender?.id === selfId);
   const writable = access === 'member_active';
   const frame = latestStatusFrame(turn);
-  const workFrame = frame?.work_id ? frame : (argsOf(turn?.terminal)?.work_id ? argsOf(turn.terminal) : null);
+  const terminal = terminalResultPayload(turn);
+  const workFrame = frame?.work_id ? frame : (terminal?.work_id ? terminal : null);
   const location = frame?.status || '';
   const controls = open ? controlEntries(frame) : [];
   const words = new Set(controls.map((entry) => entry.word));

@@ -40,6 +40,9 @@ import {
   registerLivePresentationArrivalConsumer,
   registerLiveTimelineArrivalConsumer,
   terminalContentEnvelope,
+  terminalResultPayload,
+  terminalResultState,
+  terminalRetainedValue,
 } from '../model/fold.js';
 import { selectLocalWaitingTurns, selectWaitingPresentation } from '../model/waiting-presentation.js';
 import { diagnostic } from '../model/diagnostics.js';
@@ -160,6 +163,7 @@ function ApprovalCard({ turn, state, onResolve, names }) {
           <StructuredResult requestType={request.type} payload={argsOf(terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || turn.requestId}:body`} text={text} />} />
         </footer>
       )}
+      {turn.terminalClosureOnly && <footer className="final-answer unavailable"><p>{terminalResultState(turn).error}</p></footer>}
       {error && <WireErrorLine error={error} />}
     </article>
   );
@@ -540,7 +544,7 @@ function ThreadCall({ item, names }) {
       </button>
       {open && (terminal
         ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={argsOf(terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || child.requestId}:body`} text={text} />} /></div>
-        : <p className="turn-thread-result empty">{child.terminal ? '终态内容尚未装入。' : '还没有终态。'}</p>)}
+        : <p className="turn-thread-result empty">{child.terminal ? terminalResultState(child).error : '还没有终态。'}</p>)}
     </li>
   );
 }
@@ -656,6 +660,7 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
       : <FoldableBody id={responseFoldId} text={foldText} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}>{conversationBody}</FoldableBody>}</div>}
     {!closed && <ProgressTrail turn={turn} running title={title} startedAt={processStartedTs} mergedCount={mergedCount} />}
     {stopped && <p className="agent-stopped">✗ 已停止{resumable ? ' · 发消息即继续' : ''}</p>}
+    {closed && !terminal && <p className="terminal-result-unavailable">{terminalResultState(turn).error}</p>}
     {closed && <ProgressTrail turn={turn} running={false} />}
   </>;
   if (compact) return <article className={`agent-thread-message ${className}${compactExpanded ? ' is-expanded' : ' is-collapsed'}`} tabIndex="0">
@@ -784,6 +789,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, targetAuth
           <header><strong>{nameOf(terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={argsOf(terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || turn.requestId}:body`} text={text} />} /></FoldableBody></div>
         </MessageFrame>
       )}
+      {turn.terminalClosureOnly && <ContentFrame contained><p className="terminal-result-unavailable">{terminalResultState(turn).error}</p></ContentFrame>}
     </section>
   );
 }
@@ -1488,7 +1494,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
         : 'unknown';
       const selectNote = entry.turn.request.type === TYPES.agentSelect
         ? selectSystemNote({
-          usage: argsOf(entry.turn.terminal)?.usage,
+          usage: terminalResultPayload(entry.turn)?.usage,
           describe: capabilityIndex.get(actorId)?.describe,
           agentName: nameOf(actorId, names),
         })
@@ -1618,7 +1624,12 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     }
     if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentSelect) {
       const actorId = entry.turn.request.audience?.[0] || '';
-      const note = selectSystemNote({ usage: argsOf(entry.turn.terminal)?.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) });
+      const result = terminalResultPayload(entry.turn);
+      const note = result
+        ? selectSystemNote({ usage: result.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) })
+        : (entry.turn.terminal
+          ? `配置${terminalResultState(entry.turn).error}`
+          : '');
       content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{note}</div></div>;
     }
     if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentNew) {
@@ -1670,7 +1681,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     if (!editing) return;
     const activeEditSessionId = editing.sessionId;
     const targetTurn = state.turns.get(editing.targetId);
-    const replacedBy = argsOf(targetTurn?.terminal)?.replaced_by ?? argsOf(targetTurn?.terminal)?.value?.replaced_by;
+    const replacedBy = terminalRetainedValue(targetTurn, 'replaced_by');
     const frozen = frozenByActor.get(editing.actorId);
     const ownsLiveHold = Boolean(editing.holdId
       && frozen?.source === TYPES.agentHold
@@ -1717,11 +1728,18 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     if (editing.phase === 'checking') {
       const contextTurn = state.turns.get(editing.contextId);
       if (!contextTurn?.terminal) return;
-      if (argsOf(contextTurn.terminal)?.status !== 'completed') {
-        setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'editing', error: argsOf(contextTurn.terminal)?.detail || '编辑锁已失效' }) : current);
+      const contextResult = terminalResultPayload(contextTurn);
+      if (!contextResult) {
+        setEditing((current) => current?.sessionId === activeEditSessionId
+          ? ({ ...current, phase: 'editing', error: terminalResultState(contextTurn).error })
+          : current);
         return;
       }
-      const lock = lockFromContext(argsOf(contextTurn.terminal), editing.holdId);
+      if (contextResult.status !== 'completed') {
+        setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'editing', error: contextResult.detail || '编辑锁已失效' }) : current);
+        return;
+      }
+      const lock = lockFromContext(contextResult, editing.holdId);
       if (!lock.valid) {
         setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'editing', error: lock.error }) : current);
         return;
@@ -1739,9 +1757,15 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       // 成功由上面的 target.replaced_by 分支收尾；这里只处理 replacement
       // 请求自身的失败终态。
       const replacement = state.turns.get(editing.replacementId);
-      if (argsOf(replacement?.terminal)?.status === 'failed') {
+      const replacementResult = terminalResultPayload(replacement);
+      if (replacementResult?.status === 'failed') {
         const sessionId = editing.sessionId;
-        setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: argsOf(replacement.terminal)?.detail || argsOf(replacement.terminal)?.error_code || '修改失败' }) : current);
+        setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: replacementResult.detail || replacementResult.error_code || '修改失败' }) : current);
+      } else if (replacement?.terminalClosureOnly) {
+        const sessionId = editing.sessionId;
+        setEditing((current) => current?.sessionId === sessionId
+          ? ({ ...current, phase: 'editing', error: terminalResultState(replacement).error })
+          : current);
       }
     }
   }, [controlVersion, editing?.sessionId, editing?.phase, editing?.contextId, editing?.replacementId, editing?.holdId, frozenByActor, roster]);

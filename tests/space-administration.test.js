@@ -58,6 +58,10 @@ describe('space administration model', () => {
     expect(() => parseJSONObject('[]')).toThrow('JSON 对象');
     const state = { turns: new Map([['r', { terminal: { payload: { status: 'completed', value: { ok: true } } } }]]) };
     expect(terminalValue(state, 'r')).toEqual({ phase: 'completed', value: { ok: true }, error: '' });
+    state.turns.get('r').terminalClosureOnly = true;
+    expect(terminalValue(state, 'r')).toEqual({
+      phase: 'result_unavailable', value: null, error: '终态详情不可用，请刷新或重新进入频道',
+    });
   });
 
   it('builds device actions with closed real fields', () => {

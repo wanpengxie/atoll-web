@@ -84,6 +84,24 @@ describe('ChannelCreateModal', () => {
     }));
   });
 
+  it('模板 compact closure 稳定提示详情不可用，不把缺失 recipe 当业务失败', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue('template-request');
+    const props = { channel, channels: [], roster, selfId: 'human:root:1', onSubmit, onClose: () => {} };
+    const { rerender } = render(<ChannelCreateModal {...props} state={emptyState()} />);
+    await user.type(screen.getByLabelText('新频道名称'), 'templated-room');
+    await user.type(screen.getByLabelText('频道模板 ID'), 'team');
+    await user.click(screen.getByRole('button', { name: '创建频道' }));
+    rerender(<ChannelCreateModal {...props} state={{ turns: new Map([['template-request', {
+      terminalClosureOnly: true,
+      terminal: { payload: { status: 'completed' } },
+    }]]) }} />);
+    await Promise.resolve();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/没有可用于创建频道/)).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('终态详情不可用，请刷新或重新进入频道');
+  });
+
   it('明确展示四步收敛，ready 后将新频道交给进入回调', async () => {
     const user = userEvent.setup();
     const onEnterChannel = vi.fn();

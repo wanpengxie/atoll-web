@@ -46,8 +46,9 @@ export function ChannelCreateModal({
     membership: (id) => isMemberAccess(channels.find((row) => row.id === id)?.access),
   }) : null;
   const validation = validateChannelName(name);
-  const tracking = Boolean(createRequest && !convergence?.failed && !convergence?.ready);
-  const locked = disabled || submitting || Boolean(templateRequest) || tracking || convergence?.ready;
+  const resultUnavailable = convergence?.resultPhase === 'unavailable';
+  const tracking = Boolean(createRequest && !convergence?.failed && !resultUnavailable && !convergence?.ready);
+  const locked = disabled || submitting || Boolean(templateRequest) || tracking || resultUnavailable || convergence?.ready;
   const selectableActors = useMemo(() => roster.filter((row) => (
     row.id !== selfId && ['human', 'agent', 'tool'].includes(row.kind) && !isProtectedActor(row)
   )), [roster, selfId]);
@@ -99,6 +100,10 @@ export function ChannelCreateModal({
     const terminal = terminalValue(state, templateRequest.id);
     if (terminal.phase === 'waiting') return;
     setTemplateRequest(null);
+    if (terminal.phase === 'result_unavailable') {
+      setError(`读取频道模板未完成：${terminal.error}`);
+      return;
+    }
     if (terminal.phase === 'failed') {
       setError(`读取频道模板失败：${terminal.error}`);
       return;
@@ -142,13 +147,14 @@ export function ChannelCreateModal({
 
         {error && <p className="governance-error" role="alert">{error}</p>}
         {convergence && <section className="convergence channel-create-progress" aria-label="频道创建进度" aria-live="polite">
-          <header><strong>{createRequest.name}</strong><small>{convergence.ready ? '已就绪' : convergence.failed ? '创建失败' : '正在收敛'}</small></header>
+          <header><strong>{createRequest.name}</strong><small>{convergence.ready ? '已就绪' : convergence.failed ? '创建失败' : resultUnavailable ? '终态详情不可用' : '正在收敛'}</small></header>
           {STEPS.map(([key, label, waiting]) => <div key={key} className={convergence[key] ? 'done' : convergence.failed ? 'failed' : 'waiting'}>
             <span aria-hidden="true">{convergence[key] ? '✓' : convergence.failed ? '×' : '·'}</span>
             <strong>{label}</strong>
             <small>{convergence[key] ? '已确认' : convergence.failed ? '未完成' : waiting}</small>
           </div>)}
           {convergence.failed && <p className="governance-error" role="alert">账本失败：{convergence.error}。输入内容已保留，可以重新提交。</p>}
+          {resultUnavailable && <p className="governance-error" role="alert">{convergence.resultError}</p>}
           {convergence.ready && <p className="ready-message">频道已经可以打开和协作。</p>}
         </section>}
 
@@ -156,7 +162,7 @@ export function ChannelCreateModal({
           <button type="button" onClick={onClose} disabled={submitting}>取消</button>
           {convergence?.ready
             ? <button type="button" className="primary-button" onClick={enterChannel}>进入新频道</button>
-            : <button type="submit" className="primary-button" disabled={locked || Boolean(validation)}>{submitting ? '正在提交…' : convergence?.failed ? '重新创建' : tracking ? '等待频道就绪…' : '创建频道'}</button>}
+            : <button type="submit" className="primary-button" disabled={locked || Boolean(validation)}>{submitting ? '正在提交…' : convergence?.failed ? '重新创建' : resultUnavailable ? '请刷新或重进' : tracking ? '等待频道就绪…' : '创建频道'}</button>}
         </footer>
       </form>
     </section>

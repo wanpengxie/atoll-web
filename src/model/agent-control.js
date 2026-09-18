@@ -1,6 +1,7 @@
 import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 import { taskLocation } from './task-controls.js';
+import { terminalResultEnvelope, terminalResultPayload, terminalResultState, terminalRetainedValue } from './fold.js';
 
 // 会以"一条消息"身份出现在时间线/等待区的词。replace 在列：协议 §4.6 里 replace
 // 请求受理成功后**自身就是新行**（admitBufferedAt 以原下标入队、继承 Resumed），
@@ -18,7 +19,10 @@ const CONTENT_TYPES = new Set([
 const DEFAULT_HOLD_DURATION_MS = 30 * 60 * 1000;
 
 function terminalValue(turn, key) {
-  return argsOf(turn?.terminal)?.[key] ?? argsOf(turn?.terminal)?.value?.[key];
+  const retained = key === 'merged_into' || key === 'replaced_by' || key === 'preempted_by';
+  if (retained) return terminalRetainedValue(turn, key);
+  const payload = terminalResultPayload(turn);
+  return payload?.[key] ?? payload?.value?.[key];
 }
 
 export function isAgentMessageTurn(turn) {
@@ -68,8 +72,12 @@ export function editAdmission(state, session) {
   if (!session?.holdId || !session?.targetId) return { ready: false, error: '' };
   const hold = state?.turns?.get(session.holdId);
   if (!hold?.terminal) return { ready: false, error: '' };
-  if (!terminalCompleted(hold)) {
-    return { ready: false, error: argsOf(hold.terminal)?.detail || argsOf(hold.terminal)?.error_code || '无法锁定这条任务' };
+  const result = terminalResultPayload(hold);
+  if (!result) {
+    return { ready: false, error: terminalResultState(hold).error };
+  }
+  if (result.status !== 'completed') {
+    return { ready: false, error: result.detail || result.error_code || '无法锁定这条任务' };
   }
   if (session.location === 'processing' && !resumedQueued(state?.turns?.get(session.targetId))) {
     return { ready: false, error: '' };
@@ -166,11 +174,12 @@ export function agentFrozenStates(state, actorIds = null, now = Date.now()) {
     } else if (terminalCompleted(turn) && type === TYPES.agentUnhold) {
       // New agents report whether a hold was actually released. Old ledger
       // rows have no flag and retain their historical clear behavior.
-      if (terminalValue(turn, 'released') !== false) operations.push({ seq: turn.requestSeq, kind: 'release' });
+      if (terminalResultEnvelope(turn) && terminalValue(turn, 'released') !== false) operations.push({ seq: turn.requestSeq, kind: 'release' });
     }
     if (CONTENT_TYPES.has(type)) {
       const enteredBuffer = (turn.provisional || []).some((item) => argsOf(item.envelope)?.status === 'queued' && argsOf(item.envelope)?.resumed !== true);
-      const capacityFailure = argsOf(turn.terminal)?.status === 'failed' && argsOf(turn.terminal)?.error_code === 'base_capacity';
+      const terminal = terminalResultPayload(turn);
+      const capacityFailure = terminal?.status === 'failed' && terminal.error_code === 'base_capacity';
       // replace is admitted in place without releasing the editing hold.
       if (type !== TYPES.agentReplace && (enteredBuffer || capacityFailure)) operations.push({ seq: turn.requestSeq, kind: 'new-content' });
       // 一条进度行不是"队列前进"。只有轮次**进入** processing 的那一次跃迁才

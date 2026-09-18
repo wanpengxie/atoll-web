@@ -1,5 +1,6 @@
 import { argsOf, FINAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
+import { terminalResultEnvelope } from './fold.js';
 
 // 协议正形：
 // - actor.describe 只声明 agent.options / agent.select 两个稳定 word；
@@ -84,7 +85,7 @@ function latestAgentOptionsFor(state, actorId, liveRequestId) {
   if (!state?.rows || !actorId || !liveRequestId) return null;
   const liveTurn = state?.turns?.get?.(liveRequestId);
   if (liveTurn) {
-    const row = liveTurn.terminal;
+    const row = terminalResultEnvelope(liveTurn);
     if (row?.kind !== 'response' || row.type !== TYPES.agentOptions || row.parent_id !== liveRequestId) return null;
     if (row.sender?.id !== actorId || argsOf(row)?.status !== 'completed') return null;
     return normalizeAgentOptions(argsOf(row));
@@ -152,7 +153,7 @@ function latestAgentUsageFor(state, actorId, liveRequestId) {
   const order = state?._rowOrder;
   const maxima = state?._rowMaxSeq;
   if (liveTurn && Array.isArray(order) && Array.isArray(maxima) && order.length === maxima.length) {
-    const response = liveTurn.terminal;
+    const response = terminalResultEnvelope(liveTurn);
     if (response?.kind !== 'response'
       || response.type !== TYPES.agentContext
       || response.parent_id !== liveRequestId

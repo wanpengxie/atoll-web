@@ -141,6 +141,16 @@ describe('当前值恒只认本连接证据（§4.1）', () => {
     expect(usage).toEqual({ model: 'm3', effort: 'medium', contextTokens: 52_000, contextWindow: 200_000 });
     expect(contextUsageView(usage)).toEqual({ tokens: 52_000, window: 200_000, percent: 26 });
   });
+
+  it('live context compact closure 不提供当前配置快照', () => {
+    const response = contextDone('a', 'probe-1', { model: 'm3', effort: 'medium' });
+    const state = {
+      rows: new Map([[1, response]]),
+      turns: new Map([['probe-1', { requestId: 'probe-1', requestSeq: 0, lastSeq: 1, terminalSeq: 1, terminal: response, terminalClosureOnly: true }]]),
+      _rowOrder: [1], _rowMaxSeq: [1],
+    };
+    expect(latestAgentUsage(state, 'steward', 'probe-1')).toBeNull();
+  });
 });
 
 describe('agent.options incarnation 快照', () => {
@@ -173,6 +183,15 @@ describe('agent.options incarnation 快照', () => {
       .toMatchObject({ current: { model: 'gpt-new', effort: 'high' } });
     expect(latestAgentOptions(state, 'steward', ['', 'live-probe'])).not.toBeNull();
     expect(latestAgentOptions(state, 'steward', [])).toBeNull();
+  });
+
+  it('live options compact closure 不提供目录或 current', () => {
+    const response = { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload };
+    const state = {
+      rows: new Map([[1, response]]),
+      turns: new Map([['live-probe', { terminal: response, terminalClosureOnly: true }]]),
+    };
+    expect(latestAgentOptions(state, 'steward', 'live-probe')).toBeNull();
   });
 
   it('按模型保留各自 effort，无码 effort 的模型仍可选择', () => {

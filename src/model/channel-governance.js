@@ -1,6 +1,7 @@
 import { argsOf } from '../protocol/envelope.js';
 import { isSystemDeclaration, SYSTEM_ACTOR } from './management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
+import { terminalResultPayload, terminalResultState } from './fold.js';
 
 export const GOVERNANCE_TYPES = Object.freeze({
   create: TYPES.channel.create,
@@ -90,34 +91,43 @@ export function declarationKind(row) {
 }
 
 export function creationConvergence({ turn, expectedQualifiedName, channels = [], membership = null }) {
-  const terminal = argsOf(turn?.terminal);
-  const failed = terminal?.status === 'failed';
+  const lifecycle = argsOf(turn?.terminal);
+  const terminal = terminalResultPayload(turn);
+  const resultState = terminalResultState(turn);
+  const resultCurrent = Boolean(terminal);
+  const failed = lifecycle?.status === 'failed';
   const createdId = terminal?.value?.channel_id || '';
   const channel = channels.find((row) => row.qualified_name === expectedQualifiedName || row.id === createdId) || null;
   return {
     accepted: Boolean(turn),
-    ledger: terminal?.status === 'completed',
+    ledger: lifecycle?.status === 'completed',
+    resultCurrent,
+    resultPhase: resultState.phase,
+    resultError: resultState.error,
     failed,
-    error: failed ? terminal.error_code || terminal.reason || terminal.detail || 'unknown' : '',
+    error: failed ? (terminal ? terminal.error_code || terminal.reason || terminal.detail || 'unknown' : resultState.error) : '',
     observable: Boolean(channel),
     membership: Boolean(channel && membership?.(channel.id)),
     serving: channel?.open === true,
     channel,
-    ready: Boolean(terminal?.status === 'completed' && channel && membership?.(channel.id) && channel.open === true),
+    ready: Boolean(resultCurrent && lifecycle?.status === 'completed' && channel && membership?.(channel.id) && channel.open === true),
   };
 }
 
 export function actorConvergence({ turn, type, actorId = '', roster = [] }) {
-  const terminal = argsOf(turn?.terminal);
+  const lifecycle = argsOf(turn?.terminal);
+  const terminal = terminalResultPayload(turn);
+  const resultState = terminalResultState(turn);
+  const resultCurrent = Boolean(terminal);
   // system.member.* 的回复是平铺的：create/admit/restart 回 {member}，delete 回 {removed:[…]}。
   const targetId = terminal?.member || actorId;
   const actor = roster.find((row) => row.id === targetId) || null;
-  const ledger = terminal?.status === 'completed';
-  const failed = terminal?.status === 'failed';
+  const ledger = lifecycle?.status === 'completed';
+  const failed = lifecycle?.status === 'failed';
   const rosterConverged = ledger && (
     type === GOVERNANCE_TYPES.remove ? !actor
       : type === GOVERNANCE_TYPES.restart ? Boolean(actor && actor.bound !== false)
         : Boolean(actor)
   );
-  return { accepted: Boolean(turn), ledger, failed, error: failed ? terminal.error_code || terminal.reason || terminal.detail || 'unknown' : '', actor, targetId, rosterConverged, ready: ledger && rosterConverged };
+  return { accepted: Boolean(turn), ledger, resultCurrent, resultPhase: resultState.phase, resultError: resultState.error, failed, error: failed ? (terminal ? terminal.error_code || terminal.reason || terminal.detail || 'unknown' : resultState.error) : '', actor, targetId, rosterConverged, ready: resultCurrent && ledger && rosterConverged };
 }

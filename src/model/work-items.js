@@ -2,6 +2,7 @@ import { argsOf } from '../protocol/envelope.js';
 import { isAgentControl, supportsType } from './capabilities.js';
 import { TYPES, isSystemWord } from '../protocol/vocab.js';
 import { actorNameMap } from './actor-display.js';
+import { terminalResultPayload, terminalResultState } from './fold.js';
 
 export const WORK_ITEM_KINDS = ['task', 'approval', 'agent_run', 'recovery', 'automation'];
 export const ACTIVE_WORK_ITEM_STATES = new Set(['active', 'waiting', 'blocked', 'uncertain']);
@@ -26,6 +27,7 @@ function stateOfTurn(turn) {
     return 'active';
   }
   if (argsOf(turn.terminal)?.status === 'completed') return 'completed';
+  if (turn.terminalClosureOnly) return 'uncertain';
   const reason = argsOf(turn.terminal)?.reason || argsOf(turn.terminal)?.error_code;
   return reason === 'cancelled' || reason === 'interrupted' ? 'cancelled' : 'failed';
 }
@@ -42,9 +44,10 @@ function titleOfTurn(turn) {
 }
 
 function taskValue(turn) {
-  if (turn?.request?.type !== 'task.create' || argsOf(turn?.terminal)?.status !== 'completed') return null;
-  const raw = argsOf(turn.terminal)?.value;
-  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : argsOf(turn.terminal);
+  const terminal = terminalResultPayload(turn);
+  if (turn?.request?.type !== 'task.create' || terminal?.status !== 'completed') return null;
+  const raw = terminal.value;
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : terminal;
   const taskId = value.task_id || value.id;
   return typeof taskId === 'string' && taskId ? { ...value, taskId } : null;
 }
@@ -96,7 +99,7 @@ export function buildWorkItemIndex({ state, pending = [], timers = [], selfId = 
       index.set(`approval:${channelId}:${turn.requestId}`, {
         key: `approval:${channelId}:${turn.requestId}`, channelId, kind: 'approval', nativeId: turn.requestId,
         title: titleOfTurn(turn), state: itemState, assigneeActorIds: assignees, requesterActorId: request.sender?.id,
-        dueAt: request.expires_at || '', waitingFor: '等待审批决定', priority: argsOf(request)?.priority || 'high', source: itemSource,
+        dueAt: request.expires_at || '', waitingFor: itemState === 'uncertain' ? terminalResultState(turn).error : '等待审批决定', priority: argsOf(request)?.priority || 'high', source: itemSource,
         relatedArtifacts: [], createdAt: request.ts, updatedAt: turn.terminal?.ts || request.ts,
         actionableBySelf: writable && itemState === 'waiting' && assignees.includes(selfId), provenance: 'ledger',
         diagnostic: { requestType: request.type, impact: argsOf(request)?.impact || '' },
@@ -104,13 +107,19 @@ export function buildWorkItemIndex({ state, pending = [], timers = [], selfId = 
       continue;
     }
     if (!isControlRequest(request.type)) {
+      const resultState = terminalResultState(turn);
+      const resultUnavailable = turn.terminalClosureOnly === true && (
+        request.type === 'task.create' || argsOf(turn.terminal)?.status === 'failed'
+      );
       index.set(`agent_run:${channelId}:${turn.requestId}`, {
         key: `agent_run:${channelId}:${turn.requestId}`, channelId, kind: 'agent_run', nativeId: turn.requestId,
-        title: titleOfTurn(turn), state: stateOfTurn(turn), assigneeActorIds: request.audience || [], requesterActorId: request.sender?.id,
-        waitingFor: turn.latestStatus || '', source: itemSource, relatedArtifacts: [], createdAt: request.ts,
+        title: titleOfTurn(turn), state: resultUnavailable ? 'uncertain' : stateOfTurn(turn), assigneeActorIds: request.audience || [], requesterActorId: request.sender?.id,
+        waitingFor: resultUnavailable
+          ? resultState.error
+          : turn.latestStatus || '', source: itemSource, relatedArtifacts: [], createdAt: request.ts,
         updatedAt: turn.terminal?.ts || timestamp(turn.provisional?.at(-1)?.envelope, request.ts),
         actionableBySelf: writable && !turn.terminal && request.sender?.id === selfId, provenance: 'ledger',
-        diagnostic: { requestType: request.type, requestId: turn.requestId },
+        diagnostic: { requestType: request.type, requestId: turn.requestId, resultUnavailable, resultPhase: resultState.phase },
       });
     }
   }

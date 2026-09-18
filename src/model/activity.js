@@ -1,6 +1,7 @@
 import { argsOf } from '../protocol/envelope.js';
 import { systemEventPresentation } from './system-event-presentation.js';
 import { turnStatusLabel } from './turn-presentation.js';
+import { terminalResultPayload } from './fold.js';
 
 const READABLE_ACCESS = new Set([
   'member_active',
@@ -319,7 +320,8 @@ function turnSearchItem(channelId, turn) {
   const request = turn?.request || {};
   const source = sourceRef(null, { channelId, view: 'dynamic', objectType: 'turn', objectId: turn.requestId, seq: turn.requestSeq, requestId: turn.requestId, envelopeId: request.id });
   const title = string(argsOf(request)?.title || argsOf(request)?.text || request.type) || '频道工作';
-  const responseText = string(argsOf(turn.terminal)?.text || argsOf(turn.terminal)?.detail);
+  const terminal = terminalResultPayload(turn);
+  const responseText = string(terminal?.text || terminal?.detail);
   return {
     key: `search:${channelId}:turn:${turn.requestId}`,
     channelId,

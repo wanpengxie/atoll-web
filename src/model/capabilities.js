@@ -1,5 +1,6 @@
 import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
+import { terminalResultPayload, terminalResultState } from './fold.js';
 
 // agent 基座直接受理的控制词（drivers/agents/base/base.go）。它们不是“一件正在
 // 进行的工作”，所以工作项索引把它们排除在外。
@@ -105,16 +106,25 @@ export function capabilityIndexFromState(state, liveRequestIds = null) {
     const current = index.get(actorId) || { actorId, describe: null, loading: false, error: null, requestId: '', seq: 0 };
     current.requestId = turn.requestId;
     current.seq = turn.lastSeq;
+    const terminal = terminalResultPayload(turn);
+    const resultState = terminalResultState(turn);
+    current.resultUnavailable = turn.terminalClosureOnly === true;
     current.loading = !turn.terminal;
-    if (argsOf(turn.terminal)?.status === 'completed') {
-      const describe = normalizeDescribe(describeValue(argsOf(turn.terminal)));
+    if (turn.terminalClosureOnly) {
+      current.error = {
+        code: 'describe_result_unavailable',
+        detail: resultState.error,
+      };
+    }
+    if (terminal?.status === 'completed') {
+      const describe = normalizeDescribe(describeValue(terminal));
       if (describe) current.describe = mergeDescribe(current.describe, describe);
       current.error = describe ? null : { code: 'invalid_describe', detail: 'Actor 返回的能力结构无法识别' };
       current.loading = false;
-    } else if (turn.terminal) {
+    } else if (terminal) {
       current.error = {
-        code: argsOf(turn.terminal)?.error_code || argsOf(turn.terminal)?.reason || 'describe_failed',
-        detail: argsOf(turn.terminal)?.detail || '',
+        code: terminal.error_code || terminal.reason || 'describe_failed',
+        detail: terminal.detail || '',
       };
       current.loading = false;
     }

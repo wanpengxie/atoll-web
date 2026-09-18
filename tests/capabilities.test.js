@@ -84,4 +84,20 @@ describe('actor capabilities', () => {
     state.turns.values = () => { throw new Error('不应扫描全部 turn'); };
     expect(capabilityIndexFromState(state, new Set(['d1'])).get('agent')?.describe?.className).toBe('codex');
   });
+
+  it('compact closure 只表示 describe 已关闭，不伪造 invalid_describe', () => {
+    const rows = [
+      envelope('d1', 'request', 'actor.describe', {}, {}),
+      envelope('d1-done', 'response', 'actor.describe', { status: 'completed', class: 'codex', words: { 'agent.ask': {} } }, { parent_id: 'd1' }),
+    ].map((value, index) => ({ channel_id: 'c0', seq: index + 1, envelope: value }));
+    const state = fold(rows);
+    state.turns.get('d1').terminalClosureOnly = true;
+    const entry = capabilityIndexFromState(state, new Set(['d1'])).get('agent');
+    expect(entry).toMatchObject({
+      describe: null,
+      loading: false,
+      resultUnavailable: true,
+      error: { code: 'describe_result_unavailable', detail: '终态详情不可用，请刷新或重新进入频道' },
+    });
+  });
 });

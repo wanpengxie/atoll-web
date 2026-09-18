@@ -35,6 +35,19 @@ describe('F4 WorkItem 索引', () => {
     expect(providers).toEqual([expect.objectContaining({ actorId: 'agent', name: '执行者' })]);
   });
 
+  it('task.create compact closure 稳定标成详情不可用，不猜成已完成普通回合', () => {
+    const state = fold([
+      row(1, env('task-request', 'request', 'task.create', { title: '跟进报告' })),
+      row(2, env('task-response', 'response', 'task.create', { status: 'completed', value: { task_id: 'task-7', status: 'active' } }, { parent_id: 'task-request', sender: { kind: 'agent', id: 'agent' } })),
+    ], 'me');
+    state.turns.get('task-request').terminalClosureOnly = true;
+    const index = buildWorkItemIndex({ state, selfId: 'me', access: 'member_active' });
+    expect(index.has('task:c1:task-7')).toBe(false);
+    expect(index.get('agent_run:c1:task-request')).toMatchObject({
+      state: 'uncertain', waitingFor: '终态详情不可用，请刷新或重新进入频道', diagnostic: { resultUnavailable: true, resultPhase: 'unavailable' },
+    });
+  });
+
   it('过滤责任、状态和类型并保持自动动作独立分组', () => {
     const items = [
       { key: 'a', kind: 'approval', state: 'waiting', assigneeActorIds: ['me'], actionableBySelf: true, priority: 'high', updatedAt: 1 },

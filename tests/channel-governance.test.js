@@ -51,4 +51,42 @@ describe('阶段 D 频道治理模型', () => {
     expect(actorConvergence({ turn, type: 'system.member.create', roster: [{ id: 'agent-1', bound: true }] }).ready).toBe(true);
     expect(actorConvergence({ turn: { terminal: { payload: { status: 'completed', removed: ['agent-1'] } } }, type: 'system.member.delete', actorId: 'agent-1', roster: [] }).ready).toBe(true);
   });
+
+  it('compact closure 保留 ledger lifecycle，但不以缺失业务结果宣告 ready', () => {
+    const createTurn = { terminalClosureOnly: true, terminal: { payload: { status: 'completed' } } };
+    expect(creationConvergence({
+      turn: createTurn,
+      expectedQualifiedName: 'c0.new',
+      channels: [{ id: 'new-id', qualified_name: 'c0.new', open: true }],
+      membership: () => true,
+    })).toMatchObject({ ledger: true, resultCurrent: false, observable: true, ready: false });
+    expect(actorConvergence({
+      turn: createTurn,
+      type: 'system.member.create',
+      actorId: 'agent-1',
+      roster: [{ id: 'agent-1', bound: true }],
+    })).toMatchObject({ ledger: true, resultCurrent: false, rosterConverged: true, ready: false });
+  });
+
+  it('failed compact closure 保留失败生命周期，但不猜失败原因', () => {
+    const failedClosure = { terminalClosureOnly: true, terminal: { payload: { status: 'failed' } } };
+    expect(creationConvergence({ turn: failedClosure, expectedQualifiedName: 'c0.new' }))
+      .toMatchObject({ failed: true, resultCurrent: false, error: '终态详情不可用，请刷新或重新进入频道' });
+    expect(actorConvergence({ turn: failedClosure, type: 'system.member.create' }))
+      .toMatchObject({ failed: true, resultCurrent: false, error: '终态详情不可用，请刷新或重新进入频道' });
+  });
+
+  it('compact result 缺失是稳定可观测的不可用终态', () => {
+    const turn = {
+      terminalClosureOnly: true,
+      terminal: { payload: { status: 'completed' } },
+    };
+    expect(creationConvergence({ turn, expectedQualifiedName: 'c0.new' })).toMatchObject({
+      ledger: true,
+      resultCurrent: false,
+      resultPhase: 'unavailable',
+      resultError: '终态详情不可用，请刷新或重新进入频道',
+      ready: false,
+    });
+  });
 });

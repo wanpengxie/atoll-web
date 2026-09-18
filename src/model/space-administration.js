@@ -2,6 +2,7 @@ import { argsOf } from '../protocol/envelope.js';
 import { registryCommand } from './channel-governance.js';
 import { isSystemDeclaration } from './management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
+import { terminalResultPayload, terminalResultState } from './fold.js';
 
 export const SPACE_TYPES = Object.freeze({
   actorRegister: TYPES.actorTemplate.create,
@@ -90,7 +91,12 @@ export function safeChannelDeviceRows(observation) {
 }
 
 export function terminalValue(state, requestId) {
-  const terminal = argsOf(state?.turns?.get(requestId)?.terminal);
+  const turn = state?.turns?.get(requestId);
+  if (turn?.terminalClosureOnly) {
+    const result = terminalResultState(turn);
+    return { phase: 'result_unavailable', value: null, error: result.error };
+  }
+  const terminal = terminalResultPayload(turn);
   if (!terminal) return { phase: 'waiting', value: null, error: '' };
   if (terminal.status === 'failed') return { phase: 'failed', value: terminal.value ?? null, error: terminal.error_code || terminal.reason || terminal.detail || '操作失败' };
   if (terminal.status === 'completed') return { phase: 'completed', value: terminal.value ?? null, error: '' };
