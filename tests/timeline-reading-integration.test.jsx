@@ -4,7 +4,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { createHistoryDemandPort } from '../src/model/history-demand.js';
-import { currentEntryAuthority, pendingArrivalEvents, useReadingSession } from '../src/ui/timeline/useReadingSession.js';
+import { currentEntryAuthority, installedTailReadRows, pendingArrivalEvents, useReadingSession } from '../src/ui/timeline/useReadingSession.js';
 
 vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => {
   const { PresentationMessageList } = await import('./helpers/PresentationMessageList.jsx');
@@ -1857,4 +1857,282 @@ it('requires a current durable physical tail before a local echo can inherit cur
   expect(currentEntryAuthority({
     ...input, bottomReady: false, authoritativeEmpty: true, historyStatus: { headSeq: 0, coverage: [] },
   })?.candidateID).toBe('local');
+});
+
+// ---------------------------------------------------------------------------
+// Latest-scope backlog acknowledgement contract (user correction 2026-09-18):
+// reaching the latest content of the current scope, including a successful
+// jump-to-latest, acknowledges the backlog this scope has installed. It does
+// not require every long message to pass through the viewport; browsing still
+// acknowledges individually seen rows; a filtered tail cannot clear other
+// scopes; later arrivals are not swept into an older receipt; nothing clears
+// before the jump actually reaches the tail.
+// ---------------------------------------------------------------------------
+
+function mountBacklogHarness({
+  scope = 'mine',
+  actorFilter = new Set(),
+  rows,
+  unseenRecords,
+  savedMode = 'browsing',
+  revision = 3,
+  sourceRevision = 12,
+  arrivals = null,
+}) {
+  let port;
+  const physicalMarkRead = vi.fn((acknowledgement) => acknowledgement.physicalSeq || acknowledgement.identities.length);
+  const snapshot = {
+    revision,
+    sourceRevision,
+    rows,
+    entities: new Map(rows.map((row) => [row.id, row])),
+  };
+  const history = createHistoryDemandPort({
+    channelId: 'c0',
+    status: { attached: true, messageCurrent: true, generation: 4, presentationRevision: sourceRevision },
+    markRead: physicalMarkRead,
+  });
+  const viewSessions = {
+    readView: () => ({
+      mode: savedMode, revision: 0, unseenTail: unseenRecords.length,
+      unseenRecords,
+    }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  function Harness() {
+    const reading = useReadingSession({
+      channelID: 'c0',
+      viewKey: `c0:${scope}:${[...actorFilter].join(',')}`,
+      snapshot,
+      history,
+      viewSessions,
+      arrivals,
+      historyViewSpec: { scope, actorFilter },
+      surfaceVisible: true,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  render(<Harness />);
+  return { port: () => port, physicalMarkRead, snapshot };
+}
+
+const backlogRows = [
+  { id: 'root-a', seqLow: 10, seqHigh: 31 },
+  { id: 'root-b', seqLow: 20, seqHigh: 33 },
+  { id: 'root-c', seqLow: 30, seqHigh: 35 },
+  { id: 'tail', seqLow: 40, seqHigh: 40 },
+];
+
+it('reaching the installed tail acknowledges the whole installed backlog of the scope, not only visible rows', async () => {
+  const { port, physicalMarkRead } = mountBacklogHarness({
+    rows: backlogRows,
+    unseenRecords: [['root-a', 31], ['root-b', 33], ['root-c', 35]],
+  });
+  await waitFor(() => expect(port()?.unseen).toBe(3));
+  act(() => port().jumpToLatest());
+  // Only the tail row is inside the viewport when the jump lands; the three
+  // backlog roots above it never passed through the viewport.
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 40,
+    visibleRows: [{ messageID: 'tail', seqHigh: 40 }],
+  }));
+  expect(port().unseen).toBe(0);
+  const acknowledgement = physicalMarkRead.mock.calls.at(-1)[0];
+  // Filtered scope: exact identities only, never the physical channel cursor.
+  expect(acknowledgement.physicalSeq).toBe(0);
+  expect(acknowledgement.identities).toEqual(expect.arrayContaining([
+    { messageID: 'root-a', seqHigh: 31 },
+    { messageID: 'root-b', seqHigh: 33 },
+    { messageID: 'root-c', seqHigh: 35 },
+    { messageID: 'tail', seqHigh: 40 },
+  ]));
+  expect(acknowledgement.identities).toHaveLength(4);
+  expect(acknowledgement.receipt.tailAcknowledged).toBe(true);
+  expect(acknowledgement.receipt.observedRows).toEqual([{ messageID: 'tail', seqHigh: 40 }]);
+});
+
+it('a jump-to-latest clears nothing until the tail is actually reached', async () => {
+  const { port, physicalMarkRead } = mountBacklogHarness({
+    rows: backlogRows,
+    unseenRecords: [['root-a', 31], ['root-b', 33]],
+  });
+  await waitFor(() => expect(port()?.unseen).toBe(2));
+  act(() => port().jumpToLatest());
+  expect(port().getSession().mode).toBe('following');
+  expect(port().unseen).toBe(2);
+  // The list is still travelling: an observation that is not at the tail
+  // (even in following mode, even with the tail row installed) is not success.
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 1, atTail: false,
+    surfaceVisible: true, installedHighSeq: 40,
+    visibleRows: [{ messageID: 'root-c', seqHigh: 35 }],
+  }));
+  expect(port().unseen).toBe(2);
+  expect(physicalMarkRead.mock.calls.filter(([ack]) => ack.identities.some((row) => row.messageID === 'root-a'))).toHaveLength(0);
+  // A hidden surface at the tail is not a successful jump either.
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: false, installedHighSeq: 40,
+    visibleRows: [{ messageID: 'tail', seqHigh: 40 }],
+  }));
+  expect(port().unseen).toBe(2);
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 40,
+    visibleRows: [{ messageID: 'tail', seqHigh: 40 }],
+  }));
+  expect(port().unseen).toBe(0);
+});
+
+it('a tail receipt never sweeps rows that landed above the observed installed high-water', async () => {
+  const rows = [
+    ...backlogRows,
+    // Arrived after the observation being replayed: its seqHigh is above the
+    // installed high-water that the DOM reported.
+    { id: 'later', seqLow: 41, seqHigh: 41 },
+  ];
+  const { port, physicalMarkRead } = mountBacklogHarness({
+    rows,
+    unseenRecords: [['root-a', 31], ['later', 41]],
+  });
+  await waitFor(() => expect(port()?.unseen).toBe(2));
+  act(() => port().jumpToLatest());
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 40,
+    visibleRows: [{ messageID: 'tail', seqHigh: 40 }],
+  }));
+  expect(port().unseen).toBe(1);
+  const acknowledgement = physicalMarkRead.mock.calls.at(-1)[0];
+  expect(acknowledgement.identities.map((row) => row.messageID)).not.toContain('later');
+  expect(acknowledgement.identities.map((row) => row.messageID)).toContain('root-a');
+});
+
+it('a staged arrival above the reached tail stays pending instead of being acknowledged by that tail', async () => {
+  const rows = [
+    ...backlogRows,
+    { id: 'incoming', seqLow: 44, seqHigh: 44 },
+  ];
+  const arrivals = {
+    revision: 1,
+    acknowledgedRevision: 0,
+    events: [{ revision: 1, key: 'incoming', rowID: 'incoming', seq: 44 }],
+    acknowledge: vi.fn(),
+  };
+  const { port } = mountBacklogHarness({ rows, unseenRecords: [['root-b', 33]], arrivals });
+  // Saved backlog root-b plus the staged arrival, which the browsing session
+  // resolves as unseen from the committed projection before any observation.
+  await waitFor(() => expect(port()?.unseen).toBe(2));
+  act(() => port().jumpToLatest());
+  // The tail observation was taken while the DOM had installed up to seq 40;
+  // the arrival at 44 is later content and must not ride on this receipt.
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 40,
+    visibleRows: [{ messageID: 'tail', seqHigh: 40 }],
+  }));
+  // root-b (33 <= 40) is acknowledged by the reached tail; incoming (44) is
+  // above the observed installed high-water and survives this receipt.
+  expect(port().unseen).toBe(1);
+  expect(port().getSession().mode).toBe('following');
+  // Once the DOM installs the new tail and the reader is still there, the
+  // next observation acknowledges it.
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 2, atTail: true,
+    surfaceVisible: true, installedHighSeq: 44,
+    visibleRows: [{ messageID: 'incoming', seqHigh: 44 }],
+  }));
+  expect(port().unseen).toBe(0);
+});
+
+it('browsing away from the tail still acknowledges individually seen rows and keeps the rest', async () => {
+  const { port, physicalMarkRead } = mountBacklogHarness({
+    rows: backlogRows,
+    unseenRecords: [['root-a', 31], ['root-b', 33], ['root-c', 35]],
+  });
+  await waitFor(() => expect(port()?.unseen).toBe(3));
+  expect(port().getSession().mode).toBe('browsing');
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'user', geometryRevision: 1, atTail: false,
+    surfaceVisible: true, installedHighSeq: 40,
+    visibleRows: [{ messageID: 'root-b', seqHigh: 33 }],
+  }));
+  expect(port().unseen).toBe(2);
+  expect(port().getSession().mode).toBe('browsing');
+  const acknowledgement = physicalMarkRead.mock.calls.at(-1)[0];
+  expect(acknowledgement.physicalSeq).toBe(0);
+  expect(acknowledgement.identities).toEqual([{ messageID: 'root-b', seqHigh: 33 }]);
+  expect(acknowledgement.receipt.tailAcknowledged).toBeUndefined();
+});
+
+it('a filtered tail acknowledges only identities its own projection installed and never the physical cursor', async () => {
+  // The channel also holds roots outside this filter; they are absent from
+  // this view's projection and therefore cannot be named by its receipt.
+  const { port, physicalMarkRead } = mountBacklogHarness({
+    scope: 'mine',
+    actorFilter: new Set(['agent:steward']),
+    rows: backlogRows,
+    unseenRecords: [['root-a', 31]],
+  });
+  await waitFor(() => expect(port()?.unseen).toBe(1));
+  act(() => port().jumpToLatest());
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 40,
+    visibleRows: [{ messageID: 'tail', seqHigh: 40 }],
+  }));
+  expect(port().unseen).toBe(0);
+  const acknowledgement = physicalMarkRead.mock.calls.at(-1)[0];
+  expect(acknowledgement.physicalSeq).toBe(0);
+  expect(acknowledgement.identities.map((row) => row.messageID).sort())
+    .toEqual(['root-a', 'root-b', 'root-c', 'tail']);
+  expect(acknowledgement.identities.map((row) => row.messageID)).not.toContain('other-scope-root');
+});
+
+it('an unfiltered tail advances the physical cursor to the installed high-water even when that row is above the viewport', async () => {
+  const rows = [
+    { id: 'old-root', seqLow: 10, seqHigh: 52 }, // late terminal on an old root, physically above
+    { id: 'tail', seqLow: 40, seqHigh: 40 },
+  ];
+  const { port, physicalMarkRead } = mountBacklogHarness({
+    scope: 'all',
+    rows,
+    unseenRecords: [['old-root', 52]],
+  });
+  await waitFor(() => expect(port()?.unseen).toBe(1));
+  act(() => port().jumpToLatest());
+  act(() => port().onReadingObservation({
+    activationID: port().activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 52,
+    visibleRows: [{ messageID: 'tail', seqHigh: 40 }],
+  }));
+  expect(port().unseen).toBe(0);
+  const acknowledgement = physicalMarkRead.mock.calls.at(-1)[0];
+  expect(acknowledgement.physicalSeq).toBe(52);
+});
+
+it('installedTailReadRows bounds identities by the installed high-water and drops local echo rows', () => {
+  expect(installedTailReadRows([
+    { id: 'a', seqHigh: 5 },
+    { id: 'b', seqHigh: 9 },
+    { id: 'future', seqHigh: 12 },
+    { id: 'echo', seqHigh: 7, localState: 'sending' },
+    { id: 'echo-body', seqHigh: 8, body: { local: true } },
+  ], 9, [{ messageID: 'a', seqHigh: 6 }, { messageID: 'z', seqHigh: 99 }])).toEqual([
+    { messageID: 'a', seqHigh: 6 },
+    { messageID: 'b', seqHigh: 9 },
+  ]);
+  expect(installedTailReadRows([{ id: 'a', seqHigh: 5 }], 0)).toEqual([]);
 });

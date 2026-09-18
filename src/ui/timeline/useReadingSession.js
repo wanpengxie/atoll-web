@@ -113,6 +113,29 @@ export function pendingArrivalEvents(arrivals, previousRevision) {
     .filter((event) => Number(event?.revision || 0) > previousRevision && Number(event?.revision || 0) <= revision);
 }
 
+// Reaching the latest content of one semantic view acknowledges the backlog
+// that view has actually installed, not only the rows that happen to be inside
+// the viewport at that instant. The set is bounded by the DOM-derived
+// installed high-water so a row that lands after the observation (seqHigh
+// above it) is never swept into this older receipt. Local echo rows carry no
+// durable identity and are excluded.
+export function installedTailReadRows(rows = [], installedHighSeq = 0, visibleRows = []) {
+  const high = Number(installedHighSeq || 0);
+  const byID = new Map();
+  const admit = (messageID, seqHigh) => {
+    const id = String(messageID || '');
+    const seq = Number(seqHigh || 0);
+    if (!id || !Number.isSafeInteger(seq) || seq <= 0 || seq > high) return;
+    byID.set(id, Math.max(byID.get(id) || 0, seq));
+  };
+  for (const row of visibleRows || []) admit(row?.messageID, row?.seqHigh);
+  for (const row of rows || []) {
+    if (!row || row.localState || row.body?.local === true) continue;
+    admit(row.id, row.seqHigh);
+  }
+  return Object.freeze([...byID].map(([messageID, seqHigh]) => Object.freeze({ messageID, seqHigh })));
+}
+
 function createController({ channelID, viewKey, viewSessions }) {
   const activationID = newId();
   const saved = viewSessions?.readView(channelID, viewKey) || { mode: READING_MODE.following };
@@ -336,6 +359,43 @@ function createController({ channelID, viewKey, viewSessions }) {
       persist(previousRevision);
       emit();
       return unseenRecords.size;
+    },
+    // The reader reached the installed tail of this view. Every candidate this
+    // view already knows about at or below that tail is acknowledged in one
+    // step, whether or not its row ever passed through the viewport. Records
+    // above the installed tail are later arrivals and stay untouched.
+    acknowledgeInstalledTail({ installedHighSeq = 0 } = {}) {
+      const high = Number(installedHighSeq);
+      const idle = () => Object.freeze({
+        pending: pendingRecords.size,
+        unseen: unseenRecords.size,
+        acknowledged: Object.freeze([]),
+      });
+      if (!started || !Number.isSafeInteger(high) || high <= 0) return idle();
+      const acknowledged = [];
+      for (const [key, record] of pendingRecords) {
+        if (record.seq > high) continue;
+        pendingRecords.delete(key);
+        acknowledged.push(Object.freeze({ key, seq: record.seq, stage: 'pending' }));
+      }
+      let removed = 0;
+      for (const [key, record] of unseenRecords) {
+        if (record.seq > high) continue;
+        unseenRecords.delete(key);
+        removed += 1;
+        acknowledged.push(Object.freeze({ key, seq: record.seq, stage: 'unseen' }));
+      }
+      if (removed) {
+        const previousRevision = session.revision;
+        session = Object.freeze({ ...session, revision: session.revision + 1 });
+        persist(previousRevision);
+        emit();
+      }
+      return Object.freeze({
+        pending: pendingRecords.size,
+        unseen: unseenRecords.size,
+        acknowledged: Object.freeze(acknowledged),
+      });
     },
     unseenEvidence() {
       return Object.freeze({
@@ -1217,6 +1277,45 @@ export function useReadingSession({
     return true;
   }, [channelID, controller, historyViewSpec, unseen, viewKey]);
 
+  // Installed-tail acknowledgement for the viewport notice. Same fences as the
+  // durable tail receipt below: the observation must belong to the committed
+  // owner and the currently presented revision, the reader must actually be
+  // following at the physical tail, and the surface/document must be visible.
+  // A jump-to-latest that has not yet reached the tail therefore clears nothing.
+  const acknowledgeInstalledTail = useCallback(() => {
+    const owner = committedOwnerRef.current;
+    const current = controller.getSnapshot().session;
+    const evidence = visibleTailEvidenceRef.current;
+    if (owner.controller !== controller
+      || evidence.owner !== owner
+      || evidence.controller !== controller
+      || evidence.activationID !== current.activationID
+      || evidence.atTail !== true
+      || evidence.surfaceVisible !== true
+      || current.mode !== READING_MODE.following
+      || Number(evidence.installedHighSeq || 0) <= 0
+      || Number(evidence.presentationRevision || 0) !== Number(owner.snapshot.revision || 0)
+      || document.visibilityState !== 'visible') return false;
+    const before = controller.unseenEvidence();
+    const result = controller.acknowledgeInstalledTail({
+      installedHighSeq: Number(evidence.installedHighSeq || 0),
+    });
+    if (result.acknowledged.length) {
+      readingTrace('reading.installed-tail-ack', {
+        activationID: current.activationID,
+        inputEpoch: current.inputEpoch,
+        presentationRevision: Number(evidence.presentationRevision || 0),
+        installedHighSeq: Number(evidence.installedHighSeq || 0),
+        before,
+        acknowledged: result.acknowledged,
+        pending: result.pending,
+        unseen: result.unseen,
+      });
+    }
+    acknowledgeDisposedArrivals();
+    return result.acknowledged.length > 0;
+  }, [acknowledgeDisposedArrivals, controller]);
+
   const markVisibleTailRead = useCallback(() => {
     const owner = committedOwnerRef.current;
     const current = controller.getSnapshot().session;
@@ -1233,6 +1332,20 @@ export function useReadingSession({
       || Number(evidence.presentationRevision || 0) !== Number(currentSnapshot.revision || 0)
       || document.visibilityState !== 'visible') return false;
     const scope = historyViewSpec?.scope || '';
+    // Reaching the installed tail of this view is the acknowledgement of the
+    // backlog this view has installed. The demand port derives exact read
+    // identities (and, for an unfiltered view, the physical cursor) from the
+    // identity rows on the receipt, so the receipt carries every installed
+    // in-scope row at or below the observed installed high-water together
+    // with the rows that were actually inside the viewport. Rows above that
+    // high-water (later arrivals) are excluded and need their own tail
+    // observation. Scope is still bounded by this view's projection: a
+    // filtered view cannot name rows it never installed.
+    const acknowledgedRows = installedTailReadRows(
+      currentSnapshot.rows,
+      Number(evidence.installedHighSeq || 0),
+      evidence.visibleRows,
+    );
     const receipt = Object.freeze({
       channelId: channelID,
       viewKey,
@@ -1245,7 +1358,9 @@ export function useReadingSession({
       following: true,
       surfaceVisible: true,
       installedHighSeq: Number(evidence.installedHighSeq || 0),
-      visibleRows: evidence.visibleRows,
+      visibleRows: acknowledgedRows,
+      observedRows: evidence.visibleRows,
+      tailAcknowledged: true,
     });
     return owner.markRead?.(receipt, Object.freeze({
       viewKey,
@@ -1329,13 +1444,14 @@ export function useReadingSession({
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState !== 'visible') return;
+      acknowledgeInstalledTail();
       resolveArrivals();
       acknowledgeVisibleRows();
       markVisibleTailRead();
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [acknowledgeVisibleRows, markVisibleTailRead, resolveArrivals]);
+  }, [acknowledgeInstalledTail, acknowledgeVisibleRows, markVisibleTailRead, resolveArrivals]);
 
   return useMemo(() => ({
     activationID: controller.activationID,
@@ -1453,6 +1569,10 @@ export function useReadingSession({
         generation: Number(historyStatusRef.current.generation || 0),
         visibleRows: Object.freeze([...(observation.visibleRows || [])]),
       };
+      // Installed-tail acknowledgement runs before arrival resolution so a
+      // candidate at or below the reached tail is never first published as
+      // unseen and then retracted inside the same observation.
+      acknowledgeInstalledTail();
       resolveArrivals();
       acknowledgeVisibleRows();
       // Durable channel read progress retains its physical-tail contract.
@@ -1522,5 +1642,5 @@ export function useReadingSession({
     revokeBottomIntent,
     isFollowing() { return controller.getSnapshot().session.mode === READING_MODE.following; },
     getSession() { return controller.getSnapshot().session; },
-  }), [acknowledgeVisibleRows, availability, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, session, surfaceVisible, syncStatus.interestRevision, unseen]);
+  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, session, surfaceVisible, syncStatus.interestRevision, unseen]);
 }
