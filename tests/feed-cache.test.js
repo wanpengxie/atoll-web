@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
+import { describe, expect, it, vi } from 'vitest';
+import { indexedDB, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb';
 import { createFeedCache, redactFeedSecrets, resumeSnapshot } from '../src/model/feed-cache.js';
 
 class MemoryStorage {
@@ -19,6 +19,182 @@ function envelope(id, text) {
 }
 
 describe('feed cache', () => {
+	it('publishes in-memory Meta only after its IndexedDB transaction commits', async () => {
+	  const databaseName = `feed-cache-meta-commit-${crypto.randomUUID()}`;
+	  const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	  await cache.openMeta();
+	  const originalPut = IDBObjectStore.prototype.put;
+	  let failed = false;
+	  IDBObjectStore.prototype.put = function put(value, ...args) {
+		if (!failed && this.name === 'globalMeta' && value?.id === 'global') {
+		  failed = true;
+		  throw new Error('injected globalMeta failure');
+		}
+		return originalPut.call(this, value, ...args);
+	  };
+	  try {
+		await expect(cache.saveRows([
+		  { channel_id: 'c0', seq: 1, envelope: envelope('m-1', 'must rollback') },
+		])).rejects.toThrow('injected globalMeta failure');
+	  } finally {
+		IDBObjectStore.prototype.put = originalPut;
+	  }
+
+	  expect(failed).toBe(true);
+	  expect(cache.metaSnapshot().has('c0')).toBe(false);
+	  const reopened = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	  expect((await reopened.openMeta()).has('c0')).toBe(false);
+	  await expect(reopened.readBefore('c0', 0, 20)).resolves.toMatchObject({ rows: [], cacheMiss: true });
+	});
+
+	it('keeps the last committed Meta when global trimming rolls back', async () => {
+	  const databaseName = `feed-cache-trim-rollback-${crypto.randomUUID()}`;
+	  const cache = createFeedCache({
+		indexedDBImpl: indexedDB,
+		IDBKeyRangeImpl: IDBKeyRange,
+		databaseName,
+		globalBytes: 1,
+	  });
+	  await cache.openMeta();
+	  const originalPut = IDBObjectStore.prototype.put;
+	  let channelMetaPuts = 0;
+	  IDBObjectStore.prototype.put = function put(value, ...args) {
+		if (this.name === 'channelMeta' && value?.channelId === 'c0') {
+		  channelMetaPuts += 1;
+		  if (channelMetaPuts === 2) throw new Error('injected trim Meta failure');
+		}
+		return originalPut.call(this, value, ...args);
+	  };
+	  try {
+		await expect(cache.saveRows([
+		  { channel_id: 'c0', seq: 1, envelope: envelope('m-1', 'committed before trim') },
+		])).rejects.toThrow('injected trim Meta failure');
+	  } finally {
+		IDBObjectStore.prototype.put = originalPut;
+	  }
+
+	  expect(cache.metaSnapshot().get('c0')).toMatchObject({
+		oldestSeq: 1, newestSeq: 1, rowCount: 1,
+	  });
+	  const reopened = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	  expect((await reopened.openMeta()).get('c0')).toMatchObject({
+		oldestSeq: 1, newestSeq: 1, rowCount: 1,
+	  });
+	  await reopened.saveCoverage('c0', 1, 1);
+	  await reopened.idle();
+	  expect((await reopened.readBefore('c0', 0, 20)).rows.map((row) => row.seq)).toEqual([1]);
+	});
+
+	it('does not publish zero-fact coverage when its transaction rolls back', async () => {
+	  const databaseName = `feed-cache-coverage-rollback-${crypto.randomUUID()}`;
+	  const cache = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	  await cache.openMeta();
+	  const originalPut = IDBObjectStore.prototype.put;
+	  IDBObjectStore.prototype.put = function put(value, ...args) {
+		if (this.name === 'channelMeta' && value?.channelId === 'quiet') {
+		  throw new Error('injected coverage Meta failure');
+		}
+		return originalPut.call(this, value, ...args);
+	  };
+	  try {
+		await expect(cache.saveCoverage('quiet', 20, 40)).rejects.toThrow('injected coverage Meta failure');
+	  } finally {
+		IDBObjectStore.prototype.put = originalPut;
+	  }
+
+	  expect(cache.metaSnapshot().has('quiet')).toBe(false);
+	  const reopened = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	  expect((await reopened.openMeta()).has('quiet')).toBe(false);
+	});
+
+	it('publishes quota-recovery trims and the retry only after each transaction commits', async () => {
+	  const cache = createFeedCache({
+		indexedDBImpl: indexedDB,
+		IDBKeyRangeImpl: IDBKeyRange,
+		databaseName: `feed-cache-quota-commit-${crypto.randomUUID()}`,
+		rowsPerChannel: 8,
+	  });
+	  await cache.openMeta();
+	  await cache.saveRows(Array.from({ length: 8 }, (_, index) => ({
+		channel_id: 'c0', seq: index + 1, envelope: envelope(`m-${index + 1}`, `row ${index + 1}`),
+	  })));
+	  const originalPut = IDBObjectStore.prototype.put;
+	  let quotaFailed = false;
+	  IDBObjectStore.prototype.put = function put(value, ...args) {
+		if (!quotaFailed && this.name === 'rows' && value?.seq === 9) {
+		  quotaFailed = true;
+		  throw new DOMException('quota', 'QuotaExceededError');
+		}
+		return originalPut.call(this, value, ...args);
+	  };
+	  try {
+		await cache.saveRows([{ channel_id: 'c0', seq: 9, envelope: envelope('m-9', 'row 9') }]);
+	  } finally {
+		IDBObjectStore.prototype.put = originalPut;
+	  }
+	  await cache.saveCoverage('c0', 5, 9);
+	  await cache.idle();
+
+	  expect(quotaFailed).toBe(true);
+	  expect(cache.metaSnapshot().get('c0')).toMatchObject({
+		oldestSeq: 5, newestSeq: 9, rowCount: 5, coverage: [{ lowSeq: 5, highSeq: 9 }],
+	  });
+	  expect((await cache.readBefore('c0', 0, 20)).rows.map((row) => row.seq)).toEqual([5, 6, 7, 8, 9]);
+	});
+
+	it('does not publish a principal owner when its transaction rolls back', async () => {
+	  const databaseName = `feed-cache-owner-rollback-${crypto.randomUUID()}`;
+	  const options = { indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName };
+	  const cache = createFeedCache(options);
+	  await cache.ensureOwner('alice');
+	  await cache.ensureBoot('boot-a');
+	  await cache.saveRows([{ channel_id: 'c0', seq: 1, envelope: envelope('alice-row', 'alice') }]);
+	  await cache.saveCoverage('c0', 1, 1);
+	  await cache.idle();
+
+	  const originalPut = IDBObjectStore.prototype.put;
+	  IDBObjectStore.prototype.put = function put(value, ...args) {
+		if (this.name === 'globalMeta' && value?.owner === 'bob') {
+		  throw new Error('injected owner commit failure');
+		}
+		return originalPut.call(this, value, ...args);
+	  };
+	  try {
+		await expect(cache.ensureOwner('bob')).rejects.toThrow('injected owner commit failure');
+	  } finally {
+		IDBObjectStore.prototype.put = originalPut;
+	  }
+
+	  // A same-boot continuation must retain the last committed owner. It must
+	  // not launder the failed bob draft into durable global Meta.
+	  await cache.ensureBoot('boot-a');
+	  const reopened = createFeedCache(options);
+	  await expect(reopened.ensureOwner('bob')).resolves.toMatchObject({ changed: true });
+	  await expect(reopened.readBefore('c0', 0, 20)).resolves.toMatchObject({ rows: [] });
+	});
+
+	it('publishes zero-byte row deletion and continues global trimming', async () => {
+	  const databaseName = `feed-cache-zero-byte-trim-${crypto.randomUUID()}`;
+	  const cache = createFeedCache({
+		indexedDBImpl: indexedDB,
+		IDBKeyRangeImpl: IDBKeyRange,
+		databaseName,
+		globalBytes: 1,
+	  });
+	  const now = vi.spyOn(Date, 'now').mockReturnValue(1);
+	  await cache.openMeta();
+	  await cache.saveRows([{ channel_id: 'a', seq: 1, envelope: undefined }]);
+	  now.mockRestore();
+	  await cache.saveRows([{
+		channel_id: 'b', seq: 1, envelope: { ...envelope('positive-row', 'positive'), ts: 2 },
+	  }]);
+	  await cache.idle();
+
+	  expect(cache.metaSnapshot().get('a')).toMatchObject({ rowCount: 0, oldestSeq: 0, newestSeq: 0 });
+	  const reopened = createFeedCache({ indexedDBImpl: indexedDB, IDBKeyRangeImpl: IDBKeyRange, databaseName });
+	  expect((await reopened.openMeta()).get('a')).toMatchObject({ rowCount: 0, oldestSeq: 0, newestSeq: 0 });
+	});
+
 	it('changes principal ownership in place instead of requiring a page reload', async () => {
 	  const storage = new MemoryStorage();
 	  const databaseName = `feed-cache-owner-${crypto.randomUUID()}`;

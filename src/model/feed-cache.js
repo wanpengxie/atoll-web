@@ -158,13 +158,17 @@ export function createFeedCache({
       .primaryKeys();
   }
 
-  async function trimChannel(channelId, count) {
-    if (count <= 0) return 0;
+  async function trimChannel(channelId, count, currentValue = null) {
+    if (count <= 0) return { reclaimed: 0, removedRows: 0, meta: null };
     const keys = await oldestKeys(channelId, count);
-    if (!keys.length) return 0;
+    if (!keys.length) return { reclaimed: 0, removedRows: 0, meta: null };
     const removed = await database.rows.bulkGet(keys);
     await database.rows.bulkDelete(keys);
-    const current = normalizeMeta(meta.get(channelId));
+    // The transaction's channelMeta row is the authority while a commit is in
+    // progress. The process-local Map is only a post-commit publication and
+    // must never be used as mutable transaction state.
+    const current = normalizeMeta(currentValue || await database.channelMeta.get(channelId));
+    current.channelId = channelId;
     const reclaimed = removed.reduce((sum, row) => sum + (Number(row?.bytes) || 0), 0);
     const first = await database.rows
       .where('[channelId+seq]')
@@ -177,22 +181,37 @@ export function createFeedCache({
     current.coverage = current.oldestSeq
       ? normalizeCoverage(current.coverage.map((entry) => ({ lowSeq: Math.max(entry.lowSeq, current.oldestSeq), highSeq: entry.highSeq })))
       : [];
-    meta.set(channelId, current);
     await database.channelMeta.put(current);
-    return reclaimed;
+    return { reclaimed, removedRows: keys.length, meta: current };
   }
 
   async function trimGlobal() {
-    const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '' };
-    if (global.totalBytes <= globalBytes) return;
-    while (global.totalBytes > globalBytes) {
-      const channel = [...meta.values()].filter((entry) => entry.rowCount > 0).sort((left, right) => left.lastActivity - right.lastActivity)[0];
-      if (!channel) break;
-      const reclaimed = await database.transaction('rw', database.rows, database.channelMeta, async () => trimChannel(channel.channelId, Math.min(FEED_CACHE_BATCH_SIZE, channel.rowCount)));
-      if (!reclaimed) break;
-      global.totalBytes = Math.max(0, global.totalBytes - reclaimed);
+    while (true) {
+      let committedMeta = null;
+      let stillOverLimit = false;
+      await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
+        const global = await database.globalMeta.get(GLOBAL_META_ID)
+          || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '' };
+        if (global.totalBytes <= globalBytes) return;
+        const channel = (await database.channelMeta.toArray())
+          .map(normalizeMeta)
+          .filter((entry) => entry.rowCount > 0)
+          .sort((left, right) => left.lastActivity - right.lastActivity)[0];
+        if (!channel) return;
+        const trimmed = await trimChannel(
+          channel.channelId,
+          Math.min(FEED_CACHE_BATCH_SIZE, channel.rowCount),
+          channel,
+        );
+        if (!trimmed.removedRows) return;
+        global.totalBytes = Math.max(0, global.totalBytes - trimmed.reclaimed);
+        await database.globalMeta.put(global);
+        committedMeta = trimmed.meta;
+        stillOverLimit = global.totalBytes > globalBytes;
+      });
+      if (committedMeta) meta.set(committedMeta.channelId, normalizeMeta(committedMeta));
+      if (!committedMeta || !stillOverLimit) break;
     }
-    await database.globalMeta.put(global);
   }
 
   async function persist(records, coverageByChannel = new Map()) {
@@ -201,10 +220,13 @@ export function createFeedCache({
 	for (const row of records) {
 	  if (!byChannel.has(row.channelId)) byChannel.set(row.channelId, []);
 	  byChannel.get(row.channelId).push(row);
-	}
+    }
     for (const [channelId, incoming] of byChannel) {
+      let committedMeta = null;
+      let committedAddedBytes = 0;
+      let committedAddedRows = 0;
       await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
-        const current = normalizeMeta(meta.get(channelId));
+        const current = normalizeMeta(await database.channelMeta.get(channelId));
 		current.channelId = channelId;
         let addedBytes = 0;
         let addedRows = 0;
@@ -235,16 +257,22 @@ export function createFeedCache({
         if (writes.length) await database.rows.bulkPut(writes);
         const coverage = coverageByChannel.get?.(channelId) || coverageByChannel[channelId];
         if (writes.length && coverage) current.coverage = normalizeCoverage([...current.coverage, coverage]);
-        meta.set(channelId, current);
         await database.channelMeta.put(current);
         const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '' };
         global.totalBytes = Math.max(0, (Number(global.totalBytes) || 0) + addedBytes);
         if (current.rowCount > rowsPerChannel) {
-          const reclaimed = await trimChannel(channelId, current.rowCount - rowsPerChannel);
-          global.totalBytes = Math.max(0, global.totalBytes - reclaimed);
+          const trimmed = await trimChannel(channelId, current.rowCount - rowsPerChannel, current);
+          global.totalBytes = Math.max(0, global.totalBytes - trimmed.reclaimed);
+          committedMeta = trimmed.meta;
         }
         await database.globalMeta.put(global);
-        diagnostic('debug', 'feed_cache.batch_written', { channelId, rows: addedRows, bytes: addedBytes });
+        committedMeta ||= current;
+        committedAddedBytes = addedBytes;
+        committedAddedRows = addedRows;
+      });
+      meta.set(channelId, normalizeMeta(committedMeta));
+      diagnostic('debug', 'feed_cache.batch_written', {
+        channelId, rows: committedAddedRows, bytes: committedAddedBytes,
       });
     }
 	// A valid projection page may contain zero displayable rows (for example a
@@ -255,8 +283,9 @@ export function createFeedCache({
 	  : Object.entries(coverageByChannel || {});
 	for (const [channelId, coverage] of coverageEntries) {
 	  if (!channelId || !coverage || byChannel.has(channelId)) continue;
+	  let committedMeta = null;
 	  await database.transaction('rw', database.channelMeta, async () => {
-		const current = normalizeMeta(meta.get(channelId));
+		const current = normalizeMeta(await database.channelMeta.get(channelId));
 		current.channelId = channelId;
 		// A checkpoint can legitimately cover a zero-fact interval newer than
 		// every cached row. Keep that proof intact. Only clip the low edge when
@@ -268,9 +297,10 @@ export function createFeedCache({
 		  ? { lowSeq: Math.max(lowSeq, current.oldestSeq), highSeq }
 		  : { lowSeq, highSeq };
 		current.coverage = normalizeCoverage([...current.coverage, bounded]);
-		meta.set(channelId, current);
 		await database.channelMeta.put(current);
+		committedMeta = current;
 	  });
+	  meta.set(channelId, normalizeMeta(committedMeta));
 	}
     await trimGlobal();
   }
@@ -296,17 +326,23 @@ export function createFeedCache({
 	  diagnostic('error', 'feed_cache.write_failed', { records: records.length, error });
 	  if (error?.name !== 'QuotaExceededError' || !database) throw error;
 	  for (const channelId of new Set(records.map((row) => row.channelId))) {
-		const current = meta.get(channelId);
+		const current = normalizeMeta(await database.channelMeta.get(channelId));
 		let remaining = Math.max(1, Math.ceil((current?.rowCount || 0) / 2));
-		let reclaimed = 0;
 		while (remaining > 0) {
 		  const count = Math.min(FEED_CACHE_BATCH_SIZE, remaining);
-		  reclaimed += await database.transaction('rw', database.rows, database.channelMeta, async () => trimChannel(channelId, count));
+		  let committedMeta = null;
+		  await database.transaction('rw', database.rows, database.channelMeta, database.globalMeta, async () => {
+			const durable = normalizeMeta(await database.channelMeta.get(channelId));
+			const trimmed = await trimChannel(channelId, count, durable);
+			const global = await database.globalMeta.get(GLOBAL_META_ID)
+			  || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2 };
+			global.totalBytes = Math.max(0, Number(global.totalBytes || 0) - trimmed.reclaimed);
+			await database.globalMeta.put(global);
+			committedMeta = trimmed.meta;
+		  });
+		  if (committedMeta) meta.set(channelId, normalizeMeta(committedMeta));
 		  remaining -= count;
 		}
-		const global = await database.globalMeta.get(GLOBAL_META_ID) || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2 };
-		global.totalBytes = Math.max(0, Number(global.totalBytes || 0) - reclaimed);
-		await database.globalMeta.put(global);
 	  }
 	  for (const chunk of chunksOf(records)) await persist(chunk);
 	  for (const [channelId, coverage] of compactCoverage) {
@@ -538,12 +574,12 @@ export function createFeedCache({
         global.totalBytes = 0;
         changed = true;
       }
-      owner = requested;
       global.owner = requested;
       global.schemaVersion = 2;
       boot = String(global.serverBoot || '');
       await database.globalMeta.put(global);
     });
+    owner = requested;
     try { legacyStorage?.removeItem('atoll.feed.owner.v1'); } catch { /* migration only */ }
     if (changed) meta.clear();
     return { changed, boot, meta: new Map([...meta].map(([id, value]) => [id, { ...value }])) };
