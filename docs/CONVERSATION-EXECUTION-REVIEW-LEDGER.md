@@ -4,6 +4,14 @@
 
 ### 最新状态（本段覆盖以下旧快照；监督周期已依用户改为20分钟）
 
+#### 2026-09-19 00:14：前台调度抢占整合与候选边界
+
+- 已合前序 `e5ce29f` 本地历史义务完成及 `057ce6d` 后台 source failure 向前台交接。本轮 root 亲读并整合调度抢占37行及两文件回归，主树93/93通过、diff-check通过。仅在真实 focused candidate 可派且容量满时取消一个离焦且无当前前台义务的批次；不改已dispatch priority/预算，不抢 user-demand/tail-refresh，已有取消释放时不再取消第二批，迟到数据拒写。不是扩大并发数，内存容量背压仍保守不抢。
+- 整链诊断 `f5e9a23` 已交付，候选150定向/浏览器1/build通过，尚未整合；owner正将只读诊断hunks与调度业务联合冻结。包含原始wheel无scroll、当前blockedBy、全局槽位与各阶段，不能称共享页面已有该诊断。
+- r4 a6b processing-save 独立正常包绑定81实际paint通过，外层slot保持、内层语义替换、共同正文位置不动。ordinary append仍红：长尾自动折叠3903→507导致native clamp、可见文本67–77行跳到1–6行，约3064px；0库writer不代表无跳动。整体不准入，main仍440c。
+- Composer固定浮层候选尚未合，owner继续真实visual-only键盘边界及旧resize路径退役。EOF固定首item35px候选已交，独立审核prepend时slot迁移与测量身份。submission授权候选bbe1cdf正独审；compact closure候选已续独审，FeedCache跨实例候选仍待审。不能把交付报告当已上线。
+- 20分钟durable闹铃已续；未改后端、部署或重启共享服务。
+
 #### 2026-09-18 23:05：冷入口生命周期整合与真实未闭项
 
 - `ea8e0da` live-tail 入场过渡已合：无新 scroll writer，当前 Following 同 DOM 布局过渡，非 live/cache/history/browsing 不重播。主树113定向/build通过；提交后独立正常440c解析 live-entry/reduced-motion/Q连续touch 3/3通过，接管残差0.53px。`629fde1` Q 首次有效 scroll 归 begin 的测试修正已合，未修改产品绕门。

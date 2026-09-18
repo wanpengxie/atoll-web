@@ -1237,10 +1237,47 @@ export function createHistoryScheduler({
 	});
   }
 
+  function preemptForFocusedCandidate() {
+    // cancelBatch releases its logical source immediately, but the executor is
+    // removed from inflightByChannel by dispatch.finally. Do not retire a
+    // second page while that first cancellation is already making capacity.
+    const active = [...inflightByChannel.values()].filter((batch) => !batch.cancelled);
+    if (active.length < HISTORY_MAX_INFLIGHT || active.length !== inflightByChannel.size) return false;
+    const focused = channels.get(focus);
+    const focusedCandidate = candidate(focused);
+    if (!focusedCandidate || focusedCandidate.channelId !== focus || focusedCandidate.priority !== 'foreground') {
+      return false;
+    }
+    const victim = active
+      .filter((batch) => {
+        const state = channels.get(batch.channelId);
+        // Keep the dispatch/transport priority (apart from the existing
+        // explicit in-place focus promotion) separate from this current-owner
+        // decision. An explicit demand or current-tail refresh remains
+        // foreground after focus moves; ownerless physical backfill may yield.
+        return batch.channelId !== focus
+          && state?.tier !== 0
+          && batch.purpose !== 'user-demand'
+          && batch.rangeKind !== 'tail-refresh';
+      })
+      .sort((left, right) => left.priorityClass - right.priorityClass
+        || right.createdDispatch - left.createdDispatch)[0];
+    if (!victim) return false;
+    cancelBatch(victim, 'focused channel preempted off-screen physical hydration');
+    diagnostic('info', 'history.focus_preempted_hydration', {
+      channelId: focus,
+      victimChannelId: victim.channelId,
+      victimRef: victim.ref || '',
+      generation,
+    });
+    return true;
+  }
+
   function schedule() {
     if (destroyed) return;
     clearWake();
     reclassify();
+    preemptForFocusedCandidate();
     while (inflightByChannel.size < HISTORY_MAX_INFLIGHT) {
       const batch = choose();
       if (!batch) break;

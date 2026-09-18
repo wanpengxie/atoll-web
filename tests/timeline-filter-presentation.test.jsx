@@ -291,6 +291,40 @@ it('频道新鲜度失败显示其真实错误并由重试按钮续同一 sync o
   expect(request).not.toHaveBeenCalled();
 });
 
+it('Meta 已知但 Replica 零行且 tail 未 current 时由 Scheduler 推进并显示获取反馈', async () => {
+  const request = vi.fn(() => new Promise(() => {}));
+  render(<Timeline
+    state={timelineState([])}
+    history={{
+      request,
+      status: {
+        attached: true,
+        generation: 1,
+        messageCurrent: false,
+        headSeq: 1101,
+        localReplicaReady: true,
+        loading: false,
+        hasOlder: true,
+        completedPages: 0,
+        sourceLease: '1:2:9',
+        presentationRevision: 0,
+        historyDemand: { revision: 0, phase: 'idle', error: '' },
+      },
+    }}
+    roster={[]}
+    selfId="me"
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+  />);
+
+  expect((await screen.findByRole('status')).textContent).toContain('正在确认频道内容…');
+  // messageCurrent=false means the physical initial-tail Scheduler lane is
+  // still the sole acquisition owner. Reading must not open a second semantic
+  // under-fill operation until that tail has established currentness.
+  expect(request).not.toHaveBeenCalled();
+});
+
 it('缓存正文保持可读并正交显示 freshness pending、error 与同 owner 重试', async () => {
   const { state, selfId } = mixedAgentTurns();
   const refreshLatest = vi.fn(async () => true);

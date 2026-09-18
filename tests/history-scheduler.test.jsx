@@ -605,6 +605,159 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
+  it('preempts one off-screen hydration batch when a cold channel becomes focused', async () => {
+    const harness = requestHarness();
+    const cancelPage = vi.fn(() => new Promise(() => {}));
+    const revealRows = vi.fn();
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      cancelPage,
+      revealRows,
+    });
+    scheduler.attach([
+      { channel_id: 'a', head_seq: 100, has_rows: true },
+      { channel_id: 'b', head_seq: 100, has_rows: true },
+      { channel_id: 'cold', head_seq: 1101, has_rows: true },
+    ], { generation: 1, focus: 'a' });
+
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 90, rows: 2 });
+    await waitFor(() => expect(harness.calls).toHaveLength(3));
+    const firstForegroundHydrate = harness.calls.find((call) => call.channelId === 'a' && call.purpose === 'hydrate');
+    const backgroundTail = harness.calls.find((call) => call.channelId !== 'a');
+    const nextFocus = backgroundTail.channelId === 'b' ? 'cold' : 'b';
+    expect(firstForegroundHydrate).toBeTruthy();
+    expect(backgroundTail).toMatchObject({ purpose: 'initial-tail', priority: 'background' });
+
+    // The two physical lanes now contain the former focus's foreground
+    // hydrate and an unrelated background initial tail. The new focus is not
+    // allowed to sit behind either page deadline.
+    expect(harness.calls.some((call) => call.channelId === nextFocus)).toBe(false);
+
+    revealRows.mockClear();
+
+    scheduler.focus(nextFocus);
+
+    // Local source cancellation releases the executor without waiting for the
+    // deliberately never-settling remote cancel acknowledgement.
+    await waitFor(() => expect(harness.calls.some((call) => call.channelId === nextFocus)).toBe(true));
+    expect(cancelPage).toHaveBeenCalledTimes(1);
+    expect(cancelPage).toHaveBeenCalledWith(backgroundTail.channelId, backgroundTail.ref, 1);
+    expect(cancelPage).not.toHaveBeenCalledWith('a', firstForegroundHydrate.ref, 1);
+    expect(harness.calls.find((call) => call.channelId === nextFocus)).toMatchObject({
+      beforeSeq: nextFocus === 'cold' ? 1102 : 101,
+      priority: 'foreground',
+      purpose: 'initial-tail',
+    });
+
+    // A late terminal from the preempted physical batch owns no state lease.
+    finish(scheduler, backgroundTail, { oldest: 80, rows: 2 });
+    await Promise.resolve();
+    expect(revealRows).not.toHaveBeenCalledWith(backgroundTail.channelId, expect.anything(), expect.anything());
+    scheduler.destroy();
+  });
+
+  it('does not cancel a second batch while an abandoned initial tail is already releasing capacity', async () => {
+    const harness = requestHarness();
+    const cancelPage = vi.fn(() => new Promise(() => {}));
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      cancelPage,
+      revealRows: () => {},
+    });
+    scheduler.attach([
+      { channel_id: 'a', head_seq: 100, has_rows: true },
+      { channel_id: 'b', head_seq: 100, has_rows: true },
+      { channel_id: 'cold', head_seq: 1101, has_rows: true },
+    ], { generation: 1, focus: 'b' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 90, rows: 2 });
+    await waitFor(() => expect(harness.calls).toHaveLength(3));
+    const abandoned = harness.calls.find((call) => call.channelId !== 'b');
+    const nextFocus = abandoned.channelId === 'a' ? 'cold' : 'a';
+    scheduler.focus(abandoned.channelId);
+    const background = harness.calls.find((call) => call.channelId === 'b' && call.purpose === 'hydrate');
+    expect(abandoned).toMatchObject({ purpose: 'initial-tail' });
+    expect(background).toBeTruthy();
+
+    scheduler.focus(nextFocus);
+
+    await waitFor(() => expect(harness.calls.some((call) => call.channelId === nextFocus)).toBe(true));
+    expect(cancelPage).toHaveBeenCalledTimes(1);
+    expect(cancelPage).toHaveBeenCalledWith(abandoned.channelId, abandoned.ref, 1);
+    expect(cancelPage).not.toHaveBeenCalledWith('b', background.ref, 1);
+    scheduler.destroy();
+  });
+
+  it('keeps warm batches when the focused channel has no currently schedulable candidate', async () => {
+    const harness = requestHarness();
+    const cancelPage = vi.fn(async () => ({ cancelled: true }));
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      cancelPage,
+      revealRows: () => {},
+    });
+    scheduler.attach([
+      { channel_id: 'a', head_seq: 100, has_rows: true },
+      { channel_id: 'b', head_seq: 100, has_rows: true },
+      { channel_id: 'cold', head_seq: 0, has_rows: false },
+    ], { generation: 1, focus: 'a' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 90, rows: 2 });
+    await waitFor(() => expect(harness.calls).toHaveLength(3));
+    expect(harness.calls.find((call) => call.channelId === 'a' && call.purpose === 'hydrate')).toBeTruthy();
+
+    // A complete cache-source selection is not yet available. candidate()
+    // must reject cold, so merely focusing it cannot justify discarding useful
+    // work from another room.
+    scheduler.setLocalMeta(new Map(), { localReady: false });
+    scheduler.refreshRemoteMeta({
+      channel_id: 'cold', head_seq: 1101, has_rows: true,
+    }, { generation: 1 });
+    scheduler.focus('cold');
+    await Promise.resolve();
+
+    expect(cancelPage).not.toHaveBeenCalled();
+    expect(harness.calls.some((call) => call.channelId === 'cold')).toBe(false);
+    scheduler.destroy();
+  });
+
+  it('never preempts an off-screen current-tail refresh as ordinary hydration', async () => {
+    const harness = requestHarness();
+    const cancelPage = vi.fn(() => new Promise(() => {}));
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      cancelPage,
+      revealRows: () => {},
+      visibleNewestSeq: (channelId) => (channelId === 'a' ? 100 : 0),
+    });
+    scheduler.attach([
+      // A has a materialized tail at 100, so attach creates an exact
+      // currentness bridge rather than ordinary warm backfill.
+      { channel_id: 'a', head_seq: 105, has_rows: true },
+      { channel_id: 'b', head_seq: 100, has_rows: true },
+      { channel_id: 'cold', head_seq: 1101, has_rows: true },
+    ], { generation: 1, focus: 'b' });
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    const tailRefresh = harness.calls.find((call) => call.channelId === 'a');
+    const focusedInitial = harness.calls.find((call) => call.channelId === 'b');
+    expect(tailRefresh).toMatchObject({ rangeKind: 'tail-refresh', priority: 'foreground' });
+    finish(scheduler, focusedInitial, { oldest: 90, rows: 2 });
+    await waitFor(() => expect(harness.calls).toHaveLength(3));
+    const physicalHydrate = harness.calls.find((call) => (
+      call.channelId === 'b' && call.purpose === 'hydrate'
+    ));
+    expect(physicalHydrate).toBeTruthy();
+
+    scheduler.focus('cold');
+
+    await waitFor(() => expect(harness.calls.some((call) => call.channelId === 'cold')).toBe(true));
+    expect(cancelPage).toHaveBeenCalledTimes(1);
+    expect(cancelPage).toHaveBeenCalledWith('b', physicalHydrate.ref, 1);
+    expect(cancelPage).not.toHaveBeenCalledWith('a', tailRefresh.ref, 1);
+    scheduler.destroy();
+  });
+
   it('adopts an exact durable cold tail and cancels only its redundant remote fallback', async () => {
     let resolveReceipt;
     const remoteCalls = [];
