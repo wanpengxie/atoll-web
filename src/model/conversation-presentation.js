@@ -21,8 +21,14 @@ function boundsOf(entry) {
     envelopeSeq(turn.request), finiteSeq(turn.terminalSeq), envelopeSeq(turn.terminal),
   ];
   for (const child of entry.thread || []) {
-    seqs.push(finiteSeq(child?.seq), finiteSeq(child?.turn?.requestSeq));
-    seqs.push(envelopeSeq(child?.turn?.request), envelopeSeq(child?.turn?.terminal));
+    const childTurn = child?.turn || {};
+    seqs.push(
+      finiteSeq(child?.seq), finiteSeq(childTurn.requestSeq), finiteSeq(childTurn.lastSeq),
+      finiteSeq(childTurn.terminalSeq), envelopeSeq(childTurn.request), envelopeSeq(childTurn.terminal),
+    );
+    for (const provisional of childTurn.provisional || []) {
+      seqs.push(finiteSeq(provisional?.seq), envelopeSeq(provisional?.envelope));
+    }
   }
   const present = seqs.filter(Boolean);
   const fallback = finiteSeq(entry.seq);
@@ -36,6 +42,11 @@ function identityOf(entry) {
   if (entry?.kind === 'turn') return entry.turn?.requestId || entry.turn?.request?.id || '';
   if (entry?.kind === 'narration') return `narration:${finiteSeq(entry.seq)}`;
   return entry?.envelope?.id || `${entry?.kind || 'entry'}:${finiteSeq(entry?.seq)}`;
+}
+
+function entryContainsTimelineSubject(entry, subjectID) {
+  if (!subjectID || identityOf(entry) === subjectID) return true;
+  return (entry?.thread || []).some((item) => item?.turn?.requestId === subjectID);
 }
 
 function actorOf(entry) {
@@ -250,10 +261,21 @@ function evaluatePresentation(owner, entries = [], {
   let currentEntryEligibility = viewChanged ? new Map() : owner.currentEntryEligibility;
   let snapshot = owner.snapshot;
   const incrementalChanges = sourceChanges.filter((change) => Number(change.revision) > sourceRevision);
+  let sourceEntriesByID = null;
+  const sourceEntry = (id) => {
+    if (!sourceEntriesByID) sourceEntriesByID = new Map(entries.map((entry) => [identityOf(entry), entry]));
+    return sourceEntriesByID.get(id);
+  };
+  // Fold names the visible root row and retains the mutated child as the
+  // subject. A view that filtered that child out must consume the source clock
+  // without manufacturing a content/geometry revision for an unchanged row.
+  const visibleIncrementalChanges = incrementalChanges.filter((change) => (
+    !change.subjectID || entryContainsTimelineSubject(sourceEntry(change.id), change.subjectID)
+  ));
   const revisionAdvanced = Number(nextSourceRevision) > sourceRevision;
-  if (incrementalChanges.some((change) => change.id)) {
+  if (visibleIncrementalChanges.some((change) => change.id)) {
     contentVersions = new Map(contentVersions);
-    for (const change of incrementalChanges) {
+    for (const change of visibleIncrementalChanges) {
       if (change.id) contentVersions.set(change.id, Math.max(contentVersions.get(change.id) || 0, Number(change.revision) || 0));
     }
   }
@@ -265,7 +287,7 @@ function evaluatePresentation(owner, entries = [], {
     && incrementalChanges.every((change) => change.kind === 'content');
 
   if (canIncrement) {
-    const changedIDs = [...new Set(incrementalChanges.map((change) => change.id).filter(Boolean))];
+    const changedIDs = [...new Set(visibleIncrementalChanges.map((change) => change.id).filter(Boolean))];
     sourceRevision = Math.max(sourceRevision, Number(nextSourceRevision) || 0);
     if (!changedIDs.length) {
       if (snapshot.sourceRevision !== sourceRevision) snapshot = Object.freeze({ ...snapshot, sourceRevision });

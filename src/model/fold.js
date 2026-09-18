@@ -17,12 +17,34 @@ const LIVE_ARRIVAL_LIMIT = 1_024;
 // timeline membership. Publish that fact as a small semantic change stream so
 // Presentation can detach a fresh immutable body for just the affected row.
 // Structural membership and control state keep their own versions.
-function recordTimelineChange(state, id, kind = 'content') {
+function recordTimelineChange(state, id, kind = 'content', subjectID = id) {
   state._timelineRevision += 1;
-  state._timelineChangeLog.push({ revision: state._timelineRevision, id, kind });
+  state._timelineChangeLog.push({ revision: state._timelineRevision, id, kind, subjectID });
   if (state._timelineChangeLog.length <= TIMELINE_CHANGE_LIMIT) return;
   const removed = state._timelineChangeLog.splice(0, state._timelineChangeLog.length - TIMELINE_CHANGE_LIMIT);
   state._timelineChangeBase = Number(removed.at(-1)?.revision || state._timelineChangeBase || 0);
+}
+
+// Presentation owns one row per visible root turn. A child turn mutates in
+// place inside that row's `thread`, so its semantic change must name the root
+// row rather than the child request id (which is not a Presentation entity).
+// Respect stable roots already exposed by orderedTimeline: late history may
+// reveal a parent, but it must not silently move an existing row underneath it.
+function timelineOwnerTurnID(state, turn) {
+  const stableRoots = timelineCache.get(state)?.stableRoots;
+  const seen = new Set();
+  let current = turn;
+  while (current?.requestId && !seen.has(current.requestId)) {
+    seen.add(current.requestId);
+    if (stableRoots?.has(current.requestId)) return current.requestId;
+    const parentID = current.request?.parent_id;
+    const parent = parentID && parentID !== current.requestId
+      ? state.turns.get(parentID)
+      : null;
+    if (!parent) return current.requestId;
+    current = parent;
+  }
+  return turn?.requestId || '';
 }
 
 export function createChannelState(channelId = '') {
@@ -520,7 +542,7 @@ export function apply(state, row, selfId = '') {
     state._timelineProjectionVersion += 1;
     state._timelineControlVersion += 1;
     state._requestVersion += 1;
-    recordTimelineChange(state, turn.requestId, 'structure');
+    recordTimelineChange(state, timelineOwnerTurnID(state, turn), 'structure', turn.requestId);
     return state;
   }
 
@@ -531,7 +553,12 @@ export function apply(state, row, selfId = '') {
       const changesControl = responseChangesControl(turn, envelope);
       attachResponse(state, turn, seq, envelope);
       rememberProjectionParticipants(turn, envelope);
-      recordTimelineChange(state, turn.requestId, changesProjection ? 'structure' : 'content');
+      recordTimelineChange(
+        state,
+        timelineOwnerTurnID(state, turn),
+        changesProjection ? 'structure' : 'content',
+        turn.requestId,
+      );
       if (changesProjection) state._timelineProjectionVersion += 1;
       if (changesControl) state._timelineControlVersion += 1;
       if (turn.terminal === envelope) state._terminalVersion += 1;

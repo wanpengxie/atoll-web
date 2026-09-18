@@ -103,4 +103,24 @@ describe('feed fold', () => {
     expect(entries.map((entry) => entry.turn.requestId)).toEqual(['parent', 'child']);
     expect(entries[0].thread).toEqual([]);
   });
+
+  it('keeps publishing an exposed child root after a late parent arrives', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 20, envelope: env('child', 'request', 'system.member.list', {
+      parent_id: 'parent', correlation_id: 'parent', payload: { body: {} },
+    }) }, 'me');
+    orderedTimeline(state);
+
+    apply(state, { channel_id: 'c0', seq: 10, envelope: env('parent', 'request', 'project.task', {
+      correlation_id: 'parent', payload: { text: 'older parent' },
+    }) }, 'me');
+    orderedTimeline(state);
+    apply(state, { channel_id: 'c0', seq: 21, envelope: env('child-progress', 'response', 'system.member.list', {
+      parent_id: 'child', correlation_id: 'parent', sender: { kind: 'system', id: 'system' },
+      payload: { status: 'processing', process: { kind: 'stage', text: 'still child' } },
+    }) }, 'me');
+
+    expect(state._timelineChangeLog.at(-1)).toMatchObject({ id: 'child', kind: 'structure' });
+    expect(orderedTimeline(state).map((entry) => entry.turn.requestId)).toEqual(['parent', 'child']);
+  });
 });
