@@ -15,10 +15,11 @@ const props = {
 };
 
 describe('channel notification badges', () => {
-  it('shows related roots strongly and only the additional unrelated roots weakly', () => {
+  it('shows only related roots even when raw unread truth contains unrelated roots', () => {
     render(<ChannelList {...props} unread={{ c0: { related: 2, total: 5 } }} />);
     expect(screen.getByLabelText('2 条与我相关的未读消息').textContent).toBe('2');
-    expect(screen.getByLabelText('3 条其他未读消息').textContent).toBe('3');
+    expect(screen.queryByLabelText('3 条其他未读消息')).toBeNull();
+    expect(screen.queryByTitle('其他未读消息')).toBeNull();
     expect(screen.queryByLabelText('5 条全部未读消息')).toBeNull();
   });
 

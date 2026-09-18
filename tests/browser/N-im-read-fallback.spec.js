@@ -441,14 +441,16 @@ test('N4 成员过滤视图真实到底时本 scope 计数为 0，过滤外未�
 
   expect(frames.length).toBeGreaterThan(20);
   // Raw arrival may precede installation by a few frames. Once the production
-  // projection has installed the scope tail, no in-scope residue remains;
-  // the filter-external badge is deliberately still visible.
+  // projection has installed the scope tail, no in-scope residue remains.
+  // Filter-external raw truth is retained above, but the channel rail is a
+  // personal attention surface and never renders that unrelated count.
   expect(settledAtTail.mode).toBe('following');
   expect(settledAtTail.gap).toBeLessThanOrEqual(2);
   expect(settledAtTail.related).toBe(0);
   expect(settledAtTail.jump).toBe(0);
-  expect(settledAtTail.other).toBeGreaterThan(0);
-  expect(atTailOutsideNotices.length).toBeGreaterThan(0);
+  expect(settledAtTail.other).toBe(0);
+  expect(atTailOutsideNotices).toEqual([]);
   expect(afterLeaving.jump).toBe(0);
-  expect(afterLeaving.related + afterLeaving.other).toBeGreaterThan(0);
+  expect(afterLeaving.related).toBe(0);
+  expect(afterLeaving.other).toBe(0);
 });
