@@ -6,13 +6,15 @@ import {
   unreadCounts as unreadCountsCanonical,
 } from '../src/model/cursors.js';
 import {
-  acknowledgeLiveTimelineArrivals,
   apply as applyCanonical,
   createChannelState,
+} from '../src/model/fold.js';
+import {
+  acknowledgeLiveTimelineArrivals,
   liveTimelineArrivals,
   recordLiveTimelineArrival as recordLiveTimelineArrivalCanonical,
   registerLiveTimelineArrivalConsumer,
-} from '../src/model/fold.js';
+} from '../src/model/live-arrivals.js';
 
 function canonicalEnvelope(envelope) {
   if (!envelope) return envelope;

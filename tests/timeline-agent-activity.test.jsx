@@ -3,7 +3,8 @@ import React, { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
-import { createChannelState, apply, recordLiveTimelineArrival } from '../src/model/fold.js';
+import { createChannelState, apply } from '../src/model/fold.js';
+import { recordLiveTimelineArrival } from '../src/model/live-arrivals.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 
 const readingProbe = vi.hoisted(() => ({ current: null, observations: [] }));
@@ -43,7 +44,7 @@ function ledger() {
   const state = createChannelState('c0');
   apply(state, { channel_id: 'c0', seq: 1, envelope: {
     id: 'note-1', kind: 'event', type: 'human.note', ts: 1,
-    sender: { id: 'human:root:1', kind: 'human' }, payload: { text: 'hello' }, audience: [],
+    sender: { id: 'human:root:1', kind: 'human' }, payload: { body: { text: 'hello' } }, audience: [],
   } });
   return state;
 }
@@ -105,7 +106,7 @@ it('balances consumers without treating A→B→A replacement as visible-arrival
   const arrivalA = {
     id: 'a-live', kind: 'event', type: 'human.note', visibility: 'public',
     sender: { id: 'other', kind: 'human' }, audience: ['human:root:1'],
-    payload: { text: 'A live' },
+    payload: { body: { text: 'A live' } },
   };
   apply(stateA, { channel_id: 'c0', seq: 2, envelope: arrivalA });
   recordLiveTimelineArrival(stateA, arrivalA, 2, 'human:root:1');
@@ -122,7 +123,7 @@ it('balances consumers without treating A→B→A replacement as visible-arrival
   const arrivalB = {
     id: 'b-live', kind: 'event', type: 'human.note', visibility: 'public',
     sender: { id: 'other', kind: 'human' }, audience: ['human:root:1'],
-    payload: { text: 'B live' },
+    payload: { body: { text: 'B live' } },
   };
   apply(stateB, { channel_id: 'c1', seq: 1, envelope: arrivalB });
   recordLiveTimelineArrival(stateB, arrivalB, 1, 'human:root:1');
@@ -148,7 +149,7 @@ it('balances consumers without treating A→B→A replacement as visible-arrival
   expect(stateA._liveArrivalConsumers).toBe(0);
   const unrelatedBackground = {
     id: 'a-background', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other' },
-    payload: { text: 'background message' },
+    payload: { body: { text: 'background message' } },
   };
   apply(stateA, { channel_id: 'c0', seq: 3, envelope: unrelatedBackground });
   expect(recordLiveTimelineArrival(stateA, unrelatedBackground, 3, 'human:root:1')).toBeNull();

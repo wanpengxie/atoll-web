@@ -34,17 +34,19 @@ import { ReadingContainerHandoff } from './timeline/ReadingContainerHandoff.jsx'
 import { ConversationSurface } from './conversation/ConversationSurface.jsx';
 import { ReadingIntentProvider } from './conversation/ReadingIntentContext.jsx';
 import {
+  terminalContentEnvelope,
+  terminalResultPayload,
+  terminalResultState,
+  terminalRetainedValue,
+} from '../model/fold.js';
+import {
   acknowledgeLivePresentationArrivals,
   acknowledgeLiveTimelineArrivals,
   livePresentationArrivals,
   liveTimelineArrivals,
   registerLivePresentationArrivalConsumer,
   registerLiveTimelineArrivalConsumer,
-  terminalContentEnvelope,
-  terminalResultPayload,
-  terminalResultState,
-  terminalRetainedValue,
-} from '../model/fold.js';
+} from '../model/live-arrivals.js';
 import { selectLocalWaitingTurns, selectWaitingPresentation } from '../model/waiting-presentation.js';
 import { diagnostic } from '../model/diagnostics.js';
 

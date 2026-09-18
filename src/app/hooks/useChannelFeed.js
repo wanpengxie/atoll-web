@@ -9,9 +9,8 @@ import { createFeedCache, resumeSnapshot } from '../../model/feed-cache.js';
 import {
   createChannelState,
   reconcileApprovals,
-  recordLivePresentationArrival,
-  recordLiveTimelineArrival,
 } from '../../model/fold.js';
+import { recordLivePresentationArrival, recordLiveTimelineArrival } from '../../model/live-arrivals.js';
 import { invalidatesChannelDirectory } from '../../model/directory-invalidation.js';
 import {
   createHistoryScheduler,

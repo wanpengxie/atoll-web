@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
-  acknowledgeLivePresentationArrivals,
   apply,
   createChannelState,
+} from '../src/model/fold.js';
+import {
+  acknowledgeLivePresentationArrivals,
   livePresentationArrivals,
   recordLivePresentationArrival,
   registerLivePresentationArrivalConsumer,
-} from '../src/model/fold.js';
+} from '../src/model/live-arrivals.js';
 
 function request(id, sender = 'agent') {
   return {
@@ -15,7 +17,7 @@ function request(id, sender = 'agent') {
     type: 'agent.ask',
     sender: { id: sender },
     audience: ['me'],
-    payload: { text: id },
+    payload: { body: { text: id } },
   };
 }
 
@@ -75,7 +77,7 @@ describe('ephemeral live Presentation arrival provenance', () => {
     apply(state, { channel_id: 'c0', seq: 1, envelope: root }, 'me');
     const progress = {
       id: 'progress', kind: 'response', parent_id: 'root', sender: { id: 'agent' },
-      payload: { status: 'processing', text: 'still the same row' },
+      payload: { body: { status: 'processing', text: 'still the same row' } },
     };
     apply(state, { channel_id: 'c0', seq: 2, envelope: progress }, 'me');
     expect(recordLivePresentationArrival(state, progress, 2)).toMatchObject({

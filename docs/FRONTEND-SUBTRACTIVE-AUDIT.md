@@ -9,7 +9,9 @@ Execution status on `refactor/frontend-subtractive-cleanup`:
 - A1–A2 deleted.
 - B1–B10 removed from the current runtime. Flat ledger rows remain inert for
   continuity; they do not enter business projection.
-- C1–C8 and E remain the active subtractive work. They require owner movement
+- C8 complete: `fold.js` is the ledger fold; live-arrival provenance now has a
+  dedicated owner in `live-arrivals.js`, with no compatibility re-export.
+- C1–C7 and E remain the active subtractive work. They require owner movement
   and deletion, not compatibility wrappers.
 
 ## Acceptance rule

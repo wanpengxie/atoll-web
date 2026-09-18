@@ -22,9 +22,11 @@ import { setDeviceProfile } from '../src/model/device-profile.js';
 import {
   apply,
   createChannelState,
+} from '../src/model/fold.js';
+import {
   liveTimelineArrivals,
   registerLiveTimelineArrivalConsumer,
-} from '../src/model/fold.js';
+} from '../src/model/live-arrivals.js';
 import { createRoster } from '../src/model/roster.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 
