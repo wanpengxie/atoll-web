@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { ConversationSurface } from '../../../src/ui/conversation/ConversationSurface.jsx';
-import { useComposerPresentation } from '../../../src/ui/conversation/ComposerPresentationContext.jsx';
 import '../../../src/styles/tokens.css';
 import '../../../src/styles/base.css';
 import '../../../src/styles/app-shell.css';
@@ -14,7 +13,6 @@ document.body.style.cssText = 'margin:0;font:14px/1.5 sans-serif';
 document.getElementById('root').style.cssText = 'width:900px;height:640px;max-width:100vw';
 
 let setFixture;
-let prepareSendClear;
 
 function Waiting({ fact, rosterRevision, editing }) {
   if (!['queued', 'partial', 'roster'].includes(fact)) return null;
@@ -35,12 +33,11 @@ function Waiting({ fact, rosterRevision, editing }) {
   </div>;
 }
 
-function Input({ lines, network, editing, sendClearRevision }) {
-  prepareSendClear = useComposerPresentation()?.prepareSendClear;
-  return <section className={`composer-wrap${editing ? ' is-editing-message' : ''}`} data-send-clear-revision={sendClearRevision}>
+function Input({ lines, network, editing }) {
+  return <section className={`composer-wrap${editing ? ' is-editing-message' : ''}`}>
     <div className={`composer-surface${editing ? ' is-editing-message' : ''}`}>
       <div className="composer-input-area"><div className="composer-box">
-        <div className="composer-editor" aria-label="消息">{Array.from({ length: lines }, (_, index) => <p key={index}>{`输入行 ${index + 1}`}</p>)}</div>
+        <div className="composer-editor" aria-label="消息" tabIndex={0}>{Array.from({ length: lines }, (_, index) => <p key={index}>{`输入行 ${index + 1}`}</p>)}</div>
       </div></div>
       <div className="composer-toolbar"><span>附件</span><button type="button">↑</button></div>
     </div>
@@ -49,13 +46,16 @@ function Input({ lines, network, editing, sendClearRevision }) {
 }
 
 function App() {
-  const [state, update] = useState({ fact: 'terminal', rosterRevision: 1, lines: 1, network: 'open', editing: false, sendClearRevision: 0 });
+  const [state, update] = useState({ fact: 'terminal', rosterRevision: 1, lines: 1, network: 'open', editing: false });
   setFixture = (patch) => update((current) => ({ ...current, ...patch }));
   return <ConversationSurface
-    input={<Input lines={state.lines} network={state.network} editing={state.editing} sendClearRevision={state.sendClearRevision} />}
+    input={<Input lines={state.lines} network={state.network} editing={state.editing} />}
     floating={<Waiting fact={state.fact} rosterRevision={state.rosterRevision} editing={state.editing} />}
   >
-    <section className="timeline" aria-label="reading viewport"><div className="timeline-inner">reading viewport</div></section>
+    <section className="timeline" aria-label="reading viewport"><div className="timeline-inner">
+      <span>reading viewport</span>
+      <button type="button" className="fixture-last-row" style={{ marginTop: 'auto' }}>last visible row</button>
+    </div></section>
   </ConversationSurface>;
 }
 
@@ -79,6 +79,17 @@ window.waitingLayout = {
       composer: rect('.composer-surface'),
       floating: rect('.conversation-floating-slot'),
       waiting: rect('.agent-wait-layer'),
+      lastRow: rect('.fixture-last-row'),
+      lastRowOwnsHit: (() => {
+        const node = document.querySelector('.fixture-last-row');
+        const bounds = node?.getBoundingClientRect();
+        if (!node || !bounds) return false;
+        const target = document.elementFromPoint(
+          bounds.left + bounds.width / 2,
+          bounds.top + bounds.height / 2,
+        );
+        return target === node || node.contains(target);
+      })(),
       floatingObstruction: Number.parseFloat(getComputedStyle(surface)
         .getPropertyValue('--conversation-floating-obstruction')) || 0,
       readingGap: Number.parseFloat(getComputedStyle(surface)
@@ -86,7 +97,6 @@ window.waitingLayout = {
     };
   },
   async transition(patch, frameCount = 4) {
-    if (patch.sendClearRevision != null) prepareSendClear?.(patch.sendClearRevision);
     flushSync(() => setFixture(patch));
     const frames = [];
     for (let index = 0; index < frameCount; index += 1) {

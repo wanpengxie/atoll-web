@@ -16,7 +16,6 @@ import { resolveManagementActors } from '../model/management-actors.js';
 import { diagnostic } from '../model/diagnostics.js';
 import { TYPES } from '../protocol/vocab.js';
 import { ModelSelector } from './ModelSelector.jsx';
-import { useComposerPresentation } from './conversation/ComposerPresentationContext.jsx';
 import { useReadingIntent } from './conversation/ReadingIntentContext.jsx';
 
 // 两个 Suggestion 插件同挂一个编辑器，各自要一把键——同键会在建 view 时直接抛
@@ -124,7 +123,6 @@ export function slashCommand(value) {
 
 export const Composer = React.memo(function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', draftRevision = 0, onDraftChange, disabled = false, disabledReason = '当前频道不可写', canEditDraft = !disabled, canDurablyAccept = !disabled, canTransmit = !disabled, onSend, onRetry, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
   const readingIntent = useReadingIntent();
-  const composerPresentation = useComposerPresentation();
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
   const composingRef = useRef(false);
@@ -168,11 +166,6 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   // slow. The ref closes the same-tick Enter/click race before React commits.
   const [accepting, setAccepting] = useState(false);
   const acceptingRef = useRef(false);
-  // Presentation-only monotonic signal for the exact durable draft version
-  // that is about to clear. ConversationSurface uses it to animate the input
-  // contraction without coupling draft ownership to viewport geometry.
-  const [sendClearRevision, setSendClearRevision] = useState(0);
-  const sendClearRevisionRef = useRef(0);
   // 拆发批次的逐条跟踪（协议 §3.2.1）：提交层吞掉入账前错误，Promise 看不到，
   // 只有各条 submission 的状态知道谁被拒——批次里任何一条 rejected 都要带目标名报出。
   const [sentBatch, setSentBatch] = useState([]); // all unsettled [{id, label}]
@@ -208,18 +201,6 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     if (pendingIdle.kind === 'idle') globalThis.cancelIdleCallback?.(pendingIdle.id);
     else clearTimeout(pendingIdle.id);
     draftIdleRef.current = null;
-  }
-
-  function announceDurableClear() {
-    const revision = sendClearRevisionRef.current + 1;
-    sendClearRevisionRef.current = revision;
-    // Synchronous presentation seam: the surface freezes the already-painted
-    // input block before ProseMirror removes its content. Composer publishes
-    // no geometry and never writes scroll position; the monotonic revision in
-    // the following React commit tells the surface when to animate to the new
-    // natural height.
-    composerPresentation?.prepareSendClear(revision);
-    setSendClearRevision(revision);
   }
 
   function syncEditorSnapshot(current) {
@@ -890,7 +871,6 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
             : [...current, { id: messageId, label: recipient.name || recipient.id }]);
         }
         if (editorRevisionRef.current === acceptedEditorRevision) {
-          announceDurableClear();
           editor?.commands.clearContent(true);
           recipientsRef.current = [];
           setRecipients([]);
@@ -966,7 +946,6 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       // Clear only the exact editor version accepted by the outbox. Text typed
       // while IndexedDB was committing belongs to the next message.
       if (editorRevisionRef.current === acceptedEditorRevision) {
-        announceDurableClear();
         editor?.commands.clearContent(true);
         recipientsRef.current = [];
         setRecipients([]);
@@ -1057,7 +1036,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   }
 
   return (
-    <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}`} data-send-clear-revision={sendClearRevision}>
+    <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}`}>
       <div
         className={`composer-surface${fileDragActive ? ' is-file-dragging' : ''}${editMode ? ' is-editing-message' : ''}`}
         onDragEnter={onDragEnter}

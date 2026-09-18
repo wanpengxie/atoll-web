@@ -6,7 +6,6 @@ import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 const SOURCE_PATHS = [
   'src/ui/Composer.jsx',
   'src/ui/Timeline.jsx',
-  'src/ui/conversation/ComposerPresentationContext.jsx',
   'src/ui/conversation/ConversationSurface.jsx',
   'src/ui/timeline/LegendMessageList.jsx',
   'src/ui/timeline/useReadingSession.js',
@@ -680,28 +679,10 @@ async function runTrajectory({ page, request, testInfo, mode }) {
   expect(summary.prematureTargetTimelineRows,
     'an agent request committed to Waiting must never create a transient list row before that destination is visible').toEqual([]);
   if (multiline) {
-    expect(summary.sendClearTransition.frameCount, 'durable multiline clear uses its dedicated presentation transition').toBeGreaterThanOrEqual(3);
-    expect(summary.sendClearTransition.reverseSteps, 'the input contraction is one monotonic visual movement').toEqual([]);
-    expect(summary.sendClearTransition.programmaticWrites, 'the presentation transition never chases native clamp with scroll methods').toEqual([]);
-    expect(summary.sendClearTransition.unexplainedAnchorSteps, 'the body anchor cannot move before either viewport or content extent changes').toEqual([]);
-    for (const step of summary.sendClearTransition.causalSteps) {
-      expect(Math.abs(step.tailEquationError), `frame ${step.from}->${step.to} preserves the measured tail equation`).toBeLessThanOrEqual(1);
-      expect(Math.abs(step.anchorEquationError), `frame ${step.from}->${step.to} body motion is exactly the native scroll delta`).toBeLessThanOrEqual(1);
-    }
-    const budget = summary.sendClearTransition.totalBudget;
-    expect(budget, 'the clear transition must publish a complete finite geometry budget').not.toBeNull();
-    for (const [field, value] of Object.entries(budget || {})) {
-      expect(Number.isFinite(value), `clear budget ${field} must be finite`).toBe(true);
-    }
-    expect(budget.inputContraction, 'the multiline editor must really contract').toBeGreaterThan(20);
-    expect(Math.abs(budget.contentExtentDelta), 'the fixed Footer reserve cannot be minted again when Waiting mounts').toBeLessThanOrEqual(1);
-    expect(budget.obstructionBefore, 'the fixed Footer reserve exists before Waiting mounts').toBeGreaterThanOrEqual(47);
-    expect(Math.abs(budget.obstructionAfter - budget.obstructionBefore), 'Waiting keeps the same fixed Footer reserve').toBeLessThanOrEqual(1);
-    expect(Math.abs(budget.error), 'input contraction equals content extent plus visible anchor travel').toBeLessThanOrEqual(1);
-    expect(summary.sendClearTransition.totalBudget?.gapBefore, 'the transition starts at the real tail').toBeLessThanOrEqual(1);
-    expect(summary.sendClearTransition.totalBudget?.gapAfter, 'the transition settles at the real tail').toBeLessThanOrEqual(1);
-    expect(summary.sendClearTransition.trailingReleasedFrameCount,
-      'the clear transition must release for several painted frames, not merely at snapshot time').toBeGreaterThanOrEqual(3);
+    expect(summary.sendClearTransition.frameCount,
+      'durable clear has no presentation transition owner').toBe(0);
+    expect(summary.sendClearTransition.programmaticWrites,
+      'direct clear never chases its overlay geometry with scroll methods').toEqual([]);
     const terminal = summary.sendClearTransition.terminal;
     expect(terminal, 'terminal composer state is captured in the artifact').not.toBeNull();
     expect(terminal.hasTransitionAttribute, 'terminal input slot has no send-clear owner').toBe(false);
@@ -733,9 +714,7 @@ async function runTrajectory({ page, request, testInfo, mode }) {
   }
   for (const key of ['reading', 'inputSlot', 'bottomStack', 'composerWrap', 'composerSurface']) {
     for (const field of ['top', 'bottom', 'height', 'clientHeight']) {
-      const drift = multiline
-        ? summary.sendClearTransition.settledGeometryDrift?.[key]?.[field]
-        : summary.maxGeometryDriftFromFirstWaiting?.[key]?.[field];
+      const drift = summary.maxGeometryDriftFromFirstWaiting?.[key]?.[field];
       expect(Number.isFinite(drift), `${key}.${field} drift must be measured, not defaulted`).toBe(true);
       expect(drift, `${key}.${field} stays stable after the durable clear settles through running`).toBeLessThanOrEqual(1);
     }

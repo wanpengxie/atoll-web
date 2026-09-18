@@ -41,20 +41,35 @@ describe('conversation architecture boundaries', () => {
     expect(model).toContain('activationID');
   });
 
-  it('lets ConversationSurface measure only the input stack', () => {
+  it('keeps Composer outside the fixed reading geometry contract', () => {
     const surface = source('src/ui/conversation/ConversationSurface.jsx');
     const timeline = source('src/ui/Timeline.jsx');
     const css = source('src/styles/app-shell.css');
-    // 要守的是「只有一个观察器实例」，所以数 new，不数这个词的出现次数。
-    // 原写法把注释里提到 ResizeObserver 的句子也算进去，于是解释性注释一多
-    // 就红，红的却不是它想守的东西（2026-09-18 接手时实测：实例始终只有一个）。
-    expect(surface.match(/new ResizeObserver/g)).toHaveLength(1);
-    expect(surface).toMatch(/ref=\{inputRef\} className="conversation-bottom-stack"/);
-    expect(surface).not.toMatch(/floatingRef|waiting.*height/i);
+    const composer = source('src/styles/composer.css');
+    expect(surface).not.toMatch(/ResizeObserver|MutationObserver|requestAnimationFrame|dispatchEvent/);
+    expect(surface).not.toMatch(/prepareSendClear|ComposerPresentation|sendClearRevision/);
+    expect(surface).toMatch(/className="conversation-bottom-stack"/);
+    expect(surface).not.toMatch(/floatingRef|waiting.*height|inputMaxHeight|scroll(?:Top|To|By|IntoView)/i);
     expect(timeline).toMatch(/<ConversationSurface input=\{composer\} floating=\{floatingInput\}>/);
-    expect(css).toMatch(/\.conversation-surface\s*\{[^}]*--conversation-reading-gap:\s*32px[^}]*grid-template-rows:/s);
-    expect(css).toMatch(/\.conversation-bottom-stack\s*\{[^}]*position:\s*relative/s);
+    expect(css).toMatch(/\.conversation-surface\s*\{[^}]*--conversation-composer-base-height:\s*100px[^}]*--conversation-reading-gap:\s*32px[^}]*--conversation-bottom-reserve:/s);
+    expect(css).toMatch(/\.conversation-reading-slot\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0 0 var\(--conversation-bottom-reserve\)/s);
+    expect(css).toMatch(/\.conversation-bottom-stack\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*0[^}]*max-height:\s*min\(var\(--conversation-input-max-height\), 100%\)/s);
+    expect(css).toMatch(/\.conversation-input-slot\s*\{[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s);
+    expect(composer).toMatch(/\.composer-editor\s*\{[^}]*max-height:\s*160px[^}]*overflow-y:\s*auto/s);
     expect(css).toMatch(/\.conversation-floating-slot\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*100%/s);
+  });
+
+  it('gives mobile keyboard geometry to one visual viewport owner', () => {
+    const shell = source('src/app/SurfaceShell.jsx');
+    const responsive = source('src/styles/responsive.css');
+    const composer = source('src/ui/Composer.jsx');
+    expect(shell).toContain('globalThis.visualViewport');
+    expect(shell).toContain("viewport.addEventListener('resize', commitFrame)");
+    expect(shell).toContain("viewport.addEventListener('scroll', commitFrame)");
+    expect(shell).not.toMatch(/scrollTop|scrollTo|scrollBy|querySelector|getBoundingClientRect/);
+    expect(responsive).toMatch(/\.shell\[data-visual-viewport-owned="true"\]\s*\{[^}]*--visual-viewport-height/s);
+    expect(composer).not.toMatch(/ComposerPresentation|sendClearRevision|prepareSendClear/);
+    expect(() => source('src/ui/conversation/ComposerPresentationContext.jsx')).toThrow();
   });
 
   it('keeps async rich media inside stable first-paint boxes', () => {

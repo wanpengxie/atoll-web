@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { act, cleanup, render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConversationSurface } from '../src/ui/conversation/ConversationSurface.jsx';
-import { useComposerPresentation } from '../src/ui/conversation/ComposerPresentationContext.jsx';
 
 afterEach(() => {
   cleanup();
@@ -11,291 +10,77 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('waiting layout ownership', () => {
-  it('retargets user-authored input growth from the current painted height', () => {
-    let naturalHeight = 100;
-    let renderedHeight = 100;
-    let nextFrame = 1;
-    const frames = new Map();
-    const observers = [];
-    const mutationObservers = [];
-    class TestResizeObserver {
-      constructor(callback) { this.callback = callback; observers.push(this); }
-      observe() {}
-      disconnect() {}
+describe('fixed conversation surface ownership', () => {
+  it('does not install a size/mutation/frame observer or publish a scroll intent', () => {
+    const ResizeObserver = vi.fn();
+    const MutationObserver = vi.fn();
+    const requestAnimationFrame = vi.fn();
+    vi.stubGlobal('ResizeObserver', ResizeObserver);
+    vi.stubGlobal('MutationObserver', MutationObserver);
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+
+    function Input() {
+      return <section className="composer-wrap">composer</section>;
     }
-    vi.stubGlobal('ResizeObserver', TestResizeObserver);
-    vi.stubGlobal('MutationObserver', class TestMutationObserver {
-      constructor(callback) { this.callback = callback; mutationObservers.push(this); }
-      observe() {}
-      disconnect() {}
-    });
-    vi.stubGlobal('requestAnimationFrame', (callback) => {
-      const id = nextFrame++;
-      frames.set(id, callback);
-      return id;
-    });
-    vi.stubGlobal('cancelAnimationFrame', (id) => frames.delete(id));
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
-      const height = this.classList.contains('conversation-surface')
-        ? 640
-        : this.classList.contains('composer-wrap')
-          ? naturalHeight
-          : this.classList.contains('conversation-input-slot')
-            ? renderedHeight
-            : 0;
-      return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: height, width: 800, height, toJSON: () => ({}) };
-    });
-    function Subject() {
-      return <ConversationSurface input={<section className="composer-wrap" data-send-clear-revision="0"><div className="composer-editor">message</div></section>}>
-        <div className="timeline" data-viewport-mode="following"><div className="timeline-message-list">reading</div></div>
-      </ConversationSurface>;
-    }
-
-    const view = render(<Subject />);
-    const inputSlot = view.container.querySelector('.conversation-input-slot');
-    const surface = view.container.querySelector('.conversation-surface');
-    const scroller = view.container.querySelector('.timeline-message-list');
-    let preparedCount = 0;
-    scroller.addEventListener('atoll:input-resize-prepared', () => {
-      preparedCount += 1;
-      scroller.dispatchEvent(new CustomEvent('atoll:timeline-bottom-write', { bubbles: true }));
-    });
-    naturalHeight = 121;
-    renderedHeight = 121;
-    act(() => surface.dispatchEvent(new Event('beforeinput', { bubbles: true })));
-    act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
-    expect(preparedCount).toBe(1);
-    expect(inputSlot.dataset.inputResizeTransition).toBe('armed');
-    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('100px');
-    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('121px');
-    act(() => {
-      for (const [id, callback] of [...frames]) {
-        frames.delete(id);
-        callback();
-      }
-    });
-    expect(inputSlot.dataset.inputResizeTransition).toBe('running');
-    act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
-    expect(preparedCount).toBe(1);
-
-    naturalHeight = 142;
-    renderedHeight = 111;
-    act(() => surface.dispatchEvent(new Event('beforeinput', { bubbles: true })));
-    act(() => mutationObservers[0].callback([{ type: 'childList' }]));
-    expect(preparedCount).toBe(2);
-    expect(inputSlot.dataset.inputResizeTransition).toBe('armed');
-    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('111px');
-    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('142px');
-
-    naturalHeight = 142;
-    renderedHeight = 142;
-    const end = new Event('transitionend', { bubbles: true });
-    Object.defineProperty(end, 'propertyName', { value: '--input-resize-progress-height' });
-    act(() => view.container.querySelector('.conversation-surface').dispatchEvent(end));
-    expect(inputSlot.hasAttribute('data-input-resize-transition')).toBe(false);
-    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('');
-    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('');
-
-    inputSlot.style.maxHeight = '150px';
-    naturalHeight = 180;
-    renderedHeight = 142;
-    act(() => surface.dispatchEvent(new Event('beforeinput', { bubbles: true })));
-    act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
-    expect(preparedCount).toBe(3);
-    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('142px');
-    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('150px');
-  });
-
-  it('adopts channel-entry DOM settling without animating the reading viewport', () => {
-    let naturalHeight = 72;
-    let renderedHeight = 72;
-    const mutationObservers = [];
-    vi.stubGlobal('ResizeObserver', class TestResizeObserver {
-      observe() {}
-      disconnect() {}
-    });
-    vi.stubGlobal('MutationObserver', class TestMutationObserver {
-      constructor(callback) { this.callback = callback; mutationObservers.push(this); }
-      observe() {}
-      disconnect() {}
-    });
-    vi.stubGlobal('requestAnimationFrame', () => 1);
-    vi.stubGlobal('cancelAnimationFrame', vi.fn());
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
-      const height = this.classList.contains('conversation-surface')
-        ? 640
-        : this.classList.contains('composer-wrap')
-          ? naturalHeight
-          : this.classList.contains('conversation-input-slot')
-            ? renderedHeight
-            : 0;
-      return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: height, width: 800, height, toJSON: () => ({}) };
-    });
     const view = render(<ConversationSurface
-      input={<section className="composer-wrap" data-send-clear-revision="0">composer</section>}
-    ><div>reading</div></ConversationSurface>);
-    const surface = view.container.querySelector('.conversation-surface');
-    const inputSlot = view.container.querySelector('.conversation-input-slot');
+      input={<Input />}
+      floating={<section className="agent-wait-layer">waiting</section>}
+    ><div className="timeline-message-list">reading</div></ConversationSurface>);
 
-    naturalHeight = 102;
-    renderedHeight = 102;
-    act(() => mutationObservers[0].callback([{ type: 'childList' }]));
-    expect(inputSlot.hasAttribute('data-input-resize-transition')).toBe(false);
-    expect(surface.hasAttribute('data-input-resize-transition')).toBe(false);
-
-    act(() => surface.dispatchEvent(new Event('beforeinput', { bubbles: true })));
-    naturalHeight = 121;
-    renderedHeight = 121;
-    act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
-    expect(inputSlot.dataset.inputResizeTransition).toBe('armed');
-    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('102px');
-    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('121px');
+    expect(ResizeObserver).not.toHaveBeenCalled();
+    expect(MutationObserver).not.toHaveBeenCalled();
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+    expect(view.container.querySelector('[data-input-resize-transition]')).toBeNull();
+    expect(view.container.querySelector('[data-send-clear-revision]')).toBeNull();
+    expect(view.container.querySelector('[data-send-clear-transition]')).toBeNull();
   });
 
-  it('releases a synchronous clear preparation when the committed input did not shrink', () => {
-    const observers = [];
-    class TestResizeObserver {
-      constructor(callback) { this.callback = callback; observers.push(this); }
-      observe() {}
-      disconnect() {}
-    }
-    vi.stubGlobal('ResizeObserver', TestResizeObserver);
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
-      const height = this.classList.contains('conversation-surface') ? 640 : 100;
-      return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: height, width: 800, height, toJSON: () => ({}) };
-    });
-    let prepare;
-    function Input({ revision }) {
-      prepare = useComposerPresentation()?.prepareSendClear;
-      return <section className="composer-wrap" data-send-clear-revision={revision}>same height</section>;
-    }
-    function Subject({ revision }) {
-      return <ConversationSurface input={<Input revision={revision} />}><div>reading</div></ConversationSurface>;
-    }
-
-    const view = render(<Subject revision={0} />);
-    const inputSlot = view.container.querySelector('.conversation-input-slot');
-    act(() => { expect(prepare(1)).toBe(true); });
-    expect(inputSlot.dataset.sendClearTransition).toBe('prepared');
-    view.rerender(<Subject revision={1} />);
-    act(() => observers[0].callback());
-    expect(inputSlot.hasAttribute('data-send-clear-transition')).toBe(false);
-    expect(inputSlot.style.getPropertyValue('--send-clear-from-height')).toBe('');
-  });
-
-  it('releases an active clear transition when CSS cancels it', () => {
-    let naturalHeight = 180;
-    const observers = [];
-    class TestResizeObserver {
-      constructor(callback) { this.callback = callback; observers.push(this); }
-      observe() {}
-      disconnect() {}
-    }
-    vi.stubGlobal('ResizeObserver', TestResizeObserver);
-    vi.stubGlobal('requestAnimationFrame', () => 1);
-    vi.stubGlobal('cancelAnimationFrame', vi.fn());
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
-      const height = this.classList.contains('conversation-surface') ? 640 : naturalHeight;
-      return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: height, width: 800, height, toJSON: () => ({}) };
-    });
-    let prepare;
-    function Input({ revision }) {
-      prepare = useComposerPresentation()?.prepareSendClear;
-      return <section className="composer-wrap" data-send-clear-revision={revision}>message</section>;
-    }
-    function Subject({ revision }) {
-      return <ConversationSurface input={<Input revision={revision} />}><div>reading</div></ConversationSurface>;
-    }
-
-    const view = render(<Subject revision={0} />);
-    const inputSlot = view.container.querySelector('.conversation-input-slot');
-    act(() => { expect(prepare(1)).toBe(true); });
-    naturalHeight = 100;
-    view.rerender(<Subject revision={1} />);
-    act(() => observers[0].callback());
-    expect(inputSlot.dataset.sendClearTransition).toBe('armed');
-
-    const cancel = new Event('transitioncancel', { bubbles: true });
-    Object.defineProperty(cancel, 'propertyName', { value: 'block-size' });
-    act(() => inputSlot.dispatchEvent(cancel));
-    expect(inputSlot.hasAttribute('data-send-clear-transition')).toBe(false);
-    expect(inputSlot.style.getPropertyValue('--send-clear-from-height')).toBe('');
-    expect(inputSlot.style.getPropertyValue('--send-clear-to-height')).toBe('');
-  });
-
-  it('observes only the in-flow input while Waiting facts use the fixed list reserve', () => {
-    let naturalInputHeight = 104;
-    const observers = [];
-    class TestResizeObserver {
-      constructor(callback) {
-        this.callback = callback;
-        this.targets = [];
-        observers.push(this);
-      }
-      observe(target) { this.targets.push(target); }
-      disconnect() {}
-    }
-    vi.stubGlobal('ResizeObserver', TestResizeObserver);
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
-      const height = this.classList.contains('conversation-surface')
-        ? 640
-        : this.classList.contains('conversation-input-slot')
-          ? Math.min(naturalInputHeight, 416)
-          : this.classList.contains('conversation-floating-slot')
-            ? (this.querySelector('.agent-wait-layer') ? 300 : 0)
-          : this.classList.contains('agent-wait-layer')
-            ? 300
-            : 0;
-      return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: height, width: 800, height, toJSON: () => ({}) };
-    });
-    const scrollHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
-    vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function height() {
-      return this.classList.contains('conversation-input-slot')
-        ? naturalInputHeight
-        : scrollHeight?.get?.call(this) || 0;
-    });
-
-    function floating(fact) {
-      if (!['queued', 'partial', 'roster'].includes(fact)) return null;
-      return <section className="agent-wait-layer" aria-label="等待区">
-        {fact === 'partial' && <p role="status">等待证据尚未完整</p>}
-        {fact === 'roster' && <header>新的成员名字</header>}
-        <p>等待消息</p>
-      </section>;
-    }
-    function Subject({ fact }) {
+  it('keeps reading and focused Composer DOM identities across input and Waiting changes', () => {
+    function Subject({ lines, waiting }) {
       return <ConversationSurface
-        input={<div data-testid="composer">composer</div>}
-        floating={floating(fact)}
+        input={<section className="composer-wrap">
+          <button type="button" data-testid="composer-control">send</button>
+          {Array.from({ length: lines }, (_, index) => <p key={index}>{index}</p>)}
+        </section>}
+        floating={waiting ? <section className="agent-wait-layer">waiting</section> : null}
       ><div data-testid="reading">reading</div></ConversationSurface>;
     }
 
-    const view = render(<Subject fact="terminal" />);
+    const view = render(<Subject lines={1} waiting={false} />);
     const surface = view.container.querySelector('.conversation-surface');
+    const readingSlot = view.container.querySelector('.conversation-reading-slot');
     const inputSlot = view.container.querySelector('.conversation-input-slot');
-    expect(surface.style.getPropertyValue('--conversation-input-max-height')).toBe('416px');
-    expect(observers).toHaveLength(1);
-    expect(observers[0].targets).toEqual([
-      surface,
-      inputSlot,
-    ]);
-    expect(observers[0].targets).not.toContain(view.container.querySelector('.conversation-bottom-stack'));
+    const control = view.getByTestId('composer-control');
+    control.focus();
 
-    for (const fact of ['queued', 'partial', 'roster', 'running', 'terminal']) {
-      view.rerender(<Subject fact={fact} />);
-      act(() => observers[0].callback());
-      expect(surface.style.getPropertyValue('--conversation-input-max-height')).toBe('416px');
-      expect(surface.classList.contains('is-input-constrained')).toBe(false);
-      expect(surface.style.getPropertyValue('--conversation-floating-obstruction')).toBe('');
-      expect(surface.hasAttribute('data-floating-obstruction-transition')).toBe(false);
-    }
+    view.rerender(<Subject lines={12} waiting />);
+    expect(view.container.querySelector('.conversation-surface')).toBe(surface);
+    expect(view.container.querySelector('.conversation-reading-slot')).toBe(readingSlot);
+    expect(view.container.querySelector('.conversation-input-slot')).toBe(inputSlot);
+    expect(view.getByTestId('composer-control')).toBe(control);
+    expect(document.activeElement).toBe(control);
+    expect(view.container.querySelector('.conversation-floating-slot .agent-wait-layer')).not.toBeNull();
 
-    naturalInputHeight = 470;
-    act(() => observers[0].callback());
-    expect(surface.classList.contains('is-input-constrained')).toBe(true);
-    naturalInputHeight = 104;
-    act(() => observers[0].callback());
-    expect(surface.classList.contains('is-input-constrained')).toBe(false);
+    view.rerender(<Subject lines={2} waiting={false} />);
+    expect(view.container.querySelector('.conversation-reading-slot')).toBe(readingSlot);
+    expect(document.activeElement).toBe(control);
+  });
+
+  it('keeps the floating stack separate from the reading subtree and preserves caller classes', () => {
+    const view = render(<ConversationSurface
+      className="is-test-surface"
+      input={<div data-testid="composer">composer</div>}
+      floating={<div data-testid="waiting">waiting</div>}
+    ><div data-testid="reading">reading</div></ConversationSurface>);
+    const surface = view.container.querySelector('.conversation-surface');
+    const readingSlot = view.container.querySelector('.conversation-reading-slot');
+    const bottomStack = view.container.querySelector('.conversation-bottom-stack');
+
+    expect(surface.classList.contains('is-test-surface')).toBe(true);
+    expect(readingSlot.contains(view.getByTestId('reading'))).toBe(true);
+    expect(readingSlot.contains(view.getByTestId('composer'))).toBe(false);
+    expect(readingSlot.contains(view.getByTestId('waiting'))).toBe(false);
+    expect(bottomStack.contains(view.getByTestId('composer'))).toBe(true);
+    expect(bottomStack.contains(view.getByTestId('waiting'))).toBe(true);
   });
 });

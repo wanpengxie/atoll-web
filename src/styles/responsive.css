@@ -11,7 +11,7 @@
 .compact-shell .pane-resizer, .mobile-shell .pane-resizer { display: none; }
 .shell.compact-shell, .shell.mobile-shell { position: relative; grid-template-columns: 210px minmax(0, 1fr); }
 .shell.compact-shell.has-context, .shell.mobile-shell.has-context { grid-template-columns: 210px minmax(0, 1fr); }
-.compact-shell .conversation-surface { --conversation-min-input-height: 120px; }
+.compact-shell .conversation-surface { --conversation-composer-base-height: 120px; }
 .compact-shell .context-host, .mobile-shell .context-host { grid-template-columns: 210px minmax(0, 1fr); }
   /* 文件不是辅助信息抽屉。窄屏继续给左栏留 210px 会让预览在移动端横屏只剩
      四百多像素；文件打开后直接使用完整视口，关闭后再回到原工作区。 */
@@ -40,6 +40,19 @@
 .mobile-shell .dynamic-workspace.files-split-open.terminal-split-open > .artifacts-view { display: none; }
 
 .shell.mobile-shell, .shell.mobile-shell.has-context { grid-template-columns: minmax(0, 1fr); }
+/* Mobile Safari may leave the layout viewport unchanged while its keyboard
+   shrinks and offsets only VisualViewport. SurfaceShell publishes that one
+   browser-owned frame. The 5px subtraction preserves #root's fixed brand
+   strip; no Composer measurement participates in these dimensions. */
+.shell[data-visual-viewport-owned="true"] {
+  /* Absolute layout-viewport coordinates avoid the browser-specific question
+     of whether a fixed box follows the visual or layout viewport. */
+  position: absolute;
+  top: calc(var(--visual-viewport-offset-top) + 5px);
+  left: var(--visual-viewport-offset-left);
+  width: var(--visual-viewport-width);
+  height: calc(var(--visual-viewport-height) - 5px);
+}
   /* 标题只占一行。控件仍保持 44px 点击面；放不下的 workspace 动作进入 ••• 菜单，
      恒不再为了三个图标给 header 追加第二条工具栏。 */
   .mobile-shell .workspace { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: 44px auto minmax(0, 1fr); }
@@ -88,7 +101,7 @@
      scroller to zero height on mobile. */
   .mobile-shell .workspace > .workspace-view,
   .mobile-shell .workspace > .channel-private-empty { grid-row: 3; grid-column: 1 / -1; }
-  .mobile-shell .conversation-surface { --conversation-input-height: 128px; --conversation-min-reading-height: 160px; }
+  .mobile-shell .conversation-surface { --conversation-composer-base-height: 120px; }
   .mobile-shell .send-button, .mobile-shell .task-create-modal > header button, .mobile-shell .task-create-modal footer button,
   .mobile-shell .global-search > header button, .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
   .mobile-shell .composer-tools > button,
@@ -106,6 +119,24 @@
   .mobile-shell .turn-card, .mobile-shell .standalone-row, .mobile-shell .information-flow-row:not(.contained) { width: 100%; }
   .mobile-shell .request-text, .mobile-shell .audience-line, .mobile-shell .message-attachments, .mobile-shell .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .mobile-shell .composer-wrap { padding: 0 10px 10px; }
+  /* iOS otherwise auto-zooms focused editable text below 16px, transferring
+     geometry to pinch zoom and defeating the unit-scale keyboard contract. */
+  .compact-shell .composer-editor, .mobile-shell .composer-editor { font-size: 16px; }
+  /* At a genuinely short keyboard viewport, reply/attachment/tool rows stay
+     reachable by yielding text height to the editor's existing local scroll.
+     The input's content height still never changes the reading allocation. */
+  .shell[data-visual-viewport-owned="true"] .composer-editor {
+    max-height: min(160px, max(48px, calc(var(--visual-viewport-height) - 240px)));
+  }
+  .shell[data-visual-viewport-owned="true"] .mention-menu {
+    position: static;
+    max-height: min(250px, calc(var(--visual-viewport-height) * .4));
+    margin-top: 5px;
+  }
+  .shell[data-visual-viewport-owned="true"] .command-menu {
+    position: static;
+    margin-top: 5px;
+  }
   .mobile-shell .terminal-status button { min-width: 44px; min-height: 44px; }
   .mobile-shell .timeline-scope-bar { top: 4px; min-height: 29px; flex-basis: 29px; margin-bottom: 0; }
   .mobile-shell .timeline-scope > button { min-height: 26px; padding: 2px 9px; font-size: 10px; }

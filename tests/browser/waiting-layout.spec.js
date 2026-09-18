@@ -1,20 +1,16 @@
 import { expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
-const stableKeys = ['surface', 'reading', 'stack', 'input', 'composer'];
-
-function expectSameGeometry(actual, expected, context) {
-  for (const key of stableKeys) {
-    expect(actual[key], `${context}:${key}`).toEqual(expected[key]);
-  }
-}
+const OUT = process.env.ATOLL_COMPOSER_OVERLAY_OUT || '';
 
 async function sourceFingerprint() {
   const paths = [
     'src/ui/conversation/ConversationSurface.jsx',
     'src/ui/Timeline.jsx',
     'src/styles/app-shell.css',
+    'src/styles/responsive.css',
     'src/styles/timeline.css',
   ];
   const hash = createHash('sha256');
@@ -26,20 +22,31 @@ async function persistEvidence(testInfo, name, payload) {
   const path = testInfo.outputPath(name);
   const body = JSON.stringify({
     capturedAt: new Date().toISOString(),
-    oracle: { coordinateTolerancePx: 1, inputReadingDeltaTolerancePx: 0, sampledAnimationFrames: 16 },
+    oracle: { coordinateTolerancePx: 1, sampledFrames: 16 },
     source: await sourceFingerprint(),
     ...payload,
   }, null, 2);
   await writeFile(path, body);
   await testInfo.attach(name, { path, contentType: 'application/json' });
+  if (OUT) {
+    await mkdir(OUT, { recursive: true });
+    await writeFile(resolve(OUT, name), `${body}\n`);
+  }
 }
 
-test('waiting facts and network presentation never own reading or composer geometry', async ({ page }, testInfo) => {
+function expectRect(actual, expected, context) {
+  for (const key of ['top', 'right', 'bottom', 'left', 'width', 'height']) {
+    expect(Math.abs(actual[key] - expected[key]), `${context}:${key}`).toBeLessThanOrEqual(1);
+  }
+}
+
+test('Waiting and status facts never change the fixed reading or Composer allocation', async ({ page }, testInfo) => {
   await page.goto('/tests/browser/fixtures/waiting-layout.html');
   await page.waitForFunction(() => window.waitingLayout?.geometry().composer?.height > 0);
   const baseline = await page.evaluate(() => window.waitingLayout.geometry());
 
-  const transitions = [
+  const trajectories = [];
+  for (const [label, patch] of [
     ['queued', { fact: 'queued' }],
     ['partial evidence', { fact: 'partial' }],
     ['roster refresh', { fact: 'roster', rosterRevision: 2 }],
@@ -49,63 +56,105 @@ test('waiting facts and network presentation never own reading or composer geome
     ['offline', { network: 'offline' }],
     ['queued locally', { network: 'queued' }],
     ['network restored', { network: 'open' }],
-  ];
-  const trajectories = [];
-  for (const [label, patch] of transitions) {
-    const frames = await page.evaluate((next) => window.waitingLayout.transition(next, 16), patch);
-    trajectories.push({ label, patch, frames });
+  ]) {
+    trajectories.push({
+      label,
+      frames: await page.evaluate((next) => window.waitingLayout.transition(next, 16), patch),
+    });
   }
-  await persistEvidence(testInfo, 'waiting-facts-geometry.json', { baseline, trajectories });
+  await persistEvidence(testInfo, 'fixed-overlay-waiting.json', { baseline, trajectories });
+
+  expect(Math.abs((baseline.surface.bottom - baseline.reading.bottom) - 132)).toBeLessThanOrEqual(1);
+  expect(Math.abs((baseline.stack.top - baseline.reading.bottom) - 32)).toBeLessThanOrEqual(1);
+  expect(baseline.lastRow.bottom).toBeLessThanOrEqual(baseline.reading.bottom + 1);
+  expect(baseline.lastRowOwnsHit).toBe(true);
   for (const { label, frames } of trajectories) {
     for (const [index, frame] of frames.entries()) {
-      expectSameGeometry(frame, baseline, `${label}:frame-${index}`);
-      // Obstruction growth is synchronous so content is never covered. A
-      // reduction is allowed to retain only excess space while the bounded
-      // Surface transition retires it; it may never undershoot the overlay.
-      expect(frame.floatingObstruction, `${label}:frame-${index}:measured obstruction`)
-        .toBeGreaterThanOrEqual(Math.max(0, (frame.floating?.height || 0) - frame.readingGap) - 1);
+      expectRect(frame.reading, baseline.reading, `${label}:frame-${index}:reading`);
+      expectRect(frame.stack, baseline.stack, `${label}:frame-${index}:stack`);
+      expectRect(frame.input, baseline.input, `${label}:frame-${index}:input`);
+      expectRect(frame.composer, baseline.composer, `${label}:frame-${index}:composer`);
+      if (frame.waiting) {
+        expect(Math.abs(frame.waiting.bottom - frame.stack.top),
+          `${label}:Waiting remains attached to current Composer top`).toBeLessThanOrEqual(1);
+      }
     }
-    const settled = frames.at(-1);
-    expect(Math.abs(settled.floatingObstruction - Math.max(0, (settled.floating?.height || 0) - settled.readingGap)),
-      `${label}: bounded obstruction retirement settles to the measured overlay`).toBeLessThanOrEqual(1);
   }
 });
 
-test('submit may remove natural input height while its new queued layer remains geometry-neutral', async ({ page }, testInfo) => {
+test('input growth and clear stay inside the overlay while reading client geometry is constant', async ({ page }, testInfo) => {
   await page.goto('/tests/browser/fixtures/waiting-layout.html');
   await page.waitForFunction(() => window.waitingLayout?.geometry().composer?.height > 0);
   const oneLine = await page.evaluate(() => window.waitingLayout.geometry());
-  const grownFrames = await page.evaluate(() => window.waitingLayout.transition({ lines: 6 }));
+  const grownFrames = await page.evaluate(() => window.waitingLayout.transition({ lines: 6 }, 16));
   const grown = grownFrames.at(-1);
   const submitFrames = await page.evaluate(() => window.waitingLayout.transition({
     lines: 1,
     fact: 'queued',
     network: 'queued',
-    sendClearRevision: 1,
-  }, 18));
-  await persistEvidence(testInfo, 'waiting-submit-geometry.json', { baseline: oneLine, grownFrames, submitFrames });
-  expect(grown.composer.height).toBeGreaterThan(oneLine.composer.height);
-  expect(grown.composer.bottom).toBe(oneLine.composer.bottom);
-  expect(grown.reading.top).toBe(oneLine.reading.top);
-  expect(oneLine.reading.bottom - grown.reading.bottom).toBe(grown.input.height - oneLine.input.height);
-  const inputHeights = submitFrames.map((frame) => Math.round(frame.input.height));
-  const readingBottoms = submitFrames.map((frame) => Math.round(frame.reading.bottom));
-  expect(new Set(inputHeights).size).toBeGreaterThanOrEqual(3);
-  expect(inputHeights[0]).toBe(grown.input.height);
-  expect(inputHeights.at(-1)).toBe(oneLine.input.height);
-  expect(readingBottoms[0]).toBe(grown.reading.bottom);
-  expect(readingBottoms.at(-1)).toBe(oneLine.reading.bottom);
-  expect(inputHeights.slice(1).every((height, index) => height <= inputHeights[index])).toBe(true);
-  expect(readingBottoms.slice(1).every((bottom, index) => bottom >= readingBottoms[index])).toBe(true);
-  for (const frame of submitFrames) {
-    expect(frame.composer.bottom).toBe(oneLine.composer.bottom);
-    expect(frame.waiting?.height || 0).toBeGreaterThan(0);
-    expect(frame.floatingObstruction)
-      .toBe(Math.max(0, frame.floating.height - frame.readingGap));
+  }, 16));
+  await persistEvidence(testInfo, 'fixed-overlay-input-growth.json', {
+    oneLine, grownFrames, submitFrames,
+  });
+
+  expect(grown.input.height).toBeGreaterThan(oneLine.input.height);
+  expect(Math.abs(grown.input.bottom - oneLine.input.bottom)).toBeLessThanOrEqual(1);
+  expect(grown.input.height).toBeLessThanOrEqual(320);
+  expect(grown.stack.top - grown.surface.top).toBeGreaterThanOrEqual(192);
+  for (const [index, frame] of [...grownFrames, ...submitFrames].entries()) {
+    expectRect(frame.reading, oneLine.reading, `frame-${index}:reading`);
   }
+  for (const frame of submitFrames) {
+    expectRect(frame.input, oneLine.input, 'clear installs final input geometry directly');
+    expect(frame.waiting?.height || 0).toBeGreaterThan(0);
+    expect(Math.abs(frame.waiting.bottom - frame.stack.top)).toBeLessThanOrEqual(1);
+  }
+  expect(await page.locator('[data-input-resize-transition], [data-send-clear-transition]').count()).toBe(0);
 });
 
-test('production Timeline keeps queued to running to terminal facts outside the geometry contract', async ({ page }, testInfo) => {
+test('short mobile-style Surface keeps focus and makes oversized Composer internally scrollable', async ({ page }, testInfo) => {
+  await page.goto('/tests/browser/fixtures/waiting-layout.html');
+  await page.waitForFunction(() => window.waitingLayout?.geometry().composer?.height > 0);
+  await page.locator('.composer-editor').focus();
+  const editor = page.locator('.composer-editor');
+  const before = await page.evaluate(() => window.waitingLayout.geometry());
+  const frames = await page.evaluate(async () => {
+    document.getElementById('root').style.height = '300px';
+    return window.waitingLayout.transition({ lines: 24 }, 16);
+  });
+  const after = frames.at(-1);
+  const scrollEvidence = await page.locator('.composer-editor').evaluate((editor) => {
+    const slot = editor.closest('.conversation-input-slot');
+    const beforeScroll = editor.scrollTop;
+    editor.scrollTop = editor.scrollHeight;
+    const bounds = slot.getBoundingClientRect();
+    const send = document.querySelector('.composer-toolbar button')?.getBoundingClientRect();
+    return {
+      clientHeight: editor.clientHeight,
+      scrollHeight: editor.scrollHeight,
+      beforeScroll,
+      afterScroll: editor.scrollTop,
+      overflowY: getComputedStyle(editor).overflowY,
+      sendBottom: send?.bottom || 0,
+      slotTop: bounds.top,
+      slotBottom: bounds.bottom,
+    };
+  });
+  await persistEvidence(testInfo, 'fixed-overlay-short-surface.json', {
+    before, frames, after, scrollEvidence,
+  });
+
+  await expect(editor).toBeFocused();
+  expect(Math.abs((after.surface.bottom - after.reading.bottom) - 132)).toBeLessThanOrEqual(1);
+  expect(after.reading.height).toBeGreaterThan(0);
+  expect(scrollEvidence.overflowY).toBe('auto');
+  expect(scrollEvidence.scrollHeight).toBeGreaterThan(scrollEvidence.clientHeight);
+  expect(scrollEvidence.afterScroll).toBeGreaterThan(scrollEvidence.beforeScroll);
+  expect(scrollEvidence.sendBottom).toBeLessThanOrEqual(scrollEvidence.slotBottom + 1);
+  expect(scrollEvidence.sendBottom).toBeGreaterThanOrEqual(scrollEvidence.slotTop - 1);
+});
+
+test('production Timeline keeps queued to running to terminal outside the fixed geometry', async ({ page }, testInfo) => {
   await page.goto('/tests/browser/fixtures/waiting-timeline.html');
   await page.waitForFunction(() => window.waitingTimeline?.geometry().composer?.height > 0);
   const baseline = await page.evaluate(() => window.waitingTimeline.geometry());
@@ -117,17 +166,17 @@ test('production Timeline keeps queued to running to terminal facts outside the 
     ['running', { fact: 'running' }],
     ['terminal', { fact: 'terminal' }],
   ]) {
-    trajectory.push({ label, patch, frames: await page.evaluate(
+    trajectory.push({ label, frames: await page.evaluate(
       ({ next, count }) => window.waitingTimeline.transition(next, count),
-      { next: patch, count: ['running', 'terminal'].includes(label) ? 16 : 4 },
+      { next: patch, count: 16 },
     ) });
   }
-  await persistEvidence(testInfo, 'waiting-timeline-geometry.json', { baseline, trajectory });
+  await persistEvidence(testInfo, 'fixed-overlay-production-waiting.json', { baseline, trajectory });
   for (const { label, frames } of trajectory) {
-    for (const [index, frame] of frames.entries()) expectSameGeometry(frame, baseline, `timeline-${label}:frame-${index}`);
+    for (const [index, frame] of frames.entries()) {
+      expectRect(frame.reading, baseline.reading, `timeline-${label}:frame-${index}:reading`);
+      expectRect(frame.stack, baseline.stack, `timeline-${label}:frame-${index}:stack`);
+      expectRect(frame.input, baseline.input, `timeline-${label}:frame-${index}:input`);
+    }
   }
-  expect(trajectory.find(({ label }) => label === 'queued').frames.some((frame) => frame.waiting?.height > 0)).toBe(true);
-  expect(trajectory.find(({ label }) => label === 'partial').frames.some((frame) => frame.waiting?.height > 0)).toBe(true);
-  expect(trajectory.find(({ label }) => label === 'running').frames.at(-1).waiting).toBeNull();
-  expect(trajectory.find(({ label }) => label === 'terminal').frames.at(-1).waiting).toBeNull();
 });

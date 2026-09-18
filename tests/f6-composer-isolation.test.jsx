@@ -5,7 +5,6 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Composer } from '../src/ui/Composer.jsx';
 import { Timeline } from '../src/ui/Timeline.jsx';
-import { ComposerPresentationProvider } from '../src/ui/conversation/ComposerPresentationContext.jsx';
 import { ReadingIntentProvider, useReadingIntent } from '../src/ui/conversation/ReadingIntentContext.jsx';
 
 // This assertion is only about React surface isolation. It neither claims nor
@@ -101,19 +100,16 @@ it('Composer send-start emits once and durable acceptance only correlates the st
   const composerAccepted = vi.fn();
   const token = { activationID: 'a1', inputEpoch: 0, intentRevision: 0, mode: 'following' };
   const composerSendStarted = vi.fn(() => token);
-  const prepareSendClear = vi.fn(() => true);
   const onSend = vi.fn().mockResolvedValue(['message-1']);
   render(
     <ReadingIntentProvider value={{ composerSendStarted, composerAccepted }}>
-      <ComposerPresentationProvider value={{ prepareSendClear }}>
-        <Composer
-          channelId="c0"
-          roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]}
-          selfId="me"
-          onDraftChange={() => ({ revision: 1 })}
-          onSend={onSend}
-        />
-      </ComposerPresentationProvider>
+      <Composer
+        channelId="c0"
+        roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]}
+        selfId="me"
+        onDraftChange={() => ({ revision: 1 })}
+        onSend={onSend}
+      />
     </ReadingIntentProvider>,
   );
   const editor = screen.getByRole('textbox', { name: '消息' });
@@ -122,9 +118,8 @@ it('Composer send-start emits once and durable acceptance only correlates the st
   await user.type(editor, '请继续');
   await user.click(screen.getByRole('button', { name: '发送' }));
   await vi.waitFor(() => expect(onSend).toHaveBeenCalledOnce());
-  await vi.waitFor(() => expect(document.querySelector('.composer-wrap')?.dataset.sendClearRevision).toBe('1'));
-  expect(prepareSendClear).toHaveBeenCalledOnce();
-  expect(prepareSendClear).toHaveBeenCalledWith(1);
+  await vi.waitFor(() => expect(editor.textContent).toBe(''));
+  expect(document.querySelector('.composer-wrap')?.hasAttribute('data-send-clear-revision')).toBe(false);
   expect(composerSendStarted).toHaveBeenCalledWith('c0');
   expect(composerAccepted).toHaveBeenCalledOnce();
   expect(composerAccepted).toHaveBeenCalledWith('c0', ['message-1'], token);
@@ -381,21 +376,18 @@ it('clears the accepted editor version without clearing newer input typed during
   const user = userEvent.setup();
   let resolveAcceptance;
   const acceptance = new Promise((resolve) => { resolveAcceptance = resolve; });
-  const prepareSendClear = vi.fn(() => true);
   render(
     <ReadingIntentProvider value={{
       composerSendStarted: () => ({ activationID: 'a1', inputEpoch: 0, intentRevision: 1, mode: 'following' }),
       composerAccepted: () => true,
     }}>
-      <ComposerPresentationProvider value={{ prepareSendClear }}>
-        <Composer
-          channelId="c0"
-          roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]}
-          selfId="me"
-          onDraftChange={() => ({ revision: 1 })}
-          onSend={() => acceptance}
-        />
-      </ComposerPresentationProvider>
+      <Composer
+        channelId="c0"
+        roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]}
+        selfId="me"
+        onDraftChange={() => ({ revision: 1 })}
+        onSend={() => acceptance}
+      />
     </ReadingIntentProvider>,
   );
   const editor = screen.getByRole('textbox', { name: '消息' });
@@ -408,8 +400,7 @@ it('clears the accepted editor version without clearing newer input typed during
   resolveAcceptance(['message-1']);
   await click;
   expect(editor.textContent).toContain('这是下一稿');
-  expect(document.querySelector('.composer-wrap')?.dataset.sendClearRevision).toBe('0');
-  expect(prepareSendClear).not.toHaveBeenCalled();
+  expect(document.querySelector('.composer-wrap')?.hasAttribute('data-send-clear-revision')).toBe(false);
 });
 
 it('does not send a text-only snapshot while a selected attachment is still uploading', async () => {
