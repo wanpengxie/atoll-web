@@ -429,6 +429,65 @@ describe('history presentation admission', () => {
       .toEqual(['a', 'b', 'local-echo']);
   });
 
+  // Production wedge, pinned at this module's boundary (agent B, 2026-09-18):
+  // useReadingSession routes both renewal and cancellation through
+  // runwayRequestRef, which it clears in the request promise's .finally() at
+  // history.intent_satisfied. This operation is still open for two more
+  // phases after that, so any further input arrives with no handle and the
+  // token silently falls behind the reading session's inputEpoch, which is
+  // what Timeline's exactOwner gate compares. The authority itself always
+  // carries the handle needed to reach it; these assertions are the contract
+  // the delivery-side fix is allowed to rely on.
+  it('remains addressable for renewal and cancellation after its request has settled', () => {
+    const active = token({ demandUnits: 1 });
+    const baseline = [item('b', 20), item('c', 30)];
+    const withOlder = [item('a', 10), ...baseline];
+    const baselineRows = [{ id: 'b', body: item('b', 20) }, { id: 'c', body: item('c', 30) }];
+
+    const renewing = createHistoryPresentationAdmission();
+    renewing.begin('channel', active);
+    renewing.admit('channel', baseline, meta(11));
+    renewing.observe('channel', withOlder, meta(12));
+    renewing.settle('channel');
+    renewing.admit('channel', withOlder, meta(12));
+    expect(renewing.prepareCommit('channel', {
+      revision: 12, sourceRevision: 12, rows: baselineRows,
+    })).toBe(true);
+
+    // The request is over; the operation is not. Its own snapshot is the
+    // handle, and it names the same operation the request used to name.
+    const open = renewing.snapshot('channel');
+    expect(open.phase).toBe('committed-awaiting-layout');
+    expect(open.token.operationID).toBe(active.operationID);
+    expect(renewing.bindPresentation('channel', 12).inputEpoch).toBe(2);
+
+    // Continued older input renewed through that handle keeps the bound token
+    // level with the reading session, so exactOwner can still pass.
+    expect(renewing.advanceInputEpoch('channel', {
+      operationID: open.token.operationID,
+      activationID: open.token.activationID,
+      direction: 'older',
+      inputEpoch: 3,
+      currentInputEpoch: 3,
+    })).toEqual(expect.objectContaining({ fromInputEpoch: 2, toInputEpoch: 3 }));
+    expect(renewing.bindPresentation('channel', 12).inputEpoch).toBe(3);
+    expect(renewing.acknowledge('channel', renewing.snapshot('channel').committed.commitID)).toBe(true);
+    expect(renewing.snapshot('channel').phase).toBe('idle');
+
+    // Reverse input reaches the same operation through the same handle and
+    // retires it, so a blocked demand is never left with no way out.
+    const cancelling = createHistoryPresentationAdmission();
+    cancelling.begin('channel', active);
+    cancelling.admit('channel', baseline, meta(11));
+    cancelling.observe('channel', withOlder, meta(12));
+    cancelling.settle('channel');
+    cancelling.admit('channel', withOlder, meta(12));
+    cancelling.prepareCommit('channel', { revision: 12, sourceRevision: 12, rows: baselineRows });
+    expect(cancelling.snapshot('channel').phase).toBe('committed-awaiting-layout');
+    expect(cancelling.cancel('channel', cancelling.snapshot('channel').token.operationID)).toBe(true);
+    expect(cancelling.snapshot('channel').phase).toBe('idle');
+  });
+
   it('keeps a local-only UI baseline visible while durable history is staged', () => {
     const admission = createHistoryPresentationAdmission();
     const echo = { id: 'local-echo', kind: 'turn', local: true };
