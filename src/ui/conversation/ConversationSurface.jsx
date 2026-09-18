@@ -64,6 +64,14 @@ export function ConversationSurface({ children, input, floating = null, classNam
     if (!surface || !inputSlot) return undefined;
     const transition = sendClearTransitionRef.current;
     const inputResize = inputResizeTransitionRef.current;
+    // DOM settling is not user input. In particular, Tiptap and the composer
+    // controls materialize in several commits when a channel is entered. A
+    // MutationObserver sees the same childList records as it sees after
+    // typing, so it needs the native interaction boundary to tell those two
+    // cases apart. The authority expires at the next paint; a newly mounted
+    // channel surface cannot inherit the channel-rail click that created it.
+    let inputMutationAuthorized = false;
+    let inputMutationAuthorityFrame = 0;
     const composerWrap = () => inputSlot.querySelector('.composer-wrap');
     const naturalInputHeight = () => nonNegativeHeight(composerWrap()) || nonNegativeHeight(inputSlot);
     const presentedInputHeight = () => {
@@ -304,7 +312,12 @@ export function ConversationSurface({ children, input, floating = null, classNam
       ? new MutationObserver((records) => {
         if (records.some((record) => record.type === 'attributes')) commit();
         if (records.some((record) => record.type === 'characterData' || record.type === 'childList')) {
-          animateInputMutation();
+          if (inputMutationAuthorized) animateInputMutation();
+          else if (!transition.active && !inputResize.active) {
+            // Adopt lifecycle/programmatic layout as the next baseline. It is
+            // already committed DOM, not a motion request.
+            inputResize.paintedHeight = presentedInputHeight();
+          }
         }
       })
       : null;
@@ -333,6 +346,12 @@ export function ConversationSurface({ children, input, floating = null, classNam
       }
     };
     const takePresentationControl = (event) => {
+      inputMutationAuthorized = true;
+      if (inputMutationAuthorityFrame) cancelAnimationFrame(inputMutationAuthorityFrame);
+      inputMutationAuthorityFrame = requestAnimationFrame(() => {
+        inputMutationAuthorityFrame = 0;
+        inputMutationAuthorized = false;
+      });
       if (event.isTrusted && transition.active) finishSendClearTransition();
     };
     inputSlot.addEventListener('transitionend', onTransitionComplete);
@@ -357,6 +376,7 @@ export function ConversationSurface({ children, input, floating = null, classNam
       }
       if (transition.paintFrame) cancelAnimationFrame(transition.paintFrame);
       if (inputResize.paintFrame) cancelAnimationFrame(inputResize.paintFrame);
+      if (inputMutationAuthorityFrame) cancelAnimationFrame(inputMutationAuthorityFrame);
       finishInputResizeTransition();
       finishSendClearTransition();
     };

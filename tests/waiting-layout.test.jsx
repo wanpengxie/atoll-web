@@ -54,6 +54,7 @@ describe('waiting layout ownership', () => {
 
     const view = render(<Subject />);
     const inputSlot = view.container.querySelector('.conversation-input-slot');
+    const surface = view.container.querySelector('.conversation-surface');
     const scroller = view.container.querySelector('.timeline-message-list');
     let preparedCount = 0;
     scroller.addEventListener('atoll:input-resize-prepared', () => {
@@ -62,6 +63,7 @@ describe('waiting layout ownership', () => {
     });
     naturalHeight = 121;
     renderedHeight = 121;
+    act(() => surface.dispatchEvent(new Event('beforeinput', { bubbles: true })));
     act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
     expect(preparedCount).toBe(1);
     expect(inputSlot.dataset.inputResizeTransition).toBe('armed');
@@ -79,6 +81,7 @@ describe('waiting layout ownership', () => {
 
     naturalHeight = 142;
     renderedHeight = 111;
+    act(() => surface.dispatchEvent(new Event('beforeinput', { bubbles: true })));
     act(() => mutationObservers[0].callback([{ type: 'childList' }]));
     expect(preparedCount).toBe(2);
     expect(inputSlot.dataset.inputResizeTransition).toBe('armed');
@@ -97,10 +100,57 @@ describe('waiting layout ownership', () => {
     inputSlot.style.maxHeight = '150px';
     naturalHeight = 180;
     renderedHeight = 142;
+    act(() => surface.dispatchEvent(new Event('beforeinput', { bubbles: true })));
     act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
     expect(preparedCount).toBe(3);
     expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('142px');
     expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('150px');
+  });
+
+  it('adopts channel-entry DOM settling without animating the reading viewport', () => {
+    let naturalHeight = 72;
+    let renderedHeight = 72;
+    const mutationObservers = [];
+    vi.stubGlobal('ResizeObserver', class TestResizeObserver {
+      observe() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('MutationObserver', class TestMutationObserver {
+      constructor(callback) { this.callback = callback; mutationObservers.push(this); }
+      observe() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('requestAnimationFrame', () => 1);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function bounds() {
+      const height = this.classList.contains('conversation-surface')
+        ? 640
+        : this.classList.contains('composer-wrap')
+          ? naturalHeight
+          : this.classList.contains('conversation-input-slot')
+            ? renderedHeight
+            : 0;
+      return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: height, width: 800, height, toJSON: () => ({}) };
+    });
+    const view = render(<ConversationSurface
+      input={<section className="composer-wrap" data-send-clear-revision="0">composer</section>}
+    ><div>reading</div></ConversationSurface>);
+    const surface = view.container.querySelector('.conversation-surface');
+    const inputSlot = view.container.querySelector('.conversation-input-slot');
+
+    naturalHeight = 102;
+    renderedHeight = 102;
+    act(() => mutationObservers[0].callback([{ type: 'childList' }]));
+    expect(inputSlot.hasAttribute('data-input-resize-transition')).toBe(false);
+    expect(surface.hasAttribute('data-input-resize-transition')).toBe(false);
+
+    act(() => surface.dispatchEvent(new Event('beforeinput', { bubbles: true })));
+    naturalHeight = 121;
+    renderedHeight = 121;
+    act(() => mutationObservers[0].callback([{ type: 'characterData' }]));
+    expect(inputSlot.dataset.inputResizeTransition).toBe('armed');
+    expect(inputSlot.style.getPropertyValue('--input-resize-from-height')).toBe('102px');
+    expect(inputSlot.style.getPropertyValue('--input-resize-to-height')).toBe('121px');
   });
 
   it('releases a synchronous clear preparation when the committed input did not shrink', () => {
