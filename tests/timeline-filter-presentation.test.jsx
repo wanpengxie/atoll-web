@@ -412,6 +412,45 @@ it('零行筛选供给失败后由 scheduler 状态推进恢复并保留前台�
   });
 });
 
+it('零行且已扫描过页面时仍展示当前 source 失败并由 Retry 重开 exact block', async () => {
+  const state = timelineState([{
+    seq: 9,
+    envelope: {
+      id: 'unrelated-before-source-failure', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { text: 'not mine' },
+    },
+  }]);
+  const request = vi.fn(() => new Promise(() => {}));
+  render(<Timeline
+    state={state}
+    roster={[]}
+    selfId="me"
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+    history={{
+      request,
+      status: {
+        attached: true, generation: 5, messageCurrent: false, headSeq: 90,
+        localReplicaReady: true, loading: false, loaded: false,
+        hasOlder: true, completedPages: 1,
+        presentationRevision: state._timelineRevision,
+        sourceLease: '1:2:9',
+        error: '历史请求回执超时，请重试',
+        errorCode: 'history_receipt_timeout',
+        historyDemand: { revision: 0, phase: 'idle', error: '' },
+      },
+    }}
+  />);
+
+  expect((await screen.findByRole('alert')).textContent).toContain('历史请求回执超时');
+  fireEvent.click(screen.getByRole('button', { name: '重试' }));
+  await waitFor(() => expect(request).toHaveBeenCalledOnce());
+  expect(request.mock.calls[0][0]).toMatchObject({
+    reason: 'retry', urgency: 'interactive', explicitRetry: true,
+  });
+});
+
 it('已缓存正文在前台历史失败时保持可读并显示同一 Retry 入口', async () => {
   const state = timelineState([{
     seq: 9,
@@ -445,6 +484,38 @@ it('已缓存正文在前台历史失败时保持可读并显示同一 Retry 入
   fireEvent.click(screen.getByRole('button', { name: '重试' }));
   await waitFor(() => expect(request).toHaveBeenCalledOnce());
   expect(screen.getByText('Cached body stays')).toBeTruthy();
+});
+
+it('已缓存正文不被纯后台 source 错误覆盖', async () => {
+  const state = timelineState([{
+    seq: 9,
+    envelope: {
+      id: 'cached-visible-background-error', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'me', kind: 'human' }, audience: ['me'], payload: { text: 'Readable cached body' },
+    },
+  }]);
+  render(<Timeline
+    state={state}
+    roster={[]}
+    selfId="me"
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+    history={{
+      request: vi.fn(() => new Promise(() => {})),
+      status: {
+        attached: true, generation: 5, messageCurrent: true, headSeq: 90,
+        localReplicaReady: true, loading: false, hasOlder: true, completedPages: 1,
+        presentationRevision: state._timelineRevision,
+        error: 'background source unavailable',
+        historyDemand: { revision: 2, phase: 'idle', error: '' },
+      },
+    }}
+  />);
+
+  expect(await screen.findByText('Readable cached body')).toBeTruthy();
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
 });
 
 it('opaque actor ID 与系统事实尾下，名册迟到后显示唯一 agent chip 且保留同 principal 旧回合', async () => {

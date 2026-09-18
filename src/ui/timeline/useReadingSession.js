@@ -733,9 +733,21 @@ export function useReadingSession({
   const cachePhase = localReplicaError
     ? 'error'
     : historyStatus.localReplicaReady === false ? 'pending' : 'current';
+  // A physical page can establish scan progress without producing one row in
+  // this semantic view, then the exact next source/frontier can fail and stop
+  // automatic dispatch. `semanticRangeEstablished` does not make that failure
+  // non-blocking: with zero Presentation rows there is no list edge that can
+  // create a foreground owner and inherit the Scheduler's blockedSource.
+  // Preserve readable content when rows exist, and do not surface a stale
+  // preceding-source error while a replacement batch is already running.
+  const blockingHistoryError = historyStatus.error
+    && historyStatus.loading !== true
+    && (snapshot.rows.length === 0 || !semanticRangeEstablished)
+    ? String(historyStatus.error)
+    : '';
   const availabilityError = foregroundHistoryError
     ? String(historyStatus.historyDemand?.error || historyStatus.error || '')
-    : syncHistoryError || localReplicaError || (!semanticRangeEstablished ? String(historyStatus.error || '') : '');
+    : syncHistoryError || localReplicaError || blockingHistoryError;
   // Readability and remote freshness are orthogonal. Durable cache rows stay
   // visible while the current connection proves its head; pending/error here
   // explains why Waiting/control remain unavailable without clearing content.
@@ -2098,7 +2110,7 @@ export function useReadingSession({
       if (syncHistoryError && typeof history.refreshLatest === 'function') {
         retries.push(Promise.resolve(history.refreshLatest()));
       }
-      if (foregroundHistoryError || (historyStatus.error && !semanticRangeEstablished)) {
+      if (foregroundHistoryError || blockingHistoryError) {
         retries.push(Promise.resolve(retryCurrentHistory()));
       }
       return retries.length > 1 ? Promise.all(retries) : retries[0] || Promise.resolve(false);
@@ -2247,5 +2259,5 @@ export function useReadingSession({
     revokeBottomIntent,
     isFollowing() { return controller.getSnapshot().session.mode === READING_MODE.following; },
     getSession() { return controller.getSnapshot().session; },
-  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, beginNavigation, bindBottomIntentTargets, bottomReady, cachePhase, cancelNavigation, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, finishNavigation, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, localReplicaError, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, retryCurrentHistory, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen, updateNavigation]);
+  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, beginNavigation, bindBottomIntentTargets, blockingHistoryError, bottomReady, cachePhase, cancelNavigation, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, finishNavigation, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, localReplicaError, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, retryCurrentHistory, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen, updateNavigation]);
 }
