@@ -27,6 +27,27 @@ vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => {
   };
 });
 
+vi.mock('../src/ui/timeline/FollowingTailList.jsx', async () => {
+  const { PresentationMessageList } = await import('./helpers/PresentationMessageList.jsx');
+  return {
+    FollowingTailList(props) {
+      const { reading, snapshot, surfaceVisible } = props;
+      useLayoutEffect(() => {
+        if (!snapshot.rows.length) return;
+        reading.onReadingObservation({
+          activationID: reading.activationID,
+          source: 'semantic-test-boundary',
+          atTail: true,
+          surfaceVisible: surfaceVisible === true,
+          installedHighSeq: Math.max(...snapshot.rows.map((row) => Number(row.seqHigh || 0))),
+          visibleRows: snapshot.rows.map((row) => ({ messageID: row.id, seqHigh: Number(row.seqHigh || 0) })),
+        });
+      }, [reading, snapshot.revision, snapshot.rows, surfaceVisible]);
+      return <PresentationMessageList {...props} />;
+    },
+  };
+});
+
 afterEach(cleanup);
 
 function expectLastReadReceipt(mock, installedHighSeq) {
@@ -2135,4 +2156,122 @@ it('installedTailReadRows bounds identities by the installed high-water and drop
     { messageID: 'b', seqHigh: 9 },
   ]);
   expect(installedTailReadRows([{ id: 'a', seqHigh: 5 }], 0)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// IM 读侧兜底（监理 2026-09-18 14:58 补充裁定）：活动视图处于 跟随 ∧ 在底部 ∧
+// 可见 时，新到达即读——视窗计数在派生层恒为 0，不依赖任何一条回执是否已经落
+// 地。真相仍是回执（unseen 记录、exact identities、物理游标一律不动）。
+// ---------------------------------------------------------------------------
+
+const tailObservation = (port, change = {}) => ({
+  activationID: port.activationID,
+  source: 'layout',
+  geometryRevision: 1,
+  atTail: true,
+  surfaceVisible: true,
+  installedHighSeq: 40,
+  visibleRows: [{ messageID: 'tail', seqHigh: 40 }],
+  ...change,
+});
+
+it('在底部且可见时视窗计数派生为 0，而回执真相一字不改', async () => {
+  const rows = [...backlogRows, { id: 'later', seqLow: 41, seqHigh: 41 }];
+  // 跟随态、在底部：IM 模型里这就是「在场」。
+  const { port } = mountBacklogHarness({ rows, unseenRecords: [['later', 41]], savedMode: 'following' });
+  await waitFor(() => expect(port()?.unseen).toBe(1));
+  // 还没有任何尾部观测：显示值就是真值。
+  expect(port().unseenNotice).toBe(1);
+  expect(port().tailCaughtUp.caughtUp).toBe(false);
+
+  act(() => port().onReadingObservation(tailObservation(port())));
+  // 41 在观测到的已装入水位（40）之上，旧回执恒不扫它——真相保持 1。
+  expect(port().unseen).toBe(1);
+  // 但用户此刻就在最新端看着：显示值恒为 0。
+  expect(port().tailCaughtUp).toMatchObject({
+    channelId: 'c0', caughtUp: true, scope: 'mine', actorFiltered: false,
+  });
+  expect(port().unseenNotice).toBe(0);
+
+  // 跟随态的短暂几何追赶不制造闪烁；持久回执由真实 atTail 观测另行证明。
+  act(() => port().onReadingObservation(tailObservation(port(), {
+    geometryRevision: 2, atTail: false, visibleRows: [{ messageID: 'root-c', seqHigh: 35 }],
+  })));
+  expect(port().tailCaughtUp.caughtUp).toBe(true);
+  expect(port().unseenNotice).toBe(0);
+
+  // 用户自己上滚（浏览态）才是离开底部，兜底立刻关闭，真值重新可见。
+  act(() => port().onUserControl({ direction: 'older', gestureID: 'leave-tail' }));
+  expect(port().tailCaughtUp.caughtUp).toBe(false);
+  expect(port().unseenNotice).toBe(1);
+});
+
+it('跳到最新在真正到达之前一字不清：意图改回跟随不等于在场', async () => {
+  const rows = [...backlogRows, { id: 'later', seqLow: 41, seqHigh: 41 }];
+  const { port } = mountBacklogHarness({ rows, unseenRecords: [['later', 41]], savedMode: 'browsing' });
+  await waitFor(() => expect(port()?.unseen).toBe(1));
+  act(() => port().jumpToLatest());
+  expect(port().getSession().mode).toBe('following');
+  // 还没有任何尾部观测：意图是跟随，人还没到。
+  expect(port().tailCaughtUp.caughtUp).toBe(false);
+  expect(port().unseenNotice).toBe(1);
+  act(() => port().onReadingObservation(tailObservation(port())));
+  expect(port().tailCaughtUp.caughtUp).toBe(true);
+});
+
+it('兜底只认真实在场：浏览态、Surface 隐藏、页面不可见都不压计数', async () => {
+  const rows = [...backlogRows, { id: 'later', seqLow: 41, seqHigh: 41 }];
+  // 跟随态、在底部：IM 模型里这就是「在场」。
+  const { port } = mountBacklogHarness({ rows, unseenRecords: [['later', 41]], savedMode: 'following' });
+  await waitFor(() => expect(port()?.unseen).toBe(1));
+
+  // 在底部但 Surface 未报可见：不是在场。
+  act(() => port().onReadingObservation(tailObservation(port(), { surfaceVisible: false })));
+  expect(port().tailCaughtUp.caughtUp).toBe(false);
+  expect(port().unseenNotice).toBe(1);
+
+  act(() => port().onReadingObservation(tailObservation(port(), { geometryRevision: 2 })));
+  expect(port().tailCaughtUp.caughtUp).toBe(true);
+
+  // 用户上滚（浏览态）：兜底关闭。
+  act(() => port().onUserControl({ direction: 'older', gestureID: 'g1' }));
+  expect(port().getSession().mode).toBe('browsing');
+  expect(port().tailCaughtUp.caughtUp).toBe(false);
+  expect(port().unseenNotice).toBe(1);
+
+  // 回到底部（跟随）后重新在场。
+  act(() => port().jumpToLatest());
+  expect(port().getSession().mode).toBe('following');
+  act(() => port().onReadingObservation(tailObservation(port(), { geometryRevision: 3 })));
+  expect(port().tailCaughtUp.caughtUp).toBe(true);
+
+  // Surface 被隐藏（切到别的工作区页签）：在场结束。
+  act(() => port().onSurfaceVisibilityChange(false));
+  expect(port().tailCaughtUp.caughtUp).toBe(false);
+  expect(port().unseenNotice).toBe(1);
+});
+
+it('页面不可见时兜底关闭，回到前台立刻恢复', async () => {
+  const rows = [...backlogRows, { id: 'later', seqLow: 41, seqHigh: 41 }];
+  // 跟随态、在底部：IM 模型里这就是「在场」。
+  const { port } = mountBacklogHarness({ rows, unseenRecords: [['later', 41]], savedMode: 'following' });
+  await waitFor(() => expect(port()?.unseen).toBe(1));
+  act(() => port().onReadingObservation(tailObservation(port())));
+  expect(port().tailCaughtUp.caughtUp).toBe(true);
+
+  const originalVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+  try {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(port().tailCaughtUp.caughtUp).toBe(false);
+    expect(port().unseenNotice).toBe(1);
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(port().tailCaughtUp.caughtUp).toBe(true);
+    expect(port().unseenNotice).toBe(0);
+  } finally {
+    if (originalVisibility) Object.defineProperty(document, 'visibilityState', originalVisibility);
+    else delete document.visibilityState;
+  }
 });

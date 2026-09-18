@@ -1,4 +1,5 @@
 import { agentMessageStage, isAgentMessageType } from './agent-control.js';
+import { isRequestClosed } from './fold.js';
 import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
@@ -26,6 +27,11 @@ export function selectWaitingPresentation(state, {
   // extent which is removed again as soon as the canonical queued fact lands.
   for (const turn of localTurns) {
     if (!turn?.requestId || turn.requestId === editingTargetId || presented.has(turn.requestId)) continue;
+    // The absence of a canonical turn is not evidence that the work is still
+    // waiting. The memory window evicts closed turns, and the Replica keeps the
+    // closure that proves it; without this question the outbox local echo puts
+    // finished work back into Waiting for as long as the row stays uncollected.
+    if (isRequestClosed(state, turn.requestId)) continue;
     const canonical = state?.turns?.get?.(turn.requestId);
     // Feed reconciliation can remove the outbox row one commit before the
     // actor's queued progress arrives. Once the canonical request exists, use
@@ -44,6 +50,7 @@ export function selectWaitingPresentation(state, {
   // the previous committed render.
   for (const requestId of continuityIDs || []) {
     if (!requestId || requestId === editingTargetId || presented.has(requestId)) continue;
+    if (isRequestClosed(state, requestId)) continue;
     const canonical = state?.turns?.get?.(requestId);
     if (!canonical || canonical.terminal || agentMessageStage(canonical) !== '') continue;
     turns.push({ ...canonical, waitingPresentation: 'confirming' });

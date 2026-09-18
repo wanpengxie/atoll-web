@@ -16,6 +16,13 @@ vi.mock('../src/ui/timeline/LegendMessageList.jsx', () => ({
   },
 }));
 
+vi.mock('../src/ui/timeline/FollowingTailList.jsx', () => ({
+  FollowingTailList(props) {
+    listProbe.props = props;
+    return <div data-testid="measurement-list" />;
+  },
+}));
+
 afterEach(() => {
   cleanup();
   listProbe.props = null;

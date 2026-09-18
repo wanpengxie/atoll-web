@@ -27,7 +27,7 @@ import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
 import { createMessageLayoutStore, MessageLayoutProvider, useMessageLayoutState } from './timeline/MessageLayoutState.jsx';
 import { FoldableBody } from './timeline/FoldableBody.jsx';
 import { useReadingSession } from './timeline/useReadingSession.js';
-import { MessageList } from './timeline/LegendMessageList.jsx';
+import { ReadingContainerHandoff } from './timeline/ReadingContainerHandoff.jsx';
 import { ConversationSurface } from './conversation/ConversationSurface.jsx';
 import { ReadingIntentProvider } from './conversation/ReadingIntentContext.jsx';
 import { acknowledgeLiveTimelineArrivals, liveTimelineArrivals, registerLiveTimelineArrivalConsumer } from '../model/fold.js';
@@ -39,6 +39,24 @@ import { diagnostic } from '../model/diagnostics.js';
 // 什么都没丢——等它有了合适的落位（侧栏或频道信息页）再接回来。
 const SHOW_CHANNEL_NARRATION = false;
 const EMPTY_FROZEN_STATES = new Map();
+// 默认参数写成字面量等于每帧新建一个空容器，行的保留判据会被这份空壳直接废掉。
+const EMPTY_CAPABILITY_INDEX = new Map();
+const EMPTY_CONTROL_STATES = {};
+// 行摘要是应用侧最大的一笔主线程自耗（回底 235ms / 快滚 147ms，见 after2 轨迹）：
+// 窗口里每一行、每一次 itemContent 都要算一遍。所以这里不给通用序列化器留活——
+// 字段先化成标量再拼；只有确实是对象的那几格才落到 JSON，而它们在绝大多数行上
+// 都是空的。分隔符用正文里不会出现的控制符，自由文本（系统提示、编辑中的正文）
+// 额外带上长度前缀，杜绝跨格拼接撞车。
+const REVISION_SEP = '\u0001';
+
+function revisionSlot(value) {
+  if (value === undefined || value === null) return '';
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+
+function revisionText(value) {
+  return value ? `${value.length}${REVISION_SEP}${value}` : '0';
+}
 const WAITING_HANDOFF_DURATION_MS = 180;
 const WAITING_HANDOFF_LEDGER_LIMIT = 512;
 // During a rolling frontend/backend upgrade, older actors reject unknown
@@ -817,7 +835,7 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-export function Timeline({ state, history = {}, composer = null, viewSessions, roster, waitingRosterAuthority = null, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', surfaceVisible = false, onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
+export function Timeline({ state, history = {}, composer = null, viewSessions, roster, waitingRosterAuthority = null, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = EMPTY_CONTROL_STATES, capabilityIndex = EMPTY_CAPABILITY_INDEX, access = '', surfaceVisible = false, onTailCaughtUp, onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
   const initialViewSessionRef = useRef(null);
   if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
   const readingControlRef = useRef(null);
@@ -825,7 +843,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   if (!messageLayoutStoreRef.current) messageLayoutStoreRef.current = createMessageLayoutStore(
     initialViewSessionRef.current.layoutChoices,
     (layoutChoices) => {
-      readingControlRef.current?.('layout-choice');
+      readingControlRef.current?.({ source: 'user', reason: 'layout-choice' });
       viewSessions?.writeConversation(state.channelId, { layoutChoices });
     },
   );
@@ -857,6 +875,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   const editReleaseSentRef = useRef(new Set());
   const editRuntimeRef = useRef(null);
   const editSessionOwnersRef = useRef(new Map());
+  const rowActionsRef = useRef(null);
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
@@ -1026,7 +1045,10 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     () => registerLiveTimelineArrivalConsumer(state, liveArrivalConsumerTokenRef.current),
     [state],
   );
-  const effectiveFoldOverrides = new Map(foldOverrides);
+  // foldOverrides 已经是不可变替换的 Map（toggleFold 用 new Map(current).set），
+  // 没有任何一处改写它。再复制一份既是每帧一次白白的分配，也让行拿到的
+  // overrides 身份每帧都变——那恰好废掉行子树的保留判据。
+  const effectiveFoldOverrides = foldOverrides;
 	const viewport = useReadingSession({
 	  channelID: state.channelId,
 	  viewKey: messageListKey,
@@ -1045,6 +1067,13 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 	    },
 	  },
 	});
+  // 通知兜底的唯一上报口：把"活动频道此刻已追平"这条只读读数交给 App，频道栏
+  // 徽标据此在派生层压成 0。这里不改任何未读真相，也不接收任何回调。
+  useEffect(() => {
+    if (typeof onTailCaughtUp !== 'function') return undefined;
+    onTailCaughtUp(viewport.tailCaughtUp);
+    return () => onTailCaughtUp({ ...viewport.tailCaughtUp, caughtUp: false });
+  }, [onTailCaughtUp, viewport.tailCaughtUp]);
   useLayoutEffect(() => {
     if (!historyReveal?.commitID) return;
     const bound = history.status?.presentationAdmission?.bindPresentation?.(
@@ -1127,10 +1156,13 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   useInsertionEffect(() => {
     readingControlRef.current = viewport.takeContentControl;
   }, [viewport.takeContentControl]);
+  // 内容控制权用上面那个 insertion 阶段发布的端口：useReadingSession 的返回对象
+  // 因为每帧新建 history 而每帧换身份，把它当依赖会让这个回调也每帧换身份，行就
+  // 再也保不住了。端口里永远是最后一次提交的那个控制权。
   const toggleFold = useCallback((id, expanded) => {
-    viewport.takeContentControl('fold-choice');
+    readingControlRef.current?.({ source: 'user', reason: 'fold-choice' });
     setFoldOverrides((current) => new Map(current).set(id, expanded));
-  }, [viewport]);
+  }, []);
   const timelineControl = useMemo(() => {
     const actorIds = new Set();
     const preempted = new Map();
@@ -1298,18 +1330,37 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       ? [...waitingRosterAuthority.actorIDs].sort()
       : [],
   ]), [waitingRosterAuthority]);
+  const rowSelectedTurnID = turnDetail?.selected?.requestId || '';
+  const hasCreateTask = Boolean(onCreateTask);
+  const hasReply = Boolean(onReply);
+  // 这几格对每一行都是同一个值，却被每行拼一遍。先拼成一段，行摘要直接用。
+  const sharedRowRevision = useMemo(
+    () => `${namesRevision}${REVISION_SEP}${access}${REVISION_SEP}${selfId}${REVISION_SEP}${hasCreateTask ? 1 : 0}${REVISION_SEP}${hasReply ? 1 : 0}`,
+    [access, hasCreateTask, hasReply, namesRevision, selfId],
+  );
+  // 审批态与控制态在常态下是空对象。先问一次有没有，省掉每行一次键拼接与查表。
+  const hasApprovalStates = useMemo(() => Boolean(approvalStates) && Object.keys(approvalStates).length > 0, [approvalStates]);
+  const hasControlStates = useMemo(() => Boolean(controlStates) && Object.keys(controlStates).length > 0, [controlStates]);
+  // capability 摘要只随 capabilityIndex 变，却被每一行、每一次装入各算一遍：同样
+  // 一次 keys().sort().join()，一屏三十行就做三十遍。按 actor 归约一次，行摘要直接
+  // 取。新鲜度与原来完全相同——原来的闭包也只在 capabilityIndex 换身份时才更新。
+  const capabilityRevisions = useMemo(() => {
+    const rows = new Map();
+    for (const [actorId, capability] of capabilityIndex) {
+      rows.set(actorId, `${[...(capability?.describe?.types?.keys?.() || [])].sort().join(',')}|${capability?.loading === true}|${capability?.error || ''}`);
+    }
+    return rows;
+  }, [capabilityIndex]);
   // A live publish must not invalidate every materialized row. Each row gets a
   // compact revision made only from the local UI facts it actually consumes;
   // unchanged rows retain their mounted subtree, intrinsic measurements and
   // nested disclosure state while another request streams or arrives.
   const rowRenderRevision = useCallback((_index, row) => {
     const entry = row.body;
-    const isLatest = row.role?.latest === true;
+    const isLatest = row.role?.latest === true ? 1 : 0;
     if (entry?.kind === 'turn') {
       const requestId = entry.turn.requestId;
       const actorId = entry.turn.request.audience?.[0] || '';
-      const capability = capabilityIndex.get(actorId);
-      const capabilityTypes = [...(capability?.describe?.types?.keys?.() || [])].sort().join(',');
       const targetCurrentness = waitingRosterAuthority?.current === true
         && waitingRosterAuthority.actorIDs instanceof Set
         ? (waitingRosterAuthority.actorIDs.has(actorId) ? 'current' : 'departed')
@@ -1317,42 +1368,169 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       const selectNote = entry.turn.request.type === TYPES.agentSelect
         ? selectSystemNote({
           usage: argsOf(entry.turn.terminal)?.usage,
-          describe: capability?.describe,
+          describe: capabilityIndex.get(actorId)?.describe,
           agentName: nameOf(actorId, names),
         })
         : '';
-      const controlKey = `${state.channelId}:${requestId}:cancel`;
-      const preempted = (preemptedSources.get(requestId) || [])
-        .map((turn) => `${turn.requestId}:${turn.lastSeq || turn.requestSeq || 0}`)
-        .join(',');
-      return JSON.stringify([
-        row.contentRevision, namesRevision, targetCurrentness, access, selfId, isLatest,
-        effectiveFoldOverrides.get(`${requestId}:request`), effectiveFoldOverrides.get(`${requestId}:response`),
-        turnDetail?.selected?.requestId === requestId,
-        editing?.targetId === requestId ? [editing.phase, editing.location, editing.text] : Boolean(editing),
-        resumePin === requestId,
-        approvalStates?.[entry.turn.request.id] || null,
-        controlStates?.[controlKey] || null,
-        capabilityTypes, capability?.loading || false, capability?.error || null, selectNote,
-        Boolean(onCreateTask), Boolean(onReply),
-        frozenByActor.get(actorId) || null,
-        mergedCounts.get(requestId) || 0,
-        preempted,
-      ]);
+      // 这一条恒不能预先归约：lastSeq 随进度帧原地增长，而 preemptedSources 的
+      // 身份只随控制事实变。提前算一次就等于把行钉在旧的进度上。
+      const preemptedTurns = preemptedSources.get(requestId);
+      let preempted = '';
+      if (preemptedTurns) {
+        for (const turn of preemptedTurns) preempted += `${turn.requestId}:${turn.lastSeq || turn.requestSeq || 0},`;
+      }
+      // 审批态、控制态、冻结态是这张摘要里仅有的三格对象，而且在绝大多数行上
+      // 都不存在：空就整格跳过，恒不进序列化器。
+      const approval = hasApprovalStates ? approvalStates[entry.turn.request.id] : undefined;
+      const controlState = hasControlStates ? controlStates[`${state.channelId}:${requestId}:cancel`] : undefined;
+      const frozen = frozenByActor.get(actorId);
+      const edit = editing
+        ? (editing.targetId === requestId
+          ? `2${REVISION_SEP}${editing.phase}${REVISION_SEP}${editing.location}${REVISION_SEP}${revisionText(editing.text)}`
+          : '1')
+        : '0';
+      return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${targetCurrentness}${REVISION_SEP}${isLatest}`
+        + `${REVISION_SEP}${effectiveFoldOverrides.get(`${requestId}:request`)}${REVISION_SEP}${effectiveFoldOverrides.get(`${requestId}:response`)}`
+        + `${REVISION_SEP}${turnDetail?.selected?.requestId === requestId}${REVISION_SEP}${resumePin === requestId}`
+        + `${REVISION_SEP}${capabilityRevisions.get(actorId) || ''}${REVISION_SEP}${mergedCounts.get(requestId) || 0}${REVISION_SEP}${preempted}`
+        + `${REVISION_SEP}${revisionSlot(approval)}${REVISION_SEP}${revisionSlot(controlState)}${REVISION_SEP}${revisionSlot(frozen)}`
+        + `${REVISION_SEP}${revisionText(selectNote)}${REVISION_SEP}${edit}`;
     }
     if (entry?.kind === 'standalone') {
-      return JSON.stringify([
-        row.contentRevision, namesRevision, selfId, isLatest,
-        effectiveFoldOverrides.get(`${entry.envelope.id}:message`),
-        Boolean(onCreateTask), Boolean(onReply),
-      ]);
+      return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${isLatest}`
+        + `${REVISION_SEP}${effectiveFoldOverrides.get(`${entry.envelope.id}:message`)}`;
     }
-    return `${namesRevision}|${row.contentRevision}|${isLatest ? 1 : 0}`;
+    return `${sharedRowRevision}${REVISION_SEP}${row.contentRevision}${REVISION_SEP}${isLatest}`;
+  }, [
+    approvalStates, capabilityIndex, capabilityRevisions, controlStates, editing,
+    effectiveFoldOverrides, frozenByActor, hasApprovalStates, hasControlStates,
+    mergedCounts, names, preemptedSources, resumePin, sharedRowRevision,
+    state.channelId, targetAuthorityRevision, turnDetail?.selected?.requestId,
+  ]);
+
+  // 行子树在 revision 不变的重渲染里被原样留住，所以一行恒不能捏着造它那一帧的
+  // 回调不放。所有命令式动作都经这个 commit 阶段发布的端口发出：它只转存已经存在
+  // 的回调与 Replica 引用，不持有任何事实的副本，读取只发生在用户事件里——与本文件
+  // 上面那个编辑端口同一条纪律。对 turn 它回 Replica 现取，比闭包里捕获的那份更新。
+  useLayoutEffect(() => {
+    rowActionsRef.current = {
+      channelId: state.channelId,
+      state,
+      onResolve,
+      onCancel,
+      onTaskControl,
+      onDownloadResource,
+      onPreviewResource,
+      onOpenTurn,
+      onCreateTask,
+      onReply,
+      closeTurnDetail: turnDetail?.onClose,
+      startEditing,
+      verifyAndSave,
+      abandonEditing,
+    };
+  });
+  const rowActions = useMemo(() => Object.freeze({
+    resolve(requestID, decision, payload) {
+      const port = rowActionsRef.current;
+      return port?.onResolve?.(port.channelId, requestID, decision, payload);
+    },
+    control(turn, actorId, type, payload) {
+      const port = rowActionsRef.current;
+      return port?.onTaskControl?.({
+        channelId: port.channelId,
+        turn: port.state?.turns?.get(turn?.requestId) || turn,
+        actorId,
+        type,
+        payload,
+      });
+    },
+    cancel(requestID) {
+      const port = rowActionsRef.current;
+      return port?.onCancel?.(port.channelId, requestID);
+    },
+    download(attachment) {
+      const port = rowActionsRef.current;
+      return port?.onDownloadResource?.(port.channelId, attachment);
+    },
+    preview(attachment) {
+      const port = rowActionsRef.current;
+      return port?.onPreviewResource?.(port.channelId, attachment);
+    },
+    createTask(source) { return rowActionsRef.current?.onCreateTask?.(source); },
+    reply(...args) { return rowActionsRef.current?.onReply?.(...args); },
+    startEditing(turn, actorId) { return rowActionsRef.current?.startEditing?.(turn, actorId); },
+    saveEdit(text) { return rowActionsRef.current?.verifyAndSave?.(text); },
+    abandonEdit() { return rowActionsRef.current?.abandonEditing?.(); },
+    editText(text) { setEditing((current) => current && ({ ...current, text, error: '' })); },
+    openTurnDetails(turn, detailsOpen) {
+      readingControlRef.current?.({
+        source: 'user',
+        reason: detailsOpen ? 'close-turn-details' : 'open-turn-details',
+      });
+      if (detailsOpen) rowActionsRef.current?.closeTurnDetail?.();
+      else {
+        // Expanding is a local reading action, not a new ledger entry. Stop the
+        // bottom pin before the panel changes height so the clicked message does
+        // not jump out of the viewport and appear attached to another turn.
+        rowActionsRef.current?.onOpenTurn?.(turn);
+      }
+    },
+    closeTurnDetails() {
+      readingControlRef.current?.({ source: 'user', reason: 'close-turn-details' });
+      rowActionsRef.current?.closeTurnDetail?.();
+    },
+  }), []);
+  // 缺席的回调必须继续缺席：行靠它是不是 null 决定要不要给出这个入口，
+  // rowRenderRevision 也只记它的有无。
+  const rowReply = useMemo(() => hasReply ? ((...args) => rowActions.reply(...args)) : null, [hasReply, rowActions]);
+  // renderRow 与 rowRenderRevision 同寿：依赖表就是上面那份摘要覆盖的同一批事实。
+  // 命令式回调一律不进这张表——它们经端口现取，所以 App 重建一批箭头函数恒不会
+  // 让已经装入的行整棵重建。
+  const renderRow = useCallback((row) => {
+    const entry = row.body;
+    const continuation = row.continuation;
+    const boundaryAfterTimestamp = row.boundaryAfterTimestamp;
+    let content;
+    if (entry.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
+    if (
+      entry.kind === 'turn'
+      && [TYPES.humanAsk, TYPES.humanApprove].includes(entry.turn.request.type)
+      && selfId
+      && entry.turn.request.audience?.includes(selfId)
+    ) {
+      content = <ContentFrame><ApprovalCard turn={entry.turn} state={approvalStates[entry.turn.request.id]} onResolve={rowActions.resolve} names={names} /></ContentFrame>;
+    }
+    if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentSelect) {
+      const actorId = entry.turn.request.audience?.[0] || '';
+      const note = selectSystemNote({ usage: argsOf(entry.turn.terminal)?.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) });
+      content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{note}</div></div>;
+    }
+    if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentNew) {
+      const actorId = entry.turn.request.audience?.[0] || '';
+      content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{nameOf(actorId, names)} 已开始新对话</div></div>;
+    }
+    if (!content && entry.kind === 'turn') {
+      const actorId = entry.turn.request.audience?.length === 1 ? entry.turn.request.audience[0] : '';
+      const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
+      const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
+      const detailsOpen = rowSelectedTurnID === entry.turn.requestId;
+      const fold = { latest: row.role?.latest === true, overrides: effectiveFoldOverrides, onToggle: toggleFold };
+      const common = { turn: entry.turn, names, roster, selfId, access, targetAuthority: waitingRosterAuthority, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => rowActions.control(entry.turn, actorId, type, payload), onEdit: () => rowActions.startEditing(entry.turn, actorId), onEditText: rowActions.editText, onEditSave: rowActions.saveEdit, onEditAbandon: rowActions.abandonEdit, onDownload: rowActions.download, onPreview: rowActions.preview, onCreateTask: hasCreateTask ? () => rowActions.createTask(source) : null, onReply: rowReply };
+      if (isAgentMessageTurn(entry.turn)) {
+        content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
+      } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} fold={fold} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => rowActions.cancel(entry.turn.requestId)} onControl={(type, payload) => rowActions.control(entry.turn, actorId, type, payload)} onEdit={() => rowActions.startEditing(entry.turn, actorId)} onEditText={rowActions.editText} onEditSave={rowActions.saveEdit} onEditAbandon={rowActions.abandonEdit} onDownload={rowActions.download} onPreview={rowActions.preview} onReply={rowReply} onOpen={() => rowActions.openTurnDetails(entry.turn, detailsOpen)} onCloseDetail={rowActions.closeTurnDetails} onCreateTask={hasCreateTask ? () => rowActions.createTask(source) : null} /></div>;
+    }
+    if (!content) {
+      const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
+      content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.role?.latest === true, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={hasCreateTask ? () => rowActions.createTask(source) : null} onReply={rowReply} /></div>;
+    }
+    return <div className="timeline-virtual-item">{content}{boundaryAfterTimestamp > 0 && <div className="timeline-day"><span>{dayLabel(boundaryAfterTimestamp)}</span></div>}</div>;
   }, [
     access, approvalStates, capabilityIndex, controlStates, editing,
-    foldOverrides, frozenByActor, mergedCounts, namesRevision, preemptedSources,
-    onCreateTask, onReply, resumePin, selfId, state.channelId, targetAuthorityRevision,
-    turnDetail?.selected?.requestId,
+    effectiveFoldOverrides, frozenByActor, hasCreateTask, mergedCounts, names,
+    preemptedSources, roster, rowActions, rowReply, rowSelectedTurnID, selfId,
+    state, toggleFold, waitingRosterAuthority,
   ]);
 
   useEffect(() => {
@@ -1469,7 +1647,9 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     if (editing) return;
     setEditNotice('');
     const location = taskControlContext(turn, { selfId, access, targetAuthority: waitingRosterAuthority }).location;
-    if (location === 'processing') viewport.takeContentControl('edit-message');
+    if (location === 'processing') {
+      viewport.takeContentControl({ source: 'user', reason: 'edit-message' });
+    }
     const sessionId = ++editSessionSerialRef.current;
     const draft = { sessionId, channelId: state.channelId, targetId: turn.requestId, actorId, holdId: '', location, oldText: editableText(turn), text: editableText(turn), attachments: argsOf(turn.request).attachments || [], phase: 'requesting_lock', error: '' };
     const ownerRuntime = editRuntimeRef.current;
@@ -1673,7 +1853,10 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 	    >{viewport.historyBoundary.actorFiltered
 	      ? '已到频道开头，没有更早的符合筛选的往来'
 	      : '已到频道最早一条动态'}</div>}
-		<MessageList
+		{/* ReadingSession synchronously owns following/browsing. The adapter only
+		  * keeps the outgoing paint while the browsing container materializes the
+		  * already-committed bookmark. */}
+		<ReadingContainerHandoff
 		  key={messageListRenderKey}
 		  snapshot={rolePresentation}
 		  reading={viewport}
@@ -1681,60 +1864,9 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 		  bottomIntentPresentation={bottomIntentPresentation}
 		  rowRevision={rowRenderRevision}
 		  rowPresentationState={rowPresentationState}
-		  renderRow={(row) => {
-          const entry = row.body;
-          const continuation = row.continuation;
-          const boundaryAfterTimestamp = row.boundaryAfterTimestamp;
-          let content;
-          if (entry.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
-          if (
-            entry.kind === 'turn'
-            && [TYPES.humanAsk, TYPES.humanApprove].includes(entry.turn.request.type)
-            && selfId
-            && entry.turn.request.audience?.includes(selfId)
-          ) {
-            content = <ContentFrame><ApprovalCard turn={entry.turn} state={approvalStates[entry.turn.request.id]} onResolve={(reqId, decision, payload) => onResolve(state.channelId, reqId, decision, payload)} names={names} /></ContentFrame>;
-          }
-          if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentSelect) {
-            const actorId = entry.turn.request.audience?.[0] || '';
-            const note = selectSystemNote({ usage: argsOf(entry.turn.terminal)?.usage, describe: capabilityIndex.get(actorId)?.describe, agentName: nameOf(actorId, names) });
-            content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{note}</div></div>;
-          }
-          if (!content && entry.kind === 'turn' && entry.turn.request.type === TYPES.agentNew) {
-            const actorId = entry.turn.request.audience?.[0] || '';
-            content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><div className="select-system-note" role="status">{nameOf(actorId, names)} 已开始新对话</div></div>;
-          }
-          if (!content && entry.kind === 'turn') {
-            const actorId = entry.turn.request.audience?.length === 1 ? entry.turn.request.audience[0] : '';
-            const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
-            const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
-            const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const fold = { latest: row.role?.latest === true, overrides: effectiveFoldOverrides, onToggle: toggleFold };
-            const common = { turn: entry.turn, names, roster, selfId, access, targetAuthority: waitingRosterAuthority, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onCreateTask: onCreateTask ? () => onCreateTask(source) : null, onReply };
-            if (isAgentMessageTurn(entry.turn)) {
-              content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
-            } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} fold={fold} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onReply={onReply} onOpen={() => {
-              viewport.takeContentControl(detailsOpen ? 'close-turn-details' : 'open-turn-details');
-              if (detailsOpen) turnDetail?.onClose?.();
-              else {
-                // Expanding is a local reading action, not a new ledger entry. Stop the
-                // bottom pin before the panel changes height so the clicked message does
-                // not jump out of the viewport and appear attached to another turn.
-                onOpenTurn?.(entry.turn);
-              }
-            }} onCloseDetail={() => {
-              viewport.takeContentControl('close-turn-details');
-              turnDetail?.onClose?.();
-            }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
-          }
-          if (!content) {
-            const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.role?.latest === true, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
-          }
-		  return <div className="timeline-virtual-item">{content}{boundaryAfterTimestamp > 0 && <div className="timeline-day"><span>{dayLabel(boundaryAfterTimestamp)}</span></div>}</div>;
-		  }}
+		  renderRow={renderRow}
 		/>
-	  {viewport.unseen > 0 && <button type="button" className="timeline-jump-latest" onClick={viewport.jumpToLatest}>↓ {viewport.unseen} 条新动态</button>}
+	  {viewport.unseenNotice > 0 && <button type="button" className="timeline-jump-latest" onClick={viewport.jumpToLatest}>↓ {viewport.unseenNotice} 条新动态</button>}
     </section>
   </ConversationSurface></ProgressTrailHost></MarkdownFileReferenceProvider></MessageLayoutProvider></ReadingIntentProvider>;
 }

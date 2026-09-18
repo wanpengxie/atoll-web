@@ -2101,6 +2101,17 @@ export function createMockServer({
       return;
     }
 
+    // Isolated Q browser fixture: deliberately delayed intrinsic media.
+    if (request.method === 'GET' && path === '/mock/asset/slow.svg') {
+      const delay = Math.max(0, Math.min(5_000, Number(url.searchParams.get('delay')) || 0));
+      const body = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#3b6"/></svg>`;
+      later(delay, () => {
+        response.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'no-store' });
+        response.end(body);
+      });
+      return;
+    }
+
     if (request.method === 'GET' && path === '/mock/control/catalog') {
       json(response, 200, { scenarios: scenarioIds(), agent_advance: true, actions: ['drop', 'approval', 'revoke_membership', 'grant_membership', 'retire_channel', 'set_channel_open', 'set_obs_complete', 'pulse', 'push_provisional', 'push_terminal', 'replay_envelope', 'terminal_conflict', 'resolve_approval', 'notification_lifecycle'] });
       return;
@@ -2295,6 +2306,31 @@ export function createMockServer({
             ];
           } else throw new TypeError('unknown notification lifecycle phase');
           json(response, 200, { type: body.type, phase, rows });
+          return;
+        }
+        // Isolated Q browser fixture: one ordinary append+broadcast path with
+        // caller-controlled body height. Kept out of the product patch.
+        if (body.type === 'q_tail_append') {
+          const channelId = body.channel_id || 'c0';
+          const rootActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
+          const agentId = body.agent_id || STEWARD_ACTOR_ID;
+          const rows = [];
+          let requestId = String(body.request_id || '');
+          if (!requestId) {
+            requestId = domain.nextId(`${channelId}-q-append`);
+            rows.push(append(channelId, envelope({
+              id: requestId, channelId,
+              sender: { kind: 'human', id: rootActorId }, kind: 'request', type: 'agent.ask',
+              payload: { text: String(body.ask || 'q append') }, audience: [agentId],
+            })));
+          }
+          if (body.complete !== false) rows.push(append(channelId, envelope({
+            id: `${requestId}-completed`, channelId,
+            sender: { kind: 'agent', id: agentId }, kind: 'response', type: 'agent.ask',
+            payload: { status: 'completed', text: String(body.text || 'q append answer') },
+            parentId: requestId, correlationId: requestId, audience: [rootActorId],
+          })));
+          json(response, 200, { type: body.type, request_id: requestId, rows });
           return;
         }
         if (body.type === 'dense_progress') {

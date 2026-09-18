@@ -5,6 +5,23 @@
 .timeline-message-list { min-width: 0; min-height: 0; max-width: 100%; flex: 1 1 auto; overflow-x: hidden !important; overflow-anchor: none; overscroll-behavior-y: none; scroll-behavior: auto; scrollbar-gutter: stable; background: var(--workspace); }
 .timeline-message-list-content { position: relative; width: 100%; min-width: 0; min-height: 100%; }
 .timeline-message-list:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.timeline-reading-stack { position: relative; min-width: 0; min-height: 0; flex: 1 1 auto; overflow: hidden; }
+.timeline-reading-layer { position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0; flex-direction: column; background: var(--workspace); }
+.timeline-reading-layer > .timeline-message-list,
+.timeline-reading-layer > .timeline-history-status + .timeline-message-list,
+.timeline-reading-layer > .timeline-history-error + .timeline-message-list { min-height: 0; flex: 1 1 auto; }
+.timeline-reading-layer.is-outgoing { z-index: 2; pointer-events: none; }
+.timeline-reading-layer.is-incoming { z-index: 1; opacity: 0; pointer-events: auto; }
+.timeline-reading-layer.is-incoming.is-active { opacity: 1; }
+.timeline-reading-layer.is-active { z-index: 1; }
+/* 跟随态容器：结构性吸底。
+ * 滚动容器自身 column-reverse => 滚动原点在底边，scrollTop === 0 即在底部，
+ * 且任何高度变化（尾部追加、尾行流式增长、图片/代码块晚加载、输入栈长高、
+ * 等待区进出）都朝远离原点的方向生长，浏览器不会移动视窗，应用侧零写入。
+ * 容器只有一个 wrapper 子节点，行在 wrapper 内保持自然顺序（旧 -> 新），
+ * 阅读顺序 / Tab 序 / 跨行选区因此都不受 column-reverse 影响。 */
+.timeline-following-tail { display: flex; flex-direction: column-reverse; overflow-y: auto; }
+.timeline-following-tail > .timeline-following-tail-content { display: flex; width: 100%; min-width: 0; max-width: 100%; flex: 0 0 auto; flex-direction: column; }
 /* A presentation row is the scheduler's layout unit. Keep every descendant
  * margin inside it so its DOM box is the complete row geometry. */
 .timeline-virtual-item { display: flow-root; width: 100%; min-width: 0; max-width: 100%; padding: 0 26px; }

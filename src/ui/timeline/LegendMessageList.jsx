@@ -341,6 +341,9 @@ export function MessageList({
   renderRow,
   surfaceVisible = false,
   bottomIntentPresentation = null,
+  handoffPending = false,
+  focusOnMount = false,
+  onHandoffReady,
 }) {
   const virtuosoRef = useRef(null);
   const scrollerRef = useRef(null);
@@ -350,7 +353,7 @@ export function MessageList({
     [reading.activationID],
   );
   const formalRangeStatesRef = useRef(new WeakMap());
-  const [, setFormalRangeRevision] = useState(0);
+  const [formalRangeRevision, setFormalRangeRevision] = useState(0);
   const readingRef = useRef(reading);
   const snapshotRef = useRef(snapshot);
   const bottomIntentPresentationRef = useRef(bottomIntentPresentation);
@@ -358,6 +361,9 @@ export function MessageList({
   const activationOwnerRef = useRef(null);
   const initialLocationRef = useRef({ activationID: '', value: null });
   const delayedRestoreRef = useRef(null);
+  const handoffPendingRef = useRef(handoffPending === true);
+  const handoffReadyRef = useRef(false);
+  const focusClaimedRef = useRef(false);
   const materializationAckRef = useRef(null);
   const observationFrameRef = useRef(0);
   const coverageFrameRef = useRef(0);
@@ -438,8 +444,10 @@ export function MessageList({
     const targetNode = presentationRowNode(root, pending.targetID);
     const targetMaterialized = Boolean(
       targetNode
-      && ack?.activationID === current.activationID
-      && ack?.presentationRevision === Number(data.revision || 0),
+      && (committedList || (
+        ack?.activationID === current.activationID
+        && ack?.presentationRevision === Number(data.revision || 0)
+      )),
     );
     const actualOffset = targetMaterialized
       ? Number(targetNode.getBoundingClientRect().top || 0)
@@ -859,12 +867,11 @@ export function MessageList({
     surfaceVisibleRef.current = surfaceVisible === true;
     const current = reading.getSession?.() || reading.session;
     if (activationOwnerRef.current?.activationID !== reading.activationID) {
-      const previousActivationID = activationOwnerRef.current?.activationID || '';
       const bookmark = current.bookmark?.messageID ? current.bookmark : null;
-      const targetIndex = bookmark
-        ? snapshot.rows.findIndex((row) => row.id === bookmark.messageID)
-        : -1;
-      delayedRestoreRef.current = bookmark && (previousActivationID || targetIndex < 0)
+      // A mode handoff mounts a fresh Virtuoso under the same semantic
+      // activation. It needs the committed bookmark restore protocol too;
+      // initialTopMostItemIndex is only an estimate until the row materializes.
+      delayedRestoreRef.current = bookmark
         ? {
           activationID: reading.activationID,
           inputEpoch: current.inputEpoch,
@@ -1111,6 +1118,11 @@ export function MessageList({
   }, [bottomIntentPresentation, issueBottomIfCurrent, reading, reading.activationID, snapshot, snapshot.rows, surfaceVisible]);
 
   useLayoutEffect(() => {
+    handoffPendingRef.current = handoffPending === true;
+    if (!handoffPending) handoffReadyRef.current = false;
+  }, [handoffPending]);
+
+  useLayoutEffect(() => {
     if (surfaceVisible !== true) reading.onSurfaceVisibilityChange?.(false);
   }, [reading, reading.activationID, surfaceVisible]);
 
@@ -1190,6 +1202,7 @@ export function MessageList({
   scheduleObserveRef.current = scheduleObserve;
 
   const scheduleCoverageCheck = useCallback(() => {
+    if (handoffPendingRef.current) return;
     if (coverageFrameRef.current) return;
     coverageFrameRef.current = requestAnimationFrame(() => {
       coverageFrameRef.current = 0;
@@ -1632,7 +1645,44 @@ export function MessageList({
     scrollerRef.current = next;
     setScrollerNode((current) => current === next ? current : next);
     if (next && !next.hasAttribute('tabindex')) next.tabIndex = 0;
-  }, []);
+    if (next && focusOnMount && !focusClaimedRef.current) {
+      focusClaimedRef.current = true;
+      next.focus?.({ preventScroll: true });
+    }
+  }, [focusOnMount]);
+
+  const publishHandoffReady = useCallback((source) => {
+    if (!handoffPendingRef.current || handoffReadyRef.current) return false;
+    const root = scrollerRef.current;
+    const owner = readingRef.current;
+    const current = owner?.getSession?.() || owner?.session;
+    const targetID = current?.bookmark?.messageID || '';
+    const target = targetID ? presentationRowNode(root, targetID) : null;
+    if (!root || root.clientHeight <= 0 || root.scrollHeight <= 0 || !target) return false;
+    const targetItem = target.closest?.('[data-known-size]');
+    const formalState = formalRangeStatesRef.current.get(formalRangeOwner) || null;
+    if (formalState?.phase !== 'ready'
+      || Number(targetItem?.dataset?.knownSize || 0) <= 0
+      || root.querySelector('[data-formal-preparing]')) return false;
+    // Existing browsing restore owns geometry. Readiness is only a committed
+    // identity/materialization edge and never writes scroll position.
+    if (delayedRestoreRef.current) return false;
+    handoffReadyRef.current = true;
+    const rootRect = root.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    onHandoffReady?.({
+      activationID: current.activationID,
+      inputEpoch: current.inputEpoch,
+      targetID,
+      source,
+      targetViewportOffset: targetRect.top - rootRect.top,
+    });
+    return true;
+  }, [formalRangeOwner, onHandoffReady]);
+
+  useLayoutEffect(() => {
+    publishHandoffReady('formal-range');
+  }, [formalRangeRevision, publishHandoffReady]);
 
   const itemMeasurementKey = useCallback((index, row) => (
     rowRevision?.(index, row) || String(row.contentRevision)
@@ -1666,9 +1716,10 @@ export function MessageList({
       // publishes exact visible identities after promotion.
       scheduleObserve('layout');
       positionDelayedBookmark('list-commit');
+      publishHandoffReady('list-commit');
       issueBottomIfCurrent('list-commit');
     });
-  }, [issueBottomIfCurrent, positionDelayedBookmark, scheduleObserve]);
+  }, [issueBottomIfCurrent, positionDelayedBookmark, publishHandoffReady, scheduleObserve]);
   const listContext = useMemo(() => ({
     onListCommit,
   }), [onListCommit]);
@@ -1827,6 +1878,7 @@ export function MessageList({
           endIndex: Number(info.endIndex),
         });
         positionDelayedBookmark('range-materialized');
+        publishHandoffReady('range-materialized');
       }
     }}
     atBottomStateChange={(atBottom) => {

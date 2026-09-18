@@ -10,6 +10,7 @@ import {
   requestLatest,
   takeReadingControl,
 } from '../../model/reading-session.js';
+import { readerCaughtUp, viewportUnseenNotice } from '../../model/notification-policy.js';
 import { newId } from '../../util/id.js';
 import { diagnostic, readingTrace } from '../../model/diagnostics.js';
 
@@ -27,6 +28,7 @@ const PENDING_ARRIVAL_LIMIT = 1_024;
 const EMPTY_REQUEST = () => Promise.resolve({ kind: 'exhausted' });
 const IDLE_HISTORY_DEMAND = Object.freeze({ revision: 0, phase: 'idle', error: '' });
 const BLOCKING_ADMISSION_PHASES = new Set(['pending-baseline-commit', 'committed-awaiting-layout']);
+const ADDRESSABLE_ADMISSION_PHASES = new Set(['pending', 'pending-baseline-commit', 'committed-awaiting-layout']);
 
 function currentBlockingAdmission(historyStatus, channelID, activationID, viewKey) {
   const authority = historyStatus?.presentationAdmission;
@@ -44,6 +46,22 @@ function currentBlockingAdmission(historyStatus, channelID, activationID, viewKe
     && token.epoch === expectedEpoch
     ? state
     : null;
+}
+
+// The admission authority owns a reveal operation after begin; the transport
+// request merely carries the same handle while its promise is alive. Read the
+// live authority first so every caller uses the operation's lifetime, while
+// fencing retired activation/view/generation owners before exposing it.
+function currentAdmissionOperationID(historyStatus, channelID, activationID, viewKey) {
+  const state = historyStatus?.presentationAdmission?.snapshot?.(channelID);
+  const token = state?.token || state?.committed;
+  const expectedEpoch = `${channelID}:${Number(historyStatus?.generation || 0)}`;
+  return state && ADDRESSABLE_ADMISSION_PHASES.has(state.phase)
+    && token?.activationID === activationID
+    && token?.viewID === viewKey
+    && token?.epoch === expectedEpoch
+    ? String(token.operationID || '')
+    : '';
 }
 
 function historyProgressKey(historyStatus = {}) {
@@ -161,12 +179,23 @@ function createController({ channelID, viewKey, viewSessions }) {
   // committed viewport observation, then atomically discard visible records
   // or publish only records that were actually outside the viewport.
   const pendingRecords = new Map();
-  let published = Object.freeze({ session, unseen: unseenRecords.size });
+  // 读侧在场读数。它不是第二份真相：atTail/surfaceVisible 的事实仍然只由 DOM
+  // 观测写进 visibleTailEvidenceRef，这里保存的是该证据在本 activation 上的最
+  // 后一次发布，好让 render 看得见（ref 恒不触发重渲染）。它不改任何一条未读
+  // 记录、不推进任何游标、不参与持久化。
+  let tailReached = false;
+  let tailPresence = Object.freeze({ surfaceVisible: false, documentVisible: false });
+  const caughtUp = () => readerCaughtUp({
+    following: session.mode === READING_MODE.following,
+    atTail: tailReached,
+    ...tailPresence,
+  });
+  let published = Object.freeze({ session, unseen: unseenRecords.size, tailCaughtUp: caughtUp() });
   const listeners = new Set();
   let started = false;
 
   function emit() {
-    published = Object.freeze({ session, unseen: unseenRecords.size });
+    published = Object.freeze({ session, unseen: unseenRecords.size, tailCaughtUp: caughtUp() });
     for (const listener of listeners) listener();
   }
 
@@ -240,6 +269,10 @@ function createController({ channelID, viewKey, viewSessions }) {
       const next = reduce(previous);
       if (next === previous) return session;
       session = next;
+      // 离开跟随态就是用户自己宣布"我不在最新端了"。到达尾部这一事实随之作废，
+      // 下一次在场必须由一次新的尾部观测重新证明——所以 jumpToLatest 只是把意图
+      // 改回跟随，在真正落地之前一字不清。
+      if (session.mode !== READING_MODE.following) tailReached = false;
       persist(previous.revision);
       emit();
       return session;
@@ -282,6 +315,29 @@ function createController({ channelID, viewKey, viewSessions }) {
       return pendingRecords.size;
     },
     pendingArrivalCount: () => pendingRecords.size,
+    // 发布"用户此刻是否就在最新端看着"。调用方只把已有证据读一遍传进来；这里
+    // 既不改记录也不 persist，只在读数真的变了时让 render 重新取一次快照。
+    observeTailPresence(presence = {}) {
+      if (!started) return published.tailCaughtUp;
+      const next = Object.freeze({
+        surfaceVisible: presence.surfaceVisible === true,
+        documentVisible: presence.documentVisible === true,
+      });
+      // “在底部”是一次到达，不是每一帧都要重新证明的几何。跟随态下列表自己负责
+      // 把用户留在尾部，追赶途中的一两帧 atTail=false 是列表在跟，不是用户走开
+      // 了；用户真的离开尾部走 takeReadingControl，那条路会改成浏览态并作废证据。
+      // 持久回执仍只认 markVisibleTailRead 的真实 atTail，因此显示兜底不能伪造已读。
+      const reached = next.surfaceVisible && next.documentVisible
+        && session.mode === READING_MODE.following
+        && (presence.atTail === true || tailReached);
+      if (reached === tailReached
+        && next.surfaceVisible === tailPresence.surfaceVisible
+        && next.documentVisible === tailPresence.documentVisible) return published.tailCaughtUp;
+      tailReached = reached;
+      tailPresence = next;
+      emit();
+      return published.tailCaughtUp;
+    },
     resolveArrivals({ entities, visibleRows = [], presentationRevision = 0, observationRevision = 0 } = {}) {
       if (!started || !pendingRecords.size) return Object.freeze({ pending: pendingRecords.size, unseen: unseenRecords.size, decisions: Object.freeze([]) });
       const visible = new Map();
@@ -436,7 +492,7 @@ export function useReadingSession({
     [channelID, viewKey, viewSessions],
   );
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
-  const { session, unseen } = state;
+  const { session, unseen, tailCaughtUp: readerPresent } = state;
   const hasManagedHistoryLifecycle = Object.prototype.hasOwnProperty.call(historyStatus, 'attached')
     && Object.prototype.hasOwnProperty.call(historyStatus, 'messageCurrent')
     && Object.prototype.hasOwnProperty.call(historyStatus, 'headSeq');
@@ -1316,6 +1372,22 @@ export function useReadingSession({
     return result.acknowledged.length > 0;
   }, [acknowledgeDisposedArrivals, controller]);
 
+  // 在场只是把已有证据读一遍再发布：跟随 ∧ 在底部 ∧ Surface 可见 ∧ 页面可见。
+  // 证据必须属于当前 controller 的当前 activation。owner 提交本身不制造在场或
+  // 离场事实；真正的 DOM 观测会以 atTail 精确更新这份读数。
+  const publishTailPresence = useCallback(() => {
+    const current = controller.getSnapshot().session;
+    const evidence = visibleTailEvidenceRef.current;
+    const live = evidence.controller === controller
+      && evidence.activationID === current.activationID;
+    const out = controller.observeTailPresence({
+      atTail: live && evidence.atTail === true,
+      surfaceVisible: live && evidence.surfaceVisible === true && surfaceVisible === true,
+      documentVisible: document.visibilityState === 'visible',
+    });
+    return out;
+  }, [controller, surfaceVisible]);
+
   const markVisibleTailRead = useCallback(() => {
     const owner = committedOwnerRef.current;
     const current = controller.getSnapshot().session;
@@ -1443,20 +1515,47 @@ export function useReadingSession({
 
   useEffect(() => {
     const onVisibility = () => {
-      if (document.visibilityState !== 'visible') return;
+      if (document.visibilityState !== 'visible') {
+        publishTailPresence();
+        return;
+      }
       acknowledgeInstalledTail();
       resolveArrivals();
       acknowledgeVisibleRows();
       markVisibleTailRead();
+      publishTailPresence();
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [acknowledgeInstalledTail, acknowledgeVisibleRows, markVisibleTailRead, resolveArrivals]);
+  }, [acknowledgeInstalledTail, acknowledgeVisibleRows, markVisibleTailRead, publishTailPresence, resolveArrivals]);
+
+  // 提交后的兜底发布。观测/可见性事件已经各自发布过一次；这一条负责那些不经过
+  // 事件的变化——surfaceVisible 入参翻转、insertion effect 因 owner 更替作废了
+  // 旧证据。observeTailPresence 只在读数真的变了时才 emit，所以这里是幂等的。
+  useEffect(() => {
+    publishTailPresence();
+  });
+
+  const caughtUpScope = historyViewSpec?.scope || '';
+  const caughtUpActorFiltered = Number(historyViewSpec?.actorFilter?.size || 0) > 0;
+  // 一条给通知面用的只读读数：这条视图此刻是不是"用户正看着的最新端"，以及它
+  // 覆盖的范围（频道栏据此决定能替哪一格说话）。它是 published 读数的投影，不
+  // 是新的真相持有者。
+  const tailCaughtUp = useMemo(() => Object.freeze({
+    channelId: channelID,
+    caughtUp: readerPresent === true,
+    scope: caughtUpScope,
+    actorFiltered: caughtUpActorFiltered,
+  }), [caughtUpActorFiltered, caughtUpScope, channelID, readerPresent]);
 
   return useMemo(() => ({
     activationID: controller.activationID,
     session,
+    // unseen 是回执真相（记录数）。unseenNotice 是显示值：用户就在最新端看着时
+    // 恒为 0，不等任何一条回执落地——IM 模型下那些到达本来就是"即读"。
     unseen,
+    unseenNotice: viewportUnseenNotice(unseen, tailCaughtUp.caughtUp),
+    tailCaughtUp,
     initializing: presentationInitializing,
     restorePending,
     bottomReady,
@@ -1492,19 +1591,36 @@ export function useReadingSession({
       return requestHistory('underfill', HISTORY_URGENCY.anticipatory, detail);
     },
     onUserControl(input) {
+      // The reveal operation outlives its network request. runwayRequestRef is
+      // cleared in that request's .finally at history.intent_satisfied, while
+      // the operation stays open through pending-baseline-commit and
+      // committed-awaiting-layout until Timeline acknowledges the commit. Input
+      // landing in that window must still reach the operation, so ask the
+      // authority for its own handle when the request no longer carries one.
+      // Nothing is widened: only this activation's own view is addressable, and
+      // advanceInputEpoch/cancel remain the sole write entries and re-check
+      // phase, direction, operation, activation and epoch monotonicity.
+      const activeRequest = runwayRequestRef.current;
+      const requestOperationID = activeRequest?.controller === controller
+        ? String(activeRequest.operationID || '')
+        : '';
+      const operationID = currentAdmissionOperationID(
+        historyStatus,
+        channelID,
+        controller.activationID,
+        viewKey,
+      ) || requestOperationID;
       if (input?.direction !== 'older') {
-        const active = runwayRequestRef.current;
-        active?.abortController?.abort('trusted-reverse-input');
-        if (active?.operationID) {
-          historyStatus.presentationAdmission?.cancel?.(channelID, active.operationID);
+        activeRequest?.abortController?.abort('trusted-reverse-input');
+        if (operationID) {
+          historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
         }
         runwayRequestRef.current = null;
       }
       const nextSession = controller.update((current) => takeReadingControl(current, input));
-      const active = runwayRequestRef.current;
-      if (input?.direction === 'older' && active?.operationID) {
+      if (input?.direction === 'older' && operationID) {
         const renewal = historyStatus.presentationAdmission?.advanceInputEpoch?.(channelID, {
-          operationID: active.operationID,
+          operationID,
           activationID: controller.activationID,
           direction: input.direction,
           inputEpoch: nextSession.inputEpoch,
@@ -1516,11 +1632,25 @@ export function useReadingSession({
         });
       }
     },
-    takeContentControl(reason = 'content-layout') {
+    takeContentControl(command = {}) {
+      // Only a semantic user choice may take browsing control before it
+      // changes content geometry. Resize/measurement/layout callbacks report
+      // observations to the list; they have no authority to mint navigation.
+      if (command?.source !== 'user' || !command?.reason) return false;
+      const reason = String(command.reason);
       const active = runwayRequestRef.current;
       active?.abortController?.abort(reason);
-      if (active?.operationID) {
-        historyStatus.presentationAdmission?.cancel?.(channelID, active.operationID);
+      const requestOperationID = active?.controller === controller
+        ? String(active.operationID || '')
+        : '';
+      const operationID = currentAdmissionOperationID(
+        historyStatus,
+        channelID,
+        controller.activationID,
+        viewKey,
+      ) || requestOperationID;
+      if (operationID) {
+        historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
       }
       runwayRequestRef.current = null;
       controller.update((current) => takeReadingControl(current, {
@@ -1528,6 +1658,7 @@ export function useReadingSession({
         gestureID: `${reason}:${newId()}`,
         geometryRevision: current.geometryRevision,
       }));
+      return true;
     },
     onReadingObservation(observation) {
       const current = controller.getSnapshot().session;
@@ -1575,6 +1706,8 @@ export function useReadingSession({
       acknowledgeInstalledTail();
       resolveArrivals();
       acknowledgeVisibleRows();
+      // 同一次观测既是回执证据，也是"用户此刻在不在最新端"的读数。
+      publishTailPresence();
       // Durable channel read progress retains its physical-tail contract.
       // Viewport-notice acknowledgement above is intentionally independent:
       // browsing users can read a committed row without granting follow.
@@ -1615,6 +1748,7 @@ export function useReadingSession({
       // definitive negative visibility evidence; do not leave its candidates
       // waiting for a layout observation that a hidden adapter will not emit.
       resolveArrivals();
+      publishTailPresence();
     },
     consumeBottomIntent(intent) {
       const before = controller.getSnapshot().session;
@@ -1642,5 +1776,5 @@ export function useReadingSession({
     revokeBottomIntent,
     isFollowing() { return controller.getSnapshot().session.mode === READING_MODE.following; },
     getSession() { return controller.getSnapshot().session; },
-  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, session, surfaceVisible, syncStatus.interestRevision, unseen]);
+  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, session, surfaceVisible, syncStatus.interestRevision, tailCaughtUp, unseen]);
 }

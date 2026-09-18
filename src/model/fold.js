@@ -326,6 +326,13 @@ function compactTerminalClosure(envelope) {
 export function retainTerminalClosure(state, seq, envelope) {
   const parentId = envelope?.parent_id || '';
   if (!parentId || !FINAL.has(argsOf(envelope)?.status)) return;
+  // This exact parent-id proof is deliberately retained until the request row
+  // is re-materialized and drainRequestMatches absorbs it. Do not replace it
+  // with an evicted-seq range or a lossy bounded cache: history can be sparse,
+  // so a range hit cannot prove that an unseen request in one of its holes is
+  // terminal. A safe hard memory bound needs a persisted/queryable terminal
+  // index at the Replica owner boundary; dropping identities here would either
+  // resurrect completed work or hide genuinely queued work.
   const current = state._unmatchedTerminalClosures.get(parentId);
   // Duplicate rereads are idempotent. Conflicting terminals obey ledger order
   // even when a newer suffix was observed before the earlier page.
@@ -335,6 +342,25 @@ export function retainTerminalClosure(state, seq, envelope) {
     closureOnly: true,
     envelope: compactTerminalClosure(envelope),
   });
+}
+
+// The Replica's answer to "has this request already closed?" for callers that
+// only hold a request id — Waiting being the one that matters. A request whose
+// turn the memory window evicted is still closed, and answering from the
+// canonical replica is what keeps Waiting a stateless derivation instead of a
+// second lifecycle.
+export function requestClosure(state, requestId) {
+  const id = String(requestId || '');
+  if (!id) return null;
+  const turn = state?.turns?.get?.(id);
+  if (turn?.terminal) return { seq: turn.terminalSeq || 0, envelope: turn.terminal, source: 'turn' };
+  const closure = state?._unmatchedTerminalClosures?.get?.(id);
+  if (closure) return { seq: closure.seq, envelope: closure.envelope, source: 'closure' };
+  return null;
+}
+
+export function isRequestClosed(state, requestId) {
+  return requestClosure(state, requestId) !== null;
 }
 
 function findTurn(state, envelope) {
@@ -455,8 +481,21 @@ export function apply(state, row, selfId = '') {
       state.orphans.push({ seq, envelope });
       return state;
     }
-    const turn = newTurn(envelope, seq);
-    state.turns.set(envelope.id, turn);
+    // Re-admitting a request row is not a new turn. The memory window drops
+    // evicted envelope ids from `_seenIds`, so a history page can legitimately
+    // deliver a request whose turn is still folded — with its progress frames
+    // and its terminal. Replacing that turn would make an already answered
+    // task queued again, which is finality going backwards. The canonical turn
+    // keeps every fact it already absorbed; only the request envelope and its
+    // ledger position are refreshed.
+    const existing = state.turns.get(envelope.id);
+    const turn = existing || newTurn(envelope, seq);
+    if (existing) {
+      existing.request = envelope;
+      existing.requestSeq = seq;
+      existing.lastSeq = Math.max(existing.lastSeq || 0, seq);
+      rememberProjectionParticipants(existing, envelope);
+    } else state.turns.set(envelope.id, turn);
     const correlationRequests = state.correlations.get(turn.correlationId) || [];
     correlationRequests.push(envelope.id);
     state.correlations.set(turn.correlationId, correlationRequests);
