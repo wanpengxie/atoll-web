@@ -154,6 +154,8 @@ it('混合 Codex/Claude 已加载回合按精确成员 ID 立即保留完整问�
       messageCurrent: true,
       headSeq: 4,
       localReplicaReady: true,
+      loaded: true,
+      completedPages: 1,
       loading: false,
       hasOlder: false,
       presentationRevision: state._timelineRevision,
@@ -177,6 +179,9 @@ it('混合 Codex/Claude 已加载回合按精确成员 ID 立即保留完整问�
   expect(document.querySelector('[data-presentation-row-id="ask-codex"]')).toBeNull();
   expect(screen.queryByText('正在确认频道内容…')).toBeNull();
   expect(screen.queryByText('正在恢复上次阅读位置…')).toBeNull();
+  const boundary = screen.getByText('已到频道开头，没有更早的符合筛选的往来');
+  expect(boundary.closest('.timeline-following-tail')).toBeTruthy();
+  expect(document.querySelector('.timeline-history-demand[data-phase="exhausted"]')).toBeNull();
 });
 
 it('零行成员投影用当前 viewSpec 请求可见语义供给而不等待虚拟列表 underfill', async () => {

@@ -2537,11 +2537,11 @@ it('只从当前generation的权威exhaustion派生稀疏筛选顶部边界', as
     attached: true, generation: 4, messageCurrent: true, headSeq: 999,
     localReplicaReady: true, loaded: true, completedPages: 9, loading: false,
   };
-  function Harness({ hasOlder }) {
+  function Harness({ hasOlder, buffered = 0 }) {
     const reading = useReadingSession({
       channelID: 'sparse', viewKey: 'sparse:claude',
       snapshot: { revision: 1, sourceRevision: 1, rows: [row], entities: new Map([[row.id, row]]) },
-      history: { status: { ...baseStatus, hasOlder } }, viewSessions,
+      history: { status: { ...baseStatus, hasOlder, buffered } }, viewSessions,
       historyViewSpec: { scope: 'mine', actorFilter: new Set(['agent:claude:4']) },
     });
     useLayoutEffect(() => { port = reading; }, [reading]);
@@ -2550,7 +2550,9 @@ it('只从当前generation的权威exhaustion派生稀疏筛选顶部边界', as
   const view = render(<Harness hasOlder />);
   await waitFor(() => expect(port?.activationID).toBeTruthy());
   expect(port.historyBoundary).toBeNull();
-  view.rerender(<Harness hasOlder={false} />);
+  view.rerender(<Harness hasOlder={false} buffered={25} />);
+  await waitFor(() => expect(port.historyBoundary).toBeNull());
+  view.rerender(<Harness hasOlder={false} buffered={0} />);
   await waitFor(() => expect(port.historyBoundary).toMatchObject({
     kind: 'exhausted', filtered: true, generation: 4,
   }));

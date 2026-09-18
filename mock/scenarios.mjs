@@ -53,6 +53,8 @@ export const SCENARIOS = Object.freeze({
   'first-login': standard({ memberships: [], history: false }),
   'multi-channel': standard({ files: DEMO_FILES, behavior: { demo_attachments: true } }),
   'deep-history': standard({ behavior: { history_turns: 120 } }),
+  // A physically scrollable authoritative-EOF fixture for the real app path.
+  'history-boundary': standard({ behavior: { history_turns: 22 } }),
   // Exercises the production initialization path after its 500ms readable
   // fallback without changing protocol order or inventing another endpoint.
   'deep-history-delayed': standard({ behavior: { history_turns: 120, history_page_delay_ms: 750 } }),

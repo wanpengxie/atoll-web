@@ -708,6 +708,7 @@ export function useReadingSession({
     && historyStatus.messageCurrent === true
     && historyStatus.localReplicaReady !== false
     && historyStatus.hasOlder === false
+    && Number(historyStatus.buffered || 0) === 0
     && historyStatus.loading !== true
     && syncObservationCurrent;
   const actorFilterCount = Number(historyViewSpec?.actorFilter?.size || 0);

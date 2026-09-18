@@ -5,6 +5,7 @@ import React, {
   isValidElement,
   memo,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -13,6 +14,7 @@ import React, {
 import { Virtuoso } from 'react-virtuoso';
 import { diagnostic, isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
 import { READING_MODE } from '../../model/reading-session.js';
+import { HistoryStartBoundary } from './HistoryStartBoundary.jsx';
 import {
   advanceSendScrollTransaction,
   createSendScrollTransaction,
@@ -353,6 +355,7 @@ function MessageListBody({
   navigationTarget = null,
   focusOnMount = false,
   onNavigationRevealReceipt,
+  historyStartBoundary = null,
 }) {
   const virtuosoRef = useRef(null);
   const scrollerRef = useRef(null);
@@ -1836,17 +1839,85 @@ function MessageListBody({
     scheduleNavigationRevealReceipt('formal-range');
   }, [formalRangeRevision, positionDelayedBookmark, scheduleNavigationRevealReceipt]);
 
-  const itemMeasurementKey = useCallback((index, row) => (
-    rowRevision?.(index, row) || String(row.contentRevision)
-  ), [rowRevision]);
+  const firstItemIndex = Number(snapshot.firstItemIndex || 0);
+  const frontierRowID = snapshot.rows[0]?.id || '';
+  const roleActivationID = String(reading.activationID || '');
+  const [historyBoundaryRole, setHistoryBoundaryRole] = useState(() => ({
+    activationID: roleActivationID,
+    ownerID: frontierRowID,
+  }));
+  const roleBelongsToActivation = historyBoundaryRole.activationID === roleActivationID;
+  const retainedRoleOwnerID = roleBelongsToActivation ? historyBoundaryRole.ownerID : '';
+  const retainedRoleOwnerOffset = retainedRoleOwnerID
+    ? snapshot.rows.findIndex((row) => row.id === retainedRoleOwnerID)
+    : -1;
+  const retainedRoleOwnerPresent = retainedRoleOwnerOffset >= 0;
+  // Structural transitions never let the reserved geometry follow a moving
+  // open frontier. An empty list owns no slot. The first materialized row, an
+  // activation replacement, or removal of the retained row derives exactly
+  // one new owner for this commit; the layout effect below latches that owner
+  // before paint. Ordinary prepends leave a present retained owner untouched.
+  const needsStructuralRoleOwner = Boolean(
+    frontierRowID
+    && (!roleBelongsToActivation || !retainedRoleOwnerID || !retainedRoleOwnerPresent),
+  );
+  const effectiveRoleOwnerID = frontierRowID
+    ? (needsStructuralRoleOwner ? frontierRowID : retainedRoleOwnerID)
+    : '';
+  const effectiveRoleOwnerOffset = effectiveRoleOwnerID
+    ? snapshot.rows.findIndex((row) => row.id === effectiveRoleOwnerID)
+    : -1;
+  const effectiveRoleOwnerIndex = effectiveRoleOwnerOffset >= 0
+    ? firstItemIndex + effectiveRoleOwnerOffset
+    : -1;
+  useLayoutEffect(() => {
+    if (!needsStructuralRoleOwner) return;
+    setHistoryBoundaryRole((current) => (
+      current.activationID === roleActivationID && current.ownerID === frontierRowID
+        ? current
+        : { activationID: roleActivationID, ownerID: frontierRowID }
+    ));
+  }, [frontierRowID, needsStructuralRoleOwner, roleActivationID]);
+  useEffect(() => {
+    // Open-frontier prepends retain one measured 35px owner. Exhaustion is the
+    // only transfer: the final prepend commits first, then this ordinary commit
+    // moves equal geometry to the authoritative oldest row and reveals text.
+    if (!frontierRowID || !historyStartBoundary) return;
+    setHistoryBoundaryRole((current) => (
+      current.activationID === roleActivationID && current.ownerID === frontierRowID
+        ? current
+        : { activationID: roleActivationID, ownerID: frontierRowID }
+    ));
+  }, [frontierRowID, historyStartBoundary, roleActivationID]);
+  const itemMeasurementKey = useCallback((index, row) => {
+    const revision = rowRevision?.(index, row) || String(row.contentRevision);
+    return row.id === effectiveRoleOwnerID
+      ? `${revision}:history-start-role:${roleActivationID}:${effectiveRoleOwnerID}`
+      : revision;
+  }, [effectiveRoleOwnerID, roleActivationID, rowRevision]);
   const itemContent = useCallback((index, row) => row ? (
-    <MessageRow
-      row={row}
-      revision={itemMeasurementKey(index, row)}
-      renderRow={renderRow}
-      presentationState={rowPresentationState?.(row) || ''}
-    />
-  ) : null, [itemMeasurementKey, renderRow, rowPresentationState]);
+    <>
+      {Number(index) === effectiveRoleOwnerIndex && <HistoryStartBoundary
+        boundary={historyStartBoundary && effectiveRoleOwnerID === frontierRowID
+          ? historyStartBoundary
+          : null}
+      />}
+      <MessageRow
+        row={row}
+        revision={itemMeasurementKey(index, row)}
+        renderRow={renderRow}
+        presentationState={rowPresentationState?.(row) || ''}
+      />
+    </>
+  ) : null, [
+    effectiveRoleOwnerID,
+    effectiveRoleOwnerIndex,
+    frontierRowID,
+    historyStartBoundary,
+    itemMeasurementKey,
+    renderRow,
+    rowPresentationState,
+  ]);
   const keyExtractor = useCallback((_index, row) => row.id, []);
   const onFormalRangeStateChange = useCallback((state) => {
     const previous = formalRangeStatesRef.current.get(formalRangeOwner);
@@ -2019,7 +2090,7 @@ function MessageListBody({
     role="region"
     aria-label="频道动态"
     data={snapshot.rows}
-    firstItemIndex={Number(snapshot.firstItemIndex || 0)}
+    firstItemIndex={firstItemIndex}
     computeItemKey={keyExtractor}
     computeItemMeasurementKey={itemMeasurementKey}
     formalRangeStateChange={onFormalRangeStateChange}

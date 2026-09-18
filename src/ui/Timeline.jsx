@@ -1325,6 +1325,27 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     });
   }, [projection.presentation, queuedTurns, state, viewport.activationID, viewport.session]);
   const presentationEmpty = !withNarration.length && !queuedTurns.length;
+  const historyStartBoundary = useMemo(() => {
+    if (presentationEmpty
+      || identityPending
+      || viewport.availability !== 'readable'
+      || viewport.historyDemand?.phase !== 'idle'
+      || viewport.historyBoundary?.kind !== 'exhausted') return null;
+    return Object.freeze({
+      generation: viewport.historyBoundary.generation,
+      label: viewport.historyBoundary.actorFiltered
+        ? '已到频道开头，没有更早的符合筛选的往来'
+        : '已到频道最早一条动态',
+    });
+  }, [
+    identityPending,
+    presentationEmpty,
+    viewport.availability,
+    viewport.historyBoundary?.actorFiltered,
+    viewport.historyBoundary?.generation,
+    viewport.historyBoundary?.kind,
+    viewport.historyDemand?.phase,
+  ]);
   const frozenByActor = useMemo(
     () => timelineControl.hasFreezeOperations
       ? agentFrozenStates(state, timelineControl.actorIds, presentationNow)
@@ -2014,15 +2035,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     >{viewport.historyDemand.phase === 'error'
       ? <><span>{viewport.historyDemand.error || '读取更早动态失败'}</span><button type="button" onClick={() => viewport.retryHistoryDemand()}>重试</button></>
       : '正在读取更早动态…'}</div>}
-	  {!presentationEmpty && !identityPending && viewport.availability === 'readable'
-	    && viewport.historyDemand?.phase === 'idle' && viewport.historyBoundary?.kind === 'exhausted' && <div
-	      className="timeline-history-status timeline-history-demand"
-	      data-phase="exhausted"
-	      data-generation={viewport.historyBoundary.generation}
-	      role="status"
-	    >{viewport.historyBoundary.actorFiltered
-	      ? '已到频道开头，没有更早的符合筛选的往来'
-	      : '已到频道最早一条动态'}</div>}
 		{/* ReadingSession synchronously owns following/browsing. The adapter only
 		  * keeps the outgoing paint while the browsing container materializes the
 		  * already-committed bookmark. */}
@@ -2035,6 +2047,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 		  rowRevision={rowRenderRevision}
 			  rowPresentationState={rowPresentationState}
 			  livePresentationArrivals={livePresentationArrivalSnapshot}
+			  historyStartBoundary={historyStartBoundary}
 			  renderRow={renderRow}
 		/>
 	  {viewport.unseenNotice > 0 && <button type="button" className="timeline-jump-latest" onClick={viewport.jumpToLatest}>↓ {viewport.unseenNotice} 条新动态</button>}

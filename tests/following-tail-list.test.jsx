@@ -64,6 +64,29 @@ it('uses the presentation absolute coordinate for tail row revisions and materia
   });
 });
 
+it('renders the authoritative history start before the oldest row only when the tail window contains it', () => {
+  const reading = readingPort();
+  const props = {
+    reading,
+    rowRevision: (index) => String(index),
+    renderRow: (row) => <div>{row.id}</div>,
+    surfaceVisible: true,
+    historyStartBoundary: { generation: 7, label: '已到频道最早一条动态' },
+  };
+  const view = render(<FollowingTailList {...props} snapshot={snapshot(4)} />);
+  const content = view.container.querySelector('.timeline-following-tail-content');
+  const boundary = view.getByText('已到频道最早一条动态');
+  const slot = boundary.closest('.timeline-history-boundary-slot');
+  const firstRow = content.querySelector('[data-presentation-row-id]');
+
+  expect(content.firstElementChild).toBe(slot);
+  expect(boundary.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(boundary.closest('.timeline-following-tail')).toBeTruthy();
+
+  view.rerender(<FollowingTailList {...props} snapshot={snapshot(100)} />);
+  expect(view.queryByText('已到频道最早一条动态')).toBeNull();
+});
+
 it('removes the outgoing scroll subscription when the following adapter is dormant', () => {
   const reading = readingPort();
   const { container } = render(<FollowingTailList

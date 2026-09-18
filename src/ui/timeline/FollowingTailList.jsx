@@ -14,6 +14,7 @@ import { isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js'
 import { READING_MODE } from '../../model/reading-session.js';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
 import { useReadingNavigationHost } from './ReadingNavigationOwner.jsx';
+import { HistoryStartBoundary } from './HistoryStartBoundary.jsx';
 import {
   completeViewportUnits,
   installedHighSeq,
@@ -129,6 +130,7 @@ export function FollowingTailList({
   active = true,
   focusOnMount = false,
   livePresentationArrivals = null,
+  historyStartBoundary = null,
 }) {
   const rootRef = useRef(null);
   const [rootNode, setRootNode] = useState(null);
@@ -530,6 +532,7 @@ export function FollowingTailList({
       * reversed-children variant would break all three for no extra benefit.
       * Both variants were measured; see Q.md 里程碑 0. */}
     <div className="timeline-following-tail-content">
+      {!windowTruncated && <HistoryStartBoundary boundary={historyStartBoundary} />}
       {tailRows.map((row, index) => <MessageRow
         key={row.id}
         row={row}

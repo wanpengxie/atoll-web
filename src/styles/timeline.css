@@ -39,6 +39,8 @@
 .timeline-history-demand[data-phase="error"] { pointer-events: auto; }
 .timeline-history-demand[data-phase="error"]::before { border-right-color: currentColor; animation: none; }
 .timeline-history-demand[data-phase="exhausted"]::before { border-right-color: currentColor; animation: none; }
+.timeline-history-boundary-slot { display: flex; width: 100%; height: 35px; box-sizing: border-box; flex: 0 0 35px; align-items: flex-start; justify-content: center; padding-top: 6px; }
+.timeline-history-boundary { width: max-content; max-width: min(calc(100% - 52px), 420px); margin: 0; padding: 5px 10px; border: 1px solid var(--line-control); border-radius: var(--pill); color: var(--text-muted); font-size: 10px; line-height: 1.3; text-align: center; }
 .timeline-history-demand button { min-height: 24px; border: 1px solid var(--line-control); border-radius: var(--pill); background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .timeline-history-status::before { width: 8px; height: 8px; box-sizing: border-box; flex: 0 0 auto; border: 1px solid currentColor; border-right-color: transparent; border-radius: 50%; content: ''; animation: history-status-spin .8s linear infinite; }
 @keyframes history-status-reveal { to { opacity: 1; } }

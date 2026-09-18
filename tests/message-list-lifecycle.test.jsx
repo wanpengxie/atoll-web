@@ -149,9 +149,169 @@ it('uses one row measurement revision for the item subtree and its formal certif
   );
 
   const externalIndex = 99;
-  expect(legendHarness.props.computeItemMeasurementKey(externalIndex, item)).toBe('99:measured:layout-7');
+  expect(legendHarness.props.computeItemMeasurementKey(externalIndex, item))
+    .toBe('99:measured:layout-7:history-start-role:activation:a:measured');
   expect(rowRevision).toHaveBeenCalledWith(externalIndex, item);
   expect(screen.getByText('measured')).toBeTruthy();
+});
+
+it('renders the authoritative history start inside the oldest ordinary virtual item', () => {
+  const owner = reading(vi.fn());
+  const boundary = Object.freeze({ generation: 4, label: '已到频道最早一条动态' });
+  const view = render(<MessageList
+    snapshot={snapshot([row('oldest', 1), row('newer', 2)], 1)}
+    reading={owner}
+    historyStartBoundary={boundary}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const marker = view.getByText('已到频道最早一条动态');
+  const firstRow = view.container.querySelector('[data-presentation-row-id]');
+  const firstIndex = legendHarness.props.firstItemIndex;
+  expect(marker.closest('.timeline-history-boundary-slot')?.parentElement).toBe(firstRow.parentElement);
+  expect(legendHarness.props.components.Header).toBeUndefined();
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex, legendHarness.props.data[0]))
+    .toBe('1:history-start-role:activation:a:oldest');
+});
+
+it('retains one fixed history-start role across an open-frontier prepend', () => {
+  const owner = reading(vi.fn());
+  const originalRows = [row('oldest-a', 10), row('anchor', 11)];
+  const view = render(<MessageList
+    snapshot={snapshot(originalRows, 1)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const oldFirstIndex = legendHarness.props.firstItemIndex;
+  expect(legendHarness.props.computeItemMeasurementKey(oldFirstIndex, originalRows[0]))
+    .toBe('1:history-start-role:activation:a:oldest-a');
+
+  const prependedRows = [row('older', 9), ...originalRows];
+  view.rerender(<MessageList
+    snapshot={snapshot(prependedRows, 2)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const newFirstIndex = legendHarness.props.firstItemIndex;
+  expect(legendHarness.props.computeItemMeasurementKey(newFirstIndex, prependedRows[0])).toBe('1');
+  expect(legendHarness.props.computeItemMeasurementKey(newFirstIndex + 1, prependedRows[1]))
+    .toBe('1:history-start-role:activation:a:oldest-a');
+  expect(view.container.querySelectorAll('.timeline-history-boundary-slot')).toHaveLength(1);
+  expect(view.container.querySelector('.timeline-history-boundary')).toBeNull();
+});
+
+it('latches the first materialized row before an open-frontier prepend', () => {
+  const owner = reading(vi.fn());
+  const view = render(<MessageList
+    snapshot={snapshot([], 0)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  expect(view.container.querySelectorAll('.timeline-history-boundary-slot')).toHaveLength(0);
+
+  const firstRows = [row('first-materialized', 10), row('anchor', 11)];
+  view.rerender(<MessageList
+    snapshot={snapshot(firstRows, 1)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  let firstIndex = legendHarness.props.firstItemIndex;
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex, firstRows[0]))
+    .toBe('1:history-start-role:activation:a:first-materialized');
+
+  const prependedRows = [row('older', 9), ...firstRows];
+  view.rerender(<MessageList
+    snapshot={snapshot(prependedRows, 2)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  firstIndex = legendHarness.props.firstItemIndex;
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex, prependedRows[0])).toBe('1');
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex + 1, prependedRows[1]))
+    .toBe('1:history-start-role:activation:a:first-materialized');
+  expect(view.container.querySelectorAll('.timeline-history-boundary-slot')).toHaveLength(1);
+});
+
+it('transfers the fixed role when its retained row is structurally removed', () => {
+  const owner = reading(vi.fn());
+  const firstRows = [row('removed-owner', 10), row('survivor', 11)];
+  const view = render(<MessageList
+    snapshot={snapshot(firstRows, 1)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+
+  const replacementRows = [row('replacement-frontier', 9), firstRows[1]];
+  view.rerender(<MessageList
+    snapshot={snapshot(replacementRows, 2)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const firstIndex = legendHarness.props.firstItemIndex;
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex, replacementRows[0]))
+    .toBe('1:history-start-role:activation:a:replacement-frontier');
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex + 1, replacementRows[1])).toBe('1');
+  expect(view.container.querySelectorAll('.timeline-history-boundary-slot')).toHaveLength(1);
+});
+
+it('cannot lend a retained history-start role to a replacement activation', () => {
+  const firstRows = [row('old-activation-frontier', 10), row('shared', 11)];
+  const view = render(<MessageList
+    snapshot={snapshot(firstRows, 1)} reading={reading(vi.fn(), 'activation:old')}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const nextRows = [row('new-activation-frontier', 9), row('shared', 11)];
+  view.rerender(<MessageList
+    snapshot={snapshot(nextRows, 2)} reading={reading(vi.fn(), 'activation:new')}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+
+  const firstIndex = legendHarness.props.firstItemIndex;
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex, nextRows[0]))
+    .toBe('1:history-start-role:activation:new:new-activation-frontier');
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex + 1, nextRows[1])).toBe('1');
+});
+
+it('moves the fixed role to the authoritative oldest row only after exhaustion', () => {
+  const owner = reading(vi.fn());
+  const originalRows = [row('oldest-a', 10), row('anchor', 11)];
+  const view = render(<MessageList
+    snapshot={snapshot(originalRows, 1)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const prependedRows = [row('authoritative-oldest', 9), ...originalRows];
+  const boundary = Object.freeze({ generation: 4, label: '已到频道最早一条动态' });
+  view.rerender(<MessageList
+    snapshot={snapshot(prependedRows, 2)} reading={owner}
+    historyStartBoundary={boundary}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const firstIndex = legendHarness.props.firstItemIndex;
+  const marker = view.getByText('已到频道最早一条动态');
+  const firstRow = view.container.querySelector('[data-presentation-row-id="authoritative-oldest"]');
+  expect(marker.closest('.timeline-history-boundary-slot')?.parentElement).toBe(firstRow.parentElement);
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex, prependedRows[0]))
+    .toBe('1:history-start-role:activation:a:authoritative-oldest');
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex + 1, prependedRows[1])).toBe('1');
+});
+
+it('retains the authoritative role if the boundary is revoked before another open prepend', () => {
+  const owner = reading(vi.fn());
+  const originalRows = [row('open-owner', 10), row('anchor', 11)];
+  const view = render(<MessageList
+    snapshot={snapshot(originalRows, 1)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const exhaustedRows = [row('authoritative-owner', 9), ...originalRows];
+  view.rerender(<MessageList
+    snapshot={snapshot(exhaustedRows, 2)} reading={owner}
+    historyStartBoundary={Object.freeze({ generation: 4, label: '已到频道最早一条动态' })}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+
+  const reopenedRows = [row('new-open-frontier', 8), ...exhaustedRows];
+  view.rerender(<MessageList
+    snapshot={snapshot(reopenedRows, 3)} reading={owner}
+    renderRow={(value) => <article>{value.id}</article>}
+  />);
+  const firstIndex = legendHarness.props.firstItemIndex;
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex, reopenedRows[0])).toBe('1');
+  expect(legendHarness.props.computeItemMeasurementKey(firstIndex + 1, reopenedRows[1]))
+    .toBe('1:history-start-role:activation:a:authoritative-owner');
+  expect(view.container.querySelectorAll('.timeline-history-boundary-slot')).toHaveLength(1);
+  expect(view.container.querySelector('.timeline-history-boundary')).toBeNull();
 });
 
 it('scopes formal range feedback to its activation without clearing unrelated loading', () => {
