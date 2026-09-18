@@ -4,6 +4,15 @@
 
 ### 最新状态（本段覆盖以下旧快照；监督周期已依用户改为20分钟）
 
+#### 2026-09-18 21:31：本轮整合与独立反证
+
+- `d5bfab3` 冷缓存优先权与取消生命周期已合，主树108定向通过；候选独立cold4/4、cached342.7ms。修因是未决cache selection时投机remote占唯一lane，安全Meta到后未接管；不是泛称Meta迟到。receipt/page取消均释放executor，焦点network不等待IDB。
+- `4283cd5` 在Outbox事务get后、put前校验transmitting授权，关闭排队或await期间撤权仍写入transmitting的缺口。
+- `aca5b0f` processing edit不再改变Reading mode，Composer在同编辑阶段可写后取得焦点。整合101定向/build通过；候选Following/Browsing实际201paints无白/双影，enter/cancel及普通草稿恢复通过。save/submit实际paint仍待独立核验，不泛化关闭。
+- **b089+440c完整列表验收REJECT仍有效**：独立正常served模块绑定确认440c；browsing ordinary append库scrollBy -3396导致actualpaint跳旧history，fold re-expand控件位移3026.6px。Following D和prepend有效段通过不覆盖这两红。vendor owner已续派追首违约与875对照，未无证更换依赖。
+- Q stage2独审机制准、pure-Q b089包160定向/4真实输入轨通过；尚未合。owner正在aca5b0f重放，必须保processing端口删除，不重带D。旧restore-rebase断言红与产品失败分开。
+- FilesPanel/ArtifactsView上传未纳入Composer事务实现；记录覆盖范围缺口，不声称全部文件上传生命周期已关闭。
+
 #### 2026-09-18 21:06：实际整合记录（覆盖以下历史状态）
 
 - main `3dd456b` 已合通知冻结确认事件与冷加载 admission/page lease；主树183定向通过。独立正常浏览器通知4/4及Meta先于正文1/1通过：真实high-water 25→27，重载保持27，未来seq28先计数、呈现后才确认28；不是临时隐藏数字。
