@@ -1663,9 +1663,11 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     if (editing) return;
     setEditNotice('');
     const location = taskControlContext(turn, { selfId, access, targetAuthority: waitingRosterAuthority }).location;
-    if (location === 'processing') {
-      viewport.takeFocusedContentControl({ source: 'user', reason: 'edit-message' });
-    }
+    // Editing moves focus and draft ownership to the Composer; it does not
+    // express a reading direction or a new viewport anchor. Keep the current
+    // adapter so a Following edit cannot cold-mount browsing before the editor
+    // receives its text/focus. A later trusted scroll still takes browsing
+    // through the native input owner, independently of this edit lease.
     const sessionId = ++editSessionSerialRef.current;
     const draft = { sessionId, releaseMessageId: newId(), channelId: state.channelId, targetId: turn.requestId, actorId, holdId: '', location, oldText: editableText(turn), text: editableText(turn), attachments: argsOf(turn.request).attachments || [], phase: 'requesting_lock', error: '' };
     const ownerRuntime = editRuntimeRef.current;

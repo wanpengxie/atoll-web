@@ -169,33 +169,18 @@ it('请求 settle 之后反向输入仍然能取消同一个 admission operation
   expect(admission.snapshot(CHANNEL).phase).toBe('idle');
 });
 
-it('presentation choice 不取消 admission，也不取得浏览权', async () => {
+it('content interactions 没有独立 Reading takeover 端口', async () => {
   const { admission, intent, port } = await mountReadingSession();
   driveToAwaitingLayout(admission, intent);
   const before = port().getSession();
 
-  let accepted;
-  act(() => { accepted = port().takeFocusedContentControl({ source: 'user', reason: 'fold-choice' }); });
-
-  expect(accepted).toBe(false);
+  expect(port().takeFocusedContentControl).toBeUndefined();
   expect(port().getSession()).toBe(before);
   expect(admission.snapshot(CHANNEL).phase).toBe('committed-awaiting-layout');
   expect(admission.bindPresentation(CHANNEL, 12).inputEpoch).toBe(before.inputEpoch);
 });
 
-it('纯内容布局回调没有阅读意图权威，不取消 operation 也不新建浏览导航', async () => {
-  const { admission, intent, port } = await mountReadingSession();
-  driveToAwaitingLayout(admission, intent);
-  const before = port().getSession();
-
-  act(() => port().takeFocusedContentControl({ source: 'layout', reason: 'content-layout' }));
-
-  expect(port().getSession()).toBe(before);
-  expect(admission.snapshot(CHANNEL).phase).toBe('committed-awaiting-layout');
-  expect(admission.bindPresentation(CHANNEL, 12).inputEpoch).toBe(before.inputEpoch);
-});
-
-it('切频道后新频道 focused edit 只取消自己的 operation，不取得退休频道句柄', async () => {
+it('切频道后新频道 native reverse input 只取消自己的 operation，不取得退休频道句柄', async () => {
   const admission = createHistoryPresentationAdmission();
   const first = await mountReadingSession({ admission });
   driveToAwaitingLayout(admission, first.intent);
@@ -209,7 +194,9 @@ it('切频道后新频道 focused edit 只取消自己的 operation，不取得�
   driveToAwaitingLayout(admission, second.intent, { channel: 'c1', viewKey: 'c1:mine' });
   const before = second.port().getSession().inputEpoch;
 
-  act(() => second.port().takeFocusedContentControl({ source: 'user', reason: 'edit-message' }));
+  act(() => second.port().onUserControl({
+    direction: 'newer', gestureID: 'wheel-down-c1', geometryRevision: 4,
+  }));
 
   expect(second.port().getSession()).toMatchObject({ mode: 'browsing', inputEpoch: before + 1 });
   expect(admission.snapshot('c1').phase).toBe('idle');

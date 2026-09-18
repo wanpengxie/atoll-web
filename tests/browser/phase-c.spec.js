@@ -156,6 +156,37 @@ test('C-BR-03/05 处理中只暴露编辑与停止，停止后按钮随 turn 消
   await expect(turn.getByRole('region', { name: '任务控制' })).toHaveCount(0);
 });
 
+test('C-BR-03a processing edit 保持 Reading DOM，并完整交接焦点与普通草稿', async ({ page, request }) => {
+  await reset(request, 'long-running', 139);
+  await login(page);
+  await openSteward(page);
+  const taskText = 'processing edit keeps its reading adapter';
+  const turn = await sendTask(page, taskText);
+  const editor = page.getByLabel('消息');
+  const normalDraft = 'ordinary draft survives processing edit';
+  await editor.fill(normalDraft);
+  const following = page.locator('[data-reading-container="following-tail"]');
+  await expect(following).toHaveCount(1);
+  await following.evaluate((node) => { node.dataset.processingEditProbe = 'same'; });
+
+  await turn.getByRole('button', { name: '编辑' }).click();
+
+  await expect(page.getByRole('button', { name: '取消编辑' })).toBeVisible();
+  await expect(editor).toContainText(taskText);
+  await expect(editor).toBeFocused();
+  await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'following');
+  await expect(page.locator('[data-processing-edit-probe="same"]')).toHaveCount(1);
+  await editor.fill('replacement text remains an edit-only draft');
+
+  await page.getByRole('button', { name: '取消编辑' }).click();
+
+  await expect(page.getByRole('button', { name: '取消编辑' })).toHaveCount(0);
+  await expect(editor).toContainText(normalDraft);
+  await expect(editor).toBeFocused();
+  await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'following');
+  await expect(page.locator('[data-processing-edit-probe="same"]')).toHaveCount(1);
+});
+
 test('C-BR-04 interrupt 冻结只在 Agent 气泡呈现，恒无继续按钮', async ({ page, request }) => {
   await reset(request, 'long-running', 104);
   await login(page);

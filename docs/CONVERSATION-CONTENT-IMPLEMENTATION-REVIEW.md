@@ -225,7 +225,8 @@ ContentPlan {
 - 初次恢复时，先在 immutable plan/snapshot 中解析 bookmark 到 unit index，再一次性交给 `initialTopMostItemIndex`；挂载后不做语义反向 scroll；
 - intrinsic DOM/ResizeObserver 由 Virtuoso 测量，Content 不读写祖先 `scrollTop`、不缓存 item height；
 - fold/Mermaid/详情等 Presentation choice 保持当前 Reading mode，并在同一个 adapter/row
-  内改变 DOM；真实滚动、selection 位移和 focused edit 仍沿统一输入合同取得 browsing，
+  内改变 DOM；processing edit 把焦点与草稿 owner 移到 Composer，但不伪造 Reading
+  navigation；真实滚动、selection 位移仍沿统一输入合同取得 browsing，
   following 时的唯一回底 issuer 不新增分支；
 - 不嵌套第二个 virtualizer，不建 spacer/尺寸树，不用隐藏副本、`scrollBy`、anchor diff 或 RAF retry。
 

@@ -134,8 +134,8 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 
 - Timeline 自身可聚焦；方向键、PageUp/PageDown、Home/End 与滚轮、触摸共享同一套 browsing/following 语义。
 - 普通消息按钮不应被误判为滚动。展开/收起、过程列表和 inline details 只改变
-  Presentation choice，保持动作前的 following/browsing；只有真实滚动、selection 位移、
-  focused edit 等拥有阅读位置的动作取得 browsing。
+  Presentation choice，保持动作前的 following/browsing。processing edit 把焦点和草稿所有权
+  移到 Composer，但不是阅读位移；只有真实滚动、selection 位移等动作取得 browsing。
 - 触摸目标至少 44px；hover 才出现的关键动作在无 hover 设备上必须常显。
 - 虚拟列表本身不作为 live region，避免滚动回收 DOM 时把旧消息重新朗读；状态使用独立的 `role=status/alert`。
 
@@ -145,6 +145,7 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 |---|---|---|---|
 | following | live append | 尾部自然跟随 | following |
 | following | row resize / 展开收起 | 同一 Following DOM 从尾侧自然布局；不伪造导航 | following |
+| following | 编辑 processing message | Composer 接管焦点/编辑草稿，列表保持同一 DOM | following |
 | following | 用户向上输入 | 立即停止程序跟随 | browsing |
 | browsing | live append | 屏幕不动，累计“新动态” | browsing |
 | browsing | row resize / 展开收起 | Adapter 统一测量并保住当前阅读锚点 | browsing |
@@ -153,7 +154,7 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 | browsing | 收起内容使物理底部进入视口 | 屏幕不被继续钉底 | browsing |
 | 任意 | 点击“回到最新” | 一次定位尾部 | following |
 | 任意 | scope / 成员筛选 | 新列表 identity，明确到尾部 | following |
-| browsing | 编辑当前旧消息 | 原 row 原地变化 | browsing |
+| browsing | 编辑当前消息 | Composer 接管焦点/编辑草稿，原 row 原地变化 | browsing |
 | 任意 | 查看来源 | 一次定位目标 row，随后消费命令 | browsing |
 | 任意 | 打开移动端 Files/Preview | Conversation 隐藏但不销毁 | 原会话保留 |
 

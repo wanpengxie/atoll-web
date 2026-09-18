@@ -1915,36 +1915,6 @@ export function useReadingSession({
         });
       }
     },
-    takeFocusedContentControl(command = {}) {
-      // Presentation choices (fold/progress/thread/details) preserve the
-      // existing reading mode. This imperative entry is deliberately narrow:
-      // only a focused interaction which must not be displaced by live tail
-      // growth may mint browsing ownership. Native displacement continues to
-      // use onUserControl and the shared input contract.
-      if (command?.source !== 'user' || command?.reason !== 'edit-message') return false;
-      const reason = String(command.reason);
-      const active = runwayRequestRef.current;
-      active?.abortController?.abort(reason);
-      const requestOperationID = active?.controller === controller
-        ? String(active.operationID || '')
-        : '';
-      const operationID = currentAdmissionOperationID(
-        historyStatus,
-        channelID,
-        controller.activationID,
-        viewKey,
-      ) || requestOperationID;
-      if (operationID) {
-        historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
-      }
-      runwayRequestRef.current = null;
-      controller.update((current) => takeReadingControl(current, {
-        direction: 'browse',
-        gestureID: `${reason}:${newId()}`,
-        geometryRevision: current.geometryRevision,
-      }));
-      return true;
-    },
     onReadingObservation(observation) {
       const current = controller.getSnapshot().session;
       const activationID = observation.activationID || controller.activationID;

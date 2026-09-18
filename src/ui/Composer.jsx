@@ -602,7 +602,6 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       setRecipients([]);
       setError('');
       setSendState(editMode.session.phase === 'editing' ? 'idle' : 'sending');
-      requestAnimationFrame(() => editor.commands.focus('end'));
       return;
     }
     if (normalDraftRef.current) {
@@ -616,6 +615,11 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       setRecipients(saved.recipients);
       setError('');
       setSendState('idle');
+      // The cancel button is removed with editMode. Return focus to the
+      // restored normal draft instead of leaving it on document.body.
+      requestAnimationFrame(() => {
+        if (!editor.isDestroyed && !editModeRef.current) editor.commands.focus('end');
+      });
     }
   }, [editor, editTargetId]);
 
@@ -623,6 +627,22 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     if (!editMode) return;
     setSendState(editMode.session.phase === 'editing' ? 'idle' : 'sending');
   }, [editMode?.session?.phase]);
+
+  useEffect(() => {
+    if (!editor || !editTargetId || editBusy) return undefined;
+    // The edit text is installed while the remote hold is still pending and
+    // the editor is intentionally non-editable. Focus only after that same
+    // edit session becomes writable; keying by target prevents a late focus
+    // from an obsolete lease from landing in a replacement/channel session.
+    const frame = requestAnimationFrame(() => {
+      if (!editor.isDestroyed
+        && editModeRef.current?.session?.targetId === editTargetId
+        && editModeRef.current?.session?.phase === 'editing') {
+        editor.commands.focus('end');
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editBusy, editTargetId, editor]);
 
   useEffect(() => {
     cancelAnimationFrame(compositionFrameRef.current);

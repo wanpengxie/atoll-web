@@ -77,8 +77,8 @@ Presentation 的精确 prepend”分开。React render 只计算候选；[Timeli
 及 Reading coverage，不从本地数组末项猜测。
 
 Timeline 的 Presentation choice（fold/progress/thread/details）只写稳定 choice store，不消费 Reading control。
-真实 native input 由 adapter 的统一输入合同取得 browsing；processing edit 的 focused control 直接使用当前 viewport
-port。只被 event/passive/Promise 使用的 edit runtime 在 layout commit 发布。每个 session callback 首次捕获自己的
+processing edit 只把焦点与编辑草稿 owner 移到 Composer，同样保持当前 Reading mode/adapter；真实 native input
+由 adapter 的统一输入合同取得 browsing。只被 event/passive/Promise 使用的 edit runtime 在 layout commit 发布。每个 session callback 首次捕获自己的
 committed runtime，same-channel 的最新 committed authority 只作撤权门，不能让旧 session 借用新 owner 执行动作。
 
 ### 4.3 Reading、列表与恢复

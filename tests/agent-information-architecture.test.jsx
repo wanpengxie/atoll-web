@@ -197,6 +197,41 @@ describe('agent control v7 information architecture', () => {
     expect(settled.querySelector('.response-content').textContent).not.toContain('7');
   });
 
+  it('keeps the same Reading adapter while processing edit owns Composer content', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('work', 'edit without navigation'));
+    add(state, 2, response('work-p', 'work', { status: 'processing', turn_id: 'turn-edit' }));
+    const onTaskControl = vi.fn(async ({ type }) => type === 'agent.hold' ? 'hold-edit' : `${type}-id`);
+    const onComposerEditChange = vi.fn();
+    render(<Timeline
+      state={state}
+      roster={roster}
+      selfId="me"
+      pending={[]}
+      approvalStates={{}}
+      access="member_active"
+      capabilityIndex={capabilities()}
+      onTaskControl={onTaskControl}
+      onComposerEditChange={onComposerEditChange}
+    />);
+
+    const edit = screen.getByRole('button', { name: '编辑' });
+    const following = edit.closest('[data-reading-container="following-tail"]');
+    expect(following).not.toBeNull();
+    expect(document.querySelector('.timeline')?.dataset.viewportMode).toBe('following');
+
+    fireEvent.click(edit);
+
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      session: expect.objectContaining({ targetId: 'work', text: 'edit without navigation' }),
+    })));
+    expect(following.isConnected).toBe(true);
+    expect(screen.getByText('正在输入框中编辑')
+      .closest('[data-reading-container="following-tail"]')).toBe(following);
+    expect(document.querySelector('.timeline')?.dataset.viewportMode).toBe('following');
+    expect(document.querySelector('[data-virtuoso-scroller]')).toBeNull();
+  });
+
   it('groups queue positions per agent and cancels a group through hold, cancels, unhold', async () => {
     const state = createChannelState('c0');
     add(state, 1, request('a1', 'A first', 'agent'));
