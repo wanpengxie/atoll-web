@@ -52,8 +52,8 @@
 .model-selector-context-compact > span { width: 22px; height: 3px; overflow: hidden; border-radius: var(--pill); background: var(--line-control); }
 .model-selector-context-compact i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 .model-selector-context-compact strong { color: inherit; font-size: inherit; font-weight: inherit; }
-.model-selector-popover { position: absolute; z-index: 8; right: 0; bottom: calc(100% + 9px); display: flex; align-items: flex-end; gap: 7px; filter: drop-shadow(0 12px 24px var(--shadow-2)); }
-.model-selector-menu, .model-selector-options { overflow: hidden; border: 1px solid var(--line-control); border-radius: 13px; background: var(--raised); }
+.model-selector-popover { position: fixed; z-index: 8; display: flex; max-height: var(--model-selector-popover-max-height); align-items: flex-end; gap: 7px; filter: drop-shadow(0 12px 24px var(--shadow-2)); pointer-events: auto; }
+.model-selector-menu, .model-selector-options { max-height: var(--model-selector-popover-max-height); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line-control); border-radius: 13px; background: var(--raised); }
 .model-selector-menu { order: 2; width: 228px; padding: 7px; }
 .model-selector-agent-context { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 8px 8px; border-bottom: 1px solid var(--line-subtle); color: var(--text-muted); font-size: 10px; }
 .model-selector-agent-context strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
@@ -134,7 +134,7 @@
   .model-selector-context-compact > span { display: none; }
   .model-selector-actor { max-width: 64px; }
   .model-selector-current strong { max-width: 66px; }
-  .model-selector-popover { right: -40px; display: block; width: min(280px, calc(100vw - 32px)); }
+  .model-selector-popover { display: block; width: min(280px, calc(100vw - 32px)); }
   .model-selector-menu, .model-selector-options { width: 100%; }
   .model-selector-popover.has-section .model-selector-menu { display: none; }
   .model-selector-options-title button { display: grid; }

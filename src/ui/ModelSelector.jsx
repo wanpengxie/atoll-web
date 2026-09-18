@@ -1,9 +1,88 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, ChevronDown, ChevronRight, RefreshCw, Users, Zap } from 'lucide-react';
 import { actorDisplayName } from '../model/actor-display.js';
 import { contextUsageView, selectionFor } from '../model/agent-selection.js';
 
 const SECTION_LABEL = { model: '模型', effort: '推理强度' };
+
+function viewportFrame() {
+  const viewport = globalThis.visualViewport;
+  const left = Number(viewport?.offsetLeft || 0);
+  const top = Number(viewport?.offsetTop || 0);
+  const width = Number(viewport?.width || globalThis.innerWidth || document.documentElement.clientWidth || 0);
+  const height = Number(viewport?.height || globalThis.innerHeight || document.documentElement.clientHeight || 0);
+  return { left, top, right: left + width, bottom: top + height };
+}
+
+function placePopover(node, trigger) {
+  if (!node || !trigger?.isConnected) return;
+  const frame = viewportFrame();
+  const margin = 8;
+  const gap = 9;
+  const availableWidth = Math.max(120, frame.right - frame.left - margin * 2);
+  const availableHeight = Math.max(44, frame.bottom - frame.top - margin * 2);
+  node.style.setProperty('--model-selector-popover-max-height', `${availableHeight}px`);
+  node.style.maxWidth = `${availableWidth}px`;
+  node.style.visibility = 'hidden';
+  node.style.left = '0px';
+  node.style.top = '0px';
+
+  const anchor = trigger.getBoundingClientRect();
+  const size = node.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(frame.left + margin, anchor.right - size.width),
+    Math.max(frame.left + margin, frame.right - margin - size.width),
+  );
+  const above = anchor.top - gap - size.height;
+  const below = anchor.bottom + gap;
+  const top = above >= frame.top + margin
+    ? above
+    : below + size.height <= frame.bottom - margin
+      ? below
+      : Math.min(
+        Math.max(frame.top + margin, above),
+        Math.max(frame.top + margin, frame.bottom - margin - size.height),
+      );
+  node.style.left = `${left}px`;
+  node.style.top = `${top}px`;
+  node.style.visibility = 'visible';
+}
+
+function ModelSelectorPopover({ triggerRef, popoverRef, className = '', children }) {
+  useLayoutEffect(() => {
+    const node = popoverRef.current;
+    const trigger = triggerRef.current;
+    if (!node || !trigger) return undefined;
+    const place = () => placePopover(node, trigger);
+    place();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : null;
+    observer?.observe(node);
+    observer?.observe(trigger);
+    globalThis.addEventListener?.('resize', place);
+    globalThis.visualViewport?.addEventListener?.('resize', place);
+    globalThis.visualViewport?.addEventListener?.('scroll', place);
+    document.addEventListener('scroll', place, true);
+    return () => {
+      observer?.disconnect();
+      globalThis.removeEventListener?.('resize', place);
+      globalThis.visualViewport?.removeEventListener?.('resize', place);
+      globalThis.visualViewport?.removeEventListener?.('scroll', place);
+      document.removeEventListener('scroll', place, true);
+    };
+  });
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      ref={popoverRef}
+      className={`model-selector-popover${className ? ` ${className}` : ''}`}
+      data-model-selector-portal="true"
+      style={{ visibility: 'hidden' }}
+    >{children}</div>,
+    document.body,
+  );
+}
 
 function formatTokens(value) {
   if (!Number.isFinite(value)) return '—';
@@ -38,6 +117,7 @@ function ClientStatus({ client }) {
 export function ModelSelector({ target = { kind: 'none' }, actorName = '', view = null, pending = null, candidates = [], disabled = false, onChange, onPickAgent, onOpen }) {
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
+  const popoverRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [section, setSection] = useState('');
   // 值域未就绪时用户点过一次 = 他要的是「打开面板」，不是「帮我取一次数」。
@@ -48,7 +128,7 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
   useEffect(() => {
     if (!open) return undefined;
     const outside = (event) => {
-      if (!rootRef.current?.contains(event.target)) {
+      if (!rootRef.current?.contains(event.target) && !popoverRef.current?.contains(event.target)) {
         setOpen(false);
         setSection('');
       }
@@ -109,14 +189,14 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
         <strong className="model-selector-actor">选择 Agent</strong>
         <ChevronDown size={15} strokeWidth={1.8} aria-hidden="true" />
       </button>
-      {open && <div className="model-selector-popover">
+      {open && <ModelSelectorPopover triggerRef={triggerRef} popoverRef={popoverRef}>
         <div className="model-selector-menu" role="menu" aria-label="选择目标 Agent">
           <div className="model-selector-agent-context"><span>本频道有多个 Agent</span></div>
           {candidates.map((row) => <button type="button" role="menuitem" key={row.id} onClick={() => { setOpen(false); onPickAgent?.(row.id); }}>
             <span>{actorDisplayName(row)}</span><ChevronRight size={16} aria-hidden="true" />
           </button>)}
         </div>
-      </div>}
+      </ModelSelectorPopover>}
     </div>;
   }
 
@@ -169,7 +249,7 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
         <ContextUsage usage={view.usage} compact />
         <ChevronDown size={15} strokeWidth={1.8} aria-hidden="true" />
       </button>
-      {open && <div className="model-selector-popover"><div className="model-selector-menu is-status" role="dialog" aria-label={`${actorName} Agent 状态`}><div className="model-selector-agent-context"><span>当前 Agent</span><strong>{actorName}</strong></div>{modelLabel && <div className="model-selector-readonly"><span>模型</span><strong>{modelLabel}</strong></div>}<ClientStatus client={view.client} /><ContextUsage usage={view.usage} /></div></div>}
+      {open && <ModelSelectorPopover triggerRef={triggerRef} popoverRef={popoverRef}><div className="model-selector-menu is-status" role="dialog" aria-label={`${actorName} Agent 状态`}><div className="model-selector-agent-context"><span>当前 Agent</span><strong>{actorName}</strong></div>{modelLabel && <div className="model-selector-readonly"><span>模型</span><strong>{modelLabel}</strong></div>}<ClientStatus client={view.client} /><ContextUsage usage={view.usage} /></div></ModelSelectorPopover>}
     </div>;
   }
 
@@ -208,7 +288,7 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
       <ContextUsage usage={view.usage} compact />
       {busy ? <span className="model-selector-pending">切换中</span> : <ChevronDown size={15} strokeWidth={1.8} aria-hidden="true" />}
     </button>
-    {open && <div className={`model-selector-popover${section ? ' has-section' : ''}`}>
+    {open && <ModelSelectorPopover triggerRef={triggerRef} popoverRef={popoverRef} className={section ? 'has-section' : ''}>
       <div className="model-selector-menu" role="menu" aria-label="模型设置">
         <div className="model-selector-agent-context"><span>当前 Agent</span><strong>{actorName}</strong></div>
         {(['model', ...(hasEffort ? ['effort'] : [])]).map((kind) => <button type="button" role="menuitem" key={kind} className={section === kind ? 'active' : ''} onClick={() => setSection(kind)}>
@@ -230,6 +310,6 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
           {displayed?.[section] === row.id && <Check size={17} strokeWidth={2} aria-hidden="true" />}
         </button>)}
       </div>}
-    </div>}
+    </ModelSelectorPopover>}
   </div>;
 }
