@@ -261,31 +261,41 @@ function evaluatePresentation(owner, entries = [], {
   let currentEntryEligibility = viewChanged ? new Map() : owner.currentEntryEligibility;
   let snapshot = owner.snapshot;
   const incrementalChanges = sourceChanges.filter((change) => Number(change.revision) > sourceRevision);
-  let sourceEntriesByID = null;
-  const sourceEntry = (id) => {
-    if (!sourceEntriesByID) sourceEntriesByID = new Map(entries.map((entry) => [identityOf(entry), entry]));
-    return sourceEntriesByID.get(id);
-  };
-  // Fold names the visible root row and retains the mutated child as the
-  // subject. A view that filtered that child out must consume the source clock
-  // without manufacturing a content/geometry revision for an unchanged row.
-  const visibleIncrementalChanges = incrementalChanges.filter((change) => (
-    !change.subjectID || entryContainsTimelineSubject(sourceEntry(change.id), change.subjectID)
-  ));
   const revisionAdvanced = Number(nextSourceRevision) > sourceRevision;
-  if (visibleIncrementalChanges.some((change) => change.id)) {
-    contentVersions = new Map(contentVersions);
-    for (const change of visibleIncrementalChanges) {
-      if (change.id) contentVersions.set(change.id, Math.max(contentVersions.get(change.id) || 0, Number(change.revision) || 0));
-    }
-  }
   const canIncrement = !viewChanged
     && snapshot.epoch === epoch
     && entries === entriesReference
     && sourceRevision >= Number(sourceChangeBase || 0)
     && (!revisionAdvanced || incrementalChanges.length > 0)
     && incrementalChanges.every((change) => change.kind === 'content');
-
+  // The exact committed entries array already has an owner-private identity
+  // index. Reuse it for the hot content-only path instead of rebuilding an
+  // all-roots Map for one nested progress subject. A structural/rebased input
+  // is about to pay the existing full rebuild below; bound its potentially
+  // many subject lookups to one additional scan with an evaluate-local index.
+  // This fallback is neither retained nor published as snapshot state.
+  let rebuildSourceEntriesByID = null;
+  const sourceEntry = canIncrement
+    ? (id) => entriesByID.get(id)
+    : (id) => {
+      if (!rebuildSourceEntriesByID) {
+        rebuildSourceEntriesByID = new Map();
+        for (const entry of entries) rebuildSourceEntriesByID.set(identityOf(entry), entry);
+      }
+      return rebuildSourceEntriesByID.get(id);
+    };
+  // Fold names the visible root row and retains the mutated child as the
+  // subject. A view that filtered that child out must consume the source clock
+  // without manufacturing a content/geometry revision for an unchanged row.
+  const visibleIncrementalChanges = incrementalChanges.filter((change) => (
+    !change.subjectID || entryContainsTimelineSubject(sourceEntry(change.id), change.subjectID)
+  ));
+  if (visibleIncrementalChanges.some((change) => change.id)) {
+    contentVersions = new Map(contentVersions);
+    for (const change of visibleIncrementalChanges) {
+      if (change.id) contentVersions.set(change.id, Math.max(contentVersions.get(change.id) || 0, Number(change.revision) || 0));
+    }
+  }
   if (canIncrement) {
     const changedIDs = [...new Set(visibleIncrementalChanges.map((change) => change.id).filter(Boolean))];
     sourceRevision = Math.max(sourceRevision, Number(nextSourceRevision) || 0);

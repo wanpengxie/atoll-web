@@ -72,6 +72,117 @@ describe('immutable conversation presentation', () => {
     expect(snapshot.entities).not.toHaveProperty('set');
   });
 
+  it('looks up one nested progress root without revisiting every committed entry', () => {
+    const projector = createConversationPresentation();
+    const rootIndex = 2_048;
+    const rootRequest = {
+      id: 'root', type: 'project.task', kind: 'request', seq: rootIndex + 1,
+      ts: (rootIndex + 1) * 1_000, sender: { id: 'human-a' }, audience: ['agent-a'],
+    };
+    const childRequest = {
+      id: 'child', type: 'tool.exec', kind: 'request', parent_id: rootRequest.id,
+      seq: rootIndex + 2, ts: (rootIndex + 2) * 1_000,
+      sender: { id: 'agent-a' }, audience: ['human-a'],
+    };
+    const childTurn = {
+      requestId: childRequest.id, request: childRequest, requestSeq: childRequest.seq,
+      lastSeq: childRequest.seq, provisional: [], terminal: null,
+    };
+    const rootEntry = {
+      kind: 'turn', seq: rootRequest.seq,
+      turn: {
+        requestId: rootRequest.id, request: rootRequest, requestSeq: rootRequest.seq,
+        lastSeq: childRequest.seq, provisional: [], terminal: null,
+      },
+      thread: [{ kind: 'turn', seq: childRequest.seq, turn: childTurn }],
+    };
+    const source = Array.from({ length: 4_096 }, (_, index) => message(`m${index}`, index + 1));
+    source[rootIndex] = rootEntry;
+    let entryVisits = 0;
+    const entries = new Proxy(source, {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) entryVisits += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const initial = projector.project(entries, {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
+    });
+    const initialRoot = initial.entities.get(rootRequest.id);
+    const initialNeighbour = initial.entities.get(`m${rootIndex - 1}`);
+
+    const progress = {
+      id: 'progress', type: childRequest.type, kind: 'response', parent_id: childRequest.id,
+      seq: 9_001, ts: 9_001_000, sender: { id: 'agent-a' },
+      payload: { status: 'processing', process: { kind: 'stage', text: 'working' } },
+    };
+    // Fold owns and mutates this input turn in place. Presentation must read
+    // that committed source fact while keeping the already-published snapshot
+    // detached and immutable.
+    childTurn.lastSeq = progress.seq;
+    childTurn.provisional.push({ seq: progress.seq, envelope: progress });
+    entryVisits = 0;
+    const advanced = projector.project(entries, {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
+      sourceChanges: [{ revision: 2, id: rootRequest.id, subjectID: childRequest.id, kind: 'content' }],
+    });
+
+    // Only candidate neighbours are read from the array. The root itself is
+    // found through the committed owner index, independent of root count.
+    expect(entryVisits).toBeLessThanOrEqual(2);
+    expect(advanced.changes.updated).toEqual([rootRequest.id]);
+    expect(advanced.entities.get(rootRequest.id)).not.toBe(initialRoot);
+    expect(advanced.entities.get(`m${rootIndex - 1}`)).toBe(initialNeighbour);
+    expect(initialRoot.body.thread[0].turn.provisional).toEqual([]);
+    expect(advanced.entities.get(rootRequest.id).body.thread[0].turn.provisional[0].envelope.id).toBe('progress');
+
+    const filteredProjector = createConversationPresentation();
+    const filteredEntries = [{ ...rootEntry, thread: [] }];
+    const filteredInitial = filteredProjector.project(filteredEntries, {
+      nextViewID: 'c0:mine', epoch: 'generation:1', sourceRevision: 1,
+    });
+    const filteredAdvanced = filteredProjector.project(filteredEntries, {
+      nextViewID: 'c0:mine', epoch: 'generation:1', sourceRevision: 2,
+      sourceChanges: [{ revision: 2, id: rootRequest.id, subjectID: childRequest.id, kind: 'content' }],
+    });
+    expect(filteredAdvanced.sourceRevision).toBe(2);
+    expect(filteredAdvanced.revision).toBe(filteredInitial.revision);
+    expect(filteredAdvanced.rows).toBe(filteredInitial.rows);
+    expect(filteredAdvanced.entities).toBe(filteredInitial.entities);
+  });
+
+  it('bounds structural subject lookup to one evaluate-local root scan', () => {
+    const projector = createConversationPresentation();
+    const rootCount = 4_096;
+    const initialEntries = Array.from({ length: rootCount }, (_, index) => message(`m${index}`, index + 1));
+    projector.project(initialEntries, {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
+    });
+
+    let entryVisits = 0;
+    const replacementEntries = new Proxy([...initialEntries], {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) entryVisits += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const sourceChanges = Array.from({ length: 128 }, (_, index) => ({
+      revision: index + 2,
+      id: `m${rootCount - 1}`,
+      subjectID: `m${rootCount - 1}`,
+      kind: 'structure',
+    }));
+    const rebuilt = projector.project(replacementEntries, {
+      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 129, sourceChanges,
+    });
+
+    // One local lookup-index pass plus the existing rebuild/candidate-neighbour
+    // reads stays O(N), rather than one Array.find scan per change (O(N*K)).
+    expect(entryVisits).toBeLessThan(rootCount * 5);
+    expect(rebuilt.sourceRevision).toBe(129);
+    expect(rebuilt.changes.updated).toEqual([`m${rootCount - 1}`]);
+  });
+
   it('does not reinterpret the old window head when a predecessor arrives', () => {
     const projector = createConversationPresentation();
     const current = message('m2', 2);
