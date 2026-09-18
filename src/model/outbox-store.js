@@ -126,12 +126,18 @@ export function createOutboxStore({
       });
       return durable;
     },
-    async patch(principalId, messageId, expectedStates, change) {
+    async patch(principalId, messageId, expectedStates, change, { authorize } = {}) {
       const db = await open();
       return db.transaction('rw', db.submissions, async () => {
         const key = [principalId, messageId];
         const current = await db.submissions.get(key);
         if (!current || (expectedStates?.length && !expectedStates.includes(current.state))) return null;
+        // The read above yields. A queued request may lose its exact access or
+        // transport owner while waiting behind another IndexedDB writer. Check
+        // the phase lease inside this transaction immediately before the first
+        // durable mutation; an outer before/after check can only compensate
+        // after a stale `transmitting` record has already become crash-visible.
+        if (authorize && authorize() !== true) throw new Error('发送授权已变化，未推进发送状态');
         const next = { ...current, ...change, principalId, messageId, updatedAt: now() };
         await db.submissions.put(next);
         return next;

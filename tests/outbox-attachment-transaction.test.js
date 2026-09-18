@@ -4,6 +4,27 @@ import { describe, expect, it } from 'vitest';
 import { createOutboxStore } from '../src/model/outbox-store.js';
 
 describe('durable attachment association', () => {
+  it('does not expose a stale transmitting transition after authority changes during the record read', async () => {
+    const store = createOutboxStore({ databaseName: `transition-fence-${crypto.randomUUID()}` });
+    await store.putMany('p', [{
+      key: 'queued', messageId: 'queued', channelId: 'c', state: 'queued', createdAt: 1, updatedAt: 1,
+      frame: { id: 'queued', channel_id: 'c', payload: { text: 'do not transmit' } },
+    }]);
+    let checks = 0;
+    await expect(store.patch(
+      'p',
+      'queued',
+      ['queued'],
+      { state: 'transmitting' },
+      // The IndexedDB get yields; this observation represents revoke before
+      // the first durable state mutation, not a later compensating rejection.
+      { authorize: () => { checks += 1; return false; } },
+    )).rejects.toThrow('发送授权已变化');
+    expect(checks).toBe(1);
+    expect((await store.restore('p'))[0]).toMatchObject({ state: 'queued' });
+    store.close();
+  });
+
   it('rechecks send authority after the awaited draft read and before bulkPut', async () => {
     const store = createOutboxStore({ databaseName: `send-fence-${crypto.randomUUID()}` });
     await store.writeDraft('p', 'c', { text: 'do not leak', editorRevision: 1 }, 0);

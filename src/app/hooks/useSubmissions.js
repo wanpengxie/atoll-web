@@ -384,9 +384,15 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     });
   }, [enqueueWrite, hydratePrincipal, principalId, publishDraft]);
 
-  const persistTransition = useCallback((next, expectedStates) => {
+  const persistTransition = useCallback((next, expectedStates, { authorize } = {}) => {
     if (!principalId || !next?.messageId) return Promise.resolve(null);
-    return enqueueWrite(() => outboxRef.current.patch(principalId, next.messageId, expectedStates, next));
+    return enqueueWrite(() => outboxRef.current.patch(
+      principalId,
+      next.messageId,
+      expectedStates,
+      next,
+      { authorize },
+    ));
   }, [enqueueWrite, principalId]);
 
   const clear = useCallback(() => {
@@ -524,7 +530,15 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
         owner,
         current: () => currentOwnerFacts(owner),
         phase: REQUEST_PHASE.persist,
-        effect: () => persistTransition(transmitting, ['queued', 'uncertain', 'transmitting']),
+        effect: () => persistTransition(
+          transmitting,
+          ['queued', 'uncertain', 'transmitting'],
+          { authorize: () => assessRequestOwner(
+            owner,
+            currentOwnerFacts(owner),
+            REQUEST_PHASE.persist,
+          ).current },
+        ),
       });
     } catch (error) {
       if (renewLease != null) globalThis.clearInterval?.(renewLease);
@@ -858,7 +872,13 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       messageId: submission.messageId,
       previousState: submission.state,
     });
-    const persisted = await persistTransition(next, ['uncertain', 'rejected']);
+    const persisted = await persistTransition(next, ['uncertain', 'rejected'], {
+      authorize: () => assessRequestOwner(
+        owner,
+        currentOwnerFacts(owner),
+        REQUEST_PHASE.persist,
+      ).current,
+    });
     if (!persisted) return false;
     mutatePending((current) => current.map((item) => (
       item.key === next.key && ['uncertain', 'rejected'].includes(item.state) ? next : item
