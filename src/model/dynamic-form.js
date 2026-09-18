@@ -1,8 +1,8 @@
 import { parseJSONDocument } from './capabilities.js';
 import { TYPES } from '../protocol/vocab.js';
 
-// 固定词的表单兜底；有 input_schema 时始终以 actor.describe 的机器可读声明为准。
-// 字段名对齐 drivers/agents/base/loop.go 的解码结构。
+// 固定词的表单兜底。actor.describe 的 wire schema 已在 capability owner
+// 归一为 inputSchema；表单层只接受这一种内部形状。
 const KNOWN_CONTROL_FIELDS = Object.freeze({
   [TYPES.agentAsk]: [
     { name: 'text', required: true, description: '要问 Agent 的内容', type: 'string', multiline: true },
@@ -67,7 +67,7 @@ function fieldFromSchema(name, schema, required) {
 }
 
 export function buildFormSpec(type, meta = {}) {
-  const schema = parseJSONDocument(meta.inputSchema || meta.input_schema);
+  const schema = parseJSONDocument(meta.inputSchema);
   if (schema) {
     const unsupportedRoot = schema.oneOf || schema.anyOf || schema.allOf || (schema.type && schema.type !== 'object');
     if (unsupportedRoot || !schema.properties || typeof schema.properties !== 'object') {
