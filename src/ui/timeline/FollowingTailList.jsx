@@ -254,7 +254,13 @@ export function FollowingTailList({
 
   useLayoutEffect(() => {
     if (!active || !focusOnMount) return;
-    rootRef.current?.focus?.({ preventScroll: true });
+    const root = rootRef.current;
+    // A presentation choice can rerender Timeline while its disclosure button
+    // already owns focus inside this still-active Following DOM. focusOnMount
+    // is also used for a real adapter handoff; it must not turn an ordinary
+    // fold/details commit into a focus transfer to the scroller.
+    if (!root || root.contains(globalThis.document?.activeElement)) return;
+    root.focus?.({ preventScroll: true });
   }, [active, focusOnMount]);
 
   // Every committed presentation produces one observation. Appends, streaming

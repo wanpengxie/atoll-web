@@ -169,15 +169,18 @@ it('请求 settle 之后反向输入仍然能取消同一个 admission operation
   expect(admission.snapshot(CHANNEL).phase).toBe('idle');
 });
 
-it('请求 settle 后用户 fold-choice 仍取消同一个 admission，再取得浏览权', async () => {
+it('presentation choice 不取消 admission，也不取得浏览权', async () => {
   const { admission, intent, port } = await mountReadingSession();
   driveToAwaitingLayout(admission, intent);
-  const before = port().getSession().inputEpoch;
+  const before = port().getSession();
 
-  act(() => port().takeContentControl({ source: 'user', reason: 'fold-choice' }));
+  let accepted;
+  act(() => { accepted = port().takeFocusedContentControl({ source: 'user', reason: 'fold-choice' }); });
 
-  expect(port().getSession()).toMatchObject({ mode: 'browsing', inputEpoch: before + 1 });
-  expect(admission.snapshot(CHANNEL).phase).toBe('idle');
+  expect(accepted).toBe(false);
+  expect(port().getSession()).toBe(before);
+  expect(admission.snapshot(CHANNEL).phase).toBe('committed-awaiting-layout');
+  expect(admission.bindPresentation(CHANNEL, 12).inputEpoch).toBe(before.inputEpoch);
 });
 
 it('纯内容布局回调没有阅读意图权威，不取消 operation 也不新建浏览导航', async () => {
@@ -185,14 +188,14 @@ it('纯内容布局回调没有阅读意图权威，不取消 operation 也不�
   driveToAwaitingLayout(admission, intent);
   const before = port().getSession();
 
-  act(() => port().takeContentControl({ source: 'layout', reason: 'content-layout' }));
+  act(() => port().takeFocusedContentControl({ source: 'layout', reason: 'content-layout' }));
 
   expect(port().getSession()).toBe(before);
   expect(admission.snapshot(CHANNEL).phase).toBe('committed-awaiting-layout');
   expect(admission.bindPresentation(CHANNEL, 12).inputEpoch).toBe(before.inputEpoch);
 });
 
-it('切频道后新频道用户动作只取消自己的 operation，不取得退休频道句柄', async () => {
+it('切频道后新频道 focused edit 只取消自己的 operation，不取得退休频道句柄', async () => {
   const admission = createHistoryPresentationAdmission();
   const first = await mountReadingSession({ admission });
   driveToAwaitingLayout(admission, first.intent);
@@ -206,9 +209,9 @@ it('切频道后新频道用户动作只取消自己的 operation，不取得退
   driveToAwaitingLayout(admission, second.intent, { channel: 'c1', viewKey: 'c1:mine' });
   const before = second.port().getSession().inputEpoch;
 
-  act(() => second.port().takeContentControl({ source: 'user', reason: 'fold-choice' }));
+  act(() => second.port().takeFocusedContentControl({ source: 'user', reason: 'edit-message' }));
 
-  expect(second.port().getSession().inputEpoch).toBe(before + 1);
+  expect(second.port().getSession()).toMatchObject({ mode: 'browsing', inputEpoch: before + 1 });
   expect(admission.snapshot('c1').phase).toBe('idle');
   expect(admission.snapshot(CHANNEL).phase).toBe('committed-awaiting-layout');
 });

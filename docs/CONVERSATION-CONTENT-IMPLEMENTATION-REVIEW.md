@@ -106,7 +106,10 @@ Presentation row (id = request/message id)
 - collaborator child expansion；
 - narration expansion。
 
-row 回收不会删除 store 值；选择发生时会先令 ReadingSession 取得 content control，再同步写入 principal-scoped `viewSessions`。fold 是另一组稳定业务 key（request/response/message ID），`foldDefaults` 只在实体首次成为 tail 时采样；以后失去 latest 不会自动收起，显式 override 优先。这些都应保留。
+row 回收不会删除 store 值；选择只同步写入 principal-scoped `viewSessions`，不把内容布局
+伪装成 Reading navigation。fold 是另一组稳定业务 key（request/response/message ID），
+`foldDefaults` 只在实体首次成为 tail 时采样；以后失去 latest 不会自动收起，显式 override
+优先。这些都应保留。
 
 缺口是：[view-session.js](../src/model/view-session.js#L140-L175) 对 reading 有 activation/revision 条件写，对 conversation preferences/Choices 只有同步 localStorage whole-object write。当前启动没有异步“晚恢复”竞态，所以不能声称已经发生晚恢复覆盖；但跨 tab/并发旧写仍可能最后写赢，且默认 choice 未显式落成带 revision 的记录。补齐 W4 时应给每个 choice record `choiceRevision` 与 touched/source，而不是给整个 preferences map 另做无条件 merge。
 
@@ -221,7 +224,9 @@ ContentPlan {
 - 真实历史 head prepend 时，`firstItemIndex` 与 data 同批变化；message 内新增 unit 不伪装成历史 prepend，不改 `firstItemIndex`；
 - 初次恢复时，先在 immutable plan/snapshot 中解析 bookmark 到 unit index，再一次性交给 `initialTopMostItemIndex`；挂载后不做语义反向 scroll；
 - intrinsic DOM/ResizeObserver 由 Virtuoso 测量，Content 不读写祖先 `scrollTop`、不缓存 item height；
-- fold/Mermaid/详情等用户动作沿现有 `takeContentControl` 先切 browsing，再改变 DOM；following 时的唯一回底 issuer不新增分支；
+- fold/Mermaid/详情等 Presentation choice 保持当前 Reading mode，并在同一个 adapter/row
+  内改变 DOM；真实滚动、selection 位移和 focused edit 仍沿统一输入合同取得 browsing，
+  following 时的唯一回底 issuer 不新增分支；
 - 不嵌套第二个 virtualizer，不建 spacer/尺寸树，不用隐藏副本、`scrollBy`、anchor diff 或 RAF retry。
 
 需要明确：这套接入能把 stable unit 交给组件，不能保证 Virtuoso 4.18.13 已知的 prepend paint/range 问题自动消失。W3 白帧、below-anchor resize 与 fold clamp 仍是独立验收门。

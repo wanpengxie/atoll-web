@@ -77,7 +77,7 @@ const roster = [
 ];
 
 describe('Timeline render authority', () => {
-  it('keeps a committed layout callback on its committed reading controller while another channel suspends', async () => {
+  it('keeps a committed presentation choice on its committed channel without taking reading control', async () => {
     const stateA = processingState('c0');
     const stateB = createChannelState('c1');
     const store = createViewSessionStore({ principalID: 'render-authority' });
@@ -116,6 +116,8 @@ describe('Timeline render authority', () => {
 
     render(<Harness />);
     const committedToggle = await screen.findByRole('button', { name: /展开过程详情/ });
+    const committedScroller = committedToggle.closest('[data-reading-container="following-tail"]');
+    expect(committedScroller).not.toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'start candidate' }));
     await waitFor(() => expect(candidateRendered).toBe(true));
@@ -123,9 +125,12 @@ describe('Timeline render authority', () => {
     expect(committedToggle.isConnected).toBe(true);
 
     fireEvent.click(committedToggle);
-    await waitFor(() => expect(save).toHaveBeenCalled());
-    expect(save.mock.calls.some(([channelID]) => channelID === 'c0')).toBe(true);
-    expect(save.mock.calls.some(([channelID]) => channelID === 'c1')).toBe(false);
+    await waitFor(() => expect(writeConversation).toHaveBeenCalled());
+    expect(committedScroller.isConnected).toBe(true);
+    expect(committedToggle.closest('[data-reading-container="following-tail"]')).toBe(committedScroller);
+    expect(document.querySelector('.timeline')?.dataset.viewportMode).toBe('following');
+    expect(save).not.toHaveBeenCalled();
+    expect(writeConversation.mock.calls.some(([channelID]) => channelID === 'c0')).toBe(true);
     expect(writeConversation.mock.calls.some(([channelID]) => channelID === 'c1')).toBe(false);
   });
 });

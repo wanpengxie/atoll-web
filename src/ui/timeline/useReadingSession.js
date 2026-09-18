@@ -1750,11 +1750,13 @@ export function useReadingSession({
         });
       }
     },
-    takeContentControl(command = {}) {
-      // Only a semantic user choice may take browsing control before it
-      // changes content geometry. Resize/measurement/layout callbacks report
-      // observations to the list; they have no authority to mint navigation.
-      if (command?.source !== 'user' || !command?.reason) return false;
+    takeFocusedContentControl(command = {}) {
+      // Presentation choices (fold/progress/thread/details) preserve the
+      // existing reading mode. This imperative entry is deliberately narrow:
+      // only a focused interaction which must not be displaced by live tail
+      // growth may mint browsing ownership. Native displacement continues to
+      // use onUserControl and the shared input contract.
+      if (command?.source !== 'user' || command?.reason !== 'edit-message') return false;
       const reason = String(command.reason);
       const active = runwayRequestRef.current;
       active?.abortController?.abort(reason);

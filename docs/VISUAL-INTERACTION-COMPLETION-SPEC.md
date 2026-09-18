@@ -133,7 +133,9 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 ### 键盘、触摸与可达性
 
 - Timeline 自身可聚焦；方向键、PageUp/PageDown、Home/End 与滚轮、触摸共享同一套 browsing/following 语义。
-- 普通消息按钮不应被误判为滚动；会改变 row 高度的展开/收起控件是明确的阅读动作，必须在高度变化前退出 following。
+- 普通消息按钮不应被误判为滚动。展开/收起、过程列表和 inline details 只改变
+  Presentation choice，保持动作前的 following/browsing；只有真实滚动、selection 位移、
+  focused edit 等拥有阅读位置的动作取得 browsing。
 - 触摸目标至少 44px；hover 才出现的关键动作在无 hover 设备上必须常显。
 - 虚拟列表本身不作为 live region，避免滚动回收 DOM 时把旧消息重新朗读；状态使用独立的 `role=status/alert`。
 
@@ -142,6 +144,7 @@ wheel、touch、pointer drag、PageUp/Home 等向上阅读动作立即进入 bro
 | 当前模式 | 事件 | 屏幕行为 | 模式结果 |
 |---|---|---|---|
 | following | live append | 尾部自然跟随 | following |
+| following | row resize / 展开收起 | 同一 Following DOM 从尾侧自然布局；不伪造导航 | following |
 | following | 用户向上输入 | 立即停止程序跟随 | browsing |
 | browsing | live append | 屏幕不动，累计“新动态” | browsing |
 | browsing | row resize / 展开收起 | Adapter 统一测量并保住当前阅读锚点 | browsing |

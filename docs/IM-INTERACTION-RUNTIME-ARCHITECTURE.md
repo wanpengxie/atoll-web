@@ -127,7 +127,9 @@ request thread 同样服从单调性：一个子 request 已在父级未知时�
 - 稳定源文本决定默认折叠，不在挂载后测量再改策略；
 - 所有真实尺寸统一由虚拟列表重测；
 - 不另存行高、不写祖先 CSS 高度变量、不做尺寸动画；
-- 用户展开/收起先退出 following，之后不执行自定义反向修正。
+- 用户展开/收起只提交 Presentation choice，保持当前 reading mode；following 继续稳定
+  tail，browsing 由列表原生测量同一 row。只有真实用户位移或 focused edit 取得 browsing，
+  且任何模式都不执行自定义反向修正。
 - 远程图片和 Mermaid 首帧即获得稳定 frame，异步解码/绘图只替换 frame 内部内容。
 - Composer 与等待队列保持现有产品形态；消息区重构不得顺带改变它们的视觉、默认状态和操作入口。
 

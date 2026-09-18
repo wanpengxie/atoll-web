@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
@@ -838,14 +838,10 @@ function dayLabel(ts) {
 export function Timeline({ state, history = {}, composer = null, viewSessions, roster, waitingRosterAuthority = null, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = EMPTY_CONTROL_STATES, capabilityIndex = EMPTY_CAPABILITY_INDEX, access = '', surfaceVisible = false, onTailCaughtUp, onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
   const initialViewSessionRef = useRef(null);
   if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
-  const readingControlRef = useRef(null);
   const messageLayoutStoreRef = useRef(null);
   if (!messageLayoutStoreRef.current) messageLayoutStoreRef.current = createMessageLayoutStore(
     initialViewSessionRef.current.layoutChoices,
-    (layoutChoices) => {
-      readingControlRef.current?.({ source: 'user', reason: 'layout-choice' });
-      viewSessions?.writeConversation(state.channelId, { layoutChoices });
-    },
+    (layoutChoices) => viewSessions?.writeConversation(state.channelId, { layoutChoices }),
   );
   const presentationRef = useRef(null);
   if (!presentationRef.current) presentationRef.current = createConversationPresentation();
@@ -1148,19 +1144,9 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     }
   }, [projection.presentation, roleCandidate, rolePresentation]);
 	const withNarration = rolePresentation.rows;
-  // This port is consumed by layout stores mounted below Timeline. Publish it
-  // in the commit's insertion phase: discarded renders never reach it, while
-  // a newly committed child's layout effect cannot still control the previous
-  // channel. On unmount the last committed controller remains available to
-  // the passive cleanup/late async release path; no DOM consumer survives it.
-  useInsertionEffect(() => {
-    readingControlRef.current = viewport.takeContentControl;
-  }, [viewport.takeContentControl]);
-  // 内容控制权用上面那个 insertion 阶段发布的端口：useReadingSession 的返回对象
-  // 因为每帧新建 history 而每帧换身份，把它当依赖会让这个回调也每帧换身份，行就
-  // 再也保不住了。端口里永远是最后一次提交的那个控制权。
+  // 展开/收起只提交 Presentation choice。它不表示读者离开尾部，也不创建
+  // navigation epoch；following 与 browsing 都继续使用动作前的容器。
   const toggleFold = useCallback((id, expanded) => {
-    readingControlRef.current?.({ source: 'user', reason: 'fold-choice' });
     setFoldOverrides((current) => new Map(current).set(id, expanded));
   }, []);
   const timelineControl = useMemo(() => {
@@ -1464,20 +1450,14 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     abandonEdit() { return rowActionsRef.current?.abandonEditing?.(); },
     editText(text) { setEditing((current) => current && ({ ...current, text, error: '' })); },
     openTurnDetails(turn, detailsOpen) {
-      readingControlRef.current?.({
-        source: 'user',
-        reason: detailsOpen ? 'close-turn-details' : 'open-turn-details',
-      });
       if (detailsOpen) rowActionsRef.current?.closeTurnDetail?.();
       else {
-        // Expanding is a local reading action, not a new ledger entry. Stop the
-        // bottom pin before the panel changes height so the clicked message does
-        // not jump out of the viewport and appear attached to another turn.
+        // Details are a local presentation choice, not a reading-position
+        // command. Native displacement remains the sole browsing takeover.
         rowActionsRef.current?.onOpenTurn?.(turn);
       }
     },
     closeTurnDetails() {
-      readingControlRef.current?.({ source: 'user', reason: 'close-turn-details' });
       rowActionsRef.current?.closeTurnDetail?.();
     },
   }), []);
@@ -1648,7 +1628,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     setEditNotice('');
     const location = taskControlContext(turn, { selfId, access, targetAuthority: waitingRosterAuthority }).location;
     if (location === 'processing') {
-      viewport.takeContentControl({ source: 'user', reason: 'edit-message' });
+      viewport.takeFocusedContentControl({ source: 'user', reason: 'edit-message' });
     }
     const sessionId = ++editSessionSerialRef.current;
     const draft = { sessionId, channelId: state.channelId, targetId: turn.requestId, actorId, holdId: '', location, oldText: editableText(turn), text: editableText(turn), attachments: argsOf(turn.request).attachments || [], phase: 'requesting_lock', error: '' };

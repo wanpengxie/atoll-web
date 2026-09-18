@@ -103,3 +103,38 @@ it('drops a queued following observation after the adapter becomes outgoing', ()
   act(() => frames.forEach((callback) => callback()));
   expect(reading.onReadingObservation).not.toHaveBeenCalled();
 });
+
+it('preserves descendant focus when a presentation rerender requests following focus', () => {
+  const reading = readingPort();
+  const props = {
+    snapshot: snapshot(1),
+    reading,
+    rowRevision: (index) => String(index),
+    renderRow: (row) => <button type="button">{row.id}</button>,
+    surfaceVisible: true,
+    active: true,
+  };
+  const view = render(<FollowingTailList {...props} focusOnMount={false} />);
+  const button = view.getByRole('button');
+  button.focus();
+  expect(document.activeElement).toBe(button);
+
+  view.rerender(<FollowingTailList {...props} focusOnMount />);
+
+  expect(document.activeElement).toBe(button);
+});
+
+it('focuses following when a real handoff requests focus from outside the adapter', () => {
+  const reading = readingPort();
+  const { container } = render(<FollowingTailList
+    snapshot={snapshot(1)}
+    reading={reading}
+    rowRevision={(index) => String(index)}
+    renderRow={(row) => <button type="button">{row.id}</button>}
+    surfaceVisible
+    active
+    focusOnMount
+  />);
+
+  expect(document.activeElement).toBe(container.querySelector('.timeline-following-tail'));
+});

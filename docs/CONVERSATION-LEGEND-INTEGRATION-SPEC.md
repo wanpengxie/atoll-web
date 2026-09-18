@@ -171,8 +171,9 @@ pending 内”的次序。该次序及 fold 门通过前仍不授权生产迁移
   观察，并在当前 session 允许时提示唯一 bottom issuer 重评估。
 - 锚点下方增长不得引起 browsing 补偿；锚点上方增长由 Legend 的 size MVCP 处理。
 - 不加应用 ResizeObserver 尺寸树、人工高度缓存或外部 scroll 修正。
-- 现有 `FoldableBody` 点击必须先取得 foreground content control。展开是明确授权的
-  局部布局事件，不要求整行行首或按钮二者机械地保持原坐标。定向 spike 必须在点击前
+- 现有 `FoldableBody` 点击只改变 Presentation choice，不取得 foreground navigation；
+  following 保持 tail，browsing 保持原 adapter。展开是明确授权的局部布局事件，不要求
+  整行行首或按钮二者机械地保持原坐标。定向 spike 必须在点击前
   标记折叠预览末端的最后可见正文和第一个被隐藏的正文，展开后验证二者构成连续的
   续读位置、按钮仍有焦点且全文可沿正常阅读方向到达。
 - 3.3.11 的 `shouldRestorePosition(item,index,data)` 在公开

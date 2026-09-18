@@ -13,7 +13,7 @@
 
 | 项目 | 已证事实 | 当前动作 |
 |---|---|---|
-| 吸底时点击状态闪屏 | layout-choice/fold/details/edit 切 browsing，但只有 native scroll 为旧容器交接设 armed；点击直接卸掉 following，冷挂列表产生实际坏画面 | history transition owner 修统一交接生命周期；独立 review 已定位，不逐按钮补丁 |
+| 吸底时点击状态闪屏 | layout-choice/fold/details 被错误归类为 Reading navigation，导致 following 被冷 browsing 容器替换；多种 live-sibling bridge 均被 actual paint 否决 | Presentation choice 统一保持原 mode/adapter；native input 与 focused edit 才取得 browsing，不逐按钮补 transition |
 | 浏览态 progress 与展开交错闪屏 | 正式测量撤走 normal-flow 行导致高度塌陷、native clamp；与吸底交接是两条链 | 单树原位测量候选冻结，性能 owner 独立审核，尚未合入 |
 | 进入后上滑反跳 | 旧恢复动作在后续用户 input epoch 后提前完成 | 旧候选拒绝：全局 1px 门、输入单位遗漏、settled 永久等待；owner 修订，独立审核并行 |
 | 冷频道完整弱网链 | 深缓存缺陷已提交；断线不 abort probe、sync 错误反馈及 IDB 阻塞远端启动另有候选 | 独立候选验证、待审；不能把缓存修复称为整个冷频道关闭 |
