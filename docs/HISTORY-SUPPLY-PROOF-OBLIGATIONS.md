@@ -39,3 +39,16 @@
 ## 当前尚未证明
 
 完整消费义务分散在UI effect、Reading Promise、Feed循环、Scheduler operation和Presentation admission；目前没有完成所有退出路径的归纳检查。EOF去重候选仍在隔离中，不能因两个反例通过而认为上述合同已成立。接下来以转移表逐路径核实保留、移交、关闭，必要时重划所有权并删除重复完成权威。
+
+## 逐转移实审结果：当前实现不成立
+
+本轮root核对源码与独立转移表，不能签整体正确：
+
+- Reading远端EOF记忆不绑定实际供给生命周期；K0结束后K1新buffer仍被永久拒绝。仅在settle时读取当前K1写证书也错误，证书必须属于产生结果的attempt。
+- 新供给在旧attempt尚未结束时到达，上游已消耗wake，下游只合并到旧Promise；旧attempt结束时没有保证重新判当前需求。
+- Admission忙时只保留interactive，丢弃anticipatory；但真实短列表underfill恰使用anticipatory。优先级不等于欠账能否丢弃。
+- Following纯resize只报告阅读观测，没有重判供给；Legend有几何重判，但忽略onUnderfill返回值。仅为Following接typed receipt仍不足以覆盖两个生产renderer。
+- restore目标被保留只证明不丢身份，不证明同source新供给能唤醒该目标；必须独立守护目标推进。
+- Admission baseline/bound revision不匹配的部分出口只有false/return；仍需证明这些出口不可达，或在该owner内定义明确的重新评价、取消或失败转移。
+
+实现准入要求：同一消费义务协议覆盖Following、Legend、零行投影及显式target；供给、settlement、Admission解除及有效几何变化仅唤醒当前责任方重判，不无条件重派。filled、隐藏、撤权、activation替换都有确定退出。旧EOF/localEOF重复完成权威必须统一或删除。未满足这些条件不合候选，不用通过数量代替证明。
