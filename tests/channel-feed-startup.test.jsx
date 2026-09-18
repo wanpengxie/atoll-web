@@ -278,11 +278,11 @@ describe('channel feed startup lanes', () => {
     await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(2)).toBe(true));
     expect(hook.result.current.statesRef.current.get('c0')._liveArrivalRevision).toBe(0);
 
-    // Same principal on another device is still a real external arrival. Only
-    // the exact locally-recorded message id may inherit local ownership.
+    // Same principal on another device remains in the ledger but is still this
+    // person's own traffic, so it cannot become a personal attention notice.
     enqueueRequest('c0', 3, 'other-device', 'human:self:other-device');
     await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(3)).toBe(true));
-    expect(hook.result.current.statesRef.current.get('c0')._liveArrivalRevision).toBe(1);
+    expect(hook.result.current.statesRef.current.get('c0')._liveArrivalRevision).toBe(0);
 
     roster.recordSubmission('c1', 'late-own');
     enqueueRequest('c1', 1, 'other-before-own', 'human:c1:other', 'principal-other');
@@ -290,7 +290,9 @@ describe('channel feed startup lanes', () => {
     expect(roster.ownsSubmission('c1', 'late-own')).toBe(true);
     enqueueRequest('c1', 2, 'late-own', 'human:self:c1');
     await waitFor(() => expect(hook.result.current.statesRef.current.get('c1')?.rows.has(2)).toBe(true));
-    expect(hook.result.current.statesRef.current.get('c1')._liveArrivalRevision).toBe(1);
+    // Until self identity is established, no row can be proven personally
+    // related; neither the preceding stranger nor the local echo may notify.
+    expect(hook.result.current.statesRef.current.get('c1')._liveArrivalRevision).toBe(0);
     expect(roster.self('c1')).toBe('human:self:c1');
     expect(observeFeed).toHaveBeenCalledTimes(5);
     hook.unmount();

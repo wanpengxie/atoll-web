@@ -527,6 +527,7 @@ export function useReadingSession({
   }, [controller, needsInitialization]);
   const [latestRequiredRevision, setLatestRequiredRevision] = useState(0);
   const markReadPort = history.markRead || history.onReadLatest;
+  const markNotificationsReadPort = history.markNotificationsRead;
   // This object is a render candidate until the insertion effect publishes it.
   // Refs are shared by React's current/work-in-progress fibers, so assigning
   // them in render lets a suspended candidate rewrite the authority observed
@@ -541,8 +542,9 @@ export function useReadingSession({
     historyStatus,
     historyRequest: requestPort,
     markRead: markReadPort,
+    markNotificationsRead: markNotificationsReadPort,
     arrivals,
-  }), [arrivals, channelID, controller, historyStatus, markReadPort, requestPort, session, snapshot, viewKey]);
+  }), [arrivals, channelID, controller, historyStatus, markNotificationsReadPort, markReadPort, requestPort, session, snapshot, viewKey]);
   const committedOwnerRef = useRef(commitOwnerCandidate);
   const sessionRef = useRef(session);
   const snapshotRef = useRef(snapshot);
@@ -563,6 +565,7 @@ export function useReadingSession({
     generation: 0,
     visibleRows: Object.freeze([]),
     readPending: false,
+    notificationPending: false,
   });
   const [viewabilityState, setViewabilityState] = useState(() => ({
     controller,
@@ -1419,6 +1422,39 @@ export function useReadingSession({
     return out;
   }, [controller, surfaceVisible]);
 
+  const acknowledgeChannelNotifications = useCallback(() => {
+    const owner = committedOwnerRef.current;
+    const current = controller.getSnapshot().session;
+    const evidence = visibleTailEvidenceRef.current;
+    if (owner.controller !== controller
+      || evidence.owner !== owner
+      || evidence.controller !== controller
+      || evidence.activationID !== current.activationID
+      || evidence.atTail !== true
+      || evidence.surfaceVisible !== true
+      || current.mode !== READING_MODE.following
+      || document.visibilityState !== 'visible') return false;
+    const accepted = owner.markNotificationsRead?.(Object.freeze({
+      channelId: channelID,
+      viewKey,
+      activationID: current.activationID,
+      generation: Number(evidence.generation || 0),
+      atTail: true,
+      following: true,
+      surfaceVisible: true,
+    }), Object.freeze({
+      viewKey,
+      activationID: current.activationID,
+    }));
+    if (visibleTailEvidenceRef.current === evidence) {
+      visibleTailEvidenceRef.current = {
+        ...evidence,
+        notificationPending: accepted === false,
+      };
+    }
+    return accepted || false;
+  }, [channelID, controller, viewKey]);
+
   const markVisibleTailRead = useCallback(() => {
     const owner = committedOwnerRef.current;
     const current = controller.getSnapshot().session;
@@ -1530,6 +1566,7 @@ export function useReadingSession({
         generation: 0,
         visibleRows: Object.freeze([]),
         readPending: false,
+        notificationPending: false,
       };
     }
     if (controllerChanged) {
@@ -1548,6 +1585,7 @@ export function useReadingSession({
     controller,
     historyStatus,
     markReadPort,
+    markNotificationsReadPort,
     resolveArrivals,
     session,
     snapshot,
@@ -1563,12 +1601,13 @@ export function useReadingSession({
       acknowledgeInstalledTail();
       resolveArrivals();
       acknowledgeVisibleRows();
+      acknowledgeChannelNotifications();
       markVisibleTailRead();
       publishTailPresence();
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [acknowledgeInstalledTail, acknowledgeVisibleRows, markVisibleTailRead, publishTailPresence, resolveArrivals]);
+  }, [acknowledgeChannelNotifications, acknowledgeInstalledTail, acknowledgeVisibleRows, markVisibleTailRead, publishTailPresence, resolveArrivals]);
 
   // 提交后的兜底发布。观测/可见性事件已经各自发布过一次；这一条负责那些不经过
   // 事件的变化——surfaceVisible 入参翻转、insertion effect 因 owner 更替作废了
@@ -1585,6 +1624,21 @@ export function useReadingSession({
       } else if (visibleTailEvidenceRef.current === evidence) {
         visibleTailEvidenceRef.current = { ...evidence, readPending: false };
       }
+    }
+    if (evidence.notificationPending === true) {
+      if (evidence.owner === committedOwnerRef.current
+        && evidence.controller === controller
+        && evidence.activationID === controller.getSnapshot().session.activationID) {
+        acknowledgeChannelNotifications();
+      } else if (visibleTailEvidenceRef.current === evidence) {
+        visibleTailEvidenceRef.current = { ...evidence, notificationPending: false };
+      }
+    } else {
+      // Meta may advance before the corresponding body. A committed tail
+      // observation remains valid across that status-only render, so sample
+      // the new authoritative head even when the preceding delivery succeeded.
+      // The persisted boundary is monotone and makes this idempotent.
+      acknowledgeChannelNotifications();
     }
     publishTailPresence();
   });
@@ -1764,6 +1818,7 @@ export function useReadingSession({
         generation: Number(historyStatusRef.current.generation || 0),
         visibleRows: Object.freeze([...(observation.visibleRows || [])]),
         readPending: false,
+        notificationPending: false,
       };
       // Installed-tail acknowledgement runs before arrival resolution so a
       // candidate at or below the reached tail is never first published as
@@ -1771,6 +1826,7 @@ export function useReadingSession({
       acknowledgeInstalledTail();
       resolveArrivals();
       acknowledgeVisibleRows();
+      acknowledgeChannelNotifications();
       // 同一次观测既是回执证据，也是"用户此刻在不在最新端"的读数。
       publishTailPresence();
       // Durable channel read progress retains its physical-tail contract.
@@ -1809,6 +1865,7 @@ export function useReadingSession({
         generation: 0,
         visibleRows: Object.freeze([]),
         readPending: false,
+        notificationPending: false,
       };
       // Once the surface is hidden, the current committed projection is
       // definitive negative visibility evidence; do not leave its candidates

@@ -146,10 +146,13 @@ it('balances consumers without treating A→B→A replacement as visible-arrival
 
   view.unmount();
   expect(stateA._liveArrivalConsumers).toBe(0);
-  recordLiveTimelineArrival(stateA, {
+  const unrelatedBackground = {
     id: 'a-background', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other' },
     payload: { text: 'background message' },
-  }, 3, 'human:root:1');
-  expect(stateA._liveArrivalAckRevision).toBe(2);
+  };
+  apply(stateA, { channel_id: 'c0', seq: 3, envelope: unrelatedBackground });
+  expect(recordLiveTimelineArrival(stateA, unrelatedBackground, 3, 'human:root:1')).toBeNull();
+  expect(stateA._liveArrivalRevision).toBe(1);
+  expect(stateA._liveArrivalAckRevision).toBe(1);
   expect(stateA._liveArrivalLog).toHaveLength(0);
 });

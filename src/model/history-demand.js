@@ -64,6 +64,26 @@ export function physicalReadSeq({ channelId = '', status = {}, authority = {}, r
   return visibleHigh;
 }
 
+// Channel notifications are acknowledgement of an attention boundary, not a
+// claim that every message body through that boundary was physically read.
+// The authoritative high-water therefore comes from the attached Meta status,
+// never from a caller-supplied seq or from the currently installed rows. A
+// body may arrive after its Meta boundary without resurrecting the notice.
+export function notificationReadSeq({ channelId = '', status = {}, authority = {}, receipt = {} } = {}) {
+  if (!channelId || receipt.channelId !== channelId) return 0;
+  if (!authority.viewKey || !authority.activationID
+    || receipt.viewKey !== authority.viewKey
+    || receipt.activationID !== authority.activationID) return 0;
+  const generation = safePositive(status.generation);
+  if (!generation
+    || status.attached !== true
+    || safePositive(receipt.generation) !== generation) return 0;
+  if (receipt.atTail !== true
+    || receipt.following !== true
+    || receipt.surfaceVisible !== true) return 0;
+  return safePositive(status.headSeq);
+}
+
 const EMPTY_STATUS = Object.freeze({
   headSeq: 0,
   oldestSeq: 0,
@@ -90,7 +110,7 @@ const EMPTY_STATUS = Object.freeze({
 // This is the complete Visual -> Scheduler boundary for one channel. The
 // visual side describes why a range matters; the scheduler still owns source,
 // page size, concurrency, P0/P1/P2 and cancellation of physical batches.
-export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open, refreshLatest, markRead } = {}) {
+export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open, refreshLatest, markRead, markNotificationsRead } = {}) {
   const request = (demand = {}) => open?.({
     intent: demand.intent || HISTORY_INTENT.scrollHistory,
     urgency: demand.urgency || HISTORY_URGENCY.interactive,
@@ -112,6 +132,12 @@ export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open
       // Void observer/test ports accepted delivery. Production rejection is
       // explicit false; keeping that distinction lets ReadingSession retain
       // exactly one retry obligation without duplicating successful calls.
+      return accepted === undefined ? true : accepted;
+    },
+    markNotificationsRead: (receipt, authority) => {
+      const highWater = notificationReadSeq({ channelId, status: currentStatus, authority, receipt });
+      if (highWater <= 0 || typeof markNotificationsRead !== 'function') return false;
+      const accepted = markNotificationsRead(highWater);
       return accepted === undefined ? true : accepted;
     },
   });

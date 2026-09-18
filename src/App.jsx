@@ -21,7 +21,6 @@ import { safeChannelDeviceRows, safeDaemonRows } from './model/space-administrat
 import { buildWorkItemIndex, taskProviders } from './model/work-items.js';
 import { parseWorkspaceHash, writeWorkspaceRoute } from './model/workspace-route.js';
 import { messagePresentation } from './model/message-presentation.js';
-import { projectChannelUnread } from './model/notification-policy.js';
 import { isSystemWord, SYSTEM_ACTOR_ID, TYPES } from './protocol/vocab.js';
 import { newId } from './util/id.js';
 import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
@@ -181,27 +180,6 @@ export default function App() {
     derivedRef.current.set(key, { deps, value });
     return value;
   }
-  // Timeline 的只读上报：哪个频道此刻被用户看在最新端（跟随∧在底部∧可见），
-  // 以及那条视图覆盖的范围。这里只存这一条读数，恒不回写任何阅读状态。
-  const [tailCaughtUp, setTailCaughtUp] = useState(null);
-  const handleTailCaughtUp = useCallback((evidence) => {
-    const next = evidence?.caughtUp === true && evidence.channelId ? Object.freeze({
-      channelId: String(evidence.channelId),
-      caughtUp: true,
-      scope: String(evidence.scope || ''),
-      actorFiltered: evidence.actorFiltered === true,
-    }) : null;
-    setTailCaughtUp((current) => {
-      // 只有当前这条读数的主人能宣布在场结束：切频道时旧 Timeline 的收尾恒不
-      // 覆盖新频道刚报上来的在场。
-      if (!next) return current && current.channelId !== String(evidence?.channelId || '') ? current : null;
-      if (current
-        && current.channelId === next.channelId
-        && current.scope === next.scope
-        && current.actorFiltered === next.actorFiltered) return current;
-      return next;
-    });
-  }, []);
   const [spacePrincipals, setSpacePrincipals] = useState([]);
   const [spaceDeclarations, setSpaceDeclarations] = useState([]);
   const [spaceDaemons, setSpaceDaemons] = useState([]);
@@ -335,7 +313,7 @@ export default function App() {
   }, []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
   const forwardAgentActivity = useCallback((payload, context) => agentActivityRef.current.observe(payload, context), []);
-  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel, historyFor, loadHistory, markRead, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
+  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel, historyFor, loadHistory, markRead, acknowledgeNotifications, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setFilePreviewStack([]); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice, initialChannelId: initialRouteRef.current.channelId });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
@@ -1334,6 +1312,11 @@ export default function App() {
     [activeChannelId, markRead],
     () => (acknowledgement) => markRead(activeChannelId, acknowledgement),
   );
+  const acknowledgeActiveNotifications = derived(
+    'acknowledgeActiveNotifications',
+    [activeChannelId, acknowledgeNotifications],
+    () => (highWater) => acknowledgeNotifications(activeChannelId, highWater),
+  );
   const loadActiveOlder = derived(
     'loadActiveOlder',
     [activeChannelId, loadHistory],
@@ -1353,6 +1336,7 @@ export default function App() {
     open: loadActiveOlder,
     refreshLatest: refreshActiveLatest,
     markRead: readActiveLatest,
+    markNotificationsRead: acknowledgeActiveNotifications,
   });
   const activeRow = channelList.find((channel) => channel.id === activeChannelId);
   const activeRoster = isMemberAccess(activeRow?.access) ? rosters.get(activeChannelId) || [] : [];
@@ -1365,15 +1349,14 @@ export default function App() {
     rosterAuthority: activeRosterAuthority,
     roster: activeRoster,
   });
-  // ChannelReplica 按频道 revision/read cursor 缓存未读投影。频道栏仍遍历轻量
+  // ChannelReplica 按频道 revision/notification high-water 缓存未读投影。频道栏仍遍历轻量
   // channel 列表，但后台一条 live 不再让每个频道各自重扫整本账。
   //
-  // 徽标的读侧兜底（IM 模型）：Timeline 上报"活动频道此刻已追平"（跟随∧在底部∧
-  // 可见），该频道被这条视图覆盖的那一格计数在派生层压成 0，不等回执落地。真相
-  // 仍是 cursors 的回执，这里恒不写任何游标；别的频道一格不动。
-  const unread = derived('unread', [channelList, feedIndexVersion, rosters, tailCaughtUp], () => Object.fromEntries(channelList.map((channel) => {
+  // rail 恒只从持久 notification high-water 派生，不再用 viewport 状态临时压零；
+  // 因此切频道、刷新或迟到 hydration 都不能把已确认通知复活。
+  const unread = derived('unread', [channelList, feedIndexVersion, rosters], () => Object.fromEntries(channelList.map((channel) => {
     const loaded = unreadFor(channel.id, channel.selfActorId || rosterRef.current?.self(channel.id) || '');
-    return [channel.id, projectChannelUnread(loaded, channel.id, tailCaughtUp)];
+    return [channel.id, loaded];
   })));
   const activeChannel = activeRow || channels.get(activeChannelId);
   const activeAccess = activeRow?.access || CHANNEL_ACCESS.loading;
@@ -1720,7 +1703,7 @@ export default function App() {
   <AppShell
     session={{ me, wireState, update: nodeUpdate, onLogout: handleLogout }}
     navigation={{ channels: channelList, activeChannelId, unread, agentActivity, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
-    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, waitingRosterAuthority, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onTailCaughtUp: handleTailCaughtUp, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftFor(activeChannelId), onDraftChange: (value) => updateDraft(activeChannelId, value), draftRevision: drafts.get(activeChannelId)?.revision || 0, attachments: Object.prototype.hasOwnProperty.call(draftAttachments, activeChannelId) ? draftAttachments[activeChannelId] : (draftFor(activeChannelId).attachments || []), onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => mutateDraftAttachments(activeChannelId, (rows) => rows.filter((row) => row.resource_id !== resourceId)), onClearAttachments: () => clearDraftAttachments(activeChannelId), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), onOpen: (artifact) => { rememberFilePreview(artifact); openContext('artifact-focus', { type: 'artifact', key: artifact.key }); }, onPreview: showFilePreview }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, waitingRosterAuthority, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftFor(activeChannelId), onDraftChange: (value) => updateDraft(activeChannelId, value), draftRevision: drafts.get(activeChannelId)?.revision || 0, attachments: Object.prototype.hasOwnProperty.call(draftAttachments, activeChannelId) ? draftAttachments[activeChannelId] : (draftFor(activeChannelId).attachments || []), onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => mutateDraftAttachments(activeChannelId, (rows) => rows.filter((row) => row.resource_id !== resourceId)), onClearAttachments: () => clearDraftAttachments(activeChannelId), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), onOpen: (artifact) => { rememberFilePreview(artifact); openContext('artifact-focus', { type: 'artifact', key: artifact.key }); }, onPreview: showFilePreview }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     panel={{ value: rightPanel, open: openContext, host }}
   />

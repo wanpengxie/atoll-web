@@ -4,6 +4,7 @@ import {
   exactReadIdentities,
   HISTORY_INTENT,
   HISTORY_URGENCY,
+  notificationReadSeq,
   physicalReadSeq,
 } from '../src/model/history-demand.js';
 
@@ -104,6 +105,32 @@ describe('visual history demand port', () => {
     expect(decide({ ...valid, actorFilterCount: Number.NaN })).toBe(0);
     expect(decide({ ...valid, actorFilterCount: -1 })).toBe(0);
     expect(decide({ ...valid, following: false })).toBe(0);
+  });
+
+  it('derives a notification boundary from attached Meta without requiring message bodies current', () => {
+    const status = {
+      attached: true,
+      messageCurrent: false,
+      generation: 8,
+      headSeq: 57,
+      presentationRevision: 91,
+    };
+    const receipt = {
+      channelId: 'c0', viewKey: 'c0:mine:filtered', activationID: 'activation-8',
+      generation: 8, atTail: true, following: true, surfaceVisible: true,
+    };
+    const authority = { viewKey: receipt.viewKey, activationID: receipt.activationID };
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt })).toBe(57);
+
+    const markNotificationsRead = vi.fn(() => true);
+    const port = createHistoryDemandPort({ channelId: 'c0', status, markNotificationsRead });
+    expect(port.markNotificationsRead(receipt, authority)).toBe(true);
+    expect(markNotificationsRead).toHaveBeenCalledWith(57);
+
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, generation: 7 } })).toBe(0);
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, atTail: false } })).toBe(0);
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, following: false } })).toBe(0);
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, surfaceVisible: false } })).toBe(0);
   });
 
 });

@@ -8,6 +8,7 @@ const CURSOR_PREFIX = 'atoll.cursor.v3.';
 // v3 would turn an old, cache-relative number into a false unread boundary.
 const READ_PREFIX = 'atoll.read.v4.';
 const EXACT_READ_PREFIX = 'atoll.read-identities.v1.';
+const NOTIFICATION_PREFIX = 'atoll.notification-high-water.v1.';
 const READ_AUTHORITY_KEY = 'atoll.read-authority.v1';
 const READ_AUTHORITY_SCHEMA = 1;
 
@@ -64,6 +65,30 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
     else remove(key);
   }
 
+  function notificationState(channelId) {
+    if (!readAuthorityReady) return { highWater: 0, legacyAcknowledged: new Map() };
+    try {
+      const parsed = JSON.parse(get(`${NOTIFICATION_PREFIX}${channelId}`) || 'null');
+      if (!parsed || typeof parsed !== 'object') return { highWater: 0, legacyAcknowledged: new Map() };
+      return {
+        highWater: safeNumber(parsed.highWater),
+        legacyAcknowledged: new Map((Array.isArray(parsed.legacyAcknowledged)
+          ? parsed.legacyAcknowledged : []).filter((entry) => (
+          Array.isArray(entry) && entry[0] && safeNumber(entry[1]) > 0
+        )).map(([messageID, seq]) => [String(messageID), safeNumber(seq)])),
+      };
+    } catch {
+      return { highWater: 0, legacyAcknowledged: new Map() };
+    }
+  }
+
+  function writeNotificationState(channelId, state) {
+    set(`${NOTIFICATION_PREFIX}${channelId}`, JSON.stringify({
+      highWater: safeNumber(state.highWater),
+      legacyAcknowledged: [...(state.legacyAcknowledged || [])],
+    }));
+  }
+
   return {
     selectReadAuthority({ principalId = '', serverBoot = '' } = {}) {
       if (!requireReadAuthority) return Object.freeze({ ready: true, reused: true, changed: false });
@@ -86,7 +111,9 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
         && stored.serverBoot === target.serverBoot;
       if (!reused) {
         for (const key of keys()) {
-          if (key.startsWith(READ_PREFIX) || key.startsWith(EXACT_READ_PREFIX)) remove(key);
+          if (key.startsWith(READ_PREFIX)
+            || key.startsWith(EXACT_READ_PREFIX)
+            || key.startsWith(NOTIFICATION_PREFIX)) remove(key);
         }
         set(READ_AUTHORITY_KEY, JSON.stringify(target));
       }
@@ -173,6 +200,45 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
       writeExactReadMap(channelId, exact);
       return next;
     },
+    notificationHighWater(channelId) {
+      if (!readAuthorityReady) return 0;
+      return notificationState(channelId).highWater;
+    },
+    baselineNotifications(channelId, seq) {
+      if (!readAuthorityReady || !channelId) return 0;
+      const key = `${NOTIFICATION_PREFIX}${channelId}`;
+      if (get(key) == null) {
+        const head = safeNumber(seq);
+        const highWater = Math.min(head, this.read(channelId));
+        // One-time, immutable migration bridge: preserve only the exact rows
+        // that the old model had already confirmed, while leaving every gap as
+        // a real notification. New exact receipts never enter this snapshot.
+        // The first real tail acknowledgement advances highWater and retires
+        // covered bridge entries, after which the boundary is the sole fact.
+        const legacyAcknowledged = exactReadMap(channelId);
+        for (const [messageID, rowSeq] of legacyAcknowledged) {
+          if (rowSeq <= highWater || rowSeq > head) legacyAcknowledged.delete(messageID);
+        }
+        writeNotificationState(channelId, { highWater, legacyAcknowledged });
+      }
+      return this.notificationHighWater(channelId);
+    },
+    notificationLegacyAcknowledged(channelId) {
+      return new Map(notificationState(channelId).legacyAcknowledged);
+    },
+    acknowledgeNotifications(channelId, seq) {
+      if (!readAuthorityReady || !channelId) return 0;
+      const current = notificationState(channelId);
+      const next = Math.max(current.highWater, safeNumber(seq));
+      for (const [messageID, rowSeq] of current.legacyAcknowledged) {
+        if (rowSeq <= next) current.legacyAcknowledged.delete(messageID);
+      }
+      writeNotificationState(channelId, {
+        highWater: next,
+        legacyAcknowledged: current.legacyAcknowledged,
+      });
+      return next;
+    },
     acknowledgeReadIdentities(channelId, identities = []) {
       if (!readAuthorityReady) return false;
       const exact = exactReadMap(channelId);
@@ -194,6 +260,10 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
     },
     resetReads() {
       for (const key of keys()) {
+        // Notification acknowledgement belongs to the selected principal/boot
+        // authority, not to the disposable Replica/cache. Authority selection
+        // clears it on a genuine world change; a same-world force reset must
+        // not resurrect badges the user already dismissed at the tail.
         if (key.startsWith(READ_PREFIX) || key.startsWith(EXACT_READ_PREFIX)) remove(key);
       }
     },

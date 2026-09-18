@@ -137,6 +137,7 @@ function sanitizeRailDiagnostic(value) {
       channelId: String(channel?.channelId || '').slice(0, 256),
       authorityReady: channel?.authorityReady === true,
       readSeq: Math.max(0, Number(channel?.readSeq || 0)),
+      notificationHighWater: Math.max(0, Number(channel?.notificationHighWater || 0)),
       counts: {
         related: Math.max(0, Number(channel?.counts?.related || 0)),
         total: Math.max(0, Number(channel?.counts?.total || 0)),

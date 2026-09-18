@@ -41,7 +41,7 @@ describe('channel cursors', () => {
     expect(state._liveArrivalLog).toHaveLength(1);
 
     const orphanState = createChannelState('c0');
-    const orphan = { id: 'terminal-first', kind: 'response', parent_id: 'late-root', correlation_id: 'late-root', sender: { id: 'agent' }, payload: { status: 'completed', text: 'answer before request' } };
+    const orphan = { id: 'terminal-first', kind: 'response', parent_id: 'late-root', correlation_id: 'late-root', sender: { id: 'agent' }, audience: ['me'], payload: { status: 'completed', text: 'answer before request' } };
     apply(orphanState, { channel_id: 'c0', seq: 9, envelope: orphan }, 'me');
     expect(recordLiveTimelineArrival(orphanState, orphan, 9, 'me')).toMatchObject({
       key: 'late-root', rowID: 'terminal-first', seq: 9,
@@ -49,7 +49,7 @@ describe('channel cursors', () => {
     release();
   });
 
-  it('creates a viewport arrival only when queued work produces terminal user content', () => {
+  it('keeps unrelated queued work and its terminal out of personal viewport notices', () => {
     const state = createChannelState('c0');
     registerLiveTimelineArrivalConsumer(state);
     const agent = { id: 'agent:worker:1', kind: 'agent' };
@@ -68,8 +68,10 @@ describe('channel cursors', () => {
     expect(recordLiveTimelineArrival(state, progress, 4, 'human:root:1')).toBeNull();
     const terminal = { ...processing, id: 'terminal', payload: { status: 'completed', text: 'done' } };
     apply(state, { channel_id: 'c0', seq: 5, envelope: terminal }, 'human:root:1');
-    expect(recordLiveTimelineArrival(state, terminal, 5, 'human:root:1'))
-      .toMatchObject({ key: 'work', rowID: 'work', seq: 5 });
+    expect(recordLiveTimelineArrival(state, terminal, 5, 'human:root:1')).toBeNull();
+    expect(unreadCounts(state, 0, 'human:root:1')).toEqual({ related: 0, total: 1 });
+    expect(state.turns.get('work')?.terminal?.id).toBe('terminal');
+    expect(liveTimelineArrivals(state).events).toHaveLength(0);
   });
 
   it('creates viewport arrivals only for independently readable public events', () => {
@@ -139,14 +141,17 @@ describe('channel cursors', () => {
     const state = createChannelState('c0');
     const release = registerLiveTimelineArrivalConsumer(state);
     for (let index = 1; index <= 1_100; index += 1) {
-      recordLiveTimelineArrival(state, {
+      const envelope = {
         id: `live-${index}`,
         kind: 'event',
         type: 'human.note',
         visibility: 'public',
         sender: { id: 'other' },
+        audience: ['me'],
         payload: { text: `message ${index}` },
-      }, index, 'me');
+      };
+      apply(state, { channel_id: 'c0', seq: index, envelope }, 'me');
+      recordLiveTimelineArrival(state, envelope, index, 'me');
     }
     const pending = liveTimelineArrivals(state);
     expect(pending.revision).toBe(1_100);
@@ -164,14 +169,21 @@ describe('channel cursors', () => {
     const state = createChannelState('c0');
     const release = registerLiveTimelineArrivalConsumer(state);
     for (let revision = 1; revision <= 1_100; revision += 1) {
-      recordLiveTimelineArrival(state, {
+      const envelope = {
         id: `terminal-${revision}`,
         kind: 'response',
         parent_id: 'stable-root',
         correlation_id: 'stable-root',
         sender: { id: 'agent' },
+        audience: ['me'],
         payload: { status: 'completed', text: `answer ${revision}` },
-      }, revision, 'me');
+      };
+      // This is an arrival-journal overflow fixture: retain accepted rows with
+      // one stable presentation identity without asking the turn fold to
+      // accept 1,100 conflicting terminal states for a single lifecycle.
+      state.rows.set(revision, envelope);
+      state._rowOrder.push(revision);
+      recordLiveTimelineArrival(state, envelope, revision, 'me');
     }
     expect(state._liveArrivalLog).toHaveLength(1_024);
     expect(state._liveArrivalOverflow.size).toBe(1);
@@ -184,10 +196,12 @@ describe('channel cursors', () => {
     acknowledgeLiveTimelineArrivals(state, 1_100);
     expect(liveTimelineArrivals(state).events).toHaveLength(0);
 
-    recordLiveTimelineArrival(state, {
+    const uniqueTail = {
       id: 'unique-tail', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'other' }, payload: { text: 'unique tail' },
-    }, 1_101, 'me');
+      sender: { id: 'other' }, audience: ['me'], payload: { text: 'unique tail' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1_101, envelope: uniqueTail }, 'me');
+    recordLiveTimelineArrival(state, uniqueTail, 1_101, 'me');
     expect(liveTimelineArrivals(state)).toMatchObject({
       revision: 1_101,
       events: [{ revision: 1_101, key: 'unique-tail', rowID: 'unique-tail' }],
@@ -201,11 +215,14 @@ describe('channel cursors', () => {
   it('does not retain viewport arrivals while no Timeline consumer is mounted', () => {
     const state = createChannelState('c0');
     for (let revision = 1; revision <= 2_000; revision += 1) {
-      recordLiveTimelineArrival(state, {
+      const envelope = {
         id: `background-${revision}`,
         kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other' },
+        audience: ['me'],
         payload: { text: `background ${revision}` },
-      }, revision, 'me');
+      };
+      apply(state, { channel_id: 'c0', seq: revision, envelope }, 'me');
+      recordLiveTimelineArrival(state, envelope, revision, 'me');
     }
     expect(state._liveArrivalRevision).toBe(2_000);
     expect(state._liveArrivalLog).toHaveLength(0);
@@ -219,10 +236,12 @@ describe('channel cursors', () => {
     const releaseDuplicate = registerLiveTimelineArrivalConsumer(state, consumer);
     expect(state._liveArrivalConsumers).toBe(1);
 
-    recordLiveTimelineArrival(state, {
+    const whileMounted = {
       id: 'while-mounted', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'other' }, payload: { text: 'while mounted' },
-    }, 1, 'me');
+      sender: { id: 'other' }, audience: ['me'], payload: { text: 'while mounted' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: whileMounted }, 'me');
+    recordLiveTimelineArrival(state, whileMounted, 1, 'me');
     expect(liveTimelineArrivals(state).events).toHaveLength(1);
 
     releaseDuplicate();
@@ -238,15 +257,19 @@ describe('channel cursors', () => {
   it('does not let a later background arrival acknowledge an undisposed viewport handoff', () => {
     const state = createChannelState('c0');
     const release = registerLiveTimelineArrivalConsumer(state, Symbol('timeline'));
-    recordLiveTimelineArrival(state, {
+    const pendingHandoff = {
       id: 'pending-handoff', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'other' }, payload: { text: 'pending handoff' },
-    }, 1, 'me');
+      sender: { id: 'other' }, audience: ['me'], payload: { text: 'pending handoff' },
+    };
+    apply(state, { channel_id: 'c0', seq: 1, envelope: pendingHandoff }, 'me');
+    recordLiveTimelineArrival(state, pendingHandoff, 1, 'me');
     release();
-    recordLiveTimelineArrival(state, {
+    const backgroundAfterSwitch = {
       id: 'background-after-switch', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'other' }, payload: { text: 'background after switch' },
-    }, 2, 'me');
+      sender: { id: 'other' }, audience: ['me'], payload: { text: 'background after switch' },
+    };
+    apply(state, { channel_id: 'c0', seq: 2, envelope: backgroundAfterSwitch }, 'me');
+    recordLiveTimelineArrival(state, backgroundAfterSwitch, 2, 'me');
     expect(liveTimelineArrivals(state)).toMatchObject({
       acknowledgedRevision: 0,
       events: [
@@ -262,6 +285,66 @@ describe('channel cursors', () => {
     expect(cursors.advance('c0', 3)).toBe(8);
     cursors.advance('lobby', 2);
     expect(cursors.snapshot()).toEqual({ c0: 8, lobby: 2 });
+  });
+
+  it('persists a monotone notification high-water and starts a new schema epoch at attach head', () => {
+    const storage = new MemoryStorage();
+    const cursors = createCursors(storage, { requireReadAuthority: true });
+    cursors.selectReadAuthority({ principalId: 'p1', serverBoot: 'boot-a' });
+    cursors.baselineRead('c0', 40);
+    expect(cursors.baselineNotifications('c0', 40)).toBe(40);
+    expect(cursors.acknowledgeNotifications('c0', 57)).toBe(57);
+    // Same-world stale Meta cannot move the acknowledged boundary backwards.
+    expect(cursors.baselineNotifications('c0', 25)).toBe(57);
+
+    const restored = createCursors(storage, { requireReadAuthority: true });
+    restored.selectReadAuthority({ principalId: 'p1', serverBoot: 'boot-a' });
+    expect(restored.notificationHighWater('c0')).toBe(57);
+    expect(restored.baselineNotifications('c0', 80)).toBe(57);
+    restored.resetReads();
+    expect(restored.notificationHighWater('c0')).toBe(57);
+
+    // A different ledger world gets its own explicit first-attach baseline.
+    restored.selectReadAuthority({ principalId: 'p1', serverBoot: 'boot-b' });
+    restored.baselineRead('c0', 12);
+    expect(restored.baselineNotifications('c0', 12)).toBe(12);
+  });
+
+  it('migrates sparse exact acknowledgements without clearing unvisited notification gaps', () => {
+    const storage = new MemoryStorage();
+    const cursors = createCursors(storage, { requireReadAuthority: true });
+    cursors.selectReadAuthority({ principalId: 'p1', serverBoot: 'boot-a' });
+    cursors.baselineRead('c0', 25);
+    cursors.acknowledgeReadIdentities('c0', [
+      { messageID: 'related-27', seqHigh: 27 },
+      { messageID: 'related-29', seqHigh: 29 },
+    ]);
+    cursors.baselineRead('c0', 30);
+    expect(cursors.baselineNotifications('c0', 30)).toBe(25);
+    expect([...cursors.notificationLegacyAcknowledged('c0')]).toEqual([
+      ['related-27', 27],
+      ['related-29', 29],
+    ]);
+
+    const state = createChannelState('c0');
+    for (let seq = 26; seq <= 30; seq += 1) {
+      apply(state, { channel_id: 'c0', seq, envelope: {
+        id: `related-${seq}`, kind: 'request', type: 'human.note',
+        sender: { id: 'agent' }, audience: ['me'], payload: { text: String(seq) },
+      } }, 'me');
+    }
+    expect(unreadCounts(state, cursors.notificationHighWater('c0'), 'me', {
+      acknowledged: cursors.notificationLegacyAcknowledged('c0'),
+    })).toEqual({ related: 3, total: 3 });
+
+    cursors.acknowledgeNotifications('c0', 30);
+    expect(cursors.notificationLegacyAcknowledged('c0').size).toBe(0);
+    expect(unreadCounts(state, cursors.notificationHighWater('c0'), 'me')).toEqual({ related: 0, total: 0 });
+    apply(state, { channel_id: 'c0', seq: 31, envelope: {
+      id: 'related-31', kind: 'request', type: 'human.note',
+      sender: { id: 'agent' }, audience: ['me'], payload: { text: 'future' },
+    } }, 'me');
+    expect(unreadCounts(state, cursors.notificationHighWater('c0'), 'me')).toEqual({ related: 1, total: 1 });
   });
 
   it('tracks read cursors separately and counts non-system, non-self messages', () => {
@@ -474,7 +557,7 @@ describe('channel cursors', () => {
     expect(recordLiveTimelineArrival(state, processing, 2, 'human:root:1')).toBeNull();
   });
 
-  it('does not resurrect an earlier human incarnation in rail but preserves another-session live arrival', () => {
+  it('treats an earlier incarnation as this human for rail and viewport notices', () => {
     const state = createChannelState('c0');
     const historicalSelfRequest = {
       id: 'mine-before-restart', kind: 'request', type: 'human.note', visibility: 'public',
@@ -484,8 +567,7 @@ describe('channel cursors', () => {
     apply(state, { channel_id: 'c0', seq: 1, envelope: historicalSelfRequest }, 'human:root:1900000000000');
 
     expect(unreadCounts(state, 0, 'human:root:1900000000000')).toEqual({ related: 0, total: 0 });
-    expect(recordLiveTimelineArrival(state, historicalSelfRequest, 1, 'human:root:1900000000000'))
-      .toMatchObject({ key: 'mine-before-restart', rowID: 'mine-before-restart', seq: 1 });
+    expect(recordLiveTimelineArrival(state, historicalSelfRequest, 1, 'human:root:1900000000000')).toBeNull();
   });
 
   it('does not notify for a terminal that leaves no canonical conversation row', () => {

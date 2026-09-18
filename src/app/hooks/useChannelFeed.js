@@ -95,30 +95,42 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     if (!cursorsRef.current.isReadAuthorityReady()) return { related: 0, total: 0, pending: true };
     const state = replicaRef.current.state(channelId);
     const revision = replicaRef.current.revision(channelId);
-    const readSeq = cursorsRef.current.read(channelId);
+    const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
+    const legacyAcknowledged = cursorsRef.current.notificationLegacyAcknowledged(channelId);
+    const notificationMigrationSignature = [...legacyAcknowledged]
+      .sort(([left], [right]) => String(left).localeCompare(String(right)))
+      .map(([id, seq]) => `${id}:${seq}`)
+      .join('|');
     const cached = unreadCacheRef.current.get(channelId);
-    const acknowledged = cursorsRef.current.acknowledgedReadIdentities(channelId);
-    let counts = cached?.revision === revision && cached?.readSeq === readSeq && cached?.selfId === selfId
+    let counts = cached?.revision === revision
+      && cached?.notificationHighWater === notificationHighWater
+      && cached?.notificationMigrationSignature === notificationMigrationSignature
+      && cached?.selfId === selfId
       ? cached.counts
       : null;
     if (!counts) {
-      counts = unreadCounts(state, readSeq, selfId, { incremental: true, acknowledged });
-      unreadCacheRef.current.set(channelId, { revision, readSeq, selfId, counts });
+      counts = unreadCounts(state, notificationHighWater, selfId, {
+        incremental: true,
+        acknowledged: legacyAcknowledged,
+      });
+      unreadCacheRef.current.set(channelId, {
+        revision,
+        notificationHighWater,
+        notificationMigrationSignature,
+        selfId,
+        counts,
+      });
     }
     if (isReadingTraceEnabled()) {
-      const exactSignature = [...acknowledged]
-        .sort(([left], [right]) => String(left).localeCompare(String(right)))
-        .map(([id, seq]) => `${id}:${seq}`)
-        .join('|');
-      const signature = `${revision}:${readSeq}:${selfId}:${exactSignature}`;
+      const signature = `${revision}:${notificationHighWater}:${selfId}:${notificationMigrationSignature}`;
       if (unreadDiagnosticSignatureRef.current.get(channelId) !== signature) {
         unreadDiagnosticSignatureRef.current.set(channelId, signature);
         readingTrace('notification.rail-classification', () => ({
           channelId,
-          readSeq,
-          ...unreadCountDiagnostics(state, readSeq, selfId, {
+          notificationHighWater,
+          ...unreadCountDiagnostics(state, notificationHighWater, selfId, {
             incremental: true,
-            acknowledged,
+            acknowledged: legacyAcknowledged,
           }),
         }));
       }
@@ -136,6 +148,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     for (const [channelId, state] of statesRef.current) {
       if (requestedChannelId && channelId !== requestedChannelId) continue;
       const readSeq = cursorsRef.current.read(channelId);
+      const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
+      const legacyAcknowledged = cursorsRef.current.notificationLegacyAcknowledged(channelId);
       channels.push(Object.freeze({
         channelId,
         authorityReady: cursorsRef.current.isReadAuthorityReady(),
@@ -143,13 +157,14 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
           ? notificationHydrationRef.current.channels.get(channelId) || 'ready'
           : 'stale',
         readSeq,
+        notificationHighWater,
         ...unreadCountDiagnostics(
           state,
-          readSeq,
+          notificationHighWater,
           rosterRef.current?.self(channelId) || '',
           {
             incremental: true,
-            acknowledged: cursorsRef.current.acknowledgedReadIdentities(channelId),
+            acknowledged: legacyAcknowledged,
           },
         ),
       }));
@@ -280,10 +295,10 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         Number(channelMeta?.newestSeq || 0),
         ...(channelMeta?.coverage || []).map((range) => Number(range?.highSeq || 0)),
       );
-      const readSeq = cursorsRef.current.read(channelId);
-      if (newest <= readSeq || channelId === focus) continue;
+      const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
+      if (newest <= notificationHighWater || channelId === focus) continue;
       channels.set(channelId, 'pending');
-      queue.push({ channelId, readSeq });
+      queue.push({ channelId, notificationHighWater });
     }
     notificationHydrationRef.current = { serial, channels };
     if (!queue.length) return;
@@ -291,7 +306,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     // off the React lane; a second publication exposes all completed badges.
     setIndexVersion((value) => value + 1);
     void (async () => {
-      for (const { channelId, readSeq } of queue) {
+      for (const { channelId, notificationHighWater } of queue) {
         if (serial !== localReplicaSerialRef.current) return;
         // Once a person opens the channel, its ordinary scheduler owns history
         // admission. Notification hydration must never become a second visible
@@ -302,7 +317,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         }
         try {
           const result = typeof cacheRef.current.readNotificationContext === 'function'
-            ? await cacheRef.current.readNotificationContext(channelId, readSeq, {
+            ? await cacheRef.current.readNotificationContext(channelId, notificationHighWater, {
               isCurrent: () => serial === localReplicaSerialRef.current
                 && activeChannelRef.current !== channelId,
             })
@@ -316,7 +331,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
             channels.set(channelId, 'unknown');
             diagnostic('warn', 'feed.notification_cache_incomplete', {
               channelId,
-              readSeq,
+              notificationHighWater,
               missingParents: result.missingParents || [],
             });
             continue;
@@ -327,7 +342,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         } catch (error) {
           if (serial !== localReplicaSerialRef.current) return;
           channels.set(channelId, 'unknown');
-          diagnostic('warn', 'feed.notification_cache_failed', { channelId, readSeq, error });
+          diagnostic('warn', 'feed.notification_cache_failed', { channelId, notificationHighWater, error });
           onError(error);
         }
         // Keep multiple inactive channels from becoming one long main-thread
@@ -582,12 +597,13 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       if (!entry?.channel_id) continue;
       grantedChannelIds.add(entry.channel_id);
       cursorsRef.current.baselineRead(entry.channel_id, entry.head_seq);
+      cursorsRef.current.baselineNotifications(entry.channel_id, entry.head_seq);
       replicaRef.current.installMeta(entry.channel_id, {
         headSeq: entry.head_seq,
         coverage: localMeta.get(entry.channel_id)?.coverage,
       });
       if (entry.channel_id !== (detail.focus || activeChannelRef.current || '')
-        && Number(entry.head_seq || 0) > cursorsRef.current.read(entry.channel_id)
+        && Number(entry.head_seq || 0) > cursorsRef.current.notificationHighWater(entry.channel_id)
         && !localMeta.has(entry.channel_id)
         && notificationHydrationRef.current.serial === localReplicaSerialRef.current) {
         notificationHydrationRef.current.channels.set(entry.channel_id, 'unknown');
@@ -879,6 +895,18 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     // was already persisted is idempotently accepted and must not be retried.
     return seq > 0 ? next : (exactChanged || (acknowledgement.identities?.length || 0) > 0);
   }, [rosterRef]);
+  const acknowledgeNotifications = useCallback((channelId, seq) => {
+    if (!channelId || !cursorsRef.current.isReadAuthorityReady()) return false;
+    const boundary = Number(seq || 0);
+    if (!Number.isSafeInteger(boundary) || boundary <= 0) return false;
+    const before = cursorsRef.current.notificationHighWater(channelId);
+    const next = cursorsRef.current.acknowledgeNotifications(channelId, boundary);
+    if (next !== before) {
+      unreadCacheRef.current.delete(channelId);
+      setIndexVersion((value) => value + 1);
+    }
+    return next >= boundary;
+  }, []);
   const cancel = useCallback(() => {
     liveBatchRef.current.flushNow();
     attachedGenerationRef.current = 0;
@@ -1062,6 +1090,6 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       presentationRevision: Number(replicaRef.current.state(channelId)?._timelineRevision || 0),
       sync: syncCoordinatorRef.current.snapshot(channelId),
     }),
-    loadHistory, markRead,
+		loadHistory, markRead, acknowledgeNotifications,
   };
 }

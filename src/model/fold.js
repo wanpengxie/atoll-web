@@ -1,6 +1,7 @@
 import { argsOf, correlationOf, FINAL, PROVISIONAL } from '../protocol/envelope.js';
 import { isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
 import { isViewportNotifiableDisposition, notificationDisposition } from './notification-policy.js';
+import { isSelfActor, relatedEnvelopeIdsIncremental } from './timeline-scope.js';
 
 // subjectgate 只让这两个词走 resolve 帧（platform/internal/humancell）。
 const RESOLVABLE = new Set([TYPES.humanAsk, TYPES.humanApprove]);
@@ -108,7 +109,11 @@ function rootTurnID(state, envelope) {
 // independently readable standalone events retain their own identity.
 export function recordLiveTimelineArrival(state, envelope, seq, selfId = '') {
   if (!state || !envelope) return null;
-  if (selfId && envelope.sender?.id === selfId) return null;
+  // Viewport notices are a personal attention surface, even while the ledger
+  // itself is projected as "all". With no established viewer identity, or
+  // for any incarnation of that viewer's own echo, there is no eligible
+  // arrival to advertise.
+  if (!selfId || isSelfActor(envelope.sender?.id, selfId)) return null;
   const disposition = notificationDisposition(state, envelope, selfId);
   let rowID = '';
   let key = '';
@@ -128,6 +133,12 @@ export function recordLiveTimelineArrival(state, envelope, seq, selfId = '') {
   }
   if (!isViewportNotifiableDisposition(disposition)) return null;
   if (!rowID) return null;
+  // The feed calls this seam after Replica has accepted the row, so the same
+  // incremental relation index that powers @me can decide eligibility here.
+  // Keep unrelated rows in the all-ledger projection and in raw unread truth;
+  // merely decline to turn them into a personal "new dynamics" notice.
+  const related = relatedEnvelopeIdsIncremental(state, selfId);
+  if (!related.has(envelope.id) && !related.has(key) && !related.has(rowID)) return null;
   const previousRevision = Number(state._liveArrivalRevision || 0);
   const hadUndisposedArrival = Number(state._liveArrivalAckRevision || 0) < previousRevision;
   const revision = previousRevision + 1;
