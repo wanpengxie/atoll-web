@@ -1144,8 +1144,8 @@ export function useReadingSession({
     // row. A semantic projection with zero rows therefore needs its declarative
     // supply edge here: reuse the one HistoryScheduler operation and let
     // loadHistory continue across physical pages until this view gets a row or
-    // reaches authoritative EOF. Anticipatory urgency keeps that work silent;
-    // it is not a user boundary wait.
+    // reaches authoritative EOF. Explicit @me/member filters expose that work;
+    // an unfiltered protocol-only projection may remain anticipatory.
     if (snapshot.rows.length > 0
       || !hasManagedHistoryLifecycle
       || historyStatus.attached !== true
@@ -1153,8 +1153,18 @@ export function useReadingSession({
       || historyStatus.messageCurrent !== true
       || historyStatus.localReplicaReady === false
       || historyStatus.hasOlder !== true
+      || historyStatus.historyDemand?.phase === 'error'
       || knownHead <= 0) return;
-    void requestHistory('projection-underfill', HISTORY_URGENCY.anticipatory);
+    const explicitlyFiltered = Number(historyViewSpec?.actorFilter?.size || 0) > 0
+      || historyViewSpec?.scope === 'mine';
+    // A zero-row result after the person selected @me or an actor is visible
+    // work: keep one foreground demand alive so the UI can show continuous
+    // progress and a retry if paging fails. Only an unfiltered projection that
+    // contains protocol-only facts remains anticipatory/background work.
+    void requestHistory(
+      'projection-underfill',
+      explicitlyFiltered ? HISTORY_URGENCY.interactive : HISTORY_URGENCY.anticipatory,
+    );
   }, [
     hasManagedHistoryLifecycle,
     historyStatus.attached,
@@ -1163,6 +1173,7 @@ export function useReadingSession({
     historyStatus.error,
     historyStatus.generation,
     historyStatus.hasOlder,
+    historyStatus.historyDemand?.phase,
     historyStatus.localReplicaReady,
     historyStatus.loading,
     historyStatus.messageCurrent,
@@ -1172,6 +1183,7 @@ export function useReadingSession({
     knownHead,
     requestHistory,
     snapshot.rows.length,
+    historyViewSpec,
     viewKey,
   ]);
 

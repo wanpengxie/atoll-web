@@ -136,7 +136,7 @@ it('混合 Codex/Claude 已加载回合按精确成员 ID 立即保留完整问�
   expect(screen.queryByText('正在恢复上次阅读位置…')).toBeNull();
 });
 
-it('零行成员投影用当前 viewSpec 静默请求语义供给而不等待虚拟列表 underfill', async () => {
+it('零行成员投影用当前 viewSpec 请求可见语义供给而不等待虚拟列表 underfill', async () => {
   const { state, selfId } = mixedAgentTurns();
   // Keep a physically non-empty channel while making Claude absent from the
   // installed projection. The virtual list now has no row from which to emit
@@ -172,7 +172,7 @@ it('零行成员投影用当前 viewSpec 静默请求语义供给而不等待虚
   fireEvent.click(await screen.findByTitle('只看我与 Claude 的往来'));
   await waitFor(() => expect(request).toHaveBeenCalledWith(expect.objectContaining({
     intent: 'scroll-history',
-    urgency: 'anticipatory',
+    urgency: 'interactive',
     reason: 'projection-underfill',
     anchorSeq: 0,
     viewSpec: expect.objectContaining({ scope: 'mine', selfId }),
@@ -180,8 +180,8 @@ it('零行成员投影用当前 viewSpec 静默请求语义供给而不等待虚
   const operation = request.mock.calls.find(([value]) => value.reason === 'projection-underfill')?.[0];
   expect([...operation.viewSpec.actorFilter]).toEqual(['agent:claude:300']);
   expect(screen.getByText('正在确认频道内容…')).toBeTruthy();
-  expect(screen.queryByText('当前已加载的动态里没有符合筛选的往来')).toBeNull();
-  expect(await screen.findByText('当前已加载的动态里没有符合筛选的往来')).toBeTruthy();
+  expect(screen.queryByText('正在查找符合筛选的往来…')).toBeNull();
+  expect(await screen.findByText('正在查找符合筛选的往来…')).toBeTruthy();
   expect(document.querySelector('.timeline-history-demand')).toBeNull();
 
   fireEvent.click(screen.getByTitle('只看我与 Codex 的往来'));
@@ -223,7 +223,7 @@ it('无 self 身份的全部视图仍会静默补齐被协议事实遮住的语�
   expect(document.querySelector('.timeline-history-demand')).toBeNull();
 });
 
-it('零行语义供给失败后由 scheduler 状态推进恢复且始终保持后台静默', async () => {
+it('零行筛选供给失败后由 scheduler 状态推进恢复并保留前台重试语义', async () => {
   const state = timelineState([{
     seq: 9,
     envelope: {
@@ -253,14 +253,21 @@ it('零行语义供给失败后由 scheduler 状态推进恢复且始终保持�
   await new Promise((resolve) => setTimeout(resolve, 0));
   view.rerender(<Timeline {...base} history={{
     request,
-    status: { ...status, loading: true, error: 'temporary', retryAt: Date.now() },
+    status: {
+      ...status,
+      error: 'temporary',
+      historyDemand: { revision: 1, phase: 'error', error: 'temporary' },
+    },
   }} />);
 
+  expect((await screen.findByRole('alert')).textContent).toContain('temporary');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(request).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: '重试' }));
   await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
   expect(request.mock.calls[1][0]).toMatchObject({
-    intent: 'scroll-history', urgency: 'anticipatory', reason: 'projection-underfill',
+    intent: 'scroll-history', urgency: 'interactive', reason: 'retry',
   });
-  expect(document.querySelector('.timeline-history-demand')).toBeNull();
 });
 
 it('opaque actor ID 与系统事实尾下，名册迟到后显示唯一 agent chip 且保留同 principal 旧回合', async () => {
@@ -422,7 +429,7 @@ it('重连的零头占位在前台probe完成前不是权威空频道', async ()
   expect(screen.queryByText('正在确认频道内容…')).toBeNull();
 });
 
-it('过滤后的首个物理批次显示稳定partial说明，后台分页不冒充前台确认', async () => {
+it('过滤后的首个物理批次显示稳定查找说明并保持同一前台供给', async () => {
   const state = timelineState([{
     seq: 9,
     envelope: {
@@ -446,7 +453,7 @@ it('过滤后的首个物理批次显示稳定partial说明，后台分页不冒
   } }} />);
 
   expect(await screen.findByText('正在确认频道内容…')).toBeTruthy();
-  expect(screen.queryByText('当前已加载的动态里没有符合筛选的往来')).toBeNull();
+  expect(screen.queryByText('正在查找符合筛选的往来…')).toBeNull();
   expect(screen.queryByText('这个频道里还没有与你相关的往来')).toBeNull();
 
   view.rerender(<Timeline {...base} history={{ status: {
@@ -458,8 +465,8 @@ it('过滤后的首个物理批次显示稳定partial说明，后台分页不冒
   // projection ready. The bounded activation feedback remains stable while
   // its existing runway is still finding the first matching row.
   expect(screen.getByText('正在确认频道内容…')).toBeTruthy();
-  expect(screen.queryByText('当前已加载的动态里没有符合筛选的往来')).toBeNull();
-  expect(await screen.findByText('当前已加载的动态里没有符合筛选的往来')).toBeTruthy();
+  expect(screen.queryByText('正在查找符合筛选的往来…')).toBeNull();
+  expect(await screen.findByText('正在查找符合筛选的往来…')).toBeTruthy();
   expect(screen.queryByText('正在确认频道内容…')).toBeNull();
 
   view.rerender(<Timeline {...base} history={{ status: {
@@ -468,7 +475,7 @@ it('过滤后的首个物理批次显示稳定partial说明，后台分页不冒
     sync: { interestRevision: 1, fulfilledRevision: 1, targetHead: 9 },
   } }} />);
   expect(await screen.findByText('这个频道里还没有与你相关的往来')).toBeTruthy();
-  expect(screen.queryByText('当前已加载的动态里没有符合筛选的往来')).toBeNull();
+  expect(screen.queryByText('正在查找符合筛选的往来…')).toBeNull();
   expect(screen.queryByText('正在确认频道内容…')).toBeNull();
 });
 
