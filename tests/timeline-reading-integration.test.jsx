@@ -1243,7 +1243,7 @@ it('durable acceptance resolves after user-up without minting a fresh bottom int
   await waitFor(() => expect(port?.captureBottomIntent()).toBeTruthy());
   const sendStarted = port.captureBottomIntent();
 
-  act(() => port.onUserControl({ direction: 'older', gestureID: 'wheel-up', geometryRevision: 1 }));
+  act(() => port.beginNavigation({ direction: 'older', gestureID: 'wheel-up', geometryRevision: 1 }));
   expect(port.getSession().mode).toBe('browsing');
   let accepted;
   act(() => { accepted = port.requestBottom('composer:late', sendStarted); });
@@ -1677,7 +1677,14 @@ it('keeps a rejected frozen notification while browsing and births the newer bac
   }));
   expect(markNotificationsRead.mock.calls.every(([event]) => event.boundary === 100)).toBe(true);
 
-  act(() => port.onUserControl({ direction: 'older', gestureID: 'browse-after-reject' }));
+  act(() => {
+    const navigation = port.beginNavigation({
+      direction: 'older', gestureID: 'browse-after-reject', geometryRevision: 1,
+    });
+    port.finishNavigation({
+      ...navigation, gestureID: 'browse-after-reject', reason: 'wheel-quiet',
+    });
+  });
   expect(port.getSession().mode).toBe('browsing');
   view.rerender(<Harness headSeq={101} />);
   accept = true;
@@ -2158,7 +2165,7 @@ it('consumes an overflowed live batch exactly and de-duplicates beyond 256 ident
   expect(viewSessions.save.mock.calls.at(-1)?.[4]?.unseenRecords)
     .toContainEqual(['live-1', 1_101]);
 
-  act(() => port.onUserControl({ direction: 'newer', gestureID: 'drag-to-tail', geometryRevision: 0 }));
+  act(() => port.beginNavigation({ direction: 'newer', gestureID: 'drag-to-tail', geometryRevision: 0 }));
   act(() => port.onReadingObservation({
     activationID: port.activationID,
     source: 'user',
@@ -2550,7 +2557,7 @@ it('在底部且可见时视窗计数派生为 0，而回执真相一字不改',
   expect(port().unseenNotice).toBe(0);
 
   // 用户自己上滚（浏览态）才是离开底部，兜底立刻关闭，真值重新可见。
-  act(() => port().onUserControl({ direction: 'older', gestureID: 'leave-tail' }));
+  act(() => port().beginNavigation({ direction: 'older', gestureID: 'leave-tail' }));
   expect(port().tailCaughtUp.caughtUp).toBe(false);
   expect(port().unseenNotice).toBe(1);
 });
@@ -2583,7 +2590,7 @@ it('兜底只认真实在场：浏览态、Surface 隐藏、页面不可见都�
   expect(port().tailCaughtUp.caughtUp).toBe(true);
 
   // 用户上滚（浏览态）：兜底关闭。
-  act(() => port().onUserControl({ direction: 'older', gestureID: 'g1' }));
+  act(() => port().beginNavigation({ direction: 'older', gestureID: 'g1' }));
   expect(port().getSession().mode).toBe('browsing');
   expect(port().tailCaughtUp.caughtUp).toBe(false);
   expect(port().unseenNotice).toBe(1);

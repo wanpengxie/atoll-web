@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   bindLatestIntentTargets,
+  cancelReadingControl,
   consumeLatestIntent,
   createReadingSession,
   observeReading,
   READING_MODE,
   requestLatest,
   takeReadingControl,
+  updateReadingControl,
 } from '../src/model/reading-session.js';
 
 function session(saved = {}, activationID = 'a1') {
@@ -99,6 +101,47 @@ describe('reading session authority', () => {
       activationID: 'a1', atTail: true, source: 'user', inputEpoch: current.inputEpoch,
     });
     expect(current.mode).toBe(READING_MODE.following);
+  });
+
+  it('updates direction evidence inside one input epoch and cancellation revokes it', () => {
+    const started = takeReadingControl(session(), {
+      direction: 'older', gestureID: 'gesture:one', geometryRevision: 3,
+    });
+    const reversed = updateReadingControl(started, {
+      inputEpoch: started.inputEpoch,
+      direction: 'newer',
+      gestureID: 'gesture:one',
+      geometryRevision: 4,
+    });
+    expect(reversed.inputEpoch).toBe(started.inputEpoch);
+    expect(reversed.tailEvidence).toMatchObject({
+      direction: 'newer', gestureID: 'gesture:one', geometryRevision: 4,
+    });
+    const olderAgain = updateReadingControl(reversed, {
+      inputEpoch: started.inputEpoch,
+      direction: 'older',
+      gestureID: 'gesture:one',
+      geometryRevision: 4,
+    });
+    expect(olderAgain.inputEpoch).toBe(started.inputEpoch);
+    expect(olderAgain.tailEvidence).toBeNull();
+
+    const downward = updateReadingControl(olderAgain, {
+      inputEpoch: started.inputEpoch,
+      direction: 'newer',
+      gestureID: 'gesture:one',
+      geometryRevision: 5,
+    });
+    const cancelled = cancelReadingControl(downward, {
+      inputEpoch: started.inputEpoch,
+      gestureID: 'gesture:one',
+    });
+    expect(cancelled.tailEvidence).toBeNull();
+    const staleObservation = observeReading(cancelled, {
+      activationID: 'a1', atTail: true, source: 'user',
+      inputEpoch: started.inputEpoch, geometryRevision: 5,
+    });
+    expect(staleObservation.mode).toBe(READING_MODE.browsing);
   });
 
   it('does not reinterpret a later layout clamp as downward user evidence', () => {

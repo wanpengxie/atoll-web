@@ -10,7 +10,6 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { flushSync } from 'react-dom';
 import { Virtuoso } from 'react-virtuoso';
 import { diagnostic, isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
 import { READING_MODE } from '../../model/reading-session.js';
@@ -20,6 +19,11 @@ import {
   sendScrollTransactionCanWrite,
 } from '../../model/send-scroll-transaction.js';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
+import {
+  ReadingNavigationOwner,
+  useReadingNavigationHost,
+  useReadingNavigationOwner,
+} from './ReadingNavigationOwner.jsx';
 
 function traceReadingAdapter(stage, detail = {}) {
   const sink = globalThis.__ATOLL_READING_TRACE__;
@@ -89,17 +93,6 @@ class RowErrorBoundary extends Component {
     }
     return this.props.children;
   }
-}
-
-function nestedScrollOwner(target, root, delta) {
-  for (let node = target; node && node !== root; node = node.parentElement) {
-    const style = globalThis.getComputedStyle?.(node);
-    const scrollable = /auto|scroll/.test(style?.overflowY || '') && node.scrollHeight > node.clientHeight + 1;
-    if (!scrollable) continue;
-    if (delta < 0 && node.scrollTop > 0) return node;
-    if (delta > 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1) return node;
-  }
-  return null;
 }
 
 function textPointAt(node, x, y) {
@@ -333,7 +326,21 @@ function initialLocation(rows, session) {
   };
 }
 
-export function MessageList({
+function sameNavigationTarget(left, right) {
+  return Boolean(
+    left
+    && right
+    && left.ownerToken === right.ownerToken
+    && left.activationID === right.activationID
+    && Number(left.inputGeneration) === Number(right.inputGeneration)
+    && left.transactionID === right.transactionID
+    && left.hostToken === right.hostToken
+    && Number(left.targetRevision) === Number(right.targetRevision)
+    && Number(left.presentationRevision) === Number(right.presentationRevision),
+  );
+}
+
+function MessageListBody({
   snapshot,
   reading,
   rowRevision,
@@ -342,8 +349,9 @@ export function MessageList({
   surfaceVisible = false,
   bottomIntentPresentation = null,
   handoffPending = false,
+  navigationTarget = null,
   focusOnMount = false,
-  onHandoffReady,
+  onNavigationRevealReceipt,
 }) {
   const virtuosoRef = useRef(null);
   const scrollerRef = useRef(null);
@@ -362,7 +370,11 @@ export function MessageList({
   const initialLocationRef = useRef({ activationID: '', value: null });
   const delayedRestoreRef = useRef(null);
   const handoffPendingRef = useRef(handoffPending === true);
-  const handoffReadyRef = useRef(false);
+  const handoffTargetRef = useRef(null);
+  const revealFrameRef = useRef([0, 0]);
+  const paintRevisionRef = useRef(0);
+  const deliveredReceiptKeyRef = useRef('');
+  const scheduleRevealReceiptRef = useRef(null);
   const focusClaimedRef = useRef(false);
   const materializationAckRef = useRef(null);
   const observationFrameRef = useRef(0);
@@ -421,8 +433,10 @@ export function MessageList({
     const current = owner.getSession?.() || owner.session;
     const data = snapshotRef.current;
     const ack = materializationAckRef.current;
+    const handoffTarget = pending.navigationTarget === true ? handoffTargetRef.current : null;
     if (pending.activationID !== current.activationID
-      || pending.inputEpoch !== current.inputEpoch) {
+      || pending.inputEpoch !== current.inputEpoch
+      || (pending.navigationTarget === true && !sameNavigationTarget(pending, handoffTarget))) {
       delayedRestoreRef.current = null;
       traceReadingAdapter('restore-reject', {
         activationID: current.activationID,
@@ -456,8 +470,49 @@ export function MessageList({
     const desiredOffset = Number.isFinite(pending.rowViewportOffset)
       ? Number(pending.rowViewportOffset)
       : null;
+    if (pending.navigationTarget === true && pending.phase !== 'issued') {
+      const formalState = formalRangeStatesRef.current.get(formalRangeOwner) || null;
+      if (formalState?.phase !== 'ready' || root?.querySelector?.('[data-formal-preparing]')) return false;
+      // A handoff target is allowed to write only after Virtuoso has replaced
+      // its mount placeholder with real scroll geometry. Issuing while the
+      // hidden scroller is still clientHeight-tall loses the command when the
+      // measured range is installed, which can leave a near-tail key gesture
+      // pending forever. An already aligned under-filled list needs no write.
+      if (targetMaterialized
+        && Number.isFinite(desiredOffset)
+        && Number.isFinite(actualOffset)
+        && Math.abs(actualOffset - desiredOffset) <= 2) {
+        delayedRestoreRef.current = null;
+        traceReadingAdapter('restore-complete', {
+          activationID: current.activationID,
+          inputEpoch: current.inputEpoch,
+          snapshotRevision: Number(data.revision || 0),
+          targetID: pending.targetID,
+          actualOffset,
+          desiredOffset,
+          source,
+        });
+        scheduleRevealReceiptRef.current?.('restore-complete');
+        return true;
+      }
+      if (!root || root.clientHeight <= 0 || root.scrollHeight <= root.clientHeight + 1) return false;
+    }
     if (pending.phase === 'issued') {
       if (!targetMaterialized) return false;
+      if (pending.navigationTarget === true
+        && Number.isFinite(desiredOffset)
+        && (!Number.isFinite(actualOffset) || Math.abs(actualOffset - desiredOffset) > 2)) {
+        traceReadingAdapter('restore-wait', {
+          activationID: current.activationID,
+          inputEpoch: current.inputEpoch,
+          targetID: pending.targetID,
+          actualOffset,
+          desiredOffset,
+          reason: 'handoff-anchor-mismatch',
+          source,
+        });
+        return false;
+      }
       delayedRestoreRef.current = null;
       traceReadingAdapter('restore-complete', {
         activationID: current.activationID,
@@ -468,6 +523,7 @@ export function MessageList({
         desiredOffset,
         source,
       });
+      if (pending.navigationTarget === true) scheduleRevealReceiptRef.current?.('restore-complete');
       return true;
     }
     virtuosoRef.current.scrollToIndex({
@@ -1119,8 +1175,55 @@ export function MessageList({
 
   useLayoutEffect(() => {
     handoffPendingRef.current = handoffPending === true;
-    if (!handoffPending) handoffReadyRef.current = false;
-  }, [handoffPending]);
+    const current = readingRef.current.getSession?.() || readingRef.current.session;
+    const validTarget = Boolean(
+      handoffPending
+      && navigationTarget?.bookmark?.messageID
+      && navigationTarget.activationID === current.activationID
+      && Number(navigationTarget.inputGeneration) === Number(current.inputEpoch)
+      && navigationTarget.phase !== 'revoked',
+    );
+    if (!validTarget) {
+      handoffTargetRef.current = null;
+      deliveredReceiptKeyRef.current = '';
+      for (const frame of revealFrameRef.current) {
+        if (frame) globalThis.cancelAnimationFrame?.(frame);
+      }
+      revealFrameRef.current = [0, 0];
+      if (delayedRestoreRef.current?.navigationTarget === true) delayedRestoreRef.current = null;
+      return;
+    }
+    const replaced = !sameNavigationTarget(handoffTargetRef.current, navigationTarget);
+    handoffTargetRef.current = navigationTarget;
+    if (replaced) {
+      deliveredReceiptKeyRef.current = '';
+      for (const frame of revealFrameRef.current) {
+        if (frame) globalThis.cancelAnimationFrame?.(frame);
+      }
+      revealFrameRef.current = [0, 0];
+      delayedRestoreRef.current = {
+        ownerToken: navigationTarget.ownerToken,
+        activationID: navigationTarget.activationID,
+        inputEpoch: navigationTarget.inputGeneration,
+        inputGeneration: navigationTarget.inputGeneration,
+        transactionID: navigationTarget.transactionID,
+        hostToken: navigationTarget.hostToken,
+        targetRevision: navigationTarget.targetRevision,
+        presentationRevision: navigationTarget.presentationRevision,
+        targetID: navigationTarget.bookmark.messageID,
+        rowViewportOffset: Number.isFinite(Number(navigationTarget.bookmark.rowViewportOffset))
+          ? Number(navigationTarget.bookmark.rowViewportOffset)
+          : null,
+        navigationTarget: true,
+        phase: 'pending',
+        issuedRevision: 0,
+      };
+      positionDelayedBookmark('navigation-target');
+    } else if (navigationTarget.phase === 'settled') {
+      positionDelayedBookmark('navigation-settled');
+      scheduleRevealReceiptRef.current?.('navigation-settled');
+    }
+  }, [handoffPending, navigationTarget, positionDelayedBookmark]);
 
   useLayoutEffect(() => {
     if (surfaceVisible !== true) reading.onSurfaceVisibilityChange?.(false);
@@ -1264,102 +1367,102 @@ export function MessageList({
     else owner.onAtTop(detail);
   }, []);
 
-  const takeControl = useCallback((direction, nativeEvent, {
-    kind = 'navigation',
-    canFollowTail = true,
-    canRequestHistory = true,
-  } = {}) => {
-    const owner = readingRef.current;
+  const finishNavigationObservation = useCallback((transaction) => {
     const root = scrollerRef.current;
-    const delta = nativeEvent?.deltaY || (direction === 'older' ? -1 : direction === 'newer' ? 1 : 0);
-    if (root && nativeEvent?.target && nestedScrollOwner(nativeEvent.target, root, delta)) {
-      traceReadingAdapter('input-nested', {
-        activationID: owner.activationID,
-        type: nativeEvent?.type || '',
-        direction,
-        delta,
-      });
-      return;
-    }
-    const gestureID = `${nativeEvent?.type || 'input'}:${nativeEvent?.timeStamp || performance.now()}`;
-    const control = { direction, gestureID, geometryRevision: geometryRevisionRef.current };
-    const before = owner.getSession?.() || owner.session;
-    // A downward wheel/key/touch gesture which cannot move an already
-    // following tail is not a request to start browsing. In particular it
-    // must not make the next append look like an abandoned reading position.
-    // A content selection gesture is different: it may autoscroll, so it
-    // takes browsing ownership but is never allowed to grant tail-following.
-    if (direction === 'newer' && before.mode === READING_MODE.following && isAtTail(root)) {
-      inputRef.current = { ...inputRef.current, active: false };
-      traceReadingAdapter('input-noop-tail', () => ({
-        activationID: before.activationID,
-        inputEpoch: before.inputEpoch,
-        type: nativeEvent?.type || '',
-        direction,
-        delta,
-      }));
-      return;
-    }
-    // ReadingSession changes in the same native input turn. Every later data,
-    // height, or viewport signal re-reads this owner. This commit also drives
-    // Legend's declarative maintainScrollAtEnd authorization to false.
-    if (before.mode === READING_MODE.following) {
-      flushSync(() => owner.onUserControl(control));
-    } else {
-      owner.onUserControl(control);
-    }
+    const owner = readingRef.current;
+    if (!root || !owner) return;
     const current = owner.getSession?.() || owner.session;
-    sendScrollTransactionRef.current = advanceSendScrollTransaction(
-      sendScrollTransactionRef.current,
-      { type: 'invalidate', activationID: before.activationID, inputEpoch: before.inputEpoch },
-    );
-    sendOwnedRevisionRef.current = null;
-    roleAuthorizationRef.current = null;
-    delayedRestoreRef.current = null;
-    inputRef.current = {
-      activationID: current.activationID,
-      epoch: current.inputEpoch,
-      direction,
-      gestureID,
-      geometryRevision: geometryRevisionRef.current,
-      kind,
-      canFollowTail,
-      canRequestHistory,
-      active: true,
-    };
-    traceReadingAdapter('input-owner', () => ({
-      activationID: current.activationID,
-      inputEpoch: current.inputEpoch,
-      previousInputEpoch: before.inputEpoch,
-      type: nativeEvent?.type || '',
-      direction,
-      delta,
-      gestureID,
-      scrollTop: Number(root?.scrollTop || 0),
-      scrollHeight: Number(root?.scrollHeight || 0),
-      clientHeight: Number(root?.clientHeight || 0),
-    }));
-    if (direction === 'older' && root && canRequestHistory) {
-      const atPhysicalTop = atTopRef.current || Number(root.scrollTop || 0) <= 1;
-      // This is distance to the physical start of the currently revealed
-      // dataset, not rangeChanged.startIndex (which includes pre-rendered
-      // items and changes when overscan changes). Only this native input turn
-      // can ask for a runway release; range/layout callbacks never can.
-      const runwayPx = Math.max(
-        READING_TRACE_CONFIG.historyRunwayMinimumPx,
-        Number(root.clientHeight || 0),
-      );
-      if (atPhysicalTop) requestTopDemand('top');
-      else if (Number(root.scrollTop || 0) <= runwayPx) requestTopDemand('runway');
+    const input = inputRef.current;
+    if (root.scrollTop <= 1 && input.active
+      && input.activationID === current.activationID
+      && input.epoch === current.inputEpoch
+      && input.canRequestHistory
+      && (input.direction === 'older' || input.direction === 'browse')) {
+      requestTopDemand('top');
     }
-  }, [requestTopDemand]);
+    const pending = pendingObservationRef.current;
+    const settlesCurrentUser = Boolean(
+      input.active
+      && input.activationID === current.activationID
+      && input.epoch === current.inputEpoch
+      && input.epoch === transaction.inputGeneration
+      && pending?.source === 'user'
+      && pending.activationID === current.activationID
+      && pending.inputEpoch === current.inputEpoch
+      && pending.geometryRevision === geometryRevisionRef.current
+    );
+    if (settlesCurrentUser) {
+      pendingObservationRef.current = { ...pending, atTail: isAtTail(root), settled: true };
+    }
+    inputRef.current = { ...inputRef.current, active: false };
+    if (!settlesCurrentUser) scheduleObserve('settled');
+  }, [requestTopDemand, scheduleObserve]);
+
+  const navigationHost = useMemo(() => ({
+    readBookmark: () => visibleBookmark(scrollerRef.current, snapshotRef.current.rows),
+    geometryRevision: () => geometryRevisionRef.current,
+    atTail: () => isAtTail(scrollerRef.current),
+    canFollowTail: true,
+    canRequestHistory: true,
+    onNavigationUpdate(transaction, reason) {
+      const owner = readingRef.current;
+      const current = owner.getSession?.() || owner.session;
+      if (reason === 'begin') {
+        sendScrollTransactionRef.current = advanceSendScrollTransaction(
+          sendScrollTransactionRef.current,
+          { type: 'invalidate', activationID: current.activationID, inputEpoch: current.inputEpoch - 1 },
+        );
+        sendOwnedRevisionRef.current = null;
+        roleAuthorizationRef.current = null;
+        delayedRestoreRef.current = null;
+      }
+      inputRef.current = {
+        activationID: transaction.activationID,
+        epoch: transaction.inputGeneration,
+        direction: transaction.direction,
+        gestureID: transaction.id,
+        geometryRevision: geometryRevisionRef.current,
+        kind: transaction.source,
+        canFollowTail: transaction.canFollowTail,
+        canRequestHistory: transaction.canRequestHistory,
+        active: true,
+      };
+      const root = scrollerRef.current;
+      if (transaction.direction === 'older' && root && transaction.canRequestHistory) {
+        const runwayPx = Math.max(
+          READING_TRACE_CONFIG.historyRunwayMinimumPx,
+          Number(root.clientHeight || 0),
+        );
+        if (atTopRef.current || Number(root.scrollTop || 0) <= 1) requestTopDemand('top');
+        else if (Number(root.scrollTop || 0) <= runwayPx) requestTopDemand('runway');
+      }
+      traceReadingAdapter('input-owner', () => ({
+        activationID: transaction.activationID,
+        inputEpoch: transaction.inputGeneration,
+        source: transaction.source,
+        direction: transaction.direction,
+        gestureID: transaction.id,
+        reason,
+        scrollTop: Number(root?.scrollTop || 0),
+        scrollHeight: Number(root?.scrollHeight || 0),
+        clientHeight: Number(root?.clientHeight || 0),
+      }));
+    },
+    onNavigationEnd: finishNavigationObservation,
+    onNavigationCancel() {
+      inputRef.current = { ...inputRef.current, active: false };
+      // A cancelled contact cannot lend its already-coalesced user sample to
+      // a later rAF. Drop that evidence before publishing observation-only
+      // layout state; ReadingSession cancellation clears matching tailEvidence.
+      if (pendingObservationRef.current?.source === 'user') pendingObservationRef.current = null;
+      scheduleObserve('layout');
+    },
+  }), [finishNavigationObservation, requestTopDemand, scheduleObserve]);
+  useReadingNavigationHost('browsing', navigationHost, scrollerNode);
 
   useLayoutEffect(() => {
     const root = scrollerRef.current;
     if (!root) return undefined;
-    const onWheel = (event) => {
-      if (event.deltaY) takeControl(event.deltaY < 0 ? 'older' : 'newer', event);
-    };
     scrollTopRef.current = Number(root.scrollTop || 0);
     const onScroll = () => {
       const previousTop = scrollTopRef.current;
@@ -1392,13 +1495,8 @@ export function MessageList({
           // also starts directionless, but must stay browsing: translating its
           // downward movement into a newer intent would let append steal the
           // user's selected text.
-          if (input.canFollowTail) {
-            owner.onUserControl({ direction, gestureID: input.gestureID, geometryRevision: geometryRevisionRef.current });
-          }
-          const moved = owner.getSession?.() || owner.session;
           input = {
             ...input,
-            epoch: moved.inputEpoch,
             direction,
             geometryRevision: geometryRevisionRef.current,
           };
@@ -1423,113 +1521,18 @@ export function MessageList({
         scheduleObserve('layout');
       }
     };
-    const onScrollEnd = () => {
-      const owner = readingRef.current;
-      const current = owner.getSession?.() || owner.session;
-      const input = inputRef.current;
-      // Keyboard Home and browser momentum may report their final zero offset
-      // in `scrollend` immediately before the last `scroll` event. Consume
-      // that real geometry while its originating input evidence is still
-      // current; this does not infer demand from Virtuoso's initial edge.
-      if (root.scrollTop <= 1 && input.active
-        && input.activationID === current.activationID
-        && input.epoch === current.inputEpoch
-        && input.canRequestHistory
-        && (input.direction === 'older' || input.direction === 'browse')) {
-        requestTopDemand('top');
-      }
-      const pending = pendingObservationRef.current;
-      // `settled` describes when the sample is taken; it is not a new source
-      // of authority. Preserve a current user sample instead of replacing it
-      // before its already-scheduled rAF can reach the reading reducer. Every
-      // ownership coordinate must still match, so a layout revision, input
-      // epoch, activation replacement, or completed gesture fails closed.
-      const settlesCurrentUser = Boolean(
-        input.active
-        && input.activationID === current.activationID
-        && input.epoch === current.inputEpoch
-        && pending?.source === 'user'
-        && pending.activationID === current.activationID
-        && pending.inputEpoch === current.inputEpoch
-        && pending.geometryRevision === geometryRevisionRef.current
-      );
-      if (settlesCurrentUser) {
-        pendingObservationRef.current = {
-          ...pending,
-          atTail: isAtTail(root),
-          settled: true,
-        };
-      }
-      inputRef.current = { ...inputRef.current, active: false };
-      // Capture an exact text point once per completed gesture, not on every
-      // scroll/range/layout observation. A current user sample retains its
-      // existing authority; otherwise settlement remains observation-only and
-      // cannot authorize following or write geometry.
-      if (!settlesCurrentUser) scheduleObserve('settled');
-    };
-    let touchY = null;
-    const onTouchStart = (event) => { touchY = event.touches[0]?.clientY ?? null; };
-    const onTouchMove = (event) => {
-      const y = event.touches[0]?.clientY;
-      if (y != null && touchY != null && Math.abs(y - touchY) > 2) {
-        takeControl(y > touchY ? 'older' : 'newer', event);
-      }
-      touchY = y ?? null;
-    };
-    const onKey = (event) => {
-      if (event.target.closest?.('input, textarea, select, button, a, [contenteditable="true"]')) return;
-      if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) {
-        takeControl('older', event);
-      } else if (['ArrowDown', 'PageDown', 'End'].includes(event.key) || event.key === ' ') {
-        takeControl('newer', event);
+    const onGeometryScrollEnd = () => {
+      if (!inputRef.current.active && pendingObservationRef.current?.source !== 'user') {
+        scheduleObserve('settled');
       }
     };
-    let pointerStart = null;
-    const onPointerDown = (event) => {
-      if (event.pointerType !== 'mouse' || event.button !== 0) return;
-      const scrollbar = event.target === root;
-      pointerStart = { x: event.clientX, y: event.clientY, scrollbar };
-      if (scrollbar) takeControl('browse', event, { kind: 'scrollbar' });
-    };
-    const onPointerMove = (event) => {
-      if (!pointerStart || event.pointerType !== 'mouse') return;
-      if (Math.abs(event.clientX - pointerStart.x) < 3 && Math.abs(event.clientY - pointerStart.y) < 3) return;
-      const direction = event.clientY > pointerStart.y ? 'newer' : 'older';
-      const scrollbar = pointerStart.scrollbar;
-      pointerStart = null;
-      if (scrollbar) return;
-      takeControl('browse', event, {
-        kind: 'selection',
-        canFollowTail: false,
-        canRequestHistory: false,
-      });
-    };
-    const onPointerEnd = () => { pointerStart = null; };
-    // Capture ownership before React handlers, list callbacks, or a same-turn
-    // data/size commit can observe the old following session.
-    root.addEventListener('wheel', onWheel, { capture: true, passive: true });
     root.addEventListener('scroll', onScroll, { passive: true });
-    root.addEventListener('scrollend', onScrollEnd, { passive: true });
-    root.addEventListener('touchstart', onTouchStart, { passive: true });
-    root.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
-    root.addEventListener('keydown', onKey, { capture: true });
-    root.addEventListener('pointerdown', onPointerDown, { passive: true });
-    root.addEventListener('pointermove', onPointerMove, { passive: true });
-    root.addEventListener('pointerup', onPointerEnd, { passive: true });
-    root.addEventListener('pointercancel', onPointerEnd, { passive: true });
+    root.addEventListener('scrollend', onGeometryScrollEnd, { passive: true });
     return () => {
-      root.removeEventListener('wheel', onWheel, { capture: true });
       root.removeEventListener('scroll', onScroll);
-      root.removeEventListener('scrollend', onScrollEnd);
-      root.removeEventListener('touchstart', onTouchStart);
-      root.removeEventListener('touchmove', onTouchMove, { capture: true });
-      root.removeEventListener('keydown', onKey, { capture: true });
-      root.removeEventListener('pointerdown', onPointerDown);
-      root.removeEventListener('pointermove', onPointerMove);
-      root.removeEventListener('pointerup', onPointerEnd);
-      root.removeEventListener('pointercancel', onPointerEnd);
+      root.removeEventListener('scrollend', onGeometryScrollEnd);
     };
-  }, [observe, requestTopDemand, scheduleObserve, scrollerNode, takeControl]);
+  }, [requestTopDemand, scheduleObserve, scrollerNode]);
 
   useLayoutEffect(() => {
     if (!scrollerNode) return;
@@ -1645,44 +1648,164 @@ export function MessageList({
     scrollerRef.current = next;
     setScrollerNode((current) => current === next ? current : next);
     if (next && !next.hasAttribute('tabindex')) next.tabIndex = 0;
-    if (next && focusOnMount && !focusClaimedRef.current) {
-      focusClaimedRef.current = true;
-      next.focus?.({ preventScroll: true });
-    }
-  }, [focusOnMount]);
-
-  const publishHandoffReady = useCallback((source) => {
-    if (!handoffPendingRef.current || handoffReadyRef.current) return false;
-    const root = scrollerRef.current;
-    const owner = readingRef.current;
-    const current = owner?.getSession?.() || owner?.session;
-    const targetID = current?.bookmark?.messageID || '';
-    const target = targetID ? presentationRowNode(root, targetID) : null;
-    if (!root || root.clientHeight <= 0 || root.scrollHeight <= 0 || !target) return false;
-    const targetItem = target.closest?.('[data-known-size]');
-    const formalState = formalRangeStatesRef.current.get(formalRangeOwner) || null;
-    if (formalState?.phase !== 'ready'
-      || Number(targetItem?.dataset?.knownSize || 0) <= 0
-      || root.querySelector('[data-formal-preparing]')) return false;
-    // Existing browsing restore owns geometry. Readiness is only a committed
-    // identity/materialization edge and never writes scroll position.
-    if (delayedRestoreRef.current) return false;
-    handoffReadyRef.current = true;
-    const rootRect = root.getBoundingClientRect();
-    const targetRect = target.getBoundingClientRect();
-    onHandoffReady?.({
-      activationID: current.activationID,
-      inputEpoch: current.inputEpoch,
-      targetID,
-      source,
-      targetViewportOffset: targetRect.top - rootRect.top,
-    });
-    return true;
-  }, [formalRangeOwner, onHandoffReady]);
+  }, []);
 
   useLayoutEffect(() => {
-    publishHandoffReady('formal-range');
-  }, [formalRangeRevision, publishHandoffReady]);
+    const root = scrollerRef.current;
+    if (!root || handoffPending || !focusOnMount || focusClaimedRef.current) return;
+    focusClaimedRef.current = true;
+    root.focus?.({ preventScroll: true });
+  }, [focusOnMount, handoffPending]);
+
+  const scheduleNavigationRevealReceipt = useCallback((source) => {
+    if (!handoffPendingRef.current || revealFrameRef.current.some(Boolean)) return false;
+    const buildReceipt = () => {
+      const targetAuthority = handoffTargetRef.current;
+      const reject = (reason, detail = {}) => {
+        traceReadingAdapter('navigation-receipt-reject', {
+          reason,
+          targetID: targetAuthority?.bookmark?.messageID || '',
+          targetRevision: targetAuthority?.targetRevision || 0,
+          ...detail,
+        });
+        return null;
+      };
+      if (!targetAuthority || targetAuthority.phase !== 'settled') return reject('input-active');
+      const owner = readingRef.current;
+      const current = owner?.getSession?.() || owner?.session;
+      if (targetAuthority.activationID !== current?.activationID
+        || Number(targetAuthority.inputGeneration) !== Number(current?.inputEpoch)) {
+        return reject('owner-mismatch', { inputEpoch: current?.inputEpoch || 0 });
+      }
+      const data = snapshotRef.current;
+      const ack = materializationAckRef.current;
+      if (!ack
+        || ack.activationID !== current.activationID
+        || ack.presentationRevision !== Number(data.revision || 0)
+        || Number(ack.presentationRevision) < Number(targetAuthority.presentationRevision)) {
+        return reject('materialization-revision', {
+          ackRevision: ack?.presentationRevision || 0,
+          snapshotRevision: Number(data.revision || 0),
+        });
+      }
+      const targetID = targetAuthority.bookmark?.messageID || '';
+      const targetIndex = data.rows.findIndex((row) => row.id === targetID);
+      const absoluteTargetIndex = Number(data.firstItemIndex || 0) + targetIndex;
+      if (targetIndex < 0
+        || absoluteTargetIndex < Number(ack.startIndex)
+        || absoluteTargetIndex > Number(ack.endIndex)) {
+        return reject('installed-range', {
+          targetIndex: absoluteTargetIndex,
+          startIndex: Number(ack.startIndex),
+          endIndex: Number(ack.endIndex),
+        });
+      }
+      const root = scrollerRef.current;
+      const target = presentationRowNode(root, targetID);
+      if (!root || !root.isConnected || root.clientHeight <= 0 || root.scrollHeight <= 0 || !target) {
+        return reject('target-geometry', {
+          connected: root?.isConnected === true,
+          clientHeight: Number(root?.clientHeight || 0),
+          scrollHeight: Number(root?.scrollHeight || 0),
+          targetMaterialized: Boolean(target),
+        });
+      }
+      const targetItem = target.closest?.('[data-known-size]');
+      const formalState = formalRangeStatesRef.current.get(formalRangeOwner) || null;
+      if (formalState?.phase !== 'ready'
+        || Number(targetItem?.dataset?.knownSize || 0) <= 0
+        || root.querySelector('[data-formal-preparing]')
+        || delayedRestoreRef.current) {
+        return reject('formal-or-restore', {
+          formalPhase: formalState?.phase || '',
+          knownSize: Number(targetItem?.dataset?.knownSize || 0),
+          formalPreparing: Boolean(root.querySelector('[data-formal-preparing]')),
+          restorePending: Boolean(delayedRestoreRef.current),
+        });
+      }
+      const rootRect = root.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const actualOffset = targetRect.top - rootRect.top;
+      const rawDesiredOffset = targetAuthority.bookmark?.rowViewportOffset;
+      const desiredOffset = rawDesiredOffset == null ? null : Number(rawDesiredOffset);
+      if (Number.isFinite(desiredOffset) && Math.abs(actualOffset - desiredOffset) > 2) {
+        return reject('anchor-mismatch', { actualOffset, desiredOffset });
+      }
+      const block = firstVisible(target, '[data-reading-block-id]', rootRect.top);
+      return {
+        ownerToken: targetAuthority.ownerToken,
+        activationID: targetAuthority.activationID,
+        inputGeneration: targetAuthority.inputGeneration,
+        transactionID: targetAuthority.transactionID,
+        hostToken: targetAuthority.hostToken,
+        targetRevision: targetAuthority.targetRevision,
+        presentationRevision: targetAuthority.presentationRevision,
+        materializedPresentationRevision: Number(data.revision || 0),
+        targetID,
+        targetBlockID: block?.dataset?.readingBlockId || '',
+        targetViewportOffset: actualOffset,
+        desiredViewportOffset: Number.isFinite(desiredOffset) ? desiredOffset : null,
+        installedRange: Object.freeze({
+          startIndex: Number(ack.startIndex),
+          endIndex: Number(ack.endIndex),
+        }),
+        geometryRevision: geometryRevisionRef.current,
+        formalGeneration: Number(formalState.generation || 0),
+        materialized: true,
+        source,
+      };
+    };
+    const candidate = buildReceipt();
+    if (!candidate) return false;
+    const key = [candidate.activationID, candidate.inputGeneration, candidate.transactionID,
+      candidate.targetRevision, candidate.materializedPresentationRevision,
+      candidate.geometryRevision, candidate.targetViewportOffset].join(':');
+    if (deliveredReceiptKeyRef.current === key) return true;
+    revealFrameRef.current[0] = globalThis.requestAnimationFrame?.(() => {
+      revealFrameRef.current[0] = 0;
+      if (!buildReceipt()) return;
+      revealFrameRef.current[1] = globalThis.requestAnimationFrame?.(() => {
+        revealFrameRef.current[1] = 0;
+        const receipt = buildReceipt();
+        if (!receipt) return;
+        const currentKey = [receipt.activationID, receipt.inputGeneration, receipt.transactionID,
+          receipt.targetRevision, receipt.materializedPresentationRevision,
+          receipt.geometryRevision, receipt.targetViewportOffset].join(':');
+        if (currentKey !== key || deliveredReceiptKeyRef.current === currentKey) return;
+        deliveredReceiptKeyRef.current = currentKey;
+        onNavigationRevealReceipt?.(Object.freeze({
+          ...receipt,
+          paintRevision: ++paintRevisionRef.current,
+        }));
+      }) || 0;
+    }) || 0;
+    return true;
+  }, [formalRangeOwner, onNavigationRevealReceipt]);
+  useLayoutEffect(() => {
+    scheduleRevealReceiptRef.current = scheduleNavigationRevealReceipt;
+    return () => {
+      if (scheduleRevealReceiptRef.current === scheduleNavigationRevealReceipt) {
+        scheduleRevealReceiptRef.current = null;
+      }
+    };
+  }, [scheduleNavigationRevealReceipt]);
+
+  useLayoutEffect(() => () => {
+    for (const frame of revealFrameRef.current) {
+      if (frame) globalThis.cancelAnimationFrame?.(frame);
+    }
+    revealFrameRef.current = [0, 0];
+  }, []);
+
+  /*
+   * A navigation receipt is intentionally separate from transaction settle:
+   * settle ends input attribution; only the exact committed materialization,
+   * formal geometry and a paint opportunity may admit the incoming layer.
+   */
+  useLayoutEffect(() => {
+    positionDelayedBookmark('formal-range');
+    scheduleNavigationRevealReceipt('formal-range');
+  }, [formalRangeRevision, positionDelayedBookmark, scheduleNavigationRevealReceipt]);
 
   const itemMeasurementKey = useCallback((index, row) => (
     rowRevision?.(index, row) || String(row.contentRevision)
@@ -1705,6 +1828,28 @@ export function MessageList({
     formalRangeStatesRef.current.set(formalRangeOwner, state);
     setFormalRangeRevision((revision) => revision + 1);
   }, [formalRangeOwner]);
+  const acknowledgeCommittedRange = useCallback(() => {
+    const root = scrollerRef.current;
+    const owner = readingRef.current;
+    const current = owner?.getSession?.() || owner?.session;
+    const data = snapshotRef.current;
+    if (!root || !current || !data.rows.length) return null;
+    const indexByID = new Map(data.rows.map((row, index) => [String(row.id), index]));
+    const installed = [...root.querySelectorAll('[data-presentation-row-id]')]
+      .map((node) => indexByID.get(String(node.dataset.presentationRowId || '')))
+      .filter(Number.isInteger)
+      .map((index) => Number(data.firstItemIndex || 0) + index);
+    if (!installed.length) return null;
+    const ack = {
+      activationID: current.activationID,
+      presentationRevision: Number(data.revision || 0),
+      startIndex: Math.min(...installed),
+      endIndex: Math.max(...installed),
+      source: 'list-commit',
+    };
+    materializationAckRef.current = ack;
+    return ack;
+  }, []);
   const onListCommit = useCallback(() => {
     const token = ++listCommitMicrotaskRef.current;
     queueMicrotask(() => {
@@ -1714,12 +1859,14 @@ export function MessageList({
       // committed List is the authority that a new paintable subtree exists;
       // sample it on the normal rAF path so a short, non-scrollable list still
       // publishes exact visible identities after promotion.
+      acknowledgeCommittedRange();
       scheduleObserve('layout');
       positionDelayedBookmark('list-commit');
-      publishHandoffReady('list-commit');
+      scheduleNavigationRevealReceipt('list-commit');
       issueBottomIfCurrent('list-commit');
     });
-  }, [issueBottomIfCurrent, positionDelayedBookmark, publishHandoffReady, scheduleObserve]);
+  }, [acknowledgeCommittedRange, issueBottomIfCurrent, positionDelayedBookmark,
+    scheduleNavigationRevealReceipt, scheduleObserve]);
   const listContext = useMemo(() => ({
     onListCommit,
   }), [onListCommit]);
@@ -1848,7 +1995,7 @@ export function MessageList({
     computeItemMeasurementKey={itemMeasurementKey}
     formalRangeStateChange={onFormalRangeStateChange}
     itemContent={itemContent}
-    initialTopMostItemIndex={initialTopMostItemIndex}
+    initialTopMostItemIndex={handoffPending && navigationTarget ? undefined : initialTopMostItemIndex}
     followOutput={false}
     defaultItemHeight={132}
     increaseViewportBy={900}
@@ -1860,6 +2007,8 @@ export function MessageList({
       materializationAckRef.current = {
         activationID: reading.activationID,
         presentationRevision: Number(snapshot.revision || 0),
+        startIndex: Number(info?.startIndex ?? -1),
+        endIndex: Number(info?.endIndex ?? -1),
       };
       traceReadingAdapter('range', () => ({
         startIndex: Number(info?.startIndex ?? -1),
@@ -1878,7 +2027,7 @@ export function MessageList({
           endIndex: Number(info.endIndex),
         });
         positionDelayedBookmark('range-materialized');
-        publishHandoffReady('range-materialized');
+        scheduleNavigationRevealReceipt('range-materialized');
       }
     }}
     atBottomStateChange={(atBottom) => {
@@ -2019,4 +2168,19 @@ export function MessageList({
     }}
     />
   </>;
+}
+
+function StandaloneMessageList(props) {
+  const stackRef = useRef(null);
+  return <ReadingNavigationOwner
+    activationID={props.reading.activationID}
+    reading={props.reading}
+    stackRef={stackRef}
+    visibleRole="browsing"
+  ><div ref={stackRef}><MessageListBody {...props} /></div></ReadingNavigationOwner>;
+}
+
+export function MessageList(props) {
+  const navigationOwner = useReadingNavigationOwner();
+  return navigationOwner ? <MessageListBody {...props} /> : <StandaloneMessageList {...props} />;
 }

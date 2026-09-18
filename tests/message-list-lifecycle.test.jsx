@@ -41,7 +41,7 @@ vi.mock('react-virtuoso', async () => {
     const List = props.components?.List || 'div';
     return <div ref={nodeRef} className={props.className} role={props.role} aria-label={props['aria-label']}>
       <List context={props.context}>{props.data.map((value, index) => (
-        <div key={props.computeItemKey(index + props.firstItemIndex, value)}>{props.itemContent(index + props.firstItemIndex, value)}</div>
+        <div data-known-size="132" key={props.computeItemKey(index + props.firstItemIndex, value)}>{props.itemContent(index + props.firstItemIndex, value)}</div>
       ))}</List>
     </div>;
   });
@@ -56,6 +56,7 @@ afterEach(() => {
   legendHarness.scrollToIndex.mockReset();
   legendHarness.commitHeight = 0;
   legendHarness.commitHeights = [];
+  vi.unstubAllGlobals();
 });
 
 function row(id, seq) {
@@ -87,7 +88,7 @@ function reading(onReadingObservation, activationID = 'activation:a', bookmark =
     bookmark,
     bottomIntent: { id: '', inputEpoch: 0 },
   };
-  return {
+  const owner = {
     activationID: session.activationID,
     session,
     initializing: false,
@@ -100,6 +101,14 @@ function reading(onReadingObservation, activationID = 'activation:a', bookmark =
     isFollowing: () => false,
     getSession: () => session,
   };
+  owner.beginNavigation = vi.fn((input) => {
+    owner.onUserControl(input);
+    return { inputGeneration: session.inputEpoch };
+  });
+  owner.updateNavigation = vi.fn(() => true);
+  owner.finishNavigation = vi.fn(() => true);
+  owner.cancelNavigation = vi.fn(() => true);
+  return owner;
 }
 
 function FormalRangeSubject({ activationID, rows = [row('formal-row', 1)], surfaceVisible = true }) {
@@ -410,6 +419,116 @@ it('settles a provisional bookmark after its target materializes without a secon
   expect(legendHarness.scrollToIndex).toHaveBeenCalledTimes(1);
 });
 
+it('admits a handoff only from the exact settled target after materialization, formal geometry, and paint', () => {
+  const frames = [];
+  vi.stubGlobal('requestAnimationFrame', (callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  const ownerToken = {};
+  const rows = [row('handoff-target', 1)];
+  const owner = reading(vi.fn(), 'activation:handoff', {
+    messageID: 'handoff-target', rowViewportOffset: -12,
+  });
+  const receipt = vi.fn();
+  const activeTarget = {
+    ownerToken,
+    activationID: owner.activationID,
+    inputGeneration: owner.session.inputEpoch,
+    transactionID: 'navigation:1',
+    hostToken: 9,
+    targetRevision: 1,
+    presentationRevision: 1,
+    bookmark: { messageID: 'handoff-target', rowViewportOffset: -12 },
+    phase: 'active',
+  };
+  const props = {
+    snapshot: snapshot(rows, 1),
+    reading: owner,
+    renderRow: (value) => <article data-reading-block-id={`block:${value.id}`}>{value.id}</article>,
+    handoffPending: true,
+    onNavigationRevealReceipt: receipt,
+  };
+  const view = render(<MessageList {...props} navigationTarget={activeTarget} />);
+  expect(legendHarness.props.initialTopMostItemIndex).toBeUndefined();
+  expect(legendHarness.scrollToIndex).not.toHaveBeenCalled();
+  const scroller = screen.getByRole('region', { name: '频道动态' });
+  setScrollerGeometry(scroller, { clientHeight: 600, scrollHeight: 1000, scrollTop: 400 });
+  scroller.getBoundingClientRect = () => ({
+    top: 0, bottom: 600, left: 0, right: 800, width: 800, height: 600,
+  });
+  const targetNode = scroller.querySelector('[data-presentation-row-id="handoff-target"]');
+  let targetTop = 36;
+  targetNode.getBoundingClientRect = () => ({
+    top: targetTop, bottom: targetTop + 132, left: 0, right: 800, width: 800, height: 132,
+  });
+  targetNode.querySelector('[data-reading-block-id]').getBoundingClientRect = () => ({
+    top: 0, bottom: 40, left: 8, right: 400, width: 392, height: 40,
+  });
+
+  act(() => legendHarness.props.formalRangeStateChange({
+    phase: 'ready', blocking: false, generation: 4,
+  }));
+  act(() => legendHarness.props.rangeChanged({ startIndex: 99, endIndex: 99 }));
+  expect(legendHarness.scrollToIndex).toHaveBeenCalledWith({
+    index: 0, align: 'start', offset: 12,
+  });
+  targetTop = -12;
+  act(() => legendHarness.props.rangeChanged({ startIndex: 99, endIndex: 99 }));
+  act(() => frames.splice(0).forEach((callback) => callback()));
+  act(() => frames.splice(0).forEach((callback) => callback()));
+  expect(receipt).not.toHaveBeenCalled();
+
+  view.rerender(<MessageList {...props} navigationTarget={{ ...activeTarget, phase: 'settled' }} />);
+  act(() => frames.splice(0).forEach((callback) => callback()));
+  act(() => frames.splice(0).forEach((callback) => callback()));
+
+  expect(receipt).toHaveBeenCalledTimes(1);
+  expect(receipt).toHaveBeenCalledWith(expect.objectContaining({
+    ownerToken,
+    activationID: owner.activationID,
+    inputGeneration: owner.session.inputEpoch,
+    transactionID: 'navigation:1',
+    hostToken: 9,
+    targetRevision: 1,
+    presentationRevision: 1,
+    materializedPresentationRevision: 1,
+    targetID: 'handoff-target',
+    targetBlockID: 'block:handoff-target',
+    targetViewportOffset: -12,
+    desiredViewportOffset: -12,
+    installedRange: { startIndex: 99, endIndex: 99 },
+    formalGeneration: 4,
+    materialized: true,
+    paintRevision: 1,
+  }));
+});
+
+it('transfers focus only in the atomic reveal commit, not while incoming is inert', () => {
+  const owner = reading(vi.fn(), 'activation:focus-handoff');
+  const props = {
+    snapshot: snapshot([row('focus-target', 1)], 1),
+    reading: owner,
+    renderRow: (value) => <article>{value.id}</article>,
+    focusOnMount: true,
+  };
+  const view = render(<>
+    <button type="button">outgoing focus</button>
+    <MessageList {...props} handoffPending />
+  </>);
+  const outgoing = screen.getByRole('button', { name: 'outgoing focus' });
+  outgoing.focus();
+  expect(document.activeElement).toBe(outgoing);
+
+  view.rerender(<>
+    <button type="button">outgoing focus</button>
+    <MessageList {...props} handoffPending={false} />
+  </>);
+
+  expect(document.activeElement).toBe(screen.getByRole('region', { name: '频道动态' }));
+});
+
 function followingReading({
   activationID = 'activation:follow',
   bottomIntent = { id: '', inputEpoch: 0 },
@@ -451,6 +570,13 @@ function followingReading({
       owner.session = session;
     },
   };
+  owner.beginNavigation = vi.fn((input) => {
+    owner.onUserControl(input);
+    return { inputGeneration: session.inputEpoch };
+  });
+  owner.updateNavigation = vi.fn(() => true);
+  owner.finishNavigation = vi.fn(() => true);
+  owner.cancelNavigation = vi.fn(() => true);
   return owner;
 }
 

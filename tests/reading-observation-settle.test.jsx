@@ -101,6 +101,13 @@ function readingOwner() {
     },
     observations,
   };
+  owner.beginNavigation = vi.fn((control) => {
+    owner.onUserControl(control);
+    return { inputGeneration: session.inputEpoch };
+  });
+  owner.updateNavigation = vi.fn(() => true);
+  owner.finishNavigation = vi.fn(() => true);
+  owner.cancelNavigation = vi.fn(() => true);
   return owner;
 }
 
@@ -188,13 +195,16 @@ describe('reading observation settlement authority', () => {
 
     await act(async () => {
       content.dispatchEvent(pointer('pointerdown', {
-        pointerType: 'mouse', button: 0, clientX: 10, clientY: 10,
+        pointerType: 'mouse', pointerId: 7, button: 0, clientX: 10, clientY: 10,
       }));
       content.dispatchEvent(pointer('pointermove', {
-        pointerType: 'mouse', button: 0, clientX: 10, clientY: 20,
+        pointerType: 'mouse', pointerId: 7, button: 0, clientX: 10, clientY: 20,
       }));
       scroller.scrollTop = 400;
       scroller.dispatchEvent(new Event('scroll'));
+      content.dispatchEvent(pointer('pointerup', {
+        pointerType: 'mouse', pointerId: 7, button: 0, clientX: 10, clientY: 20,
+      }));
       scroller.dispatchEvent(new Event('scrollend'));
       await nextFrame();
     });

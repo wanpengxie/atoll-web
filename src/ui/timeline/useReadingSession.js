@@ -2,6 +2,7 @@ import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, u
 import { HISTORY_INTENT, HISTORY_URGENCY } from '../../model/history-demand.js';
 import {
   bindLatestIntentTargets,
+  cancelReadingControl,
   consumeLatestIntent,
   createReadingSession,
   observeReading,
@@ -9,6 +10,7 @@ import {
   READING_MODE,
   requestLatest,
   takeReadingControl,
+  updateReadingControl,
 } from '../../model/reading-session.js';
 import { readerCaughtUp, viewportUnseenNotice } from '../../model/notification-policy.js';
 import { newId } from '../../util/id.js';
@@ -1819,6 +1821,87 @@ export function useReadingSession({
     actorFiltered: caughtUpActorFiltered,
   }), [caughtUpActorFiltered, caughtUpScope, channelID, readerPresent]);
 
+  const beginNavigation = useCallback((input = {}) => {
+    const activeRequest = runwayRequestRef.current;
+    const requestOperationID = activeRequest?.controller === controller
+      ? String(activeRequest.operationID || '')
+      : '';
+    const operationID = currentAdmissionOperationID(
+      historyStatus,
+      channelID,
+      controller.activationID,
+      viewKey,
+    ) || requestOperationID;
+    if (input.direction !== 'older') {
+      activeRequest?.abortController?.abort('trusted-reverse-input');
+      if (operationID) historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
+      runwayRequestRef.current = null;
+    }
+    const nextSession = controller.update((current) => takeReadingControl(current, input));
+    if (input.direction === 'older' && operationID) {
+      const renewal = historyStatus.presentationAdmission?.advanceInputEpoch?.(channelID, {
+        operationID,
+        activationID: controller.activationID,
+        direction: input.direction,
+        inputEpoch: nextSession.inputEpoch,
+        currentInputEpoch: controller.getSnapshot().session.inputEpoch,
+      });
+      if (renewal) diagnostic('debug', 'history.admission_input_advanced', {
+        channelId: channelID,
+        ...renewal,
+      });
+    }
+    return Object.freeze({ inputGeneration: nextSession.inputEpoch });
+  }, [channelID, controller, historyStatus, viewKey]);
+
+  const updateNavigation = useCallback((input = {}) => {
+    const current = controller.getSnapshot().session;
+    if (Number(input.inputGeneration) !== Number(current.inputEpoch)) return false;
+    if (input.direction !== 'older') {
+      const activeRequest = runwayRequestRef.current;
+      activeRequest?.abortController?.abort('trusted-reverse-input');
+      const requestOperationID = activeRequest?.controller === controller
+        ? String(activeRequest.operationID || '')
+        : '';
+      const operationID = currentAdmissionOperationID(
+        historyStatus, channelID, controller.activationID, viewKey,
+      ) || requestOperationID;
+      if (operationID) historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
+      runwayRequestRef.current = null;
+    }
+    controller.update((active) => updateReadingControl(active, {
+      inputEpoch: input.inputGeneration,
+      direction: input.direction,
+      gestureID: input.gestureID,
+      geometryRevision: input.geometryRevision,
+    }));
+    return true;
+  }, [channelID, controller, historyStatus, viewKey]);
+
+  const finishNavigation = useCallback((input = {}) => (
+    Number(input.inputGeneration) === Number(controller.getSnapshot().session.inputEpoch)
+  ), [controller]);
+
+  const cancelNavigation = useCallback((input = {}) => {
+    const before = controller.getSnapshot().session;
+    if (Number(input.inputGeneration) !== Number(before.inputEpoch)) return false;
+    const activeRequest = runwayRequestRef.current;
+    const requestOperationID = activeRequest?.controller === controller
+      ? String(activeRequest.operationID || '')
+      : '';
+    const operationID = currentAdmissionOperationID(
+      historyStatus, channelID, controller.activationID, viewKey,
+    ) || requestOperationID;
+    activeRequest?.abortController?.abort(`trusted-navigation-cancel:${input.reason || 'cancelled'}`);
+    if (operationID) historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
+    runwayRequestRef.current = null;
+    const after = controller.update((active) => cancelReadingControl(active, {
+      inputEpoch: input.inputGeneration,
+      gestureID: input.gestureID,
+    }));
+    return after !== before;
+  }, [channelID, controller, historyStatus, viewKey]);
+
   return useMemo(() => ({
     activationID: controller.activationID,
     session,
@@ -1873,48 +1956,10 @@ export function useReadingSession({
     onUnderfill(detail = {}) {
       return requestHistory('underfill', HISTORY_URGENCY.anticipatory, detail);
     },
-    onUserControl(input) {
-      // The reveal operation outlives its network request. runwayRequestRef is
-      // cleared in that request's .finally at history.intent_satisfied, while
-      // the operation stays open through pending-baseline-commit and
-      // committed-awaiting-layout until Timeline acknowledges the commit. Input
-      // landing in that window must still reach the operation, so ask the
-      // authority for its own handle when the request no longer carries one.
-      // Nothing is widened: only this activation's own view is addressable, and
-      // advanceInputEpoch/cancel remain the sole write entries and re-check
-      // phase, direction, operation, activation and epoch monotonicity.
-      const activeRequest = runwayRequestRef.current;
-      const requestOperationID = activeRequest?.controller === controller
-        ? String(activeRequest.operationID || '')
-        : '';
-      const operationID = currentAdmissionOperationID(
-        historyStatus,
-        channelID,
-        controller.activationID,
-        viewKey,
-      ) || requestOperationID;
-      if (input?.direction !== 'older') {
-        activeRequest?.abortController?.abort('trusted-reverse-input');
-        if (operationID) {
-          historyStatus.presentationAdmission?.cancel?.(channelID, operationID);
-        }
-        runwayRequestRef.current = null;
-      }
-      const nextSession = controller.update((current) => takeReadingControl(current, input));
-      if (input?.direction === 'older' && operationID) {
-        const renewal = historyStatus.presentationAdmission?.advanceInputEpoch?.(channelID, {
-          operationID,
-          activationID: controller.activationID,
-          direction: input.direction,
-          inputEpoch: nextSession.inputEpoch,
-          currentInputEpoch: controller.getSnapshot().session.inputEpoch,
-        });
-        if (renewal) diagnostic('debug', 'history.admission_input_advanced', {
-          channelId: channelID,
-          ...renewal,
-        });
-      }
-    },
+    beginNavigation,
+    updateNavigation,
+    finishNavigation,
+    cancelNavigation,
     onReadingObservation(observation) {
       const current = controller.getSnapshot().session;
       const activationID = observation.activationID || controller.activationID;
@@ -2042,5 +2087,5 @@ export function useReadingSession({
     revokeBottomIntent,
     isFollowing() { return controller.getSnapshot().session.mode === READING_MODE.following; },
     getSession() { return controller.getSnapshot().session; },
-  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen]);
+  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, beginNavigation, bindBottomIntentTargets, bottomReady, cancelNavigation, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, finishNavigation, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen, updateNavigation]);
 }

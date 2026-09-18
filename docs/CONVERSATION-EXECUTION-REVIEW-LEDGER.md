@@ -4,6 +4,13 @@
 
 ### 最新状态（本段覆盖以下旧快照；监督周期已依用户改为20分钟）
 
+#### 2026-09-18 21:52：Q 输入接管实际整合
+
+- 已亲审并整合 exact aca5 pure-Q union f8f8097523a8780c16e24e822347e37f52e07016009379182fc66199e99b36f3；独立机制审核 APPROVE。单一物理输入事务统一 wheel/touch/key，交接期间可见旧容器保留输入权，精确目标物化后原子切换；保留 D 编辑不切模式、冷 freshness 与 Outbox 实现。
+- 当前主树整合后9个测试文件158/158通过，production build通过。候选独立真实输入4/4、相关D路径11/11通过；不把候选浏览器成绩冒充提交后重新执行。
+- 仍未关闭：browsing append 的 -3396px 库写入、fold re-expand +3026.6px、processing save browsing -231px。库 owner 正追同一测量/锚定边界，不能随 Q 合入宣布关闭。processing save Following独立通过，Browsing失败保留。
+- 未部署、未重启共享服务、未改后端。
+
 #### 2026-09-18 21:31：本轮整合与独立反证
 
 - `d5bfab3` 冷缓存优先权与取消生命周期已合，主树108定向通过；候选独立cold4/4、cached342.7ms。修因是未决cache selection时投机remote占唯一lane，安全Meta到后未接管；不是泛称Meta迟到。receipt/page取消均释放executor，焦点network不等待IDB。

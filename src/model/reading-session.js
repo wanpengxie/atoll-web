@@ -96,6 +96,46 @@ export function takeReadingControl(session, { direction = 'browse', gestureID = 
   });
 }
 
+// A physical navigation transaction owns one inputEpoch for its full contact
+// lifetime. Direction reversals update only the evidence attached to that
+// epoch; they must neither mint a second epoch nor leave evidence from the
+// previous direction able to authorize following later.
+export function updateReadingControl(session, {
+  inputEpoch,
+  direction = 'browse',
+  gestureID = '',
+  geometryRevision,
+} = {}) {
+  if (Number(inputEpoch) !== session.inputEpoch) return session;
+  const nextEvidence = direction === 'newer' ? Object.freeze({
+    gestureID: String(gestureID || inputEpoch),
+    inputEpoch: session.inputEpoch,
+    geometryRevision: Number.isFinite(geometryRevision) ? geometryRevision : session.geometryRevision,
+    direction: 'newer',
+  }) : null;
+  const evidence = session.tailEvidence;
+  const sameEvidence = evidence === nextEvidence || Boolean(
+    evidence && nextEvidence
+    && evidence.gestureID === nextEvidence.gestureID
+    && evidence.inputEpoch === nextEvidence.inputEpoch
+    && evidence.geometryRevision === nextEvidence.geometryRevision
+    && evidence.direction === nextEvidence.direction
+  );
+  if (sameEvidence && !session.bottomIntent.id) return session;
+  return next(session, {
+    mode: READING_MODE.browsing,
+    bottomIntent: idleBottomIntent(),
+    tailEvidence: sameEvidence ? evidence : nextEvidence,
+  });
+}
+
+export function cancelReadingControl(session, { inputEpoch, gestureID = '' } = {}) {
+  if (Number(inputEpoch) !== session.inputEpoch) return session;
+  const evidence = session.tailEvidence;
+  if (!evidence || (gestureID && evidence.gestureID !== String(gestureID))) return session;
+  return next(session, { tailEvidence: null });
+}
+
 export function observeReading(session, observation = {}) {
   if (observation.activationID && observation.activationID !== session.activationID) return session;
   const observedGeometryRevision = Number(observation.geometryRevision) || 0;

@@ -8,10 +8,11 @@ import React, {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from 'react';
 import { isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
-import { READING_MODE } from '../../model/reading-session.js';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
+import { useReadingNavigationHost } from './ReadingNavigationOwner.jsx';
 import {
   completeViewportUnits,
   installedHighSeq,
@@ -112,24 +113,17 @@ export function FollowingTailList({
   window: windowSize = FOLLOWING_TAIL_WINDOW,
   active = true,
   focusOnMount = false,
-  onHandoffStart,
 }) {
   const rootRef = useRef(null);
-  const readingRef = useRef(reading);
-  const snapshotRef = useRef(snapshot);
-  const activeRef = useRef(active);
+  const [rootNode, setRootNode] = useState(null);
+  const committedRef = useRef({ reading, snapshot, active, surfaceVisible: surfaceVisible === true });
   const observationFrameRef = useRef(0);
-  const surfaceVisibleRef = useRef(surfaceVisible === true);
-  const handedOffRef = useRef(false);
   const consumedIntentRef = useRef('');
   const underfillKeyRef = useRef('');
-
-  readingRef.current = reading;
-  snapshotRef.current = snapshot;
-  // An already queued rAF/ResizeObserver callback can run between the browsing
-  // commit and passive-effect cleanup. Read the committed adapter role through
-  // a ref so that callback cannot publish one stale following observation.
-  activeRef.current = active;
+  const bindRoot = useCallback((node) => {
+    rootRef.current = node;
+    setRootNode(node);
+  }, []);
 
   const rows = snapshot.rows;
   // A pure derivation of the committed Presentation. No mirror, no cache: the
@@ -146,11 +140,12 @@ export function FollowingTailList({
 
   const publishObservation = useCallback((source) => {
     const root = rootRef.current;
-    const owner = readingRef.current;
-    if (!activeRef.current || !root || !owner) return;
+    const committed = committedRef.current;
+    const owner = committed.reading;
+    if (!committed.active || !root || !owner) return;
     const current = owner.getSession?.() || owner.session;
-    const data = snapshotRef.current;
-    const visible = surfaceVisibleRef.current === true && isReadingSurfaceVisible(root);
+    const data = committed.snapshot;
+    const visible = committed.surfaceVisible && isReadingSurfaceVisible(root);
     owner.onReadingObservation?.({
       activationID: current.activationID,
       source,
@@ -180,77 +175,71 @@ export function FollowingTailList({
     }) || 0;
   }, [publishObservation]);
 
-  // ---- following -> browsing handoff --------------------------------------
-
-  // In following mode nothing but the user can change scrollTop: this file
-  // never writes it, and column-reverse means no layout change moves it. A
-  // non-zero scrollTop is therefore, by construction, a user gesture.
   const onScroll = useCallback(() => {
     const root = rootRef.current;
-    const owner = readingRef.current;
-    if (!root || !owner) return;
-    const current = owner.getSession?.() || owner.session;
-    if (current.mode !== READING_MODE.following) return;
-    if (Number(root.scrollTop || 0) > -LEAVE_TAIL_THRESHOLD) {
-      scheduleObservation('user');
-      return;
-    }
-    if (handedOffRef.current) return;
-    handedOffRef.current = true;
-    // Read the anchor BEFORE the intent flips, while this container is still
-    // the mounted one. This is the payload Virtuoso's initialTopMostItemIndex
-    // consumes, so the browsing container mounts on the exact row the follower
-    // was looking at.
-    const bookmark = topVisibleBookmark(root, snapshotRef.current.rows);
-    onHandoffStart?.({
-      activationID: current.activationID,
-      inputEpoch: current.inputEpoch,
-      bookmark,
-      focusOwned: root === globalThis.document?.activeElement
-        || root.contains?.(globalThis.document?.activeElement),
-    });
-    owner.onUserControl?.({
-      direction: 'older',
-      gestureID: `following-tail:leave:${current.inputEpoch + 1}`,
-      geometryRevision: current.geometryRevision,
-    });
-    // takeReadingControl already committed mode=browsing synchronously, so this
-    // observation lands in the branch where observeReading stores the bookmark.
-    owner.onReadingObservation?.({
-      activationID: current.activationID,
-      source: 'user',
-      inputEpoch: current.inputEpoch + 1,
-      geometryRevision: 0,
-      atTail: false,
-      atTop: false,
-      surfaceVisible: surfaceVisibleRef.current === true,
-      installedHighSeq: installedHighSeq(root, snapshotRef.current.rows),
-      visibleRows: Object.freeze([]),
-      bookmark,
-    });
-    if (isReadingTraceEnabled()) {
-      const committed = owner.getSession?.() || owner.session;
-      readingTrace('reading.following-handoff', {
-        activationID: current.activationID,
-        beforeInputEpoch: current.inputEpoch,
-        inputEpoch: committed.inputEpoch,
-        scrollTop: Number(root.scrollTop || 0),
-        scrollHeight: Number(root.scrollHeight || 0),
-        clientHeight: Number(root.clientHeight || 0),
-        bookmark,
-        committedMode: committed.mode,
-        committedBookmark: committed.bookmark,
+    if (!root) return;
+    scheduleObservation(Math.abs(Number(root.scrollTop || 0)) > LEAVE_TAIL_THRESHOLD ? 'user' : 'layout');
+  }, [scheduleObservation]);
+
+  const navigationHost = useMemo(() => ({
+    readBookmark: () => topVisibleBookmark(rootRef.current, committedRef.current.snapshot.rows),
+    presentationRevision: () => Number(committedRef.current.snapshot.revision || 0),
+    ownsFocus: () => {
+      const root = rootRef.current;
+      return root === globalThis.document?.activeElement
+        || root?.contains?.(globalThis.document?.activeElement);
+    },
+    geometryRevision: () => 0,
+    isEffectiveMotion: (_previous, next) => Number(next) <= -LEAVE_TAIL_THRESHOLD,
+    onNavigationUpdate(transaction, reason) {
+      if (reason !== 'begin') return;
+      const root = rootRef.current;
+      const committedOwner = committedRef.current;
+      const owner = committedOwner.reading;
+      if (!root || !owner) return;
+      const atTail = isAtTail(root);
+      owner.onReadingObservation?.({
+        activationID: transaction.activationID,
+        source: 'user',
+        inputEpoch: transaction.inputGeneration,
+        geometryRevision: 0,
+        atTail,
+        atTop: false,
+        surfaceVisible: committedOwner.surfaceVisible,
+        installedHighSeq: installedHighSeq(root, committedOwner.snapshot.rows),
+        visibleRows: Object.freeze([]),
+        bookmark: atTail
+          ? null
+          : transaction.latestBookmark || topVisibleBookmark(root, committedOwner.snapshot.rows),
       });
-    }
-  }, [onHandoffStart, scheduleObservation]);
+      if (isReadingTraceEnabled()) {
+        const committed = owner.getSession?.() || owner.session;
+        readingTrace('reading.following-handoff', {
+          activationID: transaction.activationID,
+          inputEpoch: transaction.inputGeneration,
+          scrollTop: Number(root.scrollTop || 0),
+          scrollHeight: Number(root.scrollHeight || 0),
+          clientHeight: Number(root.clientHeight || 0),
+          bookmark: transaction.latestBookmark,
+          committedMode: committed.mode,
+          committedBookmark: committed.bookmark,
+        });
+      }
+    },
+  }), []);
+  useReadingNavigationHost('following', navigationHost, rootNode);
 
   // ---- lifecycle -----------------------------------------------------------
 
   useLayoutEffect(() => {
-    if (!active) return;
-    surfaceVisibleRef.current = surfaceVisible === true;
-    if (surfaceVisible !== true) readingRef.current?.onSurfaceVisibilityChange?.(false);
-  }, [active, surfaceVisible]);
+    committedRef.current = {
+      reading,
+      snapshot,
+      active,
+      surfaceVisible: surfaceVisible === true,
+    };
+    if (active && surfaceVisible !== true) reading.onSurfaceVisibilityChange?.(false);
+  }, [active, reading, snapshot, surfaceVisible]);
 
   useLayoutEffect(() => {
     if (!active || !focusOnMount) return;
@@ -339,7 +328,7 @@ export function FollowingTailList({
   }
 
   return <div
-    ref={rootRef}
+    ref={bindRoot}
     className="timeline-message-list timeline-following-tail"
     role="region"
     aria-label="频道动态"

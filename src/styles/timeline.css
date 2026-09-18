@@ -10,9 +10,9 @@
 .timeline-reading-layer > .timeline-message-list,
 .timeline-reading-layer > .timeline-history-status + .timeline-message-list,
 .timeline-reading-layer > .timeline-history-error + .timeline-message-list { min-height: 0; flex: 1 1 auto; }
-.timeline-reading-layer.is-outgoing { z-index: 2; pointer-events: none; }
-.timeline-reading-layer.is-incoming { z-index: 1; opacity: 0; pointer-events: auto; }
-.timeline-reading-layer.is-incoming.is-active { opacity: 1; }
+.timeline-reading-layer.is-outgoing { z-index: 2; pointer-events: auto; }
+.timeline-reading-layer.is-incoming { z-index: 1; opacity: 0; pointer-events: none; }
+.timeline-reading-layer.is-incoming.is-active { opacity: 1; pointer-events: auto; }
 .timeline-reading-layer.is-active { z-index: 1; }
 /* 跟随态容器：结构性吸底。
  * 滚动容器自身 column-reverse => 滚动原点在底边，scrollTop === 0 即在底部，

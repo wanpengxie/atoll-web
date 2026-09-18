@@ -145,7 +145,7 @@ it('请求 settle 之后继续向上输入仍然续期同一个 admission operat
   expect(boundBefore).toBe(intent.inputEpoch);
 
   // 用户没有停手，继续往上滚。
-  act(() => port().onUserControl({ direction: 'older', gestureID: 'wheel-up-2', geometryRevision: 2 }));
+  act(() => port().beginNavigation({ direction: 'older', gestureID: 'wheel-up-2', geometryRevision: 2 }));
 
   // Timeline 的 exactOwner 比的就是这两个值；它们必须仍然相等。
   const sessionEpoch = port().getSession().inputEpoch;
@@ -163,10 +163,29 @@ it('请求 settle 之后反向输入仍然能取消同一个 admission operation
   driveToAwaitingLayout(admission, intent);
 
   // 用户往回滚一下 —— 这是产品里唯一的人工出路，必须走得通。
-  act(() => port().onUserControl({ direction: 'newer', gestureID: 'wheel-down-1', geometryRevision: 3 }));
+  act(() => port().beginNavigation({ direction: 'newer', gestureID: 'wheel-down-1', geometryRevision: 3 }));
 
   expect(admission.snapshot(CHANNEL).phase).not.toBe('committed-awaiting-layout');
   expect(admission.snapshot(CHANNEL).phase).toBe('idle');
+});
+
+it('当前物理导航取消会撤销同代 awaiting-layout operation', async () => {
+  const { admission, intent, port } = await mountReadingSession();
+  driveToAwaitingLayout(admission, intent);
+
+  act(() => port().beginNavigation({
+    direction: 'older', gestureID: 'touch-up-cancel', geometryRevision: 3,
+  }));
+  const inputGeneration = port().getSession().inputEpoch;
+  expect(admission.snapshot(CHANNEL).phase).toBe('committed-awaiting-layout');
+  act(() => port().cancelNavigation({
+    inputGeneration,
+    gestureID: 'touch-up-cancel',
+    reason: 'contact-cancel',
+  }));
+
+  expect(admission.snapshot(CHANNEL).phase).toBe('idle');
+  expect(port().getSession().tailEvidence).toBeNull();
 });
 
 it('content interactions 没有独立 Reading takeover 端口', async () => {
@@ -194,7 +213,7 @@ it('切频道后新频道 native reverse input 只取消自己的 operation，�
   driveToAwaitingLayout(admission, second.intent, { channel: 'c1', viewKey: 'c1:mine' });
   const before = second.port().getSession().inputEpoch;
 
-  act(() => second.port().onUserControl({
+  act(() => second.port().beginNavigation({
     direction: 'newer', gestureID: 'wheel-down-c1', geometryRevision: 4,
   }));
 
@@ -209,7 +228,7 @@ it('重连 generation 后用户上滑不续期退休 generation 的 operation', 
   admission.begin(CHANNEL, retired);
   const tokenEpoch = admission.snapshot(CHANNEL).token.inputEpoch;
 
-  act(() => port().onUserControl({ direction: 'older', gestureID: 'wheel-after-reconnect' }));
+  act(() => port().beginNavigation({ direction: 'older', gestureID: 'wheel-after-reconnect' }));
 
   expect(port().getSession().inputEpoch).toBeGreaterThan(tokenEpoch);
   expect(admission.snapshot(CHANNEL)).toMatchObject({

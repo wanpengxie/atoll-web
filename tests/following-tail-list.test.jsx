@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import React from 'react';
-import { act, cleanup, render } from '@testing-library/react';
+import React, { startTransition, Suspense } from 'react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { FollowingTailList } from '../src/ui/timeline/FollowingTailList.jsx';
 
@@ -102,6 +102,60 @@ it('drops a queued following observation after the adapter becomes outgoing', ()
   view.rerender(<FollowingTailList {...props} active={false} surfaceVisible={false} />);
   act(() => frames.forEach((callback) => callback()));
   expect(reading.onReadingObservation).not.toHaveBeenCalled();
+});
+
+it('keeps committed reading and snapshot ownership when a candidate render suspends', async () => {
+  const frames = [];
+  vi.stubGlobal('requestAnimationFrame', (callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  const committedReading = readingPort();
+  const candidateReading = readingPort();
+  const committedSnapshot = snapshot(4);
+  const never = new Promise(() => {});
+  let candidateRendered = false;
+  function Suspender({ active }) {
+    if (active) {
+      candidateRendered = true;
+      throw never;
+    }
+    return null;
+  }
+  function Harness() {
+    const [candidate, setCandidate] = React.useState(false);
+    return <>
+      <button type="button" onClick={() => startTransition(() => setCandidate(true))}>candidate</button>
+      <Suspense fallback={<p>pending</p>}>
+        <FollowingTailList
+          snapshot={candidate ? { ...committedSnapshot, revision: 8 } : committedSnapshot}
+          reading={candidate ? candidateReading : committedReading}
+          rowRevision={(index) => String(index)}
+          renderRow={(row) => <div>{row.id}</div>}
+          active={!candidate}
+          surfaceVisible={!candidate}
+        />
+        <Suspender active={candidate} />
+      </Suspense>
+    </>;
+  }
+  const view = render(<Harness />);
+  act(() => frames.splice(0).forEach((callback) => callback()));
+  committedReading.onReadingObservation.mockClear();
+
+  fireEvent.click(view.getByRole('button', { name: 'candidate' }));
+  await waitFor(() => expect(candidateRendered).toBe(true));
+  expect(view.queryByText('pending')).toBeNull();
+
+  const root = view.container.querySelector('.timeline-message-list');
+  Object.defineProperty(root, 'scrollTop', { configurable: true, value: -10 });
+  act(() => root.dispatchEvent(new Event('scroll', { bubbles: true })));
+  expect(frames.length).toBeGreaterThan(0);
+  act(() => frames.splice(0).forEach((callback) => callback()));
+
+  expect(committedReading.onReadingObservation).toHaveBeenCalled();
+  expect(candidateReading.onReadingObservation).not.toHaveBeenCalled();
 });
 
 it('preserves descendant focus when a presentation rerender requests following focus', () => {
