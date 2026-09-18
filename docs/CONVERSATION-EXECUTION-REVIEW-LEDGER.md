@@ -4,6 +4,16 @@
 
 ### 最新状态（本段覆盖以下旧快照；监督周期已依用户改为20分钟）
 
+#### 2026-09-18 21:06：实际整合记录（覆盖以下历史状态）
+
+- main `3dd456b` 已合通知冻结确认事件与冷加载 admission/page lease；主树183定向通过。独立正常浏览器通知4/4及Meta先于正文1/1通过：真实high-water 25→27，重载保持27，未来seq28先计数、呈现后才确认28；不是临时隐藏数字。
+- 冷入口仍未整体关闭：3dd正式3/4，cached F7两次704/653ms超500ms，期间有反馈且最终内容完整。续查新样本683ms中cache Meta在点击前已就绪，旧频道foreground网络占槽、目标IDB延后；不能把不同样本都归因Meta迟到。cold owner继续机制诊断。
+- `d3e797c` FeedCache事务提交后才发布内存Meta；`82fcaf1` D展示选择保持Reading模式，独立3条实际paint通过；`89ab18e` nested内容索引优化已合。
+- `905c787` 交互请求事务已亲审合入，保留D窄编辑入口及通知接线；8 suites58 tests/build通过，独立整合App复核已续派。编辑释放固定2秒重试无退避、进程终止无后台保证仍为已知限制。
+- 440c正式流保留修复已进入本工作树：源码只保留同key/index/context的connected formal节点，未加initial取消或第二writer。安装首次未替换旧875，旧包上的132绿已明确不算新包结果；随后保留旧目录到`/tmp/atoll-vendor-before-440c-epaFzS`并正常npm重装，实核ESM440c，重新132/132与build通过。实际浏览器整合门待独立执行。
+- Q stage2未合：mouse/touch旧机制oracle红不能直接算产品失败，keyboard占位几何早发命令已在候选修复；独立源审与实际paint仍在进行。processing edit闪烁独立续派，不随D通过关闭。
+- 未部署、未重启服务，未修改后端。不得将上述局部结果拼成整体验收。
+
 #### 20分钟监督更新：d450400 后候选与独立复核裁决
 
 - 已提交快照为 `d450400`；875 正常 installed 解析 startup/continuous 已有有界通过。以下工作树候选尚不能拼成完整交付。

@@ -7,11 +7,11 @@ This directory contains the trace-free Atoll build of
 The package version remains `4.18.13`; identify this build by hashes:
 
 - tarball SHA-256:
-  `184b3e6d1aa910f23f57bf43316fe35fe68b9f048ab8be0762d312e9c0ccde4a`
+  `d968daf2793aeed2b5d9246ca9c81735bd47d9f9fe6e702b47415895754f7d26`
 - installed `dist/index.mjs` SHA-256:
-  `87560b6dc8dbfda5b88b2df457ca2bf735a0e58c97da7e0635a1c3f828620742`
+  `440c6f4d1bcbfc00caf54ab0fe6a604e41c9a30c45abb0e2123a6c7f66a51aa0`
 - npm integrity:
-  `sha512-uCan46nUIoVGTqgUdLveYrGyAH+i1Lx5F5DLvt8wdyYWB0nty0dP9bItMb/pwLMajpzvRCtwcBYYM/bozbZmtg==`
+  `sha512-VvEamerLkWjr2xuwub+eYgNRnq7FPZHiUpG1cYAiawOQGKgPLxEwEiInkc/t+0/q3B6h5hfQh1UxhbmO3sBOpg==`
 
 ## Rebuild
 
@@ -23,6 +23,7 @@ this exact order:
 3. `formal-flow-invariant-delta.patch`
 4. `stable-observer-delta.patch`
 5. `formal-prop-stability-delta.patch`
+6. `formal-tail-flow-delta.patch`
 
 | patch | SHA-256 |
 | --- | --- |
@@ -31,6 +32,7 @@ this exact order:
 | `formal-flow-invariant-delta.patch` | `5327b3f66a246d422cccf1bf596f4ce0146f443a5c8b371d763955128af6f252` |
 | `stable-observer-delta.patch` | `522d35f3b11835b38cb63c52c2994e2cf2f7123a3240fe429af7d25b1d020693` |
 | `formal-prop-stability-delta.patch` | `d9a3dee03a9b00dbca7daed8ed2e027c34952eeef549161220e2f30cd7d0be32` |
+| `formal-tail-flow-delta.patch` | `4f83cb255924b64c8a5ac3d5b49491b6c65a1ff3251a7888e67d1eff151ff91e` |
 
 Then use the upstream pinned toolchain:
 
@@ -47,11 +49,11 @@ Expected output hashes:
 
 | file | SHA-256 |
 | --- | --- |
-| `dist/index.mjs` | `87560b6dc8dbfda5b88b2df457ca2bf735a0e58c97da7e0635a1c3f828620742` |
-| `dist/index.cjs` | `e7f06859a20feedb92ffb0afcf859b5c3c841d70a0d1f8d3b2c1486f94bd6657` |
+| `dist/index.mjs` | `440c6f4d1bcbfc00caf54ab0fe6a604e41c9a30c45abb0e2123a6c7f66a51aa0` |
+| `dist/index.cjs` | `e9457d73c15034c700505ab0e1a1348474add0862c35da609fc7aeb52de0c12a` |
 | `dist/index.d.ts` | `a116bbb766f6c83b9449de5dda6c31d5a11487c57e09181dba72799b4c7f9c73` |
 
-To reverse the source patch, apply the five patches with
+To reverse the source patch, apply the six patches with
 `git apply --reverse` in reverse order. To roll back this application, restore
 the dependency and lockfile to registry `react-virtuoso@4.18.13`, perform a
 clean lock-based install, and rerun the same tests. Do not edit `node_modules`

@@ -72,8 +72,8 @@ importers:
         specifier: ^10.1.0
         version: 10.1.0(@types/react@19.2.18)(react@19.2.7)
       react-virtuoso:
-        specifier: file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-87560b6d.tgz
-        version: file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-87560b6d.tgz(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-440c6f4d.tgz
+        version: file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-440c6f4d.tgz(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       rehype-katex:
         specifier: ^7.0.1
         version: 7.0.1
@@ -1604,8 +1604,8 @@ packages:
       '@types/react': '>=18'
       react: '>=18'
 
-  react-virtuoso@file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-87560b6d.tgz:
-    resolution: {integrity: sha512-uCan46nUIoVGTqgUdLveYrGyAH+i1Lx5F5DLvt8wdyYWB0nty0dP9bItMb/pwLMajpzvRCtwcBYYM/bozbZmtg==, tarball: file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-87560b6d.tgz}
+  react-virtuoso@file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-440c6f4d.tgz:
+    resolution: {integrity: sha512-VvEamerLkWjr2xuwub+eYgNRnq7FPZHiUpG1cYAiawOQGKgPLxEwEiInkc/t+0/q3B6h5hfQh1UxhbmO3sBOpg==, tarball: file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-440c6f4d.tgz}
     version: 4.18.13
     peerDependencies:
       react: '>=16 || >=17 || >= 18 || >= 19'
@@ -3704,7 +3704,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  react-virtuoso@file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-87560b6d.tgz(react-dom@19.2.7(react@19.2.7))(react@19.2.7):
+  react-virtuoso@file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-440c6f4d.tgz(react-dom@19.2.7(react@19.2.7))(react@19.2.7):
     dependencies:
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
