@@ -301,6 +301,20 @@ describe('App automatic describe wiring', () => {
     return view;
   }
 
+  // owner 2026-09-18：「手动永远不被管理」。频次闸门只拦自动探测；真人连点必须
+  // 每一下都真的发出去，恒不因为限流被吃掉。
+  it('never rate-limits the human: every explicit open sends again', async () => {
+    harness.send.mockResolvedValue('describe-x');
+    const view = await mountAndProbe();
+    expect(harness.send).toHaveBeenCalledTimes(1);
+
+    for (let i = 2; i <= 4; i += 1) {
+      act(() => harness.appShell.workspace.agentSelection.onOpen());
+      await waitFor(() => expect(harness.send).toHaveBeenCalledTimes(i));
+    }
+    view.unmount();
+  });
+
   it('sends nothing until the user asks: no probe on mount, reconnect or feed traffic', async () => {
     const view = await mountOpenApp();
     expect(harness.send).toHaveBeenCalledTimes(0);

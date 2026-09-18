@@ -36,8 +36,8 @@ import {
   failAgentProbe,
   observeAgentProbe,
   PROBE_TIMEOUT_MS,
+  releaseAgentProbe,
   reserveProbeSlot,
-  retryFailedAgentProbe,
 } from './model/agent-probe-lifecycle.js';
 import { createObsClient, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
@@ -933,11 +933,11 @@ export default function App() {
     if (!channelId || !actorId) return;
     const probeKey = `${channelId}:${actorId}`;
     manualProbeRef.current.add(probeKey);
-    // 三张表一起开闸：频次闸门、describe 的失败记录、两个词的已探记录。
-    // 真人要求刷新时不该被任何一张挡住。在途的 describe 不会被重发——
-    // retryFailedAgentProbe 只清 failed，awaiting-ledger 保持原样。
+    // 四张表一起开闸：频次闸门、同代去重、describe 记录、两个词的已探记录。
+    // 真人要求刷新时不该被任何一张挡住——包括同代去重。它是给自动探测防自激的，
+    // 反过来管人就变成了「点了没反应」（2026-09-18 实测到第二下被吃）。
     clearProbeSlots(describeProbesRef.current, probeKey);
-    retryFailedAgentProbe(describeProbesRef.current, probeKey);
+    releaseAgentProbe(describeProbesRef.current, probeKey);
     contextProbedRef.current.delete(probeKey);
     optionsProbedRef.current.delete(probeKey);
     setManualAgentVersion((current) => current + 1);
@@ -1149,7 +1149,7 @@ export default function App() {
     if (!manualProbeRef.current.has(probeKey)) return;
     // 这里恒不传 force：本 effect 的依赖里有 feedVersion / pending，消息一多
     // 就会每秒重跑，force 会绕过同代去重而变成新的风暴。闸门由手动入口在授权
-    // 那一刻打开（clearProbeSlots + retryFailedAgentProbe），这里只负责发一条。
+    // 那一刻打开（clearProbeSlots + releaseAgentProbe），这里只负责发一条。
     if (!capability?.describe && !capability?.loading) {
       void describeActor(actor, channelId).catch(() => {});
       return;

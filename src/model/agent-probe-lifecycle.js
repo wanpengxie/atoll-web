@@ -110,6 +110,18 @@ export function retryFailedAgentProbe(lifecycle, key) {
   return true;
 }
 
+// 真人要求刷新：无条件让位，连在途的那条也作废重发。
+//
+// owner 2026-09-18 的原话是「手动永远不被管理」。这里曾经只清 failed 的记录，
+// 结果真人连点第二下被同代去重吃掉，表现就是点了没反应。去重是给自动探测防
+// 自激用的，不该反过来管人。连点产生的重复请求由点的人自己负责。
+export function releaseAgentProbe(lifecycle, key) {
+  const entry = lifecycle.entries.get(key);
+  if (entry?.requestId) lifecycle.liveRequestIds.delete(entry.requestId);
+  lifecycle.entries.delete(key);
+  return true;
+}
+
 // 用户显式重试时一并放行该 actor 的按词探测（agent.options / agent.context）。
 export function clearProbeSlots(lifecycle, keyPrefix) {
   for (const key of [...lifecycle.lastSentAt.keys()]) {

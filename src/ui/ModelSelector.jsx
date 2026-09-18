@@ -40,6 +40,10 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
   const triggerRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [section, setSection] = useState('');
+  // 值域未就绪时用户点过一次 = 他要的是「打开面板」，不是「帮我取一次数」。
+  // 手动挡下取数必须由这一下点击发起，所以面板只能等数据到了再开——
+  // 这个标记就是把那个意图记到数据回来为止，恒不让用户点第二次。
+  const awaitingViewRef = useRef(false);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -66,7 +70,16 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
     };
   }, [open, section]);
 
-  useEffect(() => { setOpen(false); setSection(''); }, [target.kind, view?.actorId]);
+  useEffect(() => {
+    setSection('');
+    // 等的那份值域到了就直接展开，把用户那一下点击补完；否则换目标一律收起。
+    if (awaitingViewRef.current && view) {
+      awaitingViewRef.current = false;
+      setOpen(true);
+      return;
+    }
+    setOpen(false);
+  }, [target.kind, view?.actorId]);
 
   if (target.kind === 'multi') {
     return <div className="model-selector">
@@ -96,6 +109,12 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
     </div>;
   }
 
+  // 展开/收起恒在事件处理器里算，onOpen 恒不放进 setOpen 的 updater。
+  // updater 是在**渲染阶段**跑的：把 onOpen 放进去，它里面的 setState 就成了
+  // "渲染 ModelSelector 时更新 App"，React 会报 Cannot update a component while
+  // rendering a different component，并可能丢掉这次交互——表现就是按钮点不动。
+  // 2026-09-18：手动挡把 onOpen 变成必定 setState 的路径后，这个旧反模式立刻暴露。
+
   // single：值域未就绪或该 agent 无 selections → 显示角色名 + 刷新。
   // 手动挡（owner 2026-09-18）：前端恒不自动探测参数，这里就是**唯一**的取数入口，
   // 所以它必须看得见、可点、说得清自己是干什么的——旧版只画一个角色名，
@@ -108,7 +127,7 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
         className="model-selector-trigger is-refresh"
         aria-label={`${actorName}，点击读取可用模型`}
         title="读取可用模型与上下文"
-        onClick={() => onOpen?.()}
+        onClick={() => { awaitingViewRef.current = true; onOpen?.(); }}
       >
         <Zap size={14} strokeWidth={2.2} aria-hidden="true" />
         <strong className="model-selector-actor">{actorName}</strong>
@@ -132,7 +151,7 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
   // 仍显示 actor + model/effort，但绝不伪造可操作菜单。
   if (view.configurable === false) {
     return <div className="model-selector" ref={rootRef}>
-      <button ref={triggerRef} type="button" className="model-selector-trigger" aria-label={`${actorName}${modelLabel ? `，模型 ${modelLabel}` : ''}${effortLabel ? `，推理强度 ${effortLabel}` : ''}${view.usage?.contextTokens != null ? `，上下文 ${contextUsageView(view.usage)?.percent ?? formatTokens(view.usage.contextTokens)}${contextUsageView(view.usage)?.percent == null ? '' : '%'}` : ''}`} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((current) => { if (!current) onOpen?.(); return !current; })}>
+      <button ref={triggerRef} type="button" className="model-selector-trigger" aria-label={`${actorName}${modelLabel ? `，模型 ${modelLabel}` : ''}${effortLabel ? `，推理强度 ${effortLabel}` : ''}${view.usage?.contextTokens != null ? `，上下文 ${contextUsageView(view.usage)?.percent ?? formatTokens(view.usage.contextTokens)}${contextUsageView(view.usage)?.percent == null ? '' : '%'}` : ''}`} aria-haspopup="dialog" aria-expanded={open} onClick={() => { const next = !open; setOpen(next); if (next) onOpen?.(); }}>
         <Zap size={14} strokeWidth={2.2} aria-hidden="true" />
         <strong className="model-selector-actor">{actorName}</strong>
         {modelLabel && <><span className="model-selector-divider" aria-hidden="true" /><span className="model-selector-current"><strong>{modelLabel}</strong>{effortLabel && <span>{effortLabel}</span>}</span></>}
@@ -169,7 +188,7 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
       aria-label={displayed ? `${actorName}，模型 ${modelLabel}${effortLabel ? `，推理强度 ${effortLabel}` : ''}${busy ? '，切换中' : ''}` : `${actorName}，模型未知`}
       aria-haspopup="menu"
       aria-expanded={open}
-      onClick={() => { setOpen((current) => { if (!current) onOpen?.(); return !current; }); setSection(''); }}
+      onClick={() => { const next = !open; setOpen(next); setSection(''); if (next) onOpen?.(); }}
     >
       <Zap size={14} strokeWidth={2.2} aria-hidden="true" />
       <strong className="model-selector-actor">{actorName}</strong>

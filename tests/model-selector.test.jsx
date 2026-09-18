@@ -113,13 +113,30 @@ describe('Model/Effort 选择器', () => {
 
   // 手动挡（owner 2026-09-18）：前端恒不自动探测参数，这个按钮是唯一的取数入口，
   // 所以它的可访问名必须说清点了会发生什么，不能只是一个角色名。
-  it('值域未就绪时显示角色名+刷新入口；点击只取数，不开菜单', async () => {
+  it('值域未就绪时显示角色名+刷新入口；点击先取数，数据一到自动展开', async () => {
     const user = userEvent.setup();
     const onOpen = vi.fn();
-    render(<ModelSelector target={single} actorName="Steward" view={null} onOpen={onOpen} />);
+    const { rerender } = render(<ModelSelector target={single} actorName="Steward" view={null} onOpen={onOpen} />);
     await user.click(screen.getByRole('button', { name: 'Steward，点击读取可用模型' }));
     expect(onOpen).toHaveBeenCalledOnce();
+    // 这一刻还没有值域，面板当然开不出来。
     expect(screen.queryByRole('menu')).toBeNull();
+
+    // 手动挡下取数必须由这一下点击发起，所以面板只能等数据。数据一到就必须
+    // 自己展开——否则用户点了一次什么也没发生，看起来就是坏的（2026-09-18 实测）。
+    const ready = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    rerender(<ModelSelector target={single} actorName="Steward" view={ready} onOpen={onOpen} />);
+    expect(await screen.findByRole('menu')).toBeTruthy();
+    expect(onOpen).toHaveBeenCalledOnce();
+  });
+
+  it('没点过就拿到值域时不自作主张展开', async () => {
+    const onOpen = vi.fn();
+    const { rerender } = render(<ModelSelector target={single} actorName="Steward" view={null} onOpen={onOpen} />);
+    const ready = agentSelectionView({ actorId: 'steward', describe: DESCRIBE, usage: null });
+    rerender(<ModelSelector target={single} actorName="Steward" view={ready} onOpen={onOpen} />);
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(onOpen).not.toHaveBeenCalled();
   });
 
   it('current 为 null 时 pill 只显示角色名，菜单仍可设置（选 model 落首组合）', async () => {
