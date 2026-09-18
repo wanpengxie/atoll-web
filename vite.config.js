@@ -6,7 +6,9 @@ const serverURL = process.env.ATOLL_SERVER_URL || 'http://localhost:8832';
 export default defineConfig({
   plugins: [react()],
   test: {
-    exclude: ['tests/browser/**', 'docs/evidence/**', '**/node_modules/**', '**/dist/**'],
+    // .claude/** 是子 agent 的隔离 worktree 落点：它带完整 tests/ 与 node_modules，不排除
+    // 就会被当成本仓库的测试收集（2026-09-18 一次收进 240 个文件，全量凭空多出 60 个"失败文件"）。
+    exclude: ['tests/browser/**', 'docs/evidence/**', '**/node_modules/**', '**/dist/**', '.claude/**', '**/.claude/**'],
     setupFiles: ['tests/setup.js'],
   },
   build: {
