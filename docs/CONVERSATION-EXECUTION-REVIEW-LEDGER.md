@@ -4,6 +4,14 @@
 
 ### 最新状态（本段覆盖以下旧快照；监督周期已依用户改为20分钟）
 
+#### 2026-09-19：ea6735c 供给断点整合后复核与合同审查
+
+- `e52a41a` 分开远端耗尽与公开可消费历史：reservoir 非空不能宣布公开 EOF。`ea6735c` 修 Following 短列表只按 Presentation revision 去重而吞掉后到供给；主树152定向及build通过。独立 exact ea6735c 正常440c解析真实Timeline轨通过：revision2/2行后buffer148自动触发第二次underfill，无退出或点击，排空后10行、scrollHeight1027/clientHeight383且实际wheel可滚。原件位于 `/tmp/underfill-verify-ea/test-results/origin-reservoir-timeline--09014--Timeline-before-finite-EOF/origin-reservoir-timeline.json`，SHA256 `0c384ad9594bca29e56dc766fd1cdddc1a8e1f4584ba50389ca2c4446c5f5abd`。只关闭该已知断点，不宣布所有冷进入完成。
+- 按用户要求重新对照总设计 I11 与实施规格4.3审查实际需求所有权、完成条件和跨层推进，不以局部测试替代架构合同。all_task_delivery_audit 正在核全部状态写点；root亲读原合同确认这次静默idle违反既定持续推进要求。
+- 诊断637b候选暂不合：root发现用visibleRows<=3判underfill、仅buffer非空就判supply-pending、未确认权威便取!hasOlder作remoteEOF，不能把行数启发式或正常预取误报为真实义务；已退回纠正。
+- r5 a6b必要回归已独立bounded PASS，集成包在505基线冻结；已要求保留当前closure与供给修复重放最小hunks，尚未替换共享440c。Composer、submission dcf1105、FeedCache28099候选已交独审结果，仍待root完整差分审查和整合，不能记作已交付。EOF新role-transfer候选等待独审，不继承旧失败候选结论。
+- 未改后端、部署或重启共享服务。
+
 #### 2026-09-19 00:37：进入诊断落地与闭合证据/正文分离整合
 
 - main `505ebad` 已合用户要求的 entry-only 调度诊断，实际5173模块已核；无wheel/touch/key监听。主树106/106及build通过（旧rail测试补上已有notificationHighWater字段），每次activation打印现状/计划，已有状态变化报告数据与展示结果。`01cf146`已合零Presentation扫描后source失败不再隐藏，主19通过。用户最新现场仍未关闭，不能拼局部绿；EOF提示意味着至少有Presentation且remote current，mine与actorFiltered文案漏判已证，尚不证明是二次进入恢复的唯一根因。
