@@ -61,6 +61,23 @@ afterEach(() => {
 });
 
 describe('v5 history batch coordinator', () => {
+  it('keeps presentation supply open until an origin page reservoir is drained', async () => {
+    const harness = requestHarness();
+    const revealRows = vi.fn();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 64, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 1, rows: 64, hasOlder: false });
+    await waitFor(() => expect(scheduler.snapshot('c0').loading).toBe(false));
+    expect(revealRows.mock.calls[0][1]).toHaveLength(32);
+    expect(scheduler.snapshot('c0')).toMatchObject({ buffered: 32, hasOlder: true });
+    const operation = scheduler.beginOperation('c0');
+    await expect(operation.next()).resolves.toMatchObject({ kind: 'segment', released: 32 });
+    expect(scheduler.snapshot('c0')).toMatchObject({ buffered: 0, hasOlder: false });
+    operation.release();
+    scheduler.destroy();
+  });
+
   it('explains a cold focus blocked behind the two physical lanes without mutating scheduling', async () => {
     const harness = requestHarness();
     const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });

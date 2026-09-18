@@ -2058,7 +2058,9 @@ export function createHistoryScheduler({
     return {
       headSeq: state.headSeq,
       oldestSeq: state.beforeSeq,
-      hasOlder: state.hasOlder,
+      // Remote EOF does not exhaust rows already installed but not presented.
+      // Keep the visual supply gate open until its reservoir is drained.
+      hasOlder: state.hasOlder || state.reservoir.size > 0,
       loaded: state.tailVisible,
       // `loading` remains the physical scheduler fact for initialization and
 	  // diagnostics. UI with already-readable content must use historyDemand:
