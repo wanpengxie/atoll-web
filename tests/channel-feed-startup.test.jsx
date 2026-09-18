@@ -1002,6 +1002,50 @@ describe('channel feed startup lanes', () => {
     hook.unmount();
   });
 
+  it('revokes a pending attach and every feed ingress after a version incompatibility', async () => {
+    let resolveBoot;
+    const selectedBoot = new Promise((resolve) => { resolveBoot = resolve; });
+    const emptyMeta = new Map();
+    const lateMeta = new Map([['c1', {
+      newestSeq: 4, rowCount: 1, coverage: [{ lowSeq: 4, highSeq: 4 }],
+    }]]);
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta: emptyMeta })),
+      ensureBoot: vi.fn(() => selectedBoot),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      readNotificationContext: vi.fn(async () => ({ rows: [], complete: true })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => lateMeta), clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+    await act(async () => {
+      await hook.result.current.prepareLocalReplica('root', { focus: 'c0' });
+    });
+
+    let attachment;
+    act(() => {
+      attachment = hook.result.current.setHistoryGrants([
+        { channel_id: 'c1', head_seq: 4, has_rows: true },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+    await waitFor(() => expect(doubles.cache.ensureBoot).toHaveBeenCalledOnce());
+    act(() => { hook.result.current.stopIncompatible(1); });
+
+    expect(hook.result.current.enqueue({
+      source: 'live', generation: 1, channel_id: 'c1', seq: 4,
+      envelope: { id: 'late-live', kind: 'event', type: 'human.note', payload: { text: 'late' } },
+    })).toBe(false);
+    expect(hook.result.current.pageEnd({ channel_id: 'c1', generation: 1 })).toBe(false);
+    expect(hook.result.current.liveCheckpoint({ channel_id: 'c1', scan_low_seq: 4, scanned_seq: 4 })).toBe(false);
+    await expect(hook.result.current.prepareLocalReplica('root', { focus: 'c0' })).resolves.toEqual({ resume: {} });
+    expect(hook.result.current.resumeLocalReplica()).toEqual({});
+
+    resolveBoot({ changed: false, boot: 'boot-a', meta: lateMeta });
+    await expect(attachment).resolves.toMatchObject({ stale: true });
+    expect(doubles.cache.readNotificationContext).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
   it('does not let a late owner replacement reset a newer remote attach', async () => {
     let resolveOwner;
     const owner = new Promise((resolve) => { resolveOwner = resolve; });

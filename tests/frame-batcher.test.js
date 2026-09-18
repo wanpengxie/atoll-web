@@ -55,4 +55,13 @@ describe('一帧一批', () => {
     batcher.flushNow();
     expect(flushed).toHaveLength(1);
   });
+
+  it('版本不兼容时丢弃尚未落地的一帧', () => {
+    const { batcher, flushed, tickFrame } = harness();
+    batcher.push('old-page-row');
+    batcher.discard();
+    tickFrame();
+    expect(flushed).toEqual([]);
+    expect(batcher.size).toBe(0);
+  });
 });

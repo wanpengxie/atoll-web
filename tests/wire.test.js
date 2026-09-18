@@ -252,7 +252,12 @@ describe('wire client', () => {
 
   it('uses a fresh cursor snapshot after reconnect', () => {
     let cursor = 2;
-    const wire = createWire({ WebSocketImpl: FakeWebSocket, since: () => ({ c0: cursor }) });
+    const states = [];
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      since: () => ({ c0: cursor }),
+      onState: (state) => states.push(state),
+    });
     const first = FakeWebSocket.instances[0];
     first.open();
     receipt(first, first.sent[0]);
@@ -262,6 +267,7 @@ describe('wire client', () => {
     const second = FakeWebSocket.instances[1];
     second.open();
     expect(second.sent[0].payload.since).toEqual({ c0: 9 });
+    expect(states).not.toContain('incompatible');
     wire.close();
   });
 
@@ -306,14 +312,32 @@ describe('wire client', () => {
     wire.close();
   });
 
-	it('fails closed when a pre-v5 downstream frame arrives', () => {
+	it('stops once and requests a page refresh when a pre-v5 downstream frame arrives', async () => {
     const errors = [];
-    const wire = createWire({ WebSocketImpl: FakeWebSocket, onError: (error) => errors.push(error) });
+    const states = [];
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      onError: (error) => errors.push(error),
+      onState: (state, detail) => states.push([state, detail]),
+    });
     const socket = FakeWebSocket.instances[0];
     socket.open();
     socket.message({ v: 2, frame_type: 'receipt', ref: socket.sent[0].ref, payload: {} });
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
-    expect(errors.at(-1)).toMatchObject({ code: 'bad_payload', detail: 'invalid downstream frame' });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: 'version_incompatible' });
+    expect(states.filter(([state]) => state === 'incompatible')).toEqual([['incompatible', expect.objectContaining({
+      expectedVersion: 5,
+      receivedVersion: 2,
+      generation: 1,
+    })]]);
+    socket.message({ v: 3, frame_type: 'receipt', ref: socket.sent[0].ref, payload: {} });
+    vi.runAllTimers();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(states.filter(([state]) => state === 'incompatible')).toHaveLength(1);
+    await expect(wire.submit({ channel_id: 'c0', msg_type: 'agent.ask' })).rejects.toMatchObject({
+      code: 'version_incompatible',
+    });
     wire.close();
   });
 });

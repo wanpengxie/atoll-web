@@ -66,6 +66,7 @@ export function createWire({
   let socket = null;
   let releaseWake = null;
   let stopped = false;
+  let incompatibility = null;
   let attached = false;
   let reconnectAttempt = 0;
   let reconnectTimer = null;
@@ -91,6 +92,13 @@ export function createWire({
   }
 
   function transmit(type, payload, { allowBeforeAttach = false } = {}) {
+    if (incompatibility) {
+      return Promise.reject(new WireError({
+        frame: type,
+        code: 'version_incompatible',
+        detail: incompatibility.detail,
+      }));
+    }
     if (!socket || socket.readyState !== WebSocketImpl.OPEN || (!attached && !allowBeforeAttach)) {
       return Promise.reject(new WireError({ frame: type, code: 'unavailable', detail: 'wire is not attached' }));
     }
@@ -127,8 +135,34 @@ export function createWire({
   }
 
   function handleMessage(event) {
+    if (incompatibility) return;
     const parsed = parseDownstream(event.data);
-    if (parsed.kind === 'invalid' || parsed.kind === 'bad_version') {
+    if (parsed.kind === 'bad_version') {
+      const receivedVersion = parsed.frame?.v;
+      const detail = `页面协议版本 ${FRAME_VERSION} 与服务端版本 ${String(receivedVersion ?? '未知')} 不兼容`;
+      incompatibility = Object.freeze({
+        expectedVersion: FRAME_VERSION,
+        receivedVersion,
+        generation,
+        detail,
+      });
+      stopped = true;
+      attached = false;
+      if (reconnectTimer != null) {
+        clearTimeoutImpl(reconnectTimer);
+        reconnectTimer = null;
+      }
+      releaseWake?.();
+      releaseWake = null;
+      rejectPending('version_incompatible', detail);
+      const error = new WireError({ frame: 'downstream', code: 'version_incompatible', detail });
+      diagnostic('error', 'wire.version_incompatible', incompatibility);
+      onError(error);
+      onState('incompatible', incompatibility);
+      socket?.close(1002, 'version incompatible');
+      return;
+    }
+    if (parsed.kind === 'invalid') {
       diagnostic('error', 'wire.protocol_rejected', { kind: parsed.kind, generation });
       onError(new WireError({ frame: 'downstream', code: 'bad_payload', detail: 'invalid downstream frame' }));
       socket?.close(1002, 'invalid downstream frame');
@@ -357,6 +391,10 @@ export function createWire({
       if (socket?.readyState !== WebSocketImpl.CLOSED) socket.close();
     });
     socket.addEventListener('close', () => {
+      if (incompatibility) {
+        diagnostic('info', 'wire.closed_incompatible', incompatibility);
+        return;
+      }
       const resyncReason = foregroundResyncReason;
       foregroundResyncReason = '';
       attached = false;

@@ -101,6 +101,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const applyRowsRef = useRef(null);
   const schedulerRef = useRef(null);
   const lifecycleRef = useRef(0);
+  const incompatibleRef = useRef(false);
   const localReplicaSerialRef = useRef(0);
   const preparedPrincipalRef = useRef('');
   const liveBatchRef = useRef(null);
@@ -320,7 +321,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   applyRowsRef.current = applyRows;
 
   const beginNotificationHydration = useCallback((meta, serial, focus = '') => {
-    if (serial !== localReplicaSerialRef.current) return;
+    if (incompatibleRef.current || serial !== localReplicaSerialRef.current) return;
     const admissionEpoch = dataAdmissionEpochRef.current;
     const grantEstablished = dataGrantSetEstablishedRef.current;
     const grantedHeads = new Map(dataGrantedChannelHeadsRef.current);
@@ -457,7 +458,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     })();
   }, [activeChannelRef, applyRows, onError]);
 
-  if (schedulerRef.current === null || schedulerRef.current.isDestroyed?.()) {
+  if (schedulerRef.current === null || (!incompatibleRef.current && schedulerRef.current.isDestroyed?.())) {
     const mobile = isMobileProfile();
     schedulerRef.current = createHistoryScheduler({
       // Live feed and history share one ordered WebSocket. Several MiB of
@@ -644,22 +645,27 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, [activeChannelRef]);
 
   const enqueue = useCallback((payloadOrChannel, seq, envelope, detail) => {
+	if (incompatibleRef.current) return false;
 	const payload = typeof payloadOrChannel === 'object'
 	  ? payloadOrChannel
 	  : detail || { channel_id: payloadOrChannel, seq, envelope, source: 'live' };
 	const historical = schedulerRef.current.historyRow(payload);
 	if (historical) {
 	  onAgentActivity?.(payload);
-	  return;
+	  return true;
 	}
 	// Live rows never enter the historical executor or reservoir. 所有屏幕都按浏览器
 	// 帧合批：桌面端也和编辑器共用一条主线程，逐行 publish 会让键盘/输入法
 	// 事件排在时间线重绘后面。合批只延后到下一帧，不改顺序和内容；checkpoint
 	// 和断线等依赖“行已落地”的边界会在下面强制 flush。
 	liveBatchRef.current.push({ kind: 'row', payload, ownerToken });
+	return true;
 	}, [onAgentActivity, ownerToken]);
 
   const setHistoryGrants = useCallback((grants = [], detail = {}) => {
+    if (incompatibleRef.current) {
+      return Promise.resolve({ stale: true, incompatible: true, meta: new Map() });
+    }
     const generation = Number(detail.generation || 0);
     if (!Number.isSafeInteger(generation) || generation <= 0
       || generation < attachedGenerationRef.current) {
@@ -779,7 +785,8 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       cacheOwnerReadyRef.current.then(() => cacheRef.current.ensureBoot(remoteBoot))
     ));
     return selectedEpoch.then(({ changed, boot, meta }) => {
-      if (serial !== attachMetaSerialRef.current
+      if (incompatibleRef.current
+        || serial !== attachMetaSerialRef.current
         || admissionEpoch !== dataAdmissionEpochRef.current) return { changed, meta, stale: true };
       cacheBootRef.current = String(boot || remoteBoot);
       cacheMetaRef.current = meta;
@@ -806,7 +813,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       setLocalReplicaErrorCode('');
       return { changed: replicaChanged || changed, meta };
     }).catch((error) => {
-      if (serial === attachMetaSerialRef.current) {
+      if (!incompatibleRef.current
+        && serial === attachMetaSerialRef.current
+        && admissionEpoch === dataAdmissionEpochRef.current) {
         resumeReadyRef.current = false;
         schedulerRef.current.setLocalMeta(new Map(), {
           publishChange: false,
@@ -825,6 +834,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, [activeChannelRef, beginNotificationHydration]);
 
   const pageEnd = useCallback((payload) => {
+    if (incompatibleRef.current) return false;
     const accepted = schedulerRef.current.pageEnd(payload);
     if (!accepted) diagnostic('warn', 'feed.page_end_ignored', {
       channelId: payload?.channel_id, source: payload?.source, ref: payload?.ref, generation: payload?.generation,
@@ -833,6 +843,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
 
   const liveCheckpoint = useCallback((payload = {}) => {
+    if (incompatibleRef.current) return false;
     // Checkpoints join the same frame journal as live facts. FeedCache writes
     // facts first and coverage second, so batching cannot create a false
     // resume claim while avoiding one IndexedDB transaction per token.
@@ -848,12 +859,14 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     return true;
   }, [onError, ownerToken]);
 
-  const focusHistory = useCallback((channelId) => schedulerRef.current.focus(channelId), []);
+  const focusHistory = useCallback((channelId) => {
+    if (!incompatibleRef.current) schedulerRef.current.focus(channelId);
+  }, []);
   const generationFor = useCallback((channelId) => (
     Number(schedulerRef.current?.snapshot(channelId)?.generation || 0)
   ), []);
   const refreshChannel = useCallback((channelId) => {
-	if (!channelId) return Promise.resolve(false);
+	if (!channelId || incompatibleRef.current) return Promise.resolve(false);
 	return syncCoordinatorRef.current.interest(channelId);
   }, []);
   const disconnectHistory = useCallback((generation) => {
@@ -862,6 +875,24 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     attachedGenerationRef.current = 0;
     syncCoordinatorRef.current.connection(false);
     schedulerRef.current.disconnected(generation);
+  }, []);
+  const stopIncompatible = useCallback((generation) => {
+    // Unlike an ordinary disconnect, a protocol mismatch must not land the
+    // last animation-frame batch or publish a late local hydration result.
+    incompatibleRef.current = true;
+    localReplicaSerialRef.current += 1;
+    attachMetaSerialRef.current += 1;
+    dataAdmissionEpochRef.current += 1;
+    notificationHydrationRef.current = {
+      serial: localReplicaSerialRef.current,
+      channels: new Map(),
+    };
+    resumeReadyRef.current = false;
+    liveBatchRef.current.discard();
+    attachedGenerationRef.current = 0;
+    syncCoordinatorRef.current.destroy();
+    schedulerRef.current.destroy();
+    diagnostic('warn', 'feed.version_incompatible', { generation });
   }, []);
   const loadHistory = useCallback(async (channelId, {
     anchorSeq = 0,
@@ -879,6 +910,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	onOperation,
     historyRevealIntent = null,
   } = {}) => {
+	if (incompatibleRef.current) return { kind: 'cancelled', reason: 'version-incompatible' };
 	const admission = presentationAdmissionRef.current;
 	const revealToken = intent === 'scroll-history' && historyRevealIntent
 	  ? admission.begin(channelId, historyRevealIntent)
@@ -1111,6 +1143,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   }, []);
 
   const prepareLocalReplica = useCallback(async (principalId, { focus = '' } = {}) => {
+    if (incompatibleRef.current) return { resume: {} };
     const serial = ++localReplicaSerialRef.current;
 	dataGrantedChannelIdsRef.current = new Set();
 	dataGrantedChannelHeadsRef.current = new Map();
@@ -1282,7 +1315,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   // React model can be ahead of disk by one animation frame and is therefore
   // not a safe resume claim.
   const resumeLocalReplica = useCallback(() => (
-    resumeReadyRef.current ? resumeSnapshot(cacheRef.current.metaSnapshot()) : {}
+    !incompatibleRef.current && resumeReadyRef.current
+      ? resumeSnapshot(cacheRef.current.metaSnapshot())
+      : {}
   ), []);
 
   useEffect(() => {
@@ -1304,7 +1339,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	revisionFor: (channelId) => replicaRef.current.revision(channelId),
 	unreadFor,
 		prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode,
-		setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel,
+		setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, stopIncompatible, focusHistory, generationFor, refreshChannel,
     coldEntryDiagnosticsFor,
     historyFor: (channelId) => ({
       ...schedulerRef.current.snapshot(channelId),

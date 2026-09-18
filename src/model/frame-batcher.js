@@ -41,6 +41,14 @@ export function createFrameBatcher(flush, {
       }
       run();
     },
+    discard() {
+      if (handle) {
+        if (handle.kind === 'raf') cancelRaf?.(handle.id);
+        else cancelTimer?.(handle.id);
+        handle = null;
+      }
+      queue = [];
+    },
     get size() {
       return queue.length;
     },

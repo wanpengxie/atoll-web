@@ -46,6 +46,7 @@ import {
 import { createObsClient, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
 import { Auth } from './ui/Auth.jsx';
+import { VersionIncompatible } from './ui/VersionIncompatible.jsx';
 import { AppShell } from './app/AppShell.jsx';
 import { TaskCreateModal } from './ui/TaskCreateModal.jsx';
 import { ChannelCreateModal } from './ui/ChannelCreateModal.jsx';
@@ -169,6 +170,12 @@ export default function App() {
   const initialRouteRef = useRef(parseWorkspaceHash(window.location.hash));
   const routeInitializedRef = useRef(false);
   const [wireState, setWireState] = useState('closed');
+  const [versionIncompatible, setVersionIncompatible] = useState(null);
+  // A protocol mismatch is terminal for this document lifetime. Keep the
+  // revocation synchronous so effects and async OBS continuations cannot use
+  // the render-delayed state value to restart old-page data work.
+  const versionIncompatibleRef = useRef(null);
+  const versionIncompatibleEpochRef = useRef(0);
   const [serverWorld, setServerWorld] = useState(() => readServerBoot());
   const [topError, setTopError] = useState('');
   const [rosters, setRosters] = useState(new Map());
@@ -361,7 +368,7 @@ export default function App() {
   }, []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
   const forwardAgentActivity = useCallback((payload, context) => agentActivityRef.current.observe(payload, context), []);
-  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel, historyFor, coldEntryDiagnosticsFor, loadHistory, markRead, acknowledgeNotifications, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
+  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, stopIncompatible: stopIncompatibleFeed, focusHistory, generationFor, refreshChannel, historyFor, coldEntryDiagnosticsFor, loadHistory, markRead, acknowledgeNotifications, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setFilePreviewStack([]); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice, initialChannelId: initialRouteRef.current.channelId });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
@@ -670,7 +677,9 @@ export default function App() {
     let refreshQueued = false;
     let attachedOnce = false;
     let wire = null;
+    let versionBlocked = false;
     const refreshAccess = () => {
+      if (versionBlocked) return Promise.resolve();
       if (refreshInFlight) {
         refreshQueued = true;
         return refreshInFlight;
@@ -678,7 +687,7 @@ export default function App() {
       // 成员身份不再走 obs 轮询：它是 attach 回执直接携带的一等事实
       // （网关资格账快照），这里只对齐频道树投影。
       refreshInFlight = loadChannelTree(obs).then((result) => {
-      if (!alive) return;
+      if (!alive || versionBlocked) return;
       const profiles = [...result.channels.values()];
       rememberChannelNames(profiles);
       access.channelsObserved(profiles, { complete: result.complete });
@@ -700,7 +709,7 @@ export default function App() {
       return refreshInFlight;
     };
     const scheduleAccessRefresh = () => {
-      if (!alive || refreshTimer != null) return;
+      if (!alive || versionBlocked || refreshTimer != null) return;
       refreshTimer = setTimeout(() => {
         refreshTimer = null;
         refreshAccess();
@@ -782,7 +791,23 @@ export default function App() {
         bumpAccess();
       },
       onState: (state, detail) => {
-        if (state === 'attached') {
+        if (state === 'incompatible') {
+          if (versionIncompatibleRef.current) return;
+          versionBlocked = true;
+          versionIncompatibleRef.current = detail || {};
+          versionIncompatibleEpochRef.current += 1;
+          if (refreshTimer != null) {
+            clearTimeout(refreshTimer);
+            refreshTimer = null;
+          }
+          accessRefreshActionsRef.current = {};
+          agentActivityRef.current.disconnect();
+          roster.close();
+          access.wire('disconnected');
+          stopIncompatibleFeed(detail?.generation);
+          setWireState('incompatible');
+          setVersionIncompatible((current) => current || detail || {});
+        } else if (state === 'attached') {
           // 这条连接自己的名字。服务端铸的 id 是寻址用的唯一依据;label 只给
           // 人看,因为选屏幕是人用话做的事。
           setUiSession({ id: detail?.session || '', label: detail?.session_label || '' });
@@ -852,10 +877,11 @@ export default function App() {
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [abortAttachmentUploads, bumpAccess, cancelFeedTask, clearTimers, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, prepareLocalReplica, principalId, resetSubmissionWorld, resumeLocalReplica, setHistoryGrants]);
+  }, [abortAttachmentUploads, bumpAccess, cancelFeedTask, clearTimers, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, prepareLocalReplica, principalId, resetSubmissionWorld, resumeLocalReplica, setHistoryGrants, stopIncompatibleFeed]);
 
   const refreshRoster = useCallback(async (channelId, force = false) => {
-    if (!channelId || !rosterRef.current) return;
+    if (versionIncompatibleRef.current || !channelId || !rosterRef.current) return;
+    const incompatibilityEpoch = versionIncompatibleEpochRef.current;
     const authorityOwner = committedFeedOwnerRef.current;
     if (!authorityOwner) return;
     const authorityPrincipal = authorityOwner.principalId;
@@ -865,6 +891,8 @@ export default function App() {
       const rows = force
         ? await rosterRef.current.refresh(channelId)
         : await rosterRef.current.ensure(channelId);
+      if (versionIncompatibleRef.current
+        || incompatibilityEpoch !== versionIncompatibleEpochRef.current) return;
       // Object identity, rather than only the principal string, rejects a late
       // request after an A -> B -> A session cycle.
       if (committedFeedOwnerRef.current !== authorityOwner) return;
@@ -895,16 +923,19 @@ export default function App() {
         bumpFeed();
       }
     } catch (error) {
-      if (error?.status !== 401) setTopError(displayError(error));
+      if (!versionIncompatibleRef.current
+        && incompatibilityEpoch === versionIncompatibleEpochRef.current
+        && error?.status !== 401) setTopError(displayError(error));
     } finally {
-      setRosterBusy(false);
+      if (!versionIncompatibleRef.current
+        && incompatibilityEpoch === versionIncompatibleEpochRef.current) setRosterBusy(false);
     }
   }, [bumpFeed]);
 
   const activeRosterGeneration = Number(generationFor(activeChannelId) || 0);
   const activeHistoryStatus = historyFor(activeChannelId);
   useEffect(() => {
-    if (!activeChannelId || !me) return;
+    if (versionIncompatibleRef.current || !activeChannelId || !me) return;
     const access = channelList.find((channel) => channel.id === activeChannelId)?.access;
     if (!isMemberAccess(access)) {
       setRosters((current) => new Map(current).set(activeChannelId, []));
@@ -953,50 +984,68 @@ export default function App() {
   }, [expireSession, logoutRemote]);
 
   const refreshGovernanceData = useCallback(async () => {
-    if (!obsRef.current) return;
+    if (versionIncompatibleRef.current || !obsRef.current) return;
+    const incompatibilityEpoch = versionIncompatibleEpochRef.current;
     try {
       const [principalObservation, declarationObservation, daemonObservation] = await Promise.all([
         obsRef.current.spacePrincipals(),
         obsRef.current.spaceDecls(),
         obsRef.current.spaceDaemons(),
       ]);
+      if (versionIncompatibleRef.current
+        || incompatibilityEpoch !== versionIncompatibleEpochRef.current) return;
       setSpacePrincipals(principalObservation.items || []);
       setSpaceDeclarations(declarationObservation.items || []);
       setSpaceDaemons(safeDaemonRows(daemonObservation));
       const channelID = activeChannelRef.current;
       if (channelID) {
         const deviceObservation = await obsRef.current.channelDevices(channelID);
+        if (versionIncompatibleRef.current
+          || incompatibilityEpoch !== versionIncompatibleEpochRef.current) return;
         if (activeChannelRef.current === channelID) setChannelDevices(safeChannelDeviceRows(deviceObservation));
       }
       await Promise.all([refreshRoster(activeChannelRef.current, true), activeChannelRef.current !== 'c0' ? refreshRoster('c0', true) : Promise.resolve()]);
     } catch (error) {
-      if (error?.status !== 401) setTopError(displayError(error));
+      if (!versionIncompatibleRef.current
+        && incompatibilityEpoch === versionIncompatibleEpochRef.current
+        && error?.status !== 401) setTopError(displayError(error));
     }
   }, [refreshRoster]);
 
   const refreshDaemonData = useCallback(async () => {
-    if (!obsRef.current) return [];
+    if (versionIncompatibleRef.current || !obsRef.current) return [];
+    const incompatibilityEpoch = versionIncompatibleEpochRef.current;
     try {
       const observation = await obsRef.current.spaceDaemons();
+      if (versionIncompatibleRef.current
+        || incompatibilityEpoch !== versionIncompatibleEpochRef.current) return [];
       const rows = safeDaemonRows(observation);
       setSpaceDaemons(rows);
       return rows;
     } catch (error) {
-      if (error?.status !== 401) setTopError(displayError(error));
+      if (!versionIncompatibleRef.current
+        && incompatibilityEpoch === versionIncompatibleEpochRef.current
+        && error?.status !== 401) setTopError(displayError(error));
       return [];
     }
   }, []);
 
   const refreshChannelDeviceData = useCallback(async (channelID = activeChannelRef.current) => {
-    if (!obsRef.current || !channelID) return [];
+    if (versionIncompatibleRef.current || !obsRef.current || !channelID) return [];
+    const incompatibilityEpoch = versionIncompatibleEpochRef.current;
     try {
       const observation = await obsRef.current.channelDevices(channelID);
+      if (versionIncompatibleRef.current
+        || incompatibilityEpoch !== versionIncompatibleEpochRef.current) return [];
       const rows = safeChannelDeviceRows(observation);
       if (activeChannelRef.current === channelID) setChannelDevices(rows);
       return rows;
     } catch (error) {
-      if (activeChannelRef.current === channelID) setChannelDevices([]);
-      if (error?.status !== 401) setTopError(displayError(error));
+      if (!versionIncompatibleRef.current
+        && incompatibilityEpoch === versionIncompatibleEpochRef.current) {
+        if (activeChannelRef.current === channelID) setChannelDevices([]);
+        if (error?.status !== 401) setTopError(displayError(error));
+      }
       return [];
     }
   }, []);
@@ -1585,6 +1634,11 @@ export default function App() {
 
   if (booting) return <div className="boot-screen"><span className="brand-dot" />正在恢复会话…</div>;
   if (!me) return <Auth identity={identity} onAuthed={handleAuthed} />;
+  if (versionIncompatible) return <VersionIncompatible
+    expectedVersion={versionIncompatible.expectedVersion}
+    receivedVersion={versionIncompatible.receivedVersion}
+    onRefresh={() => window.location.reload()}
+  />;
 
   const activeState = channelStatesRef.current.get(activeChannelId) || createChannelState(activeChannelId);
   const agentActivity = agentActivityRef.current.snapshot();
