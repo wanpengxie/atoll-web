@@ -1146,11 +1146,20 @@ export function useReadingSession({
     // loadHistory continue across physical pages until this view gets a row or
     // reaches authoritative EOF. Explicit @me/member filters expose that work;
     // an unfiltered protocol-only projection may remain anticipatory.
+    const attachedCurrent = historyStatus.attached === true
+      && Number(historyStatus.generation || 0) > 0
+      && historyStatus.messageCurrent === true;
+    // A disconnected/pre-attach reader can still own a durable local source.
+    // The scheduler knows whether that source can continue and returns a
+    // bounded local-only exhaustion at its proven frontier. Requiring a Wire
+    // generation here stranded matching rows in deeper IndexedDB pages: the
+    // first physical page could be real but semantically empty, while only a
+    // list row (which did not exist) was otherwise allowed to ask for more.
+    const localReplicaAvailable = historyStatus.localReplicaReady === true
+      && Number(historyStatus.generation || 0) === 0;
     if (snapshot.rows.length > 0
       || !hasManagedHistoryLifecycle
-      || historyStatus.attached !== true
-      || Number(historyStatus.generation || 0) <= 0
-      || historyStatus.messageCurrent !== true
+      || (!attachedCurrent && !localReplicaAvailable)
       || historyStatus.localReplicaReady === false
       || historyStatus.hasOlder !== true
       || historyStatus.historyDemand?.phase === 'error'

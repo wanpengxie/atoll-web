@@ -223,6 +223,41 @@ it('无 self 身份的全部视图仍会静默补齐被协议事实遮住的语�
   expect(document.querySelector('.timeline-history-demand')).toBeNull();
 });
 
+it('断线本地首批无匹配行时继续读取更深 IndexedDB 语义供给', async () => {
+  const state = timelineState([{
+    seq: 90,
+    envelope: {
+      id: 'cached-other-tail', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { text: 'not mine' },
+    },
+  }]);
+  const request = vi.fn(() => new Promise(() => {}));
+  render(<Timeline
+    state={state}
+    history={{
+      request,
+      status: {
+        attached: false, generation: 0, messageCurrent: false, headSeq: 90,
+        localReplicaReady: true, loading: false, hasOlder: true, completedPages: 1,
+        presentationRevision: state._timelineRevision,
+      },
+    }}
+    roster={[]}
+    selfId="me"
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+  />);
+
+  await waitFor(() => expect(request).toHaveBeenCalledWith(expect.objectContaining({
+    intent: 'scroll-history',
+    urgency: 'interactive',
+    reason: 'projection-underfill',
+    viewSpec: expect.objectContaining({ scope: 'mine', selfId: 'me' }),
+  })));
+  expect(await screen.findByText('正在查找符合筛选的往来…')).toBeTruthy();
+});
+
 it('零行筛选供给失败后由 scheduler 状态推进恢复并保留前台重试语义', async () => {
   const state = timelineState([{
     seq: 9,
