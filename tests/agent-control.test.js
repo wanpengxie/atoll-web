@@ -106,4 +106,40 @@ describe('agent control v7 presentation', () => {
     ]);
     expect(agentFrozenState(interrupted, 'agent', 31 * 60 * 1000)).toMatchObject({ held_by: 'stop', source: 'agent.interrupt' });
   });
+
+  // 账本 seq 93719–93725 的现场：hold 完成后两秒，一条**早就在跑**的 agent.ask
+  // 出了一条 processing 进度行，冻结归约把它当"队列前进"清掉了编辑租约，前端
+  // 随即释放 hold，用户看到"编辑被另一项控制终止"。进度行不是前进。
+  it('36 keeps the editing lease while a turn already running before the hold keeps reporting progress', () => {
+    const state = stateOf([
+      envelope('running', 'request', 'agent.ask', { text: 'long job' }),
+      envelope('running-p1', 'response', 'agent.ask', { status: 'processing', turn_id: 't1' }, { parent_id: 'running' }),
+      envelope('queued', 'request', 'agent.ask', { text: 'to edit' }),
+      envelope('queued-q', 'response', 'agent.ask', { status: 'queued' }, { parent_id: 'queued' }),
+      envelope('h1', 'request', 'agent.hold', { target: 'queued' }, { parent_id: 'queued' }),
+      envelope('h1-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'h1' }),
+      envelope('running-p2', 'response', 'agent.ask', { status: 'processing', turn_id: 't1' }, { parent_id: 'running' }),
+    ]);
+    expect(agentFrozenState(state, 'agent', 100)).toMatchObject({ held_by: 'h1', source: 'agent.hold', target_id: 'queued' });
+    // 业务进度行（非核心状态）夹在两条 processing 之间同样不是一次跃迁。
+    apply(state, { channel_id: 'c0', seq: 8, envelope: envelope('running-b', 'response', 'agent.ask', { status: 'tool.started' }, { parent_id: 'running' }) });
+    apply(state, { channel_id: 'c0', seq: 9, envelope: envelope('running-p3', 'response', 'agent.ask', { status: 'processing' }, { parent_id: 'running' }) });
+    expect(agentFrozenState(state, 'agent', 100)).toMatchObject({ held_by: 'h1', source: 'agent.hold' });
+    // 队列真的前进了才作废：被 hold 的那一条自己开跑。
+    apply(state, { channel_id: 'c0', seq: 10, envelope: envelope('queued-p', 'response', 'agent.ask', { status: 'processing' }, { parent_id: 'queued' }) });
+    expect(agentFrozenState(state, 'agent', 100)).toBeNull();
+  });
+
+  it('37 clears the lease when the held target resumes processing after a paused stretch', () => {
+    const state = stateOf([
+      envelope('target', 'request', 'agent.ask', { text: 'running message' }),
+      envelope('target-p', 'response', 'agent.ask', { status: 'processing' }, { parent_id: 'target' }),
+      envelope('h2', 'request', 'agent.hold', { target: 'target' }, { parent_id: 'target' }),
+      envelope('h2-d', 'response', 'agent.hold', { status: 'completed' }, { parent_id: 'h2' }),
+      envelope('target-q', 'response', 'agent.ask', { status: 'queued', resumed: true, held_by: 'h2' }, { parent_id: 'target' }),
+    ]);
+    expect(agentFrozenState(state, 'agent', 100)).toMatchObject({ held_by: 'h2', source: 'agent.hold', target_id: 'target' });
+    apply(state, { channel_id: 'c0', seq: 6, envelope: envelope('target-p2', 'response', 'agent.ask', { status: 'processing' }, { parent_id: 'target' }) });
+    expect(agentFrozenState(state, 'agent', 100)).toBeNull();
+  });
 });

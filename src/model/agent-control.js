@@ -173,8 +173,19 @@ export function agentFrozenStates(state, actorIds = null, now = Date.now()) {
       const capacityFailure = argsOf(turn.terminal)?.status === 'failed' && argsOf(turn.terminal)?.error_code === 'base_capacity';
       // replace is admitted in place without releasing the editing hold.
       if (type !== TYPES.agentReplace && (enteredBuffer || capacityFailure)) operations.push({ seq: turn.requestSeq, kind: 'new-content' });
+      // 一条进度行不是"队列前进"。只有轮次**进入** processing 的那一次跃迁才
+      // 是：hold 之前就在跑的轮次会一直重复报 processing，把每一条都当前进，
+      // 就会在 hold 完成后的下一秒把刚拿到的编辑租约清掉（账本 seq 93719–
+      // 93725 的"编辑被另一项控制终止"）。跃迁本身按自己的 seq 排序，因此
+      // hold 之前的跃迁先于冻结被消费，hold 之后开跑的（新入队的轮次、被 hold
+      // 的目标自己复跑）照旧作废租约。业务态进度行不改核心状态。
+      let coreStatus = '';
       for (const item of turn.provisional || []) {
-        if (argsOf(item.envelope)?.status === 'processing') operations.push({ seq: item.seq, kind: 'advanced' });
+        if (item.core !== true) continue;
+        if (item.status === 'processing' && coreStatus !== 'processing') {
+          operations.push({ seq: item.seq, kind: 'advanced' });
+        }
+        coreStatus = item.status;
       }
       if (terminalValue(turn, 'merged_into')) operations.push({ seq: turn.terminalSeq, kind: 'advanced' });
     }
