@@ -8,8 +8,17 @@ describe('test evidence integrity contracts', () => {
   test('shared setup does not mock a virtualizer or synthesize timeline geometry', () => {
     const setup = read('tests/setup.js');
 
-    expect(setup).not.toMatch(/vi\.mock\(\s*['"](?:react-virtuoso|@legendapp\/list(?:\/react)?)['"]/);
+    expect(setup).not.toMatch(/vi\.mock\(\s*['"]react-virtuoso['"]/);
     expect(setup).not.toMatch(/timeline-message-list|timeline-virtual-item|presentation-row/);
+  });
+
+  test('the unused Legend list dependency stays removed', () => {
+    const manifest = JSON.parse(read('package.json'));
+
+    expect(manifest.dependencies?.['@legendapp/list']).toBeUndefined();
+    expect(manifest.devDependencies?.['@legendapp/list']).toBeUndefined();
+    expect(read('package-lock.json')).not.toContain('@legendapp/list');
+    expect(read('pnpm-lock.yaml')).not.toContain('@legendapp/list');
   });
 
   test('semantic list helper renders every supplied row', () => {
