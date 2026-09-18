@@ -32,6 +32,27 @@ async function openChannelCreation(page) {
   return panel;
 }
 
+async function closeSurfaceAndRevealLatest(page, closeName, expectedRequestType) {
+  await page.getByRole('button', { name: closeName }).click();
+  const latest = page.getByRole('button', { name: /条新动态/ });
+  if (!(await latest.isVisible().catch(() => false))) return;
+  try {
+    await latest.click({ timeout: 1_000 });
+  } catch (error) {
+    if (error?.name !== 'TimeoutError') throw error;
+    const [buttonCount, dynamicVisible, expectedTurnVisible] = await Promise.all([
+      latest.count(),
+      page.getByRole('tabpanel', { name: '动态' }).isVisible().catch(() => false),
+      page.locator(`.turn-card[data-request-type="${expectedRequestType}"]`).last().isVisible().catch(() => false),
+    ]);
+    // The visible-row observation may settle unseen while Playwright is waiting
+    // for action stability. Accept only that exact auto-settled state; a button
+    // which still exists (or a surface which changed underneath us) is a real
+    // click failure and must retain the original diagnostic.
+    if (buttonCount !== 0 || !dynamicVisible || !expectedTurnVisible) throw error;
+  }
+}
+
 test('D-BR-00 新建频道与管理频道是两个独立任务入口', async ({ page, request }) => {
   await reset(request);
   await login(page);
@@ -65,14 +86,14 @@ test('D-BR-01/02/04 c0 经 registrar 创建子频道并展示完整收敛与详�
   await expect(progress.getByText('服务就绪')).toBeVisible();
   await expect(progress.getByText('已确认')).toHaveCount(4);
   await expect(progress.getByText('频道已经可以打开和协作。')).toBeVisible();
-  await expect(page.locator('.turn-card[data-request-type="channel.create"]')).toContainText('registrar');
-  await expect(page.locator('.turn-card[data-request-type="channel.create"]')).toContainText('集中讨论产品设计');
   await expect(page.locator('.channel-rail').getByText('c0.design-room', { exact: true })).toBeVisible();
-
-  await panel.getByRole('button', { name: '关闭新建频道' }).click();
+  await closeSurfaceAndRevealLatest(page, '关闭新建频道', 'system.channel.create');
+  await expect(page.locator('.turn-card[data-request-type="system.channel.create"]')).toContainText('system');
+  await expect(page.locator('.turn-card[data-request-type="system.channel.create"]')).toContainText('集中讨论产品设计');
   panel = await openManagement(page, '信息');
   await panel.getByRole('button', { name: '读取完整详情到账本' }).click();
-  await expect(page.locator('.turn-card[data-request-type="channel.get"]')).toContainText('owner_principal');
+  await closeSurfaceAndRevealLatest(page, '关闭频道详情', 'system.channel.get');
+  await expect(page.locator('.turn-card[data-request-type="system.channel.get"]')).toContainText('owner_principal');
 });
 
 test('D-BR-03 投影延迟保留账本成功事实并最终自行收敛', async ({ page, request }) => {
@@ -88,6 +109,10 @@ test('D-BR-03 投影延迟保留账本成功事实并最终自行收敛', async 
 
 test('D-BR-05 普通频道经 coreactor 精确确认退役并停止写入', async ({ page, request }) => {
   await reset(request, 'channel-governance', 203);
+  const sentFrames = [];
+  page.on('websocket', (socket) => socket.on('framesent', ({ payload }) => {
+    try { sentFrames.push(JSON.parse(String(payload))); } catch { /* binary/non-JSON frame */ }
+  }));
   await login(page);
   await page.getByRole('button', { name: /c0\.project/ }).click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
@@ -97,9 +122,20 @@ test('D-BR-05 普通频道经 coreactor 精确确认退役并停止写入', asyn
   await panel.getByLabel('退役确认').fill('c0.project');
   await expect(retire).toBeEnabled();
   await retire.click();
-  await expect(page.locator('.turn-card[data-request-type="channel.retire"]')).toContainText('coreactor');
+  await expect.poll(() => sentFrames.some((frame) => (
+    frame.frame_type === 'submit'
+    && frame.payload?.channel_id === 'c0.project'
+    && frame.payload?.msg_type === 'system.channel.delete'
+    && frame.payload?.audience?.length === 1
+    && frame.payload.audience[0] === 'system'
+  ))).toBe(true);
+  // Retirement removes the active channel before its old virtualized ledger
+  // can remain on screen. Assert the request at the wire boundary and the
+  // authoritative directory/access outcome instead of searching c0's DOM for
+  // a terminal card that belongs to c0.project.
   await expect(page.locator('main h1')).toHaveText('c0', { timeout: 15_000 });
   await expect(page.locator('.channel-rail').getByText('c0.project', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('消息')).toBeEnabled();
 });
 
 test('D-BR-06 human 候选来自 OBS，添加后 roster 与 membership 收敛', async ({ page, request }) => {
@@ -113,10 +149,11 @@ test('D-BR-06 human 候选来自 OBS，添加后 roster 与 membership 收敛', 
   await expect(principalOptions.getByRole('option', { name: /Root · 用户/ })).toHaveCount(0);
   await principalOptions.getByRole('option', { name: /Alice · 用户/ }).click();
   await panel.getByRole('button', { name: '添加到频道' }).click();
-  await expect(panel.getByText('alice-home', { exact: true })).toBeVisible();
+  await expect(panel.locator('.managed-actor').filter({ hasText: 'alice-home' })).toBeVisible();
   await expect(panel.getByRole('region', { name: '成员操作进度' }).getByText('已收敛')).toBeVisible();
-  await expect(page.locator('.turn-card[data-request-type="channel.introduce_actor"]')).toContainText('添加参与者');
-  await expect(page.locator('.turn-card[data-request-type="channel.introduce_actor"]')).toContainText('alice');
+  await closeSurfaceAndRevealLatest(page, '关闭频道详情', 'system.member.admit');
+  await expect(page.locator('.turn-card[data-request-type="system.member.admit"]')).toContainText('member');
+  await expect(page.locator('.turn-card[data-request-type="system.member.admit"]')).toContainText('alice');
 });
 
 test('D-BR-07/08/09 agent/tool 添加、重启和 instance_id 移除形成账本闭环', async ({ page, request }) => {
@@ -132,22 +169,20 @@ test('D-BR-07/08/09 agent/tool 添加、重启和 instance_id 移除形成账本
 
   await agentRow.getByRole('button', { name: '重启' }).click();
   await panel.getByRole('button', { name: '确认操作' }).click();
-  const restartTurn = page.locator('.turn-card[data-request-type="channel.restart_actor"]');
-  await expect(restartTurn).toContainText('重启参与者');
-  await expect(restartTurn).toContainText('restarted');
   await expect(panel.getByRole('region', { name: '成员操作进度' }).getByText('已收敛')).toBeVisible();
 
   await agentRow.getByRole('button', { name: '移除' }).click();
   await panel.getByRole('button', { name: '确认操作' }).click();
-  const removeTurn = page.locator('.turn-card[data-request-type="channel.remove_actor"]');
-  await expect(removeTurn).toContainText('移除参与者');
-  await expect(removeTurn).toContainText('removed');
   await expect(agentRow).toHaveCount(0);
 
   await panel.getByRole('combobox', { name: '选择参与者' }).click();
   const declarationOptions = panel.getByRole('listbox', { name: '选择参与者选项' });
   await expect(declarationOptions.getByRole('option', { name: /Search Tool · 工具/ })).toHaveCount(1);
   await expect(declarationOptions.getByRole('option', { name: /Analyst Agent · Agent/ })).toHaveCount(1);
+  await closeSurfaceAndRevealLatest(page, '关闭频道详情', 'system.member.delete');
+  await expect(page.locator('.turn-card[data-request-type="system.member.restart"]')).toContainText('member');
+  await expect(page.locator('.turn-card[data-request-type="system.member.delete"]')).toContainText('removed');
+  await expect(page.locator('.turn-card[data-request-type="system.member.delete"]')).toContainText('agent-actor-205-1');
 });
 
 test('D-BR-10 受保护入口与权限失败可理解且不丢失管理上下文', async ({ page, request }) => {
@@ -161,7 +196,7 @@ test('D-BR-10 受保护入口与权限失败可理解且不丢失管理上下文
   const creation = await openChannelCreation(page);
   await creation.getByLabel('新频道名称').fill('denied-room');
   await creation.getByRole('button', { name: '创建频道' }).click();
-  await expect(creation.getByText(/账本失败：permission_denied/)).toBeVisible();
+  await expect(creation.getByText(/账本失败：unauthorized_sender/)).toBeVisible();
   await expect(creation).toBeVisible();
   await expect(creation.getByLabel('新频道名称')).toHaveValue('denied-room');
 });

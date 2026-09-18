@@ -98,7 +98,7 @@ test('F2-006 长文件名与不支持预览安全降级，窄屏无横向溢出'
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
   expect(geometry.paneLeft).toBe(0);
   expect(geometry.paneRight).toBe(geometry.width);
-  await expect(preview.getByRole('button', { name: '下载' })).toHaveCount(0);
+  await expect(preview.getByRole('button', { name: `下载 ${longName}`, exact: true })).toBeVisible();
   await expect(preview.getByRole('button', { name: '关闭文件详情' })).toBeVisible();
 });
 
@@ -125,15 +125,40 @@ test('Composer 直接区分本机上传与 daemon 频道文件选择', async ({ 
   await expect(page.getByRole('tab', { name: '动态' })).toHaveAttribute('aria-selected', 'true');
 
   await page.setViewportSize({ width: 360, height: 760 });
-  const uploadBounds = await page.getByLabel('上传本机文件到频道').boundingBox();
-  const daemonPickerBounds = await page.getByRole('button', { name: '从频道文件选择' }).boundingBox();
+  const localUpload = page.getByLabel('上传本机文件到频道');
+  const daemonPicker = page.getByRole('button', { name: '从频道文件选择' });
+  const uploadBounds = await localUpload.boundingBox();
+  const daemonPickerBounds = await daemonPicker.boundingBox();
   expect(uploadBounds?.width).toBeGreaterThanOrEqual(44);
   expect(uploadBounds?.height).toBeGreaterThanOrEqual(44);
   expect(daemonPickerBounds?.width).toBeGreaterThanOrEqual(44);
   expect(daemonPickerBounds?.height).toBeGreaterThanOrEqual(44);
+  const readingBeforeFocus = await page.locator('.conversation-reading-slot').boundingBox();
+  await localUpload.focus();
+  await expect(localUpload).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(daemonPicker).toBeFocused();
+  const compactGeometry = await page.evaluate(() => {
+    const reading = document.querySelector('.conversation-reading-slot').getBoundingClientRect();
+    const toolbar = document.querySelector('.composer-toolbar').getBoundingClientRect();
+    const surface = document.querySelector('.composer-surface').getBoundingClientRect();
+    return {
+      viewportWidth: innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      reading: { top: reading.top, bottom: reading.bottom },
+      toolbar: { left: toolbar.left, right: toolbar.right },
+      surface: { left: surface.left, right: surface.right },
+    };
+  });
+  expect(compactGeometry.documentWidth).toBeLessThanOrEqual(compactGeometry.viewportWidth);
+  expect(compactGeometry.toolbar.left).toBeGreaterThanOrEqual(compactGeometry.surface.left);
+  expect(compactGeometry.toolbar.right).toBeLessThanOrEqual(compactGeometry.surface.right);
+  expect(readingBeforeFocus).not.toBeNull();
+  expect(compactGeometry.reading.top).toBeCloseTo(readingBeforeFocus.y, 2);
+  expect(compactGeometry.reading.bottom).toBeCloseTo(readingBeforeFocus.y + readingBeforeFocus.height, 2);
 
   await page.getByRole('button', { name: '频道操作' }).click();
-  await page.getByRole('menuitem', { name: '打开文件分屏' }).click();
+  await page.getByRole('menuitem', { name: '打开文件', exact: true }).click();
   const mountedUploadBounds = await page.getByLabel('选择要上传到当前目录的文件').boundingBox();
   expect(mountedUploadBounds?.width).toBeGreaterThanOrEqual(44);
   expect(mountedUploadBounds?.height).toBeGreaterThanOrEqual(44);

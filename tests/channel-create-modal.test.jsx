@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React, { createRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ChannelCreateModal } from '../src/ui/ChannelCreateModal.jsx';
 
@@ -51,6 +51,36 @@ describe('ChannelCreateModal', () => {
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       payload: expect.objectContaining({ initial_actor_ids: ['human:root:1', 'agent:steward:2'] }),
+    }));
+  });
+
+  it('先从当前频道账本读取模板 body，再把公开 recipe 对象用于创建', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn()
+      .mockResolvedValueOnce('template-request')
+      .mockResolvedValueOnce('create-request');
+    const props = { channel, channels: [], roster, selfId: 'human:root:1', onSubmit, onClose: () => {} };
+    const { rerender } = render(<ChannelCreateModal {...props} state={emptyState()} />);
+    await user.type(screen.getByLabelText('新频道名称'), 'templated-room');
+    await user.type(screen.getByLabelText('频道模板 ID'), 'team');
+    await user.click(screen.getByRole('button', { name: '创建频道' }));
+    expect(onSubmit).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      channelId: 'c0',
+      msgType: 'system.channel.template.get',
+      payload: { id: 'team' },
+    }));
+
+    const body = { declarations: [{ decl_id: 'mock:analyst' }], profile: { serving: 1 } };
+    rerender(<ChannelCreateModal {...props} state={{ turns: new Map([['template-request', {
+      terminal: { payload: { status: 'completed', value: { id: 'team', body } } },
+    }]]) }} />);
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect(onSubmit).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      msgType: 'system.channel.create',
+      payload: expect.objectContaining({
+        name: 'templated-room',
+        recipe: { declarations: [{ decl_id: 'mock:analyst' }], profile: { serving: 1, default_storage_device_id: 'local-device' } },
+      }),
     }));
   });
 

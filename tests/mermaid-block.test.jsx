@@ -26,9 +26,15 @@ describe('Mermaid 围栏图表', () => {
 
     await waitFor(() => expect(container.querySelector('svg[data-diagram="ok"]')).toBeTruthy());
     expect(renderDiagram).toHaveBeenCalledWith(expect.stringMatching(/^mermaid-/), 'graph LR\n  A --> B');
-    fireEvent.click(screen.getByRole('button', { name: '查看源码' }));
+    const toggle = screen.getByRole('button', { name: '查看源码' });
+    toggle.focus();
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: '查看图表' })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
     expect(container.querySelector('pre code').textContent).toContain('graph LR');
-    fireEvent.click(screen.getByRole('button', { name: '查看图表' }));
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: '查看源码' })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
     expect(container.querySelector('svg[data-diagram="ok"]')).toBeTruthy();
   });
 

@@ -4,6 +4,11 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Timeline } from '../src/ui/Timeline.jsx';
 
+// This suite asserts progress semantics, not virtual-list geometry.
+vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => ({
+  MessageList: (await import('./helpers/PresentationMessageList.jsx')).PresentationMessageList,
+}));
+
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 const roster = [{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }];

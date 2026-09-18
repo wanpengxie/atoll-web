@@ -1,7 +1,7 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
-import { cacheWorldMismatch, createPersistenceEpochFence } from '../src/model/sync-session.js';
+import { cacheWorldMismatch, createPersistenceEpochFence, createSyncObligationCoordinator } from '../src/model/sync-session.js';
 
 describe('sync data model properties', () => {
   it('fuzzes arbitrary live/history arrival order without duplicating Replica facts', () => {
@@ -65,5 +65,236 @@ describe('sync data model properties', () => {
         ));
       },
     ), { numRuns: 500 });
+  });
+
+  it('does not fulfill interest when only the head probe succeeded', async () => {
+    let catchupAttempts = 0;
+    const coordinator = createSyncObligationCoordinator({
+      probe: async (channelID) => ({ channel_id: channelID, head_seq: 20, local_head_seq: 12 }),
+      catchup: async () => {
+        catchupAttempts += 1;
+        if (catchupAttempts === 1) throw new Error('page failed');
+      },
+      setTimeoutImpl: () => 1,
+      clearTimeoutImpl: () => {},
+    });
+    coordinator.connection(true);
+    await coordinator.interest('c0');
+    expect(coordinator.snapshot('c0')).toMatchObject({
+      interestRevision: 1,
+      probedRevision: 1,
+      fulfilledRevision: 0,
+      requiredRanges: [{ lowSeq: 13, highSeq: 20, purpose: 'focused-tail' }],
+    });
+    coordinator.connection(false);
+    coordinator.connection(true);
+    await vi.waitFor(() => expect(coordinator.snapshot('c0').fulfilledRevision).toBe(1));
+    coordinator.destroy();
+  });
+
+  it('fulfills an authoritative empty head without waiting for a push', async () => {
+    const catchup = vi.fn(async () => {});
+    const coordinator = createSyncObligationCoordinator({
+      probe: async (channelID) => ({ channel_id: channelID, head_seq: 0, local_head_seq: 0 }),
+      catchup,
+    });
+    coordinator.connection(true);
+    await coordinator.interest('empty');
+    expect(catchup).toHaveBeenCalledWith('empty', expect.objectContaining({ head_seq: 0 }), {
+      revision: 1,
+      targetHead: 0,
+      requiredRanges: [],
+      signal: expect.any(AbortSignal),
+    });
+    expect(coordinator.snapshot('empty')).toMatchObject({
+      interestRevision: 1,
+      probedRevision: 1,
+      fulfilledRevision: 1,
+      targetHead: 0,
+      requiredRanges: [],
+    });
+    coordinator.destroy();
+  });
+
+  it('re-probes a pending obligation when an old connection resolves after reconnect', async () => {
+    let resolveOldProbe;
+    let resolveFulfilled;
+    const oldProbe = new Promise((resolve) => { resolveOldProbe = resolve; });
+    const fulfilled = new Promise((resolve) => { resolveFulfilled = resolve; });
+    const probe = vi.fn((channelID) => (
+      probe.mock.calls.length === 1
+        ? oldProbe
+        : Promise.resolve({ channel_id: channelID, head_seq: 0, local_head_seq: 0 })
+    ));
+    const catchup = vi.fn(async () => {});
+    const coordinator = createSyncObligationCoordinator({
+      probe,
+      catchup,
+      onChange: (_channelID, state) => {
+        if (state.fulfilledRevision === 1) resolveFulfilled();
+      },
+    });
+    coordinator.connection(true);
+    const firstAttempt = coordinator.interest('c0');
+    await Promise.resolve();
+    expect(probe).toHaveBeenCalledOnce();
+
+    coordinator.connection(false);
+    coordinator.connection(true);
+    resolveOldProbe({ channel_id: 'c0', head_seq: 99, local_head_seq: 0 });
+    await firstAttempt;
+    await fulfilled;
+
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(catchup).toHaveBeenCalledOnce();
+    expect(catchup.mock.calls[0][1]).toMatchObject({ head_seq: 0 });
+    expect(coordinator.snapshot('c0')).toMatchObject({
+      interestRevision: 1,
+      probedRevision: 1,
+      fulfilledRevision: 1,
+      targetHead: 0,
+    });
+    coordinator.destroy();
+  });
+
+  it('does not let an old connection late catchup fulfill the replacement connection', async () => {
+    let resolveOldCatchup;
+    let resolveCatchupStarted;
+    let resolveFulfilled;
+    const oldCatchup = new Promise((resolve) => { resolveOldCatchup = resolve; });
+    const catchupStarted = new Promise((resolve) => { resolveCatchupStarted = resolve; });
+    const fulfilled = new Promise((resolve) => { resolveFulfilled = resolve; });
+    const probe = vi.fn(async (channelID) => ({
+      channel_id: channelID,
+      head_seq: probe.mock.calls.length === 1 ? 9 : 0,
+      local_head_seq: 0,
+    }));
+    const catchup = vi.fn(() => {
+      if (catchup.mock.calls.length === 1) {
+        resolveCatchupStarted();
+        return oldCatchup;
+      }
+      return Promise.resolve();
+    });
+    const coordinator = createSyncObligationCoordinator({
+      probe,
+      catchup,
+      onChange: (_channelID, state) => {
+        if (state.fulfilledRevision === 1) resolveFulfilled();
+      },
+    });
+    coordinator.connection(true);
+    const firstAttempt = coordinator.interest('c0');
+    await catchupStarted;
+
+    coordinator.connection(false);
+    coordinator.connection(true);
+    resolveOldCatchup();
+    await firstAttempt;
+    await fulfilled;
+
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(catchup).toHaveBeenCalledTimes(2);
+    expect(coordinator.snapshot('c0')).toMatchObject({
+      interestRevision: 1,
+      fulfilledRevision: 1,
+      targetHead: 0,
+      requiredRanges: [],
+    });
+    coordinator.destroy();
+  });
+
+  it('fences revoked admission, ignores its late probe, and resumes the pending interest after grant', async () => {
+    let resolveRevokedProbe;
+    let resolveFulfilled;
+    const revokedProbe = new Promise((resolve) => { resolveRevokedProbe = resolve; });
+    const fulfilled = new Promise((resolve) => { resolveFulfilled = resolve; });
+    const probe = vi.fn((channelID) => (
+      probe.mock.calls.length === 1
+        ? revokedProbe
+        : Promise.resolve({ channel_id: channelID, head_seq: 0, local_head_seq: 0 })
+    ));
+    const catchup = vi.fn(async () => {});
+    const coordinator = createSyncObligationCoordinator({
+      probe,
+      catchup,
+      onChange: (_channelID, state) => {
+        if (state.fulfilledRevision === 1) resolveFulfilled();
+      },
+    });
+    coordinator.admission(['c0'], { generation: 1 });
+    coordinator.connection(true);
+    const pending = coordinator.interest('c0');
+    await Promise.resolve();
+    expect(probe).toHaveBeenCalledOnce();
+
+    coordinator.admission([], { generation: 2 });
+    expect(coordinator.snapshot('c0')).toMatchObject({
+      admitted: false, interestRevision: 1, fulfilledRevision: 0,
+    });
+    await pending;
+    expect(probe).toHaveBeenCalledOnce();
+    expect(catchup).not.toHaveBeenCalled();
+
+    coordinator.admission(['c0'], { generation: 3 });
+    await fulfilled;
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(catchup).toHaveBeenCalledOnce();
+    resolveRevokedProbe({ channel_id: 'c0', head_seq: 99, local_head_seq: 0 });
+    await Promise.resolve();
+    expect(coordinator.snapshot('c0')).toMatchObject({
+      admitted: true, interestRevision: 1, fulfilledRevision: 1, targetHead: 0,
+    });
+    coordinator.destroy();
+  });
+
+  it('blocks a current definitive denial without retry and fences an older denial from a restored grant', async () => {
+    let rejectOldProbe;
+    let resolveRestored;
+    const oldProbe = new Promise((_resolve, reject) => { rejectOldProbe = reject; });
+    const restored = new Promise((resolve) => { resolveRestored = resolve; });
+    const probe = vi.fn((channelID) => (
+      probe.mock.calls.length === 1
+        ? oldProbe
+        : Promise.resolve({ channel_id: channelID, head_seq: 0, local_head_seq: 0 })
+    ));
+    const onDefinitiveError = vi.fn();
+    const coordinator = createSyncObligationCoordinator({
+      probe,
+      catchup: vi.fn(async () => {}),
+      isDefinitiveError: (error) => error?.code === 'forbidden',
+      onDefinitiveError,
+      onChange: (_channelID, state) => {
+        if (state.fulfilledRevision === 1) resolveRestored();
+      },
+    });
+    coordinator.admission(['c0'], { generation: 1 });
+    coordinator.connection(true);
+    const oldAttempt = coordinator.interest('c0');
+    await Promise.resolve();
+    expect(probe).toHaveBeenCalledOnce();
+
+    coordinator.admission([], { generation: 2 });
+    coordinator.admission(['c0'], { generation: 3 });
+    await restored;
+    rejectOldProbe(Object.assign(new Error('forbidden'), { code: 'forbidden' }));
+    await oldAttempt;
+    await Promise.resolve();
+
+    expect(onDefinitiveError).not.toHaveBeenCalled();
+    expect(coordinator.snapshot('c0')).toMatchObject({
+      admitted: true, fulfilledRevision: 1,
+    });
+
+    // The next current attempt is a definitive denial.
+    probe.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { code: 'forbidden' }));
+    const denied = coordinator.interest('c0');
+    await denied;
+    expect(onDefinitiveError).toHaveBeenCalledOnce();
+    expect(coordinator.snapshot('c0')).toMatchObject({
+      admitted: false, interestRevision: 2, fulfilledRevision: 1,
+      retryAt: 0,
+    });
+    coordinator.destroy();
   });
 });

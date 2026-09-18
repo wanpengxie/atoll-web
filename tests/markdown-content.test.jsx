@@ -56,6 +56,11 @@ describe('MarkdownContent', () => {
     expect(container.querySelector('script')).toBeNull();
   });
 
+  it('prepared AST路径仍使用react-markdown的默认URL协议过滤', () => {
+    const { container } = render(<MarkdownContent text="[危险](javascript:alert%281%29)" />);
+    expect(container.querySelector('a').getAttribute('href')).toBe('');
+  });
+
   it('在上下文内拦截显式绝对文件链接并保留普通网页链接', async () => {
     const user = userEvent.setup();
     const onOpen = vi.fn();
@@ -83,4 +88,39 @@ describe('MarkdownContent', () => {
     expect(frame.dataset.imagePhase).toBe('ready');
     expect(container.querySelector('[data-viewport-stable-media="image"]')).toBe(frame);
   });
+
+  it('正文前插和流式续写不改名仍存活的语义块', () => {
+    const view = render(<MarkdownContent contentKey="message:stable:body" text={'第一段\n\n保留段落'} />);
+    const ids = () => Object.fromEntries([...view.container.querySelectorAll('[data-reading-block-id]')]
+      .map((node) => [node.textContent, node.dataset.readingBlockId]));
+    const initial = ids();
+    view.rerender(<MarkdownContent contentKey="message:stable:body" text={'新前文\n\n第一段\n\n保留段落'} />);
+    expect(ids()['第一段']).toBe(initial['第一段']);
+    expect(ids()['保留段落']).toBe(initial['保留段落']);
+    const beforeGrowth = ids()['保留段落'];
+    view.rerender(<MarkdownContent contentKey="message:stable:body" text={'新前文\n\n第一段\n\n保留段落继续生成'} />);
+    expect(ids()['保留段落继续生成']).toBe(beforeGrowth);
+  });
+
+  it('流式尾块更新时保留已完成块的真实DOM和原生选择', () => {
+    const view = render(<MarkdownContent contentKey="message:selection:body" text={'已完成段落\n\n生成中'} />);
+    const sealed = [...view.container.querySelectorAll('[data-reading-block-id]')]
+      .find((node) => node.textContent === '已完成段落');
+    const textNode = sealed.querySelector('p').firstChild;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 3);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+
+    view.rerender(<MarkdownContent contentKey="message:selection:body" text={'已完成段落\n\n生成中继续'} />);
+
+    const surviving = [...view.container.querySelectorAll('[data-reading-block-id]')]
+      .find((node) => node.textContent === '已完成段落');
+    expect(surviving.isSameNode(sealed)).toBe(true);
+    expect(surviving.querySelector('p').firstChild.isSameNode(textNode)).toBe(true);
+    expect(getSelection().anchorNode?.isSameNode(textNode)).toBe(true);
+    expect(getSelection().toString()).toBe('已完成');
+  });
+
 });

@@ -35,64 +35,124 @@ async function openResources(page, tab = 'KV') {
   return panel;
 }
 
+async function runLedgerAction(panel, action) {
+  const status = panel.locator('.operation-state');
+  const previous = await status.count() ? await status.getAttribute('data-request-id') : null;
+  await action();
+  await expect.poll(async () => await status.count() ? status.getAttribute('data-request-id') : null).not.toBe(previous);
+  await expect(status).toHaveText('账本已完成');
+  return status.getAttribute('data-request-id');
+}
+
+function captureSentFrames(page) {
+  const frames = [];
+  page.on('websocket', (socket) => socket.on('framesent', ({ payload }) => {
+    try { frames.push(JSON.parse(String(payload))); } catch { /* binary/non-JSON frame */ }
+  }));
+  return frames;
+}
+
+async function expectSubmit(frames, type, payload) {
+  await expect.poll(() => [...frames].reverse().find((frame) => (
+    frame.frame_type === 'submit' && frame.payload?.msg_type === type
+  )) || null).toMatchObject({ payload: { msg_type: type, payload } });
+}
+
+async function closeContextAndRevealLatest(page) {
+  const host = page.locator('.context-host');
+  const close = host.locator('.context-pane button[aria-label^="关闭"]').first();
+  if (await close.isVisible().catch(() => false)) await close.click();
+  await expect(host).toHaveCount(0);
+  const latest = page.getByRole('button', { name: /条新动态/ });
+  if (await latest.isVisible().catch(() => false)) await latest.click();
+}
+
 test('E-BR-01 Actor 模板完整 CRUD，系统声明受保护', async ({ page, request }) => {
+  const sentFrames = captureSentFrames(page);
   await reset(request, 'space-administration', 301); await login(page);
   const panel = await openSpace(page);
-  await panel.getByRole('button', { name: '从 Registrar 读取' }).click();
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '从 Registrar 读取' }).click());
   await expect(panel.getByRole('button', { name: /Steward mock:steward/ })).toBeVisible();
   await panel.getByLabel('Actor 声明 ID').fill('browser:assistant');
-  await panel.getByLabel('Actor 模板名称').fill('Browser Assistant');
+  await panel.getByLabel('Actor 模板名称').fill('browser-assistant');
   await panel.getByLabel('Actor Class').fill('codex');
   await panel.getByLabel('Actor Config JSON').fill('{"model":"mock"}');
-  await panel.getByRole('button', { name: '登记', exact: true }).click();
-  await expect(page.locator('.turn-card[data-request-type="actor.template.register"]')).toContainText('browser:assistant');
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '登记', exact: true }).click());
+  await expectSubmit(sentFrames, 'system.actor.template.create', expect.objectContaining({
+    id: 'browser:assistant', name: 'browser-assistant', class: 'codex', config: { model: 'mock' },
+  }));
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '从 Registrar 读取' }).click());
+  await expect(panel.getByRole('button', { name: /browser-assistant.*browser:assistant/ })).toBeVisible();
+  await panel.getByRole('button', { name: /browser-assistant.*browser:assistant/ }).click();
   await panel.getByLabel('Actor 模板说明').fill('edited');
-  await panel.getByRole('button', { name: '保存编辑' }).click();
-  await expect(page.locator('.turn-card[data-request-type="actor.template.edit"]')).toContainText('edited');
-  await panel.getByRole('button', { name: '撤销' }).click();
-  await expect(page.locator('.turn-card[data-request-type="actor.template.revoke"]')).toContainText('revoked');
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '保存编辑' }).click());
+  await expectSubmit(sentFrames, 'system.actor.template.set', expect.objectContaining({ id: 'browser:assistant', description: 'edited' }));
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '从 Registrar 读取' }).click());
+  await panel.getByRole('button', { name: /browser-assistant.*browser:assistant/ }).click();
+  await expect(panel.getByLabel('Actor 模板说明')).toHaveValue('edited');
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '撤销' }).click());
+  await expectSubmit(sentFrames, 'system.actor.template.delete', { id: 'browser:assistant' });
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '从 Registrar 读取' }).click());
+  await expect(panel.getByRole('button', { name: /browser:assistant/ })).toHaveCount(0);
   await panel.getByRole('button', { name: /Service Actor/ }).click();
   await expect(panel.getByRole('button', { name: '保存编辑' })).toBeDisabled();
   await expect(panel.getByRole('button', { name: '撤销' })).toBeDisabled();
+  await closeContextAndRevealLatest(page);
+  await expect(page.locator('.turn-card[data-request-type="system.actor.template.delete"]')).toContainText('revoked');
 });
 
 test('E-BR-02 频道模板登记、编辑、读取和撤销都走 Registrar 账本', async ({ page, request }) => {
+  const sentFrames = captureSentFrames(page);
   await reset(request, 'space-administration', 302); await login(page);
   const panel = await openSpace(page, '频道模板');
-  await panel.getByRole('button', { name: '从 Registrar 读取' }).click();
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '从 Registrar 读取' }).click());
   await expect(panel.getByRole('button', { name: /Team channel/ })).toBeVisible();
   await panel.getByLabel('频道模板 ID').fill('browser:channel');
   await panel.getByLabel('频道模板名称').fill('Browser Channel');
   await panel.getByLabel('频道模板 Body JSON').fill('{"declarations":[{"decl_id":"mock:analyst"}]}');
-  await panel.getByRole('button', { name: '登记', exact: true }).click();
-  await expect(page.locator('.turn-card[data-request-type="channel.template.register"]')).toContainText('browser:channel');
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '登记', exact: true }).click());
+  await expectSubmit(sentFrames, 'system.channel.template.create', expect.objectContaining({
+    id: 'browser:channel', name: 'Browser Channel',
+    body: expect.objectContaining({ declarations: [{ decl_id: 'mock:analyst' }] }),
+  }));
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '从 Registrar 读取' }).click());
+  await expect(panel.getByRole('button', { name: /Browser Channel.*browser:channel/ })).toBeVisible();
+  await panel.getByRole('button', { name: /Browser Channel.*browser:channel/ }).click();
   await panel.getByLabel('频道模板说明').fill('edited template');
-  await panel.getByRole('button', { name: '保存编辑' }).click();
-  await expect(page.locator('.turn-card[data-request-type="channel.template.edit"]')).toContainText('edited template');
-  await panel.getByRole('button', { name: '读取详情' }).click();
-  await expect(page.locator('.turn-card[data-request-type="channel.template.get"]')).toContainText('declarations');
-  await panel.getByRole('button', { name: '撤销' }).click();
-  await expect(page.locator('.turn-card[data-request-type="channel.template.revoke"]')).toContainText('revoked');
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '保存编辑' }).click());
+  await expectSubmit(sentFrames, 'system.channel.template.set', expect.objectContaining({ id: 'browser:channel', description: 'edited template' }));
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '从 Registrar 读取' }).click());
+  await panel.getByRole('button', { name: /Browser Channel.*browser:channel/ }).click();
+  await expect(panel.getByLabel('频道模板说明')).toHaveValue('edited template');
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '读取详情' }).click());
+  await expectSubmit(sentFrames, 'system.channel.template.get', { id: 'browser:channel' });
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '撤销' }).click());
+  await expectSubmit(sentFrames, 'system.channel.template.delete', { id: 'browser:channel' });
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '从 Registrar 读取' }).click());
+  await expect(panel.getByRole('button', { name: /browser:channel/ })).toHaveCount(0);
+  await closeContextAndRevealLatest(page);
+  await expect(page.locator('.turn-card[data-request-type="system.channel.template.delete"]')).toContainText('revoked');
 });
 
 test('E-BR-03/E-BR-04 配置只作用于来源频道并区分账本终态与 OBS 投影', async ({ page, request }) => {
+  const sentFrames = captureSentFrames(page);
   await reset(request, 'space-administration', 303); await login(page);
   const panel = await openSpace(page, '频道配置');
   await expect(panel.getByText('配置只作用于来源频道 c0。')).toBeVisible();
   await panel.getByLabel('Overlay 声明 ID').fill('mock:analyst');
   await panel.getByLabel('Overlay Config JSON').fill('{"model":"overlay"}');
-  await panel.getByRole('button', { name: '应用 Overlay' }).click();
-  await expect(page.locator('.turn-card[data-request-type="actor.overlay.set"]')).toContainText('applied');
-  await panel.getByRole('button', { name: '清除' }).click();
-  await expect(page.locator('.turn-card[data-request-type="actor.overlay.clear"]')).toContainText('cleared');
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '应用 Overlay' }).click());
+  await expectSubmit(sentFrames, 'system.actor.overlay.set', { channel_id: 'c0', decl_id: 'mock:analyst', config: { model: 'overlay' } });
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '清除' }).click());
+  await expectSubmit(sentFrames, 'system.actor.overlay.delete', { channel_id: 'c0', decl_id: 'mock:analyst' });
   await panel.getByLabel('Profile 说明').fill('Configured from browser');
   await panel.getByLabel('Profile Serving').fill('1');
-  await panel.getByLabel('Profile Endpoints JSON').fill('{"chat":{"description":"Chat","receiver":"steward"}}');
-  await panel.getByRole('button', { name: '保存 Profile' }).click();
-  await expect(panel.getByText('账本已完成', { exact: true })).toBeVisible();
+  await runLedgerAction(panel, () => panel.getByRole('button', { name: '保存 Profile' }).click());
+  await expectSubmit(sentFrames, 'system.channel.set', expect.objectContaining({ channel_id: 'c0', description: 'Configured from browser', serving: 1 }));
   await expect(panel.locator('.observed-runtime')).toContainText('OBS 运行投影');
   await expect(panel.locator('.observed-runtime')).toContainText('服务中');
-  await expect(page.locator('.turn-card[data-request-type="channel.profile.set"]')).toContainText('endpoints');
+  await closeContextAndRevealLatest(page);
+  await expect(page.locator('.turn-card[data-request-type="system.channel.set"]')).toContainText('Configured from browser');
 });
 
 test('E-BR-05/E-BR-06 设备使用安全 OBS，一次性密钥不进时间线和持久化，操作均需确认', async ({ page, request }) => {
@@ -202,7 +262,12 @@ test('E-BR-11/E-BR-12 定时动作是本设备记录，可触发入账并可靠�
   await expect(panel.getByText('已安排', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem('atoll.timers.root'))).toContain('browser.timer.notice');
   await request.post(`${MOCK}/mock/control/advance`, { data: { ms: 1000 } });
+  await panel.getByRole('button', { name: '关闭定时动作' }).click();
   await page.getByRole('tab', { name: '动态', exact: true }).click();
+  // Timer events are system-authored channel facts, so the default “@我”
+  // conversation scope intentionally excludes them. Inspect the full ledger.
+  await page.getByRole('group', { name: '动态范围' }).getByRole('button', { name: '@我' }).click();
+  await expect(page.getByRole('group', { name: '动态范围' }).getByRole('button', { name: '全部' })).toBeVisible();
   await expect(page.getByText('浏览器定时消息', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: '任务', exact: true }).click();
   await page.getByRole('button', { name: '安排自动动作' }).click();
@@ -222,10 +287,11 @@ test('E-BR-13 权限失败保留空间管理输入和账本错误事实', async 
   await reset(request, 'space-administration-denied', 309); await login(page);
   const panel = await openSpace(page);
   await panel.getByLabel('Actor 声明 ID').fill('browser:denied');
-  await panel.getByLabel('Actor 模板名称').fill('Denied');
+  await panel.getByLabel('Actor 模板名称').fill('denied');
   await panel.getByLabel('Actor Class').fill('codex');
   await panel.getByRole('button', { name: '登记', exact: true }).click();
-  await expect(panel.getByText(/失败：permission_denied/)).toBeVisible();
+  await expect(panel.getByText(/失败：unauthorized_sender/)).toBeVisible();
   await expect(panel.getByLabel('Actor 声明 ID')).toHaveValue('browser:denied');
-  await expect(page.locator('.turn-card[data-request-type="actor.template.register"]')).toContainText('permission_denied');
+  await closeContextAndRevealLatest(page);
+  await expect(page.locator('.turn-card[data-request-type="system.actor.template.create"]')).toContainText('unauthorized_sender');
 });

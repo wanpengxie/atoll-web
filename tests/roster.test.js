@@ -22,7 +22,26 @@ describe('roster self fallback', () => {
     ] });
     expect(roster.get('c0')).toHaveLength(2);
     expect(roster.self('c0')).toBe('human:root');
+    expect(roster.authority('c0')).toBeNull();
     roster.close();
+  });
+
+  it('marks only a complete network observation as authoritative for its principal and channel', async () => {
+    const channelActors = vi.fn()
+      .mockResolvedValueOnce({ ...observation, complete: false })
+      .mockResolvedValueOnce({ ...observation, complete: true });
+    const roster = createRoster({ obs: { channelActors }, me: 'principal-root' });
+
+    await roster.refresh('c0');
+    expect(roster.authority('c0')).toEqual({
+      principalId: 'principal-root', channelId: 'c0', complete: false,
+    });
+    await roster.refresh('c0');
+    expect(roster.authority('c0')).toEqual({
+      principalId: 'principal-root', channelId: 'c0', complete: true,
+    });
+    roster.reset();
+    expect(roster.authority('c0')).toBeNull();
   });
 
   it('does not mistake a missing principal field for the current human', async () => {
@@ -43,11 +62,21 @@ describe('roster self fallback', () => {
 
     });
     roster.recordSubmission('c0', 'message-1');
+    expect(roster.ownsSubmission('c0', 'message-1')).toBe(true);
+    expect(roster.ownsSubmission('other', 'message-1')).toBe(false);
+    expect(roster.forgetSubmission('other', 'message-1')).toBe(false);
     expect(roster.observeFeed('c0', {
       id: 'message-1',
       kind: 'request',
       sender: { kind: 'human', id: 'human:root' },
     })).toBe('human:root');
+    expect(roster.ownsSubmission('c0', 'message-1')).toBe(false);
+    expect(roster.observeFeed('c0', {
+      id: 'message-1', kind: 'request', sender: { kind: 'human', id: 'human:root' },
+    })).toBe('');
+    roster.recordSubmission('c0', 'rejected-message');
+    expect(roster.forgetSubmission('c0', 'rejected-message')).toBe(true);
+    expect(roster.ownsSubmission('c0', 'rejected-message')).toBe(false);
     expect(roster.self('c0')).toBe('human:root');
     roster.close();
   });

@@ -10,7 +10,7 @@ export function ChannelConfigurationPanel({ channel, devices = [], roster, state
   const [requestId, setRequestId] = useState('');
   const [overlay, setOverlay] = useState({ declId: '', config: '{}' });
   const observedDefaultStorageDeviceId = devices.find((row) => row.defaultStorage)?.id || channel?.default_storage_device_id || 'local-device';
-  const [profile, setProfile] = useState({ description: '', serving: '1', endpoints: '{}', defaultStorageDeviceId: observedDefaultStorageDeviceId });
+  const [profile, setProfile] = useState({ description: '', serving: '1', defaultStorageDeviceId: observedDefaultStorageDeviceId });
   const refreshedRequestRef = useRef('');
 
   useEffect(() => {
@@ -40,7 +40,7 @@ export function ChannelConfigurationPanel({ channel, devices = [], roster, state
   }
 
   function configureProfile() {
-    run(() => profileCommand({ channelId: channel.id, description: profile.description, serving: Number(profile.serving), defaultStorageDeviceId: profile.defaultStorageDeviceId, endpoints: parseJSONObject(profile.endpoints, 'Endpoints'), roster }));
+    run(() => profileCommand({ channelId: channel.id, description: profile.description, serving: Number(profile.serving), defaultStorageDeviceId: profile.defaultStorageDeviceId, roster }));
   }
 
   return <>
@@ -52,14 +52,13 @@ export function ChannelConfigurationPanel({ channel, devices = [], roster, state
       <label>Config JSON<textarea aria-label="Overlay Config JSON" rows="6" value={overlay.config} onChange={(event) => setOverlay({ ...overlay, config: event.target.value })} /></label>
       <div className="form-actions"><button type="button" className="primary-button" disabled={disabled} onClick={() => configureOverlay(false)}>应用 Overlay</button><button type="button" className="danger-text" disabled={disabled} onClick={() => configureOverlay(true)}>清除</button></div>
     </PanelCard>
-    <PanelCard className="governance-form" title="频道 Profile 与 Endpoint">
+    <PanelCard className="governance-form" title="频道 Profile">
       <div className={channel.open === true ? 'observed-runtime online' : 'observed-runtime waiting'}><span>OBS 运行投影</span><strong>{channel.open === true ? '服务中' : channel.open === false ? '未服务' : '状态未知'}</strong></div>
       <label>说明<input aria-label="Profile 说明" value={profile.description} onChange={(event) => setProfile({ ...profile, description: event.target.value })} /></label>
       <label>Serving 数量<input aria-label="Profile Serving" type="number" min="0" value={profile.serving} onChange={(event) => setProfile({ ...profile, serving: event.target.value })} /></label>
       <label>默认文件存储<SelectMenu ariaLabel="默认文件存储设备" value={profile.defaultStorageDeviceId} placeholder="选择频道已绑定设备" options={devices.map((row) => ({ value: row.id, label: row.name || row.id, description: `${row.id}${row.online === false ? ' · 离线' : ''}` }))} onChange={(value) => setProfile({ ...profile, defaultStorageDeviceId: value })} /></label>
-      <label>Endpoints JSON<textarea aria-label="Profile Endpoints JSON" rows="8" value={profile.endpoints} onChange={(event) => setProfile({ ...profile, endpoints: event.target.value })} /></label>
       <button type="button" className="primary-button" disabled={disabled} onClick={configureProfile}>保存 Profile</button>
-      <p className="protected-note">“账本已完成”表示配置请求落账；上方状态是由 WS 失效信号刷新得到的独立 OBS 应用证据。</p>
+      <p className="protected-note">Endpoint 只在创建频道时随 recipe.profile 设置；公开的 system.channel.set 不接受 endpoint 字段。“账本已完成”表示配置请求落账；上方状态是由 WS 失效信号刷新得到的独立 OBS 应用证据。</p>
     </PanelCard>
   </>;
 }

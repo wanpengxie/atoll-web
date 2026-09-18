@@ -37,6 +37,10 @@
 .model-selector-trigger:disabled { opacity: .48; cursor: not-allowed; }
 .model-selector-trigger.is-static { cursor: default; }
 .model-selector-trigger.is-static:hover { background: transparent; color: var(--text-muted); }
+/* 手动挡下这是取参数的唯一入口，必须表现得像个按钮：可点、有悬停、带刷新图标。 */
+.model-selector-trigger.is-refresh { cursor: pointer; }
+.model-selector-refresh { color: var(--text-muted); opacity: .7; }
+.model-selector-trigger.is-refresh:hover .model-selector-refresh { color: var(--text); opacity: 1; }
 .model-selector-pending { color: var(--warning); font-size: 10px; white-space: nowrap; }
 .model-selector-trigger > svg:first-child { color: var(--text); }
 .model-selector-actor { overflow: hidden; max-width: 92px; color: var(--text); font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
@@ -126,9 +130,6 @@
 .command-menu small { overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 640px) {
-  .composer-reply { grid-template-columns: 22px minmax(0, 1fr) 44px; }
-  .composer-reply > button { width: 44px; height: 44px; }
-  .model-selector-trigger { min-width: 44px; height: 44px; padding: 0 9px; }
   .model-selector-current span { display: none; }
   .model-selector-context-compact > span { display: none; }
   .model-selector-actor { max-width: 64px; }
@@ -137,5 +138,12 @@
   .model-selector-menu, .model-selector-options { width: 100%; }
   .model-selector-popover.has-section .model-selector-menu { display: none; }
   .model-selector-options-title button { display: grid; }
+}
+
+@media (pointer: coarse), (any-pointer: coarse) {
+  .composer-reply { grid-template-columns: 22px minmax(0, 1fr) 44px; }
+  .composer-reply > button { width: 44px; height: 44px; }
+  .model-selector-trigger { min-width: 44px; height: 44px; padding: 0 9px; }
   .model-selector-options > button { min-height: 44px; }
+  .send-button { width: 44px; min-width: 44px; height: 44px; }
 }

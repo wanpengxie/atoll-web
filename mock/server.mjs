@@ -253,6 +253,8 @@ function seededHistory(channelId, behavior = {}) {
       : `${channelId} history ${index}: ask ${responderId} for PONG`;
     const responseText = behavior.file_reference_demo && channelId === 'c0' && index === 3
       ? '文件已经生成，点击 [path-preview-demo.go 第 4 行](/mock/atoll/local-device/channels/c0/workspace/path-preview-demo.go:4) 在 Atoll 内预览。'
+      : Number(behavior.history_extreme_turn) === index
+        ? `${channelId} PONG ${index}\n\n${Array.from({ length: 180 }, (_, line) => `- 超长历史回复第 ${line + 1} 行：${'用一条真实可见记录验证 raw 释放上限不等于像素高度上限。'.repeat(2)}`).join('\n')}`
       : behavior.history_variable_heights && index % 4 === 0
         ? `${channelId} PONG ${index}\n\n${Array.from({ length: 11 }, (_, line) => `- 第 ${line + 1} 项检查包含长度不同的说明，用来模拟真实频道里的 Markdown 回复。`).join('\n')}`
         : behavior.history_variable_heights && index % 4 === 1
@@ -297,17 +299,6 @@ function seededHistory(channelId, behavior = {}) {
       title: 'Approve mock action',
       detail: `Approval fixture for ${channelId}`,
       impact: '允许 Mock Agent 继续执行订单操作',
-      ...(behavior.approval_schema ? {
-        response_schema: {
-          type: 'object', required: ['note', 'severity'], additionalProperties: false,
-          properties: {
-            note: { type: 'string', description: '审批说明' },
-            severity: { type: 'string', description: '风险级别', enum: ['low', 'high'] },
-            notify: { type: 'boolean', description: '通知请求方' },
-          },
-        },
-        response_example: { note: '', severity: 'low', notify: false },
-      } : {}),
     },
     audience: [selfActorId],
     expiresAt: behavior.approval_expired ? base - 1 : null,
@@ -576,9 +567,12 @@ export function createMockServer({
     sendFrame(socket, 'error', ref, { frame, code, ...(detail ? { detail } : {}) });
   }
 
-  function sendReceipt(socket, ref, payload, after) {
-    // receipt 故障注入针对业务回执；attach receipt 只受 delay 影响，避免场景在登录阶段提前消耗故障。
-    const fault = String(ref).startsWith('attach-') ? null : domain.takeFault('receipt');
+  function sendReceipt(socket, ref, payload, after, context = {}) {
+    // receipt 故障注入只针对产生业务状态的请求。attach/channel_meta/history/
+    // observe 是同步基础设施；让它们抢先消耗 fault 会在真正 submit 前断线，既
+    // 没覆盖 outbox uncertain，也不符合场景名称。
+    const businessReceipt = /^(submit|resolve|cancel|after|resource)-/.test(String(ref));
+    const fault = businessReceipt ? domain.takeFault('receipt', context) : null;
     const delay = fault?.mode === 'delay' ? fault.delay_ms : Number(domain.delays.receipt_ms || 0);
     if (fault?.mode === 'drop') {
       socket.close(1012, 'mock receipt drop');
@@ -594,7 +588,7 @@ export function createMockServer({
   }
 
   function broadcast(row) {
-    const fault = domain.takeFault('feed');
+    const fault = domain.takeFault('feed', { msgType: row?.envelope?.type });
     if (fault?.mode === 'drop') {
       for (const socket of sockets) socket.close(1012, 'mock feed drop');
       return;
@@ -657,6 +651,7 @@ export function createMockServer({
     liveTick += 1;
     const channelId = liveTick % 2 === 1 ? 'c0' : 'c0.project';
     const isProject = channelId === 'c0.project';
+    const selfActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
     append(channelId, envelope({
       id: domain.nextId(`${channelId}-live`),
       channelId,
@@ -670,7 +665,7 @@ export function createMockServer({
         tick: liveTick,
         transient: true,
       },
-      audience: [ROOT_ACTOR_ID],
+      audience: [selfActorId],
     }));
   }
 
@@ -697,18 +692,30 @@ export function createMockServer({
 
   function activeAgentTask(channelId, actorId, excludedId = '') {
     const rows = histories.get(channelId) || [];
-    return [...rows].reverse().map((row) => row.envelope).find((value) => (
-      value.id !== excludedId
-      && value.kind === 'request'
-      && value.sender?.kind === 'human'
-      && value.audience?.includes(actorId)
-      // 可被控制的是“正在办的活”本身；控制词与自省词不算活。
-      && (!AGENT_CONTROL_WORDS.includes(value.type) || value.type === 'agent.replace')
-      && value.type !== 'actor.describe'
-      && !value.type.startsWith('system.')
-      && !hasTerminal(channelId, value.id)
-      && [...rows].reverse().map((row) => row.envelope).find((reply) => reply.kind === 'response' && reply.parent_id === value.id)?.payload?.status === 'processing'
-    )) || null;
+    // One reverse pass computes the latest response and terminal evidence for
+    // every request before its root row is reached. The former implementation
+    // rescanned the full ledger twice for each candidate request, turning the
+    // harmless startup agent.context probes into O(n²) work on the 100k fixture
+    // and starving the Gateway event loop before a reload could attach.
+    const latestStatus = new Map();
+    const terminalParents = new Set();
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const value = rows[index].envelope;
+      if (value.kind === 'response' && value.parent_id) {
+        if (!latestStatus.has(value.parent_id)) latestStatus.set(value.parent_id, value.payload?.status || '');
+        if (TERMINAL_STATUSES.has(value.payload?.status)) terminalParents.add(value.parent_id);
+        continue;
+      }
+      if (value.id === excludedId
+        || value.kind !== 'request'
+        || value.sender?.kind !== 'human'
+        || !value.audience?.includes(actorId)
+        || (AGENT_CONTROL_WORDS.includes(value.type) && value.type !== 'agent.replace')
+        || value.type === 'actor.describe'
+        || value.type.startsWith('system.')) continue;
+      if (!terminalParents.has(value.id) && latestStatus.get(value.id) === 'processing') return value;
+    }
+    return null;
   }
 
   function latestTaskStatus(channelId, requestId) {
@@ -881,7 +888,7 @@ export function createMockServer({
       expires_at_ms: payload.expires_at_ms || 0,
     });
     if (submittedFrames.has(messageId)) {
-      if (submittedFrames.get(messageId) === fingerprint) sendReceipt(socket, ref, { message_id: messageId });
+      if (submittedFrames.get(messageId) === fingerprint) sendReceipt(socket, ref, { message_id: messageId }, undefined, { msgType: payload.msg_type });
       else sendError(socket, { ref, frame: 'submit', code: 'idempotency_conflict', detail: 'message id already exists with different semantics' });
       return;
     }
@@ -890,7 +897,7 @@ export function createMockServer({
       return;
     }
     submittedFrames.set(messageId, fingerprint);
-    sendReceipt(socket, ref, { message_id: messageId });
+    sendReceipt(socket, ref, { message_id: messageId }, undefined, { msgType: payload.msg_type });
     append(channelId, envelope({
       id: messageId,
       channelId,
@@ -2183,6 +2190,59 @@ export function createMockServer({
         if (body.type === 'dense_progress') {
           const channelId = body.channel_id || 'c0';
           const count = Math.max(1, Math.min(2_000, Number(body.count) || 640));
+          if (body.related === false) {
+            const unrelatedActorId = 'human:unrelated-fixture:1';
+            const unrelatedAgentId = 'agent:unrelated-fixture:1';
+            const rootActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
+            const targetActorId = body.target_agent === 'claude' ? 'claude' : '';
+            const targetCount = targetActorId
+              ? Math.max(1, Math.min(32, Number(body.target_count) || 1))
+              : 0;
+            const appendTargetTurns = () => {
+              for (let index = 1; index <= targetCount; index += 1) {
+                const requestId = domain.nextId(`${channelId}-${targetActorId}-target-${index}`);
+                append(channelId, envelope({
+                  id: requestId, channelId,
+                  sender: { kind: 'human', id: rootActorId }, kind: 'request', type: 'agent.ask',
+                  payload: { text: `target ${targetActorId} question ${index}` }, audience: [targetActorId],
+                }));
+                append(channelId, envelope({
+                  id: `${requestId}-completed`, channelId,
+                  sender: { kind: 'agent', id: targetActorId }, kind: 'response', type: 'agent.ask',
+                  payload: { status: 'completed', text: `target ${targetActorId} answer ${index}` },
+                  parentId: requestId, correlationId: requestId, audience: [rootActorId],
+                }));
+              }
+            };
+            if (!body.target_after_noise) appendTargetTurns();
+            for (let index = 1; index <= count; index += 1) {
+              const requestId = domain.nextId(`${channelId}-unrelated-${index}`);
+              append(channelId, envelope({
+                id: requestId, channelId,
+                sender: { kind: 'human', id: unrelatedActorId }, kind: 'request', type: 'agent.ask',
+                payload: { text: `unrelated history ${index}` }, audience: [unrelatedAgentId],
+              }));
+              append(channelId, envelope({
+                id: `${requestId}-completed`, channelId,
+                sender: { kind: 'agent', id: unrelatedAgentId }, kind: 'response', type: 'agent.ask',
+                payload: { status: 'completed', text: `unrelated answer ${index}` },
+                parentId: requestId, correlationId: requestId, audience: [unrelatedActorId],
+              }));
+            }
+            if (body.target_after_noise) appendTargetTurns();
+            const tailCount = Math.max(0, Math.min(64, Number(body.tail_count) || 0));
+            for (let index = 1; index <= tailCount; index += 1) append(channelId, envelope({
+              id: domain.nextId(`${channelId}-visible-tail-${index}`), channelId,
+              sender: { kind: 'human', id: rootActorId }, kind: 'event', type: 'human.note',
+              payload: { text: `visible tail ${index}` }, audience: [STEWARD_ACTOR_ID],
+            }));
+            json(response, 200, {
+              type: body.type, unrelated: true, count, tail_count: tailCount,
+              target_agent: targetActorId, target_count: targetCount,
+              head_seq: histories.get(channelId)?.length || 0,
+            });
+            return;
+          }
           const selfActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
           const requestId = domain.nextId(`${channelId}-dense-request`);
           append(channelId, envelope({

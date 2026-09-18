@@ -7,7 +7,11 @@ describe('work-addressed task controls', () => {
       request: { id: 'request-1', sender: { id: 'human:root:1' }, audience: ['agent:native:1'] },
       provisional: [{ envelope: { payload: { status: 'processing', work_id: 'w-1', controls: [{ word: 'agent.interrupt', payload: { work_id: 'w-1' } }] } } }],
     };
-    const context = taskControlContext(turn, { selfId: 'human:root:1', access: 'member_active' });
+    const context = taskControlContext(turn, {
+      selfId: 'human:root:1',
+      access: 'member_active',
+      targetAuthority: { current: true, actorIDs: new Set(['agent:native:1']) },
+    });
     expect(context.canStop).toBe(true);
     expect(context.workId).toBe('w-1');
     expect(context.workState).toBe('');

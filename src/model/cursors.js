@@ -1,4 +1,4 @@
-import { argsOf, KIND, PROVISIONAL } from '../protocol/envelope.js';
+import { argsOf, FINAL, KIND } from '../protocol/envelope.js';
 import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from './timeline-scope.js';
 import { TYPES } from '../protocol/vocab.js';
 
@@ -7,14 +7,19 @@ const CURSOR_PREFIX = 'atoll.cursor.v3.';
 // "root timeline entries after the last tail the user actually saw". Reusing
 // v3 would turn an old, cache-relative number into a false unread boundary.
 const READ_PREFIX = 'atoll.read.v4.';
+const EXACT_READ_PREFIX = 'atoll.read-identities.v1.';
+const READ_AUTHORITY_KEY = 'atoll.read-authority.v1';
+const READ_AUTHORITY_SCHEMA = 1;
 
 function safeNumber(value) {
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= 0 ? number : 0;
 }
 
-export function createCursors(storage = globalThis.localStorage) {
+export function createCursors(storage = globalThis.localStorage, { requireReadAuthority = false } = {}) {
   const memory = new Map();
+  let readAuthorityReady = !requireReadAuthority;
+  let selectedReadAuthority = null;
 
   function get(key) {
     if (storage) return storage.getItem(key);
@@ -41,7 +46,67 @@ export function createCursors(storage = globalThis.localStorage) {
     return result;
   }
 
+  function exactReadMap(channelId) {
+    if (!readAuthorityReady) return new Map();
+    try {
+      const parsed = JSON.parse(get(`${EXACT_READ_PREFIX}${channelId}`) || '[]');
+      return new Map((Array.isArray(parsed) ? parsed : []).filter((entry) => (
+        Array.isArray(entry) && entry[0] && safeNumber(entry[1]) > 0
+      )).map(([messageID, seq]) => [String(messageID), safeNumber(seq)]));
+    } catch {
+      return new Map();
+    }
+  }
+
+  function writeExactReadMap(channelId, values) {
+    const key = `${EXACT_READ_PREFIX}${channelId}`;
+    if (values.size > 0) set(key, JSON.stringify([...values]));
+    else remove(key);
+  }
+
   return {
+    selectReadAuthority({ principalId = '', serverBoot = '' } = {}) {
+      if (!requireReadAuthority) return Object.freeze({ ready: true, reused: true, changed: false });
+      const target = {
+        schema: READ_AUTHORITY_SCHEMA,
+        principalId: String(principalId || ''),
+        serverBoot: String(serverBoot || ''),
+      };
+      if (!target.principalId || !target.serverBoot) {
+        const changed = readAuthorityReady;
+        readAuthorityReady = false;
+        selectedReadAuthority = null;
+        return Object.freeze({ ready: false, reused: false, changed });
+      }
+      let stored = null;
+      try { stored = JSON.parse(get(READ_AUTHORITY_KEY) || 'null'); }
+      catch { stored = null; }
+      const reused = stored?.schema === READ_AUTHORITY_SCHEMA
+        && stored.principalId === target.principalId
+        && stored.serverBoot === target.serverBoot;
+      if (!reused) {
+        for (const key of keys()) {
+          if (key.startsWith(READ_PREFIX) || key.startsWith(EXACT_READ_PREFIX)) remove(key);
+        }
+        set(READ_AUTHORITY_KEY, JSON.stringify(target));
+      }
+      const changed = !readAuthorityReady
+        || selectedReadAuthority?.principalId !== target.principalId
+        || selectedReadAuthority?.serverBoot !== target.serverBoot;
+      selectedReadAuthority = target;
+      readAuthorityReady = true;
+      return Object.freeze({ ready: true, reused, changed });
+    },
+    clearReadAuthority() {
+      if (!requireReadAuthority) return false;
+      const changed = readAuthorityReady;
+      readAuthorityReady = false;
+      selectedReadAuthority = null;
+      return changed;
+    },
+    isReadAuthorityReady() {
+      return readAuthorityReady;
+    },
     reconcile(available = {}) {
       for (const key of keys()) {
         // Resume cursors are bounded by what IndexedDB can actually restore.
@@ -72,29 +137,65 @@ export function createCursors(storage = globalThis.localStorage) {
       return next;
     },
     read(channelId) {
+      if (!readAuthorityReady) return 0;
       return safeNumber(get(`${READ_PREFIX}${channelId}`));
     },
     hasRead(channelId) {
+      if (!readAuthorityReady) return false;
       return get(`${READ_PREFIX}${channelId}`) != null;
     },
     baselineRead(channelId, seq) {
+      if (!readAuthorityReady || !channelId) return 0;
       const key = `${READ_PREFIX}${channelId}`;
       const head = safeNumber(seq);
       const raw = get(key);
       // No local read fact means "start observing after this attach snapshot",
       // not "all hydrated history since seq zero is unread". A cursor above
       // the current head belongs to a replaced/truncated ledger and is clamped.
-      if (raw == null || safeNumber(raw) > head) set(key, head);
-      return this.read(channelId);
+      const stored = Number(raw);
+      const storedValid = raw != null && Number.isSafeInteger(stored) && stored >= 0;
+      if (!storedValid || stored > head) set(key, head);
+      const readSeq = this.read(channelId);
+      const exact = exactReadMap(channelId);
+      for (const [messageID, high] of exact) {
+        if (high <= readSeq || high > head) exact.delete(messageID);
+      }
+      writeExactReadMap(channelId, exact);
+      return readSeq;
     },
     markRead(channelId, seq) {
+      if (!readAuthorityReady) return 0;
       const current = this.read(channelId);
       const next = Math.max(current, safeNumber(seq));
       set(`${READ_PREFIX}${channelId}`, next);
+      const exact = exactReadMap(channelId);
+      for (const [messageID, high] of exact) if (high <= next) exact.delete(messageID);
+      writeExactReadMap(channelId, exact);
       return next;
     },
+    acknowledgeReadIdentities(channelId, identities = []) {
+      if (!readAuthorityReady) return false;
+      const exact = exactReadMap(channelId);
+      let changed = false;
+      for (const identity of identities) {
+        const messageID = String(identity?.messageID || '');
+        const seqHigh = safeNumber(identity?.seqHigh);
+        if (!messageID || !seqHigh || seqHigh <= this.read(channelId)) continue;
+        if ((exact.get(messageID) || 0) >= seqHigh) continue;
+        exact.set(messageID, seqHigh);
+        changed = true;
+      }
+      if (changed) writeExactReadMap(channelId, exact);
+      return changed;
+    },
+    acknowledgedReadIdentities(channelId) {
+      if (!readAuthorityReady) return new Map();
+      return new Map(exactReadMap(channelId));
+    },
     resetReads() {
-      for (const key of keys()) if (key.startsWith(READ_PREFIX)) remove(key);
+      for (const key of keys()) {
+        if (key.startsWith(READ_PREFIX) || key.startsWith(EXACT_READ_PREFIX)) remove(key);
+      }
     },
   };
 }
@@ -102,8 +203,12 @@ export function createCursors(storage = globalThis.localStorage) {
 // Channel badges are notifications, not a ledger row counter. One request may
 // produce many queued/processing/deferred response frames while an agent works;
 // those frames update the existing turn and must not look like new messages.
-// Keep only conversational requests and settled responses. Events remain in
-// the complete timeline, but are deliberately too noisy for the channel rail.
+// Keep only conversational requests and protocol-final responses. Fold also
+// accepts namespaced business provisional statuses (for example
+// provider.waiting); a negative "not core provisional" check would turn those
+// progress frames, missing statuses, and future statuses into notifications.
+// Events remain in the complete timeline, but are deliberately too noisy for
+// the channel rail.
 const HIDDEN_CONTROL_TYPES = new Set([
   TYPES.agentHold,
   TYPES.agentUnhold,
@@ -114,10 +219,22 @@ const HIDDEN_CONTROL_TYPES = new Set([
   TYPES.describe,
 ]);
 
-function isNotifiable(envelope) {
-  if (HIDDEN_CONTROL_TYPES.has(envelope?.type)) return false;
-  if (envelope?.kind === KIND.request) return true;
-  return envelope?.kind === KIND.response && !PROVISIONAL.has(argsOf(envelope)?.status);
+function notificationDisposition(channelState, envelope) {
+  if (HIDDEN_CONTROL_TYPES.has(envelope?.type)) return 'hidden_control';
+  if (envelope?.kind === KIND.request) return 'request';
+  if (envelope?.kind !== KIND.response) return 'not_message';
+  if (!FINAL.has(argsOf(envelope)?.status)) return 'not_final';
+  const directTurn = envelope.parent_id ? channelState?.turns?.get?.(envelope.parent_id) : null;
+  if (directTurn?.terminal && directTurn.terminal !== envelope) return 'terminal_conflict';
+  const unmatched = envelope.parent_id
+    ? channelState?._unmatchedTerminalClosures?.get?.(envelope.parent_id)
+    : null;
+  if (unmatched?.envelope && unmatched.envelope.id !== envelope.id) return 'terminal_conflict';
+  return 'final';
+}
+
+function isNotifiable(channelState, envelope) {
+  return ['request', 'final'].includes(notificationDisposition(channelState, envelope));
 }
 
 function visitUnreadRows(channelState, readSeq, visit) {
@@ -140,13 +257,22 @@ function visitUnreadRows(channelState, readSeq, visit) {
   }
 }
 
-export function unreadCount(channelState, readSeq, selfId) {
+function acknowledgedAt(acknowledged, messageID, seq) {
+  if (!messageID || !(acknowledged instanceof Map)) return false;
+  const rowSeq = safeNumber(seq);
+  return rowSeq > 0 && safeNumber(acknowledged.get(messageID)) >= rowSeq;
+}
+
+export function unreadCount(channelState, readSeq, selfId, { acknowledged = new Map() } = {}) {
   if (!channelState?.rows) return 0;
   let count = 0;
-  visitUnreadRows(channelState, readSeq, (_seq, envelope) => {
+  visitUnreadRows(channelState, readSeq, (seq, envelope) => {
     if (envelope?.visibility === 'system') return;
     if (selfId && envelope?.sender?.id === selfId) return;
-    if (!isNotifiable(envelope)) return;
+    if (!isNotifiable(channelState, envelope)) return;
+    if (acknowledgedAt(acknowledged, envelope?.id, seq)
+      || acknowledgedAt(acknowledged, envelope?.parent_id, seq)
+      || acknowledgedAt(acknowledged, envelope?.correlation_id, seq)) return;
     count += 1;
   });
   return count;
@@ -164,7 +290,12 @@ export function unreadCount(channelState, readSeq, selfId) {
 // incremental:与时间线共用那张增量索引(输出等价,见 timeline-scope.js)。这个函数
 // 被每个频道各叫一次,而它里面那趟 relatedEnvelopeIds 是"把整本账复制一遍再走两
 // 遍"——频道多、账本长的时候,它比时间线投影还贵。
-export function unreadCounts(channelState, readSeq, selfId, { incremental = false } = {}) {
+function projectUnreadCounts(channelState, readSeq, selfId, {
+  incremental = false,
+  acknowledged = new Map(),
+  diagnostics = false,
+  diagnosticLimit = 200,
+} = {}) {
   if (!channelState?.rows) return { related: 0, total: 0 };
   const relatedIds = incremental ? relatedEnvelopeIdsIncremental(channelState, selfId) : relatedEnvelopeIds(channelState, selfId);
   // fold 已经为 parent 路由维护了同一份 id 索引；未读投影复用它，避免每次
@@ -196,13 +327,67 @@ export function unreadCounts(channelState, readSeq, selfId, { incremental = fals
 
   const totalRoots = new Set();
   const relatedRoots = new Set();
-  visitUnreadRows(channelState, readSeq, (_seq, envelope) => {
-    if (selfId && envelope?.sender?.id === selfId) return;
-    if (!isNotifiable(envelope)) return;
+  const diagnosticRows = [];
+  const recordDiagnostic = (seq, envelope, root, ackReason) => {
+    if (!diagnostics || diagnosticRows.length >= diagnosticLimit) return;
+    diagnosticRows.push(Object.freeze({
+      id: String(root || envelope?.id || ''),
+      type: String(envelope?.type || ''),
+      kind: String(envelope?.kind || ''),
+      status: String(argsOf(envelope)?.status || ''),
+      seq: safeNumber(seq),
+      ackReason: String(ackReason || ''),
+    }));
+  };
+  visitUnreadRows(channelState, readSeq, (seq, envelope) => {
+    if (selfId && envelope?.sender?.id === selfId) {
+      recordDiagnostic(seq, envelope, '', 'self');
+      return;
+    }
+    const disposition = notificationDisposition(channelState, envelope);
+    if (!['request', 'final'].includes(disposition)) {
+      recordDiagnostic(seq, envelope, '', disposition);
+      return;
+    }
     const root = rootId(envelope);
-    if (!root) return;
+    if (!root) {
+      recordDiagnostic(seq, envelope, '', 'missing_root');
+      return;
+    }
+    if (acknowledgedAt(acknowledged, root, seq)
+      || acknowledgedAt(acknowledged, envelope?.id, seq)) {
+      recordDiagnostic(seq, envelope, root, 'exact_visible_ack');
+      return;
+    }
+    if (totalRoots.has(root)) {
+      recordDiagnostic(seq, envelope, root, 'duplicate_root');
+      return;
+    }
     totalRoots.add(root);
-    if (envelope?.id && (relatedIds.has(envelope.id) || relatedIds.has(root))) relatedRoots.add(root);
+    const related = Boolean(envelope?.id && (relatedIds.has(envelope.id) || relatedIds.has(root)));
+    if (related) relatedRoots.add(root);
+    recordDiagnostic(seq, envelope, root, related ? 'counted_related' : 'counted_other');
   });
-  return { related: relatedRoots.size, total: totalRoots.size };
+  const counts = { related: relatedRoots.size, total: totalRoots.size };
+  if (!diagnostics) return counts;
+  return Object.freeze({
+    counts: Object.freeze(counts),
+    rows: Object.freeze(diagnosticRows),
+  });
+}
+
+export function unreadCounts(channelState, readSeq, selfId, options = {}) {
+  return projectUnreadCounts(channelState, readSeq, selfId, options);
+}
+
+// Opt-in, local-only evidence for a rail count. It deliberately exports no
+// envelope/body/audience/sender data: each bounded row identifies only the
+// logical root, protocol category, sequence and the exact count/ack decision.
+// This uses the same projection as unreadCounts so diagnostics cannot invent a
+// second notification policy while investigating a user's existing badge.
+export function unreadCountDiagnostics(channelState, readSeq, selfId, options = {}) {
+  return projectUnreadCounts(channelState, readSeq, selfId, {
+    ...options,
+    diagnostics: true,
+  });
 }

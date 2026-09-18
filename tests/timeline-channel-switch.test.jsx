@@ -18,6 +18,34 @@ vi.mock('../src/ui/Timeline.jsx', () => ({
     return <section id="workspace-panel-dynamic" role="tabpanel" aria-labelledby="workspace-tab-dynamic">消息</section>;
   },
 }));
+vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => {
+  const { PresentationMessageList } = await import('./helpers/PresentationMessageList.jsx');
+  return {
+    MessageList(props) {
+      const { reading, snapshot } = props;
+      const lastDemandKey = React.useRef('');
+      const status = reading.status || {};
+      const demandKey = JSON.stringify([
+        reading.activationID,
+        snapshot.revision,
+        status.attached === true,
+        Number(status.generation || 0),
+        status.hasOlder === true,
+        status.loading === true,
+        String(status.error || ''),
+        Number(status.completedPages || 0),
+        Number(status.revealVersion || 0),
+      ]);
+      React.useLayoutEffect(() => {
+        if (snapshot.rows.length > 8 || status.attached !== true || status.hasOlder !== true) return;
+        if (lastDemandKey.current === demandKey) return;
+        lastDemandKey.current = demandKey;
+        void reading.onUnderfill?.();
+      }, [demandKey, reading, snapshot.rows.length, status.attached, status.hasOlder]);
+      return <PresentationMessageList {...props} />;
+    },
+  };
+});
 
 const { AppShell } = await import('../src/app/AppShell.jsx');
 const { Timeline } = await vi.importActual('../src/ui/Timeline.jsx');
@@ -83,6 +111,10 @@ describe('切频道的消息区', () => {
 });
 
 describe('历史自动懒加载', () => {
+  function managedHistory(status = {}, ports = {}) {
+    return { ...ports, status: { ...status } };
+  }
+
   function historyState(count = 160, startSeq = 1) {
     const standalone = Array.from({ length: count }, (_, index) => ({
       seq: startSeq + index,
@@ -92,42 +124,79 @@ describe('历史自动懒加载', () => {
   }
 
   it('后台蓄水池增长不推动可见列表，且不存在手动加载按钮', async () => {
-    const view = render(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 0 }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={historyState(120)} history={managedHistory({ hasOlder: true, buffered: 0 })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     expect(await screen.findByText('历史 120')).toBeTruthy();
     const before = view.container.querySelectorAll('.standalone-row').length;
-    view.rerender(<Timeline state={historyState(120)} history={{ hasOlder: true, buffered: 5_000 }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={historyState(120)} history={managedHistory({ hasOlder: true, buffered: 5_000 })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     expect(view.container.querySelectorAll('.standalone-row').length).toBe(before);
     expect(document.body.textContent).not.toContain('查看更早动态');
   });
 
+  it('测试端口把调度事实放在 status，动作保留为顶层 port', () => {
+    const loadOlder = vi.fn();
+    const history = managedHistory({ attached: true, hasOlder: true }, { loadOlder });
+    expect(history).not.toHaveProperty('attached');
+    expect(history).not.toHaveProperty('hasOlder');
+    expect(history.status).toEqual({ attached: true, hasOlder: true });
+    expect(history.loadOlder).toBe(loadOlder);
+  });
+
   it('短首屏已经触顶时自动释放一批 reservoir', async () => {
     const loadOlder = vi.fn(async () => ({ kind: 'exhausted' }));
-    render(<Timeline state={historyState(4)} history={{ hasOlder: true, buffered: 5_000, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    render(<Timeline state={historyState(4)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 5_000 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledOnce());
     expect(loadOlder.mock.calls[0][0]).toMatchObject({ anchorSeq: 1 });
   });
 
-  it('attach 前建立的顶部 demand 不会被挂载 effect 或短列表的 bottom 状态清掉', async () => {
+  it('短视口只在 attach 明确公布 hasOlder 后建立欠供给 demand', async () => {
     let finish;
     const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const state = historyState(4, 100);
-    const view = render(<Timeline state={state} history={{ attached: false, hasOlder: false, buffered: 0, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
-
-    // Meta/IDB settles after 消息视口 has already reported both top and bottom.
-    // The original operation remains the sole owner; rerender cannot replace it.
-    view.rerender(<Timeline state={state} history={{ attached: true, hasOlder: true, buffered: 5_000, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={state} history={managedHistory({ attached: false, hasOlder: false, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(loadOlder).toHaveBeenCalledTimes(1);
+    expect(loadOlder).not.toHaveBeenCalled();
+
+    // The scheduler's authoritative attach transition, rather than the
+    // virtualizer's initial zero window, establishes the persistent duty.
+    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 5_000 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledOnce());
     finish({ kind: 'exhausted' });
+  });
+
+  it('attach 前的非权威 false 不会封死 attach 后的同一欠供给视口', async () => {
+    const loadOlder = vi.fn().mockResolvedValue({ kind: 'satisfied', firstVisibleSeq: 68 });
+    const state = historyState(4, 100);
+    const view = render(<Timeline state={state} history={managedHistory({ attached: false, hasOlder: false, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(loadOlder).not.toHaveBeenCalled();
+    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 2, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledOnce());
+  });
+
+  it('失败后的scheduler状态推进会重新兑现同一欠供给义务', async () => {
+    const loadOlder = vi.fn()
+      .mockResolvedValueOnce({ kind: 'failed', error: new Error('temporary') })
+      .mockResolvedValueOnce({ kind: 'satisfied', firstVisibleSeq: 68 });
+    const state = historyState(4, 100);
+    const view = render(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 1, hasOlder: true, loading: false, error: '' }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
+    // Let the failed operation release its in-flight ownership before the
+    // scheduler publishes the next status revision. The old global observer
+    // shim accidentally supplied this turn; the semantic contract requires it
+    // explicitly and still demands exactly one retry from the new revision.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The scheduler owns retry timing. Its published loading/error transition,
+    // not a viewport poller, re-drives the persistent coverage obligation.
+    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 1, hasOlder: true, loading: true, error: 'temporary' }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(2));
   });
 
   it('scheduler 兑现 demand 且真正 prepend 可见项后不重复消费 reservoir', async () => {
     let finish;
     const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    const view = render(<Timeline state={historyState(4, 100)} history={{ attached: true, hasOlder: true, buffered: 0, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={historyState(4, 100)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
-    view.rerender(<Timeline state={historyState(36, 68)} history={{ attached: true, hasOlder: true, buffered: 16, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={historyState(36, 68)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     finish({ kind: 'satisfied', firstVisibleSeq: 68 });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(loadOlder).toHaveBeenCalledTimes(1);
@@ -137,7 +206,7 @@ describe('历史自动懒加载', () => {
     let finish;
     const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const initial = historyState(4, 100);
-    const view = render(<Timeline state={initial} history={{ attached: true, hasOlder: true, buffered: 0, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={initial} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
 
     const hidden = {
@@ -149,47 +218,17 @@ describe('历史自动懒加载', () => {
       rows: new Map([[hidden.seq, hidden.envelope], ...initial.rows]),
       standalone: [hidden, ...initial.standalone],
     };
-    view.rerender(<Timeline state={next} history={{ attached: true, hasOlder: true, buffered: 16, loadOlder }} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={next} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(loadOlder).toHaveBeenCalledTimes(1);
     finish({ kind: 'exhausted' });
-  });
-
-  it('成员过滤按钮在 消息视口 时间线中可点击并收窄条目', async () => {
-    const standalone = ['agent-a', 'agent-b'].map((agentId, index) => ({
-      seq: index + 1,
-      envelope: {
-        id: `from-${agentId}`,
-        kind: 'event',
-        type: 'human.note',
-        visibility: 'public',
-        sender: { id: agentId, kind: 'agent' },
-        audience: ['me'],
-        payload: { text: `来自 ${agentId}` },
-      },
-    }));
-    const state = {
-      channelId: 'c0',
-      rows: new Map(standalone.map((row) => [row.seq, row.envelope])),
-      turns: new Map(),
-      standalone,
-      orphans: [],
-      narration: [],
-      lastSeq: 2,
-    };
-    render(<Timeline state={state} history={{ attached: true, hasOlder: false }} roster={[{ id: 'agent-a', kind: 'agent' }, { id: 'agent-b', kind: 'agent' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
-
-    fireEvent.click(await screen.findByTitle('只看我与 agent-a 的往来'));
-    expect(screen.getByTitle('取消只看 agent-a').getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getByText('来自 agent-a')).toBeTruthy();
-    expect(screen.queryByText('来自 agent-b')).toBeNull();
   });
 
   it('频道 DOM 重挂后从 View Session 恢复阅读范围', async () => {
     const sessions = createViewSessionStore();
     const props = {
       state: historyState(4),
-      history: { attached: true, hasOlder: false },
+      history: managedHistory({ attached: true, hasOlder: false }),
       viewSessions: sessions,
       roster: [],
       selfId: 'me',

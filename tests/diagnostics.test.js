@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearDiagnostics, diagnostic, diagnosticsSnapshot } from '../src/model/diagnostics.js';
+import {
+  clearDiagnostics,
+  diagnostic,
+  diagnosticsSnapshot,
+  enableReadingTrace,
+  railDiagnosticSnapshot,
+  readingTrace,
+  readingTraceSnapshot,
+  registerRailDiagnosticProvider,
+} from '../src/model/diagnostics.js';
 
 describe('frontend diagnostics', () => {
   let stored;
@@ -37,6 +46,80 @@ describe('frontend diagnostics', () => {
     expect(JSON.parse(globalThis.__ATOLL_DIAGNOSTICS__.exportText())).toHaveLength(1);
     globalThis.__ATOLL_DIAGNOSTICS__.clear();
     expect(diagnosticsSnapshot()).toEqual([]);
+  });
+
+  it('exports an explicit local rail snapshot without retaining its provider after cleanup', () => {
+    const release = registerRailDiagnosticProvider((channelId) => ({
+      version: 1,
+      channels: [{
+        channelId,
+        rows: [{ id: 'root', type: 'agent.ask', kind: 'response', status: 'completed', seq: 9, ackReason: 'counted_related' }],
+      }],
+    }));
+    expect(globalThis.__ATOLL_DIAGNOSTICS__.rail.snapshot('c0')).toEqual({
+      version: 1,
+      channels: [{
+        channelId: 'c0',
+        authorityReady: false,
+        readSeq: 0,
+        counts: { related: 0, total: 0 },
+        rows: [{ id: 'root', type: 'agent.ask', kind: 'response', status: 'completed', seq: 9, ackReason: 'counted_related' }],
+      }],
+    });
+    expect(JSON.parse(globalThis.__ATOLL_DIAGNOSTICS__.rail.exportText('c0'))).toEqual(railDiagnosticSnapshot('c0'));
+    release();
+    expect(railDiagnosticSnapshot('c0')).toEqual({ version: 1, channels: [] });
+  });
+
+  it('keeps opt-in reading geometry metadata bounded, monotonic, redacted, and off the console', () => {
+    const spy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    enableReadingTrace({ version: 'test', token: 'never-export' });
+    for (let index = 0; index < 1_200; index += 1) {
+      readingTrace('reading.sample', { index, body: `private-${index}`, scrollTop: index * 2 });
+    }
+    const snapshot = readingTraceSnapshot();
+    expect(snapshot.enabled).toBe(true);
+    expect(snapshot.entries).toHaveLength(snapshot.limit);
+    expect(snapshot.dropped).toBe(177);
+    expect(snapshot.entries[0].sequence).toBeGreaterThan(1);
+    expect(snapshot.entries.every((entry, index) => (
+      index === 0
+      || (entry.sequence > snapshot.entries[index - 1].sequence
+        && entry.elapsedMs >= snapshot.entries[index - 1].elapsedMs)
+    ))).toBe(true);
+    expect(snapshot.entries.at(-1).detail).toMatchObject({ index: 1_199, body: '[redacted]', scrollTop: 2_398 });
+    expect(snapshot.metadata.token).toBe('[redacted]');
+    expect(spy).not.toHaveBeenCalled();
+    expect(JSON.parse(globalThis.__ATOLL_DIAGNOSTICS__.exportBundleText()).reading.entries).toHaveLength(snapshot.limit);
+  });
+
+  it('does not evaluate trace-only geometry while the reading recorder is disabled', () => {
+    let geometryReads = 0;
+    readingTrace('reading.geometry', () => {
+      geometryReads += 1;
+      return { scrollHeight: 1000 };
+    });
+    expect(geometryReads).toBe(0);
+
+    enableReadingTrace({ case: 'lazy-geometry' });
+    readingTrace('reading.geometry', () => {
+      geometryReads += 1;
+      return { scrollHeight: 1000 };
+    });
+    expect(geometryReads).toBe(1);
+    expect(readingTraceSnapshot().entries.at(-1).detail.scrollHeight).toBe(1000);
+  });
+
+  it('isolates a failing detail factory without leaking its error text', () => {
+    enableReadingTrace({ case: 'failing-detail' });
+    expect(() => readingTrace('reading.geometry', () => {
+      throw new Error('private message body');
+    })).not.toThrow();
+    expect(readingTraceSnapshot().entries.at(-1)).toMatchObject({
+      event: 'trace.detail-error',
+      detail: { sourceEvent: 'reading.geometry' },
+    });
+    expect(JSON.stringify(readingTraceSnapshot())).not.toContain('private message body');
   });
 });
 

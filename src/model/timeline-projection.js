@@ -9,7 +9,6 @@ import {
   TIMELINE_SCOPE,
 } from './timeline-scope.js';
 import { TYPES } from '../protocol/vocab.js';
-import { projectPresentationRows } from './conversation-presentation.js';
 
 export { presentationEntryId } from './conversation-presentation.js';
 
@@ -24,6 +23,12 @@ const HIDDEN_TURN_TYPES = new Set([
 ]);
 
 const SELECT_OR_NEW = new Set([TYPES.agentSelect, TYPES.agentNew]);
+const LOCAL_ECHO_HIDDEN_TYPES = new Set([
+  ...HIDDEN_TURN_TYPES,
+  TYPES.agentSelect,
+  TYPES.agentNew,
+]);
+const projectionCache = new WeakMap();
 
 function isTransientEntry(entry) {
   return entry.kind === 'standalone'
@@ -62,62 +67,129 @@ export function projectTimeline(state, {
   actorFilter = new Set(),
   editingTargetId = '',
   showNarration = false,
-  presentationProjector = null,
+  presentation = null,
+  presentationAdmission = null,
   presentationKey = '',
+  dataEpoch = '',
+  localEchoes = [],
   // 「我的往来」用增量索引算(见 timeline-scope.js)。输出相同,代价从"每帧走一遍
   // 整本账"降到"每帧只判新来的那几行"。
   incremental = false,
 } = {}) {
   const actorFilterApplies = scope === TIMELINE_SCOPE.mine;
   const mine = scope === TIMELINE_SCOPE.mine;
-  const related = mine && selfId
-    ? (incremental ? relatedEnvelopeIdsIncremental(state, selfId) : relatedEnvelopeIds(state, selfId))
-    : null;
-  const allEntries = [];
-  const scoped = [];
-  const filtered = [];
-
-  // 一条 live frame 到达时这段会跑在输入同一条主线程上。过去先 filter、再 map、
-  // 再 scope filter、再 actor filter，老频道每帧会把整条时间线复制四遍。这里保持
-  // 三层结果供历史判断和 UI 使用，但在一次顺序扫描里同时生成它们。
-  for (const rawEntry of orderedTimeline(state)) {
-    if (!timelineEntryVisible(rawEntry, editingTargetId)) continue;
-    allEntries.push(rawEntry);
-    const entry = mine ? withoutUiProtocol(rawEntry) : rawEntry;
-    if (!entry || (related && !entryMatchesScope(entry, related))) continue;
-    scoped.push(entry);
-    if (actorFilterApplies && actorFilter?.size && !entryMatchesActors(entry, actorFilter)) continue;
-    filtered.push(entry);
+  const cacheKey = JSON.stringify([
+    scope, selfId, [...(actorFilter || [])].sort(), editingTargetId, showNarration, incremental,
+  ]);
+  let stateCache = projectionCache.get(state);
+  if (!stateCache) {
+    stateCache = new Map();
+    projectionCache.set(state, stateCache);
   }
-
-  const latestTransient = new Map();
-  for (const entry of filtered) {
-    if (isTransientEntry(entry)) {
-      latestTransient.set(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`, entry);
+  const projectionVersion = Number(state._timelineProjectionVersion || 0);
+  let base = stateCache.get(cacheKey);
+  if (!base || base.projectionVersion !== projectionVersion) {
+    const related = mine && selfId
+      ? (incremental ? relatedEnvelopeIdsIncremental(state, selfId) : relatedEnvelopeIds(state, selfId))
+      : null;
+    const allEntries = [];
+    const scoped = [];
+    const filtered = [];
+    for (const rawEntry of orderedTimeline(state)) {
+      if (!timelineEntryVisible(rawEntry, editingTargetId)) continue;
+      allEntries.push(rawEntry);
+      const entry = mine ? withoutUiProtocol(rawEntry) : rawEntry;
+      if (!entry || (related && !entryMatchesScope(entry, related))) continue;
+      scoped.push(entry);
+      if (actorFilterApplies && actorFilter?.size && !entryMatchesActors(entry, actorFilter)) continue;
+      filtered.push(entry);
     }
+    const latestTransient = new Map();
+    for (const entry of filtered) {
+      if (isTransientEntry(entry)) latestTransient.set(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`, entry);
+    }
+    const visible = filtered.filter((entry) => (
+      !isTransientEntry(entry)
+      || latestTransient.get(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`) === entry
+    ));
+    const narrationSeq = state.narration?.[0]?.seq ?? Number.POSITIVE_INFINITY;
+    let items = visible;
+    if (showNarration && state.narration?.length) {
+      const narration = { kind: 'narration', seq: narrationSeq };
+      const insertion = visible.findIndex((entry) => entry.seq > narrationSeq);
+      items = insertion < 0
+        ? [...visible, narration]
+        : [...visible.slice(0, insertion), narration, ...visible.slice(insertion)];
+    }
+    base = { projectionVersion, allEntries, scoped, filtered, visible, items };
+    stateCache.set(cacheKey, base);
   }
-  const visible = filtered.filter((entry) => (
-    !isTransientEntry(entry)
-    || latestTransient.get(`${entry.envelope.sender?.id || ''}:${entry.envelope.type}`) === entry
-  ));
-  const narrationSeq = state.narration?.[0]?.seq ?? Number.POSITIVE_INFINITY;
-  let items = visible;
-  if (showNarration && state.narration?.length) {
-    const narration = { kind: 'narration', seq: narrationSeq };
-    const insertion = visible.findIndex((entry) => entry.seq > narrationSeq);
-    items = insertion < 0
-      ? [...visible, narration]
-      : [...visible.slice(0, insertion), narration, ...visible.slice(insertion)];
-  }
+  const landedIndex = state._envelopesById?.has
+    ? state._envelopesById
+    : new Set([...(state.rows?.values?.() || [])].map((envelope) => envelope?.id).filter(Boolean));
+  const echoes = (localEchoes || []).flatMap((submission, index) => {
+    if (!submission?.messageId || landedIndex.has(submission.messageId)) return [];
+    const frame = submission.frame || {};
+    if (!frame.msg_type || LOCAL_ECHO_HIDDEN_TYPES.has(frame.msg_type) || String(frame.msg_type).startsWith('ui.')) return [];
+    const envelope = {
+        id: submission.messageId,
+        type: frame.msg_type,
+        kind: frame.kind || 'request',
+        payload: frame.payload || { text: submission.text || '' },
+        audience: frame.audience || [],
+        parent_id: frame.parent_id || '',
+        visibility: frame.visibility || 'public',
+        ts: submission.createdAt || Date.now() + index,
+        sender: { id: selfId, kind: 'human' },
+        local_submission_state: submission.state,
+    };
+    // A pending request already has its permanent message identity and kind.
+    // Render the same request shell it will have after ledger confirmation;
+    // otherwise confirmation replaces Standalone with TurnCard and destroys
+    // the clicked control, fold identity, and DOM reading anchor.
+    const entry = envelope.kind === 'request' ? {
+      kind: 'turn', seq: 0, local: true, thread: [],
+      turn: {
+        requestId: envelope.id, request: envelope, requestSeq: 0,
+        lastSeq: 0, provisional: [], terminal: null,
+        status: 'local', local: true,
+      },
+    } : { kind: 'standalone', seq: 0, local: true, envelope };
+    if (actorFilterApplies && actorFilter?.size && !entryMatchesActors(entry, actorFilter)) return [];
+    return [entry];
+  });
+  const rawItems = echoes.length ? [...base.items, ...echoes] : base.items;
+  const admissionMeta = {
+    viewID: presentationKey,
+    epoch: dataEpoch,
+    sourceRevision: Number(state._timelineRevision ?? state.lastSeq ?? 0),
+  };
+  const items = presentationAdmission?.admit
+    ? presentationAdmission.admit(state.channelId, rawItems, admissionMeta)
+    : rawItems;
+  const admissionSourceFence = presentationAdmission?.sourceFence?.(state.channelId);
+  const projectedSourceRevision = admissionSourceFence == null
+    ? Number(state._timelineRevision ?? state.lastSeq ?? 0)
+    : admissionSourceFence;
+  const presentationSnapshot = presentation?.project
+    ? presentation.project(items, {
+      epoch: dataEpoch,
+      nextViewID: presentationKey,
+      sourceRevision: projectedSourceRevision,
+      sourceChangeBase: Number(state._timelineChangeBase || 0),
+      sourceChanges: (state._timelineChangeLog || [])
+        .filter((change) => Number(change.revision || 0) <= projectedSourceRevision),
+    })
+    : null;
 
   return {
     items,
-    presentationRows: presentationProjector?.project
-      ? presentationProjector.project(items, { viewKey: presentationKey })
-      : projectPresentationRows(items),
-    allEntries,
-    scoped,
-    filtered,
+    presentation: presentationSnapshot,
+    presentationRows: presentationSnapshot?.rows || [],
+    allEntries: base.allEntries,
+    scoped: base.scoped,
+    filtered: base.filtered,
+    localEchoes: echoes,
     actorFilterApplies,
     firstVisibleSeq: items[0]?.seq || 0,
     lastVisibleSeq: items.at(-1)?.seq || 0,

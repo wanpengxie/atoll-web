@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap, actorNameMap } from '../model/actor-display.js';
 import { resolveFormSpec } from '../model/dynamic-form.js';
 import { formatArtifactSize } from '../model/artifacts.js';
@@ -6,33 +6,41 @@ import { attachmentFromFileReference } from '../model/file-references.js';
 import { LIST_WINDOW_SIZE } from '../model/list-window.js';
 import { messagePresentation } from '../model/message-presentation.js';
 import { replyTargetOf } from '../model/reply-target.js';
+import { READING_MODE } from '../model/reading-session.js';
 import { systemEventPresentation } from '../model/system-event-presentation.js';
 import { controlLabel, controlPayload, extraControls, taskControlContext } from '../model/task-controls.js';
 import { agentFrozenStates, agentMessageStage, editAdmission, editableText, isAgentMessageTurn, lockFromContext, mergedInto, preemptedBy } from '../model/agent-control.js';
 import { selectSystemNote } from '../model/agent-selection.js';
 import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
-import { presentationEntryId, projectTimeline } from '../model/timeline-projection.js';
-import { createPresentationProjector, presentationGeometryKey } from '../model/conversation-presentation.js';
+import { projectTimeline } from '../model/timeline-projection.js';
+import { createConversationPresentation, createConversationRoleFinalizer } from '../model/conversation-presentation.js';
 import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../model/turn-presentation.js';
-import { conversationTextObservations, processCount, turnStartObservation, withoutFinalEcho } from '../model/turn-process.js';
+import { conversationTextObservations, finalEchoObservation, processCount, turnStartObservation, withoutFinalEcho } from '../model/turn-process.js';
 import { argsOf } from '../protocol/envelope.js';
 import { DECISIONS, TYPES } from '../protocol/vocab.js';
 import { messageTimeLabel } from '../util/time.js';
-import { StructuredResult } from './StructuredResult.jsx';
+import { StructuredResult, terminalPresentation } from './StructuredResult.jsx';
 import { MarkdownContent, MarkdownFileReferenceProvider } from './MarkdownContent.jsx';
 import { TurnInlineDetail } from './context/TurnContext.jsx';
 import { ContentFrame, MessageFrame } from './timeline/InformationFlow.jsx';
 import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
 import { createMessageLayoutStore, MessageLayoutProvider, useMessageLayoutState } from './timeline/MessageLayoutState.jsx';
 import { FoldableBody } from './timeline/FoldableBody.jsx';
-import { useConversationViewport } from './timeline/useConversationViewport.js';
-import { VirtualTimelineAdapter } from './timeline/VirtualTimelineAdapter.jsx';
+import { useReadingSession } from './timeline/useReadingSession.js';
+import { MessageList } from './timeline/LegendMessageList.jsx';
+import { ConversationSurface } from './conversation/ConversationSurface.jsx';
+import { ReadingIntentProvider } from './conversation/ReadingIntentContext.jsx';
+import { acknowledgeLiveTimelineArrivals, liveTimelineArrivals, registerLiveTimelineArrivalConsumer } from '../model/fold.js';
+import { selectLocalWaitingTurns, selectWaitingPresentation } from '../model/waiting-presentation.js';
+import { diagnostic } from '../model/diagnostics.js';
 
 // 平台叙事（成员进出、跨频道入站）暂时不进时间线。它和真正的往来平铺在同一条流里，
 // 每次 agent 干活就刷出一串，把人要读的东西淹掉。数据仍然在 state.narration 里，
 // 什么都没丢——等它有了合适的落位（侧栏或频道信息页）再接回来。
 const SHOW_CHANNEL_NARRATION = false;
 const EMPTY_FROZEN_STATES = new Map();
+const WAITING_HANDOFF_DURATION_MS = 180;
+const WAITING_HANDOFF_LEDGER_LIMIT = 512;
 // During a rolling frontend/backend upgrade, older actors reject unknown
 // fields. Use the lease CAS as soon as actor.describe advertises it; the UI
 // invalidation rules below remain the compatibility guard for older actors.
@@ -120,7 +128,7 @@ function ApprovalCard({ turn, state, onResolve, names }) {
         <footer className={turn.status === 'failed' ? 'final-answer failed' : 'final-answer'}>
           <p className="answer-label">RESPONSE · {String(argsOf(turn.terminal)?.status || '').toUpperCase()}</p>
           <p className="approval-resolver">处理者：{nameOf(turn.terminal.sender?.id, names)}{argsOf(turn.terminal)?.decision && ` · ${argsOf(turn.terminal).decision}`}</p>
-          <StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <MarkdownContent text={text} />} />
+          <StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${turn.terminal.id || turn.requestId}:body`} text={text} />} />
         </footer>
       )}
       {error && <WireErrorLine error={error} />}
@@ -143,25 +151,132 @@ function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) 
   );
 }
 
-function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, frozenByActor, editing, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon }) {
+function useReducedMotionPreference() {
+  const [reduced, setReduced] = useState(() => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true);
+  useEffect(() => {
+    const query = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!query) return undefined;
+    const update = () => setReduced(query.matches === true);
+    update();
+    query.addEventListener?.('change', update);
+    return () => query.removeEventListener?.('change', update);
+  }, []);
+  return reduced;
+}
+
+function useWaitingHandoff(channelId, queuedTurns, presentationRows) {
+  const reducedMotion = useReducedMotionPreference();
+  const previousRef = useRef({ channelId, turns: new Map() });
+  const completedRef = useRef(new Map());
+  const timersRef = useRef(new Map());
+  const [settling, setSettling] = useState(() => new Map());
+  const currentTurns = useMemo(
+    () => new Map(queuedTurns.map((turn, order) => [turn.requestId, { turn, order }])),
+    [queuedTurns],
+  );
+  const rowIDs = useMemo(
+    () => new Set(presentationRows.map((row) => row.id)),
+    [presentationRows],
+  );
+  const sameChannel = previousRef.current.channelId === channelId;
+  const fresh = sameChannel ? [...previousRef.current.turns].flatMap(([requestId, entry]) => (
+    !currentTurns.has(requestId)
+    && rowIDs.has(requestId)
+    && !completedRef.current.has(requestId)
+      ? [[requestId, entry]]
+      : []
+  )) : [];
+  let visibleHandoffs = settling;
+  if (!sameChannel || reducedMotion) visibleHandoffs = new Map();
+  else if (fresh.length) {
+    visibleHandoffs = new Map(settling);
+    for (const [requestId, entry] of fresh) visibleHandoffs.set(requestId, entry);
+  }
+
+  useLayoutEffect(() => {
+    if (previousRef.current.channelId !== channelId) {
+      for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
+      timersRef.current.clear();
+      completedRef.current.clear();
+      previousRef.current = { channelId, turns: currentTurns };
+      setSettling((current) => current.size ? new Map() : current);
+      return;
+    }
+    previousRef.current = { channelId, turns: currentTurns };
+    if (!fresh.length) return;
+    for (const [requestId] of fresh) completedRef.current.set(requestId, true);
+    while (completedRef.current.size > WAITING_HANDOFF_LEDGER_LIMIT) {
+      completedRef.current.delete(completedRef.current.keys().next().value);
+    }
+    if (reducedMotion) return;
+    setSettling((current) => {
+      const next = new Map(current);
+      for (const [requestId, entry] of fresh) next.set(requestId, entry);
+      return next;
+    });
+    for (const [requestId] of fresh) {
+      const timer = globalThis.setTimeout(() => {
+        timersRef.current.delete(requestId);
+        setSettling((current) => {
+          if (!current.has(requestId)) return current;
+          const next = new Map(current);
+          next.delete(requestId);
+          return next;
+        });
+      }, WAITING_HANDOFF_DURATION_MS);
+      timersRef.current.set(requestId, timer);
+    }
+  }, [channelId, currentTurns, fresh, reducedMotion]);
+
+  useLayoutEffect(() => {
+    if (!reducedMotion || !settling.size) return;
+    for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
+    timersRef.current.clear();
+    setSettling(new Map());
+  }, [reducedMotion, settling.size]);
+
+  useEffect(() => () => {
+    for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
+    timersRef.current.clear();
+  }, [channelId]);
+
+  const exiting = useMemo(
+    () => [...visibleHandoffs].map(([requestId, entry]) => ({ requestId, ...entry })),
+    [visibleHandoffs],
+  );
+  const enteringRequestIDs = useMemo(() => new Set(visibleHandoffs.keys()), [visibleHandoffs]);
+  return { exiting, enteringRequestIDs };
+}
+
+function WaitingLayer({ turns, handoffs = [], state, names, selfId, access, targetAuthority, capabilityIndex, frozenByActor, editing, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon }) {
   const [bulk, setBulk] = useState({ actorId: '', error: '' });
   const [collapsed, setCollapsed] = useState(false);
-  if (!turns.length) return null;
+  if (!turns.length && !handoffs.length) return null;
+  const presented = [
+    ...turns.map((turn, order) => ({ turn, order, exiting: false })),
+    ...handoffs.map((entry) => ({ turn: entry.turn, order: entry.order, exiting: true })),
+  ].sort((left, right) => left.order - right.order);
   const groups = [];
   const byActor = new Map();
-  for (const turn of turns) {
+  for (const item of presented) {
+    const { turn } = item;
     const actorId = turn.request.audience?.[0] || '';
     if (!byActor.has(actorId)) {
-      const group = { actorId, turns: [] };
+      const group = { actorId, turns: [], items: [] };
       byActor.set(actorId, group);
       groups.push(group);
     }
-    byActor.get(actorId).turns.push(turn);
+    const group = byActor.get(actorId);
+    group.items.push(item);
+    if (!item.exiting) group.turns.push(turn);
   }
 
   async function cancelAll(group) {
     if (bulk.actorId) return;
-    const cancellable = group.turns.filter((turn) => taskControlContext(turn, { selfId, access }).canCancel);
+    const cancellable = group.turns.filter((turn) => {
+      const context = taskControlContext(turn, { selfId, access, targetAuthority });
+      return context.targetControlsEligible && context.canCancel;
+    });
     if (!cancellable.length) return;
     setBulk({ actorId: group.actorId, error: '' });
     let held = false;
@@ -173,7 +288,7 @@ function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, fr
       held = true;
       for (const turn of cancellable) {
         try {
-          await onCancel?.(state.channelId, turn.requestId, taskControlContext(turn, { selfId, access }).cancelsAsDismiss);
+          await onCancel?.(state.channelId, turn.requestId, taskControlContext(turn, { selfId, access, targetAuthority }).cancelsAsDismiss);
         } catch (error) {
           failures.push(error?.message || String(error));
         }
@@ -195,38 +310,54 @@ function WaitingLayer({ turns, state, names, selfId, access, capabilityIndex, fr
   const soleGroup = groups.length === 1 ? groups[0] : null;
   const hasQueuedEditor = turns.some((turn) => turn.requestId === editing?.targetId);
   const renderedGroups = groups;
-  return <div className={`agent-wait-dock${collapsed ? ' is-collapsed' : ''}`}>
-    <section className={`agent-wait-layer${collapsed ? ' is-collapsed' : ''}${hasQueuedEditor ? ' is-editing' : ''}`} aria-label="等待区">
-      {collapsed && <div className="agent-wait-collapsed"><span aria-hidden="true">↳</span><strong>{turns.length} 条等待消息</strong><button type="button" aria-expanded="false" onClick={() => setCollapsed(false)}>展开</button></div>}
+  const handoffOnly = turns.length === 0;
+  return <div className={`agent-wait-dock${collapsed ? ' is-collapsed' : ''}${handoffOnly ? ' is-handoff-only' : ''}`}>
+    <section className={`agent-wait-layer${collapsed ? ' is-collapsed' : ''}${hasQueuedEditor ? ' is-editing' : ''}${handoffOnly ? ' is-handoff-only' : ''}`} aria-label={handoffOnly ? undefined : '等待区'} aria-hidden={handoffOnly ? 'true' : undefined} inert={handoffOnly ? true : undefined}>
+      {collapsed && <div className="agent-wait-collapsed"><span aria-hidden="true">↳</span><strong>{turns.length || handoffs.length} 条等待消息</strong>{!handoffOnly && <button type="button" aria-expanded="false" onClick={() => setCollapsed(false)}>展开</button>}</div>}
       {!collapsed && <header className="agent-wait-header" aria-label="等待区操作">
-        <div>
+        {!handoffOnly && <div>
           {renderedGroups.map((group) => {
-            const canInsertAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access }).canInsert);
+            const canInsertAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access, targetAuthority }).canInsert);
             return canInsertAll && <button type="button" className="agent-wait-insert-all" key={`insert-${group.actorId}`} onClick={() => onControl(group.turns[0], group.actorId, TYPES.agentSteer, { all: true })}>{soleGroup ? '全部插入' : `插入 ${nameOf(group.actorId, names)} 全部`}</button>;
           })}
           {renderedGroups.map((group) => {
-            const canCancelAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access }).canCancel);
+            const canCancelAll = group.turns.some((turn) => {
+              const context = taskControlContext(turn, { selfId, access, targetAuthority });
+              return context.targetControlsEligible && context.canCancel;
+            });
             return canCancelAll && <button type="button" className="agent-wait-cancel-all" key={group.actorId} disabled={Boolean(bulk.actorId)} onClick={() => cancelAll(group)}>{bulk.actorId === group.actorId ? '正在取消…' : soleGroup ? '全部取消' : `取消 ${nameOf(group.actorId, names)} 全部`}</button>;
           })}
           <button type="button" onClick={() => setCollapsed(true)}>收起</button>
-        </div>
+        </div>}
       </header>}
       {!collapsed && renderedGroups.map((group) => {
       const paused = frozenByActor.get(group.actorId)?.source === TYPES.agentHold;
       return <section className="agent-wait-group" key={group.actorId} data-agent-id={group.actorId}>
         {!hasQueuedEditor && !soleGroup && <header><strong>{nameOf(group.actorId, names)}{paused ? '（已暂停）' : ''}</strong></header>}
-        <ol>{group.turns.map((turn, index) => {
-          const context = taskControlContext(turn, { selfId, access });
+        <ol>{group.items.map(({ turn, exiting }) => {
+          const context = taskControlContext(turn, { selfId, access, targetAuthority });
           const view = messagePresentation(turn.request);
           const session = editing?.targetId === turn.requestId ? editing : null;
-          return <li key={turn.requestId} className={`agent-wait-item${session ? ' is-editing' : ''}`} data-request-id={turn.requestId}>
-            {session
+          const localStateLabel = turn.waitingPresentation === 'stored-local'
+            ? '已保存在本机'
+            : turn.waitingPresentation === 'transmitting'
+              ? '正在发送'
+              : turn.waitingPresentation === 'confirming'
+                ? '等待账本确认'
+                : '';
+          return <li key={turn.requestId} className={`agent-wait-item${session ? ' is-editing' : ''}${exiting ? ' is-handoff-exiting' : ''}`} data-request-id={turn.requestId} data-handoff-state={exiting ? 'exit' : undefined} aria-hidden={exiting ? 'true' : undefined} inert={exiting ? true : undefined}>
+            {exiting
+              ? <div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{view.text}</strong></div>
+              : session
               ? <><div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{view.text}</strong></div><span className="agent-wait-editing-label">正在编辑</span></>
               : <>
                 <div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{view.text}</strong></div>
                 <div className="agent-wait-actions">
+                  {localStateLabel && <span className="agent-wait-local-state">{localStateLabel}</span>}
                   {paused && <span className="agent-wait-paused">已暂停</span>}
                   {context.steering && <span className="agent-wait-paused">正在并入…</span>}
+                  {context.targetCurrentness === 'unknown' && <span className="agent-wait-paused">正在核验收件人</span>}
+                  {context.targetCurrentness === 'departed' && <span className="agent-wait-paused">收件人已离席，等待账本关闭</span>}
                   {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
                   {context.canEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
                   {context.canCancel && <button type="button" title={context.cancelsAsDismiss ? '这条不是你发的，将请对方放弃它' : '撤回你自己发出的这条请求'} onClick={() => onCancel?.(state.channelId, turn.requestId, context.cancelsAsDismiss)}>取消</button>}
@@ -378,7 +509,7 @@ function ThreadCall({ item, names }) {
         <small>{nameOf(child.request.sender?.id, names)} → {receivers || '—'} · {turnStatusLabel(child)} · {timeLabel(child.request.ts)}</small>
       </button>
       {open && (child.terminal
-        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={argsOf(child.terminal)} renderText={(text) => <MarkdownContent text={text} />} /></div>
+        ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={argsOf(child.terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${child.terminal.id || child.requestId}:body`} text={text} />} /></div>
         : <p className="turn-thread-result empty">还没有终态。</p>)}
     </li>
   );
@@ -429,9 +560,35 @@ function AgentRequestQuote({ request, names, onDownload, onPreview }) {
       <span aria-hidden="true">·</span>
       <time>{timeLabel(request.ts)}</time>
     </header>
-    <div className="agent-request-quote-text"><MarkdownContent text={view.text} /></div>
+    <div className="agent-request-quote-text"><MarkdownContent contentKey={`request:${request.id}:body`} text={view.text} /></div>
     <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
   </blockquote>;
+}
+
+function parsesAsStructuredJSON(text) {
+  const source = String(text || '').trim();
+  if (!source || !['{', '['].includes(source[0])) return false;
+  try {
+    const parsed = JSON.parse(source);
+    return Boolean(parsed && typeof parsed === 'object');
+  } catch {
+    return false;
+  }
+}
+
+// A text stage and a matching terminal answer are two protocol envelopes but
+// one visible answer slot. Keeping this component and contentKey stable lets
+// MarkdownContent preserve completed blocks, native selection, and expensive
+// embedded renderers across the protocol hand-off. Structured/empty results
+// retain StructuredResult's established presentation instead of pretending
+// they are the same Markdown tree.
+function ConversationAnswerSlot({ requestType, text, terminalPayload = null, contentKey }) {
+  if (!terminalPayload) return <MarkdownContent contentKey={contentKey} text={text} />;
+  const result = terminalPresentation(requestType, terminalPayload);
+  if (result.kind === 'text' && !result.empty && !parsesAsStructuredJSON(result.text)) {
+    return <MarkdownContent contentKey={contentKey} text={result.text} />;
+  }
+  return <StructuredResult requestType={requestType} payload={terminalPayload} renderText={(value) => <MarkdownContent contentKey={contentKey} text={value} />} />;
 }
 
 function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roster = [], selfId = '', quotedRequest = null, fold = null, onDownload, onPreview, onReply, onCreateTask, compact = false, compactExpanded = false, onCompactToggle = null, hasThreadChildren = false }) {
@@ -445,15 +602,21 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
   const bubbleTs = terminal?.ts || liveEnvelope?.ts;
   const processStartedTs = turnStartedAt(turn);
   const terminalText = terminal && !stopped ? messagePresentation(terminal).text : '';
-  const conversationTexts = withoutFinalEcho(conversationTextObservations(turn), terminalText);
+  const allConversationTexts = conversationTextObservations(turn);
+  const echoObservation = terminal && !stopped ? finalEchoObservation(allConversationTexts, terminalText) : null;
+  const conversationTexts = withoutFinalEcho(allConversationTexts, terminalText);
   const foldText = [...conversationTexts.map(({ process }) => process.text), terminalText].filter(Boolean).join('\n\n');
   const className = `agent-turn-bubble${terminal ? ' settled' : ' processing'}${compact ? ' compact' : ''}${hasThreadChildren ? ' has-thread-children' : ''}`;
   const identity = <span className="actor-icon kind-agent">A</span>;
   const heading = <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{bubbleTs && <time>{timeLabel(bubbleTs)}</time>}</header>;
-  const conversationBody = <>
-    {conversationTexts.map(({ seq, envelope, process }) => <div key={envelope.id || seq} className="agent-progress-text" data-seq={seq}><MarkdownContent text={process.text} /></div>)}
-    {terminal && !stopped && <div className="agent-final-text"><StructuredResult requestType={request.type} payload={conversationPayload(argsOf(terminal))} renderText={(text) => <MarkdownContent text={text} />} /></div>}
-  </>;
+  const conversationSlots = conversationTexts.map(({ seq, envelope, process }) => {
+      const slotID = envelope.id || `${turn.requestId}:${seq}`;
+      return <div key={slotID} className="agent-progress-text" data-seq={seq}><ConversationAnswerSlot requestType={request.type} contentKey={`answer:${turn.requestId}:${slotID}:body`} text={process.text} /></div>;
+    });
+  if (terminal && !stopped) conversationSlots.push(echoObservation
+    ? <div key={echoObservation.envelope.id || `${turn.requestId}:${echoObservation.seq}`} className="agent-final-text" data-seq={echoObservation.seq}><ConversationAnswerSlot requestType={request.type} contentKey={`answer:${turn.requestId}:${echoObservation.envelope.id || `${turn.requestId}:${echoObservation.seq}`}:body`} text={echoObservation.process.text} terminalPayload={conversationPayload(argsOf(terminal))} /></div>
+    : <div key={terminal.id || `${turn.requestId}:terminal`} className="agent-final-text"><StructuredResult requestType={request.type} payload={conversationPayload(argsOf(terminal))} renderText={(text) => <MarkdownContent contentKey={`terminal:${terminal.id || turn.requestId}:body`} text={text} />} /></div>);
+  const conversationBody = <>{conversationSlots}</>;
   const hasConversationBody = conversationTexts.length > 0 || Boolean(terminal && !stopped);
   const content = <>
     {quotedRequest && <AgentRequestQuote request={quotedRequest} names={names} onDownload={onDownload} onPreview={onPreview} />}
@@ -532,33 +695,33 @@ function AgentThreadMessages({ thread = [], names, onDownload, onPreview }) {
   </ol>;
 }
 
-function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, frozen, fold = null, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask }) {
+function AgentConversationTurn({ turn, thread = [], leadTurns = [], mergedCount = 0, names, roster, selfId, access, targetAuthority, frozen, fold = null, editActive, editSession = null, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const requestText = requestView.text;
   const requestFoldId = `${turn.requestId}:request`;
-  const controlContext = taskControlContext(turn, { selfId, access });
+  const controlContext = taskControlContext(turn, { selfId, access, targetAuthority });
   const lead = leadTurns.map((item) => messagePresentation(item.request).text);
   const processingTitle = [...lead, requestText].join(' ＋ ');
-  const suppressAgentBubble = Boolean(mergedInto(turn) || preemptedBy(turn));
+  const suppressAgentBubble = Boolean(turn.local || mergedInto(turn) || preemptedBy(turn));
   return <section className={`turn-card agent-conversation-turn self status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
     <MessageFrame className="request-message" identity={<span className="actor-icon kind-human">H</span>}>
       <header><strong>{nameOf(request.sender?.id, names)}</strong><time>{timeLabel(request.ts)}</time></header>
-      <div className="request-text"><FoldableBody id={requestFoldId} text={requestText} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent text={requestText} /></FoldableBody></div>
+      <div className="request-text"><FoldableBody id={requestFoldId} text={requestText} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`request:${request.id}:body`} text={requestText} /></FoldableBody></div>
       {editSession && <small className="message-editing-state">正在输入框中编辑</small>}
       <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
     </MessageFrame>
-    {!turn.terminal && !editSession && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
-    {!suppressAgentBubble && <AgentBubble turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} roster={roster} selfId={selfId} fold={fold} onReply={onReply} onCreateTask={onCreateTask} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
+    {!turn.local && !turn.terminal && !editSession && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
+    {!suppressAgentBubble && <AgentBubble key={`${turn.requestId}:agent-answer`} turn={turn} title={processingTitle} mergedCount={mergedCount} frozen={frozen} names={names} roster={roster} selfId={selfId} fold={fold} onReply={onReply} onCreateTask={onCreateTask} hasThreadChildren={thread.some((item) => isAgentMessageTurn(item.turn) && item.turn.request?.sender?.kind === 'agent')} />}
     <AgentThreadMessages thread={thread} names={names} onDownload={onDownload} onPreview={onPreview} />
   </section>;
 }
 
-function TurnCard({ turn, thread = [], roster, names, selfId, access, capability, controlState, continuation = false, detailsOpen = false, fold = null, editSession = null, editActive = false, queuePosition = 0, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview, onOpen, onCreateTask, onReply, onCloseDetail }) {
+function TurnCard({ turn, thread = [], roster, names, selfId, access, targetAuthority, capability, controlState, continuation = false, detailsOpen = false, fold = null, editSession = null, editActive = false, queuePosition = 0, onCancel, onControl, onEdit, onEditText, onEditSave, onEditAbandon, onDownload, onPreview, onOpen, onCreateTask, onReply, onCloseDetail }) {
   const request = turn.request;
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
-  const controlContext = taskControlContext(turn, { selfId, access });
+  const controlContext = taskControlContext(turn, { selfId, access, targetAuthority });
   const replyTarget = replyTargetOf(request, { roster, selfId });
   const requestFoldId = `${turn.requestId}:request`;
   const responseFoldId = `${turn.requestId}:response`;
@@ -571,7 +734,7 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
     <section className={`turn-card ${continuation ? 'continuation' : ''} ${self ? 'self' : ''} status-${turn.status}`} data-request-id={turn.requestId} data-request-type={request.type} tabIndex="0">
       <ReplyableMessageFrame replyTarget={replyTarget} copyText={requestView.text} onReply={onReply} onCreateTask={onCreateTask} className="request-message" identity={<span className={`actor-icon kind-${request.sender?.kind}`}>{request.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
           <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(request.ts)}</time>{request.audience?.length > 0 && <span className="recipient-label">发送给 {request.audience.map((id) => nameOf(id, names)).join('、')}</span>}</header>
-          <div className="request-text"><FoldableBody id={requestFoldId} text={requestView.text} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent text={requestView.text} /></FoldableBody>{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
+          <div className="request-text"><FoldableBody id={requestFoldId} text={requestView.text} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(requestFoldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`request:${request.id}:body`} text={requestView.text} /></FoldableBody>{requestView.detail && <p className="message-detail">{requestView.detail}</p>}</div>
           <AttachmentCards attachments={argsOf(request).attachments} onDownload={onDownload} onPreview={onPreview} />
       </ReplyableMessageFrame>
       <ThreadCalls thread={thread} names={names} />
@@ -582,11 +745,11 @@ function TurnCard({ turn, thread = [], roster, names, selfId, access, capability
           <span aria-hidden="true">查看过程 ›</span>
         </button></ContentFrame>}
       {detailsOpen && <ContentFrame contained><TurnInlineDetail turn={turn} roster={roster} selfId={selfId} access={access} capability={capability} controlState={controlState} onCancel={onCancel} onControl={onControl} onDownload={onDownload} onCreateTask={onCreateTask} onClose={onCloseDetail} /></ContentFrame>}
-      {!turn.terminal && !detailsOpen && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
+      {!turn.local && !turn.terminal && !detailsOpen && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
       {editSession && <ContentFrame contained><p className="message-editing-state">正在输入框中编辑</p></ContentFrame>}
       {turn.terminal && (
         <MessageFrame className={turn.status === 'failed' ? 'final-answer turn-response failed' : 'final-answer turn-response'} contentClassName="response-body" identity={<span className={`actor-icon kind-${turn.terminal.sender?.kind || 'agent'}`}>{(turn.terminal.sender?.kind || 'agent').slice(0, 1).toUpperCase()}</span>}>
-          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(turn.terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <MarkdownContent text={text} />} /></FoldableBody></div>
+          <header><strong>{nameOf(turn.terminal.sender?.id || request.audience?.[0], names)}</strong><small className="ai-label">AI</small><time>{timeLabel(turn.terminal.ts)}</time>{turn.status === 'failed' && <span className="response-failed">处理失败</span>}</header><div className="response-content"><FoldableBody id={responseFoldId} text={messagePresentation(turn.terminal).text} exempt={foldExempt} expanded={fold?.overrides?.get(responseFoldId)} onToggle={fold?.onToggle}><StructuredResult requestType={request.type} payload={argsOf(turn.terminal)} renderText={(text) => <MarkdownContent contentKey={`terminal:${turn.terminal.id || turn.requestId}:body`} text={text} />} /></FoldableBody></div>
         </MessageFrame>
       )}
     </section>
@@ -625,7 +788,7 @@ function Standalone({ envelope, names, roster, selfId, continuation = false, fol
   const foldId = `${envelope.id}:message`;
   return (
     <ReplyableMessageFrame replyTarget={replyTarget} copyText={view.text} onReply={onReply} onCreateTask={onCreateTask} className={`standalone-row ${continuation ? 'continuation' : ''} ${self ? 'self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${nameOf(envelope.sender?.id, names)}，${timeLabel(envelope.ts)}`}>{timeLabel(envelope.ts)}</time> : <span className={`actor-icon kind-${envelope.sender?.kind}`}>{envelope.sender?.kind?.slice(0, 1).toUpperCase()}</span>}>
-      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<FoldableBody id={foldId} text={view.text} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(foldId)} onToggle={fold?.onToggle}><MarkdownContent text={view.text} /></FoldableBody>{view.detail && <p className="message-detail">{view.detail}</p>}
+      {!continuation && <header><strong>{nameOf(envelope.sender?.id, names)}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{timeLabel(envelope.ts)}</time></header>}<FoldableBody id={foldId} text={view.text} exempt={Boolean(fold?.latest)} expanded={fold?.overrides?.get(foldId)} onToggle={fold?.onToggle}><MarkdownContent contentKey={`message:${envelope.id}:body`} text={view.text} /></FoldableBody>{view.detail && <p className="message-detail">{view.detail}</p>}
     </ReplyableMessageFrame>
   );
 }
@@ -654,52 +817,62 @@ function dayLabel(ts) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(date);
 }
 
-function foldIDsForPresentationRow(row) {
-  const entry = row?.body;
-  if (entry?.kind === 'turn' && entry.turn?.requestId) {
-    return [`${entry.turn.requestId}:request`, `${entry.turn.requestId}:response`];
-  }
-  if (entry?.kind === 'standalone' && entry.envelope?.id) return [`${entry.envelope.id}:message`];
-  return [];
-}
-
-export function Timeline({ state, history = {}, composer = null, viewSessions, navigationTarget = null, onNavigationTargetConsumed, roster, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
+export function Timeline({ state, history = {}, composer = null, viewSessions, roster, waitingRosterAuthority = null, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = {}, capabilityIndex = new Map(), access = '', surfaceVisible = false, onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
   const initialViewSessionRef = useRef(null);
   if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
+  const readingControlRef = useRef(null);
   const messageLayoutStoreRef = useRef(null);
   if (!messageLayoutStoreRef.current) messageLayoutStoreRef.current = createMessageLayoutStore(
     initialViewSessionRef.current.layoutChoices,
-    (layoutChoices) => viewSessions?.writeConversation(state.channelId, { layoutChoices }),
+    (layoutChoices) => {
+      readingControlRef.current?.('layout-choice');
+      viewSessions?.writeConversation(state.channelId, { layoutChoices });
+    },
   );
-  const presentationProjectorRef = useRef(null);
-  if (!presentationProjectorRef.current) presentationProjectorRef.current = createPresentationProjector();
-  const [scope, setScope] = useState(() => initialViewSessionRef.current.scope || TIMELINE_SCOPE.mine);
+  const presentationRef = useRef(null);
+  if (!presentationRef.current) presentationRef.current = createConversationPresentation();
+  const roleFinalizerRef = useRef(null);
+  if (!roleFinalizerRef.current) roleFinalizerRef.current = createConversationRoleFinalizer();
+  const [presentationCommitVersion, setPresentationCommitVersion] = useState(0);
+  const requestedInitialScope = initialViewSessionRef.current.scope || TIMELINE_SCOPE.mine;
+  // An unresolved identity cannot truthfully project "@ me". Start from the
+  // complete ledger and let the reader opt into Mine once identity is known;
+  // a late roster/session hand-off must not silently replace the visible tree.
+  const [scope, setScope] = useState(() => (
+    requestedInitialScope === TIMELINE_SCOPE.mine && !selfId
+      ? TIMELINE_SCOPE.all
+      : requestedInitialScope
+  ));
+  const [knownSelfId, setKnownSelfId] = useState(() => selfId || '');
   // 选中的 agent。空集 = 不过滤（常态）。Timeline 按频道 key 挂载，所以切频道
   // 天然重置，恒不需要自己清。
   const [actorFilter, setActorFilter] = useState(() => new Set(initialViewSessionRef.current.actorFilter || []));
   // 读者手动展开 / 收起过的正文，按正文 id 记（true 展开、false 收起）。没记的按
-  // 默认规则：超阈值即折，最新一轮和正在查看过程的那轮例外；手动选择跨频道重挂保留。
+  // 当前 Presentation 位置推导默认：tail/活跃行展开，历史长文折叠。默认从不写进
+  // choices；只有读者点击产生 override，因而 append 可让未操作旧 tail 自然转为
+  // 历史折叠，却不会推翻任何显式展开/收起。
   const [foldOverrides, setFoldOverrides] = useState(() => new Map(initialViewSessionRef.current.foldOverrides || []));
-  // “最新一轮”只决定正文第一次进入当前阅读会话时的默认形态。后续 live
-  // 不能因为它不再是最后一条就把已经展示的长文自动折起；否则消息事实会
-  // 直接改写屏幕几何。自动保留与手动选择分开，手动选择恒优先。
-  const foldDefaultsRef = useRef(new Set(initialViewSessionRef.current.foldDefaults || []));
-  const previousTailRef = useRef({ listKey: '', rowID: '', foldIDs: [] });
-  const toggleFold = useCallback((id, expanded) => setFoldOverrides((current) => new Map(current).set(id, expanded)), []);
   const [editing, setEditing] = useState(null);
   const editSessionSerialRef = useRef(0);
   const editingRef = useRef(null);
   const editReleasePendingRef = useRef(new Set());
   const editReleaseSentRef = useRef(new Set());
   const editRuntimeRef = useRef(null);
+  const editSessionOwnersRef = useRef(new Map());
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
+	const waitingContinuityRef = useRef({ channelId: '', ids: new Set() });
 	const previousAccess = useRef(access);
 	const openFileReference = useCallback((reference) => {
 	  onPreviewResource?.(state.channelId, attachmentFromFileReference(reference));
 	}, [onPreviewResource, state.channelId]);
   const names = useMemo(() => actorNameMap(roster), [roster]);
+  useEffect(() => {
+    if (selfId) setKnownSelfId(selfId);
+  }, [selfId]);
+  const projectionSelfId = selfId || knownSelfId;
+  const identityPending = !projectionSelfId;
   // 正在编辑的消息钉在原地：协议上"处理中被编辑"的消息会被打断回队列（Resumed），
   // 但呈现上必须留在用户点下"编辑"的位置原地变可编辑——恒不在编辑中途瞬移。
   // 只钉"从处理中进入编辑"的：等待区消息的编辑本来就发生在等待区原地。
@@ -710,22 +883,125 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
   // Scope and actor filters replace the visible conversation and therefore get
   // a fresh presentation/geometry identity. Editing only changes an existing
   // row and deliberately does not reset either identity.
-  const messageListKey = `${state.channelId}:${scope}:${selfId}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
+  const messageListKey = `${state.channelId}:${scope}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
   const projectionVersion = state._timelineProjectionVersion ?? state.lastSeq;
+  const contentVersion = state._timelineRevision ?? state.lastSeq;
   const controlVersion = state._timelineControlVersion ?? state.lastSeq;
-  const projection = useMemo(() => projectTimeline(state, {
+  const historyViewSpec = useMemo(() => ({
     scope,
-    selfId,
+    selfId: projectionSelfId,
     actorFilter,
     editingTargetId,
     showNarration: SHOW_CHANNEL_NARRATION,
     incremental: true,
-    presentationProjector: presentationProjectorRef.current,
-    presentationKey: messageListKey,
-  }), [state, projectionVersion, scope, selfId, actorFilter, editingTargetId, messageListKey]);
-  const { filtered: entries } = projection;
+  }), [actorFilter, editingTargetId, projectionSelfId, scope]);
+  const localWaitingTurns = useMemo(
+    () => selectLocalWaitingTurns(pending || [], projectionSelfId),
+    [pending, projectionSelfId],
+  );
+  const localWaitingIDs = useMemo(
+    () => new Set(localWaitingTurns.map((turn) => turn.requestId)),
+    [localWaitingTurns],
+  );
+  const timelineLocalEchoes = useMemo(
+    () => (pending || []).filter((submission) => !localWaitingIDs.has(submission.messageId)),
+    [localWaitingIDs, pending],
+  );
+  const projection = useMemo(() => {
+    const admission = history.status?.presentationAdmission;
+    let admissionCandidate = null;
+    let presentationCandidate = null;
+    const presentation = presentationRef.current;
+    // projectTimeline remains a pure projection during React render. Capture
+    // its admission decision locally; the layout effect below is the sole
+    // authority that may publish that candidate after React commits it.
+    const renderAdmission = admission?.evaluate ? {
+      admit(channelID, items, meta) {
+        admissionCandidate = admission.evaluate(channelID, items, meta);
+        return admissionCandidate.items;
+      },
+      sourceFence(channelID) {
+        return admission.sourceFence?.(channelID);
+      },
+    } : admission;
+    const renderPresentation = presentation.evaluate ? {
+      project(items, meta) {
+        presentationCandidate = presentation.evaluate(items, meta);
+        return presentationCandidate.snapshot;
+      },
+    } : presentation;
+    return {
+      ...projectTimeline(state, {
+        ...historyViewSpec,
+        presentation: renderPresentation,
+        presentationKey: messageListKey,
+        dataEpoch: `${state.channelId}:${history.status?.generation || 0}`,
+        localEchoes: timelineLocalEchoes,
+        presentationAdmission: renderAdmission,
+      }),
+      admissionCandidate,
+      presentationCandidate,
+    };
+  }, [
+    state, projectionVersion, contentVersion, historyViewSpec, messageListKey,
+    history.status?.generation, history.status?.presentationAdmission,
+    history.status?.presentationAdmissionState?.phase,
+    presentationCommitVersion, timelineLocalEchoes,
+  ]);
+  useLayoutEffect(() => {
+    if (!projection.presentationCandidate) return;
+    const committed = presentationRef.current.commitCandidate(projection.presentationCandidate);
+    if (!committed && presentationRef.current.current() !== projection.presentation) {
+      setPresentationCommitVersion((value) => value + 1);
+    }
+  }, [projection.presentationCandidate]);
+  useLayoutEffect(() => {
+    if (!projection.admissionCandidate) return;
+    history.status?.presentationAdmission?.commitCandidate?.(
+      state.channelId,
+      projection.admissionCandidate,
+    );
+  }, [
+    history.status?.presentationAdmission,
+    projection.admissionCandidate,
+    state.channelId,
+  ]);
+  useLayoutEffect(() => {
+    history.status?.presentationAdmission?.reconcileCurrent?.(state.channelId, {
+      viewID: messageListKey,
+      epoch: `${state.channelId}:${history.status?.generation || 0}`,
+    });
+  }, [
+    history.status?.generation,
+    history.status?.presentationAdmission,
+    messageListKey,
+    state.channelId,
+  ]);
+  useEffect(() => () => {
+    history.status?.presentationAdmission?.reset?.(state.channelId);
+  }, [history.status?.presentationAdmission, state.channelId]);
+  useLayoutEffect(() => {
+    if (history.status?.presentationAdmissionState?.phase !== 'pending-baseline-commit') return;
+    history.status?.presentationAdmission?.prepareCommit?.(
+      state.channelId,
+      projection.presentation,
+    );
+  }, [
+    history.status?.presentationAdmission,
+    history.status?.presentationAdmissionState?.phase,
+    projection.presentation,
+    state.channelId,
+  ]);
+  const historyReveal = history.status?.presentationAdmissionState?.phase === 'committed-awaiting-layout'
+    ? history.status.presentationAdmissionState.committed
+    : null;
   // 名册里的 agent 才进过滤条：人和工具恒不是"我在跟谁说话"的那个谁。
   const filterableAgents = useMemo(() => (roster || []).filter((row) => row.kind === 'agent'), [roster]);
+  const currentFilterActorIDs = useMemo(() => new Set(filterableAgents.map((row) => row.id)), [filterableAgents]);
+  const staleActorFilters = useMemo(
+    () => [...actorFilter].filter((actorID) => !currentFilterActorIDs.has(actorID)).sort(),
+    [actorFilter, currentFilterActorIDs],
+  );
   // 过滤条恰好只选中一个 agent 时，屏幕上就只剩「我和他」的往来。此时 composer
   // 的默认收件人恒该是他——否则人照着屏幕打字，消息发去了另一个 agent。多选或
   // 空集恒不构成"一个目标"，报空让判据链继续往下走。
@@ -735,60 +1011,126 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     return filterableAgents.some((row) => row.id === only) ? only : '';
   }, [actorFilterApplies, actorFilter, filterableAgents]);
   useEffect(() => { onFocusAgentChange?.(focusAgentId); }, [focusAgentId, onFocusAgentChange]);
-	const withNarration = projection.presentationRows;
-  const tailRow = withNarration.at(-1);
-  const tailRowID = tailRow ? presentationEntryId(tailRow) : '';
-  const previousTail = previousTailRef.current;
-  const nextFoldDefaults = new Set(foldDefaultsRef.current);
-  if (previousTail.listKey === messageListKey && previousTail.rowID && previousTail.rowID !== tailRowID) {
-    for (const id of previousTail.foldIDs) nextFoldDefaults.add(id);
+  // Scope/filter identity still owns its own Presentation and ReadingSession,
+  // but a non-empty local projection does not need a new physical scroller.
+  // Keeping the same Legend DOM lets an installed matching row replace the
+  // prior view in the filter commit instead of exposing a blank virtualizer
+  // mount while the new semantic activation is already selected.
+  const messageListRenderKey = state.channelId;
+  const liveArrivalConsumerTokenRef = useRef(null);
+  if (!liveArrivalConsumerTokenRef.current) {
+    liveArrivalConsumerTokenRef.current = Symbol('timeline-live-arrival-consumer');
   }
-  const nextTail = { listKey: messageListKey, rowID: tailRowID, foldIDs: foldIDsForPresentationRow(tailRow) };
-  useLayoutEffect(() => {
-    foldDefaultsRef.current = nextFoldDefaults;
-    previousTailRef.current = nextTail;
-  }, [messageListKey, tailRowID]);
-  const effectiveFoldOverrides = new Map([...nextFoldDefaults].map((id) => [id, true]));
-  for (const [id, expanded] of foldOverrides) effectiveFoldOverrides.set(id, expanded);
-  const localGeometryKey = useMemo(() => JSON.stringify({
-    folds: [...effectiveFoldOverrides].map(([id, expanded]) => [id, Boolean(expanded)]).sort(([left], [right]) => left.localeCompare(right)),
-    detail: turnDetail?.selected?.requestId || '',
-    editing: editing ? [editing.targetId, editing.phase, editing.location] : null,
-    resumePin,
-    access,
-    roster: (roster || []).map((row) => [row.id, row.name || row.display_name || '']),
-    approvals: Object.entries(approvalStates || {}).sort(([left], [right]) => left.localeCompare(right)),
-    controls: Object.entries(controlStates || {}).sort(([left], [right]) => left.localeCompare(right)),
-    capabilities: [...capabilityIndex.entries()]
-      .map(([id, value]) => [id, value?.describe?.revision || value?.describe?.version || ''])
-      .sort(([left], [right]) => left.localeCompare(right)),
-  }), [tailRowID, foldOverrides, turnDetail?.selected?.requestId, editing?.targetId, editing?.phase, editing?.location, resumePin, access, roster, approvalStates, controlStates, capabilityIndex]);
-  const viewportGeometryKey = useMemo(() => presentationGeometryKey(
-    withNarration,
-    localGeometryKey,
-  ), [withNarration, localGeometryKey]);
-  // History demand uses presentation bounds; navigation uses row IDs. A turn
-  // can span several ledger sequences, so raw entry seq is not a row address.
-  const firstVisibleSeq = Number(withNarration[0]?.seqLow || 0);
-  const latestVisibleSeq = Number(withNarration.at(-1)?.seqHigh || 0);
-	const viewport = useConversationViewport({
-	  channelId: state.channelId,
-	  lastSeq: state.lastSeq,
-	  history,
+  useLayoutEffect(
+    () => registerLiveTimelineArrivalConsumer(state, liveArrivalConsumerTokenRef.current),
+    [state],
+  );
+  const effectiveFoldOverrides = new Map(foldOverrides);
+	const viewport = useReadingSession({
+	  channelID: state.channelId,
 	  viewKey: messageListKey,
-	  listKey: messageListKey,
-		  items: withNarration,
-		  firstVisibleSeq,
-		  latestVisibleSeq,
-		  geometryKey: viewportGeometryKey,
-	  viewSpec: { scope, selfId, actorFilter, editingTargetId, showNarration: SHOW_CHANNEL_NARRATION },
-	  navigationTarget,
-	  onNavigationTargetConsumed,
-	  initialSession: initialViewSessionRef.current,
-	  onSessionChange: (change) => viewSessions?.writeConversation(state.channelId, change),
+	  snapshot: projection.presentation,
+	  history: {
+	    ...history,
+	    status: { ...history.status, historyReveal },
+	  },
+	  viewSessions,
+	  historyViewSpec,
+	  surfaceVisible,
+	  arrivals: {
+	    ...liveTimelineArrivals(state),
+	    acknowledge(revision) {
+	      acknowledgeLiveTimelineArrivals(state, revision);
+	    },
+	  },
 	});
+  useLayoutEffect(() => {
+    if (!historyReveal?.commitID) return;
+    const bound = history.status?.presentationAdmission?.bindPresentation?.(
+      state.channelId,
+      Number(projection.presentation?.revision || 0),
+    );
+    if (!bound?.commitID) return;
+    const changes = projection.presentation?.changes || {};
+    const inserted = changes.frontInsertedIDs || [];
+    const staged = bound.stagedIDs || [];
+    const exactIDs = inserted.length === staged.length
+      && inserted.every((id, index) => id === staged[index]);
+    const exactRevision = Number(projection.presentation?.revision || 0)
+      === Number(bound.candidatePresentationRevision || 0);
+    const pureStructuralCommit = changes.kind === 'prepend'
+      && (changes.backInsertedIDs || []).length === 0
+      && (changes.removed || []).length === 0
+      && (changes.updated || []).length === 0;
+    const exactOwner = viewport.activationID === bound.activationID
+      && viewport.session.inputEpoch === bound.inputEpoch;
+    diagnostic('debug', 'history.admission_commit_check', {
+      channelId: state.channelId,
+      operationID: bound.operationID,
+      exactIDs,
+      exactRevision,
+      exactOwner,
+      pureStructuralCommit,
+      presentationRevision: projection.presentation?.revision || 0,
+      candidatePresentationRevision: bound.candidatePresentationRevision || 0,
+      inserted,
+      staged,
+      backInsertedIDs: changes.backInsertedIDs || [],
+      updated: changes.updated || [],
+      removed: changes.removed || [],
+      ownerInputEpoch: viewport.session.inputEpoch,
+      tokenInputEpoch: bound.inputEpoch,
+    });
+    if (!exactIDs || !exactRevision || !exactOwner || !pureStructuralCommit) return;
+    diagnostic('debug', 'history.admission_commit', {
+      channelId: state.channelId,
+      operationID: bound.operationID,
+      activationID: bound.activationID,
+      inputEpoch: bound.inputEpoch,
+      presentationRevision: projection.presentation.revision,
+      stagedIDs: staged,
+    });
+    history.status?.presentationAdmission?.acknowledge?.(state.channelId, bound.commitID);
+  }, [
+    history.status?.presentationAdmission,
+    historyReveal,
+    projection.presentation?.changes,
+    projection.presentation?.revision,
+    state.channelId,
+    viewport.activationID,
+    viewport.session.inputEpoch,
+  ]);
+  const roleCandidate = useMemo(
+    () => roleFinalizerRef.current.evaluate(projection.presentation, viewport.presentationAuthority),
+    [projection.presentation, viewport.presentationAuthority],
+  );
+	const rolePresentation = roleCandidate.snapshot;
+  useLayoutEffect(() => {
+    // Role authority is subordinate to the exact committed Presentation. If
+    // an older concurrent candidate lost that owner race, neither owner may
+    // publish it; synchronously recompute from the winner before paint.
+    const presentationCurrent = presentationRef.current.current() === projection.presentation;
+    const committed = presentationCurrent
+      && roleFinalizerRef.current.commitCandidate(roleCandidate);
+    if (!presentationCurrent
+      || (!committed && roleFinalizerRef.current.current() !== rolePresentation)) {
+      setPresentationCommitVersion((value) => value + 1);
+    }
+  }, [projection.presentation, roleCandidate, rolePresentation]);
+	const withNarration = rolePresentation.rows;
+  // This port is consumed by layout stores mounted below Timeline. Publish it
+  // in the commit's insertion phase: discarded renders never reach it, while
+  // a newly committed child's layout effect cannot still control the previous
+  // channel. On unmount the last committed controller remains available to
+  // the passive cleanup/late async release path; no DOM consumer survives it.
+  useInsertionEffect(() => {
+    readingControlRef.current = viewport.takeContentControl;
+  }, [viewport.takeContentControl]);
+  const toggleFold = useCallback((id, expanded) => {
+    viewport.takeContentControl('fold-choice');
+    setFoldOverrides((current) => new Map(current).set(id, expanded));
+  }, [viewport]);
   const timelineControl = useMemo(() => {
-    const queued = [];
     const actorIds = new Set();
     const preempted = new Map();
     const merged = new Map();
@@ -796,7 +1138,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     for (const turn of state.turns.values()) {
       const actorId = turn.request?.audience?.length === 1 ? turn.request.audience[0] : '';
       if (actorId) actorIds.add(actorId);
-      if (agentMessageStage(turn) === 'queued' && turn.requestId !== editingTargetId) queued.push(turn);
       const replacement = preemptedBy(turn);
       if (replacement) preempted.set(replacement, [...(preempted.get(replacement) || []), turn]);
       const owner = mergedInto(turn);
@@ -806,30 +1147,115 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
         hasFreezeOperations = true;
       }
     }
-    queued.sort((left, right) => {
-      const leftTarget = argsOf(left.request).target;
-      const rightTarget = argsOf(right.request).target;
-      const leftSeq = left.request.type === TYPES.agentReplace ? state.turns.get(leftTarget)?.requestSeq || left.requestSeq : left.requestSeq;
-      const rightSeq = right.request.type === TYPES.agentReplace ? state.turns.get(rightTarget)?.requestSeq || right.requestSeq : right.requestSeq;
-      return leftSeq - rightSeq;
+    return { actorIds, preempted, merged, hasFreezeOperations };
+  }, [state, controlVersion]);
+  const schedulerStatus = history.status || null;
+  // Replica is the sole folded-state authority for Waiting. Cached rows may
+  // paint immediately, but absence of a terminal is operationally meaningful
+  // only after the attached tail is current.
+  const controlCurrent = schedulerStatus ? schedulerStatus.controlCurrent === true : true;
+  const continuityIDs = waitingContinuityRef.current.channelId === state.channelId
+    ? waitingContinuityRef.current.ids
+    : new Set();
+  const queuedTurns = useMemo(() => selectWaitingPresentation(state, {
+    controlCurrent,
+    editingTargetId,
+    localTurns: localWaitingTurns,
+    continuityIDs,
+  }), [continuityIDs, controlCurrent, controlVersion, editingTargetId, localWaitingTurns, state]);
+  useLayoutEffect(() => {
+    const next = new Set(localWaitingIDs);
+    for (const requestId of continuityIDs) {
+      const turn = state.turns.get(requestId);
+      if (turn && !turn.terminal && agentMessageStage(turn) === '') next.add(requestId);
+    }
+    waitingContinuityRef.current = { channelId: state.channelId, ids: next };
+  }, [continuityIDs, controlVersion, localWaitingIDs, state]);
+  const waitingHandoff = useWaitingHandoff(state.channelId, queuedTurns, rolePresentation.rows);
+  const rowPresentationState = useCallback(
+    (row) => waitingHandoff.enteringRequestIDs.has(row.id) ? 'handoff-enter' : '',
+    [waitingHandoff.enteringRequestIDs],
+  );
+  const bottomIntentPresentation = useMemo(() => {
+    const intent = viewport.session.bottomIntent;
+    const messageIDs = intent?.targetMessageIDs || [];
+    if (!intent?.id || !messageIDs.length) return null;
+    const destinations = messageIDs.map((messageID) => {
+      // A durable local agent request already owns the Waiting destination.
+      // Do not wait for its ledger request/progress pair to round-trip before
+      // satisfying the send-start correlation; that later replacement keeps
+      // the same id and must not create a second bottom obligation.
+      if (queuedTurns.some((item) => item.requestId === messageID)) {
+        return { messageID, destination: 'waiting' };
+      }
+      const turn = state.turns.get(messageID);
+      if (turn && isAgentMessageTurn(turn)) {
+        const stage = agentMessageStage(turn);
+        if (stage === 'timeline' && projection.presentation.rows.some((row) => (
+          row.id === messageID && !row.localState && row.body?.local !== true
+        ))) return {
+          messageID,
+          destination: 'timeline',
+          targetListRevision: Number(projection.presentation.revision || 0),
+        };
+        return null;
+      }
+      const row = projection.presentation.rows.find((candidate) => candidate.id === messageID);
+      return row && !row.localState && row.body?.local !== true
+        ? {
+          messageID,
+          destination: 'timeline',
+          targetListRevision: Number(projection.presentation.revision || 0),
+        }
+        : null;
     });
-    return { queued, actorIds, preempted, merged, hasFreezeOperations };
-  }, [state, controlVersion, editingTargetId]);
-  // Cached conversation rows are safe to show immediately; cached open-state
-  // deductions are not. A missing terminal in the unsynchronised tail must
-  // never resurrect an already-finished request in the waiting layer.
-  const controlCurrent = history.status ? history.status.controlCurrent === true : true;
-  const queuedTurns = controlCurrent ? timelineControl.queued : [];
+    return Object.freeze({
+      intentID: intent.id,
+      activationID: viewport.activationID,
+      inputEpoch: viewport.session.inputEpoch,
+      presentationRevision: Number(projection.presentation.revision || 0),
+      ready: destinations.every(Boolean),
+      destinations: Object.freeze(destinations.filter(Boolean)),
+    });
+  }, [projection.presentation, queuedTurns, state, viewport.activationID, viewport.session]);
+  const presentationEmpty = !withNarration.length && !queuedTurns.length;
   const frozenByActor = useMemo(
     () => timelineControl.hasFreezeOperations
       ? agentFrozenStates(state, timelineControl.actorIds, presentationNow)
       : EMPTY_FROZEN_STATES,
     [state, controlVersion, timelineControl.actorIds, timelineControl.hasFreezeOperations, presentationNow],
   );
-  editingRef.current = editing;
-  editRuntimeRef.current = { state, frozenByActor, capabilityIndex, onTaskControl };
+  // Editing callbacks and frozen-state evidence form one commit-owned port.
+  // Its consumers are user events, passive cleanup and Promise continuations,
+  // all of which run after the whole layout phase. A suspended render cannot
+  // publish it, and a session keeps the runtime that acquired its hold rather
+  // than inheriting a later callback merely because the parent rerendered.
+  useLayoutEffect(() => {
+    const runtime = Object.freeze({
+      channelId: state.channelId,
+      state,
+      frozenByActor,
+      capabilityIndex,
+      onTaskControl,
+    });
+    editingRef.current = editing;
+    editRuntimeRef.current = runtime;
+    if (editing?.sessionId
+      && editing.channelId === state.channelId
+      && !editSessionOwnersRef.current.has(editing.sessionId)) {
+      editSessionOwnersRef.current.set(editing.sessionId, runtime);
+    }
+  }, [capabilityIndex, editing, frozenByActor, onTaskControl, state]);
 
-  function releaseEditSession(session, targetTurn = null) {
+  function editSessionRuntimes(session) {
+    const current = editRuntimeRef.current;
+    const owner = editSessionOwnersRef.current.get(session?.sessionId)
+      || (current?.channelId === session?.channelId ? current : null);
+    const authority = current?.channelId === session?.channelId ? current : owner;
+    return { owner, authority };
+  }
+
+  function releaseEditSession(session, targetTurn = null, ownerRuntime = null) {
     if (!session || editReleaseSentRef.current.has(session.sessionId)) return;
     if (!session.holdId) {
       editReleasePendingRef.current.add(session.sessionId);
@@ -837,51 +1263,77 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     }
     editReleasePendingRef.current.delete(session.sessionId);
     editReleaseSentRef.current.add(session.sessionId);
-    const runtime = editRuntimeRef.current;
-    const observed = runtime?.frozenByActor?.get(session.actorId);
+    const resolved = editSessionRuntimes(session);
+    const runtime = ownerRuntime || resolved.owner;
+    editSessionOwnersRef.current.delete(session.sessionId);
+    // The callback belongs to the runtime that acquired the hold, but a later
+    // committed render of the same channel carries the newest revocation fact.
+    // A different channel must never authorize or route this release.
+    const authorityRuntime = resolved.authority || runtime;
+    const observed = authorityRuntime?.frozenByActor?.get(session.actorId);
     // Against an older backend that has not advertised lease CAS yet, this
     // front-side guard still avoids an observed newer interrupt/hold. With a
     // new backend, expected_hold_id closes the remaining wire race.
-    if (observed && (observed.source !== TYPES.agentHold || observed.held_by !== session.holdId)) return;
-    const turn = targetTurn || runtime?.state?.turns?.get(session.targetId);
+    if (!runtime
+      || (observed && (observed.source !== TYPES.agentHold || observed.held_by !== session.holdId))) return;
+    const turn = authorityRuntime?.state?.turns?.get(session.targetId) || targetTurn;
     Promise.resolve(runtime?.onTaskControl?.({
       channelId: session.channelId,
       turn,
       actorId: session.actorId,
       type: TYPES.agentUnhold,
-      payload: withExpectedHold(runtime?.capabilityIndex || new Map(), session.actorId, TYPES.agentUnhold, {}, session.holdId),
+      payload: withExpectedHold(authorityRuntime?.capabilityIndex || new Map(), session.actorId, TYPES.agentUnhold, {}, session.holdId),
     })).catch(() => {});
   }
   const nextFreezeDeadline = Math.min(...[...frozenByActor.values()].filter(Boolean).map((value) => value.until));
 	const preemptedSources = timelineControl.preempted;
 	const mergedCounts = timelineControl.merged;
-  const namesRevision = useMemo(() => (roster || [])
-    .map((row) => `${row.id}:${row.name || row.display_name || ''}`)
-    .sort()
-    .join('|'), [roster]);
+  const namesRevision = useMemo(() => JSON.stringify((roster || [])
+    .map((row) => [row.id, row.kind || '', row.name || row.display_name || ''])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])))), [roster]);
+  const targetAuthorityRevision = useMemo(() => JSON.stringify([
+    waitingRosterAuthority?.current === true,
+    waitingRosterAuthority?.current === true && waitingRosterAuthority.actorIDs instanceof Set
+      ? [...waitingRosterAuthority.actorIDs].sort()
+      : [],
+  ]), [waitingRosterAuthority]);
   // A live publish must not invalidate every materialized row. Each row gets a
   // compact revision made only from the local UI facts it actually consumes;
   // unchanged rows retain their mounted subtree, intrinsic measurements and
   // nested disclosure state while another request streams or arrives.
   const rowRenderRevision = useCallback((_index, row) => {
     const entry = row.body;
-    const isLatest = row.id === tailRowID;
+    const isLatest = row.role?.latest === true;
     if (entry?.kind === 'turn') {
       const requestId = entry.turn.requestId;
       const actorId = entry.turn.request.audience?.[0] || '';
+      const capability = capabilityIndex.get(actorId);
+      const capabilityTypes = [...(capability?.describe?.types?.keys?.() || [])].sort().join(',');
+      const targetCurrentness = waitingRosterAuthority?.current === true
+        && waitingRosterAuthority.actorIDs instanceof Set
+        ? (waitingRosterAuthority.actorIDs.has(actorId) ? 'current' : 'departed')
+        : 'unknown';
+      const selectNote = entry.turn.request.type === TYPES.agentSelect
+        ? selectSystemNote({
+          usage: argsOf(entry.turn.terminal)?.usage,
+          describe: capability?.describe,
+          agentName: nameOf(actorId, names),
+        })
+        : '';
       const controlKey = `${state.channelId}:${requestId}:cancel`;
       const preempted = (preemptedSources.get(requestId) || [])
         .map((turn) => `${turn.requestId}:${turn.lastSeq || turn.requestSeq || 0}`)
         .join(',');
       return JSON.stringify([
-        namesRevision, access, selfId, isLatest,
+        row.contentRevision, namesRevision, targetCurrentness, access, selfId, isLatest,
         effectiveFoldOverrides.get(`${requestId}:request`), effectiveFoldOverrides.get(`${requestId}:response`),
         turnDetail?.selected?.requestId === requestId,
         editing?.targetId === requestId ? [editing.phase, editing.location, editing.text] : Boolean(editing),
         resumePin === requestId,
         approvalStates?.[entry.turn.request.id] || null,
         controlStates?.[controlKey] || null,
-        capabilityIndex.get(actorId)?.describe?.revision || capabilityIndex.get(actorId)?.describe?.version || '',
+        capabilityTypes, capability?.loading || false, capability?.error || null, selectNote,
+        Boolean(onCreateTask), Boolean(onReply),
         frozenByActor.get(actorId) || null,
         mergedCounts.get(requestId) || 0,
         preempted,
@@ -889,16 +1341,17 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     }
     if (entry?.kind === 'standalone') {
       return JSON.stringify([
-        namesRevision, selfId, isLatest,
+        row.contentRevision, namesRevision, selfId, isLatest,
         effectiveFoldOverrides.get(`${entry.envelope.id}:message`),
+        Boolean(onCreateTask), Boolean(onReply),
       ]);
     }
     return `${namesRevision}|${row.contentRevision}|${isLatest ? 1 : 0}`;
   }, [
     access, approvalStates, capabilityIndex, controlStates, editing,
-    tailRowID, foldOverrides, frozenByActor, mergedCounts, namesRevision, preemptedSources,
-    resumePin, selfId, state.channelId, turnDetail?.selected?.requestId,
-    withNarration.length,
+    foldOverrides, frozenByActor, mergedCounts, namesRevision, preemptedSources,
+    onCreateTask, onReply, resumePin, selfId, state.channelId, targetAuthorityRevision,
+    turnDetail?.selected?.requestId,
   ]);
 
   useEffect(() => {
@@ -906,9 +1359,9 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
       scope,
       actorFilter: [...actorFilter],
       foldOverrides: [...foldOverrides],
-      foldDefaults: [...foldDefaultsRef.current],
+      foldDefaults: [],
     });
-  }, [viewSessions, state.channelId, scope, actorFilter, foldOverrides, tailRowID]);
+  }, [viewSessions, state.channelId, scope, actorFilter, foldOverrides]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
   // presentationNow 只服务冻结期限。普通正文帧不会改变冻结事实；每帧都 setState
   // 会让一次 live publish 额外再渲染整棵 Timeline 一次。
@@ -944,7 +1397,10 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
       if (replacementLanded && session.location === 'processing') setResumePin(replacedBy);
       setEditing((current) => current?.sessionId === session.sessionId ? null : current);
       if (!replacementLanded) setEditNotice(targetClosed ? '原消息已经停止或取消，已退出编辑' : actorGone ? 'Agent 已重启或离开，已退出编辑' : '编辑已被另一项控制终止');
-      if (actorGone) editReleaseSentRef.current.add(session.sessionId);
+      if (actorGone) {
+        editReleaseSentRef.current.add(session.sessionId);
+        editSessionOwnersRef.current.delete(session.sessionId);
+      }
       else releaseEditSession(session, targetTurn);
       return;
     }
@@ -971,8 +1427,9 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
       }
       setEditing((current) => current?.sessionId === activeEditSessionId ? ({ ...current, phase: 'submitting', error: '' }) : current);
       const sessionId = editing.sessionId;
-      const replacementPayload = withExpectedHold(capabilityIndex, editing.actorId, TYPES.agentReplace, { target: editing.targetId, old_text: editing.oldText, new_text: editing.text, ...(editing.attachments.length ? { attachments: editing.attachments } : {}) }, editing.holdId);
-      Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentReplace, payload: replacementPayload }))
+      const runtime = editSessionRuntimes(editing);
+      const replacementPayload = withExpectedHold(runtime.authority?.capabilityIndex || new Map(), editing.actorId, TYPES.agentReplace, { target: editing.targetId, old_text: editing.oldText, new_text: editing.text, ...(editing.attachments.length ? { attachments: editing.attachments } : {}) }, editing.holdId);
+      Promise.resolve(runtime.owner?.onTaskControl?.({ channelId: editing.channelId, turn: runtime.authority?.state?.turns?.get(editing.targetId) || targetTurn, actorId: editing.actorId, type: TYPES.agentReplace, payload: replacementPayload }))
         .then((replacementId) => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'saving', replacementId: replacementId || '', error: replacementId ? '' : '修改请求未发出' }) : current))
         .catch((failure) => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: failure.message || String(failure) }) : current));
       return;
@@ -999,9 +1456,10 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     previousAccess.current = access;
     if (!reconnected || !editing || editing.phase !== 'editing') return;
     const sessionId = editing.sessionId;
-    const targetTurn = state.turns.get(editing.targetId);
+    const runtime = editSessionRuntimes(editing);
+    const targetTurn = runtime.authority?.state?.turns?.get(editing.targetId) || state.turns.get(editing.targetId);
     setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'checking', error: '' }) : current);
-    Promise.resolve(onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentContext, payload: {} }))
+    Promise.resolve(runtime.owner?.onTaskControl?.({ channelId: editing.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentContext, payload: {} }))
       .then((contextId) => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, contextId: contextId || '', error: contextId ? '' : '编辑锁已失效' }) : current))
       .catch(() => setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: '编辑锁已失效' }) : current));
   }, [access]);
@@ -1009,22 +1467,29 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
   async function startEditing(turn, actorId) {
     if (editing) return;
     setEditNotice('');
-    const location = taskControlContext(turn, { selfId, access }).location;
+    const location = taskControlContext(turn, { selfId, access, targetAuthority: waitingRosterAuthority }).location;
+    if (location === 'processing') viewport.takeContentControl('edit-message');
     const sessionId = ++editSessionSerialRef.current;
     const draft = { sessionId, channelId: state.channelId, targetId: turn.requestId, actorId, holdId: '', location, oldText: editableText(turn), text: editableText(turn), attachments: argsOf(turn.request).attachments || [], phase: 'requesting_lock', error: '' };
+    const ownerRuntime = editRuntimeRef.current;
+    if (ownerRuntime?.channelId === draft.channelId) {
+      editSessionOwnersRef.current.set(sessionId, ownerRuntime);
+    }
     setEditing(draft);
     try {
-      const holdId = await onTaskControl?.({ channelId: state.channelId, turn, actorId, type: TYPES.agentHold, payload: { target: turn.requestId } });
+      const holdId = await ownerRuntime?.onTaskControl?.({ channelId: draft.channelId, turn, actorId, type: TYPES.agentHold, payload: { target: turn.requestId } });
       if (!holdId) {
+        editSessionOwnersRef.current.delete(sessionId);
         setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: '无法锁定这条任务' }) : current);
         return;
       }
       if (editReleasePendingRef.current.has(sessionId)) {
-        releaseEditSession({ ...draft, holdId }, turn);
+        releaseEditSession({ ...draft, holdId }, turn, ownerRuntime);
         return;
       }
       setEditing((current) => current?.sessionId === sessionId ? ({ ...current, holdId, phase: 'locking', error: '' }) : current);
     } catch (failure) {
+      editSessionOwnersRef.current.delete(sessionId);
       setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: failure?.message || String(failure) || '无法锁定这条任务' }) : current);
     }
   }
@@ -1032,11 +1497,12 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
   async function verifyAndSave(nextText) {
     if (!editing || editing.phase !== 'editing') return;
     const sessionId = editing.sessionId;
-    const targetTurn = state.turns.get(editing.targetId);
+    const runtime = editSessionRuntimes(editing);
+    const targetTurn = runtime.authority?.state?.turns?.get(editing.targetId) || state.turns.get(editing.targetId);
     const text = typeof nextText === 'string' ? nextText : editing.text;
     setEditing((current) => current?.sessionId === sessionId ? ({ ...current, text, phase: 'checking', error: '' }) : current);
     try {
-      const contextId = await onTaskControl?.({ channelId: state.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentContext, payload: {} });
+      const contextId = await runtime.owner?.onTaskControl?.({ channelId: editing.channelId, turn: targetTurn, actorId: editing.actorId, type: TYPES.agentContext, payload: {} });
       setEditing((current) => current?.sessionId === sessionId ? ({ ...current, contextId: contextId || '', error: contextId ? '' : '编辑锁已失效' }) : current);
     } catch (failure) {
       setEditing((current) => current?.sessionId === sessionId ? ({ ...current, phase: 'editing', error: failure?.message || String(failure) || '无法确认编辑锁' }) : current);
@@ -1062,10 +1528,60 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
     onComposerEditChange?.(null);
   }, [onComposerEditChange, state.channelId]);
 
-  return <MessageLayoutProvider store={messageLayoutStoreRef.current}><MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost>
-		<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" data-viewport-mode={viewport.mode} data-has-initial-anchor={viewport.hasInitialAnchor || undefined}>
+
+  const floatingInput = <>
+    {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
+    <WaitingLayer turns={queuedTurns} handoffs={waitingHandoff.exiting} state={state} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
+  </>;
+
+  const acceptedComposerTokensRef = useRef(new WeakSet());
+  const readingIntent = useMemo(() => ({
+    composerSendStarted(channelID) {
+      if (channelID !== state.channelId) return null;
+      const before = viewport.captureBottomIntent();
+      if (!before || !viewport.requestBottom('composer:send-start', before, {
+        afterPresentationRevision: before.presentationRevision,
+        baselineTailID: before.baselineTailID,
+      })) return null;
+      // Return the post-intent revision. The list may consume bottomIntent
+      // before IndexedDB accepts the send, but native input/scope replacement
+      // will change this authority and make the later acceptance stale.
+      return viewport.captureBottomIntent();
+    },
+    composerAccepted(channelID, messageIDs, token) {
+      if (channelID !== state.channelId
+        || !messageIDs?.length
+        || !token
+        || typeof token.activationID !== 'string'
+        || !Number.isSafeInteger(token.inputEpoch)
+        || !Number.isSafeInteger(token.intentRevision)
+        || !['following', 'browsing'].includes(token.mode)) return false;
+      if (acceptedComposerTokensRef.current.has(token)) return false;
+      const current = viewport.captureBottomIntent();
+      if (!current
+        || current.activationID !== token.activationID
+        || current.inputEpoch !== token.inputEpoch
+        || current.intentRevision !== token.intentRevision) return false;
+      acceptedComposerTokensRef.current.add(token);
+      if (viewport.bindBottomIntentTargets?.(token, messageIDs) === false) return false;
+      // Acceptance only consumes the send correlation token. Send-start has
+      // already published the one bottom intent; receipt/feed ordering cannot
+      // cause a second request.
+      return true;
+    },
+    composerRejected(channelID, token) {
+      if (channelID !== state.channelId || !token) return false;
+      // A local durable failure revokes only the exact send-start authority.
+      // The viewport validates activation/input epochs and the bottom-intent id,
+      // so a late failure cannot consume a newer send or an explicit return.
+      return viewport.revokeBottomIntent?.(token) === true;
+    },
+  }), [state.channelId, viewport.bindBottomIntentTargets, viewport.captureBottomIntent, viewport.requestBottom, viewport.revokeBottomIntent]);
+
+  return <ReadingIntentProvider value={readingIntent}><MessageLayoutProvider store={messageLayoutStoreRef.current}><MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost><ConversationSurface input={composer} floating={floatingInput}>
+		<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" data-viewport-mode={viewport.session.mode} data-has-initial-anchor={viewport.session.bookmark ? true : undefined}>
       <div className={state.rows.size ? 'timeline-inner timeline-controls-overlay' : 'timeline-inner'}>
-        {selfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
+        {projectionSelfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
           <div className="timeline-scope" role="group" aria-label="动态范围">
             <button
               type="button"
@@ -1075,48 +1591,96 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
                 setScope((value) => value === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine);
               }}
             >{TIMELINE_SCOPE_LABELS[scope]}</button>
-            {actorFilterApplies && filterableAgents.length > 1 && <div className="timeline-actor-filter" role="group" aria-label="按成员过滤">
+            {actorFilterApplies && (filterableAgents.length > 0 || staleActorFilters.length > 0) && <div className="timeline-actor-filter" role="group" aria-label="按成员过滤">
               {filterableAgents.map((row) => {
                 const on = actorFilter.has(row.id);
                 const activity = agentActivity?.agents?.[row.id];
                 const activityState = activity?.state || '';
                 const actorName = names.get(row.id) || row.id;
-                return <button
-                  key={row.id}
-                  type="button"
-                  className={[on && 'is-on', activityState && `activity-${activityState}`].filter(Boolean).join(' ')}
-                  aria-pressed={on}
-                  title={activityState === 'active' ? `${actorName} 正在运行` : activityState === 'settled' ? `${actorName} 已完成，点击确认` : on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
-                  onClick={() => {
-                    if (activityState === 'settled') onAcknowledgeAgentActivity?.(row.id);
-                    // 点一下选中，再点一下取消——按钮各自开关，恒不是单选。
-                    setActorFilter((current) => {
-                      const next = new Set(current);
-                      if (!next.delete(row.id)) next.add(row.id);
-                      return next;
-                    });
-                  }}
-                >{activityState && <i className="agent-activity-dot" aria-hidden="true" />}{actorName}</button>;
+                return <div className="timeline-actor-filter-item" key={row.id}>
+                  <button
+                    type="button"
+                    className={[on && 'is-on', activityState && `activity-${activityState}`].filter(Boolean).join(' ')}
+                    aria-pressed={on}
+                    title={on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
+                    onClick={() => {
+                      // 选择成员仍是唯一的交互入口；若这位成员的本轮活动已经
+                      // settled，同一次点击顺便退役提示，不增加额外确认步骤。
+                      if (activityState === 'settled') onAcknowledgeAgentActivity?.(row.id);
+                      setActorFilter((current) => {
+                        const next = new Set(current);
+                        if (!next.delete(row.id)) next.add(row.id);
+                        return next;
+                      });
+                    }}
+                  >{activityState && <i className="agent-activity-dot" aria-hidden="true" />}{actorName}</button>
+                </div>;
               })}
+              {staleActorFilters.map((actorID) => <button
+                key={actorID}
+                type="button"
+                className="is-on is-stale"
+                aria-pressed="true"
+                aria-label={`移除已失效成员筛选 ${actorID}`}
+                title={`已失效成员：${actorID}；点击移除筛选`}
+                onClick={() => setActorFilter((current) => {
+                  const next = new Set(current);
+                  next.delete(actorID);
+                  return next;
+                })}
+              >已失效 · {actorID}</button>)}
             </div>}
           </div>
         </div>}
-        {!state.rows.size && <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>}
-        {Boolean(state.rows.size) && !entries.length && !queuedTurns.length && (
-          // Saying the channel is empty here would be a lie the reader can act
-          // on — they would go looking for what they wrote. The channel is full;
-          // none of it is theirs.
-          <div className="empty-ledger"><span>@</span><h2>这个频道里还没有与你相关的往来</h2><p>切回「全部」可以看到频道里其他人的动态。</p></div>
-        )}
+		{presentationEmpty && viewport.availability === 'empty-known' && (
+		  viewport.emptyReason === 'channel'
+		    ? <div className="empty-ledger"><span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器 @ 一位成员开始。</p></div>
+		    : <div className="empty-ledger"><span>@</span>{staleActorFilters.length
+		      ? <><h2>当前应用了已失效的成员筛选。</h2><p>从上方移除已失效筛选后即可查看当前范围。</p></>
+		      : viewport.historyBoundary?.actorFiltered
+		        ? <><h2>已扫描到频道开头，没有符合当前成员筛选的往来</h2><p>这不表示频道为空；切回「全部」可查看其他动态。</p></>
+		        : <><h2>这个频道里还没有与你相关的往来</h2><p>切回「全部」可以看到频道里其他人的动态。</p></>}</div>
+		)}
+		{presentationEmpty && viewport.availability === 'partial' && (
+		  <div className="empty-ledger" data-scope-state="partial"><span>@</span>{staleActorFilters.length
+		    ? <><h2>当前应用了已失效的成员筛选。</h2><p>从上方移除已失效筛选后即可查看当前范围。</p></>
+		    : <><h2>当前已加载的动态里没有符合筛选的往来</h2><p>更早内容会在后台继续准备；切回「全部」可查看当前动态。</p></>}</div>
+		)}
 	  </div>
-	  {viewport.atTop && viewport.mode === 'loading-before' && <div className="timeline-history-status" role="status">正在读取更早动态…</div>}
-	  {viewport.status.error && <p className="bounded-list-note timeline-history-error" role="alert">{viewport.status.error}</p>}
-		<VirtualTimelineAdapter
-		  listKey={messageListKey}
-		  rows={withNarration}
-		  viewport={viewport}
+		  {((presentationEmpty && ['syncing', 'unknown'].includes(viewport.availability)) || viewport.availability === 'materializing') && <div className="timeline-history-status" role="status">正在确认频道内容…</div>}
+		  {presentationEmpty && viewport.availability === 'error' && <div
+      className="timeline-history-status timeline-history-demand"
+      data-phase="error"
+      data-revision={viewport.historyDemand?.revision || 0}
+      role="alert"
+    ><span>{viewport.status.error || '确认频道内容失败'}</span><button type="button" onClick={() => viewport.retryHistoryDemand()}>重试</button></div>}
+	  {!presentationEmpty && identityPending && <div className="timeline-history-status" role="status">正在确认你的频道身份，当前显示全部动态。</div>}
+	  {!presentationEmpty && !identityPending && viewport.availability === 'readable' && viewport.historyDemand?.phase !== 'idle' && <div
+      className="timeline-history-status timeline-history-demand"
+      data-phase={viewport.historyDemand.phase}
+      data-revision={viewport.historyDemand.revision}
+      role={viewport.historyDemand.phase === 'error' ? 'alert' : 'status'}
+    >{viewport.historyDemand.phase === 'error'
+      ? <><span>{viewport.historyDemand.error || '读取更早动态失败'}</span><button type="button" onClick={() => viewport.retryHistoryDemand()}>重试</button></>
+      : '正在读取更早动态…'}</div>}
+	  {!presentationEmpty && !identityPending && viewport.availability === 'readable'
+	    && viewport.historyDemand?.phase === 'idle' && viewport.historyBoundary?.kind === 'exhausted' && <div
+	      className="timeline-history-status timeline-history-demand"
+	      data-phase="exhausted"
+	      data-generation={viewport.historyBoundary.generation}
+	      role="status"
+	    >{viewport.historyBoundary.actorFiltered
+	      ? '已到频道开头，没有更早的符合筛选的往来'
+	      : '已到频道最早一条动态'}</div>}
+		<MessageList
+		  key={messageListRenderKey}
+		  snapshot={rolePresentation}
+		  reading={viewport}
+		  surfaceVisible={surfaceVisible}
+		  bottomIntentPresentation={bottomIntentPresentation}
 		  rowRevision={rowRenderRevision}
-		  renderRow={(_index, row) => {
+		  rowPresentationState={rowPresentationState}
+		  renderRow={(row) => {
           const entry = row.body;
           const continuation = row.continuation;
           const boundaryAfterTimestamp = row.boundaryAfterTimestamp;
@@ -1144,11 +1708,12 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
             const controlKey = `${state.channelId}:${entry.turn.requestId}:cancel`;
             const source = { view: 'dynamic', objectType: 'turn', objectId: entry.turn.requestId, seq: entry.turn.requestSeq };
             const detailsOpen = turnDetail?.selected?.requestId === entry.turn.requestId;
-            const fold = { latest: row.id === tailRowID, overrides: effectiveFoldOverrides, onToggle: toggleFold };
-            const common = { turn: entry.turn, names, roster, selfId, access, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onCreateTask: onCreateTask ? () => onCreateTask(source) : null, onReply };
+            const fold = { latest: row.role?.latest === true, overrides: effectiveFoldOverrides, onToggle: toggleFold };
+            const common = { turn: entry.turn, names, roster, selfId, access, targetAuthority: waitingRosterAuthority, capability: capabilityIndex.get(actorId), frozen: frozenByActor.get(actorId), fold, editActive: Boolean(editing && editing.targetId !== entry.turn.requestId), editSession: editing?.targetId === entry.turn.requestId ? editing : null, onControl: (type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload }), onEdit: () => startEditing(entry.turn, actorId), onEditText: (text) => setEditing((current) => current && ({ ...current, text, error: '' })), onEditSave: verifyAndSave, onEditAbandon: abandonEditing, onDownload: (attachment) => onDownloadResource?.(state.channelId, attachment), onPreview: (attachment) => onPreviewResource?.(state.channelId, attachment), onCreateTask: onCreateTask ? () => onCreateTask(source) : null, onReply };
             if (isAgentMessageTurn(entry.turn)) {
               content = <div className="timeline-entry" data-entry-id={entry.turn.requestId}><AgentConversationTurn {...common} thread={entry.thread} leadTurns={preemptedSources.get(entry.turn.requestId) || []} mergedCount={mergedCounts.get(entry.turn.requestId) || 0} /></div>;
-            } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} fold={fold} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onReply={onReply} onOpen={() => {
+            } else content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.turn.requestId}><TurnCard turn={entry.turn} thread={entry.thread} roster={roster} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capability={capabilityIndex.get(actorId)} controlState={controlStates[controlKey]} continuation={continuation} detailsOpen={detailsOpen} fold={fold} editSession={editing?.targetId === entry.turn.requestId ? editing : null} editActive={Boolean(editing && editing.targetId !== entry.turn.requestId)} onCancel={() => onCancel?.(state.channelId, entry.turn.requestId)} onControl={(type, payload) => onTaskControl?.({ channelId: state.channelId, turn: entry.turn, actorId, type, payload })} onEdit={() => startEditing(entry.turn, actorId)} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} onDownload={(attachment) => onDownloadResource?.(state.channelId, attachment)} onPreview={(attachment) => onPreviewResource?.(state.channelId, attachment)} onReply={onReply} onOpen={() => {
+              viewport.takeContentControl(detailsOpen ? 'close-turn-details' : 'open-turn-details');
               if (detailsOpen) turnDetail?.onClose?.();
               else {
                 // Expanding is a local reading action, not a new ledger entry. Stop the
@@ -1156,21 +1721,19 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, n
                 // not jump out of the viewport and appear attached to another turn.
                 onOpenTurn?.(entry.turn);
               }
-            }} onCloseDetail={turnDetail?.onClose} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
+            }} onCloseDetail={() => {
+              viewport.takeContentControl('close-turn-details');
+              turnDetail?.onClose?.();
+            }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} /></div>;
           }
           if (!content) {
             const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
-            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.id === tailRowID, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
+            content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.role?.latest === true, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={onCreateTask ? () => onCreateTask(source) : null} onReply={onReply} /></div>;
           }
 		  return <div className="timeline-virtual-item">{content}{boundaryAfterTimestamp > 0 && <div className="timeline-day"><span>{dayLabel(boundaryAfterTimestamp)}</span></div>}</div>;
 		  }}
 		/>
 	  {viewport.unseen > 0 && <button type="button" className="timeline-jump-latest" onClick={viewport.jumpToLatest}>↓ {viewport.unseen} 条新动态</button>}
     </section>
-    <div className="conversation-bottom-overlay">
-      {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
-      <WaitingLayer turns={queuedTurns} state={state} names={names} selfId={selfId} access={access} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={editing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={(text) => setEditing((current) => current && ({ ...current, text, error: '' }))} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
-      {composer}
-    </div>
-  </ProgressTrailHost></MarkdownFileReferenceProvider></MessageLayoutProvider>;
+  </ConversationSurface></ProgressTrailHost></MarkdownFileReferenceProvider></MessageLayoutProvider></ReadingIntentProvider>;
 }

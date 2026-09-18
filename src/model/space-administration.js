@@ -124,7 +124,7 @@ export function actorTemplateCommand(action, values, roster) {
   return command({ type, payload, roster, label: `${type} → ${id || 'all'}` });
 }
 
-export function channelTemplateCommand(action, values, roster) {
+export function channelTemplateCommand(action, values, roster, channelId = 'c0') {
   const type = SPACE_TYPES[`channel${action[0].toUpperCase()}${action.slice(1)}`];
   if (!type) throw new TypeError('未知频道模板操作');
   const id = String(values?.id || '').trim();
@@ -136,7 +136,7 @@ export function channelTemplateCommand(action, values, roster) {
     if (values.body !== undefined) payload.body = channelTemplateBody(values.body);
   }
   if (action === 'revoke' || action === 'get') payload = { id };
-  return command({ type, payload, roster, label: `${type} → ${id || 'all'}` });
+  return command({ channelId, type, payload, roster, label: `${type} → ${id || 'all'}` });
 }
 
 function channelTemplateBody(value) {

@@ -11,6 +11,7 @@
 .compact-shell .pane-resizer, .mobile-shell .pane-resizer { display: none; }
 .shell.compact-shell, .shell.mobile-shell { position: relative; grid-template-columns: 210px minmax(0, 1fr); }
 .shell.compact-shell.has-context, .shell.mobile-shell.has-context { grid-template-columns: 210px minmax(0, 1fr); }
+.compact-shell .conversation-surface { --conversation-min-input-height: 120px; }
 .compact-shell .context-host, .mobile-shell .context-host { grid-template-columns: 210px minmax(0, 1fr); }
   /* 文件不是辅助信息抽屉。窄屏继续给左栏留 210px 会让预览在移动端横屏只剩
      四百多像素；文件打开后直接使用完整视口，关闭后再回到原工作区。 */
@@ -87,11 +88,11 @@
      scroller to zero height on mobile. */
   .mobile-shell .workspace > .workspace-view,
   .mobile-shell .workspace > .channel-private-empty { grid-row: 3; grid-column: 1 / -1; }
-  .mobile-shell .dynamic-message-pane > .timeline,
-  .mobile-shell .dynamic-message-pane > .channel-private-empty { grid-row: 1; grid-column: 1; }
-  .mobile-shell .dynamic-message-pane { --conversation-composer-height: 128px; }
+  .mobile-shell .conversation-surface { --conversation-input-height: 128px; --conversation-min-reading-height: 160px; }
   .mobile-shell .send-button, .mobile-shell .task-create-modal > header button, .mobile-shell .task-create-modal footer button,
   .mobile-shell .global-search > header button, .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
+  .mobile-shell .composer-tools > button,
+  .mobile-shell .composer-file-control { width: 44px; height: 44px; }
   .mobile-shell .task-create-modal > header button, .mobile-shell .global-search > header button { min-width: 44px; }
   .mobile-shell .seq-label { display: none; }
   .mobile-shell .timeline-inner { padding: 8px 7px 18px; }
@@ -105,7 +106,6 @@
   .mobile-shell .turn-card, .mobile-shell .standalone-row, .mobile-shell .information-flow-row:not(.contained) { width: 100%; }
   .mobile-shell .request-text, .mobile-shell .audience-line, .mobile-shell .message-attachments, .mobile-shell .final-answer { width: 100%; margin-left: 0; padding-left: 6px; }
   .mobile-shell .composer-wrap { padding: 0 10px 10px; }
-  .mobile-shell .composer-tools > button, .mobile-shell .composer-file-control, .mobile-shell .composer-cancel-edit { width: 44px; height: 44px; }
   .mobile-shell .terminal-status button { min-width: 44px; min-height: 44px; }
   .mobile-shell .timeline-scope-bar { top: 4px; min-height: 29px; flex-basis: 29px; margin-bottom: 0; }
   .mobile-shell .timeline-scope > button { min-height: 26px; padding: 2px 9px; font-size: 10px; }
@@ -118,3 +118,17 @@
   .mobile-shell .workspace-view .panel-tabs button { min-width: max-content; }
   .mobile-shell .workspace-view-scroll { padding: 10px; }
   .mobile-shell .rail-global-actions button, .mobile-shell .rail-create-button, .mobile-shell .channel-item { min-height: 44px; }
+
+/* Topology answers how much horizontal room the shell has. Input capability
+   answers how large an interactive target must be. A rotated phone is a
+   compact shell, but it remains a coarse-pointer device. */
+@media (pointer: coarse), (any-pointer: coarse) {
+  .composer-tools > button,
+  .composer-file-control,
+  .composer-cancel-edit { width: 44px; height: 44px; }
+  .agent-wait-item,
+  .mobile-shell .agent-wait-item,
+  .agent-wait-item.is-editing,
+  .mobile-shell .agent-wait-item.is-editing { height: auto; min-height: 44px; }
+  .agent-wait-actions button { min-width: 44px; min-height: 44px; }
+}

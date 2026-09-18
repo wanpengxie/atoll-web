@@ -405,6 +405,9 @@ export function createWire({
   releaseWake = wake ? wake(wakeNow) : null;
 
   return {
+    prepareSubmit(payload) {
+      return stampOrigin(payload);
+    },
     submit(payload) {
       return transmit(UP.submit, stampOrigin(payload));
     },

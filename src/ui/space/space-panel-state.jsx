@@ -19,5 +19,5 @@ export function OperationState({ states, requestId }) {
     : result.phase === 'failed'
       ? `失败：${result.error}`
       : '请求已提交，等待账本终态';
-  return <p className={`operation-state state-${result.phase}`} role="status">{label}</p>;
+  return <p className={`operation-state state-${result.phase}`} role="status" data-request-id={requestId}>{label}</p>;
 }

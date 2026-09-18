@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Extension } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -13,8 +13,11 @@ import { composerDelivery, deliverySourceLabel } from '../model/composer-target.
 import { addRecipient, normalizeRecipients, removeRecipient, resolveRecipients } from '../model/mention-recipients.js';
 import { mentionRing } from '../model/agent-selection.js';
 import { resolveManagementActors } from '../model/management-actors.js';
+import { diagnostic } from '../model/diagnostics.js';
 import { TYPES } from '../protocol/vocab.js';
 import { ModelSelector } from './ModelSelector.jsx';
+import { useComposerPresentation } from './conversation/ComposerPresentationContext.jsx';
+import { useReadingIntent } from './conversation/ReadingIntentContext.jsx';
 
 // 两个 Suggestion 插件同挂一个编辑器，各自要一把键——同键会在建 view 时直接抛
 // "Adding different instances of a keyed plugin"。
@@ -119,15 +122,23 @@ export function slashCommand(value) {
   return null;
 }
 
-export const Composer = React.memo(function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', onDraftChange, disabled, disabledReason = '等待连接…', onSend, onRetry, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
+export const Composer = React.memo(function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', draftRevision = 0, onDraftChange, disabled = false, disabledReason = '当前频道不可写', canEditDraft = !disabled, canDurablyAccept = !disabled, canTransmit = !disabled, onSend, onRetry, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
+  const readingIntent = useReadingIntent();
+  const composerPresentation = useComposerPresentation();
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
   const composingRef = useRef(false);
   const compositionFrameRef = useRef(0);
   const draftIdleRef = useRef(null);
   const lastDraftFingerprintRef = useRef(JSON.stringify(initialDraft.doc));
+  const editorRevisionRef = useRef(Number(draft?.editorRevision || 0));
+  const attachmentFingerprintRef = useRef(JSON.stringify(attachments.map((row) => row.resource_id || row.id || row.name)));
+  const replyFingerprintRef = useRef(JSON.stringify(replyTarget || null));
+  const restoredDraftRevisionRef = useRef(Number(draftRevision || 0));
   const editModeRef = useRef(editMode);
   const replyTargetRef = useRef(replyTarget);
+  const attachmentsRef = useRef(attachments);
+  const onDraftChangeRef = useRef(onDraftChange);
   const cancelReplyRef = useRef(onCancelReply);
   const mentionContextRef = useRef({ roster: [], selfId: '', selectedIds: [], activeCandidate: 0, editing: false });
   const suggestionSessionRef = useRef(null);
@@ -139,6 +150,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   const commandContextRef = useRef({ types: [], activeCandidate: 0 });
   const commandSessionRef = useRef(null);
   const submitRef = useRef(() => {});
+  const committedEventOwnerRef = useRef(null);
   const normalDraftRef = useRef(null);
   // 收件人条上的芯片。它是 @ 这个动词的产物，恒不是正文的函数——正文里的 @ 只是 @。
   const [recipients, setRecipients] = useState(() => initialDraft.recipients);
@@ -150,10 +162,20 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   const dismissedMentionRef = useRef(null);
   const [error, setError] = useState('');
   const [sendState, setSendState] = useState('idle');
-  const [sentMessageId, setSentMessageId] = useState('');
+  // Durable acceptance is the only critical section. Transport progress for a
+  // previously accepted row must never keep the next message disabled: users
+  // can queue several immutable outbox rows while an earlier receipt/feed is
+  // slow. The ref closes the same-tick Enter/click race before React commits.
+  const [accepting, setAccepting] = useState(false);
+  const acceptingRef = useRef(false);
+  // Presentation-only monotonic signal for the exact durable draft version
+  // that is about to clear. ConversationSurface uses it to animate the input
+  // contraction without coupling draft ownership to viewport geometry.
+  const [sendClearRevision, setSendClearRevision] = useState(0);
+  const sendClearRevisionRef = useRef(0);
   // 拆发批次的逐条跟踪（协议 §3.2.1）：提交层吞掉入账前错误，Promise 看不到，
   // 只有各条 submission 的状态知道谁被拒——批次里任何一条 rejected 都要带目标名报出。
-  const [sentBatch, setSentBatch] = useState([]); // [{id, label}]
+  const [sentBatch, setSentBatch] = useState([]); // all unsettled [{id, label}]
   const [activeCandidate, setActiveCandidate] = useState(0);
   const [activeCommandCandidate, setActiveCommandCandidate] = useState(0);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
@@ -188,6 +210,18 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     draftIdleRef.current = null;
   }
 
+  function announceDurableClear() {
+    const revision = sendClearRevisionRef.current + 1;
+    sendClearRevisionRef.current = revision;
+    // Synchronous presentation seam: the surface freezes the already-painted
+    // input block before ProseMirror removes its content. Composer publishes
+    // no geometry and never writes scroll position; the monotonic revision in
+    // the following React commit tells the surface when to animate to the new
+    // natural height.
+    composerPresentation?.prepareSendClear(revision);
+    setSendClearRevision(revision);
+  }
+
   function syncEditorSnapshot(current) {
     if (!current || current.isDestroyed) return;
     const value = editorText(current);
@@ -195,7 +229,14 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     const fingerprint = JSON.stringify(document);
     if (fingerprint === lastDraftFingerprintRef.current) return;
     lastDraftFingerprintRef.current = fingerprint;
-    if (!editModeRef.current) onDraftChange?.({ text: value, doc: document, recipients: recipientsRef.current });
+    if (!editModeRef.current) onDraftChangeRef.current?.({
+      text: value,
+      doc: document,
+      recipients: recipientsRef.current,
+      attachments: attachmentsRef.current,
+      replyTarget: replyTargetRef.current,
+      editorRevision: editorRevisionRef.current,
+    });
     setError('');
     setSendState('idle');
   }
@@ -388,7 +429,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       Placeholder.configure({ placeholder: '输入消息；@ 选择成员，/ 使用命令' }),
     ],
     content: initialDraft.doc,
-    editable: Boolean(channelId) && !disabled,
+    editable: Boolean(channelId) && canEditDraft,
     immediatelyRender: false,
     // 编辑器 DOM 由 ProseMirror 直接维护；外围 React 只订阅必要的派生状态。
     // 明确关闭逐 transaction 的 React 重绘，避免输入与工作区共享渲染节拍。
@@ -432,13 +473,11 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       // composingRef 要持续到确认文字完成首次绘制，覆盖 ProseMirror 已经提前
       // 清掉 view.composing、但浏览器尚未 paint 的窗口。
       if (composingRef.current || current.view.composing) return;
+      editorRevisionRef.current += 1;
       syncEditorPresentation(current);
       persistDraftWhenIdle(current);
     },
   }, [channelId]);
-  editModeRef.current = editMode;
-  replyTargetRef.current = replyTarget;
-  cancelReplyRef.current = onCancelReply;
   // 芯片按当前名册重解：名字随成员改名走，这个 id 不在名册里了就标 missing
   // ——恒不静默把一个收件人丢掉再退回默认目标。
   const mentions = useMemo(() => resolveRecipients(recipients, roster), [recipients, roster]);
@@ -485,11 +524,59 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   const matchingCandidates = (searchQuery) => mentionCandidates(roster, selfId, mentions.map((row) => row.id), searchQuery || '');
   const candidates = useMemo(() => matchingCandidates(query), [mentions, query, roster, selfId]);
   const commands = useMemo(() => commandCandidates(agentSelection?.supportedTypes, commandQuery), [agentSelection?.supportedTypes, commandQuery]);
-  mentionContextRef.current = { roster, selfId, selectedIds: mentions.map((row) => row.id), activeCandidate, editing: Boolean(editMode) };
-  menuOpenRef.current = { mention: query != null && candidates.length > 0, command: commandQuery != null && commands.length > 0 };
-  commandContextRef.current = { types: agentSelection?.supportedTypes || [], activeCandidate: activeCommandCandidate };
-  const sentRows = sentBatch.length ? sentBatch : (sentMessageId ? [{ id: sentMessageId, label: '' }] : []);
-  const activeSubmission = sentRows.map((row) => pending.find((item) => item.messageId === row.id)).find(Boolean) || null;
+  const eventOwnerCandidate = {
+    ownerKey: `${String(channelId || '')}\u0000${String(selfId || '')}`,
+    editMode,
+    replyTarget,
+    attachments,
+    onDraftChange,
+    onCancelReply,
+    mentionContext: { roster, selfId, selectedIds: mentions.map((row) => row.id), activeCandidate, editing: Boolean(editMode) },
+    menuOpen: { mention: query != null && candidates.length > 0, command: commandQuery != null && commands.length > 0 },
+    commandContext: { types: agentSelection?.supportedTypes || [], activeCandidate: activeCommandCandidate },
+    submit,
+    recipientActions: {
+      add: (row) => commitRecipients(addRecipient(recipientsRef.current, row)),
+      dropLast: () => {
+        const rows = recipientsRef.current;
+        if (!rows.length) return false;
+        return commitRecipients(rows.slice(0, -1));
+      },
+    },
+  };
+  useLayoutEffect(() => {
+    const committed = eventOwnerCandidate;
+    committedEventOwnerRef.current = committed;
+    editModeRef.current = committed.editMode;
+    replyTargetRef.current = committed.replyTarget;
+    attachmentsRef.current = committed.attachments;
+    onDraftChangeRef.current = committed.onDraftChange;
+    cancelReplyRef.current = committed.onCancelReply;
+    mentionContextRef.current = committed.mentionContext;
+    menuOpenRef.current = committed.menuOpen;
+    commandContextRef.current = committed.commandContext;
+    recipientActionsRef.current = committed.recipientActions;
+    submitRef.current = committed.submit;
+    return () => {
+      if (committedEventOwnerRef.current !== committed) return;
+      committedEventOwnerRef.current = null;
+      editModeRef.current = null;
+      replyTargetRef.current = null;
+      attachmentsRef.current = [];
+      onDraftChangeRef.current = null;
+      cancelReplyRef.current = null;
+      mentionContextRef.current = { roster: [], selfId: '', selectedIds: [], activeCandidate: 0, editing: false };
+      menuOpenRef.current = { mention: false, command: false };
+      commandContextRef.current = { types: [], activeCandidate: 0 };
+      recipientActionsRef.current = { add: () => {}, dropLast: () => false };
+      submitRef.current = () => {};
+    };
+  });
+  const sentRows = sentBatch;
+  const trackedSubmissions = sentRows
+    .map((row) => pending.find((item) => item.messageId === row.id))
+    .filter(Boolean);
+  const uncertainSubmission = trackedSubmissions.find((item) => item.state === 'uncertain') || null;
 
   useEffect(() => { setActiveCandidate(0); }, [query]);
   useEffect(() => { setActiveCommandCandidate(0); }, [commandQuery]);
@@ -550,8 +637,58 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     updateQuery(null);
     setError('');
     setSendState('idle');
-    setSentMessageId('');
+    acceptingRef.current = false;
+    setAccepting(false);
+    setSentBatch([]);
+    editorRevisionRef.current = Number(draft?.editorRevision || 0);
   }, [channelId]);
+
+  useEffect(() => {
+    const revision = Number(draftRevision || 0);
+    if (!editor || revision <= restoredDraftRevisionRef.current) return;
+    restoredDraftRevisionRef.current = revision;
+    // IndexedDB restoration is allowed to fill a pristine editor only. It can
+    // never replace text the user entered while restoration was in flight.
+    if (editorRevisionRef.current !== 0 || editorText(editor).trim() || recipientsRef.current.length) return;
+    const restored = normalizedDraft(draft);
+    if (!restored.text && !restored.recipients.length) return;
+    editorRevisionRef.current = Number(draft?.editorRevision || 0);
+    lastDraftFingerprintRef.current = JSON.stringify(restored.doc);
+    editor.commands.setContent(restored.doc, { emitUpdate: false });
+    recipientsRef.current = restored.recipients;
+    setRecipients(restored.recipients);
+    updateHasText(Boolean(restored.text.trim()));
+  }, [draft, draftRevision, editor]);
+
+  useEffect(() => {
+    const fingerprint = JSON.stringify(attachments.map((row) => row.resource_id || row.id || row.name));
+    if (fingerprint === attachmentFingerprintRef.current) return;
+    attachmentFingerprintRef.current = fingerprint;
+    editorRevisionRef.current += 1;
+    if (!editModeRef.current && editor && !editor.isDestroyed) onDraftChangeRef.current?.({
+      text: editorText(editor),
+      doc: editor.getJSON(),
+      recipients: recipientsRef.current,
+      attachments,
+      replyTarget: replyTargetRef.current,
+      editorRevision: editorRevisionRef.current,
+    });
+  }, [attachments]);
+
+  useEffect(() => {
+    const fingerprint = JSON.stringify(replyTarget || null);
+    if (fingerprint === replyFingerprintRef.current) return;
+    replyFingerprintRef.current = fingerprint;
+    editorRevisionRef.current += 1;
+    if (!editModeRef.current && editor && !editor.isDestroyed) onDraftChangeRef.current?.({
+      text: editorText(editor),
+      doc: editor.getJSON(),
+      recipients: recipientsRef.current,
+      attachments: attachmentsRef.current,
+      replyTarget,
+      editorRevision: editorRevisionRef.current,
+    });
+  }, [editor, replyTarget]);
 
   useEffect(() => () => {
     cancelAnimationFrame(compositionFrameRef.current);
@@ -560,10 +697,16 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
 
   useEffect(() => {
     if (!editor) return;
-    const editable = Boolean(channelId) && !disabled && (!editMode || !editBusy);
-    editor.setEditable(editable);
+    const editable = Boolean(channelId)
+      && canEditDraft
+      && (!editMode || (!editBusy && canTransmit));
+    // Editor availability is presentation state, not an editor transaction.
+    // Emitting an update here would advance editorRevision and make the exact
+    // accepted snapshot look like a newer user draft; it would also clear a
+    // just-published acceptance error via onUpdate.
+    editor.setEditable(editable, false);
     editor.view.dom.setAttribute('aria-disabled', String(!editable));
-  }, [channelId, disabled, editor, editMode, editBusy]);
+  }, [canEditDraft, canTransmit, channelId, editor, editMode, editBusy]);
 
   useEffect(() => {
     if (!sentRows.length) return undefined;
@@ -579,38 +722,38 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       if (inFlight.some((row) => row.submission.state === 'queued')) setSendState('queued');
       else if (inFlight.some((row) => row.submission.state === 'uncertain')) setSendState('uncertain');
       else if (inFlight.some((row) => row.submission.state === 'delayed')) setSendState('delayed');
-      else setSendState(inFlight.some((row) => row.submission.state === 'transmitting') ? 'sending' : 'accepted');
+      else setSendState(inFlight.some((row) => row.submission.state === 'transmitting') ? 'transmitting' : 'accepted');
       return undefined;
     }
-    if (sendState !== 'sending') {
-      setSendState('landed');
-      const timer = setTimeout(() => { setSendState('idle'); setSentMessageId(''); setSentBatch([]); }, 2_500);
-      return () => clearTimeout(timer);
-    }
-    return undefined;
-  }, [pending, sendState, sentMessageId, sentBatch]);
+    // Once every tracked outbox row has disappeared, the ledger has confirmed
+    // the submission. This is true even when reconciliation beats the missing
+    // receipt: keeping the local `sending` flag in that race permanently
+    // disables the composer after the message and its reply are already shown.
+    setSendState('landed');
+    const timer = setTimeout(() => { setSendState('idle'); setSentBatch([]); }, 2_500);
+    return () => clearTimeout(timer);
+  }, [pending, sentBatch]);
 
   // 收件人的唯一写入口。芯片变了就立刻落草稿——它和正文一样是草稿的一部分，
   // 切走再回来恒还在。
   function commitRecipients(next) {
     if (next === recipientsRef.current) return false;
     recipientsRef.current = next;
+    editorRevisionRef.current += 1;
     setRecipients(next);
     setError('');
     if (!editModeRef.current && editor && !editor.isDestroyed) {
-      onDraftChange?.({ text: editorText(editor), doc: editor.getJSON(), recipients: next });
+      onDraftChangeRef.current?.({
+        text: editorText(editor),
+        doc: editor.getJSON(),
+        recipients: next,
+        attachments: attachmentsRef.current,
+        replyTarget: replyTargetRef.current,
+        editorRevision: editorRevisionRef.current,
+      });
     }
     return true;
   }
-
-  recipientActionsRef.current = {
-    add: (row) => commitRecipients(addRecipient(recipientsRef.current, row)),
-    dropLast: () => {
-      const rows = recipientsRef.current;
-      if (!rows.length) return false;
-      return commitRecipients(rows.slice(0, -1));
-    },
-  };
 
   function pick(row) {
     suggestionSessionRef.current?.command({ id: row.id, label: actorDisplayName(row), kind: row.kind });
@@ -626,7 +769,9 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     // 这样中文刚确认就按 Enter，也不会丢掉最后一个字。
     const value = editorText(editor).trim();
     if (editMode) {
-      if (!value || !channelId || disabled || editBusy || sendState === 'sending') return;
+      if (!value || !channelId || !canTransmit || editBusy || acceptingRef.current) return;
+      acceptingRef.current = true;
+      setAccepting(true);
       setError('');
       setSendState('sending');
       try {
@@ -634,18 +779,53 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       } catch (failure) {
         setError(failure.message || String(failure));
         setSendState('error');
+      } finally {
+        acceptingRef.current = false;
+        setAccepting(false);
       }
       return;
     }
-    if ((!value && !attachments.length) || !channelId || disabled || sendState === 'sending') return;
+    if ((!value && !attachments.length)
+      || !channelId
+      || !canDurablyAccept
+      || attachmentBusy
+      || acceptingRef.current) return;
+    acceptingRef.current = true;
+    setAccepting(true);
     setError('');
     setSendState('sending');
-    setSentBatch([]);
+    // Send-start is the sole producer of a bottom intent and runs before the
+    // first await. Durable acceptance may only correlate stable ids with this
+    // frozen token; receipt/feed/retry paths cannot mint another intent.
+    const readingIntentToken = readingIntent?.composerSendStarted?.(channelId) || null;
+    diagnostic('debug', 'submission.composer_send_started', {
+      channelId,
+      activationID: readingIntentToken?.activationID || '',
+      inputEpoch: readingIntentToken?.inputEpoch,
+      intentRevision: readingIntentToken?.intentRevision,
+    });
+    // The current editor version is about to be consumed atomically with the
+    // outbox rows. A queued idle write for that same version must not run
+    // afterwards and resurrect the just-sent text as a draft.
+    cancelDraftIdle();
+    let durableMessageIDs = [];
 
     try {
+      const acceptedEditorRevision = editorRevisionRef.current;
+      const draftSnapshot = {
+        text: value,
+        doc: editor?.getJSON() || editorDocument(value),
+        recipients: recipientsRef.current,
+        attachments,
+        replyTarget,
+        editorRevision: acceptedEditorRevision,
+      };
+      const persistedDraft = await onDraftChange?.(draftSnapshot);
+      const acceptedDraftRevision = Number(persistedDraft?.revision ?? draftRevision);
       const slash = slashCommand(value);
       if (slash) {
         if (replyTarget) throw new TypeError('回复模式下不能使用斜杠命令，请先取消回复');
+        if (attachments.length) throw new TypeError('斜杠命令不能携带附件，请先移除附件');
         let recipient;
         if (slash.target === 'agent') {
           // 与消息发送同一判据（§2.2）：@ 唯一 agent 优先，否则参数面板目标。
@@ -658,12 +838,37 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
           if (!member) throw new TypeError('请 @ 一个 Agent，或在右下角选择目标 Agent');
           payload = { ...payload, member: member.id };
         }
-        const messageId = onSend({ text: value, msgType: slash.msgType, audience: [recipient.id], targetLabel: recipient.name || recipient.id, payload });
-        setSentMessageId(messageId || '');
-        editor?.commands.clearContent(true);
-        recipientsRef.current = [];
-        setRecipients([]);
-        onDraftChange?.({ text: '', doc: editorDocument(''), recipients: [] });
+        const messageId = await onSend({
+          channelId,
+          text: value,
+          msgType: slash.msgType,
+          audience: [recipient.id],
+          targetLabel: recipient.name || recipient.id,
+          payload,
+          draftRevision: acceptedDraftRevision,
+          editorRevision: acceptedEditorRevision,
+        });
+        if (!messageId) throw new Error('发送队列未返回消息编号');
+        durableMessageIDs = [messageId];
+        if (messageId) {
+          const readingAccepted = readingIntent?.composerAccepted?.(channelId, [messageId], readingIntentToken) === true;
+          diagnostic('debug', 'submission.composer_durable_accepted', {
+            channelId,
+            messageIds: [messageId],
+            readingAccepted,
+          });
+        }
+        if (messageId) {
+          setSentBatch((current) => current.some((row) => row.id === messageId)
+            ? current
+            : [...current, { id: messageId, label: recipient.name || recipient.id }]);
+        }
+        if (editorRevisionRef.current === acceptedEditorRevision) {
+          announceDurableClear();
+          editor?.commands.clearContent(true);
+          recipientsRef.current = [];
+          setRecipients([]);
+        }
         setSendState('accepted');
         return;
       }
@@ -693,46 +898,71 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
       // 的 kind 定词。部分失败恒不回滚——已发出的收回不来，失败的逐条报出可重发。
       // agent.ask 的 text 是必填且不能为空白，所以纯附件消息也要带上一句正文。
       const body = value || `发送 ${attachments.length} 个附件`;
-      const failures = [];
-      const sent = [];
-      for (const row of recipients) {
-        try {
-          const id = onSend({
-            text: body,
-            msgType: row.kind === 'human' ? TYPES.humanMessage : TYPES.agentAsk,
-            audience: [row.id],
-            targetLabel: actorDisplayName(row),
-            payload: attachments.length ? { text: body, attachments } : undefined,
-          });
-          if (id) sent.push({ id, label: actorDisplayName(row) });
-        } catch (failure) {
-          failures.push(`@${actorDisplayName(row)}：${failure.message || failure}`);
-        }
+      const ids = await onSend({
+        channelId,
+        batch: recipients.map((row) => ({
+          channelId,
+          text: body,
+          msgType: row.kind === 'human' ? TYPES.humanMessage : TYPES.agentAsk,
+          audience: [row.id],
+          targetLabel: actorDisplayName(row),
+          payload: attachments.length ? { text: body, attachments } : undefined,
+          ...(replyTarget?.sourceId ? { parentId: replyTarget.sourceId } : {}),
+        })),
+        draftRevision: acceptedDraftRevision,
+        editorRevision: acceptedEditorRevision,
+      });
+      const sent = (ids || []).map((id, index) => ({ id, label: actorDisplayName(recipients[index]) }));
+      if (!sent.length) throw new Error('发送队列未返回消息编号');
+      durableMessageIDs = sent.map((item) => item.id);
+      // `onSend` resolves only after the durable Outbox has accepted and
+      // published these stable ids. This is the one user-authored send seam:
+      // receipts, retries, feed echo, task controls and slash commands cannot
+      // recreate the intent later. Native input or activation replacement
+      // invalidates it in ReadingSession before any delayed list signal writes.
+      if (sent.length) {
+        const messageIds = sent.map((item) => item.id);
+        const readingAccepted = readingIntent?.composerAccepted?.(
+          channelId,
+          messageIds,
+          readingIntentToken,
+        ) === true;
+        diagnostic('debug', 'submission.composer_durable_accepted', {
+          channelId,
+          messageIds,
+          readingAccepted,
+        });
       }
-      if (failures.length === recipients.length) throw new TypeError(`发送失败 ${failures.join('；')}`);
-      setSentMessageId(sent.at(-1)?.id || '');
-      setSentBatch(sent);
-      editor?.commands.clearContent(true);
-      // 芯片属于刚发出去的那一句。下一句要发给谁，由判据链重新回答（最近交互
-      // 这一环恰好会指向刚发过的人），恒不把上一句的收件人黏在框上。
-      recipientsRef.current = [];
-      setRecipients([]);
-      onDraftChange?.({ text: '', doc: editorDocument(''), recipients: [] });
-      onClearAttachments?.();
-      if (replyTarget && sent.length) onReplySent?.();
-      if (failures.length) {
-        setError(`部分发送失败（其余已送出）：${failures.join('；')}`);
-        setSendState('error');
-      } else {
-        setSendState('accepted');
+      setSentBatch((current) => {
+        const known = new Set(current.map((row) => row.id));
+        return [...current, ...sent.filter((row) => !known.has(row.id))];
+      });
+      // Clear only the exact editor version accepted by the outbox. Text typed
+      // while IndexedDB was committing belongs to the next message.
+      if (editorRevisionRef.current === acceptedEditorRevision) {
+        announceDurableClear();
+        editor?.commands.clearContent(true);
+        recipientsRef.current = [];
+        setRecipients([]);
+        onClearAttachments?.();
+        if (replyTarget && sent.length) onReplySent?.();
       }
+      setSendState('accepted');
     } catch (failure) {
+      if (!durableMessageIDs.length && readingIntentToken) {
+        const readingRejected = readingIntent?.composerRejected?.(channelId, readingIntentToken) === true;
+        diagnostic('debug', 'submission.composer_durable_rejected', {
+          channelId,
+          readingRejected,
+        });
+      }
       setError(failure.message || String(failure));
       setSendState('error');
+    } finally {
+      acceptingRef.current = false;
+      setAccepting(false);
     }
   }
-
-  submitRef.current = submit;
 
   async function uploadFiles(files) {
     if (!files.length || !onUploadAttachments) return;
@@ -764,14 +994,14 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   }
 
   function onDragEnter(event) {
-    if (disabled || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
+    if (!canTransmit || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
     event.preventDefault();
     dragDepthRef.current += 1;
     setFileDragActive(true);
   }
 
   function onDragOver(event) {
-    if (disabled || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
+    if (!canTransmit || !onUploadAttachments || !containsFiles(event.dataTransfer)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
   }
@@ -788,20 +1018,20 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
     event.preventDefault();
     dragDepthRef.current = 0;
     setFileDragActive(false);
-    if (disabled || !onUploadAttachments) return;
+    if (!canTransmit || !onUploadAttachments) return;
     await uploadFiles([...(event.dataTransfer.files || [])]);
   }
 
   async function onPaste(event) {
     const files = [...(event.clipboardData?.files || [])];
-    if (!files.length || disabled || !onUploadAttachments) return;
+    if (!files.length || !canTransmit || !onUploadAttachments) return;
     // 只有剪贴板确实带文件时才接管；普通文字和 Markdown 仍由 Tiptap 处理。
     event.preventDefault();
     await uploadFiles(files);
   }
 
   return (
-    <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}`}>
+    <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}`} data-send-clear-revision={sendClearRevision}>
       <div
         className={`composer-surface${fileDragActive ? ' is-file-dragging' : ''}${editMode ? ' is-editing-message' : ''}`}
         onDragEnter={onDragEnter}
@@ -821,12 +1051,12 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
             发给谁"在屏幕上没有答案，而那恰好是最容易发错的一格。红色也是错的：
             这不是错误也不是危险，是一句陈述。唯一该刺眼的是"没有收件人"。
             判据来源与多收件人名单挂在 title 上，想知道时鼠标停一下。 */}
-        {!editMode && <div className={`composer-target is-${delivery.kind}${disabled ? ' is-muted' : ''}`} role="status" aria-label="收件人" title={deliveryTitle}>
+        {!editMode && <div className={`composer-target is-${delivery.kind}${!canEditDraft ? ' is-muted' : ''}`} role="status" aria-label="收件人" title={deliveryTitle}>
           {removableRows.length
             ? removableRows.map((row) => (
               <span key={row.id} className={`composer-target-pill is-picked${row.missing ? ' is-lost' : ''}`}>
                 {`@${actorDisplayName(row)}`}
-                <button type="button" className="composer-target-remove" aria-label={`移除收件人 @${actorDisplayName(row)}`} title="移除收件人" disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={() => dropRecipient(row.id)}><X size={11} strokeWidth={2.4} aria-hidden="true" /></button>
+                <button type="button" className="composer-target-remove" aria-label={`移除收件人 @${actorDisplayName(row)}`} title="移除收件人" disabled={!canEditDraft} onMouseDown={(event) => event.preventDefault()} onClick={() => dropRecipient(row.id)}><X size={11} strokeWidth={2.4} aria-hidden="true" /></button>
               </span>
             ))
             : <span className="composer-target-pill">{deliveryText}</span>}
@@ -875,17 +1105,17 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
         </div>
         <div className="composer-toolbar">
           <div className="composer-tools" aria-label="附件操作">
-            <span className={`composer-file-control${disabled || attachmentBusy || !onUploadAttachments ? ' is-disabled' : ''}`} title="上传本机文件到频道">
+            <span className={`composer-file-control${!canTransmit || attachmentBusy || !onUploadAttachments ? ' is-disabled' : ''}`} title={canTransmit ? '上传本机文件到频道' : '连接可用后才能上传本机文件'}>
               <input
                 type="file"
                 multiple
                 aria-label={attachmentBusy ? '正在上传本机文件' : '上传本机文件到频道'}
-                disabled={disabled || attachmentBusy || !onUploadAttachments}
+                disabled={!canTransmit || attachmentBusy || !onUploadAttachments}
                 onChange={chooseLocalFiles}
               />
               {attachmentBusy ? <span className="attachment-tool-busy" aria-hidden="true" /> : <Upload size={17} strokeWidth={1.8} aria-hidden="true" />}
             </span>
-            <button type="button" aria-label="从频道文件选择" title="从频道文件选择" disabled={disabled || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
+            <button type="button" aria-label="从频道文件选择" title="从频道文件选择" disabled={!canTransmit || attachmentBusy || !onOpenChannelFiles} onClick={onOpenChannelFiles}><FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <div className="composer-submit-actions">
             {replyTarget?.senderKind === 'human'
@@ -896,7 +1126,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
                 view={agentSelection?.view && effectiveParameterAgent && agentSelection.view.actorId === effectiveParameterAgent.id ? agentSelection.view : null}
                 pending={agentSelection?.pending && effectiveParameterAgent && agentSelection.pending.actorId === effectiveParameterAgent.id ? agentSelection.pending : null}
                 candidates={roster.filter((row) => row.kind === 'agent')}
-                disabled={disabled || sendState === 'sending' || Boolean(replyTarget)}
+                disabled={!canTransmit || accepting || Boolean(replyTarget)}
                 onChange={agentSelection?.onChange}
                 onPickAgent={agentSelection?.onPickAgent}
                 onOpen={agentSelection?.onOpen}
@@ -912,18 +1142,20 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
                 mousedown → 编辑器 blur → click，焦点在 click 之前就已经被按钮抢走，
                 是同一场赛跑换个变量。而停止本来就不缺入口——turn 卡片的「任务控制」
                 里一直有停止和编辑。所以这里恒不再承担第二个含义。 */}
-            <button type="button" className="send-button" onClick={submit} disabled={(editMode ? !hasText : (!hasText && !attachments.length)) || !channelId || disabled || (editMode && editBusy) || sendState === 'sending'} aria-label={sendState === 'sending' ? '发送中' : '发送'}>{sendState === 'sending' ? '…' : '↑'}</button>
+            <button type="button" className="send-button" onClick={submit} disabled={(editMode ? !hasText : (!hasText && !attachments.length)) || !channelId || (editMode ? !canTransmit : !canDurablyAccept) || (editMode && editBusy) || accepting || attachmentBusy} aria-label={accepting ? '发送中' : '发送'}>{accepting ? '…' : '↑'}</button>
           </div>
         </div>
       </div>
       <div className="composer-state-rail">
         {(error || editMode?.session?.error)
           ? <p className="composer-error" role="alert">{error || editMode.session.error}</p>
-          : disabled
+          : !canEditDraft || !canDurablyAccept
             ? <p className="composer-disabled-reason">{disabledReason}；草稿仍保留在当前设备。</p>
             : ['queued', 'delayed', 'uncertain'].includes(sendState)
-              ? <p className={`composer-status state-${sendState}`} role="status">{{ queued: '已保存到本机，连接可用后自动发送', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对' }[sendState]}{sendState === 'uncertain' && activeSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(activeSubmission)}>使用原编号重试</button>}</p>
-              : null}
+              ? <p className={`composer-status state-${sendState}`} role="status">{{ queued: '已保存到本机，连接可用后自动发送', delayed: '已受理，入账时间较长', uncertain: '发送结果待确认，正在通过账本核对' }[sendState]}{sendState === 'uncertain' && uncertainSubmission && onRetry && <button type="button" className="composer-retry" onClick={() => onRetry(uncertainSubmission)}>使用原编号重试</button>}</p>
+              : !canTransmit
+                ? <p className="composer-status state-offline" role="status">离线编辑；发送会先保存到本机，连接可用后自动发送。</p>
+                : null}
       </div>
     </section>
   );

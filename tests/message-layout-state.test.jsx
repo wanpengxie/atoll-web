@@ -35,7 +35,7 @@ it('preserves presentation choices even in following sessions, independently of 
   const copy = sessions.read('a');
   copy.layoutChoices[0][1].push('not-persisted');
   expect(sessions.read('a').layoutChoices).toEqual([['expanded', ['child-a']]]);
-  expect(sessions.read('a').viewportSnapshot).toBeNull();
+  expect(sessions.read('a')).not.toHaveProperty('viewportSnapshot');
   expect(sessions.read('b').layoutChoices).toEqual([]);
   const restored = createMessageLayoutStore(sessions.read('a').layoutChoices);
   expect(restored.get('expanded', [])).toEqual(['child-a']);

@@ -22,7 +22,11 @@ function terminalValue(turn, key) {
 }
 
 export function isAgentMessageTurn(turn) {
-  return CONTENT_TYPES.has(turn?.request?.type);
+  return isAgentMessageType(turn?.request?.type);
+}
+
+export function isAgentMessageType(type) {
+  return CONTENT_TYPES.has(type);
 }
 
 // A user message moves between the wait layer and the conversation from its

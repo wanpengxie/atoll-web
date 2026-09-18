@@ -1,0 +1,154 @@
+diff --git a/packages/react-virtuoso/src/Virtuoso.tsx b/packages/react-virtuoso/src/Virtuoso.tsx
+index 805454e..dda4eaf 100644
+--- a/packages/react-virtuoso/src/Virtuoso.tsx
++++ b/packages/react-virtuoso/src/Virtuoso.tsx
+@@ -34,6 +34,7 @@ import type {
+   ItemContent,
+   ListItem,
+   ListRootProps,
++  SizeFunction,
+ } from './interfaces'
+ import type { FormalRangePreparation, ListState } from './listStateSystem'
+ import type { HistoryPreparation } from './measuredHistoryAdmission'
+@@ -46,7 +47,7 @@ export interface FormalMeasurementContext {
+   inlineSize: number
+   itemComponent: unknown
+   itemContent: unknown
+-  itemSize: unknown
++  itemSize: SizeFunction
+ }
+ 
+ export interface FormalMeasurementObservation {
+@@ -258,11 +259,13 @@ const combinedSystem = /*#__PURE__*/ u.system(
+           if (certificateMatches(item, context, requireConnected)) {
+             return false
+           }
+-          // A row already live in this same host is not a future admission. Any
+-          // later image/font/content resize is handled by the ordinary DOM owner.
++          // A semantic row already in the current formal window must remain in
++          // normal flow until the desired state's spacer replaces it in the
++          // same commit. Re-preparing it would turn the active node fixed and
++          // momentarily remove its height. Connected changes are measured by
++          // the ordinary DOM owner and recertified from that live layout.
+           const liveCertificate = formalCertificates.get(keyFor(item))
+           return !(
+-            requireConnected &&
+             liveCertificate?.element.isConnected === true &&
+             sameMeasurementContext(liveCertificate, context) &&
+             currentFormal.items.some((current) => keyFor(current) === keyFor(item) && Object.is(current.data, item.data))
+@@ -316,7 +319,11 @@ const combinedSystem = /*#__PURE__*/ u.system(
+           const key = keyFor(item)
+           formalCertificates.set(key, {
+             ...next,
+-            blockSize: measured.bottom - measured.top,
++            // Certificates and the numeric size tree must use one ruler.
++            // DOMRect is fractional while the default itemSize is offsetHeight;
++            // comparing the two directly can turn a connected formal row into
++            // a preparation candidate as it leaves the desired window.
++            blockSize: next.itemSize(measured.element, 'offsetHeight'),
+             data: item.data,
+             element: measured.element,
+             key,
+diff --git a/packages/react-virtuoso/test/Virtuoso.test.tsx b/packages/react-virtuoso/test/Virtuoso.test.tsx
+index 9222307..9376f7f 100644
+--- a/packages/react-virtuoso/test/Virtuoso.test.tsx
++++ b/packages/react-virtuoso/test/Virtuoso.test.tsx
+@@ -186,6 +186,98 @@ describe('Virtuoso', () => {
+     raf.mockRestore()
+   })
+ 
++  it('does not remove a connected current-formal row while the desired range moves past it', () => {
++    const resizeCallbacks: (() => void)[] = []
++    const frames: FrameRequestCallback[] = []
++    const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++      frames.push(callback)
++      return frames.length
++    })
++    const NativeResizeObserver = globalThis.ResizeObserver
++    globalThis.ResizeObserver = resizeObserverStub(resizeCallbacks)
++    const commits: { formalPreparing: number; total: number }[] = []
++    let capture = false
++    let measurementRevision = 0
++    const Item = ({
++      children,
++      context: _context,
++      item: _item,
++      ...props
++    }: React.HTMLAttributes<HTMLDivElement> & { context?: unknown; item?: unknown }) => {
++      const ref = React.useRef<HTMLDivElement>(null)
++      React.useLayoutEffect(() => {
++        if (!capture || !ref.current) {
++          return
++        }
++        const list = ref.current.parentElement!
++        const flow = [...list.children].filter((child) => (child as HTMLElement).style.position !== 'fixed') as HTMLElement[]
++        commits.push({
++          formalPreparing: list.querySelectorAll('[data-formal-preparing]').length,
++          total:
++            parseFloat(list.style.paddingTop || '0') +
++            flow.reduce((sum, child) => sum + Number(child.dataset.knownSize ?? '0'), 0) +
++            parseFloat(list.style.paddingBottom || '0'),
++        })
++      })
++      return (
++        <div {...props} ref={ref}>
++          {children}
++        </div>
++      )
++    }
++    const root = ReactDOM.createRoot(container)
++    act(() => {
++      root.render(
++        <Virtuoso
++          components={{ Item }}
++          computeItemMeasurementKey={() => measurementRevision}
++          data={['a', 'b', 'c', 'd']}
++          defaultItemHeight={471}
++          initialItemCount={4}
++          itemSize={() => 471}
++        />
++      )
++    })
++    const scroller = container.querySelector<HTMLElement>('[data-testid="virtuoso-scroller"]')! as any
++    const viewport = scroller.firstElementChild as any
++    const list = container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!
++    Object.defineProperty(list, 'clientWidth', { configurable: true, value: 800 })
++    for (const [index, row] of [...list.querySelectorAll<HTMLElement>('[data-item-index]')].entries()) {
++      row.getBoundingClientRect = () => ({ bottom: (index + 1) * 471.21875, top: index * 471.21875 }) as DOMRect
++    }
++    act(() => {
++      scroller.triggerScroll({ scrollHeight: 1884, scrollTop: 0, viewportHeight: 471 })
++      viewport.triggerResize({ getBoundingClientRect: () => ({ height: 471 }) })
++      ;(list as any).triggerChangedChildSizes([{ endIndex: 3, size: 471, startIndex: 0 }])
++      for (let count = 0; count < 10; count++) {
++        for (const callback of resizeCallbacks.splice(0)) {
++          callback()
++        }
++        while (frames.length) {
++          frames.shift()!(0)
++        }
++      }
++    })
++
++    capture = true
++    measurementRevision = 1
++    act(() => {
++      scroller.triggerScroll({ scrollHeight: 1884, scrollTop: 1413, viewportHeight: 471 })
++    })
++
++    expect(commits.length).toBeGreaterThan(0)
++    // Off-flow preparation may continue after B is formal. It must never
++    // remove an A flow row before B's padding assumes the same geometry.
++    expect(commits.some(({ formalPreparing }) => formalPreparing > 0)).toBe(true)
++    expect(
++      commits.every(({ total }) => total === 1884),
++      JSON.stringify(commits)
++    ).toBe(true)
++    act(() => root.unmount())
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  })
++
+   it('reports formal admission only after its matching DOM layout commit', () => {
+     const resizeCallbacks: (() => void)[] = []
+     const frames: FrameRequestCallback[] = []

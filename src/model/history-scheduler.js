@@ -1,13 +1,13 @@
 import PQueue from 'p-queue';
-import { diagnostic } from './diagnostics.js';
+import { diagnostic, readingTrace } from './diagnostics.js';
 
 export const HISTORY_PAGE_SIZE = 128;
 export const HISTORY_BATCH_BYTES = 1 * 1024 * 1024;
 export const HISTORY_RESERVOIR_SIZE = 5_000;
 export const HISTORY_RESERVOIR_CHANNEL_BYTES = 16 * 1024 * 1024;
 export const HISTORY_RESERVOIR_GLOBAL_BYTES = 64 * 1024 * 1024;
-export const HISTORY_MAX_INFLIGHT = 4;
-export const HISTORY_MAX_BACKGROUND_INFLIGHT = 3;
+export const HISTORY_MAX_INFLIGHT = 2;
+export const HISTORY_MAX_BACKGROUND_INFLIGHT = 1;
 export const HISTORY_REVEAL_SIZE = 32;
 export const HISTORY_REVEAL_BYTES = 1 * 1024 * 1024;
 export const HISTORY_BATCH_TIMEOUT_MS = 30_000;
@@ -63,6 +63,38 @@ function coverageContains(meta, seq) {
   ));
 }
 
+function rangesContain(ranges, seq) {
+  const target = numeric(seq);
+  return target > 0 && Array.isArray(ranges) && ranges.some((entry) => (
+    numeric(entry?.lowSeq) <= target && numeric(entry?.highSeq) >= target
+  ));
+}
+
+function tailWindowCovered(meta, head) {
+  const target = numeric(head);
+  if (!target) return true;
+  const interval = Array.isArray(meta?.coverage) && meta.coverage.find((entry) => (
+    numeric(entry?.lowSeq) <= target && numeric(entry?.highSeq) >= target
+  ));
+  if (!interval) return false;
+  const low = numeric(interval.lowSeq);
+  return low === 1 || target - low + 1 >= HISTORY_REVEAL_SIZE;
+}
+
+function mergedCoverage(ranges = [], addition = null) {
+  const ordered = [...ranges, ...(addition ? [addition] : [])]
+    .map((range) => ({ lowSeq: numeric(range?.lowSeq), highSeq: numeric(range?.highSeq) }))
+    .filter((range) => range.lowSeq > 0 && range.highSeq >= range.lowSeq)
+    .sort((left, right) => left.lowSeq - right.lowSeq || left.highSeq - right.highSeq);
+  const merged = [];
+  for (const range of ordered) {
+    const previous = merged.at(-1);
+    if (!previous || range.lowSeq > previous.highSeq + 1) merged.push({ ...range });
+    else previous.highSeq = Math.max(previous.highSeq, range.highSeq);
+  }
+  return merged;
+}
+
 function hasLocalKnowledge(meta) {
   return Boolean(meta && (numeric(meta.rowCount) > 0 || (Array.isArray(meta.coverage) && meta.coverage.length > 0)));
 }
@@ -92,6 +124,10 @@ function createState(id, previous = {}) {
     tailRefreshFloorSeq: 0,
     cacheBypassBeforeSeq: 0,
     localMeta: null,
+    // In-memory scan evidence is independent from rendered rows. Visible seq
+    // gaps are legal after visibility filtering; only these validated ranges
+    // can prove that a cached queued response has no later terminal through H.
+    verifiedCoverage: [],
     hasRows: false,
     hasOlder: false,
     tailVisible: false,
@@ -104,6 +140,12 @@ function createState(id, previous = {}) {
     revealVersion: 0,
     foregroundWaiters: [],
     foregroundOwners: new Set(),
+	// Presentation status belongs to a semantic, user-visible edge demand, not
+	// to physical cache/network batches.  Background hydration and initial-tail
+	// work may be in flight without mounting a foreground loading affordance.
+	foregroundDemandRevision: 0,
+	foregroundError: '',
+	currentWaiters: new Set(),
 	projectionPending: false,
 	cancelPending: null,
     retryAt: 0,
@@ -143,12 +185,17 @@ function foregroundDemand(state) {
   return selected;
 }
 
+function visibleForegroundOwners(state) {
+  return [...(state?.foregroundOwners || [])].filter((owner) => owner?.presentation === true);
+}
+
 export function createHistoryScheduler({
   requestPage,
   cancelPage = () => Promise.resolve(),
   readCache = async () => ({ rows: [], exhausted: true, nextBeforeSeq: 0, bytes: 0 }),
   revealRows,
   hasVisibleRow = () => false,
+  hasPresentedRows = () => true,
   visibleOldestSeq = () => 0,
   visibleNewestSeq = () => 0,
   persistRows = () => Promise.resolve(),
@@ -184,6 +231,10 @@ export function createHistoryScheduler({
   let wakeAt = 0;
   let destroyed = false;
   let priorityScope = 'anonymous';
+  // Only the pull lane waits for local metadata selection. Transport attach
+  // and live delivery remain independent, but history must not choose the
+  // network merely because IndexedDB has not answered yet.
+  let localMetaReady = true;
   const transportStats = {
     indexeddb: { durationMs: 80, rowsPerMs: 1.6, bytesPerMs: 16 * 1024, averageRowBytes: 2 * 1024, rowLimit: HISTORY_PAGE_SIZE },
     network: { durationMs: 400, rowsPerMs: 0.32, bytesPerMs: 4 * 1024, averageRowBytes: 2 * 1024, rowLimit: HISTORY_PAGE_SIZE },
@@ -362,6 +413,7 @@ export function createHistoryScheduler({
   }
 
   function candidate(state) {
+	if (!localMetaReady) return null;
 	const remoteAttached = Boolean(generation && state?.attachedGeneration === generation);
 	const localAttached = Boolean(!remoteAttached && state?.remoteEligible !== false && hasLocalKnowledge(state?.localMeta));
 	if (!state || (!remoteAttached && !localAttached) || inflightByChannel.has(state.id) || state.retryAt > now()) return null;
@@ -553,12 +605,53 @@ export function createHistoryScheduler({
   function retry(state, error) {
     state.retryCount += 1;
     state.error = error?.message || String(error || '历史加载失败');
+	if (visibleForegroundOwners(state).length > 0) state.foregroundError = state.error;
     const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(6, state.retryCount - 1));
     state.retryAt = now() + delay;
     diagnostic('warn', 'history.batch_retry', { channelId: state.id, generation, delay, detail: state.error });
     scheduleWake(state.retryAt);
     settleForeground(state, { kind: 'failed', error: error instanceof Error ? error : new Error(state.error) });
     onError(error instanceof Error ? error : new Error(state.error));
+	for (const waiter of [...state.currentWaiters]) {
+	  waiter.cleanup?.();
+	  state.currentWaiters.delete(waiter);
+	  waiter.reject(error instanceof Error ? error : new Error(state.error));
+	}
+  }
+
+  function currentTargetInstalled(state, targetHead) {
+    const target = numeric(targetHead);
+    // An authoritative empty head has no positive sequence to put in a
+    // coverage interval. Requiring rangesContain(..., 0) leaves the focused
+    // freshness obligation pending until timeout even though Meta has proved
+    // there is nothing to fetch.
+    if (target === 0) return state?.remoteKnown === true && numeric(state.headSeq) === 0;
+    return rangesContain(state?.verifiedCoverage, target);
+  }
+
+  function requireRemoteTail(state, floorSeq = visibleNewestSeq(state?.id)) {
+	const target = numeric(state?.headSeq);
+	const floor = numeric(floorSeq);
+	if (!state?.attachedGeneration || !target || target <= floor || currentTargetInstalled(state, target)) return false;
+	const alreadyPending = numeric(state.tailRefreshBeforeSeq) > 0;
+	state.tailRefreshBeforeSeq = Math.max(numeric(state.tailRefreshBeforeSeq), target + 1);
+	state.tailRefreshFloorSeq = alreadyPending
+	  ? Math.min(numeric(state.tailRefreshFloorSeq), floor)
+	  : floor;
+	state.controlCurrent = false;
+	return true;
+  }
+
+  function settleCurrentWaiters(state) {
+	if (!state?.currentWaiters?.size) return;
+	const newest = numeric(visibleNewestSeq(state.id));
+	for (const waiter of [...state.currentWaiters]) {
+	  if (!currentTargetInstalled(state, waiter.targetHead)
+	    || state.tailRefreshBeforeSeq || !state.controlCurrent) continue;
+	  waiter.cleanup?.();
+	  state.currentWaiters.delete(waiter);
+	  waiter.resolve({ channelId: state.id, headSeq: waiter.targetHead, newestSeq: newest });
+	}
   }
 
   async function executeNetwork(batch) {
@@ -646,6 +739,10 @@ export function createHistoryScheduler({
       // advance truth; it only bypasses this cache claim at the same frontier.
       if (result.cacheMiss) {
         state.cacheBypassBeforeSeq = batch.beforeSeq;
+		// A stale IndexedDB frontier may sit below the authoritative remote
+		// head. Falling through to network at that same deep cursor would skip
+		// the remote-only tail forever; reuse the existing freshness lane first.
+		if (batch.purpose === 'initial-tail') requireRemoteTail(state);
         if (!state.attachedGeneration && batch.rangeKind === 'backfill') state.hasOlder = false;
         diagnostic('warn', 'history.cache_claim_missed', {
           channelId: state.id, beforeSeq: batch.beforeSeq, generation,
@@ -669,7 +766,11 @@ export function createHistoryScheduler({
 	  if (batch.rangeKind === 'tail-refresh') {
 		const nextBefore = numeric(result.next_before_seq);
 		const floor = numeric(state.tailRefreshFloorSeq);
-		state.tailRefreshBeforeSeq = Boolean(result.has_older) && nextBefore > floor + 1
+		// With no materialized local tail there is no seam to bridge: one
+		// validated page establishes the bounded current-tail working set. A
+		// non-zero floor means cache/live content already exists, so continue
+		// exactly until that seam is covered.
+		state.tailRefreshBeforeSeq = floor > 0 && Boolean(result.has_older) && nextBefore > floor + 1
 		  ? nextBefore
 		  : 0;
 		if (!state.tailRefreshBeforeSeq) {
@@ -683,6 +784,14 @@ export function createHistoryScheduler({
 	  }
       const lowSeq = numeric(result.scan_low_seq);
       const highSeq = numeric(result.scan_high_seq);
+      state.verifiedCoverage = mergedCoverage(state.verifiedCoverage, { lowSeq, highSeq });
+	  // The page terminal carries a fresh authoritative head. It may advance
+	  // after the request's exclusive beforeSeq was chosen (for example while
+	  // attach/OBS facts are being committed). Never continue older hydration
+	  // while that newly discovered suffix remains outside this page's scan.
+	  if (state.headSeq > highSeq && !currentTargetInstalled(state, state.headSeq)) {
+		requireRemoteTail(state, highSeq);
+	  }
       const coverageByChannel = lowSeq && highSeq >= lowSeq
         ? new Map([[state.id, { lowSeq, highSeq }]])
         : new Map();
@@ -704,22 +813,38 @@ export function createHistoryScheduler({
       || state.foregroundOwners.size > 0;
     if (batch.rangeKind === 'tail-refresh' && visibleIntent && remembered.accepted > 0) {
 	  initialReleased = release(state, remembered.accepted, { initial: false, byteLimit: batch.byteLimit });
-	  state.tailVisible = true;
-	} else if (!state.tailVisible && visibleIntent) {
-      initialReleased = release(state, HISTORY_REVEAL_SIZE, { initial: true });
-      state.tailVisible = true;
+	  state.tailVisible = hasPresentedRows(state.id);
+    } else if (!state.tailVisible && visibleIntent) {
+      initialReleased = release(state, HISTORY_REVEAL_SIZE, { initial: true, byteLimit: batch.byteLimit });
+      state.tailVisible = hasPresentedRows(state.id);
+      if (!state.tailVisible && state.reservoir.size > 0) {
+        initialReleased += release(state, state.reservoir.size, { initial: true, byteLimit: batch.byteLimit });
+        state.tailVisible = hasPresentedRows(state.id);
+      }
     }
 	if (batch.source === 'network' && batch.rangeKind === 'backfill' && batch.purpose === 'initial-tail') {
+	  state.controlCurrent = !state.tailRefreshBeforeSeq && currentTargetInstalled(state, state.headSeq);
+	}
+	if (batch.source === 'indexeddb' && batch.purpose === 'initial-tail' && state.attachedGeneration) {
+	  const localNewest = numeric(visibleNewestSeq(state.id));
+	  if (state.headSeq > localNewest && !rangesContain(state.verifiedCoverage, state.headSeq)) {
+		state.tailRefreshBeforeSeq = state.headSeq + 1;
+		state.tailRefreshFloorSeq = localNewest;
+	  }
+	}
+	if (state.attachedGeneration && state.tailVisible && tailWindowCovered(state.localMeta, state.headSeq)) {
 	  state.controlCurrent = true;
 	}
-	if (state.attachedGeneration && state.tailVisible && coverageContains(state.localMeta, state.headSeq)) {
-	  state.controlCurrent = true;
-	}
+	settleCurrentWaiters(state);
     state.retryAt = 0;
     state.retryCount = 0;
     state.error = '';
+	if (batch.purpose === 'user-demand' && visibleForegroundOwners(state).length > 0) {
+	  state.foregroundError = '';
+	}
     diagnostic('info', 'history.batch_complete', {
-      channelId: state.id, source: batch.source, purpose: batch.purpose, priority: batch.priority, tier: batch.tier,
+      channelId: state.id, focus, visibleIntent, initialReleased, tailVisible: state.tailVisible,
+      source: batch.source, purpose: batch.purpose, priority: batch.priority, tier: batch.tier,
       generation, ref: batch.ref || '', rows: rows.length,
       acceptedRows, reservoir: state.reservoir.size, reservoirBytes: state.reservoirBytes,
       durationMs: timing.durationMs, estimatedMs: batch.estimatedMs, nextLimit: timing.nextLimit,
@@ -728,6 +853,18 @@ export function createHistoryScheduler({
       rangeKind: batch.rangeKind,
       nextBeforeSeq: numeric(result.next_before_seq) || numeric(result.nextBeforeSeq),
       scanLowSeq: numeric(result.scan_low_seq), scanHighSeq: numeric(result.scan_high_seq),
+    });
+    readingTrace('history.batch-complete', {
+      channelId: state.id,
+      generation,
+      ref: batch.ref || '',
+      source: batch.source,
+      purpose: batch.purpose,
+      rangeKind: batch.rangeKind,
+      rows: rows.length,
+      acceptedRows,
+      beforeSeq: state.beforeSeq,
+      nextBeforeSeq: numeric(result.next_before_seq) || numeric(result.nextBeforeSeq),
     });
     if (initialReleased > 0) settleForeground(state, { kind: 'segment', released: initialReleased, initial: true });
     else if (state.reservoir.size > 0) settleForeground(state, { kind: 'available' });
@@ -746,6 +883,16 @@ export function createHistoryScheduler({
       else if (candidate(state)) state.waitDispatches += 1;
     }
 	diagnostic('info', 'history.segment_requested', batch);
+    readingTrace('history.segment-requested', {
+      channelId: batch.channelId,
+      generation: batch.generation,
+      ref: batch.ref || '',
+      source: batch.source,
+      purpose: batch.purpose,
+      rangeKind: batch.rangeKind,
+      beforeSeq: batch.beforeSeq,
+      limit: batch.limit,
+    });
     let failed = false;
     executors.add(() => execute(batch), { id: batch.id, timeout: HISTORY_BATCH_TIMEOUT_MS }).then((result) => commit(batch, result)).catch((error) => {
       failed = true;
@@ -848,10 +995,10 @@ export function createHistoryScheduler({
 	  const seamBatch = seamBatches.get(id);
 	  const compatibleLocalBatch = Boolean(seamBatch?.source === 'indexeddb'
 		&& cachedHead >= numeric(entry.head_seq)
-		&& coverageContains(meta, numeric(entry.head_seq)));
+		&& tailWindowCovered(meta, numeric(entry.head_seq)));
 	  const canKeepLocalFrontier = Boolean((previous?.tailVisible || previous?.completedPages > 0 || compatibleLocalBatch)
 		&& cachedHead >= numeric(entry.head_seq)
-		&& coverageContains(meta, numeric(entry.head_seq)));
+		&& tailWindowCovered(meta, numeric(entry.head_seq)));
 	  if (compatibleLocalBatch) seamBatches.delete(id);
       state.attachedGeneration = generation;
 	  state.remoteKnown = true;
@@ -860,6 +1007,7 @@ export function createHistoryScheduler({
 	  state.beforeSeq = canKeepLocalFrontier ? previous.beforeSeq : state.headSeq + 1;
       state.cacheBypassBeforeSeq = 0;
 	  state.localMeta = meta;
+	  state.verifiedCoverage = mergedCoverage(meta?.coverage || []);
       state.hasRows = Boolean(entry.has_rows);
 	  state.hasOlder = state.hasRows && state.beforeSeq > 0;
       state.activity = Math.max(numeric(entry.last_activity), numeric(state.localMeta?.lastActivity));
@@ -922,7 +1070,26 @@ export function createHistoryScheduler({
       diagnostic('warn', 'history.unmatched_row', { ref: payload.ref, channelId: payload.channel_id, generation: payload.generation });
       return true;
     }
-    batch.rows.push({ channel_id: payload.channel_id, seq: numeric(payload.seq), envelope: payload.envelope });
+    const seq = numeric(payload.seq);
+    batch.rows.push({ channel_id: payload.channel_id, seq, envelope: payload.envelope });
+    // Row envelopes can be large and a normal page can contain hundreds of
+    // frames. Aggregate arrival metadata on the batch so one page cannot evict
+    // the input/request origin from the bounded reading trace.
+    const arrival = batch.readingTraceArrival || {
+      count: 0,
+      firstSeq: seq,
+      lastSeq: seq,
+      minSeq: seq,
+      maxSeq: seq,
+      firstAt: now(),
+      lastAt: now(),
+    };
+    arrival.count += 1;
+    arrival.lastSeq = seq;
+    arrival.minSeq = Math.min(arrival.minSeq, seq);
+    arrival.maxSeq = Math.max(arrival.maxSeq, seq);
+    arrival.lastAt = now();
+    batch.readingTraceArrival = arrival;
     return true;
   }
 
@@ -938,12 +1105,32 @@ export function createHistoryScheduler({
       diagnostic('warn', 'history.unmatched_page_end', { ref: payload.ref, channelId: payload.channel_id, generation: payload.generation });
       return false;
     }
+    readingTrace('history.page-ended', {
+      channelId: payload.channel_id,
+      generation: numeric(payload.generation),
+      ref: payload.ref || '',
+      errorCode: payload.error_code || '',
+      rows: batch.rows.length,
+      firstSeq: batch.readingTraceArrival?.firstSeq || 0,
+      lastSeq: batch.readingTraceArrival?.lastSeq || 0,
+      minSeq: batch.readingTraceArrival?.minSeq || 0,
+      maxSeq: batch.readingTraceArrival?.maxSeq || 0,
+      arrivalCount: batch.readingTraceArrival?.count || 0,
+      arrivalDurationMs: batch.readingTraceArrival
+        ? Math.max(0, batch.readingTraceArrival.lastAt - batch.readingTraceArrival.firstAt)
+        : 0,
+    });
     if (payload.error_code) batch.terminal.reject(new Error(payload.error_detail || payload.error_code));
     else batch.terminal.resolve(payload);
     return true;
   }
 
-  async function nextSegment(channelId, { signal, count = HISTORY_REVEAL_SIZE, projectionBarrier = true } = {}) {
+  async function nextSegment(channelId, {
+    signal,
+    count = HISTORY_REVEAL_SIZE,
+    byteLimit = HISTORY_REVEAL_BYTES,
+    projectionBarrier = true,
+  } = {}) {
     if (signal?.aborted) return { kind: 'cancelled' };
     let state = channels.get(channelId);
     if (!state) {
@@ -953,9 +1140,12 @@ export function createHistoryScheduler({
 	// The caller has completed projection of the previous segment and is asking
 	// for a continuation. This acknowledgement, not a render timer, releases the
 	// channel to schedule its next contiguous batch.
-	state.projectionPending = false;
+    state.projectionPending = false;
     if (state.reservoir.size > 0) {
-      const released = release(state, Math.max(1, count));
+      const boundedByteLimit = Number.isFinite(Number(byteLimit))
+        ? Math.max(1, Math.min(HISTORY_REVEAL_BYTES, Number(byteLimit)))
+        : HISTORY_REVEAL_BYTES;
+      const released = release(state, Math.max(1, count), { byteLimit: boundedByteLimit });
 	  state.projectionPending = projectionBarrier;
       publish();
       schedule();
@@ -992,7 +1182,9 @@ export function createHistoryScheduler({
       schedule();
     }).then((result) => {
       if (result?.kind !== 'available') return result;
-      return nextSegment(channelId, { signal, count, projectionBarrier });
+      return nextSegment(channelId, {
+        signal, count, byteLimit, projectionBarrier,
+      });
     });
   }
 
@@ -1005,9 +1197,23 @@ export function createHistoryScheduler({
 	const owner = {
 	  intent: intent || 'scroll-history',
 	  urgency: Object.hasOwn(DEMAND_URGENCY_SCORE, urgency) ? urgency : 'interactive',
+	  // Runway/under-fill work is anticipatory hydration. It may promote the
+	  // existing scheduler lane for latency, but it is not a user-visible wait.
+	  // Only a real interactive edge/retry demand owns foreground presentation.
+	  presentation: (intent || 'scroll-history') === 'scroll-history'
+	    && urgency === 'interactive',
 	};
+	const hadVisibleDemand = visibleForegroundOwners(state).length > 0;
 	let released = false;
 	state.foregroundOwners.add(owner);
+	if (owner.presentation && !hadVisibleDemand) {
+	  state.foregroundDemandRevision += 1;
+	  // A visible Retry action is an explicit attempt, so it may bypass the
+	  // automatic backoff once. Repeated automatic work still obeys retryAt.
+	  state.retryAt = 0;
+	  state.error = '';
+	  state.foregroundError = '';
+	}
 	promoteChannel(state, 'history channel promoted by user intent');
 	const release = () => {
 	  if (released) return;
@@ -1022,10 +1228,55 @@ export function createHistoryScheduler({
 	  schedule();
 	};
 	if (signal) signal.addEventListener('abort', release, { once: true });
+	const promote = ({ intent: nextIntent = owner.intent, urgency: nextUrgency = owner.urgency } = {}) => {
+	  if (released) return false;
+	  // Attach may replace the state record while preserving the owner Set.
+	  // Publish presentation facts on the installed record, not the pre-attach
+	  // object captured when this operation began.
+	  state = channels.get(channelId) || state;
+	  const normalizedUrgency = Object.hasOwn(DEMAND_URGENCY_SCORE, nextUrgency)
+	    ? nextUrgency
+	    : owner.urgency;
+	  const hadVisibleDemand = visibleForegroundOwners(state).length > 0;
+	  let changed = false;
+	  if (DEMAND_URGENCY_SCORE[normalizedUrgency] > DEMAND_URGENCY_SCORE[owner.urgency]) {
+		owner.urgency = normalizedUrgency;
+		changed = true;
+	  }
+	  if (nextIntent && nextIntent !== owner.intent) {
+		owner.intent = nextIntent;
+		changed = true;
+	  }
+	  const shouldPresent = owner.intent === 'scroll-history'
+	    && DEMAND_URGENCY_SCORE[owner.urgency] >= DEMAND_URGENCY_SCORE.interactive;
+	  if (shouldPresent && !owner.presentation) {
+		owner.presentation = true;
+		changed = true;
+	  }
+	  if (!changed) return false;
+	  if (owner.presentation && !hadVisibleDemand) {
+		state.foregroundDemandRevision += 1;
+		state.retryAt = 0;
+		state.error = '';
+		state.foregroundError = '';
+	  }
+	  promoteChannel(state, 'history operation promoted by interactive demand');
+	  diagnostic('debug', 'history.operation_promoted', {
+		channelId,
+		intent: owner.intent,
+		urgency: owner.urgency,
+		presentation: owner.presentation,
+		demandRevision: state.foregroundDemandRevision,
+	  });
+	  publish();
+	  schedule();
+	  return true;
+	};
 	publish();
 	schedule();
 	return {
 	  next: (options = {}) => nextSegment(channelId, { ...options, signal: options.signal || signal }),
+	  promote,
 	  release,
 	};
   }
@@ -1047,12 +1298,18 @@ export function createHistoryScheduler({
     }
     if (state) {
       state.lastFocusOrder = ++focusSerial;
-      if (!state.tailVisible && state.headSeq > 0 && hasVisibleRow(state.id, state.headSeq)) {
+      // A live terminal/progress frame may arrive before the request that owns
+      // it. Having the raw head row in the replica does not mean the current
+      // projection can render a tail. Treating that orphan as a visible tail
+      // suppresses the initial history page forever and opens an empty channel.
+      if (!state.tailVisible && state.headSeq > 0
+        && hasVisibleRow(state.id, state.headSeq)
+        && hasPresentedRows(state.id)) {
         state.tailVisible = true;
       }
       if (!state.tailVisible && state.reservoir.size > 0) {
-        const released = release(state, HISTORY_PAGE_SIZE, { initial: true });
-        if (released > 0) state.tailVisible = true;
+        const released = release(state, HISTORY_PAGE_SIZE, { initial: true, byteLimit: HISTORY_REVEAL_BYTES });
+        if (released > 0 && hasPresentedRows(state.id)) state.tailVisible = true;
       }
       persistPriority();
     }
@@ -1075,7 +1332,9 @@ export function createHistoryScheduler({
 	state.hasRows = Boolean(entry.has_rows) || state.hasRows || headSeq > 0;
 	state.activity = Math.max(state.activity, numeric(entry.last_activity));
 	const localNewest = numeric(visibleNewestSeq(id));
-	if (headSeq > localNewest && id === focus) {
+	const headCovered = rangesContain(state.verifiedCoverage, headSeq);
+	const localTailPending = !localMetaReady || (hasLocalKnowledge(state.localMeta) && !state.tailVisible);
+	if (headSeq > localNewest && !headCovered && id === focus && !localTailPending) {
 	  state.controlCurrent = false;
 	  if (!state.tailRefreshBeforeSeq) state.tailRefreshFloorSeq = localNewest;
 	  else state.tailRefreshFloorSeq = Math.min(state.tailRefreshFloorSeq, localNewest);
@@ -1095,14 +1354,47 @@ export function createHistoryScheduler({
 	  generation,
 	  headSeq,
 	  localNewest,
-	  catchup: headSeq > localNewest && id === focus,
+	  catchup: headSeq > localNewest && !headCovered && id === focus && !localTailPending,
 	});
 	publish();
 	schedule();
+	settleCurrentWaiters(state);
 	return true;
   }
 
-  function setLocalMeta(nextMeta = new Map(), { publishChange = true } = {}) {
+  function waitForCurrent(channelId, targetHead, { signal, timeoutMs = HISTORY_BATCH_TIMEOUT_MS } = {}) {
+	const state = channels.get(channelId);
+	if (!state || state.attachedGeneration !== generation) return Promise.reject(new Error('频道同步会话尚未建立'));
+	const target = numeric(targetHead);
+	if (currentTargetInstalled(state, target) && !state.tailRefreshBeforeSeq && state.controlCurrent) {
+	  return Promise.resolve({ channelId, headSeq: target, newestSeq: numeric(visibleNewestSeq(channelId)) });
+	}
+	return new Promise((resolve, reject) => {
+	  let timer = null;
+	  const waiter = { targetHead: target, resolve, reject, cleanup: null };
+	  const abort = () => {
+		state.currentWaiters.delete(waiter);
+		waiter.cleanup?.();
+		reject(new Error('频道同步已取消'));
+	  };
+	  waiter.cleanup = () => {
+		if (timer != null) clearTimeoutImpl(timer);
+		signal?.removeEventListener('abort', abort);
+	  };
+	  if (signal) signal.addEventListener('abort', abort, { once: true });
+	  timer = setTimeoutImpl(() => {
+		state.currentWaiters.delete(waiter);
+		waiter.cleanup?.();
+		reject(new Error('频道同步超时'));
+	  }, timeoutMs);
+	  state.currentWaiters.add(waiter);
+	  schedule();
+	});
+  }
+
+  function setLocalMeta(nextMeta = new Map(), { publishChange = true, localReady } = {}) {
+    const activatingLocalMeta = localReady === true && !localMetaReady;
+    if (typeof localReady === 'boolean') localMetaReady = localReady;
     for (const [id, value] of nextMeta) {
 	  let state = channels.get(id);
 	  if (!state) {
@@ -1110,7 +1402,22 @@ export function createHistoryScheduler({
 		channels.set(id, state);
 	  }
       state.localMeta = value;
-	  if (state.attachedGeneration && state.tailVisible && coverageContains(value, state.headSeq)) {
+	  const cachedHead = localHead(value);
+	  if (activatingLocalMeta && state.attachedGeneration && !state.tailVisible && state.completedPages === 0 && cachedHead > 0) {
+		// Local-first startup begins at the newest durable local interval. Once
+		// that segment paints, commit() bridges any remote-only tail above it.
+		state.beforeSeq = cachedHead + 1;
+		state.hasRows = true;
+		state.hasOlder = true;
+	  }
+	  for (const range of value?.coverage || []) state.verifiedCoverage = mergedCoverage(state.verifiedCoverage, range);
+	  // Prefer the durable local page when it really covers this frontier. If
+	  // metadata only names a newest sequence but cannot serve it, current-tail
+	  // freshness must remain anchored at the authoritative remote head.
+	  if (activatingLocalMeta && state.attachedGeneration && sourceFor(state) === 'network') {
+		requireRemoteTail(state);
+	  }
+	  if (state.attachedGeneration && state.tailVisible && tailWindowCovered(value, state.headSeq)) {
 		state.controlCurrent = true;
 	  }
       state.cacheBypassBeforeSeq = 0;
@@ -1142,6 +1449,11 @@ export function createHistoryScheduler({
     }
     for (const state of channels.values()) {
 	  state.controlCurrent = false;
+	  for (const waiter of [...state.currentWaiters]) {
+		waiter.cleanup?.();
+		state.currentWaiters.delete(waiter);
+		waiter.reject(new Error('连接已断开'));
+	  }
       const localCanContinue = !destroyed && (state.reservoir.size > 0 || sourceFor(state) === 'indexeddb');
 	  if (!localCanContinue) {
 		settleForeground(state, { kind: 'cancelled' });
@@ -1157,24 +1469,73 @@ export function createHistoryScheduler({
     schedule();
   }
 
+  function revoke(channelId, { generation: deniedGeneration = 0, reason = 'forbidden' } = {}) {
+    const responseGeneration = numeric(deniedGeneration);
+    const state = channels.get(channelId);
+    if (!channelId || !responseGeneration || responseGeneration !== generation
+      || !state || state.attachedGeneration !== responseGeneration) return false;
+
+    const batch = inflightByChannel.get(channelId);
+    if (batch) cancelBatch(batch, 'channel access revoked');
+    state.attachedGeneration = 0;
+    state.remoteKnown = true;
+    state.remoteEligible = false;
+    state.controlCurrent = false;
+    state.tailRefreshBeforeSeq = 0;
+    state.tailRefreshFloorSeq = 0;
+    state.retryAt = 0;
+    state.error = reason;
+    for (const waiter of [...state.currentWaiters]) {
+      waiter.cleanup?.();
+      state.currentWaiters.delete(waiter);
+      waiter.reject(Object.assign(new Error('频道访问已撤销'), { code: reason }));
+    }
+    settleForeground(state, { kind: 'cancelled' });
+    state.foregroundOwners.clear();
+    state.projectionPending = false;
+    diagnostic('warn', 'history.access_revoked', { channelId, generation, reason });
+    publish();
+    schedule();
+    return true;
+  }
+
   function snapshot(channelId) {
     const state = channels.get(channelId);
-    if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, buffered: 0, bufferedNewest: 0, revealVersion: 0, attached: false, controlCurrent: false, tier: 3, completedPages: 0, generation, error: '' };
+    if (!state) return { headSeq: 0, oldestSeq: 0, hasOlder: false, loaded: false, loading: false, backgroundLoading: false, foregroundLoading: false, historyDemand: { revision: 0, phase: 'idle', error: '' }, buffered: 0, bufferedNewest: 0, revealVersion: 0, attached: false, messageCurrent: false, controlCurrent: false, tier: 3, completedPages: 0, generation, error: '', coverage: [] };
+    const batch = inflightByChannel.get(channelId);
+    const visibleDemand = visibleForegroundOwners(state).length > 0;
+    const historyDemandPhase = state.foregroundError
+      ? 'error'
+      : visibleDemand
+        ? 'pending'
+        : 'idle';
     return {
       headSeq: state.headSeq,
       oldestSeq: state.beforeSeq,
       hasOlder: state.hasOlder,
       loaded: state.tailVisible,
-      loading: inflightByChannel.has(channelId),
+      // `loading` remains the physical scheduler fact for initialization and
+	  // diagnostics. UI with already-readable content must use historyDemand:
+	  // background warming must not look like a foreground edge stall.
+      loading: Boolean(batch),
+	  backgroundLoading: Boolean(batch) && batch.purpose !== 'user-demand',
+	  foregroundLoading: historyDemandPhase === 'pending',
+	  historyDemand: Object.freeze({
+		revision: state.foregroundDemandRevision,
+		phase: historyDemandPhase,
+		error: state.foregroundError,
+	  }),
       buffered: state.reservoir.size,
       bufferedNewest: Math.max(0, ...state.reservoir.keys()),
       revealVersion: state.revealVersion,
       attached: generation > 0 && state.attachedGeneration === generation,
+      messageCurrent: generation > 0 && state.attachedGeneration === generation && state.controlCurrent,
       controlCurrent: generation > 0 && state.attachedGeneration === generation && state.controlCurrent,
       tier: state.tier,
       completedPages: state.completedPages,
       generation,
       error: state.error,
+      coverage: state.verifiedCoverage.map((range) => ({ ...range })),
     };
   }
 
@@ -1186,6 +1547,7 @@ export function createHistoryScheduler({
       channels.set(channelId, state);
     }
     state.headSeq = Math.max(state.headSeq, numeric(seq));
+    if (numeric(seq) > 0) state.verifiedCoverage = mergedCoverage(state.verifiedCoverage, { lowSeq: numeric(seq), highSeq: numeric(seq) });
     if (numeric(seq) > 0) state.hasRows = true;
     state.activity = Math.max(state.activity, numeric(timestamp));
     state.liveOrder = ++liveSerial;
@@ -1206,7 +1568,14 @@ export function createHistoryScheduler({
   }
 
   function resetReplica() {
-	for (const state of channels.values()) settleForeground(state, { kind: 'cancelled' });
+	for (const state of channels.values()) {
+	  settleForeground(state, { kind: 'cancelled' });
+	  for (const waiter of [...state.currentWaiters]) {
+		waiter.cleanup?.();
+		waiter.reject(new Error('本地副本已重置'));
+	  }
+	  state.currentWaiters.clear();
+	}
 	replicaEpoch += 1;
 	for (const batch of inflightByChannel.values()) {
 	  batch.cancelled = true;
@@ -1234,5 +1603,5 @@ export function createHistoryScheduler({
     disconnected(generation + 1);
   }
 
-  return { attach, refreshRemoteMeta, setLocalMeta, setPriorityScope, historyRow, pageEnd, nextSegment, beginOperation, focus: setFocus, observeLive, markRead, disconnected, clear, resetReplica, destroy, isDestroyed: () => destroyed, snapshot, tick: schedule };
+  return { attach, revoke, refreshRemoteMeta, waitForCurrent, setLocalMeta, setPriorityScope, historyRow, pageEnd, nextSegment, beginOperation, focus: setFocus, observeLive, markRead, disconnected, clear, resetReplica, destroy, isDestroyed: () => destroyed, snapshot, tick: schedule };
 }

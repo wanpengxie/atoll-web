@@ -8,6 +8,20 @@ const RESOLVABLE = new Set([TYPES.humanAsk, TYPES.humanApprove]);
 const UI_WORDS = new Set([TYPES.uiState, TYPES.uiNavigate, TYPES.uiOpen]);
 const BUSINESS_PROVISIONAL = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*$/;
 const timelineCache = new WeakMap();
+const TIMELINE_CHANGE_LIMIT = 1_024;
+const LIVE_ARRIVAL_LIMIT = 1_024;
+
+// The mutable replica may grow a processing turn in place without changing
+// timeline membership. Publish that fact as a small semantic change stream so
+// Presentation can detach a fresh immutable body for just the affected row.
+// Structural membership and control state keep their own versions.
+function recordTimelineChange(state, id, kind = 'content') {
+  state._timelineRevision += 1;
+  state._timelineChangeLog.push({ revision: state._timelineRevision, id, kind });
+  if (state._timelineChangeLog.length <= TIMELINE_CHANGE_LIMIT) return;
+  const removed = state._timelineChangeLog.splice(0, state._timelineChangeLog.length - TIMELINE_CHANGE_LIMIT);
+  state._timelineChangeBase = Number(removed.at(-1)?.revision || state._timelineChangeBase || 0);
+}
 
 export function createChannelState(channelId = '') {
   return {
@@ -25,6 +39,12 @@ export function createChannelState(channelId = '') {
     _seenIds: new Set(),
     _envelopesById: new Map(),
     _unmatchedByParent: new Map(),
+    // A history suffix can deliver a terminal before its older request. The
+    // mobile row window may discard the full unmatched envelope before that
+    // request is paged in, so retain one compact, earliest terminal per parent
+    // until the canonical turn can absorb it. This is closure provenance, not
+    // a second lifecycle projection.
+    _unmatchedTerminalClosures: new Map(),
     // Map 没有“从上次迭代结束处继续”的可复用游标。保留一条只增的 seq
     // 日志，让上层派生索引只消费新行；真正的信封仍只在 rows 里。
     _rowOrder: [],
@@ -36,8 +56,162 @@ export function createChannelState(channelId = '') {
     // 对象上原地增长，恒不需要为同一条 processing 帧重扫整本账。
     _timelineProjectionVersion: 0,
     _timelineControlVersion: 0,
+    _timelineRevision: 0,
+    _timelineChangeBase: 0,
+    _timelineChangeLog: [],
+    // Only the live transport may append to this semantic arrival
+    // journal. Cache/history hydration can change Presentation membership, but
+    // it cannot manufacture a "new dynamic" notification. Consumers join the
+    // stable row id against their current visible projection.
+    _liveArrivalRevision: 0,
+    _liveArrivalAckRevision: 0,
+    _liveArrivalLog: [],
+    _liveArrivalConsumers: 0,
+    _liveArrivalConsumerTokens: new Set(),
+    // The hot journal has a fixed budget. If a synchronous feed batch outruns
+    // React consumption, retain one exact record per not-yet-acknowledged
+    // stable identity instead of silently dropping the notification or
+    // growing a second unbounded row log.
+    _liveArrivalOverflow: new Map(),
     _requestVersion: 0,
     _terminalVersion: 0,
+  };
+}
+
+function rootTurnID(state, envelope) {
+  let id = envelope?.kind === 'request'
+    ? envelope.id
+    : envelope?.parent_id || envelope?.correlation_id || '';
+  const seen = new Set();
+  while (id && !seen.has(id)) {
+    seen.add(id);
+    const turn = state?.turns?.get?.(id);
+    const parent = turn?.request?.parent_id;
+    if (!parent || !state?.turns?.has?.(parent)) break;
+    id = parent;
+  }
+  const unresolvedParent = state?.turns?.get?.(id)?.request?.parent_id;
+  if (unresolvedParent && !state?.turns?.has?.(unresolvedParent)) {
+    return state.turns.get(id)?.request?.correlation_id
+      || envelope?.correlation_id
+      || unresolvedParent;
+  }
+  if (!state?.turns?.has?.(id) && envelope?.correlation_id) return envelope.correlation_id;
+  return id;
+}
+
+// Arrival provenance belongs to the Replica commit seam, not to Presentation.
+// The caller invokes this only after an accepted live commit. Provisional
+// progress mutates an existing turn and is deliberately not a new dynamic;
+// terminal responses reuse the root's stable presentation identity.
+export function recordLiveTimelineArrival(state, envelope, seq, selfId = '') {
+  if (!state || !envelope) return null;
+  if (selfId && envelope.sender?.id === selfId) return null;
+  let rowID = '';
+  let key = '';
+  if (envelope.kind === 'request') {
+    key = rootTurnID(state, envelope);
+    rowID = state.turns?.has?.(key) ? key : envelope.id || key;
+  }
+  else if (envelope.kind === 'response') {
+    if (!FINAL.has(argsOf(envelope)?.status)) return null;
+    const directTurn = envelope.parent_id ? state.turns?.get?.(envelope.parent_id) : null;
+    // Fold is the lifecycle owner. A second terminal frame for an already
+    // closed turn is retained as an anomaly/ledger fact, but it did not create
+    // new presentation content and therefore cannot create another arrival.
+    if (directTurn?.terminal && directTurn.terminal !== envelope) return null;
+    key = rootTurnID(state, envelope);
+    // A live terminal can precede its historical request. Until hydration
+    // supplies that root, Presentation exposes the orphan by envelope id; use
+    // that visible row while retaining the root as the notification identity.
+    rowID = state.turns?.has?.(key) ? key : envelope.id || key;
+  } else if (envelope.visibility !== 'system') {
+    rowID = envelope.id || '';
+    key = rowID;
+  }
+  if (!rowID) return null;
+  const previousRevision = Number(state._liveArrivalRevision || 0);
+  const hadUndisposedArrival = Number(state._liveArrivalAckRevision || 0) < previousRevision;
+  const revision = previousRevision + 1;
+  const event = Object.freeze({
+    revision,
+    key: String(key || rowID),
+    rowID: String(rowID),
+    seq: Math.max(0, Number(seq) || 0),
+  });
+  state._liveArrivalRevision = revision;
+  state._liveArrivalLog.push(event);
+  if (state._liveArrivalLog.length > LIVE_ARRIVAL_LIMIT) {
+    const removed = state._liveArrivalLog.splice(0, state._liveArrivalLog.length - LIVE_ARRIVAL_LIMIT);
+    for (const item of removed) {
+      if (item.revision <= Number(state._liveArrivalAckRevision || 0)) continue;
+      const previous = state._liveArrivalOverflow.get(item.key);
+      const rowIDs = new Set(previous?.rowIDs || [previous?.rowID].filter(Boolean));
+      rowIDs.add(item.rowID);
+      state._liveArrivalOverflow.set(item.key, Object.freeze({
+        ...item,
+        revision: Math.max(item.revision, Number(previous?.revision || 0)),
+        seq: Math.max(item.seq, Number(previous?.seq || 0)),
+        rowIDs: Object.freeze([...rowIDs]),
+      }));
+    }
+  }
+  // A channel that had no viewport delivery in flight delegates new arrivals
+  // to the durable rail/read-cursor path and needs no second queue. Once a
+  // mounted viewport has accepted an arrival but not durably disposed it,
+  // however, temporarily having zero consumers (filter/channel activation
+  // replacement) must preserve that backlog for the successor. A later
+  // background arrival must not accidentally acknowledge the older handoff.
+  if (Number(state._liveArrivalConsumers || 0) === 0 && !hadUndisposedArrival) {
+    acknowledgeLiveTimelineArrivals(state, revision);
+  }
+  return event;
+}
+
+// Return an immutable render snapshot. Overflow identities are only the
+// unacknowledged prefix displaced from the fixed hot journal.
+export function liveTimelineArrivals(state) {
+  const overflow = [...(state?._liveArrivalOverflow?.values?.() || [])];
+  const hot = [...(state?._liveArrivalLog || [])];
+  return Object.freeze({
+    revision: Number(state?._liveArrivalRevision || 0),
+    acknowledgedRevision: Number(state?._liveArrivalAckRevision || 0),
+    events: Object.freeze([...overflow, ...hot].sort((left, right) => left.revision - right.revision)),
+  });
+}
+
+export function acknowledgeLiveTimelineArrivals(state, throughRevision) {
+  if (!state) return 0;
+  const revision = Math.min(
+    Number(state._liveArrivalRevision || 0),
+    Math.max(Number(state._liveArrivalAckRevision || 0), Number(throughRevision || 0)),
+  );
+  state._liveArrivalAckRevision = revision;
+  state._liveArrivalLog = (state._liveArrivalLog || []).filter((event) => event.revision > revision);
+  for (const [key, event] of state._liveArrivalOverflow || []) {
+    if (event.revision <= revision) state._liveArrivalOverflow.delete(key);
+  }
+  return revision;
+}
+
+export function registerLiveTimelineArrivalConsumer(state, consumerToken = Symbol('live-arrival-consumer')) {
+  if (!state) return () => {};
+  // Registration is keyed by the mounted Timeline, rather than accumulated by
+  // setup calls. This keeps an accidental duplicate setup (and React's
+  // setup-cleanup-setup StrictMode probe) from leaving the Replica permanently
+  // subscribed after the one logical consumer has gone away.
+  const consumers = state._liveArrivalConsumerTokens instanceof Set
+    ? state._liveArrivalConsumerTokens
+    : new Set();
+  state._liveArrivalConsumerTokens = consumers;
+  consumers.add(consumerToken);
+  state._liveArrivalConsumers = consumers.size;
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    consumers.delete(consumerToken);
+    state._liveArrivalConsumers = consumers.size;
   };
 }
 
@@ -130,6 +304,41 @@ function pushMap(map, key, item) {
   map.set(key, values);
 }
 
+function compactTerminalClosure(envelope) {
+  const payload = argsOf(envelope);
+  return {
+    id: envelope.id || '',
+    parent_id: envelope.parent_id || '',
+    correlation_id: envelope.correlation_id || '',
+    kind: 'response',
+    type: envelope.type || '',
+    ts: envelope.ts,
+    sender: envelope.sender,
+    audience: envelope.audience,
+    visibility: envelope.visibility,
+    payload: {
+      status: payload.status,
+      ...(payload.merged_into ? { merged_into: payload.merged_into } : {}),
+      ...(payload.replaced_by ? { replaced_by: payload.replaced_by } : {}),
+      ...(payload.preempted_by ? { preempted_by: payload.preempted_by } : {}),
+    },
+  };
+}
+
+export function retainTerminalClosure(state, seq, envelope) {
+  const parentId = envelope?.parent_id || '';
+  if (!parentId || !FINAL.has(argsOf(envelope)?.status)) return;
+  const current = state._unmatchedTerminalClosures.get(parentId);
+  // Duplicate rereads are idempotent. Conflicting terminals obey ledger order
+  // even when a newer suffix was observed before the earlier page.
+  if (current && current.seq <= seq) return;
+  state._unmatchedTerminalClosures.set(parentId, {
+    seq,
+    closureOnly: true,
+    envelope: compactTerminalClosure(envelope),
+  });
+}
+
 function findTurn(state, envelope) {
   if (!envelope.parent_id) return null;
   return state.turns.get(envelope.parent_id) || null;
@@ -190,13 +399,24 @@ function applyTerminal(state, turn, seq, envelope) {
 }
 
 function attachResponse(state, turn, seq, envelope) {
+  // Every response routed to this turn belongs to the semantic row's ledger
+  // range even when it is an invalid late provisional or a conflicting second
+  // terminal. The accepted terminal/content remain unchanged, but a reader at
+  // the visible row tail must be able to advance the read cursor past that
+  // installed fact instead of leaving an unread badge that no row can clear.
+  turn.lastSeq = Math.max(turn.lastSeq, seq);
   if (FINAL.has(argsOf(envelope)?.status)) applyTerminal(state, turn, seq, envelope);
   else applyProvisional(state, turn, seq, envelope);
 }
 
 function drainRequestMatches(state, turn) {
   const byParent = state._unmatchedByParent.get(turn.requestId) || [];
+  const closure = state._unmatchedTerminalClosures.get(turn.requestId);
   state._unmatchedByParent.delete(turn.requestId);
+  state._unmatchedTerminalClosures.delete(turn.requestId);
+  if (closure && !byParent.some((item) => (
+    item.seq === closure.seq && item.envelope?.id === closure.envelope?.id
+  ))) byParent.push(closure);
   for (const item of byParent.sort((left, right) => left.seq - right.seq)) {
     attachResponse(state, turn, item.seq, item.envelope);
   }
@@ -227,6 +447,7 @@ export function apply(state, row, selfId = '') {
   if (isNarrationEnvelope(envelope)) {
     state.narration.push({ seq, envelope });
     state._timelineProjectionVersion += 1;
+    recordTimelineChange(state, envelope.id || `narration:${seq}`, 'structure');
     return state;
   }
 
@@ -251,6 +472,7 @@ export function apply(state, row, selfId = '') {
     state._timelineProjectionVersion += 1;
     state._timelineControlVersion += 1;
     state._requestVersion += 1;
+    recordTimelineChange(state, turn.requestId, 'structure');
     return state;
   }
 
@@ -261,21 +483,27 @@ export function apply(state, row, selfId = '') {
       const changesControl = responseChangesControl(turn, envelope);
       attachResponse(state, turn, seq, envelope);
       rememberProjectionParticipants(turn, envelope);
+      recordTimelineChange(state, turn.requestId, changesProjection ? 'structure' : 'content');
       if (changesProjection) state._timelineProjectionVersion += 1;
       if (changesControl) state._timelineControlVersion += 1;
       if (turn.terminal === envelope) state._terminalVersion += 1;
     }
-    else if (envelope.parent_id) pushMap(state._unmatchedByParent, envelope.parent_id, { seq, envelope });
+    else if (envelope.parent_id) {
+      pushMap(state._unmatchedByParent, envelope.parent_id, { seq, envelope });
+      retainTerminalClosure(state, seq, envelope);
+    }
     else {
       anomaly(state, 'response_parent_missing', seq, envelope);
       state.orphans.push({ seq, envelope });
       state._timelineProjectionVersion += 1;
+      recordTimelineChange(state, envelope.id || `orphan:${seq}`, 'structure');
     }
     return state;
   }
 
   state.standalone.push({ seq, envelope });
   state._timelineProjectionVersion += 1;
+  recordTimelineChange(state, envelope.id || `standalone:${seq}`, 'structure');
   if (envelope.type === TYPES.agentHoldExpired) {
     state._timelineControlVersion += 1;
   }

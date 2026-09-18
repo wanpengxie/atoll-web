@@ -25,7 +25,7 @@ async function advanceComputation(request, count = 1) {
   }
 }
 
-test('F7 channel notifications baseline history, count root turns, and clear only at the visible tail', async ({ page, request }) => {
+test('F7 channel notifications baseline history, count roots, and acknowledge only exact visible identities', async ({ page, request }) => {
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'multi-channel', seed: 2608 } });
   expect(reset.ok()).toBe(true);
   await login(page);
@@ -55,24 +55,67 @@ test('F7 channel notifications baseline history, count root turns, and clear onl
 
   await channel.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
-  await expect(related).toHaveCount(0);
+  // `mine` is a filtered semantic view: entering at its tail must not clear
+  // unread roots which are still above the viewport. They are acknowledged by
+  // exact identity only after the user exposes those rows.
+  await expect(related).toHaveText('2');
 
   const viewport = page.locator('.timeline-message-list');
   // Use a physical gesture: the timeline intentionally distinguishes user
-  // scrolling from Virtuoso's own scroll compensation.
+  // scrolling from the virtualizer's own anchor compensation.
   await viewport.hover();
   await page.mouse.wheel(0, -100_000);
   await expect.poll(() => viewport.evaluate((node) => (
     node.scrollHeight - node.clientHeight - node.scrollTop
   ))).toBeGreaterThan(24);
+  await expect(related).toHaveCount(0);
   await terminal(3);
-  await expect(related).toHaveText('1');
+  // Root 3 is already exposed in this viewport. Its later final revision is
+  // real answer content, but it is acknowledged immediately by that exact
+  // visible root+seq evidence rather than flashing a badge.
+  await expect(related).toHaveCount(0);
 
   await page.mouse.wheel(0, 100_000);
+  await expect.poll(() => viewport.evaluate((node) => (
+    node.scrollHeight - node.clientHeight - node.scrollTop
+  ))).toBeLessThanOrEqual(24);
+  // Reaching the physical bottom does not itself grant a filtered view
+  // authority over other identities. The now-visible root is nevertheless
+  // acknowledged exactly even if the reader has not reclaimed following.
   await expect(related).toHaveCount(0);
 });
 
-test('F7 channel rail exposes live Agent timers and Agent buttons acknowledge completion', async ({ page, request }) => {
+test('F7 inactive-channel business and core progress never create rail or new-dynamic counts', async ({ page, request }) => {
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'multi-channel', seed: 2620 } });
+  expect(reset.ok()).toBe(true);
+  await login(page);
+
+  const project = page.locator('.channel-item').filter({ hasText: 'c0.project' });
+  for (let index = 0; index < 20; index += 1) {
+    const response = await request.post('/mock/control/action', {
+      data: {
+        type: 'push_provisional', channel_id: 'c0.project',
+        request_id: `c0.project-history-request-${index % 2 + 1}`,
+        status: 'provider.waiting', payload: { step: index + 1 },
+      },
+    });
+    expect(response.ok()).toBe(true);
+  }
+  const dense = await request.post('/mock/control/action', {
+    data: { type: 'dense_progress', channel_id: 'c0.project', count: 40 },
+  });
+  expect(dense.ok()).toBe(true);
+
+  await expect(project.locator('.unread-related')).toHaveCount(0);
+  await expect(project.locator('.unread-total')).toHaveCount(0);
+  await project.click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
+  await expect(page.getByRole('button', { name: /条新动态/ })).toHaveCount(0);
+  await expect(project.locator('.unread-related')).toHaveCount(0);
+  await expect(project.locator('.unread-total')).toHaveCount(0);
+});
+
+test('F7 channel rail exposes live Agent timers and the member filter acknowledges completion', async ({ page, request }) => {
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'long-running', seed: 2610 } });
   expect(reset.ok()).toBe(true);
   await login(page);
@@ -81,7 +124,7 @@ test('F7 channel rail exposes live Agent timers and Agent buttons acknowledge co
 
   const home = page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0$/ }) });
   await expect(home.locator('.channel-agent-timer')).toHaveCount(1);
-  await expect(page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward' })).toHaveClass(/activity-active/);
+  await expect(page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true })).toHaveClass(/activity-active/);
 
   const project = page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0\.project$/ }) });
   await project.click();
@@ -90,9 +133,10 @@ test('F7 channel rail exposes live Agent timers and Agent buttons acknowledge co
 
   await advanceComputation(request, 3);
   await expect(home.locator('.channel-agent-timer')).toHaveCount(0);
-  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward' });
+  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true });
   await expect(steward).toHaveClass(/activity-settled/);
   await steward.click();
+  await expect(steward).toHaveAttribute('aria-pressed', 'true');
   await expect(steward).not.toHaveClass(/activity-settled/);
   await expect(steward.locator('.agent-activity-dot')).toHaveCount(0);
 });
@@ -127,7 +171,7 @@ test('F7 unresolved history after a same-boot reload stays quiet until fresh liv
   // current generation and restores both timer and green Agent dot.
   await advanceComputation(request);
   await expect(page.locator('.channel-agent-timer')).toHaveCount(1);
-  await expect(page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward' })).toHaveClass(/activity-active/);
+  await expect(page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true })).toHaveClass(/activity-active/);
 });
 
 test('F7 completion during a same-boot disconnect reconciles to red, never zombie green', async ({ page, request }) => {
@@ -142,7 +186,7 @@ test('F7 completion during a same-boot disconnect reconciles to red, never zombi
   await advanceComputation(request, 3);
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/, { timeout: 15_000 });
   await expect(page.locator('.channel-agent-timer')).toHaveCount(0);
-  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward' });
+  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true });
   await expect(steward).toHaveClass(/activity-settled/);
   await expect(steward).not.toHaveClass(/activity-active/);
 });
@@ -154,7 +198,7 @@ test('F7 mobile channel drawer keeps Agent activity visible, bounded, and action
   await login(page);
   await startLongTask(page, '移动端跨频道活动通知');
 
-  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward' });
+  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true });
   await expect(steward).toHaveClass(/activity-active/);
   await page.getByRole('button', { name: '打开频道列表' }).click();
   const timer = page.locator('.channel-agent-timer');
@@ -194,6 +238,7 @@ test('F7 mobile channel drawer keeps Agent activity visible, bounded, and action
   await advanceComputation(request, 3);
   await expect(steward).toHaveClass(/activity-settled/);
   await steward.click();
+  await expect(steward).toHaveAttribute('aria-pressed', 'true');
   await expect(steward.locator('.agent-activity-dot')).toHaveCount(0);
   const finalWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(finalWidth).toBeLessThanOrEqual(320);

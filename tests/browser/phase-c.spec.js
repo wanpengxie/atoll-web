@@ -44,7 +44,15 @@ async function switchScenario(page, request, scenario, seed = 101) {
 }
 
 async function openSteward(page) {
-  if (!await page.locator('.roster-panel').count()) {
+  const host = page.locator('.context-host');
+  let restoredContext = false;
+  try {
+    await host.waitFor({ state: 'attached', timeout: 750 });
+    restoredContext = true;
+  } catch { /* no route-restored context: open it through the header */ }
+  if (restoredContext) {
+    await expect(host.locator('.roster-panel')).toBeVisible();
+  } else {
     await page.getByRole('button', { name: '成员', exact: true }).click();
     await page.getByRole('complementary', { name: /频道管理/ }).getByRole('button', { name: '查看 steward' }).click();
   }
@@ -56,6 +64,18 @@ async function openSteward(page) {
 
 function capability(details, type) {
   return details.locator('.capability-row').filter({ hasText: type });
+}
+
+async function closeContextAndRevealLatest(page) {
+  const host = page.locator('.context-host');
+  const close = page.getByRole('button', { name: '关闭上下文' });
+  for (let depth = 0; depth < 4 && await close.isVisible().catch(() => false); depth += 1) {
+    await close.click();
+    await page.waitForTimeout(50);
+  }
+  await expect(host).toHaveCount(0);
+  const latest = page.getByRole('button', { name: /条新动态/ });
+  if (await latest.isVisible().catch(() => false)) await latest.click();
 }
 
 async function sendTask(page, text) {
@@ -109,6 +129,7 @@ test('C-BR-02/03/04 Schema 表单跨 OBS 刷新保留输入并原样调用', asy
   await form.getByRole('option', { name: 'urgent' }).click();
   await form.getByRole('checkbox', { name: /notify/ }).check();
   await form.getByRole('button', { name: '提交操作' }).click();
+  await closeContextAndRevealLatest(page);
 
   const turn = page.locator('.turn-card').filter({ hasText: 'mock.order.create' }).last();
   const result = turn.locator('.structured-result').last();
@@ -145,7 +166,7 @@ test('C-BR-04 interrupt 冻结只在 Agent 气泡呈现，恒无继续按钮', a
   await turn.getByRole('button', { name: '停止', exact: true }).click();
   await expect(page.getByRole('region', { name: '等待区' })).not.toContainText('已暂停');
   await expect(page.getByRole('button', { name: '继续' })).toHaveCount(0);
-  await page.getByLabel('消息').fill('直接发消息恢复');
+  await page.getByRole('textbox', { name: '消息', exact: true }).fill('直接发消息恢复');
   await page.getByRole('button', { name: /发送/ }).click();
   await expect(page.getByRole('region', { name: '等待区' })).not.toContainText('已暂停');
 });
@@ -203,44 +224,29 @@ test('C-BR-06/08 queued 恒住等待浮层，interrupt 定格 Agent 气泡', asy
   await expect(page.getByRole('button', { name: '继续' })).toHaveCount(0);
 });
 
-test('C-BR-07/09/10 生命周期高风险控制只能从 Actor 详情确认后提交', async ({ page, request }) => {
+test('C-BR-07/09/10 Actor 详情不伪造未公开的运行时生命周期能力', async ({ page, request }) => {
   await reset(request, 'actor-lifecycle', 108);
   await login(page);
   const details = await openSteward(page);
-
-  await capability(details, 'agent.restart').getByRole('button', { name: '调用' }).click();
-  let form = details.getByRole('region', { name: '重启 Agent 运行时 参数' });
-  await expect(form.getByRole('button', { name: '提交操作' })).toBeDisabled();
-  await form.getByRole('checkbox').check();
-  await form.getByRole('button', { name: '提交操作' }).click();
-  await expect(page.locator('.turn-card[data-request-type="agent.restart"]').getByText('restarted', { exact: true })).toBeVisible();
-
-  await capability(details, 'agent.terminate').getByRole('button', { name: '调用' }).click();
-  form = details.getByRole('region', { name: '终止 Agent 运行时 参数' });
-  const submit = form.getByRole('button', { name: '提交操作' });
-  await form.getByRole('textbox').fill('wrong-id');
-  await expect(submit).toBeDisabled();
-  await form.getByRole('textbox').fill('steward');
-  await expect(submit).toBeEnabled();
-  await submit.click();
-  await expect(page.locator('.turn-card[data-request-type="agent.terminate"]').getByText('terminated', { exact: true })).toBeVisible();
+  await expect(capability(details, 'agent.restart')).toHaveCount(0);
+  await expect(capability(details, 'agent.terminate')).toHaveCount(0);
+  await expect(capability(details, 'agent.interrupt')).toHaveCount(1);
+  // Member restart/removal are system.member.* operations and remain covered
+  // through the channel-governance confirmation flow (D-BR-07/08/09).
 });
 
-test('C-BR-08/11 Schema 审批携带结构化 payload 并由终态恢复处理者', async ({ page, request }) => {
+test('C-BR-08/11 审批按公开闭集提交备注并由终态恢复处理者', async ({ page, request }) => {
   await reset(request, 'approval-schema', 109);
   await login(page);
   const approval = page.locator('.approval-card').first();
   await expect(approval.getByText(/影响：/)).toBeVisible();
-  await approval.getByRole('textbox', { name: /note/ }).fill('同意按灰度方案执行');
-  await approval.getByRole('combobox', { name: /severity/ }).click();
-  await approval.getByRole('option', { name: 'high' }).click();
-  await approval.getByRole('checkbox', { name: /notify/ }).check();
+  await approval.getByRole('textbox', { name: '备注（可选）' }).fill('同意按灰度方案执行');
   await approval.getByRole('button', { name: '批准' }).click();
-  await expect(approval.getByText(/处理者：root.*approved/)).toBeVisible();
-  await expect(approval.getByText('同意按灰度方案执行', { exact: true })).toBeVisible();
-  await expect(approval.locator('.structured-result dd').filter({ hasText: /^high$/ })).toBeVisible();
+  await expect(approval.getByText(/处理者：root.*approve/)).toBeVisible();
+  await approval.locator('.structured-result-details > summary').click();
+  await expect(approval.locator('dl').getByText('同意按灰度方案执行', { exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.locator('.approval-card').first().getByText(/处理者：root.*approved/)).toBeVisible();
+  await expect(page.locator('.approval-card').first().getByText(/处理者：root.*approve/)).toBeVisible();
 });
 
 test('C-BR-09/12 过期、并发错误和外部处理均保留审批事实', async ({ page, request }) => {
@@ -252,7 +258,7 @@ test('C-BR-09/12 过期、并发错误和外部处理均保留审批事实', asy
 
   await switchScenario(page, request, 'approval-conflict', 111);
   approval = page.locator('.approval-card').first();
-  await approval.getByRole('textbox', { name: /note/ }).fill('冲突验收');
+  await approval.getByRole('textbox', { name: '备注（可选）' }).fill('冲突验收');
   const errors = [
     ['not_in_audience', '收件人不在频道'],
     ['request_not_found', '找不到请求'],
@@ -265,8 +271,8 @@ test('C-BR-09/12 过期、并发错误和外部处理均保留审批事实', asy
     await expect(approval.getByRole('alert')).toContainText(label);
     await expect(approval.getByRole('alert')).toContainText(code);
   }
-  await action(request, { type: 'resolve_approval', decision: 'rejected', actor_id: 'external-reviewer' });
-  await expect(approval.getByText(/处理者：external-reviewer.*rejected/)).toBeVisible();
+  await action(request, { type: 'resolve_approval', decision: 'reject', actor_id: 'external-reviewer' });
+  await expect(approval.getByText(/处理者：external-reviewer.*reject/)).toBeVisible();
   await expect(approval.getByText('已回执', { exact: true })).toBeVisible();
 });
 
@@ -282,7 +288,7 @@ test('C-BR-10/13 刷新重放后处理气泡与控制资格只保留一份', asy
   turn = page.locator('.turn-card').filter({ hasText: taskText });
   await expect(turn).toHaveCount(1);
   await expect(turn.locator('.agent-turn-bubble')).toHaveCount(1);
-  await expect(turn.locator('.agent-turn-bubble button')).toHaveCount(0);
+  await expect(turn.locator('.agent-turn-bubble').getByRole('button', { name: '继续' })).toHaveCount(0);
   await expect(turn.getByRole('button', { name: '停止', exact: true })).toBeVisible();
   await expect(turn.getByRole('button', { name: '编辑' })).toBeVisible();
 });

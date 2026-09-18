@@ -1,0 +1,4495 @@
+diff --git a/packages/react-virtuoso/src/TableVirtuoso.tsx b/packages/react-virtuoso/src/TableVirtuoso.tsx
+index 26c6b2e..6f8a04a 100644
+--- a/packages/react-virtuoso/src/TableVirtuoso.tsx
++++ b/packages/react-virtuoso/src/TableVirtuoso.tsx
+@@ -199,7 +199,7 @@ const TableBody = /*#__PURE__*/ React.memo(function TableVirtuosoBody() {
+   const log = useEmitterValue('log')
+ 
+   const { callbackRef, ref } = useChangedListContentsSizes(
+-    sizeRanges,
++    (observation) => sizeRanges(observation.ranges),
+     itemSize,
+     trackItemSizes,
+     scrollContainerStateCallback,
+diff --git a/packages/react-virtuoso/src/Virtuoso.tsx b/packages/react-virtuoso/src/Virtuoso.tsx
+index 7ec32c5..805454e 100644
+--- a/packages/react-virtuoso/src/Virtuoso.tsx
++++ b/packages/react-virtuoso/src/Virtuoso.tsx
+@@ -1,19 +1,73 @@
+ import React from 'react'
+ 
++import { findMaxKeyValue } from './AATree'
+ import useChangedListContentsSizes from './hooks/useChangedChildSizes'
+ import useIsomorphicLayoutEffect from './hooks/useIsomorphicLayoutEffect'
+ import useScrollTop from './hooks/useScrollTop'
+ import useSize from './hooks/useSize'
+ import useWindowViewportRectRef from './hooks/useWindowViewportRect'
++import { getInitialTopMostItemIndexNumber } from './initialTopMostItemIndexSystem'
+ import { listSystem } from './listSystem'
++import { LogLevel } from './loggerSystem'
++import { measuredHistoryAdmission } from './measuredHistoryAdmission'
+ import { systemToComponent } from './react-urx'
++import { recalcSystem } from './recalcSystem'
+ import * as u from './urx'
+ import { VirtuosoMockContext } from './utils/context'
+ import { correctItemSize } from './utils/correctItemSize'
+ import { positionStickyCssValue } from './utils/positionStickyCssValue'
+ 
+-import type { GroupedVirtuosoHandle, GroupedVirtuosoProps, VirtuosoHandle, VirtuosoProps } from './component-interfaces/Virtuoso'
+-import type { Components, ComputeItemKey, ContextProp, GroupContent, GroupItemContent, ItemContent, ListRootProps } from './interfaces'
++import type {
++  FormalRangeState,
++  GroupedVirtuosoHandle,
++  GroupedVirtuosoProps,
++  VirtuosoHandle,
++  VirtuosoProps,
++} from './component-interfaces/Virtuoso'
++import type { ChildSizeObservation } from './hooks/useChangedChildSizes'
++import type {
++  Components,
++  ComputeItemKey,
++  ContextProp,
++  GroupContent,
++  GroupItemContent,
++  ItemContent,
++  ListItem,
++  ListRootProps,
++} from './interfaces'
++import type { FormalRangePreparation, ListState } from './listStateSystem'
++import type { HistoryPreparation } from './measuredHistoryAdmission'
++
++export interface FormalMeasurementContext {
++  computeItemMeasurementKey: unknown
++  computeItemKey: unknown
++  context: unknown
++  host: HTMLElement
++  inlineSize: number
++  itemComponent: unknown
++  itemContent: unknown
++  itemSize: unknown
++}
++
++export interface FormalMeasurementObservation {
++  context: FormalMeasurementContext
++  elements: HTMLElement[]
++  sizes: number[]
++  token: FormalRangePreparation
++}
++
++interface FormalLiveLayoutObservation {
++  context: FormalMeasurementContext
++  observation: ChildSizeObservation & { layout: NonNullable<ChildSizeObservation['layout']>; listState: ListState }
++}
++
++interface FormalCertificate extends FormalMeasurementContext {
++  blockSize: number
++  data: unknown
++  element: HTMLElement
++  key: string
++  measurementKey: unknown
++}
+ 
+ export function identity<T>(value: T) {
+   return value
+@@ -24,6 +78,7 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
+   const groupContent = u.statefulStream<GroupContent<any>>((index: number) => `Group ${index}`)
+   const components = u.statefulStream<Components<any>>({})
+   const computeItemKey = u.statefulStream<ComputeItemKey<any, any>>(identity)
++  const computeItemMeasurementKey = u.statefulStream<(index: number, item: unknown, context: unknown) => unknown>(() => undefined)
+   const HeaderFooterTag = u.statefulStream('div')
+   const scrollerRef = u.statefulStream<(ref: HTMLElement | null | Window) => void>(u.noop)
+ 
+@@ -41,6 +96,7 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
+   return {
+     components,
+     computeItemKey,
++    computeItemMeasurementKey,
+     EmptyPlaceholder: distinctProp('EmptyPlaceholder'),
+     FooterComponent: distinctProp('Footer'),
+     GroupComponent: distinctProp('Group', 'div'),
+@@ -58,10 +114,499 @@ const listComponentPropsSystem = /*#__PURE__*/ u.system(() => {
+ })
+ 
+ const combinedSystem = /*#__PURE__*/ u.system(
+-  ([listSystem, propsSystem]) => {
+-    return { ...listSystem, ...propsSystem }
++  ([listSystem, propsSystem, recalc]) => {
++    const requestedData = u.statefulStream<readonly unknown[] | undefined>(undefined)
++    const requestedFirstItemIndex = u.statefulStream(0)
++    const requestedTotalCount = u.statefulStream(0)
++    const historyAcceptedSource = u.statefulStream<{ data: readonly unknown[] | undefined; firstItemIndex: number; totalCount: number }>({
++      data: undefined,
++      firstItemIndex: 0,
++      totalCount: 0,
++    })
++    const formalMeasurementContext = u.statefulStream<FormalMeasurementContext | null>(null)
++    const formalListHost = u.statefulStream<HTMLElement | null>(null)
++    const formalRangeFailure = u.statefulStream<'duplicate-key' | null>(null)
++    const formalRangeState = u.statefulStream<FormalRangeState | null>(null)
++    const formalRangeStateChange = u.pipe(
++      formalRangeState,
++      u.filter((state): state is FormalRangeState => state !== null)
++    )
++    const observeFormalLiveLayout = u.stream<FormalLiveLayoutObservation>()
++    const invalidateRetainedFormalCertificate = u.stream<{ blockSize: number; element: HTMLElement; key: string }>()
++    const formalRangeMeasurementEnabled = u.statefulStream(typeof ResizeObserver !== 'undefined')
++    const formalCertificates = new Map<string, FormalCertificate>()
++    let lastMeasurementContext: FormalMeasurementContext | null = null
++    let acceptedSourceGeneration = 0
++    let admissionFinalizeGeneration = 0
++    const sameMeasurementContext = (left: FormalMeasurementContext | null, right: FormalMeasurementContext | null) =>
++      left === right ||
++      (left !== null &&
++        right !== null &&
++        left.host === right.host &&
++        left.inlineSize === right.inlineSize &&
++        left.itemComponent === right.itemComponent &&
++        left.itemSize === right.itemSize)
++    const keyFor = (item: Pick<ListItem<unknown>, 'data' | 'index'>) =>
++      String(u.getValue(propsSystem.computeItemKey)(item.index, item.data, u.getValue(listSystem.context)))
++    const measurementKeyFor = (item: Pick<ListItem<unknown>, 'data' | 'index'>) =>
++      u.getValue(propsSystem.computeItemMeasurementKey)(item.index, item.data, u.getValue(listSystem.context))
++    const certificateMatches = (
++      item: ListItem<unknown>,
++      context: FormalMeasurementContext | null,
++      requireConnected: boolean,
++      measurementKey = measurementKeyFor(item)
++    ) => {
++      if (context === null) {
++        return false
++      }
++      const certificate = formalCertificates.get(keyFor(item))
++      return (
++        certificate !== undefined &&
++        (!requireConnected || certificate.element.isConnected) &&
++        Object.is(certificate.data, item.data) &&
++        Object.is(certificate.measurementKey, measurementKey) &&
++        certificate.blockSize === item.size &&
++        sameMeasurementContext(certificate, context)
++      )
++    }
++    u.publish(listSystem.formalRangeCandidates, (state: ListState) => {
++      if (
++        !u.getValue(formalRangeMeasurementEnabled) ||
++        !u.getValue(listSystem.trackItemSizes) ||
++        u.getValue(listSystem.groupIndices).length > 0 ||
++        u.getValue(listSystem.horizontalDirection) ||
++        u.getValue(listSystem.useWindowScroll) ||
++        u.getValue(listSystem.customScrollParent)
++      ) {
++        return []
++      }
++      const context = u.getValue(formalMeasurementContext)
++      const currentFormal = u.getValue(listSystem.listState)
++      let candidateItems = state.items.filter((item) => item.type !== 'group')
++      const includedIndexes = new Set(candidateItems.map((item) => item.originalIndex))
++      const connectedCertificateIndexes = new Set(includedIndexes)
++      if (!u.getValue(listSystem.initialItemFinalLocationReached) && candidateItems.length === 0 && state.totalCount > 0) {
++        const target = getInitialTopMostItemIndexNumber(u.getValue(listSystem.initialTopMostItemIndex), state.totalCount)
++        const start = Math.max(0, target - 31)
++        const accepted = u.getValue(historyAcceptedSource).data
++        const sizeTree = u.getValue(listSystem.sizes).sizeTree
++        candidateItems = Array.from({ length: target - start + 1 }, (_, offset) => {
++          const originalIndex = start + offset
++          includedIndexes.add(originalIndex)
++          connectedCertificateIndexes.add(originalIndex)
++          return {
++            data: accepted?.[originalIndex],
++            index: originalIndex + state.firstItemIndex,
++            offset: 0,
++            originalIndex,
++            size: findMaxKeyValue(sizeTree, originalIndex)[1] ?? 0,
++          }
++        })
++      }
++      const accepted = u.getValue(historyAcceptedSource)
++      const sizeTree = u.getValue(listSystem.sizes).sizeTree
++      for (let originalIndex = 0; originalIndex < state.totalCount; originalIndex++) {
++        if (includedIndexes.has(originalIndex)) {
++          continue
++        }
++        candidateItems.push({
++          data: accepted.data?.[originalIndex],
++          index: originalIndex + state.firstItemIndex,
++          offset: 0,
++          originalIndex,
++          size: findMaxKeyValue(sizeTree, originalIndex)[1] ?? 0,
++        })
++      }
++      const keys = candidateItems.map(keyFor)
++      if (new Set(keys).size !== keys.length) {
++        if (u.getValue(formalRangeFailure) !== 'duplicate-key') {
++          u.publish(formalRangeFailure, 'duplicate-key')
++        }
++        const accepted = u.getValue(historyAcceptedSource)
++        const firstIndexByKey = new Map<string, number>()
++        const conflicts: { firstOriginalIndex: number; key: string; secondOriginalIndex: number }[] = []
++        keys.forEach((key, index) => {
++          const originalIndex = candidateItems[index]!.originalIndex!
++          const firstOriginalIndex = firstIndexByKey.get(key)
++          if (firstOriginalIndex === undefined) {
++            firstIndexByKey.set(key, originalIndex)
++          } else if (conflicts.length < 8) {
++            conflicts.push({ firstOriginalIndex, key, secondOriginalIndex: originalIndex })
++          }
++        })
++        u.getValue(listSystem.log)(
++          'Formal range preparation requires unique item keys',
++          {
++            acceptedFirst: accepted.firstItemIndex,
++            acceptedTotal: accepted.totalCount,
++            conflicts,
++            desiredFirst: state.firstItemIndex,
++            desiredTotal: state.totalCount,
++            internalFirst: u.getValue(listSystem.firstItemIndex),
++            internalTotal: u.getValue(listSystem.statefulTotalCount),
++          },
++          LogLevel.ERROR
++        )
++        return null
++      }
++      if (u.getValue(formalRangeFailure) !== null) {
++        u.publish(formalRangeFailure, null)
++      }
++      const pendingItems = candidateItems
++        .filter((item) => {
++          const requireConnected = connectedCertificateIndexes.has(item.originalIndex)
++          if (certificateMatches(item, context, requireConnected)) {
++            return false
++          }
++          // A row already live in this same host is not a future admission. Any
++          // later image/font/content resize is handled by the ordinary DOM owner.
++          const liveCertificate = formalCertificates.get(keyFor(item))
++          return !(
++            requireConnected &&
++            liveCertificate?.element.isConnected === true &&
++            sameMeasurementContext(liveCertificate, context) &&
++            currentFormal.items.some((current) => keyFor(current) === keyFor(item) && Object.is(current.data, item.data))
++          )
++        })
++        .slice(0, 32)
++      const result = [] as (ListItem<unknown> & { measurementKey: unknown })[]
++      for (const item of pendingItems) {
++        result.push({ ...item, measurementKey: measurementKeyFor(item) })
++      }
++      return result
++    })
++    u.publish(listSystem.retainAuthorizedFormalRange, (formal: ListState) => {
++      const accepted = u.getValue(historyAcceptedSource)
++      if (accepted.data === undefined) {
++        const first = accepted.firstItemIndex
++        const end = first + accepted.totalCount
++        const items = formal.items.filter((item) => item.index >= first && item.index < end)
++        const topItems = formal.topItems.filter((item) => item.index >= first && item.index < end)
++        return items.length === formal.items.length && topItems.length === formal.topItems.length ? formal : { ...formal, items, topItems }
++      }
++      const authority = new Map<string, unknown[]>()
++      accepted.data.forEach((data, index) => {
++        const key = String(u.getValue(propsSystem.computeItemKey)(accepted.firstItemIndex + index, data, u.getValue(listSystem.context)))
++        const entries = authority.get(key)
++        if (entries) {
++          entries.push(data)
++        } else {
++          authority.set(key, [data])
++        }
++      })
++      const isAuthorized = (item: ListItem<unknown>) => authority.get(keyFor(item))?.some((data) => Object.is(data, item.data)) === true
++      const items = formal.items.filter(isAuthorized)
++      const topItems = formal.topItems.filter(isAuthorized)
++      return items.length === formal.items.length && topItems.length === formal.topItems.length ? formal : { ...formal, items, topItems }
++    })
++    u.subscribe(observeFormalLiveLayout, ({ context: next, observation }) => {
++      if (!sameMeasurementContext(lastMeasurementContext, next)) {
++        formalCertificates.clear()
++        lastMeasurementContext = next
++        u.publish(formalMeasurementContext, next)
++      }
++      const currentFormal = u.getValue(listSystem.listState)
++      const stateItems = new Map(currentFormal.items.map((item) => [item.originalIndex, item]))
++      if (next.inlineSize > 0) {
++        for (const measured of observation.layout.items) {
++          const item = stateItems.get(measured.originalIndex)
++          if (!item || measured.element.dataset.formalPreparing !== undefined || !measured.element.isConnected) {
++            continue
++          }
++          const key = keyFor(item)
++          formalCertificates.set(key, {
++            ...next,
++            blockSize: measured.bottom - measured.top,
++            data: item.data,
++            element: measured.element,
++            key,
++            measurementKey: measurementKeyFor(item),
++          })
++        }
++      }
++      // Seed the new-context live certificates before size ranges synchronously
++      // recalculate the desired state. Width invalidation and row geometry are
++      // therefore one RO transaction, with no hidden intermediate formal row.
++      u.publish(listSystem.formalLiveGeometryRefresh, true)
++      u.publish(listSystem.domSizeObservation, observation)
++      u.publish(listSystem.formalLiveGeometryRefresh, false)
++      u.publish(listSystem.reevaluateFormalRange, undefined)
++    })
++    u.subscribe(formalRangeMeasurementEnabled, () => u.publish(listSystem.reevaluateFormalRange, undefined))
++    u.subscribe(propsSystem.computeItemMeasurementKey, () => u.publish(listSystem.reevaluateFormalRange, undefined))
++    u.subscribe(invalidateRetainedFormalCertificate, ({ blockSize, element, key }) => {
++      const certificate = formalCertificates.get(key)
++      if (certificate?.element !== element || blockSize <= 0 || Math.abs(certificate.blockSize - blockSize) <= 0.5) {
++        return
++      }
++      formalCertificates.delete(key)
++      u.publish(listSystem.reevaluateFormalRange, undefined)
++    })
++    const observeFormalRangePreparation = u.statefulStream((observation: FormalMeasurementObservation) => {
++      const { context, sizes: measured, token } = observation
++      if (
++        u.getValue(listSystem.formalRangePreparation) !== token ||
++        !sameMeasurementContext(u.getValue(formalMeasurementContext), context) ||
++        observation.elements.length !== token.candidates.length ||
++        measured.length !== token.candidates.length ||
++        observation.elements.some((element) => !element.isConnected) ||
++        token.candidates.some((item) => !Object.is(item.measurementKey, measurementKeyFor(item))) ||
++        measured.some((size) => !Number.isFinite(size) || size <= 0)
++      ) {
++        return
++      }
++      token.candidates.forEach((item, index) => {
++        const key = keyFor(item)
++        formalCertificates.set(key, {
++          ...context,
++          blockSize: measured[index]!,
++          data: item.data,
++          element: observation.elements[index]!,
++          key,
++          measurementKey: item.measurementKey,
++        })
++      })
++      u.publish(
++        listSystem.sizeRanges,
++        token.candidates.map((item, index) => ({
++          startIndex: item.originalIndex!,
++          endIndex: item.originalIndex!,
++          size: measured[index]!,
++        }))
++      )
++      // A certificate can equal the size already stored in the numeric tree.
++      // Re-evaluate even when `sizes`/desired state is referentially unchanged.
++      u.publish(listSystem.reevaluateFormalRange, undefined)
++    })
++    const admission = measuredHistoryAdmission({
++      enabled: () =>
++        u.getValue(listSystem.groupIndices).length === 0 &&
++        !u.getValue(listSystem.horizontalDirection) &&
++        !u.getValue(listSystem.useWindowScroll) &&
++        !u.getValue(listSystem.customScrollParent),
++      key: (index, data) => u.getValue(propsSystem.computeItemKey)(index, data, u.getValue(listSystem.context)),
++      fail: (reason) => u.getValue(listSystem.log)(reason, {}, LogLevel.ERROR),
++      admit: (data, firstItemIndex, totalCount, prefixSizes) => {
++        const finalizeGeneration = ++admissionFinalizeGeneration
++        const ready = u.getValue(listSystem.propsReady)
++        u.publish(listSystem.propsReady, false)
++        u.publish(listSystem.formalRangeAdmissionPaused, true)
++        u.publish(listSystem.measuredPrependSizes, prefixSizes ?? null)
++        // Authority precedes every synchronous desired/formal recalculation.
++        u.publish(historyAcceptedSource, { data, firstItemIndex, totalCount })
++        u.publish(listSystem.firstItemIndex, firstItemIndex)
++        u.publish(listSystem.data, data)
++        u.publish(listSystem.totalCount, totalCount)
++        u.publish(listSystem.measuredPrependSizes, null)
++        // The first/index and data/count streams intentionally remain public
++        // for compatibility, so their synchronous emissions can leave the
++        // desired calculator holding an intermediate snapshot. Re-publish the
++        // completed tuple while formal admission is paused; only this final
++        // snapshot is eligible for the generation latch below.
++        u.publish(listSystem.firstItemIndex, firstItemIndex)
++        u.publish(listSystem.data, data)
++        u.publish(listSystem.totalCount, totalCount)
++        u.publish(listSystem.formalRangeSourceGeneration, ++acceptedSourceGeneration)
++        u.publish(listSystem.propsReady, ready)
++        const finalize = () => {
++          if (finalizeGeneration !== admissionFinalizeGeneration) {
++            return
++          }
++          u.publish(listSystem.formalRangeAdmissionPaused, false)
++          u.publish(listSystem.reevaluateFormalRange, undefined)
++        }
++        if (u.getValue(recalc.recalcInProgress)) {
++          u.handleNext(
++            u.pipe(
++              recalc.recalcInProgress,
++              u.filter((inProgress) => !inProgress)
++            ),
++            finalize
++          )
++        } else {
++          finalize()
++        }
++      },
++    })
++    const observeHistoryPreparation = u.statefulStream(
++      (token: HistoryPreparation, inlineSize: number, heights: readonly number[], elements: readonly HTMLElement[], host?: HTMLElement) => {
++        const context = u.getValue(formalMeasurementContext)
++        if (
++          u.getValue(admission.preparation) !== token ||
++          context === null ||
++          context.inlineSize !== inlineSize ||
++          (host !== undefined && context.host !== host) ||
++          elements.length !== heights.length ||
++          elements.some((element) => !element.isConnected) ||
++          heights.some((height) => !Number.isFinite(height) || height <= 0)
++        ) {
++          return
++        }
++        for (let index = token.start; index < token.end; index++) {
++          const data = token.data?.[index]
++          const externalIndex = token.firstItemIndex + index
++          const key = String(u.getValue(propsSystem.computeItemKey)(externalIndex, data, u.getValue(listSystem.context)))
++          formalCertificates.set(key, {
++            ...context,
++            blockSize: heights[index - token.start]!,
++            data,
++            element: elements[index - token.start]!,
++            key,
++            measurementKey: u.getValue(propsSystem.computeItemMeasurementKey)(externalIndex, data, u.getValue(listSystem.context)),
++          })
++        }
++        admission.observe(token, inlineSize, heights)
++      }
++    )
++    let formalStateGeneration = 0
++    let formalAdmissionActive = false
++    let lastFormalState: FormalRangeState | null = null
++    let awaitingFormalReady: { generation: number; host: HTMLElement; state: ListState } | null = null
++    let lastRequestedTuple: { data: readonly unknown[] | undefined; firstItemIndex: number; totalCount: number } | null = null
++    const publishFormalState = (state: FormalRangeState) => {
++      if (
++        lastFormalState?.generation === state.generation &&
++        lastFormalState.phase === state.phase &&
++        lastFormalState.reason === state.reason &&
++        lastFormalState.blocking === state.blocking
++      ) {
++        return
++      }
++      lastFormalState = state
++      u.publish(formalRangeState, state)
++    }
++    const formalAdmissionSupported = () =>
++      u.getValue(formalRangeMeasurementEnabled) &&
++      u.getValue(listSystem.trackItemSizes) &&
++      u.getValue(listSystem.groupIndices).length === 0 &&
++      !u.getValue(listSystem.horizontalDirection) &&
++      !u.getValue(listSystem.useWindowScroll) &&
++      !u.getValue(listSystem.customScrollParent)
++    const reevaluateFormalState = () => {
++      if (!u.getValue(listSystem.propsReady)) {
++        return
++      }
++      const requested = u.getValue(requestedData)?.length ?? u.getValue(requestedTotalCount)
++      if (requested <= 0 || !formalAdmissionSupported()) {
++        if (lastFormalState !== null && lastFormalState.phase !== 'ready') {
++          publishFormalState({ blocking: false, generation: formalStateGeneration, phase: 'ready' })
++        }
++        formalAdmissionActive = false
++        awaitingFormalReady = null
++        return
++      }
++      const formal = u.getValue(listSystem.listState)
++      const blocking = formal.items.length === 0
++      const host = u.getValue(formalListHost)
++      const context = u.getValue(formalMeasurementContext)
++      const failure = u.getValue(formalRangeFailure)
++      let reason: 'duplicate-key' | 'host' | 'inline-size' | 'item-size' | null
++      if (failure === null) {
++        reason =
++          host === null
++            ? 'host'
++            : context === null || context.host !== host || context.inlineSize <= 0
++              ? 'inline-size'
++              : u.getValue(admission.preparation) !== null || u.getValue(listSystem.formalRangePreparation) !== null
++                ? 'item-size'
++                : null
++      } else {
++        reason = failure
++      }
++      if (reason !== null) {
++        awaitingFormalReady = null
++        if (!formalAdmissionActive) {
++          formalAdmissionActive = true
++          formalStateGeneration++
++        }
++        publishFormalState({
++          blocking,
++          generation: formalStateGeneration,
++          phase: failure === null ? 'pending' : 'failed',
++          reason,
++        })
++        return
++      }
++      if (!formalAdmissionActive || host === null) {
++        return
++      }
++      awaitingFormalReady = { generation: formalStateGeneration, host, state: formal }
++    }
++    for (const input of [
++      requestedData,
++      requestedTotalCount,
++      requestedFirstItemIndex,
++      formalListHost,
++      formalMeasurementContext,
++      formalRangeFailure,
++      admission.preparation,
++      listSystem.formalRangePreparation,
++      listSystem.listState,
++      formalRangeMeasurementEnabled,
++    ]) {
++      u.subscribe(input, reevaluateFormalState)
++    }
++    let applying = false
++    u.subscribe(listSystem.propsReady, (ready) => {
++      if (!ready || applying) {
++        return
++      }
++      applying = true
++      const data = u.getValue(requestedData)
++      const firstItemIndex = u.getValue(requestedFirstItemIndex)
++      const totalCount = data?.length ?? u.getValue(requestedTotalCount)
++      if (
++        lastRequestedTuple === null ||
++        lastRequestedTuple.data !== data ||
++        lastRequestedTuple.firstItemIndex !== firstItemIndex ||
++        lastRequestedTuple.totalCount !== totalCount
++      ) {
++        lastRequestedTuple = { data, firstItemIndex, totalCount }
++        formalStateGeneration++
++        formalAdmissionActive = true
++        awaitingFormalReady = null
++      }
++      admission.request(data, firstItemIndex, totalCount)
++      applying = false
++      reevaluateFormalState()
++    })
++    u.subscribe(listSystem.listLayoutCommitted, (layout) => {
++      const waiting = awaitingFormalReady
++      if (
++        waiting === null ||
++        waiting.generation !== formalStateGeneration ||
++        waiting.host !== layout.host ||
++        waiting.state !== layout.listState ||
++        u.getValue(formalListHost) !== layout.host ||
++        u.getValue(listSystem.formalRangePreparation) !== null ||
++        u.getValue(admission.preparation) !== null ||
++        u.getValue(formalRangeFailure) !== null
++      ) {
++        return
++      }
++      awaitingFormalReady = null
++      formalAdmissionActive = false
++      publishFormalState({ blocking: false, generation: waiting.generation, phase: 'ready' })
++    })
++    return {
++      ...listSystem,
++      ...propsSystem,
++      requestedData,
++      requestedFirstItemIndex,
++      requestedTotalCount,
++      historyAcceptedSource,
++      historyPreparation: admission.preparation,
++      observeHistoryPreparation,
++      formalMeasurementContext,
++      formalListHost,
++      formalRangeStateChange,
++      observeFormalLiveLayout,
++      invalidateRetainedFormalCertificate,
++      formalRangeMeasurementEnabled,
++      observeFormalRangePreparation,
++    }
+   },
+-  u.tup(listSystem, listComponentPropsSystem)
++  u.tup(listSystem, listComponentPropsSystem, recalcSystem)
+ )
+ 
+ const DefaultScrollSeekPlaceholder = ({ height }: { height: number }) => <div style={{ height }} />
+@@ -71,8 +616,15 @@ const ITEM_STYLE = { overflowAnchor: 'none' } as const
+ const HORIZONTAL_ITEM_STYLE = { ...ITEM_STYLE, display: 'inline-block', height: '100%' } as const
+ 
+ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = false }: { showTopList?: boolean }) {
++  const mockContext = React.useContext(VirtuosoMockContext)
++  const setFormalRangeMeasurementEnabled = usePublisher('formalRangeMeasurementEnabled')
++  useIsomorphicLayoutEffect(() => {
++    setFormalRangeMeasurementEnabled(mockContext === undefined && typeof ResizeObserver !== 'undefined')
++  }, [mockContext, setFormalRangeMeasurementEnabled])
+   const listState = useEmitterValue('listState')
++  const formalRangePreparation = useEmitterValue('formalRangePreparation')
+ 
++  const domSizeObservation = usePublisher('domSizeObservation')
+   const sizeRanges = usePublisher('sizeRanges')
+   const useWindowScroll = useEmitterValue('useWindowScroll')
+   const customScrollParent = useEmitterValue('customScrollParent')
+@@ -81,16 +633,63 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+   const scrollContainerStateCallback =
+     customScrollParent || useWindowScroll ? windowScrollContainerStateCallback : _scrollContainerStateCallback
+   const itemContent = useEmitterValue('itemContent')
++  const ItemComponent = useEmitterValue('ItemComponent')!
+   const context = useEmitterValue('context')
++  const computeItemKey = useEmitterValue('computeItemKey')
++  const computeItemMeasurementKey = useEmitterValue('computeItemMeasurementKey')
+   const groupContent = useEmitterValue('groupContent')
++  const hasGroups = useEmitterValue('groupIndices').length > 0
++  const headerHeight = useEmitterValue('headerHeight')
++  const fixedHeaderHeight = useEmitterValue('fixedHeaderHeight')
+   const trackItemSizes = useEmitterValue('trackItemSizes')
+   const itemSize = useEmitterValue('itemSize')
+   const log = useEmitterValue('log')
+   const listGap = usePublisher('gap')
+   const horizontalDirection = useEmitterValue('horizontalDirection')
++  const observeFormalLiveLayout = usePublisher('observeFormalLiveLayout')
++  const publishDomSizeObservation = React.useCallback(
++    (observation: Parameters<typeof domSizeObservation>[0]) => {
++      const committedObservation = { ...observation, listState }
++      if (observation.layout) {
++        observeFormalLiveLayout({
++          context: {
++            computeItemMeasurementKey,
++            computeItemKey,
++            context,
++            host: observation.layout.host,
++            inlineSize: observation.layout.inlineSize,
++            itemComponent: ItemComponent,
++            itemContent,
++            itemSize,
++          },
++          observation: committedObservation as FormalLiveLayoutObservation['observation'],
++        })
++      } else {
++        domSizeObservation(committedObservation)
++      }
++    },
++    [
++      computeItemKey,
++      computeItemMeasurementKey,
++      context,
++      domSizeObservation,
++      ItemComponent,
++      itemContent,
++      itemSize,
++      listState,
++      observeFormalLiveLayout,
++    ]
++  )
++  const observationItemKey = React.useCallback(
++    (originalIndex: number) => {
++      const item = listState.items.find((item) => item.originalIndex === originalIndex)
++      return item ? String(computeItemKey(item.index, item.data, context)) : ''
++    },
++    [listState, computeItemKey, context]
++  )
+ 
+-  const { callbackRef } = useChangedListContentsSizes(
+-    sizeRanges,
++  const { callbackRef, measure } = useChangedListContentsSizes(
++    showTopList ? (observation) => sizeRanges(observation.ranges) : publishDomSizeObservation,
+     itemSize,
+     trackItemSizes,
+     showTopList ? u.noop : scrollContainerStateCallback,
+@@ -98,9 +697,32 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+     listGap,
+     customScrollParent,
+     horizontalDirection,
+-    useEmitterValue('skipAnimationFrameInResizeObserver')
++    useEmitterValue('skipAnimationFrameInResizeObserver'),
++    observationItemKey,
++    !showTopList &&
++      !hasGroups &&
++      listState.topItems.length === 0 &&
++      headerHeight === 0 &&
++      fixedHeaderHeight === 0 &&
++      !horizontalDirection &&
++      !useWindowScroll &&
++      !customScrollParent
+   )
+-
++  // Host identity is React state, not a stable ref object: replacing a custom
++  // List host must rebind both observers and invalidate in-flight ownership.
++  const [listHost, setListHost] = React.useState<HTMLElement | null>(null)
++  const setFormalListHost = usePublisher('formalListHost')
++  const bindNativeList = React.useCallback((element: HTMLElement | null) => {
++    setListHost((current) => (current === element ? current : element))
++  }, [])
++  useIsomorphicLayoutEffect(() => {
++    setFormalListHost(listHost)
++    return () => setFormalListHost(null)
++  }, [listHost, setFormalListHost])
++  useIsomorphicLayoutEffect(() => {
++    callbackRef(listHost)
++    return () => callbackRef(null)
++  }, [callbackRef, listHost])
+   const [deviation, setDeviation] = React.useState(0)
+   useEmitter('deviation', (value) => {
+     if (deviation !== value) {
+@@ -117,17 +739,135 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+     deviationCommitted(deviation)
+   }, [deviation, deviationCommitted])
+ 
++  const listLayoutCommitted = usePublisher('listLayoutCommitted')
++  const pinnedMeasurementRange = useEmitterValue('measurementItemRange')
++  const prependMeasurementsPending = useEmitterValue('prependMeasurementsPending')
++  const previousMeasurementKeyComputer = React.useRef(computeItemMeasurementKey)
++  const measurementKeyComputerChanged = previousMeasurementKeyComputer.current !== computeItemMeasurementKey
++  useIsomorphicLayoutEffect(() => {
++    const listElement = listHost
++    if (!listElement || showTopList) {
++      return
++    }
++    // Prepend preparation is the only path allowed to request a synchronous
++    // read here. Ordinary ownership starts from a browser DOM observation;
++    // measuring every native range transition changes programmatic/explicit
++    // positioning by replacing its intended estimated range before paint.
++    if (
++      (measurementKeyComputerChanged || pinnedMeasurementRange !== null || prependMeasurementsPending) &&
++      !mockContext &&
++      trackItemSizes &&
++      deviation === 0 &&
++      !horizontalDirection &&
++      !useWindowScroll &&
++      !customScrollParent
++    ) {
++      measure(listElement)
++    }
++    previousMeasurementKeyComputer.current = computeItemMeasurementKey
++    let scroller = listElement.parentElement
++    while (scroller && scroller.dataset.virtuosoScroller === undefined) {
++      scroller = scroller.parentElement
++    }
++    if (!scroller) {
++      return
++    }
++    const ownerWindow = scroller.ownerDocument.defaultView!
++    const windowScrolling = (scroller.lastElementChild as HTMLDivElement | null)?.dataset.viewportType === 'window'
++    const viewportTop = customScrollParent
++      ? customScrollParent.getBoundingClientRect().top
++      : windowScrolling
++        ? 0
++        : scroller.getBoundingClientRect().top
++    const nativeScrollTop = customScrollParent
++      ? customScrollParent.scrollTop
++      : windowScrolling
++        ? ownerWindow.scrollY || ownerWindow.document.documentElement.scrollTop
++        : scroller.scrollTop
++    const clientHeight = customScrollParent
++      ? customScrollParent.clientHeight
++      : windowScrolling
++        ? ownerWindow.innerHeight
++        : scroller.clientHeight
++    const stateItems = new Map(listState.items.map((item) => [item.originalIndex, item]))
++    const items = [...listElement.children].flatMap((child) => {
++      const element = child as HTMLElement
++      if (
++        element.dataset.historyPreparing !== undefined ||
++        element.dataset.historyRetained !== undefined ||
++        element.dataset.formalPreparing !== undefined
++      ) {
++        return []
++      }
++      const originalIndex = Number(element.dataset.index)
++      const stateItem = stateItems.get(originalIndex)
++      if (!stateItem) {
++        return []
++      }
++      const rect = element.getBoundingClientRect()
++      return [
++        {
++          bottom: rect.bottom - viewportTop,
++          data: stateItem.data,
++          key: computeItemKey(stateItem.index, stateItem.data, context),
++          index: stateItem.index,
++          element,
++          originalIndex,
++          top: rect.top - viewportTop,
++        },
++      ]
++    })
++    const readScrollTop = () =>
++      customScrollParent
++        ? customScrollParent.scrollTop
++        : windowScrolling
++          ? ownerWindow.scrollY || ownerWindow.document.documentElement.scrollTop
++          : scroller.scrollTop
++    const scrollHeight = customScrollParent
++      ? customScrollParent.scrollHeight
++      : windowScrolling
++        ? ownerWindow.document.documentElement.scrollHeight
++        : scroller.scrollHeight
++    listLayoutCommitted({
++      clientHeight,
++      deviation,
++      host: listElement,
++      items,
++      listState,
++      nativeScrollTop,
++      maxScrollTop: scrollHeight - clientHeight,
++      readScrollTop,
++    })
++  }, [
++    customScrollParent,
++    deviation,
++    listHost,
++    listLayoutCommitted,
++    listState,
++    showTopList,
++    pinnedMeasurementRange,
++    prependMeasurementsPending,
++    measure,
++    horizontalDirection,
++    useWindowScroll,
++    computeItemKey,
++    computeItemMeasurementKey,
++    context,
++    mockContext,
++    trackItemSizes,
++    measurementKeyComputerChanged,
++  ])
++
+   const EmptyPlaceholder = useEmitterValue('EmptyPlaceholder')
+   const ScrollSeekPlaceholder = useEmitterValue('ScrollSeekPlaceholder') ?? DefaultScrollSeekPlaceholder
+   const ListComponent = useEmitterValue('ListComponent')!
+-  const ItemComponent = useEmitterValue('ItemComponent')!
+   const GroupComponent = useEmitterValue('GroupComponent')!
+-  const computeItemKey = useEmitterValue('computeItemKey')
+   const isSeeking = useEmitterValue('isSeeking')
+-  const hasGroups = useEmitterValue('groupIndices').length > 0
+   const alignToBottom = useEmitterValue('alignToBottom')
+   const initialItemFinalLocationReached = useEmitterValue('initialItemFinalLocationReached')
+ 
++  const renderedItems = showTopList ? listState.topItems : listState.items
++
+   const containerStyle: React.CSSProperties = showTopList
+     ? {}
+     : {
+@@ -149,7 +889,13 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+         ...(initialItemFinalLocationReached ? {} : { visibility: 'hidden' }),
+       }
+ 
+-  if (!showTopList && listState.totalCount === 0 && EmptyPlaceholder !== null && EmptyPlaceholder !== undefined) {
++  if (
++    !showTopList &&
++    listState.totalCount === 0 &&
++    formalRangePreparation === null &&
++    EmptyPlaceholder !== null &&
++    EmptyPlaceholder !== undefined
++  ) {
+     return <EmptyPlaceholder {...contextPropIfNotDomElement(EmptyPlaceholder, context)} />
+   }
+ 
+@@ -157,58 +903,64 @@ const Items = /*#__PURE__*/ React.memo(function VirtuosoItems({ showTopList = fa
+     <ListComponent
+       {...contextPropIfNotDomElement(ListComponent, context)}
+       data-testid={showTopList ? 'virtuoso-top-item-list' : 'virtuoso-item-list'}
+-      ref={callbackRef}
++      ref={bindNativeList}
+       style={containerStyle}
+     >
+-      {(showTopList ? listState.topItems : listState.items).map((item) => {
+-        const index = item.originalIndex!
+-        const key = computeItemKey(index + listState.firstItemIndex, item.data, context)
++      <MeasuredRows
++        enabled={!showTopList && !hasGroups && !horizontalDirection && !useWindowScroll && !customScrollParent && !isSeeking}
++        items={renderedItems}
++        listHost={listHost}
++      >
++        {renderedItems.map((item) => {
++          const index = item.originalIndex!
++          const key = computeItemKey(index + listState.firstItemIndex, item.data, context)
+ 
+-        if (isSeeking) {
+-          return (
+-            <ScrollSeekPlaceholder
+-              {...contextPropIfNotDomElement(ScrollSeekPlaceholder, context)}
+-              height={item.size}
+-              index={item.index}
+-              key={key}
+-              type={item.type || 'item'}
+-              {...(item.type === 'group' ? {} : { groupIndex: item.groupIndex })}
+-            />
+-          )
+-        }
++          if (isSeeking) {
++            return (
++              <ScrollSeekPlaceholder
++                {...contextPropIfNotDomElement(ScrollSeekPlaceholder, context)}
++                height={item.size}
++                index={item.index}
++                key={key}
++                type={item.type || 'item'}
++                {...(item.type === 'group' ? {} : { groupIndex: item.groupIndex })}
++              />
++            )
++          }
++
++          if (item.type === 'group') {
++            return (
++              <GroupComponent
++                {...contextPropIfNotDomElement(GroupComponent, context)}
++                data-index={index}
++                data-item-index={item.index}
++                data-known-size={item.size}
++                key={key}
++                style={GROUP_STYLE}
++              >
++                {groupContent(item.index, context)}
++              </GroupComponent>
++            )
++          }
+ 
+-        if (item.type === 'group') {
+           return (
+-            <GroupComponent
+-              {...contextPropIfNotDomElement(GroupComponent, context)}
++            <ItemComponent
++              {...contextPropIfNotDomElement(ItemComponent, context)}
++              {...itemPropIfNotDomElement(ItemComponent, item.data)}
+               data-index={index}
++              data-item-group-index={item.groupIndex}
+               data-item-index={item.index}
+               data-known-size={item.size}
+               key={key}
+-              style={GROUP_STYLE}
++              style={horizontalDirection ? HORIZONTAL_ITEM_STYLE : ITEM_STYLE}
+             >
+-              {groupContent(item.index, context)}
+-            </GroupComponent>
++              {hasGroups
++                ? (itemContent as GroupItemContent<any, any>)(item.index, item.groupIndex!, item.data, context)
++                : (itemContent as ItemContent<any, any>)(item.index, item.data, context)}
++            </ItemComponent>
+           )
+-        }
+-
+-        return (
+-          <ItemComponent
+-            {...contextPropIfNotDomElement(ItemComponent, context)}
+-            {...itemPropIfNotDomElement(ItemComponent, item.data)}
+-            data-index={index}
+-            data-item-group-index={item.groupIndex}
+-            data-item-index={item.index}
+-            data-known-size={item.size}
+-            key={key}
+-            style={horizontalDirection ? HORIZONTAL_ITEM_STYLE : ITEM_STYLE}
+-          >
+-            {hasGroups
+-              ? (itemContent as GroupItemContent<any, any>)(item.index, item.groupIndex!, item.data, context)
+-              : (itemContent as ItemContent<any, any>)(item.index, item.data, context)}
+-          </ItemComponent>
+-        )
+-      })}
++        })}
++      </MeasuredRows>
+     </ListComponent>
+   )
+ })
+@@ -456,6 +1208,290 @@ const TopItemListContainer: React.FC<React.PropsWithChildren> = ({ children }) =
+   )
+ }
+ 
++// An external-store update in this child does not render the application's
++// custom List parent. All normal/prepared/retained rows share one key space.
++const MeasuredRows = React.memo(function MeasuredRows({
++  children,
++  enabled,
++  items,
++  listHost,
++}: {
++  children: React.ReactElement[]
++  enabled: boolean
++  items: { index: number; data?: unknown }[]
++  listHost: HTMLElement | null
++}) {
++  const token = useEmitterValue('historyPreparation')
++  const observe = useEmitterValue('observeHistoryPreparation')
++  const formalToken = useEmitterValue('formalRangePreparation')
++  const formalContext = useEmitterValue('formalMeasurementContext')
++  const observeFormal = useEmitterValue('observeFormalRangePreparation')
++  const invalidateRetainedFormalCertificate = usePublisher('invalidateRetainedFormalCertificate')
++  const deviation = useEmitterValue('deviation')
++  const itemContent = useEmitterValue('itemContent') as ItemContent<any, any>
++  const ItemComponent = useEmitterValue('ItemComponent')!
++  const itemSize = useEmitterValue('itemSize')
++  const computeItemKey = useEmitterValue('computeItemKey')
++  const context = useEmitterValue('context')
++  const cache = React.useRef(new Map<string, { data: unknown; index: number }>())
++  const historyRetention = React.useRef(false)
++  const {
++    data: acceptedData,
++    firstItemIndex: acceptedFirstIndex,
++    totalCount: acceptedTotalCount,
++  } = useEmitterValue('historyAcceptedSource')
++  const list = listHost
++  // Width is committed by the list ResizeObserver. Never force a layout read
++  // from render; stale/zero contexts simply remain fail-closed until RO runs.
++  const width = formalContext?.host === list ? formalContext.inlineSize : 0
++  if (token !== null) {
++    historyRetention.current = true
++  }
++  const retain = enabled && (token !== null || formalToken !== null || (historyRetention.current && cache.current.size > 0))
++  const rows = retain ? new Map(cache.current) : new Map<string, { data: unknown; index: number }>()
++  const visible = new Map(children.map((child) => [String(child.key), child]))
++  const preparing = new Set<string>()
++  const historyPreparing = new Set<string>()
++  const formalPreparing = new Set<string>()
++  if (retain) {
++    const isAuthorized = (key: string, index: number, data: unknown) => {
++      const offset = index - acceptedFirstIndex
++      if (acceptedData === undefined) {
++        return offset >= 0 && offset < acceptedTotalCount && String(computeItemKey(index, data, context)) === key
++      }
++      if (offset < 0 || offset >= acceptedData.length) {
++        return false
++      }
++      const accepted = acceptedData[offset]
++      return Object.is(accepted, data) && String(computeItemKey(index, accepted, context)) === key
++    }
++    // Retention is only a geometry cache, never an authority cache. A row
++    // removed by replacement/filter/permission projection must leave the DOM
++    // in this commit even when the spare-node budget has not been exhausted.
++    for (const [key, row] of rows) {
++      const index = row.index - acceptedFirstIndex
++      if (acceptedData === undefined) {
++        if (index < 0 || index >= acceptedTotalCount || String(computeItemKey(row.index, row.data, context)) !== key) {
++          rows.delete(key)
++        }
++      } else if (index < 0 || index >= acceptedData.length || String(computeItemKey(row.index, acceptedData[index], context)) !== key) {
++        rows.delete(key)
++      } else {
++        rows.set(key, { index: row.index, data: acceptedData[index] })
++      }
++    }
++    for (const item of items) {
++      const key = String(computeItemKey(item.index, item.data, context))
++      if (!isAuthorized(key, item.index, item.data)) {
++        continue
++      }
++      rows.delete(key)
++      rows.set(key, { index: item.index, data: item.data })
++    }
++    if (token) {
++      for (let index = token.start; index < token.end; index++) {
++        const data = token.data?.[index]
++        const externalIndex = token.firstItemIndex + index
++        const key = String(computeItemKey(externalIndex, data, context))
++        preparing.add(key)
++        historyPreparing.add(key)
++        rows.delete(key)
++        rows.set(key, { index: externalIndex, data })
++      }
++    }
++    if (formalToken) {
++      for (const item of formalToken.candidates) {
++        const key = String(computeItemKey(item.index, item.data, context))
++        preparing.add(key)
++        formalPreparing.add(key)
++        rows.delete(key)
++        rows.set(key, { index: item.index, data: item.data })
++      }
++    }
++    // Retain a bounded recent working set, not all history. Visible/preparing
++    // nodes are never evicted by this cache budget.
++    if (token === null && formalToken === null) {
++      let spare = rows.size - visible.size - preparing.size
++      for (const key of rows.keys()) {
++        if (spare <= 64) {
++          break
++        }
++        if (!visible.has(key) && !preparing.has(key)) {
++          rows.delete(key)
++          spare--
++        }
++      }
++    }
++  }
++  useIsomorphicLayoutEffect(() => {
++    cache.current = rows
++  })
++
++  useIsomorphicLayoutEffect(() => {
++    const element = listHost
++    if (!enabled || !token || !element || deviation !== 0) {
++      return
++    }
++    const measure = () => {
++      const currentCss = getComputedStyle(element)
++      const currentWidth = element.clientWidth - parseFloat(currentCss.paddingLeft || '0') - parseFloat(currentCss.paddingRight || '0')
++      // A hidden tab is not a measurement failure. Its ResizeObserver wakes
++      // preparation when an actual inline size becomes available.
++      if (currentWidth <= 0) {
++        return
++      }
++      const nodes = [...element.children].filter(
++        (child) => (child as HTMLElement).dataset.historyPreparing === String(token.generation)
++      ) as HTMLElement[]
++      if (nodes.length !== token.end - token.start) {
++        return
++      }
++      observe(
++        token,
++        currentWidth,
++        nodes.map((child) => itemSize(child, 'offsetHeight')),
++        nodes,
++        element
++      )
++    }
++    measure()
++    if (typeof ResizeObserver === 'undefined') {
++      return
++    }
++    let frame = 0
++    const observer = new ResizeObserver(() => {
++      cancelAnimationFrame(frame)
++      frame = requestAnimationFrame(measure)
++    })
++    for (const child of element.children) {
++      if ((child as HTMLElement).dataset.historyPreparing === String(token.generation)) {
++        observer.observe(child)
++      }
++    }
++    return () => {
++      cancelAnimationFrame(frame)
++      observer.disconnect()
++    }
++  }, [token, observe, listHost, deviation, itemSize, enabled])
++
++  useIsomorphicLayoutEffect(() => {
++    const element = listHost
++    if (!enabled || !formalToken || !formalContext || !element || formalContext.host !== element || deviation !== 0) {
++      return
++    }
++    const measure = () => {
++      const currentCss = getComputedStyle(element)
++      const currentWidth = element.clientWidth - parseFloat(currentCss.paddingLeft || '0') - parseFloat(currentCss.paddingRight || '0')
++      if (currentWidth <= 0 || currentWidth !== formalContext.inlineSize) {
++        return
++      }
++      const nodes = [...element.children].filter(
++        (child) => (child as HTMLElement).dataset.formalPreparing === String(formalToken.generation)
++      ) as HTMLElement[]
++      if (nodes.length !== formalToken.candidates.length) {
++        return
++      }
++      observeFormal({
++        context: formalContext,
++        elements: nodes,
++        sizes: nodes.map((child) => itemSize(child, 'offsetHeight')),
++        token: formalToken,
++      })
++    }
++    measure()
++    if (typeof ResizeObserver === 'undefined') {
++      return
++    }
++    let frame = 0
++    const observer = new ResizeObserver(() => {
++      cancelAnimationFrame(frame)
++      frame = requestAnimationFrame(measure)
++    })
++    for (const child of element.children) {
++      if ((child as HTMLElement).dataset.formalPreparing === String(formalToken.generation)) {
++        observer.observe(child)
++      }
++    }
++    return () => {
++      cancelAnimationFrame(frame)
++      observer.disconnect()
++    }
++  }, [deviation, enabled, formalContext, formalToken, itemSize, listHost, observeFormal])
++
++  useIsomorphicLayoutEffect(() => {
++    const element = listHost
++    if (!enabled || !element || typeof ResizeObserver === 'undefined') {
++      return
++    }
++    const keyByIndex = new Map([...rows.entries()].map(([key, row]) => [row.index, key]))
++    const retained = [...element.children].filter((child) => (child as HTMLElement).dataset.historyRetained !== undefined) as HTMLElement[]
++    if (retained.length === 0) {
++      return
++    }
++    let frame = 0
++    const observer = new ResizeObserver((entries) => {
++      cancelAnimationFrame(frame)
++      frame = requestAnimationFrame(() => {
++        for (const entry of entries) {
++          const node = entry.target as HTMLElement
++          if (!node.isConnected || node.dataset.historyRetained === undefined) {
++            continue
++          }
++          const size = itemSize(node, 'offsetHeight')
++          const key = keyByIndex.get(Number(node.dataset.itemIndex))
++          if (key !== undefined) {
++            invalidateRetainedFormalCertificate({ blockSize: size, element: node, key })
++          }
++        }
++      })
++    })
++    retained.forEach((node) => observer.observe(node))
++    return () => {
++      cancelAnimationFrame(frame)
++      observer.disconnect()
++    }
++  }, [enabled, formalToken, invalidateRetainedFormalCertificate, itemSize, items, listHost, rows, token])
++
++  if (!retain) {
++    return children
++  }
++  return [...rows.entries()]
++    .sort((a, b) => a[1].index - b[1].index)
++    .map(([key, { data, index }]) => {
++      const active = visible.get(key)
++      if (active && !formalPreparing.has(key)) {
++        return active
++      }
++      return (
++        <ItemComponent
++          {...contextPropIfNotDomElement(ItemComponent, context)}
++          {...itemPropIfNotDomElement(ItemComponent, data)}
++          aria-hidden="true"
++          inert={true}
++          data-history-preparing={historyPreparing.has(key) ? token!.generation : undefined}
++          data-formal-preparing={formalPreparing.has(key) ? formalToken!.generation : undefined}
++          data-history-retained={preparing.has(key) ? undefined : ''}
++          data-index={-1}
++          data-item-index={index}
++          data-known-size={0}
++          key={key}
++          style={{
++            ...ITEM_STYLE,
++            position: 'fixed',
++            top: '-100vh',
++            transform: 'translateY(-100%)',
++            left: 0,
++            width,
++            visibility: 'hidden',
++            pointerEvents: 'none',
++          }}
++        >
++          {itemContent(index, data, context)}
++        </ItemComponent>
++      )
++    })
++})
++
+ const ListRoot: React.FC<ListRootProps> = /*#__PURE__*/ React.memo(function VirtuosoRoot(props) {
+   const useWindowScroll = useEmitterValue('useWindowScroll')
+   const showTopList = useEmitterValue('topItemsIndexes').length > 0
+@@ -497,15 +1533,16 @@ export const {
+       overscan: 'overscan',
+       increaseViewportBy: 'increaseViewportBy',
+       minOverscanItemCount: 'minOverscanItemCount',
+-      totalCount: 'totalCount',
++      totalCount: 'requestedTotalCount',
+       groupCounts: 'groupCounts',
+       topItemCount: 'topItemCount',
+-      firstItemIndex: 'firstItemIndex',
++      firstItemIndex: 'requestedFirstItemIndex',
+       initialTopMostItemIndex: 'initialTopMostItemIndex',
+       components: 'components',
+       atBottomThreshold: 'atBottomThreshold',
+       atTopThreshold: 'atTopThreshold',
+       computeItemKey: 'computeItemKey',
++      computeItemMeasurementKey: 'computeItemMeasurementKey',
+       defaultItemHeight: 'defaultItemHeight',
+       fixedGroupHeight: 'fixedGroupHeight', // Must be set above 'fixedItemHeight'
+       fixedItemHeight: 'fixedItemHeight',
+@@ -513,7 +1550,7 @@ export const {
+       itemSize: 'itemSize',
+       scrollSeekConfiguration: 'scrollSeekConfiguration',
+       headerFooterTag: 'HeaderFooterTag',
+-      data: 'data',
++      data: 'requestedData',
+       initialItemCount: 'initialItemCount',
+       initialScrollTop: 'initialScrollTop',
+       alignToBottom: 'alignToBottom',
+@@ -542,6 +1579,7 @@ export const {
+       totalListHeightChanged: 'totalListHeightChanged',
+       itemsRendered: 'itemsRendered',
+       groupIndices: 'groupIndices',
++      formalRangeStateChange: 'formalRangeStateChange',
+     },
+   },
+   ListRoot
+diff --git a/packages/react-virtuoso/src/component-interfaces/Virtuoso.ts b/packages/react-virtuoso/src/component-interfaces/Virtuoso.ts
+index e6a014e..50d29ea 100644
+--- a/packages/react-virtuoso/src/component-interfaces/Virtuoso.ts
++++ b/packages/react-virtuoso/src/component-interfaces/Virtuoso.ts
+@@ -1,6 +1,7 @@
+ import type {
+   Components,
+   ComputeItemKey,
++  ComputeItemMeasurementKey,
+   FlatIndexLocationWithAlign,
+   FlatScrollIntoViewLocation,
+   FollowOutput,
+@@ -19,6 +20,15 @@ import type {
+ } from '../interfaces'
+ import type { LogLevel } from '../loggerSystem'
+ 
++export type FormalRangePendingReason = 'host' | 'inline-size' | 'item-size'
++
++export interface FormalRangeState {
++  blocking: boolean
++  generation: number
++  phase: 'failed' | 'pending' | 'ready'
++  reason?: 'duplicate-key' | FormalRangePendingReason
++}
++
+ /**
+  * Exposes the GroupedVirtuoso component methods for imperative control.
+  * Access via ref on the GroupedVirtuoso component.
+@@ -195,6 +205,15 @@ export interface VirtuosoProps<Data, Context> extends ListRootProps {
+    */
+   computeItemKey?: ComputeItemKey<Data, Context>
+ 
++  /**
++   * Returns a layout revision for exact future-range measurement. Rows whose
++   * returned value changes are measured again before entering formal geometry.
++   */
++  computeItemMeasurementKey?: ComputeItemMeasurementKey<Data, Context>
++
++  /** Reports exact-range admission progress for a requested formal generation. */
++  formalRangeStateChange?: (state: FormalRangeState) => void
++
+   /**
+    * Additional context available in the custom components and content callbacks
+    */
+diff --git a/packages/react-virtuoso/src/domIOSystem.ts b/packages/react-virtuoso/src/domIOSystem.ts
+index e19388a..c24325c 100644
+--- a/packages/react-virtuoso/src/domIOSystem.ts
++++ b/packages/react-virtuoso/src/domIOSystem.ts
+@@ -1,6 +1,26 @@
+ import * as u from './urx'
+ 
+ import type { ScrollContainerState } from './interfaces'
++import type { ListState } from './listStateSystem'
++
++export interface ListLayoutCommit {
++  clientHeight: number
++  deviation: number
++  host: HTMLElement
++  items: {
++    bottom: number
++    data: unknown
++    key?: string | number | bigint | undefined
++    index: number
++    element: HTMLElement
++    originalIndex: number
++    top: number
++  }[]
++  listState: ListState
++  nativeScrollTop: number
++  maxScrollTop: number
++  readScrollTop: () => number
++}
+ 
+ export const domIOSystem = u.system(
+   () => {
+@@ -11,6 +31,7 @@ export const domIOSystem = u.system(
+     // has actually reached the DOM. `upwardScrollFixSystem` waits for it before
+     // scrolling, so the scroll never runs against the pre-deviation layout.
+     const deviationCommitted = u.stream<number>()
++    const listLayoutCommitted = u.stream<ListLayoutCommit>()
+     const smoothScrollTargetReached = u.stream<true>()
+     const statefulScrollTop = u.statefulStream(0)
+     const viewportHeight = u.stream<number>()
+@@ -51,6 +72,7 @@ export const domIOSystem = u.system(
+       footerHeight,
+       headerHeight,
+       horizontalDirection,
++      listLayoutCommitted,
+       scrollBy,
+       // input
+       scrollContainerState,
+diff --git a/packages/react-virtuoso/src/followOutputSystem.ts b/packages/react-virtuoso/src/followOutputSystem.ts
+index 6d94565..b4c7387 100644
+--- a/packages/react-virtuoso/src/followOutputSystem.ts
++++ b/packages/react-virtuoso/src/followOutputSystem.ts
+@@ -1,6 +1,7 @@
+ import { contextSystem } from './contextSystem'
+ import { domIOSystem } from './domIOSystem'
+ import { initialTopMostItemIndexSystem } from './initialTopMostItemIndexSystem'
++import { listStateSystem } from './listStateSystem'
+ import { loggerSystem, LogLevel } from './loggerSystem'
+ import { propsReadySystem } from './propsReadySystem'
+ import { scrollIntoViewSystem } from './scrollIntoViewSystem'
+@@ -27,7 +28,7 @@ const behaviorFromFollowOutput = (follow: FollowOutput, isAtBottom: boolean) =>
+ 
+ export const followOutputSystem = u.system(
+   ([
+-    { listRefresh, totalCount, fixedItemSize, data },
++    { listRefresh, fixedItemSize },
+     { atBottomState, isAtBottom },
+     { scrollToIndex },
+     { scrolledToInitialItem },
+@@ -36,10 +37,19 @@ export const followOutputSystem = u.system(
+     { scrollingInProgress },
+     { context },
+     { scrollIntoView },
++    { listState },
+   ]) => {
+     const followOutput = u.statefulStream<FollowOutput>(false)
+     const autoscrollToBottom = u.stream<true>()
+     let pendingScrollHandle: any = null
++    const formalTotalCount = u.statefulStreamFromEmitter(
++      u.pipe(
++        listState,
++        u.map((state) => state.totalCount),
++        u.distinctUntilChanged()
++      ),
++      0
++    )
+ 
+     function scrollToBottom(followOutputBehavior: FollowOutputScalarType) {
+       u.publish(scrollToIndex, {
+@@ -51,7 +61,7 @@ export const followOutputSystem = u.system(
+ 
+     u.subscribe(
+       u.pipe(
+-        u.combineLatest(u.pipe(u.duc(totalCount), u.skip(1)), didMount),
++        u.combineLatest(u.pipe(u.duc(formalTotalCount), u.skip(1)), didMount),
+         u.withLatestFrom(u.duc(followOutput), isAtBottom, scrolledToInitialItem, scrollingInProgress),
+         u.map(([[totalCount, didMount], followOutput, isAtBottom, scrolledToInitialItem, scrollingInProgress]) => {
+           let shouldFollow = didMount && scrolledToInitialItem
+@@ -102,7 +112,7 @@ export const followOutputSystem = u.system(
+ 
+     u.subscribe(
+       u.pipe(
+-        u.combineLatest(u.duc(followOutput), totalCount, propsReady),
++        u.combineLatest(u.duc(followOutput), formalTotalCount, propsReady),
+         u.filter(([follow, , ready]) => follow !== false && ready),
+         u.scan(
+           ({ value }, [, next]) => {
+@@ -111,7 +121,7 @@ export const followOutputSystem = u.system(
+           { refreshed: false, value: 0 }
+         ),
+         u.filter(({ refreshed }) => refreshed),
+-        u.withLatestFrom(followOutput, totalCount)
++        u.withLatestFrom(followOutput, formalTotalCount)
+       ),
+       ([, followOutput]) => {
+         // activate adjustment only if the initial item is already scrolled to
+@@ -142,16 +152,7 @@ export const followOutputSystem = u.system(
+ 
+     const tcOrDataChange = u.stream<number>()
+ 
+-    u.connect(
+-      u.merge(
+-        u.pipe(
+-          u.duc(data),
+-          u.map((data) => data?.length ?? 0)
+-        ),
+-        u.pipe(u.duc(totalCount))
+-      ),
+-      tcOrDataChange
+-    )
++    u.connect(u.duc(formalTotalCount), tcOrDataChange)
+ 
+     u.subscribe(
+       u.pipe(
+@@ -196,6 +197,7 @@ export const followOutputSystem = u.system(
+     loggerSystem,
+     domIOSystem,
+     contextSystem,
+-    scrollIntoViewSystem
++    scrollIntoViewSystem,
++    listStateSystem
+   )
+ )
+diff --git a/packages/react-virtuoso/src/hooks/__mocks__/useChangedChildSizes.ts b/packages/react-virtuoso/src/hooks/__mocks__/useChangedChildSizes.ts
+index 58be00f..626c726 100644
+--- a/packages/react-virtuoso/src/hooks/__mocks__/useChangedChildSizes.ts
++++ b/packages/react-virtuoso/src/hooks/__mocks__/useChangedChildSizes.ts
+@@ -1,15 +1,45 @@
++import { useRef } from 'react'
++
+ import type { SizeRange } from '../../'
++import type { ChildSizeObservation } from '../useChangedChildSizes'
+ 
+ type CallbackRefParam = HTMLElement | null
+ 
+-export default function useChangedChildSizes(callback: (sizes: SizeRange[]) => void) {
++export default function useChangedChildSizes(callback: (observation: ChildSizeObservation) => void) {
++  const ref = useRef<CallbackRefParam>(null)
+   const callbackRef = (elRef: CallbackRefParam) => {
++    if (ref.current && ref.current !== elRef) {
++      delete (ref.current as any).triggerChangedChildSizes
++    }
++    ref.current = elRef
+     if (elRef) {
+       ;(elRef as any).triggerChangedChildSizes = (sizes: SizeRange[]) => {
+-        callback(sizes)
++        const items = [...elRef.children].flatMap((child) => {
++          const element = child as HTMLElement
++          if (element.dataset.index === undefined) {
++            return []
++          }
++          const rect = element.getBoundingClientRect()
++          return [{ bottom: rect.bottom, element, originalIndex: Number(element.dataset.index), top: rect.top }]
++        })
++        callback({
++          layout: {
++            clientHeight: elRef.parentElement?.clientHeight ?? 0,
++            host: elRef,
++            inlineSize: elRef.clientWidth,
++            maxScrollTop: (elRef.parentElement?.scrollHeight ?? 0) - (elRef.parentElement?.clientHeight ?? 0),
++            readScrollTop: () => elRef.parentElement?.scrollTop ?? 0,
++            items,
++            scrollTop: elRef.parentElement?.scrollTop ?? 0,
++          },
++          ranges: sizes,
++          observedIndexes: sizes.flatMap(({ startIndex, endIndex }) =>
++            Array.from({ length: endIndex - startIndex + 1 }, (_, i) => startIndex + i)
++          ),
++        })
+       }
+     }
+   }
+ 
+-  return { callbackRef }
++  return { callbackRef, ref, measure: () => undefined }
+ }
+diff --git a/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts b/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts
+index 4dd89f0..a916732 100644
+--- a/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts
++++ b/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts
+@@ -6,8 +6,23 @@ import { useSizeWithElRef } from './useSize'
+ 
+ import type { ScrollContainerState, SizeFunction, SizeRange } from '../interfaces'
+ import type { Log } from '../loggerSystem'
++
++export interface ChildSizeObservation {
++  layout?: {
++    clientHeight: number
++    host: HTMLElement
++    inlineSize: number
++    maxScrollTop: number
++    readScrollTop: () => number
++    scrollTop: number
++    items: { originalIndex: number; key?: string | undefined; top: number; bottom: number; element: HTMLElement }[]
++  }
++  observedIndexes: number[]
++  ranges: SizeRange[]
++}
++
+ export default function useChangedListContentsSizes(
+-  callback: (ranges: SizeRange[]) => void,
++  callback: (observation: ChildSizeObservation) => void,
+   itemSize: SizeFunction,
+   enabled: boolean,
+   scrollContainerStateCallback: (state: ScrollContainerState) => void,
+@@ -15,11 +30,19 @@ export default function useChangedListContentsSizes(
+   gap: ((gap: number) => void) | undefined,
+   customScrollParent: HTMLElement | undefined,
+   horizontalDirection: boolean,
+-  skipAnimationFrame: boolean
++  skipAnimationFrame: boolean,
++  itemKey?: (originalIndex: number) => string,
++  samePaint = false
+ ) {
++  const samePaintObservation = React.useRef<{ element: HTMLElement; observation: ChildSizeObservation } | null>(null)
+   const memoedCallback = React.useCallback(
+     (el: HTMLElement) => {
+-      const ranges = getChangedChildSizes(el.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight', log)
++      const prepared = samePaintObservation.current
++      samePaintObservation.current = null
++      const observation =
++        prepared?.element === el
++          ? prepared.observation
++          : getChangedChildSizes(el.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight', log)
+       let scrollableElement = el.parentElement!
+ 
+       while (scrollableElement.dataset.virtuosoScroller === undefined) {
+@@ -80,17 +103,71 @@ export default function useChangedListContentsSizes(
+           : resolveGapValue('row-gap', getComputedStyle(el).rowGap, log)
+       )
+ 
+-      if (ranges !== null) {
+-        callback(ranges)
++      if (observation !== null) {
++        if (!horizontalDirection && !windowScrolling && !customScrollParent) {
++          const viewportTop = scrollableElement.getBoundingClientRect().top
++          const hostStyle = getComputedStyle(el)
++          observation.layout = {
++            clientHeight: scrollableElement.clientHeight,
++            host: el,
++            inlineSize: el.clientWidth - parseFloat(hostStyle.paddingLeft || '0') - parseFloat(hostStyle.paddingRight || '0'),
++            maxScrollTop: scrollHeight - scrollableElement.clientHeight,
++            readScrollTop: () => scrollableElement.scrollTop,
++            scrollTop,
++            items: [...el.children].flatMap((child) => {
++              const element = child as HTMLElement
++              if (
++                element.dataset.index === undefined ||
++                element.dataset.historyPreparing !== undefined ||
++                element.dataset.historyRetained !== undefined ||
++                element.dataset.formalPreparing !== undefined ||
++                !element.isConnected
++              ) {
++                return []
++              }
++              const rect = element.getBoundingClientRect()
++              return [
++                {
++                  originalIndex: Number(element.dataset.index),
++                  key: itemKey?.(Number(element.dataset.index)),
++                  top: rect.top - viewportTop,
++                  bottom: rect.bottom - viewportTop,
++                  element,
++                },
++              ]
++            }),
++          }
++        }
++        callback(observation)
++      }
++    },
++    [callback, itemSize, log, gap, customScrollParent, scrollContainerStateCallback, horizontalDirection, itemKey]
++  )
++
++  const scheduleSamePaint = React.useCallback(
++    (element: HTMLElement) => {
++      const observation = getChangedChildSizes(element.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight')
++      if (observation !== null && observation.ranges.length > 0) {
++        samePaintObservation.current = { element, observation }
++        return true
+       }
++      return false
+     },
+-    [callback, itemSize, log, gap, customScrollParent, scrollContainerStateCallback, horizontalDirection]
++    [horizontalDirection, itemSize]
+   )
+ 
+-  return useSizeWithElRef(memoedCallback, enabled, skipAnimationFrame)
++  return {
++    ...useSizeWithElRef(memoedCallback, enabled, skipAnimationFrame, samePaint ? scheduleSamePaint : false),
++    measure: memoedCallback,
++  }
+ }
+ 
+-function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction, field: 'offsetHeight' | 'offsetWidth', log: Log) {
++function getChangedChildSizes(
++  children: HTMLCollection,
++  itemSize: SizeFunction,
++  field: 'offsetHeight' | 'offsetWidth',
++  log?: Log
++): ChildSizeObservation | null {
+   const length = children.length
+ 
+   if (length === 0) {
+@@ -98,6 +175,7 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
+   }
+ 
+   const results: SizeRange[] = []
++  const observedIndexes: number[] = []
+ 
+   for (let i = 0; i < length; i++) {
+     const child = children.item(i) as HTMLElement
+@@ -106,11 +184,19 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
+       continue
+     }
+ 
++    if (
++      child.dataset.historyPreparing !== undefined ||
++      child.dataset.historyRetained !== undefined ||
++      child.dataset.formalPreparing !== undefined
++    ) {
++      continue
++    }
+     const index = parseInt(child.dataset.index, 10)
++    observedIndexes.push(index)
+     const knownSize = parseFloat(child.dataset.knownSize!)
+     const size = itemSize(child, field)
+ 
+-    if (size === 0) {
++    if (size === 0 && log) {
+       log('Zero-sized element, this should not happen', { child }, LogLevel.ERROR)
+     }
+ 
+@@ -126,7 +212,7 @@ function getChangedChildSizes(children: HTMLCollection, itemSize: SizeFunction,
+     }
+   }
+ 
+-  return results
++  return { observedIndexes, ranges: results }
+ }
+ 
+ function resolveGapValue(property: string, value: string | undefined, log: Log) {
+diff --git a/packages/react-virtuoso/src/hooks/useSize.ts b/packages/react-virtuoso/src/hooks/useSize.ts
+index d55407f..41874ac 100644
+--- a/packages/react-virtuoso/src/hooks/useSize.ts
++++ b/packages/react-virtuoso/src/hooks/useSize.ts
+@@ -6,7 +6,12 @@ export default function useSize(callback: (e: HTMLElement) => void, enabled: boo
+   return useSizeWithElRef(callback, enabled, skipAnimationFrame).callbackRef
+ }
+ 
+-export function useSizeWithElRef(callback: (e: HTMLElement) => void, enabled: boolean, skipAnimationFrame: boolean) {
++export function useSizeWithElRef(
++  callback: (e: HTMLElement) => void,
++  enabled: boolean,
++  skipAnimationFrame: boolean,
++  samePaint: boolean | ((element: HTMLElement) => boolean) = false
++) {
+   const ref = React.useRef<CallbackRefParam>(null)
+ 
+   let callbackRef = (_el: CallbackRefParam) => {
+@@ -16,21 +21,23 @@ export function useSizeWithElRef(callback: (e: HTMLElement) => void, enabled: bo
+   const observer = React.useMemo(() => {
+     if (typeof ResizeObserver !== 'undefined') {
+       return new ResizeObserver((entries: ResizeObserverEntry[]) => {
++        const element = entries[0]!.target as HTMLElement
+         const code = () => {
+-          const element = entries[0]!.target as HTMLElement
+           if (element.offsetParent !== null) {
+             callback(element)
+           }
+         }
+         if (skipAnimationFrame) {
+           code()
++        } else if (element.offsetParent !== null && (typeof samePaint === 'function' ? samePaint(element) : samePaint)) {
++          queueMicrotask(code)
+         } else {
+           requestAnimationFrame(code)
+         }
+       })
+     }
+     return null
+-  }, [callback, skipAnimationFrame])
++  }, [callback, samePaint, skipAnimationFrame])
+ 
+   callbackRef = (elRef: CallbackRefParam) => {
+     if (elRef && enabled) {
+diff --git a/packages/react-virtuoso/src/interfaces.ts b/packages/react-virtuoso/src/interfaces.ts
+index 136e5f3..079b49b 100644
+--- a/packages/react-virtuoso/src/interfaces.ts
++++ b/packages/react-virtuoso/src/interfaces.ts
+@@ -110,6 +110,15 @@ export interface Components<Data = unknown, Context = unknown> {
+  */
+ export type ComputeItemKey<Data, Context> = (index: number, item: Data, context: Context) => React.Key
+ 
++/**
++ * Returns the caller-owned layout revision for an item. Change the returned
++ * value when the same semantic item/data identity can render different
++ * geometry due to external presentation state.
++ *
++ * @group Common
++ */
++export type ComputeItemMeasurementKey<Data, Context> = (index: number, item: Data, context: Context) => unknown
++
+ /**
+  * Passed to the Components.FillerRow custom component
+  * @group TableVirtuoso
+diff --git a/packages/react-virtuoso/src/listStateSystem.ts b/packages/react-virtuoso/src/listStateSystem.ts
+index e6da4ed..913cfc6 100644
+--- a/packages/react-virtuoso/src/listStateSystem.ts
++++ b/packages/react-virtuoso/src/listStateSystem.ts
+@@ -6,7 +6,7 @@ import { propsReadySystem } from './propsReadySystem'
+ import { recalcSystem } from './recalcSystem'
+ import { scrollToIndexSystem } from './scrollToIndexSystem'
+ import { BOTTOM, TOP, sizeRangeSystem } from './sizeRangeSystem'
+-import { hasGroups, originalIndexFromItemIndex, rangesWithinOffsets, sizeSystem } from './sizeSystem'
++import { hasGroups, offsetOf, originalIndexFromItemIndex, rangesWithinOffsets, sizeSystem } from './sizeSystem'
+ import { stateFlagsSystem } from './stateFlagsSystem'
+ import * as u from './urx'
+ 
+@@ -28,6 +28,16 @@ export interface ListState {
+   totalCount: number
+ }
+ 
++export type FormalRangeCandidate = ListItem<unknown> & {
++  measurementKey: unknown
++}
++
++export interface FormalRangePreparation {
++  candidates: FormalRangeCandidate[]
++  desiredState: ListState
++  generation: number
++}
++
+ export type MinOverscanItemCount = number | { bottom: number; top: number }
+ 
+ function probeItemSet(index: number, sizes: SizeState, data: Data) {
+@@ -182,8 +192,8 @@ export const listStateSystem = u.system(
+     { data, firstItemIndex, gap, sizes, totalCount },
+     groupedListSystem,
+     { listBoundary, topListHeight: rangeTopListHeight, visibleRange },
+-    { initialTopMostItemIndex, scrolledToInitialItem },
+-    { topListHeight },
++    { initialItemFinalLocationReached, initialTopMostItemIndex, scrolledToInitialItem },
++    { scrollToIndexReady, topListHeight },
+     stateFlags,
+     { didMount },
+     { recalcInProgress },
+@@ -192,10 +202,13 @@ export const listStateSystem = u.system(
+     const initialItemCount = u.statefulStream(0)
+     const itemsRendered = u.stream<ListItems>()
+     const minOverscanItemCount = u.statefulStream<MinOverscanItemCount>(0)
++    const measurementItemRange = u.statefulStream<[number, number] | null>(null)
++    const formalRangeSourceGeneration = u.statefulStream(0)
++    let normalListState: (() => ListState | null) | null = null
+ 
+     u.connect(groupedListSystem.topItemsIndexes, topItemsIndexes)
+ 
+-    const listState = u.statefulStreamFromEmitter(
++    const desiredListState = u.statefulStreamFromEmitter(
+       u.pipe(
+         u.combineLatest(
+           didMount,
+@@ -209,9 +222,9 @@ export const listStateSystem = u.system(
+           u.duc(firstItemIndex),
+           u.duc(gap),
+           u.duc(minOverscanItemCount),
+-          data
++          u.combineLatest(data, measurementItemRange, formalRangeSourceGeneration)
+         ),
+-        u.filter(([mount, recalcInProgress, , totalCount, , , , , , , , data]) => {
++        u.filter(([mount, recalcInProgress, , totalCount, , , , , , , , [data]]) => {
+           // When data length changes, it is synced to totalCount, both of which trigger a recalc separately.
+           // Recalc should be skipped then, as the calculation expects both data and totalCount to be in sync.
+           const dataChangeInProgress = data !== undefined && data.length !== totalCount
+@@ -230,7 +243,7 @@ export const listStateSystem = u.system(
+             firstItemIndex,
+             gap,
+             minOverscanItemCountValue,
+-            data,
++            [data, pinnedRange],
+           ]) => {
+             const sizesValue = sizes
+             const { offsetTree, sizeTree } = sizesValue
+@@ -291,80 +304,95 @@ export const listStateSystem = u.system(
+ 
+             const minStartIndex = topItemsIndexes.length > 0 ? topItemsIndexes[topItemsIndexes.length - 1]! + 1 : 0
+ 
+-            const offsetPointRanges = rangesWithinOffsets(offsetTree, startOffset, endOffset, minStartIndex)
+-            if (offsetPointRanges.length === 0) {
+-              return null
+-            }
++            const buildRange = (startOffset: number, endOffset: number, includeOverscan: boolean) => {
++              const offsetPointRanges = rangesWithinOffsets(offsetTree, startOffset, endOffset, minStartIndex)
++              if (offsetPointRanges.length === 0) {
++                return null
++              }
+ 
+-            const maxIndex = totalCount - 1
++              const maxIndex = totalCount - 1
+ 
+-            const items = u.tap([] as Item<any>[], (result) => {
+-              for (const range of offsetPointRanges) {
+-                const point = range.value
+-                let offset = point.offset
+-                let rangeStartIndex = range.start
+-                const size = point.size
++              const items = u.tap([] as Item<any>[], (result) => {
++                for (const range of offsetPointRanges) {
++                  const point = range.value
++                  let offset = point.offset
++                  let rangeStartIndex = range.start
++                  const size = point.size
+ 
+-                if (point.offset < startOffset) {
+-                  rangeStartIndex += Math.floor((startOffset - point.offset + gap) / (size + gap))
+-                  const itemCount = rangeStartIndex - range.start
+-                  offset += itemCount * size + itemCount * gap
+-                }
++                  if (point.offset < startOffset) {
++                    rangeStartIndex += Math.floor((startOffset - point.offset + gap) / (size + gap))
++                    const itemCount = rangeStartIndex - range.start
++                    offset += itemCount * size + itemCount * gap
++                  }
+ 
+-                if (rangeStartIndex < minStartIndex) {
+-                  offset += (minStartIndex - rangeStartIndex) * size
+-                  rangeStartIndex = minStartIndex
+-                }
++                  if (rangeStartIndex < minStartIndex) {
++                    offset += (minStartIndex - rangeStartIndex) * size
++                    rangeStartIndex = minStartIndex
++                  }
+ 
+-                const endIndex = Math.min(range.end, maxIndex)
++                  const endIndex = Math.min(range.end, maxIndex)
+ 
+-                for (let i = rangeStartIndex; i <= endIndex; i++) {
+-                  if (offset >= endOffset) {
+-                    break
+-                  }
++                  for (let i = rangeStartIndex; i <= endIndex; i++) {
++                    if (offset >= endOffset) {
++                      break
++                    }
+ 
+-                  result.push({ data: data?.[i], index: i, offset, size })
+-                  offset += size + gap
++                    result.push({ data: data?.[i], index: i, offset, size })
++                    offset += size + gap
++                  }
+                 }
+-              }
+-            })
+-
+-            // Extend items by minOverscanItemCount at the top and bottom
+-            const topOverscanCount = getMinOverscanItemCount(minOverscanItemCountValue, TOP)
+-            const bottomOverscanCount = getMinOverscanItemCount(minOverscanItemCountValue, BOTTOM)
+-
+-            if (items.length > 0 && (topOverscanCount > 0 || bottomOverscanCount > 0)) {
+-              const firstItem = items[0]!
+-              const lastItem = items[items.length - 1]!
+-
+-              // Prepend items before the first rendered item
+-              if (topOverscanCount > 0 && firstItem.index > minStartIndex) {
+-                const prependCount = Math.min(topOverscanCount, firstItem.index - minStartIndex)
+-                const prependItems: Item<any>[] = []
+-                let offset = firstItem.offset
+-                for (let i = firstItem.index - 1; i >= firstItem.index - prependCount; i--) {
+-                  const ranges = rangesWithin(sizeTree, i, i)
+-                  const size = ranges[0]?.value ?? firstItem.size
+-                  offset -= size + gap
+-                  prependItems.unshift({ data: data?.[i], index: i, offset, size })
++              })
++
++              // Extend items by minOverscanItemCount at the top and bottom
++              const topOverscanCount = includeOverscan ? getMinOverscanItemCount(minOverscanItemCountValue, TOP) : 0
++              const bottomOverscanCount = includeOverscan ? getMinOverscanItemCount(minOverscanItemCountValue, BOTTOM) : 0
++
++              if (items.length > 0 && (topOverscanCount > 0 || bottomOverscanCount > 0)) {
++                const firstItem = items[0]!
++                const lastItem = items[items.length - 1]!
++
++                // Prepend items before the first rendered item
++                if (topOverscanCount > 0 && firstItem.index > minStartIndex) {
++                  const prependCount = Math.min(topOverscanCount, firstItem.index - minStartIndex)
++                  const prependItems: Item<any>[] = []
++                  let offset = firstItem.offset
++                  for (let i = firstItem.index - 1; i >= firstItem.index - prependCount; i--) {
++                    const ranges = rangesWithin(sizeTree, i, i)
++                    const size = ranges[0]?.value ?? firstItem.size
++                    offset -= size + gap
++                    prependItems.unshift({ data: data?.[i], index: i, offset, size })
++                  }
++                  items.unshift(...prependItems)
+                 }
+-                items.unshift(...prependItems)
+-              }
+ 
+-              // Append items after the last rendered item
+-              if (bottomOverscanCount > 0 && lastItem.index < maxIndex) {
+-                const appendCount = Math.min(bottomOverscanCount, maxIndex - lastItem.index)
+-                let offset = lastItem.offset + lastItem.size + gap
+-                for (let i = lastItem.index + 1; i <= lastItem.index + appendCount; i++) {
+-                  const ranges = rangesWithin(sizeTree, i, i)
+-                  const size = ranges[0]?.value ?? lastItem.size
+-                  items.push({ data: data?.[i], index: i, offset, size })
+-                  offset += size + gap
++                // Append items after the last rendered item
++                if (bottomOverscanCount > 0 && lastItem.index < maxIndex) {
++                  const appendCount = Math.min(bottomOverscanCount, maxIndex - lastItem.index)
++                  let offset = lastItem.offset + lastItem.size + gap
++                  for (let i = lastItem.index + 1; i <= lastItem.index + appendCount; i++) {
++                    const ranges = rangesWithin(sizeTree, i, i)
++                    const size = ranges[0]?.value ?? lastItem.size
++                    items.push({ data: data?.[i], index: i, offset, size })
++                    offset += size + gap
++                  }
+                 }
+               }
+-            }
+ 
+-            return buildListState(items, topItems, totalCount, gap, sizesValue, firstItemIndex)
++              return buildListState(items, topItems, totalCount, gap, sizesValue, firstItemIndex)
++            }
++            normalListState = () => {
++              const [start, end] = u.getValue(visibleRange)
++              return buildRange(start, end, true)
++            }
++            if (pinnedRange) {
++              const [first, last] = pinnedRange
++              return buildRange(
++                offsetOf(first, offsetTree, gap),
++                offsetOf(last, offsetTree, gap) + findMaxKeyValue(sizeTree, last)[1]!,
++                false
++              )
++            }
++            return buildRange(startOffset, endOffset, true)
+           }
+         ),
+         //@ts-expect-error filter needs to be fixed
+@@ -374,6 +402,167 @@ export const listStateSystem = u.system(
+       EMPTY_LIST_STATE
+     )
+ 
++    const listState = u.statefulStream(EMPTY_LIST_STATE)
++    const formalRangePreparation = u.statefulStream<FormalRangePreparation | null>(null)
++    const formalRangeAdmissionPaused = u.statefulStream(false)
++    const formalLiveGeometryRefresh = u.statefulStream(false)
++    const formalRangeCandidates = u.statefulStream<(state: ListState) => FormalRangeCandidate[] | null>(() => [])
++    const retainAuthorizedFormalRange = u.statefulStream<(formal: ListState, desired: ListState) => ListState>((formal) => formal)
++    const reevaluateFormalRange = u.stream<void>()
++    let preparationGeneration = 0
++
++    const refreshAdmittedGeometry = (current: ListState, desired: ListState) => {
++      if (current.items.length === 0 || current.firstItemIndex !== desired.firstItemIndex || desired.totalCount < current.totalCount) {
++        return current
++      }
++      const sizeState = u.getValue(sizes)
++      const currentGap = u.getValue(gap)
++      const refreshItem = (item: ListItem<unknown>) => {
++        const originalIndex = item.originalIndex!
++        return {
++          ...item,
++          offset: offsetOf(originalIndex, sizeState.offsetTree, currentGap),
++          size: findMaxKeyValue(sizeState.sizeTree, originalIndex)[1] ?? item.size,
++        }
++      }
++      const items = current.items.map(refreshItem)
++      const topItems = current.topItems.map(refreshItem)
++      const offsetTop = items[0]?.offset ?? 0
++      const bottom = items.length > 0 ? items[items.length - 1]!.offset + items[items.length - 1]!.size : 0
++      const lastAcceptedIndex = current.totalCount - 1
++      const total =
++        lastAcceptedIndex >= 0
++          ? offsetOf(lastAcceptedIndex, sizeState.offsetTree, currentGap) + (findMaxKeyValue(sizeState.sizeTree, lastAcceptedIndex)[1] ?? 0)
++          : 0
++      const next = {
++        ...current,
++        bottom,
++        items,
++        offsetBottom: total - bottom,
++        offsetTop,
++        top: offsetTop,
++        topItems,
++        topListHeight: topItems.reduce((height, item) => height + item.size, 0),
++      }
++      const unchanged =
++        current.bottom === next.bottom &&
++        current.offsetBottom === next.offsetBottom &&
++        current.offsetTop === next.offsetTop &&
++        current.topListHeight === next.topListHeight &&
++        current.items.every((item, index) => item.offset === items[index]!.offset && item.size === items[index]!.size) &&
++        current.topItems.every((item, index) => item.offset === topItems[index]!.offset && item.size === topItems[index]!.size)
++      return unchanged ? current : next
++    }
++
++    const refreshDesiredGeometry = (state: ListState) => {
++      if (state.items.length === 0) {
++        return state
++      }
++      const sizeState = u.getValue(sizes)
++      const currentGap = u.getValue(gap)
++      const refreshItem = (item: ListItem<unknown>) => {
++        const originalIndex = item.originalIndex!
++        return {
++          ...item,
++          offset: offsetOf(originalIndex, sizeState.offsetTree, currentGap),
++          size: findMaxKeyValue(sizeState.sizeTree, originalIndex)[1] ?? item.size,
++        }
++      }
++      const items = state.items.map(refreshItem)
++      const topItems = state.topItems.map(refreshItem)
++      const offsetTop = items[0]?.offset ?? 0
++      const bottom = items.length > 0 ? items[items.length - 1]!.offset + items[items.length - 1]!.size : 0
++      const lastIndex = state.totalCount - 1
++      const total =
++        lastIndex >= 0
++          ? offsetOf(lastIndex, sizeState.offsetTree, currentGap) + (findMaxKeyValue(sizeState.sizeTree, lastIndex)[1] ?? 0)
++          : 0
++      const next = {
++        ...state,
++        bottom,
++        items,
++        offsetBottom: total - bottom,
++        offsetTop,
++        top: offsetTop,
++        topItems,
++        topListHeight: topItems.reduce((height, item) => height + item.size, 0),
++      }
++      const unchanged =
++        state.bottom === next.bottom &&
++        state.offsetBottom === next.offsetBottom &&
++        state.offsetTop === next.offsetTop &&
++        state.topListHeight === next.topListHeight &&
++        state.items.every((item, index) => item.offset === items[index]!.offset && item.size === items[index]!.size) &&
++        state.topItems.every((item, index) => item.offset === topItems[index]!.offset && item.size === topItems[index]!.size)
++      return unchanged ? state : next
++    }
++
++    const admitDesiredState = (desired: ListState) => {
++      if (u.getValue(formalRangeAdmissionPaused)) {
++        return
++      }
++      let state = desired
++      let candidates = u.getValue(formalRangeCandidates)(state)
++      if (candidates !== null && candidates.length > 0) {
++        const normalized = refreshDesiredGeometry(state)
++        if (normalized !== state) {
++          state = normalized
++          candidates = u.getValue(formalRangeCandidates)(state)
++        }
++      }
++      if (candidates === null) {
++        u.publish(formalRangePreparation, null)
++        u.publish(scrollToIndexReady, false)
++        const currentFormal = u.getValue(listState)
++        const authorizedFormal = u.getValue(retainAuthorizedFormalRange)(currentFormal, state)
++        if (authorizedFormal !== currentFormal) {
++          u.publish(listState, authorizedFormal)
++        }
++        return
++      }
++      if (candidates.length === 0) {
++        u.publish(formalRangePreparation, null)
++        if (u.getValue(listState) !== state) {
++          u.publish(listState, state)
++        }
++        u.publish(scrollToIndexReady, true)
++        return
++      }
++      u.publish(scrollToIndexReady, false)
++      const current = u.getValue(formalRangePreparation)
++      if (
++        current?.desiredState === state &&
++        current.candidates.length === candidates.length &&
++        current.candidates.every((item, index) => {
++          const candidate = candidates[index]!
++          return (
++            item.index === candidate.index &&
++            item.originalIndex === candidate.originalIndex &&
++            item.size === candidate.size &&
++            Object.is(item.data, candidate.data) &&
++            Object.is(item.measurementKey, candidate.measurementKey)
++          )
++        })
++      ) {
++        return
++      }
++      u.publish(formalRangePreparation, {
++        candidates,
++        desiredState: state,
++        generation: ++preparationGeneration,
++      })
++      const currentFormal = u.getValue(listState)
++      const authorizedFormal = u.getValue(retainAuthorizedFormalRange)(currentFormal, state)
++      const refreshedFormal = u.getValue(formalLiveGeometryRefresh) ? refreshAdmittedGeometry(authorizedFormal, state) : authorizedFormal
++      if (refreshedFormal !== currentFormal) {
++        u.publish(listState, refreshedFormal)
++      }
++    }
++
++    u.subscribe(desiredListState, admitDesiredState)
++    u.subscribe(reevaluateFormalRange, () => admitDesiredState(u.getValue(desiredListState)))
++    u.subscribe(initialItemFinalLocationReached, () => admitDesiredState(u.getValue(desiredListState)))
++
+     u.connect(
+       u.pipe(
+         data,
+@@ -412,9 +601,9 @@ export const listStateSystem = u.system(
+       u.pipe(
+         listState,
+         u.filter(({ items }) => items.length > 0),
+-        u.withLatestFrom(totalCount, data),
+-        u.filter(([{ items }, totalCount]) => items[items.length - 1]!.originalIndex === totalCount - 1),
+-        u.map(([, totalCount, data]) => [totalCount - 1, data] as [number, unknown[]]),
++        u.withLatestFrom(data),
++        u.filter(([{ items, totalCount }]) => items[items.length - 1]!.originalIndex === totalCount - 1),
++        u.map(([{ totalCount }, data]) => [totalCount - 1, data] as [number, unknown[]]),
+         u.distinctUntilChanged(tupleComparator),
+         u.map(([count]) => count)
+       )
+@@ -461,6 +650,16 @@ export const listStateSystem = u.system(
+     )
+ 
+     return {
++      desiredListState,
++      formalRangeCandidates,
++      formalRangeAdmissionPaused,
++      formalLiveGeometryRefresh,
++      formalRangePreparation,
++      formalRangeSourceGeneration,
++      getNormalListState: u.statefulStream(() => normalListState?.() ?? null),
++      measurementItemRange,
++      reevaluateFormalRange,
++      retainAuthorizedFormalRange,
+       endReached,
+       initialItemCount,
+       itemsRendered,
+diff --git a/packages/react-virtuoso/src/listSystem.ts b/packages/react-virtuoso/src/listSystem.ts
+index 587a8b6..5136b97 100644
+--- a/packages/react-virtuoso/src/listSystem.ts
++++ b/packages/react-virtuoso/src/listSystem.ts
+@@ -68,6 +68,9 @@ export const listSystem = u.system(
+   ([
+     {
+       data,
++      measuredPrependSizes,
++      domSizeObservation,
++      prependMeasurementsPending,
+       defaultItemSize,
+       firstItemIndex,
+       fixedItemSize,
+@@ -88,7 +91,7 @@ export const listSystem = u.system(
+     followOutput,
+     listStateSystemOutput,
+     { scrollToIndex },
+-    _,
++    upwardScrollFix,
+     { topItemCount },
+     { groupCounts },
+     featureGroup1,
+@@ -107,6 +110,9 @@ export const listSystem = u.system(
+ 
+     return {
+       data,
++      measuredPrependSizes,
++      prependMeasurementsPending,
++      domSizeObservation,
+       defaultItemHeight: defaultItemSize,
+       firstItemIndex,
+       fixedItemHeight: fixedItemSize,
+@@ -139,6 +145,7 @@ export const listSystem = u.system(
+       // the bag of IO from featureGroup1System
+       ...featureGroup1,
+       ...domIO,
++      ...upwardScrollFix,
+       sizes,
+       ...stateLoad,
+     }
+diff --git a/packages/react-virtuoso/src/scrollToIndexSystem.ts b/packages/react-virtuoso/src/scrollToIndexSystem.ts
+index 42a2502..07f5239 100644
+--- a/packages/react-virtuoso/src/scrollToIndexSystem.ts
++++ b/packages/react-virtuoso/src/scrollToIndexSystem.ts
+@@ -42,12 +42,36 @@ export const scrollToIndexSystem = u.system(
+     { log },
+   ]) => {
+     const scrollToIndex = u.stream<IndexLocation>()
++    // A retry is an implementation detail of an already-issued command. Keep
++    // it off the public command stream so transaction owners can distinguish
++    // a genuinely new positioning request from size-driven convergence of the
++    // current one.
++    const scrollToIndexExecution = u.stream<IndexLocation>()
++    const scrollToIndexReady = u.statefulStream(true)
+     const scrollTargetReached = u.stream<true>()
+     const topListHeight = u.statefulStream(0)
+ 
+     let unsubscribeNextListRefresh: any = null
+     let cleartTimeoutRef: null | ReturnType<typeof setTimeout> = null
+     let unsubscribeListRefresh: any = null
++    let pendingExecution: IndexLocation | null = null
++
++    const executeWhenReady = (location: IndexLocation) => {
++      if (u.getValue(scrollToIndexReady)) {
++        pendingExecution = null
++        u.publish(scrollToIndexExecution, location)
++      } else {
++        pendingExecution = location
++      }
++    }
++
++    u.subscribe(scrollToIndexReady, (ready) => {
++      if (ready && pendingExecution !== null) {
++        const location = pendingExecution
++        pendingExecution = null
++        u.publish(scrollToIndexExecution, location)
++      }
++    })
+ 
+     function cleanup() {
+       if (unsubscribeNextListRefresh !== null) {
+@@ -69,7 +93,7 @@ export const scrollToIndexSystem = u.system(
+ 
+     u.connect(
+       u.pipe(
+-        scrollToIndex,
++        scrollToIndexExecution,
+         u.withLatestFrom(sizes, viewportHeight, totalCount, topListHeight, headerHeight, footerHeight, log),
+         u.withLatestFrom(gap, fixedHeaderHeight, fixedFooterHeight),
+         u.map(
+@@ -105,7 +129,7 @@ export const scrollToIndexSystem = u.system(
+               cleanup()
+               if (listChanged) {
+                 log('retrying to scroll to', { location }, LogLevel.DEBUG)
+-                u.publish(scrollToIndex, location)
++                executeWhenReady(location)
+               } else {
+                 u.publish(scrollTargetReached, true)
+                 log('list did not change, scroll successful', {}, LogLevel.DEBUG)
+@@ -142,9 +166,12 @@ export const scrollToIndexSystem = u.system(
+       scrollTo
+     )
+ 
++    u.subscribe(scrollToIndex, executeWhenReady)
++
+     return {
+       scrollTargetReached,
+       scrollToIndex,
++      scrollToIndexReady,
+       topListHeight,
+     }
+   },
+diff --git a/packages/react-virtuoso/src/sizeRangeSystem.ts b/packages/react-virtuoso/src/sizeRangeSystem.ts
+index 84e8bdd..38197f6 100644
+--- a/packages/react-virtuoso/src/sizeRangeSystem.ts
++++ b/packages/react-virtuoso/src/sizeRangeSystem.ts
+@@ -34,11 +34,13 @@ export const sizeRangeSystem = u.system(
+     const topListHeight = u.statefulStream(0)
+     const increaseViewportBy = u.statefulStream<ViewportIncrease>(0)
+     const overscan = u.statefulStream<Overscan>(0)
++    const forceRangeCalculation = u.statefulStream(false)
+ 
+     const visibleRange = u.statefulStreamFromEmitter(
+       u.pipe(
+         u.combineLatest(
+           u.duc(scrollTop),
++          u.duc(forceRangeCalculation),
+           u.duc(viewportHeight),
+           u.duc(headerHeight),
+           u.duc(listBoundary, tupleComparator),
+@@ -51,6 +53,7 @@ export const sizeRangeSystem = u.system(
+         u.map(
+           ([
+             scrollTop,
++            forceRangeCalculation,
+             viewportHeight,
+             headerHeight,
+             [listTop, listBottom],
+@@ -80,7 +83,10 @@ export const sizeRangeSystem = u.system(
+               direction = DOWN
+             }
+ 
+-            if (direction !== NONE) {
++            if (direction !== NONE || forceRangeCalculation) {
++              if (direction === NONE) {
++                direction = UP
++              }
+               return [
+                 Math.max(top - headerHeight - getOverscan(overscan, TOP, direction) - topViewportAddition, 0),
+                 top -
+@@ -106,6 +112,7 @@ export const sizeRangeSystem = u.system(
+       // input
+       listBoundary,
+       overscan,
++      forceRangeCalculation,
+       topListHeight,
+ 
+       // output
+diff --git a/packages/react-virtuoso/src/sizeSystem.ts b/packages/react-virtuoso/src/sizeSystem.ts
+index b279ac1..116a61f 100644
+--- a/packages/react-virtuoso/src/sizeSystem.ts
++++ b/packages/react-virtuoso/src/sizeSystem.ts
+@@ -7,6 +7,7 @@ import { correctItemSize } from './utils/correctItemSize'
+ 
+ import type { AANode, Range } from './AATree'
+ import type { SizeFunction, SizeRange } from './interfaces'
++import type { ListState } from './listStateSystem'
+ import type { Log } from './loggerSystem'
+ 
+ export type Data = readonly unknown[] | undefined
+@@ -29,6 +30,34 @@ export interface SizeState {
+   sizeTree: AANode<number>
+ }
+ 
++export interface DomSizeObservation {
++  layout?: {
++    clientHeight: number
++    host: HTMLElement
++    inlineSize: number
++    maxScrollTop: number
++    readScrollTop: () => number
++    scrollTop: number
++    items: { originalIndex: number; key?: string | undefined; top: number; bottom: number; element: HTMLElement }[]
++  }
++  /** The exact rendered state whose nodes produced this observation. */
++  listState?: ListState
++  observedIndexes: number[]
++  ranges: SizeRange[]
++}
++
++export interface PrependDomMeasurement extends DomSizeObservation {
++  generation: number
++  ownedIndexes: number[]
++  nextSizes: SizeState
++  previousSizes: SizeState
++}
++
++export interface PrependDomMeasurementStart extends DomSizeObservation {
++  generation: number
++  ownedIndexes: number[]
++}
++
+ type OptionalNumber = number | undefined
+ 
+ export function hasGroups(sizes: SizeState) {
+@@ -292,9 +321,18 @@ const SIZE_MAP = {
+ export const sizeSystem = u.system(
+   ([{ log }, { recalcInProgress }]) => {
+     const sizeRanges = u.stream<SizeRange[]>()
++    const domSizeObservation = u.stream<DomSizeObservation>()
++    const ordinaryDomMeasurementStart = u.stream<DomSizeObservation>()
++    const ordinaryDomMeasurementEnd = u.stream<DomSizeObservation>()
++    const prependDomMeasurement = u.stream<PrependDomMeasurement>()
++    const prependDomMeasurementStart = u.stream<PrependDomMeasurementStart>()
++    const completePrependMeasurement = u.stream<{ generation: number; indexes: number[] }>()
++    const prependMeasurementEnabled = u.statefulStream(false)
++    const prependMeasurementsPending = u.statefulStream(false)
+     const totalCount = u.stream<number>()
+     const statefulTotalCount = u.statefulStreamFromEmitter(totalCount, 0)
+     const unshiftWith = u.stream<number>()
++    const measuredPrependSizes = u.statefulStream<readonly number[] | null>(null)
+     const shiftWith = u.stream<number>()
+     const firstItemIndex = u.statefulStream(0)
+     const groupIndices = u.statefulStream([] as number[])
+@@ -307,12 +345,90 @@ export const sizeSystem = u.system(
+     const data = u.statefulStream<Data>(undefined)
+     const gap = u.statefulStream(0)
+     const initial = initialSizeState()
++    let prependGeneration = 0
++    let pendingPrependIndexes = new Set<number>()
++
++    function clearPrependMeasurement() {
++      pendingPrependIndexes = new Set()
++      u.publish(prependMeasurementsPending, false)
++    }
++
++    u.subscribe(prependMeasurementEnabled, (enabled) => {
++      if (!enabled) {
++        clearPrependMeasurement()
++      }
++    })
++
++    u.subscribe(unshiftWith, (count) => {
++      if (u.getValue(measuredPrependSizes)?.length === count) {
++        clearPrependMeasurement()
++        return
++      }
++      if (!u.getValue(prependMeasurementEnabled) || count <= 0) {
++        clearPrependMeasurement()
++        return
++      }
++      prependGeneration += 1
++      pendingPrependIndexes = new Set([
++        ...Array.from({ length: count }, (_, index) => index),
++        ...[...pendingPrependIndexes].map((index) => index + count),
++      ])
++      u.publish(prependMeasurementsPending, true)
++    })
++
++    u.subscribe(shiftWith, clearPrependMeasurement)
+ 
+     const sizes = u.statefulStreamFromEmitter(
+       u.pipe(sizeRanges, u.withLatestFrom(groupIndices, log, gap), u.scan(sizeStateReducer, initial), u.distinctUntilChanged()),
+       initial
+     )
+ 
++    u.subscribe(domSizeObservation, (observation) => {
++      const observedPending = observation.observedIndexes.filter((index) => pendingPrependIndexes.has(index))
++      const changedPending = observedPending.filter((index) =>
++        observation.ranges.some(({ startIndex, endIndex }) => index >= startIndex && index <= endIndex)
++      )
++      for (const index of observedPending) {
++        if (!changedPending.includes(index)) {
++          pendingPrependIndexes.delete(index)
++        }
++      }
++      if (changedPending.length > 0) {
++        u.publish(prependDomMeasurementStart, {
++          ...observation,
++          generation: prependGeneration,
++          ownedIndexes: changedPending,
++        })
++      } else if (observation.ranges.length > 0) {
++        u.publish(ordinaryDomMeasurementStart, observation)
++      }
++      const previousSizes = u.getValue(sizes)
++      u.publish(sizeRanges, observation.ranges)
++      const nextSizes = u.getValue(sizes)
++      if (changedPending.length > 0) {
++        u.publish(prependDomMeasurement, {
++          ...observation,
++          generation: prependGeneration,
++          ownedIndexes: changedPending,
++          nextSizes,
++          previousSizes,
++        })
++      } else if (observation.ranges.length > 0) {
++        u.publish(ordinaryDomMeasurementEnd, observation)
++      }
++      u.publish(prependMeasurementsPending, pendingPrependIndexes.size > 0)
++    })
++
++    u.subscribe(completePrependMeasurement, ({ generation, indexes }) => {
++      if (generation !== prependGeneration) {
++        return
++      }
++      for (const index of indexes) {
++        pendingPrependIndexes.delete(index)
++      }
++      u.publish(prependMeasurementsPending, pendingPrependIndexes.size > 0)
++    })
++
+     const prevGroupIndices = u.statefulStreamFromEmitter(
+       u.pipe(
+         groupIndices,
+@@ -609,7 +725,7 @@ export const sizeSystem = u.system(
+             ).ranges
+           }
+ 
+-          return walk(sizes.sizeTree).reduce(
++          const shiftedRanges = walk(sizes.sizeTree).reduce(
+             (acc, { k: index, v: size }) => {
+               return {
+                 prevIndex: index + unshiftWith,
+@@ -623,6 +739,10 @@ export const sizeSystem = u.system(
+               ranges: [] as SizeRange[],
+             }
+           ).ranges
++          const measured = u.getValue(measuredPrependSizes)
++          return measured?.length === unshiftWith
++            ? [...shiftedRanges, ...measured.map((size, index) => ({ startIndex: index, endIndex: index, size }))]
++            : shiftedRanges
+         })
+       ),
+       sizeRanges
+@@ -700,9 +820,17 @@ export const sizeSystem = u.system(
+ 
+     return {
+       beforeUnshiftWith,
++      measuredPrependSizes,
++      ordinaryDomMeasurementStart,
++      ordinaryDomMeasurementEnd,
+       // input
++      completePrependMeasurement,
++      canMeasurePrependIndex: u.statefulStream(
++        (generation: number, index: number) => generation === prependGeneration && pendingPrependIndexes.has(index)
++      ),
+       data,
+       defaultItemSize,
++      domSizeObservation,
+       firstItemIndex,
+       fixedItemSize,
+       fixedGroupSize,
+@@ -711,6 +839,10 @@ export const sizeSystem = u.system(
+       heightEstimates,
+       itemSize,
+       listRefresh,
++      prependDomMeasurement,
++      prependDomMeasurementStart,
++      prependMeasurementEnabled,
++      prependMeasurementsPending,
+       shiftWith,
+       shiftWithOffset,
+       sizeRanges,
+diff --git a/packages/react-virtuoso/src/upwardScrollFixSystem.ts b/packages/react-virtuoso/src/upwardScrollFixSystem.ts
+index 7fc960c..b399109 100644
+--- a/packages/react-virtuoso/src/upwardScrollFixSystem.ts
++++ b/packages/react-virtuoso/src/upwardScrollFixSystem.ts
+@@ -1,14 +1,20 @@
+ import { find } from './AATree'
+ import { domIOSystem } from './domIOSystem'
++import { initialTopMostItemIndexSystem } from './initialTopMostItemIndexSystem'
+ import { listStateSystem } from './listStateSystem'
+ import { loggerSystem, LogLevel } from './loggerSystem'
+ import { recalcSystem } from './recalcSystem'
++import { scrollToIndexSystem } from './scrollToIndexSystem'
++import { sizeRangeSystem } from './sizeRangeSystem'
+ import { sizeSystem } from './sizeSystem'
+-import { stateFlagsSystem, UP } from './stateFlagsSystem'
++import { DOWN, stateFlagsSystem, UP } from './stateFlagsSystem'
+ import * as u from './urx'
+ import { simpleMemoize } from './utils/simpleMemoize'
+ 
++import type { ListLayoutCommit } from './domIOSystem'
+ import type { ListItem } from './interfaces'
++import type { ListState } from './listStateSystem'
++import type { DomSizeObservation, PrependDomMeasurement, PrependDomMeasurementStart } from './sizeSystem'
+ 
+ const isMobileSafari = simpleMemoize(() => {
+   return /iP(ad|od|hone)/i.test(navigator.userAgent) && /WebKit/i.test(navigator.userAgent)
+@@ -20,13 +26,539 @@ type UpwardFixState = [number, ListItem<any>[], number, number]
+  */
+ export const upwardScrollFixSystem = u.system(
+   ([
+-    { deviation, deviationCommitted, scrollBy, scrollingInProgress, scrollTop },
++    { deviation, deviationCommitted, listLayoutCommitted, scrollBy, scrollingInProgress, scrollTop, headerHeight, fixedHeaderHeight },
+     { isAtBottom, isScrolling, lastJumpDueToItemResize, scrollDirection },
+-    { listState },
+-    { beforeUnshiftWith, gap, shiftWithOffset, sizes },
++    { listState, measurementItemRange, getNormalListState },
++    {
++      beforeUnshiftWith,
++      measuredPrependSizes,
++      ordinaryDomMeasurementStart,
++      ordinaryDomMeasurementEnd,
++      completePrependMeasurement,
++      canMeasurePrependIndex,
++      gap,
++      prependDomMeasurement,
++      prependDomMeasurementStart,
++      prependMeasurementEnabled,
++      shiftWith,
++      shiftWithOffset,
++      sizes,
++    },
+     { log },
+     { recalcInProgress },
++    { forceRangeCalculation },
++    { initialItemFinalLocationReached },
++    { scrollToIndex },
+   ]) => {
++    interface PreparedMeasurement {
++      anchorData: unknown
++      anchorKey: string | number | bigint | undefined
++      anchorIndex: number
++      anchorOriginalIndex: number
++      anchorViewportOffset: number
++      anchorElement: HTMLElement
++      baseScrollTop: number
++      generation: number
++      indexes: number[]
++      renderedRange: [number, number]
++    }
++    type MeasuredTransaction = PreparedMeasurement & {
++      expectedListState: ListState | null
++    }
++    let preparedMeasurement: PreparedMeasurement | null = null
++    let measuredTransaction: MeasuredTransaction | null = null
++    let previousLayout: ListLayoutCommit | null = null
++    let nativeScrollEpoch = 0
++    let lastNativeScrollTop: number | null = null
++    // One concrete DOM observation owns exactly the size-tree transition it
++    // starts and the matching React ListState commit. Compensation is performed
++    // in that commit's layout effect, before paint, and the owner is then gone.
++    let ordinaryMeasurement: {
++      observation: DomSizeObservation
++      anchor: ListLayoutCommit['items'][number]
++      expectedTop: number
++      baseTop: number
++      viewportTop: number
++      expectedListState: ListState | null
++      scrollEpoch: number
++    } | null = null
++
++    const ordinaryLayoutIsSupported = () =>
++      u.getValue(deviation) === 0 &&
++      u.getValue(headerHeight) === 0 &&
++      u.getValue(fixedHeaderHeight) === 0 &&
++      u.getValue(listState).topItems.length === 0 &&
++      u.getValue(sizes).groupIndices.length === 0
++
++    const cancelOrdinaryMeasurement = () => {
++      if (ordinaryMeasurement) {
++        ordinaryMeasurement = null
++        u.publish(recalcInProgress, false)
++      }
++    }
++
++    u.subscribe(scrollToIndex, cancelOrdinaryMeasurement)
++    u.subscribe(scrollTop, (top) => {
++      if (lastNativeScrollTop === null || Math.abs(top - lastNativeScrollTop) > 0.5) {
++        nativeScrollEpoch++
++        lastNativeScrollTop = top
++      }
++    })
++
++    u.subscribe(ordinaryDomMeasurementStart, (observation) => {
++      if (ordinaryMeasurement?.expectedListState) {
++        // A second real observation arrived before React committed the first
++        // tree. Supersede the old exact owner; the new observation includes
++        // all physical changes and will name the only state allowed to commit.
++        ordinaryMeasurement = null
++      }
++      const rejection = [
++        ordinaryMeasurement && 'ordinary-active',
++        preparedMeasurement && 'prepend-preparing',
++        measuredTransaction && 'prepend-active',
++        !u.getValue(initialItemFinalLocationReached) && 'initial-positioning',
++        u.getValue(scrollingInProgress) && 'explicit-positioning',
++        !previousLayout && 'no-baseline',
++        !ordinaryLayoutIsSupported() && 'unsupported-layout',
++        u.getValue(recalcInProgress) && 'recalc-active',
++        !observation.layout && 'no-layout',
++        !observation.listState && 'no-list-state',
++        observation.listState !== u.getValue(listState) && 'stale-list-state',
++        observation.layout && previousLayout && observation.layout.host !== previousLayout.host && 'host-mismatch',
++      ].filter(Boolean)
++      if (rejection.length > 0) {
++        return
++      }
++      const layout = observation.layout!
++      const baseline = previousLayout!
++      const nativeDelta = layout.scrollTop - baseline.nativeScrollTop
++      const changed = (index: number) => observation.ranges.some(({ startIndex, endIndex }) => index >= startIndex && index <= endIndex)
++      const anchor = baseline.items.find((item) => {
++        const expectedTop = item.top - nativeDelta
++        return (
++          !changed(item.originalIndex) &&
++          item.key !== undefined &&
++          expectedTop < layout.clientHeight &&
++          item.bottom - nativeDelta > 0 &&
++          item.element.isConnected &&
++          observation.layout!.items.some((current) => current.element === item.element && current.key === String(item.key)) &&
++          Number(item.element.dataset.itemIndex) === item.index
++        )
++      })
++      // A changed row's own top can remain fixed while its growth displaces
++      // every following row. Preserve the first stable visible semantic row in
++      // the existing visual order; if a stable row precedes the resize, its
++      // zero delta correctly leaves a legitimate below-viewport fold alone.
++      const current = anchor ? layout.items.find((item) => item.element === anchor.element)! : null
++      if (!anchor || !current) {
++        return
++      }
++      ordinaryMeasurement = {
++        observation,
++        anchor,
++        expectedTop: anchor.top - nativeDelta,
++        baseTop: layout.scrollTop,
++        viewportTop: anchor.element.getBoundingClientRect().top - current.top,
++        expectedListState: null,
++        scrollEpoch: nativeScrollEpoch,
++      }
++      u.publish(recalcInProgress, true)
++    })
++
++    function acceptPassiveLayoutBaseline(layout: ListLayoutCommit) {
++      const modelByIndex = new Map(layout.listState.items.map((item) => [item.originalIndex, item]))
++      const comparable = layout.items.flatMap((item) => {
++        const modeled = modelByIndex.get(item.originalIndex)
++        return modeled ? [{ modeled, physical: item }] : []
++      })
++      const first = comparable[0]
++      const sizesMatch = comparable.every(({ modeled, physical }) => Math.abs(physical.bottom - physical.top - modeled.size) <= 1)
++      const relativeRowsMatch =
++        first !== undefined &&
++        comparable.length >= 2 &&
++        comparable.every(
++          ({ modeled, physical }) => Math.abs(physical.top - first.physical.top - (modeled.offset - first.modeled.offset)) <= 1
++        )
++      const priorContainsOnlyRow =
++        comparable.length === 1 &&
++        previousLayout !== null &&
++        previousLayout.host === layout.host &&
++        previousLayout.items.some((item) => item.element === first?.physical.element && item.element.isConnected)
++      const geometryIsAuthoritative = sizesMatch && (relativeRowsMatch || (comparable.length === 1 && !priorContainsOnlyRow))
++      if (previousLayout === null || previousLayout.host !== layout.host || geometryIsAuthoritative) {
++        previousLayout = layout
++        return true
++      }
++      return false
++    }
++
++    function commitOrdinaryMeasurement(layout: ListLayoutCommit) {
++      const ordinaryTransaction = ordinaryMeasurement
++      if (!ordinaryTransaction) {
++        return false
++      }
++      if (ordinaryTransaction.expectedListState !== layout.listState) {
++        return true
++      }
++      ordinaryMeasurement = null
++      if (
++        layout.deviation !== 0 ||
++        layout.host !== ordinaryTransaction.observation.layout?.host ||
++        nativeScrollEpoch !== ordinaryTransaction.scrollEpoch ||
++        Math.abs(layout.readScrollTop() - ordinaryTransaction.baseTop) > 0.5
++      ) {
++        acceptPassiveLayoutBaseline(layout)
++        return true
++      }
++      const anchor = layout.items.find(
++        (item) =>
++          item.originalIndex === ordinaryTransaction.anchor.originalIndex &&
++          item.index === ordinaryTransaction.anchor.index &&
++          item.element === ordinaryTransaction.anchor.element &&
++          (ordinaryTransaction.anchor.key === undefined
++            ? Object.is(item.data, ordinaryTransaction.anchor.data)
++            : String(item.key) === String(ordinaryTransaction.anchor.key))
++      )
++      if (!anchor || !anchor.element.isConnected) {
++        acceptPassiveLayoutBaseline(layout)
++        return true
++      }
++      const delta = anchor.top - ordinaryTransaction.expectedTop
++      const targetTop = Math.min(layout.maxScrollTop, Math.max(0, layout.nativeScrollTop + delta))
++      const appliedDelta = targetTop - layout.nativeScrollTop
++      const coversViewport =
++        layout.items.length > 0 &&
++        Math.min(...layout.items.map((item) => item.top)) - appliedDelta <= 0.5 &&
++        Math.max(...layout.items.map((item) => item.bottom)) - appliedDelta >= layout.clientHeight - 0.5
++      if (Math.abs(appliedDelta) > 0.5 && coversViewport) {
++        u.publish(scrollBy, { top: appliedDelta, behavior: 'auto' })
++      } else if (Math.abs(appliedDelta) > 0.5) {
++        u.getValue(log)('Ordinary measured layout cannot preserve viewport coverage', { delta, appliedDelta }, LogLevel.ERROR)
++      }
++      const actualTop = layout.readScrollTop()
++      const residual = anchor.element.getBoundingClientRect().top - ordinaryTransaction.viewportTop - ordinaryTransaction.expectedTop
++      if (Math.abs(residual) > 1) {
++        u.getValue(log)(
++          'Ordinary measured layout has residual displacement',
++          { residual, targetTop, actualTop, clamped: appliedDelta !== delta },
++          LogLevel.WARN
++        )
++      }
++      u.publish(scrollTop, actualTop)
++      previousLayout = {
++        ...layout,
++        nativeScrollTop: actualTop,
++        items: layout.items.map((item) => ({
++          ...item,
++          top: item.top - (actualTop - layout.nativeScrollTop),
++          bottom: item.bottom - (actualTop - layout.nativeScrollTop),
++        })),
++      }
++      return true
++    }
++
++    u.subscribe(ordinaryDomMeasurementEnd, (observation) => {
++      const transaction = ordinaryMeasurement
++      if (!transaction || transaction.observation !== observation) {
++        return
++      }
++      // Releasing recalc publishes the exact ListState produced by this
++      // observation. Keep ownership until that identity reaches the DOM.
++      u.publish(recalcInProgress, false)
++      transaction.expectedListState = u.getValue(listState)
++      const observedLayout = observation.layout
++      if (!observedLayout || typeof observedLayout.readScrollTop !== 'function' || !Number.isFinite(observedLayout.maxScrollTop)) {
++        return
++      }
++      const stateItems = new Map(transaction.expectedListState.items.map((item) => [item.originalIndex, item]))
++      const baselineItems = new Map(previousLayout?.items.map((item) => [item.element, item]))
++      const items = observedLayout.items.flatMap((measured) => {
++        const item = stateItems.get(measured.originalIndex) ?? baselineItems.get(measured.element)
++        if (!item) {
++          return []
++        }
++        return [{ ...measured, data: item.data, index: item.index, key: measured.key }]
++      })
++      commitOrdinaryMeasurement({
++        clientHeight: observedLayout.clientHeight,
++        deviation: u.getValue(deviation),
++        host: observedLayout.host,
++        items,
++        listState: transaction.expectedListState,
++        nativeScrollTop: observedLayout.scrollTop,
++        maxScrollTop: observedLayout.maxScrollTop,
++        readScrollTop: observedLayout.readScrollTop,
++      })
++    })
++    let releaseFrame: number | null = null
++    let releaseToken = 0
++    let releaseBaseScrollTop = 0
++
++    function releaseMeasuredWindow() {
++      u.publish(measurementItemRange, null)
++      u.publish(forceRangeCalculation, false)
++    }
++
++    function finishOwnedMeasurement(generation: number, indexes: number[]) {
++      u.publish(completePrependMeasurement, { generation, indexes })
++    }
++
++    function cancelMeasuredTransaction({ consume = true } = {}) {
++      const transaction = measuredTransaction
++      const prepared = preparedMeasurement
++      measuredTransaction = null
++      preparedMeasurement = null
++      releaseToken += 1
++      if (releaseFrame !== null) {
++        cancelAnimationFrame(releaseFrame)
++      }
++      releaseFrame = null
++      releaseMeasuredWindow()
++      u.publish(recalcInProgress, false)
++      if (!consume) {
++        return
++      }
++      if (transaction) {
++        finishOwnedMeasurement(transaction.generation, transaction.indexes)
++      } else if (prepared) {
++        finishOwnedMeasurement(prepared.generation, prepared.indexes)
++      }
++    }
++
++    u.connect(
++      u.pipe(
++        u.combineLatest(initialItemFinalLocationReached, scrollingInProgress),
++        u.map(([initialReady, explicitScroll]) => initialReady && !explicitScroll),
++        u.distinctUntilChanged()
++      ),
++      prependMeasurementEnabled
++    )
++
++    u.subscribe(prependMeasurementEnabled, (enabled) => {
++      if (!enabled && (preparedMeasurement || measuredTransaction || u.getValue(measurementItemRange) !== null)) {
++        cancelMeasuredTransaction()
++      }
++    })
++
++    u.subscribe(beforeUnshiftWith, () => {
++      if (preparedMeasurement || measuredTransaction || u.getValue(measurementItemRange) !== null) {
++        cancelMeasuredTransaction({ consume: false })
++      }
++    })
++
++    u.subscribe(shiftWith, () => {
++      if (preparedMeasurement || measuredTransaction || u.getValue(measurementItemRange) !== null) {
++        cancelMeasuredTransaction({ consume: false })
++      }
++    })
++
++    u.subscribe(prependDomMeasurementStart, (measurement: PrependDomMeasurementStart) => {
++      const current = u.getValue(listState)
++      const layout = measurement.layout
++      const baseline = previousLayout
++      const previousAnchor =
++        layout &&
++        baseline?.items.find((item) => {
++          const userDelta = layout.scrollTop - baseline.nativeScrollTop
++          return (
++            item.bottom - userDelta > 0 &&
++            item.top - userDelta < layout.clientHeight &&
++            current.items.some((candidate) => candidate.index === item.index)
++          )
++        })
++      const currentAnchor = previousAnchor && current.items.find((item) => item.index === previousAnchor.index)
++      const physicalAnchor = measuredTransaction
++        ? layout?.items.find((item) => item.originalIndex === measuredTransaction!.anchorOriginalIndex)
++        : currentAnchor
++          ? layout?.items.find((item) => item.originalIndex === currentAnchor.originalIndex)
++          : layout?.items.find((item) => item.bottom > 0 && item.top < layout.clientHeight)
++      const anchor = current.items.find((item) => item.originalIndex === physicalAnchor?.originalIndex)
++      if (
++        !layout ||
++        !physicalAnchor ||
++        !anchor ||
++        anchor.originalIndex === undefined ||
++        u.getValue(deviation) !== 0 ||
++        u.getValue(headerHeight) !== 0 ||
++        u.getValue(fixedHeaderHeight) !== 0 ||
++        current.topItems.length > 0 ||
++        u.getValue(sizes).groupIndices.length > 0
++      ) {
++        preparedMeasurement = null
++        finishOwnedMeasurement(measurement.generation, measurement.ownedIndexes)
++        return
++      }
++      preparedMeasurement = {
++        anchorData: measuredTransaction?.anchorData ?? anchor.data,
++        anchorKey: measuredTransaction?.anchorKey ?? physicalAnchor.key ?? previousAnchor?.key,
++        anchorIndex: measuredTransaction?.anchorIndex ?? anchor.index,
++        anchorOriginalIndex: measuredTransaction?.anchorOriginalIndex ?? anchor.originalIndex,
++        anchorViewportOffset:
++          measuredTransaction?.anchorViewportOffset ??
++          (previousAnchor && previousLayout
++            ? previousAnchor.top - (layout.scrollTop - previousLayout.nativeScrollTop)
++            : physicalAnchor.top),
++        anchorElement: physicalAnchor.element,
++        baseScrollTop: measuredTransaction?.baseScrollTop ?? layout.scrollTop,
++        generation: measurement.generation,
++        indexes: [...new Set([...(measuredTransaction?.indexes || []), ...measurement.ownedIndexes])],
++        renderedRange: [layout.items[0]!.originalIndex, layout.items[layout.items.length - 1]!.originalIndex],
++      }
++      u.publish(recalcInProgress, true)
++    })
++
++    u.subscribe(prependDomMeasurement, (measurement: PrependDomMeasurement) => {
++      const prepared = preparedMeasurement
++      preparedMeasurement = null
++      if (!prepared || prepared.generation !== measurement.generation) {
++        finishOwnedMeasurement(measurement.generation, measurement.ownedIndexes)
++        u.publish(recalcInProgress, false)
++        return
++      }
++      measuredTransaction = {
++        ...prepared,
++        expectedListState: null,
++      }
++      // Retain exactly the DOM window that this batch measured. In particular,
++      // do not render a future scroll coordinate and mount unmeasured prefixes.
++      u.publish(measurementItemRange, prepared.renderedRange)
++      u.publish(forceRangeCalculation, true)
++      u.publish(recalcInProgress, false)
++    })
++
++    u.subscribe(scrollTop, (top) => {
++      if (releaseFrame !== null && Math.abs(top - releaseBaseScrollTop) > 1) {
++        cancelMeasuredTransaction()
++        return
++      }
++      if (measuredTransaction && Math.abs(top - measuredTransaction.baseScrollTop) > 1) {
++        cancelMeasuredTransaction()
++      }
++    })
++
++    u.subscribe(scrollDirection, (direction) => {
++      if (direction === DOWN && (preparedMeasurement || measuredTransaction)) {
++        cancelMeasuredTransaction()
++      }
++    })
++
++    u.subscribe(listState, (state) => {
++      if (ordinaryMeasurement?.expectedListState && ordinaryMeasurement.expectedListState !== state) {
++        cancelOrdinaryMeasurement()
++      }
++      if (measuredTransaction === null) {
++        return
++      }
++      measuredTransaction.expectedListState = state
++    })
++
++    u.subscribe(listLayoutCommitted, (layout) => {
++      const { deviation: committedDeviation, listState: state, items, nativeScrollTop, clientHeight, maxScrollTop, readScrollTop } = layout
++      const transaction = measuredTransaction
++      if (previousLayout && previousLayout.host !== layout.host) {
++        cancelOrdinaryMeasurement()
++      }
++      if (commitOrdinaryMeasurement(layout)) {
++        return
++      }
++      if (!transaction && !preparedMeasurement) {
++        // A child can grow before its ResizeObserver callback while an
++        // unrelated parent commit runs. Only a layout whose relative physical
++        // rows agree with the formal size model may replace the baseline.
++        acceptPassiveLayoutBaseline(layout)
++      }
++      if (transaction === null || committedDeviation !== 0 || transaction.expectedListState !== state) {
++        return
++      }
++      if (Math.abs(nativeScrollTop - transaction.baseScrollTop) > 1) {
++        cancelMeasuredTransaction()
++        return
++      }
++      const anchor = items.find((item) => item.originalIndex === transaction.anchorOriginalIndex && item.index === transaction.anchorIndex)
++      const sameSemanticAnchor =
++        anchor &&
++        (transaction.anchorKey === undefined
++          ? anchor.element === transaction.anchorElement && Object.is(anchor.data, transaction.anchorData)
++          : String(anchor.key) === String(transaction.anchorKey))
++      if (!anchor || !anchor.element.isConnected || sameSemanticAnchor !== true) {
++        u.getValue(log)('Prepend measured window lost its anchor', {}, LogLevel.ERROR)
++        cancelMeasuredTransaction()
++        return
++      }
++      const modeledAnchor = state.items.find(
++        (item) => item.originalIndex === transaction.anchorOriginalIndex && item.index === transaction.anchorIndex
++      )!
++      // Newly mounted predecessors can already occupy their actual DOM height
++      // while the size tree still contains estimates. Do not release the range
++      // override until both coordinate systems describe the same anchor.
++      if (Math.abs(nativeScrollTop + anchor.top - modeledAnchor.offset) > 1) {
++        u.getValue(log)('Prepend measured window has inconsistent coordinates', {}, LogLevel.ERROR)
++        cancelMeasuredTransaction()
++        return
++      }
++      const delta = anchor.top - transaction.anchorViewportOffset
++      const first = items[0]
++      const last = items[items.length - 1]
++      if (!first || !last || first.top - delta > 1 || last.bottom - delta < clientHeight - 1) {
++        u.getValue(log)('Prepend measured window has insufficient coverage', {}, LogLevel.ERROR)
++        cancelMeasuredTransaction()
++        return
++      }
++      const expectedTop = nativeScrollTop + delta
++      if (expectedTop < 0 || expectedTop > maxScrollTop) {
++        u.getValue(log)('Prepend measured window exceeds scroll extent', {}, LogLevel.ERROR)
++        cancelMeasuredTransaction()
++        return
++      }
++      measuredTransaction = null
++      if (Math.abs(delta) > 0.5) {
++        u.publish(scrollBy, { behavior: 'auto', top: delta })
++      }
++      // scrollBy may round or clamp. Only the browser can acknowledge its
++      // resulting coordinate; never publish an estimated native position.
++      const actualTop = readScrollTop()
++      if (Math.abs(actualTop - expectedTop) > 1) {
++        u.getValue(log)('Prepend measurement scroll was not applied', { actualTop, expectedTop }, LogLevel.ERROR)
++      }
++      u.publish(scrollTop, actualTop)
++      const normal = u.getValue(getNormalListState)()
++      const newPrefix = normal?.items.filter((item) => item.originalIndex! < transaction.renderedRange[0]) ?? []
++      const canContinue =
++        normal &&
++        normal.items.length > 0 &&
++        newPrefix.every((item) => u.getValue(canMeasurePrependIndex)(transaction.generation, item.originalIndex!))
++      if (canContinue !== true) {
++        u.getValue(log)('Prepend measured window cannot be released safely', { renderedRange: transaction.renderedRange }, LogLevel.ERROR)
++      }
++      if (canContinue === true && newPrefix.length > 0) {
++        const token = ++releaseToken
++        releaseBaseScrollTop = actualTop
++        // This batch is already corrected and covers the viewport. Yield only
++        // in that stable state, then admit the next owned measurement batch.
++        releaseFrame = requestAnimationFrame(() => {
++          releaseFrame = null
++          if (token === releaseToken) {
++            releaseMeasuredWindow()
++          }
++        })
++      } else {
++        releaseMeasuredWindow()
++      }
++      previousLayout = {
++        ...layout,
++        nativeScrollTop: actualTop,
++        items: items.map((item) => ({
++          data: item.data,
++          index: item.index,
++          element: item.element,
++          originalIndex: item.originalIndex,
++          top: item.top - (actualTop - nativeScrollTop),
++          bottom: item.bottom - (actualTop - nativeScrollTop),
++        })),
++      }
++      finishOwnedMeasurement(transaction.generation, transaction.indexes)
++    })
++
+     const deviationOffset = u.streamFromEmitter(
+       u.pipe(
+         listState,
+@@ -75,6 +607,9 @@ export const upwardScrollFixSystem = u.system(
+     }
+ 
+     u.subscribe(u.pipe(deviationOffset, u.withLatestFrom(deviation, isScrolling)), ([offset, deviationAmount, isScrolling]) => {
++      if (preparedMeasurement || measuredTransaction || ordinaryMeasurement) {
++        return
++      }
+       if (isScrolling && isMobileSafari()) {
+         u.publish(deviation, deviationAmount - offset)
+       } else {
+@@ -87,7 +622,7 @@ export const upwardScrollFixSystem = u.system(
+     u.subscribe(
+       u.pipe(
+         u.combineLatest(u.statefulStreamFromEmitter(isScrolling, false), deviation, recalcInProgress),
+-        u.filter(([is, deviation, recalc]) => !is && !recalc && deviation !== 0),
++        u.filter(([is, deviation, recalc]) => !preparedMeasurement && !measuredTransaction && !is && !recalc && deviation !== 0),
+         u.map(([_, deviation]) => deviation),
+         u.throttleTime(1)
+       ),
+@@ -147,6 +682,10 @@ export const upwardScrollFixSystem = u.system(
+             return itemCount * (defaultItemSize + gap)
+           }
+           if (groupIndices.length === 0) {
++            const measured = u.getValue(measuredPrependSizes)
++            if (measured?.length === offset) {
++              return measured.reduce((sum, size) => sum + size + gap, 0)
++            }
+             return getItemOffset(offset)
+           }
+ 
+@@ -217,5 +756,15 @@ export const upwardScrollFixSystem = u.system(
+ 
+     return { deviation }
+   },
+-  u.tup(domIOSystem, stateFlagsSystem, listStateSystem, sizeSystem, loggerSystem, recalcSystem)
++  u.tup(
++    domIOSystem,
++    stateFlagsSystem,
++    listStateSystem,
++    sizeSystem,
++    loggerSystem,
++    recalcSystem,
++    sizeRangeSystem,
++    initialTopMostItemIndexSystem,
++    scrollToIndexSystem
++  )
+ )
+diff --git a/packages/react-virtuoso/test/Virtuoso.test.tsx b/packages/react-virtuoso/test/Virtuoso.test.tsx
+index 9c97f74..9222307 100644
+--- a/packages/react-virtuoso/test/Virtuoso.test.tsx
++++ b/packages/react-virtuoso/test/Virtuoso.test.tsx
+@@ -11,6 +11,17 @@ vi.mock('../src/hooks/useChangedChildSizes')
+ vi.mock('../src/hooks/useScrollTop')
+ ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
+ 
++function resizeObserverStub(callbacks: (() => void)[]) {
++  return class {
++    constructor(callback: () => void) {
++      callbacks.push(callback)
++    }
++    observe() {}
++    unobserve() {}
++    disconnect() {}
++  } as unknown as typeof ResizeObserver
++}
++
+ describe('Virtuoso', () => {
+   let container: HTMLDivElement
+   beforeEach(() => {
+@@ -24,6 +35,285 @@ describe('Virtuoso', () => {
+     container.remove()
+   })
+ 
++  it('prepares history in the child owner without committing the custom List', () => {
++    const commits = vi.fn()
++    const resizeCallbacks: (() => void)[] = []
++    const frames: FrameRequestCallback[] = []
++    const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++      frames.push(callback)
++      return frames.length
++    })
++    const NativeResizeObserver = globalThis.ResizeObserver
++    globalThis.ResizeObserver = resizeObserverStub(resizeCallbacks)
++    const CustomList = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(function CustomList(props, ref) {
++      React.useLayoutEffect(() => {
++        commits()
++      })
++      return <div {...props} ref={ref} />
++    })
++    const components = { List: CustomList }
++    const computeItemKey = (index: number, data?: string) => data?.[0] ?? String(index)
++    const root = ReactDOM.createRoot(container)
++    const props = { components, computeItemKey, itemSize: () => 100, defaultItemHeight: 100, initialItemCount: 2 }
++    act(() => {
++      root.render(<Virtuoso {...props} data={['a', 'b']} firstItemIndex={100} />)
++    })
++    commits.mockClear()
++    act(() => {
++      root.render(<Virtuoso {...props} data={['x', 'a', 'b']} firstItemIndex={99} />)
++    })
++    const prepared = container.querySelector('[data-history-preparing]')!
++    expect(prepared).not.toBeNull()
++    expect(commits).not.toHaveBeenCalled()
++    const list = container.querySelector('[data-testid="virtuoso-item-list"]')!
++    Object.defineProperty(list, 'clientWidth', { value: 800, configurable: true })
++    act(() => {
++      ;(list as any).triggerChangedChildSizes([])
++    })
++    const pendingCallbacks = resizeCallbacks.slice()
++    act(() => {
++      for (const callback of pendingCallbacks) {
++        callback()
++      }
++    })
++    act(() => {
++      for (let count = 0; frames.length && count < 10; count++) {
++        frames.shift()!(0)
++      }
++    })
++    const promoted = list.querySelector<HTMLElement>('[data-item-index="99"]')!
++    expect(promoted).toBe(prepared)
++    expect(Object.hasOwn(promoted.dataset, 'historyPreparing')).toBe(false)
++    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
++    act(() => {
++      root.render(<Virtuoso {...props} data={['x', 'x-duplicate', 'a', 'b']} firstItemIndex={99} />)
++    })
++    expect(list.querySelector<HTMLElement>('[data-item-index="99"]')).toBe(promoted)
++    expect(error).toHaveBeenCalledWith(
++      expect.any(String),
++      expect.any(String),
++      expect.any(String),
++      'Formal range preparation requires unique item keys',
++      expect.any(Object)
++    )
++    error.mockRestore()
++    act(() => {
++      root.render(<Virtuoso {...props} data={['b']} firstItemIndex={101} />)
++    })
++    expect(list.querySelector('[data-item-index="99"]')).toBeNull()
++    expect(list.querySelector('[data-item-index="100"]')).toBeNull()
++    act(() => {
++      root.unmount()
++    })
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  })
++
++  it('rebinds measurement when a custom List replaces its native host', () => {
++    const ListA = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(function ListA(props, ref) {
++      return <div {...props} ref={ref} />
++    })
++    const ListB = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(function ListB(props, ref) {
++      return <div {...props} ref={ref} />
++    })
++    const root = ReactDOM.createRoot(container)
++    act(() => {
++      root.render(<Virtuoso components={{ List: ListA }} data={['a', 'b']} initialItemCount={2} />)
++    })
++    const firstHost = container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!
++    expect((firstHost as any).triggerChangedChildSizes).toBeTypeOf('function')
++    act(() => {
++      root.render(<Virtuoso components={{ List: ListB }} data={['a', 'b']} initialItemCount={2} />)
++    })
++    const secondHost = container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!
++    expect(secondHost).not.toBe(firstHost)
++    expect((secondHost as any).triggerChangedChildSizes).toBeTypeOf('function')
++    act(() => root.unmount())
++  })
++
++  it('keeps the connected formal row and focus while its host width is recertified', () => {
++    const resizeCallbacks: (() => void)[] = []
++    const frames: FrameRequestCallback[] = []
++    const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++      frames.push(callback)
++      return frames.length
++    })
++    const NativeResizeObserver = globalThis.ResizeObserver
++    globalThis.ResizeObserver = resizeObserverStub(resizeCallbacks)
++    const root = ReactDOM.createRoot(container)
++    act(() => {
++      root.render(
++        <Virtuoso
++          defaultItemHeight={100}
++          initialItemCount={1}
++          itemContent={() => <textarea defaultValue="selection" />}
++          itemSize={() => 101}
++          totalCount={1}
++        />
++      )
++    })
++    const list = container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!
++    Object.defineProperty(list, 'clientWidth', { configurable: true, value: 800 })
++    act(() => {
++      ;(list as any).triggerChangedChildSizes([{ endIndex: 0, size: 101, startIndex: 0 }])
++      for (let count = 0; count < 10; count++) {
++        for (const callback of resizeCallbacks.splice(0)) {
++          callback()
++        }
++        while (frames.length) {
++          frames.shift()!(0)
++        }
++      }
++    })
++    const row = list.querySelector<HTMLElement>('[data-item-index="0"]')!
++    expect(row.dataset.formalPreparing).toBeUndefined()
++    row.getBoundingClientRect = () => ({ bottom: 101, top: 0 }) as DOMRect
++    const textarea = row.querySelector('textarea')!
++    textarea.focus()
++    textarea.setSelectionRange(2, 7)
++
++    Object.defineProperty(list, 'clientWidth', { configurable: true, value: 500 })
++    act(() => {
++      ;(list as any).triggerChangedChildSizes([])
++    })
++
++    expect(list.querySelector<HTMLElement>('[data-item-index="0"]')).toBe(row)
++    expect(document.activeElement).toBe(textarea)
++    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([2, 7])
++    expect(row.dataset.formalPreparing).toBeUndefined()
++    act(() => root.unmount())
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  })
++
++  it('reports formal admission only after its matching DOM layout commit', () => {
++    const resizeCallbacks: (() => void)[] = []
++    const frames: FrameRequestCallback[] = []
++    const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++      frames.push(callback)
++      return frames.length
++    })
++    const NativeResizeObserver = globalThis.ResizeObserver
++    globalThis.ResizeObserver = resizeObserverStub(resizeCallbacks)
++    const states: { blocking: boolean; generation: number; phase: string; reason?: string }[] = []
++    const root = ReactDOM.createRoot(container)
++    act(() => {
++      root.render(
++        <Virtuoso
++          data={['a']}
++          defaultItemHeight={100}
++          formalRangeStateChange={(state) => states.push(state)}
++          initialItemCount={1}
++          itemSize={() => 101}
++        />
++      )
++    })
++    const list = container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!
++    expect(states.some((state) => state.phase === 'pending' && state.reason === 'inline-size' && state.blocking)).toBe(true)
++    Object.defineProperty(list, 'clientWidth', { configurable: true, value: 800 })
++    act(() => {
++      ;(list as any).triggerChangedChildSizes([])
++    })
++    expect(states.some((state) => state.phase === 'pending' && state.reason === 'item-size' && state.blocking)).toBe(true)
++    act(() => {
++      for (let count = 0; count < 10; count++) {
++        ;(list as any).triggerChangedChildSizes([])
++        for (const callback of resizeCallbacks.splice(0)) {
++          callback()
++        }
++        while (frames.length) {
++          frames.shift()!(0)
++        }
++      }
++    })
++    const ready = states.find((state) => state.phase === 'ready')
++    expect(ready).toMatchObject({ blocking: false })
++    expect(ready!.generation).toBe(states.find((state) => state.reason === 'item-size')!.generation)
++    act(() => root.unmount())
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  })
++
++  it('reports duplicate measurement keys as a failed cold admission', () => {
++    const NativeResizeObserver = globalThis.ResizeObserver
++    globalThis.ResizeObserver = resizeObserverStub([])
++    const states: { blocking: boolean; generation: number; phase: string; reason?: string }[] = []
++    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
++    const root = ReactDOM.createRoot(container)
++    act(() => {
++      root.render(
++        <Virtuoso
++          computeItemKey={() => 'duplicate'}
++          data={['a', 'b']}
++          formalRangeStateChange={(state) => states.push(state)}
++          initialItemCount={2}
++          itemSize={() => 100}
++        />
++      )
++    })
++    const list = container.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')!
++    Object.defineProperty(list, 'clientWidth', { configurable: true, value: 800 })
++    act(() => {
++      ;(list as any).triggerChangedChildSizes([])
++    })
++    expect(states.at(-1)).toMatchObject({ blocking: true, phase: 'failed', reason: 'duplicate-key' })
++    act(() => {
++      root.render(
++        <Virtuoso
++          computeItemKey={() => 'duplicate'}
++          data={[]}
++          formalRangeStateChange={(state) => states.push(state)}
++          initialItemCount={2}
++          itemSize={() => 100}
++        />
++      )
++    })
++    expect(states.at(-1)).toMatchObject({ blocking: false, phase: 'ready' })
++    act(() => root.unmount())
++    error.mockRestore()
++    globalThis.ResizeObserver = NativeResizeObserver
++  })
++
++  it('supersedes a pending formal generation when the requested source changes', () => {
++    const NativeResizeObserver = globalThis.ResizeObserver
++    globalThis.ResizeObserver = resizeObserverStub([])
++    const states: { blocking: boolean; generation: number; phase: string; reason?: string }[] = []
++    const root = ReactDOM.createRoot(container)
++    try {
++      act(() => {
++        root.render(
++          <Virtuoso
++            data={['a']}
++            firstItemIndex={10}
++            formalRangeStateChange={(state) => states.push(state)}
++            initialItemCount={1}
++            itemSize={() => 100}
++          />
++        )
++      })
++      const firstGeneration = states.at(-1)!.generation
++      expect(states.at(-1)).toMatchObject({ blocking: true, phase: 'pending', reason: 'inline-size' })
++      act(() => {
++        root.render(
++          <Virtuoso
++            data={['b', 'c']}
++            firstItemIndex={20}
++            formalRangeStateChange={(state) => states.push(state)}
++            initialItemCount={1}
++            itemSize={() => 100}
++          />
++        )
++      })
++      const latest = states.at(-1)!
++      expect(latest).toMatchObject({ blocking: true, phase: 'pending', reason: 'inline-size' })
++      expect(latest.generation).toBeGreaterThan(firstGeneration)
++      expect(states.some((state) => state.phase === 'ready' && state.generation === firstGeneration)).toBe(false)
++    } finally {
++      act(() => root.unmount())
++      globalThis.ResizeObserver = NativeResizeObserver
++    }
++  })
++
+   it('renders a probe item initially', () => {
+     act(() => {
+       ReactDOM.createRoot(container).render(<Virtuoso totalCount={20000} />)
+diff --git a/packages/react-virtuoso/test/scrollToIndexSystem.test.ts b/packages/react-virtuoso/test/scrollToIndexSystem.test.ts
+index fbf23a5..010d321 100644
+--- a/packages/react-virtuoso/test/scrollToIndexSystem.test.ts
++++ b/packages/react-virtuoso/test/scrollToIndexSystem.test.ts
+@@ -1,6 +1,15 @@
+-import { describe, expect, it } from 'vitest'
++import { describe, expect, it, vi } from 'vitest'
+ 
+-import { normalizeIndexLocation } from '../src/scrollToIndexSystem'
++import { domIOSystem } from '../src/domIOSystem'
++import { loggerSystem } from '../src/loggerSystem'
++import { scrollToIndexSystem, normalizeIndexLocation } from '../src/scrollToIndexSystem'
++import { sizeSystem } from '../src/sizeSystem'
++import { init, publish, subscribe, system, tup } from '../src/urx'
++
++const testSystem = system(
++  ([scroll, size, dom, logger]) => ({ ...scroll, ...size, ...dom, ...logger }),
++  tup(scrollToIndexSystem, sizeSystem, domIOSystem, loggerSystem)
++)
+ 
+ describe('normalizeIndexLocation', () => {
+   it('does not mutate the passed location object', () => {
+@@ -25,3 +34,27 @@ describe('normalizeIndexLocation', () => {
+     expect(normalizeIndexLocation(7)).toEqual({ align: 'start', behavior: 'auto', index: 7, offset: 0 })
+   })
+ })
++
++describe('formal range handoff', () => {
++  it('executes a queued target against the exact model admitted by the matching generation', () => {
++    vi.useFakeTimers()
++    const engine = init(testSystem)
++    publish(engine.totalCount, 3)
++    publish(engine.viewportHeight, 100)
++    publish(engine.sizeRanges, [{ startIndex: 0, endIndex: 2, size: 40 }])
++    publish(engine.scrollToIndexReady, false)
++    const writes: unknown[] = []
++    subscribe(engine.scrollTo, (location) => writes.push(location))
++    publish(engine.scrollToIndex, { align: 'end', index: 'LAST' })
++    expect(writes).toEqual([])
++    publish(engine.sizeRanges, [
++      { startIndex: 0, endIndex: 0, size: 30 },
++      { startIndex: 1, endIndex: 1, size: 50 },
++      { startIndex: 2, endIndex: 2, size: 70 },
++    ])
++    publish(engine.scrollToIndexReady, true)
++    expect(writes).toEqual([{ behavior: 'auto', top: 50 }])
++    vi.runAllTimers()
++    vi.useRealTimers()
++  })
++})
+diff --git a/packages/react-virtuoso/test/sizeSystem.test.ts b/packages/react-virtuoso/test/sizeSystem.test.ts
+index a77544b..c5e0980 100644
+--- a/packages/react-virtuoso/test/sizeSystem.test.ts
++++ b/packages/react-virtuoso/test/sizeSystem.test.ts
+@@ -18,6 +18,18 @@ function toKV<T>(tree: AANode<T>) {
+   return walk(tree).map((node) => [node.k, node.v] as [number, T])
+ }
+ 
++it('installs real prefix sizes instead of a default-height prefix', () => {
++  const system = init(sizeSystem)
++  publish(system.firstItemIndex, 100)
++  publish(system.sizeRanges, [{ startIndex: 0, endIndex: 9, size: 132 }])
++  publish(system.measuredPrependSizes, [117, 309])
++  publish(system.firstItemIndex, 98)
++  const state = getValue(system.sizes)
++  expect(offsetOf(2, state.offsetTree, 0)).toBe(426)
++  expect(offsetOf(3, state.offsetTree, 0)).toBe(558)
++  expect(getValue(system.prependMeasurementsPending)).toBe(false)
++})
++
+ const mockLogger = function () {
+   void 0
+ }
+@@ -714,6 +726,64 @@ describe('heightEstimates', () => {
+   })
+ })
+ 
++describe('bounded prepend DOM measurement ownership', () => {
++  it('does not admit initial or explicit-position measurements while disabled', () => {
++    const system = init(sizeSystem)
++    const owned: unknown[] = []
++    subscribe(system.prependDomMeasurement, (value) => owned.push(value))
++
++    publish(system.unshiftWith, 2)
++    publish(system.domSizeObservation, {
++      observedIndexes: [0, 1],
++      ranges: [{ startIndex: 0, endIndex: 1, size: 40 }],
++    })
++
++    expect(owned).toEqual([])
++  })
++
++  it('consumes equal-size observations so later media resize is ordinary', () => {
++    const system = init(sizeSystem)
++    const owned: unknown[] = []
++    subscribe(system.prependDomMeasurement, (value) => owned.push(value))
++    publish(system.sizeRanges, [{ startIndex: 0, endIndex: 0, size: 40 }])
++    publish(system.prependMeasurementEnabled, true)
++    publish(system.unshiftWith, 1)
++
++    publish(system.domSizeObservation, { observedIndexes: [0], ranges: [] })
++    publish(system.domSizeObservation, {
++      observedIndexes: [0],
++      ranges: [{ startIndex: 0, endIndex: 0, size: 80 }],
++    })
++
++    expect(owned).toEqual([])
++  })
++
++  it('owns one changed observation until exact completion and then retires it', () => {
++    const system = init(sizeSystem)
++    const owned: { generation: number; ownedIndexes: number[] }[] = []
++    subscribe(system.prependDomMeasurement, (value) => owned.push(value))
++    publish(system.sizeRanges, [{ startIndex: 0, endIndex: 0, size: 40 }])
++    publish(system.prependMeasurementEnabled, true)
++    publish(system.unshiftWith, 1)
++
++    publish(system.domSizeObservation, {
++      observedIndexes: [0],
++      ranges: [{ startIndex: 0, endIndex: 0, size: 80 }],
++    })
++    expect(owned).toHaveLength(1)
++    publish(system.completePrependMeasurement, {
++      generation: owned[0]!.generation,
++      indexes: owned[0]!.ownedIndexes,
++    })
++    publish(system.domSizeObservation, {
++      observedIndexes: [0],
++      ranges: [{ startIndex: 0, endIndex: 0, size: 90 }],
++    })
++
++    expect(owned).toHaveLength(1)
++  })
++})
++
+ /*
+ describe.only('benchmarks', () => {
+   const COUNT = 20000
+diff --git a/packages/react-virtuoso/test/upwardScrollFixSystem.test.ts b/packages/react-virtuoso/test/upwardScrollFixSystem.test.ts
+index 280c1b2..0e83b47 100644
+--- a/packages/react-virtuoso/test/upwardScrollFixSystem.test.ts
++++ b/packages/react-virtuoso/test/upwardScrollFixSystem.test.ts
+@@ -1,10 +1,11 @@
+ import { describe, expect, it, vi } from 'vitest'
+ 
+ import { domIOSystem } from '../src/domIOSystem'
++import { listSystem } from '../src/listSystem'
+ import { recalcSystem } from '../src/recalcSystem'
+ import { sizeSystem } from '../src/sizeSystem'
+ import { upwardScrollFixSystem } from '../src/upwardScrollFixSystem'
+-import { init, publish, subscribe, system, tup } from '../src/urx'
++import { getValue, init, publish, subscribe, system, tup } from '../src/urx'
+ 
+ const testSystem = system(
+   ([upward, dom, size, recalc]) => ({ ...upward, ...dom, ...size, ...recalc }),
+@@ -15,6 +16,399 @@ const ITEM_SIZE = 30
+ const UNSHIFTED = 10
+ const EXPECTED_OFFSET = ITEM_SIZE * UNSHIFTED
+ 
++describe('ordinary physical measurement batch', () => {
++  it('anchors the first stable row after a boundary row grows', () => {
++    const engine = init(system(([list, size, recalc]) => ({ ...list, ...size, ...recalc }), tup(listSystem, sizeSystem, recalcSystem)))
++    publish(engine.log, vi.fn())
++    publish(engine.scrollTop, 4036)
++    publish(engine.viewportHeight, 100)
++    publish(engine.totalCount, 100)
++    publish(engine.sizeRanges, [{ startIndex: 0, endIndex: 99, size: 94 }])
++    publish(engine.propsReady, true)
++    publish(engine.initialItemFinalLocationReached, true)
++    const host = document.createElement('div')
++    const row39 = document.createElement('div')
++    const row40 = document.createElement('div')
++    const row41 = document.createElement('div')
++    row39.dataset.itemIndex = '39'
++    row40.dataset.itemIndex = '40'
++    row41.dataset.itemIndex = '41'
++    host.append(row39, row40, row41)
++    document.body.append(host)
++    let nativeTop = 4036
++    let tops = [-94, 0, 94]
++    const elements = [row39, row40, row41]
++    elements.forEach((element, index) => {
++      element.getBoundingClientRect = () => ({ bottom: tops[index]! + 94, top: tops[index] }) as DOMRect
++    })
++    const state = getValue(engine.listState)
++    publish(engine.listLayoutCommitted, {
++      listState: state,
++      host,
++      nativeScrollTop: nativeTop,
++      deviation: 0,
++      clientHeight: 100,
++      maxScrollTop: 10_000,
++      readScrollTop: () => nativeTop,
++      items: elements.map((element, offset) => ({
++        key: `row${39 + offset}`,
++        index: 39 + offset,
++        originalIndex: 39 + offset,
++        data: undefined,
++        element,
++        top: tops[offset]!,
++        bottom: tops[offset]! + 94,
++      })),
++    })
++    const writes: number[] = []
++    subscribe(engine.scrollBy, ({ top = 0 }) => {
++      writes.push(top)
++      nativeTop += top
++      tops = tops.map((value) => value - top)
++    })
++    tops = [-94, 180, 274]
++    row39.getBoundingClientRect = () => ({ bottom: tops[0]! + 274, top: tops[0] }) as DOMRect
++    // An unrelated parent commit can run after the physical growth but before
++    // ResizeObserver delivery. It must not replace the last admitted baseline.
++    publish(engine.listLayoutCommitted, {
++      listState: state,
++      host,
++      nativeScrollTop: nativeTop,
++      deviation: 0,
++      clientHeight: 100,
++      maxScrollTop: 10_000,
++      readScrollTop: () => nativeTop,
++      items: elements.map((element, offset) => ({
++        key: `row${39 + offset}`,
++        index: 39 + offset,
++        originalIndex: 39 + offset,
++        data: undefined,
++        element,
++        top: tops[offset]!,
++        bottom: tops[offset]! + (offset === 0 ? 274 : 94),
++      })),
++    })
++    publish(engine.domSizeObservation, {
++      listState: state,
++      observedIndexes: [39],
++      ranges: [{ startIndex: 39, endIndex: 39, size: 274 }],
++      layout: {
++        scrollTop: nativeTop,
++        clientHeight: 100,
++        host,
++        inlineSize: 800,
++        maxScrollTop: 10_000,
++        readScrollTop: () => nativeTop,
++        items: elements.map((element, offset) => ({
++          originalIndex: 39 + offset,
++          key: `row${39 + offset}`,
++          element,
++          top: tops[offset]!,
++          bottom: tops[offset]! + (offset === 0 ? 274 : 94),
++        })),
++      },
++    })
++    expect(writes).toEqual([180])
++    expect(row40.getBoundingClientRect().top).toBe(0)
++    expect(getValue(engine.recalcInProgress)).toBe(false)
++    host.remove()
++  })
++
++  it.each([
++    { key: 'row13', delta: 1830 },
++    { key: 'row13', delta: 47, direct: true },
++    { key: 'replacement', delta: 1830 },
++  ])('owns the exact ordinary batch without replaying total extent: %j', ({ key, delta, direct = false }) => {
++    const engine = init(system(([list, size, recalc]) => ({ ...list, ...size, ...recalc }), tup(listSystem, sizeSystem, recalcSystem)))
++    publish(engine.log, vi.fn())
++    publish(engine.scrollTop, 2500)
++    publish(engine.viewportHeight, 800)
++    publish(engine.totalCount, 100)
++    publish(engine.sizeRanges, [{ startIndex: 0, endIndex: 99, size: 132 }])
++    publish(engine.propsReady, true)
++    publish(engine.initialItemFinalLocationReached, true)
++    const host = document.createElement('div')
++    const prefixElement = document.createElement('div')
++    prefixElement.dataset.itemIndex = '0'
++    const element = document.createElement('div')
++    element.dataset.itemIndex = '13'
++    host.append(prefixElement, element)
++    document.body.append(host)
++    let nativeTop = 2500
++    let contentTop = 2154
++    element.getBoundingClientRect = () => ({ top: contentTop - nativeTop, bottom: contentTop - nativeTop + 621 }) as DOMRect
++    publish(engine.listLayoutCommitted, {
++      listState: getValue(engine.listState),
++      host,
++      nativeScrollTop: nativeTop,
++      deviation: 0,
++      clientHeight: 800,
++      maxScrollTop: 20000,
++      readScrollTop: () => nativeTop,
++      items: [
++        { key: 'row0', index: 0, originalIndex: 0, data: undefined, element: prefixElement, top: -2500, bottom: -2215.5 },
++        { key: 'row13', index: 13, originalIndex: 13, data: undefined, element, top: -346, bottom: 275 },
++      ],
++    })
++    const writes: number[] = []
++    subscribe(engine.scrollBy, ({ top = 0 }) => {
++      writes.push(top)
++      nativeTop += top
++    })
++    nativeTop = 1800
++    contentTop += delta
++    publish(engine.scrollTop, nativeTop)
++    const observation = {
++      listState: getValue(engine.listState),
++      observedIndexes: Array.from({ length: 12 }, (_, index) => index),
++      ranges: [{ startIndex: 0, endIndex: 11, size: 132 + delta / 12 }],
++      layout: {
++        scrollTop: nativeTop,
++        clientHeight: 800,
++        host,
++        ...(direct ? { maxScrollTop: 20_000, readScrollTop: () => nativeTop } : {}),
++        items: [
++          { originalIndex: 0, key: 'row0', element: prefixElement, top: -1800, bottom: -1515.5 },
++          { originalIndex: 13, key, element, top: 354 + delta, bottom: 975 + delta },
++        ],
++      },
++    }
++    publish(engine.domSizeObservation, observation)
++    const expectedWrites = key === 'row13' ? [delta] : []
++    expect(writes).toEqual(direct ? expectedWrites : [])
++    const measuredState = getValue(engine.listState)
++    publish(engine.listLayoutCommitted, {
++      listState: measuredState,
++      host,
++      nativeScrollTop: nativeTop,
++      deviation: 0,
++      clientHeight: 800,
++      maxScrollTop: 20000,
++      readScrollTop: () => nativeTop,
++      items: [
++        {
++          key: 'row0',
++          index: 0,
++          originalIndex: 0,
++          data: undefined,
++          element: document.createElement('div'),
++          top: -1800,
++          bottom: -1515.5,
++        },
++        { key, index: 13, originalIndex: 13, data: undefined, element, top: 354 + delta, bottom: 975 + delta },
++      ],
++    })
++    expect(writes).toEqual(expectedWrites)
++    expect(element.getBoundingClientRect().top).toBe(key === 'row13' ? 354 : 354 + delta)
++    expect(getValue(engine.recalcInProgress)).toBe(false)
++    publish(engine.domSizeObservation, {
++      ...observation,
++      listState: getValue(engine.listState),
++      ranges: [],
++      layout: { ...observation.layout, scrollTop: nativeTop },
++    })
++    expect(writes).toEqual(expectedWrites)
++    host.remove()
++  })
++
++  it.each(['native scroll changed', 'host replaced', 'new scrollToIndex command'])(
++    'cancels the exact owner when its commit boundary is invalidated: %s',
++    (reason) => {
++      const engine = init(system(([list, size, recalc]) => ({ ...list, ...size, ...recalc }), tup(listSystem, sizeSystem, recalcSystem)))
++      publish(engine.log, vi.fn())
++      publish(engine.scrollTop, 150)
++      publish(engine.viewportHeight, 90)
++      publish(engine.totalCount, 100)
++      publish(engine.sizeRanges, [{ startIndex: 0, endIndex: 99, size: 30 }])
++      publish(engine.propsReady, true)
++      const host = document.createElement('div')
++      const replacementHost = document.createElement('div')
++      const anchor = document.createElement('div')
++      anchor.dataset.itemIndex = '5'
++      host.append(anchor)
++      document.body.append(host, replacementHost)
++      let nativeTop = 150
++      anchor.getBoundingClientRect = () => ({ top: 23, bottom: 53 }) as DOMRect
++      const baselineState = getValue(engine.listState)
++      publish(engine.listLayoutCommitted, {
++        listState: baselineState,
++        host,
++        nativeScrollTop: nativeTop,
++        deviation: 0,
++        clientHeight: 90,
++        maxScrollTop: 3000,
++        readScrollTop: () => nativeTop,
++        items: [{ key: 'row5', index: 5, originalIndex: 5, data: undefined, element: anchor, top: 23, bottom: 53 }],
++      })
++      const writes: number[] = []
++      subscribe(engine.scrollBy, ({ top = 0 }) => writes.push(top))
++      publish(engine.domSizeObservation, {
++        listState: baselineState,
++        observedIndexes: [0, 5],
++        ranges: [{ startIndex: 0, endIndex: 0, size: 60 }],
++        layout: {
++          host,
++          scrollTop: nativeTop,
++          clientHeight: 90,
++          items: [{ originalIndex: 5, key: 'row5', element: anchor, top: 53, bottom: 83 }],
++        },
++      })
++      if (reason === 'native scroll changed') {
++        nativeTop = 180
++        publish(engine.scrollTop, nativeTop)
++      } else if (reason === 'new scrollToIndex command') {
++        publish(engine.scrollToIndex, { index: 40 })
++      }
++      const measuredState = getValue(engine.listState)
++      publish(engine.listLayoutCommitted, {
++        listState: measuredState,
++        host: reason === 'host replaced' ? replacementHost : host,
++        nativeScrollTop: nativeTop,
++        deviation: 0,
++        clientHeight: 90,
++        maxScrollTop: 3000,
++        readScrollTop: () => nativeTop,
++        items: [{ key: 'row5', index: 5, originalIndex: 5, data: undefined, element: anchor, top: 53, bottom: 83 }],
++      })
++      expect(writes).toEqual([])
++      expect(getValue(engine.recalcInProgress)).toBe(false)
++      host.remove()
++      replacementHost.remove()
++    }
++  )
++})
++
++describe('first prepend measurement physical anchor', () => {
++  function measurement(previousTop?: number, replaceDataObjects = false) {
++    const engine = init(system(([list, size]) => ({ ...list, ...size }), tup(listSystem, sizeSystem)))
++    publish(engine.log, vi.fn())
++    publish(engine.scrollTop, 150)
++    publish(engine.viewportHeight, 100)
++    publish(engine.totalCount, 100)
++    if (replaceDataObjects) {
++      publish(
++        engine.data,
++        Array.from({ length: 100 }, (_, id) => ({ id }))
++      )
++    }
++    publish(engine.sizeRanges, [{ startIndex: 0, endIndex: 99, size: 30 }])
++    publish(engine.propsReady, true)
++    const element = document.createElement('div')
++    document.body.append(element)
++    const writes: ScrollToOptions[] = []
++    subscribe(engine.scrollBy, (value) => writes.push(value))
++    const observation = {
++      generation: 1,
++      ownedIndexes: [0],
++      observedIndexes: [0, 5],
++      ranges: [{ startIndex: 0, endIndex: 0, size: 60 }],
++      layout: {
++        scrollTop: 150,
++        clientHeight: 90,
++        items: [5, 6, 7, 8].map((originalIndex) => ({
++          originalIndex,
++          top: -7 + (originalIndex - 5) * 30,
++          bottom: 23 + (originalIndex - 5) * 30,
++          element,
++        })),
++      },
++    }
++    if (previousTop !== undefined) {
++      publish(engine.listLayoutCommitted, {
++        listState: getValue(engine.listState),
++        nativeScrollTop: 150,
++        deviation: 0,
++        clientHeight: 90,
++        maxScrollTop: 3000,
++        readScrollTop: () => 150,
++        items: [
++          {
++            originalIndex: 5,
++            index: 5,
++            data: getValue(engine.listState).items[0]?.data,
++            element,
++            top: previousTop,
++            bottom: previousTop + 30,
++          },
++        ],
++      })
++      if (replaceDataObjects) {
++        publish(
++          engine.data,
++          Array.from({ length: 100 }, (_, id) => ({ id }))
++        )
++      }
++      observation.layout.items[0]!.top += 100
++      observation.layout.items[0]!.bottom += 100
++    }
++    const previousSizes = getValue(engine.sizes)
++    publish(engine.prependDomMeasurementStart, observation)
++    publish(engine.sizeRanges, observation.ranges)
++    publish(engine.prependDomMeasurement, { ...observation, previousSizes, nextSizes: getValue(engine.sizes) })
++    const state = getValue(engine.listState)
++    const commit = (displacement: number) =>
++      publish(engine.listLayoutCommitted, {
++        listState: state,
++        nativeScrollTop: 150,
++        maxScrollTop: 3000,
++        readScrollTop: () => 150 + displacement,
++        deviation: 0,
++        clientHeight: 90,
++        items: state.items.map((item, index) => ({
++          data: item.data,
++          index: item.index,
++          originalIndex: item.originalIndex!,
++          element: index === 0 ? element : document.createElement('div'),
++          top: item.offset - 187 + displacement,
++          bottom: item.offset + item.size - 187 + displacement,
++        })),
++      })
++    return { engine, writes, commit, element }
++  }
++
++  it('does not scroll while committed physical and estimated anchor coordinates disagree', () => {
++    const { engine, writes, commit, element } = measurement()
++    expect(writes).toEqual([])
++    expect(getValue(engine.measurementItemRange)).toEqual([5, 8])
++    commit(0)
++    expect(writes).toEqual([])
++    expect(getValue(engine.measurementItemRange)).toBe(null)
++    element.remove()
++  })
++
++  it('uses only the actual committed displacement and consumes it once', () => {
++    const { writes, commit, element } = measurement()
++    commit(37)
++    commit(37)
++    expect(writes).toEqual([{ behavior: 'auto', top: 37 }])
++    element.remove()
++  })
++
++  it('does not replay the old correction after user input', () => {
++    const { engine, writes, commit, element } = measurement()
++    publish(engine.scrollTop, 151)
++    commit(12)
++    expect(writes).toEqual([])
++    element.remove()
++  })
++
++  it('retains the previous committed reading offset when RO sees an already displaced anchor', () => {
++    const { engine, writes, commit, element } = measurement(-7)
++    expect(getValue(engine.measurementItemRange)).toEqual([5, 8])
++    commit(37)
++    expect(writes).toEqual([{ behavior: 'auto', top: 37 }])
++    element.remove()
++  })
++
++  it('retains the same external item identity when the caller rebuilds data objects', () => {
++    const { engine, writes, commit, element } = measurement(-7, true)
++    expect(getValue(engine.measurementItemRange)).toEqual([5, 8])
++    commit(37)
++    expect(writes).toEqual([{ behavior: 'auto', top: 37 }])
++    element.remove()
++  })
++})
++
+ function setup() {
+   const s = init(testSystem)
+   // establish a default item size, so the unshift offset is computable
+diff --git a/FUTURE_RANGE_CANDIDATE6.md b/FUTURE_RANGE_CANDIDATE6.md
+new file mode 100644
+index 0000000..7545c30
+--- /dev/null
++++ b/FUTURE_RANGE_CANDIDATE6.md
+@@ -0,0 +1,63 @@
++# Candidate 6: bounded prepend measurement ownership
++
++Historical design record: the negative-deviation/two-phase proposal below was
++rejected and is **not the current implementation**. It is retained as failure
++history. Current mechanism and validation state are recorded in
++`/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/audit-output/virtuoso-physical-anchor-20260918/IMPLEMENTATION.md`.
++
++Base: `react-virtuoso@4.18.13` (`ebd6b0f0ff41e1fe003a50fe47b168b3ed698868`).
++
++This is an isolated experiment. It does not modify an application dependency.
++
++## State
++
++- `idle`: DOM measurements use the original resize path.
++- `owned(generation, pendingIndexes)`: entered only by `unshiftWith(count)` while
++  the initial item location is complete and no explicit/follow scroll is in
++  progress. The generation owns the newly prepended original indexes which
++  have not yet been observed in the DOM.
++- `prepared`: one DOM observation contains a changed pending index above the
++  current semantic anchor. Ordinary upward correction is held before applying
++  that size batch.
++- `awaiting-render-commit`: the new size tree has produced a future range that
++  contains the exact anchor data identity at its prior viewport offset. A
++  layout-effect acknowledgement of that exact `ListState` authorizes the
++  matching scroll and consumes the measured indexes.
++
++Equal-size DOM observations consume pending ownership without a scroll. A
++later resize of that row is ordinary. A new prepend shifts still-pending
++indexes and adds the new prefix. Front removal, initial/explicit positioning,
++or reverse input cancels the unpublished pair. Measurement ownership is not a
++permanent numeric prefix boundary.
++
++## Required gates
++
++1. Initial and explicit positioning must never enter `owned`/`prepared` and
++   must retain the tag's original visibility and scroll liveness.
++2. A compensation cannot precede the exact future `ListState` layout commit.
++3. Every sampled paint must preserve the pre-write semantic anchor until a
++   later trusted input.
++4. Repeated RO batches update one generation; equal-size observations retire
++   ownership; non-owned media/body resizes remain on the original path.
++
++## Candidate 6c physical handoff
++
++`ListState` and `deviation` values are not physical layout acknowledgements.
++Candidate 6b proved this: the exact state tuple committed, but the first native
++write still replaced the semantic anchor by exactly the write delta. The next
++revision therefore uses this state table:
++
++| phase | native scroll owner | range coordinate owner | renderer obligation | exit |
++| --- | --- | --- | --- | --- |
++| `idle` | browser/user/ordinary Virtuoso | native `scrollTop` | none | exact `unshiftWith` may open ownership |
++| `awaiting-negative-layout` | browser remains at frozen `S` | native `S` plus `deviation=-d` | connected exact anchor DOM node at frozen viewport offset; native scroll still `S` | physical ack -> clearing; native change/reverse/explicit -> cancel |
++| `awaiting-clear-layout` | browser still remains at frozen `S` | private range override `S+d`, never the public/native scroll stream | `deviation=0`; connected exact anchor DOM node at frozen offset `+d`; actual row rects shifted by `-d` cover the future viewport | physical ack -> one native `scrollBy(d)`; mismatch/input -> cancel |
++| `written` | browser at the synchronously written position | native `scrollTop` after the write | no pending renderer obligation | consume exact measured indexes and retire |
++
++The range override belongs only to `sizeRangeSystem`. It must never publish a
++fake native/stateful `scrollTop`, and native scroll events cannot overwrite it.
++At the final physical acknowledgement the native write happens first, then the
++real `scrollTop=S+d` is published, then the range override is cleared. The
++second phase does not require the first phase's `ListState` object: clearing
++deviation can legitimately produce a new state, and that exact new render is
++measured. If it never commits, no native write is authorized.
+diff --git a/packages/react-virtuoso/src/measuredHistoryAdmission.ts b/packages/react-virtuoso/src/measuredHistoryAdmission.ts
+new file mode 100644
+index 0000000..663eb45
+--- /dev/null
++++ b/packages/react-virtuoso/src/measuredHistoryAdmission.ts
+@@ -0,0 +1,117 @@
++import * as u from './urx'
++
++import type { Data } from './sizeSystem'
++
++export interface HistoryPreparation {
++  data: readonly unknown[] | undefined
++  firstItemIndex: number
++  generation: number
++  prefixCount: number
++  start: number
++  end: number
++  totalCount: number
++}
++
++/** Private admission gate: requested history is not list geometry until measured. */
++export function measuredHistoryAdmission(options: {
++  admit: (data: Data, firstItemIndex: number, totalCount: number, prefixSizes?: readonly number[]) => void
++  key: (index: number, data: unknown) => unknown
++  fail: (reason: string) => void
++  enabled?: () => boolean
++}) {
++  const preparation = u.statefulStream<HistoryPreparation | null>(null)
++  let acceptedData: Data
++  let acceptedFirst = 0
++  let acceptedTotalCount = 0
++  let generation = 0
++  let pendingPrefixSizes: number[] | null = null
++
++  function request(data: Data, firstItemIndex: number, totalCount = data?.length ?? 0) {
++    const active = u.getValue(preparation)
++    if (active && active.data === data && active.firstItemIndex === firstItemIndex && active.totalCount === totalCount) {
++      return
++    }
++    if (acceptedData === data && acceptedFirst === firstItemIndex && acceptedTotalCount === totalCount && active === null) {
++      return
++    }
++    generation++
++    const prefixCount = acceptedFirst - firstItemIndex
++    if (options.enabled?.() !== false && acceptedTotalCount > 0 && prefixCount > 0) {
++      const suffixMatches =
++        acceptedData !== undefined && data !== undefined
++          ? data.length >= acceptedData.length + prefixCount &&
++            acceptedData.every(
++              (item, index) => options.key(acceptedFirst + index, item) === options.key(acceptedFirst + index, data[prefixCount + index])
++            )
++          : acceptedData === undefined && data === undefined && totalCount === acceptedTotalCount + prefixCount
++      if (!suffixMatches) {
++        u.publish(preparation, null)
++        pendingPrefixSizes = null
++        acceptedData = data
++        acceptedFirst = firstItemIndex
++        acceptedTotalCount = totalCount
++        // A replacement/rebase is not a history-prefix insertion. Preserve its
++        // existing public behavior rather than freezing the requested data.
++        options.admit(data, firstItemIndex, totalCount)
++        return
++      }
++      pendingPrefixSizes = Array.from({ length: prefixCount }, () => 0)
++      u.publish(preparation, {
++        data,
++        firstItemIndex,
++        generation,
++        prefixCount,
++        start: Math.max(0, prefixCount - 32),
++        end: prefixCount,
++        totalCount,
++      })
++      return
++    }
++    u.publish(preparation, null)
++    pendingPrefixSizes = null
++    acceptedData = data
++    acceptedFirst = firstItemIndex
++    acceptedTotalCount = totalCount
++    options.admit(data, firstItemIndex, totalCount)
++  }
++
++  function observe(token: HistoryPreparation, inlineSize: number, heights: readonly number[]) {
++    if (u.getValue(preparation) !== token) {
++      return
++    }
++    if (!(inlineSize > 0) || heights.some((size) => size === 0)) {
++      // No invented placeholder size: keep the request and let its live row
++      // ResizeObservers retry when a zero-sized resource obtains dimensions.
++      return
++    }
++    if (heights.length !== token.end - token.start || heights.some((size) => !Number.isFinite(size) || size < 0)) {
++      options.fail('Measured history received invalid live DOM dimensions')
++      return
++    }
++    if (pendingPrefixSizes === null || pendingPrefixSizes.length !== token.prefixCount) {
++      options.fail('Measured history lost its preparation generation')
++      return
++    }
++    heights.forEach((height, index) => {
++      pendingPrefixSizes![token.start + index] = height
++    })
++    if (token.start > 0) {
++      u.publish(preparation, {
++        ...token,
++        generation: ++generation,
++        start: Math.max(0, token.start - 32),
++        end: token.start,
++      })
++      return
++    }
++    const prefixSizes = pendingPrefixSizes
++    pendingPrefixSizes = null
++    acceptedData = token.data
++    acceptedFirst = token.firstItemIndex
++    acceptedTotalCount = token.totalCount
++    options.admit(acceptedData, acceptedFirst, acceptedTotalCount, prefixSizes)
++    u.publish(preparation, null)
++  }
++
++  return { observe, preparation, request }
++}
+diff --git a/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts b/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts
+new file mode 100644
+index 0000000..3579fd9
+--- /dev/null
++++ b/packages/react-virtuoso/test/measuredHistoryAdmission.test.ts
+@@ -0,0 +1,84 @@
++import { describe, expect, it, vi } from 'vitest'
++
++import { measuredHistoryAdmission } from '../src/measuredHistoryAdmission'
++import { getValue } from '../src/urx'
++
++function fixture() {
++  const admit = vi.fn()
++  const fail = vi.fn()
++  const gate = measuredHistoryAdmission({ admit, fail, key: (_index, data) => data })
++  gate.request(['a', 'b'], 100)
++  admit.mockClear()
++  return { ...gate, admit, fail }
++}
++
++describe('real DOM history admission', () => {
++  it('keeps a transient zero-height resource retryable and admits its later real size', () => {
++    const gate = fixture()
++    gate.request(['x', 'a', 'b'], 99)
++    const token = getValue(gate.preparation)!
++    gate.observe(token, 800, [0])
++    expect(getValue(gate.preparation)).toBe(token)
++    expect(gate.admit).not.toHaveBeenCalled()
++    gate.observe(token, 800, [127])
++    expect(gate.admit).toHaveBeenCalledWith(['x', 'a', 'b'], 99, 3, [127])
++  })
++  it('does not admit prefix indexes or heights before exact DOM observation', () => {
++    const gate = fixture()
++    gate.request(['x', 'y', 'a', 'b'], 98)
++    expect(gate.admit).not.toHaveBeenCalled()
++    const token = getValue(gate.preparation)!
++    gate.observe(token, 800, [117, 309])
++    expect(gate.admit).toHaveBeenLastCalledWith(['x', 'y', 'a', 'b'], 98, 4, [117, 309])
++    expect(getValue(gate.preparation)).toBeNull()
++  })
++
++  it('prepares bounded live batches and atomically admits the exact full prefix', () => {
++    const gate = fixture()
++    const prefix = Array.from({ length: 35 }, (_, index) => `p${index}`)
++    gate.request([...prefix, 'a', 'b'], 65)
++    const first = getValue(gate.preparation)!
++    expect(first.start).toBe(3)
++    gate.observe(
++      first,
++      800,
++      Array.from({ length: 32 }, () => 100)
++    )
++    const second = getValue(gate.preparation)!
++    expect(second.start).toBe(0)
++    expect(second.end).toBe(3)
++    expect(gate.admit).not.toHaveBeenCalled()
++    gate.observe(
++      first,
++      800,
++      Array.from({ length: 32 }, () => 1)
++    )
++    expect(getValue(gate.preparation)).toBe(second)
++    gate.observe(second, 700, [90, 90, 90])
++    expect(getValue(gate.preparation)).toBeNull()
++    expect(gate.admit).toHaveBeenLastCalledWith([...prefix, 'a', 'b'], 65, 37, [
++      ...Array.from({ length: 3 }, () => 90),
++      ...Array.from({ length: 32 }, () => 100),
++    ])
++  })
++
++  it('does not freeze a non-prefix replacement in the history gate', () => {
++    const gate = fixture()
++    gate.request(['x', 'b', 'a'], 99)
++    expect(gate.fail).not.toHaveBeenCalled()
++    expect(gate.admit).toHaveBeenCalledWith(['x', 'b', 'a'], 99, 3)
++  })
++
++  it('prepares a data-less totalCount prepend in the same accepted source transaction', () => {
++    const admit = vi.fn()
++    const gate = measuredHistoryAdmission({ admit, fail: vi.fn(), key: (index) => index })
++    gate.request(undefined, 100, 2)
++    admit.mockClear()
++    gate.request(undefined, 98, 4)
++    const token = getValue(gate.preparation)!
++    expect(token).toMatchObject({ firstItemIndex: 98, start: 0, end: 2, totalCount: 4 })
++    expect(admit).not.toHaveBeenCalled()
++    gate.observe(token, 800, [81, 93])
++    expect(admit).toHaveBeenCalledWith(undefined, 98, 4, [81, 93])
++  })
++})
+diff --git a/packages/react-virtuoso/test/useSize.test.tsx b/packages/react-virtuoso/test/useSize.test.tsx
+new file mode 100644
+index 0000000..09b8879
+--- /dev/null
++++ b/packages/react-virtuoso/test/useSize.test.tsx
+@@ -0,0 +1,146 @@
++import { act } from 'react'
++
++import ReactDOM from 'react-dom/client'
++import { expect, it, vi } from 'vitest'
++
++import useChangedListContentsSizes from '../src/hooks/useChangedChildSizes'
++import { useSizeWithElRef } from '../src/hooks/useSize'
++
++;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
++
++function resizeObserverStub(callbacks: ResizeObserverCallback[]) {
++  return class {
++    constructor(callback: ResizeObserverCallback) {
++      callbacks.push(callback)
++    }
++    disconnect() {}
++    observe() {}
++    unobserve() {}
++  } as unknown as typeof ResizeObserver
++}
++
++it('uses same-paint delivery only when the observation predicate owns the resize', async () => {
++  const callbacks: ResizeObserverCallback[] = []
++  const frames: FrameRequestCallback[] = []
++  const NativeResizeObserver = globalThis.ResizeObserver
++  const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++    frames.push(callback)
++    return frames.length
++  })
++  globalThis.ResizeObserver = resizeObserverStub(callbacks)
++  const callback = vi.fn()
++  const samePaint = vi.fn(() => false)
++  const container = document.createElement('div')
++  document.body.append(container)
++  const root = ReactDOM.createRoot(container)
++
++  function Subject() {
++    const { callbackRef } = useSizeWithElRef(callback, true, false, samePaint)
++    return <div ref={callbackRef} />
++  }
++
++  try {
++    act(() => root.render(<Subject />))
++    const element = container.firstElementChild as HTMLElement
++    Object.defineProperty(element, 'offsetParent', { configurable: true, value: container })
++    const entry = { target: element } as unknown as ResizeObserverEntry
++
++    act(() => callbacks[0]!([entry], {} as ResizeObserver))
++    expect(callback).not.toHaveBeenCalled()
++    expect(frames).toHaveLength(1)
++    act(() => frames.shift()!(0))
++    expect(callback).toHaveBeenCalledTimes(1)
++
++    samePaint.mockReturnValue(true)
++    await act(async () => {
++      callbacks[0]!([entry], {} as ResizeObserver)
++      await Promise.resolve()
++    })
++    expect(callback).toHaveBeenCalledTimes(2)
++    expect(frames).toHaveLength(0)
++  } finally {
++    act(() => root.unmount())
++    container.remove()
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  }
++})
++
++it('uses same-paint list delivery only for changed active child geometry', async () => {
++  const callbacks: ResizeObserverCallback[] = []
++  const frames: FrameRequestCallback[] = []
++  const NativeResizeObserver = globalThis.ResizeObserver
++  const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
++    frames.push(callback)
++    return frames.length
++  })
++  globalThis.ResizeObserver = resizeObserverStub(callbacks)
++  const changed = vi.fn()
++  const container = document.createElement('div')
++  document.body.append(container)
++  const root = ReactDOM.createRoot(container)
++  let actualSize = 100
++
++  function Subject() {
++    const { callbackRef } = useChangedListContentsSizes(
++      changed,
++      () => actualSize,
++      true,
++      vi.fn(),
++      vi.fn(),
++      undefined,
++      undefined,
++      false,
++      false,
++      undefined,
++      true
++    )
++    return (
++      <div data-virtuoso-scroller>
++        <div ref={callbackRef}>
++          <div data-index="0" data-known-size="100" />
++        </div>
++      </div>
++    )
++  }
++
++  try {
++    act(() => root.render(<Subject />))
++    const host = container.querySelector<HTMLElement>('[data-virtuoso-scroller] > div')!
++    const child = host.firstElementChild as HTMLElement
++    Object.defineProperty(host, 'offsetParent', { configurable: true, value: container })
++    const entry = { target: host } as unknown as ResizeObserverEntry
++
++    act(() => callbacks[0]!([entry], {} as ResizeObserver))
++    expect(changed).not.toHaveBeenCalled()
++    expect(frames).toHaveLength(1)
++    act(() => frames.shift()!(0))
++    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ ranges: [] }))
++
++    changed.mockClear()
++    actualSize = 120
++    await act(async () => {
++      callbacks[0]!([entry], {} as ResizeObserver)
++      await Promise.resolve()
++    })
++    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ ranges: [{ endIndex: 0, size: 120, startIndex: 0 }] }))
++    expect(frames).toHaveLength(0)
++
++    for (const excludedAttribute of ['formalPreparing', 'historyPreparing', 'historyRetained'] as const) {
++      changed.mockClear()
++      child.dataset[excludedAttribute] = '1'
++      actualSize += 20
++      act(() => callbacks[0]!([entry], {} as ResizeObserver))
++      expect(changed).not.toHaveBeenCalled()
++      expect(frames).toHaveLength(1)
++      act(() => frames.shift()!(0))
++      expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ ranges: [] }))
++      delete child.dataset[excludedAttribute]
++    }
++  } finally {
++    act(() => root.unmount())
++    container.remove()
++    globalThis.ResizeObserver = NativeResizeObserver
++    raf.mockRestore()
++  }
++})

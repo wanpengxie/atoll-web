@@ -111,11 +111,13 @@ describe('Model/Effort 选择器', () => {
     expect(onPickAgent).toHaveBeenCalledWith('claude');
   });
 
-  it('值域未就绪时只显示角色名；点击是探测重试通道，不开菜单', async () => {
+  // 手动挡（owner 2026-09-18）：前端恒不自动探测参数，这个按钮是唯一的取数入口，
+  // 所以它的可访问名必须说清点了会发生什么，不能只是一个角色名。
+  it('值域未就绪时显示角色名+刷新入口；点击只取数，不开菜单', async () => {
     const user = userEvent.setup();
     const onOpen = vi.fn();
     render(<ModelSelector target={single} actorName="Steward" view={null} onOpen={onOpen} />);
-    await user.click(screen.getByRole('button', { name: 'Steward' }));
+    await user.click(screen.getByRole('button', { name: 'Steward，点击读取可用模型' }));
     expect(onOpen).toHaveBeenCalledOnce();
     expect(screen.queryByRole('menu')).toBeNull();
   });

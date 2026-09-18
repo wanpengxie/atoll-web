@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Users, Zap } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, ChevronRight, RefreshCw, Users, Zap } from 'lucide-react';
 import { actorDisplayName } from '../model/actor-display.js';
 import { contextUsageView, selectionFor } from '../model/agent-selection.js';
 
@@ -96,14 +96,23 @@ export function ModelSelector({ target = { kind: 'none' }, actorName = '', view 
     </div>;
   }
 
-  // single：值域未就绪（describe 在途 / 探测失败）或该 agent 无 selections →
-  // 只显示角色名；点击走 onOpen（失败探测的显式重试通道）。
+  // single：值域未就绪或该 agent 无 selections → 显示角色名 + 刷新。
+  // 手动挡（owner 2026-09-18）：前端恒不自动探测参数，这里就是**唯一**的取数入口，
+  // 所以它必须看得见、可点、说得清自己是干什么的——旧版只画一个角色名，
+  // 用户根本不知道点它会加载。
   if (!view) {
     if (!actorName) return null;
     return <div className="model-selector">
-      <button type="button" className="model-selector-trigger is-static" aria-label={actorName} onClick={() => onOpen?.()}>
+      <button
+        type="button"
+        className="model-selector-trigger is-refresh"
+        aria-label={`${actorName}，点击读取可用模型`}
+        title="读取可用模型与上下文"
+        onClick={() => onOpen?.()}
+      >
         <Zap size={14} strokeWidth={2.2} aria-hidden="true" />
         <strong className="model-selector-actor">{actorName}</strong>
+        <RefreshCw size={12} strokeWidth={2.2} aria-hidden="true" className="model-selector-refresh" />
       </button>
     </div>;
   }

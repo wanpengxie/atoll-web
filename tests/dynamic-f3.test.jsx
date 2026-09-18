@@ -8,6 +8,12 @@ import { fold } from '../src/model/fold.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { TurnContext } from '../src/ui/context/TurnContext.jsx';
 
+// Presentation-only tests render every projected row. Browser gates own
+// virtualization, scrolling, measurement, and anchor behavior.
+vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => ({
+  MessageList: (await import('./helpers/PresentationMessageList.jsx')).PresentationMessageList,
+}));
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -174,14 +180,6 @@ it('终端会话生命周期不进入动态时间线', () => {
   expect(document.body.textContent).not.toContain('session-1');
 });
 
-it('只有时间线确认位于最新端后才回报已读序号', async () => {
-  const envelope = { id: 'latest-1', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'other', kind: 'human' }, audience: ['me'], payload: { text: '最新消息' } };
-  const state = { channelId: 'c0', rows: new Map([[7, envelope]]), turns: new Map(), standalone: [{ seq: 7, envelope }], orphans: [], narration: [], lastSeq: 7 };
-  const onReadLatest = vi.fn();
-  render(<Timeline state={state} history={{ onReadLatest }} roster={[{ id: 'me', name: '我' }]} selfId="me" pending={[]} approvalStates={{}} />);
-  await waitFor(() => expect(onReadLatest).toHaveBeenCalledWith(7));
-});
-
 // 平台叙事暂时不进时间线（Timeline 的 SHOW_CHANNEL_NARRATION）：它与真正的往来
 // 平铺在一条流里，agent 每干一次活就刷出一串，把人要读的东西淹掉。这条钉的是
 // "不出现"，而不是它长什么样——等它有了合适的落位，连同这条一起重写。
@@ -321,7 +319,7 @@ it('Agent 调用按 parent_id 渲染消息树，每个子节点独立折叠且�
 describe('F3 Composer', () => {
   it('回复目标独立于正文 mention，并按 sender kind 自动选择消息词', async () => {
     const user = userEvent.setup();
-    const onSend = vi.fn().mockResolvedValue('reply-message');
+    const onSend = vi.fn().mockResolvedValue(['reply-message']);
     const onReplySent = vi.fn();
     const onCancelReply = vi.fn();
     render(<Composer
@@ -337,7 +335,9 @@ describe('F3 Composer', () => {
     expect(screen.getByText('回复 @同事')).toBeTruthy();
     expect(document.querySelectorAll('.composer-target-pill.is-picked')).toHaveLength(0);
     await user.type(screen.getByRole('textbox', { name: '消息' }), '收到，我来处理{Enter}');
-    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ msgType: 'human.message', audience: ['peer'] }));
+    expect(onSend.mock.calls[0][0].batch).toEqual([
+      expect.objectContaining({ msgType: 'human.message', audience: ['peer'] }),
+    ]);
     expect(onReplySent).toHaveBeenCalledOnce();
   });
 
@@ -429,7 +429,7 @@ describe('F3 Composer', () => {
   // 上到收件人条。正文自此恒是纯文本——这正是"粘一段带 @ 的东西就发不出去"的解药。
   it('选中的成员离开正文、上到收件人条，并随草稿一起存活', async () => {
     const user = userEvent.setup();
-    const onSend = vi.fn().mockResolvedValue('message-mention');
+    const onSend = vi.fn().mockResolvedValue(['message-mention']);
     const onDraftChange = vi.fn();
     render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" onDraftChange={onDraftChange} onSend={onSend} />);
 
@@ -445,7 +445,9 @@ describe('F3 Composer', () => {
     expect(JSON.stringify(snapshot.doc)).not.toContain('mention');
 
     await user.type(input, '请处理{Enter}');
-    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['agent-1'], text: '请处理' }));
+    expect(onSend.mock.calls[0][0].batch).toEqual([
+      expect.objectContaining({ audience: ['agent-1'], text: '请处理' }),
+    ]);
   });
 
   it('芯片可以摘掉：× 一枚一枚摘，正文最前面按退格摘最后一枚', async () => {
@@ -487,7 +489,7 @@ describe('F3 Composer', () => {
     // request 帧在写入 gate 恒强制收件人恰一个（协议 §3.1），多 audience 是非法
     // 帧——拆发是把一次输入翻译成 N 条合法帧的唯一方式；混合 @ 各按其 kind。
     const user = userEvent.setup();
-    const onSend = vi.fn().mockResolvedValueOnce('m-1').mockResolvedValueOnce('m-2');
+    const onSend = vi.fn().mockResolvedValue(['m-1', 'm-2']);
     render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }, { id: 'peer', kind: 'human', name: '同事' }]} selfId="me" onSend={onSend} />);
 
     const input = screen.getByRole('textbox', { name: '消息' });
@@ -497,10 +499,11 @@ describe('F3 Composer', () => {
     await user.click(screen.getByRole('option', { name: /同事/ }));
     await user.type(input, '一起看下{Enter}');
 
-    expect(onSend).toHaveBeenCalledTimes(2);
-    expect(onSend.mock.calls[0][0]).toMatchObject({ msgType: 'agent.ask', audience: ['steward'] });
-    expect(onSend.mock.calls[1][0]).toMatchObject({ msgType: 'human.message', audience: ['peer'] });
-    expect(onSend.mock.calls[0][0].text).toBe(onSend.mock.calls[1][0].text);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    const batch = onSend.mock.calls[0][0].batch;
+    expect(batch[0]).toMatchObject({ msgType: 'agent.ask', audience: ['steward'] });
+    expect(batch[1]).toMatchObject({ msgType: 'human.message', audience: ['peer'] });
+    expect(batch[0].text).toBe(batch[1].text);
   });
 
   it('用 Enter 选中 @候选时不会把选择动作继续当成发送', async () => {
@@ -519,17 +522,19 @@ describe('F3 Composer', () => {
   // 文本、写个邮箱、写 "@codex /compact"，整条消息都发不出去。
   it('正文里的 @ 就是字面量：照发不误，收件人由默认目标回答', async () => {
     const user = userEvent.setup();
-    const onSend = vi.fn().mockResolvedValue('m-plain');
+    const onSend = vi.fn().mockResolvedValue(['m-plain']);
     render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }]} selfId="me" agentSelection={{ fallbackAgentId: 'steward' }} onSend={onSend} />);
     await user.type(screen.getByRole('textbox', { name: '消息' }), '联系 ops@atoll.local 看下 @ts-ignore{Enter}');
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['steward'], text: '联系 ops@atoll.local 看下 @ts-ignore' }));
+    expect(onSend.mock.calls[0][0].batch).toEqual([
+      expect.objectContaining({ audience: ['steward'], text: '联系 ops@atoll.local 看下 @ts-ignore' }),
+    ]);
   });
 
   // ESC = 这一个 @ 我不是在叫人。菜单收起，字面量留在正文里继续打。
   it('@ 后按 ESC 取消选择框，@ 变回普通字符，回车照发', async () => {
     const user = userEvent.setup();
-    const onSend = vi.fn().mockResolvedValue('m-esc');
+    const onSend = vi.fn().mockResolvedValue(['m-esc']);
     render(<Composer channelId="c0" roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'steward', kind: 'agent', name: 'Steward' }]} selfId="me" agentSelection={{ fallbackAgentId: 'steward' }} onSend={onSend} />);
     const input = screen.getByRole('textbox', { name: '消息' });
     await user.type(input, '@st');
@@ -539,7 +544,9 @@ describe('F3 Composer', () => {
     expect(screen.queryByRole('option', { name: /Steward/ })).toBeNull();
     await user.type(input, 'eward@example.com{Enter}');
     expect(document.querySelectorAll('.composer-target-pill.is-picked')).toHaveLength(0);
-    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ audience: ['steward'], text: '@steward@example.com' }));
+    expect(onSend.mock.calls[0][0].batch).toEqual([
+      expect.objectContaining({ audience: ['steward'], text: '@steward@example.com' }),
+    ]);
   });
 
   // @codex /compact —— 命令词从前被正文里的 @ 顶掉（首词成了 "@codex"），

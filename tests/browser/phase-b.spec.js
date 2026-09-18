@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 import { MOCK_ORIGIN } from './mock-origin.js';
 
 
@@ -24,12 +25,26 @@ async function login(page) {
 
 async function send(page, text) {
   const chooseAgent = page.getByRole('button', { name: '选择 Agent' });
+  const recipient = page.getByRole('status', { name: '收件人' });
+  // Receipt-order tests must first enter the submit path. During initial OBS
+  // publication the composer can be readable before a default recipient is
+  // known; wait for either a derived target or the real chooser instead of
+  // racing it and asserting about a request that was never sent.
+  await expect.poll(async () => (
+    await chooseAgent.isVisible().catch(() => false)
+      || !/无收件人/.test(await recipient.textContent().catch(() => '无收件人'))
+  )).toBe(true);
   if (await chooseAgent.isVisible().catch(() => false)) {
-    await chooseAgent.click();
-    const menu = page.getByRole('menu', { name: '选择目标 Agent' });
-    const steward = menu.getByRole('menuitem', { name: 'steward' });
-    if (await steward.count()) await steward.click();
-    else await menu.getByRole('menuitem').first().click();
+    // A roster publication can replace the chooser with a derived recipient
+    // between the visibility read and click. That is success, not a reason to
+    // hold the test on a locator that no longer exists.
+    const opened = await chooseAgent.click({ timeout: 1_000 }).then(() => true).catch(() => false);
+    if (opened) {
+      const menu = page.getByRole('menu', { name: '选择目标 Agent' });
+      const steward = menu.getByRole('menuitem', { name: 'steward' });
+      if (await steward.count()) await steward.click();
+      else await menu.getByRole('menuitem').first().click();
+    }
   }
   await page.getByLabel('消息').fill(text);
   await page.getByRole('button', { name: /发送/ }).click();
@@ -175,6 +190,66 @@ test('B-BR-04 真实后端形态下不猜 self，发送 feed 后自动识别', a
   await expect(page.getByText(/正在确认你在本频道中的 Actor 身份/)).toHaveCount(0);
 });
 
+test('B-BR-04b 首次本机发送的 live echo 不计为新动态且保持同一消息身份', async ({ page, request }, testInfo) => {
+  await reset(request, 'real-backend-shape', 814);
+  const received = [];
+  page.on('websocket', (socket) => socket.on('framereceived', ({ payload }) => {
+    try { received.push(JSON.parse(String(payload))); } catch { /* binary/non-JSON frame */ }
+  }));
+  await login(page);
+  await page.evaluate(() => {
+    window.__ATOLL_DIAGNOSTICS__.clear();
+    window.__ATOLL_DIAGNOSTICS__.reading.enable({ case: 'first-local-echo' });
+  });
+  const message = `first-local-echo-${Date.now()}`;
+  await send(page, message);
+  await expect(page.getByText(message, { exact: true })).toBeVisible();
+  await page.waitForFunction(() => {
+    const entries = window.__ATOLL_DIAGNOSTICS__.snapshot();
+    const startIndex = entries.map((entry) => entry.event).lastIndexOf('submission.composer_send_started');
+    const acceptedOffset = entries.slice(startIndex + 1)
+      .findIndex((entry) => entry.event === 'submission.outbox_accepted');
+    const acceptedIndex = acceptedOffset < 0 ? -1 : startIndex + 1 + acceptedOffset;
+    const accepted = entries[acceptedIndex];
+    const messageId = accepted?.detail?.messageIds?.[0];
+    return Boolean(messageId && entries.slice(acceptedIndex + 1).some((entry) => (
+      entry.event === 'submission.feed_landed'
+        && entry.detail?.messageIds?.includes(messageId)
+    )));
+  });
+  await expect(page.getByText(message, { exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /条新动态/ })).toHaveCount(0);
+
+  const application = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot());
+  const reading = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.snapshot());
+  const composerStartIndex = application.map((entry) => entry.event).lastIndexOf('submission.composer_send_started');
+  const accepted = application.slice(composerStartIndex + 1)
+    .find((entry) => entry.event === 'submission.outbox_accepted');
+  const messageId = accepted?.detail?.messageIds?.[0] || '';
+  expect(messageId).toBeTruthy();
+  await expect.poll(() => received.some((frame) => (
+    frame.frame_type === 'feed'
+      && frame.payload?.source === 'live'
+      && frame.payload?.envelope?.id === messageId
+  ))).toBe(true);
+  const requestFrame = received.find((frame) => (
+    frame.frame_type === 'feed'
+      && frame.payload?.source === 'live'
+      && frame.payload?.envelope?.id === messageId
+  ));
+  const requestSeq = Number(requestFrame?.payload?.seq || 0);
+  expect(requestSeq).toBeGreaterThan(0);
+  const ownRequestArrivals = (reading.entries || [])
+    .filter((entry) => entry.event === 'reading.unseen-arrival')
+    .flatMap((entry) => entry.detail?.records || [])
+    .filter((record) => record.key === messageId && Number(record.seq) === requestSeq);
+  expect(ownRequestArrivals).toEqual([]);
+
+  const evidencePath = testInfo.outputPath('first-local-echo.json');
+  await writeFile(evidencePath, JSON.stringify({ messageId, requestSeq, ownRequestArrivals, application, reading }, null, 2));
+  await testInfo.attach('first-local-echo.json', { path: evidencePath, contentType: 'application/json' });
+});
+
 test('B-BR-05 完整 provisional、命名空间状态和第一终态权威性', async ({ page, request }) => {
   await reset(request, 'business-provisional');
   await login(page);
@@ -216,15 +291,95 @@ test('B-BR-06 receipt 先到与 feed 先到都只产生一个请求', async ({ p
   await expect(page.locator('.timeline').getByText(receiptDelayed, { exact: true })).toHaveCount(1);
 });
 
-test('B-BR-07 receipt 丢失时先显示 uncertain，再由重连 feed 对账', async ({ page, request }) => {
+test('B-BR-06a 名册未就绪的早发送明确受阻，目标到达后原草稿可发送', async ({ page, request }) => {
+  await reset(request, 'feed-delayed', 818);
+  await login(page);
+  const fault = await request.post(`${MOCK_ORIGIN}/mock/control/fault`, {
+    data: { target: 'obs', mode: 'delay', delay_ms: 2_500, count: 20 },
+  });
+  expect(fault.ok()).toBe(true);
+  const sentFrames = [];
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => { try { sentFrames.push(JSON.parse(String(payload))); } catch { /* binary */ } });
+  });
+  await clearProductCache(page);
+  await page.reload();
+  await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
+
+  const message = `early-roster-${Date.now()}`;
+  await page.getByLabel('消息').fill(message);
+  await page.getByRole('button', { name: /发送/ }).click();
+  await expect(page.getByText(/请 @ 一个成员，或在右下角选择目标 Agent/)).toBeVisible();
+  expect(sentFrames.filter((frame) => (
+    frame.frame_type === 'submit' && frame.payload?.msg_type === 'agent.ask'
+  ))).toHaveLength(0);
+  await expect(page.getByLabel('消息')).toHaveText(message);
+
+  const chooseAgent = page.getByRole('button', { name: '选择 Agent' });
+  await expect(chooseAgent).toBeVisible();
+  await chooseAgent.click();
+  const menu = page.getByRole('menu', { name: '选择目标 Agent' });
+  await expect(menu.getByRole('menuitem').first()).toBeVisible({ timeout: 6_000 });
+  const steward = menu.getByRole('menuitem', { name: 'steward' });
+  if (await steward.count()) await steward.click();
+  else await menu.getByRole('menuitem').first().click();
+  await page.getByRole('button', { name: /发送/ }).click();
+  await expect(page.getByText('PONG', { exact: true })).toBeVisible({ timeout: 8_000 });
+  expect(sentFrames.filter((frame) => (
+    frame.frame_type === 'submit' && frame.payload?.msg_type === 'agent.ask'
+  ))).toHaveLength(1);
+});
+
+test('B-BR-07 receipt 丢失但 feed 已落账时直接以账本事实完成对账', async ({ page, request }) => {
   await reset(request, 'receipt-lost-feed-landed');
   await login(page);
   const message = `uncertain-${Date.now()}`;
   await send(page, message);
-  await expect(page.getByText(/发送结果待确认/).first()).toBeVisible();
+  // This fixture drops the receipt but deliberately delivers the feed without
+  // delay. The ledger may reconcile the durable submission before the socket
+  // close is observed, so inventing a mandatory uncertain frame would assert
+  // timing rather than product state.
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText(message, { exact: true })).toHaveCount(1);
+  await expect(page.locator('.timeline').getByText(message, { exact: true })).toHaveCount(1);
   await expect(page.getByText('PONG', { exact: true })).toBeVisible();
+  await expect(page.locator('.composer-status.state-uncertain')).toHaveCount(0);
+});
+
+test('B-BR-07a receipt 与 feed 都尚未确认时显示 uncertain，重连后按账本收敛', async ({ page, request }) => {
+  await reset(request, 'message-flow', 817);
+  const sentFrames = [];
+  const receivedFrames = [];
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => { try { sentFrames.push(JSON.parse(String(payload))); } catch { /* binary */ } });
+    socket.on('framereceived', ({ payload }) => { try { receivedFrames.push(JSON.parse(String(payload))); } catch { /* binary */ } });
+  });
+  await login(page);
+  for (const data of [
+    { target: 'feed', mode: 'delay', delay_ms: 1_200, count: 4, match_msg_type: 'agent.ask' },
+    { target: 'receipt', mode: 'drop', count: 1, match_msg_type: 'agent.ask' },
+  ]) {
+    const response = await request.post(`${MOCK_ORIGIN}/mock/control/fault`, { data });
+    expect(response.ok()).toBe(true);
+  }
+  await page.evaluate(() => {
+    window.__ATOLL_SAW_UNCERTAIN__ = false;
+    const sample = () => {
+      if (document.querySelector('.composer-status.state-uncertain')) window.__ATOLL_SAW_UNCERTAIN__ = true;
+    };
+    new MutationObserver(sample).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+  });
+  const message = `uncertain-window-${Date.now()}`;
+  await send(page, message);
+  await expect.poll(() => page.evaluate(() => window.__ATOLL_SAW_UNCERTAIN__)).toBe(true);
+  await expect(page.getByText('OPEN', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.timeline').getByText(message, { exact: true })).toHaveCount(1, { timeout: 10_000 });
+  await expect(page.locator('.composer-status.state-uncertain')).toHaveCount(0);
+  await expect(page.getByText(/现已通过频道账本确认/)).toBeVisible();
+  const conflicts = receivedFrames.filter((frame) => frame.frame_type === 'error' && frame.payload?.code === 'idempotency_conflict');
+  expect(conflicts, JSON.stringify({
+    conflicts,
+    retries: sentFrames.filter((frame) => frame.frame_type === 'submit').map((frame) => ({ ref: frame.ref, payload: frame.payload })),
+  })).toEqual([]);
 });
 
 test('B-BR-08 切频道不改变 pending 所属频道', async ({ page, request }) => {

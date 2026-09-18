@@ -54,6 +54,7 @@ describe('Phase B request fold', () => {
     expect(turn.provisional.find((item) => item.status === 'deferred').envelope.payload.retry_after_ms).toBe(500);
     expect(turn.phase).toBe('completed');
     expect(turn.terminal.id).toBe('done');
+    expect(turn.lastSeq).toBe(10);
     expect(turn.anomalies.map((item) => item.code)).toEqual(expect.arrayContaining(['provisional_after_terminal', 'terminal_conflict']));
   });
 

@@ -5,7 +5,7 @@ import { loadScenario, scenarioIds } from '../mock/scenarios.mjs';
 describe('mock scenario and domain layers', () => {
   it('contains every phase A and future-development scenario', () => {
     expect(scenarioIds()).toEqual(expect.arrayContaining([
-      'first-login', 'multi-channel', 'message-flow', 'approval', 'network-drop',
+      'first-login', 'multi-channel', 'deep-history-delayed', 'message-flow', 'approval', 'network-drop',
       'permission-revoked', 'channel-retired', 'projection-delay', 'actor-capability',
       'channel-governance', 'space-governance', 'resource-workflow', 'scheduled-action',
       'message-structured-success', 'message-empty-success', 'message-failed',

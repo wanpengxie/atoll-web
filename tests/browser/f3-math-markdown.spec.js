@@ -34,19 +34,22 @@ test('研究消息里的 LaTeX 括号语法渲染为数学公式且不撑破窄�
 
   const message = page.locator('.turn-card.self > .request-message').last();
   await expect(message.locator('.katex')).toHaveCount(2);
-  await expect(message.locator('.katex-display')).toBeVisible();
-  const layout = await message.evaluate((row) => {
-    const display = row.querySelector('.katex-display');
+  await expect(page.getByText('PONG', { exact: true }).last()).toBeVisible();
+  const readLayout = () => message.locator('.katex-display').evaluate((node) => {
     return {
+      connected: node.isConnected,
       pageWidth: document.documentElement.scrollWidth,
       viewportWidth: window.innerWidth,
-      displayClientWidth: display?.clientWidth || 0,
-      displayScrollWidth: display?.scrollWidth || 0,
-      overflowX: display ? getComputedStyle(display).overflowX : '',
+      displayClientWidth: node.clientWidth,
+      displayScrollWidth: node.scrollWidth,
+      overflowX: getComputedStyle(node).overflowX,
     };
   });
-  expect(layout.pageWidth).toBeLessThanOrEqual(layout.viewportWidth);
-  expect(layout.displayClientWidth).toBeGreaterThan(0);
-  expect(layout.displayScrollWidth).toBeGreaterThanOrEqual(layout.displayClientWidth);
-  expect(layout.overflowX).toBe('auto');
+  await expect.poll(readLayout).toMatchObject({ connected: true, displayClientWidth: expect.any(Number), overflowX: 'auto' });
+  const layout = await readLayout();
+  const evidence = JSON.stringify(layout);
+  expect(layout.pageWidth, evidence).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.displayClientWidth, evidence).toBeGreaterThan(0);
+  expect(layout.displayScrollWidth, evidence).toBeGreaterThanOrEqual(layout.displayClientWidth);
+  expect(layout.overflowX, evidence).toBe('auto');
 });

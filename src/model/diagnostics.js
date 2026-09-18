@@ -1,5 +1,6 @@
 const STORAGE_KEY = 'atoll.diagnostics.v1';
 const MAX_ENTRIES = 500;
+const MAX_READING_TRACE_ENTRIES = 1_024;
 const MAX_STACK_LINES = 12;
 const REDACTED_KEY = /(?:password|secret|token|credential|authorization|cookie|envelope|payload|body|content|text)/i;
 
@@ -38,6 +39,132 @@ function restore() {
 }
 
 const entries = restore();
+const readingTraceEntries = [];
+let readingTraceEnabled = false;
+let readingTraceSequence = 0;
+let readingTraceStartedAt = 0;
+let readingTraceMetadata = {};
+let readingTraceDropped = 0;
+let railDiagnosticProvider = null;
+
+function monotonicNow() {
+  return Number(globalThis.performance?.now?.() || Date.now());
+}
+
+export function readingTrace(event, detail = {}) {
+  if (!readingTraceEnabled) return null;
+  let resolvedDetail;
+  let normalizedEvent;
+  try {
+    normalizedEvent = String(event || 'unknown');
+    resolvedDetail = typeof detail === 'function' ? detail() : detail;
+    resolvedDetail = safeValue(resolvedDetail);
+  } catch {
+    // An opt-in recorder must never turn a geometry getter, a test hook, or a
+    // hostile diagnostic value into an application failure. Keep only a
+    // metadata marker; never echo the thrown message, which may contain text.
+    normalizedEvent = 'trace.detail-error';
+    resolvedDetail = { sourceEvent: typeof event === 'string' ? event : 'unknown' };
+  }
+  try {
+    const entry = {
+      sequence: ++readingTraceSequence,
+      elapsedMs: Math.max(0, monotonicNow() - readingTraceStartedAt),
+      event: normalizedEvent,
+      detail: resolvedDetail,
+    };
+    readingTraceEntries.push(entry);
+    if (readingTraceEntries.length > MAX_READING_TRACE_ENTRIES) {
+      const overflow = readingTraceEntries.length - MAX_READING_TRACE_ENTRIES;
+      readingTraceEntries.splice(0, overflow);
+      readingTraceDropped += overflow;
+    }
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
+export function enableReadingTrace(metadata = {}) {
+  readingTraceEntries.length = 0;
+  readingTraceSequence = 0;
+  readingTraceDropped = 0;
+  readingTraceStartedAt = monotonicNow();
+  readingTraceMetadata = safeValue(metadata);
+  readingTraceEnabled = true;
+  readingTrace('trace.enabled', { version: 1, metadata: readingTraceMetadata });
+}
+
+export function disableReadingTrace() {
+  readingTraceEnabled = false;
+}
+
+export function isReadingTraceEnabled() {
+  return readingTraceEnabled;
+}
+
+export function clearReadingTrace() {
+  readingTraceEntries.length = 0;
+  readingTraceSequence = 0;
+  readingTraceDropped = 0;
+  readingTraceMetadata = {};
+}
+
+export function readingTraceSnapshot() {
+  return {
+    version: 1,
+    enabled: readingTraceEnabled,
+    limit: MAX_READING_TRACE_ENTRIES,
+    dropped: readingTraceDropped,
+    metadata: structuredClone(readingTraceMetadata),
+    entries: readingTraceEntries.map((entry) => structuredClone(entry)),
+  };
+}
+
+export function registerRailDiagnosticProvider(provider) {
+  const installed = typeof provider === 'function' ? provider : null;
+  railDiagnosticProvider = installed;
+  return () => {
+    if (railDiagnosticProvider === installed) railDiagnosticProvider = null;
+  };
+}
+
+function sanitizeRailDiagnostic(value) {
+  const channels = Array.isArray(value?.channels) ? value.channels : [];
+  return {
+    version: 1,
+    channels: channels.slice(0, 200).map((channel) => ({
+      channelId: String(channel?.channelId || '').slice(0, 256),
+      authorityReady: channel?.authorityReady === true,
+      readSeq: Math.max(0, Number(channel?.readSeq || 0)),
+      counts: {
+        related: Math.max(0, Number(channel?.counts?.related || 0)),
+        total: Math.max(0, Number(channel?.counts?.total || 0)),
+      },
+      rows: (Array.isArray(channel?.rows) ? channel.rows : []).slice(0, 200).map((row) => ({
+        id: String(row?.id || '').slice(0, 256),
+        type: String(row?.type || '').slice(0, 256),
+        kind: String(row?.kind || '').slice(0, 64),
+        status: String(row?.status || '').slice(0, 128),
+        seq: Math.max(0, Number(row?.seq || 0)),
+        ackReason: String(row?.ackReason || '').slice(0, 128),
+      })),
+    })),
+  };
+}
+
+export function railDiagnosticSnapshot(channelId = '') {
+  if (!railDiagnosticProvider) return { version: 1, channels: [] };
+  try {
+    return sanitizeRailDiagnostic(railDiagnosticProvider(String(channelId || '')));
+  } catch {
+    return { version: 1, channels: [], error: 'snapshot_failed' };
+  }
+}
+
+export function railDiagnosticsText(channelId = '') {
+  return JSON.stringify(railDiagnosticSnapshot(channelId), null, 2);
+}
 
 function persist() {
   try { storage()?.setItem(STORAGE_KEY, JSON.stringify(entries)); }
@@ -70,12 +197,21 @@ export function diagnosticsSnapshot() {
 
 export function clearDiagnostics() {
   entries.length = 0;
+  readingTraceEnabled = false;
+  clearReadingTrace();
   try { storage()?.removeItem(STORAGE_KEY); }
   catch { /* best effort */ }
 }
 
 export function diagnosticsText() {
   return JSON.stringify(diagnosticsSnapshot(), null, 2);
+}
+
+export function diagnosticsBundleText() {
+  return JSON.stringify({
+    diagnostics: diagnosticsSnapshot(),
+    reading: readingTraceSnapshot(),
+  }, null, 2);
 }
 
 export function isResizeObserverLoop(message) {
@@ -112,6 +248,20 @@ if (typeof globalThis === 'object') {
   globalThis.__ATOLL_DIAGNOSTICS__ = Object.freeze({
     snapshot: diagnosticsSnapshot,
     exportText: diagnosticsText,
+    exportBundleText: diagnosticsBundleText,
     clear: clearDiagnostics,
+    reading: Object.freeze({
+      enable: enableReadingTrace,
+      disable: disableReadingTrace,
+      snapshot: readingTraceSnapshot,
+      clear: clearReadingTrace,
+    }),
+    // Explicit, read-only local snapshot. The provider exposes protocol
+    // identity/classification facts only; it never queries a channel or
+    // includes envelope payloads/message bodies.
+    rail: Object.freeze({
+      snapshot: railDiagnosticSnapshot,
+      exportText: railDiagnosticsText,
+    }),
   });
 }

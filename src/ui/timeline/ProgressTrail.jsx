@@ -160,7 +160,7 @@ function ProgressDetailDrawer({ row, onClose }) {
           {toolData && <div className="progress-json-shell"><JsonView data={toolData} style={JSON_TREE_STYLES} shouldExpandNode={expandShallowJson} clickToExpandNode /></div>}
           {row.detail && <div className="progress-tool-detail"><strong>执行说明</strong><p>{row.detail}</p></div>}
           {row.input === undefined && row.output === undefined && !row.detail && <p className="progress-empty">这次调用没有返回可展示的数据。</p>}
-        </div> : <MarkdownContent text={row.body} />}
+        </div> : <MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={row.body} />}
       </div>
     </aside>
   </div>;

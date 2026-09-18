@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-vi.mock('../src/ui/ChannelList.jsx', () => ({ ChannelList: () => null }));
+vi.mock('../src/ui/ChannelList.jsx', () => ({
+  ChannelList: ({ onSelect }) => <div>
+    <button type="button" onClick={() => onSelect('c0')}>切换到 c0</button>
+    <button type="button" onClick={() => onSelect('c1')}>切换到 c1</button>
+  </div>,
+}));
 vi.mock('../src/ui/ArtifactsView.jsx', () => ({ ArtifactsView: () => null }));
 vi.mock('../src/ui/TasksView.jsx', () => ({ TasksView: () => null }));
 vi.mock('../src/ui/Composer.jsx', () => ({ Composer: () => <div data-testid="composer" /> }));
-vi.mock('../src/ui/Timeline.jsx', () => ({ Timeline: () => <section id="workspace-panel-dynamic" role="tabpanel" aria-labelledby="workspace-tab-dynamic">消息</section> }));
+vi.mock('../src/ui/Timeline.jsx', () => ({ Timeline: ({ surfaceVisible }) => <section id="workspace-panel-dynamic" role="tabpanel" aria-labelledby="workspace-tab-dynamic" data-surface-visible={String(surfaceVisible)}>消息</section> }));
 vi.mock('../src/ui/TerminalView.jsx', () => ({ TerminalView: ({ channelId, visible }) => <section id="workspace-panel-terminal" data-channel={channelId} aria-labelledby="workspace-terminal-toggle" hidden={!visible}>终端内容</section> }));
 vi.mock('../src/app/RightPanelHost.jsx', () => ({ RightPanelHost: () => null }));
 
@@ -31,7 +36,10 @@ function props(view = 'dynamic', channelId = 'c0') {
   };
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('终端分屏开关', () => {
   it('右侧边缘提供最近阅读抽屉入口', () => {
@@ -65,6 +73,170 @@ describe('终端分屏开关', () => {
 
     fireEvent.keyDown(document, { key: 'F12', ctrlKey: true });
     expect(screen.getByRole('button', { name: /终端/ }).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('频道选择已发出但目标workspace尚未commit时，旧频道终端入口立即不可用', async () => {
+    const initial = props('dynamic', 'c0');
+    const view = render(<AppShell {...initial} />);
+    const toggle = screen.getByRole('button', { name: /终端/ });
+    expect(toggle.disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: '切换到 c1' }));
+    expect(initial.navigation.onSelect).toHaveBeenCalledWith('c1');
+    // The parent has deliberately not committed c1 yet. Before the handoff
+    // gate this old DOM stayed enabled and a second input opened c0 instead.
+    expect(toggle.disabled).toBe(true);
+    fireEvent.click(toggle);
+    expect(document.getElementById('workspace-panel-terminal')).toBeNull();
+
+    view.rerender(<AppShell {...props('dynamic', 'c1')} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    expect(document.getElementById('workspace-panel-terminal')?.dataset.channel).toBe('c1');
+  });
+
+  it('目标尚未commit时快速反选已提交频道，以最新选择结束旧pending', async () => {
+    const initial = props('dynamic', 'c0');
+    render(<AppShell {...initial} />);
+    const toggle = screen.getByRole('button', { name: /终端/ });
+
+    fireEvent.click(screen.getByRole('button', { name: '切换到 c1' }));
+    expect(toggle.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '切换到 c0' }));
+    expect(initial.navigation.onSelect.mock.calls.map(([channelId]) => channelId)).toEqual(['c1', 'c0']);
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    fireEvent.click(toggle);
+    expect(document.getElementById('workspace-panel-terminal')?.dataset.channel).toBe('c0');
+  });
+
+  it('稳定commit到第三频道时，路由或directory fallback会supersede旧pending', async () => {
+    const initial = props('dynamic', 'c0');
+    const view = render(<AppShell {...initial} />);
+    fireEvent.click(screen.getByRole('button', { name: '切换到 c1' }));
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(true);
+
+    const superseded = props('dynamic', 'c2');
+    superseded.navigation.channels.push({ id: 'c2', access: 'member_active' });
+    view.rerender(<AppShell {...superseded} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    expect(document.getElementById('workspace-panel-terminal')?.dataset.channel).toBe('c2');
+  });
+
+  it('目标失效时directory先发布目标再退回原频道，退回后结束旧pending', async () => {
+    const initial = props('dynamic', 'c0');
+    const view = render(<AppShell {...initial} />);
+    fireEvent.click(screen.getByRole('button', { name: '切换到 c1' }));
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(true);
+
+    // useChannelDirectory first commits the requested id. Until its directory
+    // effect rejects a missing/retired id, the workspace has no matching row.
+    const missing = props('dynamic', 'c1');
+    missing.workspace.channel = null;
+    view.rerender(<AppShell {...missing} />);
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(true);
+
+    // The directory fallback returns to c0. This is not an indefinitely slow
+    // c1 commit: the intervening active id proves the old request was rejected.
+    view.rerender(<AppShell {...props('dynamic', 'c0')} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    expect(document.getElementById('workspace-panel-terminal')?.dataset.channel).toBe('c0');
+  });
+
+  it('已打开终端在内容访问被撤销后仍可从同一入口安全收起', () => {
+    const input = props('dynamic', 'c0');
+    const view = render(<AppShell {...input} />);
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    expect(screen.getByRole('button', { name: /终端/ }).getAttribute('aria-pressed')).toBe('true');
+
+    view.rerender(<AppShell {...{
+      ...input,
+      workspace: { ...input.workspace, access: 'access_denied' },
+    }} />);
+    const close = screen.getByRole('button', { name: /终端/ });
+    expect(close.disabled).toBe(false);
+    expect(document.getElementById('workspace-panel-terminal')).toBeNull();
+    fireEvent.click(close);
+    expect(close.getAttribute('aria-pressed')).toBe('false');
+  });
+});
+
+describe('消息Surface可见性', () => {
+  const compactMedia = (query) => ({
+    matches: query === '(max-width: 900px)',
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
+
+  it('窄屏被文件或终端覆盖时显式发布false，回到消息面后恢复true', () => {
+    vi.stubGlobal('matchMedia', compactMedia);
+    const view = render(<AppShell {...props()} />);
+    const surface = () => document.getElementById('workspace-panel-dynamic');
+    expect(surface().dataset.surfaceVisible).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    expect(surface().dataset.surfaceVisible).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    expect(surface().dataset.surfaceVisible).toBe('true');
+
+    view.rerender(<AppShell {...props('artifacts')} />);
+    expect(surface().dataset.surfaceVisible).toBe('false');
+  });
+
+  it('桌面分屏仍保留可见消息Surface', () => {
+    render(<AppShell {...props()} />);
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    expect(document.getElementById('workspace-panel-dynamic').dataset.surfaceVisible).toBe('true');
+  });
+});
+
+describe('用户频道导航的焦点交接', () => {
+  it('仅在用户选择已commit时聚焦新频道标题，且不改变滚动位置', async () => {
+    const initial = props('dynamic', 'c0');
+    const view = render(<AppShell {...initial} />);
+    const focusHeading = vi.spyOn(screen.getByRole('heading', { name: 'c0' }), 'focus');
+    const selectC1 = screen.getByRole('button', { name: '切换到 c1' });
+    selectC1.focus();
+    fireEvent.click(selectC1);
+
+    view.rerender(<AppShell {...props('dynamic', 'c1')} />);
+    const heading = screen.getByRole('heading', { name: 'c1' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(focusHeading).toHaveBeenCalledWith({ preventScroll: true });
+    expect(heading.tabIndex).toBe(-1);
+  });
+
+  it('初次显示、后台rerender和被第三频道supersede都不抢焦点', async () => {
+    const initial = props('dynamic', 'c0');
+    const view = render(<AppShell {...initial} />);
+    const member = screen.getByRole('button', { name: '成员' });
+    member.focus();
+    view.rerender(<AppShell {...props('dynamic', 'c0')} />);
+    expect(document.activeElement).toBe(member);
+
+    fireEvent.click(screen.getByRole('button', { name: '切换到 c1' }));
+    member.focus();
+    const superseded = props('dynamic', 'c2');
+    superseded.navigation.channels.push({ id: 'c2', access: 'member_active' });
+    view.rerender(<AppShell {...superseded} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false));
+    expect(document.activeElement).toBe(member);
+  });
+
+  it('快速A→B→A只交接最新的用户选择', async () => {
+    const initial = props('dynamic', 'c0');
+    render(<AppShell {...initial} />);
+    const selectC1 = screen.getByRole('button', { name: '切换到 c1' });
+    selectC1.focus();
+    fireEvent.click(selectC1);
+    const selectC0 = screen.getByRole('button', { name: '切换到 c0' });
+    selectC0.focus();
+    fireEvent.click(selectC0);
+
+    const heading = screen.getByRole('heading', { name: 'c0' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(initial.navigation.onSelect.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
   });
 });
 

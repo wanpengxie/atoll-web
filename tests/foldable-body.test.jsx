@@ -4,8 +4,14 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, createChannelState } from '../src/model/fold.js';
 import { normalizeDescribe } from '../src/model/capabilities.js';
+import { createWaitingTargetAuthority } from '../src/model/task-controls.js';
+import { createViewSessionStore } from '../src/model/view-session.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 import { FoldableBody, foldCandidate } from '../src/ui/timeline/FoldableBody.jsx';
+
+vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => ({
+  MessageList: (await import('./helpers/PresentationMessageList.jsx')).PresentationMessageList,
+}));
 
 afterEach(() => {
   cleanup();
@@ -50,16 +56,50 @@ describe('FoldableBody', () => {
     expect(document.querySelector('.message-fold.is-folded')).toBeNull();
   });
 
-  it('折叠资格不读布局也不创建 observer', () => {
+  it('折叠资格不读 scrollHeight；只有实际折叠后才观察焦点边界', () => {
     const observe = vi.fn();
     const ResizeObserver = vi.fn(function Observer() { this.observe = observe; this.disconnect = vi.fn(); });
     vi.stubGlobal('ResizeObserver', ResizeObserver);
     const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get');
     const view = render(<FoldableBody id="stable-fold" text="一句话"><p>一句话</p></FoldableBody>);
-    view.rerender(<FoldableBody id="stable-fold" text={LONG}><pre>{LONG}</pre></FoldableBody>);
     expect(ResizeObserver).not.toHaveBeenCalled();
+    view.rerender(<FoldableBody id="stable-fold" text={LONG}><pre>{LONG}</pre></FoldableBody>);
+    expect(ResizeObserver).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalled();
     expect(scrollHeight).not.toHaveBeenCalled();
     scrollHeight.mockRestore();
+  });
+
+  it('只把裁剪边界外的控件移出 Tab 序列，展开时精确恢复属性', () => {
+    const rect = (top, bottom) => ({ top, bottom, left: 0, right: 100, width: 100, height: bottom - top, x: 0, y: top, toJSON: () => ({}) });
+    const geometry = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect() {
+      if (this.classList.contains('message-fold-content')) return rect(0, 100);
+      if (this.dataset.position === 'visible') return rect(10, 30);
+      if (this.dataset.position === 'hidden') return rect(120, 140);
+      return rect(0, 10);
+    });
+    const view = render(<FoldableBody id="focus-boundary" text={LONG}>
+      <div>
+        <a href="/visible" data-position="visible">可见链接</a>
+        <button type="button" data-position="hidden" tabIndex="4" aria-hidden="false">隐藏操作</button>
+      </div>
+    </FoldableBody>);
+    const visible = screen.getByRole('link', { name: '可见链接' });
+    const hidden = view.container.querySelector('[data-position="hidden"]');
+    expect(visible.hasAttribute('tabindex')).toBe(false);
+    expect(visible.hasAttribute('aria-hidden')).toBe(false);
+    expect(hidden.getAttribute('tabindex')).toBe('-1');
+    expect(hidden.getAttribute('aria-hidden')).toBe('true');
+
+    view.rerender(<FoldableBody id="focus-boundary" text={LONG} expanded>
+      <div>
+        <a href="/visible" data-position="visible">可见链接</a>
+        <button type="button" data-position="hidden" tabIndex="4" aria-hidden="false">隐藏操作</button>
+      </div>
+    </FoldableBody>);
+    expect(hidden.getAttribute('tabindex')).toBe('4');
+    expect(hidden.getAttribute('aria-hidden')).toBe('false');
+    geometry.mockRestore();
   });
 
   it('例外位置（最新一轮）默认展开但仍可手动收起', () => {
@@ -72,8 +112,8 @@ describe('FoldableBody', () => {
   });
 });
 
-const request = (id, text, sender = { kind: 'human', id: 'me' }) => ({
-  id, kind: 'request', type: 'agent.ask', ts: Date.now(), sender, audience: ['agent'], visibility: 'public', payload: { text },
+const request = (id, text, sender = { kind: 'human', id: 'me' }, audience = ['agent']) => ({
+  id, kind: 'request', type: 'agent.ask', ts: Date.now(), sender, audience, visibility: 'public', payload: { text },
 });
 const done = (id, parentId, text) => ({
   id, parent_id: parentId, kind: 'response', type: 'agent.ask', ts: Date.now(),
@@ -85,10 +125,35 @@ const progressText = (id, parentId, text) => ({
   payload: { status: 'processing', process: { kind: 'stage', stage: 'text', text } },
 });
 const roster = [{ id: 'me', kind: 'human', name: '我' }, { id: 'agent', kind: 'agent', name: 'Agent' }];
-const capabilityIndex = new Map([['agent', { describe: normalizeDescribe({ class: 'agent', capabilities: {}, words: { 'agent.ask': {} } }) }]]);
+const capability = () => ({ describe: normalizeDescribe({ class: 'agent', capabilities: {}, words: { 'agent.ask': {} } }) });
+const capabilityIndex = new Map([['agent', capability()]]);
+const waitingRosterAuthority = createWaitingTargetAuthority({
+  principalId: 'me',
+  channelId: 'c0',
+  generation: 1,
+  rosterAuthority: {
+    principalId: 'me', channelId: 'c0', generation: 1, current: true,
+  },
+  roster,
+});
+const authoritativeHistory = (state) => ({
+  get status() {
+    const headSeq = Number(state.lastSeq || 0);
+    return {
+      attached: true,
+      generation: 1,
+      messageCurrent: true,
+      localReplicaReady: true,
+      headSeq,
+      presentationRevision: Number(state._timelineRevision || headSeq),
+      coverage: headSeq > 0 ? [{ lowSeq: 1, highSeq: headSeq }] : [],
+      sync: { interestRevision: 1, fulfilledRevision: 1, targetHead: headSeq },
+    };
+  },
+});
 
 describe('Timeline 正文自动折叠', () => {
-  it('旧的长答案折起，最新一轮的长答案不折；人贴的长文同样折', () => {
+  it('历史长正文默认折起，当前 Presentation 的最后一条答案默认展开', () => {
     const state = createChannelState('c0');
     let seq = 0;
     apply(state, { channel_id: 'c0', seq: ++seq, envelope: request('r1', '第一问') });
@@ -97,7 +162,7 @@ describe('Timeline 正文自动折叠', () => {
     apply(state, { channel_id: 'c0', seq: ++seq, envelope: done('r2-done', 'r2', SHORT) });
     apply(state, { channel_id: 'c0', seq: ++seq, envelope: request('r3', '最后一问') });
     apply(state, { channel_id: 'c0', seq: ++seq, envelope: done('r3-done', 'r3', LONG) });
-    render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilityIndex} />);
+    render(<Timeline state={state} history={authoritativeHistory(state)} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilityIndex} />);
     const folded = [...document.querySelectorAll('.message-fold.is-folded')].map((node) => node.closest('[data-entry-id]')?.getAttribute('data-entry-id'));
     expect(folded).toEqual(['r1', 'r2']);
     const latest = document.querySelector('[data-entry-id="r3"]');
@@ -105,31 +170,87 @@ describe('Timeline 正文自动折叠', () => {
     expect(latest.querySelector('.message-fold-toggle').textContent).toContain('收起');
   });
 
-  it('live 到达后不把刚刚展示的末尾长文自动折起', () => {
+  it('append 后无 override 的旧 latest 转为历史折叠，新 latest 默认展开', () => {
     const state = createChannelState('c0');
     apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '第一问') });
     apply(state, { channel_id: 'c0', seq: 2, envelope: done('r1-done', 'r1', LONG) });
-    const props = { roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex };
+    const props = { roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex, history: authoritativeHistory(state) };
     const view = render(<Timeline {...props} state={state} />);
-    expect(document.querySelector('[data-entry-id="r1"] .message-fold.is-folded')).toBeNull();
+    const firstFold = document.querySelector('[data-entry-id="r1"] .response-body .message-fold');
+    expect(firstFold.classList.contains('is-folded')).toBe(false);
 
     apply(state, { channel_id: 'c0', seq: 3, envelope: request('r2', '第二问') });
-    apply(state, { channel_id: 'c0', seq: 4, envelope: done('r2-done', 'r2', SHORT) });
+    apply(state, { channel_id: 'c0', seq: 4, envelope: done('r2-done', 'r2', LONG) });
     view.rerender(<Timeline {...props} state={state} />);
-    expect(document.querySelector('[data-entry-id="r1"] .message-fold.is-folded')).toBeNull();
+    expect(document.querySelector('[data-entry-id="r1"] .response-body .message-fold').classList.contains('is-folded')).toBe(true);
+    expect(document.querySelector('[data-entry-id="r2"] .response-body .message-fold').classList.contains('is-folded')).toBe(false);
   });
 
-  it('手动展开的正文在重渲后仍是展开的', () => {
+  it('读者显式展开的正文不因 append 或重渲被默认推翻', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '第一问') });
+    apply(state, { channel_id: 'c0', seq: 2, envelope: done('r1-done', 'r1', LONG) });
+    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex, history: authoritativeHistory(state) };
+    const { rerender } = render(<Timeline {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '收起' }));
+    fireEvent.click(screen.getByRole('button', { name: /展开全文/ }));
+    apply(state, { channel_id: 'c0', seq: 3, envelope: request('r2', '第二问') });
+    apply(state, { channel_id: 'c0', seq: 4, envelope: done('r2-done', 'r2', SHORT) });
+    rerender(<Timeline {...props} />);
+    expect(document.querySelector('[data-entry-id="r1"] .response-body .message-fold.is-folded')).toBeNull();
+  });
+
+  it('忽略旧 tail 默认展开缓存，但保留读者跨重挂的显式 foldOverrides', () => {
     const state = createChannelState('c0');
     apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '第一问') });
     apply(state, { channel_id: 'c0', seq: 2, envelope: done('r1-done', 'r1', LONG) });
     apply(state, { channel_id: 'c0', seq: 3, envelope: request('r2', '第二问') });
-    apply(state, { channel_id: 'c0', seq: 4, envelope: done('r2-done', 'r2', SHORT) });
-    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex };
-    const { rerender } = render(<Timeline {...props} />);
-    fireEvent.click(screen.getByRole('button', { name: /展开全文/ }));
-    rerender(<Timeline {...props} />);
-    expect(document.querySelector('[data-entry-id="r1"] .message-fold.is-folded')).toBeNull();
+    apply(state, { channel_id: 'c0', seq: 4, envelope: done('r2-done', 'r2', LONG) });
+    apply(state, { channel_id: 'c0', seq: 5, envelope: request('r3', '第三问') });
+    apply(state, { channel_id: 'c0', seq: 6, envelope: done('r3-done', 'r3', LONG) });
+    const viewSessions = createViewSessionStore({ storage: null });
+    viewSessions.writeConversation('c0', {
+      foldDefaults: ['r1:response'],
+      foldOverrides: [['r2:response', true]],
+    });
+
+    render(<Timeline state={state} history={authoritativeHistory(state)} viewSessions={viewSessions} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilityIndex} />);
+    expect(document.querySelector('[data-entry-id="r1"] .response-body .message-fold').classList.contains('is-folded')).toBe(true);
+    expect(document.querySelector('[data-entry-id="r2"] .response-body .message-fold').classList.contains('is-folded')).toBe(false);
+    expect(document.querySelector('[data-entry-id="r3"] .response-body .message-fold').classList.contains('is-folded')).toBe(false);
+  });
+
+  it('用户手动收起 latest 后，流式追加和 terminal 都不推翻 override', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '开始') });
+    apply(state, { channel_id: 'c0', seq: 2, envelope: progressText('r1-progress-1', 'r1', LONG) });
+    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex, history: authoritativeHistory(state) };
+    const view = render(<Timeline {...props} />);
+    const responseFold = () => document.querySelector('[data-entry-id="r1"] .response-body .message-fold');
+    expect(responseFold().classList.contains('is-folded')).toBe(false);
+    fireEvent.click(responseFold().querySelector('.message-fold-toggle'));
+    expect(responseFold().classList.contains('is-folded')).toBe(true);
+
+    apply(state, { channel_id: 'c0', seq: 3, envelope: progressText('r1-progress-2', 'r1', '继续追加但不改变稳定行身份') });
+    view.rerender(<Timeline {...props} />);
+    expect(responseFold().classList.contains('is-folded')).toBe(true);
+
+    apply(state, { channel_id: 'c0', seq: 4, envelope: done('r1-done', 'r1', LONG) });
+    view.rerender(<Timeline {...props} />);
+    expect(responseFold().classList.contains('is-folded')).toBe(true);
+  });
+
+  it('未操作的 processing latest 在 terminal 后仍保持默认展开', () => {
+    const state = createChannelState('c0');
+    apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '开始') });
+    apply(state, { channel_id: 'c0', seq: 2, envelope: progressText('r1-progress-1', 'r1', LONG) });
+    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex, history: authoritativeHistory(state) };
+    const view = render(<Timeline {...props} />);
+    const responseFold = () => document.querySelector('[data-entry-id="r1"] .response-body .message-fold');
+    expect(responseFold().classList.contains('is-folded')).toBe(false);
+    apply(state, { channel_id: 'c0', seq: 3, envelope: done('r1-done', 'r1', LONG) });
+    view.rerender(<Timeline {...props} />);
+    expect(responseFold().classList.contains('is-folded')).toBe(false);
   });
 
   it('中间正文与最终答复共用整段对话的展开和收起范围', () => {
@@ -157,7 +278,10 @@ describe('Timeline 正文自动折叠', () => {
     const state = createChannelState('c0');
     apply(state, { channel_id: 'c0', seq: 1, envelope: request('r1', '开始') });
     apply(state, { channel_id: 'c0', seq: 2, envelope: progressText('r1-progress-1', 'r1', '第一段') });
-    const props = { state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex };
+    const props = {
+      state, roster, selfId: 'me', pending: [], approvalStates: {},
+      access: 'member_active', capabilityIndex, waitingRosterAuthority,
+    };
     const { rerender } = render(<Timeline {...props} />);
     const version = state._timelineProjectionVersion;
     const controlVersion = state._timelineControlVersion;
@@ -176,6 +300,10 @@ describe('Timeline 正文自动折叠', () => {
     } });
     expect(state._timelineProjectionVersion).toBe(version);
     expect(state._timelineControlVersion).toBe(controlVersion + 1);
+    expect(waitingRosterAuthority).toMatchObject({
+      principalId: 'me', channelId: 'c0', generation: 1, current: true,
+    });
+    expect(waitingRosterAuthority.actorIDs).toEqual(new Set(['agent']));
     rerender(<Timeline {...props} />);
     expect(screen.getByRole('button', { name: '停止' })).toBeTruthy();
   });

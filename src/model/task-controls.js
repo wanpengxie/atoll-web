@@ -57,7 +57,36 @@ export function controlPayload(context, word, fallback = {}) {
     : fallback;
 }
 
-export function taskControlContext(turn, { selfId = '', access = '', now = Date.now() } = {}) {
+export function taskTargetCurrentness(turn, authority = null) {
+  const actorId = turn?.request?.audience?.length === 1 ? turn.request.audience[0] : '';
+  if (!actorId || authority?.current !== true || !(authority.actorIDs instanceof Set)) return 'unknown';
+  return authority.actorIDs.has(actorId) ? 'current' : 'departed';
+}
+
+export function createWaitingTargetAuthority({
+  principalId = '', channelId = '', generation = 0, rosterAuthority = null, roster = [],
+} = {}) {
+  const activeGeneration = Number(generation || 0);
+  return {
+    principalId,
+    channelId,
+    generation: activeGeneration,
+    current: Boolean(
+      activeGeneration > 0
+      && rosterAuthority?.principalId === principalId
+      && rosterAuthority?.channelId === channelId
+      && rosterAuthority?.generation === activeGeneration
+      && rosterAuthority?.current === true
+    ),
+    actorIDs: new Set((roster || [])
+      .filter((row) => row?.kind === 'agent' && typeof row.id === 'string' && row.id)
+      .map((row) => row.id)),
+  };
+}
+
+export function taskControlContext(turn, {
+  selfId = '', access = '', now = Date.now(), targetAuthority = null,
+} = {}) {
   const request = turn?.request;
   const actorId = request?.audience?.length === 1 ? request.audience[0] : '';
   const open = Boolean(request && !turn.terminal);
@@ -72,7 +101,10 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
   const location = frame?.status || '';
   const controls = open ? controlEntries(frame) : [];
   const words = new Set(controls.map((entry) => entry.word));
-  const actionable = open && writable;
+  const targetCurrentness = taskTargetCurrentness(turn, targetAuthority);
+  const callerCancelEligible = open && writable && owned && location === 'queued';
+  const targetControlsEligible = open && writable && targetCurrentness === 'current';
+  const actionable = targetControlsEligible;
   const expiresAt = Number(request?.expires_at || 0);
   return {
     actorId,
@@ -81,6 +113,9 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
     owned,
     writable,
     actionable,
+    targetCurrentness,
+    callerCancelEligible,
+    targetControlsEligible,
     turnId: processingTurnId(turn),
     expiresAt,
     expired: expiresAt > 0 && expiresAt <= now,
@@ -98,10 +133,11 @@ export function taskControlContext(turn, { selfId = '', access = '', now = Date.
     //   别人发的 → 请持有它的 actor 把它答掉（agent.dismiss）——第三方不是
     //   合法的终态作者，绕开受理方去关账是不存在的动作。
     // 后一种和其它控制词一样，以受理方在账上宣告 dismiss 为准。
-    canCancel: actionable && location === 'queued' && (owned || words.has(TYPES.agentDismiss)),
-    cancelsAsDismiss: actionable && !owned,
-    canInsert: actionable && words.has(TYPES.agentSteer),
-    canEdit: actionable && words.has(TYPES.agentReplace),
-    canStop: actionable && words.has(TYPES.agentInterrupt),
+    canCancel: callerCancelEligible
+      || (targetControlsEligible && location === 'queued' && words.has(TYPES.agentDismiss)),
+    cancelsAsDismiss: !callerCancelEligible && targetControlsEligible && !owned,
+    canInsert: targetControlsEligible && words.has(TYPES.agentSteer),
+    canEdit: targetControlsEligible && words.has(TYPES.agentReplace),
+    canStop: targetControlsEligible && words.has(TYPES.agentInterrupt),
   };
 }

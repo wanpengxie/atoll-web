@@ -24,7 +24,7 @@ async function login(page) {
   return errors;
 }
 
-const terminalToggle = (page) => page.getByRole('button', { name: /终端/ });
+const terminalToggle = (page) => page.locator('#workspace-terminal-toggle');
 
 test('F7-001 打开终端分屏：消息与终端同时可见，页面无错', async ({ page }) => {
   const errors = await login(page);

@@ -1,0 +1,159 @@
+import { expect, test } from '@playwright/test';
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+
+const SOURCE_PATHS = [
+  'src/ui/timeline/useReadingSession.js',
+  'src/ui/timeline/LegendMessageList.jsx',
+  'src/model/view-session.js',
+  'src/ui/Timeline.jsx',
+  'src/ui/conversation/ConversationSurface.jsx',
+  'src/styles/timeline.css',
+];
+
+async function fingerprint() {
+  const hash = createHash('sha256');
+  for (const path of SOURCE_PATHS) hash.update(path).update('\0').update(await readFile(path));
+  return hash.digest('hex');
+}
+
+async function attachJSON(testInfo, name, value) {
+  const path = testInfo.outputPath(name);
+  await writeFile(path, `${JSON.stringify({
+    capturedAt: new Date().toISOString(), sourceDigest: await fingerprint(), ...value,
+  }, null, 2)}\n`, 'utf8');
+  await testInfo.attach(name, { path, contentType: 'application/json' });
+}
+
+async function reset(request, scenario, seed) {
+  const response = await request.post('/mock/control/reset', { data: { scenario, seed } });
+  expect(response.ok()).toBe(true);
+}
+
+async function login(page) {
+  await page.goto('/');
+  await page.getByRole('textbox', { name: '账号', exact: true }).fill('root');
+  await page.getByLabel('密码').fill('root');
+  await page.getByRole('button', { name: '进入 Atoll' }).click();
+  await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.locator('.timeline-message-list')).toBeVisible();
+  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'visible-unseen-ack' }));
+}
+
+async function sendToSteward(page, text) {
+  const editor = page.getByLabel('消息');
+  await editor.fill('@st');
+  const option = page.getByRole('option', { name: /steward/ });
+  if (await option.isVisible().catch(() => false)) await option.click();
+  await editor.press('End');
+  await editor.pressSequentially(` ${text}`);
+  await page.getByRole('button', { name: /发送/ }).click();
+}
+
+async function wheelToPhysicalGap(page, desiredGap) {
+  const viewport = page.locator('.timeline-message-list');
+  await viewport.hover();
+  const gap = await viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop);
+  await page.mouse.wheel(0, Math.max(1, gap - desiredGap));
+  await expect.poll(() => viewport.evaluate((node) => (
+    node.scrollHeight - node.clientHeight - node.scrollTop
+  ))).toBeGreaterThan(1);
+  return viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop);
+}
+
+async function evidence(page, needle) {
+  return page.evaluate((text) => {
+    const viewport = document.querySelector('.timeline-message-list');
+    const viewportRect = viewport?.getBoundingClientRect();
+    const row = [...(viewport?.querySelectorAll('[data-presentation-row-id]') || [])]
+      .find((candidate) => candidate.textContent?.includes(text));
+    const rowRect = row?.getBoundingClientRect();
+    const waiting = document.querySelector('.agent-wait-layer');
+    const waitingRect = waiting?.getBoundingClientRect();
+    const overlapTop = Math.max(rowRect?.top || 0, waitingRect?.top || Number.POSITIVE_INFINITY);
+    const overlapBottom = Math.min(rowRect?.bottom || 0, waitingRect?.bottom || Number.NEGATIVE_INFINITY);
+    const overlapY = overlapBottom > overlapTop ? (overlapTop + overlapBottom) / 2 : null;
+    const overlapTarget = overlapY == null || !rowRect
+      ? null
+      : document.elementFromPoint(rowRect.left + rowRect.width / 2, overlapY);
+    const centerTarget = !rowRect
+      ? null
+      : document.elementFromPoint(rowRect.left + rowRect.width / 2, (rowRect.top + rowRect.bottom) / 2);
+    const visibleTop = Math.max(rowRect?.top || 0, viewportRect?.top || 0);
+    const visibleBottom = Math.min(rowRect?.bottom || 0, viewportRect?.bottom || 0);
+    const visibleY = visibleBottom > visibleTop ? (visibleTop + visibleBottom) / 2 : null;
+    const visibleTargets = visibleY == null || !rowRect ? [] : [0.1, 0.25, 0.75, 0.9]
+      .map((ratio) => document.elementFromPoint(rowRect.left + rowRect.width * ratio, visibleY));
+    return {
+      needle: text,
+      mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
+      jump: document.querySelector('.timeline-jump-latest')?.textContent || '',
+      gap: viewport ? viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop : null,
+      viewport: viewportRect ? { top: viewportRect.top, bottom: viewportRect.bottom } : null,
+      rowID: row?.dataset.presentationRowId || '',
+      row: rowRect ? { top: rowRect.top, bottom: rowRect.bottom, left: rowRect.left, right: rowRect.right } : null,
+      rowIntersectsViewport: Boolean(rowRect && viewportRect
+        && rowRect.bottom > viewportRect.top + 0.5 && rowRect.top < viewportRect.bottom - 0.5),
+      rowCenterOwnsHit: Boolean(row && centerTarget && (row === centerTarget || row.contains(centerTarget))),
+      rowHasOwnedVisibleHit: Boolean(row && visibleTargets.some((target) => target && (row === target || row.contains(target)))),
+      viewportVisiblePixels: Math.max(0, visibleBottom - visibleTop),
+      waiting: waitingRect ? { top: waitingRect.top, bottom: waitingRect.bottom, left: waitingRect.left, right: waitingRect.right } : null,
+      waitingOverlap: Math.max(0, overlapBottom - overlapTop),
+      overlapOwnedByWaiting: Boolean(waiting && overlapTarget && (waiting === overlapTarget || waiting.contains(overlapTarget))),
+      reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || [],
+    };
+  }, needle);
+}
+
+test('wheel-visible committed arrival auto-acknowledges before exact physical tail', async ({ page, request }, testInfo) => {
+  await reset(request, 'deep-history', 0x92_24_01);
+  await login(page);
+  const viewport = page.locator('.timeline-message-list');
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+  await viewport.hover();
+  await page.mouse.wheel(0, -800);
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
+
+  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
+  expect(pulse.ok()).toBe(true);
+  await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
+  await wheelToPhysicalGap(page, 12);
+  await page.waitForTimeout(150);
+
+  const sample = await evidence(page, 'c0 动态 #1');
+  await attachJSON(testInfo, 'visible-gap-unseen.json', { sample });
+  expect(sample.gap).toBeGreaterThan(1);
+  expect(sample.rowIntersectsViewport).toBe(true);
+  expect(sample.viewportVisiblePixels).toBeGreaterThan(40);
+  expect(sample.rowHasOwnedVisibleHit).toBe(true);
+  expect(sample.jump).toBe('');
+});
+
+test('Waiting-covered committed arrival remains unseen until actually exposed', async ({ page, request }, testInfo) => {
+  await reset(request, 'long-running-history', 0x92_24_02);
+  await login(page);
+  await sendToSteward(page, 'visible ack active task');
+  await expect(page.locator('.task-control-buttons').getByRole('button', { name: '停止' })).toBeVisible();
+  await sendToSteward(page, 'visible ack queued task');
+  await expect(page.getByRole('region', { name: '等待区' })).toContainText('visible ack queued task');
+
+  const viewport = page.locator('.timeline-message-list');
+  await viewport.hover();
+  await page.mouse.wheel(0, -800);
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
+  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
+  expect(pulse.ok()).toBe(true);
+  await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
+  await wheelToPhysicalGap(page, 70);
+  await page.waitForTimeout(150);
+
+  const sample = await evidence(page, 'c0 动态 #1');
+  await attachJSON(testInfo, 'waiting-covered-unseen.json', { sample });
+  expect(sample.gap).toBeGreaterThan(1);
+  expect(sample.rowIntersectsViewport).toBe(true);
+  expect(sample.viewportVisiblePixels).toBeGreaterThan(0);
+  expect(sample.waitingOverlap).toBeGreaterThan(0);
+  expect(sample.overlapOwnedByWaiting).toBe(true);
+  expect(sample.jump).toBe('↓ 1 条新动态');
+});

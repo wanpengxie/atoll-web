@@ -2,27 +2,43 @@
 .timeline { grid-row: 4; min-width: 0; min-height: 0; max-width: 100%; margin-bottom: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scrollbar-gutter: stable; background: var(--workspace); }
 .timeline.timeline-virtualized { position: relative; display: flex; overflow: hidden; flex-direction: column; scrollbar-gutter: auto; }
 .timeline-virtualized > .timeline-inner { min-height: 0; flex: 0 0 auto; padding-bottom: 0; }
-.timeline-message-list { min-width: 0; min-height: 0; max-width: 100%; flex: 1 1 auto; overflow-x: hidden !important; overflow-anchor: none; overscroll-behavior-y: none; scrollbar-gutter: stable; background: var(--workspace); }
+.timeline-message-list { min-width: 0; min-height: 0; max-width: 100%; flex: 1 1 auto; overflow-x: hidden !important; overflow-anchor: none; overscroll-behavior-y: none; scroll-behavior: auto; scrollbar-gutter: stable; background: var(--workspace); }
+.timeline-message-list-content { position: relative; width: 100%; min-width: 0; min-height: 100%; }
 .timeline-message-list:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* A presentation row is the scheduler's layout unit. Keep every descendant
  * margin inside it so its DOM box is the complete row geometry. */
 .timeline-virtual-item { display: flow-root; width: 100%; min-width: 0; max-width: 100%; padding: 0 26px; }
 .timeline-virtualized > .timeline-jump-latest { position: absolute; right: 50%; bottom: 8px; margin: 0; transform: translateX(50%); }
 .timeline-history-status, .timeline-history-error { position: absolute; z-index: 4; top: 8px; left: 50%; width: max-content; max-width: min(calc(100% - 32px), 420px); margin: 0; transform: translateX(-50%); border: 1px solid var(--line-control); border-radius: var(--pill); background: var(--raised); box-shadow: 0 3px 12px var(--shadow); color: var(--text-muted); font-size: 10px; line-height: 1.3; text-align: center; pointer-events: none; }
-.timeline-history-status { padding: 5px 10px; }
+.presentation-row-shell { display: flow-root; }
+.timeline-history-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; }
+.timeline-history-demand[data-phase="pending"] { opacity: 0; animation: history-status-reveal 0s linear 120ms forwards; }
+.timeline-history-demand[data-phase="error"] { pointer-events: auto; }
+.timeline-history-demand[data-phase="error"]::before { border-right-color: currentColor; animation: none; }
+.timeline-history-demand[data-phase="exhausted"]::before { border-right-color: currentColor; animation: none; }
+.timeline-history-demand button { min-height: 24px; border: 1px solid var(--line-control); border-radius: var(--pill); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.timeline-history-status::before { width: 8px; height: 8px; box-sizing: border-box; flex: 0 0 auto; border: 1px solid currentColor; border-right-color: transparent; border-radius: 50%; content: ''; animation: history-status-spin .8s linear infinite; }
+@keyframes history-status-reveal { to { opacity: 1; } }
+@keyframes history-status-spin { to { rotate: 1turn; } }
+@media (prefers-reduced-motion: reduce) { .timeline-history-status::before { border-right-color: currentColor; animation: none; } }
 .timeline-history-error { padding: 6px 11px; border-color: var(--danger-line); color: var(--danger); }
 .timeline .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; white-space: nowrap; }
 .timeline-inner { display: flex; position: relative; width: 100%; min-width: 0; min-height: 100%; max-width: 100%; flex-direction: column; gap: 0; padding: 24px 26px; }
 .agent-wait-dock { position: relative; z-index: 2; display: block; width: min(calc(100% - 92px), calc(var(--timeline-track) - 40px)); margin: 0 auto; pointer-events: auto; }
-.agent-wait-layer { position: relative; width: 100%; height: auto; overflow: hidden; border: 1px solid var(--line-control); border-radius: 15px 15px 0 0; background: var(--raised); box-shadow: 0 -4px 18px var(--shadow); contain: layout paint; }
+.agent-wait-dock.is-handoff-only { pointer-events: none; }
+.agent-wait-layer { position: relative; width: 100%; height: auto; max-height: min(42vh, 420px); overflow-x: hidden; overflow-y: auto; border: 1px solid var(--line-control); border-radius: 15px 15px 0 0; background: var(--raised); box-shadow: 0 -4px 18px var(--shadow); contain: layout paint; overscroll-behavior: contain; }
+.agent-wait-layer.is-handoff-only { overflow: hidden; pointer-events: none; animation: waiting-handoff-exit 180ms ease-in both; }
+.timeline-waiting-obstruction { width: 100%; height: var(--conversation-waiting-reserve, 48px); flex: 0 0 auto; pointer-events: none; }
 .agent-wait-header { display: flex; min-height: 28px; align-items: center; justify-content: flex-end; padding: 2px 8px; border-bottom: 1px solid var(--line-subtle); background: var(--raised); }
 .agent-wait-header > div { display: flex; align-items: center; gap: 4px; }
 .agent-wait-header button { min-height: 24px; padding: 2px 7px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
 .agent-wait-header .agent-wait-cancel-all { color: var(--danger); }
 .agent-wait-header button:hover, .agent-wait-header button:focus-visible { background: var(--surface-muted); color: var(--text); }
 .agent-wait-header button:disabled { opacity: .45; cursor: not-allowed; }
+.agent-wait-partial { margin: 0; padding: 6px 11px; border-bottom: 1px solid var(--line-subtle); color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.agent-wait-read-only { color: var(--text-muted); font-size: 10px; }
 .agent-wait-layer.is-collapsed { height: auto; overflow: hidden; }
-.agent-wait-layer.is-editing { overflow: hidden; }
+.agent-wait-layer.is-editing { overflow-x: hidden; overflow-y: auto; }
 .agent-wait-group + .agent-wait-group { border-top: 0; }
 .agent-wait-group > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 11px; background: var(--surface-muted); }
 .agent-wait-group > header strong { font-size: 10px; }
@@ -33,7 +49,8 @@
 .agent-wait-summary { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .agent-wait-summary strong { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .agent-wait-position { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-content: center; color: var(--text-dim); font-size: 16px; }
-.agent-wait-actions { display: flex; gap: 5px; }
+.agent-wait-actions { display: flex; align-items: center; gap: 5px; }
+.agent-wait-local-state { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
 .agent-wait-paused { align-self: center; color: var(--warning); font-size: 10px; }
 .agent-wait-actions button, .task-control-buttons button, .task-editor button { min-height: 30px; padding: 5px 8px; border: 1px solid var(--line-control); border-radius: var(--radius-control); background: var(--raised); color: var(--text); cursor: pointer; font-size: 10px; }
 .agent-wait-actions button { border-color: transparent; background: transparent; color: var(--text-muted); font-size: 11px; }
@@ -45,7 +62,17 @@
 .agent-wait-actions button:disabled, .task-control-buttons button:disabled { opacity: .45; cursor: not-allowed; }
 .agent-wait-locking { grid-column: 1 / -1; margin: 0; color: var(--text-muted); font-size: 10px; }
 .agent-wait-item.is-editing { height: 32px; background: var(--surface-soft); }
+.agent-wait-item.is-handoff-exiting { pointer-events: none; }
+.agent-wait-layer:not(.is-handoff-only) .agent-wait-item.is-handoff-exiting { animation: waiting-handoff-exit 180ms ease-in both; }
 .agent-wait-editing-label { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.presentation-row-shell[data-presentation-state="handoff-enter"] > .timeline-virtual-item { animation: waiting-handoff-enter 180ms ease-out both; }
+@keyframes waiting-handoff-exit { from { opacity: 1; } to { opacity: 0; } }
+@keyframes waiting-handoff-enter { from { opacity: .36; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .agent-wait-layer.is-handoff-only,
+  .agent-wait-layer:not(.is-handoff-only) .agent-wait-item.is-handoff-exiting,
+  .presentation-row-shell[data-presentation-state="handoff-enter"] > .timeline-virtual-item { animation: none; }
+}
 .message-editing-state { display: block; width: fit-content; margin-top: 4px; color: var(--text-muted); font-size: 10px; }
 .timeline-entry { width: 100%; min-width: 0; max-width: 100%; }
 .empty-ledger { display: grid; min-height: 52vh; place-content: center; justify-items: center; color: var(--text-muted); text-align: center; }
@@ -228,6 +255,8 @@
 .request-text, .response-content { max-width: 74ch; color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
+.markdown-content > .markdown-content-block:first-child > :first-child { margin-top: 0; }
+.markdown-content > .markdown-content-block:last-child > :last-child { margin-bottom: 0; }
 .markdown-image-frame { position: relative; display: block; inline-size: min(100%, 640px); aspect-ratio: 16 / 9; margin: 8px 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-muted); }
 .markdown-image-frame > img { position: absolute; inset: 0; display: block; inline-size: 100%; block-size: 100%; object-fit: contain; background: var(--workspace); opacity: 0; }
 .markdown-image-frame[data-image-phase="ready"] > img { opacity: 1; }
@@ -255,13 +284,15 @@
 .code-block.is-numbered .code-block-line { display: grid; grid-template-columns: 34px minmax(0, 1fr); }
 .code-block-line-number { padding-right: 12px; color: var(--text-dim); text-align: right; user-select: none; }
 .code-block-line-code { min-width: 0; }
-.mermaid-block { min-width: 0; max-width: 100%; margin: 9px 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--raised); }
+.mermaid-block-shell { position: relative; min-width: 0; max-width: 100%; margin: 9px 0; }
+.mermaid-block { min-width: 0; max-width: 100%; margin: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--raised); }
 .mermaid-block-bar { display: flex; min-height: 30px; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 6px 3px 11px; border-bottom: 1px solid var(--border); background: var(--surface-code); }
 .mermaid-block-bar > span { color: var(--text-muted); font: 500 10.5px/1.4 var(--mono); letter-spacing: .02em; }
 .mermaid-mode-toggle { min-height: 24px; padding: 2px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10.5px; }
 .mermaid-mode-toggle:hover, .mermaid-mode-toggle:focus-visible { background: var(--surface-muted); color: var(--text); }
-.mermaid-block.is-source { position: relative; border: 0; background: transparent; }
-.mermaid-block.is-source > .mermaid-mode-toggle { position: absolute; z-index: 1; top: 3px; right: 6px; }
+.mermaid-block-shell > .mermaid-mode-toggle { position: absolute; z-index: 2; top: 3px; right: 6px; }
+.mermaid-block.is-source { border: 0; background: transparent; }
+.mermaid-block-shell.is-source > .mermaid-mode-toggle { right: 56px; }
 .mermaid-block.is-source > .code-block { margin: 0; }
 .mermaid-stage { position: relative; block-size: clamp(220px, 42vw, 360px); min-block-size: 0; overflow: auto; background: var(--workspace); }
 .mermaid-diagram { display: grid; inline-size: 100%; block-size: 100%; padding: 14px; place-items: center; }
@@ -270,7 +301,7 @@
 .mermaid-error { display: grid; gap: 5px; min-block-size: 100%; padding: 12px; color: var(--danger); }
 .mermaid-error > span { overflow-wrap: anywhere; color: var(--text-muted); font: 11px/1.5 var(--mono); }
 .mermaid-error > .code-block { margin-bottom: 0; }
-.markdown-content .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.markdown-content .katex-display { display: block; width: 100%; max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
 .markdown-content .katex-display > .katex { min-width: max-content; }
 .markdown-table-scroll { max-width: 100%; overflow-x: auto; margin: 7px 0; }
 .markdown-table-scroll table { width: max-content; min-width: 100%; border-spacing: 0; border-collapse: collapse; font-size: 12px; }
@@ -449,6 +480,7 @@
    名字比「@我」宽，右对齐会把「@我」往里推，两边都不齐。
    字号比它小一档：这是一列常驻的旁支控件，恒不与主开关争视线。 */
 .timeline-actor-filter { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.timeline-actor-filter-item { display: flex; align-items: center; gap: 3px; }
 .timeline-actor-filter button { display: flex; min-height: 22px; max-width: 8.5em; align-items: center; gap: 5px; overflow: hidden; padding: 2px 8px; border: 1px solid var(--line-control-strong); border-radius: var(--pill); opacity: .5; background: var(--raised); color: var(--text); box-shadow: 0 2px 8px var(--shadow); cursor: pointer; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; transition: opacity .12s; }
 .timeline-actor-filter button:focus-visible { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
 @media (hover: hover) {
@@ -456,6 +488,7 @@
 }
 .timeline-actor-filter button.is-on { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); font-weight: 700; }
 .timeline-actor-filter button.activity-active, .timeline-actor-filter button.activity-settled { opacity: .78; }
+.timeline-actor-filter button.is-stale { max-width: 13em; border-style: dashed; color: var(--text-muted); }
 .agent-activity-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--online); box-shadow: 0 0 5px color-mix(in srgb, var(--online), transparent 30%); }
 .activity-active .agent-activity-dot { animation: progress-live-pulse 1.5s ease-in-out infinite; }
 .activity-settled .agent-activity-dot { background: var(--danger); box-shadow: 0 0 4px color-mix(in srgb, var(--danger), transparent 45%); }
@@ -499,7 +532,8 @@
 /* 正文折叠。按内容长度判，不看发送者：超过 --message-fold-lines 行就只露开头，
    渐隐到底，下面一个"展开全文"。折叠形沿用线程紧凑气泡那一套（max-height + mask）。 */
 .message-fold { position: relative; min-width: 0; }
-.message-fold.is-folded > .message-fold-content { max-height: calc(var(--message-fold-lines) * 1lh); overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, var(--text) 78%, transparent 100%); mask-image: linear-gradient(to bottom, var(--text) 78%, transparent 100%); }
+.message-fold-content { display: flow-root; }
+.message-fold.is-folded > .message-fold-content { max-height: calc(var(--message-fold-lines) * 23px); overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, var(--text) 78%, transparent 100%); mask-image: linear-gradient(to bottom, var(--text) 78%, transparent 100%); }
 .message-fold-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; margin-top: 3px; padding: 2px 8px 2px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 11.5px; line-height: 1.4; }
 .message-fold-toggle:hover, .message-fold-toggle:focus-visible { background: var(--surface-muted); color: var(--text); }
 .message-fold-toggle > span[aria-hidden] { display: block; font-size: 13px; line-height: 1; transition: transform .15s ease; }

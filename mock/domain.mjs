@@ -48,7 +48,7 @@ export function envelope({ id, channelId, sender, kind, type, payload = {}, pare
   };
 }
 
-function createRoster(channel, memberships, clock, { seedBusiness = true } = {}) {
+function createRoster(channel, memberships, clock, { seedBusiness = true, canonicalActorIds = false } = {}) {
   // 与真实后端一致：每个频道都有 system 与 svcactor(peer)，registrar 只在 c0。
   const rows = [
     rosterItem({ id: 'system', kind: 'system', name: 'system', description: 'Channel system actor' }, clock),
@@ -58,7 +58,10 @@ function createRoster(channel, memberships, clock, { seedBusiness = true } = {})
     rows.push(rosterItem({ id: 'registrar', kind: 'system', declId: 'registrar', name: 'Registrar Seat', description: 'Registrar seat' }, clock));
   }
 	if (!channel.internal && seedBusiness) {
-    rows.push(rosterItem({ id: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, kind: 'agent', declId: 'mock:steward', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
+		const businessActorId = channel.id === 'c0'
+			? canonicalActorIds ? 'agent:steward:test' : 'steward'
+			: canonicalActorIds ? `agent:${channel.name}:test` : `${channel.name}-agent`;
+		rows.push(rosterItem({ id: businessActorId, kind: 'agent', declId: 'mock:steward', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
     if (channel.id === 'c0') rows.push(rosterItem({ id: 'claude', kind: 'agent', declId: 'mock:claude', name: 'Claude', description: 'Mock Claude collaboration agent' }, clock));
   }
   for (const membership of memberships.filter((entry) => entry.channel_id === channel.id && entry.status === 'active')) {
@@ -80,7 +83,9 @@ export class MockDomain {
     this.channels = new Map(config.channels.map((channel) => [channel.id, structuredClone(channel)]));
     this.memberships = structuredClone(config.memberships);
     this.humanPrincipals = new Set([ROOT_ID, 'alice', 'bob']);
-    this.rosters = new Map([...this.channels.values()].map((channel) => [channel.id, createRoster(channel, this.memberships, this.clock)]));
+    this.rosters = new Map([...this.channels.values()].map((channel) => [channel.id, createRoster(channel, this.memberships, this.clock, {
+      canonicalActorIds: config.behavior?.canonical_actor_ids === true,
+    })]));
     this.histories = new Map([...this.channels.keys()].map((channelId) => [channelId, []]));
     this.scheduled = structuredClone(config.scheduled || []);
     this.delays = structuredClone(config.delays || {});
@@ -551,13 +556,16 @@ export class MockDomain {
     const delayMs = fault.delay_ms == null ? 0 : Number(fault.delay_ms);
     if (!Number.isSafeInteger(count) || count < 1) throw new TypeError('fault count must be a positive safe integer');
     if (!Number.isSafeInteger(delayMs) || delayMs < 0) throw new TypeError('fault delay_ms must be a non-negative safe integer');
-    const configured = { target: fault.target, mode: fault.mode, count, delay_ms: delayMs, code: fault.code || 'unavailable' };
+    const matchMsgType = String(fault.match_msg_type || '').trim();
+    const configured = { target: fault.target, mode: fault.mode, count, delay_ms: delayMs, code: fault.code || 'unavailable', ...(matchMsgType ? { match_msg_type: matchMsgType } : {}) };
     this.faults.push(configured);
     return { ...configured };
   }
 
-  takeFault(target) {
-    const index = this.faults.findIndex((fault) => fault.target === target && fault.count > 0);
+  takeFault(target, context = {}) {
+    const index = this.faults.findIndex((fault) => fault.target === target
+      && fault.count > 0
+      && (!fault.match_msg_type || fault.match_msg_type === context.msgType));
     if (index < 0) return null;
     const fault = this.faults[index];
     fault.count -= 1;

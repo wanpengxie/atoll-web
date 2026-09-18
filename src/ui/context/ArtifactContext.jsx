@@ -251,7 +251,7 @@ function TextArtifactPreview({ artifact, text, mode: controlledMode, onModeChang
       <button type="button" className={mode === 'source' ? 'active' : ''} aria-pressed={mode === 'source'} onClick={() => changeMode('source')}>源码</button>
     </div>}
     {markdown && mode === 'preview'
-      ? <MarkdownContent text={text} className="artifact-markdown-preview" />
+      ? <MarkdownContent contentKey={`artifact:${artifact.resourceId}:preview`} text={text} className="artifact-markdown-preview" />
       : html && mode === 'preview'
         ? <HtmlArtifactPreview text={text} name={artifact.name} />
         : <SourceArtifactPreview text={text} line={targetLine} language={language} />}

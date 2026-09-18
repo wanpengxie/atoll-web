@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, isMemberAccess } from '../model/channel-access.js';
 import { ChannelList } from '../ui/ChannelList.jsx';
 import { Timeline } from '../ui/Timeline.jsx';
@@ -8,6 +8,7 @@ import { PaneResizer } from '../ui/primitives/PaneResizer.jsx';
 import { readPaneWidth, writePaneWidth } from '../model/pane-sizes.js';
 import { createViewSessionStore } from '../model/view-session.js';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
+import { ConversationSurface } from '../ui/conversation/ConversationSurface.jsx';
 
 // 首屏可读内容只需要频道与消息。输入框、文件管理、终端、任务和右侧详情以前虽
 // 不可见，仍全部进入入口 chunk；移动端要先下载/解析完才会执行 session 请求。
@@ -28,7 +29,7 @@ const ACCESS_MESSAGE = {
   observer_active: '正在只读旁观此频道。',
   observer_stale: '旁观连接已中断，当前显示本地缓存。',
   discoverable: '这是空间中的可发现频道，你当前没有成员访问关系。',
-  access_denied: '你的频道访问权限已被撤销，历史缓存仅供本地查看。',
+  access_denied: '你的频道访问权限已被撤销，缓存内容已隐藏。重新获得访问权限后才能查看。',
   loading: '正在确认频道访问状态。',
 };
 
@@ -38,18 +39,35 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   const singleSurfaceShell = shellTopology !== 'desktop';
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
+  const [pendingChannelSelection, setPendingChannelSelection] = useState(null);
   const [composerEdit, setComposerEdit] = useState(null);
   const [replyTargets, setReplyTargets] = useState({});
   const viewSessionsRef = useRef(null);
-  if (!viewSessionsRef.current) viewSessionsRef.current = createViewSessionStore();
-  // App 的 workspace 外壳随每一批 feed 重建，里面的 inline callback 也会换身份。
-  // Composer 真正需要的是最新行为，不需要因为函数对象换了就重渲。用稳定端口转发
-  // 到本次 render 的实现，让 React.memo 可以把输入 DOM 与 feed 更新彻底隔开。
-  const composerActionTargetsRef = useRef({});
-  const composerActionsRef = useRef(null);
-  if (!composerActionsRef.current) {
-    const call = (name) => (...args) => composerActionTargetsRef.current[name]?.(...args);
-    composerActionsRef.current = {
+  const viewSessionPrincipal = String(session.me?.id || '');
+  if (!viewSessionsRef.current || viewSessionsRef.current.principal !== viewSessionPrincipal) {
+    viewSessionsRef.current = {
+      principal: viewSessionPrincipal,
+      store: createViewSessionStore({ principalID: viewSessionPrincipal }),
+    };
+  }
+  // Feed renders replace the workspace's inline callbacks, but only a
+  // committed channel/principal may become the target of the already-painted
+  // Composer DOM. A ref shared by every channel used to leak callbacks from a
+  // suspended/aborted B render into the still-committed A editor. Give each
+  // owner a distinct stable port; its targets are published below in layout
+  // commit, never while React is merely evaluating a candidate render.
+  const composerOwnerKey = `${String(session.me?.id || '')}\u0000${String(navigation.activeChannelId || '')}\u0000${String(workspace.view || '')}`;
+  const composerPort = useMemo(() => {
+    const targetsRef = { current: Object.freeze({ ownerKey: '' }) };
+    const call = (name) => (...args) => {
+      const targets = targetsRef.current;
+      if (targets.ownerKey !== composerOwnerKey) return undefined;
+      return targets[name]?.(...args);
+    };
+    return {
+      ownerKey: composerOwnerKey,
+      targetsRef,
+      actions: Object.freeze({
       onDraftChange: call('onDraftChange'),
       onSend: call('onSend'),
       onRetry: call('onRetry'),
@@ -60,10 +78,14 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
       onOpenChannelFiles: call('onOpenChannelFiles'),
       onCancelReply: call('onCancelReply'),
       onReplySent: call('onReplySent'),
+      }),
     };
-  }
+  }, [composerOwnerKey]);
+  const composerActions = composerPort.actions;
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
+  const channelHeadingRef = useRef(null);
+  const channelSelectionSerialRef = useRef(0);
   const filesButtonRef = useRef(null);
   const terminalButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
@@ -110,19 +132,100 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }, [dynamicVisible, filesOpen, navigation.activeChannelId]);
   const dynamicTabView = () => (filesOpenRef.current.get(navigation.activeChannelId) ? 'artifacts' : 'dynamic');
   const writeDisabled = session.wireState !== 'open' || !canWriteChannel(workspace.access);
+  // Draft ownership is a local authorization fact, not a transport fact. A
+  // previously confirmed member may keep editing and atomically hand text to
+  // the durable outbox while disconnected; reconnect is only permission to
+  // transmit. Unknown identities, observers and revoked members never cross
+  // the durable-accept seam.
+  const knownDraftOwner = Boolean(session.me?.id && workspace.channel && isMemberAccess(workspace.access));
+  const canEditDraft = knownDraftOwner;
+  const canDurablyAccept = knownDraftOwner;
+  const canTransmit = knownDraftOwner && session.wireState === 'open' && canWriteChannel(workspace.access);
   const contentVisible = canViewChannelContent(workspace.access);
+  const messageSurfaceVisible = contentVisible
+    && dynamicVisible
+    && !(singleSurfaceShell && (filesOpen || terminalOpen));
+  // Within one commit the old button and toggleTerminal already used the same
+  // access condition. The gap is between commits: a channel click can return
+  // while the old DOM and its handler still identify the previous channel.
+  // Publish that handoff locally so the next input cannot be consumed by the
+  // previous channel before the parent workspace commits the target identity.
+  const terminalChannelReady = Boolean(
+    workspace.channel
+    && workspace.channel.id === navigation.activeChannelId,
+  );
+  const terminalContentReady = terminalChannelReady && contentVisible;
+  // An already-open split must remain closable if access disappears. Pending
+  // channel handoff still wins: neither open nor close may mutate the channel
+  // whose old DOM happens to remain committed for that brief interval.
+  const terminalActionReady = !pendingChannelSelection
+    && terminalChannelReady
+    && (terminalOpen || terminalContentReady);
+  const selectShellChannel = useCallback((channelId) => {
+    // Always replace the pending fact, including a rapid selection back to the
+    // currently committed channel. That reverse selection is itself the latest
+    // intent and must supersede an older target still waiting to commit.
+    setPendingChannelSelection({
+      id: channelSelectionSerialRef.current += 1,
+      target: channelId,
+      origin: navigation.activeChannelId,
+      focusOrigin: document.activeElement,
+    });
+    navigation.onSelect(channelId);
+  }, [navigation.activeChannelId, navigation.onSelect]);
+  useEffect(() => {
+    if (!pendingChannelSelection) return;
+    const { target, origin, focusOrigin, departedOrigin = false } = pendingChannelSelection;
+    if (navigation.activeChannelId !== origin && !departedOrigin) {
+      // The directory publishes a requested id before it can discover that the
+      // target is gone and fall back. Remember that committed departure so a
+      // later return to origin is distinguishable from a parent that simply has
+      // not committed the request yet.
+      setPendingChannelSelection((current) => (
+        current === pendingChannelSelection ? { ...current, departedOrigin: true } : current
+      ));
+    }
+    if (workspace.channel?.id !== navigation.activeChannelId) return;
+    // Still on the commit from which this selection was issued: wait. A target
+    // commit completes normally; a third committed identity means browser
+    // navigation, directory fallback, or another owner superseded the target.
+    if (
+      navigation.activeChannelId === origin
+      && navigation.activeChannelId !== target
+      && !departedOrigin
+    ) return;
+    const selectedCommit = navigation.activeChannelId === target;
+    const rejectedTargetFallback = navigation.activeChannelId === origin
+      && target !== origin
+      && departedOrigin;
+    // Focus belongs to the latest user navigation, not to feed/access rerenders.
+    // If the reader has deliberately moved focus since clicking the channel,
+    // their newer input wins. preventScroll keeps the restored reading position.
+    if (selectedCommit || rejectedTargetFallback) {
+      const activeElement = document.activeElement;
+      if (!activeElement || activeElement === document.body || activeElement === focusOrigin) {
+        channelHeadingRef.current?.focus({ preventScroll: true });
+      }
+    }
+    // Access may still be loading after the identity commit. Clearing the
+    // transition here is safe because terminalContentReady independently owns
+    // the authorization/readability gate for opening and mounting content.
+    setPendingChannelSelection(null);
+  }, [pendingChannelSelection, navigation.activeChannelId, workspace.channel?.id]);
   // AppShell 会跟随每批 live feed 重渲。activeAgentTurn 原先每次都复制、过滤、
   // 排序整个 turns Map；同一 processing 阶段追加正文并不会改变“当前运行任务”。
   const runningAgentTurn = useMemo(
     () => activeAgentTurn(workspace.state, workspace.roster, workspace.selfId),
     [workspace.state, workspace.state?._timelineControlVersion, workspace.roster, workspace.selfId],
   );
-  const disabledReason = session.wireState !== 'open'
-    ? '等待连接…'
+  const disabledReason = !session.me?.id
+    ? '当前身份尚未建立'
     : workspace.access === CHANNEL_ACCESS.discoverable || workspace.access === CHANNEL_ACCESS.accessDenied
       ? '加入频道后才能发送消息'
-      : workspace.access === CHANNEL_ACCESS.memberUnavailable
-        ? '频道暂不可用'
+      : [CHANNEL_ACCESS.observerActive, CHANNEL_ACCESS.observerStale].includes(workspace.access)
+        ? '当前频道为只读旁观'
+        : workspace.access === CHANNEL_ACCESS.loading
+          ? '正在确认频道访问状态'
         : '当前频道不可写';
 
   useEffect(() => {
@@ -162,11 +265,11 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
         : adjacentChannelId(memberChannels, navigation.activeChannelId, direction);
       if (!channelId) return;
       event.preventDefault();
-      navigation.onSelect(channelId);
+      selectShellChannel(channelId);
     };
     document.addEventListener('keydown', switchByKey);
     return () => document.removeEventListener('keydown', switchByKey);
-  }, [navigation.activeChannelId, navigation.channels, navigation.onSelect]);
+  }, [navigation.activeChannelId, navigation.channels, selectShellChannel]);
 
   // 破窗恢复。它会打断频道里正在跑的一切,所以先问一句;确认后就是一条普通控制
   // 请求,结果落在时间线上,这里只负责别让人连点两次。
@@ -194,7 +297,8 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }
 
   function toggleTerminal() {
-    if (!workspace.channel || !contentVisible) return;
+    if (!terminalActionReady) return;
+    if (!terminalOpen && !terminalContentReady) return;
     const channelId = navigation.activeChannelId;
     // 从任务那一格开终端，要先回到动态——终端是挂在动态那块布局里的。但
     // 桌面 artifacts 已经**就是**动态布局（动态 + 文件），把它也当成"不在动态"
@@ -215,6 +319,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   useEffect(() => {
     const toggleByKey = (event) => {
       if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.key !== 'F12') return;
+      if (!terminalActionReady) return;
       event.preventDefault();
       toggleTerminal();
     };
@@ -222,35 +327,27 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     // into its textarea and xterm legitimately stops many function keys.
     document.addEventListener('keydown', toggleByKey, true);
     return () => document.removeEventListener('keydown', toggleByKey, true);
-  }, [workspace.channel, workspace.view, dynamicVisible, contentVisible, navigation.activeChannelId]);
+  }, [workspace.channel, workspace.view, dynamicVisible, terminalActionReady, navigation.activeChannelId]);
 
   useEffect(() => setComposerEdit(null), [navigation.activeChannelId]);
   useEffect(() => {
     if (!composerEdit || !navigation.activeChannelId) return;
-    setReplyTargets((current) => {
-      if (!current[navigation.activeChannelId]) return current;
-      const next = { ...current };
-      delete next[navigation.activeChannelId];
-      return next;
-    });
+    setReplyTargets((current) => ({ ...current, [navigation.activeChannelId]: null }));
   }, [Boolean(composerEdit), navigation.activeChannelId]);
 
-  const replyTarget = replyTargets[navigation.activeChannelId] || null;
+  const replyTarget = Object.prototype.hasOwnProperty.call(replyTargets, navigation.activeChannelId)
+    ? replyTargets[navigation.activeChannelId]
+    : workspace.draft?.replyTarget || null;
   function beginReply(target) {
     if (!target || composerEdit || !navigation.activeChannelId) return;
     setReplyTargets((current) => ({ ...current, [navigation.activeChannelId]: target }));
   }
   function clearReply() {
     if (!navigation.activeChannelId) return;
-    setReplyTargets((current) => {
-      if (!current[navigation.activeChannelId]) return current;
-      const next = { ...current };
-      delete next[navigation.activeChannelId];
-      return next;
-    });
+    setReplyTargets((current) => ({ ...current, [navigation.activeChannelId]: null }));
   }
 
-  composerActionTargetsRef.current = {
+  const composerActionTargets = {
     onDraftChange: workspace.onDraftChange,
     onSend: workspace.onSend,
     onRetry: workspace.onRetry,
@@ -262,7 +359,18 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
     onCancelReply: clearReply,
     onReplySent: clearReply,
   };
-  const composerActions = composerActionsRef.current;
+  useLayoutEffect(() => {
+    const committed = Object.freeze({ ownerKey: composerPort.ownerKey, ...composerActionTargets });
+    composerPort.targetsRef.current = committed;
+    return () => {
+      // A late idle callback from an unmounted Composer is a no-op. It must
+      // neither write its former owner nor fall through to the next channel's
+      // targets.
+      if (composerPort.targetsRef.current === committed) {
+        composerPort.targetsRef.current = Object.freeze({ ownerKey: '' });
+      }
+    };
+  });
 
   function moveViewTab(event, index) {
     const views = WORKSPACE_TABS;
@@ -297,13 +405,13 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }
 
   const shellClass = ['shell', panel.value && 'has-context', mobileChannelsOpen && 'mobile-channels-open'].filter(Boolean).join(' ');
-  const composer = <Suspense fallback={<section className="composer-wrap composer-loading" role="status"><div className="composer-surface">正在加载输入框…</div></section>}><Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} onDraftChange={composerActions.onDraftChange} disabled={!workspace.channel || writeDisabled} disabledReason={disabledReason} onSend={composerActions.onSend} onRetry={composerActions.onRetry} attachments={workspace.attachments} onPreviewAttachment={composerActions.onPreviewAttachment} onRemoveAttachment={composerActions.onRemoveAttachment} onClearAttachments={composerActions.onClearAttachments} onUploadAttachments={composerActions.onUploadAttachments} onOpenChannelFiles={composerActions.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={composerActions.onCancelReply} onReplySent={composerActions.onReplySent} /></Suspense>;
+  const composer = <Suspense fallback={<section className="composer-wrap composer-loading" role="status"><div className="composer-surface">正在加载输入框…</div></section>}><Composer key={navigation.activeChannelId} channelId={navigation.activeChannelId} roster={workspace.roster} selfId={workspace.selfId} pending={workspace.pending} draft={workspace.draft} draftRevision={workspace.draftRevision} onDraftChange={composerActions.onDraftChange} disabled={!canEditDraft} disabledReason={disabledReason} canEditDraft={canEditDraft} canDurablyAccept={canDurablyAccept} canTransmit={canTransmit} onSend={composerActions.onSend} onRetry={composerActions.onRetry} attachments={workspace.attachments} onPreviewAttachment={composerActions.onPreviewAttachment} onRemoveAttachment={composerActions.onRemoveAttachment} onClearAttachments={composerActions.onClearAttachments} onUploadAttachments={composerActions.onUploadAttachments} onOpenChannelFiles={composerActions.onOpenChannelFiles} agentSelection={workspace.agentSelection} editMode={composerEdit} replyTarget={replyTarget} onCancelReply={composerActions.onCancelReply} onReplySent={composerActions.onReplySent} /></Suspense>;
   return <SurfaceShell topology={shellTopology} ref={railRef} className={shellClass} data-workspace-view={workspace.view} style={railWidth ? { '--rail-width': `${railWidth}px` } : undefined}>
-    <ChannelList channels={navigation.channels} activeChannelId={navigation.activeChannelId} unread={navigation.unread} agentActivity={navigation.agentActivity} wireState={session.wireState} me={session.me} update={session.update} onSelect={(channelId) => { navigation.onSelect(channelId); setMobileChannelsOpen(false); }} onCreate={() => { setMobileChannelsOpen(false); navigation.onCreate(); }} onSearch={() => { setMobileChannelsOpen(false); navigation.onSearch(); }} onActivity={() => { setMobileChannelsOpen(false); navigation.onActivity(); }} onSpaceManage={() => { setMobileChannelsOpen(false); navigation.onSpaceManage(); }} onLogout={session.onLogout} onCloseMobile={mobileChannelsOpen ? closeMobileChannels : undefined} />
+    <ChannelList channels={navigation.channels} activeChannelId={navigation.activeChannelId} unread={navigation.unread} agentActivity={navigation.agentActivity} wireState={session.wireState} me={session.me} update={session.update} onSelect={(channelId) => { selectShellChannel(channelId); setMobileChannelsOpen(false); }} onCreate={() => { setMobileChannelsOpen(false); navigation.onCreate(); }} onSearch={() => { setMobileChannelsOpen(false); navigation.onSearch(); }} onActivity={() => { setMobileChannelsOpen(false); navigation.onActivity(); }} onSpaceManage={() => { setMobileChannelsOpen(false); navigation.onSpaceManage(); }} onLogout={session.onLogout} onCloseMobile={mobileChannelsOpen ? closeMobileChannels : undefined} />
     {shellTopology === 'desktop' && <PaneResizer kind="rail" grows="right" width={railWidth} measure={() => railRef.current?.querySelector('.channel-rail')?.getBoundingClientRect().width} onResize={setRailWidth} onCommit={commitRailWidth} onReset={resetRailWidth} label="调整频道栏宽度" />}
     <main className="workspace">
       <header className="channel-header">
-        <div className="channel-identity"><button type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button><div><p className="eyebrow">频道</p><h1>{workspace.channel?.qualified_name || workspace.channel?.name || navigation.activeChannelId || '选择频道'}</h1></div></div>
+        <div className="channel-identity"><button type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button><div><p className="eyebrow">频道</p><h1 ref={channelHeadingRef} tabIndex={-1}>{workspace.channel?.qualified_name || workspace.channel?.name || navigation.activeChannelId || '选择频道'}</h1></div></div>
         <div className="channel-header-actions">
           <span className="seq-label">SEQ {workspace.state.lastSeq}</span>
           {workspace.mockAdvance?.available && <button type="button" className="header-action mock-advance-action" disabled={workspace.mockAdvance.busy || !runningAgentTurn} onClick={workspace.mockAdvance.onAdvance} title={runningAgentTurn ? '追加下一条 Mock 计算事实' : '当前没有正在计算的任务'}>{workspace.mockAdvance.busy ? '推进中…' : '推进计算'}</button>}
@@ -315,7 +423,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
               <button type="button" role="menuitem" onClick={() => { setChannelMenuOpen(false); panel.open('resources', { type: 'channel_resources', key: workspace.channel.id }); }}>高级资源工具</button>
               <button type="button" role="menuitem" onClick={() => { setChannelMenuOpen(false); navigation.onCreate(); }}>新建子频道</button>
               <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || !contentVisible} onClick={() => { setChannelMenuOpen(false); toggleFiles(); }}>{filesOpen ? '关闭文件' : '打开文件'}</button>
-              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || !contentVisible} onClick={() => { setChannelMenuOpen(false); toggleTerminal(); }}>{terminalOpen ? '关闭终端' : '打开终端'}</button>
+              <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!terminalActionReady} onClick={() => { setChannelMenuOpen(false); toggleTerminal(); }}>{terminalOpen ? '关闭终端' : '打开终端'}</button>
               <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!workspace.channel || writeDisabled || restarting} onClick={() => { setChannelMenuOpen(false); restartChannel(); }}>{restarting ? '重启中…' : '重启频道'}</button>
             </div>}
           </div>
@@ -333,7 +441,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
       <div className="workspace-quick-actions">
         <button id="workspace-channel-restart" type="button" className="channel-restart-action" disabled={!workspace.channel || writeDisabled || restarting} title="重启本频道内全部成员(agent 与 tool);不会删除频道、账本或文件" onClick={restartChannel}><span aria-hidden="true">⟳</span>{restarting ? '重启中…' : '重启频道'}</button>
         <button ref={filesButtonRef} id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} aria-controls="workspace-panel-artifacts" disabled={!workspace.channel || !contentVisible} title={singleSurfaceShell ? '打开或关闭文件' : '切换文件分屏'} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
-        <button ref={terminalButtonRef} id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${terminalOpen ? ' active' : ''}`} aria-pressed={terminalOpen} aria-controls="workspace-panel-terminal" disabled={!workspace.channel || !contentVisible} title={singleSurfaceShell ? '打开或关闭终端（Ctrl+F12）' : '切换终端分屏（Ctrl+F12）'} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端<kbd>Ctrl F12</kbd></button>
+        <button ref={terminalButtonRef} id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${terminalOpen ? ' active' : ''}`} aria-pressed={terminalOpen} aria-controls="workspace-panel-terminal" disabled={!terminalActionReady} title={singleSurfaceShell ? '打开或关闭终端（Ctrl+F12）' : '切换终端分屏（Ctrl+F12）'} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端<kbd>Ctrl F12</kbd></button>
       </div>
       <div className="status-stack">
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}
@@ -345,7 +453,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
             ViewSession 用语义 row anchor 恢复；绝不把上一频道的 DOM 测量解释成
             当前频道的几何。Composer 同样按频道隔离草稿编辑器。 */}
         <div className="dynamic-message-pane">
-          {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} composer={composer} viewSessions={viewSessionsRef.current} state={workspace.state} history={workspace.history} navigationTarget={workspace.timelineTarget} onNavigationTargetConsumed={workspace.onTimelineTargetConsumed} roster={workspace.roster} selfId={workspace.selfId} agentActivity={workspace.agentActivity} onAcknowledgeAgentActivity={workspace.onAcknowledgeAgentActivity} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} onFocusAgentChange={workspace.onFocusAgentChange} /> : <><section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section><div className="conversation-bottom-overlay">{composer}</div></>}
+          {contentVisible ? <Timeline key={`timeline-${navigation.activeChannelId}`} composer={composer} viewSessions={viewSessionsRef.current.store} state={workspace.state} history={workspace.history} roster={workspace.roster} waitingRosterAuthority={workspace.waitingRosterAuthority} selfId={workspace.selfId} agentActivity={workspace.agentActivity} onAcknowledgeAgentActivity={workspace.onAcknowledgeAgentActivity} pending={workspace.pending} approvalStates={workspace.approvalStates} controlStates={workspace.controlStates} capabilityIndex={workspace.capabilityIndex} access={workspace.access} surfaceVisible={messageSurfaceVisible} onResolve={workspace.onResolve} onCancel={workspace.onCancel} onTaskControl={workspace.onTaskControl} onDownloadResource={workspace.onDownloadResource} onPreviewResource={workspace.onPreviewResource} onOpenTurn={workspace.onOpenTurn} onCreateTask={workspace.onCreateTask} onReply={composerEdit ? null : beginReply} turnDetail={workspace.turnDetail} onComposerEditChange={setComposerEdit} onFocusAgentChange={workspace.onFocusAgentChange} /> : <ConversationSurface input={composer}><section id="workspace-panel-dynamic" className="channel-private-empty dynamic-private-empty" role="tabpanel" aria-labelledby="workspace-tab-dynamic"><strong>频道内容不可访问</strong><p>当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。</p></section></ConversationSurface>}
         </div>
         {/* 文件工作面。跟终端一样：开过就恒不卸载，收起只是 hidden——目录、滚动和
             选中都在这棵树里，卸一次人就得从根目录重新点回来。按频道 key 重挂，
@@ -356,7 +464,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
             恒在服务端：shell 由宽限期保住，屏幕由会话的回放环保住，attach 时
             先回放再转直播。上一版为了不黑屏把 N 块常驻在 DOM 里，那是把真相
             放在浏览器里的补丁，回放做掉之后它恒无必要。 */}
-        {terminalEverOpened && workspace.channel && contentVisible
+        {terminalEverOpened && terminalContentReady
           && <Suspense fallback={<section id="workspace-panel-terminal" className="terminal-view split-loading" role="status" hidden={!terminalOpen}>正在加载终端…</section>}><TerminalView channelId={navigation.activeChannelId} devices={workspace.resources.devices || []} canWrite={!writeDisabled} visible={terminalOpen} onClose={toggleTerminal} /></Suspense>}
       </div>}
       {workspace.view === 'tasks' && workspace.channel && (contentVisible ? <Suspense fallback={<section className="split-loading" role="status">正在加载任务…</section>}><TasksView items={workspace.tasks.items} roster={workspace.roster} selfId={workspace.selfId} providers={workspace.tasks.providers} canWrite={workspace.tasks.canWrite} onNewTask={workspace.tasks.onNewTask} onOpen={workspace.tasks.onOpen} onNewAutomation={workspace.tasks.onNewAutomation} /></Suspense> : <section id="workspace-panel-tasks" className="channel-private-empty" role="tabpanel" aria-labelledby="workspace-tab-tasks"><strong>任务不可访问</strong><p>恢复频道访问后才能查看任务。</p></section>)}

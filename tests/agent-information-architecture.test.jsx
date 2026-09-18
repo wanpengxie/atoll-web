@@ -4,7 +4,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, createChannelState } from '../src/model/fold.js';
 import { normalizeDescribe } from '../src/model/capabilities.js';
-import { Timeline } from '../src/ui/Timeline.jsx';
+import { Timeline as ProductTimeline } from '../src/ui/Timeline.jsx';
+
+vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => ({
+  MessageList: (await import('./helpers/PresentationMessageList.jsx')).PresentationMessageList,
+}));
 
 afterEach(cleanup);
 
@@ -29,7 +33,8 @@ function add(state, seq, envelope) {
   apply(state, { channel_id: 'c0', seq, envelope });
 }
 
-function capabilities() {
+function capabilities({ expectedHold = true } = {}) {
+  const holdGuard = expectedHold ? { expected_hold_id: { type: 'string' } } : {};
   return new Map([['agent', { describe: normalizeDescribe({
     class: 'agent', capabilities: { steer: true, interrupt: true },
     words: {
@@ -37,8 +42,8 @@ function capabilities() {
       'agent.steer': {},
       'agent.hold': {},
       'agent.interrupt': {},
-      'agent.replace': { input_schema: { type: 'object', properties: { expected_hold_id: { type: 'string' } } } },
-      'agent.unhold': { input_schema: { type: 'object', properties: { expected_hold_id: { type: 'string' } } } },
+      'agent.replace': { input_schema: { type: 'object', properties: holdGuard } },
+      'agent.unhold': { input_schema: { type: 'object', properties: holdGuard } },
     },
   }) }]]);
 }
@@ -49,6 +54,11 @@ function capabilitiesFor(...actorIds) {
 }
 
 const roster = [{ id: 'me', kind: 'human', name: '我' }, { id: 'agent', kind: 'agent', name: 'Agent' }];
+const currentTargetAuthority = { current: true, actorIDs: new Set(['agent', 'agent-2']) };
+
+function Timeline({ waitingRosterAuthority = currentTargetAuthority, ...props }) {
+  return <ProductTimeline {...props} waitingRosterAuthority={waitingRosterAuthority} />;
+}
 
 describe('agent control v7 information architecture', () => {
   it('does not resurrect cached queued controls before the backend tail is current', () => {
@@ -61,6 +71,46 @@ describe('agent control v7 information architecture', () => {
     expect(screen.queryByRole('region', { name: '等待区' })).toBeNull();
     view.rerender(<Timeline state={state} history={history(true)} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} />);
     expect(screen.getByRole('region', { name: '等待区' })).toBeTruthy();
+  });
+
+  it('keeps queued facts visible while exact roster authority gates receiver controls', () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('roster-gated', '收件人状态门'));
+    add(state, 2, response('roster-gated-q', 'roster-gated', { status: 'queued' }));
+    const common = {
+      state,
+      history: { status: { controlCurrent: true }, open: vi.fn(), markRead: vi.fn() },
+      roster,
+      selfId: 'me',
+      pending: [],
+      approvalStates: {},
+      access: 'member_active',
+      capabilityIndex: capabilities(),
+    };
+    const view = render(<Timeline {...common} waitingRosterAuthority={null} />);
+
+    let waiting = screen.getByRole('region', { name: '等待区' });
+    expect(within(waiting).getByText('收件人状态门')).toBeTruthy();
+    expect(within(waiting).getByText('正在核验收件人')).toBeTruthy();
+    expect(within(waiting).getByRole('button', { name: '取消' })).toBeTruthy();
+    expect(within(waiting).queryByRole('button', { name: '插入' })).toBeNull();
+    expect(within(waiting).queryByRole('button', { name: '编辑' })).toBeNull();
+    expect(within(waiting).queryByRole('button', { name: '全部取消' })).toBeNull();
+
+    view.rerender(<Timeline {...common} waitingRosterAuthority={{ current: true, actorIDs: new Set(['agent']) }} />);
+    waiting = screen.getByRole('region', { name: '等待区' });
+    expect(within(waiting).queryByText('正在核验收件人')).toBeNull();
+    expect(within(waiting).getByRole('button', { name: '插入' })).toBeTruthy();
+    expect(within(waiting).getByRole('button', { name: '编辑' })).toBeTruthy();
+    expect(within(waiting).getByRole('button', { name: '全部取消' })).toBeTruthy();
+
+    view.rerender(<Timeline {...common} waitingRosterAuthority={{ current: true, actorIDs: new Set(['agent:new:2']) }} />);
+    waiting = screen.getByRole('region', { name: '等待区' });
+    expect(within(waiting).getByText('收件人已离席，等待账本关闭')).toBeTruthy();
+    expect(within(waiting).getByRole('button', { name: '取消' })).toBeTruthy();
+    expect(within(waiting).queryByRole('button', { name: '插入' })).toBeNull();
+    expect(within(waiting).queryByRole('button', { name: '编辑' })).toBeNull();
+    expect(within(waiting).queryByRole('button', { name: '全部取消' })).toBeNull();
   });
 
   it('semantic history keeps a completed request visible without progress frames', () => {
@@ -104,7 +154,7 @@ describe('agent control v7 information architecture', () => {
     add(state, 7, response('queued-p', 'queued', { status: 'processing', turn_id: 'turn-1' }));
     view.rerender(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} onTaskControl={onTaskControl} />);
     expect(screen.queryByRole('region', { name: '等待区' })).toBeNull();
-    // The promoted request predates the current viewport. Virtuoso correctly
+    // The promoted request predates the current viewport. The virtualizer correctly
     // preserves the reading anchor, so remount the scope before inspecting it.
     fireEvent.click(screen.getByRole('button', { name: '@我' }));
     fireEvent.click(screen.getByRole('button', { name: '全部' }));
@@ -263,6 +313,225 @@ describe('agent control v7 information architecture', () => {
     await waitFor(() => expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({
       channelId: 'c0', type: 'agent.unhold', payload: { expected_hold_id: 'late-hold' },
     })));
+  });
+
+  it('keeps a late edit release bound to the committed callback when a candidate render suspends', async () => {
+    const stateA = createChannelState('c0');
+    add(stateA, 1, request('queued', 'committed editor'));
+    add(stateA, 2, response('queued-q', 'queued', { status: 'queued' }));
+    const stateB = createChannelState('c0');
+    add(stateB, 1, request('queued-b', 'discarded editor'));
+    add(stateB, 2, response('queued-b-q', 'queued-b', { status: 'queued' }));
+    add(stateB, 3, { ...request('discarded-stop', '', 'agent'), type: 'agent.interrupt', payload: {} });
+    add(stateB, 4, { ...response('discarded-stop-d', 'discarded-stop', { status: 'completed' }), type: 'agent.interrupt' });
+    let resolveHold;
+    const holdReceipt = new Promise((resolve) => { resolveHold = resolve; });
+    const onTaskControlA = vi.fn(({ type }) => (
+      type === 'agent.hold' ? holdReceipt : Promise.resolve(`${type}-a`)
+    ));
+    const onTaskControlB = vi.fn(() => Promise.resolve('candidate-b'));
+    const never = new Promise(() => {});
+    function Suspender({ active }) {
+      if (active) throw never;
+      return null;
+    }
+    const common = {
+      roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active',
+      onComposerEditChange: vi.fn(),
+    };
+    const frame = (state, onTaskControl, suspend = false, capabilityIndex = capabilities()) => (
+      <React.Suspense fallback={<div>candidate fallback</div>}>
+        <Timeline {...common} state={state} capabilityIndex={capabilityIndex} onTaskControl={onTaskControl} />
+        <Suspender active={suspend} />
+      </React.Suspense>
+    );
+    const view = render(frame(stateA, onTaskControlA));
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
+    view.rerender(frame(stateB, onTaskControlB, true, capabilities({ expectedHold: false })));
+    expect(screen.getByText('candidate fallback')).toBeTruthy();
+    view.unmount();
+    resolveHold('late-hold-a');
+
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({
+      channelId: 'c0', type: 'agent.unhold', payload: { expected_hold_id: 'late-hold-a' },
+    })));
+    expect(onTaskControlB.mock.calls.some(([value]) => value.type === 'agent.unhold')).toBe(false);
+  });
+
+  it('keeps the hold owner when a later committed render supplies a different callback', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'stable hold owner'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    let resolveHold;
+    const holdReceipt = new Promise((resolve) => { resolveHold = resolve; });
+    const onTaskControlA = vi.fn(({ type }) => (
+      type === 'agent.hold' ? holdReceipt : Promise.resolve(`${type}-a`)
+    ));
+    const onTaskControlB = vi.fn(() => Promise.resolve('committed-b'));
+    const common = {
+      state, roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active',
+      capabilityIndex: capabilities(), onComposerEditChange: vi.fn(),
+    };
+    const view = render(<Timeline {...common} onTaskControl={onTaskControlA} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
+    view.rerender(<Timeline {...common} onTaskControl={onTaskControlB} />);
+    view.unmount();
+    resolveHold('owned-by-a');
+
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({
+      channelId: 'c0', type: 'agent.unhold', payload: { expected_hold_id: 'owned-by-a' },
+    })));
+    expect(onTaskControlB.mock.calls.some(([value]) => value.type === 'agent.unhold')).toBe(false);
+  });
+
+  it('routes context and replacement through the callback that owns the edit hold', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'edit through one owner'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    const onTaskControlA = vi.fn(async ({ type }) => (
+      type === 'agent.hold' ? 'hold-a'
+        : type === 'agent.context' ? 'context-a'
+          : type === 'agent.replace' ? 'replacement-a' : `${type}-a`
+    ));
+    const onTaskControlB = vi.fn(async ({ type }) => `${type}-b`);
+    const onTaskControlA2 = vi.fn(async ({ type }) => `${type}-a2`);
+    const onComposerEditChange = vi.fn();
+    const common = {
+      roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active',
+      onComposerEditChange,
+    };
+    const view = render(<Timeline {...common} state={state} capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControlA} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
+    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
+    view.rerender(<Timeline {...common} state={state} capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControlB} />);
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
+
+    const editor = onComposerEditChange.mock.lastCall[0];
+    await editor.onSave('updated text');
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.context' })));
+    expect(onTaskControlB.mock.calls.some(([value]) => value.type === 'agent.context')).toBe(false);
+
+    const latestState = createChannelState('c0');
+    add(latestState, 1, request('queued', 'edit through one owner'));
+    add(latestState, 2, response('queued-q', 'queued', { status: 'queued' }));
+    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(latestState, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
+    add(latestState, 5, { ...request('context-a', '', 'agent'), type: 'agent.context', payload: {} });
+    add(latestState, 6, { ...response('context-a-d', 'context-a', { status: 'completed', frozen: { held_by: 'hold-a', until: Date.now() + 60_000 } }), type: 'agent.context' });
+    view.rerender(<Timeline {...common} state={latestState} capabilityIndex={capabilities()} onTaskControl={onTaskControlA2} />);
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'agent.replace',
+      turn: latestState.turns.get('queued'),
+      payload: expect.objectContaining({ expected_hold_id: 'hold-a', new_text: 'updated text' }),
+    })));
+    expect(onTaskControlB.mock.calls.some(([value]) => value.type === 'agent.replace')).toBe(false);
+    expect(onTaskControlA2).not.toHaveBeenCalled();
+  });
+
+  it('uses the hold owner on reconnect while reading the latest committed target', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'reconnect edit'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    const onTaskControlA = vi.fn(async ({ type }) => type === 'agent.hold' ? 'hold-a' : `${type}-a`);
+    const onTaskControlB = vi.fn(async ({ type }) => `${type}-b`);
+    const onTaskControlC = vi.fn(async ({ type }) => `${type}-c`);
+    const onComposerEditChange = vi.fn();
+    const common = {
+      roster, selfId: 'me', pending: [], approvalStates: {}, capabilityIndex: capabilities(), onComposerEditChange,
+    };
+    const view = render(<Timeline {...common} state={state} access="member_active" onTaskControl={onTaskControlA} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
+    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
+    view.rerender(<Timeline {...common} state={state} access="member_active" onTaskControl={onTaskControlB} />);
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
+
+    view.rerender(<Timeline {...common} state={state} access="disconnected" onTaskControl={onTaskControlB} />);
+    const latestState = createChannelState('c0');
+    add(latestState, 1, request('queued', 'reconnect edit'));
+    add(latestState, 2, response('queued-q', 'queued', { status: 'queued' }));
+    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(latestState, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
+    view.rerender(<Timeline {...common} state={latestState} access="member_active" onTaskControl={onTaskControlC} />);
+
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'agent.context', turn: latestState.turns.get('queued'),
+    })));
+    expect(onTaskControlB.mock.calls.some(([value]) => value.type === 'agent.context')).toBe(false);
+    expect(onTaskControlC).not.toHaveBeenCalled();
+  });
+
+  it('releases with the original callback and the latest committed turn and capability', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'abandon latest state'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    const onTaskControlA = vi.fn(async ({ type }) => type === 'agent.hold' ? 'hold-a' : `${type}-a`);
+    const onTaskControlB = vi.fn(async ({ type }) => `${type}-b`);
+    const onTaskControlC = vi.fn(async ({ type }) => `${type}-c`);
+    const onComposerEditChange = vi.fn();
+    const common = { roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', onComposerEditChange };
+    const view = render(<Timeline {...common} state={state} capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControlA} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
+    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
+    view.rerender(<Timeline {...common} state={state} capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControlB} />);
+    await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
+    const committedEditor = onComposerEditChange.mock.lastCall[0];
+
+    const latestState = createChannelState('c0');
+    add(latestState, 1, request('queued', 'abandon latest state'));
+    add(latestState, 2, response('queued-q', 'queued', { status: 'queued' }));
+    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(latestState, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
+    view.rerender(<Timeline {...common} state={latestState} capabilityIndex={capabilities()} onTaskControl={onTaskControlC} />);
+    await committedEditor.onAbandon();
+
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'agent.unhold',
+      turn: latestState.turns.get('queued'),
+      payload: { expected_hold_id: 'hold-a' },
+    })));
+    expect(onTaskControlB.mock.calls.some(([value]) => value.type === 'agent.unhold')).toBe(false);
+    expect(onTaskControlC).not.toHaveBeenCalled();
+  });
+
+  it('does not release a late hold when newer committed authority superseded it', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'late superseded hold'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    let resolveHold;
+    const holdReceipt = new Promise((resolve) => { resolveHold = resolve; });
+    const onTaskControlA = vi.fn(({ type }) => type === 'agent.hold' ? holdReceipt : Promise.resolve(`${type}-a`));
+    const onTaskControlB = vi.fn(async ({ type }) => `${type}-b`);
+    const common = { roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', capabilityIndex: capabilities(), onComposerEditChange: vi.fn() };
+    const view = render(<Timeline {...common} state={state} onTaskControl={onTaskControlA} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
+    const latestState = createChannelState('c0');
+    add(latestState, 1, request('queued', 'late superseded hold'));
+    add(latestState, 2, response('queued-q', 'queued', { status: 'queued' }));
+    add(latestState, 3, { ...request('stop', '', 'agent'), type: 'agent.interrupt', payload: {} });
+    add(latestState, 4, { ...response('stop-d', 'stop', { status: 'completed' }), type: 'agent.interrupt' });
+    view.rerender(<Timeline {...common} state={latestState} onTaskControl={onTaskControlB} />);
+    view.unmount();
+    resolveHold('late-hold');
+    await holdReceipt;
+    await Promise.resolve();
+
+    expect(onTaskControlA.mock.calls.some(([value]) => value.type === 'agent.unhold')).toBe(false);
+    expect(onTaskControlB).not.toHaveBeenCalled();
   });
 
   it('switches the wait layer to one editor state without pushing later queued rows down', () => {

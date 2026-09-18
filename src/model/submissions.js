@@ -18,17 +18,19 @@ export function createSubmission({ id, channelId, text = '', targetLabel = '', f
 }
 
 export function transitionSubmission(item, event, error = null) {
+  const allowed = {
+    accepted: new Set(['transmitting']),
+    queued: new Set(['queued', 'transmitting']),
+    transmit: new Set(['queued', 'transmitting', 'uncertain']),
+    delayed: new Set(['accepted']),
+    uncertain: new Set(['transmitting']),
+    rejected: new Set(['queued', 'transmitting', 'uncertain']),
+    retry: new Set(['uncertain', 'rejected']),
+  };
+  if (!allowed[event]?.has(item.state)) return item;
   const next = { ...item, updatedAt: Date.now() };
-  if (event === 'accepted' && item.state !== 'landed') next.state = 'accepted';
-  else if (event === 'queued' && item.state !== 'landed') next.state = 'queued';
-  else if (event === 'transmit' && item.state !== 'landed') next.state = 'transmitting';
-  else if (event === 'delayed' && item.state === 'accepted') next.state = 'delayed';
-  else if (event === 'uncertain' && item.state !== 'landed') next.state = 'uncertain';
-  else if (event === 'rejected' && item.state !== 'landed') next.state = 'rejected';
-  else if (event === 'retry') {
-    next.state = 'transmitting';
-    next.error = null;
-  }
+  next.state = event === 'transmit' || event === 'retry' ? 'transmitting' : event;
+  if (event === 'retry') next.error = null;
   if (error) next.error = { code: error.code || 'unknown', detail: error.detail || error.message || String(error) };
   return next;
 }
@@ -61,6 +63,23 @@ export function saveSubmissions(principalId, items, storage = globalThis.localSt
     // 持久化失败不改变当前会话中的提交事实。
   }
 }
+
+export function removeStoredSubmissions(principalId, storage = globalThis.localStorage) {
+  if (!principalId || !storage) return;
+  try { storage.removeItem(`${PREFIX}${principalId}`); } catch { /* keep source for a later migration */ }
+}
+
+export function restoreSubmissionRecords(items = []) {
+  return (items || []).filter((item) => item?.messageId && item?.channelId && item?.frame && ACTIVE.has(item.state)).map((item) => ({
+    ...item,
+    state: item.state === 'transmitting' ? 'uncertain' : item.state,
+    error: item.error || null,
+    leaseOwner: '',
+    leaseUntil: 0,
+  }));
+}
+
+export function activeSubmissions(items = []) { return (items || []).filter((item) => ACTIVE.has(item.state)); }
 
 export function isUncertainWireError(error) {
   return error?.code === 'timeout' || error?.code === 'closed';

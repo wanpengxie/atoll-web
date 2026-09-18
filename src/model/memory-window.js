@@ -1,4 +1,5 @@
 import { argsOf } from '../protocol/envelope.js';
+import { retainTerminalClosure } from './fold.js';
 import { invalidateScopeIndex } from './timeline-scope.js';
 
 // 这一页在内存里留多少账。
@@ -92,7 +93,15 @@ export function trimChannelState(state, { maxRows, maxBytes } = MOBILE_WINDOW) {
   }
   for (const [id, turn] of state.turns) {
     // 闭合了、且整段都在窗口外的才摘;开着的上面已经用 floor 保住了。
-    if (turn.terminal && Math.max(turn.requestSeq, turn.terminalSeq || 0, turn.lastSeq || 0) < cut) state.turns.delete(id);
+    if (turn.terminal && Math.max(turn.requestSeq, turn.terminalSeq || 0, turn.lastSeq || 0) < cut) {
+      // Keep the terminal in Fold's existing compact closure authority before
+      // dropping the heavy request/response record. A later history page can
+      // contain the older request and queued position without repeating the
+      // already-scanned terminal; drainRequestMatches must still close that
+      // turn before Waiting derives from it.
+      retainTerminalClosure(state, turn.terminalSeq, turn.terminal);
+      state.turns.delete(id);
+    }
   }
   for (const [correlation, ids] of state.correlations) {
     const alive = ids.filter((id) => state.turns.has(id));
@@ -105,6 +114,9 @@ export function trimChannelState(state, { maxRows, maxBytes } = MOBILE_WINDOW) {
     if (alive.length) state._unmatchedByParent.set(parentId, alive);
     else state._unmatchedByParent.delete(parentId);
   }
+  // Full unmatched progress/body rows follow the ordinary window. Fold keeps
+  // only its compact FINAL closure tombstones separately until their older
+  // parent requests arrive; trimming those would resurrect completed work.
   state.standalone = state.standalone.filter((item) => item.seq >= cut);
   state.orphans = state.orphans.filter((item) => item.seq >= cut);
   state.narration = state.narration.filter((item) => item.seq >= cut);

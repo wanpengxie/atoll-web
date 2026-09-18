@@ -147,18 +147,44 @@ test('连续中文输入不改变 Composer 与消息区的布局尺寸', async (
   expect(Math.abs(after.timelineBottom - before.timelineBottom)).toBeLessThanOrEqual(1);
 });
 
-test('Composer 随多行内容向上增高，并稳定地为消息区让出同等空间', async ({ page, request }) => {
+test('Composer 随多行内容向上增高，并稳定地为消息区让出同等空间', async ({ page, request }, testInfo) => {
   await reset(request, 'message-flow', 1308); await login(page);
   const editor = page.getByLabel('消息');
   const timeline = page.getByRole('tabpanel', { name: '动态' });
-  const beforeSurface = await page.locator('.composer-surface').evaluate((node) => node.getBoundingClientRect().height);
+  const composer = page.locator('.composer-surface');
+  const handoff = await page.evaluate(() => {
+    const surface = document.querySelector('.composer-surface');
+    const input = document.querySelector('[aria-label="消息"]');
+    const surfaceRect = surface?.getBoundingClientRect();
+    const inputRect = input?.getBoundingClientRect();
+    return {
+      surfaceHeight: surfaceRect?.height || 0,
+      inputHeight: inputRect?.height || 0,
+      inputVisible: Boolean(inputRect?.width && inputRect?.height && getComputedStyle(input).visibility !== 'hidden'),
+      restoring: Boolean(document.querySelector('.timeline-reading-restore')),
+    };
+  });
+  await testInfo.attach('composer-readiness-handoff.json', {
+    body: Buffer.from(JSON.stringify(handoff, null, 2)),
+    contentType: 'application/json',
+  });
+  // A zero-sized mount handoff is not a user-operable composer. If the editor
+  // is visible, its owning surface must already have real geometry.
+  expect(handoff.inputVisible && handoff.surfaceHeight === 0, JSON.stringify(handoff)).toBe(false);
+  // This case measures input growth, not the separate 500ms readable-restore
+  // handoff. Capture the baseline only after both production surfaces have a
+  // committed non-zero box; a transient zero-sized composer is not geometry.
+  await expect(page.locator('.timeline-message-list')).toBeVisible();
+  await expect.poll(() => composer.evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThan(0);
+  const beforeSurface = await composer.evaluate((node) => node.getBoundingClientRect().height);
   const beforeTimeline = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
   await editor.fill('第一行\n第二行\n第三行\n第四行');
-  const afterSurface = await page.locator('.composer-surface').evaluate((node) => node.getBoundingClientRect().height);
+  const afterSurface = await composer.evaluate((node) => node.getBoundingClientRect().height);
   const afterTimeline = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
+  const evidence = JSON.stringify({ beforeSurface, afterSurface, beforeTimeline, afterTimeline });
   expect(afterSurface).toBeGreaterThan(beforeSurface);
   expect(Math.abs(afterTimeline.top - beforeTimeline.top)).toBeLessThanOrEqual(1);
-  expect(Math.abs((beforeTimeline.bottom - afterTimeline.bottom) - (afterSurface - beforeSurface))).toBeLessThanOrEqual(1);
+  expect(Math.abs((beforeTimeline.bottom - afterTimeline.bottom) - (afterSurface - beforeSurface)), evidence).toBeLessThanOrEqual(1);
 });
 
 test('审批使用正文列，后台活动不污染消息主线', async ({ page, request }) => {
@@ -188,7 +214,7 @@ test('审批使用正文列，后台活动不污染消息主线', async ({ page,
   expect(mobile.scrollWidth).toBeLessThanOrEqual(mobile.viewport);
 });
 
-test('新条目到达时，固定在底部的信息流不反向抖动', async ({ page, request }) => {
+test('新条目到达时，固定在底部的信息流不反向抖动', async ({ page, request }, testInfo) => {
   await reset(request, 'multi-channel', 1304); await login(page);
   await expect(page.locator('.approval-card')).toBeAttached();
 
@@ -196,19 +222,37 @@ test('新条目到达时，固定在底部的信息流不反向抖动', async ({
     const viewport = document.querySelector('.timeline-message-list');
     viewport.scrollTo(0, viewport.scrollHeight);
     const rows = [];
+    const trace = [];
+    let tracing = true;
+    const geometry = () => ({
+      top: viewport.scrollTop,
+      bottom: viewport.scrollHeight - viewport.clientHeight,
+      approvals: document.querySelectorAll('.approval-card').length,
+    });
+    window.__ATOLL_READING_TRACE__ = (entry) => trace.push({ kind: 'adapter', ...entry, ...geometry() });
+    const frame = (at) => {
+      if (!tracing) return;
+      trace.push({ kind: 'raf', stage: 'raf', at, ...geometry() });
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
     for (let index = 0; index < 30; index += 1) {
       rows.push({
-        top: viewport.scrollTop,
-        bottom: viewport.scrollHeight - viewport.clientHeight,
-        approvals: document.querySelectorAll('.approval-card').length,
+        ...geometry(),
       });
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    return rows;
+    tracing = false;
+    delete window.__ATOLL_READING_TRACE__;
+    return { rows, trace };
   });
   await page.waitForTimeout(300);
   expect((await request.get(`${MOCK}/mock/approve`)).ok()).toBe(true);
-  const rows = await sampling;
+  const { rows, trace } = await sampling;
+  await testInfo.attach('append-timing.json', {
+    body: Buffer.from(JSON.stringify({ rows, trace }, null, 2)),
+    contentType: 'application/json',
+  });
 
   expect(rows.at(-1).approvals).toBeGreaterThan(rows[0].approvals);
   expect(rows.filter((row, index) => index > 0 && row.top + 1 < rows[index - 1].top)).toHaveLength(0);

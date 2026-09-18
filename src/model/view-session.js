@@ -1,91 +1,235 @@
 import { TIMELINE_SCOPE } from './timeline-scope.js';
-import { VIEWPORT_MODE } from './conversation-viewport.js';
+import { READING_MODE } from './reading-session.js';
 
-function defaultConversation() {
+function defaultPreferences() {
   return {
-    mode: VIEWPORT_MODE.following,
-    anchor: null,
-    unseenTail: 0,
     scope: TIMELINE_SCOPE.mine,
     actorFilter: [],
     foldOverrides: [],
     foldDefaults: [],
     layoutChoices: [],
-    viewportSnapshot: null,
   };
 }
 
-function copyViewportSnapshot(value) {
-  if (!value?.listKey || !value?.geometryKey || value?.state?.version !== 1 || !Array.isArray(value.state.rows)) return null;
+function defaultReading() {
   return {
-    listKey: String(value.listKey),
-    geometryKey: String(value.geometryKey),
-    state: {
-      version: 1,
-      width: Number(value.state.width || 0),
-      rows: value.state.rows.map((row) => ({
-        id: String(row.id),
-        size: Number(row.size || 0),
-      })),
-    },
+    revision: 0,
+    mode: READING_MODE.following,
+    bookmark: null,
+    unseenTail: 0,
+    unseenKeys: [],
+    unseenRecords: [],
   };
 }
 
-function copyConversation(value = {}) {
-  const mode = Object.values(VIEWPORT_MODE).includes(value.mode) ? value.mode : VIEWPORT_MODE.following;
-  const anchor = value.anchor?.rowID ? {
-      rowID: String(value.anchor.rowID),
-      offset: Number(value.anchor.offset || 0),
-      seq: Number(value.anchor.seq || 0),
-    } : null;
+function copyBookmark(value) {
+  if (!value?.messageID) return null;
+  const rowViewportOffset = value.rowViewportOffset == null || value.rowViewportOffset === ''
+    ? null
+    : Number(value.rowViewportOffset);
+  const textViewportOffset = value.textViewportOffset == null || value.textViewportOffset === ''
+    ? null
+    : Number(value.textViewportOffset);
   return {
+    messageID: String(value.messageID),
+    blockID: String(value.blockID || ''),
+    textOffset: Math.max(0, Number(value.textOffset) || 0),
+    textBefore: String(value.textBefore || '').slice(-64),
+    textAfter: String(value.textAfter || '').slice(0, 64),
+    blockTextStart: String(value.blockTextStart || '').slice(0, 96),
+    blockTextEnd: String(value.blockTextEnd || '').slice(-96),
+    viewportOffset: Number(value.viewportOffset) || 0,
+    textViewportOffset: Number.isFinite(textViewportOffset) ? textViewportOffset : null,
+    rowViewportOffset: Number.isFinite(rowViewportOffset) ? rowViewportOffset : null,
+    seq: Math.max(0, Number(value.seq) || 0),
+    predecessorID: String(value.predecessorID || ''),
+    successorID: String(value.successorID || ''),
+  };
+}
+
+function copyReading(value = {}) {
+  const mode = value.mode === READING_MODE.browsing ? READING_MODE.browsing : READING_MODE.following;
+  const recordMap = new Map();
+  for (const record of value.unseenRecords || []) {
+    if (!Array.isArray(record) || !record[0]) continue;
+    const key = String(record[0]);
+    const seq = Number(record[1]);
+    if (!Number.isSafeInteger(seq) || seq <= 0) continue;
+    recordMap.set(key, Math.max(recordMap.get(key) || 0, seq));
+  }
+  const unseenRecords = [...recordMap];
+  const unseenKeys = unseenRecords.map(([key]) => key);
+  return {
+    revision: Math.max(0, Number(value.revision) || 0),
     mode,
-    anchor,
-    unseenTail: Math.max(0, Number(value.unseenTail || 0)),
+    bookmark: mode === READING_MODE.browsing ? copyBookmark(value.bookmark) : null,
+    // Viewport-unseen state is derived from one authoritative fact: a stable
+    // identity paired with the finite durable sequence that introduced it.
+    // Older v2 payloads also persisted an independent count and key-only
+    // identities. They cannot be acknowledged against an installed tail, so
+    // discard that incomplete derived state at the read boundary while
+    // retaining every valid record (including records absent from unseenKeys).
+    unseenTail: unseenRecords.length,
+    unseenKeys,
+    unseenRecords,
+  };
+}
+
+// A semantic reading position belongs to this browser document, not to the
+// principal's durable profile. Persisting browsing + bookmark made a reload,
+// a newly opened page, or a much later visit resume an old middle position.
+// Keep the rest of the reading record durable (notably exact unseen evidence
+// and its CAS revision), but make every storage boundary start at latest.
+// The live store still retains the full copyReading value, so A→B→A inside
+// one document restores the in-memory bookmark without another scroll owner.
+function copyPersistedReading(value = {}) {
+  return {
+    ...copyReading(value),
+    mode: READING_MODE.following,
+    bookmark: null,
+  };
+}
+
+function copyPreferences(value = {}) {
+  return {
     scope: value.scope === TIMELINE_SCOPE.all ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine,
     actorFilter: [...new Set(value.actorFilter || [])].filter(Boolean).sort(),
     foldOverrides: [...(value.foldOverrides || [])]
       .filter((entry) => Array.isArray(entry) && entry.length === 2 && entry[0])
-      .map(([id, expanded]) => [id, Boolean(expanded)]),
+      .map(([id, expanded]) => [String(id), Boolean(expanded)]),
     foldDefaults: [...new Set(value.foldDefaults || [])].filter(Boolean).map(String),
     layoutChoices: (value.layoutChoices || []).filter((entry) => (
       Array.isArray(entry) && typeof entry[0] === 'string'
       && (typeof entry[1] === 'boolean' || typeof entry[1] === 'string'
         || (Array.isArray(entry[1]) && entry[1].every((item) => typeof item === 'string')))
     )).map(([key, choice]) => [key, Array.isArray(choice) ? [...choice] : choice]),
-    // Physical measurements are subordinate to semantic reading intent. A
-    // following session has exactly one valid destination—the live tail—so a
-    // cached measurements must never override it. Snapshots are useful only
-    // as an acceleration for a browsing session that also has a durable row
-    // anchor to fall back to.
-    viewportSnapshot: mode === VIEWPORT_MODE.browsing && anchor
-      ? copyViewportSnapshot(value.viewportSnapshot)
-      : null,
   };
 }
 
-// One disposable reading session per channel. This store never owns ledger
-// rows, history cursors or route state. App routing is the sole owner of the
-// active Surface/Context; copying those values here would create an unread
-// second truth. This store only survives Conversation remounts caused by
-// channel navigation and responsive topology changes. It may also retain a
-// disposable row measurement snapshot (never a pixel destination). Reuse is allowed only when
-// the exact presentation geometry key still matches, so pixels never become
-// a second ledger or navigation truth.
-export function createViewSessionStore() {
-  const channels = new Map();
+function readingKey(channelID, viewKey) {
+  return `${channelID}\u0000${viewKey}`;
+}
+
+const VIEW_SESSION_SCHEMA = 2;
+
+function storageKey(principalID) {
+  return principalID ? `atoll.view-session.v2.${principalID}` : '';
+}
+
+function parseStored(storage, principalID) {
+  const key = storageKey(principalID);
+  if (!key || !storage?.getItem) return { preferences: new Map(), readings: new Map() };
+  try {
+    const value = JSON.parse(storage.getItem(key) || 'null');
+    if (value?.schema !== VIEW_SESSION_SCHEMA) return { preferences: new Map(), readings: new Map() };
+    return {
+      preferences: new Map(Object.entries(value.preferences || {}).map(([channelID, item]) => [channelID, copyPreferences(item)])),
+      readings: new Map(Object.entries(value.readings || {}).map(([keyID, item]) => [keyID, copyPersistedReading(item)])),
+    };
+  } catch {
+    return { preferences: new Map(), readings: new Map() };
+  }
+}
+
+function writeStored(storage, principalID, preferences, readings) {
+  const key = storageKey(principalID);
+  if (!key || !storage?.setItem) return;
+  try {
+    storage.setItem(key, JSON.stringify({
+      schema: VIEW_SESSION_SCHEMA,
+      preferences: Object.fromEntries([...preferences].map(([channelID, item]) => [channelID, copyPreferences(item)])),
+      readings: Object.fromEntries([...readings].map(([keyID, item]) => [keyID, copyPersistedReading(item)])),
+    }));
+  } catch {
+    // Persistence is an accelerator. A disabled/full convenience store must
+    // not break the active reading session.
+  }
+}
+
+// Preferences and reading state deliberately use different key domains.
+// Choices belong to a channel/message identity; reading belongs to a concrete
+// filtered view activation. An old unmount has no authority over a newer
+// activation of the same view.
+export function createViewSessionStore({ principalID = '', storage = globalThis.localStorage } = {}) {
+  const restored = parseStored(storage, principalID);
+  const preferences = restored.preferences;
+  const readings = restored.readings;
+  const active = new Map();
+
+  function mergeStoredReading(keyID, item) {
+    const current = readings.get(keyID);
+    if (current && item.revision <= current.revision) return;
+    // A newer document may advance durable unseen evidence and the CAS
+    // revision, but its persisted record intentionally carries no reading
+    // position. Keep this document's in-memory position when merging it.
+    readings.set(keyID, current ? copyReading({
+      ...item,
+      mode: current.mode,
+      bookmark: current.bookmark,
+    }) : item);
+  }
+
+  function refresh(key = '') {
+    const latest = parseStored(storage, principalID);
+    if (!key) {
+      for (const [channelID, item] of latest.preferences) preferences.set(channelID, item);
+      for (const [keyID, item] of latest.readings) mergeStoredReading(keyID, item);
+      return;
+    }
+    const item = latest.readings.get(key);
+    if (item) mergeStoredReading(key, item);
+  }
+
+  const persist = () => writeStored(storage, principalID, preferences, readings);
 
   return Object.freeze({
-    read(channelId) {
-      return copyConversation(channels.get(channelId) || defaultConversation());
+    read(channelID) {
+      refresh();
+      const prefs = copyPreferences(preferences.get(channelID) || defaultPreferences());
+      const defaultView = copyReading(readings.get(readingKey(channelID, 'conversation')) || defaultReading());
+      return { ...prefs, ...defaultView };
     },
-    writeConversation(channelId, conversation) {
-      if (!channelId) return;
-      const current = channels.get(channelId) || defaultConversation();
-      channels.set(channelId, copyConversation({ ...current, ...conversation }));
+    writeConversation(channelID, change = {}) {
+      if (!channelID) return false;
+      const current = preferences.get(channelID) || defaultPreferences();
+      preferences.set(channelID, copyPreferences({ ...current, ...change }));
+      persist();
+      return true;
     },
-    forget(channelId) {
-      channels.delete(channelId);
+    activate(channelID, viewKey, activationID) {
+      if (!channelID || !viewKey || !activationID) return defaultReading();
+      const key = readingKey(channelID, viewKey);
+      refresh(key);
+      active.set(key, activationID);
+      return copyReading(readings.get(key) || defaultReading());
+    },
+    readView(channelID, viewKey) {
+      const key = readingKey(channelID, viewKey);
+      refresh(key);
+      return copyReading(readings.get(key) || defaultReading());
+    },
+    save(channelID, viewKey, activationID, expectedRevision, change = {}) {
+      const key = readingKey(channelID, viewKey);
+      if (!channelID || !viewKey || active.get(key) !== activationID) return false;
+      refresh(key);
+      const current = readings.get(key) || defaultReading();
+      if (Number(expectedRevision) !== current.revision) return false;
+      const next = copyReading({ ...current, ...change, revision: current.revision + 1 });
+      readings.set(key, next);
+      persist();
+      return true;
+    },
+    deactivate(channelID, viewKey, activationID) {
+      const key = readingKey(channelID, viewKey);
+      if (active.get(key) !== activationID) return false;
+      active.delete(key);
+      return true;
+    },
+    forget(channelID) {
+      preferences.delete(channelID);
+      for (const key of [...readings.keys()]) if (key.startsWith(`${channelID}\u0000`)) readings.delete(key);
+      for (const key of [...active.keys()]) if (key.startsWith(`${channelID}\u0000`)) active.delete(key);
+      persist();
     },
   });
 }

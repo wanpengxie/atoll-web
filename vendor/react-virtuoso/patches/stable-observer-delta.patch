@@ -1,0 +1,259 @@
+--- a/packages/react-virtuoso/src/hooks/useSize.ts
++++ b/packages/react-virtuoso/src/hooks/useSize.ts
+@@ -1,5 +1,7 @@
+ import React from 'react'
+ 
++import useIsomorphicLayoutEffect from './useIsomorphicLayoutEffect'
++
+ export type CallbackRefParam = HTMLElement | null
+ 
+ export default function useSize(callback: (e: HTMLElement) => void, enabled: boolean, skipAnimationFrame: boolean) {
+@@ -14,52 +16,95 @@
+ ) {
+   const ref = React.useRef<CallbackRefParam>(null)
+   const nextGeneration = React.useRef(0)
+-
+-  let callbackRef = (_el: CallbackRefParam) => {
+-    void 0
+-  }
++  const config = React.useRef({ callback, samePaint, skipAnimationFrame })
+ 
+   const observerState = React.useMemo(() => {
+-    const state: { generation: number; observer: ResizeObserver | null } = { generation: 0, observer: null }
++    const state: {
++      generation: number
++      observer: ResizeObserver | null
++      pending: { frame: number | null; generation: number } | null
++    } = { generation: 0, observer: null, pending: null }
+     if (typeof ResizeObserver !== 'undefined') {
+       state.observer = new ResizeObserver((entries: ResizeObserverEntry[]) => {
+         const element = entries[0]!.target as HTMLElement
+-        const deliveryGeneration = state.generation
++        if (state.pending?.frame !== null && state.pending?.frame !== undefined) {
++          cancelAnimationFrame(state.pending.frame)
++        }
++        state.pending = null
++        const deliveryGeneration = (state.generation = ++nextGeneration.current)
++        const deliveryConfig = config.current
+         const active = () => deliveryGeneration > 0 && state.generation === deliveryGeneration && ref.current === element
+         const code = () => {
++          if (state.pending?.generation === deliveryGeneration) {
++            state.pending = null
++          }
+           if (active() && element.offsetParent !== null) {
+-            callback(element)
++            deliveryConfig.callback(element)
+           }
+         }
+         if (!active()) {
+           return
+         }
+-        if (skipAnimationFrame) {
++        if (deliveryConfig.skipAnimationFrame) {
+           code()
+-        } else if (element.offsetParent !== null && (typeof samePaint === 'function' ? samePaint(element) : samePaint)) {
++        } else if (
++          element.offsetParent !== null &&
++          (typeof deliveryConfig.samePaint === 'function' ? deliveryConfig.samePaint(element) : deliveryConfig.samePaint)
++        ) {
++          state.pending = { frame: null, generation: deliveryGeneration }
+           queueMicrotask(code)
+         } else {
+-          requestAnimationFrame(code)
++          state.pending = { frame: requestAnimationFrame(code), generation: deliveryGeneration }
+         }
+       })
+     }
+     return state
+-  }, [callback, samePaint, skipAnimationFrame])
++  }, [])
+ 
+-  callbackRef = (elRef: CallbackRefParam) => {
+-    if (elRef && enabled) {
+-      observerState.generation = ++nextGeneration.current
+-      observerState.observer?.observe(elRef)
+-      ref.current = elRef
+-    } else {
+-      if (ref.current) {
+-        observerState.observer?.unobserve(ref.current)
++  useIsomorphicLayoutEffect(() => {
++    const previous = config.current
++    if (previous.callback !== callback || previous.samePaint !== samePaint || previous.skipAnimationFrame !== skipAnimationFrame) {
++      config.current = { callback, samePaint, skipAnimationFrame }
++      const element = ref.current
++      if (element && enabled && observerState.pending !== null) {
++        if (observerState.pending.frame !== null) {
++          cancelAnimationFrame(observerState.pending.frame)
++        }
++        const retryGeneration = (observerState.generation = ++nextGeneration.current)
++        const retry = () => {
++          if (observerState.pending?.generation === retryGeneration) {
++            observerState.pending = null
++          }
++          if (observerState.generation === retryGeneration && ref.current === element && element.offsetParent !== null) {
++            config.current.callback(element)
++          }
++        }
++        observerState.pending = { frame: requestAnimationFrame(retry), generation: retryGeneration }
+       }
+-      observerState.generation = 0
+-      nextGeneration.current++
+-      ref.current = null
+     }
+-  }
++  }, [callback, enabled, observerState, samePaint, skipAnimationFrame])
++
++  const callbackRef = React.useCallback(
++    (elRef: CallbackRefParam) => {
++      if (elRef && enabled) {
++        observerState.generation = ++nextGeneration.current
++        observerState.observer?.observe(elRef)
++        ref.current = elRef
++      } else {
++        if (observerState.pending?.frame !== null && observerState.pending?.frame !== undefined) {
++          cancelAnimationFrame(observerState.pending.frame)
++        }
++        observerState.pending = null
++        if (ref.current) {
++          observerState.observer?.unobserve(ref.current)
++        }
++        observerState.generation = 0
++        nextGeneration.current++
++        ref.current = null
++      }
++    },
++    [enabled, observerState]
++  )
+ 
+   return { callbackRef, ref }
+ }
+--- a/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts
++++ b/packages/react-virtuoso/src/hooks/useChangedChildSizes.ts
+@@ -2,6 +2,7 @@
+ 
+ import { LogLevel } from '../loggerSystem'
+ import { getLogicalScrollLeft } from '../utils/horizontalScroll'
++import useIsomorphicLayoutEffect from './useIsomorphicLayoutEffect'
+ import { useSizeWithElRef } from './useSize'
+ 
+ import type { ScrollContainerState, SizeFunction, SizeRange } from '../interfaces'
+@@ -159,6 +160,7 @@
+ 
+   const scheduleSamePaint = React.useCallback(
+     (element: HTMLElement) => {
++      samePaintObservation.current = null
+       const observation = getChangedChildSizes(element.children, itemSize, horizontalDirection ? 'offsetWidth' : 'offsetHeight')
+       if (observation !== null && observation.ranges.length > 0) {
+         samePaintObservation.current = { element, observation }
+@@ -170,6 +172,12 @@
+   )
+   const size = useSizeWithElRef(memoedCallback, enabled, skipAnimationFrame, samePaint ? scheduleSamePaint : false)
+   const sizeCallbackRef = size.callbackRef
++  useIsomorphicLayoutEffect(() => {
++    // `useSizeWithElRef` keeps one native observer across callback revisions.
++    // A prepared child snapshot belongs to the exact callback/list-state
++    // generation that produced it, so never carry it into the new closure.
++    samePaintObservation.current = null
++  }, [memoedCallback, scheduleSamePaint])
+   const callbackRef = React.useCallback(
+     (element: HTMLElement | null) => {
+       samePaintObservation.current = null
+--- a/packages/react-virtuoso/test/useSize.test.tsx
++++ b/packages/react-virtuoso/test/useSize.test.tsx
+@@ -10,14 +10,14 @@
+ 
+ ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
+ 
+-function resizeObserverStub(callbacks: ResizeObserverCallback[]) {
++function resizeObserverStub(callbacks: ResizeObserverCallback[], observe = vi.fn(), unobserve = vi.fn()) {
+   return class {
+     constructor(callback: ResizeObserverCallback) {
+       callbacks.push(callback)
+     }
+     disconnect() {}
+-    observe() {}
+-    unobserve() {}
++    observe = observe
++    unobserve = unobserve
+   } as unknown as typeof ResizeObserver
+ }
+ 
+@@ -96,16 +96,14 @@
+ 
+     callbacks[0]!([entry], {} as ResizeObserver)
+     act(() => root.render(<Subject callback={nextCallback} />))
++    expect(callbacks).toHaveLength(1)
+     await act(async () => {
+       await Promise.resolve()
+     })
+     expect(firstCallback).not.toHaveBeenCalled()
+-    expect(frames).toHaveLength(0)
+-
+-    await act(async () => {
+-      callbacks.at(-1)!([entry], {} as ResizeObserver)
+-      await Promise.resolve()
+-    })
++    expect(nextCallback).not.toHaveBeenCalled()
++    expect(frames).toHaveLength(1)
++    act(() => frames.shift()!(0))
+     expect(nextCallback).toHaveBeenCalledTimes(1)
+     expect(frames).toHaveLength(0)
+   } finally {
+@@ -116,6 +114,42 @@
+   }
+ })
+ 
++it('keeps the native observer attached when only its callback revision changes', () => {
++  const callbacks: ResizeObserverCallback[] = []
++  const observe = vi.fn()
++  const unobserve = vi.fn()
++  const NativeResizeObserver = globalThis.ResizeObserver
++  globalThis.ResizeObserver = resizeObserverStub(callbacks, observe, unobserve)
++  const firstCallback = vi.fn()
++  const nextCallback = vi.fn()
++  const container = document.createElement('div')
++  document.body.append(container)
++  const root = ReactDOM.createRoot(container)
++
++  function Subject({ callback }: { callback: (element: HTMLElement) => void }) {
++    const { callbackRef } = useSizeWithElRef(callback, true, false)
++    return <div ref={callbackRef} />
++  }
++
++  try {
++    act(() => root.render(<Subject callback={firstCallback} />))
++    const element = container.firstElementChild
++    expect(callbacks).toHaveLength(1)
++    expect(observe).toHaveBeenCalledTimes(1)
++    expect(observe).toHaveBeenLastCalledWith(element)
++
++    act(() => root.render(<Subject callback={nextCallback} />))
++    expect(container.firstElementChild).toBe(element)
++    expect(callbacks).toHaveLength(1)
++    expect(observe).toHaveBeenCalledTimes(1)
++    expect(unobserve).not.toHaveBeenCalled()
++  } finally {
++    act(() => root.unmount())
++    container.remove()
++    globalThis.ResizeObserver = NativeResizeObserver
++  }
++})
++
+ it('drops the cached list observation when the same host is rebound to a new callback', async () => {
+   const callbacks: ResizeObserverCallback[] = []
+   const frames: FrameRequestCallback[] = []
+@@ -166,9 +200,13 @@
+     expect(container.querySelector<HTMLElement>('[data-virtuoso-scroller] > div')).toBe(host)
+     await act(() => Promise.resolve())
+     expect(firstCallback).not.toHaveBeenCalled()
+-    expect(frames).toHaveLength(0)
++    expect(nextCallback).not.toHaveBeenCalled()
++    expect(frames).toHaveLength(1)
++    act(() => frames.shift()!(0))
++    expect(nextCallback).toHaveBeenLastCalledWith(expect.objectContaining({ ranges: [{ endIndex: 0, size: 120, startIndex: 0 }] }))
+ 
+     actualSize = 100
++    nextCallback.mockClear()
+     act(() => callbacks.at(-1)!([entry], {} as ResizeObserver))
+     expect(frames).toHaveLength(1)
+     act(() => frames.shift()!(0))

@@ -52,12 +52,23 @@ export function turnStartObservation(turn) {
 // 过程记录是截断过的（provider 侧 4096 字），所以"是答案本身"包含"是答案的前缀"。
 const TRUNCATION_MARK = '…[truncated]';
 
-export function withoutFinalEcho(observations, terminalText) {
+// Return the one provisional observation which is the early delivery of the
+// terminal answer. Callers that render content can use this as a logical slot
+// hand-off instead of deleting one keyed tree and mounting another. Only the
+// last stage is eligible: earlier stages remain distinct conversation records.
+export function finalEchoObservation(observations, terminalText) {
   const answer = String(terminalText || '').trim();
-  if (!answer || !observations.length) return observations;
-  const last = String(observations.at(-1)?.process?.text || '').trim();
-  if (!last) return observations;
+  if (!answer || !observations.length) return null;
+  const observation = observations.at(-1);
+  const last = String(observation?.process?.text || '').trim();
+  if (!last) return null;
   const body = last.endsWith(TRUNCATION_MARK) ? last.slice(0, -TRUNCATION_MARK.length) : last;
-  if (!body) return observations;
-  return answer.startsWith(body) ? observations.slice(0, -1) : observations;
+  if (!body) return null;
+  return answer.startsWith(body) ? observation : null;
+}
+
+export function withoutFinalEcho(observations, terminalText) {
+  return finalEchoObservation(observations, terminalText)
+    ? observations.slice(0, -1)
+    : observations;
 }

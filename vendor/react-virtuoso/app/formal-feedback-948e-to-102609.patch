@@ -1,0 +1,76 @@
+--- a/src/ui/timeline/LegendMessageList.jsx
++++ b/src/ui/timeline/LegendMessageList.jsx
+@@ -333,6 +333,12 @@
+   const virtuosoRef = useRef(null);
+   const scrollerRef = useRef(null);
+   const [scrollerNode, setScrollerNode] = useState(null);
++  const formalRangeOwner = useMemo(
++    () => Object.freeze({ activationID: reading.activationID }),
++    [reading.activationID],
++  );
++  const formalRangeStatesRef = useRef(new WeakMap());
++  const [, setFormalRangeRevision] = useState(0);
+   const readingRef = useRef(reading);
+   const snapshotRef = useRef(snapshot);
+   const bottomIntentPresentationRef = useRef(bottomIntentPresentation);
+@@ -1602,6 +1608,15 @@
+     />
+   ) : null, [itemMeasurementKey, renderRow, rowPresentationState]);
+   const keyExtractor = useCallback((_index, row) => row.id, []);
++  const onFormalRangeStateChange = useCallback((state) => {
++    const previous = formalRangeStatesRef.current.get(formalRangeOwner);
++    if (previous?.generation === state.generation
++      && previous.phase === state.phase
++      && previous.reason === state.reason
++      && previous.blocking === state.blocking) return;
++    formalRangeStatesRef.current.set(formalRangeOwner, state);
++    setFormalRangeRevision((revision) => revision + 1);
++  }, [formalRangeOwner]);
+   const onListCommit = useCallback(() => {
+     const token = ++listCommitMicrotaskRef.current;
+     queueMicrotask(() => {
+@@ -1707,7 +1722,27 @@
+       ...(Number.isFinite(initial.viewOffset) ? { offset: initial.viewOffset } : {}),
+     };
+ 
+-  return <Virtuoso
++  const formalRangeState = formalRangeStatesRef.current.get(formalRangeOwner) || null;
++  const formalRangePending = surfaceVisible === true
++    && formalRangeState?.phase === 'pending'
++    && formalRangeState.blocking === true;
++  const formalRangeFailed = surfaceVisible === true
++    && formalRangeState?.phase === 'failed';
++
++  return <>
++    {formalRangePending && <div
++      className="timeline-history-status"
++      data-generation={formalRangeState.generation}
++      data-reason={formalRangeState.reason || ''}
++      role="status"
++    >正在准备频道内容…</div>}
++    {formalRangeFailed && <div
++      className="timeline-history-error"
++      data-generation={formalRangeState.generation}
++      data-reason={formalRangeState.reason || ''}
++      role="alert"
++    >频道内容准备失败</div>}
++    <Virtuoso
+     ref={virtuosoRef}
+     className="timeline-message-list"
+     role="region"
+@@ -1716,6 +1751,7 @@
+     firstItemIndex={Number(snapshot.firstItemIndex || 0)}
+     computeItemKey={keyExtractor}
+     computeItemMeasurementKey={itemMeasurementKey}
++    formalRangeStateChange={onFormalRangeStateChange}
+     itemContent={itemContent}
+     initialTopMostItemIndex={initialTopMostItemIndex}
+     followOutput={false}
+@@ -1885,5 +1921,6 @@
+         issueBottomIfCurrent('item-layout-commit');
+       });
+     }}
+-  />;
++    />
++  </>;
+ }

@@ -26,6 +26,7 @@
     "ws": "^8.21.3"
   },
   "dependencies": {
+    "@legendapp/list": "3.3.11",
     "@tiptap/core": "^3.30.2",
     "@tiptap/extension-mention": "^3.30.2",
     "@tiptap/extension-placeholder": "^3.30.2",
@@ -47,10 +48,12 @@
     "react-dom": "^19.2.6",
     "react-json-view-lite": "^2.5.0",
     "react-markdown": "^10.1.0",
-    "react-virtuoso": "^4.18.12",
+    "react-virtuoso": "file:vendor/react-virtuoso/react-virtuoso-4.18.13-atoll-87560b6d.tgz",
     "rehype-katex": "^7.0.1",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5"
   }
 }

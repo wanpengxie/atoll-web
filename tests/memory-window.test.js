@@ -3,6 +3,7 @@ import { apply } from '../src/model/fold.js';
 import { createChannelState } from '../src/model/fold.js';
 import { estimateRowBytes, MOBILE_WINDOW, trimChannelState } from '../src/model/memory-window.js';
 import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from '../src/model/timeline-scope.js';
+import { selectWaitingPresentation } from '../src/model/waiting-presentation.js';
 
 const ME = 'human:me:1';
 
@@ -11,6 +12,17 @@ function ask(seq, id, { text = 'hi', open = false } = {}) {
 }
 function answer(seq, id, parent) {
   return { channel_id: 'c', seq, envelope: { id, kind: 'response', type: 'agent.ask', parent_id: parent, sender: { id: 'agent:a:1' }, audience: [ME], payload: { status: 'completed', text: 'ok' }, correlation_id: parent } };
+}
+
+function progress(seq, id, parent, status = 'queued') {
+  return { channel_id: 'c', seq, envelope: { id, kind: 'response', type: 'agent.ask', parent_id: parent, sender: { id: 'agent:a:1' }, audience: [ME], payload: { status, controls: [] }, correlation_id: parent } };
+}
+
+function forceTrimPast(state, fromSeq = 301) {
+  for (let seq = fromSeq; seq < fromSeq + 24; seq += 1) {
+    apply(state, { channel_id: 'c', seq, envelope: { id: `noise-${seq}`, kind: 'event', type: 'human.note', payload: { text: 'noise' } } }, ME);
+  }
+  trimChannelState(state, { maxRows: 8, maxBytes: 1e9 });
 }
 
 function channelWith(pairs, { openLast = false } = {}) {
@@ -58,6 +70,99 @@ describe('内存窗口', () => {
     trimChannelState(state, { maxRows: 4, maxBytes: 1e9 });
     expect(state.turns.has(openTurn.requestId)).toBe(true);
     expect(state.rows.has(openTurn.requestSeq)).toBe(true);
+  });
+
+  it('保留先到 terminal 的 compact closure，窗口裁剪后旧 queued 不能复活', () => {
+    const state = createChannelState('c');
+    const terminal = answer(300, 'terminal-first', 'older-request');
+    apply(state, terminal, ME);
+    forceTrimPast(state);
+
+    expect(state.rows.has(300)).toBe(false);
+    expect(state._unmatchedByParent.has('older-request')).toBe(false);
+    expect(state._unmatchedTerminalClosures.get('older-request')).toMatchObject({ seq: 300 });
+
+    // Re-reading the same terminal after its full row was trimmed is
+    // idempotent and must not create a conflicting second terminal at drain.
+    apply(state, terminal, ME);
+    apply(state, ask(100, 'older-request'), ME);
+    apply(state, progress(101, 'older-queued', 'older-request'), ME);
+
+    const turn = state.turns.get('older-request');
+    expect(turn).toMatchObject({ terminalSeq: 300, latestStatus: 'completed' });
+    expect(state.anomalies.filter((entry) => entry.code === 'terminal_conflict')).toEqual([]);
+    expect(selectWaitingPresentation(state, { controlCurrent: true })).toEqual([]);
+  });
+
+  it('多个乱序 unmatched terminal 由 earliest seq 吸收', () => {
+    const state = createChannelState('c');
+    apply(state, answer(300, 'later-terminal', 'older-request'), ME);
+    apply(state, answer(200, 'earlier-terminal', 'older-request'), ME);
+    forceTrimPast(state, 401);
+
+    expect(state._unmatchedTerminalClosures.get('older-request')).toMatchObject({ seq: 200 });
+    apply(state, ask(100, 'older-request'), ME);
+    apply(state, progress(101, 'older-queued', 'older-request'), ME);
+    expect(state.turns.get('older-request')).toMatchObject({ terminalSeq: 200, latestStatus: 'completed' });
+    expect(selectWaitingPresentation(state, { controlCurrent: true })).toEqual([]);
+  });
+
+  it('已匹配 terminal 被裁剪后仍以 compact closure 阻止旧 queued 复活', () => {
+    const state = createChannelState('c');
+    apply(state, ask(100, 'closed-request'), ME);
+    apply(state, progress(101, 'closed-queued', 'closed-request'), ME);
+    apply(state, answer(300, 'closed-terminal', 'closed-request'), ME);
+    expect(state.turns.get('closed-request')).toMatchObject({ terminalSeq: 300, latestStatus: 'completed' });
+
+    forceTrimPast(state, 401);
+
+    expect(state.turns.has('closed-request')).toBe(false);
+    expect(state.rows.has(300)).toBe(false);
+    expect(state._unmatchedTerminalClosures.get('closed-request')).toMatchObject({
+      seq: 300,
+      closureOnly: true,
+      envelope: { id: 'closed-terminal', parent_id: 'closed-request', payload: { status: 'completed' } },
+    });
+    expect(state._unmatchedTerminalClosures.get('closed-request').envelope.payload).not.toHaveProperty('text');
+
+    // A later page may end before the terminal suffix which was already
+    // scanned and trimmed. The request atomically drains its retained closure;
+    // the following stale queued row cannot reopen it.
+    apply(state, ask(100, 'closed-request'), ME);
+    expect(state._unmatchedTerminalClosures.has('closed-request')).toBe(false);
+    apply(state, progress(101, 'closed-queued', 'closed-request'), ME);
+    expect(state.turns.get('closed-request')).toMatchObject({ terminalSeq: 300, latestStatus: 'completed' });
+    expect(selectWaitingPresentation(state, { controlCurrent: true })).toEqual([]);
+  });
+
+  it('terminal closure retention is isolated by channel state even for the same request id', () => {
+    const closed = createChannelState('closed-channel');
+    const open = createChannelState('open-channel');
+    const channelRow = (channelId, row) => ({ ...row, channel_id: channelId });
+
+    apply(closed, channelRow('closed-channel', ask(100, 'same-request')), ME);
+    apply(closed, channelRow('closed-channel', progress(101, 'closed-queued', 'same-request')), ME);
+    apply(closed, channelRow('closed-channel', answer(300, 'closed-terminal', 'same-request')), ME);
+    for (let seq = 401; seq < 425; seq += 1) apply(closed, {
+      channel_id: 'closed-channel', seq,
+      envelope: { id: `closed-noise-${seq}`, kind: 'event', type: 'human.note', payload: { text: 'noise' } },
+    }, ME);
+    trimChannelState(closed, { maxRows: 8, maxBytes: 1e9 });
+
+    apply(open, channelRow('open-channel', ask(100, 'same-request')), ME);
+    apply(open, channelRow('open-channel', progress(101, 'open-queued', 'same-request')), ME);
+
+    expect(closed._unmatchedTerminalClosures.has('same-request')).toBe(true);
+    expect(open._unmatchedTerminalClosures.has('same-request')).toBe(false);
+    expect(selectWaitingPresentation(open, { controlCurrent: true }).map((turn) => turn.requestId)).toEqual(['same-request']);
+  });
+
+  it('unmatched process/provisional 正文仍随窗口淘汰，不生成 closure', () => {
+    const state = createChannelState('c');
+    apply(state, progress(300, 'process-first', 'older-request', 'processing'), ME);
+    forceTrimPast(state);
+    expect(state._unmatchedByParent.has('older-request')).toBe(false);
+    expect(state._unmatchedTerminalClosures.has('older-request')).toBe(false);
   });
 
   it('闭合且整段在窗口外的 turn 连同它的相关索引一起摘掉', () => {

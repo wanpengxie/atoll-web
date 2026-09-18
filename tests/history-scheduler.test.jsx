@@ -8,6 +8,11 @@ import {
   HISTORY_BATCH_BYTES,
   HISTORY_PAGE_SIZE,
 } from '../src/model/history-scheduler.js';
+import {
+  clearDiagnostics,
+  enableReadingTrace,
+  readingTraceSnapshot,
+} from '../src/model/diagnostics.js';
 
 function accepted(ref, channelId, generation, purpose) {
   const promise = Promise.resolve({ accepted: true, channel_id: channelId, generation, purpose });
@@ -26,7 +31,12 @@ function requestHarness() {
   return { calls, requestPage };
 }
 
-function finish(scheduler, call, { oldest = call.beforeSeq - 2, hasOlder = true, rows = 2 } = {}) {
+function finish(scheduler, call, {
+  oldest = call.beforeSeq - 2,
+  hasOlder = true,
+  rows = 2,
+  headSeq = call.beforeSeq - 1,
+} = {}) {
   for (let index = 0; index < rows; index += 1) {
     const seq = oldest + index;
     scheduler.historyRow({
@@ -38,15 +48,285 @@ function finish(scheduler, call, { oldest = call.beforeSeq - 2, hasOlder = true,
   scheduler.pageEnd({
     source: 'history', ref: call.ref, generation: call.generation,
     channel_id: call.channelId, purpose: call.purpose,
-    head_seq: call.beforeSeq, oldest_seq: oldest,
+    head_seq: headSeq, oldest_seq: oldest,
 	scan_low_seq: oldest, scan_high_seq: call.beforeSeq - 1,
 	next_before_seq: oldest, rows, bytes: rows * 10, has_older: hasOlder,
   });
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  clearDiagnostics();
+  vi.restoreAllMocks();
+});
 
 describe('v5 history batch coordinator', () => {
+  it('keeps physical warm batches silent and exposes one stable foreground edge-demand lifecycle', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+
+    // Initial-tail and background reservoir work are scheduler facts, not a
+    // user-visible claim that the current readable timeline is blocked.
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      loading: true,
+      backgroundLoading: true,
+      foregroundLoading: false,
+      historyDemand: { revision: 0, phase: 'idle', error: '' },
+    });
+
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'interactive',
+    });
+    const revision = scheduler.snapshot('c0').historyDemand.revision;
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      foregroundLoading: true,
+      historyDemand: { revision, phase: 'pending', error: '' },
+    });
+
+    const segment = operation.next({ count: 8 });
+    finish(scheduler, harness.calls[0], { oldest: 90, rows: 2 });
+    await expect(segment).resolves.toMatchObject({ kind: 'segment' });
+    // A physical page completion does not unmount/recreate the semantic wait.
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      foregroundLoading: true,
+      historyDemand: { revision, phase: 'pending', error: '' },
+    });
+    operation.release();
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      foregroundLoading: false,
+      historyDemand: { revision, phase: 'idle', error: '' },
+    });
+    scheduler.destroy();
+  });
+
+  it('keeps anticipatory runway and under-fill operations out of foreground presentation', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'anticipatory',
+    });
+    expect(scheduler.snapshot('c0')).toMatchObject({
+      foregroundLoading: false,
+      historyDemand: { revision: 0, phase: 'idle', error: '' },
+    });
+    operation.release();
+    scheduler.destroy();
+  });
+
+  it('promotes one anticipatory operation to interactive presentation without opening a second operation or page', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'anticipatory',
+    });
+    const segment = operation.next({ count: 1 });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({
+      purpose: 'user-demand', urgency: 'anticipatory',
+    });
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision: 0, phase: 'idle', error: '' });
+
+    expect(operation.promote({ intent: 'scroll-history', urgency: 'interactive' })).toBe(true);
+    const revision = scheduler.snapshot('c0').historyDemand.revision;
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision, phase: 'pending', error: '' });
+    expect(revision).toBe(1);
+    expect(operation.promote({ intent: 'scroll-history', urgency: 'interactive' })).toBe(false);
+    expect(scheduler.snapshot('c0').historyDemand.revision).toBe(revision);
+    expect(harness.calls).toHaveLength(1);
+
+    finish(scheduler, harness.calls[0], { oldest: 99, rows: 1, hasOlder: true });
+    await expect(segment).resolves.toMatchObject({ kind: 'segment', released: 1 });
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision, phase: 'pending', error: '' });
+    operation.release();
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision, phase: 'idle', error: '' });
+    scheduler.destroy();
+  });
+
+  it('keeps one demand revision pending across filtered physical pages and settles only at the semantic boundary', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    const operation = scheduler.beginOperation('c0', {
+      intent: 'scroll-history', urgency: 'interactive',
+    });
+    const first = operation.next({ count: 1 });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 300, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    const revision = scheduler.snapshot('c0').historyDemand.revision;
+
+    finish(scheduler, harness.calls[0], { oldest: 200, rows: 0, hasOlder: true });
+    await expect(first).resolves.toMatchObject({ kind: 'segment', released: 0, scanAdvanced: true });
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision, phase: 'pending', error: '' });
+
+    const second = operation.next({ count: 1 });
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision, phase: 'pending', error: '' });
+    finish(scheduler, harness.calls[1], { oldest: 100, rows: 0, hasOlder: true });
+    await expect(second).resolves.toMatchObject({ kind: 'segment', released: 0, scanAdvanced: true });
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision, phase: 'pending', error: '' });
+
+    const third = operation.next({ count: 1 });
+    await waitFor(() => expect(harness.calls).toHaveLength(3));
+    finish(scheduler, harness.calls[2], { oldest: 99, rows: 1, hasOlder: true });
+    await expect(third).resolves.toMatchObject({ kind: 'segment', released: 1 });
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision, phase: 'pending', error: '' });
+
+    operation.release();
+    expect(scheduler.snapshot('c0').historyDemand).toEqual({ revision, phase: 'idle', error: '' });
+    scheduler.destroy();
+  });
+
+  it('settles an authoritative EOF without reopening a physical page', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    scheduler.attach([{ channel_id: 'empty', head_seq: 0, has_rows: false }], { generation: 1, focus: 'empty' });
+    const operation = scheduler.beginOperation('empty', { intent: 'scroll-history' });
+    const revision = scheduler.snapshot('empty').historyDemand.revision;
+
+    await expect(operation.next()).resolves.toEqual({ kind: 'exhausted' });
+    expect(harness.calls).toHaveLength(0);
+    expect(scheduler.snapshot('empty').historyDemand).toEqual({ revision, phase: 'pending', error: '' });
+    operation.release();
+    expect(scheduler.snapshot('empty').historyDemand).toEqual({ revision, phase: 'idle', error: '' });
+    scheduler.destroy();
+  });
+
+  it('keeps a user-owned failure actionable without exposing background failures', async () => {
+    const rejects = [];
+    const requestPage = vi.fn(() => new Promise((_, reject) => rejects.push(reject)));
+    const scheduler = createHistoryScheduler({ requestPage, revealRows: () => {}, onError: () => {} });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(rejects).toHaveLength(1));
+    const operation = scheduler.beginOperation('c0', { intent: 'scroll-history' });
+    const failed = operation.next();
+    rejects[0](new Error('history unavailable'));
+    await expect(failed).resolves.toMatchObject({ kind: 'failed' });
+    operation.release();
+    expect(scheduler.snapshot('c0').historyDemand).toMatchObject({
+      phase: 'error', error: 'history unavailable',
+    });
+
+    // An explicit retry starts a new semantic demand immediately; it does not
+    // wait behind the automatic retry timer and does not inherit stale error UI.
+    const retry = scheduler.beginOperation('c0', { intent: 'scroll-history' });
+    const retryResult = retry.next();
+    await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(2));
+    expect(scheduler.snapshot('c0').error).toBe('');
+    expect(scheduler.snapshot('c0').historyDemand).toMatchObject({ phase: 'pending', error: '' });
+    rejects[1](new Error('still unavailable'));
+    await expect(retryResult).resolves.toMatchObject({ kind: 'failed' });
+    retry.release();
+    scheduler.destroy();
+  });
+
+  it('aggregates a page trace without losing arrival order or flooding the ring', async () => {
+    let clock = 10;
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      revealRows: () => {},
+      now: () => ++clock,
+    });
+    enableReadingTrace({ case: 'history-arrival-order' });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    const call = harness.calls[0];
+    for (const seq of [90, 88, 89]) {
+      scheduler.historyRow({
+        source: 'history', ref: call.ref, generation: call.generation,
+        channel_id: call.channelId, seq,
+        envelope: { id: `m-${seq}`, kind: 'event', type: 'human.note' },
+      });
+    }
+    scheduler.pageEnd({
+      source: 'history', ref: call.ref, generation: call.generation,
+      channel_id: call.channelId, purpose: call.purpose,
+      head_seq: 100, oldest_seq: 88, scan_low_seq: 88, scan_high_seq: 99,
+      next_before_seq: 88, rows: 3, bytes: 30, has_older: true,
+    });
+    const pageEnded = readingTraceSnapshot().entries.find((entry) => entry.event === 'history.page-ended');
+    expect(pageEnded?.detail).toMatchObject({
+      arrivalCount: 3,
+      firstSeq: 90,
+      lastSeq: 89,
+      minSeq: 88,
+      maxSeq: 90,
+    });
+    expect(readingTraceSnapshot().entries.filter((entry) => entry.event === 'history.row-arrived')).toHaveLength(0);
+    scheduler.destroy();
+  });
+
+  it('自动失败按 scheduler retryAt 有界退避，同一 coverage 不会紧密重发', async () => {
+    let clock = 0;
+    let timerSerial = 0;
+    const timers = new Map();
+    const requestPage = vi.fn(() => Promise.reject(new Error('temporary history failure')));
+    const onError = vi.fn();
+    const scheduler = createHistoryScheduler({
+      requestPage,
+      revealRows: () => {},
+      onError,
+      now: () => clock,
+      setTimeoutImpl: (callback, delay) => {
+        const id = ++timerSerial;
+        timers.set(id, { callback, delay });
+        return id;
+      },
+      clearTimeoutImpl: (id) => timers.delete(id),
+    });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' });
+
+    await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect([...timers.values()]).toHaveLength(1);
+    expect([...timers.values()][0].delay).toBe(500);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requestPage).toHaveBeenCalledTimes(1);
+
+    const [firstID, firstWake] = [...timers.entries()][0];
+    timers.delete(firstID);
+    clock += firstWake.delay;
+    firstWake.callback();
+    await waitFor(() => expect(requestPage).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
+    expect([...timers.values()]).toHaveLength(1);
+    expect([...timers.values()][0].delay).toBe(1_000);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requestPage).toHaveBeenCalledTimes(2);
+    scheduler.destroy();
+  });
+
+  it('does not mistake an unpresentable live head for an installed tail', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      maxBackgroundInflight: 0,
+      hasVisibleRow: () => true,
+      hasPresentedRows: () => false,
+      revealRows: () => {},
+    });
+    scheduler.attach([{ channel_id: 'c0.project', head_seq: 25, has_rows: true }], {
+      generation: 1,
+      focus: '',
+    });
+    scheduler.observeLive('c0.project', Date.now(), { seq: 28, related: true });
+    scheduler.focus('c0.project');
+
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({
+      channelId: 'c0.project',
+      purpose: 'initial-tail',
+      beforeSeq: 26,
+      priority: 'foreground',
+    });
+    expect(scheduler.snapshot('c0.project').loaded).toBe(false);
+    scheduler.destroy();
+  });
+
   it('hydrates the focused channel from IndexedDB before any remote attach', async () => {
     const requestPage = vi.fn();
     const readCache = vi.fn(async (channelId, beforeSeq) => ({
@@ -156,7 +436,7 @@ describe('v5 history batch coordinator', () => {
     scheduler.destroy();
   });
 
-  it('gates first paint, then fills the frontend P0/P1/P2 working set', async () => {
+  it('gates first paint, then fills the frontend P0/P1/P2 working set under bounded concurrency', async () => {
     const harness = requestHarness();
     const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
     scheduler.attach(Array.from({ length: 8 }, (_, index) => ({
@@ -169,9 +449,12 @@ describe('v5 history batch coordinator', () => {
     expect(scheduler.snapshot('c0')).toMatchObject({ tier: 0, completedPages: 0 });
 
     finish(scheduler, harness.calls[0], { oldest: 900 });
-    await waitFor(() => expect(harness.calls).toHaveLength(5));
-    expect(harness.calls.slice(1).map((call) => call.channelId)).toEqual(['c0', 'c1', 'c2', 'c4']);
-    expect(harness.calls.slice(1).filter((call) => call.priority === 'background')).toHaveLength(3);
+    await waitFor(() => expect(harness.calls).toHaveLength(3));
+    expect(harness.calls.slice(1).map((call) => call.channelId)).toEqual(['c0', 'c1']);
+    expect(harness.calls.slice(1).filter((call) => call.priority === 'background')).toHaveLength(1);
+    // The scheduler classifies the complete working set immediately, but only
+    // admits two requests globally and one background request at a time.
+    expect(harness.calls.slice(1).filter((call) => call.priority === 'foreground')).toHaveLength(1);
     expect(scheduler.snapshot('c1').tier).toBe(1);
     expect(scheduler.snapshot('c4').tier).toBe(2);
     expect(scheduler.snapshot('c7').tier).toBe(2);
@@ -266,6 +549,25 @@ describe('v5 history batch coordinator', () => {
     operation.release();
     await waitFor(() => expect(harness.calls).toHaveLength(3));
     expect(harness.calls[2]).toMatchObject({ channelId: 'c0', limit: 32 });
+    scheduler.destroy();
+  });
+
+  it('threads a bounded raw-record and byte budget through an operation release', async () => {
+    const harness = requestHarness();
+    const revealRows = vi.fn();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 1_000, has_rows: true }], { generation: 1, focus: 'c0' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 961, rows: 40 });
+    await waitFor(() => expect(scheduler.snapshot('c0').buffered).toBe(8));
+
+    const operation = scheduler.beginOperation('c0', { intent: 'scroll-history', urgency: 'anticipatory' });
+    // Every encoded fixture record is larger than one byte. The first record
+    // is the documented liveness exception; the byte budget stops the rest.
+    await expect(operation.next({ count: 8, byteLimit: 1 })).resolves.toEqual({ kind: 'segment', released: 1 });
+    expect(revealRows.mock.calls.at(-1)[1]).toHaveLength(1);
+    expect(scheduler.snapshot('c0').buffered).toBe(7);
+    operation.release();
     scheduler.destroy();
   });
 
@@ -656,9 +958,142 @@ describe('v5 history batch coordinator', () => {
     await waitFor(() => expect(scheduler.snapshot('c0').controlCurrent).toBe(true));
     scheduler.destroy();
   });
+
+  it('bridges a remote head that arrives before the local cache frontier is ready', async () => {
+    const harness = requestHarness();
+    const readCache = vi.fn(async (_channelId, beforeSeq) => ({
+      rows: [], nextBeforeSeq: beforeSeq, exhausted: true, cacheMiss: true, bytes: 0,
+    }));
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      readCache,
+      revealRows: () => {},
+    });
+
+    // App startup attaches the authoritative channel Meta before IndexedDB has
+    // finished decoding its newest durable interval. The later cache frontier
+    // must not replace the remote upper bound and silently skip 845..848.
+    scheduler.setLocalMeta(new Map(), { localReady: false });
+    scheduler.attach([{ channel_id: 'c0', head_seq: 848, has_rows: true }], {
+      generation: 1,
+      focus: 'c0',
+    });
+    expect(harness.calls).toHaveLength(0);
+
+    scheduler.setLocalMeta(new Map([['c0', {
+      newestSeq: 844,
+      rowCount: 844,
+      coverage: [{ lowSeq: 715, highSeq: 844 }],
+    }]]), { localReady: true });
+
+    await waitFor(() => expect(readCache).toHaveBeenCalledWith('c0', 845, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES));
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({
+      channelId: 'c0',
+      beforeSeq: 849,
+      rangeKind: 'tail-refresh',
+      priority: 'foreground',
+    });
+    expect(scheduler.snapshot('c0').controlCurrent).toBe(false);
+
+    finish(scheduler, harness.calls[0], { oldest: 845, rows: 4, hasOlder: true, headSeq: 848 });
+    await waitFor(() => expect(scheduler.snapshot('c0').controlCurrent).toBe(true));
+    expect(scheduler.snapshot('c0').oldestSeq).toBe(845);
+    scheduler.destroy();
+  });
+
+  it('bridges a remote head that advances while the initial page is in flight', async () => {
+    const harness = requestHarness();
+    const visible = new Set();
+    const scheduler = createHistoryScheduler({
+      requestPage: harness.requestPage,
+      revealRows: (_channelId, entries) => entries.forEach(([seq]) => visible.add(seq)),
+      visibleNewestSeq: () => Math.max(0, ...visible),
+    });
+
+    scheduler.attach([{ channel_id: 'c0', head_seq: 844, has_rows: true }], {
+      generation: 1,
+      focus: 'c0',
+    });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    expect(harness.calls[0]).toMatchObject({ beforeSeq: 845, rangeKind: 'backfill' });
+
+    for (const seq of [843, 844]) {
+      scheduler.historyRow({
+        source: 'history', ref: harness.calls[0].ref, generation: 1,
+        channel_id: 'c0', seq,
+        envelope: { id: `c0-${seq}`, kind: 'event', type: 'human.note', payload: { text: `${seq}` } },
+      });
+    }
+    scheduler.pageEnd({
+      source: 'history', ref: harness.calls[0].ref, generation: 1,
+      channel_id: 'c0', purpose: 'initial-tail', head_seq: 848,
+      oldest_seq: 843, scan_low_seq: 843, scan_high_seq: 844,
+      next_before_seq: 843, rows: 2, bytes: 20, has_older: true,
+    });
+
+    await waitFor(() => expect(harness.calls).toHaveLength(2));
+    expect(harness.calls[1]).toMatchObject({
+      beforeSeq: 849,
+      rangeKind: 'tail-refresh',
+      priority: 'foreground',
+    });
+    expect(scheduler.snapshot('c0').controlCurrent).toBe(false);
+
+    finish(scheduler, harness.calls[1], { oldest: 845, rows: 4, hasOlder: true, headSeq: 848 });
+    await waitFor(() => expect(scheduler.snapshot('c0').controlCurrent).toBe(true));
+    expect([...visible].sort((left, right) => left - right)).toEqual([843, 844, 845, 846, 847, 848]);
+    scheduler.destroy();
+  });
 });
 
 describe('live feed priority', () => {
+  async function attachWithReadAuthority(hook, grants, {
+    principalId,
+    generation = 1,
+    focus = 'c0',
+    boot = 'history-test-boot',
+  }) {
+    await act(async () => {
+      await hook.result.current.prepareLocalReplica(principalId, { focus });
+    });
+    await act(async () => {
+      await hook.result.current.setHistoryGrants(grants, {
+        generation, focus, boot,
+      });
+    });
+    expect(hook.result.current.cursorsRef.current.isReadAuthorityReady()).toBe(true);
+  }
+
+  it('exposes the one scheduler operation so a coalesced visual demand can promote it in place', async () => {
+    const hook = renderHook(() => useChannelFeed({
+      wireRef: { current: { historyBefore: vi.fn() } },
+      rosterRef: { current: { self: () => '', observeFeed: () => '', handleEnvelope: () => {} } },
+      accessRef: { current: { live: () => {} } },
+      activeChannelRef: { current: 'c0' },
+      onRoster: () => {}, onError: () => {}, onChannelsDiscovered: () => {},
+      onDirectoryInvalidated: () => {}, onTimerFired: () => {},
+      onSubmissionFeed: () => {}, onAccessChanged: () => {},
+    }), { wrapper: ({ children }) => <StrictMode>{children}</StrictMode> });
+    const controller = new AbortController();
+    const onOperation = vi.fn();
+    let result;
+    act(() => {
+      result = hook.result.current.loadHistory('c0', {
+        signal: controller.signal,
+        urgency: 'anticipatory',
+        onOperation,
+      });
+    });
+    expect(onOperation).toHaveBeenCalledOnce();
+    expect(onOperation.mock.calls[0][0]).toMatchObject({
+      next: expect.any(Function), promote: expect.any(Function), release: expect.any(Function),
+    });
+    controller.abort();
+    await expect(result).resolves.toEqual({ kind: 'cancelled' });
+    hook.unmount();
+  });
+
   it('applies live rows on the next frame while a history batch is in flight', async () => {
     const historyBefore = vi.fn((channelId, _before, _limit, options) => accepted('history-live', channelId, options.generation, options.purpose));
     const hook = renderHook(() => useChannelFeed({
@@ -670,7 +1105,9 @@ describe('live feed priority', () => {
       onDirectoryInvalidated: () => {}, onTimerFired: () => {},
       onSubmissionFeed: () => {}, onAccessChanged: () => {},
     }), { wrapper: ({ children }) => <StrictMode>{children}</StrictMode> });
-    act(() => hook.result.current.setHistoryGrants([{ channel_id: 'c0', head_seq: 100, has_rows: true }], { generation: 1, focus: 'c0' }));
+    await attachWithReadAuthority(hook, [
+      { channel_id: 'c0', head_seq: 100, has_rows: true },
+    ], { principalId: 'history-live-principal' });
     await waitFor(() => expect(historyBefore).toHaveBeenCalledOnce());
     expect(hook.result.current.cursorsRef.current.read('c0')).toBe(100);
     act(() => hook.result.current.enqueue('c0', 101, {
@@ -687,11 +1124,38 @@ describe('live feed priority', () => {
     // tail; Timeline advances this only after its scroller confirms bottom.
     expect(hook.result.current.cursorsRef.current.read('c0')).toBe(100);
     const version = hook.result.current.version;
-    act(() => hook.result.current.markRead('c0', 101));
+    act(() => hook.result.current.markRead('c0', { physicalSeq: 101, identities: [] }));
     expect(hook.result.current.cursorsRef.current.read('c0')).toBe(101);
     // This event cannot create a channel badge, so marking it read updates the
     // cursor without publishing a second application render.
     expect(hook.result.current.version).toBe(version);
+    hook.unmount();
+  });
+
+  it('invalidates the rail cache when marking a weak/system notification read', async () => {
+    const historyBefore = vi.fn((channelId, _before, _limit, options) => accepted('history-system', channelId, options.generation, options.purpose));
+    const hook = renderHook(() => useChannelFeed({
+      wireRef: { current: { historyBefore } },
+      rosterRef: { current: { self: () => 'me', observeFeed: () => '', handleEnvelope: () => {} } },
+      accessRef: { current: { live: () => {} } },
+      activeChannelRef: { current: 'c0' },
+      onRoster: () => {}, onError: () => {}, onChannelsDiscovered: () => {},
+      onDirectoryInvalidated: () => {}, onTimerFired: () => {},
+      onSubmissionFeed: () => {}, onAccessChanged: () => {},
+    }));
+    await attachWithReadAuthority(hook, [
+      { channel_id: 'c0', head_seq: 100, has_rows: true },
+    ], { principalId: 'me' });
+    act(() => hook.result.current.enqueue({
+      source: 'live', generation: 1, channel_id: 'c0', seq: 101,
+      envelope: {
+        id: 'system-notice', kind: 'request', type: 'system.member.created', visibility: 'system',
+        sender: { id: 'system', kind: 'system' }, audience: ['me'], payload: {},
+      },
+    }));
+    await waitFor(() => expect(hook.result.current.unreadFor('c0', 'me').total).toBe(1));
+    act(() => hook.result.current.markRead('c0', { physicalSeq: 101, identities: [] }));
+    expect(hook.result.current.unreadFor('c0', 'me')).toEqual({ related: 0, total: 0 });
     hook.unmount();
   });
 });

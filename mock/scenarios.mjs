@@ -53,7 +53,18 @@ export const SCENARIOS = Object.freeze({
   'first-login': standard({ memberships: [], history: false }),
   'multi-channel': standard({ files: DEMO_FILES, behavior: { demo_attachments: true } }),
   'deep-history': standard({ behavior: { history_turns: 120 } }),
+  // Exercises the production initialization path after its 500ms readable
+  // fallback without changing protocol order or inventing another endpoint.
+  'deep-history-delayed': standard({ behavior: { history_turns: 120, history_page_delay_ms: 750 } }),
   'mixed-height-history': standard({ behavior: { history_turns: 120, history_variable_heights: true } }),
+  // One older terminal record carries much more text than a viewport while
+  // remaining below 256KiB. The production presentation is expected to fold
+  // it before geometry ownership reaches the virtualizer; this distinguishes
+  // raw-record limits from actual item-height limits without bypassing
+  // history_before or the reservoir.
+  'extreme-height-history': standard({
+    behavior: { history_turns: 120, history_variable_heights: true, history_extreme_turn: 104 },
+  }),
   // 14,286 turns × 7 ledger rows + 4 non-turn rows = 100,006 rows (~100k).
   // Keep this scenario to one membership channel so the fixture measures one
   // genuinely deep ledger rather than spending the same memory on a background
@@ -97,13 +108,15 @@ export const SCENARIOS = Object.freeze({
   'obs-partial': standard({ obs_complete: false }),
   'real-backend-shape': standard({ behavior: { roster_principal: false } }),
   'long-running': standard({ history: false, behavior: { capabilities: true, message: 'long-running' } }),
+  'long-running-canonical': standard({ history: false, behavior: { capabilities: true, message: 'long-running', canonical_actor_ids: true } }),
+  'long-running-history': standard({ behavior: { history_turns: 120, capabilities: true, message: 'long-running', canonical_actor_ids: true } }),
   'progress-demo': standard({ history: false, behavior: { capabilities: true, message: 'progress-demo' } }),
   'agent-tree': standard({ history: false, behavior: { capabilities: true, message: 'agent-tree' } }),
   'control-conflict': standard({ history: false, behavior: { capabilities: true, message: 'long-running' } }),
   'actor-lifecycle': standard({ history: false, behavior: { capabilities: true } }),
-  'approval-schema': standard({ behavior: { approval_schema: true } }),
+  'approval-schema': standard(),
   'approval-expired': standard({ behavior: { approval_expired: true } }),
-  'approval-conflict': standard({ behavior: { approval_schema: true } }),
+  'approval-conflict': standard(),
 });
 
 export const scenarioIds = () => Object.keys(SCENARIOS);

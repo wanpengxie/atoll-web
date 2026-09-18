@@ -1,5 +1,5 @@
 import { argsOf } from './protocol/envelope.js';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { capabilityIndexFromState } from './model/capabilities.js';
 import { attachmentFromFileReference } from './model/file-references.js';
 import { rememberChannelNames } from './model/channel-name-cache.js';
@@ -24,8 +24,21 @@ import { messagePresentation } from './model/message-presentation.js';
 import { isSystemWord, SYSTEM_ACTOR_ID, TYPES } from './protocol/vocab.js';
 import { newId } from './util/id.js';
 import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
+import { createWaitingTargetAuthority } from './model/task-controls.js';
 import { agentSelectionView, latestAgentOptions, latestAgentUsage, latestInteractedAgentId, resolveParameterAgent } from './model/agent-selection.js';
 import { createAgentActivityTracker } from './model/agent-activity.js';
+import {
+  acceptAgentProbe,
+  advanceAgentProbeGeneration,
+  beginAgentProbe,
+  clearProbeSlots,
+  createAgentProbeLifecycle,
+  failAgentProbe,
+  observeAgentProbe,
+  PROBE_TIMEOUT_MS,
+  reserveProbeSlot,
+  retryFailedAgentProbe,
+} from './model/agent-probe-lifecycle.js';
 import { createObsClient, ObsError } from './net/obs.js';
 import { createWire } from './net/wire.js';
 import { Auth } from './ui/Auth.jsx';
@@ -145,19 +158,13 @@ export default function App() {
   const [wireState, setWireState] = useState('closed');
   const [topError, setTopError] = useState('');
   const [rosters, setRosters] = useState(new Map());
+  const [rosterAuthorities, setRosterAuthorities] = useState(new Map());
   const [rosterBusy, setRosterBusy] = useState(false);
   const [channelNotice, setChannelNotice] = useState('');
   const [selectedActor, setSelectedActor] = useState(null);
   const [rightPanel, setRightPanel] = useState('');
   const [contextFocus, setContextFocus] = useState(null);
   const [workspaceView, setWorkspaceView] = useState(initialRouteRef.current.view);
-  const [timelineTarget, setTimelineTarget] = useState(null);
-  const timelineTargetSerialRef = useRef(0);
-  const issueTimelineTarget = (channelId, rowID) => {
-    if (!channelId || !rowID) return;
-    timelineTargetSerialRef.current += 1;
-    setTimelineTarget({ channelId, rowID, token: timelineTargetSerialRef.current });
-  };
   const workspaceViewsRef = useRef(new Map());
   // 早返回(booting / 未登录)之后的那一段恒不能再调 hook——hook 的条数在两次渲染
   // 之间必须一样,多一条就是 "Rendered more hooks than during the previous render"。
@@ -178,12 +185,15 @@ export default function App() {
   const [spaceDaemons, setSpaceDaemons] = useState([]);
   const [channelDevices, setChannelDevices] = useState([]);
   const [draftAttachments, setDraftAttachments] = useState({});
-  const draftAttachmentsRef = useRef(draftAttachments);
-  draftAttachmentsRef.current = draftAttachments;
+  // Imperative attachment commands and async uploads need a ledger that is
+  // updated only by committed user actions. A render mirror lets a suspended
+  // candidate overwrite what the still-painted Composer observes.
+  const draftAttachmentLedgerRef = useRef(new Map());
+  const attachmentDraftEpochsRef = useRef(new Map());
+  const attachmentWorldRevisionRef = useRef(0);
   const attachmentUploadQueuesRef = useRef(new Map());
   // 草稿是编辑器私有的临时状态，不是工作区渲染状态。这里仅用 ref 做跨频道、
   // 跨主视图的本地持久化；逐字输入不得触发 App/Timeline 重渲染。
-  const draftTextsRef = useRef({});
   const [taskCreateSource, setTaskCreateSource] = useState(undefined);
   const [channelCreateOpen, setChannelCreateOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
@@ -203,11 +213,21 @@ export default function App() {
   const manualAgentsRef = useRef(new Map()); // channelId -> 手选 agent id（首条 ask 入账即清）
   const contextProbedRef = useRef(new Map()); // `${channelId}:${actorId}` -> {requestId, failed}，重连时清
   const optionsProbedRef = useRef(new Map()); // 同上；agent.options 是 incarnation 级活快照
-  // 本连接内发出的 describe requestId 集合。capability 是活状态读数，恒现场
-  // 拉：只有这个集合里的响应才算数，账本历史帧恒不当缓存。集合易失——
-  // 刷新/重连即清，活状态自然重新现问。
-  const liveDescribesRef = useRef(new Set());
-  const describeInFlightRef = useRef(new Set()); // `${channelId}:${actorId}`，回执前也必须防重
+  // describe 的 guard 覆盖本地提交、回执先于 feed 的空窗和账本终态。失败留在
+  // 当前连接代中，只有明确用户手势或下一连接代才能重试。
+  const describeProbesRef = useRef(null);
+  if (describeProbesRef.current === null) describeProbesRef.current = createAgentProbeLifecycle();
+  const liveDescribesRef = useRef(describeProbesRef.current.liveRequestIds);
+  // 手动挡（owner 2026-09-18 拍定）：**没有任何自动探测**。这里装着"用户刚刚
+  // 要求刷新的目标"，每条探测都必须能追溯到一个真人动作——展开模型选择器、
+  // 手动切目标、手选 agent、点开某个成员。一次动作放行一条完整链
+  // （describe → options → context），链走完即出栈，不会自己续上。
+  //
+  // 去掉自动挡的原因：自动探测的触发条件挂在连接状态和消息流上，前端服务一挂、
+  // 浏览器不停重连，它就变成轮询。2026-09-18 凌晨六个标签页三小时发出 1200 条，
+  // 塞满 codex 的在站账，真人反而被 overloaded 挡在门外。限流能压住量，但只要
+  // 还有自动触发，这条路就始终存在。手动挡直接把它焊死。
+  const manualProbeRef = useRef(new Set()); // `${channelId}:${actorId}`
   const [manualAgentVersion, setManualAgentVersion] = useState(0);
   const [, setAgentActivityVersion] = useState(0);
   const agentActivityRef = useRef(null);
@@ -220,6 +240,10 @@ export default function App() {
   const obsRef = useRef(null);
   const wireRef = useRef(null);
   const rosterRef = useRef(null);
+  // Callbacks owned by Wire/roster outlive an individual React render. Publish
+  // their authority as one committed port: a suspended principal candidate
+  // must not redirect a frame received by the still-painted session.
+  const committedFeedOwnerRef = useRef(null);
   const accessRef = useRef(null);
   const activeChannelRef = useRef(initialRouteRef.current.channelId || '');
   const showSessionError = useCallback((error) => {
@@ -228,6 +252,10 @@ export default function App() {
   }, []);
   const { booting, principal: me, identity, accept: handleAuthed, clear: clearSession, logoutRemote } = useAtollSession({ onError: showSessionError });
   const principalId = me?.id || '';
+  const feedProducerOwnerToken = useMemo(
+    () => Object.freeze({ principalId }),
+    [principalId],
+  );
   const nodeUpdate = useNodeUpdate({ principalId: me?.id, wireState });
 
   useEffect(() => {
@@ -245,21 +273,47 @@ export default function App() {
   }, [me]);
   const { records: timerRecords, markFired: markTimerFired, after: handleAfter, cancel: handleCancelTimer, clear: clearTimers } = useLocalAutomation({ principalId: me?.id, wireRef, activeChannelRef });
   const directoryActionsRef = useRef({});
-  const submissionActionsRef = useRef({});
   const accessRefreshActionsRef = useRef({});
-  const receiveRoster = useCallback((channelId, rows) => {
+  const receiveRoster = useCallback((channelId, rows, producerOwnerToken) => {
+    const owner = committedFeedOwnerRef.current;
+    if (!owner || owner.producerOwnerToken !== producerOwnerToken) return;
     setRosters((current) => new Map(current).set(channelId, rows));
+    const authority = rosterRef.current?.authority?.(channelId);
+    const generation = Number(owner.generationFor(channelId) || 0);
+    const currentPrincipal = owner.principalId;
+    setRosterAuthorities((current) => {
+      const next = new Map(current);
+      if (authority?.principalId === currentPrincipal && generation > 0) {
+        next.set(channelId, Object.freeze({
+          principalId: currentPrincipal,
+          channelId,
+          generation,
+          current: authority.complete === true,
+        }));
+      } else {
+        next.delete(channelId);
+      }
+      return next;
+    });
   }, []);
   const receiveFeedError = useCallback((error) => {
     diagnostic('error', 'feed.failed', { error });
     setTopError(displayError(error));
   }, []);
+  const receiveSubmissionError = useCallback((error) => {
+    diagnostic('error', 'submission.failed', { error });
+    setTopError(displayError(error));
+  }, []);
   const forwardChannels = useCallback((channelIds) => directoryActionsRef.current.discover?.(channelIds), []);
   const forwardDirectoryInvalidated = useCallback(() => accessRefreshActionsRef.current.schedule?.(), []);
-  const forwardSubmissionFeed = useCallback((landed, closed) => submissionActionsRef.current.reconcile?.(landed, closed), []);
+  const forwardSubmissionFeed = useCallback((landed, closed, producerOwnerToken) => {
+    const owner = committedFeedOwnerRef.current;
+    if (!owner || owner.producerOwnerToken !== producerOwnerToken) return false;
+    return owner?.reconcile?.(landed, closed);
+  }, []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
   const forwardAgentActivity = useCallback((payload, context) => agentActivityRef.current.observe(payload, context), []);
-  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, refreshChannel, historyFor, loadHistory, markRead, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
+  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel, historyFor, loadHistory, markRead, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setFilePreviewStack([]); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice, initialChannelId: initialRouteRef.current.channelId });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
@@ -316,11 +370,21 @@ export default function App() {
       writeWorkspaceRoute({ channelId: activeChannelId, view }, { replace: true });
     }
   }, [activeChannelId, workspaceView]);
-  const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireState, wireRef, rosterRef, accessRef, channelStatesRef, onError: (error) => {
-    diagnostic('error', 'submission.failed', { error });
-    setTopError(displayError(error));
-  }, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
-  const { pending, approvalStates, controlStates, send: handleSend, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions } = submissions;
+  const submissions = useSubmissions({ principalId: me?.id, activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion: directory.version, channelStatesRef, onError: receiveSubmissionError, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
+  const { pending, drafts, draftFor, updateDraft, approvalStates, controlStates, send: handleSend, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions, resetWorld: resetSubmissionWorld } = submissions;
+  const feedOwnerCandidate = useMemo(() => ({
+    principalId,
+    producerOwnerToken: feedProducerOwnerToken,
+    generationFor,
+    reconcile: reconcileSubmissionFeed,
+  }), [feedProducerOwnerToken, generationFor, principalId, reconcileSubmissionFeed]);
+  useLayoutEffect(() => {
+    const committed = feedOwnerCandidate;
+    committedFeedOwnerRef.current = committed;
+    return () => {
+      if (committedFeedOwnerRef.current === committed) committedFeedOwnerRef.current = null;
+    };
+  }, [feedOwnerCandidate]);
   directoryActionsRef.current.bump = bumpAccess;
   directoryActionsRef.current.discover = (channelIds) => setChannels((current) => {
     const missing = [...channelIds].filter((channelId) => !current.has(channelId));
@@ -330,8 +394,6 @@ export default function App() {
     accessRefreshActionsRef.current.schedule?.();
     return next;
   });
-  submissionActionsRef.current.reconcile = reconcileSubmissionFeed;
-
   useEffect(() => {
     activeChannelRef.current = activeChannelId;
   }, [activeChannelId]);
@@ -346,10 +408,11 @@ export default function App() {
     manualAgentsRef.current.clear();
     contextProbedRef.current.clear();
     optionsProbedRef.current.clear();
-    describeInFlightRef.current.clear();
+    advanceAgentProbeGeneration(describeProbesRef.current);
     setPendingSelect(null);
     setComposerAgent({ channelId: '', actorId: '' });
     setRosters(new Map());
+    setRosterAuthorities(new Map());
     setChannelNotice('');
     setSelectedActor(null);
     setContextFocus(null);
@@ -362,8 +425,11 @@ export default function App() {
     setChannelDevices([]);
     clearTimers();
     agentActivityRef.current.clear();
+    attachmentWorldRevisionRef.current += 1;
+    attachmentDraftEpochsRef.current.clear();
+    draftAttachmentLedgerRef.current.clear();
+    attachmentUploadQueuesRef.current.clear();
     setDraftAttachments({});
-    draftTextsRef.current = {};
     setTaskCreateSource(undefined);
     setChannelCreateOpen(false);
     setGlobalSearchOpen(false);
@@ -469,10 +535,15 @@ export default function App() {
           // timers name objects in the old world.
           access.reset();
           roster.reset();
-          clearSubmissions();
+          resetSubmissionWorld();
           clearTimers();
           setRosters(new Map());
+          setRosterAuthorities(new Map());
           setChannels(new Map());
+          attachmentWorldRevisionRef.current += 1;
+          attachmentDraftEpochsRef.current.clear();
+          draftAttachmentLedgerRef.current.clear();
+          attachmentUploadQueuesRef.current.clear();
           setDraftAttachments({});
           setRecentFiles([]);
           bumpAccess();
@@ -569,16 +640,42 @@ export default function App() {
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [bumpAccess, cancelFeedTask, clearSubmissions, clearTimers, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, prepareLocalReplica, principalId, resumeLocalReplica, setHistoryGrants]);
+  }, [bumpAccess, cancelFeedTask, clearTimers, disconnectHistory, enqueueFeed, expireSession, finishHistoryPage, prepareLocalReplica, principalId, resetSubmissionWorld, resumeLocalReplica, setHistoryGrants]);
 
   const refreshRoster = useCallback(async (channelId, force = false) => {
     if (!channelId || !rosterRef.current) return;
+    const authorityOwner = committedFeedOwnerRef.current;
+    if (!authorityOwner) return;
+    const authorityPrincipal = authorityOwner.principalId;
+    const authorityGeneration = Number(authorityOwner.generationFor(channelId) || 0);
     setRosterBusy(true);
     try {
       const rows = force
         ? await rosterRef.current.refresh(channelId)
         : await rosterRef.current.ensure(channelId);
+      // Object identity, rather than only the principal string, rejects a late
+      // request after an A -> B -> A session cycle.
+      if (committedFeedOwnerRef.current !== authorityOwner) return;
       setRosters((current) => new Map(current).set(channelId, rows));
+      if (force) {
+        const authority = rosterRef.current.authority?.(channelId);
+        const generationStillCurrent = authorityGeneration > 0
+          && Number(authorityOwner.generationFor(channelId) || 0) === authorityGeneration;
+        setRosterAuthorities((current) => {
+          const next = new Map(current);
+          if (authority?.principalId === authorityPrincipal && generationStillCurrent) {
+            next.set(channelId, Object.freeze({
+              principalId: authorityPrincipal,
+              channelId,
+              generation: authorityGeneration,
+              current: authority.complete === true,
+            }));
+          } else {
+            next.delete(channelId);
+          }
+          return next;
+        });
+      }
       const selfId = rosterRef.current.self(channelId);
       const state = channelStatesRef.current.get(channelId);
       if (state && selfId) {
@@ -592,15 +689,27 @@ export default function App() {
     }
   }, [bumpFeed]);
 
+  const activeRosterGeneration = Number(generationFor(activeChannelId) || 0);
+  const activeHistoryStatus = historyFor(activeChannelId);
   useEffect(() => {
     if (!activeChannelId || !me) return;
     const access = channelList.find((channel) => channel.id === activeChannelId)?.access;
     if (!isMemberAccess(access)) {
       setRosters((current) => new Map(current).set(activeChannelId, []));
+      setRosterAuthorities((current) => {
+        if (!current.has(activeChannelId)) return current;
+        const next = new Map(current);
+        next.delete(activeChannelId);
+        return next;
+      });
       return;
     }
-    refreshRoster(activeChannelId);
-  }, [activeChannelId, channelList, me, refreshRoster]);
+    const authority = rosterAuthorities.get(activeChannelId);
+    const authorityAttempted = authority?.principalId === principalId
+      && authority?.channelId === activeChannelId
+      && authority?.generation === activeRosterGeneration;
+    void refreshRoster(activeChannelId, activeRosterGeneration > 0 && !authorityAttempted);
+  }, [activeChannelId, activeRosterGeneration, channelList, me, principalId, refreshRoster, rosterAuthorities]);
 
   useEffect(() => {
     const access = channelList.find((channel) => channel.id === activeChannelId)?.access;
@@ -817,11 +926,30 @@ export default function App() {
   // 上一个频道的筛选决定这个频道的第一条消息发给谁。
   useEffect(() => { setFocusAgentId(''); }, [activeChannelId]);
 
+  // 手动挡的唯一授权入口。真人动作调它，放行这个目标的一整轮探测；
+  // 参数探测那个 effect 没有这张通行证就一条都不发。
+  // 恒不在任何自动路径（连接状态、消息流、渲染）里调用它——那样就又成了自动挡。
+  const authorizeProbe = useCallback((channelId, actorId) => {
+    if (!channelId || !actorId) return;
+    const probeKey = `${channelId}:${actorId}`;
+    manualProbeRef.current.add(probeKey);
+    // 三张表一起开闸：频次闸门、describe 的失败记录、两个词的已探记录。
+    // 真人要求刷新时不该被任何一张挡住。在途的 describe 不会被重发——
+    // retryFailedAgentProbe 只清 failed，awaiting-ledger 保持原样。
+    clearProbeSlots(describeProbesRef.current, probeKey);
+    retryFailedAgentProbe(describeProbesRef.current, probeKey);
+    contextProbedRef.current.delete(probeKey);
+    optionsProbedRef.current.delete(probeKey);
+    setManualAgentVersion((current) => current + 1);
+  }, []);
+
   const handlePickAgent = useCallback((actorId) => {
     if (!activeChannelId) return;
     manualAgentsRef.current.set(activeChannelId, actorId);
+    // 手选目标是真人动作：顺带放行它的参数探测，否则选完面板是空的。
+    authorizeProbe(activeChannelId, actorId);
     setManualAgentVersion((current) => current + 1);
-  }, [activeChannelId]);
+  }, [activeChannelId, authorizeProbe]);
 
   // 手选清除恒以账本为准（§2.1.2"首条 agent.ask 成功入账后"）：当最近交互的
   // 推导结果已经等于手选目标时，手选让位——交接时值无缝，被拒的发送（账本无
@@ -842,11 +970,11 @@ export default function App() {
   }, [feedVersion, rosters]);
 
   useEffect(() => {
+    // 任何连接状态边界都使旧 Promise 失效；进入 open 后才允许新代探测。
+    advanceAgentProbeGeneration(describeProbesRef.current);
     if (wireState === 'open') {
       contextProbedRef.current.clear();
       optionsProbedRef.current.clear();
-      liveDescribesRef.current.clear();
-      describeInFlightRef.current.clear();
     }
   }, [wireState]);
 
@@ -860,7 +988,6 @@ export default function App() {
 
   const changeWorkspaceView = useCallback((view) => {
     if (!activeChannelId) return;
-    setTimelineTarget(null);
     workspaceViewsRef.current.set(activeChannelId, view);
     setWorkspaceView(view);
     setSelectedActor(null);
@@ -872,10 +999,15 @@ export default function App() {
 
   const selectWorkspaceChannel = useCallback((channelId) => {
     const view = workspaceViewsRef.current.get(channelId) || 'dynamic';
-    setTimelineTarget(null);
+    // A deliberate re-selection is a new foreground freshness obligation.
+    // A real channel change is handled once by the activeChannelId effect;
+    // firing here as well would turn one click into two sequential probes.
+    const reselected = channelId === activeChannelRef.current;
     selectChannel(channelId);
-	focusHistory(channelId);
-	void refreshChannel(channelId);
+    if (reselected) {
+      focusHistory(channelId);
+      void refreshChannel(channelId);
+    }
     setWorkspaceView(view);
     writeWorkspaceRoute({ channelId, view });
   }, [focusHistory, refreshChannel, selectChannel]);
@@ -966,13 +1098,11 @@ export default function App() {
     if (requestId) openContext('', { type: 'turn', key: requestId });
   }, [openContext]);
 
-  const describeActor = useCallback(async (actor, channelId = activeChannelId) => {
+  const describeActor = useCallback(async (actor, channelId = activeChannelId, { force = false } = {}) => {
     if (!actor || !channelId) return '';
     const probeKey = `${channelId}:${actor.id}`;
-    if (describeInFlightRef.current.has(probeKey)) return '';
-    // handleSend 的 Promise 回执可能晚于请求本身进入 feed；若只在 await 后记录
-    // requestId，feedVersion 会在这个窗口反复触发 effect，造成 describe 风暴。
-    describeInFlightRef.current.add(probeKey);
+    const probe = beginAgentProbe(describeProbesRef.current, probeKey, { force });
+    if (!probe) return '';
     try {
       const requestId = await handleSend({
         channelId,
@@ -981,35 +1111,51 @@ export default function App() {
         audience: [actor.id],
         targetLabel: actor.name || actor.id,
         payload: {},
+        // 探测自带死线：目标卡死时账本这条 request 一分钟后过期，
+        // 对端的在站账随即归还格子，不再由它把真人的话挤出去。
+        expiresAtMs: Date.now() + PROBE_TIMEOUT_MS,
       });
-      if (requestId) liveDescribesRef.current.add(requestId);
+      acceptAgentProbe(describeProbesRef.current, probe, requestId);
+      setManualAgentVersion((current) => current + 1);
       return requestId || '';
-    } finally {
-      describeInFlightRef.current.delete(probeKey);
+    } catch (error) {
+      failAgentProbe(describeProbesRef.current, probe);
+      setManualAgentVersion((current) => current + 1);
+      throw error;
     }
   }, [activeChannelId, handleSend]);
 
-  // 参数目标的值域/当前值冷启动：目标无 describe 缓存则描述一次；有值域、无账本
-  // usage 且未探测过则静默发一次 agent.context。探测按三态管理（§4.1.2）：
-  // in-flight（有 requestId 未见结局）/ failed（账本 failed 终态或 submission
-  // 被拒——停止自动重发防循环，重连清空或用户展开参数区时重试）/ 成功（账本
-  // usage 到位后此 effect 不再走到这里）。恒不做"每会话一次"死标记。
+  // 参数目标的值域/当前值：**只在用户要求时**拉取（手动挡，见 manualProbeRef）。
+  // 本 effect 自身恒不发起任何请求，它只做两件事：观察在途探测的结局，以及把
+  // 一次已授权的手动刷新走完（describe 拿到后接着取 options / context）。
+  // 用户没有动作时，这里一条消息都不会发出去。
   useEffect(() => {
     if (wireState !== 'open') return;
     const { channelId, actorId } = composerAgent;
     if (!channelId || !actorId || channelId !== activeChannelId) return;
+    const channelAccess = accessRef.current?.state?.(channelId);
+    if (channelAccess?.relationship !== 'member' || channelAccess?.unavailable) return;
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId);
     if (!actor) return;
     const state = channelStatesRef.current.get(channelId);
     const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actorId);
     const probeKey = `${channelId}:${actorId}`;
+    const describeProbe = describeProbesRef.current.entries.get(probeKey);
+    const describeRejected = Boolean(describeProbe?.requestId && pending.some(
+      (item) => item.messageId === describeProbe.requestId && item.state === 'rejected',
+    ));
+    observeAgentProbe(describeProbesRef.current, probeKey, capability, describeRejected);
+    // 手动挡的唯一闸门：没有真人授权就到此为止，一条都不发。
+    if (!manualProbeRef.current.has(probeKey)) return;
+    // 这里恒不传 force：本 effect 的依赖里有 feedVersion / pending，消息一多
+    // 就会每秒重跑，force 会绕过同代去重而变成新的风暴。闸门由手动入口在授权
+    // 那一刻打开（clearProbeSlots + retryFailedAgentProbe），这里只负责发一条。
     if (!capability?.describe && !capability?.loading) {
-      describeActor(actor, channelId);
+      void describeActor(actor, channelId).catch(() => {});
       return;
     }
     if (!capability?.describe) return;
-    // 值域与当前 context 是两个普通 actor word。各自每连接探测一次，失败只在
-    // 用户再次展开面板时重试，避免断路时形成自激请求环。
+    // 值域与当前 context 是两个普通 actor word，属于这次手动刷新的后半程。
     const probeWord = (type, registry) => {
       if (!capability.describe.types?.has?.(type)) return;
       const probe = registry.current.get(probeKey);
@@ -1021,46 +1167,36 @@ export default function App() {
         }
         return;
       }
+      // 与 describe 同一道频次闸门，按词分桶；registry 会在重连时被清空，
+      // 闸门不会，所以断线重连不再等于解除限流。
+      if (!reserveProbeSlot(describeProbesRef.current, `${probeKey}:${type}`)) return;
       const entry = { requestId: '', failed: false };
       registry.current.set(probeKey, entry);
-      try {
-        // send returns the id synchronously once the durable outbox owns it.
-        // Submission/ledger updates below determine the eventual result.
-        entry.requestId = handleSend({ channelId, text: '', msgType: type, audience: [actorId], targetLabel: actorId, payload: {} }) || '';
-        entry.failed = !entry.requestId;
-        setManualAgentVersion((current) => current + 1);
-      } catch {
-        entry.failed = true;
-      }
+      void handleSend({ channelId, text: '', msgType: type, audience: [actorId], targetLabel: actorId, payload: {}, expiresAtMs: Date.now() + PROBE_TIMEOUT_MS })
+        .then((requestId) => {
+          entry.requestId = requestId || '';
+          entry.failed = !entry.requestId;
+          setManualAgentVersion((current) => current + 1);
+        })
+        .catch(() => {
+          entry.failed = true;
+          setManualAgentVersion((current) => current + 1);
+        });
     };
     probeWord(TYPES.agentOptions, optionsProbedRef);
     probeWord(TYPES.agentContext, contextProbedRef);
+    // 授权用完即收：这一轮该发的都发了，链不会自己续上。下一条探测必须来自
+    // 用户的下一个动作。
+    const settled = (type, registry) => !capability.describe.types?.has?.(type) || registry.current.has(probeKey);
+    if (settled(TYPES.agentOptions, optionsProbedRef) && settled(TYPES.agentContext, contextProbedRef)) {
+      manualProbeRef.current.delete(probeKey);
+    }
   }, [composerAgent, feedVersion, wireState, activeChannelId, rosters, pending, manualAgentVersion, describeActor, handleSend]);
 
-  // 用户展开参数区 = 显式重试通道：上次探测失败的目标清掉失败标记重新探测。
+  // 展开模型选择器（或点那个只显示角色名的按钮）= 手动刷新。
   const handleSelectorOpen = useCallback(() => {
-    const { channelId, actorId } = composerAgent;
-    if (!channelId || !actorId) return;
-    const probeKey = `${channelId}:${actorId}`;
-    let retry = false;
-    if (contextProbedRef.current.get(probeKey)?.failed) {
-      contextProbedRef.current.delete(probeKey);
-      retry = true;
-    }
-    if (optionsProbedRef.current.get(probeKey)?.failed) {
-      optionsProbedRef.current.delete(probeKey);
-      retry = true;
-    }
-    // describe 本连接已发但失败时，展开参数区 = 显式重试：把失败那次从
-    // 本连接集合剔除，capability 归零后冷启动 effect 自动重新自省。
-    const state = channelStatesRef.current.get(channelId);
-    const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actorId);
-    if (capability?.error && !capability?.loading && capability.requestId) {
-      liveDescribesRef.current.delete(capability.requestId);
-      retry = true;
-    }
-    if (retry) setManualAgentVersion((current) => current + 1);
-  }, [composerAgent]);
+    authorizeProbe(composerAgent.channelId, composerAgent.actorId);
+  }, [composerAgent, authorizeProbe]);
 
   const handleSelectActor = useCallback((actor) => {
     setSelectedActor(actor);
@@ -1070,7 +1206,8 @@ export default function App() {
     if (activeChannelId) writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView, focus }, { contextEntry: true });
     const state = channelStatesRef.current.get(activeChannelId);
     const capability = capabilityIndexFromState(state, liveDescribesRef.current).get(actor.id);
-    if (!capability?.describe && !capability?.loading) describeActor(actor, activeChannelId);
+    // 点开某个成员看它的能力是真人动作，force 绕过频次闸门：限流只管自动探测。
+    if (!capability?.describe && !capability?.loading) describeActor(actor, activeChannelId, { force: true });
   }, [activeChannelId, describeActor, workspaceView]);
 
   const handleInvokeActor = useCallback(async (type, payload) => {
@@ -1166,22 +1303,39 @@ export default function App() {
   const readActiveLatest = derived(
     'readActiveLatest',
     [activeChannelId, markRead],
-    () => (seq) => markRead(activeChannelId, seq),
+    () => (acknowledgement) => markRead(activeChannelId, acknowledgement),
   );
   const loadActiveOlder = derived(
     'loadActiveOlder',
     [activeChannelId, loadHistory],
     () => (options) => loadHistory(activeChannelId, options),
   );
+  const refreshActiveLatest = derived(
+    'refreshActiveLatest',
+    [activeChannelId, refreshChannel],
+    () => () => refreshChannel(activeChannelId),
+  );
   const activeHistory = createHistoryDemandPort({
     channelId: activeChannelId,
-    status: { ...historyFor(activeChannelId), localReplicaReady },
+    status: {
+      ...activeHistoryStatus,
+      localReplicaReady,
+    },
     open: loadActiveOlder,
+    refreshLatest: refreshActiveLatest,
     markRead: readActiveLatest,
   });
   const activeRow = channelList.find((channel) => channel.id === activeChannelId);
   const activeRoster = isMemberAccess(activeRow?.access) ? rosters.get(activeChannelId) || [] : [];
   const selfId = activeRow?.selfActorId || rosterRef.current?.self(activeChannelId) || '';
+  const activeRosterAuthority = rosterAuthorities.get(activeChannelId);
+  const waitingRosterAuthority = createWaitingTargetAuthority({
+    principalId,
+    channelId: activeChannelId,
+    generation: activeRosterGeneration,
+    rosterAuthority: activeRosterAuthority,
+    roster: activeRoster,
+  });
   // ChannelReplica 按频道 revision/read cursor 缓存未读投影。频道栏仍遍历轻量
   // channel 列表，但后台一条 live 不再让每个频道各自重扫整本账。
   const unread = derived('unread', [channelList, feedIndexVersion, rosters], () => Object.fromEntries(channelList.map((channel) => {
@@ -1261,41 +1415,88 @@ export default function App() {
   const selectedTurn = contextFocus?.type === 'turn' ? activeState.turns.get(contextFocus.key) : null;
   const selectedWorkItem = contextFocus?.type === 'work_item' ? workItemIndex.get(contextFocus.key) : null;
 
+  const currentDraftAttachments = (channelId, readDraft = draftFor) => (
+    draftAttachmentLedgerRef.current.has(channelId)
+      ? draftAttachmentLedgerRef.current.get(channelId)
+      : (readDraft(channelId).attachments || [])
+  );
+
+  const commitDraftAttachments = (channelId, rows) => {
+    const nextRows = [...rows];
+    // Publish the command ledger before scheduling React. A second committed
+    // action in the same turn must observe the first even if React batches the
+    // presentation updates; the state updater itself remains pure/replayable.
+    draftAttachmentLedgerRef.current.set(channelId, nextRows);
+    setDraftAttachments((current) => ({ ...current, [channelId]: nextRows }));
+    return nextRows;
+  };
+
+  const mutateDraftAttachments = (channelId, mutate, readDraft = draftFor) => (
+    commitDraftAttachments(channelId, mutate([...currentDraftAttachments(channelId, readDraft)]))
+  );
+
+  const clearDraftAttachments = (channelId) => {
+    attachmentDraftEpochsRef.current.set(
+      channelId,
+      Number(attachmentDraftEpochsRef.current.get(channelId) || 0) + 1,
+    );
+    return commitDraftAttachments(channelId, []);
+  };
+
   const attachToDraft = (attachment) => {
-    setDraftAttachments((current) => ({ ...current, [activeChannelId]: [...(current[activeChannelId] || []).filter((row) => row.resource_id !== attachment.resource_id), attachment] }));
+    const channelId = activeChannelId;
+    mutateDraftAttachments(channelId, (rows) => [
+      ...rows.filter((row) => row.resource_id !== attachment.resource_id),
+      attachment,
+    ]);
     changeWorkspaceView('dynamic');
   };
 
   const uploadComposerAttachments = async (files) => {
     const channel = activeChannel;
     if (!channel?.id) throw new TypeError('请先选择频道');
+    const committedOwner = committedFeedOwnerRef.current;
+    const producerOwnerToken = committedOwner?.producerOwnerToken;
+    if (!producerOwnerToken) throw new TypeError('上传会话尚未提交');
+    const worldRevision = attachmentWorldRevisionRef.current;
+    const draftEpoch = Number(attachmentDraftEpochsRef.current.get(channel.id) || 0);
+    // `draftFor` belongs to the committed callback installed in AppShell. It
+    // is only a fallback until the first attachment command creates a ledger
+    // entry; render candidates never publish into that ledger.
+    const readDraft = draftFor;
+    const isCurrentUploadOwner = () => (
+      committedFeedOwnerRef.current?.producerOwnerToken === producerOwnerToken
+      && attachmentWorldRevisionRef.current === worldRevision
+      && Number(attachmentDraftEpochsRef.current.get(channel.id) || 0) === draftEpoch
+    );
     const previous = attachmentUploadQueuesRef.current.get(channel.id) || Promise.resolve();
     const task = previous.catch(() => {}).then(async () => {
+      if (!isCurrentUploadOwner()) return [];
       // OPEN 只代表消息通道已就绪，daemon OBS 可能仍在路上。粘贴/拖入不应
       // 因这个短暂竞态失败，所以首次上传可就地等待一次 daemon observation。
       const devices = channelDevices.length ? channelDevices : await refreshChannelDeviceData(channel.id);
+      if (!isCurrentUploadOwner()) return [];
       const daemonId = availableDefaultStorageDeviceId(channel, devices);
       const daemon = devices.find((row) => row.id === daemonId);
       if (!daemon) throw new TypeError('频道没有可用的默认文件存储设备');
       if (daemon.online === false) throw new TypeError(`频道默认文件存储设备 ${daemon.name || daemon.id} 当前离线`);
       const uploaded = [];
-      const occupiedNames = new Set((draftAttachmentsRef.current[channel.id] || []).map((row) => row.name));
+      const occupiedNames = new Set(currentDraftAttachments(channel.id, readDraft).map((row) => row.name));
       for (const file of files) {
+        if (!isCurrentUploadOwner()) return [];
         const uploadName = availableUploadName(file.name, occupiedNames);
         occupiedNames.add(uploadName);
         uploaded.push(await uploadChannelFile({ file, channel, deviceName: daemon.name, uploadName, onResource: handleResource }));
+        if (!isCurrentUploadOwner()) return [];
       }
-      setDraftAttachments((current) => {
-        const rows = [...(current[channel.id] || [])];
+      mutateDraftAttachments(channel.id, (rows) => {
         for (const attachment of uploaded) {
           const index = rows.findIndex((row) => row.resource_id === attachment.resource_id);
           if (index >= 0) rows[index] = attachment;
           else rows.push(attachment);
         }
-        const next = { ...current, [channel.id]: rows };
-        draftAttachmentsRef.current = next;
-        return next;
-      });
+        return rows;
+      }, readDraft);
       return uploaded;
     });
     attachmentUploadQueuesRef.current.set(channel.id, task);
@@ -1358,24 +1559,22 @@ export default function App() {
     showFilePreview(artifact);
   };
 
-  const openArtifactSource = (source) => {
+  const openArtifactSource = () => {
     setSelectedActor(null);
     setContextFocus(null);
     setRightPanel('');
     workspaceViewsRef.current.set(activeChannelId, 'dynamic');
     setWorkspaceView('dynamic');
     writeWorkspaceRoute({ channelId: activeChannelId, view: 'dynamic' }, { replace: true });
-    issueTimelineTarget(activeChannelId, source.objectId);
   };
 
-  const openDynamicSource = (source) => {
+  const openDynamicSource = () => {
     setSelectedActor(null);
     setContextFocus(null);
     setRightPanel('');
     workspaceViewsRef.current.set(activeChannelId, 'dynamic');
     setWorkspaceView('dynamic');
     writeWorkspaceRoute({ channelId: activeChannelId, view: 'dynamic' }, { replace: true });
-    issueTimelineTarget(activeChannelId, source.objectId);
   };
 
   const openWorkItemSource = (source) => {
@@ -1443,9 +1642,12 @@ export default function App() {
     const focus = ['channel', 'participant', 'artifact', 'turn', 'work_item'].includes(focusType) && source.objectId
       ? { type: focusType, key: source.objectId }
       : null;
+    const reselected = channel.id === activeChannelRef.current;
     selectChannel(channel.id);
-	focusHistory(channel.id);
-	void refreshChannel(channel.id);
+    if (reselected) {
+      focusHistory(channel.id);
+      void refreshChannel(channel.id);
+    }
     workspaceViewsRef.current.set(channel.id, view);
     setWorkspaceView(view);
     setSelectedActor(null);
@@ -1457,7 +1659,6 @@ export default function App() {
             : focusType === 'work_item' ? 'work-item-focus' : '');
     setGlobalSearchOpen(false);
     writeWorkspaceRoute({ channelId: channel.id, view, focus }, { contextEntry: Boolean(focus) });
-    if (!focus) issueTimelineTarget(channel.id, source.objectId);
   };
 
   const host = {
@@ -1472,14 +1673,14 @@ export default function App() {
       const focus = { type: 'channel', key: activeChannelId };
       setContextFocus(focus);
       writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView, focus }, { replace: true, contextEntry: true });
-    }, onDescribe: () => describeActor(selectedActor, activeChannelId), onInvoke: handleInvokeActor },
+    }, onDescribe: () => describeActor(selectedActor, activeChannelId, { force: true }), onInvoke: handleInvokeActor },
     activity: { activities: globalData.activities, operations: globalData.operations, onOpen: navigateToSource },
   };
   return <>
   <AppShell
     session={{ me, wireState, update: nodeUpdate, onLogout: handleLogout }}
     navigation={{ channels: channelList, activeChannelId, unread, agentActivity, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
-    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, selfId, timelineTarget: timelineTarget?.channelId === activeChannelId ? timelineTarget : null, onTimelineTargetConsumed: (token) => setTimelineTarget((current) => current?.token === token ? null : current), agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftTextsRef.current[activeChannelId] || '', onDraftChange: (value) => { draftTextsRef.current[activeChannelId] = value; }, attachments: draftAttachments[activeChannelId] || [], onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => setDraftAttachments((current) => ({ ...current, [activeChannelId]: (current[activeChannelId] || []).filter((row) => row.resource_id !== resourceId) })), onClearAttachments: () => setDraftAttachments((current) => ({ ...current, [activeChannelId]: [] })), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), onOpen: (artifact) => { rememberFilePreview(artifact); openContext('artifact-focus', { type: 'artifact', key: artifact.key }); }, onPreview: showFilePreview }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, waitingRosterAuthority, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: draftFor(activeChannelId), onDraftChange: (value) => updateDraft(activeChannelId, value), draftRevision: drafts.get(activeChannelId)?.revision || 0, attachments: Object.prototype.hasOwnProperty.call(draftAttachments, activeChannelId) ? draftAttachments[activeChannelId] : (draftFor(activeChannelId).attachments || []), onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: () => setAttachmentPickerOpen(true), onRemoveAttachment: (resourceId) => mutateDraftAttachments(activeChannelId, (rows) => rows.filter((row) => row.resource_id !== resourceId)), onClearAttachments: () => clearDraftAttachments(activeChannelId), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onAttach: attachToDraft, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), onOpen: (artifact) => { rememberFilePreview(artifact); openContext('artifact-focus', { type: 'artifact', key: artifact.key }); }, onPreview: showFilePreview }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     panel={{ value: rightPanel, open: openContext, host }}
   />

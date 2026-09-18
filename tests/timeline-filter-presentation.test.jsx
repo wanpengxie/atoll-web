@@ -1,0 +1,500 @@
+// @vitest-environment jsdom
+import React from 'react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { Timeline } from '../src/ui/Timeline.jsx';
+import { createViewSessionStore } from '../src/model/view-session.js';
+import { apply, createChannelState } from '../src/model/fold.js';
+
+vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => ({
+  MessageList: (await import('./helpers/PresentationMessageList.jsx')).PresentationMessageList,
+}));
+
+afterEach(cleanup);
+
+function timelineState(standalone = []) {
+  return {
+    channelId: 'c0',
+    rows: new Map(standalone.map((row) => [row.seq, row.envelope])),
+    turns: new Map(),
+    standalone,
+    orphans: [],
+    narration: [],
+    lastSeq: standalone.at(-1)?.seq || 0,
+  };
+}
+
+function mixedAgentTurns() {
+  const state = createChannelState('c0');
+  const selfId = 'human:root:100';
+  const append = (seq, envelope) => apply(state, {
+    channel_id: 'c0',
+    seq,
+    envelope: {
+      ts: seq,
+      channel_id: 'c0',
+      visibility: 'public',
+      ...envelope,
+    },
+  }, selfId);
+  append(1, {
+    id: 'ask-codex', kind: 'request', type: 'agent.ask',
+    sender: { id: selfId, kind: 'human' }, audience: ['agent:codex:200'],
+    correlation_id: 'ask-codex', payload: { text: 'Codex question' },
+  });
+  append(2, {
+    id: 'done-codex', kind: 'response', type: 'agent.ask',
+    sender: { id: 'agent:codex:200', kind: 'agent' }, audience: [selfId],
+    parent_id: 'ask-codex', correlation_id: 'ask-codex',
+    payload: { status: 'completed', text: 'Codex answer' },
+  });
+  append(3, {
+    id: 'ask-claude', kind: 'request', type: 'agent.ask',
+    sender: { id: selfId, kind: 'human' }, audience: ['agent:claude:300'],
+    correlation_id: 'ask-claude', payload: { text: 'Claude question' },
+  });
+  append(4, {
+    id: 'done-claude', kind: 'response', type: 'agent.ask',
+    sender: { id: 'agent:claude:300', kind: 'agent' }, audience: [selfId],
+    parent_id: 'ask-claude', correlation_id: 'ask-claude',
+    payload: { status: 'completed', text: 'Claude answer' },
+  });
+  return { state, selfId };
+}
+
+function incarnationAndSystemHeavyState() {
+  const state = createChannelState('c0');
+  const historicalSelf = 'human:root:1700000000000';
+  const claude = 'agent:claude:1800000000000';
+  const applyEnvelope = (seq, envelope) => apply(state, {
+    channel_id: 'c0',
+    seq,
+    envelope: {
+      ts: seq,
+      channel_id: 'c0',
+      visibility: 'public',
+      ...envelope,
+    },
+  }, historicalSelf);
+  for (let seq = 1; seq <= 24; seq += 1) {
+    applyEnvelope(seq, {
+      id: `system-${seq}`,
+      kind: 'event',
+      type: 'system.member.updated',
+      visibility: 'system',
+      sender: { id: 'system:c0:1', kind: 'system' },
+      audience: [],
+      payload: { member: `opaque-${seq}` },
+    });
+  }
+  applyEnvelope(25, {
+    id: 'opaque-ask-claude', kind: 'request', type: 'agent.ask',
+    sender: { id: historicalSelf, kind: 'human' }, audience: [claude],
+    correlation_id: 'opaque-ask-claude', payload: { text: '跨 incarnation 的 Claude 问题' },
+  });
+  applyEnvelope(26, {
+    id: 'opaque-done-claude', kind: 'response', type: 'agent.ask',
+    sender: { id: claude, kind: 'agent' }, audience: [historicalSelf],
+    parent_id: 'opaque-ask-claude', correlation_id: 'opaque-ask-claude',
+    payload: { status: 'completed', text: '跨 incarnation 的 Claude 回答' },
+  });
+  return { state, claude };
+}
+
+it('混合 Codex/Claude 已加载回合按精确成员 ID 立即保留完整问答', async () => {
+  const { state, selfId } = mixedAgentTurns();
+  render(<Timeline
+    state={state}
+    history={{ status: {
+      attached: true,
+      generation: 1,
+      messageCurrent: true,
+      headSeq: 4,
+      localReplicaReady: true,
+      loading: false,
+      hasOlder: false,
+      presentationRevision: state._timelineRevision,
+    } }}
+    roster={[
+      { id: selfId, kind: 'human', name: '我' },
+      { id: 'agent:codex:200', kind: 'agent', name: 'Codex' },
+      { id: 'agent:claude:300', kind: 'agent', name: 'Claude' },
+    ]}
+    selfId={selfId}
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+  />);
+
+  fireEvent.click(await screen.findByTitle('只看我与 Claude 的往来'));
+
+  const claudeTurn = document.querySelector('[data-presentation-row-id="ask-claude"]');
+  expect(claudeTurn?.textContent).toContain('Claude question');
+  expect(claudeTurn?.textContent).toContain('Claude answer');
+  expect(document.querySelector('[data-presentation-row-id="ask-codex"]')).toBeNull();
+  expect(screen.queryByText('正在确认频道内容…')).toBeNull();
+  expect(screen.queryByText('正在恢复上次阅读位置…')).toBeNull();
+});
+
+it('零行成员投影用当前 viewSpec 静默请求语义供给而不等待虚拟列表 underfill', async () => {
+  const { state, selfId } = mixedAgentTurns();
+  // Keep a physically non-empty channel while making Claude absent from the
+  // installed projection. The virtual list now has no row from which to emit
+  // its geometry-driven under-fill callback.
+  state.rows.delete(3);
+  state.rows.delete(4);
+  state.turns.delete('ask-claude');
+  state.lastSeq = 2;
+  state._timelineProjectionVersion += 1;
+  state._timelineRevision += 1;
+  const request = vi.fn(() => new Promise(() => {}));
+  render(<Timeline
+    state={state}
+    history={{
+      request,
+      status: {
+        attached: true, generation: 1, messageCurrent: true, headSeq: 400,
+        localReplicaReady: true, loading: false, hasOlder: true, completedPages: 1,
+        presentationRevision: state._timelineRevision,
+      },
+    }}
+    roster={[
+      { id: selfId, kind: 'human', name: '我' },
+      { id: 'agent:codex:200', kind: 'agent', name: 'Codex' },
+      { id: 'agent:claude:300', kind: 'agent', name: 'Claude' },
+    ]}
+    selfId={selfId}
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+  />);
+
+  fireEvent.click(await screen.findByTitle('只看我与 Claude 的往来'));
+  await waitFor(() => expect(request).toHaveBeenCalledWith(expect.objectContaining({
+    intent: 'scroll-history',
+    urgency: 'anticipatory',
+    reason: 'projection-underfill',
+    anchorSeq: 0,
+    viewSpec: expect.objectContaining({ scope: 'mine', selfId }),
+  }))); 
+  const operation = request.mock.calls.find(([value]) => value.reason === 'projection-underfill')?.[0];
+  expect([...operation.viewSpec.actorFilter]).toEqual(['agent:claude:300']);
+  expect(screen.getByText('正在确认频道内容…')).toBeTruthy();
+  expect(screen.queryByText('当前已加载的动态里没有符合筛选的往来')).toBeNull();
+  expect(await screen.findByText('当前已加载的动态里没有符合筛选的往来')).toBeTruthy();
+  expect(document.querySelector('.timeline-history-demand')).toBeNull();
+
+  fireEvent.click(screen.getByTitle('只看我与 Codex 的往来'));
+  await waitFor(() => expect(operation.signal.aborted).toBe(true));
+});
+
+it('无 self 身份的全部视图仍会静默补齐被协议事实遮住的语义供给', async () => {
+  const state = timelineState([{
+    seq: 9,
+    envelope: {
+      id: 'hidden-session-tail', kind: 'event', type: 'terminal.session', visibility: 'public',
+      sender: { id: 'system:channel:1', kind: 'system' }, audience: [], payload: { event: 'closed' },
+    },
+  }]);
+  const request = vi.fn(() => new Promise(() => {}));
+  render(<Timeline
+    state={state}
+    history={{
+      request,
+      status: {
+        attached: true, generation: 4, messageCurrent: true, headSeq: 90,
+        localReplicaReady: true, loading: false, hasOlder: true,
+        presentationRevision: state._timelineRevision,
+      },
+    }}
+    roster={[]}
+    selfId=""
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+  />);
+
+  await waitFor(() => expect(request).toHaveBeenCalledWith(expect.objectContaining({
+    intent: 'scroll-history',
+    urgency: 'anticipatory',
+    reason: 'projection-underfill',
+    viewSpec: expect.objectContaining({ scope: 'all', selfId: '' }),
+  })));
+  expect(document.querySelector('.timeline-history-demand')).toBeNull();
+});
+
+it('零行语义供给失败后由 scheduler 状态推进恢复且始终保持后台静默', async () => {
+  const state = timelineState([{
+    seq: 9,
+    envelope: {
+      id: 'unrelated-tail', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { text: 'not mine' },
+    },
+  }]);
+  const request = vi.fn()
+    .mockResolvedValueOnce({ kind: 'failed', error: new Error('temporary') })
+    .mockImplementationOnce(() => new Promise(() => {}));
+  const base = {
+    state,
+    roster: [],
+    selfId: 'me',
+    pending: [],
+    approvalStates: {},
+    access: 'member_active',
+  };
+  const status = {
+    attached: true, generation: 5, messageCurrent: true, headSeq: 90,
+    localReplicaReady: true, loading: false, hasOlder: true, completedPages: 1,
+    presentationRevision: state._timelineRevision,
+  };
+  const view = render(<Timeline {...base} history={{ request, status }} />);
+
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  view.rerender(<Timeline {...base} history={{
+    request,
+    status: { ...status, loading: true, error: 'temporary', retryAt: Date.now() },
+  }} />);
+
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  expect(request.mock.calls[1][0]).toMatchObject({
+    intent: 'scroll-history', urgency: 'anticipatory', reason: 'projection-underfill',
+  });
+  expect(document.querySelector('.timeline-history-demand')).toBeNull();
+});
+
+it('opaque actor ID 与系统事实尾下，名册迟到后显示唯一 agent chip 且保留同 principal 旧回合', async () => {
+  const { state, claude } = incarnationAndSystemHeavyState();
+  const currentSelf = 'human:root:1900000000000';
+  const history = { status: {
+    attached: true,
+    generation: 7,
+    messageCurrent: true,
+    headSeq: 26,
+    localReplicaReady: true,
+    loading: false,
+    hasOlder: false,
+    presentationRevision: state._timelineRevision,
+  } };
+  const base = {
+    state,
+    history,
+    selfId: currentSelf,
+    pending: [],
+    approvalStates: {},
+    access: 'member_active',
+  };
+  const view = render(<Timeline
+    {...base}
+    roster={[{ id: currentSelf, kind: 'human', name: '我', principal: 'root' }]}
+  />);
+
+  expect(await screen.findByText('跨 incarnation 的 Claude 问题')).toBeTruthy();
+  expect(screen.getByText('跨 incarnation 的 Claude 回答')).toBeTruthy();
+
+  view.rerender(<Timeline
+    {...base}
+    roster={[
+      { id: currentSelf, kind: 'human', name: '我', principal: 'root' },
+      { id: claude, kind: 'agent', name: 'Claude' },
+    ]}
+  />);
+
+  const chip = await screen.findByTitle('只看我与 Claude 的往来');
+  expect(chip.getAttribute('aria-pressed')).toBe('false');
+  expect(screen.getByRole('group', { name: '动态范围' }).textContent).not.toContain('0');
+  fireEvent.click(chip);
+  expect(document.querySelector('[data-presentation-row-id="opaque-ask-claude"]')?.textContent)
+    .toContain('跨 incarnation 的 Claude 回答');
+  expect(screen.queryByText('正在确认频道内容…')).toBeNull();
+});
+
+it('成员过滤按钮收窄呈现条目', async () => {
+  const standalone = ['agent-a', 'agent-b'].map((agentId, index) => ({
+    seq: index + 1,
+    envelope: {
+      id: `from-${agentId}`,
+      kind: 'event',
+      type: 'human.note',
+      visibility: 'public',
+      sender: { id: agentId, kind: 'agent' },
+      audience: ['me'],
+      payload: { text: `来自 ${agentId}` },
+    },
+  }));
+  const state = timelineState(standalone);
+  render(<Timeline state={state} history={{ attached: true, hasOlder: false }} roster={[{ id: 'agent-a', kind: 'agent' }, { id: 'agent-b', kind: 'agent' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+
+  fireEvent.click(await screen.findByTitle('只看我与 agent-a 的往来'));
+  expect(screen.getByTitle('取消只看 agent-a').getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByText('来自 agent-a')).toBeTruthy();
+  expect(screen.queryByText('来自 agent-b')).toBeNull();
+});
+
+it('旧incarnation的持久筛选始终可见可移除，不装作未过滤空态', async () => {
+  const memory = new Map();
+  const storage = {
+    getItem: (key) => memory.get(key) || null,
+    setItem: (key, value) => memory.set(key, value),
+  };
+  const viewSessions = createViewSessionStore({ principalID: 'root-stale-filter', storage });
+  viewSessions.writeConversation('c0', {
+    scope: 'mine',
+    actorFilter: ['agent:codex:old'],
+  });
+  const state = timelineState([{
+    seq: 1,
+    envelope: {
+      id: 'new-incarnation-message', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'agent:codex:new', kind: 'agent' }, audience: ['me'],
+      payload: { text: '新 incarnation 的真实动态' },
+    },
+  }]);
+  render(<Timeline
+    state={state}
+    history={{ attached: true, hasOlder: false }}
+    roster={[{ id: 'human:root:1', kind: 'human', name: '我' }, { id: 'agent:codex:new', kind: 'agent', name: 'Codex' }]}
+    selfId="me"
+    viewSessions={viewSessions}
+    pending={[]}
+    approvalStates={{}}
+    access="member_active"
+  />);
+
+  expect(screen.queryByText('新 incarnation 的真实动态')).toBeNull();
+  expect(screen.getByText('当前应用了已失效的成员筛选。')).toBeTruthy();
+  const stale = screen.getByRole('button', { name: '移除已失效成员筛选 agent:codex:old' });
+  expect(stale.getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(stale);
+  expect(await screen.findByText('新 incarnation 的真实动态')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /agent:codex:old/ })).toBeNull();
+});
+
+it('只有已完成同步的已知空频道才显示空账邀请', async () => {
+  const state = timelineState();
+  const base = { state, roster: [], selfId: 'me', pending: [], approvalStates: {}, access: 'member_active' };
+  const loadOlder = vi.fn(async () => ({ kind: 'failed' }));
+  const view = render(<Timeline {...base} history={{ status: { attached: false, generation: 0, messageCurrent: false, headSeq: 0, localReplicaReady: false, loading: true }, loadOlder }} />);
+
+  expect(await screen.findByText('正在确认频道内容…')).toBeTruthy();
+  expect(screen.queryByText('这本账还没有可见条目')).toBeNull();
+
+  view.rerender(<Timeline {...base} history={{ status: { attached: true, generation: 1, messageCurrent: false, headSeq: 0, localReplicaReady: true, loading: false, error: '读取失败' }, loadOlder }} />);
+  expect((await screen.findByRole('alert')).textContent).toContain('读取失败');
+  fireEvent.click(screen.getByRole('button', { name: '重试' }));
+  expect(loadOlder).toHaveBeenCalledWith(expect.objectContaining({
+    intent: 'scroll-history', reason: 'retry', urgency: 'interactive',
+  }));
+  expect(screen.queryByText('这本账还没有可见条目')).toBeNull();
+  expect(screen.queryByText('正在确认频道内容…')).toBeNull();
+
+  view.rerender(<Timeline {...base} history={{ status: { attached: true, generation: 1, messageCurrent: true, headSeq: 0, localReplicaReady: true, loading: false, error: '' }, loadOlder }} />);
+  expect(await screen.findByText('这本账还没有可见条目')).toBeTruthy();
+  expect(screen.queryByText('正在确认频道内容…')).toBeNull();
+});
+
+it('重连的零头占位在前台probe完成前不是权威空频道', async () => {
+  const state = timelineState();
+  const base = { state, roster: [], selfId: 'me', pending: [], approvalStates: {}, access: 'member_active' };
+  const view = render(<Timeline {...base} history={{ status: {
+    attached: true, generation: 2, messageCurrent: true, headSeq: 0,
+    localReplicaReady: true, loading: false,
+    sync: { interestRevision: 1, fulfilledRevision: 0, targetHead: 0 },
+  } }} />);
+
+  expect(await screen.findByText('正在确认频道内容…')).toBeTruthy();
+  expect(screen.queryByText('这本账还没有可见条目')).toBeNull();
+
+  view.rerender(<Timeline {...base} history={{ status: {
+    attached: true, generation: 2, messageCurrent: false, headSeq: 0,
+    localReplicaReady: true, loading: false,
+    sync: { interestRevision: 1, fulfilledRevision: 0, targetHead: 9 },
+  } }} />);
+  expect(screen.getByText('正在确认频道内容…')).toBeTruthy();
+  expect(screen.queryByText('这本账还没有可见条目')).toBeNull();
+
+  view.rerender(<Timeline {...base} history={{ status: {
+    attached: true, generation: 2, messageCurrent: true, headSeq: 0,
+    localReplicaReady: true, loading: false,
+    sync: { interestRevision: 1, fulfilledRevision: 1, targetHead: 0 },
+  } }} />);
+  expect(await screen.findByText('这本账还没有可见条目')).toBeTruthy();
+  expect(screen.queryByText('正在确认频道内容…')).toBeNull();
+});
+
+it('过滤后的首个物理批次显示稳定partial说明，后台分页不冒充前台确认', async () => {
+  const state = timelineState([{
+    seq: 9,
+    envelope: {
+      id: 'unrelated-first-page', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: { id: 'other', kind: 'human' }, audience: ['other'],
+      payload: { text: '首批仅有不相关事实' },
+    },
+  }]);
+  const base = {
+    state,
+    roster: [{ id: 'agent-a', kind: 'agent' }],
+    selfId: 'me',
+    pending: [],
+    approvalStates: {},
+    access: 'member_active',
+  };
+  const view = render(<Timeline {...base} history={{ status: {
+    attached: true, generation: 2, messageCurrent: true, headSeq: 9,
+    localReplicaReady: true, loading: false, hasOlder: true, completedPages: 0,
+    sync: { interestRevision: 1, fulfilledRevision: 1, targetHead: 9 },
+  } }} />);
+
+  expect(await screen.findByText('正在确认频道内容…')).toBeTruthy();
+  expect(screen.queryByText('当前已加载的动态里没有符合筛选的往来')).toBeNull();
+  expect(screen.queryByText('这个频道里还没有与你相关的往来')).toBeNull();
+
+  view.rerender(<Timeline {...base} history={{ status: {
+    attached: true, generation: 2, messageCurrent: true, headSeq: 9,
+    localReplicaReady: true, loading: false, hasOlder: true, completedPages: 1,
+    sync: { interestRevision: 1, fulfilledRevision: 1, targetHead: 9 },
+  } }} />);
+  // Raw-head currentness and one physical page do not make an empty semantic
+  // projection ready. The bounded activation feedback remains stable while
+  // its existing runway is still finding the first matching row.
+  expect(screen.getByText('正在确认频道内容…')).toBeTruthy();
+  expect(screen.queryByText('当前已加载的动态里没有符合筛选的往来')).toBeNull();
+  expect(await screen.findByText('当前已加载的动态里没有符合筛选的往来')).toBeTruthy();
+  expect(screen.queryByText('正在确认频道内容…')).toBeNull();
+
+  view.rerender(<Timeline {...base} history={{ status: {
+    attached: true, generation: 2, messageCurrent: true, headSeq: 9,
+    localReplicaReady: true, loading: false, hasOlder: false, completedPages: 1,
+    sync: { interestRevision: 1, fulfilledRevision: 1, targetHead: 9 },
+  } }} />);
+  expect(await screen.findByText('这个频道里还没有与你相关的往来')).toBeTruthy();
+  expect(screen.queryByText('当前已加载的动态里没有符合筛选的往来')).toBeNull();
+  expect(screen.queryByText('正在确认频道内容…')).toBeNull();
+});
+
+it('身份迟到前诚实显示全部且不重挂消息列表，Mine 只由用户明确选择', async () => {
+  const standalone = [
+    { seq: 1, envelope: { id: 'mine', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: '我的动态' } } },
+    { seq: 2, envelope: { id: 'other', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other', kind: 'human' }, payload: { text: '其他动态' } } },
+  ];
+  const state = timelineState(standalone);
+  const base = { state, history: { attached: true, hasOlder: false }, roster: [], pending: [], approvalStates: {}, access: 'member_active' };
+  const view = render(<Timeline {...base} selfId="" />);
+
+  expect(await screen.findByText('正在确认你的频道身份，当前显示全部动态。')).toBeTruthy();
+  expect(screen.getByText('我的动态')).toBeTruthy();
+  expect(screen.getByText('其他动态')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '@我' })).toBeNull();
+  const listBeforeIdentity = view.container.querySelector('.timeline-message-list');
+
+  view.rerender(<Timeline {...base} selfId="me" />);
+  const scopeButton = await screen.findByRole('button', { name: '全部' });
+  expect(view.container.querySelector('.timeline-message-list')).toBe(listBeforeIdentity);
+  expect(screen.queryByText('正在确认你的频道身份，当前显示全部动态。')).toBeNull();
+  expect(screen.getByText('其他动态')).toBeTruthy();
+
+  fireEvent.click(scopeButton);
+  expect(await screen.findByRole('button', { name: '@我' })).toBeTruthy();
+  expect(screen.getByText('我的动态')).toBeTruthy();
+  expect(screen.queryByText('其他动态')).toBeNull();
+});

@@ -6,7 +6,7 @@ const serverURL = process.env.ATOLL_SERVER_URL || 'http://localhost:8832';
 export default defineConfig({
   plugins: [react()],
   test: {
-    exclude: ['tests/browser/**', '**/node_modules/**', '**/dist/**'],
+    exclude: ['tests/browser/**', 'docs/evidence/**', '**/node_modules/**', '**/dist/**'],
     setupFiles: ['tests/setup.js'],
   },
   build: {
@@ -16,6 +16,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    watch: {
+      // Browser evidence is not application source. Watching traces and
+      // screenshots can exhaust inotify and take down the development entry.
+      ignored: ['**/test-results*/**', '**/playwright-report*/**', '**/docs/evidence/**', '**/audit-output/**'],
+    },
     allowedHosts: ['tardis', 'tardis.tail6bc2a1.ts.net'],
     proxy: {
       '/api': { target: serverURL, changeOrigin: true },

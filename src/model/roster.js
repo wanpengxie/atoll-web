@@ -42,6 +42,7 @@ export function invalidatesRoster(envelope) {
 
 export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
   const cache = new Map();
+  const authorities = new Map();
   const pendingSubmissions = new Map();
   const timers = new Map();
   // self 是活状态读数（我在此频道以哪个 actor 身份行动），恒只活在内存：
@@ -61,6 +62,11 @@ export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
     const observation = await obs.channelActors(channelId);
     const rows = (observation.items || []).map(project);
     cache.set(channelId, rows);
+    authorities.set(channelId, Object.freeze({
+      principalId: String(me || ''),
+      channelId,
+      complete: observation.complete !== false,
+    }));
     const principalMatch = me
       ? rows.find((row) => row.kind === 'human' && row.principal === me)
       : undefined;
@@ -81,6 +87,9 @@ export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
     get(channelId) {
       return cache.get(channelId) || [];
     },
+    authority(channelId) {
+      return authorities.get(channelId) || null;
+    },
     async ensure(channelId) {
       return cache.has(channelId) ? cache.get(channelId) : refresh(channelId);
     },
@@ -96,6 +105,16 @@ export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
     },
     recordSubmission(channelId, messageId) {
       if (channelId && messageId) pendingSubmissions.set(messageId, channelId);
+    },
+    ownsSubmission(channelId, messageId) {
+      return Boolean(channelId && messageId && pendingSubmissions.get(messageId) === channelId);
+    },
+    forgetSubmission(channelId, messageId) {
+      if (channelId && messageId && pendingSubmissions.get(messageId) === channelId) {
+        pendingSubmissions.delete(messageId);
+        return true;
+      }
+      return false;
     },
     observeFeed(channelId, envelope) {
       const expectedChannel = envelope?.id ? pendingSubmissions.get(envelope.id) : '';
@@ -128,6 +147,7 @@ export function createRoster({ obs, me = '', debounceMs = 500 } = {}) {
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
       cache.clear();
+      authorities.clear();
       pendingSubmissions.clear();
       selves.clear();
     },

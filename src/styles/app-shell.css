@@ -103,10 +103,23 @@
 .workspace-view { grid-row: 4 / 6; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; background: var(--workspace); }
 .dynamic-workspace { grid-row: 4 / 6; display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
 .dynamic-workspace.terminal-split-open { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.dynamic-message-pane { --conversation-composer-height: 112px; --conversation-reading-gap: 32px; --conversation-composer-lane: calc(var(--conversation-composer-height) + var(--conversation-reading-gap)); position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr) var(--conversation-composer-lane); overflow: hidden; background: var(--workspace); }
-.dynamic-message-pane > .timeline { grid-row: 1; }
-.dynamic-message-pane > .channel-private-empty { grid-row: 1; }
-.conversation-bottom-overlay { position: absolute; z-index: 2; right: 0; bottom: 0; left: 0; display: flex; min-width: 0; flex-direction: column; align-items: stretch; pointer-events: none; }
+.dynamic-message-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--workspace); }
+.conversation-surface { --conversation-input-max-height: 320px; --conversation-min-input-height: 96px; --conversation-min-reading-height: 192px; --conversation-reading-gap: 32px; --conversation-waiting-reserve: 48px; position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; row-gap: var(--conversation-reading-gap); overflow: hidden; background: var(--workspace); }
+.conversation-reading-slot { grid-row: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.conversation-reading-slot > .timeline, .conversation-reading-slot > .channel-private-empty { width: 100%; height: 100%; min-height: 0; }
+.conversation-bottom-stack { position: relative; z-index: 3; grid-row: 2; min-width: 0; max-height: var(--conversation-input-max-height); }
+.conversation-input-slot { min-width: 0; max-height: var(--conversation-input-max-height); pointer-events: none; }
+.conversation-input-slot[data-send-clear-transition] { display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+.conversation-input-slot[data-send-clear-transition="prepared"] { block-size: var(--send-clear-from-height); transition: none; }
+.conversation-input-slot[data-send-clear-transition="armed"] { block-size: var(--send-clear-from-height); transition: none; }
+.conversation-input-slot[data-send-clear-transition="running"] { block-size: var(--send-clear-to-height); transition: block-size 180ms cubic-bezier(.2, .75, .25, 1); }
+.conversation-input-slot[data-send-clear-transition] > * { width: 100%; flex: 0 0 auto; }
+.conversation-surface.is-input-constrained .conversation-input-slot { box-sizing: border-box; overflow-x: hidden; overflow-y: auto; padding-top: 22px; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.conversation-surface.is-compact-height .conversation-reading-slot { min-height: 0; }
+.conversation-floating-slot { position: absolute; z-index: 2; right: 0; bottom: 100%; left: 0; min-width: 0; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .conversation-input-slot[data-send-clear-transition="running"] { transition-duration: 0ms; }
+}
 .dynamic-workspace > .terminal-view { grid-row: 1; }
 .dynamic-workspace.terminal-split-open > .terminal-view { grid-column: 2; border-left: 1px solid var(--terminal-line); }
 /* 桌面文件工作面。.workspace-view 的 grid-row: 4/6 是它当整屏 tab 时的位置，在这里要还

@@ -1,6 +1,7 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChannelCommand, creationConvergence, isProtectedActor, validateChannelName } from '../model/channel-governance.js';
 import { isMemberAccess } from '../model/channel-access.js';
+import { channelTemplateCommand, terminalValue } from '../model/space-administration.js';
 import { useModalFocus } from './primitives/useModalFocus.js';
 
 const STEPS = [
@@ -26,9 +27,11 @@ export function ChannelCreateModal({
 }) {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
+  const [template, setTemplate] = useState('');
   const [additionalActors, setAdditionalActors] = useState([]);
 
   const [createRequest, setCreateRequest] = useState(null);
+  const [templateRequest, setTemplateRequest] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const dialogRef = useRef(null);
@@ -44,12 +47,31 @@ export function ChannelCreateModal({
   }) : null;
   const validation = validateChannelName(name);
   const tracking = Boolean(createRequest && !convergence?.failed && !convergence?.ready);
-  const locked = disabled || submitting || tracking || convergence?.ready;
+  const locked = disabled || submitting || Boolean(templateRequest) || tracking || convergence?.ready;
   const selectableActors = useMemo(() => roster.filter((row) => (
     row.id !== selfId && ['human', 'agent', 'tool'].includes(row.kind) && !isProtectedActor(row)
   )), [roster, selfId]);
 
   useModalFocus({ dialogRef, initialFocusRef: nameRef, returnFocusRef, onClose, closeDisabled: submitting });
+
+  async function create(recipe, values = { name, purpose, additionalActors }) {
+    try {
+      if (!selfId) throw new Error('尚未确认你在当前频道中的 Actor 身份，请刷新后重试');
+      const id = await onSubmit(createChannelCommand({
+        parentId: channel.id,
+        name: values.name,
+        purpose: values.purpose,
+        recipe,
+        initialActorIds: [selfId, ...values.additionalActors],
+        roster,
+      }));
+      setCreateRequest({ id, name: values.name.trim() });
+    } catch (failure) {
+      setError(failure?.message || String(failure));
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function submit(event) {
     event.preventDefault();
@@ -57,16 +79,38 @@ export function ChannelCreateModal({
     if (nameError) { setError(nameError); return; }
     setError('');
     setSubmitting(true);
+    const templateID = template.trim();
+    if (!templateID) {
+      await create(null);
+      return;
+    }
     try {
-      if (!selfId) throw new Error('尚未确认你在当前频道中的 Actor 身份，请刷新后重试');
-      const id = await onSubmit(createChannelCommand({ parentId: channel.id, name, purpose, initialActorIds: [selfId, ...additionalActors], roster }));
-      setCreateRequest({ id, name: name.trim() });
+      const id = await onSubmit(channelTemplateCommand('get', { id: templateID }, roster, channel.id));
+      setTemplateRequest({ id, name, purpose, additionalActors: [...additionalActors] });
     } catch (failure) {
       setError(failure?.message || String(failure));
     } finally {
       setSubmitting(false);
     }
   }
+
+  useEffect(() => {
+    if (!templateRequest) return;
+    const terminal = terminalValue(state, templateRequest.id);
+    if (terminal.phase === 'waiting') return;
+    setTemplateRequest(null);
+    if (terminal.phase === 'failed') {
+      setError(`读取频道模板失败：${terminal.error}`);
+      return;
+    }
+    const recipe = terminal.value?.body;
+    if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)) {
+      setError('频道模板没有可用于创建频道的 recipe body');
+      return;
+    }
+    setSubmitting(true);
+    void create(recipe, templateRequest);
+  }, [state, templateRequest]);
 
   function enterChannel() {
     if (convergence?.ready && convergence.channel) onEnterChannel?.(convergence.channel);
@@ -85,6 +129,7 @@ export function ChannelCreateModal({
         <label><span>频道名称</span><input ref={nameRef} aria-label="新频道名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 backend" disabled={locked} aria-invalid={Boolean(name && validation)} required /></label>
         {name && validation && <small className="field-error">{validation}</small>}
         <label><span>用途</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>
+        <label><span>模板 ID（可选）</span><input aria-label="频道模板 ID" value={template} onChange={(event) => setTemplate(event.target.value)} placeholder="已登记的 channel template ID" disabled={locked} /></label>
         <section className="channel-create-members" aria-labelledby="channel-create-members-title">
           <header><strong id="channel-create-members-title">初始成员</strong><small>你会自动加入，也可以带入当前频道的其他角色</small></header>
           {selfId && <div className="channel-create-member pinned"><span>✓</span><div><strong>我</strong><small>{selfId}</small></div></div>}

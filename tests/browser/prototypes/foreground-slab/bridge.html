@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>History reveal to Virtuoso bridge</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body, #root { margin: 0; min-height: 100%; background: #f4f6f8; color: #172033; font: 14px/1.45 system-ui, sans-serif; }
+      #root { padding: 24px; }
+      .bridge-root { height: 600px; overflow-y: auto; background: #fff; border: 1px solid #b8c2d1; border-radius: 12px; overflow-anchor: auto; }
+      .history-reveal { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 180ms linear; }
+      .history-reveal[data-state="revealing"] { grid-template-rows: 1fr; }
+      .history-reveal-inner { min-height: 0; overflow: hidden; }
+      .bridge-row { margin: 0 16px; padding: 12px 16px; border-bottom: 1px solid #dce2ea; background: #fff; overflow-anchor: auto; }
+      .bridge-row strong { display: block; color: #1c345d; }
+      .bridge-row p { margin: 3px 0; }
+    </style>
+  </head>
+  <body><div id="root"></div><script type="module" src="./bridge.jsx"></script></body>
+</html>

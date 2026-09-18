@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createSubmission, isUncertainWireError, reconcileLanded, restoreSubmissions, saveSubmissions, transitionSubmission } from '../src/model/submissions.js';
+import { createSubmission, isUncertainWireError, reconcileLanded, restoreSubmissionRecords, restoreSubmissions, saveSubmissions, transitionSubmission } from '../src/model/submissions.js';
 
 class MemoryStorage {
   data = new Map();
@@ -31,5 +31,25 @@ describe('submission state', () => {
     const item = createSubmission({ id: 'm2', channelId: 'c0', frame: { id: 'm2' }, state: 'queued' });
     saveSubmissions('root', [item], storage);
     expect(restoreSubmissions('root', storage)[0]).toMatchObject({ messageId: 'm2', state: 'queued' });
+  });
+
+  it('restores explicit recovery states, clears foreign leases, and never regresses accepted work', () => {
+    const rows = ['transmitting', 'uncertain', 'rejected'].map((state, index) => ({
+      messageId: `m${index}`,
+      channelId: 'c0',
+      frame: { id: `m${index}` },
+      state,
+      leaseOwner: 'dead-tab',
+      leaseUntil: 99,
+    }));
+    expect(restoreSubmissionRecords(rows)).toEqual([
+      expect.objectContaining({ messageId: 'm0', state: 'uncertain', leaseOwner: '', leaseUntil: 0 }),
+      expect.objectContaining({ messageId: 'm1', state: 'uncertain', leaseOwner: '', leaseUntil: 0 }),
+      expect.objectContaining({ messageId: 'm2', state: 'rejected', leaseOwner: '', leaseUntil: 0 }),
+    ]);
+
+    const accepted = transitionSubmission({ ...rows[0], state: 'accepted' }, 'queued');
+    expect(accepted.state).toBe('accepted');
+    expect(transitionSubmission(accepted, 'retry')).toBe(accepted);
   });
 });
