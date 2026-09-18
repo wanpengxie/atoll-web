@@ -336,7 +336,7 @@ export default function App() {
   }, []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
   const forwardAgentActivity = useCallback((payload, context) => agentActivityRef.current.observe(payload, context), []);
-  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel, historyFor, loadHistory, markRead, acknowledgeNotifications, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
+  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel, historyFor, coldEntryDiagnosticsFor, loadHistory, markRead, acknowledgeNotifications, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setFilePreviewStack([]); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice, initialChannelId: initialRouteRef.current.channelId });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
@@ -1483,6 +1483,7 @@ export default function App() {
     open: loadActiveOlder,
     refreshLatest: refreshActiveLatest,
     retryLocalReplica: retryActiveLocalReplica,
+    debugSnapshot: () => coldEntryDiagnosticsFor(activeChannelId),
     markRead: readActiveLatest,
     markNotificationsRead: acknowledgeActiveNotifications,
   });

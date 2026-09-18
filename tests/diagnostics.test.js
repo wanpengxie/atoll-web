@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearDiagnostics,
+  coldEntryDiagnosticSnapshot,
   diagnostic,
   diagnosticsSnapshot,
   enableReadingTrace,
@@ -8,6 +9,7 @@ import {
   readingTrace,
   readingTraceSnapshot,
   registerRailDiagnosticProvider,
+  registerColdEntryDiagnosticProvider,
 } from '../src/model/diagnostics.js';
 
 describe('frontend diagnostics', () => {
@@ -62,6 +64,7 @@ describe('frontend diagnostics', () => {
         channelId: 'c0',
         authorityReady: false,
         readSeq: 0,
+        notificationHighWater: 0,
         counts: { related: 0, total: 0 },
         rows: [{ id: 'root', type: 'agent.ask', kind: 'response', status: 'completed', seq: 9, ackReason: 'counted_related' }],
       }],
@@ -69,6 +72,29 @@ describe('frontend diagnostics', () => {
     expect(JSON.parse(globalThis.__ATOLL_DIAGNOSTICS__.rail.exportText('c0'))).toEqual(railDiagnosticSnapshot('c0'));
     release();
     expect(railDiagnosticSnapshot('c0')).toEqual({ version: 1, channels: [] });
+  });
+
+  it('exports the bounded cold-entry chain deeply enough to name the occupying lane', () => {
+    const release = registerColdEntryDiagnosticProvider(() => ({
+      version: 1,
+      channelId: 'cold',
+      input: { kind: 'wheel', deltaY: -120, body: 'never export' },
+      feed: { scheduler: { global: { occupants: [{
+        channelId: 'warm', purpose: 'hydrate', priority: 'background', queuedMs: 42,
+      }] } } },
+    }));
+    expect(coldEntryDiagnosticSnapshot()).toEqual({
+      version: 1,
+      channelId: 'cold',
+      input: { kind: 'wheel', deltaY: -120, body: '[redacted]' },
+      feed: { scheduler: { global: { occupants: [{
+        channelId: 'warm', purpose: 'hydrate', priority: 'background', queuedMs: 42,
+      }] } } },
+    });
+    expect(globalThis.__ATOLL_DIAGNOSTICS__.coldEntry.snapshot())
+      .toEqual(coldEntryDiagnosticSnapshot());
+    release();
+    expect(coldEntryDiagnosticSnapshot()).toEqual({ version: 1, active: false });
   });
 
   it('keeps opt-in reading geometry metadata bounded, monotonic, redacted, and off the console', () => {

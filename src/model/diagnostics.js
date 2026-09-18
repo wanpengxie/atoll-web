@@ -9,7 +9,7 @@ function storage() {
   catch { return null; }
 }
 
-function safeValue(value, key = '', depth = 0) {
+function safeValue(value, key = '', depth = 0, maxDepth = 4) {
   if (REDACTED_KEY.test(key)) return '[redacted]';
   if (value instanceof Error) {
     return {
@@ -21,10 +21,10 @@ function safeValue(value, key = '', depth = 0) {
   }
   if (typeof value === 'string') return value.length > 2_000 ? `${value.slice(0, 2_000)}…` : value;
   if (value == null || ['number', 'boolean'].includes(typeof value)) return value;
-  if (depth >= 4) return '[truncated]';
-  if (Array.isArray(value)) return value.slice(0, 50).map((item) => safeValue(item, '', depth + 1));
+  if (depth >= maxDepth) return '[truncated]';
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => safeValue(item, '', depth + 1, maxDepth));
   if (typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).slice(0, 50).map(([name, item]) => [name, safeValue(item, name, depth + 1)]));
+    return Object.fromEntries(Object.entries(value).slice(0, 50).map(([name, item]) => [name, safeValue(item, name, depth + 1, maxDepth)]));
   }
   return String(value);
 }
@@ -46,6 +46,7 @@ let readingTraceStartedAt = 0;
 let readingTraceMetadata = {};
 let readingTraceDropped = 0;
 let railDiagnosticProvider = null;
+let coldEntryDiagnosticProvider = null;
 
 function monotonicNow() {
   return Number(globalThis.performance?.now?.() || Date.now());
@@ -167,6 +168,27 @@ export function railDiagnosticsText(channelId = '') {
   return JSON.stringify(railDiagnosticSnapshot(channelId), null, 2);
 }
 
+export function registerColdEntryDiagnosticProvider(provider) {
+  const installed = typeof provider === 'function' ? provider : null;
+  coldEntryDiagnosticProvider = installed;
+  return () => {
+    if (coldEntryDiagnosticProvider === installed) coldEntryDiagnosticProvider = null;
+  };
+}
+
+export function coldEntryDiagnosticSnapshot() {
+  if (!coldEntryDiagnosticProvider) return { version: 1, active: false };
+  try {
+    return safeValue(coldEntryDiagnosticProvider(), '', 0, 8);
+  } catch {
+    return { version: 1, active: false, error: 'snapshot_failed' };
+  }
+}
+
+export function coldEntryDiagnosticsText() {
+  return JSON.stringify(coldEntryDiagnosticSnapshot(), null, 2);
+}
+
 function persist() {
   try { storage()?.setItem(STORAGE_KEY, JSON.stringify(entries)); }
   catch { /* Diagnostics must never become another application failure. */ }
@@ -178,7 +200,7 @@ export function diagnostic(level, event, detail = {}) {
     at: new Date().toISOString(),
     level: normalizedLevel,
     event: String(event || 'unknown'),
-    detail: safeValue(detail),
+    detail: safeValue(detail, '', 0, String(event || '') === 'cold_entry.snapshot' ? 8 : 4),
   };
   entries.push(entry);
   if (entries.length > MAX_ENTRIES) entries.splice(0, entries.length - MAX_ENTRIES);
@@ -263,6 +285,10 @@ if (typeof globalThis === 'object') {
     rail: Object.freeze({
       snapshot: railDiagnosticSnapshot,
       exportText: railDiagnosticsText,
+    }),
+    coldEntry: Object.freeze({
+      snapshot: coldEntryDiagnosticSnapshot,
+      exportText: coldEntryDiagnosticsText,
     }),
   });
 }

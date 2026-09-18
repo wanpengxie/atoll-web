@@ -61,6 +61,39 @@ afterEach(() => {
 });
 
 describe('v5 history batch coordinator', () => {
+  it('explains a cold focus blocked behind the two physical lanes without mutating scheduling', async () => {
+    const harness = requestHarness();
+    const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });
+    scheduler.attach([
+      { channel_id: 'focus-a', head_seq: 100, has_rows: true },
+      { channel_id: 'warm-b', head_seq: 80, has_rows: true, last_activity: 1000 },
+      { channel_id: 'cold', head_seq: 1101, has_rows: true },
+    ], { generation: 1, focus: 'focus-a' });
+    await waitFor(() => expect(harness.calls).toHaveLength(1));
+    finish(scheduler, harness.calls[0], { oldest: 90, rows: 2, hasOlder: true });
+    await waitFor(() => expect(harness.calls).toHaveLength(3));
+    scheduler.focus('cold');
+
+    const beforeCalls = harness.calls.length;
+    const snapshot = scheduler.debugSnapshot('cold');
+    expect(snapshot.channel).toMatchObject({
+      channelId: 'cold',
+      headSeq: 1101,
+      blockedBy: 'global-inflight-capacity',
+    });
+    expect(snapshot.candidate).toMatchObject({
+      source: 'network', purpose: 'initial-tail', priority: 'foreground', beforeSeq: 1102,
+    });
+    expect(snapshot.global.occupants).toHaveLength(2);
+    expect(snapshot.global.occupants.map((entry) => [entry.channelId, entry.priority, entry.purpose]))
+      .toEqual(expect.arrayContaining([
+        ['focus-a', 'foreground', 'hydrate'],
+        ['warm-b', 'background', 'initial-tail'],
+      ]));
+    expect(harness.calls).toHaveLength(beforeCalls);
+    scheduler.destroy();
+  });
+
   it('keeps physical warm batches silent and exposes one stable foreground edge-demand lifecycle', async () => {
     const harness = requestHarness();
     const scheduler = createHistoryScheduler({ requestPage: harness.requestPage, revealRows: () => {} });

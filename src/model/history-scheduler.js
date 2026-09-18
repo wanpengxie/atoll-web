@@ -624,6 +624,83 @@ export function createHistoryScheduler({
     };
   }
 
+  // Read-only explanation for diagnostics. This deliberately shares the real
+  // candidate() result and only explains a null result; it never advances the
+  // dispatch wheel or creates another scheduling authority.
+  function candidateBlockReason(state) {
+    const ready = candidate(state);
+    if (ready) {
+      if (inflightByChannel.size >= HISTORY_MAX_INFLIGHT) return 'global-inflight-capacity';
+      const backgroundInflight = [...inflightByChannel.values()]
+        .filter((batch) => batch.priority === 'background').length;
+      if (ready.priority === 'background' && backgroundInflight >= maxBackgroundInflight) {
+        return 'background-inflight-capacity';
+      }
+      return 'ready';
+    }
+    if (!state) return 'channel-unknown';
+    if (!localMetaReady) return 'local-meta-pending';
+    if (localSelectionPending && state.id !== focus
+      && state.foregroundOwners.size === 0
+      && state.foregroundWaiters.length === 0
+      && state.currentWaiters.size === 0) return 'cache-selection-priority';
+    const remoteAttached = Boolean(generation && state.attachedGeneration === generation);
+    const localAttached = Boolean(!remoteAttached
+      && state.remoteEligible !== false
+      && hasLocalKnowledge(state.localMeta));
+    if (!remoteAttached && !localAttached) return 'source-not-attached';
+    if (inflightByChannel.has(state.id)) return 'channel-inflight';
+    if (authoritativeExhausted(state)) return 'authoritative-eof';
+    if (state.retryAt > now()) return 'retry-backoff';
+    if (state.projectionPending) return 'projection-ack-pending';
+    if (state.tier >= 3) return 'priority-ineligible';
+    const tailRefresh = numeric(state.tailRefreshBeforeSeq) > 0;
+    const purpose = tailRefresh ? 'initial-tail' : purposeFor(state, focus);
+    if (purpose === 'user-demand' && state.reservoir.size > 0) return 'buffer-awaiting-release';
+    const gapBeforeSeq = purpose === 'user-demand' ? visibleGapBefore(state) : 0;
+    const targetRows = state.tier === 0
+      ? HISTORY_P0_TARGET_ROWS
+      : state.tier === 1 ? HISTORY_P1_TARGET_ROWS : HISTORY_P2_TARGET_ROWS;
+    const targetBytes = state.tier === 0
+      ? HISTORY_P0_TARGET_BYTES
+      : state.tier === 1 ? HISTORY_P1_TARGET_BYTES : HISTORY_P2_TARGET_BYTES;
+    const scanBudget = state.tier === 0
+      ? HISTORY_P0_SCAN_BUDGET
+      : state.tier === 1 ? HISTORY_P1_SCAN_BUDGET : HISTORY_P2_SCAN_BUDGET;
+    if (!tailRefresh && purpose !== 'user-demand'
+      && (state.tailVisible || state.id !== focus)
+      && (state.reservoir.size >= targetRows
+        || state.reservoirBytes >= targetBytes
+        || state.warmScanned >= scanBudget)) return 'warm-target-satisfied';
+    if (state.reservoir.size >= reservoirSize
+      || state.reservoirBytes >= reservoirChannelBytes) return 'channel-reservoir-capacity';
+    const foregroundInflight = [...inflightByChannel.values()]
+      .some((batch) => batch.priority === 'foreground');
+    const globalAvailable = Math.max(0,
+      reservoirGlobalBytes - globalReservoirBytes - reservedInflightBytes);
+    if (globalAvailable <= 0 && (!tailRefresh && state.tier !== 0 || foregroundInflight)) {
+      return 'global-byte-capacity';
+    }
+    if (!tailRefresh && !state.hasRows && !state.hasOlder
+      && !hasLocalKnowledge(state.localMeta) && !gapBeforeSeq) return 'no-source-evidence';
+    if (!tailRefresh && !gapBeforeSeq
+      && state.completedPages > 0 && !state.hasOlder) return 'authoritative-eof';
+    const taskBeforeSeq = tailRefresh
+      ? state.tailRefreshBeforeSeq
+      : gapBeforeSeq || state.beforeSeq;
+    const source = tailRefresh ? 'network' : sourceFor(state, taskBeforeSeq);
+    if (blockedSourceMatches(state, {
+      source,
+      beforeSeq: taskBeforeSeq,
+      replicaEpoch,
+      localMetaEpoch,
+      stateLease: state.stateLease,
+      generation: source === 'network' ? generation : 0,
+    })) return 'source-failure-block';
+    if (!remoteAttached && source !== 'indexeddb') return 'remote-source-unavailable';
+    return 'not-selected';
+  }
+
   function compare(left, right) {
     return right.priorityClass - left.priorityClass
       || left.tier - right.tier
@@ -2015,6 +2092,85 @@ export function createHistoryScheduler({
     };
   }
 
+  function debugSnapshot(channelId = '') {
+    const state = channels.get(channelId);
+    const batch = state ? inflightByChannel.get(channelId) : null;
+    const pendingCandidate = state ? candidate(state) : null;
+    const summarizeBatch = (entry) => ({
+      channelId: entry.channelId,
+      source: entry.source,
+      purpose: entry.purpose,
+      rangeKind: entry.rangeKind,
+      phase: String(entry.phase || 'queued'),
+      priority: entry.priority,
+      generation: numeric(entry.generation),
+      beforeSeq: numeric(entry.beforeSeq),
+      limit: numeric(entry.limit),
+      queuedMs: Math.max(0, now() - numeric(entry.createdAt)),
+      cancelled: entry.cancelled === true,
+    });
+    const summarizeChannel = (entry) => ({
+      channelId: entry.id,
+      tier: entry.tier,
+      attached: generation > 0 && entry.attachedGeneration === generation,
+      headSeq: numeric(entry.headSeq),
+      frontierSeq: numeric(entry.beforeSeq),
+      tailRefreshBeforeSeq: numeric(entry.tailRefreshBeforeSeq),
+      hasOlder: entry.hasOlder === true,
+      tailVisible: entry.tailVisible === true,
+      controlCurrent: entry.controlCurrent === true,
+      projectionPending: entry.projectionPending === true,
+      buffered: entry.reservoir.size,
+      bufferedBytes: numeric(entry.reservoirBytes),
+      foregroundOwners: entry.foregroundOwners.size,
+      foregroundWaiters: entry.foregroundWaiters.length,
+      currentWaiters: entry.currentWaiters.size,
+      completedPages: numeric(entry.completedPages),
+      retryInMs: Math.max(0, numeric(entry.retryAt) - now()),
+      errorCode: entry.error ? String(entry.errorCode || 'history_failed') : '',
+      blockedBy: candidateBlockReason(entry),
+    });
+    return Object.freeze({
+      version: 1,
+      channel: state ? summarizeChannel(state) : {
+        channelId: String(channelId || ''),
+        blockedBy: channelId ? 'channel-unknown' : 'no-channel',
+      },
+      candidate: pendingCandidate ? {
+        source: pendingCandidate.source,
+        purpose: pendingCandidate.purpose,
+        rangeKind: pendingCandidate.rangeKind,
+        priority: pendingCandidate.priority,
+        beforeSeq: pendingCandidate.beforeSeq,
+        limit: pendingCandidate.limit,
+        byteLimit: pendingCandidate.byteLimit,
+      } : null,
+      inflight: batch ? summarizeBatch(batch) : null,
+      global: {
+        focus,
+        generation,
+        localMetaReady,
+        selectionPending: localSelectionPending,
+        inflightCount: inflightByChannel.size,
+        executorRunning: numeric(executors.pending),
+        executorQueued: numeric(executors.size),
+        reservedBytes: reservedInflightBytes,
+        reservoirBytes: globalReservoirBytes,
+        reservoirLimitBytes: reservoirGlobalBytes,
+        wakeInMs: Math.max(0, wakeAt - now()),
+        occupants: [...inflightByChannel.values()].slice(0, HISTORY_MAX_INFLIGHT)
+          .map(summarizeBatch),
+        otherChannels: [...channels.values()]
+          .filter((entry) => entry.id !== channelId
+            && (inflightByChannel.has(entry.id)
+              || entry.foregroundOwners.size > 0
+              || entry.foregroundWaiters.length > 0))
+          .slice(0, 8)
+          .map(summarizeChannel),
+      },
+    });
+  }
+
   function observeLive(channelId, timestamp = 0, { related = false, seq = 0, generation: rowGeneration = 0 } = {}) {
     if (!channelId) return;
     let state = channels.get(channelId);
@@ -2112,5 +2268,5 @@ export function createHistoryScheduler({
     disconnected(generation + 1);
   }
 
-  return { attach, revoke, refreshRemoteMeta, waitForCurrent, setLocalMeta, setPriorityScope, historyRow, pageEnd, nextSegment, beginOperation, focus: setFocus, observeLive, markRead, disconnected, clear, resetReplica, destroy, isDestroyed: () => destroyed, snapshot, tick: schedule };
+  return { attach, revoke, refreshRemoteMeta, waitForCurrent, setLocalMeta, setPriorityScope, historyRow, pageEnd, nextSegment, beginOperation, focus: setFocus, observeLive, markRead, disconnected, clear, resetReplica, destroy, isDestroyed: () => destroyed, snapshot, debugSnapshot, tick: schedule };
 }

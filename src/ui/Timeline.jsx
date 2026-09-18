@@ -28,6 +28,7 @@ import { ProgressTrail, ProgressTrailHost } from './timeline/ProgressTrail.jsx';
 import { createMessageLayoutStore, MessageLayoutProvider, useMessageLayoutState } from './timeline/MessageLayoutState.jsx';
 import { FoldableBody } from './timeline/FoldableBody.jsx';
 import { useReadingSession } from './timeline/useReadingSession.js';
+import { useColdEntryDiagnostics } from './timeline/useColdEntryDiagnostics.js';
 import { ReadingContainerHandoff } from './timeline/ReadingContainerHandoff.jsx';
 import { ConversationSurface } from './conversation/ConversationSurface.jsx';
 import { ReadingIntentProvider } from './conversation/ReadingIntentContext.jsx';
@@ -1175,6 +1176,15 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     [projection.presentation, viewport.presentationAuthority],
   );
 	const rolePresentation = roleCandidate.snapshot;
+  useColdEntryDiagnostics({
+    channelId: state.channelId,
+    viewKey: messageListKey,
+    selfReady: !identityPending,
+    surfaceVisible,
+    presentation: rolePresentation,
+    reading: viewport,
+    history,
+  });
   useLayoutEffect(() => {
     // Role authority is subordinate to the exact committed Presentation. If
     // an older concurrent candidate lost that owner race, neither owner may

@@ -1002,6 +1002,26 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	}
   }, []);
   const historyFor = useCallback((channelId) => schedulerRef.current.snapshot(channelId), []);
+  const coldEntryDiagnosticsFor = useCallback((channelId) => {
+    const state = replicaRef.current.state(channelId);
+    return Object.freeze({
+      feed: Object.freeze({
+        localReplicaReady,
+        localReplicaErrorCode: String(localReplicaErrorCode || ''),
+        admissionEpoch: dataAdmissionEpochRef.current,
+        grantEstablished: dataGrantSetEstablishedRef.current,
+        granted: dataGrantedChannelIdsRef.current.has(channelId),
+      }),
+      replica: Object.freeze({
+        revision: replicaRef.current.revision(channelId),
+        rows: Number(state?.rows?.size || 0),
+        lastSeq: Number(state?.lastSeq || 0),
+        projectionRevision: Number(state?._timelineProjectionVersion || 0),
+        semanticRevision: Number(state?._timelineRevision || 0),
+      }),
+      scheduler: schedulerRef.current.debugSnapshot(channelId),
+    });
+  }, [localReplicaErrorCode, localReplicaReady]);
   const bump = useCallback(() => {
     setVersion((value) => value + 1);
     setIndexVersion((value) => value + 1);
@@ -1285,6 +1305,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	unreadFor,
 		prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode,
 		setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel,
+    coldEntryDiagnosticsFor,
     historyFor: (channelId) => ({
       ...schedulerRef.current.snapshot(channelId),
       notificationAuthorityRevision: notificationAuthorityRevisionRef.current,
