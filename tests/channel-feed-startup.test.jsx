@@ -19,7 +19,12 @@ vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => ({
 import { useChannelFeed } from '../src/app/hooks/useChannelFeed.js';
 import { createAgentActivityTracker } from '../src/model/agent-activity.js';
 import { setDeviceProfile } from '../src/model/device-profile.js';
-import { apply, createChannelState } from '../src/model/fold.js';
+import {
+  apply,
+  createChannelState,
+  liveTimelineArrivals,
+  registerLiveTimelineArrivalConsumer,
+} from '../src/model/fold.js';
 import { createRoster } from '../src/model/roster.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 
@@ -132,7 +137,63 @@ describe('channel feed startup lanes', () => {
     hook.unmount();
   });
 
-  it('keeps incomplete notification context unknown until the ordinary viewport physically reads it', async () => {
+  it('rejects an in-flight notification hydration when attach grants revoke its channel', async () => {
+    const resolvers = [];
+    const meta = new Map([['c1', {
+      newestSeq: 3, rowCount: 1, coverage: [{ lowSeq: 3, highSeq: 3 }],
+    }]]);
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      readNotificationContext: vi.fn(() => new Promise((resolve) => { resolvers.push(resolve); })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+    await act(async () => { await hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    await waitFor(() => expect(resolvers).toHaveLength(1));
+
+    await act(async () => {
+      await hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+      resolvers[0]({
+        complete: true, cancelled: false, missingParents: [],
+        rows: [{ channel_id: 'c1', seq: 3, envelope: { id: 'revoked-before-attach', kind: 'event', type: 'human.note' } }],
+      });
+      await Promise.resolve();
+    });
+    expect(hook.result.current.statesRef.current.get('c1')?.rows.has(3)).not.toBe(true);
+
+    act(() => {
+      hook.result.current.cursorsRef.current.markRead('c1', 0);
+      hook.result.current.cursorsRef.current.acknowledgeNotifications('c1', 0);
+    });
+    await act(async () => {
+      await hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+        { channel_id: 'c1', head_seq: 3, has_rows: true },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+    await waitFor(() => expect(resolvers.length).toBeGreaterThan(1));
+    const sameGenerationResolvers = resolvers.slice(1);
+    await act(async () => {
+      await hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+      sameGenerationResolvers.forEach((resolve) => resolve({
+        complete: true, cancelled: false, missingParents: [],
+        rows: [{ channel_id: 'c1', seq: 3, envelope: { id: 'revoked-same-generation', kind: 'event', type: 'human.note' } }],
+      }));
+      await Promise.resolve();
+    });
+    expect(hook.result.current.statesRef.current.get('c1')?.rows.has(3)).not.toBe(true);
+    expect(hook.result.current.unreadFor('c1')).not.toHaveProperty('pending');
+    hook.unmount();
+  });
+
+  it('keeps incomplete notification context unknown when only physical reading advances', async () => {
     const meta = new Map([['c1', {
       newestSeq: 3, rowCount: 1, coverage: [{ lowSeq: 3, highSeq: 3 }],
     }]]);
@@ -155,7 +216,99 @@ describe('channel feed startup lanes', () => {
     await waitFor(() => expect(hook.result.current.unreadFor('c1')).toMatchObject({ unknown: true }));
 
     act(() => hook.result.current.markRead('c1', { physicalSeq: 3, identities: [] }));
-    expect(hook.result.current.unreadFor('c1')).not.toHaveProperty('unknown');
+    expect(hook.result.current.unreadFor('c1')).toMatchObject({ unknown: true });
+    hook.unmount();
+  });
+
+  it('keeps an inactive granted notification unknown when local Meta never settles', async () => {
+    const never = new Promise(() => {});
+    const meta = new Map();
+    doubles.cache = {
+      ensureOwner: vi.fn(() => never),
+      ensureBoot: vi.fn(() => never),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      readNotificationContext: vi.fn(async () => ({ complete: false, cancelled: false, rows: [] })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+    act(() => { void hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    act(() => {
+      void hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+    act(() => {
+      hook.result.current.cursorsRef.current.markRead('c1', 0);
+      hook.result.current.cursorsRef.current.acknowledgeNotifications('c1', 0);
+      void hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+        { channel_id: 'c1', head_seq: 3, has_rows: true },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+    expect(hook.result.current.unreadFor('c1')).toMatchObject({ unknown: true });
+    expect(doubles.cache.readNotificationContext).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it('journals a related reconnect tail fact when history materializes it for the mounted viewport', async () => {
+    const meta = new Map();
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const calls = [];
+    const historyBefore = vi.fn((channelId, beforeSeq, _limit, options) => {
+      const ref = `reconnect-${calls.length + 1}`;
+      calls.push({ channelId, beforeSeq, ref, ...options });
+      const receipt = Promise.resolve({ accepted: true, channel_id: channelId, generation: options.generation });
+      receipt.ref = ref;
+      return receipt;
+    });
+    const props = feedProps();
+    props.rosterRef.current = {
+      self: () => 'human:root:1', observeFeed: () => '', handleEnvelope: () => {},
+    };
+    props.wireRef.current = { historyBefore, cancelHistory: vi.fn(async () => {}) };
+    const hook = renderHook(() => useChannelFeed(props));
+    await act(async () => {
+      await hook.result.current.prepareLocalReplica('root', { focus: 'c0' });
+      await hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+    act(() => hook.result.current.cursorsRef.current.acknowledgeNotifications('c0', 100));
+    await act(async () => {
+      await hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 101, has_rows: true },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+    await waitFor(() => expect(calls).toHaveLength(1));
+    const state = hook.result.current.statesRef.current.get('c0');
+    const releaseConsumer = registerLiveTimelineArrivalConsumer(state);
+    const call = calls[0];
+    act(() => {
+      hook.result.current.enqueue({
+        source: 'history', ref: call.ref, generation: 1, channel_id: 'c0', seq: 101,
+        envelope: {
+          id: 'reconnect-related', kind: 'event', type: 'human.note', visibility: 'public',
+          sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:root:1'], payload: { text: 'after reconnect' },
+        },
+      });
+      hook.result.current.pageEnd({
+        source: 'history', ref: call.ref, generation: 1, channel_id: 'c0', purpose: call.purpose,
+        head_seq: 101, oldest_seq: 101, scan_low_seq: 101, scan_high_seq: 101,
+        next_before_seq: 101, rows: 1, bytes: 100, has_older: false,
+      });
+    });
+    await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(101)).toBe(true));
+    expect(liveTimelineArrivals(state).events).toEqual([
+      expect.objectContaining({ rowID: 'reconnect-related', seq: 101 }),
+    ]);
+    releaseConsumer();
     hook.unmount();
   });
 
@@ -744,6 +897,30 @@ describe('channel feed startup lanes', () => {
     hook.unmount();
   });
 
+  it('does not install late cache Meta for a channel omitted from the attach grant set', async () => {
+    const meta = new Map([['b', {
+      newestSeq: 10, rowCount: 10, coverage: [{ lowSeq: 1, highSeq: 10 }],
+    }]]);
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+
+    await act(async () => {
+      await hook.result.current.setHistoryGrants([
+        { channel_id: 'a', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'a', boot: 'boot-a' });
+    });
+
+    expect(hook.result.current.statesRef.current.has('b')).toBe(false);
+    expect(doubles.cache.readBefore).not.toHaveBeenCalledWith('b', expect.anything(), expect.anything(), expect.anything());
+    hook.unmount();
+  });
+
   it('does not retain rejected pre-Meta receipts across a revoked channel or successor generation', async () => {
     let resolveOwner;
     const owner = new Promise((resolve) => { resolveOwner = resolve; });
@@ -822,6 +999,92 @@ describe('channel feed startup lanes', () => {
       'c0', 101, expect.any(Number), expect.objectContaining({ generation: 1 }),
     ));
     expect(hook.result.current.localReplicaReady).toBe(true);
+    hook.unmount();
+  });
+
+  it('does not let a late owner replacement reset a newer remote attach', async () => {
+    let resolveOwner;
+    const owner = new Promise((resolve) => { resolveOwner = resolve; });
+    const meta = new Map();
+    doubles.cache = {
+      ensureOwner: vi.fn(() => owner),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const props = feedProps();
+    props.wireRef.current = {
+      historyBefore: vi.fn(() => {
+        const pending = new Promise(() => {});
+        pending.ref = 'late-owner-history';
+        return pending;
+      }),
+      cancelHistory: vi.fn(async () => {}),
+      channelMeta: vi.fn(async () => ({
+        channel_id: 'c0', head_seq: 1, has_rows: true, generation: 1,
+      })),
+    };
+    const hook = renderHook(() => useChannelFeed(props));
+
+    let preparation;
+    let attachment;
+    act(() => { preparation = hook.result.current.prepareLocalReplica('root', { focus: 'c0' }); });
+    act(() => {
+      attachment = hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 1, has_rows: true },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+      hook.result.current.enqueue({
+        source: 'live', generation: 1, channel_id: 'c0', seq: 1,
+        envelope: { id: 'live-before-owner', kind: 'event', type: 'human.note', payload: { text: 'live' } },
+      });
+    });
+    await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(1)).toBe(true));
+    expect(hook.result.current.historyFor('c0')).toMatchObject({
+      attached: true, generation: 1, messageCurrent: true,
+    });
+
+    resolveOwner({ changed: true, boot: 'boot-a', meta });
+    await act(async () => { await Promise.all([preparation, attachment]); });
+
+    expect(hook.result.current.historyFor('c0')).toMatchObject({
+      attached: true,
+      generation: 1,
+      messageCurrent: true,
+    });
+    expect(hook.result.current.statesRef.current.get('c0')?.rows.has(1)).toBe(true);
+    hook.unmount();
+  });
+
+  it('does not let a delayed persistent clear reset a newer remote attach', async () => {
+    let resolveClear;
+    const clear = new Promise((resolve) => { resolveClear = resolve; });
+    const meta = new Map();
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(() => clear),
+    };
+    const hook = renderHook(() => useChannelFeed(feedProps()));
+    let reset;
+    act(() => { reset = hook.result.current.resetPersistent(); });
+    await waitFor(() => expect(doubles.cache.clear).toHaveBeenCalledOnce());
+
+    let attachment;
+    act(() => {
+      attachment = hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+    expect(hook.result.current.historyFor('c0')).toMatchObject({ attached: true, generation: 1 });
+
+    resolveClear();
+    await act(async () => { await Promise.all([reset, attachment]); });
+    expect(hook.result.current.historyFor('c0')).toMatchObject({
+      attached: true, generation: 1, messageCurrent: true,
+    });
     hook.unmount();
   });
 

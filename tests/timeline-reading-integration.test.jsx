@@ -1500,6 +1500,204 @@ it('fresh following 立即显示缓存Projection，但在Replica修订消费前�
   expect(request).not.toHaveBeenCalled();
 });
 
+it('freezes one backlog notification boundary and waits for presented follow evidence before advancing again', async () => {
+  let port;
+  const markNotificationsRead = vi.fn(() => true);
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row100 = { id: 'row-100', seqLow: 100, seqHigh: 100 };
+  const initialSnapshot = {
+    revision: 10,
+    sourceRevision: 10,
+    rows: [row100],
+    entities: new Map([[row100.id, row100]]),
+  };
+  function Harness({ snapshot, status, arrivals }) {
+    const reading = useReadingSession({
+      channelID: 'c0', viewKey: 'c0:mine', snapshot,
+      history: { status, markNotificationsRead }, viewSessions,
+      historyViewSpec: { scope: 'mine', actorFilter: new Set() },
+      surfaceVisible: true,
+      arrivals,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  const baseStatus = {
+    attached: true, generation: 7, headSeq: 100,
+    messageCurrent: false, presentationRevision: 10,
+    notificationAuthorityRevision: 3,
+  };
+  const view = render(<Harness snapshot={initialSnapshot} status={baseStatus} arrivals={{ revision: 0, acknowledgedRevision: 0, events: [] }} />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  // Meta advances before the first legal DOM-tail observation. The backlog
+  // event must be born from that later observation, not from attach/render.
+  view.rerender(<Harness
+    snapshot={initialSnapshot}
+    status={{ ...baseStatus, headSeq: 101 }}
+    arrivals={{ revision: 0, acknowledgedRevision: 0, events: [] }}
+  />);
+  await act(async () => {});
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 100,
+    visibleRows: [{ messageID: row100.id, seqHigh: 100 }],
+  }));
+  expect(markNotificationsRead).toHaveBeenCalledTimes(1);
+  expect(markNotificationsRead.mock.calls[0][0]).toMatchObject({
+    cause: 'tail-backlog', boundary: 101, generation: 7,
+  });
+
+  // Meta-only progress does not reuse the old tail observation.
+  view.rerender(<Harness
+    snapshot={initialSnapshot}
+    status={{ ...baseStatus, headSeq: 102 }}
+    arrivals={{ revision: 0, acknowledgedRevision: 0, events: [] }}
+  />);
+  await act(async () => {});
+  expect(markNotificationsRead).toHaveBeenCalledTimes(1);
+
+  const row101 = { id: 'row-101', seqLow: 102, seqHigh: 102 };
+  const nextSnapshot = {
+    revision: 11,
+    sourceRevision: 11,
+    rows: [row100, row101],
+    entities: new Map([[row100.id, row100], [row101.id, row101]]),
+  };
+  view.rerender(<Harness
+    snapshot={nextSnapshot}
+    status={{ ...baseStatus, headSeq: 102, messageCurrent: true, presentationRevision: 11 }}
+    arrivals={{
+      revision: 1,
+      acknowledgedRevision: 0,
+      events: [{ revision: 1, key: row101.id, rowID: row101.id, seq: 102 }],
+      acknowledge: vi.fn(),
+    }}
+  />);
+  await act(async () => {});
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 2, atTail: true,
+    surfaceVisible: true, installedHighSeq: 102,
+    visibleRows: [{ messageID: row101.id, seqHigh: 102 }],
+  }));
+  expect(markNotificationsRead).toHaveBeenCalledTimes(2);
+  expect(markNotificationsRead.mock.calls[1][0]).toMatchObject({
+    cause: 'presented-follow', boundary: 102, installedHighSeq: 102, sourceRevision: 11,
+  });
+});
+
+it('retries the same frozen notification event after Meta advances', async () => {
+  let port;
+  let accept = false;
+  const markNotificationsRead = vi.fn(() => accept);
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row = { id: 'row-100', seqLow: 100, seqHigh: 100 };
+  const snapshot = {
+    revision: 10, sourceRevision: 10, rows: [row], entities: new Map([[row.id, row]]),
+  };
+  function Harness({ headSeq }) {
+    const reading = useReadingSession({
+      channelID: 'c0', viewKey: 'c0:mine', snapshot,
+      history: {
+        status: {
+          attached: true, generation: 7, headSeq,
+          messageCurrent: false, presentationRevision: 10,
+          notificationAuthorityRevision: 3,
+        },
+        markNotificationsRead,
+      },
+      viewSessions,
+      surfaceVisible: true,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  const view = render(<Harness headSeq={100} />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 100,
+    visibleRows: [{ messageID: row.id, seqHigh: 100 }],
+  }));
+  expect(markNotificationsRead).toHaveBeenCalled();
+  expect(markNotificationsRead.mock.calls.every(([event]) => event.boundary === 100)).toBe(true);
+
+  accept = true;
+  view.rerender(<Harness headSeq={101} />);
+  await waitFor(() => expect(markNotificationsRead.mock.calls.some(([event]) => (
+    event.boundary === 100 && markNotificationsRead.mock.results.at(-1)?.value === true
+  ))).toBe(true));
+  expect(markNotificationsRead.mock.calls.every(([event]) => event.boundary === 100)).toBe(true);
+});
+
+it('keeps a rejected frozen notification while browsing and births the newer backlog only at a fresh tail', async () => {
+  let port;
+  let accept = false;
+  const markNotificationsRead = vi.fn(() => accept);
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const row = { id: 'row-100', seqLow: 100, seqHigh: 100 };
+  const snapshot = {
+    revision: 10, sourceRevision: 10, rows: [row], entities: new Map([[row.id, row]]),
+  };
+  function Harness({ headSeq }) {
+    const reading = useReadingSession({
+      channelID: 'c0', viewKey: 'c0:mine', snapshot,
+      history: {
+        status: {
+          attached: true, generation: 7, headSeq,
+          messageCurrent: false, presentationRevision: 10,
+          notificationAuthorityRevision: 3,
+        },
+        markNotificationsRead,
+      },
+      viewSessions,
+      surfaceVisible: true,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  const view = render(<Harness headSeq={100} />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 1, atTail: true,
+    surfaceVisible: true, installedHighSeq: 100,
+    visibleRows: [{ messageID: row.id, seqHigh: 100 }],
+  }));
+  expect(markNotificationsRead.mock.calls.every(([event]) => event.boundary === 100)).toBe(true);
+
+  act(() => port.onUserControl({ direction: 'older', gestureID: 'browse-after-reject' }));
+  expect(port.getSession().mode).toBe('browsing');
+  view.rerender(<Harness headSeq={101} />);
+  accept = true;
+  act(() => port.jumpToLatest());
+  expect(markNotificationsRead.mock.calls.every(([event]) => event.boundary === 100)).toBe(true);
+
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 2, atTail: true,
+    surfaceVisible: true, installedHighSeq: 100,
+    visibleRows: [{ messageID: row.id, seqHigh: 100 }],
+  }));
+  expect(markNotificationsRead.mock.calls.some(([event], index) => (
+    event.boundary === 100 && markNotificationsRead.mock.results[index]?.value === true
+  ))).toBe(true);
+  expect(markNotificationsRead.mock.calls.at(-1)[0]).toMatchObject({
+    cause: 'tail-backlog', boundary: 101,
+  });
+});
+
 it('真实上滚会把同一个anticipatory历史operation升级为可见interactive demand', async () => {
   let port;
   let settle;

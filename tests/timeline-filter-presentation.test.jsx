@@ -291,6 +291,46 @@ it('频道新鲜度失败显示其真实错误并由重试按钮续同一 sync o
   expect(request).not.toHaveBeenCalled();
 });
 
+it('缓存正文保持可读并正交显示 freshness pending、error 与同 owner 重试', async () => {
+  const { state, selfId } = mixedAgentTurns();
+  const refreshLatest = vi.fn(async () => true);
+  const base = {
+    state,
+    roster: [
+      { id: selfId, kind: 'human', name: '我' },
+      { id: 'agent:codex:200', kind: 'agent', name: 'Codex' },
+      { id: 'agent:claude:300', kind: 'agent', name: 'Claude' },
+    ],
+    selfId,
+    pending: [],
+    approvalStates: {},
+    access: 'member_active',
+  };
+  const status = {
+    attached: true, generation: 8, messageCurrent: false, headSeq: 4,
+    localReplicaReady: true, loading: false, hasOlder: false, completedPages: 1,
+    presentationRevision: state._timelineRevision,
+    sync: { interestRevision: 2, fulfilledRevision: 1, targetHead: 4, error: '' },
+  };
+  const view = render(<Timeline {...base} history={{ refreshLatest, status }} />);
+
+  expect(await screen.findByText('Codex question')).toBeTruthy();
+  expect(screen.getByText('正在确认频道最新内容…')).toBeTruthy();
+
+  view.rerender(<Timeline {...base} history={{
+    refreshLatest,
+    status: {
+      ...status,
+      sync: { ...status.sync, error: '频道新鲜度响应超时' },
+    },
+  }} />);
+  expect(screen.getByText('Codex question')).toBeTruthy();
+  expect(screen.getByRole('alert').textContent).toContain('频道新鲜度响应超时');
+  fireEvent.click(screen.getByRole('button', { name: '重试' }));
+  await waitFor(() => expect(refreshLatest).toHaveBeenCalledOnce());
+  expect(screen.getByText('Codex question')).toBeTruthy();
+});
+
 it('零行筛选供给失败后由 scheduler 状态推进恢复并保留前台重试语义', async () => {
   const state = timelineState([{
     seq: 9,

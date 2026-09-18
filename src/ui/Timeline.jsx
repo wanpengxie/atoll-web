@@ -1822,6 +1822,18 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       role="alert"
     ><span>{viewport.availabilityError || '确认频道内容失败'}</span><button type="button" onClick={() => viewport.retryAvailability()}>重试</button></div>}
 	  {!presentationEmpty && identityPending && <div className="timeline-history-status" role="status">正在确认你的频道身份，当前显示全部动态。</div>}
+	  {!presentationEmpty && !identityPending && viewport.availability === 'readable'
+	    && viewport.freshness?.phase === 'pending' && <div
+	      className="timeline-history-status timeline-freshness-status"
+	      data-phase="pending"
+	      role="status"
+	    >正在确认频道最新内容…</div>}
+	  {!presentationEmpty && !identityPending && viewport.availability === 'readable'
+	    && viewport.freshness?.phase === 'error' && <div
+	      className="timeline-history-status timeline-freshness-status"
+	      data-phase="error"
+	      role="alert"
+	    ><span>{viewport.freshness.error || '确认频道最新内容失败'}</span><button type="button" onClick={() => viewport.retryAvailability()}>重试</button></div>}
 	  {!presentationEmpty && !identityPending && viewport.availability === 'readable' && viewport.historyDemand?.phase !== 'idle' && <div
       className="timeline-history-status timeline-history-demand"
       data-phase={viewport.historyDemand.phase}

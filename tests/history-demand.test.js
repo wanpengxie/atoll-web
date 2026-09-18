@@ -107,7 +107,7 @@ describe('visual history demand port', () => {
     expect(decide({ ...valid, following: false })).toBe(0);
   });
 
-  it('derives a notification boundary from attached Meta without requiring message bodies current', () => {
+  it('validates a frozen backlog boundary without resampling a newer Meta head', () => {
     const status = {
       attached: true,
       messageCurrent: false,
@@ -118,19 +118,45 @@ describe('visual history demand port', () => {
     const receipt = {
       channelId: 'c0', viewKey: 'c0:mine:filtered', activationID: 'activation-8',
       generation: 8, atTail: true, following: true, surfaceVisible: true,
+      cause: 'tail-backlog', boundary: 52,
     };
     const authority = { viewKey: receipt.viewKey, activationID: receipt.activationID };
-    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt })).toBe(57);
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt })).toBe(52);
 
     const markNotificationsRead = vi.fn(() => true);
     const port = createHistoryDemandPort({ channelId: 'c0', status, markNotificationsRead });
     expect(port.markNotificationsRead(receipt, authority)).toBe(true);
-    expect(markNotificationsRead).toHaveBeenCalledWith(57);
+    expect(markNotificationsRead).toHaveBeenCalledWith(receipt);
 
     expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, generation: 7 } })).toBe(0);
     expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, atTail: false } })).toBe(0);
     expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, following: false } })).toBe(0);
     expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, surfaceVisible: false } })).toBe(0);
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, boundary: 58 } })).toBe(0);
+  });
+
+  it('accepts a presentation-bounded follow event only after current body presentation', () => {
+    const status = {
+      attached: true,
+      messageCurrent: true,
+      generation: 8,
+      headSeq: 57,
+      presentationRevision: 91,
+      notificationAuthorityRevision: 4,
+    };
+    const receipt = {
+      channelId: 'c0', viewKey: 'c0:mine', activationID: 'activation-8',
+      authorityRevision: 4, generation: 8, atTail: true, following: true, surfaceVisible: true,
+      cause: 'presented-follow', boundary: 53, installedHighSeq: 53, sourceRevision: 91,
+    };
+    const authority = { viewKey: receipt.viewKey, activationID: receipt.activationID };
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt })).toBe(53);
+    expect(notificationReadSeq({
+      channelId: 'c0', status: { ...status, messageCurrent: false }, authority, receipt,
+    })).toBe(0);
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, installedHighSeq: 52 } })).toBe(0);
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, sourceRevision: 92 } })).toBe(0);
+    expect(notificationReadSeq({ channelId: 'c0', status, authority, receipt: { ...receipt, authorityRevision: 3 } })).toBe(0);
   });
 
 });

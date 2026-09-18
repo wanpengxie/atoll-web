@@ -1315,7 +1315,7 @@ export default function App() {
   const acknowledgeActiveNotifications = derived(
     'acknowledgeActiveNotifications',
     [activeChannelId, acknowledgeNotifications],
-    () => (highWater) => acknowledgeNotifications(activeChannelId, highWater),
+    () => (confirmation) => acknowledgeNotifications(activeChannelId, confirmation),
   );
   const loadActiveOlder = derived(
     'loadActiveOlder',

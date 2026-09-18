@@ -68,6 +68,14 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const cacheEpochFenceRef = useRef(null);
   if (cacheEpochFenceRef.current === null) cacheEpochFenceRef.current = createPersistenceEpochFence();
   const attachMetaSerialRef = useRef(0);
+  // Cache selection and remote attach are independent startup lanes. This
+  // epoch is the authority seam between them: a completion that began before
+  // a newer attach may finish durable work, but it cannot reset or replace the
+  // in-memory Replica/Scheduler world selected by that attach.
+  const dataAdmissionEpochRef = useRef(0);
+  const dataGrantedChannelIdsRef = useRef(new Set());
+  const dataGrantedChannelHeadsRef = useRef(new Map());
+  const dataGrantSetEstablishedRef = useRef(false);
   const replicaRef = useRef(null);
   if (replicaRef.current === null) replicaRef.current = createChannelReplicaStore();
   const presentationAdmissionRef = useRef(null);
@@ -90,6 +98,11 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const notificationHydrationRef = useRef({ serial: 0, channels: new Map() });
   const syncCoordinatorRef = useRef(null);
   const attachedGenerationRef = useRef(0);
+  // Reading keeps a small, mount-local notification confirmation lifecycle.
+  // Bind it to the selected (principal, server boot) world so a boot change
+  // that restarts ledger sequence numbers cannot inherit the preceding
+  // world's delivered boundary merely because React kept the Timeline mount.
+  const notificationAuthorityRevisionRef = useRef(0);
 
   const unreadFor = useCallback((channelId, selfId = '') => {
     if (!cursorsRef.current.isReadAuthorityReady()) return { related: 0, total: 0, pending: true };
@@ -138,8 +151,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     const hydration = notificationHydrationRef.current.serial === localReplicaSerialRef.current
       ? notificationHydrationRef.current.channels.get(channelId)
       : '';
-    if (hydration === 'pending') return { ...counts, pending: true };
-    if (hydration === 'unknown') return { ...counts, unknown: true };
+    const hydrationPhase = typeof hydration === 'string' ? hydration : hydration?.phase;
+    if (hydrationPhase === 'pending') return { ...counts, pending: true };
+    if (hydrationPhase === 'unknown') return { ...counts, unknown: true };
     return counts;
   }, []);
 
@@ -154,7 +168,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         channelId,
         authorityReady: cursorsRef.current.isReadAuthorityReady(),
         notificationHydration: notificationHydrationRef.current.serial === localReplicaSerialRef.current
-          ? notificationHydrationRef.current.channels.get(channelId) || 'ready'
+          ? notificationHydrationRef.current.channels.get(channelId)?.phase
+            || notificationHydrationRef.current.channels.get(channelId)
+            || 'ready'
           : 'stale',
         readSeq,
         notificationHighWater,
@@ -176,6 +192,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     publish = true,
     persist = true,
     source = 'replay',
+    materializesCurrentTail = source === 'live',
     acceptedRows = null,
     producerOwnerToken = committedOwnerTokenRef.current,
   } = {}) => {
@@ -224,7 +241,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       const state = landed.record.state;
       const rowSubmissionFacts = submissionFacts(rowOwnerToken);
       acceptedRows?.push(row);
-      if (source === 'live') {
+      if (materializesCurrentTail
+        && cursorsRef.current.isReadAuthorityReady()
+        && seq > cursorsRef.current.notificationHighWater(channelId)) {
         const arrivalSelfId = ownedSubmission ? row.envelope?.sender?.id || selfId : selfId;
         recordLiveTimelineArrival(state, row.envelope, seq, arrivalSelfId);
       }
@@ -288,47 +307,113 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 
   const beginNotificationHydration = useCallback((meta, serial, focus = '') => {
     if (serial !== localReplicaSerialRef.current) return;
-    const channels = new Map();
+    const admissionEpoch = dataAdmissionEpochRef.current;
+    const grantEstablished = dataGrantSetEstablishedRef.current;
+    const grantedHeads = new Map(dataGrantedChannelHeadsRef.current);
+    const channels = grantEstablished
+      && notificationHydrationRef.current.serial === serial
+      ? new Map(notificationHydrationRef.current.channels)
+      : new Map();
     const queue = [];
-    for (const [channelId, channelMeta] of meta) {
+    if (grantEstablished) {
+      for (const channelId of channels.keys()) {
+        if (!grantedHeads.has(channelId)) channels.delete(channelId);
+      }
+      for (const [channelId, target] of grantedHeads) {
+        const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
+        if (target <= notificationHighWater) channels.delete(channelId);
+        else if (!channels.has(channelId)) channels.set(channelId, { phase: 'unknown', target });
+      }
+    } else {
+      for (const [channelId, channelMeta] of meta) {
+        const target = Math.max(
+          Number(channelMeta?.newestSeq || 0),
+          ...(channelMeta?.coverage || []).map((range) => Number(range?.highSeq || 0)),
+        );
+        if (target > cursorsRef.current.notificationHighWater(channelId)) {
+          channels.set(channelId, { phase: 'unknown', target });
+        }
+      }
+    }
+    for (const [channelId, obligation] of channels) {
+      if (grantEstablished && !grantedHeads.has(channelId)) continue;
+      const channelMeta = meta.get(channelId);
       const newest = Math.max(
         Number(channelMeta?.newestSeq || 0),
         ...(channelMeta?.coverage || []).map((range) => Number(range?.highSeq || 0)),
       );
       const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
-      if (newest <= notificationHighWater || channelId === focus) continue;
-      channels.set(channelId, 'pending');
-      queue.push({ channelId, notificationHighWater });
+      if (Number(obligation.target || 0) <= notificationHighWater) {
+        channels.delete(channelId);
+        continue;
+      }
+      // The active Scheduler owns body admission for focus. Retain its unknown
+      // obligation until a real tail confirmation covers the grant boundary;
+      // cache hydration must not become a competing visible history path.
+      if (!channelMeta || newest <= notificationHighWater || channelId === focus) {
+        channels.set(channelId, { ...obligation, phase: 'unknown' });
+        continue;
+      }
+      channels.set(channelId, {
+        ...obligation,
+        phase: newest >= Number(obligation.target || 0) ? 'pending' : 'unknown',
+      });
+      queue.push({
+        channelId,
+        notificationHighWater,
+        cachedNewest: newest,
+        target: Number(obligation.target || 0),
+      });
     }
-    notificationHydrationRef.current = { serial, channels };
-    if (!queue.length) return;
+    const hydration = { serial, channels };
+    notificationHydrationRef.current = hydration;
     // Publish the unknown state once. Cache pages and fold commits below stay
     // off the React lane; a second publication exposes all completed badges.
     setIndexVersion((value) => value + 1);
+    if (!queue.length) return;
     void (async () => {
-      for (const { channelId, notificationHighWater } of queue) {
-        if (serial !== localReplicaSerialRef.current) return;
+      for (const { channelId, notificationHighWater, cachedNewest, target } of queue) {
+        if (serial !== localReplicaSerialRef.current
+          || admissionEpoch !== dataAdmissionEpochRef.current
+          || notificationHydrationRef.current !== hydration) return;
+        if (dataGrantSetEstablishedRef.current
+          && !dataGrantedChannelIdsRef.current.has(channelId)) {
+          channels.delete(channelId);
+          continue;
+        }
         // Once a person opens the channel, its ordinary scheduler owns history
         // admission. Notification hydration must never become a second visible
         // history-advance path.
         if (activeChannelRef.current === channelId) {
-          channels.delete(channelId);
+          channels.set(channelId, { phase: 'unknown', target });
           continue;
         }
         try {
           const result = typeof cacheRef.current.readNotificationContext === 'function'
             ? await cacheRef.current.readNotificationContext(channelId, notificationHighWater, {
               isCurrent: () => serial === localReplicaSerialRef.current
+                && admissionEpoch === dataAdmissionEpochRef.current
+                && notificationHydrationRef.current === hydration
+                && (!dataGrantSetEstablishedRef.current
+                  || dataGrantedChannelIdsRef.current.has(channelId))
                 && activeChannelRef.current !== channelId,
             })
             : { complete: false, cancelled: false, rows: [], missingParents: [] };
-          if (serial !== localReplicaSerialRef.current || result.cancelled) return;
-          if (activeChannelRef.current === channelId) {
+          if (serial !== localReplicaSerialRef.current
+            || admissionEpoch !== dataAdmissionEpochRef.current
+            || notificationHydrationRef.current !== hydration
+            || result.cancelled) return;
+          if (dataGrantSetEstablishedRef.current
+            && !dataGrantedChannelIdsRef.current.has(channelId)) {
             channels.delete(channelId);
             continue;
           }
+          if (activeChannelRef.current === channelId) {
+            channels.set(channelId, { phase: 'unknown', target });
+            continue;
+          }
           if (!result.complete) {
-            channels.set(channelId, 'unknown');
+            channels.set(channelId, { phase: 'unknown', target });
             diagnostic('warn', 'feed.notification_cache_incomplete', {
               channelId,
               notificationHighWater,
@@ -338,10 +423,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
           }
           applyRows(result.rows, { publish: false, persist: false, source: 'replay' });
           unreadCacheRef.current.delete(channelId);
-          channels.delete(channelId);
+          if (cachedNewest >= target) channels.delete(channelId);
+          else channels.set(channelId, { phase: 'unknown', target });
         } catch (error) {
-          if (serial !== localReplicaSerialRef.current) return;
-          channels.set(channelId, 'unknown');
+          if (serial !== localReplicaSerialRef.current
+            || admissionEpoch !== dataAdmissionEpochRef.current) return;
+          channels.set(channelId, { phase: 'unknown', target });
           diagnostic('warn', 'feed.notification_cache_failed', { channelId, notificationHighWater, error });
           onError(error);
         }
@@ -349,7 +436,9 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         // cache/fold task even when IndexedDB answers from memory.
         await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
       }
-      if (serial !== localReplicaSerialRef.current) return;
+      if (serial !== localReplicaSerialRef.current
+        || admissionEpoch !== dataAdmissionEpochRef.current
+        || notificationHydrationRef.current !== hydration) return;
       setIndexVersion((value) => value + 1);
     })();
   }, [activeChannelRef, applyRows, onError]);
@@ -382,13 +471,13 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	  ).items.length > 0,
 	  visibleOldestSeq: (channelId) => replicaRef.current.visibleOldest(channelId),
 	  visibleNewestSeq: (channelId) => replicaRef.current.visibleNewest(channelId),
-	  revealRows: (channelId, entries) => {
+	  revealRows: (channelId, entries, { materializesCurrentTail = false } = {}) => {
 		// A push frame that arrived first must merge first even if a pull page
 		// completes in the same browser frame.
 		liveBatchRef.current?.flushNow();
 		return applyRowsRef.current?.(
 		  entries.map(([seq, envelope]) => ({ channel_id: channelId, seq, envelope })),
-		  { persist: false, source: 'replay' },
+		  { persist: false, source: 'replay', materializesCurrentTail },
 		);
 	  },
       onChange: () => setVersion((value) => value + 1),
@@ -557,8 +646,21 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	}, [onAgentActivity, ownerToken]);
 
   const setHistoryGrants = useCallback((grants = [], detail = {}) => {
-    const serial = ++attachMetaSerialRef.current;
     const generation = Number(detail.generation || 0);
+    if (!Number.isSafeInteger(generation) || generation <= 0
+      || generation < attachedGenerationRef.current) {
+      return Promise.resolve({ stale: true, meta: cacheMetaRef.current });
+    }
+    const serial = ++attachMetaSerialRef.current;
+    dataAdmissionEpochRef.current += 1;
+    const admissionEpoch = dataAdmissionEpochRef.current;
+    const grantedChannelHeads = new Map(grants.flatMap((entry) => {
+      const channelId = String(entry?.channel_id || '');
+      return channelId ? [[channelId, Math.max(0, Number(entry?.head_seq || 0))]] : [];
+    }));
+    dataGrantedChannelIdsRef.current = new Set(grantedChannelHeads.keys());
+    dataGrantedChannelHeadsRef.current = grantedChannelHeads;
+    dataGrantSetEstablishedRef.current = true;
     const generationChanged = attachedGenerationRef.current !== generation;
     if (generationChanged) {
       attachedGenerationRef.current = generation;
@@ -569,6 +671,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       principalId: preparedPrincipalRef.current,
       serverBoot: remoteBoot,
     });
+    if (readAuthority.changed) notificationAuthorityRevisionRef.current += 1;
     if (readAuthority.changed || !readAuthority.reused) unreadCacheRef.current.clear();
     const worldMismatch = cacheWorldMismatch(remoteBoot, cacheBootRef.current, cacheMetaRef.current);
     const replicaChanged = detail.forceReset === true || worldMismatch;
@@ -592,7 +695,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     }
     const localMeta = replicaChanged ? new Map() : cacheMetaRef.current;
     const grantedChannelIds = new Set();
-    let notificationStatusChanged = false;
+    const notificationChannels = new Map();
     for (const entry of grants) {
       if (!entry?.channel_id) continue;
       grantedChannelIds.add(entry.channel_id);
@@ -602,15 +705,15 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         headSeq: entry.head_seq,
         coverage: localMeta.get(entry.channel_id)?.coverage,
       });
-      if (entry.channel_id !== (detail.focus || activeChannelRef.current || '')
-        && Number(entry.head_seq || 0) > cursorsRef.current.notificationHighWater(entry.channel_id)
-        && !localMeta.has(entry.channel_id)
-        && notificationHydrationRef.current.serial === localReplicaSerialRef.current) {
-        notificationHydrationRef.current.channels.set(entry.channel_id, 'unknown');
-        notificationStatusChanged = true;
+      const target = Math.max(0, Number(entry.head_seq || 0));
+      if (target > cursorsRef.current.notificationHighWater(entry.channel_id)) {
+        notificationChannels.set(entry.channel_id, { phase: 'unknown', target });
       }
     }
-    if (notificationStatusChanged) setIndexVersion((value) => value + 1);
+    notificationHydrationRef.current = {
+      serial: localReplicaSerialRef.current,
+      channels: notificationChannels,
+    };
     schedulerRef.current.attach(grants, {
       generation,
       focus: detail.focus || activeChannelRef.current || '',
@@ -621,7 +724,12 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     // non-settling cache operation keep HistoryScheduler's local-meta gate
     // closed forever: start from the already-selected in-memory Meta (possibly
     // empty), then merge the epoch-fenced disk result below if it arrives.
-    schedulerRef.current.setLocalMeta(localMeta, { publishChange: false, localReady: true });
+    schedulerRef.current.setLocalMeta(localMeta, { publishChange: false, localReady: true, replace: true });
+    beginNotificationHydration(
+      localMeta,
+      localReplicaSerialRef.current,
+      detail.focus || activeChannelRef.current || '',
+    );
     setLocalReplicaReady(true);
     // Attach history_meta is the authoritative read-grant set for this Wire
     // generation. Fence pending freshness work before reconnect availability
@@ -652,28 +760,36 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       cacheOwnerReadyRef.current.then(() => cacheRef.current.ensureBoot(remoteBoot))
     ));
     return selectedEpoch.then(({ changed, boot, meta }) => {
-      if (serial !== attachMetaSerialRef.current) return { changed, meta, stale: true };
+      if (serial !== attachMetaSerialRef.current
+        || admissionEpoch !== dataAdmissionEpochRef.current) return { changed, meta, stale: true };
       cacheBootRef.current = String(boot || remoteBoot);
       cacheMetaRef.current = meta;
       resumeReadyRef.current = true;
       // A disk-only mismatch discovered after attach cannot invalidate live
       // rows already committed in memory. ensureBoot has cleared that obsolete
       // disk world; publish only its now-safe (normally empty) metadata.
-      for (const [channelId, value] of meta) replicaRef.current.installMeta(channelId, value);
-      schedulerRef.current.setLocalMeta(meta, { publishChange: false, localReady: true });
+      for (const [channelId, value] of meta) {
+        if (grantedChannelIds.has(channelId)) replicaRef.current.installMeta(channelId, value);
+      }
+      schedulerRef.current.setLocalMeta(meta, { publishChange: false, localReady: true, replace: true });
+      beginNotificationHydration(
+        meta,
+        localReplicaSerialRef.current,
+        detail.focus || activeChannelRef.current || '',
+      );
       setLocalReplicaReady(true);
       return { changed: replicaChanged || changed, meta };
     }).catch((error) => {
       if (serial === attachMetaSerialRef.current) {
         resumeReadyRef.current = false;
-        schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true });
+        schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true, replace: true });
         diagnostic('error', 'feed.cache_boot_check_failed', { generation, error });
         onError(error);
         setLocalReplicaReady(true);
       }
       return { changed: replicaChanged, meta: new Map(), error };
     });
-  }, [activeChannelRef]);
+  }, [activeChannelRef, beginNotificationHydration]);
 
   const pageEnd = useCallback((payload) => {
     const accepted = schedulerRef.current.pageEnd(payload);
@@ -708,7 +824,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 	return syncCoordinatorRef.current.interest(channelId);
   }, []);
   const disconnectHistory = useCallback((generation) => {
-	liveBatchRef.current.flushNow();
+    liveBatchRef.current.flushNow();
 	diagnostic('info', 'feed.connection_reset', { generation });
     attachedGenerationRef.current = 0;
     syncCoordinatorRef.current.connection(false);
@@ -849,59 +965,41 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     if (!cursorsRef.current.isReadAuthorityReady()) return false;
     const state = statesRef.current.get(channelId);
     const before = cursorsRef.current.read(channelId);
-    const beforeCounts = unreadCounts(
-      state,
-      before,
-      rosterRef.current?.self(channelId) || '',
-      {
-        incremental: true,
-        acknowledged: cursorsRef.current.acknowledgedReadIdentities(channelId),
-      },
-    );
     const exactChanged = cursorsRef.current.acknowledgeReadIdentities(
       channelId,
       acknowledgement.identities,
     );
     const seq = Number(acknowledgement.physicalSeq || 0);
-    const notificationHydrationChanged = seq > 0
-      && notificationHydrationRef.current.serial === localReplicaSerialRef.current
-      && notificationHydrationRef.current.channels.delete(channelId);
     if (seq > 0 && trimIfMobile(state)) replicaRef.current.afterTrim(channelId);
-    // Provisional stream frames advance the durable read cursor but never draw
-    // a rail badge. Publishing a second React render for every such frame used
-    // to nearly double the main-thread work while an agent was answering.
-    // The rail renders unreadCounts, so clearing it must use that exact
-    // semantic projection. unreadCount intentionally excludes weak/system
-    // traffic and previously left those badges cached after the viewport had
-    // reached the tail.
+    // Physical/exact reading progress is independent from notification state.
+    // It may trim mobile history and inform Scheduler supply, but it neither
+    // invalidates the rail projection nor completes notification hydration.
     const next = seq > 0 ? cursorsRef.current.markRead(channelId, seq) : before;
     if (seq > 0) schedulerRef.current.markRead(channelId);
-    const afterCounts = unreadCounts(
-      state,
-      next,
-      rosterRef.current?.self(channelId) || '',
-      {
-        incremental: true,
-        acknowledged: cursorsRef.current.acknowledgedReadIdentities(channelId),
-      },
-    );
-	if (notificationHydrationChanged || ((next !== before || exactChanged)
-      && (afterCounts.related !== beforeCounts.related || afterCounts.total !== beforeCounts.total))) {
-	  unreadCacheRef.current.delete(channelId);
-	  setVersion((value) => value + 1);
-	  setIndexVersion((value) => value + 1);
-	}
     // The demand port needs acceptance, not mutation: an exact receipt that
     // was already persisted is idempotently accepted and must not be retried.
     return seq > 0 ? next : (exactChanged || (acknowledgement.identities?.length || 0) > 0);
-  }, [rosterRef]);
-  const acknowledgeNotifications = useCallback((channelId, seq) => {
+  }, []);
+  const acknowledgeNotifications = useCallback((channelId, confirmation = {}) => {
     if (!channelId || !cursorsRef.current.isReadAuthorityReady()) return false;
-    const boundary = Number(seq || 0);
+    if (confirmation.channelId !== channelId) return false;
+    if (Number(confirmation.generation || 0) !== attachedGenerationRef.current
+      || !dataGrantSetEstablishedRef.current
+      || !dataGrantedChannelIdsRef.current.has(channelId)) return false;
+    if (Number(confirmation.authorityRevision || 0)
+      !== notificationAuthorityRevisionRef.current) return false;
+    const boundary = Number(confirmation.boundary || 0);
     if (!Number.isSafeInteger(boundary) || boundary <= 0) return false;
     const before = cursorsRef.current.notificationHighWater(channelId);
     const next = cursorsRef.current.acknowledgeNotifications(channelId, boundary);
-    if (next !== before) {
+    const hydration = notificationHydrationRef.current;
+    const obligation = hydration.serial === localReplicaSerialRef.current
+      ? hydration.channels.get(channelId)
+      : null;
+    const hydrationChanged = Number(obligation?.target || 0) > 0
+      && boundary >= Number(obligation.target || 0)
+      && hydration.channels.delete(channelId);
+    if (next !== before || hydrationChanged) {
       unreadCacheRef.current.delete(channelId);
       setIndexVersion((value) => value + 1);
     }
@@ -931,18 +1029,24 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
   const resetPersistent = useCallback(async () => {
     liveBatchRef.current.flushNow();
     const serial = ++localReplicaSerialRef.current;
+    const admissionEpoch = dataAdmissionEpochRef.current;
     notificationHydrationRef.current = { serial, channels: new Map() };
     await cacheEpochFenceRef.current.run(() => cacheRef.current.clear());
+	if (serial !== localReplicaSerialRef.current || admissionEpoch !== dataAdmissionEpochRef.current) return false;
 	replicaRef.current.reset();
 	statesRef.current = replicaRef.current.states();
 	unreadCacheRef.current.clear();
     cursorsRef.current.reconcile({});
     setVersion((value) => value + 1);
     setIndexVersion((value) => value + 1);
+    return true;
   }, []);
 
   const prepareLocalReplica = useCallback(async (principalId, { focus = '' } = {}) => {
     const serial = ++localReplicaSerialRef.current;
+	dataGrantedChannelIdsRef.current = new Set();
+	dataGrantedChannelHeadsRef.current = new Map();
+	dataGrantSetEstablishedRef.current = false;
 	const principalChanged = preparedPrincipalRef.current !== principalId;
 	if (principalChanged) {
 	  attachedGenerationRef.current = 0;
@@ -961,7 +1065,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       preparedPrincipalRef.current = '';
       notificationHydrationRef.current = { serial, channels: new Map() };
       cursorsRef.current.clearReadAuthority();
-	  schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true });
+	  schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true, replace: true });
       setLocalReplicaReady(true);
       return { resume: {} };
     }
@@ -983,11 +1087,18 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
     if (principalChanged) cursorsRef.current.clearReadAuthority();
     setLocalReplicaReady(false);
     schedulerRef.current.setPriorityScope(principalId);
+    const admissionEpochAtSelection = dataAdmissionEpochRef.current;
     const ownerReady = cacheEpochFenceRef.current.select(() => cacheRef.current.ensureOwner(principalId));
     cacheOwnerReadyRef.current = ownerReady.then(() => undefined);
     try {
       const { changed, boot, meta } = await ownerReady;
       if (serial !== localReplicaSerialRef.current) return { resume: {} };
+      if (admissionEpochAtSelection !== dataAdmissionEpochRef.current) {
+        // Remote attach has already selected the active world. Its queued
+        // ensureBoot continuation owns any safe cache Meta merge; this older
+        // owner completion has no authority to reset current Replica state.
+        return { resume: {} };
+      }
       cacheBootRef.current = String(boot || '');
       const remoteBoot = remoteBootRef.current;
       if (cacheWorldMismatch(remoteBoot, cacheBootRef.current, meta)) {
@@ -1007,6 +1118,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
         // competing world and must never revoke that newer remote authority.
         serverBoot: remoteBoot || cacheBootRef.current,
       });
+      if (readAuthority.changed) notificationAuthorityRevisionRef.current += 1;
       if (readAuthority.changed || !readAuthority.reused) unreadCacheRef.current.clear();
       if (changed) {
 		replicaRef.current.reset();
@@ -1025,7 +1137,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       }
       beginNotificationHydration(meta, serial, focus);
       if (focus) schedulerRef.current.focus(focus);
-      schedulerRef.current.setLocalMeta(meta, { publishChange: false, localReady: true });
+      schedulerRef.current.setLocalMeta(meta, { publishChange: false, localReady: true, replace: true });
 
       // Start the selected local decode immediately, but do not await it. Push
       // is the realtime lane; cache decode and remote history are both pull.
@@ -1047,7 +1159,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
       if (serial !== localReplicaSerialRef.current) return { resume: {} };
       onError(error);
       diagnostic('error', 'feed.restore_failed', { error });
-	  schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true });
+	  schedulerRef.current.setLocalMeta(new Map(), { publishChange: false, localReady: true, replace: true });
       setLocalReplicaReady(true);
       return { resume: {} };
     }
@@ -1082,6 +1194,7 @@ export function useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef
 		setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, focusHistory, generationFor, refreshChannel,
     historyFor: (channelId) => ({
       ...schedulerRef.current.snapshot(channelId),
+      notificationAuthorityRevision: notificationAuthorityRevisionRef.current,
       presentationAdmission: presentationAdmissionRef.current,
       presentationAdmissionState: presentationAdmissionRef.current.snapshot(channelId),
       // The remote head may end in protocol facts that intentionally have no

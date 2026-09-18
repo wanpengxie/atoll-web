@@ -432,14 +432,26 @@ function createController({ channelID, viewKey, viewSessions }) {
       for (const [key, record] of pendingRecords) {
         if (record.seq > high) continue;
         pendingRecords.delete(key);
-        acknowledged.push(Object.freeze({ key, seq: record.seq, stage: 'pending' }));
+        acknowledged.push(Object.freeze({
+          key,
+          seq: record.seq,
+          stage: 'pending',
+          rowIDs: Object.freeze([...record.rowIDs]),
+          presentationRevision: Number(record.presentationRevision || 0),
+        }));
       }
       let removed = 0;
       for (const [key, record] of unseenRecords) {
         if (record.seq > high) continue;
         unseenRecords.delete(key);
         removed += 1;
-        acknowledged.push(Object.freeze({ key, seq: record.seq, stage: 'unseen' }));
+        acknowledged.push(Object.freeze({
+          key,
+          seq: record.seq,
+          stage: 'unseen',
+          rowIDs: Object.freeze([...record.rowIDs]),
+          presentationRevision: Number(record.presentationRevision || 0),
+        }));
       }
       if (removed) {
         const previousRevision = session.revision;
@@ -563,10 +575,27 @@ export function useReadingSession({
     presentationRevision: 0,
     sourceRevision: 0,
     generation: 0,
+    headSeq: 0,
+    notificationAuthorityRevision: 0,
+    observationRevision: 0,
     visibleRows: Object.freeze([]),
     readPending: false,
-    notificationPending: false,
   });
+  // One channel mount owns one notification confirmation lifecycle even when
+  // its semantic filter replaces the Reading controller. A backlog boundary
+  // is born only from a legal committed DOM tail observation; follow events
+  // are presentation-bounded. Pending delivery retains the immutable object.
+  const notificationConfirmationRef = useRef({
+    authorityRevision: Number(historyStatus.notificationAuthorityRevision || 0),
+    generation: Number(historyStatus.generation || 0),
+    needsBacklog: true,
+    requiredObservationRevision: 1,
+    confirmedBoundary: 0,
+    queuedPresented: null,
+    pending: null,
+  });
+  const notificationObservationRevisionRef = useRef(0);
+  const acknowledgeChannelNotificationsRef = useRef(null);
   const [viewabilityState, setViewabilityState] = useState(() => ({
     controller,
     visible: snapshot.rows.length > 0,
@@ -672,6 +701,13 @@ export function useReadingSession({
   const availabilityError = foregroundHistoryError
     ? String(historyStatus.historyDemand?.error || historyStatus.error || '')
     : syncHistoryError || (!semanticRangeEstablished ? String(historyStatus.error || '') : '');
+  // Readability and remote freshness are orthogonal. Durable cache rows stay
+  // visible while the current connection proves its head; pending/error here
+  // explains why Waiting/control remain unavailable without clearing content.
+  const freshnessPhase = !hasManagedSyncLifecycle || syncObservationCurrent
+    ? 'current'
+    : syncHistoryError ? 'error' : 'pending';
+  const freshnessError = freshnessPhase === 'error' ? syncHistoryError : '';
   const availability = snapshot.rows.length > 0
     ? (presentationPending ? 'materializing' : 'readable')
     : availabilityError
@@ -1316,6 +1352,17 @@ export function useReadingSession({
         unseen: resolution.unseen,
       });
     }
+    const presentedBoundary = canUseVisibleEvidence
+      && evidence.atTail === true
+      && current.mode === READING_MODE.following
+      && Number(evidence.presentationRevision || 0) === presentationRevision
+      ? resolution.decisions.reduce((high, decision) => (
+        decision.outcome === 'visible' ? Math.max(high, Number(decision.seq || 0)) : high
+      ), 0)
+      : 0;
+    if (presentedBoundary > 0) {
+      acknowledgeChannelNotificationsRef.current?.(presentedBoundary);
+    }
     acknowledgeDisposedArrivals();
     return resolution.decisions.length > 0;
   }, [acknowledgeDisposedArrivals, controller]);
@@ -1385,7 +1432,7 @@ export function useReadingSession({
       || current.mode !== READING_MODE.following
       || Number(evidence.installedHighSeq || 0) <= 0
       || Number(evidence.presentationRevision || 0) !== Number(owner.snapshot.revision || 0)
-      || document.visibilityState !== 'visible') return false;
+      || document.visibilityState !== 'visible') return null;
     const before = controller.unseenEvidence();
     const result = controller.acknowledgeInstalledTail({
       installedHighSeq: Number(evidence.installedHighSeq || 0),
@@ -1403,7 +1450,13 @@ export function useReadingSession({
       });
     }
     acknowledgeDisposedArrivals();
-    return result.acknowledged.length > 0;
+    const presentedBoundary = result.acknowledged.reduce((high, record) => {
+      const presented = (record.rowIDs || []).some((rowID) => (
+        Number(owner.snapshot.entities?.get?.(rowID)?.seqHigh || 0) >= Number(record.seq || 0)
+      ));
+      return presented ? Math.max(high, Number(record.seq || 0)) : high;
+    }, 0);
+    return Object.freeze({ ...result, presentedBoundary });
   }, [acknowledgeDisposedArrivals, controller]);
 
   // 在场只是把已有证据读一遍再发布：跟随 ∧ 在底部 ∧ Surface 可见 ∧ 页面可见。
@@ -1422,7 +1475,7 @@ export function useReadingSession({
     return out;
   }, [controller, surfaceVisible]);
 
-  const acknowledgeChannelNotifications = useCallback(() => {
+  const acknowledgeChannelNotifications = useCallback((presentedBoundary = 0) => {
     const owner = committedOwnerRef.current;
     const current = controller.getSnapshot().session;
     const evidence = visibleTailEvidenceRef.current;
@@ -1434,26 +1487,103 @@ export function useReadingSession({
       || evidence.surfaceVisible !== true
       || current.mode !== READING_MODE.following
       || document.visibilityState !== 'visible') return false;
-    const accepted = owner.markNotificationsRead?.(Object.freeze({
-      channelId: channelID,
-      viewKey,
-      activationID: current.activationID,
-      generation: Number(evidence.generation || 0),
-      atTail: true,
-      following: true,
-      surfaceVisible: true,
-    }), Object.freeze({
-      viewKey,
-      activationID: current.activationID,
-    }));
-    if (visibleTailEvidenceRef.current === evidence) {
-      visibleTailEvidenceRef.current = {
-        ...evidence,
-        notificationPending: accepted === false,
-      };
+    const confirmation = notificationConfirmationRef.current;
+    const authorityRevision = Number(evidence.notificationAuthorityRevision || 0);
+    if (confirmation.authorityRevision !== authorityRevision) return false;
+
+    // A continuous confirmation is born only from an eligible related
+    // arrival that the current Presentation/DOM disposition has proved
+    // installed at this tail. Freeze that observation now; later retries do
+    // not borrow a newer Meta head or Presentation revision.
+    const proposedBoundary = Math.min(
+      Number(presentedBoundary || 0),
+      Number(evidence.installedHighSeq || 0),
+      Number(evidence.headSeq || 0),
+    );
+    if (proposedBoundary > confirmation.confirmedBoundary
+      && owner.historyStatus.messageCurrent === true
+      && Number(evidence.sourceRevision || 0) === Number(owner.historyStatus.presentationRevision || 0)) {
+      const proposed = Object.freeze({
+        channelId: channelID,
+        viewKey,
+        activationID: current.activationID,
+        authorityRevision,
+        generation: Number(evidence.generation || 0),
+        cause: 'presented-follow',
+        boundary: proposedBoundary,
+        presentationRevision: Number(evidence.presentationRevision || 0),
+        sourceRevision: Number(evidence.sourceRevision || 0),
+        installedHighSeq: Number(evidence.installedHighSeq || 0),
+        atTail: true,
+        following: true,
+        surfaceVisible: true,
+      });
+      if (!confirmation.queuedPresented
+        || proposed.boundary > confirmation.queuedPresented.boundary) {
+        confirmation.queuedPresented = proposed;
+      }
     }
-    return accepted || false;
+
+    let delivered = false;
+    // A rejected event is always retried first. A later browsing departure may
+    // meanwhile have armed one newer backlog observation, and one presented
+    // follow boundary can also be queued behind it, hence the bounded three
+    // deliveries through the same scalar reducer.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let event = confirmation.pending;
+      if (!event
+        && confirmation.needsBacklog
+        && Number(evidence.observationRevision || 0) >= confirmation.requiredObservationRevision
+        && owner.historyStatus.attached === true
+        && Number(evidence.generation || 0) > 0) {
+        // The backlog fact is born here, at the first legal committed DOM tail
+        // observation after it was armed. Freeze this observation's Meta head;
+        // attach/insertion renders before the tail cannot preselect a boundary.
+        confirmation.needsBacklog = false;
+        event = Object.freeze({
+          channelId: channelID,
+          viewKey,
+          activationID: current.activationID,
+          authorityRevision,
+          generation: Number(evidence.generation || 0),
+          cause: 'tail-backlog',
+          boundary: Math.max(0, Number(evidence.headSeq || 0)),
+          presentationRevision: Number(evidence.presentationRevision || 0),
+          sourceRevision: Number(evidence.sourceRevision || 0),
+          installedHighSeq: Number(evidence.installedHighSeq || 0),
+          atTail: true,
+          following: true,
+          surfaceVisible: true,
+        });
+      } else if (!event
+        && confirmation.queuedPresented?.boundary > confirmation.confirmedBoundary) {
+        event = confirmation.queuedPresented;
+      }
+      if (!event) return delivered;
+      if (event.boundary <= 0 && event.cause === 'tail-backlog') {
+        confirmation.pending = null;
+        delivered = true;
+        continue;
+      }
+      const accepted = owner.markNotificationsRead?.(event, Object.freeze({
+        viewKey: event.viewKey,
+        activationID: event.activationID,
+      }));
+      if (accepted === false || accepted == null) {
+        confirmation.pending = event;
+        return false;
+      }
+      confirmation.pending = null;
+      confirmation.confirmedBoundary = Math.max(confirmation.confirmedBoundary, event.boundary);
+      if (confirmation.queuedPresented === event
+        || confirmation.queuedPresented?.boundary <= confirmation.confirmedBoundary) {
+        confirmation.queuedPresented = null;
+      }
+      delivered = true;
+    }
+    return delivered;
   }, [channelID, controller, viewKey]);
+  acknowledgeChannelNotificationsRef.current = acknowledgeChannelNotifications;
 
   const markVisibleTailRead = useCallback(() => {
     const owner = committedOwnerRef.current;
@@ -1532,6 +1662,46 @@ export function useReadingSession({
     resolveArrivalsRef.current = resolveArrivals;
     acknowledgeArrivalsRef.current = acknowledgeDisposedArrivals;
     const controllerChanged = previous.controller !== controller;
+    const notificationAuthorityRevision = Number(historyStatus.notificationAuthorityRevision || 0);
+    const notificationGeneration = Number(historyStatus.generation || 0);
+    let confirmation = notificationConfirmationRef.current;
+    if (confirmation.authorityRevision !== notificationAuthorityRevision
+      || confirmation.generation !== notificationGeneration) {
+      confirmation = {
+        authorityRevision: notificationAuthorityRevision,
+        generation: notificationGeneration,
+        needsBacklog: true,
+        requiredObservationRevision: notificationObservationRevisionRef.current + 1,
+        confirmedBoundary: 0,
+        queuedPresented: null,
+        pending: null,
+      };
+      notificationConfirmationRef.current = confirmation;
+    }
+    // A semantic activation replacement invalidates receipts owned by its
+    // predecessor. A deliberate departure from Following only arms a future
+    // backlog observation: any receipt that was already born remains the same
+    // immutable retry obligation while the person is browsing.
+    if (controllerChanged) {
+      confirmation.needsBacklog = true;
+      confirmation.requiredObservationRevision = notificationObservationRevisionRef.current + 1;
+      confirmation.queuedPresented = null;
+      confirmation.pending = null;
+    } else if (previous.session?.mode === READING_MODE.following
+      && session.mode !== READING_MODE.following) {
+      confirmation.needsBacklog = true;
+      confirmation.requiredObservationRevision = notificationObservationRevisionRef.current + 1;
+    }
+    if (confirmation.pending
+      && (confirmation.pending.activationID !== controller.activationID
+        || confirmation.pending.generation !== notificationGeneration)) {
+      confirmation.pending = null;
+    }
+    if (confirmation.queuedPresented
+      && (confirmation.queuedPresented.activationID !== controller.activationID
+        || confirmation.queuedPresented.generation !== notificationGeneration)) {
+      confirmation.queuedPresented = null;
+    }
     const sameObservationAuthority = !controllerChanged
       && previous.activationID === commitOwnerCandidate.activationID
       && previous.channelID === commitOwnerCandidate.channelID
@@ -1564,9 +1734,11 @@ export function useReadingSession({
         presentationRevision: 0,
         sourceRevision: 0,
         generation: 0,
+        headSeq: 0,
+        notificationAuthorityRevision,
+        observationRevision: notificationObservationRevisionRef.current,
         visibleRows: Object.freeze([]),
         readPending: false,
-        notificationPending: false,
       };
     }
     if (controllerChanged) {
@@ -1598,10 +1770,10 @@ export function useReadingSession({
         publishTailPresence();
         return;
       }
-      acknowledgeInstalledTail();
+      const installed = acknowledgeInstalledTail();
       resolveArrivals();
       acknowledgeVisibleRows();
-      acknowledgeChannelNotifications();
+      acknowledgeChannelNotifications(installed?.presentedBoundary || 0);
       markVisibleTailRead();
       publishTailPresence();
     };
@@ -1625,20 +1797,12 @@ export function useReadingSession({
         visibleTailEvidenceRef.current = { ...evidence, readPending: false };
       }
     }
-    if (evidence.notificationPending === true) {
+    if (notificationConfirmationRef.current.pending) {
       if (evidence.owner === committedOwnerRef.current
         && evidence.controller === controller
         && evidence.activationID === controller.getSnapshot().session.activationID) {
         acknowledgeChannelNotifications();
-      } else if (visibleTailEvidenceRef.current === evidence) {
-        visibleTailEvidenceRef.current = { ...evidence, notificationPending: false };
       }
-    } else {
-      // Meta may advance before the corresponding body. A committed tail
-      // observation remains valid across that status-only render, so sample
-      // the new authoritative head even when the preceding delivery succeeded.
-      // The persisted boundary is monotone and makes this idempotent.
-      acknowledgeChannelNotifications();
     }
     publishTailPresence();
   });
@@ -1671,6 +1835,7 @@ export function useReadingSession({
     emptyReason,
     presentationPending,
     availabilityError,
+    freshness: Object.freeze({ phase: freshnessPhase, error: freshnessError }),
     status: historyStatus,
     // This is a semantic edge-demand lifecycle. Physical background batches
     // remain available on status.loading/backgroundLoading for diagnostics,
@@ -1808,6 +1973,8 @@ export function useReadingSession({
         ...observation,
         activationID,
       }));
+      const observationRevision = notificationObservationRevisionRef.current + 1;
+      notificationObservationRevisionRef.current = observationRevision;
       visibleTailEvidenceRef.current = {
         owner: commitOwnerCandidate,
         controller,
@@ -1818,17 +1985,19 @@ export function useReadingSession({
         presentationRevision: Number(snapshotRef.current.revision || 0),
         sourceRevision: Number(snapshotRef.current.sourceRevision || 0),
         generation: Number(historyStatusRef.current.generation || 0),
+        headSeq: Number(historyStatusRef.current.headSeq || 0),
+        notificationAuthorityRevision: Number(historyStatusRef.current.notificationAuthorityRevision || 0),
+        observationRevision,
         visibleRows: Object.freeze([...(observation.visibleRows || [])]),
         readPending: false,
-        notificationPending: false,
       };
       // Installed-tail acknowledgement runs before arrival resolution so a
       // candidate at or below the reached tail is never first published as
       // unseen and then retracted inside the same observation.
-      acknowledgeInstalledTail();
+      const installed = acknowledgeInstalledTail();
       resolveArrivals();
       acknowledgeVisibleRows();
-      acknowledgeChannelNotifications();
+      acknowledgeChannelNotifications(installed?.presentedBoundary || 0);
       // 同一次观测既是回执证据，也是"用户此刻在不在最新端"的读数。
       publishTailPresence();
       // Durable channel read progress retains its physical-tail contract.
@@ -1865,9 +2034,11 @@ export function useReadingSession({
         presentationRevision: 0,
         sourceRevision: 0,
         generation: 0,
+        headSeq: 0,
+        notificationAuthorityRevision: Number(historyStatusRef.current.notificationAuthorityRevision || 0),
+        observationRevision: notificationObservationRevisionRef.current,
         visibleRows: Object.freeze([]),
         readPending: false,
-        notificationPending: false,
       };
       // Once the surface is hidden, the current committed projection is
       // definitive negative visibility evidence; do not leave its candidates
@@ -1901,5 +2072,5 @@ export function useReadingSession({
     revokeBottomIntent,
     isFollowing() { return controller.getSnapshot().session.mode === READING_MODE.following; },
     getSession() { return controller.getSnapshot().session; },
-  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, foregroundHistoryError, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen]);
+  }), [acknowledgeInstalledTail, acknowledgeVisibleRows, availability, availabilityError, bindBottomIntentTargets, bottomReady, captureBottomIntent, channelID, commitOwnerCandidate, controller, emptyReason, foregroundHistoryError, freshnessError, freshnessPhase, history, historyBoundary, historyDemand, historyStatus, markVisibleTailRead, presentationAuthority, presentationInitializing, presentationPending, publishTailPresence, requestBottom, requestHistory, resolveArrivals, restorePending, revokeBottomIntent, semanticRangeEstablished, session, surfaceVisible, syncHistoryError, syncStatus.interestRevision, tailCaughtUp, unseen]);
 }

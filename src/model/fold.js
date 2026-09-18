@@ -125,10 +125,12 @@ function rootTurnID(state, envelope) {
 }
 
 // Arrival provenance belongs to the Replica commit seam, not to Presentation.
-// The caller invokes this only after an accepted live commit. Queued and
-// processing/progress mutate an existing turn and are deliberately not new
-// dynamics. Terminal responses reuse the root's stable presentation identity;
-// independently readable standalone events retain their own identity.
+// The caller invokes this after an accepted fact newly materializes the current
+// tail, whether supplied live or by reconnect tail recovery. Deeper backfill
+// never enters this journal. Queued and processing/progress mutate an existing
+// turn and are deliberately not new dynamics. Terminal responses reuse the
+// root's stable presentation identity; independently readable standalone
+// events retain their own identity.
 export function recordLiveTimelineArrival(state, envelope, seq, selfId = '') {
   if (!state || !envelope) return null;
   // Viewport notices are a personal attention surface, even while the ledger

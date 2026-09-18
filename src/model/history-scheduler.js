@@ -135,6 +135,7 @@ function createState(id, previous = {}) {
     // In-memory scan evidence is independent from rendered rows. Visible seq
     // gaps are legal after visibility filtering; only these validated ranges
     // can prove that a cached queued response has no later terminal through H.
+    localCoverage: [],
     verifiedCoverage: [],
     hasRows: false,
     hasOlder: false,
@@ -216,6 +217,9 @@ export function createHistoryScheduler({
   now = () => Date.now(),
   priorityStorage = globalThis.localStorage,
   batchBytes = HISTORY_BATCH_BYTES,
+  reservoirSize = HISTORY_RESERVOIR_SIZE,
+  reservoirChannelBytes = HISTORY_RESERVOIR_CHANNEL_BYTES,
+  reservoirGlobalBytes = HISTORY_RESERVOIR_GLOBAL_BYTES,
   maxBackgroundInflight = HISTORY_MAX_BACKGROUND_INFLIGHT,
 } = {}) {
   // PQueue is deliberately only the bounded executor. Candidate ownership and
@@ -229,6 +233,7 @@ export function createHistoryScheduler({
   let generation = 0;
   let remoteUnavailable = false;
   let replicaEpoch = 1;
+  let stateLeaseSerial = 0;
   let globalReservoirBytes = 0;
   let reservedInflightBytes = 0;
   let dispatchSerial = 0;
@@ -239,6 +244,12 @@ export function createHistoryScheduler({
   let wakeAt = 0;
   let destroyed = false;
   let priorityScope = 'anonymous';
+  // Complete cache snapshots define a source lease. Replacing one invalidates
+  // every IndexedDB frontier selected from its predecessor, even when the same
+  // channel id remains present with narrower coverage.
+  let localMetaEpoch = 0;
+  let remoteAdmissionEstablished = false;
+  let admittedChannelIds = new Set();
   // Only the pull lane waits for local metadata selection. Transport attach
   // and live delivery remain independent, but history must not choose the
   // network merely because IndexedDB has not answered yet.
@@ -292,10 +303,39 @@ export function createHistoryScheduler({
 
   let restoredPriority = restorePriority();
 
-  function schedulerState(id, previous = {}) {
+  function schedulerState(id, previous = {}, { generationReplacement = false } = {}) {
     const state = createState(id, previous);
+    state.stateLease = ++stateLeaseSerial;
+    // Replacement states may inherit already-committed immutable entries, but
+    // never the mutable containers still held by an asynchronous producer.
+    state.reservoir = new Map(previous?.reservoir || []);
+    state.reservoirBytes = [...state.reservoir.values()]
+      .reduce((total, entry) => total + numeric(entry?.bytes), 0);
+    state.localCoverage = mergedCoverage(previous?.localCoverage || []);
+    state.verifiedCoverage = mergedCoverage(previous?.verifiedCoverage || []);
+    state.foregroundWaiters = [...(previous?.foregroundWaiters || [])];
+    state.foregroundOwners = new Set(previous?.foregroundOwners || []);
+    state.currentWaiters = generationReplacement
+      ? new Set()
+      : new Set(previous?.currentWaiters || []);
     if (!state.lastFocusOrder) state.lastFocusOrder = numeric(restoredPriority.views[id]);
     return state;
+  }
+
+  function recomputeReservoirBytes() {
+    globalReservoirBytes = 0;
+    for (const state of channels.values()) {
+      state.reservoirBytes = [...state.reservoir.values()]
+        .reduce((total, entry) => total + numeric(entry?.bytes), 0);
+      globalReservoirBytes += state.reservoirBytes;
+    }
+  }
+
+  function dropReservoir(state) {
+    if (!state) return;
+    state.reservoir = new Map();
+    state.reservoirBytes = 0;
+    recomputeReservoirBytes();
   }
 
   function persistPriority() {
@@ -448,11 +488,11 @@ export function createHistoryScheduler({
 	if (!tailRefresh && purpose !== 'user-demand'
 	  && (state.tailVisible || state.id !== focus)
 	  && (state.reservoir.size >= targetRows || state.reservoirBytes >= targetBytes || state.warmScanned >= scanBudget)) return null;
-    if (state.reservoir.size >= HISTORY_RESERVOIR_SIZE || state.reservoirBytes >= HISTORY_RESERVOIR_CHANNEL_BYTES) return null;
+    if (state.reservoir.size >= reservoirSize || state.reservoirBytes >= reservoirChannelBytes) return null;
 	const priority = tailRefresh || state.tier === 0 ? 'foreground' : 'background';
     const urgent = priority === 'foreground';
-    const channelAvailable = Math.max(0, HISTORY_RESERVOIR_CHANNEL_BYTES - state.reservoirBytes);
-    const globalAvailable = Math.max(0, HISTORY_RESERVOIR_GLOBAL_BYTES - globalReservoirBytes - reservedInflightBytes);
+    const channelAvailable = Math.max(0, reservoirChannelBytes - state.reservoirBytes);
+    const globalAvailable = Math.max(0, reservoirGlobalBytes - globalReservoirBytes - reservedInflightBytes);
 	const foregroundInflight = [...inflightByChannel.values()].some((batch) => batch.priority === 'foreground');
 	// A visible user action may borrow one bounded batch beyond a full warm
 	// reservoir, but a second foreground batch must wait. This keeps the global
@@ -483,7 +523,7 @@ export function createHistoryScheduler({
 	const rowDeficit = tailRefresh || purpose === 'user-demand' || !state.tailVisible
       ? sourceStats.rowLimit
       : Math.max(1, targetRows - state.reservoir.size);
-    const limit = Math.max(1, Math.min(sourceStats.rowLimit, rowDeficit, HISTORY_RESERVOIR_SIZE - state.reservoir.size));
+    const limit = Math.max(1, Math.min(sourceStats.rowLimit, rowDeficit, reservoirSize - state.reservoir.size));
 	// A local replica can stop at a coverage hole without pretending the
 	// history is globally exhausted. Once attach supplies a remote source the
 	// same frontier becomes schedulable again.
@@ -494,6 +534,8 @@ export function createHistoryScheduler({
       // guarded by the local replica epoch and remains valid across reconnects.
       generation: source === 'network' ? generation : 0,
       replicaEpoch,
+      localMetaEpoch,
+      stateLease: state.stateLease,
       channelId: state.id,
       source,
       purpose,
@@ -510,7 +552,7 @@ export function createHistoryScheduler({
       tier: state.tier,
       lastFocusOrder: state.lastFocusOrder,
       activity: state.activity,
-      waterDeficit: HISTORY_RESERVOIR_SIZE - state.reservoir.size,
+      waterDeficit: reservoirSize - state.reservoir.size,
       waitDispatches: state.waitDispatches,
 	  visibleNewestAtDispatch: numeric(visibleNewestSeq(state.id)),
     };
@@ -558,11 +600,12 @@ export function createHistoryScheduler({
     return candidates.sort(compare)[0] || null;
   }
 
-  async function rememberRows(state, rows, { allowGlobalOverflow = false } = {}) {
+  async function stageRows(state, rows, { allowGlobalOverflow = false } = {}) {
     const staged = [];
     const stagedSeqs = new Set();
     let stagedBytes = 0;
     let measuredBytes = 0;
+    let complete = true;
     for (let index = 0; index < rows.length; index += 1) {
       // Pull work is cooperative. A live frame received between chunks is
       // committed before the next chunk rather than waiting behind a whole
@@ -576,35 +619,49 @@ export function createHistoryScheduler({
       if (!seq || hasVisibleRow(state.id, seq) || state.reservoir.has(seq) || stagedSeqs.has(seq)) continue;
       const bytes = rowBytes(row.envelope);
       measuredBytes += bytes;
-      if (state.reservoir.size + staged.length >= HISTORY_RESERVOIR_SIZE
-        || state.reservoirBytes + stagedBytes + bytes > HISTORY_RESERVOIR_CHANNEL_BYTES
-        || (!allowGlobalOverflow && globalReservoirBytes + stagedBytes + bytes > HISTORY_RESERVOIR_GLOBAL_BYTES)
-        || (allowGlobalOverflow && globalReservoirBytes + stagedBytes + bytes > HISTORY_RESERVOIR_GLOBAL_BYTES + HISTORY_BATCH_BYTES)) break;
+      if (state.reservoir.size + staged.length >= reservoirSize
+        || state.reservoirBytes + stagedBytes + bytes > reservoirChannelBytes
+        || (!allowGlobalOverflow && globalReservoirBytes + stagedBytes + bytes > reservoirGlobalBytes)
+        || (allowGlobalOverflow && globalReservoirBytes + stagedBytes + bytes > reservoirGlobalBytes + batchBytes)) {
+        complete = false;
+        break;
+      }
       staged.push({ seq, envelope: row.envelope, bytes });
       stagedSeqs.add(seq);
       stagedBytes += bytes;
     }
-    // Do not expose a half-ingested page through setFocus/nextSegment while a
-    // cooperative yield is in progress. In particular, releasing the first
-    // 16/32 records of a current-tail page marks tailVisible and strands the
-    // newer suffix in the reservoir. Recheck concurrent live/release changes,
-    // then install the complete bounded staging set in one synchronous step.
-    let accepted = 0;
-    for (const { seq, envelope, bytes } of staged) {
-      if (hasVisibleRow(state.id, seq) || state.reservoir.has(seq)) continue;
-      if (state.reservoir.size >= HISTORY_RESERVOIR_SIZE
-        || state.reservoirBytes + bytes > HISTORY_RESERVOIR_CHANNEL_BYTES
-        || (!allowGlobalOverflow && globalReservoirBytes + bytes > HISTORY_RESERVOIR_GLOBAL_BYTES)
-        || (allowGlobalOverflow && globalReservoirBytes + bytes > HISTORY_RESERVOIR_GLOBAL_BYTES + HISTORY_BATCH_BYTES)) break;
+    return { staged, measuredBytes, complete, allowGlobalOverflow };
+  }
+
+  function installStagedRows(state, stagedPage) {
+    const additions = stagedPage.staged.filter(({ seq }) => (
+      !hasVisibleRow(state.id, seq) && !state.reservoir.has(seq)
+    ));
+    const additionBytes = additions.reduce((total, entry) => total + entry.bytes, 0);
+    const globalLimit = reservoirGlobalBytes
+      + (stagedPage.allowGlobalOverflow ? batchBytes : 0);
+    if (!stagedPage.complete
+      || state.reservoir.size + additions.length > reservoirSize
+      || state.reservoirBytes + additionBytes > reservoirChannelBytes
+      || globalReservoirBytes + additionBytes > globalLimit) {
+      // A page terminal advances across every scanned sequence. Publishing a
+      // partial displayable subset would strand the omitted suffix behind the
+      // new cursor, so fail the whole reducer without changing any state.
+      throw new Error('历史批次超过当前原子安装预算');
+    }
+    for (const { seq, envelope, bytes } of additions) {
       state.reservoir.set(seq, { envelope, bytes });
       state.reservoirBytes += bytes;
       globalReservoirBytes += bytes;
-      accepted += 1;
     }
-    return { accepted, measuredBytes };
+    return additions.length;
   }
 
-  function release(state, count, { initial = false, byteLimit = HISTORY_REVEAL_BYTES } = {}) {
+  function release(state, count, {
+    initial = false,
+    materializesCurrentTail = initial,
+    byteLimit = HISTORY_REVEAL_BYTES,
+  } = {}) {
     if (!state || count <= 0 || !state.reservoir.size) return 0;
     const selected = [];
     let selectedBytes = 0;
@@ -614,13 +671,19 @@ export function createHistoryScheduler({
       selected.push(entry);
       selectedBytes += entry[1].bytes;
     }
+    selected.sort(([left], [right]) => left - right);
+    // Mutation happens only after the synchronous Replica handoff. If the
+    // handoff throws, the reservoir remains the unique recoverable supply even
+    // though the page cursor itself has already committed.
+    revealRows?.(state.id, selected.map(([seq, value]) => [seq, value.envelope]), {
+      initial,
+      materializesCurrentTail,
+    });
     for (const [seq, value] of selected) {
       state.reservoir.delete(seq);
       state.reservoirBytes -= value.bytes;
       globalReservoirBytes -= value.bytes;
     }
-    selected.sort(([left], [right]) => left - right);
-    revealRows?.(state.id, selected.map(([seq, value]) => [seq, value.envelope]), { initial });
     state.revealVersion += 1;
     // Releasing a warm segment consumes the prediction. The channel may refill
     // to its current tier target instead of being blocked by lifetime counters.
@@ -645,6 +708,13 @@ export function createHistoryScheduler({
 	}
   }
 
+  function installedCoverage(state) {
+    return mergedCoverage([
+      ...(state?.localCoverage || []),
+      ...(state?.verifiedCoverage || []),
+    ]);
+  }
+
   function currentTargetInstalled(state, targetHead) {
     const target = numeric(targetHead);
     // An authoritative empty head has no positive sequence to put in a
@@ -652,7 +722,7 @@ export function createHistoryScheduler({
     // freshness obligation pending until timeout even though Meta has proved
     // there is nothing to fetch.
     if (target === 0) return state?.remoteKnown === true && numeric(state.headSeq) === 0;
-    return rangesContain(state?.verifiedCoverage, target);
+    return rangesContain(installedCoverage(state), target);
   }
 
   function requireRemoteTail(state, floorSeq = visibleNewestSeq(state?.id)) {
@@ -712,7 +782,10 @@ export function createHistoryScheduler({
   async function execute(batch) {
     if (batch.cancelled) throw new Error('history batch cancelled');
     if (batch.source === 'indexeddb') {
-      return readCache(batch.channelId, batch.beforeSeq, batch.limit, batch.byteLimit);
+      return Promise.race([
+        readCache(batch.channelId, batch.beforeSeq, batch.limit, batch.byteLimit),
+        batch.sourceCancellation.promise,
+      ]);
     }
     return executeNetwork(batch);
   }
@@ -751,13 +824,19 @@ export function createHistoryScheduler({
   }
 
   function batchIsCurrent(batch) {
-    return batch.replicaEpoch === replicaEpoch
-      && (batch.source !== 'network' || batch.generation === generation);
+    const state = channels.get(batch.channelId);
+    return batch.cancelled !== true
+      && batch.replicaEpoch === replicaEpoch
+      && (batch.source !== 'network' || batch.generation === generation)
+      && (batch.source !== 'indexeddb' || batch.localMetaEpoch === localMetaEpoch)
+      && state?.stateLease === batch.stateLease
+      && inflightByChannel.get(batch.channelId) === batch;
   }
 
   async function commit(batch, result) {
     if (!batchIsCurrent(batch)) return;
-    const state = channels.get(batch.channelId);
+    batch.committing = true;
+    let state = channels.get(batch.channelId);
     if (!state) return;
     const rows = (result.rows || []).sort((left, right) => left.seq - right.seq);
     if (batch.source === 'indexeddb') {
@@ -777,11 +856,28 @@ export function createHistoryScheduler({
         return;
       }
       validateCachePage(batch, result, rows);
+    } else {
+      validateNetworkPage(batch, result, rows);
+    }
+    // Cooperative decoding owns only local staging. No cursor, coverage,
+    // currentness or reservoir fact is published until the complete page has
+    // crossed the same state/generation/batch lease below.
+    const stagedPage = await stageRows(state, rows, {
+      allowGlobalOverflow: batch.priority === 'foreground',
+    });
+    if (!batchIsCurrent(batch) || batch.cancelled) return;
+    state = channels.get(batch.channelId);
+    if (!state) return;
+
+    // From here through row installation, cursor/coverage/currentness and byte
+    // accounting are one synchronous reducer. installStagedRows validates that
+    // every still-displayable row fits before the first mutation occurs.
+    const acceptedRows = installStagedRows(state, stagedPage);
+    if (batch.source === 'indexeddb') {
       if (batch.rangeKind === 'backfill') state.beforeSeq = Number(result.nextBeforeSeq);
       state.cacheBypassBeforeSeq = 0;
 	  if (!state.attachedGeneration && result.exhausted && batch.rangeKind === 'backfill') state.hasOlder = false;
     } else {
-	  validateNetworkPage(batch, result, rows);
       state.headSeq = Math.max(state.headSeq, numeric(result.head_seq));
 	  if (batch.rangeKind === 'backfill') state.beforeSeq = Number(result.next_before_seq);
 	  state.cacheBypassBeforeSeq = 0;
@@ -811,6 +907,20 @@ export function createHistoryScheduler({
       const lowSeq = numeric(result.scan_low_seq);
       const highSeq = numeric(result.scan_high_seq);
       state.verifiedCoverage = mergedCoverage(state.verifiedCoverage, { lowSeq, highSeq });
+	  // A complete local-Meta snapshot can finish while this page is yielding
+	  // and open the freshness lane for the exact same remote frontier. The
+	  // validated page already owns that scan. Retire only that identical
+	  // request (and only once it reaches the pre-existing visible seam), so a
+	  // genuinely newer head still keeps its separate tail refresh.
+	  if (state.tailRefreshBeforeSeq === batch.beforeSeq
+	    && currentTargetInstalled(state, state.headSeq)) {
+		const refreshFloor = numeric(state.tailRefreshFloorSeq);
+		const nextBefore = numeric(result.next_before_seq);
+		if (!refreshFloor || !result.has_older || nextBefore <= refreshFloor + 1) {
+		  state.tailRefreshBeforeSeq = 0;
+		  state.tailRefreshFloorSeq = 0;
+		} else state.tailRefreshBeforeSeq = nextBefore;
+	  }
 	  // The page terminal carries a fresh authoritative head. It may advance
 	  // after the request's exclusive beforeSeq was chosen (for example while
 	  // attach/OBS facts are being committed). Never continue older hydration
@@ -823,10 +933,7 @@ export function createHistoryScheduler({
         : new Map();
       void persistRows(rows, { coverageByChannel }).catch((error) => diagnostic('error', 'history.cache_persist_failed', { channelId: state.id, error }));
     }
-    const remembered = await rememberRows(state, rows, { allowGlobalOverflow: batch.priority === 'foreground' });
-    if (!batchIsCurrent(batch) || batch.cancelled) return;
-    const timing = observeBatch(batch, result, rows, remembered.measuredBytes);
-    const acceptedRows = remembered.accepted;
+    const timing = observeBatch(batch, result, rows, stagedPage.measuredBytes);
     state.completedPages += 1;
     if (batch.purpose !== 'user-demand' && batch.rangeKind === 'backfill') {
       const scanLow = numeric(result.scan_low_seq) || numeric(result.scanLowSeq);
@@ -837,8 +944,12 @@ export function createHistoryScheduler({
     const visibleIntent = state.id === focus
       || state.foregroundWaiters.length > 0
       || state.foregroundOwners.size > 0;
-    if (batch.rangeKind === 'tail-refresh' && visibleIntent && remembered.accepted > 0) {
-	  initialReleased = release(state, remembered.accepted, { initial: false, byteLimit: batch.byteLimit });
+    if (batch.rangeKind === 'tail-refresh' && visibleIntent && acceptedRows > 0) {
+      initialReleased = release(state, acceptedRows, {
+        initial: false,
+        materializesCurrentTail: true,
+        byteLimit: batch.byteLimit,
+      });
 	  state.tailVisible = hasPresentedRows(state.id);
     } else if (!state.tailVisible && visibleIntent) {
       initialReleased = release(state, HISTORY_REVEAL_SIZE, { initial: true, byteLimit: batch.byteLimit });
@@ -853,7 +964,7 @@ export function createHistoryScheduler({
 	}
 	if (batch.source === 'indexeddb' && batch.purpose === 'initial-tail' && state.attachedGeneration) {
 	  const localNewest = numeric(visibleNewestSeq(state.id));
-	  if (state.headSeq > localNewest && !rangesContain(state.verifiedCoverage, state.headSeq)) {
+	  if (state.headSeq > localNewest && !rangesContain(installedCoverage(state), state.headSeq)) {
 		state.tailRefreshBeforeSeq = state.headSeq + 1;
 		state.tailRefreshFloorSeq = localNewest;
 	  }
@@ -903,6 +1014,13 @@ export function createHistoryScheduler({
     batch.createdAt = now();
     batch.createdDispatch = dispatchSerial;
     inflightByChannel.set(batch.channelId, batch);
+    if (batch.source === 'indexeddb') {
+      batch.sourceCancellation = deferred();
+      // execute() races this signal with the physical IndexedDB promise. The
+      // latter may still settle later, but it no longer occupies a scheduler
+      // executor or regains authority after its Meta source was replaced.
+      void batch.sourceCancellation.promise.catch(() => {});
+    }
     reservedInflightBytes += batch.reservedBytes;
     for (const state of channels.values()) {
       if (state.id === batch.channelId) state.waitDispatches = 0;
@@ -946,8 +1064,9 @@ export function createHistoryScheduler({
 	if (batch.ref) {
 	  cancelledRefs.set(batch.ref, { channelId: batch.channelId, generation: batch.generation });
 	  while (cancelledRefs.size > 128) cancelledRefs.delete(cancelledRefs.keys().next().value);
-	}
+    }
     batch.terminal?.reject(new Error(reason));
+    batch.sourceCancellation?.reject(new Error(reason));
     if (batch.source === 'network' && batch.ref) {
 	  const state = channels.get(batch.channelId);
 	  const pending = Promise.resolve().then(() => cancelPage(batch.channelId, batch.ref, batch.generation));
@@ -1004,6 +1123,8 @@ export function createHistoryScheduler({
     // compatible IndexedDB decode already in flight remains valid and joins
     // this generation. Only incompatible/old-network pulls are discarded.
     const seamBatches = new Map(inflightByChannel);
+    const previousGeneration = generation;
+    const generationReplaced = previousGeneration !== nextGeneration;
     generation = nextGeneration;
     remoteUnavailable = false;
     focus = detail.focus || focus;
@@ -1014,18 +1135,27 @@ export function createHistoryScheduler({
       if (!id) continue;
       seen.add(id);
       const previous = channels.get(id);
-      const state = schedulerState(id, previous);
+      if (generationReplaced) for (const waiter of [...(previous?.currentWaiters || [])]) {
+		waiter.cleanup?.();
+		waiter.reject(new Error('频道同步 generation 已替换'));
+	  }
+      const state = schedulerState(id, previous, { generationReplacement: generationReplaced });
 	  const meta = localMeta.get?.(id) || localMeta[id] || null;
 	  const cachedHead = localHead(meta);
 	  const visibleHead = numeric(visibleNewestSeq(id));
 	  const seamBatch = seamBatches.get(id);
 	  const compatibleLocalBatch = Boolean(seamBatch?.source === 'indexeddb'
+		&& seamBatch.committing !== true
 		&& cachedHead >= numeric(entry.head_seq)
-		&& tailWindowCovered(meta, numeric(entry.head_seq)));
+		&& tailWindowCovered(meta, numeric(entry.head_seq))
+		&& coverageContains(meta, numeric(seamBatch.beforeSeq) - 1));
 	  const canKeepLocalFrontier = Boolean((previous?.tailVisible || previous?.completedPages > 0 || compatibleLocalBatch)
 		&& cachedHead >= numeric(entry.head_seq)
 		&& tailWindowCovered(meta, numeric(entry.head_seq)));
-	  if (compatibleLocalBatch) seamBatches.delete(id);
+	  if (compatibleLocalBatch) {
+		seamBatches.delete(id);
+		seamBatch.stateLease = state.stateLease;
+	  }
       state.attachedGeneration = generation;
 	  state.remoteKnown = true;
 	  state.remoteEligible = true;
@@ -1033,7 +1163,11 @@ export function createHistoryScheduler({
 	  state.beforeSeq = canKeepLocalFrontier ? previous.beforeSeq : state.headSeq + 1;
       state.cacheBypassBeforeSeq = 0;
 	  state.localMeta = meta;
-	  state.verifiedCoverage = mergedCoverage(meta?.coverage || []);
+	  state.localCoverage = mergedCoverage(meta?.coverage || []);
+	  state.verifiedCoverage = previousGeneration === nextGeneration
+		&& previous?.attachedGeneration === nextGeneration
+		? mergedCoverage(previous.verifiedCoverage || [])
+		: [];
       state.hasRows = Boolean(entry.has_rows);
 	  state.hasOlder = state.hasRows && state.beforeSeq > 0;
       state.activity = Math.max(numeric(entry.last_activity), numeric(state.localMeta?.lastActivity));
@@ -1048,36 +1182,67 @@ export function createHistoryScheduler({
 	  state.tailRefreshFloorSeq = state.tailRefreshBeforeSeq ? visibleHead : 0;
 	  if (!canKeepLocalFrontier) state.completedPages = 0;
 	  if (!canKeepLocalFrontier && state.reservoir.size) {
-		globalReservoirBytes = Math.max(0, globalReservoirBytes - state.reservoirBytes);
 		state.reservoir = new Map();
 		state.reservoirBytes = 0;
 	  }
+      state.retryAt = 0;
+      state.retryCount = 0;
+      state.cancelPending = null;
+      state.foregroundError = '';
       state.error = entry.error_detail || '';
       channels.set(id, state);
+      settleCurrentWaiters(state);
     }
 	const focused = channels.get(focus);
 	if (focused && !focused.lastFocusOrder) {
 	  focused.lastFocusOrder = ++focusSerial;
 	  persistPriority();
 	}
-    for (const [id, state] of channels) {
+    for (const [id, previous] of [...channels]) {
       if (seen.has(id)) continue;
+      for (const waiter of [...previous.currentWaiters]) {
+		waiter.cleanup?.();
+		waiter.reject(new Error('频道同步 generation 已替换'));
+	  }
+	  settleForeground(previous, { kind: 'cancelled' });
+	  previous.foregroundOwners.clear();
+	  previous.projectionPending = false;
+	  const state = schedulerState(id, previous, { generationReplacement: true });
       state.attachedGeneration = 0;
 	  state.remoteKnown = true;
 	  state.remoteEligible = false;
       state.hasRows = false;
       state.hasOlder = false;
+      state.controlCurrent = false;
+      state.headSeq = 0;
+      state.beforeSeq = 0;
+      state.tailRefreshBeforeSeq = 0;
+      state.tailRefreshFloorSeq = 0;
+      state.localMeta = null;
+      state.localCoverage = [];
+      state.verifiedCoverage = [];
+      state.reservoir = new Map();
+      state.reservoirBytes = 0;
+      state.retryAt = 0;
+      state.retryCount = 0;
+      state.cancelPending = null;
+      state.foregroundError = '';
+      channels.set(id, state);
     }
 	for (const [id, batch] of seamBatches) {
 	  batch.cancelled = true;
 	  batch.terminal?.reject(new Error('history source recalibrated by attach'));
+	  batch.sourceCancellation?.reject(new Error('history source recalibrated by attach'));
 	  if (batch.ref) {
 		inflightByRef.delete(batch.ref);
 		cancelledRefs.set(batch.ref, { channelId: batch.channelId, generation: batch.generation });
 		if (batch.source === 'network') void cancelPage(batch.channelId, batch.ref, batch.generation).catch(() => {});
 	  }
 	  if (inflightByChannel.get(id) === batch) inflightByChannel.delete(id);
-	}
+    }
+	remoteAdmissionEstablished = true;
+	admittedChannelIds = new Set(seen);
+    recomputeReservoirBytes();
     diagnostic('info', 'history.attach_meta', { generation, focus, channels: seen.size });
     publish();
     schedule();
@@ -1158,6 +1323,9 @@ export function createHistoryScheduler({
     projectionBarrier = true,
   } = {}) {
     if (signal?.aborted) return { kind: 'cancelled' };
+    if (remoteAdmissionEstablished && !admittedChannelIds.has(channelId)) {
+      return { kind: 'cancelled' };
+    }
     let state = channels.get(channelId);
     if (!state) {
       state = schedulerState(channelId);
@@ -1166,7 +1334,8 @@ export function createHistoryScheduler({
 	// The caller has completed projection of the previous segment and is asking
 	// for a continuation. This acknowledgement, not a render timer, releases the
 	// channel to schedule its next contiguous batch.
-    state.projectionPending = false;
+	state.projectionPending = false;
+    if (state.remoteKnown && state.remoteEligible === false) return { kind: 'cancelled' };
     if (state.reservoir.size > 0) {
       const boundedByteLimit = Number.isFinite(Number(byteLimit))
         ? Math.max(1, Math.min(HISTORY_REVEAL_BYTES, Number(byteLimit)))
@@ -1192,10 +1361,11 @@ export function createHistoryScheduler({
       const waiter = { resolve, cleanup: null, projectionBarrier };
       if (signal) {
         const abort = () => {
-          const index = state.foregroundWaiters.indexOf(waiter);
-          if (index >= 0) state.foregroundWaiters.splice(index, 1);
+          const installed = channels.get(channelId) || state;
+          const index = installed.foregroundWaiters.indexOf(waiter);
+          if (index >= 0) installed.foregroundWaiters.splice(index, 1);
           resolve({ kind: 'cancelled' });
-          cancelUnownedForeground(state);
+          cancelUnownedForeground(installed);
           publish();
           schedule();
         };
@@ -1245,6 +1415,7 @@ export function createHistoryScheduler({
 	  if (released) return;
 	  released = true;
 	  signal?.removeEventListener('abort', release);
+	  state = channels.get(channelId) || state;
 	  state.foregroundOwners.delete(owner);
 	  if (state.foregroundOwners.size === 0 && state.foregroundWaiters.length === 0) {
 		state.projectionPending = false;
@@ -1358,7 +1529,7 @@ export function createHistoryScheduler({
 	state.hasRows = Boolean(entry.has_rows) || state.hasRows || headSeq > 0;
 	state.activity = Math.max(state.activity, numeric(entry.last_activity));
 	const localNewest = numeric(visibleNewestSeq(id));
-	const headCovered = rangesContain(state.verifiedCoverage, headSeq);
+	const headCovered = rangesContain(installedCoverage(state), headSeq);
 	const localTailPending = !localMetaReady || (hasLocalKnowledge(state.localMeta) && !state.tailVisible);
 	if (headSeq > localNewest && !headCovered && id === focus && !localTailPending) {
 	  state.controlCurrent = false;
@@ -1399,7 +1570,7 @@ export function createHistoryScheduler({
 	  let timer = null;
 	  const waiter = { targetHead: target, resolve, reject, cleanup: null };
 	  const abort = () => {
-		state.currentWaiters.delete(waiter);
+		(channels.get(channelId) || state).currentWaiters.delete(waiter);
 		waiter.cleanup?.();
 		reject(new Error('频道同步已取消'));
 	  };
@@ -1409,7 +1580,7 @@ export function createHistoryScheduler({
 	  };
 	  if (signal) signal.addEventListener('abort', abort, { once: true });
 	  timer = setTimeoutImpl(() => {
-		state.currentWaiters.delete(waiter);
+		(channels.get(channelId) || state).currentWaiters.delete(waiter);
 		waiter.cleanup?.();
 		reject(new Error('频道同步超时'));
 	  }, timeoutMs);
@@ -1418,16 +1589,45 @@ export function createHistoryScheduler({
 	});
   }
 
-  function setLocalMeta(nextMeta = new Map(), { publishChange = true, localReady } = {}) {
+  function setLocalMeta(nextMeta = new Map(), { publishChange = true, localReady, replace = false } = {}) {
     const activatingLocalMeta = localReady === true && !localMetaReady;
     if (typeof localReady === 'boolean') localMetaReady = localReady;
+    if (replace) {
+      localMetaEpoch += 1;
+      for (const batch of inflightByChannel.values()) {
+        if (batch.source === 'indexeddb') {
+          cancelBatch(batch, 'complete local Meta snapshot replaced cache source');
+        }
+      }
+      for (const [id, state] of channels) {
+        if (nextMeta.has(id)
+          && (!remoteAdmissionEstablished || admittedChannelIds.has(id))) continue;
+        state.localMeta = null;
+        state.localCoverage = [];
+        state.cacheBypassBeforeSeq = 0;
+        const remoteAttached = Boolean(generation && state.attachedGeneration === generation);
+        if (!remoteAttached) {
+          state.headSeq = 0;
+          state.beforeSeq = 0;
+          state.hasRows = false;
+          state.hasOlder = false;
+          state.controlCurrent = false;
+          dropReservoir(state);
+        } else if (!currentTargetInstalled(state, state.headSeq)) {
+          state.controlCurrent = false;
+          requireRemoteTail(state);
+        }
+      }
+    }
     for (const [id, value] of nextMeta) {
+	  if (remoteAdmissionEstablished && !admittedChannelIds.has(id)) continue;
 	  let state = channels.get(id);
 	  if (!state) {
 		state = schedulerState(id);
 		channels.set(id, state);
 	  }
       state.localMeta = value;
+	  state.localCoverage = mergedCoverage(value?.coverage || []);
 	  const cachedHead = localHead(value);
 	  if (activatingLocalMeta && state.attachedGeneration && !state.tailVisible && state.completedPages === 0 && cachedHead > 0) {
 		// Local-first startup begins at the newest durable local interval. Once
@@ -1436,7 +1636,6 @@ export function createHistoryScheduler({
 		state.hasRows = true;
 		state.hasOlder = true;
 	  }
-	  for (const range of value?.coverage || []) state.verifiedCoverage = mergedCoverage(state.verifiedCoverage, range);
 	  // Prefer the durable local page when it really covers this frontier. If
 	  // metadata only names a newest sequence but cannot serve it, current-tail
 	  // freshness must remain anchored at the authoritative remote head.
@@ -1503,6 +1702,7 @@ export function createHistoryScheduler({
 
     const batch = inflightByChannel.get(channelId);
     if (batch) cancelBatch(batch, 'channel access revoked');
+    admittedChannelIds.delete(channelId);
     state.attachedGeneration = 0;
     state.remoteKnown = true;
     state.remoteEligible = false;
@@ -1511,6 +1711,14 @@ export function createHistoryScheduler({
     state.tailRefreshFloorSeq = 0;
     state.retryAt = 0;
     state.error = reason;
+    state.headSeq = 0;
+    state.beforeSeq = 0;
+    state.hasRows = false;
+    state.hasOlder = false;
+    state.localMeta = null;
+    state.localCoverage = [];
+    state.verifiedCoverage = [];
+    dropReservoir(state);
     for (const waiter of [...state.currentWaiters]) {
       waiter.cleanup?.();
       state.currentWaiters.delete(waiter);
@@ -1561,7 +1769,7 @@ export function createHistoryScheduler({
       completedPages: state.completedPages,
       generation,
       error: state.error,
-      coverage: state.verifiedCoverage.map((range) => ({ ...range })),
+      coverage: installedCoverage(state).map((range) => ({ ...range })),
     };
   }
 
@@ -1582,7 +1790,7 @@ export function createHistoryScheduler({
     const filledRefreshGap = liveIsCurrent
       && state.tailRefreshBeforeSeq > 0
       && rangesCover(
-        state.verifiedCoverage,
+        installedCoverage(state),
         numeric(state.tailRefreshFloorSeq) + 1,
         state.headSeq,
       );
@@ -1635,6 +1843,7 @@ export function createHistoryScheduler({
 	for (const batch of inflightByChannel.values()) {
 	  batch.cancelled = true;
 	  batch.terminal?.reject(new Error('local replica reset'));
+	  batch.sourceCancellation?.reject(new Error('local replica reset'));
 	}
 	executors.clear();
 	inflightByChannel.clear();
@@ -1644,6 +1853,9 @@ export function createHistoryScheduler({
 	reservedInflightBytes = 0;
 	globalReservoirBytes = 0;
 	generation = 0;
+	localMetaEpoch += 1;
+	remoteAdmissionEstablished = false;
+	admittedChannelIds = new Set();
 	remoteUnavailable = false;
 	dispatchWheelIndex = 0;
 	// A server/owner epoch reset may have cleared the persisted view/live MRU.

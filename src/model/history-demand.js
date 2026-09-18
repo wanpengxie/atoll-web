@@ -64,24 +64,37 @@ export function physicalReadSeq({ channelId = '', status = {}, authority = {}, r
   return visibleHigh;
 }
 
-// Channel notifications are acknowledgement of an attention boundary, not a
-// claim that every message body through that boundary was physically read.
-// The authoritative high-water therefore comes from the attached Meta status,
-// never from a caller-supplied seq or from the currently installed rows. A
-// body may arrive after its Meta boundary without resurrecting the notice.
+// Channel notifications acknowledge a frozen attention boundary; they do not
+// claim that every body through it was physically read. Reading owns the
+// event that captured that boundary. This port only validates that the event
+// still belongs to the current channel/view/activation/generation and cannot
+// name a sequence beyond the attached Meta head. It must never resample the
+// mutable head while retrying an older tail observation.
 export function notificationReadSeq({ channelId = '', status = {}, authority = {}, receipt = {} } = {}) {
   if (!channelId || receipt.channelId !== channelId) return 0;
   if (!authority.viewKey || !authority.activationID
     || receipt.viewKey !== authority.viewKey
     || receipt.activationID !== authority.activationID) return 0;
   const generation = safePositive(status.generation);
+  const notificationAuthorityRevision = safePositive(status.notificationAuthorityRevision);
   if (!generation
     || status.attached !== true
     || safePositive(receipt.generation) !== generation) return 0;
+  if (notificationAuthorityRevision
+    && safePositive(receipt.authorityRevision) !== notificationAuthorityRevision) return 0;
   if (receipt.atTail !== true
     || receipt.following !== true
     || receipt.surfaceVisible !== true) return 0;
-  return safePositive(status.headSeq);
+  const boundary = safePositive(receipt.boundary);
+  const head = safePositive(status.headSeq);
+  if (!boundary || boundary > head) return 0;
+  if (receipt.cause === 'presented-follow') {
+    if (status.messageCurrent !== true
+      || safePositive(receipt.installedHighSeq) < boundary
+      || Number(receipt.sourceRevision || 0) <= 0
+      || Number(receipt.sourceRevision || 0) > Number(status.presentationRevision || 0)) return 0;
+  } else if (receipt.cause !== 'tail-backlog') return 0;
+  return boundary;
 }
 
 const EMPTY_STATUS = Object.freeze({
@@ -103,6 +116,7 @@ const EMPTY_STATUS = Object.freeze({
   completedPages: 0,
   generation: 0,
   presentationRevision: 0,
+  notificationAuthorityRevision: 0,
   error: '',
   localReplicaReady: true,
 });
@@ -137,7 +151,10 @@ export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open
     markNotificationsRead: (receipt, authority) => {
       const highWater = notificationReadSeq({ channelId, status: currentStatus, authority, receipt });
       if (highWater <= 0 || typeof markNotificationsRead !== 'function') return false;
-      const accepted = markNotificationsRead(highWater);
+      // Forward the same immutable event. Feed owns the principal/boot epoch
+      // check and Cursors owns the scalar max; neither layer may reconstruct a
+      // newer boundary from mutable status.
+      const accepted = markNotificationsRead(receipt);
       return accepted === undefined ? true : accepted;
     },
   });
