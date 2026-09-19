@@ -267,6 +267,26 @@ F7 timing probe 中 browsing 前 `c0-history-request-112/113/114` 均真实可�
 
 本轮三条结论：readable_event 是真实 DOM→Reading 缺口；final root badge 是 fixture audience/合同语义问题，暂不交产品；F7 row 112 是当前产品 presentation 缺口，Reading 候选仅待 owner 复验的局部改善。N4/H1–H4 仍按前文 DOM 主证据与 diagnostics 分层，不因空 provider 追加用户 rail 回归。
 
+## 第十轮只读复验：Reading 候选后的公开 owner 分层（执行基线 `c6f9ea8`，2026-09-20）
+
+本轮以当前共享树 `c6f9ea8` 加未提交 `VendorListExecutor.jsx` Reading anchor-retention 候选为观察基线。测试侧没有修改产品、fixture、断言或 skip；候选未作为已验收产品修复。
+
+### readable_event：交给 Reading handoff owner，不是 Presentation/rail
+
+`notification-policy.spec.js --grep="tool, timer, and public-event"` 的浏览器重跑仍为 **1 failed**，line 243 缺 `reading.observation.visibleRowIDs`。line 243 前的独立 readable row 生命周期和真实 DOM 可见性已通过，说明当前首断点不是 row 未挂载，也不是左 rail 数字；它是 **Presentation/DOM → Reading observation handoff**。证据目录：`test-results-browser-ns-round10-reading-15580-20260920/`。
+
+同一候选下 `reading-observation-settle.test.jsx` 与 `reading-session-ports.test.js` 为 **4 failed / 4 passed**（文件 1 failed、1 passed）：bookmark `blockID`、selection/layout settle、input-free layout settle、epoch invalidation 四条仍红。故不能以候选的 DOM 可见性替代 Reading observation/authority 合同；公开 owner 仍是 Reading session/observation owner。
+
+### F7 row 112：真实用户可见 Presentation 回归仍在
+
+`34d6f0c` oracle F7 采集 **1 passed**，但原合同首断点仍为 **Presentation**。回返时 cursor `readSeq/high-water=844`，replica `head=848`、80 rows 已包含 row 112；唯一 browsing owner 已 mounted row 112，但其 `top=-938,bottom=-720`、不可见，visible IDs 仍为 `c0-history-request-120`、`c0-approval-1`、`c0-summary`。因此这是用户可见的回返 presentation/virtualized admission 缺口，不是空 diagnostics provider 或 fixture；当前 Reading 候选没有移动首断点。证据目录：`test-results-browser-ns-round10-f7-15581-20260920/`。
+
+### final root badge：fixture/合同待决，不登记产品回归
+
+模型层 canonical final（completed + text）仍可进 rail，standalone readable `human.note` event 明确只进 viewport。浏览器 final envelope 的 `audience=["project-agent"]` 与 fixture root actor `root-project` 不一致，runtime 的 actor relation gate 会在 rail predicate 前拒绝 root 关系；所以 `.unread-total=0` 当前只能说明 fixture audience 与 line 154 的预期不相容，不能登记成 notification 产品 badge bug。保留 **fixture/合同语义待决**；不向产品 owner 派发，除非合同先确认 audience 语义或 fixture 改 root audience 后仍复现。
+
+本轮交接摘要：**Reading**（readable_event observation 缺口）与 **Presentation**（F7 row 112 回返不可见）分别交各自公开 owner；**fixture**（final root audience）暂不交产品。空 diagnostics 不作为用户 rail 错误证据。
+
 ## 结论
 
 以上当前 R2–R8 覆盖最终 10 个 RED case 的真实分歧；历史 R1 disconnect 已关闭，Composer/Tiptap guard 的 uncaught 也未在最终轮复现。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。

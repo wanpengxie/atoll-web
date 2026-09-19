@@ -327,3 +327,42 @@ F7 时序主证据（`test-results-browser-ns-reading-probe-05b1fff-20260920/...
    Reading 候选的同一浏览器序列中，回返后唯一 owner 保持 `mode=browsing`，且 `c0-history-request-111/112/113/114` 均在物理可见区，说明 deferred content-anchor + 增大 retention 确实把 row 112 的 presentation 首断点向前闭合；但候选 focused settle tests 仍 4/4 RED，不能据此宣称 F7 产品修复已验收。当前公开 owner 仍是 reading-session/admission → virtualized presentation，候选只作为待 owner 复验的非合入证据。
 
 本轮逐条运行结果：当前 HEAD 的 `notification-policy.spec.js --grep "rail follows presented"` 在 line 154 RED；`--grep "tool, timer, and public-event"` 在 line 243 RED；F7 oracle **1 passed（采集完成，契约首断点仍 RED）**。因此本轮最终分层是：readable_event = DOM→Reading handoff 产品缺口；final root badge = fixture audience/合同语义待决，不冒充产品 bug；F7 row 112 = 当前产品 presentation 缺口，Reading 候选仅局部改善。
+
+## 第十轮只读复验：Reading 候选后的首断点（执行基线 `c6f9ea8`，2026-09-20）
+
+本轮在共享工作树当前 `c6f9ea8` 加未提交的 `src/ui/timeline/VendorListExecutor.jsx` Reading anchor-retention 候选上复验；没有修改产品、fixture、断言或 skip。这里的候选不是已验收提交，结果只用于确认首个公开分歧，不能把候选局部行为写成产品已修复。
+
+### readable_event：Presentation 已到 DOM，Reading handoff 仍 RED
+
+命令：
+
+```text
+ATOLL_TEST_WEB_PORT=15580 ATOLL_TEST_MOCK_PORT=19980 npx playwright test tests/browser/notification-policy.spec.js --grep="tool, timer, and public-event" --workers=1 --reporter=line --output=test-results-browser-ns-round10-reading-15580-20260920
+```
+
+结果为 **1 failed**，失败仍在 `notification-policy.spec.js:243` 的 `reading.observation.visibleRowIDs` 断言。此前的 lifecycle、独立 root、row DOM 可见性已通过：`c0.project-notification-readable-event` 在唯一 active owner 中真实可见；候选没有产生对应 `reading.observation`。因此该首断点严格归 **Reading（Presentation/DOM → Reading observation handoff）**，不是 row presentation 未物化，也不是 rail/diagnostics provider。
+
+候选的 focused unit 交叉复验：
+
+```text
+npx vitest run tests/reading-observation-settle.test.jsx tests/reading-session-ports.test.js --reporter=dot
+# Test Files 1 failed | 1 passed (2), Tests 4 failed | 4 passed (8)
+```
+
+四个 RED 分别是 bookmark 缺 `blockID`、selection autoscroll 仍记录 `layout/settled=false`、input-free layout 仍为 `layout/settled=false`、epoch advance 后仍保留 `user` 而非 `settled`。这只说明候选尚未满足 Reading authority/settle 合同，不改变上述浏览器首断点。
+
+### F7 row 112：候选没有移动 Presentation 首断点
+
+命令：
+
+```text
+ATOLL_TEST_WEB_PORT=15581 ATOLL_TEST_MOCK_PORT=19981 npx playwright test tests/browser/notification-owner-oracle.spec.js --grep="F7 input" --workers=1 --reporter=line --output=test-results-browser-ns-round10-f7-15581-20260920
+```
+
+oracle 采集 **1 passed**（采集绿色不等于原合同绿色），但 `firstDivergence` 仍为 **`presentation` / `return-after-switch`**：cursor `readSeq=844`、`notificationHighWater=844`，replica `head=848`、80 rows 且包含 `c0-history-request-112`；唯一 owner 为 `mode=browsing`，目标已 mounted 但 `top=-938,bottom=-720,visible=false`，可见仍是 `120/approval/summary`。所以 input、cursor、replica 已到位，候选没有闭合回返后的 virtualized presentation admission/anchor 可见性。
+
+### final root badge：继续按 fixture audience 语义待决
+
+canonical lifecycle final 仍是模型上的 `final`（可进 rail），独立 `human.note` readable event 仍是 `event`（只进 viewport，不进 rail）。实际 fixture final 的 audience 是 `project-agent`，multi-channel root actor 是 `root-project`；runtime 先过当前 actor relation 再应用 rail predicate，因此 root `.unread-total=0` 不能在这组 audience 下单独证明产品 badge 回归。该条保持 **fixture/合同语义待决**，不向 notification 产品 owner 交接；只有合同明确 channel-wide audience 语义，或 fixture 改为 root audience 后仍无 badge，才重新开放产品分歧。
+
+本轮最终分层：**Presentation** = F7 row 112 回返不可见；**Reading** = readable_event DOM 已见但无 observation（且候选 settle/authority 未闭合）；**fixture** = final root badge audience 不相容。三者不互相代偿，证据目录为 `test-results-browser-ns-round10-reading-15580-20260920/` 与 `test-results-browser-ns-round10-f7-15581-20260920/`。
