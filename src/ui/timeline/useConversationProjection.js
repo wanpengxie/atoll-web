@@ -37,6 +37,20 @@ import { usePresentationArrivalReceipt, useTimelineArrivalReceipt } from './useL
 const IDLE_HISTORY_DEMAND = Object.freeze({ revision: 0, phase: 'idle', error: '' });
 const HISTORY_RUNWAY_REVEAL_RECORDS = 8;
 const HISTORY_RUNWAY_REVEAL_BYTES = 256 * 1024;
+const pageIsVisible = () => globalThis.document?.visibilityState !== 'hidden';
+
+function sameTailEvidence(left, right) {
+  return left.activationID === right.activationID
+    && left.atTail === right.atTail
+    && left.surfaceVisible === right.surfaceVisible
+    && left.installedHighSeq === right.installedHighSeq
+    && left.generation === right.generation
+    && left.headSeq === right.headSeq
+    && left.presentationRevision === right.presentationRevision
+    && left.sourceRevision === right.sourceRevision
+    && left.authorityRevision === right.authorityRevision;
+}
+
 function createSessionController({ channelID, viewKey, viewSessions }) {
   const activationID = newId();
   const saved = viewSessions?.readView?.(channelID, viewKey) || {};
@@ -107,8 +121,19 @@ function useProjectionReadingOwner({
   const { session } = published;
   const snapshotRef = useRef(snapshot);
   const historyStatusRef = useRef(historyStatus);
-  const observationRef = useRef({ atTail: false, surfaceVisible: false });
+  const observationRef = useRef(Object.freeze({
+    activationID: controller.activationID,
+    atTail: false,
+    surfaceVisible: false,
+    installedHighSeq: 0,
+    generation: 0,
+    headSeq: 0,
+    presentationRevision: 0,
+    sourceRevision: 0,
+    authorityRevision: 0,
+  }));
   const [observationRevision, setObservationRevision] = useState(0);
+  const [documentVisible, setDocumentVisible] = useState(pageIsVisible);
   const commitOwnerCandidate = useMemo(() => Object.freeze({
     controller,
     activationID: controller.activationID,
@@ -129,6 +154,11 @@ function useProjectionReadingOwner({
     controller.start();
     return () => controller.suspend();
   }, [controller]);
+  useEffect(() => {
+    const publish = () => setDocumentVisible(pageIsVisible());
+    globalThis.document?.addEventListener?.('visibilitychange', publish);
+    return () => globalThis.document?.removeEventListener?.('visibilitychange', publish);
+  }, []);
   useEffect(() => {
     if (session.mode !== READING_MODE.following || surfaceVisible !== true) return;
     arrivals?.acknowledge?.(Number(arrivals.revision || 0));
@@ -289,14 +319,64 @@ function useProjectionReadingOwner({
       epoch: `${owner.channelID}:${Number(owner.historyStatus.generation || 0)}`,
     });
   }, []);
-  const tailCaughtUp = useMemo(() => Object.freeze({
-    channelId: channelID,
-    caughtUp: session.mode === READING_MODE.following
-      && observationRef.current.atTail === true
-      && observationRef.current.surfaceVisible === true,
-    scope: historyViewSpec?.scope || '',
-    actorFiltered: Number(historyViewSpec?.actorFilter?.size || 0) > 0,
-  }), [channelID, historyViewSpec, observationRevision, session.mode]);
+  const tailCaughtUp = useMemo(() => {
+    const evidence = observationRef.current;
+    const scope = historyViewSpec?.scope || '';
+    const actorFilterCount = Number(historyViewSpec?.actorFilter?.size || 0);
+    const generation = Number(historyStatus.generation || 0);
+    const headSeq = Number(historyStatus.headSeq || 0);
+    const presentationRevision = Number(historyStatus.presentationRevision || 0);
+    const authorityRevision = Number(historyStatus.notificationAuthorityRevision || 0);
+    const sourceRevision = Number(snapshot.sourceRevision || 0);
+    const caughtUp = session.mode === READING_MODE.following
+      && evidence.activationID === controller.activationID
+      && evidence.atTail === true
+      && evidence.surfaceVisible === true
+      && documentVisible === true;
+    const current = caughtUp
+      && historyStatus.attached === true
+      && historyStatus.messageCurrent === true
+      && generation > 0
+      && evidence.generation === generation
+      && evidence.headSeq === headSeq
+      && evidence.presentationRevision === presentationRevision
+      && evidence.sourceRevision === sourceRevision
+      && evidence.authorityRevision === authorityRevision
+      && sourceRevision >= presentationRevision
+      && evidence.installedHighSeq > 0
+      && evidence.installedHighSeq <= headSeq;
+    return Object.freeze({
+      channelId: channelID,
+      viewKey,
+      activationID: controller.activationID,
+      caughtUp,
+      scope,
+      actorFiltered: actorFilterCount > 0,
+      actorFilterCount,
+      generation,
+      authorityRevision,
+      cause: current ? 'presented-follow' : '',
+      sourceRevision: Number(evidence.sourceRevision || 0),
+      presentationRevision: Number(evidence.presentationRevision || 0),
+      installedHighSeq: Number(evidence.installedHighSeq || 0),
+      atTail: caughtUp,
+      following: session.mode === READING_MODE.following,
+      surfaceVisible: caughtUp,
+      physicalSeq: current && scope === 'all' && actorFilterCount === 0
+        ? evidence.installedHighSeq
+        : 0,
+      // Notification acknowledgement is a channel attention boundary, not a
+      // claim that filtered-out bodies were physically read. A current
+      // semantic tail may therefore confirm the frozen channel head while its
+      // physical cursor remains zero.
+      boundary: current ? headSeq : 0,
+    });
+  }, [
+    channelID, controller, documentVisible, historyStatus.attached, historyStatus.generation,
+    historyStatus.headSeq, historyStatus.messageCurrent, historyStatus.presentationRevision,
+    historyStatus.notificationAuthorityRevision, historyViewSpec, observationRevision,
+    session.mode, snapshot.sourceRevision, viewKey,
+  ]);
 
   return useMemo(() => Object.freeze({
     activationID: controller.activationID,
@@ -333,12 +413,38 @@ function useProjectionReadingOwner({
     finishNavigation(input = {}) { return Number(input.inputGeneration) === controller.getSnapshot().session.inputEpoch; },
     cancelNavigation,
     onReadingObservation(observation = {}) {
-      if (observation.activationID && observation.activationID !== controller.activationID
-        || observation.surfaceVisible !== true) return controller.getSnapshot().session;
+      if (observation.activationID && observation.activationID !== controller.activationID) {
+        return controller.getSnapshot().session;
+      }
+      if (observation.surfaceVisible !== true) {
+        const cleared = Object.freeze({
+          ...observationRef.current,
+          activationID: controller.activationID,
+          atTail: false,
+          surfaceVisible: false,
+          installedHighSeq: 0,
+        });
+        if (!sameTailEvidence(cleared, observationRef.current)) {
+          observationRef.current = cleared;
+          setObservationRevision((value) => value + 1);
+        }
+        return controller.getSnapshot().session;
+      }
       controller.update((current) => observeReading(current, { ...observation, activationID: controller.activationID }));
-      const nextEvidence = { atTail: observation.atTail === true, surfaceVisible: true };
-      if (nextEvidence.atTail !== observationRef.current.atTail
-        || nextEvidence.surfaceVisible !== observationRef.current.surfaceVisible) {
+      const committedSnapshot = snapshotRef.current;
+      const committedHistory = historyStatusRef.current;
+      const nextEvidence = Object.freeze({
+        activationID: controller.activationID,
+        atTail: observation.atTail === true,
+        surfaceVisible: true,
+        installedHighSeq: Number(observation.installedHighSeq || 0),
+        generation: Number(committedHistory.generation || 0),
+        headSeq: Number(committedHistory.headSeq || 0),
+        presentationRevision: Number(committedHistory.presentationRevision || 0),
+        sourceRevision: Number(committedSnapshot.sourceRevision || 0),
+        authorityRevision: Number(committedHistory.notificationAuthorityRevision || 0),
+      });
+      if (!sameTailEvidence(nextEvidence, observationRef.current)) {
         observationRef.current = nextEvidence;
         setObservationRevision((value) => value + 1);
       }
@@ -352,7 +458,12 @@ function useProjectionReadingOwner({
       if (visible) return;
       if (observationRef.current.atTail === false
         && observationRef.current.surfaceVisible === false) return;
-      observationRef.current = { atTail: false, surfaceVisible: false };
+      observationRef.current = Object.freeze({
+        ...observationRef.current,
+        atTail: false,
+        surfaceVisible: false,
+        installedHighSeq: 0,
+      });
       setObservationRevision((value) => value + 1);
     },
     consumeBottomIntent(intent) {
@@ -559,7 +670,14 @@ export function useConversationProjection({
   useLayoutEffect(() => {
     if (typeof onTailCaughtUp !== 'function') return undefined;
     onTailCaughtUp(viewport.tailCaughtUp);
-    return () => onTailCaughtUp({ ...viewport.tailCaughtUp, caughtUp: false });
+    return () => onTailCaughtUp(Object.freeze({
+      ...viewport.tailCaughtUp,
+      caughtUp: false,
+      atTail: false,
+      surfaceVisible: false,
+      physicalSeq: 0,
+      boundary: 0,
+    }));
   }, [onTailCaughtUp, viewport.tailCaughtUp]);
   const latestRowID = viewport.presentationAuthority?.candidateID || '';
   useColdEntryDiagnostics({
