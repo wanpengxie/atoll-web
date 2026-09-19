@@ -37,6 +37,7 @@ const DIRECTORY_INVALIDATION_TYPES = new Set([
 const AGENT_ACTIVITY_LIMIT = 512;
 const TIMER_FIRING_LIMIT = 256;
 const ACCESS_UNAVAILABLE_CODES = new Set(['unavailable', 'channel_unavailable']);
+const CURSOR_STORAGE_PREFIX = 'atoll.feed-cursors.v1.';
 
 function invalidatesChannelDirectory(envelope) {
   return DIRECTORY_INVALIDATION_TYPES.has(envelope?.type || '');
@@ -138,10 +139,29 @@ function createCursorOwner(storage = globalThis.localStorage) {
   const reads = new Map();
   const notifications = new Map();
   let authority = '';
+  const persistedKeys = () => {
+    if (!storage || typeof storage.key !== 'function') return [];
+    const keys = [];
+    for (let index = 0; index < Number(storage.length || 0); index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(CURSOR_STORAGE_PREFIX)) keys.push(key);
+    }
+    return keys;
+  };
+  const resetAuthority = () => {
+    let changed = Boolean(authority || reads.size || notifications.size);
+    for (const key of persistedKeys()) {
+      try { storage.removeItem(key); changed = true; } catch { /* best effort */ }
+    }
+    authority = '';
+    reads.clear();
+    notifications.clear();
+    return changed;
+  };
   const persist = () => {
     if (!authority || !storage) return;
     try {
-      storage.setItem(`atoll.feed-cursors.v1.${authority}`, JSON.stringify({
+      storage.setItem(`${CURSOR_STORAGE_PREFIX}${authority}`, JSON.stringify({
         reads: Object.fromEntries(reads), notifications: Object.fromEntries(notifications),
       }));
     } catch { /* cursor durability is best effort */ }
@@ -150,7 +170,7 @@ function createCursorOwner(storage = globalThis.localStorage) {
     reads.clear(); notifications.clear();
     if (!authority || !storage) return false;
     try {
-      const raw = storage.getItem(`atoll.feed-cursors.v1.${authority}`);
+      const raw = storage.getItem(`${CURSOR_STORAGE_PREFIX}${authority}`);
       if (!raw) return false;
       const value = JSON.parse(raw);
       for (const [id, seq] of Object.entries(value.reads || {})) reads.set(id, historyNumeric(seq));
@@ -163,11 +183,17 @@ function createCursorOwner(storage = globalThis.localStorage) {
       const next = principalId && serverBoot ? `${principalId}\u0000${serverBoot}` : '';
       const changed = next !== authority;
       if (!changed) return { changed: false, reused: Boolean(authority), fresh: false };
+      // A live authority replacement invalidates every prior principal/world
+      // prefix. The first selection in a fresh runtime is allowed to restore
+      // the exact tuple; its caller handles an actual world transition via
+      // resetAuthority before selecting the replacement.
+      if (authority) resetAuthority();
       authority = next;
       const restored = load();
       return { changed: true, reused: Boolean(authority) && restored, fresh: Boolean(authority) && !restored };
     },
-    clearReadAuthority() { authority = ''; reads.clear(); notifications.clear(); },
+    clearReadAuthority: resetAuthority,
+    resetAuthority,
     isReadAuthorityReady: () => Boolean(authority),
     reconcileReads(snapshot = {}) {
       for (const [channelId, seq] of Object.entries(snapshot)) {
@@ -683,7 +709,7 @@ export function createChannelFeedRuntime(options = {}) {
     generation = nextGeneration;
     const epoch = ++attachEpoch;
     const nextWorld = String(detail.boot || world);
-    const worldChanged = nextWorld !== world;
+    const worldChanged = Boolean(world) && nextWorld !== world;
     world = nextWorld;
     if (worldChanged) {
       for (const channelId of histories.keys()) admission.reset(channelId);
@@ -811,7 +837,17 @@ export function createChannelFeedRuntime(options = {}) {
     replica.reset(); publish({ index: true });
   }
 
-  async function resetPersistent() { await cache.clear(); clear(); cursors.resetReads(); return true; }
+  function resetNotificationAuthority() {
+    const changed = cursors.resetAuthority();
+    if (changed) publish();
+    return changed;
+  }
+  async function resetPersistent() {
+    await cache.clear();
+    clear();
+    resetNotificationAuthority();
+    return true;
+  }
   function disconnectHistory(requestGeneration = generation) {
     if (requestGeneration && requestGeneration !== generation) return false;
     for (const status of histories.values()) {
@@ -922,6 +958,7 @@ export function createChannelFeedRuntime(options = {}) {
     attach: attachAgentActivity,
     disconnect: disconnectAgentActivity,
   });
+  const notificationAuthorityPort = Object.freeze({ reset: resetNotificationAuthority });
   const resumeLocalReplica = () => localReplicaReady ? replicaResumeSnapshot(cache.metaSnapshot()) : {};
 
   function buildSnapshot() {
@@ -929,7 +966,7 @@ export function createChannelFeedRuntime(options = {}) {
     const timerFirings = timerFiringSnapshot();
     return Object.freeze({
       version, indexVersion, localReplicaReady, localReplicaError, localReplicaErrorCode,
-      agentActivity, timerFirings, agentActivityPort,
+      agentActivity, timerFirings, agentActivityPort, notificationAuthorityPort,
       bump: () => publish({ index: true }),
       enqueue, pageEnd, liveCheckpoint, setHistoryGrants, prepareLocalReplica, resumeLocalReplica,
       disconnectHistory, stopIncompatible, cancel: disconnectHistory, clear, resetPersistent,

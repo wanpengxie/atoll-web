@@ -119,6 +119,32 @@ describe('notification confirmation contract', () => {
     secondFeed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
     expect(secondFeed.unreadFor(channelId, selfId)).toMatchObject({ related: 0, total: 0 });
   });
+
+  it('clears the old world cursor prefix through the sole notification reset port', async () => {
+    const { runtime, channelId, selfId, boot } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'approval-world-1', selfId), seq: 1 });
+    const status = feed.historyFor(channelId);
+    expect(feed.acknowledgeNotifications(channelId, {
+      channelId,
+      generation: status.generation,
+      authorityRevision: status.notificationAuthorityRevision,
+      cause: 'presented-follow',
+      boundary: 1,
+    })).toBe(1);
+    const authorityKey = (value) => `atoll.feed-cursors.v1.${selfId}\u0000${value}`;
+    expect(localStorage.getItem(authorityKey(boot))).not.toBeNull();
+
+    await feed.setHistoryGrants(
+      [{ channel_id: channelId, head_seq: 0 }],
+      { generation: 1, boot: `${boot}-replacement` },
+    );
+    expect(localStorage.getItem(authorityKey(boot))).toBeNull();
+    expect(localStorage.getItem(authorityKey(`${boot}-replacement`))).not.toBeNull();
+
+    expect(runtime.getSnapshot().notificationAuthorityPort.reset()).toBe(true);
+    expect(Object.keys(localStorage).filter((key) => key.startsWith('atoll.feed-cursors.v1.'))).toEqual([]);
+  });
 });
 
 describe('notification presentation facts', () => {
