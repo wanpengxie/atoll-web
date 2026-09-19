@@ -71,14 +71,18 @@ test('F8-001 两个频道各开终端：恒只有一条 WS，来回切各看各�
   const items = page.locator('.channel-item');
 
   await items.nth(0).click();
+  await expect(page.locator('main h1')).toHaveText('c0');
   await openTerminalAndMark(page, 'MARK_ZERO');
   await items.nth(1).click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
   await openTerminalAndMark(page, 'MARK_ONE');
 
   for (let round = 0; round < 3; round += 1) {
     await items.nth(0).click();
+    await expect(page.locator('main h1')).toHaveText('c0');
     await expect.poll(() => visibleScreen(page), { timeout: 15_000 }).toContain('MARK_ZERO');
     await items.nth(1).click();
+    await expect(page.locator('main h1')).toHaveText('c0.project');
     await expect.poll(() => visibleScreen(page), { timeout: 15_000 }).toContain('MARK_ONE');
   }
 
