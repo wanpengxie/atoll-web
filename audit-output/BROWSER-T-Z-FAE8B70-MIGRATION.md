@@ -238,7 +238,7 @@ setup → action → result; current evidence and disposition.
 
 37. **real App send transaction keeps queued WaitingLayer out of following-existing-waiting geometry** — Capability: sending while another task waits does not cover the composer or move reading. Invariant: existing Waiting remains visible and reading allocation stable. Owner: `WaitingLayer` + submission runtime. Original: existing waiting queue → send → probe controls/geometry. Current: production owner+queued setup then send and public Waiting/rect/tail evidence. **PASS.**
 
-38. **real App send transaction keeps queued WaitingLayer out of wheel-takeover-after-send geometry** — Capability: send after trusted wheel takeover preserves browsing ownership and anchor. Invariant: send must not silently force Following or perform a competing programmatic scroll. Owner: `useBrowsingReadingController` + submission runtime/reading command executor. Original: wheel takeover → send → instrument scroll writers/anchor. Current: production wheel then send; public result gap was 0 (Following) instead of the required browsing gap >1. **RED: product regression packet; no forced test pass.**
+38. **real App send transaction keeps queued WaitingLayer out of wheel-takeover-after-send geometry** — Capability: send after trusted wheel takeover preserves browsing ownership and anchor. Invariant: send must not silently force Following or perform a competing programmatic scroll. Owner: `useBrowsingReadingController` + submission runtime/reading command executor. Original: wheel takeover → send → instrument scroll writers/anchor. **Historical RED before `5aef9f4`; superseded by the current canonical-materialization PASS recorded below.**
 
 ## Follow-up: durable unseen result ownership (read-only)
 
@@ -574,9 +574,10 @@ geometry was browsing/gap `901` before durable materialization and browsing/gap
 `1225` after it. This demonstrates why the new wait is needed while confirming
 the product invariant.
 
-### E-send conflict ledger
+### E-send conflict ledger (obsolete contract retained as a witness)
 
-The old E case is intentionally retained, not deleted or skipped:
+The old E case is intentionally retained as **obsolete**, not deleted or
+skipped:
 `tests/browser/e-send-scroll-writers.spec.js:274` says that browsing send
 hands off to Following and requires final gap `<=24`. At the same `5aef9f4`
 HEAD its focused run fails with the public frame `mode=browsing`,
@@ -586,3 +587,39 @@ the replacement public coverage for send-after-browsing (canonical feed wait,
 anchor preservation, and `gap > 1`). The E assertion remains as an explicit
 conflict witness until its owner adjudicates it; it is not evidence for
 weakening case38.
+
+## Follow-up: A08 exact durable-unseen chain audit at current HEAD
+
+The unchanged A08 contract was re-run in a clean detached worktree at
+`05b1fff` (product source includes the `5aef9f4` Reading send fix):
+
+```text
+ATOLL_TEST_WEB_PORT=15293 ATOLL_TEST_MOCK_PORT=19852 npx playwright test \
+  tests/browser/ux-unseen-persistence.spec.js --reporter=line
+```
+
+Result: **1 RED at line 91**, after the public approval arrival and
+`↓ 1 条新动态` jump are present; `unseenRecords` is still `[]`. A disposable
+browser probe repeated the same seed `29109` trajectory and captured the exact
+first divergence:
+
+| chain stage | observed result | disposition |
+|---|---|---|
+| live arrival | mock feeds `c0` `848 → 849`; live WebSocket feed is `seq=849`, id `c0-approval-29109-1`, `source=live`; the public jump is `↓ 1 条新动态` | PASS: canonical arrival/materialization reaches the active Reading view |
+| Reading durable-record emission | active storage key is exactly `c0\u0000c0:mine:`; public mode is `browsing`, `inputEpoch=1`; storage revision advances `4 → 5`, but the saved value remains `unseenTail=0`, `unseenKeys=[]`, `unseenRecords=[]` | **FIRST DIVERGENCE: RED** |
+| storage write/normalization | schema-3 `atoll.view-session.v3.root` exists and `setItem` writes the canonical key, but no write contains a valid unseen tuple; `tests/view-session.test.js` independently passes 7/7, including finite tuple persistence and reload parsing | storage is not rejecting a producer tuple; the producer never supplies one |
+| reload hydrate | natural reload finds the exact approval row in history, with storage still empty; mode is `following`, gap `0`, and no jump | reload hydrates the empty record as written; no valid tuple exists to test as a hydrate failure |
+| authority/key mismatch | the view key is present and stable, the live id/seq is accepted by the active public projection, and the jump is rendered | no authority mismatch evidence |
+
+The source chain makes this boundary explicit. `channel-replica` records the
+live `(key,rowID,seq)` only in its ephemeral arrival journal; `useConversationProjection`
+derives `unseenNotice` from `arrivals.events.length`. The active session's
+`viewSessions.save` path persists `persistentReadingSession(session)`, whose
+result contains only `revision`, `mode`, and `bookmark`; it never carries
+`unseenRecords`. `copyReading`/`copyPersistedReading` can normalize and retain
+records that are already in schema-3 storage, but no current owner transfers
+the live journal tuple into that durable record. Therefore the owner is the
+Reading arrival-to-persistence seam, not storage parsing, reload hydration, or
+view authority. The hard A08 normalization/reload/jump-clear/ack assertions
+remain intact for the product owner to satisfy; no fallback or assertion
+change was made.
