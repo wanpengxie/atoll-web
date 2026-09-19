@@ -663,3 +663,31 @@ ATOLL_TEST_WEB_PORT=16428 ATOLL_TEST_MOCK_PORT=20728 npx playwright test tests/b
 hydration 单红仍为 line 160 的 `latestAddedApprovalSeq(afterHydratedAcknowledgement)`，即在第一次 project click 后立即读取 `rail.rows` 时拿不到 injected approval row；不是 high-water 丢失。当前 HEAD 的同语义 observation-only probe 在相同 `seed=0x4e_06` 中记录：两条 approval seq `26/27`，reload 前后 high-water `25`，project click 后立即和 500ms 后均为 high-water `27`、DOM `0/0/false/0`、rows `ackReason=high_water`，二次 reload 仍 high-water `27`、DOM `0/0/false/0`。证据 `test-results-browser-ns-round20-hydration-16426-20260920/**/round20-hydration-probe.json`。故该单红归 **过时/竞态 raw diagnostics test contract**（公开用户链已绿），不交 notification owner，不用删除断言或放宽行为门伪绿。
 
 本轮结论：response-first 高水位 fence、late-parent rail 提醒、typed tail receipt、reload persistence 均 GREEN；剩余正式套件单红只在立即 raw-row 读取时序，属于测试观测门，不是产品回归。
+
+## 第二十一轮：交错 response-first A/B 与 notification owner candidate `67167ee`
+
+本轮只读产品，未改正式 spec、fixture、产品、vendor、package 或 skip。临时 observation-only spec 在复验后删除；其 JSON 证据保留在 `test-results-browser-ns-round21-interleaved-preowner-16431-20260920/` 与 `test-results-browser-ns-round21-interleaved-postowner-16433-20260920/`。
+
+场景固定为 `multi-channel`, seed=`0x21_21_01`, channel=`c0.project`：A 先用既有 mock 写入正常 request+terminal 并闭合；B 先写带未来 exact parent `round21-interleaved-b-parent` 的 terminal，再离开 tail，最后由浏览器内真实 v5 `/ws` submit 写入 exact parent。候选 `67167ee`（`fix(notifications): fence following lease obligations`）落 HEAD 后用同一场景 `--repeat-each=3`，结果 **3 passed (32.3s)**；三次阶段值完全一致：
+
+| 阶段 | DOM 用户可见 | cursor / rail / rows | typed Reading observation |
+|---|---|---|---|
+| A terminal+parent 闭合 | following，`related/total/pending/jump=0/0/false/0` | `readSeq=25`, high-water=`29`, `authorityReady=true`；A 无用户 badge | tail/surface visible，A root 在 mounted IDs |
+| B terminal first，parent 缺失，仍在 tail | `0/0/false/0` | high-water 仍 `29`；terminal seq=`30`, `ackReason=notification_context_unknown` | 没有把未闭 terminal 冒充可见 receipt |
+| 离开 tail，B parent 尚未到 | `browsing`, `0/0/false/0` | `readSeq/high-water=25/29`；seq30 仍 unknown | `atTail=false`, `surfaceVisible=true` |
+| B parent live 到达且仍 browsing | `browsing`, `related/total/pending/jump=1/0/false/0` | seq30→`counted_related`；parent seq31=`self`；mock lifecycle seq32–36=`not_final`, seq37=`terminal_conflict`；high-water 仍29 | `atTail=false`, `surfaceVisible=true` |
+| 回 tail，B receipt | following，`0/0/false/0`，visible IDs 含 exact B root | high-water=`37`；seq30–37 全 `ackReason=high_water`，authorityReady=true | `atTail=true`, `surfaceVisible=true`, `inputEpoch=2`, visible IDs 含 B root |
+| reload | following，`0/0/false/0`，不复活 badge | high-water=`37`，rows 仍全 `high_water` | reload 重置 recorder trace，不影响 durable rail/cursor |
+
+因此 response-first terminal 不会在缺 parent 时提前推进 boundary；parent 在 browsing 时产生一个且仅一个用户可见 related 提醒；回 tail 后 receipt 才清除；reload 不复活。`terminal_conflict` 是 mock 自动 lifecycle 的诊断状态，不是额外用户 badge，也不构成产品回归。
+
+同一 owner HEAD 上正式 hydration 单例另外 `--repeat-each=3`：
+
+```text
+ATOLL_TEST_WEB_PORT=16434 ATOLL_TEST_MOCK_PORT=20734 npx playwright test tests/browser/notification-high-water.spec.js --grep='cached hydration' --workers=1 --repeat-each=3 --reporter=line --output=test-results-browser-ns-round21-hydration-postowner-16434-20260920
+# 2 passed, 1 failed；失败仍为 line 160 latestAddedApprovalSeq(afterHydratedAcknowledgement)
+```
+
+owner 前同一正式门为 `1 passed, 2 failed`（`test-results-browser-ns-round21-hydration-formal-16432-20260920/`）；通过样本与 owner 后通过样本均保留 approval seq=`26/27`、high-water=`27`、counts=`0/0`，二次 hydration 仍为 high-water=`27`、counts=`0/0`。失败样本只是在第一次 project click 后立即 raw `rail.rows` 为空，DOM 用户链未出现 badge；故仍是测试侧 raw-diagnostics 读取竞态，不是 owner 产品回归，不用 probe 替代正式门，不删/放宽断言。
+
+本轮结论：`67167ee` 后 A/B 交错用户可见链、rail authority、cursor/high-water、Presentation→Reading tail receipt 与 reload persistence 均 **GREEN**；唯一正式红继续归测试观测时序合同。

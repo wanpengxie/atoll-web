@@ -479,3 +479,26 @@ ATOLL_TEST_WEB_PORT=16428 ATOLL_TEST_MOCK_PORT=20728 npx playwright test tests/b
 ```
 
 该单红不是公开产品回归：同 seed 的 observation-only 对照 `test-results-browser-ns-round20-hydration-16426-20260920/**/round20-hydration-probe.json` 显示 approval seq `26/27` 在 reload 后完整保留，project click 后 high-water `27`、DOM/rail counts 全 `0/0`，二次 reload 仍稳定；正式 spec 在 line 160 紧贴 click 读取 raw `rail.rows`，该时点拿不到该 row，属于测试侧观察时序/过时 raw contract。无 notification owner handoff，不改产品或断言，不删 skip。
+
+## 第二十一轮交错验收：`67167ee` 后无公开通知回归
+
+本轮把唯一剩余 response-first 黑盒拆成两个独立输入：A 是已闭合 terminal+parent；B 是 terminal 先到、exact parent 缺失，读者离开 tail 后才由真实浏览器 v5 submit 写入 parent。未改产品、正式断言、fixture、vendor、package 或 skip；临时 observation-only spec 已删除。
+
+```text
+ATOLL_TEST_WEB_PORT=16433 ATOLL_TEST_MOCK_PORT=20733 npx playwright test tests/browser/ztmp-ns-round21-interleaved.spec.js --workers=1 --repeat-each=3 --reporter=line --output=test-results-browser-ns-round21-interleaved-postowner-16433-20260920
+# 3 passed (32.3s), HEAD=67167ee
+```
+
+三次真实 Chromium 的首断点与公开结果一致：
+
+- A 闭合后 rail high-water=`29`、readSeq=`25`、authorityReady=`true`，DOM 左侧 related/total/pending/jump=`0/0/false/0`。
+- B terminal seq=`30` 在 parent 缺失时保持 `ackReason=notification_context_unknown`、high-water=`29`，tail 与 browsing DOM 均 `0/0/false/0`；没有用空 diagnostics 证明错误。
+- exact B parent 到达且仍 browsing 时，左侧用户可见 related=`1`（total=`0`, pending=false, jump=0），rail seq30 转 `counted_related`、parent seq31=`self`；这是预期 related 提醒，不是产品红。
+- 回 tail 后 high-water=`37`，B seq30–37 全部 `high_water`，Presentation following/gap=0、typed observation 为 `atTail=true/surfaceVisible=true` 且 visible IDs 含 B root，DOM 回 `0/0/false/0`。
+- reload 后同一 durable high-water=`37`、rows 仍全 `high_water`、DOM `0/0/false/0`，无 badge 复活。mock seq37 `terminal_conflict` 仅诊断 lifecycle，不是用户可见 rail 错。
+
+### hydration 仍为测试读取竞态，不交 notification owner
+
+在 `67167ee` 同 HEAD，正式 cached-hydration 单例 repeat3 为 `2 passed, 1 failed`，失败仍是 `notification-high-water.spec.js:160` 立即调用 `latestAddedApprovalSeq(afterHydratedAcknowledgement)` 时 raw `rail.rows` 暂为空；通过样本在相同操作后保留 approval seq26/27、high-water27、counts0/0，二次 reload 同样稳定。owner 前的独立 repeat3 为 `1 passed, 2 failed`，说明该门具有时序不稳定性；公开 DOM badge/清除/reload 语义没有对应红。该现象继续归测试 observation contract/等待边界，保留正式行为门，不删断言、不用 probe 替正式测试，也不新增产品 owner handoff。
+
+本轮最终 disposition：A/B 交错 notification lifecycle **GREEN**；`67167ee` 后无公开用户可见 notification 产品回归；formal hydration 唯一红维持测试侧 raw snapshot race。
