@@ -19,7 +19,19 @@ function actorShortName(actorId) {
   return String(actorId || '').split(':')[1] || String(actorId || 'agent');
 }
 
-function WorkspaceRail({ session, navigation, onClose }) {
+function accessLabel(access) {
+  return ({
+    member_stale: '离线缓存',
+    member_unavailable: '暂不可用',
+    observer_active: '只读旁观',
+    observer_stale: '旁观中断',
+    discoverable: '可发现',
+    access_denied: '无权访问',
+    loading: '确认中',
+  })[access] || '';
+}
+
+function WorkspaceRail({ session, navigation, onClose, closeButtonRef }) {
   const memberChannels = navigation.channels.filter((channel) => String(channel.access || '').startsWith('member_'));
   const otherChannels = navigation.channels.filter((channel) => !String(channel.access || '').startsWith('member_'));
   const activeCount = Object.values(navigation.agentActivity?.byChannel || {})
@@ -36,14 +48,17 @@ function WorkspaceRail({ session, navigation, onClose }) {
       const activity = navigation.agentActivity?.byChannel?.[channel.id] || {};
       const active = activity.active || [];
       const settled = Object.entries(activity.agents || {}).filter(([, value]) => value.state === 'settled');
+      const unread = navigation.unread?.[channel.id] || {};
+      const label = accessLabel(channel.access);
       return <button
         type="button"
         className={channel.id === navigation.activeChannelId ? 'channel-item active' : 'channel-item'}
         key={channel.id}
+        aria-current={channel.id === navigation.activeChannelId ? 'page' : undefined}
         onClick={() => {
           for (const [agentId] of settled) navigation.acknowledgeAgentActivity?.(channel.id, agentId);
           navigation.select(channel.id);
-          onClose?.();
+          onClose?.('heading');
         }}
       >
         <span className="channel-glyph">#</span>
@@ -55,7 +70,11 @@ function WorkspaceRail({ session, navigation, onClose }) {
           </span>}
           {settled.length > 0 && <span className="channel-agent-more" aria-label={`${settled.length} 项 Agent 已完成`}>✓ {settled.length}</span>}
         </span>
-        {navigation.unread?.[channel.id]?.related > 0 && <span className="unread-badge unread-related">{navigation.unread[channel.id].related}</span>}
+        <span className="channel-trailing">
+          {label && <span className={`channel-access-label label-${channel.access}`}>{label}</span>}
+          {unread.related > 0 && <span className="unread-badge unread-related" aria-label={`${unread.related} 条与我相关的未读消息`} title="与我相关的未读消息">{unread.related > 99 ? '99+' : unread.related}</span>}
+          {unread.pending && <span className="unread-total unread-pending" aria-label="正在恢复未读状态" title="正在恢复未读状态">…</span>}
+        </span>
       </button>;
     })}
     {!rows.length && <p className="rail-empty">{empty}</p>}
@@ -64,12 +83,11 @@ function WorkspaceRail({ session, navigation, onClose }) {
     <header className="rail-header">
       <div className="brand-lockup"><span className="brand-dot" />ATOLL</div>
       <div className={`connection-state state-${session.wireState}`}><span aria-hidden="true" />{connectionLabel(session.wireState)}</div>
-      {onClose && <button type="button" className="mobile-rail-close" onClick={onClose} aria-label="关闭频道列表">×</button>}
+      {onClose && <button ref={closeButtonRef} type="button" className="mobile-rail-close" onClick={() => onClose('toggle')} aria-label="关闭频道列表">×</button>}
     </header>
     <nav aria-label="频道">
-      <div className="rail-global-actions">
-        <button type="button" onClick={navigation.openSearch}>全局搜索</button>
-        <button type="button" onClick={navigation.openSpaceAdministration}>空间管理</button>
+      <div className="rail-global-actions" aria-label="全局工具">
+        <button type="button" onClick={() => { onClose?.('none'); navigation.openSearch(); }} aria-label="全局搜索"><span aria-hidden="true">⌕</span> 搜索</button>
       </div>
       <p className="rail-caption">我的频道 <span>{memberChannels.length}</span></p>
       {renderRows(memberChannels, '还没有加入频道')}
@@ -79,7 +97,7 @@ function WorkspaceRail({ session, navigation, onClose }) {
     <footer className="account-card">
       <span className="avatar">{String(session.me?.display_name || session.me?.id || '?').slice(0, 1).toUpperCase()}</span>
       <span><strong>{session.me?.display_name || '已登录用户'}</strong><small>{session.me?.id}</small></span>
-      <span className="account-actions"><button type="button" onClick={session.onLogout}>退出</button></span>
+      <span className="account-actions"><button type="button" onClick={() => { onClose?.('none'); navigation.openSpaceAdministration(); }} aria-label="空间管理" title="空间管理">空间管理</button><button type="button" onClick={session.onLogout} aria-label="退出" title="退出">退出</button></span>
     </footer>
   </aside>;
 }
@@ -98,12 +116,29 @@ export function WorkspaceLayout({
   const topology = useSurfaceTopology();
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const mobileChannelToggleRef = useRef(null);
+  const mobileRailCloseRef = useRef(null);
+  const channelHeadingRef = useRef(null);
   const viewTabRefs = useRef([]);
   const channel = navigation.channel;
-  const closeMobileChannels = () => {
+  const closeMobileChannels = (focus = 'toggle') => {
     setMobileChannelsOpen(false);
-    globalThis.requestAnimationFrame(() => mobileChannelToggleRef.current?.focus());
+    if (focus === 'none') return;
+    globalThis.requestAnimationFrame(() => (focus === 'heading' ? channelHeadingRef.current : mobileChannelToggleRef.current)?.focus({ preventScroll: true }));
   };
+  useEffect(() => {
+    if (!mobileChannelsOpen) return undefined;
+    const frame = globalThis.requestAnimationFrame(() => mobileRailCloseRef.current?.focus({ preventScroll: true }));
+    const escape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeMobileChannels('toggle');
+    };
+    document.addEventListener('keydown', escape);
+    return () => {
+      globalThis.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [mobileChannelsOpen]);
   const moveViewTab = (event, index) => {
     let nextIndex = index;
     if (event.key === 'ArrowRight') nextIndex = (index + 1) % VIEW_ENTRIES.length;
@@ -120,12 +155,12 @@ export function WorkspaceLayout({
     className={['shell', mobileChannelsOpen && 'mobile-channels-open', rightPanel && 'has-context'].filter(Boolean).join(' ')}
     data-workspace-view={navigation.activeView}
   >
-    <WorkspaceRail session={session} navigation={navigation} onClose={mobileChannelsOpen ? closeMobileChannels : null} />
+    <WorkspaceRail session={session} navigation={navigation} onClose={mobileChannelsOpen ? closeMobileChannels : null} closeButtonRef={mobileRailCloseRef} />
     <main className="workspace">
       <header className="channel-header">
         <div className="channel-identity">
           <button ref={mobileChannelToggleRef} type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button>
-          <div><p className="eyebrow">频道</p><h1>{channel?.qualified_name || channel?.name || '选择频道'}</h1></div>
+          <div><p className="eyebrow">频道</p><h1 ref={channelHeadingRef} tabIndex={-1}>{channel?.qualified_name || channel?.name || '选择频道'}</h1></div>
         </div>
         <div className="channel-header-actions">
           <span className="seq-label">SEQ {Number(conversation?.state?.lastSeq || 0)}</span>

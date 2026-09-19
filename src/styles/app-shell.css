@@ -15,7 +15,7 @@
 .connection-state.state-open > span { background: var(--online); box-shadow: 0 0 6px var(--online); }
 .connection-state.state-connecting > span, .connection-state.state-reconnecting > span { background: var(--warning); animation: pulse 1.2s ease-in-out infinite; }
 .channel-rail nav { min-height: 0; flex: 1; overflow-y: auto; padding: 15px 10px; }
-.rail-global-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 0 4px 15px; }
+.rail-global-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 6px; margin: 0 4px 15px; }
 .rail-global-actions button { display: flex; min-width: 0; min-height: 34px; align-items: center; justify-content: center; gap: 6px; padding: 7px; border: 1px solid var(--line-control-strong); border-radius: 7px; background: var(--raised); color: var(--text-muted); cursor: pointer; font-size: 11px; }
 .rail-global-actions button:hover, .rail-global-actions button:focus-visible { border-color: var(--line-control); background: var(--surface-soft); color: var(--text); }
 .rail-global-actions span { color: var(--accent); font: 700 13px var(--mono); }

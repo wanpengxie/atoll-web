@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from './files/FilesFeature.jsx';
 import { ChannelAdministrationPanel, ChannelAutomationPanel, SpaceAdministrationPanel } from './governance/GovernanceFeature.jsx';
@@ -41,16 +41,62 @@ export function WorkspaceFeatures({
   </>;
 }
 
+function ContextHost({ type, focusKey, onClose, children }) {
+  const hostRef = useRef(null);
+  const openerRef = useRef(null);
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    openerRef.current = active && active !== document.body && active.isConnected
+      ? active
+      : document.querySelector('.mobile-channel-toggle');
+    hostRef.current?.querySelector('.context-pane button[aria-label^="关闭"]')?.focus({ preventScroll: true });
+    return () => {
+      const opener = openerRef.current;
+      if (opener?.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
+    };
+  }, []);
+  useEffect(() => {
+    const escape = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      onClose?.();
+    };
+    document.addEventListener('keydown', escape);
+    return () => document.removeEventListener('keydown', escape);
+  }, [onClose]);
+  return <div ref={hostRef} className="context-host" data-context-type={type || 'context'} data-context-key={focusKey || ''}>
+    <button type="button" className="context-backdrop" aria-label="关闭上下文" tabIndex={-1} onClick={onClose} />
+    <div className="context-pane">{children}</div>
+  </div>;
+}
+
 export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, onClose }) {
   const kind = typeof panel === 'string' ? panel : panel?.kind || panel?.value || '';
-  if (kind === WORKSPACE_FEATURE_PANEL.roster) return <RosterFeature port={roster} onClose={onClose} />;
-  if (kind === WORKSPACE_FEATURE_PANEL.actor) return <ActorDetailPanel port={roster} onClose={onClose} />;
-  if (kind === WORKSPACE_FEATURE_PANEL.artifact) return <ArtifactPreviewPanel port={files} onClose={onClose} />;
-  if (kind === WORKSPACE_FEATURE_PANEL.task) return <TaskDetailPanel port={tasks} onClose={onClose} />;
-  if (kind === WORKSPACE_FEATURE_PANEL.automation) return <ChannelAutomationPanel channel={channel} port={automation} onClose={onClose} />;
-  if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) return <ChannelAdministrationPanel channel={channel} port={governance.channel || governance} onClose={onClose} />;
-  if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) return <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
-  return null;
+  let content = null;
+  let dismiss = onClose;
+  let focusKey = kind;
+  if (kind === WORKSPACE_FEATURE_PANEL.roster) content = <RosterFeature port={roster} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.actor) {
+    focusKey = `${kind}:${roster.selectedActor?.id || ''}`;
+    content = <ActorDetailPanel port={roster} onClose={onClose} />;
+  }
+  else if (kind === WORKSPACE_FEATURE_PANEL.artifact) {
+    focusKey = `${kind}:${files.selectedArtifact?.key || files.selectedArtifact?.resourceId || ''}`;
+    dismiss = () => {
+      files.commands?.select?.(null);
+      onClose?.();
+    };
+    content = <ArtifactPreviewPanel port={files} onClose={onClose} />;
+  }
+  else if (kind === WORKSPACE_FEATURE_PANEL.task) {
+    focusKey = `${kind}:${tasks.selectedItem?.key || tasks.selectedItem?.id || ''}`;
+    content = <TaskDetailPanel port={tasks} onClose={onClose} />;
+  }
+  else if (kind === WORKSPACE_FEATURE_PANEL.automation) content = <ChannelAutomationPanel channel={channel} port={automation} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) content = <ChannelAdministrationPanel channel={channel} port={governance.channel || governance} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) content = <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
+  if (!content) return null;
+  return <ContextHost key={focusKey} type={kind === WORKSPACE_FEATURE_PANEL.artifact ? 'artifact' : kind} focusKey={focusKey} onClose={dismiss}>{content}</ContextHost>;
 }
 
 export function WorkspaceFeatureOverlays({ search = {} }) {
