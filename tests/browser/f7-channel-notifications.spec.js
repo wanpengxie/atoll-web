@@ -8,9 +8,17 @@ async function login(page) {
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
 }
 
+async function chooseSteward(page) {
+  const choose = page.getByRole('button', { name: '选择 Agent' });
+  await expect(choose).toBeVisible();
+  await choose.click();
+  await page.getByRole('menu', { name: '选择目标 Agent' })
+    .getByRole('menuitem', { name: 'steward' }).click();
+}
+
 async function startLongTask(page, text) {
   const editor = page.getByRole('textbox', { name: '消息', exact: true });
-  await page.getByLabel('目标 Agent').selectOption('steward');
+  await chooseSteward(page);
   await editor.fill(text);
   await editor.press('Enter');
   await expect(page.locator('.channel-agent-timer')).toHaveCount(1);

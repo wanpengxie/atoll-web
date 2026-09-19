@@ -50,7 +50,12 @@ test('F6-004 主视图支持方向键，Modal 隔离背景并恢复焦点', asyn
   const opener = page.locator('button[aria-label="全局搜索"]');
   await opener.click();
   await expect(page.getByRole('dialog', { name: '全局搜索' }).getByRole('textbox')).toBeFocused();
-  await expect(page.locator('.shell')).toHaveAttribute('aria-hidden', 'true');
+  // The modal focus owner marks the application surfaces (its sibling rail
+  // and main) inert. The shell is the modal layer's parent and intentionally
+  // remains exposed to host the dialog, so asserting on it is the retired
+  // ownership contract.
+  await expect(page.locator('main')).toHaveAttribute('aria-hidden', 'true');
+  await expect(page.locator('main')).toHaveJSProperty('inert', true);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: '全局搜索' })).toHaveCount(0);
   await expect(opener).toBeFocused();

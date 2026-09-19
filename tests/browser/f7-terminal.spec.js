@@ -70,7 +70,7 @@ test('F7-004 终端配色可切换', async ({ page }) => {
   await expect(view.locator('.xterm')).toBeVisible({ timeout: 15_000 });
   await expect(view).toHaveAttribute('data-terminal-theme', 'dark');
 
-  await page.getByRole('button', { name: '浅色', exact: true }).click();
+  await page.getByRole('button', { name: '切到浅色', exact: true }).click();
   await expect(view).toHaveAttribute('data-terminal-theme', 'light');
 
 });
