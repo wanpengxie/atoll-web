@@ -15,6 +15,58 @@ async function login(page) {
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
 }
 
+async function armReadingWriteProbe(page) {
+  await page.evaluate(() => {
+    const scroller = document.querySelector('.timeline-reading-layer.is-active .timeline-message-list')
+      || document.querySelector('.timeline-message-list');
+    if (!scroller) throw new Error('active reading scroller is absent');
+    const writes = [];
+    const methods = ['scrollTo', 'scrollBy', 'scrollIntoView'];
+    const originals = new Map(methods.map((name) => [name, Element.prototype[name]]));
+    const belongsToReading = (node) => node === scroller || scroller.contains(node);
+    for (const name of methods) {
+      if (typeof originals.get(name) !== 'function') continue;
+      Element.prototype[name] = function probedReadingWrite(...args) {
+        if (belongsToReading(this)) writes.push({ kind: name, args });
+        return originals.get(name).apply(this, args);
+      };
+    }
+
+    let owner = scroller;
+    let descriptor = null;
+    while (owner && !descriptor) {
+      descriptor = Object.getOwnPropertyDescriptor(owner, 'scrollTop');
+      owner = Object.getPrototypeOf(owner);
+    }
+    const ownsScrollTopProbe = Boolean(descriptor?.get && descriptor?.set);
+    if (ownsScrollTopProbe) {
+      Object.defineProperty(scroller, 'scrollTop', {
+        configurable: true,
+        get() { return descriptor.get.call(this); },
+        set(value) {
+          writes.push({ kind: 'scrollTop', value });
+          descriptor.set.call(this, value);
+        },
+      });
+    }
+    const onBottomWrite = () => writes.push({ kind: 'atoll:timeline-bottom-write' });
+    scroller.addEventListener('atoll:timeline-bottom-write', onBottomWrite);
+    globalThis.__stopF3ReadingWriteProbe = () => {
+      for (const [name, original] of originals) {
+        if (typeof original === 'function') Element.prototype[name] = original;
+      }
+      scroller.removeEventListener('atoll:timeline-bottom-write', onBottomWrite);
+      if (ownsScrollTopProbe) delete scroller.scrollTop;
+      delete globalThis.__stopF3ReadingWriteProbe;
+      return writes;
+    };
+  });
+}
+
+async function stopReadingWriteProbe(page) {
+  return page.evaluate(() => globalThis.__stopF3ReadingWriteProbe?.() || []);
+}
+
 test('F3-001..004/006 动态只保留用户消息与原地定格的 Agent 气泡', async ({ page, request }) => {
   await reset(request); await login(page);
   const editor = page.getByLabel('消息');
@@ -147,10 +199,9 @@ test('连续中文输入不改变 Composer 与消息区的布局尺寸', async (
   expect(Math.abs(after.timelineBottom - before.timelineBottom)).toBeLessThanOrEqual(1);
 });
 
-test('Composer 随多行内容向上增高，并稳定地为消息区让出同等空间', async ({ page, request }, testInfo) => {
+test('Composer 随多行内容向上增高，但 reading/scroller 几何与滚动所有权恒定', async ({ page, request }, testInfo) => {
   await reset(request, 'message-flow', 1308); await login(page);
   const editor = page.getByLabel('消息');
-  const timeline = page.getByRole('tabpanel', { name: '动态' });
   const composer = page.locator('.composer-surface');
   const handoff = await page.evaluate(() => {
     const surface = document.querySelector('.composer-surface');
@@ -176,15 +227,33 @@ test('Composer 随多行内容向上增高，并稳定地为消息区让出同�
   // committed non-zero box; a transient zero-sized composer is not geometry.
   await expect(page.locator('.timeline-message-list')).toBeVisible();
   await expect.poll(() => composer.evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThan(0);
-  const beforeSurface = await composer.evaluate((node) => node.getBoundingClientRect().height);
-  const beforeTimeline = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
+  const measure = () => page.evaluate(() => {
+    const box = (selector) => {
+      const node = document.querySelector(selector);
+      const rect = node?.getBoundingClientRect();
+      return rect ? { top: rect.top, bottom: rect.bottom, height: rect.height, clientHeight: node.clientHeight } : null;
+    };
+    return {
+      composerHeight: document.querySelector('.composer-surface')?.getBoundingClientRect().height || 0,
+      reading: box('.conversation-reading-slot'),
+      scroller: box('.timeline-reading-layer.is-active .timeline-message-list'),
+    };
+  });
+  const before = await measure();
+  await armReadingWriteProbe(page);
   await editor.fill('第一行\n第二行\n第三行\n第四行');
-  const afterSurface = await composer.evaluate((node) => node.getBoundingClientRect().height);
-  const afterTimeline = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
-  const evidence = JSON.stringify({ beforeSurface, afterSurface, beforeTimeline, afterTimeline });
-  expect(afterSurface).toBeGreaterThan(beforeSurface);
-  expect(Math.abs(afterTimeline.top - beforeTimeline.top)).toBeLessThanOrEqual(1);
-  expect(Math.abs((beforeTimeline.bottom - afterTimeline.bottom) - (afterSurface - beforeSurface)), evidence).toBeLessThanOrEqual(1);
+  await expect.poll(() => composer.evaluate((node) => node.getBoundingClientRect().height))
+    .toBeGreaterThan(before.composerHeight);
+  const after = await measure();
+  const writes = await stopReadingWriteProbe(page);
+  const evidence = JSON.stringify({ before, after, writes });
+  await testInfo.attach('composer-fixed-overlay-growth.json', {
+    body: Buffer.from(JSON.stringify({ before, after, writes }, null, 2)),
+    contentType: 'application/json',
+  });
+  expect(after.reading, evidence).toEqual(before.reading);
+  expect(after.scroller, evidence).toEqual(before.scroller);
+  expect(writes, evidence).toEqual([]);
 });
 
 test('审批使用正文列，后台活动不污染消息主线', async ({ page, request }) => {
@@ -217,16 +286,17 @@ test('审批使用正文列，后台活动不污染消息主线', async ({ page,
 test('新条目到达时，固定在底部的信息流不反向抖动', async ({ page, request }, testInfo) => {
   await reset(request, 'multi-channel', 1304); await login(page);
   await expect(page.locator('.approval-card')).toBeAttached();
+  await expect(page.locator('[data-reading-container="following-tail"]')).toBeVisible();
+  await armReadingWriteProbe(page);
 
   const sampling = page.evaluate(async () => {
-    const viewport = document.querySelector('.timeline-message-list');
-    viewport.scrollTo(0, viewport.scrollHeight);
+    const viewport = document.querySelector('[data-reading-container="following-tail"]');
     const rows = [];
     const trace = [];
     let tracing = true;
     const geometry = () => ({
       top: viewport.scrollTop,
-      bottom: viewport.scrollHeight - viewport.clientHeight,
+      extent: viewport.scrollHeight - viewport.clientHeight,
       approvals: document.querySelectorAll('.approval-card').length,
     });
     window.__ATOLL_READING_TRACE__ = (entry) => trace.push({ kind: 'adapter', ...entry, ...geometry() });
@@ -249,12 +319,14 @@ test('新条目到达时，固定在底部的信息流不反向抖动', async ({
   await page.waitForTimeout(300);
   expect((await request.get(`${MOCK}/mock/approve`)).ok()).toBe(true);
   const { rows, trace } = await sampling;
+  const writes = await stopReadingWriteProbe(page);
   await testInfo.attach('append-timing.json', {
-    body: Buffer.from(JSON.stringify({ rows, trace }, null, 2)),
+    body: Buffer.from(JSON.stringify({ rows, trace, writes }, null, 2)),
     contentType: 'application/json',
   });
 
   expect(rows.at(-1).approvals).toBeGreaterThan(rows[0].approvals);
-  expect(rows.filter((row, index) => index > 0 && row.top + 1 < rows[index - 1].top)).toHaveLength(0);
-  expect(rows.every((row) => Math.abs(row.bottom - row.top) <= 2), JSON.stringify(rows)).toBe(true);
+  expect(rows.at(-1).extent).toBeGreaterThan(rows[0].extent);
+  expect(rows.every((row) => Math.abs(row.top) <= 1), JSON.stringify(rows)).toBe(true);
+  expect(writes).toEqual([]);
 });
