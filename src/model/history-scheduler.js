@@ -1,5 +1,20 @@
-import PQueue from 'p-queue';
 import { diagnostic, readingTrace } from './diagnostics.js';
+import { createHistoryBoundedExecutor } from './history-bounded-executor.js';
+import {
+  HISTORY_DEMAND_URGENCY_SCORE as DEMAND_URGENCY_SCORE,
+  hasHistoryLocalKnowledge as hasLocalKnowledge,
+  historyBlockedSourceMatches,
+  historyCoverageContains as coverageContains,
+  historyLocalHead as localHead,
+  historyRangesContain as rangesContain,
+  historyRangesCover as rangesCover,
+  historySourceBlockIdentity,
+  historySourceFor as sourceFor,
+  historyTailWindowCovered,
+  mergeHistoryCoverage as mergedCoverage,
+  reduceHistoryCandidates,
+} from './history-candidate-reducer.js';
+import { createHistorySourceAdapters } from './history-source-adapters.js';
 
 export const HISTORY_PAGE_SIZE = 128;
 export const HISTORY_BATCH_BYTES = 1 * 1024 * 1024;
@@ -30,26 +45,10 @@ const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 30_000;
 const FAIRNESS_DISPATCHES = 8;
 const HISTORY_PRIORITY_KEY = 'atoll.history.priority.v1';
-const DEMAND_URGENCY_SCORE = Object.freeze({
-  anticipatory: 0,
-  interactive: 4,
-  blocking: 8,
-});
-// Weighted round-robin is the cadence, not a permanent score. After every
-// dispatched small page the next token is reconsidered against the latest
-// focus/LRU/live facts. Missing tiers are skipped immediately.
-const DISPATCH_WHEEL = [0, 0, 0, 1, 1, 2];
 
 function numeric(value) {
   const result = Number(value);
   return Number.isSafeInteger(result) && result >= 0 ? result : 0;
-}
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-  return { promise, resolve, reject };
 }
 
 function rowBytes(envelope) {
@@ -57,62 +56,6 @@ function rowBytes(envelope) {
   catch { return 0; }
 }
 
-function coverageContains(meta, seq) {
-  return Array.isArray(meta?.coverage) && meta.coverage.some((entry) => (
-    numeric(entry?.lowSeq) <= seq && numeric(entry?.highSeq) >= seq
-  ));
-}
-
-function rangesContain(ranges, seq) {
-  const target = numeric(seq);
-  return target > 0 && Array.isArray(ranges) && ranges.some((entry) => (
-    numeric(entry?.lowSeq) <= target && numeric(entry?.highSeq) >= target
-  ));
-}
-
-function rangesCover(ranges, lowSeq, highSeq) {
-  const low = numeric(lowSeq);
-  const high = numeric(highSeq);
-  return low > 0 && high >= low && Array.isArray(ranges) && ranges.some((entry) => (
-    numeric(entry?.lowSeq) <= low && numeric(entry?.highSeq) >= high
-  ));
-}
-
-function tailWindowCovered(meta, head) {
-  const target = numeric(head);
-  if (!target) return true;
-  const interval = Array.isArray(meta?.coverage) && meta.coverage.find((entry) => (
-    numeric(entry?.lowSeq) <= target && numeric(entry?.highSeq) >= target
-  ));
-  if (!interval) return false;
-  const low = numeric(interval.lowSeq);
-  return low === 1 || target - low + 1 >= HISTORY_REVEAL_SIZE;
-}
-
-function mergedCoverage(ranges = [], addition = null) {
-  const ordered = [...ranges, ...(addition ? [addition] : [])]
-    .map((range) => ({ lowSeq: numeric(range?.lowSeq), highSeq: numeric(range?.highSeq) }))
-    .filter((range) => range.lowSeq > 0 && range.highSeq >= range.lowSeq)
-    .sort((left, right) => left.lowSeq - right.lowSeq || left.highSeq - right.highSeq);
-  const merged = [];
-  for (const range of ordered) {
-    const previous = merged.at(-1);
-    if (!previous || range.lowSeq > previous.highSeq + 1) merged.push({ ...range });
-    else previous.highSeq = Math.max(previous.highSeq, range.highSeq);
-  }
-  return merged;
-}
-
-function hasLocalKnowledge(meta) {
-  return Boolean(meta && (numeric(meta.rowCount) > 0 || (Array.isArray(meta.coverage) && meta.coverage.length > 0)));
-}
-
-function localHead(meta) {
-  const coverageHigh = Array.isArray(meta?.coverage)
-    ? meta.coverage.reduce((high, entry) => Math.max(high, numeric(entry?.highSeq)), 0)
-    : 0;
-  return Math.max(numeric(meta?.newestSeq), coverageHigh);
-}
 
 function createState(id, previous = {}) {
   return {
@@ -173,28 +116,6 @@ function createState(id, previous = {}) {
   };
 }
 
-function purposeFor(state, focus) {
-  if (state.foregroundOwners.size > 0 || state.foregroundWaiters.length > 0) return 'user-demand';
-  if (!state.tailVisible) return 'initial-tail';
-  return 'hydrate';
-}
-
-function foregroundDemand(state) {
-  let selected = null;
-  for (const owner of state?.foregroundOwners || []) {
-    const urgency = Object.hasOwn(DEMAND_URGENCY_SCORE, owner?.urgency)
-      ? owner.urgency
-      : 'interactive';
-    const candidate = {
-      intent: owner?.intent || 'scroll-history',
-      urgency,
-      score: DEMAND_URGENCY_SCORE[urgency],
-    };
-    if (!selected || candidate.score > selected.score) selected = candidate;
-  }
-  return selected;
-}
-
 function visibleForegroundOwners(state) {
   return [...(state?.foregroundOwners || [])].filter((owner) => owner?.presentation === true);
 }
@@ -224,9 +145,10 @@ export function createHistoryScheduler({
   maxBackgroundInflight = HISTORY_MAX_BACKGROUND_INFLIGHT,
   batchTimeoutMs = HISTORY_BATCH_TIMEOUT_MS,
 } = {}) {
-  // PQueue is deliberately only the bounded executor. Candidate ownership and
-  // priority stay in this coordinator, which re-scores after every batch.
-  const executors = new PQueue({ concurrency: HISTORY_MAX_INFLIGHT, autoStart: true });
+  const executor = createHistoryBoundedExecutor({
+    concurrency: HISTORY_MAX_INFLIGHT,
+    timeoutMs: batchTimeoutMs,
+  });
   const channels = new Map();
   const inflightByChannel = new Map();
   const inflightByRef = new Map();
@@ -265,16 +187,12 @@ export function createHistoryScheduler({
     indexeddb: { durationMs: 80, rowsPerMs: 1.6, bytesPerMs: 16 * 1024, averageRowBytes: 2 * 1024, rowLimit: HISTORY_PAGE_SIZE },
     network: { durationMs: 400, rowsPerMs: 0.32, bytesPerMs: 4 * 1024, averageRowBytes: 2 * 1024, rowLimit: HISTORY_PAGE_SIZE },
   };
-
-  function estimateBatch(source, limit, byteLimit) {
-    const stats = transportStats[source] || transportStats.network;
-    const expectedBytes = Math.min(byteLimit, limit * stats.averageRowBytes);
-    return Math.ceil(Math.max(
-      stats.durationMs * 0.25,
-      limit / Math.max(0.001, stats.rowsPerMs),
-      expectedBytes / Math.max(1, stats.bytesPerMs),
-    ));
-  }
+  const sources = createHistorySourceAdapters({
+    requestPage,
+    cancelPage,
+    readCache,
+    registerNetwork: (batch) => inflightByRef.set(batch.ref, batch),
+  });
 
   function observeBatch(batch, result, rows, measuredBytes = 0) {
     const stats = transportStats[batch.source] || transportStats.network;
@@ -417,38 +335,57 @@ export function createHistoryScheduler({
     }, Math.max(1, at - now()));
   }
 
-  function sourceFor(state, beforeSeq = state.beforeSeq) {
-    const local = state.localMeta;
-    if (!local || state.cacheBypassBeforeSeq === beforeSeq) return 'network';
-    const frontier = beforeSeq - 1;
-    return frontier > 0 && coverageContains(local, frontier) ? 'indexeddb' : 'network';
+  function tailWindowCovered(meta, head) {
+    return historyTailWindowCovered(meta, head, HISTORY_REVEAL_SIZE);
+  }
+
+  function candidateInput() {
+    return {
+      states: [...channels.values()], focus, generation, replicaEpoch, localMetaEpoch,
+      localMetaReady, localSelectionPending, inflightByChannel,
+      now: now(),
+      globalReservoirBytes, reservedInflightBytes, dispatchSerial, dispatchWheelIndex,
+      maxBackgroundInflight, transportStats,
+      visibleOldestByChannel: new Map(
+        [...channels.keys()].map((channelId) => [channelId, numeric(visibleOldestSeq(channelId))]),
+      ),
+      visibleNewestByChannel: new Map(
+        [...channels.keys()].map((channelId) => [channelId, numeric(visibleNewestSeq(channelId))]),
+      ),
+      config: {
+        maxInflight: HISTORY_MAX_INFLIGHT, p1Channels: HISTORY_P1_CHANNELS,
+        p2Channels: HISTORY_P2_CHANNELS, reservoirSize, reservoirChannelBytes,
+        reservoirGlobalBytes, batchBytes,
+        fairnessDispatches: FAIRNESS_DISPATCHES,
+        targets: {
+          0: { rows: HISTORY_P0_TARGET_ROWS, bytes: HISTORY_P0_TARGET_BYTES, scanBudget: HISTORY_P0_SCAN_BUDGET },
+          1: { rows: HISTORY_P1_TARGET_ROWS, bytes: HISTORY_P1_TARGET_BYTES, scanBudget: HISTORY_P1_SCAN_BUDGET },
+          2: { rows: HISTORY_P2_TARGET_ROWS, bytes: HISTORY_P2_TARGET_BYTES, scanBudget: HISTORY_P2_SCAN_BUDGET },
+        },
+      },
+    };
+  }
+
+  function reduceCandidates({ commitTiers = true } = {}) {
+    const decision = reduceHistoryCandidates(candidateInput());
+    if (commitTiers) {
+      for (const state of channels.values()) state.tier = decision.tiers.get(state.id) ?? 3;
+    }
+    return decision;
   }
 
   function sourceBlockIdentity(state) {
-	const tailRefresh = numeric(state?.tailRefreshBeforeSeq) > 0;
-	const purpose = tailRefresh ? 'initial-tail' : purposeFor(state, focus);
-	const gapBeforeSeq = purpose === 'user-demand' ? visibleGapBefore(state) : 0;
-	const beforeSeq = tailRefresh ? state.tailRefreshBeforeSeq : gapBeforeSeq || state.beforeSeq;
-	const source = tailRefresh ? 'network' : sourceFor(state, beforeSeq);
-	return {
-	  source,
-	  beforeSeq,
-	  replicaEpoch,
-	  localMetaEpoch,
-	  stateLease: state.stateLease,
-	  generation: source === 'network' ? generation : 0,
-	};
+    return historySourceBlockIdentity(state, {
+      focus,
+      generation,
+      replicaEpoch,
+      localMetaEpoch,
+      visibleOldestSeq: numeric(visibleOldestSeq(state?.id)),
+    });
   }
 
   function blockedSourceMatches(state, identity = sourceBlockIdentity(state)) {
-	const blocked = state?.blockedSource;
-	return Boolean(blocked
-	  && blocked.source === identity.source
-	  && blocked.beforeSeq === identity.beforeSeq
-	  && blocked.replicaEpoch === identity.replicaEpoch
-	  && blocked.localMetaEpoch === identity.localMetaEpoch
-	  && blocked.stateLease === identity.stateLease
-	  && blocked.generation === identity.generation);
+    return historyBlockedSourceMatches(state, identity);
   }
 
   function beginVisibleDemand(state, { explicitRetry = false } = {}) {
@@ -456,291 +393,13 @@ export function createHistoryScheduler({
 	state.retryAt = 0;
 	const blockedCurrent = blockedSourceMatches(state);
 	if (blockedCurrent && !explicitRetry) {
-	  // The background lane already produced the terminal failure for this
-	  // exact source/frontier. Promoting it to a visible obligation transfers
-	  // that same failure into the sole foreground error authority; it must not
-	  // erase the error while leaving candidate() blocked forever.
 	  state.foregroundError = state.error;
 	  return;
 	}
-	// Explicit Retry opens this exact source once. A source/frontier lease that
-	// no longer matches also makes the old block inapplicable without a click.
 	state.blockedSource = null;
 	state.error = '';
 	state.errorCode = '';
 	state.foregroundError = '';
-  }
-
-  function reclassify() {
-    for (const state of channels.values()) state.tier = 3;
-    const focused = channels.get(focus);
-    if (focused) focused.tier = 0;
-    for (const state of channels.values()) {
-      if (state.foregroundWaiters.length > 0 || state.foregroundOwners.size > 0) state.tier = 0;
-    }
-
-    const eligible = [...channels.values()].filter((state) => {
-      if (state.tier === 0 || state.remoteEligible === false) return false;
-      const remoteAttached = Boolean(generation && state.attachedGeneration === generation);
-      const localAttached = Boolean(!remoteAttached && hasLocalKnowledge(state.localMeta));
-      return (remoteAttached || localAttached)
-        && (state.hasRows || state.hasOlder || hasLocalKnowledge(state.localMeta));
-    });
-    const ordered = [];
-    const seen = new Set();
-    const append = (rows) => {
-      for (const state of rows) {
-        if (seen.has(state.id)) continue;
-        seen.add(state.id);
-        ordered.push(state);
-      }
-    };
-    const descending = (field) => eligible
-      .filter((state) => state[field] > 0)
-      .sort((left, right) => right[field] - left[field] || left.id.localeCompare(right.id));
-
-    // Deterministic merge, not an opaque score: the room just left gets the
-    // first next-hop slot; related unread and fresh live rooms follow; the
-    // remainder is filled by actual view-MRU and finally observed activity.
-    const viewed = descending('lastFocusOrder');
-    append(viewed.slice(0, 1));
-    append(descending('relatedUnreadOrder'));
-    append(descending('liveOrder'));
-    append(viewed);
-    append(eligible.slice().sort((left, right) => right.activity - left.activity || left.id.localeCompare(right.id)));
-
-    ordered.slice(0, HISTORY_P1_CHANNELS).forEach((state) => { state.tier = 1; });
-    ordered.slice(HISTORY_P1_CHANNELS, HISTORY_P1_CHANNELS + HISTORY_P2_CHANNELS)
-      .forEach((state) => { state.tier = 2; });
-  }
-
-  function candidate(state) {
-	if (!localMetaReady) return null;
-	if (localSelectionPending && state?.id !== focus
-	  && state?.foregroundOwners.size === 0
-	  && state?.foregroundWaiters.length === 0
-	  && state?.currentWaiters.size === 0) return null;
-	const remoteAttached = Boolean(generation && state?.attachedGeneration === generation);
-	const localAttached = Boolean(!remoteAttached && state?.remoteEligible !== false && hasLocalKnowledge(state?.localMeta));
-	if (!state || (!remoteAttached && !localAttached) || inflightByChannel.has(state.id) || state.retryAt > now()) return null;
-	if (state.projectionPending) return null;
-	if (state.tier >= 3) return null;
-	const tailRefresh = numeric(state.tailRefreshBeforeSeq) > 0;
-	const purpose = tailRefresh ? 'initial-tail' : purposeFor(state, focus);
-	const demand = purpose === 'user-demand' ? foregroundDemand(state) : null;
-	// Buffered rows already satisfy the foreground operation. Do not open a
-	// second network page before nextSegment has projected and consumed them.
-	if (purpose === 'user-demand' && state.reservoir.size > 0) return null;
-	const gapBeforeSeq = purpose === 'user-demand' ? visibleGapBefore(state) : 0;
-	const rangeKind = tailRefresh ? 'tail-refresh' : gapBeforeSeq ? 'visible-gap' : 'backfill';
-	const taskBeforeSeq = tailRefresh ? state.tailRefreshBeforeSeq : gapBeforeSeq || state.beforeSeq;
-	const targetRows = state.tier === 0
-	  ? HISTORY_P0_TARGET_ROWS
-	  : state.tier === 1 ? HISTORY_P1_TARGET_ROWS : HISTORY_P2_TARGET_ROWS;
-	const targetBytes = state.tier === 0
-	  ? HISTORY_P0_TARGET_BYTES
-	  : state.tier === 1 ? HISTORY_P1_TARGET_BYTES : HISTORY_P2_TARGET_BYTES;
-	const scanBudget = state.tier === 0
-	  ? HISTORY_P0_SCAN_BUDGET
-	  : state.tier === 1 ? HISTORY_P1_SCAN_BUDGET : HISTORY_P2_SCAN_BUDGET;
-	if (!tailRefresh && purpose !== 'user-demand'
-	  && (state.tailVisible || state.id !== focus)
-	  && (state.reservoir.size >= targetRows || state.reservoirBytes >= targetBytes || state.warmScanned >= scanBudget)) return null;
-    if (state.reservoir.size >= reservoirSize || state.reservoirBytes >= reservoirChannelBytes) return null;
-	const priority = tailRefresh || state.tier === 0 ? 'foreground' : 'background';
-    const urgent = priority === 'foreground';
-    const channelAvailable = Math.max(0, reservoirChannelBytes - state.reservoirBytes);
-    const globalAvailable = Math.max(0, reservoirGlobalBytes - globalReservoirBytes - reservedInflightBytes);
-	const foregroundInflight = [...inflightByChannel.values()].some((batch) => batch.priority === 'foreground');
-	// A visible user action may borrow one bounded batch beyond a full warm
-	// reservoir, but a second foreground batch must wait. This keeps the global
-	// overshoot bounded by exactly one batch instead of one per active channel.
-	const globalAllowance = urgent && !foregroundInflight
-	  ? Math.max(globalAvailable, batchBytes)
-	  : globalAvailable;
-	const targetByteDeficit = tailRefresh || purpose === 'user-demand' || (!state.tailVisible && state.id === focus)
-      ? batchBytes
-      : Math.max(1, targetBytes - state.reservoirBytes);
-    const byteLimit = Math.min(batchBytes, targetByteDeficit, channelAvailable, globalAllowance);
-    if (byteLimit <= 0) return null;
-    // Partial final batches are valid. Requiring a whole 1 MiB quantum here
-    // left every P1/P2 reservoir permanently below its configured byte target.
-	if (!tailRefresh && !state.hasRows && !state.hasOlder && !hasLocalKnowledge(state.localMeta) && !gapBeforeSeq) return null;
-	if (!tailRefresh && !gapBeforeSeq && state.completedPages > 0 && !state.hasOlder) return null;
-    let priorityClass = priority === 'foreground' ? 100 : 0;
-    if (purpose === 'user-demand') priorityClass += 20;
-    else if (purpose === 'initial-tail') priorityClass += 10;
-	if (tailRefresh) priorityClass += 40;
-    // Starvation promotion is deliberately confined to the same transport
-    // class. Background hydration can become the next background batch, but
-    // it can never jump ahead of a person's active top operation.
-    priorityClass += Math.min(9, Math.floor(state.waitDispatches / FAIRNESS_DISPATCHES));
-    priorityClass += demand?.score || 0;
-	const source = tailRefresh ? 'network' : sourceFor(state, taskBeforeSeq);
-	if (blockedSourceMatches(state, {
-	  source,
-	  beforeSeq: taskBeforeSeq,
-	  replicaEpoch,
-	  localMetaEpoch,
-	  stateLease: state.stateLease,
-	  generation: source === 'network' ? generation : 0,
-	})) return null;
-	const sourceStats = transportStats[source] || transportStats.network;
-	const rowDeficit = tailRefresh || purpose === 'user-demand' || !state.tailVisible
-      ? sourceStats.rowLimit
-      : Math.max(1, targetRows - state.reservoir.size);
-    const limit = Math.max(1, Math.min(sourceStats.rowLimit, rowDeficit, reservoirSize - state.reservoir.size));
-	// A local replica can stop at a coverage hole without pretending the
-	// history is globally exhausted. Once attach supplies a remote source the
-	// same frontier becomes schedulable again.
-	if (!remoteAttached && source !== 'indexeddb') return null;
-    return {
-      id: `${replicaEpoch}:${source === 'network' ? generation : 'cache'}:${state.id}:${dispatchSerial + 1}`,
-      // Wire generation belongs only to remote requests. IndexedDB work is
-      // guarded by the local replica epoch and remains valid across reconnects.
-      generation: source === 'network' ? generation : 0,
-      replicaEpoch,
-      localMetaEpoch,
-      stateLease: state.stateLease,
-      channelId: state.id,
-      source,
-      purpose,
-      intent: demand?.intent || '',
-      urgency: demand?.urgency || '',
-      rangeKind,
-      priority,
-      beforeSeq: taskBeforeSeq,
-      limit,
-      byteLimit,
-      estimatedMs: estimateBatch(source, limit, byteLimit),
-      reservedBytes: byteLimit,
-      priorityClass,
-      tier: state.tier,
-      lastFocusOrder: state.lastFocusOrder,
-      activity: state.activity,
-      waterDeficit: reservoirSize - state.reservoir.size,
-      waitDispatches: state.waitDispatches,
-	  visibleNewestAtDispatch: numeric(visibleNewestSeq(state.id)),
-    };
-  }
-
-  // Read-only explanation for diagnostics. This deliberately shares the real
-  // candidate() result and only explains a null result; it never advances the
-  // dispatch wheel or creates another scheduling authority.
-  function candidateBlockReason(state) {
-    const ready = candidate(state);
-    if (ready) {
-      if (inflightByChannel.size >= HISTORY_MAX_INFLIGHT) return 'global-inflight-capacity';
-      const backgroundInflight = [...inflightByChannel.values()]
-        .filter((batch) => batch.priority === 'background').length;
-      if (ready.priority === 'background' && backgroundInflight >= maxBackgroundInflight) {
-        return 'background-inflight-capacity';
-      }
-      return 'ready';
-    }
-    if (!state) return 'channel-unknown';
-    if (!localMetaReady) return 'local-meta-pending';
-    if (localSelectionPending && state.id !== focus
-      && state.foregroundOwners.size === 0
-      && state.foregroundWaiters.length === 0
-      && state.currentWaiters.size === 0) return 'cache-selection-priority';
-    const remoteAttached = Boolean(generation && state.attachedGeneration === generation);
-    const localAttached = Boolean(!remoteAttached
-      && state.remoteEligible !== false
-      && hasLocalKnowledge(state.localMeta));
-    if (!remoteAttached && !localAttached) return 'source-not-attached';
-    if (inflightByChannel.has(state.id)) return 'channel-inflight';
-    if (authoritativeExhausted(state)) return 'authoritative-eof';
-    if (state.retryAt > now()) return 'retry-backoff';
-    if (state.projectionPending) return 'projection-ack-pending';
-    if (state.tier >= 3) return 'priority-ineligible';
-    const tailRefresh = numeric(state.tailRefreshBeforeSeq) > 0;
-    const purpose = tailRefresh ? 'initial-tail' : purposeFor(state, focus);
-    if (purpose === 'user-demand' && state.reservoir.size > 0) return 'buffer-awaiting-release';
-    const gapBeforeSeq = purpose === 'user-demand' ? visibleGapBefore(state) : 0;
-    const targetRows = state.tier === 0
-      ? HISTORY_P0_TARGET_ROWS
-      : state.tier === 1 ? HISTORY_P1_TARGET_ROWS : HISTORY_P2_TARGET_ROWS;
-    const targetBytes = state.tier === 0
-      ? HISTORY_P0_TARGET_BYTES
-      : state.tier === 1 ? HISTORY_P1_TARGET_BYTES : HISTORY_P2_TARGET_BYTES;
-    const scanBudget = state.tier === 0
-      ? HISTORY_P0_SCAN_BUDGET
-      : state.tier === 1 ? HISTORY_P1_SCAN_BUDGET : HISTORY_P2_SCAN_BUDGET;
-    if (!tailRefresh && purpose !== 'user-demand'
-      && (state.tailVisible || state.id !== focus)
-      && (state.reservoir.size >= targetRows
-        || state.reservoirBytes >= targetBytes
-        || state.warmScanned >= scanBudget)) return 'warm-target-satisfied';
-    if (state.reservoir.size >= reservoirSize
-      || state.reservoirBytes >= reservoirChannelBytes) return 'channel-reservoir-capacity';
-    const foregroundInflight = [...inflightByChannel.values()]
-      .some((batch) => batch.priority === 'foreground');
-    const globalAvailable = Math.max(0,
-      reservoirGlobalBytes - globalReservoirBytes - reservedInflightBytes);
-    if (globalAvailable <= 0 && (!tailRefresh && state.tier !== 0 || foregroundInflight)) {
-      return 'global-byte-capacity';
-    }
-    if (!tailRefresh && !state.hasRows && !state.hasOlder
-      && !hasLocalKnowledge(state.localMeta) && !gapBeforeSeq) return 'no-source-evidence';
-    if (!tailRefresh && !gapBeforeSeq
-      && state.completedPages > 0 && !state.hasOlder) return 'authoritative-eof';
-    const taskBeforeSeq = tailRefresh
-      ? state.tailRefreshBeforeSeq
-      : gapBeforeSeq || state.beforeSeq;
-    const source = tailRefresh ? 'network' : sourceFor(state, taskBeforeSeq);
-    if (blockedSourceMatches(state, {
-      source,
-      beforeSeq: taskBeforeSeq,
-      replicaEpoch,
-      localMetaEpoch,
-      stateLease: state.stateLease,
-      generation: source === 'network' ? generation : 0,
-    })) return 'source-failure-block';
-    if (!remoteAttached && source !== 'indexeddb') return 'remote-source-unavailable';
-    return 'not-selected';
-  }
-
-  function compare(left, right) {
-    return right.priorityClass - left.priorityClass
-      || left.tier - right.tier
-      || right.lastFocusOrder - left.lastFocusOrder
-      || right.activity - left.activity
-      || right.waterDeficit - left.waterDeficit
-      || right.waitDispatches - left.waitDispatches
-      || left.channelId.localeCompare(right.channelId);
-  }
-
-  function choose() {
-    const backgroundInflight = [...inflightByChannel.values()].filter((batch) => batch.priority === 'background').length;
-    const candidates = [...channels.values()].map(candidate).filter((batch) => (
-      batch && (batch.priority === 'foreground' || backgroundInflight < maxBackgroundInflight)
-    ));
-    if (!candidates.length) return null;
-    // A focused head check has proved that the current screen is stale. This
-    // is the highest-priority data demand: it wins before ordinary top-scroll
-    // and before the hydration wheel.
-    const freshness = candidates.filter((batch) => batch.rangeKind === 'tail-refresh').sort(compare)[0];
-    if (freshness) return freshness;
-    // A person explicitly paging always wins the next free executor regardless
-    // of the wheel. Ordinary hydration then follows 3:2:1 weighted RR.
-    const demanded = candidates.filter((batch) => batch.purpose === 'user-demand').sort(compare)[0];
-    if (demanded) return demanded;
-    const focused = channels.get(focus);
-    if (focused && !focused.tailVisible) {
-      const selected = candidates.filter((batch) => batch.channelId === focus).sort(compare)[0];
-      if (selected) return selected;
-      if (inflightByChannel.has(focus)) return null;
-    }
-    for (let offset = 0; offset < DISPATCH_WHEEL.length; offset += 1) {
-      const index = (dispatchWheelIndex + offset) % DISPATCH_WHEEL.length;
-      const tier = DISPATCH_WHEEL[index];
-      const selected = candidates.filter((batch) => batch.tier === tier).sort(compare)[0];
-      if (!selected) continue;
-      dispatchWheelIndex = (index + 1) % DISPATCH_WHEEL.length;
-      return selected;
-    }
-    return candidates.sort(compare)[0] || null;
   }
 
   async function stageRows(state, rows, {
@@ -906,88 +565,6 @@ export function createHistoryScheduler({
 	}
   }
 
-  async function executeNetwork(batch) {
-    const terminal = deferred();
-    batch.phase = 'network-receipt';
-    let accepted;
-    try {
-      accepted = requestPage(batch.channelId, batch.beforeSeq, batch.limit, {
-        purpose: batch.purpose, priority: batch.priority,
-        intent: batch.intent, urgency: batch.urgency,
-        generation: batch.generation, byteLimit: batch.byteLimit,
-        rangeKind: batch.rangeKind,
-      });
-    } catch (error) {
-      throw error;
-    }
-    batch.ref = accepted?.ref || '';
-    batch.rows = [];
-    batch.terminal = terminal;
-    // A cancellation may arrive immediately after dispatch, before the receipt
-    // promise has yielded. Mark this promise handled now; awaiting it below
-    // still observes the same rejection.
-    void terminal.promise.catch(() => {});
-    inflightByRef.set(batch.ref, batch);
-    const receipt = await Promise.race([
-      accepted,
-      batch.sourceCancellation.promise,
-    ]);
-    if (!receipt?.accepted || receipt.generation !== batch.generation || receipt.channel_id !== batch.channelId) {
-      throw new Error('历史批次回执不匹配');
-    }
-    batch.phase = 'network-page';
-    const page = await Promise.race([
-      terminal.promise,
-      batch.sourceCancellation.promise,
-    ]);
-	return { ...page, declaredRows: page.rows, rows: batch.rows };
-  }
-
-  async function execute(batch) {
-    if (batch.cancelled) throw new Error('history batch cancelled');
-    if (batch.source === 'indexeddb') {
-      batch.phase = 'cache-read';
-      return Promise.race([
-        readCache(batch.channelId, batch.beforeSeq, batch.limit, batch.byteLimit),
-        batch.sourceCancellation.promise,
-      ]);
-    }
-    return executeNetwork(batch);
-  }
-
-  function validateNetworkPage(batch, result, rows) {
-	if (numeric(result.generation) !== batch.generation) throw new Error('历史批次 generation 不匹配');
-	if (result.channel_id !== batch.channelId) throw new Error('历史批次 channel 不匹配');
-	const declaredRows = Number(result.declaredRows);
-	if (!Number.isSafeInteger(declaredRows) || declaredRows !== rows.length) throw new Error('历史批次 rows 计数不匹配');
-	const scanHigh = Number(result.scan_high_seq);
-	const nextBefore = Number(result.next_before_seq);
-	if (!Number.isSafeInteger(scanHigh) || scanHigh !== batch.beforeSeq - 1) {
-	  throw new Error(`历史批次 scan_high 不连续: got=${scanHigh} want=${batch.beforeSeq - 1}`);
-	}
-	if (!Number.isSafeInteger(nextBefore) || nextBefore < 0 || nextBefore > scanHigh) throw new Error('历史批次 next_before 非法');
-	const scanLow = Number(result.scan_low_seq);
-	if (!Number.isSafeInteger(scanLow) || scanLow !== nextBefore) throw new Error('历史批次 scan_low 与 cursor 不一致');
-	if (result.has_older && nextBefore >= batch.beforeSeq) throw new Error('历史批次 cursor 未前进');
-	for (const row of rows) {
-	  const seq = Number(row.seq);
-	  if (!Number.isSafeInteger(seq) || seq < scanLow || seq > scanHigh) throw new Error('历史事实落在扫描区间外');
-	}
-  }
-
-  function validateCachePage(batch, result, rows) {
-    const nextBefore = Number(result.nextBeforeSeq);
-    if (!Number.isSafeInteger(nextBefore) || nextBefore <= 0 || nextBefore >= batch.beforeSeq) {
-      throw new Error('缓存历史批次 cursor 未前进');
-    }
-    for (const row of rows) {
-      const seq = Number(row.seq);
-      if (!Number.isSafeInteger(seq) || seq < nextBefore || seq >= batch.beforeSeq) {
-        throw new Error('缓存历史事实落在扫描区间外');
-      }
-    }
-  }
-
   function batchIsCurrent(batch) {
     const state = channels.get(batch.channelId);
     return batch.cancelled !== true
@@ -1020,16 +597,16 @@ export function createHistoryScheduler({
         settleForeground(state, { kind: 'exhausted', localOnly: true });
         return;
       }
-      validateCachePage(batch, result, rows);
+      sources.validate(batch, result, rows);
     } else {
-      validateNetworkPage(batch, result, rows);
+      sources.validate(batch, result, rows);
     }
     // Cooperative decoding owns only local staging. No cursor, coverage,
     // currentness or reservoir fact is published until the complete page has
     // crossed the same state/generation/batch lease below.
     const stagedPage = await stageRows(state, rows, {
       allowGlobalOverflow: batch.priority === 'foreground',
-      sourceCancellation: batch.sourceCancellation?.promise,
+      sourceCancellation: sources.cancellation(batch),
     });
     if (!batchIsCurrent(batch) || batch.cancelled) return;
     state = channels.get(batch.channelId);
@@ -1180,16 +757,12 @@ export function createHistoryScheduler({
     batch.createdAt = now();
     batch.createdDispatch = dispatchSerial;
     inflightByChannel.set(batch.channelId, batch);
-    batch.sourceCancellation = deferred();
-    // Physical IndexedDB reads and a network request's receipt/page phases can
-    // both settle after ownership moved. Race the shared cancellation signal
-    // so neither source keeps the executor/channel lane occupied; late results
-    // remain unable to commit through batchIsCurrent/cancelledRefs.
-    void batch.sourceCancellation.promise.catch(() => {});
+    sources.prepare(batch);
     reservedInflightBytes += batch.reservedBytes;
+    const waitingCandidates = reduceCandidates().candidates;
     for (const state of channels.values()) {
       if (state.id === batch.channelId) state.waitDispatches = 0;
-      else if (candidate(state)) state.waitDispatches += 1;
+      else if (waitingCandidates.has(state.id)) state.waitDispatches += 1;
     }
 	diagnostic('info', 'history.segment_requested', batch);
     readingTrace('history.segment-requested', {
@@ -1203,14 +776,14 @@ export function createHistoryScheduler({
       limit: batch.limit,
     });
     let failed = false;
-    // One executor deadline owns receipt/cache read, cooperative staging, and
-    // the atomic commit. A decode yield that never resumes must not retain the
-    // channel lane or reserved bytes outside the timeout domain.
-    executors.add(async () => commit(batch, await execute(batch)), {
+    executor.run(async () => {
+      await commit(batch, await sources.execute(batch));
+      sources.complete(batch);
+    }, {
       id: batch.id,
-      timeout: batchTimeoutMs,
     }).catch((error) => {
       failed = true;
+      sources.fail(batch);
       const state = channels.get(batch.channelId);
 	  const timedOut = error?.name === 'TimeoutError'
 	    || error?.code === 'timeout'
@@ -1218,12 +791,12 @@ export function createHistoryScheduler({
 	  if (!batch.cancelled && batchIsCurrent(batch) && !destroyed && state) {
 		const sourceError = timedOut ? new Error(batch.source === 'indexeddb'
 		  ? '本地缓存读取超时，请重试'
-		  : batch.phase === 'network-page'
+		    : sources.phase(batch) === 'network-page'
 		    ? '历史数据响应超时，请重试'
 		    : '历史请求回执超时，请重试') : error;
 		if (timedOut) sourceError.code = batch.source === 'indexeddb'
 		  ? 'history_cache_timeout'
-		  : batch.phase === 'network-page'
+		    : sources.phase(batch) === 'network-page'
 		    ? 'history_page_timeout'
 		    : 'history_receipt_timeout';
 		state.blockedSource = {
@@ -1261,9 +834,6 @@ export function createHistoryScheduler({
       reservedInflightBytes = Math.max(0, reservedInflightBytes - batch.reservedBytes);
       if (batch.ref) inflightByRef.delete(batch.ref);
       if (inflightByChannel.get(batch.channelId) === batch) inflightByChannel.delete(batch.channelId);
-      // Silent hydration changes only the off-DOM reservoir. Publishing every
-      // batch would make the full app reconcile continuously while idle. Initial
-      // paint, sticky user demand, and errors remain observable immediately.
       if (batch.tier === 0 || failed) publish();
       schedule();
     });
@@ -1276,11 +846,9 @@ export function createHistoryScheduler({
 	  cancelledRefs.set(batch.ref, { channelId: batch.channelId, generation: batch.generation });
 	  while (cancelledRefs.size > 128) cancelledRefs.delete(cancelledRefs.keys().next().value);
     }
-    batch.terminal?.reject(new Error(reason));
-    batch.sourceCancellation?.reject(new Error(reason));
     if (batch.source === 'network' && batch.ref) {
 	  const state = channels.get(batch.channelId);
-	  const pending = Promise.resolve().then(() => cancelPage(batch.channelId, batch.ref, batch.generation));
+	  const pending = sources.cancel(batch, reason);
 	  if (state) state.cancelPending = pending;
       void pending.catch((error) => {
         diagnostic('warn', 'history.cancel_failed', { channelId: batch.channelId, ref: batch.ref, error });
@@ -1289,7 +857,7 @@ export function createHistoryScheduler({
 		publish();
 		schedule();
       });
-    }
+    } else void sources.cancel(batch, reason);
     diagnostic('debug', 'history.batch_cancelled', {
       channelId: batch.channelId, ref: batch.ref || '', generation: batch.generation, reason,
     });
@@ -1314,24 +882,16 @@ export function createHistoryScheduler({
 	});
   }
 
-  function preemptForFocusedCandidate() {
-    // cancelBatch releases its logical source immediately, but the executor is
-    // removed from inflightByChannel by dispatch.finally. Do not retire a
-    // second page while that first cancellation is already making capacity.
+  function preemptForFocusedCandidate(decision) {
     const active = [...inflightByChannel.values()].filter((batch) => !batch.cancelled);
     if (active.length < HISTORY_MAX_INFLIGHT || active.length !== inflightByChannel.size) return false;
-    const focused = channels.get(focus);
-    const focusedCandidate = candidate(focused);
+    const focusedCandidate = decision.candidates.get(focus);
     if (!focusedCandidate || focusedCandidate.channelId !== focus || focusedCandidate.priority !== 'foreground') {
       return false;
     }
     const victim = active
       .filter((batch) => {
         const state = channels.get(batch.channelId);
-        // Keep the dispatch/transport priority (apart from the existing
-        // explicit in-place focus promotion) separate from this current-owner
-        // decision. An explicit demand or current-tail refresh remains
-        // foreground after focus moves; ownerless physical backfill may yield.
         return batch.channelId !== focus
           && state?.tier !== 0
           && batch.purpose !== 'user-demand'
@@ -1353,11 +913,13 @@ export function createHistoryScheduler({
   function schedule() {
     if (destroyed) return;
     clearWake();
-    reclassify();
-    preemptForFocusedCandidate();
+    let decision = reduceCandidates();
+    preemptForFocusedCandidate(decision);
     while (inflightByChannel.size < HISTORY_MAX_INFLIGHT) {
-      const batch = choose();
+      decision = reduceCandidates();
+      const batch = decision.selected;
       if (!batch) break;
+      dispatchWheelIndex = decision.nextWheelIndex;
       dispatch(batch);
     }
     const retryAt = Math.min(...[...channels.values()].map((state) => state.retryAt).filter((value) => value > now()));
@@ -1479,12 +1041,10 @@ export function createHistoryScheduler({
     }
 	for (const [id, batch] of seamBatches) {
 	  batch.cancelled = true;
-	  batch.terminal?.reject(new Error('history source recalibrated by attach'));
-	  batch.sourceCancellation?.reject(new Error('history source recalibrated by attach'));
+	  void sources.cancel(batch, 'history source recalibrated by attach').catch(() => {});
 	  if (batch.ref) {
 		inflightByRef.delete(batch.ref);
 		cancelledRefs.set(batch.ref, { channelId: batch.channelId, generation: batch.generation });
-		if (batch.source === 'network') void cancelPage(batch.channelId, batch.ref, batch.generation).catch(() => {});
 	  }
 	  if (inflightByChannel.get(id) === batch) inflightByChannel.delete(id);
     }
@@ -1510,7 +1070,7 @@ export function createHistoryScheduler({
       return true;
     }
     const seq = numeric(payload.seq);
-    batch.rows.push({ channel_id: payload.channel_id, seq, envelope: payload.envelope });
+    sources.appendRow(batch, { channel_id: payload.channel_id, seq, envelope: payload.envelope });
     // Row envelopes can be large and a normal page can contain hundreds of
     // frames. Aggregate arrival metadata on the batch so one page cannot evict
     // the input/request origin from the bounded reading trace.
@@ -1549,7 +1109,7 @@ export function createHistoryScheduler({
       generation: numeric(payload.generation),
       ref: payload.ref || '',
       errorCode: payload.error_code || '',
-      rows: batch.rows.length,
+      rows: sources.rowCount(batch),
       firstSeq: batch.readingTraceArrival?.firstSeq || 0,
       lastSeq: batch.readingTraceArrival?.lastSeq || 0,
       minSeq: batch.readingTraceArrival?.minSeq || 0,
@@ -1559,8 +1119,7 @@ export function createHistoryScheduler({
         ? Math.max(0, batch.readingTraceArrival.lastAt - batch.readingTraceArrival.firstAt)
         : 0,
     });
-    if (payload.error_code) batch.terminal.reject(new Error(payload.error_detail || payload.error_code));
-    else batch.terminal.resolve(payload);
+    sources.finish(batch, payload);
     return true;
   }
 
@@ -1979,8 +1538,7 @@ export function createHistoryScheduler({
 		continue;
 	  }
 	  batch.cancelled = true;
-	  batch.terminal?.reject(new Error('connection closed'));
-	  batch.sourceCancellation?.reject(new Error('connection closed'));
+	  void sources.cancel(batch, 'connection closed', { notifyRemote: false });
 	  if (batch.ref) inflightByRef.delete(batch.ref);
 	  if (inflightByChannel.get(channelId) === batch) inflightByChannel.delete(channelId);
     }
@@ -2000,7 +1558,7 @@ export function createHistoryScheduler({
 	  state.cancelPending = null;
 	}
     cancelledRefs.clear();
-    if (destroyed) executors.clear();
+    if (destroyed) executor.clear();
     clearWake();
     diagnostic('info', 'history.disconnected', { generation: 0 });
     schedule();
@@ -2073,7 +1631,7 @@ export function createHistoryScheduler({
 		phase: historyDemandPhase,
 		error: state.foregroundError,
 	  }),
-      waitingStage: String(batch?.phase || ''),
+      waitingStage: batch ? sources.phase(batch) : '',
       waitingSince: numeric(batch?.createdAt),
       buffered: state.reservoir.size,
       bufferedNewest: Math.max(0, ...state.reservoir.keys()),
@@ -2097,13 +1655,14 @@ export function createHistoryScheduler({
   function debugSnapshot(channelId = '') {
     const state = channels.get(channelId);
     const batch = state ? inflightByChannel.get(channelId) : null;
-    const pendingCandidate = state ? candidate(state) : null;
+    const decision = reduceCandidates({ commitTiers: false });
+    const pendingCandidate = state ? decision.candidates.get(state.id) : null;
     const summarizeBatch = (entry) => ({
       channelId: entry.channelId,
       source: entry.source,
       purpose: entry.purpose,
       rangeKind: entry.rangeKind,
-      phase: String(entry.phase || 'queued'),
+      phase: sources.phase(entry),
       priority: entry.priority,
       generation: numeric(entry.generation),
       beforeSeq: numeric(entry.beforeSeq),
@@ -2113,7 +1672,7 @@ export function createHistoryScheduler({
     });
     const summarizeChannel = (entry) => ({
       channelId: entry.id,
-      tier: entry.tier,
+      tier: decision.tiers.get(entry.id) ?? 3,
       attached: generation > 0 && entry.attachedGeneration === generation,
       headSeq: numeric(entry.headSeq),
       frontierSeq: numeric(entry.beforeSeq),
@@ -2130,7 +1689,7 @@ export function createHistoryScheduler({
       completedPages: numeric(entry.completedPages),
       retryInMs: Math.max(0, numeric(entry.retryAt) - now()),
       errorCode: entry.error ? String(entry.errorCode || 'history_failed') : '',
-      blockedBy: candidateBlockReason(entry),
+      blockedBy: decision.blockReasons.get(entry.id) || 'not-selected',
     });
     return Object.freeze({
       version: 1,
@@ -2154,8 +1713,8 @@ export function createHistoryScheduler({
         localMetaReady,
         selectionPending: localSelectionPending,
         inflightCount: inflightByChannel.size,
-        executorRunning: numeric(executors.pending),
-        executorQueued: numeric(executors.size),
+        executorRunning: numeric(executor.snapshot().running),
+        executorQueued: numeric(executor.snapshot().queued),
         reservedBytes: reservedInflightBytes,
         reservoirBytes: globalReservoirBytes,
         reservoirLimitBytes: reservoirGlobalBytes,
@@ -2242,10 +1801,9 @@ export function createHistoryScheduler({
 	replicaEpoch += 1;
 	for (const batch of inflightByChannel.values()) {
 	  batch.cancelled = true;
-	  batch.terminal?.reject(new Error('local replica reset'));
-	  batch.sourceCancellation?.reject(new Error('local replica reset'));
+	  void sources.cancel(batch, 'local replica reset', { notifyRemote: false });
 	}
-	executors.clear();
+	executor.clear();
 	inflightByChannel.clear();
 	inflightByRef.clear();
 	cancelledRefs.clear();
