@@ -111,6 +111,21 @@ function directionFromKey(key) {
   return '';
 }
 
+const CONTENT_ANCHOR_MAX_ATTEMPTS = 4;
+
+function contentAnchorIdentity(command) {
+  if (!command) return '';
+  return [
+    command.type,
+    command.activationID,
+    Number(command.inputEpoch),
+    command.anchorID,
+    Number(command.viewportOffset),
+    Number(command.beforeScrollHeight),
+    command.expectedExpanded == null ? 'null' : Boolean(command.expectedExpanded) ? 'expanded' : 'collapsed',
+  ].join('\u001f');
+}
+
 /**
  * The sole vendor-list adapter. It owns refs, native input attribution and
  * typed DOM command execution; ReadingSession remains the only semantic
@@ -132,7 +147,11 @@ export function VendorListExecutor({
   const [anchorRetentionExtent, setAnchorRetentionExtent] = useState(0);
   const geometryRevisionRef = useRef(0);
   const observationFrameRef = useRef(0);
-  const contentAnchorFrameRef = useRef(0);
+  // A delayed content-anchor restore is a typed command transaction, not a
+  // bare timer. Keep its identity and frame token together so a stale RAF can
+  // never consume or execute a later fold command from the same activation.
+  const contentAnchorFrameRef = useRef(null);
+  const contentAnchorRetryRef = useRef(null);
   const lastScrollTopRef = useRef(0);
   const consumedCommandRef = useRef('');
   const touchRef = useRef(null);
@@ -247,65 +266,143 @@ export function VendorListExecutor({
       if (command) owner.consumeContentAnchor?.(command);
       return false;
     }
+    const key = contentAnchorIdentity(command);
+    const token = Object.freeze({
+      key,
+      activationID: String(command.activationID || ''),
+      inputEpoch: Number(command.inputEpoch),
+    });
+    const pending = contentAnchorFrameRef.current;
+    if (pending && pending.key !== token.key) {
+      globalThis.cancelAnimationFrame?.(pending.frameID);
+      contentAnchorFrameRef.current = null;
+    }
+    if (contentAnchorRetryRef.current?.key !== token.key) {
+      contentAnchorRetryRef.current = { key: token.key, attempts: 0 };
+    }
     if (command.expectedExpanded != null) {
       const extentDelta = Math.abs(Number(root.scrollHeight) - Number(command.beforeScrollHeight));
       setAnchorRetentionExtent((current) => Math.max(current, 2200, extentDelta + 1200));
     }
-    const execute = () => {
+    const currentForToken = () => {
       const currentRoot = rootRef.current;
       const currentOwner = readingRef.current;
       const currentCommand = currentOwner.contentAnchorCommand?.();
-      if (!currentCommand) return false;
-      if (!currentRoot) {
-        currentOwner.consumeContentAnchor?.(currentCommand);
-        return false;
+      const currentSession = currentOwner.getSession?.();
+      const currentKey = contentAnchorIdentity(currentCommand);
+      const current = currentCommand
+        && currentKey === token.key
+        && String(currentSession?.activationID || currentOwner.activationID || '') === token.activationID
+        && Number(currentSession?.inputEpoch) === token.inputEpoch
+        ? { root: currentRoot, owner: currentOwner, command: currentCommand }
+        : null;
+      return current;
+    };
+
+    const clearForToken = () => {
+      if (contentAnchorRetryRef.current?.key === token.key) contentAnchorRetryRef.current = null;
+      if (contentAnchorFrameRef.current?.key === token.key) contentAnchorFrameRef.current = null;
+      setAnchorRetentionExtent(0);
+    };
+
+    const terminal = (current) => {
+      // Consume only the command captured by this token. If input or another
+      // fold replaced it, the identity check above prevents a stale callback
+      // from consuming the replacement command.
+      if (current) current.owner.consumeContentAnchor?.(current.command);
+      clearForToken();
+      return false;
+    };
+
+    let attempt;
+
+    const queue = (frames = 1) => {
+      if (contentAnchorFrameRef.current?.key === token.key) return false;
+      const frame = { key: token.key, frameID: 0, remaining: Math.max(1, frames) };
+      const run = () => {
+        if (contentAnchorFrameRef.current !== frame) return;
+        const current = currentForToken();
+        if (!current) {
+          // The command was revoked/replaced by a newer input or semantic
+          // choice. Do not touch the newer command or its retention window.
+          contentAnchorFrameRef.current = null;
+          return;
+        }
+        if (frame.remaining > 1) {
+          frame.remaining -= 1;
+          frame.frameID = globalThis.requestAnimationFrame?.(run) || 0;
+          if (!frame.frameID) {
+            contentAnchorFrameRef.current = null;
+            attempt(current);
+          }
+          return;
+        }
+        contentAnchorFrameRef.current = null;
+        attempt(current);
+      };
+      contentAnchorFrameRef.current = frame;
+      frame.frameID = globalThis.requestAnimationFrame?.(run) || 0;
+      if (!frame.frameID) {
+        contentAnchorFrameRef.current = null;
+        const current = currentForToken();
+        if (current) attempt(current);
       }
-      if (!Number.isFinite(Number(currentRoot.scrollHeight))
-        || Math.abs(Number(currentRoot.scrollHeight) - Number(currentCommand.beforeScrollHeight)) <= 0.5) {
-        return false;
+      return true;
+    };
+
+    const retryOrTerminate = (current) => {
+      const retry = contentAnchorRetryRef.current?.key === token.key
+        ? contentAnchorRetryRef.current
+        : { key: token.key, attempts: 0 };
+      retry.attempts += 1;
+      contentAnchorRetryRef.current = retry;
+      if (retry.attempts >= CONTENT_ANCHOR_MAX_ATTEMPTS) return terminal(current);
+      queue(1);
+      return false;
+    };
+
+    attempt = (current) => {
+      const live = currentForToken();
+      if (!live) return false;
+      const currentRoot = live.root;
+      if (!currentRoot) return terminal(live);
+      const currentHeight = Number(currentRoot.scrollHeight);
+      // These are transient pre-paint states: React/Virtuoso has not committed
+      // the new extent or the row is not yet mounted. Keep the exact command
+      // pending behind a bounded retry fence.
+      if (!Number.isFinite(currentHeight)
+        || Math.abs(currentHeight - Number(live.command.beforeScrollHeight)) <= 0.5) {
+        return retryOrTerminate(live);
       }
       const anchor = [...currentRoot.querySelectorAll('[data-fold-id]')]
-        .find((node) => node.getAttribute('data-fold-id') === String(currentCommand.anchorID));
-      if (!anchor || (currentCommand.expectedExpanded != null
-        && anchor.getAttribute('aria-expanded') !== String(Boolean(currentCommand.expectedExpanded)))) {
-        currentOwner.consumeContentAnchor?.(currentCommand);
-        setAnchorRetentionExtent(0);
-        return false;
+        .find((node) => node.getAttribute('data-fold-id') === String(live.command.anchorID));
+      if (!anchor || (live.command.expectedExpanded != null
+        && anchor.getAttribute('aria-expanded') !== String(Boolean(live.command.expectedExpanded)))) {
+        return retryOrTerminate(live);
       }
-      const executed = executeReadingDOMCommand(currentCommand, {
+      const executed = executeReadingDOMCommand(live.command, {
         virtuoso: virtuosoRef.current, root: currentRoot,
       });
-      // A changed extent with a missing/stale anchor is a terminal command
-      // failure; never let it survive into an unrelated geometry transaction.
-      currentOwner.consumeContentAnchor?.(currentCommand);
-      if (!(executed && currentCommand.expectedExpanded === true)) setAnchorRetentionExtent(0);
-      if (executed) scheduleObserve(source, true);
-      return executed;
+      if (!executed) return retryOrTerminate(live);
+      live.owner.consumeContentAnchor?.(live.command);
+      if (contentAnchorRetryRef.current?.key === token.key) contentAnchorRetryRef.current = null;
+      if (live.command.expectedExpanded !== true) setAnchorRetentionExtent(0);
+      if (contentAnchorFrameRef.current?.key === token.key) contentAnchorFrameRef.current = null;
+      scheduleObserve(source, true);
+      return true;
     };
-    // Collapse must be corrected in the same pre-paint transaction. If the
-    // measured extent has not landed yet, retry once on the next frame; the
-    // unchanged-height guard above keeps that pending command alive without
-    // consuming it as a failed execution.
+
+    // Collapse is attempted immediately so a same-transaction measurement can
+    // be corrected before paint. Expansion gets two frames for the vendor's
+    // measured extent; both paths use the same identity fence and retry logic.
     if (command.expectedExpanded === false) {
-      const executed = execute();
-      if (!executed && readingRef.current.contentAnchorCommand?.()) {
-        contentAnchorFrameRef.current = globalThis.requestAnimationFrame?.(() => {
-          contentAnchorFrameRef.current = 0;
-          execute();
-        }) || 0;
-      }
+      const executed = attempt({ root, owner, command });
+      if (!executed && currentForToken()) queue(1);
       return executed;
     }
-    if (contentAnchorFrameRef.current) return false;
-    // Expansion increases the item above the fold control. Let the vendor
-    // commit that measured extent while the temporary retention window keeps
-    // the large item mounted, then issue the same typed scroll command.
-    contentAnchorFrameRef.current = globalThis.requestAnimationFrame?.(() => {
-      contentAnchorFrameRef.current = globalThis.requestAnimationFrame?.(() => {
-        contentAnchorFrameRef.current = 0;
-        execute();
-      }) || 0;
-    }) || 0;
+
+    if (contentAnchorFrameRef.current?.key === token.key) return false;
+    queue(2);
     return false;
   }, [scheduleObserve]);
 
@@ -463,7 +560,11 @@ export function VendorListExecutor({
 
   useEffect(() => () => {
     if (observationFrameRef.current) globalThis.cancelAnimationFrame?.(observationFrameRef.current);
-    if (contentAnchorFrameRef.current) globalThis.cancelAnimationFrame?.(contentAnchorFrameRef.current);
+    if (contentAnchorFrameRef.current?.frameID) {
+      globalThis.cancelAnimationFrame?.(contentAnchorFrameRef.current.frameID);
+    }
+    contentAnchorFrameRef.current = null;
+    contentAnchorRetryRef.current = null;
   }, []);
 
   if (reading.restorePending && !snapshot.rows.length) {
