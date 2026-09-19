@@ -102,7 +102,7 @@ describe('A-D round 18 public owner evidence: target handoff', () => {
     expect(screen.getByRole('heading', { name: 'c0' })).toBeTruthy();
   });
 
-  it.fails('[AD-101] publishes false message-surface visibility when mobile terminal covers it', () => {
+  it('[AD-101] publishes false message-surface visibility when mobile terminal covers it', () => {
     // 用户能力：窄屏终端覆盖消息面时公开 surface=false。
     // 不变量：覆盖状态是可观察事实；公共 owner：WorkspaceLayout。
     vi.stubGlobal('matchMedia', (query) => ({

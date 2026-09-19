@@ -130,6 +130,19 @@ export function WorkspaceLayout({
   const [pendingChannelSelection, setPendingChannelSelection] = useState(null);
   const channel = navigation.channel;
   const filesOpen = navigation.activeView === 'files';
+  // The responsive CSS hides the message pane when a compact/mobile terminal
+  // or file surface takes the only column. Keep that layout fact on the
+  // committed shell boundary and pass it to the conversation owner; CSS alone
+  // must not be mistaken for a readable/visible message surface.
+  const messageSurfaceCovered = (topology === 'mobile' || topology === 'compact')
+    && (navigation.terminalVisible || filesOpen);
+  const messageSurfaceVisible = conversation?.surfaceVisible !== false && !messageSurfaceCovered;
+  const conversationElement = React.isValidElement(conversation?.element)
+    ? React.cloneElement(conversation.element, {
+      ...(typeof conversation.element.type === 'string' ? {} : { surfaceVisible: messageSurfaceVisible }),
+      'data-surface-visible': String(messageSurfaceVisible),
+    })
+    : conversation?.element;
   const terminalTransitionPending = Boolean(
     pendingChannelSelection
     && pendingChannelSelection.origin === navigation.activeChannelId
@@ -334,7 +347,7 @@ export function WorkspaceLayout({
         filesOpen && !navigation.terminalVisible && 'files-split-open',
         navigation.activeView === 'tasks' && !navigation.terminalVisible && 'tasks-view-open',
       ].filter(Boolean).join(' ')}>
-        <div className="dynamic-message-pane">{conversation?.element}</div>
+        <div className="dynamic-message-pane" data-surface-visible={String(messageSurfaceVisible)}>{conversationElement}</div>
         {features}
       </div>
     </main>

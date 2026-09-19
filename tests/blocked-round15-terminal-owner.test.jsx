@@ -205,12 +205,21 @@ describe('A-D round 15 terminal/channel-restart blocked evidence', () => {
     expect(revoked.openTerminal).toHaveBeenCalledTimes(1);
   });
 
-  it.fails('[AD-101] publishes an explicit false message-surface state when mobile terminal covers it', () => {
+  it('[AD-101] publishes an explicit false message-surface state when mobile terminal covers it', () => {
     // 用户能力：窄屏终端覆盖消息面时屏幕阅读/布局能知道 surface 已离开；不变量：visible 事实显式发布。
     vi.stubGlobal('matchMedia', (query) => ({ matches: query === '(max-width: 640px)', addEventListener: vi.fn(), removeEventListener: vi.fn() }));
     const nav = navigation('c0', { terminalVisible: true });
-    renderWorkspace(nav);
+    const view = renderWorkspace(nav);
     expect(screen.getByTestId('message-surface').getAttribute('data-surface-visible')).toBe('false');
+
+    const returned = navigation('c0', { terminalVisible: false });
+    view.rerender(<WorkspaceLayout
+      session={session()}
+      navigation={returned}
+      conversation={{ element: <div data-testid="message-surface">消息</div> }}
+      features={featuresFor(returned)}
+    />);
+    expect(screen.getByTestId('message-surface').getAttribute('data-surface-visible')).toBe('true');
   });
 
   it('[AD-102] keeps the message surface mounted during a desktop terminal split', async () => {
