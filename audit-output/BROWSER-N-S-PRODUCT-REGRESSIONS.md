@@ -111,6 +111,19 @@ ATOLL_TEST_WEB_PORT=15320 ATOLL_TEST_MOCK_PORT=18920 npx playwright test \
 
 产品交接应据此拆分：N4/H1–H4 当前主要是公开 diagnostics/provider 可观测性缺口（不是左侧数字或 jump 错）；F7 是 reading-session/presentation visibility 稳定性缺口。证据目录：`test-results-notification-owner-oracle-post-2265cfa-20260920/` 及对应 DOM 合同输出目录。未修改产品、fixture、断言或 skip。
 
+## 第七轮 Luna Max：HEAD `5aef9f4` 与 readable_event
+
+沿用 `34d6f0c` oracle，N2/N4/H1–H4/F7 **7/7 观测完成**（目录 `test-results-notification-owner-oracle-post-5aef9f4-20260920/`）。DOM 用户可见结论：
+
+- N2 following arrival 的 gap=0 帧中 related/total/pending/jump 全 0，之前 transient badge 已闭合。
+- N4 filtered tail 的 c0 rail 数字与 jump 全 0；H1 DOM `2→0→reload 0→future 1→ack 0`；H2 reload unread=2、ack/二次 reload=0；H3 离开时 2、filtered tail/离开后 0；H4 arrival 后新 row visible、gap=0、badge/jump 全 0。以上均不是用户可见 rail 数字错误；空 `rail.snapshot` 只记 instrumentation/provider 缺口。
+- H1–H4 原合同仍在 diagnostics/high-water 断言失败，故“DOM 通过”不等于公开 rail/high-water 合同完成。
+- F7 仍是 presentation/reading owner 问题：oracle return 未稳定恢复 row 112，严格合同还观察到 Hook-order `Should have a queue` 与 reading owner=0 截断。
+
+readable_event 是本轮真实可见回归：`notification-policy` 的 final readable root 没有产生预期左 rail `.unread-total=1`；独立 readable-event row 本身可见，但没有 `reading.observation.visibleRowIDs` 记录，故首断点在 presentation→reading handoff，不是空 diagnostics 误报。证据目录：`test-results-readable-event-5aef9f4-20260920/`。
+
+裁决：Outbox P0 相关提交已改善 reload、ack 不复活和 following DOM 计数，但 notification owner 尚未全闭合；需公开 owner 处理 rail/high-water provider、readable final badge、readable_event reading observation 与 F7 presentation stability。未修改产品、fixture、断言或 skip。
+
 ## R1（历史记录，已由 `cbd8591` 关闭）：频道切换时 history owner 尚未连接
 
 这条历史分歧不再是当前复验结果：`cbd8591` 后频道切换可以继续进入真实页面；最终轮未记录该错误。以下步骤和栈保留作修复前 provenance，不应作为当前 RED 计数。

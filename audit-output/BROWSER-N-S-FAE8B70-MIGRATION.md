@@ -245,3 +245,23 @@ ATOLL_TEST_WEB_PORT=15320 ATOLL_TEST_MOCK_PORT=18920 npx playwright test \
 | F7 | 当前 oracle return-after-switch 快照 visible IDs 含 `c0-history-request-112`（与 111–114 同屏） | 严格 `reading-position-session.spec.js` 仍在 line 145 的目标可见等待超时；说明 admission/时序仍不稳定，不能以单次 oracle 快照宣称完成 | **仍为 presentation visibility/timing 产品问题** |
 
 补充：所有当前 oracle 快照的 `rail.diagnostic.channels` 仍为空，这是 provider 未发布的 instrumentation 限制；本节没有把它冒充成用户可见 badge 错误。证据：`test-results-notification-owner-oracle-post-2265cfa-20260920/`、`test-results-notification-dom-N4-2265cfa-20260920/`、`test-results-notification-dom-highwater-2265cfa-20260920/`、`test-results-notification-dom-F7-2265cfa-20260920/`。
+
+## 第七轮 Luna Max：`5aef9f4` Outbox P0 后复验
+
+目标 HEAD 为 `5aef9f4`（当前工作树产品入口；含 `451d7b2` tail backlog freeze、`0145d6d` persisted unread suffix hydration、`2265cfa` rail high-water handoff）。沿用 `34d6f0c` oracle 真实浏览器重跑 N2/N4/H1–H4/F7，7/7 观测完成；证据：`test-results-notification-owner-oracle-post-5aef9f4-20260920/`。
+
+DOM 主判据与 Outbox P0 闭合状态：
+
+| case | DOM 左 rail / jump / reload 结果 | 结论 |
+|---|---|---|
+| N2 | following arrival 全部 `gap=0`、related/total/pending/jump=0；cursor 36、replica head 36 | **已闭合用户可见 badge 闪烁**；diagnostic channel 仍空，仅作定位。 |
+| N4 | actor-filter tail c0 related/total/pending/jump 全 0，approval rows visible、gap=0 | **无可见 rail 回归**；raw authority/outside preservation 仍无法由空 diagnostics 证明。 |
+| H1 | DOM 已完成 unread `2 → 0 → reload 0 → future 1 → ack 0`；cursor/replica 到 30/32 | **reload/ack 不复活的用户路径通过**；公开 high-water snapshot 仍缺。 |
+| H2 | reload 后 project unread=2，ack 后及二次 reload=0（原合同 DOM 断言先通过） | **hydration/ack 用户路径通过**；diagnostic channel 仍缺。 |
+| H3 | 离开期间 related=2，filtered tail/离开后=0；cursor project=29、owner gap=0 | **filtered DOM 路径通过**；raw diagnostics 缺失。 |
+| H4 | arrival 后新 approval 进入 visible owner，gap=0，related/total/pending/jump=0；cursor/replica=28 | **用户可见 following 路径通过**；公开 high-water poll 仍为 0。 |
+| F7 | oracle return snapshot 未恢复目标 112（仍 latest 120）；严格原合同另触发 Hook-order `Should have a queue`/owner count=0 | **未闭合，首断点仍 presentation/reading owner**，并有当前 Composer dirty owner 的 Hook-order 截断。 |
+
+readable_event 额外复验（`notification-policy.spec.js`）：final readable root 期待 `.unread-total=1` 但 DOM 始终无该 badge（真实可见 rail 缺口，不是 diagnostics）；独立 `c0.project-notification-readable-event` row 可见，但 `reading.observation.visibleRowIDs` 未包含它（presentation→reading handoff 缺口）。证据：`test-results-readable-event-5aef9f4-20260920/`。
+
+因此 `451d7b2/0145d6d/2265cfa` 对 reload、ack 后不复活和 following DOM 数字已有用户路径收益；仍不能宣称 notification 合同全闭合：rail diagnostics/high-water provider 未发布、readable final badge 缺失、readable_event reading observation 缺失、F7 presentation owner 不稳定。全程没有修改产品、fixture、断言或 skip。
