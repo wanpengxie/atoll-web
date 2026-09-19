@@ -802,6 +802,23 @@ export function createChannelFeedRuntime(options = {}) {
       if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
       applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
     }
+    // A persisted notification obligation is a cache admission demand even
+    // when its channel is not the active focus. Reuse the existing Replica
+    // cache read/commit path; do not create a second notification hydrator or
+    // infer a count from metadata alone. New/bootstrap authorities have
+    // already been baselined above, so only a durable suffix below head is
+    // admitted here.
+    for (const [channelId, meta] of selectedMeta) {
+      if (channelId === focus || !histories.has(channelId)) continue;
+      const targetHead = Math.max(
+        historyNumeric(histories.get(channelId)?.headSeq),
+        historyNumeric(meta?.headSeq || meta?.newestSeq),
+      );
+      if (!targetHead || cursors.notificationHighWater(channelId) >= targetHead) continue;
+      const cached = await cache.readBefore(channelId, targetHead + 1, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
+      if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
+      applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
+    }
     let retiredActivity = false;
     for (const [key, entry] of activityEntries) {
       if (entry.state !== 'active' || entry.generation === generation) continue;
