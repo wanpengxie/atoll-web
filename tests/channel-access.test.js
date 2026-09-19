@@ -130,6 +130,13 @@ describe('channel access model (public useWireConnection port)', () => {
       memberships: [{ channel_id: 'c0', status: 'active' }],
     });
     const rows = harness.result.current.accessRef.current.rows();
+    const access = harness.result.current.accessRef.current;
+    // The public consumer derives its write gate from the same access facts:
+    // the member row is open/member, while the public observer row is never a
+    // member write target. Keep this invariant without importing the old
+    // channel-access predicate.
+    expect(access.state('c0')).toMatchObject({ relationship: 'member', runtime: 'open' });
+    expect(access.state('c0.public')).toMatchObject({ relationship: 'discoverable', runtime: 'open' });
     // Intentionally preserved product regression: the current owner only
     // recognizes the protocol's systemReserved marker, while the legacy
     // contract also excluded actor/lobby profile shapes.
