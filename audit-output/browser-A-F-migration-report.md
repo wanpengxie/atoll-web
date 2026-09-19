@@ -543,6 +543,20 @@ clean snapshot `9c8b7b5` 执行
 HEAD 用户体验等价 **PASS**，无首个公开 owner 缺口；不改写冻结 `7ba308c` 的
 `23/8` 历史 aggregate。
 
+### 第十九轮再续：#18 F7 inactive-channel progress/count（clean `7765f9c`）
+
+按旧 `fae8b70` 的用户合同，在当前用户停留 `c0` 时向 inactive `c0.project` 注入
+20 次 provisional business progress 与 40 条 dense core progress；这些 lifecycle
+事实不能伪造 channel rail unread 或“条新动态”，但用户点击目标频道仍必须进入真实
+surface。该路径不依赖 Reading 几何、search 或 debug-only UI。
+
+clean snapshot `7765f9c` 真实 Chromium 执行
+`tests/browser/f7-channel-notifications.spec.js --grep 'inactive-channel business'`：
+`1 passed (7.5s)`。注入前后 `.unread-related` / `.unread-total` 均为 0，进入后
+`main h1=c0.project`、active message list 与 jump button absence 均通过。结论：
+#18 当前 clean HEAD 用户体验等价 **PASS**，未发现 notification policy 或 Workspace
+handoff 首断点；不改写冻结 `7ba308c` 的 `23/8` 历史 aggregate。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
