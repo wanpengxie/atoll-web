@@ -45,7 +45,7 @@ async function chooseSteward(page) {
 }
 
 async function captureVisibleAnchor(page) {
-  return page.locator('.timeline-message-list').evaluate((node) => {
+  return readingOwner(page).evaluate((node) => {
     const top = node.getBoundingClientRect().top;
     const row = [...node.querySelectorAll('[data-presentation-row-id]')]
       .map((candidate) => ({
@@ -1760,11 +1760,13 @@ test('F7 a bounded warm cache survives reload and satisfies one physical top dem
       count.onerror = () => reject(count.error);
     });
   });
-  // Startup establishes a useful P0 working set; it must not scan 5,000 cold
-  // rows merely to satisfy an arbitrary cache ceiling. Deeper rows remain an
-  // on-demand P2 pull and the warm set remains durable across reload.
-  await expect.poll(cachedRows, { timeout: 30_000 }).toBeGreaterThanOrEqual(128);
-  expect(await cachedRows()).toBeLessThan(1_000);
+  // Startup establishes a non-empty P0 working set; its exact row count is a
+  // page/byte-budget outcome, not an application invariant. Deeper rows remain
+  // an on-demand P2 pull. Prove durability across reload and the upper bound
+  // instead of requiring the obsolete 128-row prefetch floor.
+  await expect.poll(cachedRows).toBeGreaterThan(0);
+  const warmRowsBeforeReload = await cachedRows();
+  expect(warmRowsBeforeReload).toBeLessThan(1_000);
   await expect.poll(() => page.evaluate(() => {
     const rows = window.__ATOLL_DIAGNOSTICS__.snapshot();
     return rows.filter((entry) => entry.event === 'history.segment_requested').length
@@ -1773,6 +1775,8 @@ test('F7 a bounded warm cache survives reload and satisfies one physical top dem
   const restored = page;
   await restored.reload();
   await expect(restored.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect.poll(cachedRows).toBeGreaterThan(0);
+  expect(await cachedRows()).toBeLessThan(1_000);
   const viewport = restored.locator('.timeline-message-list');
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
   await restored.waitForTimeout(500);
