@@ -50,13 +50,15 @@ describe('任务区从 ChannelReplica 投影等待控制', () => {
       controls: [{ word: FEATURE_WAITING_CONTROL.steer }, { word: FEATURE_WAITING_CONTROL.interrupt }],
     })));
 
-    const [item] = selectFeatureWaitingFacts({ state: replica.state(CHANNEL_ID) });
+    const targetAuthority = { current: true, actorIDs: new Set([AGENT_ID]) };
+    const [item] = selectFeatureWaitingFacts({ state: replica.state(CHANNEL_ID), targetAuthority });
     expect(item).toMatchObject({
       requestId: 'request-1',
       channelId: CHANNEL_ID,
       actorId: AGENT_ID,
       state: 'processing',
       actions: [FEATURE_WAITING_CONTROL.steer, FEATURE_WAITING_CONTROL.interrupt],
+      targetAuthority,
     });
     expect(createFeatureWaitingControlSubmission({ item, type: FEATURE_WAITING_CONTROL.steer })).toEqual({
       channelId: CHANNEL_ID,
@@ -75,7 +77,7 @@ describe('任务区从 ChannelReplica 投影等待控制', () => {
       payload: {},
       controlContext: {
         source: 'feature',
-        targetAuthority: null,
+        targetAuthority: { current: true, actorIDs: [AGENT_ID] },
         turn: {
           requestId: 'request-1',
           requestType: 'agent.ask',
@@ -88,6 +90,22 @@ describe('任务区从 ChannelReplica 投影等待控制', () => {
         },
       },
     });
+  });
+
+  it('keeps the waiting fact visible but rejects interrupt when target authority is missing', () => {
+    const replica = createChannelReplicaStore();
+    replica.commit(row(1, request()));
+    replica.commit(row(2, response('progress-1', 'request-1', {
+      status: 'processing',
+      controls: [{ word: FEATURE_WAITING_CONTROL.interrupt }],
+    })));
+
+    const [item] = selectFeatureWaitingFacts({ state: replica.state(CHANNEL_ID) });
+    expect(item.targetAuthority).toBeNull();
+    expect(() => createFeatureWaitingControlSubmission({
+      item,
+      type: FEATURE_WAITING_CONTROL.interrupt,
+    })).toThrowError(expect.objectContaining({ code: 'control_authority_stale' }));
   });
 
   it('未知控制词不猜 schema，terminal 到账后等待项消失', () => {

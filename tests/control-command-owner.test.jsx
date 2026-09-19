@@ -88,6 +88,21 @@ describe('submission control owner', () => {
     config.store.close();
   });
 
+  it('rejects a Waiting feature interrupt when its target authority is missing', async () => {
+    const config = harness();
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(config));
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    await expect(act(async () => result.current.control({
+      channelId: 'c0', msgType: TYPES.agentInterrupt,
+      audience: ['agent:worker:1'], payload: {},
+      controlContext: { source: 'feature', turn: turn() },
+    }))).rejects.toMatchObject({ code: 'control_authority_stale' });
+    expect(config.submit).not.toHaveBeenCalled();
+    unmount();
+    config.store.close();
+  });
+
   it('rechecks the member authority at the submission owner before enqueueing', async () => {
     const config = harness();
     const access = config.accessRef.current.state();

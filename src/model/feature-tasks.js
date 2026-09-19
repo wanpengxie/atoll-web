@@ -92,7 +92,7 @@ export function createFeatureWaitingControlSubmission({ item, type, intent = 'si
     request.controlContext = {
       source: 'feature',
       turn: item.turn,
-      ...(item.targetAuthority ? { targetAuthority: item.targetAuthority } : {}),
+      targetAuthority: item.targetAuthority || null,
     };
   }
   return createControlCommand(request);
@@ -404,6 +404,7 @@ export function selectFeatureWaitingFacts({
   channelId = state?.channelId || '',
   pending = [],
   actionFacts = new Map(),
+  targetAuthority = null,
 } = {}) {
   if (!channelId) return Object.freeze([]);
   const rows = [];
@@ -425,7 +426,8 @@ export function selectFeatureWaitingFacts({
       title: titleOf(request, '排队指令'),
       state: String(frame.status),
       actorId: String(request.audience?.[0] || ''),
-      actions: explicitActions(actionFacts, [key, id], { actions: declaredControls(frame) }, { kind: 'waiting', key, id, turn, frame }),
+      targetAuthority,
+      actions: explicitActions(actionFacts, [key, id], { actions: declaredControls(frame) }, { kind: 'waiting', key, id, turn, frame, targetAuthority }),
       turn,
       createdAt: request.ts,
       updatedAt: turn.provisional?.at(-1)?.envelope?.ts || request.ts,
@@ -450,7 +452,8 @@ export function selectFeatureWaitingFacts({
       title: String(row.text || row.frame?.payload?.text || row.frame?.msg_type || '排队指令'),
       state: String(row.state),
       actorId: String(row.frame?.audience?.[0] || ''),
-      actions: explicitActions(actionFacts, [key, id], row, { kind: 'waiting', key, id, row }),
+      targetAuthority,
+      actions: explicitActions(actionFacts, [key, id], row, { kind: 'waiting', key, id, row, targetAuthority }),
       submission: row,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

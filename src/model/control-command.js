@@ -103,11 +103,8 @@ function assertInterruptContext(context, actorId) {
     throw failure('control_capability_missing', '目标回合未宣告 agent.interrupt 能力');
   }
   const authority = context.targetAuthority;
-  if (authority && (!authority.current || !authority.actorIDs.includes(actorId))) {
+  if (!authority || !authority.current || !authority.actorIDs.includes(actorId)) {
     throw failure('control_authority_stale', '目标 Agent 当前权威已失效');
-  }
-  if (!authority && context.source !== CONTROL_COMMAND_SOURCE.feature) {
-    throw failure('control_authority_stale', '停止命令缺少当前 Agent 权威');
   }
 }
 
