@@ -674,3 +674,52 @@ still retained as obsolete and was not deleted or weakened.
 No product source, target spec, or contract was changed in this round; only
 this audit entry records the pending Reading owner handoff and the current
 case38 PASS.
+## 第十轮只读：A08 durable-unseen gate remains pending Reading owner
+
+At the current branch tip `94ca90c`, no commit after `5aef9f4` touches the
+Reading persistence paths (`view-session.js`, `reading-session.js`,
+`useConversationProjection.js`, or `useLiveArrivalReceipts.js`). The owner
+still calls `persistentReadingSession(session)` with only `revision`, `mode`,
+and `bookmark`; no Reading submission has landed, so a post-submission
+live → `unseenRecords` write → reload acceptance result cannot be claimed.
+
+The strict A08 contract was run in a clean detached worktree at the relevant
+current source baseline `c2fb7c6`:
+
+```text
+ATOLL_TEST_WEB_PORT=15302 ATOLL_TEST_MOCK_PORT=19861 npx playwright test \
+  tests/browser/ux-unseen-persistence.spec.js --reporter=line \
+  --output=test-results-tz-a08-strict-c2fb
+```
+
+Result: **1 RED at line 91** (`unseenRecords` expected length 1, received
+length 0). A separate disposable browser probe on the same clean baseline
+fixed the live/storage/reload witnesses:
+
+| stage | fixed public witness | saved schema-3 record |
+|---|---|---|
+| approval/live | mock response/message ID `c0-approval-29109-1`; jump `↓ 1 条新动态`; public mode `browsing` | key `c0\u0000c0:mine:`, revision `4 → 5`, `unseenTail=0`, `unseenKeys=[]`, `unseenRecords=[]` |
+| natural reload | history contains row `c0-approval-29109-1`; jump cleared and mode is `following` | same key, revision `7`, `unseenTail=0`, `unseenKeys=[]`, `unseenRecords=[]` |
+
+Thus the exact first divergence remains Reading arrival → durable-record
+emission. The message is real and the live jump is visible; storage writes the
+canonical key and advances revision, but no tuple is supplied for
+normalization/hydration to preserve. This is not an environment or reload
+failure, and the strict normalization, jump-clear, and acknowledgement
+assertions remain unchanged.
+
+Case38 was also rerun in a clean detached worktree at `c2fb7c6`:
+
+```text
+ATOLL_TEST_WEB_PORT=15303 ATOLL_TEST_MOCK_PORT=19862 npx playwright test \
+  tests/browser/waiting-production-contract.spec.js \
+  --grep "wheel-takeover-after-send" --reporter=line \
+  --output=test-results-tz-case38-c2fb
+```
+
+Result: **1 passed (6.7s)**. The current shared worktree's uncommitted
+fixed-identity helper also passed its focused run; that run printed the
+pre-existing unrelated `rows.find is not a function` console exception from
+dirty roster changes, while the clean case38 run had no such exception. No
+product or assertion change was made in this round; this entry records the
+pending Reading owner handoff and the exact A08/case38 evidence.
