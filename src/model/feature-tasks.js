@@ -4,6 +4,86 @@ import { TYPES } from '../protocol/vocab.js';
 const ACTIVE_STATES = new Set(['active', 'waiting', 'blocked', 'uncertain', 'queued', 'running']);
 const FINISHED_STATES = new Set(['completed', 'failed', 'cancelled', 'expired']);
 const RECOVERY_STATES = new Set(['uncertain', 'rejected']);
+const LOCAL_WAITING_STATES = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain']);
+const LOCAL_WAITING_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+
+export const FEATURE_TASK_ACTION = Object.freeze({
+  approve: 'approval.approve',
+  reject: 'approval.reject',
+  retry: 'recovery.retry',
+  cancel: 'request.cancel',
+});
+
+export const FEATURE_COMMAND_STATE = Object.freeze({
+  ready: 'ready',
+  submitting: 'submitting',
+  disabled: 'disabled',
+  unsupported: 'unsupported',
+  failed: 'failed',
+});
+
+export const FEATURE_WAITING_CONTROL = Object.freeze({
+  steer: TYPES.agentSteer,
+  interrupt: TYPES.agentInterrupt,
+});
+
+function requiredText(value, label) {
+  const result = String(value || '').trim();
+  if (!result) throw new TypeError(`${label}不能为空`);
+  return result;
+}
+
+// Pure adapters for the existing submission owner. Keeping request authorship
+// here prevents Workspace composition from having to reconstruct protocol
+// payloads or silently fall back to an untyped no-op.
+export function createFeatureTaskSubmission({
+  channelId,
+  providerId,
+  providerName = '',
+  title,
+  description = '',
+  dueAt = '',
+  source = null,
+} = {}) {
+  const resolvedChannelId = requiredText(channelId, '频道');
+  const resolvedProviderId = requiredText(providerId, '任务执行者');
+  const resolvedTitle = requiredText(title, '任务内容');
+  const resolvedDescription = String(description || '').trim();
+  const payload = {
+    title: resolvedTitle,
+    ...(resolvedDescription ? { description: resolvedDescription } : {}),
+    ...(dueAt ? { due_at: String(dueAt) } : {}),
+    ...(source ? { source: { ...source, channelId: resolvedChannelId } } : {}),
+  };
+  return Object.freeze({
+    channelId: resolvedChannelId,
+    text: resolvedTitle,
+    msgType: 'task.create',
+    audience: Object.freeze([resolvedProviderId]),
+    targetLabel: String(providerName || resolvedProviderId),
+    payload: Object.freeze(payload),
+  });
+}
+
+export function createFeatureWaitingControlSubmission({ item, type, intent = 'single', targetLabel = '' } = {}) {
+  const channelId = requiredText(item?.channelId, '频道');
+  const actorId = requiredText(item?.actorId, '等待区控制目标');
+  const requestId = requiredText(item?.requestId || item?.id, '等待区请求');
+  if (!featureWaitingActions(item).includes(type)) throw new TypeError('该控制词未由当前账本声明');
+  let payload;
+  if (type === FEATURE_WAITING_CONTROL.interrupt) payload = {};
+  else if (type === FEATURE_WAITING_CONTROL.steer) {
+    payload = intent === 'all' ? { all: true } : { target: requestId };
+  } else throw new TypeError('该控制词尚无可靠的请求构造器');
+  return Object.freeze({
+    channelId,
+    text: '',
+    msgType: type,
+    audience: Object.freeze([actorId]),
+    targetLabel: String(targetLabel || actorId),
+    payload: Object.freeze(payload),
+  });
+}
 
 function timelineTurns(timeline = []) {
   const turns = [];
@@ -23,16 +103,30 @@ function terminalState(turn) {
   return ['cancelled', 'interrupted'].includes(reason) ? 'cancelled' : 'failed';
 }
 
-function explicitActions(actionFacts, keys, source) {
+function explicitActions(actionFacts, keys, source, context) {
   const candidates = [];
   if (Array.isArray(source?.actions)) candidates.push(source.actions);
+  if (typeof actionFacts === 'function') candidates.push(actionFacts(Object.freeze(context)));
   for (const key of keys) {
     if (!key) continue;
     if (actionFacts instanceof Map) candidates.push(actionFacts.get(key));
     else if (actionFacts && typeof actionFacts === 'object') candidates.push(actionFacts[key]);
   }
-  const actions = candidates.find(Array.isArray) || [];
+  const actions = candidates.filter(Array.isArray).flat();
   return Object.freeze([...new Set(actions.filter((action) => typeof action === 'string' && action))]);
+}
+
+function latestControlFact(turn) {
+  return [...(turn?.provisional || [])]
+    .sort((left, right) => Number(right.seq || 0) - Number(left.seq || 0))
+    .map((entry) => argsOf(entry.envelope))
+    .find((body) => ['queued', 'processing'].includes(body.status) && Array.isArray(body.controls)) || null;
+}
+
+function declaredControls(frame) {
+  return (frame?.controls || []).flatMap((entry) => (
+    entry && typeof entry.word === 'string' && entry.word ? [entry.word] : []
+  ));
 }
 
 function titleOf(request, fallback) {
@@ -61,7 +155,7 @@ function taskFact(turn, channelId, actionFacts) {
     ownerId: String(request.sender?.id || ''),
     createdAt: request.ts,
     updatedAt: turn.terminal?.ts || request.ts,
-    actions: explicitActions(actionFacts, [key, id, turn.requestId]),
+    actions: explicitActions(actionFacts, [key, id, turn.requestId], null, { kind: 'task', key, id, turn }),
     source: Object.freeze({ kind: 'canonical', requestId: turn.requestId, seq: turn.requestSeq }),
   });
 }
@@ -88,7 +182,7 @@ function approvalFact(turn, channelId, selfId, now, actionFacts) {
     waitingFor: state === 'waiting' ? '等待决定' : '',
     createdAt: request.ts,
     updatedAt: turn.terminal?.ts || request.ts,
-    actions: explicitActions(actionFacts, [key, id]),
+    actions: explicitActions(actionFacts, [key, id], null, { kind: 'approval', key, id, turn, state }),
     source: Object.freeze({ kind: 'canonical', requestId: id, seq: turn.requestSeq }),
   });
 }
@@ -109,7 +203,7 @@ function recoveryFact(row, channelId, selfId, actionFacts) {
     waitingFor: String(row.error?.detail || (row.state === 'uncertain' ? '等待频道账本确认' : '等待安全重试')),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    actions: explicitActions(actionFacts, [key, id], row),
+    actions: explicitActions(actionFacts, [key, id], row, { kind: 'recovery', key, id, row }),
     submission: row,
     source: Object.freeze({ kind: 'submission', messageId: id }),
   });
@@ -148,6 +242,81 @@ export function selectFeatureTaskFacts({
   facts.sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0)
     || left.key.localeCompare(right.key));
   return Object.freeze(facts);
+}
+
+export function selectFeatureTaskProviders(capabilityIndex = new Map(), roster = []) {
+  const actors = new Map((roster || []).map((actor) => [actor?.id, actor]));
+  return Object.freeze([...capabilityIndex.values()].flatMap((entry) => {
+    const actor = actors.get(entry?.actorId);
+    if (!actor || !entry?.describe?.types?.has?.('task.create')) return [];
+    return [Object.freeze({
+      actorId: actor.id,
+      name: String(actor.name || actor.label || actor.id),
+    })];
+  }).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')));
+}
+
+export function selectFeatureWaitingFacts({
+  state,
+  channelId = state?.channelId || '',
+  pending = [],
+  actionFacts = new Map(),
+} = {}) {
+  if (!channelId) return Object.freeze([]);
+  const rows = [];
+  const canonicalRequestIds = new Set();
+  for (const turn of timelineTurns(state?.timeline || [])) {
+    canonicalRequestIds.add(String(turn.requestId));
+    if (turn.terminal) continue;
+    const frame = latestControlFact(turn);
+    if (!frame) continue;
+    const request = turn.request;
+    const id = String(turn.requestId);
+    const key = `waiting:${channelId}:${id}`;
+    rows.push(Object.freeze({
+      key,
+      id,
+      requestId: id,
+      channelId,
+      kind: 'waiting',
+      title: titleOf(request, '排队指令'),
+      state: String(frame.status),
+      actorId: String(request.audience?.[0] || ''),
+      actions: explicitActions(actionFacts, [key, id], { actions: declaredControls(frame) }, { kind: 'waiting', key, id, turn, frame }),
+      turn,
+      createdAt: request.ts,
+      updatedAt: turn.provisional?.at(-1)?.envelope?.ts || request.ts,
+      source: Object.freeze({ kind: 'canonical', requestId: id, seq: turn.requestSeq }),
+    }));
+  }
+  for (const row of pending) {
+    const rowChannelId = String(row?.channelId || row?.frame?.channel_id || '');
+    const id = String(row?.messageId || '');
+    if (rowChannelId !== channelId
+      || !id
+      || canonicalRequestIds.has(id)
+      || !LOCAL_WAITING_STATES.has(row.state)
+      || !LOCAL_WAITING_TYPES.has(row.frame?.msg_type)) continue;
+    const key = `waiting:${channelId}:${id}`;
+    rows.push(Object.freeze({
+      key,
+      id,
+      requestId: id,
+      channelId,
+      kind: 'waiting',
+      title: String(row.text || row.frame?.payload?.text || row.frame?.msg_type || '排队指令'),
+      state: String(row.state),
+      actorId: String(row.frame?.audience?.[0] || ''),
+      actions: explicitActions(actionFacts, [key, id], row, { kind: 'waiting', key, id, row }),
+      submission: row,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      source: Object.freeze({ kind: 'submission', messageId: id }),
+    }));
+  }
+  rows.sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0)
+    || left.key.localeCompare(right.key));
+  return Object.freeze(rows);
 }
 
 export function filterFeatureTasks(items = [], { scope = 'me', status = 'active', kind = 'all', selfId = '' } = {}) {
