@@ -342,7 +342,9 @@ function useProjectionReadingOwner({
     const sourceRevision = Number(snapshot.sourceRevision || 0);
     const following = session.mode === READING_MODE.following;
     const atTail = evidence.atTail === true;
-    const surfaceReady = evidence.surfaceVisible === true && documentVisible === true;
+    const surfaceReady = surfaceVisible === true
+      && evidence.surfaceVisible === true
+      && documentVisible === true;
     const caughtUp = following
       && evidence.activationID === controller.activationID
       && atTail

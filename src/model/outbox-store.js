@@ -75,8 +75,45 @@ export function createOutboxStore({
   let database = null;
   let opened = null;
   let openGeneration = 0;
+  let lifetimeGeneration = 0;
+  let closed = false;
+  let activeOperations = 0;
+  let closingDatabase = null;
+
+  function outboxClosedError() {
+    const error = new Error('本机持久发送队列已关闭');
+    error.code = 'outbox_closed';
+    return error;
+  }
+
+  function assertStoreOpen() {
+    if (closed) throw outboxClosedError();
+  }
+
+  async function withDatabase(operation) {
+    const generation = lifetimeGeneration;
+    const assertCurrent = () => {
+      if (closed || lifetimeGeneration !== generation) throw outboxClosedError();
+    };
+    activeOperations += 1;
+    try {
+      assertCurrent();
+      const db = await open();
+      assertCurrent();
+      const result = await operation(db, assertCurrent);
+      assertCurrent();
+      return result;
+    } finally {
+      activeOperations -= 1;
+      if (closed && activeOperations === 0) {
+        closingDatabase?.close();
+        closingDatabase = null;
+      }
+    }
+  }
 
   function open() {
+    assertStoreOpen();
     if (opened) return opened;
     if (!indexedDBImpl || !IDBKeyRangeImpl) return Promise.reject(new Error('本机持久发送队列不可用'));
     const generation = ++openGeneration;
@@ -104,59 +141,74 @@ export function createOutboxStore({
   return Object.freeze({
     async restore(principalId) {
       if (!principalId) return [];
-      const db = await open();
-      return db.submissions.where('principalId').equals(principalId).sortBy('createdAt');
+      return withDatabase(async (db, assertCurrent) => {
+        const rows = await db.submissions.where('principalId').equals(principalId).sortBy('createdAt');
+        assertCurrent();
+        return rows;
+      });
     },
     async restoreDrafts(principalId) {
       if (!principalId) return [];
-      const db = await open();
-      return db.drafts.where('principalId').equals(principalId).toArray();
+      return withDatabase(async (db, assertCurrent) => {
+        const rows = await db.drafts.where('principalId').equals(principalId).toArray();
+        assertCurrent();
+        return rows;
+      });
     },
     async putMany(principalId, submissions, { authorize } = {}) {
       if (!principalId) throw new TypeError('outbox write requires principal');
       const durable = durableSubmissions(submissions);
-      const db = await open();
-      await db.transaction('rw', db.submissions, () => {
-        if (authorize && authorize() !== true) throw new Error('发送授权已变化，未保存到发送队列');
-        return db.submissions.bulkPut(durable.map((submission) => ({ ...submission, principalId })));
+      return withDatabase(async (db, assertCurrent) => {
+        await db.transaction('rw', db.submissions, () => {
+          assertCurrent();
+          if (authorize && authorize() !== true) throw new Error('发送授权已变化，未保存到发送队列');
+          assertCurrent();
+          return db.submissions.bulkPut(durable.map((submission) => ({ ...submission, principalId })));
+        });
+        return durable;
       });
-      return durable;
     },
-    async patch(principalId, messageId, expectedStates, change, { authorize } = {}) {
-      const db = await open();
-      return db.transaction('rw', db.submissions, async () => {
+    async patch(principalId, messageId, expectedStates, change, { authorize, leaseOwner } = {}) {
+      return withDatabase((db, assertCurrent) => db.transaction('rw', db.submissions, async () => {
+        assertCurrent();
         const key = [principalId, messageId];
         const current = await db.submissions.get(key);
+        assertCurrent();
         if (!current || (expectedStates?.length && !expectedStates.includes(current.state))) return null;
+        if (leaseOwner && current.leaseOwner !== leaseOwner) return null;
         // The read above yields. A queued request may lose its exact access or
         // transport owner while waiting behind another IndexedDB writer. Check
         // the phase lease inside this transaction immediately before the first
         // durable mutation; an outer before/after check can only compensate
         // after a stale `transmitting` record has already become crash-visible.
         if (authorize && authorize() !== true) throw new Error('发送授权已变化，未推进发送状态');
+        assertCurrent();
         const next = { ...current, ...change, principalId, messageId, updatedAt: now() };
         await db.submissions.put(next);
         return next;
-      });
+      }));
     },
     async remove(principalId, messageId, expectedStates = null) {
       if (!principalId || !messageId) return;
-      const db = await open();
-      return db.transaction('rw', db.submissions, async () => {
+      return withDatabase((db, assertCurrent) => db.transaction('rw', db.submissions, async () => {
+        assertCurrent();
         const key = [principalId, messageId];
         const current = await db.submissions.get(key);
+        assertCurrent();
         if (!current || (expectedStates?.length && !expectedStates.includes(current.state))) return false;
+        assertCurrent();
         await db.submissions.delete(key);
         return true;
-      });
+      }));
     },
     async writeDraft(principalId, channelId, draft, expectedRevision) {
       if (!principalId || !channelId) throw new TypeError('draft write requires principal and channel');
       const durable = durableDraft(draft);
-      const db = await open();
-      return db.transaction('rw', db.drafts, async () => {
+      return withDatabase((db, assertCurrent) => db.transaction('rw', db.drafts, async () => {
+        assertCurrent();
         const key = [principalId, channelId];
         const current = await db.drafts.get(key);
+        assertCurrent();
         const revision = Number(current?.revision || 0);
         if (Number.isFinite(expectedRevision) && Number(expectedRevision) !== revision) {
           return { conflict: true, current };
@@ -169,9 +221,10 @@ export function createOutboxStore({
           draft: meaningfulDraft(durable) ? durable : null,
           updatedAt: now(),
         };
+        assertCurrent();
         await db.drafts.put(next);
         return { conflict: false, record: next };
-      });
+      }));
     },
     async mergeDraftAttachments({ principalId, channelId, attachments, expectedRevision = 0, authorize }) {
       if (!principalId || !channelId) throw new TypeError('draft attachment merge requires principal and channel');
@@ -181,11 +234,12 @@ export function createOutboxStore({
       if (durableAttachments.length !== (attachments || []).length) {
         throw new TypeError('附件尚未成为可恢复的频道资源');
       }
-      const db = await open();
-      return db.transaction('rw', db.drafts, async () => {
+      return withDatabase((db, assertCurrent) => db.transaction('rw', db.drafts, async () => {
+        assertCurrent();
         if (authorize && authorize() !== true) throw new Error('草稿附件授权已变化');
         const key = [principalId, channelId];
         const current = await db.drafts.get(key);
+        assertCurrent();
         const revision = Number(current?.revision || 0);
         if (revision < Number(expectedRevision || 0)) return { conflict: true, current, reason: 'revision_rewound' };
         // A consumed row is the durable send boundary. An upload captured
@@ -210,18 +264,20 @@ export function createOutboxStore({
           draft: meaningfulDraft(draft) ? draft : null,
           updatedAt: now(),
         };
+        assertCurrent();
         await db.drafts.put(next);
         return { conflict: false, record: next };
-      });
+      }));
     },
     async acceptDraft({ principalId, channelId, expectedRevision, editorRevision, submissions, authorize }) {
       if (!principalId || !channelId || !submissions?.length) throw new TypeError('acceptDraft requires draft identity and frames');
       const durable = durableSubmissions(submissions);
-      const db = await open();
-      return db.transaction('rw', db.drafts, db.submissions, async () => {
+      return withDatabase((db, assertCurrent) => db.transaction('rw', db.drafts, db.submissions, async () => {
+        assertCurrent();
         if (authorize && authorize() !== true) throw new Error('发送授权已变化，未保存到发送队列');
         const key = [principalId, channelId];
         const current = await db.drafts.get(key);
+        assertCurrent();
         const revision = Number(current?.revision || 0);
         const expected = Number(expectedRevision || 0);
         if (revision < expected) return { accepted: false, conflict: current || null };
@@ -229,6 +285,7 @@ export function createOutboxStore({
         // before its first durable submission write so revoke/retire cannot
         // slip between the entry check and bulkPut/consume.
         if (authorize && authorize() !== true) throw new Error('发送授权已变化，未保存到发送队列');
+        assertCurrent();
         await db.submissions.bulkPut(durable.map((submission) => ({ ...submission, principalId })));
         // The editor may advance while the acceptance transaction waits for
         // IndexedDB. The immutable frames still belong in the outbox, but a
@@ -245,38 +302,52 @@ export function createOutboxStore({
           consumedAt: now(),
           updatedAt: now(),
         };
+        assertCurrent();
         await db.drafts.put(consumed);
         return { accepted: true, consumed: true, record: consumed, submissions: durable };
-      });
+      }));
     },
     async acquireLease(principalId, messageId, owner, ttlMs = 15_000) {
-      const db = await open();
-      return db.transaction('rw', db.submissions, async () => {
+      if (!owner) throw new TypeError('outbox lease requires owner');
+      return withDatabase((db, assertCurrent) => db.transaction('rw', db.submissions, async () => {
+        assertCurrent();
         const key = [principalId, messageId];
         const current = await db.submissions.get(key);
+        assertCurrent();
         if (!current) return null;
         const timestamp = now();
         if (current.leaseOwner && current.leaseOwner !== owner && Number(current.leaseUntil || 0) > timestamp) return null;
         const next = { ...current, leaseOwner: owner, leaseUntil: timestamp + ttlMs, updatedAt: timestamp };
+        assertCurrent();
         await db.submissions.put(next);
         return next;
-      });
+      }));
     },
     async releaseLease(principalId, messageId, owner) {
-      const db = await open();
-      return db.transaction('rw', db.submissions, async () => {
+      if (!owner) return false;
+      return withDatabase((db, assertCurrent) => db.transaction('rw', db.submissions, async () => {
+        assertCurrent();
         const key = [principalId, messageId];
         const current = await db.submissions.get(key);
+        assertCurrent();
         if (!current || current.leaseOwner !== owner) return false;
+        assertCurrent();
         await db.submissions.put({ ...current, leaseOwner: '', leaseUntil: 0, updatedAt: now() });
         return true;
-      });
+      }));
     },
     close() {
+      if (closed) return;
+      closed = true;
+      lifetimeGeneration += 1;
       openGeneration += 1;
-      database?.close();
+      closingDatabase = database;
       database = null;
       opened = null;
+      if (activeOperations === 0) {
+        closingDatabase?.close();
+        closingDatabase = null;
+      }
     },
   });
 }

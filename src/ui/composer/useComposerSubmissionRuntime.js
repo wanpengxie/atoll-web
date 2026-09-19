@@ -49,6 +49,10 @@ function feedIDs(value) {
   return new Set();
 }
 
+function isLiveLifecycle(lifecycle, generation) {
+  return lifecycle.active && lifecycle.generation === generation;
+}
+
 export function useComposerSubmissionRuntime({
   activeChannelId = '',
   principalId = '',
@@ -73,6 +77,9 @@ export function useComposerSubmissionRuntime({
   const attemptEpochRef = useRef(0);
   const hydrationRef = useRef(0);
   const transmittingRef = useRef(new Set());
+  const automaticReconnectRetryRef = useRef(new Set());
+  const lifecycleRef = useRef({ generation: 0, active: true });
+  const retryPrincipalRef = useRef(principalId);
   const acceptingRef = useRef(new Map());
   const landedRef = useRef(new Set());
   const persistedDraftRevisionRef = useRef(new Map());
@@ -162,10 +169,15 @@ export function useComposerSubmissionRuntime({
 
   useEffect(() => {
     const generation = ++hydrationRef.current;
+    const lifecycleGeneration = lifecycleRef.current.generation;
     attemptEpochRef.current += 1;
     transmittingRef.current.clear();
     acceptingRef.current.clear();
     persistedDraftRevisionRef.current.clear();
+    if (retryPrincipalRef.current !== principalId) {
+      automaticReconnectRetryRef.current.clear();
+      retryPrincipalRef.current = principalId;
+    }
     setAcceptingChannels(new Set());
     setApprovalStates({});
     setControlStates({});
@@ -176,12 +188,31 @@ export function useComposerSubmissionRuntime({
     }
     let alive = true;
     void fenceRef.current.select(async () => {
-      const [submissionRows, draftRows] = await Promise.all([
-        outboxRef.current.restore(principalId),
-        outboxRef.current.restoreDrafts(principalId),
-      ]);
-      if (!alive || generation !== hydrationRef.current || authorityRef.current?.principalId !== principalId) return;
-      const restored = submissionRows.map(restoredSubmission).filter(Boolean);
+      let submissionRows;
+      let draftRows;
+      try {
+        [submissionRows, draftRows] = await Promise.all([
+          outboxRef.current.restore(principalId),
+          outboxRef.current.restoreDrafts(principalId),
+        ]);
+      } catch (error) {
+        if (alive && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) onError(error);
+        return;
+      }
+      if (!alive || !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)
+        || generation !== hydrationRef.current || authorityRef.current?.principalId !== principalId) return;
+      const restoredRows = submissionRows.map(restoredSubmission).filter(Boolean);
+      const landed = restoredRows.filter((row) => landedRef.current.has(row.messageId));
+      if (landed.length) {
+        await Promise.all(landed.map((row) => outboxRef.current.remove(principalId, row.messageId)
+          .catch((error) => {
+            if (isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) onError(error);
+            return null;
+          })));
+        if (!alive || !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)
+          || generation !== hydrationRef.current) return;
+      }
+      const restored = restoredRows.filter((row) => !landedRef.current.has(row.messageId));
       persistedDraftRevisionRef.current = new Map(draftRows
         .filter((row) => row?.channelId)
         .map((row) => [row.channelId, Number(row.revision || 0)]));
@@ -192,13 +223,18 @@ export function useComposerSubmissionRuntime({
           if (row.state === 'queued' || row.state === 'uncertain') void transmitRef.current?.(row);
         }
       }
-    }).catch(onError);
+    }).catch((error) => {
+      if (alive && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) onError(error);
+    });
     return () => { alive = false; };
   }, [onError, principalId, publishDrafts, publishPending, wireRef]);
 
   useEffect(() => () => {
+    lifecycleRef.current.active = false;
+    lifecycleRef.current.generation += 1;
     hydrationRef.current += 1;
     attemptEpochRef.current += 1;
+    automaticReconnectRetryRef.current.clear();
     outboxRef.current?.close();
   }, []);
 
@@ -289,6 +325,9 @@ export function useComposerSubmissionRuntime({
   const transmit = useCallback(async (submission) => {
     const key = submission.key || submission.messageId;
     if (!key || transmittingRef.current.has(key)) return false;
+    const lifecycleGeneration = lifecycleRef.current.generation;
+    const isLive = () => isLiveLifecycle(lifecycleRef.current, lifecycleGeneration);
+    if (!isLive()) return false;
     const owner = captureOwner(submission.channelId);
     const transportAssessment = assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.submit);
     if (!transportAssessment.current) return false;
@@ -296,16 +335,22 @@ export function useComposerSubmissionRuntime({
     let leased = null;
     try {
       leased = await outboxRef.current.acquireLease(owner.principalId, submission.messageId, leaseOwnerRef.current);
+      if (!isLive()) return false;
       if (!leased) return false;
       authorize(owner, REQUEST_PHASE.submit);
       const transmitting = await outboxRef.current.patch(owner.principalId, submission.messageId,
         ['queued', 'uncertain', 'rejected', 'transmitting'],
         { state: 'transmitting', error: null },
-        { authorize: () => assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.submit).current });
+        {
+          leaseOwner: leaseOwnerRef.current,
+          authorize: () => isLive() && assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.submit).current,
+        });
+      if (!isLive()) return false;
       if (!transmitting) return false;
       publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? transmitting : row));
       rosterRef?.current?.recordSubmission?.(submission.channelId, submission.messageId);
       const receipt = await owner.transport.submit(transmitting.frame);
+      if (!isLive()) return false;
       authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
       if (receipt?.message_id && receipt.message_id !== submission.messageId) {
         const error = new Error('服务端返回了不同的消息编号');
@@ -313,7 +358,11 @@ export function useComposerSubmissionRuntime({
         throw error;
       }
       const accepted = await outboxRef.current.patch(owner.principalId, submission.messageId,
-        ['transmitting'], { state: 'accepted', error: null });
+        ['transmitting'], { state: 'accepted', error: null }, {
+          leaseOwner: leaseOwnerRef.current,
+          authorize: () => isLive(),
+        });
+      if (!isLive()) return false;
       if (landedRef.current.has(submission.messageId)) {
         await outboxRef.current.remove(owner.principalId, submission.messageId);
         publishPending((rows) => rows.filter((row) => row.messageId !== submission.messageId));
@@ -327,14 +376,18 @@ export function useComposerSubmissionRuntime({
         requireAccess: false,
         requireTransport: false,
       });
-      if (!settlement.current) return false;
+      if (!isLive() || !settlement.current) return false;
       const state = wireFailureState(error);
       const failed = await outboxRef.current.patch(owner.principalId, submission.messageId,
         ['queued', 'transmitting', 'uncertain', 'rejected'],
-        { state, error: serializedError(error) }).catch((persistError) => {
-          onError(persistError);
+        { state, error: serializedError(error) }, {
+          leaseOwner: leaseOwnerRef.current,
+          authorize: () => isLive(),
+        }).catch((persistError) => {
+          if (isLive()) onError(persistError);
           return null;
         });
+      if (!isLive()) return false;
       if (failed) publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? failed : row));
       if (state === 'uncertain') onNotice('发送结果待确认，正在通过重连账本核对。');
       if (state === 'rejected') rosterRef?.current?.forgetSubmission?.(submission.channelId, submission.messageId);
@@ -342,7 +395,13 @@ export function useComposerSubmissionRuntime({
       return false;
     } finally {
       transmittingRef.current.delete(key);
-      if (leased) await outboxRef.current.releaseLease(owner.principalId, submission.messageId, leaseOwnerRef.current).catch(onError);
+      if (leased && isLive()) {
+        try {
+          await outboxRef.current.releaseLease(owner.principalId, submission.messageId, leaseOwnerRef.current);
+        } catch (error) {
+          if (isLive()) onError(error);
+        }
+      }
     }
   }, [authorize, captureOwner, currentFacts, onAccessChanged, onError, onFeedChanged, onNotice, publishPending, rosterRef]);
   transmitRef.current = transmit;
@@ -408,6 +467,7 @@ export function useComposerSubmissionRuntime({
       ));
     }
     const ids = new Set(submissions.map((row) => row.messageId));
+    ids.forEach((id) => automaticReconnectRetryRef.current.delete(id));
     const outstanding = submissions.filter((row) => !landedRef.current.has(row.messageId));
     const alreadyLanded = submissions.filter((row) => landedRef.current.has(row.messageId));
     publishPending((rows) => [...rows.filter((row) => !ids.has(row.messageId)), ...outstanding]);
@@ -447,6 +507,7 @@ export function useComposerSubmissionRuntime({
       ? pendingRef.current.find((row) => row.messageId === value)
       : value;
     if (!submission || !RETRY_STATES.has(submission.state)) return false;
+    automaticReconnectRetryRef.current.delete(submission.messageId);
     const owner = captureOwner(submission.channelId);
     authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
     const queued = await outboxRef.current.patch(owner.principalId, submission.messageId,
@@ -461,7 +522,14 @@ export function useComposerSubmissionRuntime({
   useEffect(() => {
     if (wireState !== 'open' || !wireRef?.current) return;
     for (const row of pendingRef.current) {
-      if (row.state === 'queued' || row.state === 'uncertain') void transmitRef.current(row);
+      if (row.state === 'queued') {
+        void transmitRef.current(row);
+        continue;
+      }
+      if (row.state === 'uncertain' && !automaticReconnectRetryRef.current.has(row.messageId)) {
+        automaticReconnectRetryRef.current.add(row.messageId);
+        void transmitRef.current(row);
+      }
     }
   }, [wireRef, wireState]);
 
