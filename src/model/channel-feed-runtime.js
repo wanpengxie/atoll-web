@@ -309,6 +309,20 @@ function closedNotificationBoundary(state, boundary, previous = 0) {
   return closed;
 }
 
+function unresolvedTerminalBoundary(state, after = 0) {
+  if (!state || !(state.rows instanceof Map)) return 0;
+  const start = historyNumeric(after);
+  const rows = [...state.rows.entries()].sort(([left], [right]) => left - right);
+  for (const [seq, envelope] of rows) {
+    if (seq <= start) continue;
+    if (envelope?.kind === 'response'
+      && envelope.parent_id
+      && FINAL.has(argsOf(envelope)?.status)
+      && !state._envelopesById?.has?.(String(envelope.parent_id))) return seq;
+  }
+  return 0;
+}
+
 // One lifetime owner for source admission, canonical commit, cache and
 // publication. Cache/history/live are ingress provenance, never stores that a
 // consumer can observe independently of Replica.commit.
@@ -584,9 +598,24 @@ export function createChannelFeedRuntime(options = {}) {
           && following.authority?.serverBoot === world
           && following.owner?.generation === status.generation
           && following.authorityRevision === status.notificationAuthorityRevision) {
+          // A following lease may absorb safe request/event arrivals until
+          // the next observation, but it must remember the first unresolved
+          // terminal it crossed. Once that terminal's parent arrives, a
+          // mutable head must not retroactively expand the old lease and hide
+          // the newly closed notification; only a fresh frozen confirmation
+          // may clear this obligation.
+          const blockedBoundary = following.unresolvedBoundary
+            || unresolvedTerminalBoundary(replica.state(row.channel_id), following.headSeq);
+          const closedHead = closedNotificationBoundary(
+            replica.state(row.channel_id), status.headSeq, following.headSeq,
+          );
           followingObservations.set(row.channel_id, Object.freeze({
             ...following,
-            headSeq: status.headSeq,
+            headSeq: Math.max(
+              following.headSeq,
+              blockedBoundary ? Math.min(closedHead, blockedBoundary - 1) : closedHead,
+            ),
+            unresolvedBoundary: blockedBoundary || 0,
           }));
         }
       }

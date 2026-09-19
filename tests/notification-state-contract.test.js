@@ -240,6 +240,78 @@ describe('notification confirmation contract', () => {
     expect(feed.acknowledgeNotifications(confirmationFor(channelId, closedStatus, 2))).toBe(2);
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
   });
+
+  it('keeps an A/B following lease behind an unresolved B terminal across live interleaving and reload', async () => {
+    const { runtime, channelId, selfId, boot } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    const aRequest = relatedRequest(channelId, 'lease-a-request', selfId);
+    const aTerminal = {
+      channel_id: channelId,
+      source: 'live',
+      envelope: {
+        id: 'lease-a-final', parent_id: aRequest.envelope.id, kind: 'response', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { status: 'completed', text: 'A closed' } },
+      },
+    };
+    expect(feed.enqueue({ ...aRequest, seq: 1 })).toBe(true);
+    expect(feed.enqueue({ ...aTerminal, seq: 2 })).toBe(true);
+    const aStatus = feed.historyFor(channelId);
+    expect(feed.acknowledgeNotifications(confirmationFor(channelId, aStatus, 2))).toBe(2);
+
+    // An unrelated event may be absorbed by the short following lease. It
+    // must not move that lease across the later unresolved B obligation.
+    expect(feed.enqueue({
+      channel_id: channelId,
+      seq: 3,
+      source: 'live',
+      envelope: {
+        id: 'lease-unrelated-event', kind: 'event', type: 'human.note', visibility: 'public',
+        sender: { kind: 'agent', id: 'agent:other:1' }, audience: [selfId],
+        payload: { body: { text: 'unrelated event' } },
+      },
+    })).toBe(true);
+    expect(feed.enqueue({
+      channel_id: channelId,
+      seq: 4,
+      source: 'live',
+      envelope: {
+        id: 'lease-b-final', parent_id: 'lease-b-request', kind: 'response', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { status: 'completed', text: 'B arrived before parent' } },
+      },
+    })).toBe(true);
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+
+    expect(feed.enqueue({
+      channel_id: channelId,
+      seq: 5,
+      source: 'live',
+      envelope: {
+        id: 'lease-b-request', kind: 'request', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { text: 'B parent arrived later' } },
+      },
+    })).toBe(true);
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    // Reload removes only the ephemeral following lease; durable high-water
+    // remains at A and the now-closed B obligation is still visible.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    runtime.destroy();
+    const restored = createChannelFeedRuntime(runtimeOptions(selfId));
+    restored.mount();
+    await restored.getSnapshot().prepareLocalReplica(selfId, { focus: channelId });
+    await restored.getSnapshot().setHistoryGrants(
+      [{ channel_id: channelId, head_seq: 5 }], { generation: 1, boot },
+    );
+    const restoredFeed = restored.getSnapshot();
+    expect(restoredFeed.historyFor(channelId).notificationHighWater).toBe(2);
+    expect(restoredFeed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+    restored.destroy();
+  });
 });
 
 describe('notification presentation facts', () => {
