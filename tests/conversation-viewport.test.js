@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   bindLatestIntentTargets,
+  acceptPositionRowLease,
   captureContentAnchor,
   cancelReadingControl,
   consumeContentAnchor,
+  consumePositionRowLease,
   consumeLatestIntent,
   contentAnchorCommand,
   createReadingSession,
   observeReading,
+  positionRowLeaseCommand,
   READING_MODE,
+  revokePositionRowLease,
   requestLatest,
   takeReadingControl,
   updateReadingControl,
@@ -71,6 +75,72 @@ describe('reading session authority', () => {
     const consumed = consumeContentAnchor(current, command);
     expect(consumed.contentAnchor).toBeNull();
     expect(contentAnchorCommand(consumed)).toBeNull();
+  });
+
+  it('accepts one exact history position lease and revokes it on reverse/latest input', () => {
+    let current = takeReadingControl(session(), {
+      direction: 'older',
+      gestureID: 'wheel:one',
+      historyAnchor: { messageID: 'm80', viewportOffset: -394 },
+    });
+    expect(current.historyAnchor).toMatchObject({
+      messageID: 'm80', viewportOffset: -394, inputEpoch: current.inputEpoch,
+    });
+    const lease = {
+      type: 'position-row',
+      activationID: current.activationID,
+      inputEpoch: current.inputEpoch,
+      intentRevision: current.intentRevision,
+      operationID: 'history:a1:7',
+      viewID: 'c0:all',
+      epoch: 'c0:4',
+      presentationRevision: 12,
+      messageID: 'm80',
+      viewportOffset: -394,
+    };
+    current = acceptPositionRowLease(current, lease);
+    expect(positionRowLeaseCommand(current)).toMatchObject(lease);
+    expect(positionRowLeaseCommand(current)).not.toBe(lease);
+    expect(positionRowLeaseCommand(
+      acceptPositionRowLease(current, { ...lease, viewportOffset: -393 }),
+    )).toMatchObject(lease);
+
+    const reversed = updateReadingControl(current, {
+      inputEpoch: current.inputEpoch,
+      direction: 'newer',
+      gestureID: 'wheel:one',
+      geometryRevision: 3,
+    });
+    expect(positionRowLeaseCommand(reversed)).toBeNull();
+    expect(revokePositionRowLease(reversed)).toBe(reversed);
+
+    current = takeReadingControl(session(), {
+      direction: 'older',
+      historyAnchor: { messageID: 'm80', viewportOffset: -394 },
+    });
+    current = acceptPositionRowLease(current, lease);
+    expect(positionRowLeaseCommand(current)).toMatchObject(lease);
+    expect(requestLatest(current, 'latest').positionRowLease).toBeNull();
+  });
+
+  it('consumes a position lease only after every identity field matches', () => {
+    let current = takeReadingControl(session(), {
+      direction: 'older',
+      historyAnchor: { messageID: 'm80', viewportOffset: -394 },
+    });
+    const lease = {
+      type: 'position-row', activationID: 'a1', inputEpoch: current.inputEpoch,
+      intentRevision: current.intentRevision, operationID: 'history:a1:1',
+      viewID: 'c0:all', epoch: 'c0:4', presentationRevision: 12,
+      messageID: 'm80', viewportOffset: -394,
+    };
+    current = acceptPositionRowLease(current, lease);
+    expect(positionRowLeaseCommand(current)).not.toBeNull();
+    const wrong = { ...lease, presentationRevision: 13 };
+    expect(revokePositionRowLease(current, wrong)).toBe(current);
+    expect(positionRowLeaseCommand(current)).not.toBeNull();
+    expect(consumePositionRowLease(current, wrong)).toBe(current);
+    expect(consumePositionRowLease(current, lease).positionRowLease).toBeNull();
   });
 
   it('does not arm content restoration in following and native input revokes browsing capture', () => {

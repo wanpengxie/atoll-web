@@ -251,6 +251,49 @@ describe('history presentation admission', () => {
     ).accepted).toBe(true);
   });
 
+  it('fences an accepted history grant by intent revision as well as input epoch', () => {
+    const admission = createAdmissionAuthority();
+    const baseline = [item('b', 20)];
+    const withOlder = [item('a', 10), ...baseline];
+    admission.begin('channel', token({
+      intentRevision: 9,
+      messageID: 'b',
+      viewportOffset: -394,
+      baselineIDs: ['b'],
+      uiBaselineIDs: ['b'],
+      durableBaselineIDs: ['b'],
+    }));
+    commitAdmission(admission, 'channel', baseline, meta(11));
+    admission.observe('channel', withOlder, meta(12));
+    admission.settle('channel');
+    commitAdmission(admission, 'channel', withOlder, meta(12));
+    admission.prepareCommit('channel', {
+      revision: 11, sourceRevision: 12,
+      rows: [{ id: 'b', body: baseline[0] }],
+    });
+    const candidate = admission.evaluate('channel', withOlder, meta(12));
+    const presentation = {
+      revision: 12,
+      rows: [{ id: 'a' }, { id: 'b' }],
+      changes: {
+        kind: 'prepend', inserted: ['a'], frontInsertedIDs: ['a'],
+        backInsertedIDs: [], updated: [], removed: [],
+      },
+    };
+    expect(admission.validatePresentation(
+      'channel', candidate, presentation, viewportAuthority({ intentRevision: 8 }),
+    )).toEqual({ accepted: false, reason: 'stale-viewport-owner' });
+    const accepted = admission.validatePresentation(
+      'channel', candidate, presentation, viewportAuthority({ intentRevision: 9 }),
+    );
+    expect(accepted.accepted).toBe(true);
+    expect(accepted.grant.commitToken).toMatchObject({
+      activationID: 'activation-1', inputEpoch: 2, intentRevision: 9,
+      operationID: 'history:activation-1:1', viewID: 'channel:mine:agent',
+      epoch: 'channel:7', messageID: 'b', viewportOffset: -394,
+    });
+  });
+
   it('keeps cancelled facts staged and lets the next same-view intent inherit them', () => {
     const admission = createAdmissionAuthority();
     const firstToken = token({ demandUnits: 3 });

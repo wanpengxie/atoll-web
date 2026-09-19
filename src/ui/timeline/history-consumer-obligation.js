@@ -76,21 +76,37 @@ export function ownsHistoryOperation(currentOwner, requestOwner, controller, act
     && activePromise === promise;
 }
 
-export function historyRevealIntent({ intent, activationID, inputEpoch, epoch, viewKey, channelID, status, snapshot, demandUnits }) {
+export function historyRevealIntent({
+  intent, activationID, inputEpoch, intentRevision, epoch, viewKey, channelID,
+  status, snapshot, demandUnits, historyAnchor = null,
+}) {
   if (intent !== HISTORY_INTENT.scrollHistory) return null;
   const rows = snapshot.rows || [];
   const first = rows[0];
+  const capturedAnchor = historyAnchor?.messageID
+    && String(historyAnchor.messageID) === String(first?.id || '')
+    && Number.isFinite(Number(historyAnchor.viewportOffset))
+    ? historyAnchor : null;
+  const anchorID = String(capturedAnchor?.messageID || first?.id || '');
+  const viewportOffset = Number(capturedAnchor?.viewportOffset);
   return Object.freeze({
     activationID,
     inputEpoch,
+    intentRevision,
     operationID: `history:${activationID}:${epoch}`,
     viewID: viewKey,
     epoch: `${channelID}:${Number(status.generation || 0)}`,
     baselinePresentationRevision: Number(snapshot.revision || 0),
     uiBaselineIDs: Object.freeze(rows.map((row) => row.id)),
     durableBaselineIDs: Object.freeze(rows.filter((row) => !row.localState && row.body?.local !== true).map((row) => row.id)),
-    anchorID: first?.id || '',
+    anchorID,
     anchorSeq: Number(first?.seqLow || 0),
+    // This is captured before the first older gesture, while the baseline is
+    // still painted. Admission copies it into the accepted grant so the
+    // Vendor adapter can restore the exact row-local viewport position after
+    // prepend; a missing geometry sample deliberately yields no lease.
+    messageID: anchorID,
+    viewportOffset: Number.isFinite(viewportOffset) ? viewportOffset : null,
     demandUnits: Math.max(1, Math.min(24, Number(demandUnits) || 1)),
   });
 }

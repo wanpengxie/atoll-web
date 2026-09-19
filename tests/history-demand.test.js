@@ -62,6 +62,7 @@ describe('current history demand boundary', () => {
     const base = {
       activationID: 'activation-1',
       inputEpoch: 2,
+      intentRevision: 5,
       epoch: 7,
       viewKey: 'c0:all',
       channelID: 'c0',
@@ -69,11 +70,17 @@ describe('current history demand boundary', () => {
       snapshot: { revision: 3, rows: [{ id: 'row-80', seqLow: 80, localState: false }] },
     };
     expect(historyRevealIntent({ ...base, intent: HISTORY_INTENT.searchContext, demandUnits: 99 })).toBeNull();
-    expect(historyRevealIntent({ ...base, intent: HISTORY_INTENT.scrollHistory, demandUnits: 99 })).toMatchObject({
+    expect(historyRevealIntent({
+      ...base,
+      intent: HISTORY_INTENT.scrollHistory,
+      demandUnits: 99,
+      historyAnchor: { messageID: 'row-80', viewportOffset: -394 },
+    })).toMatchObject({
       operationID: 'history:activation-1:7',
-      epoch: 'c0:4',
+      epoch: 'c0:4', intentRevision: 5,
       anchorID: 'row-80',
       anchorSeq: 80,
+      messageID: 'row-80', viewportOffset: -394,
       demandUnits: 24,
       durableBaselineIDs: ['row-80'],
     });

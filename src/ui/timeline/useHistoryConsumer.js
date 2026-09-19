@@ -164,8 +164,15 @@ export function useHistoryConsumer({
     if (!continuation && committedOwnerRef.current !== commitOwnerCandidate) {
       return Promise.resolve({ kind: 'stale-owner', deduplicated: true });
     }
+    const currentSession = controller.getSnapshot().session;
+    // A committed prepend owns the next physical boundary until the accepted
+    // position-row lease reaches actual paint. Do not let a continuation or a
+    // second top/runway request race that one-shot restore.
+    if (currentSession.positionRowLease
+      && (continuation || reason === 'top' || reason === 'runway')) {
+      return Promise.resolve({ kind: 'position-lease-pending', deduplicated: true });
+    }
     if (reason === 'top' && !continuation) {
-      const currentSession = controller.getSnapshot().session;
       // `top` is only emitted by useBrowsingReadingController after the
       // typed Vendor scroll-position evidence reported the physical boundary.
       // Keep that evidence as an identity lease; do not re-query global DOM
@@ -322,8 +329,10 @@ export function useHistoryConsumer({
     const activeSession = controller.getSnapshot().session;
     const revealIntent = historyRevealIntent({
       intent, activationID: controller.activationID, inputEpoch: activeSession.inputEpoch,
+      intentRevision: activeSession.intentRevision,
       epoch, viewKey, channelID, status: historyStatusRef.current,
       snapshot: snapshotRef.current, demandUnits,
+      historyAnchor: activeSession.historyAnchor,
     });
     const promise = Promise.resolve(requestPort({
       intent, urgency, signal: abortController.signal,

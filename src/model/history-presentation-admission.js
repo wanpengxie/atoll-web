@@ -400,6 +400,8 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
     const currentOwner = viewportAuthority || {};
     if (String(currentOwner.activationID || '') !== String(state.committed.activationID || '')
       || Number(currentOwner.inputEpoch) !== Number(state.committed.inputEpoch)
+      || (state.committed.intentRevision != null
+        && Number(currentOwner.intentRevision) !== Number(state.committed.intentRevision))
       || String(currentOwner.viewID || '') !== state.viewID
       || String(currentOwner.epoch || '') !== state.epoch) {
       return Object.freeze({ accepted: false, reason: 'stale-viewport-owner' });

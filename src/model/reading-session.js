@@ -76,6 +76,42 @@ function idleContentAnchor() {
   return null;
 }
 
+function normalizedPositionRowLease(value) {
+  if (!value || value.type !== 'position-row') return null;
+  const viewportOffset = Number(value.viewportOffset);
+  const presentationRevision = Number(value.presentationRevision);
+  if (!value.activationID || !Number.isFinite(Number(value.inputEpoch))
+    || !Number.isFinite(Number(value.intentRevision)) || !value.operationID
+    || !value.viewID || !value.epoch || !value.messageID
+    || !Number.isFinite(presentationRevision) || !Number.isFinite(viewportOffset)) return null;
+  return Object.freeze({
+    type: 'position-row',
+    activationID: String(value.activationID),
+    inputEpoch: Number(value.inputEpoch),
+    intentRevision: Number(value.intentRevision),
+    operationID: String(value.operationID),
+    viewID: String(value.viewID),
+    epoch: String(value.epoch),
+    presentationRevision,
+    messageID: String(value.messageID),
+    viewportOffset,
+  });
+}
+
+function samePositionRowLease(left, right) {
+  return Boolean(left && right)
+    && left.type === 'position-row' && right.type === 'position-row'
+    && String(left.activationID) === String(right.activationID)
+    && Number(left.inputEpoch) === Number(right.inputEpoch)
+    && Number(left.intentRevision) === Number(right.intentRevision)
+    && String(left.operationID) === String(right.operationID)
+    && String(left.viewID) === String(right.viewID)
+    && String(left.epoch) === String(right.epoch)
+    && Number(left.presentationRevision) === Number(right.presentationRevision)
+    && String(left.messageID) === String(right.messageID)
+    && Number(left.viewportOffset) === Number(right.viewportOffset);
+}
+
 function normalizedUnseenRecords(value) {
   const records = new Map();
   for (const record of value?.unseenRecords || []) {
@@ -110,6 +146,8 @@ export function createReadingSession({ key, activationID, saved = {} } = {}) {
     unseenRecords,
     bottomIntent: idleBottomIntent(),
     contentAnchor: idleContentAnchor(),
+    positionRowLease: null,
+    historyAnchor: null,
     tailEvidence: null,
   });
 }
@@ -139,14 +177,28 @@ function sameBookmark(left, right) {
 // Native input changes only the business reading intent. It does not mirror or
 // cancel the list component's internal work. A pending return-to-bottom intent
 // is application-owned, however, and becomes invalid synchronously.
-export function takeReadingControl(session, { direction = 'browse', gestureID = '', geometryRevision } = {}) {
+export function takeReadingControl(session, {
+  direction = 'browse', gestureID = '', geometryRevision, historyAnchor = null,
+} = {}) {
   const inputEpoch = session.inputEpoch + 1;
+  const intentRevision = session.intentRevision + 1;
   return next(session, {
     inputEpoch,
-    intentRevision: session.intentRevision + 1,
+    intentRevision,
     mode: READING_MODE.browsing,
     bottomIntent: idleBottomIntent(),
     contentAnchor: idleContentAnchor(),
+    positionRowLease: null,
+    historyAnchor: direction === 'older' && historyAnchor?.messageID
+      && Number.isFinite(Number(historyAnchor.viewportOffset))
+      ? Object.freeze({
+        activationID: session.activationID,
+        inputEpoch,
+        intentRevision,
+        messageID: String(historyAnchor.messageID),
+        viewportOffset: Number(historyAnchor.viewportOffset),
+      })
+      : null,
     tailEvidence: direction === 'newer' ? Object.freeze({
       gestureID: String(gestureID || inputEpoch),
       inputEpoch,
@@ -161,10 +213,7 @@ export function takeReadingControl(session, { direction = 'browse', gestureID = 
 // epoch; they must neither mint a second epoch nor leave evidence from the
 // previous direction able to authorize following later.
 export function updateReadingControl(session, {
-  inputEpoch,
-  direction = 'browse',
-  gestureID = '',
-  geometryRevision,
+  inputEpoch, direction = 'browse', gestureID = '', geometryRevision,
 } = {}) {
   if (Number(inputEpoch) !== session.inputEpoch) return session;
   const nextEvidence = direction === 'newer' ? Object.freeze({
@@ -181,11 +230,17 @@ export function updateReadingControl(session, {
     && evidence.geometryRevision === nextEvidence.geometryRevision
     && evidence.direction === nextEvidence.direction
   );
-  if (sameEvidence && !session.bottomIntent.id && !session.contentAnchor) return session;
+  const positionRowLease = direction === 'newer' ? null : session.positionRowLease;
+  const historyAnchor = direction === 'newer' ? null : session.historyAnchor || null;
+  if (sameEvidence && positionRowLease === session.positionRowLease
+    && historyAnchor === session.historyAnchor
+    && !session.bottomIntent.id && !session.contentAnchor) return session;
   return next(session, {
     mode: READING_MODE.browsing,
     bottomIntent: idleBottomIntent(),
     contentAnchor: idleContentAnchor(),
+    positionRowLease,
+    historyAnchor,
     tailEvidence: sameEvidence ? evidence : nextEvidence,
   });
 }
@@ -217,12 +272,19 @@ export function observeReading(session, observation = {}) {
     : observed || session.bookmark;
   const tailEvidence = reachedByCurrentInput ? null : session.tailEvidence;
   const contentAnchor = mode === READING_MODE.following ? idleContentAnchor() : session.contentAnchor;
+  const positionRowLease = mode === READING_MODE.following ? null : session.positionRowLease;
+  const historyAnchor = mode === READING_MODE.following ? null : session.historyAnchor;
   if (geometryRevision === session.geometryRevision
     && mode === session.mode
     && sameBookmark(bookmark, session.bookmark)
     && tailEvidence === session.tailEvidence
-    && contentAnchor === session.contentAnchor) return session;
-  return next(session, { geometryRevision, mode, bookmark, tailEvidence, contentAnchor });
+    && contentAnchor === session.contentAnchor
+    && positionRowLease === session.positionRowLease
+    && historyAnchor === session.historyAnchor) return session;
+  return next(session, {
+    geometryRevision, mode, bookmark, tailEvidence, contentAnchor,
+    positionRowLease, historyAnchor,
+  });
 }
 
 // This is the product's one explicit scrolling intent. If rows are not ready,
@@ -239,6 +301,8 @@ export function requestLatest(session, id, {
     mode: READING_MODE.following,
     bookmark: null,
     contentAnchor: idleContentAnchor(),
+    positionRowLease: null,
+    historyAnchor: null,
     tailEvidence: null,
     bottomIntent: Object.freeze({
       id: String(id),
@@ -266,6 +330,7 @@ export function captureContentAnchor(session, {
     || !Number.isFinite(Number(viewportOffset))
     || !Number.isFinite(Number(beforeScrollHeight))) return session;
   return next(session, {
+    positionRowLease: null,
     contentAnchor: Object.freeze({
       activationID: session.activationID,
       inputEpoch: session.inputEpoch,
@@ -275,6 +340,49 @@ export function captureContentAnchor(session, {
       expectedExpanded: expectedExpanded == null ? null : Boolean(expectedExpanded),
     }),
   });
+}
+
+// A history prepend may change the native list extent before the browser has
+// painted the accepted rows. This lease is the semantic handoff for that one
+// exact presentation: only the current Reading owner may accept it, and only
+// the sole Vendor adapter may consume it after the row reaches its captured
+// offset. It is intentionally not persisted as a bookmark or a new scroll
+// owner.
+export function acceptPositionRowLease(session, lease) {
+  const normalized = normalizedPositionRowLease(lease);
+  if (!normalized
+    || normalized.activationID !== session.activationID
+    || Number(normalized.inputEpoch) !== session.inputEpoch
+    || Number(normalized.intentRevision) !== session.intentRevision
+    || session.mode !== READING_MODE.browsing) return session;
+  if (samePositionRowLease(session.positionRowLease, normalized)) return session;
+  // A second accepted prepend may not overwrite a lease whose actual-paint
+  // outcome is still unknown. The scheduler must wait for consumption or an
+  // explicit revoke before issuing a new top operation.
+  if (session.positionRowLease) return session;
+  return next(session, { positionRowLease: normalized });
+}
+
+export function positionRowLeaseCommand(session) {
+  const lease = normalizedPositionRowLease(session?.positionRowLease);
+  if (!lease
+    || lease.activationID !== session.activationID
+    || Number(lease.inputEpoch) !== session.inputEpoch
+    || Number(lease.intentRevision) !== session.intentRevision
+    || session.mode !== READING_MODE.browsing) return null;
+  return lease;
+}
+
+export function consumePositionRowLease(session, command = {}) {
+  const lease = positionRowLeaseCommand(session);
+  if (!lease || !samePositionRowLease(lease, command)) return session;
+  return next(session, { positionRowLease: null });
+}
+
+export function revokePositionRowLease(session, command = null) {
+  const lease = session?.positionRowLease;
+  if (!lease || (command && !samePositionRowLease(lease, command))) return session;
+  return next(session, { positionRowLease: null });
 }
 
 export function contentAnchorCommand(session) {
