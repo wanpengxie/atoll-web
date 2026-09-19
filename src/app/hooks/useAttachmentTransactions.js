@@ -181,12 +181,7 @@ export function useAttachmentTransactions({
   }, [activeChannelId, assessFileOperation, directoryVersion, serverWorld, wireState]);
 
   const inCurrentWorld = useCallback((rows, worldEpoch = serverWorldCommittedRef.current) => {
-    // A server that does not publish a boot id has no world boundary to
-    // compare against. In that supported mode the committed draft ledger is
-    // authoritative as-is; treating the missing boundary as a mismatch drops
-    // both existing names and the result of an upload captured for that same
-    // channel. Once a boot id exists, keep the strict epoch fence.
-    if (!worldEpoch) return rows || [];
+    if (!worldEpoch) return [];
     return (rows || []).filter((row) => row?.[WORLD_FIELD] === worldEpoch);
   }, [serverWorldCommittedRef]);
   const stripWorld = useCallback((row) => {

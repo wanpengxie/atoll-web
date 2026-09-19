@@ -278,6 +278,10 @@ async function mountOpenApp({ selectAgent = true, suspense = false } = {}) {
 describe('App automatic describe wiring', () => {
   beforeEach(() => {
     localStorage.clear();
+    // Production restores drafts only inside a committed server world. Keep
+    // this harness on that same contract instead of manufacturing an
+    // identity-less world that B7 intentionally rejects.
+    localStorage.setItem('atoll.server.boot.v1', 'boot-current');
     harness.appShell = null;
     harness.wireOptions = null;
     harness.unauthorized = null;
@@ -399,7 +403,7 @@ describe('App automatic describe wiring', () => {
   it('merges an upload into the latest committed attachment ledger without overwriting a newer attachment action', async () => {
     harness.drafts.set('c1', {
       text: '',
-      attachments: [{ resource_id: 'existing', name: 'report.txt' }],
+      attachments: [{ resource_id: 'existing', name: 'report.txt', _atoll_world_epoch: 'boot-current' }],
     });
     const uploaded = deferred();
     harness.uploadChannelFile.mockReturnValueOnce(uploaded.promise);
