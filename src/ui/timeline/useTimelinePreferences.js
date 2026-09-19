@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { TIMELINE_SCOPE } from '../../model/timeline-scope.js';
 import { createMessageLayoutStore } from './MessageLayoutState.jsx';
+
+export const CONVERSATION_SCOPE = Object.freeze({ mine: 'mine', all: 'all' });
 
 export function useTimelinePreferences({ channelId, viewSessions }) {
   const initialRef = useRef(null);
   if (!initialRef.current) initialRef.current = viewSessions?.read(channelId) || {};
   const initial = initialRef.current;
   const committedOwnerRef = useRef({ channelId, viewSessions });
-  const [scope, setScope] = useState(() => initial.scope || TIMELINE_SCOPE.mine);
+  const [scope, setScope] = useState(() => initial.scope || CONVERSATION_SCOPE.mine);
   const [actorFilter, setActorFilter] = useState(() => new Set(initial.actorFilter || []));
   const [foldOverrides, setFoldOverrides] = useState(() => new Map(initial.foldOverrides || []));
 
@@ -37,7 +38,9 @@ export function useTimelinePreferences({ channelId, viewSessions }) {
   }, [actorFilter, channelId, foldOverrides, scope, viewSessions, writePreferences]);
 
   const toggleScope = useCallback(() => {
-    setScope((value) => value === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine);
+    setScope((value) => value === CONVERSATION_SCOPE.mine
+      ? CONVERSATION_SCOPE.all
+      : CONVERSATION_SCOPE.mine);
   }, []);
   const toggleActorFilter = useCallback((actorId) => {
     setActorFilter((current) => {

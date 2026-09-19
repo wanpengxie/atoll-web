@@ -1,9 +1,10 @@
-import { TIMELINE_SCOPE } from './timeline-scope.js';
 import { READING_MODE } from './reading-session.js';
+
+const CONVERSATION_SCOPE = Object.freeze({ mine: 'mine', all: 'all' });
 
 function defaultPreferences() {
   return {
-    scope: TIMELINE_SCOPE.mine,
+    scope: CONVERSATION_SCOPE.mine,
     actorFilter: [],
     foldOverrides: [],
     foldDefaults: [],
@@ -88,7 +89,7 @@ function copyPersistedReading(value = {}) {
 
 function copyPreferences(value = {}) {
   return {
-    scope: value.scope === TIMELINE_SCOPE.all ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine,
+    scope: value.scope === CONVERSATION_SCOPE.all ? CONVERSATION_SCOPE.all : CONVERSATION_SCOPE.mine,
     actorFilter: [...new Set(value.actorFilter || [])].filter(Boolean).sort(),
     foldOverrides: [...(value.foldOverrides || [])]
       .filter((entry) => Array.isArray(entry) && entry.length === 2 && entry[0])
