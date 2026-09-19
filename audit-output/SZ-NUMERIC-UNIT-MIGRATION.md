@@ -365,6 +365,33 @@ GREEN=current public-owner proof; RED=product regression; PARTIAL=related path o
 | SZ-304 | tests/waiting-terminal-finality.test.js — terminal 先于 request 的历史后缀超过 512 条时也不能丢精确保护 | S35 | **GREEN** — `src/model/channel-replica-terminal-closure.test.jsx:89-125` passes for response-first trim/upgrade; a 700-terminal probe trimmed to 30 rows retains 670 exact parent proofs and does not synthesize a request for a terminal-only id. |
 | SZ-305 | tests/waiting-terminal-finality.test.js — 真实 history/live/trim 交错：非连续历史空洞里的 queued 恒不被区间压缩吞掉 | S35 | **GREEN** — sparse history/live/trim owner probe re-admits a request from an unseen gap with queued progress and observes `pending`/no terminal; exact parent closures, not coverage ranges, decide terminality. |
 
+| SZ-306 | tests/wire.test.js — sends attach as the first and only attach frame | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-307 | tests/wire.test.js — attaches immediately without waiting for local Replica metadata | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-308 | tests/wire.test.js — delivers live immediately while attach persistence remains unfinished | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-309 | tests/wire.test.js — rejects feed before the v5 attach receipt instead of emulating the old wire | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-310 | tests/wire.test.js — delivers explicitly correlated history rows after a metadata-only attach | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-311 | tests/wire.test.js — delivers only current-generation live scan checkpoints after attach | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-312 | tests/wire.test.js — reads an older page over the attached websocket | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-313 | tests/wire.test.js — checks one channel head immediately over the control lane | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-314 | tests/wire.test.js — cancels a correlated history batch without overloading request cancel | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-315 | tests/wire.test.js — correlates receipts and errors by ref | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-316 | tests/wire.test.js — uses a fresh cursor snapshot after reconnect | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-317 | tests/wire.test.js — reattaches immediately on mobile foreground wake even when the old socket still looks attached | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-318 | tests/wire.test.js — rejects every pending request on close | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-319 | tests/wire.test.js — stops once and requests a page refresh when a pre-v5 downstream frame arrives | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-320 | tests/wire.test.js — agent.ask 的 body 上盖着 origin | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-321 | tests/wire.test.js — 别的词一个字都不加——控制命令和 system 词都不盖 | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-322 | tests/wire.test.js — 已有的 origin 不覆盖——代转的消息来源是最先说话那块屏 | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-323 | tests/wire.test.js — 服务端没给 session 就不盖 | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-324 | tests/work-items.test.js — 统一审批、回合、正式任务、恢复和本设备自动动作，且按原生编号去重 | S37 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-325 | tests/work-items.test.js — 只接受 describe 明确声明 task.create 的 provider | S37 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-326 | tests/work-items.test.js — task.create compact closure 稳定标成详情不可用，不猜成已完成普通回合 | S37 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-327 | tests/work-items.test.js — 过滤责任、状态和类型并保持自动动作独立分组 | S37 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-328 | tests/workspace-bootstrap-cache.test.js — restores the small identity, membership and profile manifest without mixing principals | S38 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-329 | tests/workspace-route.test.js — 编码并恢复频道、主视图和稳定 focus | S39 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-330 | tests/workspace-route.test.js — 拒绝未知视图和未知 focus，不猜测目标 | S39 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
+| SZ-331 | tests/workspace-route.test.js — 写入 history 时区分普通导航与 Context 入口 | S39 | **OPEN** — retained; build public-owner successor or hand off regression |
+
 ### S35 post-98/078 evidence and closure-bound measurement (read-only, 2026-09-20)
 
 The semantic disposition above is based on the current public Replica owner and
@@ -417,32 +444,6 @@ closure growth is linear when old full rows are continuously trimmed.
   warning threshold but no automatic eviction. Existing principal/world/session
   reset remains the only whole-store reclamation action. This is an audit
   recommendation, not a product change in this commit.
-| SZ-306 | tests/wire.test.js — sends attach as the first and only attach frame | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-307 | tests/wire.test.js — attaches immediately without waiting for local Replica metadata | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-308 | tests/wire.test.js — delivers live immediately while attach persistence remains unfinished | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-309 | tests/wire.test.js — rejects feed before the v5 attach receipt instead of emulating the old wire | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-310 | tests/wire.test.js — delivers explicitly correlated history rows after a metadata-only attach | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-311 | tests/wire.test.js — delivers only current-generation live scan checkpoints after attach | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-312 | tests/wire.test.js — reads an older page over the attached websocket | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-313 | tests/wire.test.js — checks one channel head immediately over the control lane | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-314 | tests/wire.test.js — cancels a correlated history batch without overloading request cancel | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-315 | tests/wire.test.js — correlates receipts and errors by ref | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-316 | tests/wire.test.js — uses a fresh cursor snapshot after reconnect | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-317 | tests/wire.test.js — reattaches immediately on mobile foreground wake even when the old socket still looks attached | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-318 | tests/wire.test.js — rejects every pending request on close | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-319 | tests/wire.test.js — stops once and requests a page refresh when a pre-v5 downstream frame arrives | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-320 | tests/wire.test.js — agent.ask 的 body 上盖着 origin | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-321 | tests/wire.test.js — 别的词一个字都不加——控制命令和 system 词都不盖 | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-322 | tests/wire.test.js — 已有的 origin 不覆盖——代转的消息来源是最先说话那块屏 | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-323 | tests/wire.test.js — 服务端没给 session 就不盖 | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-324 | tests/work-items.test.js — 统一审批、回合、正式任务、恢复和本设备自动动作，且按原生编号去重 | S37 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-325 | tests/work-items.test.js — 只接受 describe 明确声明 task.create 的 provider | S37 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-326 | tests/work-items.test.js — task.create compact closure 稳定标成详情不可用，不猜成已完成普通回合 | S37 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-327 | tests/work-items.test.js — 过滤责任、状态和类型并保持自动动作独立分组 | S37 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-328 | tests/workspace-bootstrap-cache.test.js — restores the small identity, membership and profile manifest without mixing principals | S38 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-329 | tests/workspace-route.test.js — 编码并恢复频道、主视图和稳定 focus | S39 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-330 | tests/workspace-route.test.js — 拒绝未知视图和未知 focus，不猜测目标 | S39 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-331 | tests/workspace-route.test.js — 写入 history 时区分普通导航与 Context 入口 | S39 | **OPEN** — retained; build public-owner successor or hand off regression |
 
 ## Product packets and handoff boundaries
 
