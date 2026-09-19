@@ -167,6 +167,141 @@ describe('ChannelFeedRuntime ownership', () => {
     runtime.destroy();
   });
 
+  it('keeps cache-only queued controls readable but not current', async () => {
+    const principal = `feed-cache-${Date.now()}-${Math.random()}`;
+    const boot = `feed-cache-boot-${Date.now()}-${Math.random()}`;
+    const grant = [{ channel_id: 'c0', head_seq: 2, has_rows: true }];
+    const request = {
+      id: `cache-request-${principal}`, kind: 'request', type: TYPES.agentAsk,
+      sender: { id: 'human:root:1', kind: 'human' }, audience: ['agent:worker:1'],
+      payload: { body: { text: 'cached queued work' } },
+    };
+    const queued = {
+      id: `cache-queued-${principal}`, parent_id: request.id, kind: 'response', type: TYPES.agentAsk,
+      sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'],
+      payload: { body: { status: 'queued', controls: [] } },
+    };
+
+    const seed = createChannelFeedRuntime(runtimeOptions());
+    seed.mount();
+    await seed.getSnapshot().setHistoryGrants(grant, { generation: 1, boot, focus: 'c0' });
+    await seed.getSnapshot().prepareLocalReplica(principal, { focus: 'c0' });
+    expect(seed.getSnapshot().enqueue({ channel_id: 'c0', seq: 1, generation: 1, envelope: request })).toBe(true);
+    expect(seed.getSnapshot().enqueue({ channel_id: 'c0', seq: 2, generation: 1, envelope: queued })).toBe(true);
+    expect(seed.getSnapshot().historyFor('c0').controlCurrent).toBe(true);
+    // applyRows persists through the same Replica cache owner used by attach;
+    // allow that asynchronous cache write to settle before replacing runtime.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    seed.destroy();
+
+    const restored = createChannelFeedRuntime(runtimeOptions());
+    restored.mount();
+    await restored.getSnapshot().setHistoryGrants(grant, { generation: 1, boot, focus: 'c0' });
+    await restored.getSnapshot().prepareLocalReplica(principal, { focus: 'c0' });
+    expect(restored.getSnapshot().stateFor('c0').rows).toEqual(new Map([
+      [1, expect.objectContaining({ id: request.id })],
+      [2, expect.objectContaining({ id: queued.id })],
+    ]));
+    expect(restored.getSnapshot().historyFor('c0')).toMatchObject({
+      loaded: true,
+      controlCurrent: false,
+      controlTailCoverage: false,
+      controlParentClosure: false,
+      controlCoverage: [],
+    });
+    restored.destroy();
+  });
+
+  it('proves a network tail and revokes it for higher heads, lifecycle fences and old generations', async () => {
+    let requestNumber = 0;
+    const wireRef = { current: {
+      historyBefore: vi.fn(() => {
+        requestNumber += 1;
+        const accepted = Promise.resolve({ accepted: true, generation: requestNumber === 1 ? 1 : 2, channel_id: 'c0' });
+        accepted.ref = `history-matrix-${requestNumber}`;
+        return accepted;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 2, has_rows: true },
+    ], { generation: 1, boot: 'matrix-boot-a', focus: 'c0' });
+
+    const request = {
+      id: 'network-request', kind: 'request', type: TYPES.agentAsk,
+      sender: { id: 'human:root:1', kind: 'human' }, audience: ['agent:worker:1'],
+      payload: { body: { text: 'network queued work' } },
+    };
+    const queued = {
+      id: 'network-queued', parent_id: request.id, kind: 'response', type: TYPES.agentAsk,
+      sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'],
+      payload: { body: { status: 'queued', controls: [] } },
+    };
+    const pending = runtime.getSnapshot().loadHistory('c0');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runtime.getSnapshot().enqueue({
+      ref: 'history-matrix-1', channel_id: 'c0', seq: 1, envelope: request,
+    })).toBe(true);
+    expect(runtime.getSnapshot().enqueue({
+      ref: 'history-matrix-1', channel_id: 'c0', seq: 2, envelope: queued,
+    })).toBe(true);
+    expect(runtime.getSnapshot().pageEnd({
+      ref: 'history-matrix-1', channel_id: 'c0', generation: 1,
+      rows: 2, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'satisfied', released: 2 });
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      controlCurrent: true, controlTailCoverage: true, controlParentClosure: true,
+      controlCoverage: [{ lowSeq: 1, highSeq: 2 }],
+    });
+
+    // A newer grant head is an authority replacement even when the wire
+    // generation is reused; the old proof cannot float with the head.
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 3, has_rows: true },
+    ], { generation: 1, boot: 'matrix-boot-a', focus: 'c0' });
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      headSeq: 3, controlCurrent: false, controlCoverage: [],
+    });
+
+    expect(runtime.getSnapshot().disconnectHistory(1)).toBe(true);
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      attached: false, controlCurrent: false, controlCoverage: [],
+    });
+
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 3, has_rows: true },
+    ], { generation: 2, boot: 'matrix-boot-b', focus: 'c0' });
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      attached: true, generation: 2, controlCurrent: false, controlCoverage: [],
+    });
+
+    const forbidden = runtime.getSnapshot().loadHistory('c0');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runtime.getSnapshot().pageEnd({
+      ref: 'history-matrix-2', channel_id: 'c0', generation: 2,
+      error_code: 'forbidden', error_detail: 'forbidden',
+    })).toBe(true);
+    await forbidden;
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      attached: false, controlCurrent: false, controlCoverage: [],
+    });
+
+    // Late rows/checkpoints from the retired generation cannot re-open the
+    // waiting surface after the forbidden projection.
+    expect(runtime.getSnapshot().enqueue({
+      generation: 1, source: 'live', channel_id: 'c0', seq: 3,
+      envelope: { id: 'old-generation-row', kind: 'event', type: 'human.note' },
+    })).toBe(false);
+    expect(runtime.getSnapshot().liveCheckpoint({
+      generation: 1, channel_id: 'c0', scan_low_seq: 1, scanned_seq: 3,
+    })).toBe(false);
+    expect(runtime.getSnapshot().historyFor('c0').controlCurrent).toBe(false);
+    runtime.destroy();
+  });
+
   it('keeps owner-scoped command identities stable across store publications', () => {
     const options = runtimeOptions();
     const ownerToken = Object.freeze({ principalId: 'root' });
