@@ -571,6 +571,32 @@ clean snapshot `309325a` 真实 Chromium 执行
 没有 Feed activity/WorkspaceRail 首断点；不改写冻结 `7ba308c` 的 `23/8` 历史
 aggregate。
 
+### 第二十轮：#31 latest-role fold materialization 与位置稳定（clean `32c021a`）
+
+本轮回到此前仍需确认 actual paint 的 #31，使用最新 clean snapshot `32c021a` 和真实
+Chromium 执行原合同 `tests/browser/fold-collapse-anchor.spec.js --grep '角色转移导致'`：
+`1 passed (16.6s)`。合同记录的 `H-ROLE-2` 锚点在 pulse 前后保持
+`top=271.38`、`scrollTop=4728`；`scrollHeight=9663 → 9738`，但
+`anchorDrift=0`、`worstDrift=0`、`maxFrameStep=0`、`allowedDrift=0`、
+`excessDrift=0`、`vanished=false`、`unmountedFrames=0`（102 个 rAF frames）。
+
+独立 actual-paint diagnostic 同样在该 clean snapshot 通过（`1 passed (16.9s)`）：
+
+| 阶段 | canonical row / presentation | actual paint |
+| --- | --- | --- |
+| 初始 latest `H-ROLE-6` | row `430536c9-fea0-44a2-b4f7-c30ebbb5bde3`；seq `884..890`；content `890:84`；render `890:84\u00011\u00010\u0001\u0001\u0001\u00015` | fold `aria-expanded=true`、可见且已物化 |
+| pulse 锚点 `H-ROLE-2` | row `dcf9b339-8c7c-4704-9f5a-8106b801f4bb` | 同一 top/scrollTop；无漂移、无卸载帧 |
+| 最终 latest `H-ROLE-6` | 同一 row、seq/content 仍为 `884..890` / `890:84`；render `890:84\u00010\u00010\u0001\u0001\u0001\u00015` | 向下真实滚轮 5 步后 top `344.1875`；fold `true → false` actual paint |
+
+最终 mounted IDs 为 `6f68ec81-0e4e-4272-a8c8-61b5443ff5a0`、
+`c1e7321d-8219-499c-8933-6f68b5efd315`、
+`430536c9-fea0-44a2-b4f7-c30ebbb5bde3`、`c0-live-20260918-1`；
+pageerror 与 network error 均为空。结论：#31 在最新 clean HEAD 达到
+**PASS**，latest-role authority、fold eligibility、真实展开/收起 paint 和 Reading
+锚点位置稳定均已闭环，没有新的产品首断点或 owner。双向 reader reveal 是此前已提交
+的测试 helper 对齐，不是 selector 替换或几何断言放宽；本轮只补证据，不改写冻结
+`7ba308c` 的 `23/8` 历史 aggregate。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
