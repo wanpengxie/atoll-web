@@ -931,3 +931,23 @@ ATOLL_TEST_WEB_PORT=15461 ATOLL_TEST_MOCK_PORT=19892 npx playwright test \
 归因已与产品 owner 对齐：当前 `src/ui/timeline/TimelineRowRenderer.jsx` 的 `MessageActions` 在接收 `onOpen && turn` 时为 request 和 answer 都渲染“查看过程”，并由 `useTimelineRowRenderer` 接到 `WorkspaceApp` 的 `openTurnDetail`。上述两个按钮是当前 row owner 比 `fae8b70` 多出的资源：旧 `fae8b70` 的 `MessageActions` 没有 `onOpen` 与通用过程入口，而当前 `tests/browser/layout-responsive.spec.js` 已明确把这三个按钮列为现行合同。因此，快照红是旧 fae 视觉包与后续 row semantics 的时序差异，不应通过删除按钮或调整间距追图绿。
 
 同时，该最小复现揭示一个独立的产品语义缺口：无 process summary 的行也显示“查看过程”，点击后没有 detail 或几何变化。这个缺口属 `TimelineRowRenderer → openTurnDetail` 的 product owner 决策：应明确“无 process 时是否隐藏入口”或“为空 process 提供可见详情”。本轮不替 owner 擅自删除现行按钮，也不以截图阈值改动强合同；该 case 保留为 **RED（视觉基线与现行 owner semantics 不同）**，产品缺口只报告待决。
+
+## 第十六轮：UI-VIS-09 过程入口条件修正（最小 owner 修复）
+
+本轮将上轮发现的产品缺口收回现有 TimelineRowRenderer 行 owner，没有使用 CSS 隐藏、兼容分支或测试改阈值。旧 fae8b70 的条件是 processCount(turn) > 0：只计算 execution process（tool 或非 stage:text 的 stage），纯文字观察、turn start 和没有过程的完成回合不应有“查看过程”。
+
+当前 row owner 新增 hasProcessSummary(turn)，只在上述 execution process 存在时把 onOpen 传给 request/answer 操作轨；不重造 process 事实、不改变 projection 合同。现有 layout 测试同步收紧为无 process 时仅保留 复制 / ↩ 回复。
+
+定向单测：
+
+    npx vitest run src/ui/timeline/progress-trail.test.jsx tests/agent-answer-reply-gating.test.jsx tests/agent-information-architecture.test.jsx --reporter=dot
+    3 files, 22 tests PASS
+
+真实 Chromium 验证（均为当前源码，不改截图）：
+
+| 场景 | process 证据 | 操作轨 | 布局高度 / 结果 |
+|---|---|---|---|
+| actor-capability 历史 c0-history-request-1 | .progress-trail=0，.turn-process-summary=0 | request/answer 均仅 复制、↩ 回复，查看过程=0 | 218.1875px；无伪入口，定向 layout spec 1 passed |
+| progress-demo 实时回合 | .progress-trail 有 1 条 tool: 理解任务 … | request [复制, ↩ 回复, 查看过程]，answer [查看过程] | 306.09375px；点击后真实打开工作项详情 panel |
+
+UI-VIS-09 原始截图断言仍为 **RED**（期望 958x180，当前 958x219；本轮已清除无 process 行的伪“查看过程”，剩余高度来自当前 row semantics 的 request 操作轨，未在本修复中扩大为回退回复语义）。因此该 RED 不是本修复引入的布局回归；产品可点与快照基线的其余差异保留为单独决策。

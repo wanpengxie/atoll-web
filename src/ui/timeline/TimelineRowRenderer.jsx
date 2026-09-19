@@ -364,6 +364,10 @@ function processObservations(turn) {
   return (turn?.provisional || []).map((item) => ({ seq: Number(item.seq), envelope: item.envelope, process: argsOf(item.envelope).process }))
     .filter((item) => Number.isFinite(item.seq) && item.process && typeof item.process === 'object').sort((a, b) => a.seq - b.seq);
 }
+function hasProcessSummary(turn) {
+  return processObservations(turn).some(({ process }) => process.kind === 'tool'
+    || (process.kind === 'stage' && process.stage !== 'text'));
+}
 function conversationObservations(turn) {
   return processObservations(turn).filter(({ process }) => process.kind === 'stage' && process.stage === 'text' && typeof process.text === 'string' && process.text.trim());
 }
@@ -451,14 +455,19 @@ function TurnCard({ turn, names, selfId, access, targetAuthority, fold, approval
   if ([TYPES.humanAsk, TYPES.humanApprove].includes(request.type) && request.audience?.includes(selfId)) return <ContentFrame><ApprovalCard turn={turn} names={names} state={approvalState} onResolve={onResolve} /></ContentFrame>;
   const pending = !turn.terminal; const local = request.local_submission_state;
   const recipients = (request.audience || []).map((id) => nameOf(id, names)).join('、');
+  // The process entry is the owner of the detail affordance. A turn without
+  // an execution process must not advertise an action that openTurnDetail
+  // cannot materialize; keep this gate at the row owner rather than hiding a
+  // stale button with CSS or making the application invent an empty detail.
+  const onOpenProcess = hasProcessSummary(turn) ? onOpen : undefined;
   return <section className={`turn-card agent-conversation-turn${request.sender?.id === selfId ? ' self' : ''} status-${turn.status || (pending ? 'pending' : 'completed')}`} data-request-id={turn.requestId} data-request-type={request.type}>
-    <ReplyableMessageFrame envelope={request} turn={turn} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpen} className="request-message" identity={actorIcon(request, names)}>
+    <ReplyableMessageFrame envelope={request} turn={turn} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpenProcess} className="request-message" identity={actorIcon(request, names)}>
       <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(request.ts)}</time>{recipients && <span className="recipient-label">发送给 {recipients}</span>}{local && <small>{local}</small>}</header>
       <div className="request-text"><EnvelopeBody envelope={request} fold={fold} onDownload={onDownload} onPreview={onPreview} contentKeyPrefix="request" /></div>{editing?.targetId === turn.requestId && <small className="message-editing-state">正在输入框中编辑</small>}
     </ReplyableMessageFrame>
     {pending && !local && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons">{request.type === TYPES.agentAsk && onEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, actorId)}>编辑</button>}{canInterrupt(turn, { access, targetAuthority }) && onControl && <button type="button" onClick={() => onControl(turn, actorId, TYPES.agentInterrupt, {})}>停止</button>}</div></div></ContentFrame>}
     {local && onCancel && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons"><button type="button" onClick={() => onCancel(turn.requestId)}>取消</button></div></div></ContentFrame>}
-    <AgentAnswer turn={turn} names={names} fold={fold} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpen} />
+    <AgentAnswer turn={turn} names={names} fold={fold} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess} />
     <ThreadCalls root={turn} thread={turn.thread} names={names} />
   </section>;
 }

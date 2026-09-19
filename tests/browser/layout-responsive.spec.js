@@ -83,15 +83,15 @@ test('@成员 menu stays within the input area at 320px', async ({ page, request
   expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
 });
 
-test('completed Agent answer has only copy/reply actions', async ({ page, request }) => {
+test('completed Agent answer without process summary has only copy/reply actions', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'actor-capability', 954);
   await login(page);
   const turn = page.locator('.agent-conversation-turn.status-completed').first();
   const bubble = turn.locator('.agent-turn-bubble');
   await expect(bubble).toBeVisible();
-  await expect(bubble.locator('.message-actions button')).toHaveText(['复制', '↩ 回复', '查看过程']);
-  await expect(bubble.locator('button')).toHaveCount(3);
+  await expect(bubble.locator('.message-actions button')).toHaveText(['复制', '↩ 回复']);
+  await expect(bubble.locator('button')).toHaveCount(2);
   await expect(turn.locator('.turn-process-summary')).toHaveCount(0);
 });
 
