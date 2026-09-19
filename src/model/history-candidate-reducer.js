@@ -229,7 +229,7 @@ function evaluateCandidate(state, tier, input) {
     waitDispatches: state.waitDispatches, visibleNewestAtDispatch: historyNumeric(visibleNewestByChannel.get(state.id)),
   } };
 }
-// Pure scheduling reduction. The scheduler supplies immutable observations;
+// Pure scheduling reduction. ChannelFeedRuntime supplies immutable observations;
 // this function alone classifies channels and selects the next obligation.
 export function reduceHistoryCandidates(input) {
   const states = [...input.states];

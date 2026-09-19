@@ -1,36 +1,135 @@
-import { apply, createChannelState } from './fold.js';
+import { argsOf, FINAL } from '../protocol/envelope.js';
+
+const CACHE_DATABASE = 'atoll-channel-replica-v1';
+const CACHE_VERSION = 1;
+const memoryCache = new Map();
 
 function numeric(value) {
   const result = Number(value);
   return Number.isSafeInteger(result) && result >= 0 ? result : 0;
 }
 
-function insertInterval(intervals, lowSeq, highSeq = lowSeq) {
-  if (!lowSeq || highSeq < lowSeq) return intervals;
-  const ordered = [...intervals, { lowSeq, highSeq }].sort((left, right) => left.lowSeq - right.lowSeq);
+function rowBytes(row) {
+  try { return new TextEncoder().encode(JSON.stringify(row)).byteLength; }
+  catch { return 0; }
+}
+
+export function mergeReplicaCoverage(ranges = [], addition = null) {
+  const ordered = [...ranges, ...(addition ? [addition] : [])]
+    .map((range) => ({ lowSeq: numeric(range?.lowSeq), highSeq: numeric(range?.highSeq) }))
+    .filter((range) => range.lowSeq > 0 && range.highSeq >= range.lowSeq)
+    .sort((left, right) => left.lowSeq - right.lowSeq || left.highSeq - right.highSeq);
   const merged = [];
-  for (const interval of ordered) {
+  for (const range of ordered) {
     const previous = merged.at(-1);
-    if (previous && interval.lowSeq <= previous.highSeq + 1) previous.highSeq = Math.max(previous.highSeq, interval.highSeq);
-    else merged.push({ ...interval });
+    if (!previous || range.lowSeq > previous.highSeq + 1) merged.push({ ...range });
+    else previous.highSeq = Math.max(previous.highSeq, range.highSeq);
   }
   return merged;
 }
 
-function rowBounds(state) {
-  if (!state?.rows?.size) return { lowSeq: 0, highSeq: 0 };
-  let lowSeq = Number.POSITIVE_INFINITY;
-  let highSeq = 0;
-  for (const seq of state.rows.keys()) {
-    lowSeq = Math.min(lowSeq, numeric(seq));
-    highSeq = Math.max(highSeq, numeric(seq));
+function rootRequestId(envelope, requests) {
+  if (envelope?.kind === 'request') {
+    const correlation = String(envelope.correlation_id || '');
+    if (correlation && correlation !== envelope.id && requests.has(correlation)) return correlation;
+    let parent = String(envelope.parent_id || '');
+    const visited = new Set();
+    while (parent && requests.has(parent) && !visited.has(parent)) {
+      visited.add(parent);
+      const request = requests.get(parent);
+      const next = String(request.parent_id || request.correlation_id || '');
+      if (!next || next === parent || !requests.has(next)) return parent;
+      parent = next;
+    }
+    return envelope.id;
   }
-  return { lowSeq: Number.isFinite(lowSeq) ? lowSeq : 0, highSeq };
+  let parent = String(envelope?.parent_id || envelope?.correlation_id || '');
+  const visited = new Set();
+  while (parent && requests.has(parent) && !visited.has(parent)) {
+    visited.add(parent);
+    const request = requests.get(parent);
+    const next = String(request.parent_id || request.correlation_id || '');
+    if (!next || next === parent || !requests.has(next)) return parent;
+    parent = next;
+  }
+  return '';
 }
 
-// The single in-memory owner for one browser replica. Cache/network/live are
-// provenance of a commit, not separate stores. The history scheduler may plan
-// range work, but only this object owns materialized rows and their revisions.
+function buildTurn(request, requestSeq, responses) {
+  const provisional = [];
+  let terminal = null;
+  let terminalSeq = 0;
+  let lastSeq = requestSeq;
+  for (const response of responses || []) {
+    lastSeq = Math.max(lastSeq, response.seq);
+    if (FINAL.has(argsOf(response.envelope)?.status)) {
+      if (response.seq >= terminalSeq) { terminal = response.envelope; terminalSeq = response.seq; }
+    } else provisional.push({ seq: response.seq, envelope: response.envelope });
+  }
+  return {
+    requestId: request.id, request, requestSeq, lastSeq, provisional, terminal, terminalSeq,
+    status: terminal ? String(argsOf(terminal)?.status || 'completed') : 'pending',
+  };
+}
+
+// Replica is the only mutable materialized ledger. Every source commits here;
+// the timeline is rebuilt from that canonical row set so out-of-order cache,
+// history and live delivery cannot create competing folds.
+function rebuildState(state) {
+  const orderedRows = [...state.rows.entries()].sort((left, right) => left[0] - right[0]);
+  const requests = new Map();
+  const requestSeqs = new Map();
+  const responses = new Map();
+  const standalone = [];
+  state._envelopesById = new Map();
+  state.narration = [];
+  for (const [seq, envelope] of orderedRows) {
+    if (!envelope) continue;
+    if (envelope.id) state._envelopesById.set(envelope.id, envelope);
+    if (envelope.visibility === 'system') { state.narration.push({ seq, envelope }); continue; }
+    if (envelope.kind === 'request' && envelope.id) {
+      requests.set(envelope.id, envelope);
+      requestSeqs.set(envelope.id, seq);
+    } else if (envelope.kind === 'response' && envelope.parent_id) {
+      const list = responses.get(envelope.parent_id) || [];
+      list.push({ seq, envelope });
+      responses.set(envelope.parent_id, list);
+    } else standalone.push({ kind: 'standalone', seq, envelope });
+  }
+  const roots = new Map();
+  for (const [id, request] of requests) {
+    const rootId = rootRequestId(request, requests) || id;
+    if (rootId === id) {
+      roots.set(id, {
+        kind: 'turn', seq: requestSeqs.get(id), thread: [],
+        turn: buildTurn(request, requestSeqs.get(id), responses.get(id)),
+      });
+    }
+  }
+  for (const [id, request] of requests) {
+    const rootId = rootRequestId(request, requests) || id;
+    if (rootId === id) continue;
+    roots.get(rootId)?.thread.push({
+      kind: 'turn', seq: requestSeqs.get(id), thread: [],
+      turn: buildTurn(request, requestSeqs.get(id), responses.get(id)),
+    });
+  }
+  for (const root of roots.values()) {
+    root.thread.sort((left, right) => left.seq - right.seq);
+    root.turn.lastSeq = Math.max(root.turn.lastSeq, ...root.thread.map((entry) => entry.turn.lastSeq));
+  }
+  state.timeline = [...roots.values(), ...standalone].sort((left, right) => left.seq - right.seq);
+  state.lastSeq = orderedRows.at(-1)?.[0] || 0;
+}
+
+function createState(channelId) {
+  return {
+    channelId, rows: new Map(), timeline: [], narration: [], lastSeq: 0,
+    _envelopesById: new Map(), _timelineRevision: 0, _timelineProjectionVersion: 0,
+    _timelineChangeBase: 0, _timelineChangeLog: [],
+  };
+}
+
 export function createChannelReplicaStore() {
   let states = new Map();
   const records = new Map();
@@ -38,73 +137,242 @@ export function createChannelReplicaStore() {
   function ensure(channelId) {
     let record = records.get(channelId);
     if (record) return record;
-    const state = createChannelState(channelId);
-    record = {
-      channelId,
-      state,
-      revision: 0,
-      headSeq: 0,
-      durableCoverage: [],
-      materializedCoverage: [],
-    };
+    const state = createState(channelId);
+    record = { channelId, state, revision: 0, headSeq: 0, durableCoverage: [], materializedCoverage: [] };
     records.set(channelId, record);
     states.set(channelId, state);
     return record;
   }
 
-  function commit(row, selfId = '', transform = (value) => value) {
-    const channelId = row?.channel_id;
-    const seq = numeric(row?.seq);
-    if (!channelId || !seq) return { accepted: false, record: null };
+  function commit(row, _selfId = '', transform = (value) => value) {
+    const prepared = transform(row);
+    const channelId = prepared?.channel_id;
+    const seq = numeric(prepared?.seq);
+    const envelope = prepared?.envelope;
+    if (!channelId || !seq || !envelope) return { accepted: false, record: null, reason: 'invalid-row' };
     const record = ensure(channelId);
-    if (record.state.rows.has(seq)) return { accepted: false, record };
-    apply(record.state, transform(row), selfId);
-    if (!record.state.rows.has(seq)) return { accepted: false, record };
+    if (record.state.rows.has(seq)) return { accepted: false, record, reason: 'duplicate-seq' };
+    if (envelope.id && record.state._envelopesById.has(envelope.id)) {
+      return { accepted: false, record, reason: 'duplicate-envelope' };
+    }
+    record.state.rows.set(seq, envelope);
+    rebuildState(record.state);
     record.revision += 1;
     record.headSeq = Math.max(record.headSeq, seq);
-    record.materializedCoverage = insertInterval(record.materializedCoverage, seq);
-    return { accepted: true, record };
+    record.materializedCoverage = mergeReplicaCoverage(record.materializedCoverage, { lowSeq: seq, highSeq: seq });
+    record.state._timelineRevision += 1;
+    record.state._timelineProjectionVersion += 1;
+    const requests = new Map([...record.state._envelopesById.values()]
+      .filter((value) => value.kind === 'request').map((value) => [value.id, value]));
+    const rootID = rootRequestId(envelope, requests) || envelope.id || '';
+    record.state._timelineChangeLog.push({
+      revision: record.state._timelineRevision,
+      kind: envelope.kind === 'response' ? 'content' : 'structure',
+      id: rootID,
+      subjectID: envelope.parent_id || envelope.id || '',
+    });
+    if (record.state._timelineChangeLog.length > 256) {
+      const removed = record.state._timelineChangeLog.splice(0, record.state._timelineChangeLog.length - 256);
+      record.state._timelineChangeBase = removed.at(-1)?.revision || record.state._timelineChangeBase;
+    }
+    return { accepted: true, record, row: prepared };
   }
 
-  function installMeta(channelId, { headSeq = 0, coverage = [] } = {}) {
+  function installMeta(channelId, { headSeq = 0, newestSeq = 0, coverage = [] } = {}) {
     const record = ensure(channelId);
-    record.headSeq = Math.max(record.headSeq, numeric(headSeq));
-    record.durableCoverage = (Array.isArray(coverage) ? coverage : []).reduce((all, entry) => (
-      insertInterval(all, numeric(entry?.lowSeq), numeric(entry?.highSeq))
-    ), []);
+    record.headSeq = Math.max(record.headSeq, numeric(headSeq || newestSeq));
+    record.durableCoverage = (Array.isArray(coverage) ? coverage : [])
+      .reduce((all, range) => mergeReplicaCoverage(all, range), []);
     return record;
   }
 
-  function afterTrim(channelId) {
+  function trim(channelId, maximumRows) {
     const record = records.get(channelId);
-    if (!record) return null;
-    record.materializedCoverage = [...record.state.rows.keys()]
-      .map(numeric)
-      .filter(Boolean)
-      .sort((left, right) => left - right)
-      .reduce((all, seq) => insertInterval(all, seq), []);
+    const limit = numeric(maximumRows);
+    if (!record || !limit || record.state.rows.size <= limit) return 0;
+    const remove = [...record.state.rows.keys()].sort((a, b) => a - b).slice(0, record.state.rows.size - limit);
+    for (const seq of remove) record.state.rows.delete(seq);
+    rebuildState(record.state);
+    record.materializedCoverage = [...record.state.rows.keys()].sort((a, b) => a - b)
+      .reduce((all, seq) => mergeReplicaCoverage(all, { lowSeq: seq, highSeq: seq }), []);
     record.revision += 1;
-    return record;
+    record.state._timelineRevision += 1;
+    record.state._timelineProjectionVersion += 1;
+    return remove.length;
   }
 
-  function reset() {
-    states = new Map();
-    records.clear();
-  }
-
-  return {
-    destroy: reset,
-    ensure,
-    commit,
-    installMeta,
-    afterTrim,
-    reset,
+  function reset() { states = new Map(); records.clear(); }
+  const bounds = (channelId) => [...(records.get(channelId)?.state.rows.keys() || [])];
+  return Object.freeze({
+    destroy: reset, ensure, commit, installMeta, trim, afterTrim: (channelId) => records.get(channelId), reset,
     states: () => states,
     state: (channelId) => records.get(channelId)?.state,
     record: (channelId) => records.get(channelId),
     revision: (channelId) => records.get(channelId)?.revision || 0,
     hasRow: (channelId, seq) => records.get(channelId)?.state.rows.has(numeric(seq)) === true,
-    visibleOldest: (channelId) => rowBounds(records.get(channelId)?.state).lowSeq,
-    visibleNewest: (channelId) => rowBounds(records.get(channelId)?.state).highSeq,
+    visibleOldest: (channelId) => { const seqs = bounds(channelId); return seqs.length ? Math.min(...seqs) : 0; },
+    visibleNewest: (channelId) => records.get(channelId)?.state.lastSeq || 0,
+  });
+}
+
+function requestResult(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('replica cache request failed'));
+  });
+}
+
+function openCache(indexedDB) {
+  if (!indexedDB) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(CACHE_DATABASE, CACHE_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('rows')) db.createObjectStore('rows', { keyPath: ['owner', 'channelId', 'seq'] });
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: ['owner', 'channelId'] });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('replica cache open failed'));
+  });
+}
+
+export function replicaResumeSnapshot(meta) {
+  return Object.fromEntries([...meta].map(([channelId, value]) => [channelId, numeric(value?.headSeq || value?.newestSeq)]));
+}
+
+// Durable cache belongs to the Replica boundary but never bypasses commit.
+export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } = {}) {
+  let owner = '';
+  let ownerEpoch = 0;
+  let dbPromise = openCache(indexedDB);
+  let meta = new Map();
+  const memoryForOwner = () => {
+    if (!memoryCache.has(owner)) memoryCache.set(owner, { rows: new Map(), meta: new Map() });
+    return memoryCache.get(owner);
   };
+
+  async function ensureOwner(principalId, { world = '' } = {}) {
+    const selectedOwner = `${String(principalId || '')}\u0000${String(world || '')}`;
+    const epoch = ++ownerEpoch;
+    owner = selectedOwner;
+    meta = new Map();
+    const db = await dbPromise;
+    if (epoch !== ownerEpoch || selectedOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+    if (!db) meta = new Map(memoryForOwner().meta);
+    else {
+      const entries = await requestResult(db.transaction('meta', 'readonly').objectStore('meta').getAll());
+      if (epoch !== ownerEpoch || selectedOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+      for (const entry of entries) if (entry.owner === selectedOwner) meta.set(entry.channelId, entry.value);
+    }
+    return { changed: false, boot: world, meta: new Map(meta) };
+  }
+
+  async function saveRows(rows, { coverage } = {}) {
+    const operationOwner = owner;
+    const epoch = ownerEpoch;
+    const accepted = (rows || []).filter((row) => row?.channel_id && numeric(row?.seq));
+    const touched = new Map();
+    for (const row of accepted) {
+      const channelId = row.channel_id;
+      const seq = numeric(row.seq);
+      const known = meta.get(channelId) || {};
+      const current = touched.get(channelId) || { ...known, coverage: [...(known.coverage || [])] };
+      current.headSeq = Math.max(numeric(current.headSeq), seq);
+      current.newestSeq = Math.max(numeric(current.newestSeq), seq);
+      current.oldestSeq = current.oldestSeq ? Math.min(numeric(current.oldestSeq), seq) : seq;
+      current.rowCount = numeric(current.rowCount) + 1;
+      current.coverage = mergeReplicaCoverage(current.coverage, { lowSeq: seq, highSeq: seq });
+      touched.set(channelId, current);
+    }
+    if (coverage?.channelId) {
+      const known = meta.get(coverage.channelId) || {};
+      const current = touched.get(coverage.channelId) || { ...known, coverage: [...(known.coverage || [])] };
+      current.coverage = mergeReplicaCoverage(current.coverage, coverage);
+      touched.set(coverage.channelId, current);
+    }
+    if (!accepted.length && !touched.size) return 0;
+    for (const [channelId, value] of touched) meta.set(channelId, value);
+    const db = await dbPromise;
+    if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+    if (!db) {
+      const memory = memoryForOwner();
+      for (const row of accepted) memory.rows.set(`${row.channel_id}\u0000${row.seq}`, structuredClone(row));
+      memory.meta = new Map(meta);
+      return accepted.length;
+    }
+    const transaction = db.transaction(['rows', 'meta'], 'readwrite');
+    for (const row of accepted) transaction.objectStore('rows').put({ owner: operationOwner, channelId: row.channel_id, seq: numeric(row.seq), row });
+    for (const [channelId, value] of touched) transaction.objectStore('meta').put({ owner: operationOwner, channelId, value });
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = resolve;
+      transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error('replica cache commit failed'));
+    });
+    return accepted.length;
+  }
+
+  async function readBefore(channelId, beforeSeq = Number.MAX_SAFE_INTEGER, limit = 128, byteLimit = 1024 * 1024) {
+    const operationOwner = owner;
+    const epoch = ownerEpoch;
+    const before = numeric(beforeSeq) || Number.MAX_SAFE_INTEGER;
+    const maximum = Math.max(1, numeric(limit) || 128);
+    const maximumBytes = Math.max(1, numeric(byteLimit) || 1024 * 1024);
+    const db = await dbPromise;
+    if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+    let available;
+    if (!db) {
+      available = [...memoryForOwner().rows.values()]
+        .filter((row) => row.channel_id === channelId && numeric(row.seq) < before)
+        .sort((left, right) => numeric(right.seq) - numeric(left.seq));
+    } else {
+      const records = await requestResult(db.transaction('rows', 'readonly').objectStore('rows').getAll());
+      available = records.filter((entry) => entry.owner === operationOwner && entry.channelId === channelId && entry.seq < before)
+        .sort((left, right) => right.seq - left.seq).map((entry) => entry.row);
+    }
+    const selected = [];
+    let bytes = 0;
+    for (const row of available) {
+      const size = rowBytes(row);
+      if (selected.length >= maximum || (selected.length && bytes + size > maximumBytes)) break;
+      selected.push(row);
+      bytes += size;
+    }
+    selected.sort((left, right) => numeric(left.seq) - numeric(right.seq));
+    return {
+      rows: selected,
+      nextBeforeSeq: selected.length ? numeric(selected[0].seq) : before,
+      exhausted: available.length <= selected.length,
+      bytes,
+    };
+  }
+
+  async function clear() {
+    const operationOwner = owner;
+    const epoch = ownerEpoch;
+    const db = await dbPromise;
+    if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+    meta = new Map();
+    memoryCache.delete(owner);
+    if (!db) return;
+    const keysByStore = new Map();
+    for (const storeName of ['rows', 'meta']) {
+      const keys = await requestResult(db.transaction(storeName, 'readonly').objectStore(storeName).getAllKeys());
+      keysByStore.set(storeName, keys.filter((key) => key[0] === operationOwner));
+    }
+    const transaction = db.transaction(['rows', 'meta'], 'readwrite');
+    for (const storeName of ['rows', 'meta']) {
+      const store = transaction.objectStore(storeName);
+      for (const key of keysByStore.get(storeName)) store.delete(key);
+    }
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = resolve;
+      transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error('replica cache clear failed'));
+    });
+  }
+
+  return Object.freeze({
+    ensureOwner, saveRows, readBefore, clear,
+    saveCoverage: (channelId, lowSeq, highSeq) => saveRows([], { coverage: { channelId, lowSeq, highSeq } }),
+    metaSnapshot: () => new Map(meta),
+    destroy: async () => { const db = await dbPromise; db?.close(); dbPromise = Promise.resolve(null); },
+  });
 }

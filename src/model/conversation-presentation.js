@@ -540,3 +540,213 @@ export function createConversationPresentation() {
 export function presentationEntryId(entryOrRow) {
   return entryOrRow?.id || identityOf(entryOrRow);
 }
+
+export const CONVERSATION_SCOPE = Object.freeze({ all: 'all', mine: 'mine' });
+export const TIMELINE_SCOPE = CONVERSATION_SCOPE;
+
+const HIDDEN_CONVERSATION_TYPES = new Set([
+  TYPES.agentHold,
+  TYPES.agentUnhold,
+  TYPES.agentInterrupt,
+  TYPES.agentContext,
+  TYPES.agentOptions,
+  TYPES.agentFork,
+  TYPES.describe,
+]);
+
+function envelopeOf(entry) {
+  return entry?.kind === 'turn' ? entry.turn?.request : entry?.envelope;
+}
+
+function entryEnvelopes(entry) {
+  if (entry?.kind !== 'turn') return [entry?.envelope].filter(Boolean);
+  const envelopes = [entry.turn?.request, entry.turn?.terminal];
+  for (const provisional of entry.turn?.provisional || []) envelopes.push(provisional?.envelope);
+  for (const child of entry.thread || []) envelopes.push(...entryEnvelopes(child));
+  return envelopes.filter(Boolean);
+}
+
+function humanPrincipal(actorID) {
+  const parts = String(actorID || '').split(String(actorID || '').includes('::') ? '::' : ':');
+  return parts[0] === 'human' && parts.length >= 3 ? parts[1] : '';
+}
+
+function samePerson(left, right) {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const principal = humanPrincipal(left);
+  return Boolean(principal && principal === humanPrincipal(right));
+}
+
+function entryInvolves(entry, actorID) {
+  if (!actorID) return true;
+  return entryEnvelopes(entry).some((envelope) => (
+    samePerson(envelope?.sender?.id, actorID)
+    || envelope?.audience?.some((audience) => samePerson(audience, actorID))
+  ));
+}
+
+function entryMatchesActors(entry, actors) {
+  if (!actors?.size) return true;
+  return entryEnvelopes(entry).some((envelope) => (
+    actors.has(envelope?.sender?.id)
+    || envelope?.audience?.some((audience) => actors.has(audience))
+  ));
+}
+
+function uiType(type) {
+  return String(type || '').startsWith('ui.');
+}
+
+function visibleEntry(entry, scope, editingTargetID, editingReplacementID) {
+  const envelope = envelopeOf(entry);
+  if (!envelope || (entry.kind === 'standalone' && envelope.type === 'terminal.session')) return false;
+  if (entry.kind !== 'turn') return scope === CONVERSATION_SCOPE.all
+    || (!uiType(envelope.type) && !String(envelope.type || '').startsWith('terminal.'));
+  if (editingReplacementID && entry.turn?.requestId === editingReplacementID) return false;
+  if (entry.turn?.requestId === editingTargetID) return true;
+  if (scope === CONVERSATION_SCOPE.mine
+    && (uiType(envelope.type) || HIDDEN_CONVERSATION_TYPES.has(envelope.type))) return false;
+  if ([TYPES.agentSelect, TYPES.agentNew].includes(envelope.type)) {
+    return argsOf(entry.turn?.terminal)?.status === 'completed';
+  }
+  return true;
+}
+
+function withoutUiChildren(entry, scope) {
+  if (scope !== CONVERSATION_SCOPE.mine || entry?.kind !== 'turn' || !entry.thread?.length) return entry;
+  const thread = entry.thread.filter((child) => !uiType(child?.turn?.request?.type));
+  return thread.length === entry.thread.length ? entry : { ...entry, thread };
+}
+
+function transient(entry) {
+  const envelope = entry?.kind === 'standalone' ? entry.envelope : null;
+  return Boolean(envelope && (argsOf(envelope)?.transient === true || envelope.type === 'mock.channel.pulse'));
+}
+
+function localEchoEntries(localEchoes, selfID, landed) {
+  return (localEchoes || []).flatMap((submission, index) => {
+    if (!submission?.messageId || landed.has(submission.messageId)) return [];
+    const frame = submission.frame || {};
+    if (!frame.msg_type || uiType(frame.msg_type) || HIDDEN_CONVERSATION_TYPES.has(frame.msg_type)
+      || frame.msg_type === TYPES.agentSelect || frame.msg_type === TYPES.agentNew) return [];
+    const envelope = {
+      id: submission.messageId,
+      type: frame.msg_type,
+      kind: frame.kind || 'request',
+      payload: frame.payload || { body: { text: submission.text || '' } },
+      audience: frame.audience || [],
+      parent_id: frame.parent_id || '',
+      visibility: frame.visibility || 'public',
+      ts: submission.createdAt || Date.now() + index,
+      sender: { id: selfID, kind: 'human' },
+      local_submission_state: submission.state,
+    };
+    return envelope.kind === 'request' ? [{
+      kind: 'turn', seq: 0, local: true, thread: [],
+      turn: {
+        requestId: envelope.id, request: envelope, requestSeq: 0, lastSeq: 0,
+        provisional: [], terminal: null, terminalSeq: 0, status: 'local', local: true,
+      },
+    }] : [{ kind: 'standalone', seq: 0, local: true, envelope }];
+  });
+}
+
+// Semantic projection is exported from the Presentation owner. It consumes the
+// Replica's canonical timeline and does not retain or mutate another ledger.
+export function selectTimelineItems(state, {
+  scope = CONVERSATION_SCOPE.mine,
+  selfId = '',
+  actorFilter = new Set(),
+  editingTargetId = '',
+  editingReplacementId = '',
+  showNarration = false,
+  localEchoes = [],
+} = {}) {
+  const allEntries = [];
+  const scoped = [];
+  const filtered = [];
+  for (const rawEntry of state?.timeline || []) {
+    if (!visibleEntry(rawEntry, scope, editingTargetId, editingReplacementId)) continue;
+    allEntries.push(rawEntry);
+    const entry = withoutUiChildren(rawEntry, scope);
+    if (scope === CONVERSATION_SCOPE.mine && !entryInvolves(entry, selfId)) continue;
+    scoped.push(entry);
+    if (scope === CONVERSATION_SCOPE.mine && actorFilter?.size && !entryMatchesActors(entry, actorFilter)) continue;
+    filtered.push(entry);
+  }
+  const latestTransient = new Map();
+  for (const entry of filtered) {
+    if (transient(entry)) latestTransient.set(`${entry.envelope?.sender?.id || ''}:${entry.envelope?.type || ''}`, entry);
+  }
+  let items = filtered.filter((entry) => !transient(entry)
+    || latestTransient.get(`${entry.envelope?.sender?.id || ''}:${entry.envelope?.type || ''}`) === entry);
+  if (showNarration && state?.narration?.length) {
+    const narrationSeq = state.narration[0].seq;
+    const narration = { kind: 'narration', seq: narrationSeq };
+    const insertion = items.findIndex((entry) => entry.seq > narrationSeq);
+    items = insertion < 0 ? [...items, narration] : [...items.slice(0, insertion), narration, ...items.slice(insertion)];
+  }
+  const landed = state?._envelopesById?.has ? state._envelopesById : new Map();
+  const echoes = localEchoEntries(localEchoes, selfId, landed);
+  if (echoes.length) items = [...items, ...echoes];
+  return Object.freeze({
+    items,
+    allEntries,
+    scoped,
+    filtered,
+    localEchoes: echoes,
+    actorFilterApplies: scope === CONVERSATION_SCOPE.mine,
+    firstVisibleSeq: Number(items[0]?.seq || 0),
+    lastVisibleSeq: Number(items.at(-1)?.seq || 0),
+  });
+}
+
+// Render projection is hard-bound to Admission and Presentation. Callers may
+// use evaluate/commit candidates or their narrow admit/project render ports.
+export function projectTimeline(state, options = {}) {
+  const semantic = selectTimelineItems(state, options);
+  const { presentation, presentationAdmission, presentationKey = '', dataEpoch = '' } = options;
+  const sourceRevision = Number(state?._timelineRevision ?? state?.lastSeq ?? 0);
+  let admissionCandidate = null;
+  let items;
+  if (typeof presentationAdmission?.admit === 'function') {
+    items = presentationAdmission.admit(state.channelId, semantic.items, {
+      viewID: presentationKey, epoch: dataEpoch, sourceRevision,
+    });
+  } else if (typeof presentationAdmission?.evaluate === 'function') {
+    admissionCandidate = presentationAdmission.evaluate(state.channelId, semantic.items, {
+      viewID: presentationKey, epoch: dataEpoch, sourceRevision,
+    });
+    items = admissionCandidate.items;
+  } else throw new TypeError('conversation projection requires HistoryPresentationAdmission');
+  if (!Array.isArray(items)) throw new TypeError('HistoryPresentationAdmission must return items');
+  const fence = presentationAdmission.sourceFence?.(state.channelId);
+  const projectedRevision = fence == null ? sourceRevision : Number(fence);
+  const meta = {
+    epoch: dataEpoch,
+    nextViewID: presentationKey,
+    sourceRevision: projectedRevision,
+    sourceChangeBase: Number(state?._timelineChangeBase || 0),
+    sourceChanges: (state?._timelineChangeLog || [])
+      .filter((change) => Number(change.revision || 0) <= projectedRevision),
+  };
+  let presentationCandidate = null;
+  let snapshot;
+  if (typeof presentation?.project === 'function') snapshot = presentation.project(items, meta);
+  else if (typeof presentation?.evaluate === 'function') {
+    presentationCandidate = presentation.evaluate(items, meta);
+    snapshot = presentationCandidate.snapshot;
+  } else throw new TypeError('conversation projection requires ConversationPresentation');
+  if (!snapshot || !Array.isArray(snapshot.rows)) throw new TypeError('ConversationPresentation must return a snapshot');
+  return Object.freeze({
+    ...semantic,
+    items,
+    presentation: snapshot,
+    presentationRows: snapshot.rows,
+    admissionCandidate,
+    presentationCandidate,
+    firstVisibleSeq: Number(items[0]?.seq || 0),
+    lastVisibleSeq: Number(items.at(-1)?.seq || 0),
+  });
+}

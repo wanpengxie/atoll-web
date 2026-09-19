@@ -1,6 +1,6 @@
 import PQueue from 'p-queue';
 // Owns physical concurrency only. It has no channel, source, priority, or
-// obligation knowledge; HistoryScheduler remains the sole lifecycle owner.
+// obligation knowledge; ChannelFeedRuntime remains the sole lifecycle owner.
 export function createHistoryBoundedExecutor({ concurrency, timeoutMs }) {
   const queue = new PQueue({ concurrency, autoStart: true });
   const jobs = new Set();
