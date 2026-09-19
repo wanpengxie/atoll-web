@@ -7,7 +7,7 @@ import { ArrowLeft, Check, ChevronDown, ChevronRight, RefreshCw, Upload, Users, 
 import { useReadingIntent } from '../conversation/ReadingIntentContext.jsx';
 
 const actorName = (actor) => actor?.name || actor?.label || actor?.id || '未知成员';
-const editorText = (editor) => editor?.getText({ blockSeparator: '\n' }) || '';
+const editorText = (editor) => (editor && !editor.isDestroyed ? editor.getText({ blockSeparator: '\n' }) : '') || '';
 const editorDocument = (text = '') => ({
   type: 'doc',
   content: String(text).split('\n').map((line) => ({ type: 'paragraph', ...(line ? { content: [{ type: 'text', text: line }] } : {}) })),
@@ -263,7 +263,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       },
     },
     onUpdate: ({ editor: current }) => {
-      if (applyingRef.current || composingRef.current || current.view.composing) return;
+      if (applyingRef.current || composingRef.current || current.isDestroyed || current.view.composing) return;
       const value = editorText(current);
       pendingTextRef.current = value;
       setHasText(Boolean(value.trim()));
@@ -274,19 +274,32 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   latestRef.current = { model, commands, readingIntent };
 
   useEffect(() => {
-    if (!editor) return;
+    // `useEditor` recreates the instance when the channel owner changes, but
+    // its passive effect may publish the new instance before EditorContent has
+    // attached that instance's view. During the same handoff the previous
+    // instance can already be destroyed while it is still the value returned
+    // by this render. `isEditorContentInitialized` is set by Tiptap's
+    // EditorContent only after the view has been moved into the live DOM;
+    // pair it with `isDestroyed` so this owner never reads the proxy view for
+    // either stale or not-yet-mounted instances.
+    if (!editor || editor.isDestroyed || editor.isEditorContentInitialized !== true) return;
+    const view = editor.view;
+    const dom = view.dom;
     const editable = Boolean(model.channelId) && model.permissions.canEditDraft && (!editMode || (!model.busy && model.permissions.canTransmit));
     editor.setEditable(editable, false);
-    editor.view.dom.setAttribute('aria-disabled', String(!editable));
+    dom.setAttribute('aria-disabled', String(!editable));
     // Keep the native-form disabled contract observable to accessibility and
     // browser automation even though ProseMirror renders a contenteditable.
-    editor.view.dom.disabled = !editable;
+    dom.disabled = !editable;
   }, [editMode, editor, model.busy, model.channelId, model.permissions.canEditDraft, model.permissions.canTransmit]);
 
   const presentationKey = `${model.channelId}\u0000${model.editSession?.targetId || ''}`;
   const lastPresentationKeyRef = useRef(presentationKey);
   useEffect(() => {
-    if (!editor) return;
+    // The editor returned for the previous channel can be synchronously
+    // destroyed by useEditor before this passive effect runs. Once destroyed,
+    // even state-only helpers such as getText/getJSON are no longer valid.
+    if (!editor || editor.isDestroyed) return;
     const localText = editorText(editor);
     if (pendingTextRef.current === model.draft.text) pendingTextRef.current = null;
     const ownerChanged = lastPresentationKeyRef.current !== presentationKey;
@@ -300,15 +313,21 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   }, [editor, model.draft.doc, model.draft.editorRevision, model.draft.text, presentationKey]);
   useEffect(() => { setActiveMention(0); }, [model.mentionQuery?.query]);
   useEffect(() => { setActiveCommand(0); }, [model.commandMenu?.query]);
-  useEffect(() => { if (model.draft.replyTarget && !editMode && editor) requestAnimationFrame(() => editor.commands.focus('end')); }, [editMode, editor, model.draft.replyTarget?.sourceId]);
+  useEffect(() => {
+    if (!model.draft.replyTarget || editMode || !editor) return undefined;
+    const frame = requestAnimationFrame(() => {
+      if (!editor.isDestroyed && editor.isEditorContentInitialized === true) editor.commands.focus('end');
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editMode, editor, model.draft.replyTarget?.sourceId]);
 
   const liveSnapshot = () => {
     const value = editorText(editor);
     return { ...model.draft, text: value, doc: editor?.getJSON() || editorDocument(value), editorRevision: model.draft.editorRevision + (value === model.draft.text ? 0 : 1) };
   };
   const clearAccepted = (result) => {
-    if (!result) return;
-    applyingRef.current = true; editor?.commands.clearContent(false); applyingRef.current = false;
+    if (!result || !editor || editor.isDestroyed) return;
+    applyingRef.current = true; editor.commands.clearContent(false); applyingRef.current = false;
     pendingTextRef.current = null; setHasText(false);
   };
   const submit = (event) => {
@@ -318,14 +337,14 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     invoke(editMode ? commands.edit : commands.send, editMode ? { newText: snapshot.text } : { readingIntent, draft: snapshot }).then(clearAccepted);
   };
   const chooseMention = (row) => invoke(commands.pickMention, row).then((next) => {
-    if (!next || !editor) return;
+    if (!next || !editor || editor.isDestroyed) return;
     applyingRef.current = true; editor.commands.setContent(next.doc?.type === 'doc' ? next.doc : editorDocument(next.text), { emitUpdate: false }); applyingRef.current = false;
     pendingTextRef.current = null; setHasText(Boolean(next.text?.trim())); editor.commands.focus('end');
   });
   const chooseCommand = (row) => {
     const text = `/${row.command} `;
     invoke(commands.changeDraft, { text }).then(() => {
-      if (!editor) return;
+      if (!editor || editor.isDestroyed) return;
       applyingRef.current = true; editor.commands.setContent(editorDocument(text), { emitUpdate: false }); applyingRef.current = false;
       pendingTextRef.current = null; setHasText(true); editor.commands.focus('end');
     });
@@ -354,7 +373,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       {fileDragActive && <div className="composer-drop-hint" role="status"><Upload size={18} /><strong>松开以上传到当前频道</strong></div>}
       {!editMode && model.draft.replyTarget && <div className="composer-reply" role="status"><span aria-hidden="true">↩</span><div><strong>回复 @{model.draft.replyTarget.senderName || model.draft.replyTarget.senderId}</strong><small>{model.draft.replyTarget.excerpt || ''}</small></div><button type="button" aria-label="取消回复" onClick={() => invoke(commands.clearReply)}>×</button></div>}
       {!editMode && model.draft.attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{model.draft.attachments.map((row) => { const id = row.resource_id || row.id; return <article key={id}><div className="attachment-draft-preview" title="已附加到当前草稿"><span aria-hidden="true">◇</span><span><strong>{row.name || id}</strong><small>{formatSize(Number(row.size || 0))}</small></span></div><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name || id}`} onClick={() => invoke(commands.removeAttachment, id)}>×</button></article>; })}</div>}
-      <div ref={inputAreaRef} className="composer-input-area"><div className="composer-box"><EditorContent editor={editor} className="composer-richtext" onPasteCapture={(event) => { const files = [...(event.clipboardData?.files || [])]; if (files.length && !editMode && model.permissions.canTransmit) { event.preventDefault(); void uploadFiles(files); } }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; const value = editorText(editor); pendingTextRef.current = value; setHasText(Boolean(value.trim())); invoke(commands.changeDraft, { text: value, doc: editor?.getJSON() }); }} /></div>
+      <div ref={inputAreaRef} className="composer-input-area"><div className="composer-box"><EditorContent editor={editor} className="composer-richtext" onPasteCapture={(event) => { const files = [...(event.clipboardData?.files || [])]; if (files.length && !editMode && model.permissions.canTransmit) { event.preventDefault(); void uploadFiles(files); } }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; if (!editor || editor.isDestroyed) return; const value = editorText(editor); pendingTextRef.current = value; setHasText(Boolean(value.trim())); invoke(commands.changeDraft, { text: value, doc: editor.getJSON() }); }} /></div>
         {mentionQuery && mentionRows.length > 0 && <FloatingPortal anchorRef={inputAreaRef} matchWidth className="mention-menu composer-menu-portal"><div role="listbox" aria-label="@ 收件人">{mentionRows.map((actor, index) => <button type="button" role="option" aria-selected={index === activeMention % mentionRows.length} key={actor.id} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(actor)}><span className={`actor-icon kind-${actor.kind}`}>{actor.kind.slice(0, 1).toUpperCase()}</span><strong title={actor.id}>{actorName(actor)}</strong><small>{actor.kind} · {actor.decl_id || actor.id}</small></button>)}</div></FloatingPortal>}
         {commandMenu && <FloatingPortal anchorRef={inputAreaRef} matchWidth className="command-menu composer-menu-portal"><div role="listbox" aria-label="Agent 命令">{commandRows.length ? commandRows.map((row, index) => <button type="button" role="option" aria-selected={index === activeCommand % commandRows.length} key={row.command} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(row)}><span className="command-menu-name">/{row.command}</span><span><strong>{row.label}</strong><small>{row.description}</small></span></button>) : <p className="command-menu-empty" role="status">{commandMenu.reason}</p>}</div></FloatingPortal>}
       </div>
