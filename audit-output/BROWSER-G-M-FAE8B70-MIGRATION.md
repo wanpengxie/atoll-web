@@ -813,6 +813,64 @@ unmount、restore target failure、第二次 continuation、reverse；每项必�
 被 consume 或 revoke、无永久 pending、且 `Element.prototype.scrollTo/scrollBy` 只有
 被当前唯一 Vendor command 授权的写入。
 
+### J. Round 21 current-HEAD Reading acceptance recheck (read-only)
+
+本轮以共享工作树的最新产品源 `5a72149` 重验；随后 HEAD 只前进了 audit-only
+`77b301b`，且下列 Reading/Projection/History consumer 文件没有 tracked diff。工作树仍有
+其他分区的 untracked dirty；没有 stage、修改或提交 `src/`、Vendor、fixture 或正式
+browser spec。验收门保持四项同时成立：`history.admission_commit` 带 accepted
+position lease、真实 prepend、原 messageID 的 exact row offset restore、reverse 后
+`Element.prototype.scrollTo/scrollBy` writer 数为 0。
+
+#### Formal Chromium gates
+
+```text
+# current source 5a72149, fresh ports
+ATOLL_TEST_MOCK_PORT=20067 ATOLL_TEST_WEB_PORT=15367 npx playwright test \
+  tests/browser/history-presentation-admission-prototype.spec.js \
+  --grep='one older gesture stages sparse history' --repeat-each=3 --reporter=line \
+  --output=/tmp/gm21-current-5a72149-case1-repeat3
+# 0 passed / 3 failed; first public assertion line 133: listCount 4, expected > 4
+
+ATOLL_TEST_MOCK_PORT=20068 ATOLL_TEST_WEB_PORT=15368 npx playwright test \
+  tests/browser/history-reveal-prototype.spec.js \
+  --grep='trusted wheel takes over history work' --repeat-each=3 --reporter=line \
+  --output=/tmp/gm21-current-5a72149-case3-repeat3
+# 0 passed / 3 failed; first public assertion line 103: mode following, expected browsing
+```
+
+Case 1 的单次 Chromium attachment（同一当前源的 fresh run）保持：baseline 4 rows，原
+首行 offset `-394px`；最终仍是 4 rows、原首行 offset `35px`。diagnostics 只有
+`history.intent_started(runway)`、`history.intent_promoted(top, promoted=false)` 和
+`history.intent_satisfied`，没有 `history.admission_commit`，所以本轮没有 accepted
+position lease、没有 prepend，也没有 exact-anchor restore。
+
+Case 3 repeat3 的稳定首断为 active surface 仍回到 `following`；同类单次 DOM probe
+进一步看到 `scrollTo({top:4350})` / `scrollTo({top:3964})` writer，故即使某次时序
+短暂显示 `browsing` 也不能过 gate。旧 writer 不是 native reverse wheel 的写入。
+
+#### Four edge probes (temporary probe, removed after run)
+
+临时 Chromium probe 在 fresh ports `20065/15365`（restore-failure 因初始 filter
+replacement 过早造成空投影后，以不预先点击 filter 的等价动作在 `20066/15366` 重跑）
+分别执行 unmount、restore failure、14-wheel second continuation、reverse；probe 文件已
+删除，正式测试未改变。四项均先检查 accepted grant；无一观察到带 `positionLease` 的
+`history.admission_commit`，因此均按 **REJECT/BLOCKED-BY-EARLIER-ADMISSION** 记录，
+不把普通 connected/idle 当作 lease 通过：
+
+| edge | 当前可见证据 | 严格裁决 |
+|---|---|---|
+| unmount | older 后 c0 `browsing`, rows=15；切 `c0.project` 时 activeLists=0，回 c0 rows=16；writers 含 `top=3964`、`top=1963`，无 grant | 未覆盖 accepted lease revoke；旧 Vendor writer 仍存在，REJECT |
+| restore failure | older 后 rows=15、writers 为 `top=3824` 与 `top=1823`；切 Claude filter 后 `connected=false`, activeLists=0，仅有 `projection-underfill` intent | 无 accepted lease，不能证明 restore failure 清理；REJECT |
+| second continuation | 14 次 `wheel(-420)` 后第 12 wheel 有 `history.admission_commit_check accepted=false, reason=stale-viewport-owner`，staged/inserted 为 `c0-history-request-101/102`；累计多条 `scrollTo/scrollBy` writer | 没有 accepted prepend/lease；不能验证 continuation wait/consume；REJECT |
+| reverse input | before `browsing`, rows=15, scrollTop=1963；reverse 后仍 connected/browsing、scrollTop=2483，但旧 writers `top=3964`、`top=1963` 仍在 | wheel 后 writer 非 0，且无 lease；REJECT |
+
+故本轮不是产品闭合：case 1 仍卡 admission/presentation 首断，case 3 仍卡
+following/writer 首断，四个 lease 边界都不能越过“先形成真实 accepted grant”的前置
+条件。唯一可交 Reading owner 的最小复现仍是：先修复 accepted grant → actual paint
+lease，再分别 repeat unmount、restore failure、second continuation、reverse；任何
+场景须同时记录 lease consume/revoke、无永久 pending 和 reverse 后 0 old writer。
+
 ## Boundary audit
 
 - This partition edits only the G–M `tests/browser` specs and this `audit-output` report. No
