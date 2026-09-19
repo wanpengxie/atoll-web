@@ -3,9 +3,10 @@ import { actorNameMap } from '../model/actor-display.js';
 import { attachmentFromFileReference } from '../model/file-references.js';
 import { agentMessageStage, isAgentMessageTurn } from '../model/agent-control.js';
 import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
-import { createMessageLayoutStore, MessageLayoutProvider } from './timeline/MessageLayoutState.jsx';
+import { MessageLayoutProvider } from './timeline/MessageLayoutState.jsx';
 import { ReadingContainerHandoff } from './timeline/ReadingContainerHandoff.jsx';
 import { useConversationProjection } from './timeline/useConversationProjection.js';
+import { useTimelinePreferences } from './timeline/useTimelinePreferences.js';
 import {
   WaitingLayer,
   useWaitingEditingController,
@@ -22,18 +23,17 @@ import {
   useTimelineRowRenderer,
 } from './timeline/TimelineRowRenderer.jsx';
 export function Timeline({ state, history = {}, composer = null, viewSessions, roster, waitingRosterAuthority = null, selfId, agentActivity, onAcknowledgeAgentActivity, pending, approvalStates, controlStates = EMPTY_CONTROL_STATES, capabilityIndex = EMPTY_CAPABILITY_INDEX, access = '', surfaceVisible = false, onTailCaughtUp, onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, turnDetail, onComposerEditChange, onFocusAgentChange }) {
-  const initialViewSessionRef = useRef(null);
-  if (!initialViewSessionRef.current) initialViewSessionRef.current = viewSessions?.read(state.channelId) || {};
-  const messageLayoutStoreRef = useRef(null);
-  if (!messageLayoutStoreRef.current) messageLayoutStoreRef.current = createMessageLayoutStore(
-    initialViewSessionRef.current.layoutChoices,
-    (layoutChoices) => viewSessions?.writeConversation(state.channelId, { layoutChoices }),
-  );
-  const requestedInitialScope = initialViewSessionRef.current.scope || TIMELINE_SCOPE.mine;
-  const [scope, setScope] = useState(() => requestedInitialScope);
+  const {
+    scope,
+    actorFilter,
+    foldOverrides,
+    messageLayoutStore,
+    toggleScope,
+    toggleActorFilter,
+    removeActorFilter,
+    toggleFold,
+  } = useTimelinePreferences({ channelId: state.channelId, viewSessions });
   const [knownSelfId, setKnownSelfId] = useState(() => selfId || '');
-  const [actorFilter, setActorFilter] = useState(() => new Set(initialViewSessionRef.current.actorFilter || []));
-  const [foldOverrides, setFoldOverrides] = useState(() => new Map(initialViewSessionRef.current.foldOverrides || []));
 	const openFileReference = useCallback((reference) => {
 	  onPreviewResource?.(state.channelId, attachmentFromFileReference(reference));
 	}, [onPreviewResource, state.channelId]);
@@ -114,11 +114,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   }, [actorFilterApplies, actorFilter, filterableAgents]);
   useEffect(() => { onFocusAgentChange?.(focusAgentId); }, [focusAgentId, onFocusAgentChange]);
   const messageListRenderKey = state.channelId;
-  const effectiveFoldOverrides = foldOverrides;
   const withNarration = rolePresentation.rows;
-  const toggleFold = useCallback((id, expanded) => {
-    setFoldOverrides((current) => new Map(current).set(id, expanded));
-  }, []);
   const waitingHandoff = useWaitingHandoff(state.channelId, queuedTurns, rolePresentation.rows);
   const rowPresentationState = useCallback(
     (row) => waitingHandoff.enteringRequestIDs.has(row.id) ? 'handoff-enter' : '',
@@ -196,7 +192,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     presentationEditing,
     resumePin,
     browsingExpandedSlots,
-    effectiveFoldOverrides,
+    effectiveFoldOverrides: foldOverrides,
     approvalStates,
     controlStates,
     mergedCounts,
@@ -216,14 +212,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     onEditText,
     toggleFold,
   });
-  useEffect(() => {
-    viewSessions?.writeConversation(state.channelId, {
-      scope,
-      actorFilter: [...actorFilter],
-      foldOverrides: [...foldOverrides],
-      foldDefaults: [],
-    });
-  }, [viewSessions, state.channelId, scope, actorFilter, foldOverrides]);
   const floatingInput = <>
     {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
     <WaitingLayer turns={queuedTurns} handoffs={waitingHandoff.exiting} state={state} names={names} selfId={selfId} access={access} targetAuthority={waitingRosterAuthority} capabilityIndex={capabilityIndex} frozenByActor={frozenByActor} editing={presentationEditing} onCancel={onCancel} onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })} onEdit={startEditing} onEditText={onEditText} onEditSave={verifyAndSave} onEditAbandon={abandonEditing} />
@@ -269,7 +257,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
       : viewport.status?.waitingStage === 'network-page'
         ? '正在接收历史数据…'
         : '正在确认频道内容…';
-  return <ReadingIntentProvider value={readingIntent}><MessageLayoutProvider store={messageLayoutStoreRef.current}><MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost><ConversationSurface input={composer} floating={floatingInput}>
+  return <ReadingIntentProvider value={readingIntent}><MessageLayoutProvider store={messageLayoutStore}><MarkdownFileReferenceProvider onOpen={openFileReference}><ProgressTrailHost><ConversationSurface input={composer} floating={floatingInput}>
 		<section id="workspace-panel-dynamic" className="timeline timeline-virtualized" role="tabpanel" aria-labelledby="workspace-tab-dynamic" data-viewport-mode={viewport.session.mode} data-has-initial-anchor={viewport.session.bookmark ? true : undefined}>
       <div className={state.rows.size ? 'timeline-inner timeline-controls-overlay' : 'timeline-inner'}>
         {projectionSelfId && Boolean(state.rows.size) && <div className="timeline-scope-bar">
@@ -278,9 +266,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
               type="button"
               aria-pressed={scope === TIMELINE_SCOPE.mine}
               title={`切换为${TIMELINE_SCOPE_LABELS[scope === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine]}`}
-              onClick={() => {
-                setScope((value) => value === TIMELINE_SCOPE.mine ? TIMELINE_SCOPE.all : TIMELINE_SCOPE.mine);
-              }}
+              onClick={toggleScope}
             >{TIMELINE_SCOPE_LABELS[scope]}</button>
             {actorFilterApplies && (filterableAgents.length > 0 || staleActorFilters.length > 0) && <div className="timeline-actor-filter" role="group" aria-label="按成员过滤">
               {filterableAgents.map((row) => {
@@ -296,11 +282,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
                     title={on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
                     onClick={() => {
                       if (activityState === 'settled') onAcknowledgeAgentActivity?.(row.id);
-                      setActorFilter((current) => {
-                        const next = new Set(current);
-                        if (!next.delete(row.id)) next.add(row.id);
-                        return next;
-                      });
+                      toggleActorFilter(row.id);
                     }}
                   >{activityState && <i className="agent-activity-dot" aria-hidden="true" />}{actorName}</button>
                 </div>;
@@ -312,11 +294,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
                 aria-pressed="true"
                 aria-label={`移除已失效成员筛选 ${actorID}`}
                 title={`已失效成员：${actorID}；点击移除筛选`}
-                onClick={() => setActorFilter((current) => {
-                  const next = new Set(current);
-                  next.delete(actorID);
-                  return next;
-                })}
+                onClick={() => removeActorFilter(actorID)}
               >已失效 · {actorID}</button>)}
             </div>}
           </div>
