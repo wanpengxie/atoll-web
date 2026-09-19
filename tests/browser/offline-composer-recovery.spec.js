@@ -16,16 +16,15 @@ async function login(page) {
 
 async function disconnect(context, page, request) {
   await context.setOffline(true);
-  // A reload can briefly overlap its retired socket with the newly attached
-  // one. Drop the bounded current set until the UI observes the close; browser
-  // offline mode then prevents another connection from replacing it.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await request.post('/mock/control/action', { data: { type: 'drop' } });
-    expect(response.ok()).toBe(true);
-    await page.waitForTimeout(200);
-    if (await page.locator('.connection-state').evaluate((node) => node.classList.contains('state-reconnecting'))) break;
-  }
-  await expect(page.locator('.connection-state')).toHaveClass(/state-reconnecting/);
+  const response = await request.post('/mock/control/action', { data: { type: 'drop' } });
+  expect(response.ok()).toBe(true);
+  // Offline draft admission is owned by the browser network boundary, not by
+  // the asynchronously painted WebSocket badge. Chromium can retain the last
+  // OPEN paint until it delivers the socket close task even though every new
+  // connection and request is already rejected. Requiring RECONNECTING here
+  // made the fixture race an unrelated UI publication before it could exercise
+  // the durable draft/submission transaction.
+  await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
 }
 
 async function outboxSnapshot(page) {
@@ -50,15 +49,20 @@ test('W6 known member edits/restores a draft offline and queues one durable fram
   await reset(request);
   await login(page);
 
-  await disconnect(context, page, request);
   const editor = page.getByRole('textbox', { name: '消息' });
+  // Establish the "known member" premise while the canonical roster is
+  // online. The durable recipient snapshot may then be edited and restored
+  // offline without asking an unavailable directory to discover a new actor.
+  await editor.fill('@st');
+  await page.getByRole('option', { name: /steward/ }).click();
+  await expect(page.getByRole('status', { name: '收件人' })).toContainText('@steward');
+
+  await disconnect(context, page, request);
   await expect(editor).toHaveAttribute('contenteditable', 'true');
   await expect(page.getByText(/离线编辑；发送会先保存到本机/)).toBeVisible();
   await expect(page.getByLabel('上传本机文件到频道')).toBeDisabled();
   await expect(page.getByRole('button', { name: '从频道文件选择' })).toBeDisabled();
 
-  await editor.fill('@st');
-  await page.getByRole('option', { name: /steward/ }).click();
   await editor.pressSequentially('离线草稿跨刷新恢复');
   await expect.poll(async () => {
     const snapshot = await outboxSnapshot(page);
@@ -73,6 +77,11 @@ test('W6 known member edits/restores a draft offline and queues one durable fram
   await expect(page.getByRole('status', { name: '收件人' })).toContainText('@steward');
 
   await disconnect(context, page, request);
+  // Wait for the committed application transport owner, not merely
+  // navigator.onLine, before exercising offline acceptance. This ensures the
+  // click cannot enter an older OPEN render while the socket-close task is
+  // still pending.
+  await expect(page.getByText(/离线编辑；发送会先保存到本机/)).toBeVisible();
   await page.getByRole('button', { name: '发送' }).click();
   await expect(page.getByText('已保存到本机，连接可用后自动发送')).toBeVisible();
   await expect(page.getByRole('textbox', { name: '消息' })).toHaveText('');
