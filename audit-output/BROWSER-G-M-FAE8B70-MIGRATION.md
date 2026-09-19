@@ -233,6 +233,81 @@ React “change in the order of Hooks”与 `Should have a queue`，stack 落在
 `test-results-gm-model-shared-5aef9f4-20260920/`、
 `test-results-gm-history-jump-shared-5aef9f4-20260920/`。
 
+## 第八轮：`ef8f906` 的 ModelSelector / history-jump 分拆复核
+
+父分支在上一轮之后落入 `8e3b69f`（随后的当前 HEAD 为 `ef8f906`），因此不能把
+`5aef9f4` 的五条 ModelSelector 红测继续当作当前结果。使用干净 detached HEAD、独立
+端口 `15248/19948` 重跑 ModelSelector 五条，结果为 **5 passed，0 failed，0 blocked**；
+共享工作树端口 `15250/19950` 对照同样为 **5 passed**。
+
+### ModelSelector：旧行为与当前 DOM 的精确差异
+
+旧 `fae8b70` 的 `agentSelectionView()` 从 `agent.select.input_schema.oneOf` 把每个合法
+`(model, effort)` 组合物化为 `selections`；旧 `ModelSelector` 因而在 loaded view 中发布
+`role=menu`，其中有 `role=menuitem` 的“模型”和“推理强度”，再进入
+`role=menu` + `role=menuitemradio` 的选项层，点击后调用 `onChange`、关闭 portal 并恢复
+trigger focus。旧手动 fixture 也是在 80ms 后直接把这份 describe 投影交给 selector，故它
+验证的是可选值域已经物化后的真实 Chromium 行为。
+
+干净 `05b1fff` 的生产 DOM 则是另一条分支：`agent.parameters` 只有 `agent.context`
+当前值，`selections=[]`、`configurable=false`，所以 trigger 的 `[expanded]` 与
+`role=dialog aria-label="steward Agent 状态"` 都有效，dialog 内只显示 `模型 / gpt-5.6-sol`
+只读摘要；React 根本没有生成“模型” `menuitem`，也没有生成选项 `menuitemradio`。这不是
+测试把旧 `role=menu` 选错，也不是权限拒绝：`member_active`、trigger click、context
+usage 和 dialog geometry/hit 均已通过。
+
+`8e3b69f` 的唯一有效修复边界是把 live capability 的 `agent.select.oneOf` 投影回
+`selections`（`describeOptionView`），并将 capability 传给 `projectAgentParameters`；
+当前 `ef8f906` 的 DOM 随即出现 dialog 内“模型/推理强度” `menuitem`，模型层出现
+`menuitemradio`，三种 viewport 的 portal 命中、选择、关闭和 focus-restore 全通过。
+因此五条红测的原始缺口已被证明是 **选项物化 / capability projection 输入层**，不是
+`menuitem` ARIA 角色实现层，也不是 Composer 权限输入层。修复后的唯一 owner 是
+`agent-parameters.js` 的 capability→selection projection（调用端为
+`useComposerCommands`）；`Composer` 只消费已物化的 rows。
+
+证据命令与结果：
+
+```text
+# clean ef8f906
+ATOLL_TEST_MOCK_PORT=19948 ATOLL_TEST_WEB_PORT=15248 npx playwright test \
+  tests/browser/model-selector-manual.spec.js \
+  tests/browser/model-selector-portal.spec.js --reporter=line \
+  --output=test-results-gm-model-head-ef8f906-20260920
+# 5 passed
+
+# shared worktree comparison (only read; no source/test edits by this packet)
+ATOLL_TEST_MOCK_PORT=19950 ATOLL_TEST_WEB_PORT=15250 npx playwright test \
+  tests/browser/model-selector-manual.spec.js \
+  tests/browser/model-selector-portal.spec.js --reporter=line \
+  --output=test-results-gm-model-shared-ef8f906-20260920
+# 5 passed
+```
+
+### History / jump：六条仍严格直联 Reading owner
+
+同一干净 `ef8f906`、端口 `15249/19949` 重跑六条最小严格 oracle，结果为
+**6 tests，0 passed，6 failed，0 blocked**。ModelSelector 的修复没有改变任何 history /
+jump 首断点：
+
+| case | 用户能力 / 严格首断点 | 唯一 owner |
+|---:|---|---|
+| 1 | sparse history prepend 后 list 仍为 `4`，未进入同一 presentation | `useProjectionReadingOwner`（`useConversationProjection.js`）的 admission/session |
+| 2 | reveal sampled frame 出现 `visibleRows=0` 空帧 | `useProjectionReadingOwner` 的 reveal/presentation handoff |
+| 3 | trusted wheel 后 mode 仍 `following`，未交给 browsing | `useProjectionReadingOwner` 的 reading-intent/scroll owner |
+| 8 | underfill settle 后 `historyOneVisible=false` | `useHistoryConsumer` 的 underfill demand/recheck owner |
+| 13 | jump button `jumpVisible=false`（物理 gap=2121） | `useProjectionReadingOwner` 的 live-arrival/unseen/jump boundary |
+| 23 | browsing arrival `browsingRowCount=0`、`jump=false` | `useProjectionReadingOwner` 的 live-arrival/reading-session boundary |
+
+没有把等待/diagnostic 事件、额外 scroll writer、滚底动作或另建列表当作成功。共享工作树
+的同六条对照仍为 0/6/0，并额外打印 React Hook 顺序变更 / `Should have a queue`，stack
+落在 `AuthenticatedWorkspace → useComposerCommands`；干净 `ef8f906` 无该 runtime 噪声，
+故 Hook 问题继续作为并行 dirty owner，不改变六条 Reading 回归裁决。
+
+本轮证据目录（clean）：
+`test-results-gm-model-head-ef8f906-20260920/`、
+`test-results-gm-history-jump-head-ef8f906-20260920/`；共享 ModelSelector 对照为
+`test-results-gm-model-shared-ef8f906-20260920/`。
+
 ## Case ledger
 
 `owner` 是当前生产 owner；`result` 是上述 Chromium 全组轮的逐 case 裁决。每行保留
