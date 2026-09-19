@@ -16,9 +16,31 @@ const ACTIVITY_TYPES = new Set([
   TYPES.agentAsk, TYPES.agentQueue, TYPES.agentCompact,
   TYPES.agentNew, TYPES.agentReplace, TYPES.agentSteer,
 ]);
+// OBS is the current directory projection. A live ledger fact in one of these
+// topology families invalidates that projection; replay and read-only words do
+// not. Keep this predicate at the feed ingress so a batch can coalesce its
+// refresh signal without creating another directory owner.
+const DIRECTORY_INVALIDATION_TYPES = new Set([
+  TYPES.channel.create,
+  TYPES.channel.set,
+  TYPES.channel.remove,
+  TYPES.member.create,
+  TYPES.member.admit,
+  TYPES.member.remove,
+  TYPES.device.attach,
+  TYPES.device.detach,
+  TYPES.device.remove,
+  TYPES.narration.memberCreated,
+  TYPES.narration.memberDeleted,
+  TYPES.narration.channelInbound,
+]);
 const AGENT_ACTIVITY_LIMIT = 512;
 const TIMER_FIRING_LIMIT = 256;
 const ACCESS_UNAVAILABLE_CODES = new Set(['unavailable', 'channel_unavailable']);
+
+function invalidatesChannelDirectory(envelope) {
+  return DIRECTORY_INVALIDATION_TYPES.has(envelope?.type || '');
+}
 
 function historyNumeric(value) {
   const result = Number(value);
@@ -385,6 +407,7 @@ export function createChannelFeedRuntime(options = {}) {
     const closedRequestIDs = new Set();
     const discoveredChannels = new Set();
     let accessChanged = false;
+    let directoryInvalidatedEnvelope = null;
     for (const row of rows || []) {
       const selfID = rosterRef.current?.self?.(row?.channel_id) || '';
       const result = replica.commit(row, selfID, (value) => value, { source });
@@ -407,6 +430,9 @@ export function createChannelFeedRuntime(options = {}) {
           if (rosterRows) callback('onRoster', row.channel_id, rosterRows, producerToken);
           if (error) callback('onError', error);
         });
+        if (!directoryInvalidatedEnvelope && invalidatesChannelDirectory(row.envelope)) {
+          directoryInvalidatedEnvelope = row.envelope;
+        }
       }
       if (row.envelope?.id) {
         landedMessageIDs.add(row.envelope.id);
@@ -429,6 +455,7 @@ export function createChannelFeedRuntime(options = {}) {
         callback('onSubmissionFeed', landedMessageIDs, closedRequestIDs, producerToken);
       }
       if (accessChanged) callback('onAccessChanged');
+      if (directoryInvalidatedEnvelope) callback('onDirectoryInvalidated', directoryInvalidatedEnvelope);
       if (publishChange) publish({ index: true });
       if (persist) void cache.saveRows(accepted).catch(cacheError);
     }
