@@ -417,10 +417,15 @@ export function createChannelFeedRuntime(options = {}) {
       const status = histories.get(row.channel_id);
       if (source === 'live' && status?.attached && status.generation === generation) {
         const nextHead = Math.max(status.headSeq, historyNumeric(row.seq));
-        if (nextHead !== status.headSeq || status.messageCurrent !== true) {
+        const wasCurrent = status.messageCurrent === true;
+        if (nextHead !== status.headSeq || !wasCurrent) {
           status.headSeq = nextHead;
           status.messageCurrent = true;
-          status.notificationAuthorityRevision = ++notificationAuthorityRevision;
+          // A live head advance is not an owner replacement. Frozen
+          // notification confirmations must remain valid while later rows
+          // arrive; only the first transition into a current attached
+          // authority gets a new authority revision.
+          if (!wasCurrent) status.notificationAuthorityRevision = ++notificationAuthorityRevision;
         }
       }
       rosterRef.current?.observeFeed?.(row.channel_id, row.envelope);
@@ -719,8 +724,7 @@ export function createChannelFeedRuntime(options = {}) {
       const headSeq = Math.max(status.headSeq, grantedHeadSeq, replica.visibleNewest(channelId));
       const authorityChanged = status.generation !== generation
         || status.attached !== true
-        || status.messageCurrent !== true
-        || status.headSeq !== headSeq;
+        || status.messageCurrent !== true;
       Object.assign(status, {
         generation, attached: true, messageCurrent: true, headSeq,
         beforeSeq: replica.visibleOldest(channelId) || headSeq + 1,
@@ -836,14 +840,44 @@ export function createChannelFeedRuntime(options = {}) {
       || physicalSeq <= 0 || physicalSeq > status.headSeq) return false;
     return cursors.markRead(channelId, physicalSeq);
   }
-  function acknowledgeNotifications(channelId, confirmation = {}) {
+  // Commit one frozen notification confirmation. The event carries the
+  // boundary selected by its producing Presentation/DOM observation; this
+  // reducer must never replace it with the mutable current head.
+  function acknowledgeNotifications(channelOrEvent, maybeConfirmation = {}) {
+    const event = channelOrEvent && typeof channelOrEvent === 'object'
+      ? channelOrEvent
+      : maybeConfirmation;
+    const channelId = String(
+      (typeof channelOrEvent === 'string' ? channelOrEvent : '')
+      || event?.channelId
+      || event?.authority?.channelId
+      || '',
+    );
     const status = histories.get(channelId);
-    const boundary = historyNumeric(confirmation.boundary);
+    const authority = event?.authority;
+    const owner = event?.owner;
+    const generation = historyNumeric(owner?.generation ?? event?.generation);
+    const authorityRevisionValue = event?.authorityRevision ?? owner?.authorityRevision;
+    const boundary = historyNumeric(event?.boundary);
+    const cause = event?.cause;
+
+    // Flat fields remain the shape emitted by the current Conversation
+    // surface; the structured authority/owner shape is accepted by the same
+    // port. If an authority tuple is supplied, it must name this exact
+    // principal/boot/channel rather than merely a matching channel.
+    if (authority && (
+      String(authority.channelId || '') !== channelId
+      || String(authority.principalId || '') !== principal
+      || String(authority.serverBoot || '') !== world
+    )) return false;
+
     if (!cursors.isReadAuthorityReady() || !status?.attached || !status.messageCurrent
-      || confirmation.generation !== status.generation
-      || confirmation.authorityRevision !== status.notificationAuthorityRevision
-      || confirmation.cause !== 'presented-follow'
-      || boundary !== status.headSeq) return false;
+      || !generation || generation !== status.generation
+      || (authorityRevisionValue != null
+        && historyNumeric(authorityRevisionValue) !== status.notificationAuthorityRevision)
+      || (cause !== 'tail-backlog' && cause !== 'presented-follow')
+      || boundary <= 0 || boundary > status.headSeq) return false;
+
     const previous = cursors.notificationHighWater(channelId);
     const acknowledged = cursors.acknowledgeNotifications(channelId, boundary);
     if (acknowledged > previous) publish();
