@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { actorNameMap } from '../../model/actor-display.js';
+import { READING_MODE } from '../../model/reading-session.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { MessageLayoutProvider } from '../timeline/MessageLayoutState.jsx';
 import { ReadingContainerHandoff } from '../timeline/ReadingContainerHandoff.jsx';
@@ -59,6 +60,20 @@ export function ConversationSurface({
   if (typeof onTaskControl !== 'function') throw new TypeError('ConversationSurface 缺少 Agent 控制 port');
   if (typeof onRequestCapability !== 'function') throw new TypeError('ConversationSurface 缺少能力查询 port');
   if (typeof onCancel !== 'function') throw new TypeError('ConversationSurface 缺少取消命令 port');
+  const viewportRef = useRef(null);
+  const captureFoldAnchor = useCallback(({ anchorID, control, expectedExpanded }) => {
+    const root = control?.closest?.('.timeline-message-list');
+    const controlRect = control?.getBoundingClientRect?.();
+    const rootRect = root?.getBoundingClientRect?.();
+    if (!root || !controlRect || !rootRect || !Number.isFinite(controlRect.top)
+      || !Number.isFinite(rootRect.top) || !Number.isFinite(root.scrollHeight)) return false;
+    return viewportRef.current?.captureContentAnchor?.({
+      anchorID,
+      expectedExpanded,
+      viewportOffset: controlRect.top - rootRect.top,
+      beforeScrollHeight: root.scrollHeight,
+    }) === true;
+  }, []);
   const {
     scope,
     actorFilter,
@@ -68,7 +83,7 @@ export function ConversationSurface({
     toggleActorFilter,
     removeActorFilter,
     toggleFold,
-  } = useTimelinePreferences({ channelId: state.channelId, viewSessions });
+  } = useTimelinePreferences({ channelId: state.channelId, viewSessions, onFoldAnchor: captureFoldAnchor });
   const names = useMemo(() => actorNameMap(roster), [roster]);
   const identityPending = !selfId;
   const projectionScope = identityPending && scope === CONVERSATION_SCOPE.mine
@@ -118,6 +133,12 @@ export function ConversationSurface({
     surfaceVisible,
     onTailCaughtUp,
   });
+  useLayoutEffect(() => {
+    viewportRef.current = viewport;
+    return () => {
+      if (viewportRef.current === viewport) viewportRef.current = null;
+    };
+  }, [viewport]);
   const filterableAgents = useMemo(() => roster.filter((row) => row.kind === 'agent'), [roster]);
   const rosterActorIDs = useMemo(() => new Set(filterableAgents.map((row) => row.id)), [filterableAgents]);
   const staleActorFilters = useMemo(
@@ -185,7 +206,12 @@ export function ConversationSurface({
     composerSendStarted(channelID) {
       if (channelID !== state.channelId) return null;
       const token = viewport.captureBottomIntent();
-      if (!token || !viewport.requestBottom('composer:send-start', token, {
+      // A send is not a request to abandon a browsing position. Only a
+      // reader already following the physical tail may absorb its own
+      // outgoing row through the bottom-intent transaction; browsing keeps
+      // its anchor and lets the ordinary arrival/jump notice own the result.
+      if (!token || token.mode !== READING_MODE.following) return null;
+      if (!viewport.requestBottom('composer:send-start', token, {
         afterPresentationRevision: token.presentationRevision,
         baselineTailID: token.baselineTailID,
       })) return null;

@@ -88,4 +88,35 @@ describe('ReadingSession pure ports', () => {
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     expect(executeReadingDOMCommand({ type: 'unknown' }, { root })).toBe(false);
   });
+
+  it('restores a committed content anchor only after the measured extent changes', () => {
+    const scrollTo = vi.fn();
+    let scrollHeight = 1000;
+    const root = {
+      scrollTop: 200,
+      clientHeight: 400,
+      get scrollHeight() { return scrollHeight; },
+      getBoundingClientRect: () => ({ top: 100 }),
+      querySelectorAll: () => [{
+        getAttribute: (name) => ({
+          'data-fold-id': 'turn:body',
+          'aria-expanded': 'true',
+        }[name] || null),
+        getBoundingClientRect: () => ({ top: 300 }),
+      }],
+      scrollTo,
+    };
+    const command = {
+      type: 'restore-content-anchor',
+      activationID: 'a1', inputEpoch: 2, anchorID: 'turn:body',
+      viewportOffset: 250, beforeScrollHeight: 1000, expectedExpanded: true,
+    };
+
+    expect(executeReadingDOMCommand(command, { root })).toBe(false);
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    scrollHeight = 900;
+    expect(executeReadingDOMCommand(command, { root })).toBe(true);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 150, behavior: 'auto' });
+  });
 });

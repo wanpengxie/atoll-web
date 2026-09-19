@@ -17,8 +17,11 @@ import { diagnostic } from '../../model/diagnostics.js';
 import { HISTORY_URGENCY } from '../../model/history-demand.js';
 import {
   bindLatestIntentTargets,
+  captureContentAnchor,
   cancelReadingControl,
+  consumeContentAnchor,
   consumeLatestIntent,
+  contentAnchorCommand,
   createReadingSession,
   observeReading,
   persistentReadingSession,
@@ -303,6 +306,20 @@ function useProjectionReadingOwner({
     const next = controller.update((current) => takeReadingControl(current, input));
     return Object.freeze({ inputGeneration: next.inputEpoch });
   }, [controller]);
+  const captureContentAnchorForReading = useCallback((detail = {}) => {
+    const before = controller.getSnapshot().session;
+    const after = controller.update((current) => captureContentAnchor(current, detail));
+    return after !== before;
+  }, [controller]);
+  const getContentAnchorCommand = useCallback(
+    () => contentAnchorCommand(controller.getSnapshot().session),
+    [controller],
+  );
+  const consumeContentAnchorCommand = useCallback((command = {}) => {
+    const before = controller.getSnapshot().session;
+    const after = controller.update((current) => consumeContentAnchor(current, command));
+    return after !== before;
+  }, [controller]);
   const updateNavigation = useCallback((input = {}) => {
     const before = controller.getSnapshot().session;
     const after = controller.update((current) => updateReadingControl(current, {
@@ -442,6 +459,9 @@ function useProjectionReadingOwner({
     onNearTop(detail = {}) { return requestHistory('runway', HISTORY_URGENCY.anticipatory, { ...detail, revealRows: HISTORY_RUNWAY_REVEAL_RECORDS, revealBytes: HISTORY_RUNWAY_REVEAL_BYTES }); },
     onUnderfill(detail = {}) { return requestHistory('underfill', HISTORY_URGENCY.anticipatory, { ...detail, consumer: HISTORY_CONSUMER.viewportUnderfill }); },
     beginNavigation,
+    captureContentAnchor: captureContentAnchorForReading,
+    contentAnchorCommand: getContentAnchorCommand,
+    consumeContentAnchor: consumeContentAnchorCommand,
     updateNavigation,
     finishNavigation(input = {}) { return Number(input.inputGeneration) === controller.getSnapshot().session.inputEpoch; },
     cancelNavigation,
@@ -522,8 +542,9 @@ function useProjectionReadingOwner({
     getSession: () => controller.getSnapshot().session,
   }), [
     arrivals?.events?.length, authoritativeEmpty, availability, availabilityError, beginNavigation,
-    bottomReady, cancelNavigation, captureBottomIntent, channelID, controller,
-    currentAdmissionAuthority, history, historyBoundary, historyConsumer, historyStatus,
+    bottomReady, cancelNavigation, captureBottomIntent, captureContentAnchorForReading, channelID, controller,
+    consumeContentAnchorCommand, currentAdmissionAuthority, getContentAnchorCommand,
+    history, historyBoundary, historyConsumer, historyStatus,
     presentationAuthority, presentationInitializing, requestBottom, requestHistory,
     restorePending, session, syncObservationCurrent, syncStatus.error, tailCaughtUp,
   ]);

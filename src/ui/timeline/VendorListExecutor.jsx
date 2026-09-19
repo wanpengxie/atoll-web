@@ -237,22 +237,37 @@ export function VendorListExecutor({
     return executed;
   }, [navigationPolicy, scheduleObserve]);
 
+  const restoreContentAnchor = useCallback((source = 'layout') => {
+    const root = rootRef.current;
+    const owner = readingRef.current;
+    const command = owner.contentAnchorCommand?.();
+    if (!root || !command) return false;
+    const executed = executeReadingDOMCommand(command, {
+      virtuoso: virtuosoRef.current, root,
+    });
+    if (!executed) return false;
+    owner.consumeContentAnchor?.(command);
+    scheduleObserve(source, true);
+    return true;
+  }, [scheduleObserve]);
+
   useLayoutEffect(() => {
     if (!rootNode || typeof globalThis.MutationObserver !== 'function') return undefined;
     // Virtuoso commits its measured spacer in a DOM mutation before paint.
     // Consume the already-owned following intent at that boundary, rather
     // than waiting for the vendor's next-frame followOutput callback.
     const observer = new globalThis.MutationObserver(() => {
+      restoreContentAnchor('layout');
       enforceFollowingTail('layout');
     });
     observer.observe(rootNode, {
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ['style'],
+      attributeFilter: ['style', 'class', 'aria-expanded'],
     });
     return () => observer.disconnect();
-  }, [enforceFollowingTail, rootNode]);
+  }, [enforceFollowingTail, restoreContentAnchor, rootNode]);
 
   useEffect(() => {
     const root = rootNode;
@@ -345,6 +360,7 @@ export function VendorListExecutor({
     const root = rootRef.current;
     const current = reading.getSession();
     if (!root || !snapshot.rows.length) return;
+    restoreContentAnchor('layout');
     const intent = current.bottomIntent;
     if (intent.id && intent.inputEpoch === current.inputEpoch) {
       const key = `tail:${current.activationID}:${intent.id}`;
@@ -381,7 +397,7 @@ export function VendorListExecutor({
       consumedCommandRef.current = key;
       scheduleObserve('layout', true);
     }
-  }, [enforceFollowingTail, navigationPolicy, reading, scheduleObserve, snapshot]);
+  }, [enforceFollowingTail, navigationPolicy, reading, restoreContentAnchor, scheduleObserve, snapshot]);
 
   useLayoutEffect(() => {
     if (focusOnMount && rootNode) executeReadingDOMCommand({ type: 'claim-focus' }, { root: rootNode });
@@ -426,6 +442,7 @@ export function VendorListExecutor({
     components={VIRTUOSO_COMPONENTS}
     context={listContext}
     rangeChanged={(range) => {
+      restoreContentAnchor('layout');
       reportDomEvidence(Object.freeze({
         type: 'materialized-range',
         activationID: reading.activationID,
@@ -449,9 +466,13 @@ export function VendorListExecutor({
     }}
     totalListHeightChanged={() => {
       geometryRevisionRef.current += 1;
+      restoreContentAnchor('layout');
       enforceFollowingTail('layout');
       scheduleObserve('layout');
     }}
-    atBottomStateChange={() => scheduleObserve('layout')}
+    atBottomStateChange={() => {
+      restoreContentAnchor('layout');
+      scheduleObserve('layout');
+    }}
   />;
 }

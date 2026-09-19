@@ -72,6 +72,10 @@ function idleBottomIntent() {
   });
 }
 
+function idleContentAnchor() {
+  return null;
+}
+
 export function createReadingSession({ key, activationID, saved = {} } = {}) {
   if (!key || !activationID) throw new TypeError('reading session requires key and activationID');
   const savedMode = saved.mode === READING_MODE.browsing ? READING_MODE.browsing : READING_MODE.following;
@@ -85,6 +89,7 @@ export function createReadingSession({ key, activationID, saved = {} } = {}) {
     mode: savedMode,
     bookmark: savedMode === READING_MODE.browsing ? normalizedBookmark(saved.bookmark) : null,
     bottomIntent: idleBottomIntent(),
+    contentAnchor: idleContentAnchor(),
     tailEvidence: null,
   });
 }
@@ -121,6 +126,7 @@ export function takeReadingControl(session, { direction = 'browse', gestureID = 
     intentRevision: session.intentRevision + 1,
     mode: READING_MODE.browsing,
     bottomIntent: idleBottomIntent(),
+    contentAnchor: idleContentAnchor(),
     tailEvidence: direction === 'newer' ? Object.freeze({
       gestureID: String(gestureID || inputEpoch),
       inputEpoch,
@@ -155,10 +161,11 @@ export function updateReadingControl(session, {
     && evidence.geometryRevision === nextEvidence.geometryRevision
     && evidence.direction === nextEvidence.direction
   );
-  if (sameEvidence && !session.bottomIntent.id) return session;
+  if (sameEvidence && !session.bottomIntent.id && !session.contentAnchor) return session;
   return next(session, {
     mode: READING_MODE.browsing,
     bottomIntent: idleBottomIntent(),
+    contentAnchor: idleContentAnchor(),
     tailEvidence: sameEvidence ? evidence : nextEvidence,
   });
 }
@@ -189,11 +196,13 @@ export function observeReading(session, observation = {}) {
     ? null
     : observed || session.bookmark;
   const tailEvidence = reachedByCurrentInput ? null : session.tailEvidence;
+  const contentAnchor = mode === READING_MODE.following ? idleContentAnchor() : session.contentAnchor;
   if (geometryRevision === session.geometryRevision
     && mode === session.mode
     && sameBookmark(bookmark, session.bookmark)
-    && tailEvidence === session.tailEvidence) return session;
-  return next(session, { geometryRevision, mode, bookmark, tailEvidence });
+    && tailEvidence === session.tailEvidence
+    && contentAnchor === session.contentAnchor) return session;
+  return next(session, { geometryRevision, mode, bookmark, tailEvidence, contentAnchor });
 }
 
 // This is the product's one explicit scrolling intent. If rows are not ready,
@@ -209,6 +218,7 @@ export function requestLatest(session, id, {
     intentRevision: session.intentRevision + 1,
     mode: READING_MODE.following,
     bookmark: null,
+    contentAnchor: idleContentAnchor(),
     tailEvidence: null,
     bottomIntent: Object.freeze({
       id: String(id),
@@ -218,6 +228,61 @@ export function requestLatest(session, id, {
       targetMessageIDs: Object.freeze([...new Set((targetMessageIDs || []).map(String).filter(Boolean))]),
     }),
   });
+}
+
+// A semantic content choice (for example folding a body) may change the
+// measured height of rows above the reader's current anchor. Capture only the
+// anchor identity and its pre-choice viewport offset here. The list adapter
+// later turns this pending intent into the one typed DOM command after the
+// committed presentation reports a changed extent.
+export function captureContentAnchor(session, {
+  anchorID = '',
+  viewportOffset,
+  beforeScrollHeight,
+  expectedExpanded = null,
+} = {}) {
+  if (session.mode !== READING_MODE.browsing
+    || !anchorID
+    || !Number.isFinite(Number(viewportOffset))
+    || !Number.isFinite(Number(beforeScrollHeight))) return session;
+  return next(session, {
+    contentAnchor: Object.freeze({
+      activationID: session.activationID,
+      inputEpoch: session.inputEpoch,
+      anchorID: String(anchorID),
+      viewportOffset: Number(viewportOffset),
+      beforeScrollHeight: Number(beforeScrollHeight),
+      expectedExpanded: expectedExpanded == null ? null : Boolean(expectedExpanded),
+    }),
+  });
+}
+
+export function contentAnchorCommand(session) {
+  const anchor = session.contentAnchor;
+  if (!anchor
+    || anchor.activationID !== session.activationID
+    || anchor.inputEpoch !== session.inputEpoch
+    || session.mode !== READING_MODE.browsing) return null;
+  return Object.freeze({
+    type: 'restore-content-anchor',
+    activationID: anchor.activationID,
+    inputEpoch: anchor.inputEpoch,
+    anchorID: anchor.anchorID,
+    viewportOffset: anchor.viewportOffset,
+    beforeScrollHeight: anchor.beforeScrollHeight,
+    expectedExpanded: anchor.expectedExpanded,
+  });
+}
+
+export function consumeContentAnchor(session, command = {}) {
+  const anchor = session.contentAnchor;
+  if (!anchor
+    || command.type !== 'restore-content-anchor'
+    || command.activationID !== session.activationID
+    || Number(command.inputEpoch) !== session.inputEpoch
+    || command.anchorID !== anchor.anchorID
+    || Number(command.beforeScrollHeight) !== anchor.beforeScrollHeight) return session;
+  return next(session, { contentAnchor: idleContentAnchor() });
 }
 
 // Durable acceptance correlates the stable outbox identities with the

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   bindLatestIntentTargets,
+  captureContentAnchor,
   cancelReadingControl,
+  consumeContentAnchor,
   consumeLatestIntent,
+  contentAnchorCommand,
   createReadingSession,
   observeReading,
   READING_MODE,
@@ -51,6 +54,53 @@ describe('reading session authority', () => {
     expect(browsing.mode).toBe(READING_MODE.browsing);
     expect(browsing.bottomIntent.id).toBe('');
     expect(consumeLatestIntent(browsing, { ...intent, activationID: 'a1' })).toBe(browsing);
+  });
+
+  it('captures a browsing content anchor and emits one typed restore command', () => {
+    let current = takeReadingControl(session(), { direction: 'older', gestureID: 'fold' });
+    current = captureContentAnchor(current, {
+      anchorID: 'turn:body', viewportOffset: 172.5,
+      beforeScrollHeight: 9912, expectedExpanded: true,
+    });
+    const command = contentAnchorCommand(current);
+    expect(command).toMatchObject({
+      type: 'restore-content-anchor',
+      anchorID: 'turn:body', viewportOffset: 172.5,
+      beforeScrollHeight: 9912, expectedExpanded: true,
+    });
+    const consumed = consumeContentAnchor(current, command);
+    expect(consumed.contentAnchor).toBeNull();
+    expect(contentAnchorCommand(consumed)).toBeNull();
+  });
+
+  it('does not arm content restoration in following and native input revokes browsing capture', () => {
+    const following = session();
+    expect(captureContentAnchor(following, {
+      anchorID: 'tail:body', viewportOffset: 20, beforeScrollHeight: 400,
+    })).toBe(following);
+    let browsing = takeReadingControl(following, { direction: 'older', gestureID: 'fold' });
+    browsing = captureContentAnchor(browsing, {
+      anchorID: 'turn:body', viewportOffset: 20, beforeScrollHeight: 400,
+    });
+    browsing = takeReadingControl(browsing, { direction: 'older', gestureID: 'wheel' });
+    expect(browsing.contentAnchor).toBeNull();
+    expect(contentAnchorCommand(browsing)).toBeNull();
+
+    browsing = takeReadingControl(following, {
+      direction: 'newer', gestureID: 'tail', geometryRevision: 3,
+    });
+    browsing = captureContentAnchor(browsing, {
+      anchorID: 'turn:body', viewportOffset: 20, beforeScrollHeight: 400,
+    });
+    browsing = observeReading(browsing, {
+      activationID: browsing.activationID,
+      atTail: true,
+      source: 'user',
+      inputEpoch: browsing.inputEpoch,
+      geometryRevision: 3,
+    });
+    expect(browsing.mode).toBe(READING_MODE.following);
+    expect(browsing.contentAnchor).toBeNull();
   });
 
   it('consumes the one bottom intent only in its activation and input epoch', () => {

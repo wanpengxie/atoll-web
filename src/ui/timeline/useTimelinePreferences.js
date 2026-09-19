@@ -14,7 +14,7 @@ function readPreferences(channelId, viewSessions) {
   };
 }
 
-export function useTimelinePreferences({ channelId, viewSessions }) {
+export function useTimelinePreferences({ channelId, viewSessions, onFoldAnchor }) {
   const committedOwnerRef = useRef(null);
   const createSession = (nextChannelId, nextViewSessions) => {
     const initial = readPreferences(nextChannelId, nextViewSessions);
@@ -86,12 +86,14 @@ export function useTimelinePreferences({ channelId, viewSessions }) {
       return { ...current, actorFilter: next };
     });
   }, [session.owner]);
-  const toggleFold = useCallback((id, expanded) => {
+  const toggleFold = useCallback((id, expanded, control) => {
+    if (committedOwnerRef.current !== session.owner) return;
+    onFoldAnchor?.({ anchorID: id, control, expectedExpanded: expanded });
     setSession((current) => current.owner !== session.owner ? current : ({
       ...current,
       foldOverrides: new Map(current.foldOverrides).set(id, expanded),
     }));
-  }, [session.owner]);
+  }, [onFoldAnchor, session.owner]);
 
   return {
     scope: session.scope,

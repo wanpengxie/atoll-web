@@ -30,7 +30,7 @@ describe('conversation architecture boundaries', () => {
     // authorized trigger enters the same issuer; runtime geometry remains a
     // Chromium contract, not a jsdom assertion.
     expect(domExecutor.match(/\broot\.scrollTo\(\{/g)).toHaveLength(1);
-    expect(domExecutor).toMatch(/top:\s*command\.reverse === true \? 0 : root\.scrollHeight/);
+    expect(domExecutor).toMatch(/writeScroll\(root, command\.reverse === true \? 0 : root\.scrollHeight\)/);
     expect(list.match(/type:\s*'scroll-tail'/g)).toHaveLength(2);
     expect(list).toMatch(/const enforceFollowingTail = useCallback[\s\S]*?current\.mode !== READING_MODE\.following[\s\S]*?input\.active && input\.direction !== 'newer'[\s\S]*?executeReadingDOMCommand\([\s\S]*?type:\s*'scroll-tail'/);
     expect(list).toMatch(/MutationObserver[\s\S]*?enforceFollowingTail\('layout'\)/);
