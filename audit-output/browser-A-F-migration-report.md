@@ -407,6 +407,18 @@ materialization 首断点，不是把 selector 换掉或放宽断言；本轮诊
 若要把冻结 spec 本身变绿，应由测试 owner 单独提交等价的双向 reader reveal 修复，
 本分区不改断言。
 
+#### HEAD 后续移动的可比性记录：`3e86c0d`（不计数）
+
+审计提交后共享 HEAD 又进入 `68112a3 fix(composer): derive default agent from recent
+interaction`，当前为 `3e86c0d`。在该最新 clean snapshot 上按原始 #31 fixture 重跑时，
+首个 gate 已前移到 `chooseSteward()`：spec 要求可访问名为“选择 Agent”的按钮，但
+当前真实 Chromium 的 composer 已自动选中 `steward`，可见按钮名称变为“steward”，
+因此在六条长回合/authority/role paint 之前以 15s `toBeVisible` 停止。该轮没有改
+selector，也没有把名称变化当作等价通过，故不计入 #31 结果；首个公开 owner 是
+`useAgentProbes`/composer target control 的测试合同交接，不是 notification 或
+Reading fold owner。此前 `668bd55` clean run 的 #31 PASS 仍保留为可比证据，待测试
+合同 owner 处理该公开入口后再在同一当前 HEAD 重跑。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
