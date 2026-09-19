@@ -32,9 +32,9 @@ function canonicalTurn(id, status = '') {
       type: 'agent.ask',
       sender: { id: SELF, kind: 'human' },
       audience: [AGENT],
-      payload: { text: `text-${id}` },
+      payload: { body: { text: `text-${id}` } },
     },
-    provisional: status ? [{ seq: 21, envelope: { payload: { status, controls: [] } } }] : [],
+    provisional: status ? [{ seq: 21, envelope: { payload: { body: { status, controls: [] } } } }] : [],
     terminal: null,
   };
 }

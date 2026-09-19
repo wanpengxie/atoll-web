@@ -41,7 +41,7 @@ function request(id, type = TYPES.agentAsk) {
     sender: { kind: 'human', id: 'me' },
     audience: ['agent'],
     visibility: 'public',
-    payload: type === TYPES.agentSelect ? { model: 'model-a', effort: 'low' } : { text: 'work' },
+    payload: { body: type === TYPES.agentSelect ? { model: 'model-a', effort: 'low' } : { text: 'work' } },
   };
 }
 
@@ -55,7 +55,7 @@ function response(id, parentId, type, payload) {
     sender: { kind: 'agent', id: 'agent' },
     audience: ['me'],
     visibility: 'public',
-    payload,
+    payload: { body: payload },
   };
 }
 
@@ -91,7 +91,7 @@ it('changes the per-row measurement signature when target authority or roster ki
   append(state, 1, request('work'));
   append(state, 2, response('work-progress', 'work', TYPES.agentAsk, {
     status: 'processing',
-    controls: [{ word: TYPES.agentInterrupt }],
+    controls: [{ word: TYPES.agentInterrupt, payload: { target: 'work' } }],
   }));
 
   const view = render(<Timeline {...common(state, { waitingRosterAuthority: null })} />);

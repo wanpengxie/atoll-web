@@ -56,7 +56,7 @@ describe('space administration model', () => {
   it('parses object JSON and reads authoritative terminal phase', () => {
     expect(parseJSONObject('{"x":1}')).toEqual({ x: 1 });
     expect(() => parseJSONObject('[]')).toThrow('JSON 对象');
-    const state = { turns: new Map([['r', { terminal: { payload: { status: 'completed', value: { ok: true } } } }]]) };
+    const state = { turns: new Map([['r', { terminal: { payload: { body: { status: 'completed', value: { ok: true } } } } }]]) };
     expect(terminalValue(state, 'r')).toEqual({ phase: 'completed', value: { ok: true }, error: '' });
     state.turns.get('r').terminalClosureOnly = true;
     expect(terminalValue(state, 'r')).toEqual({

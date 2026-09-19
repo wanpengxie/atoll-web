@@ -16,16 +16,16 @@ const LONG = '这是一段很长的思考记录，'.repeat(12);
 
 // 工具与思考留在过程轨迹；stage:text 是已经发出的对话正文。
 function turnWith({ terminal = null } = {}) {
-  const request = { id: 'req-1', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { text: '解释账本模型' } };
+  const request = { id: 'req-1', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { body: { text: '解释账本模型' } } };
   return {
     requestId: request.id, request, requestSeq: 1, status: terminal ? 'completed' : 'processing',
     latestStatus: terminal ? 'completed' : 'processing', terminal,
     provisional: [
-      { seq: 2, status: 'processing', core: true, envelope: { id: 'p-0', type: 'agent.ask', ts: 105, sender: { id: 'agent-1' }, payload: { status: 'processing', turn_id: 't-1', process: { kind: 'turn', phase: 'started' } } } },
-      { seq: 3, status: 'processing', envelope: { id: 'p-tool-start', type: 'agent.ask', ts: 110, sender: { id: 'agent-1' }, payload: { status: 'processing', process: { kind: 'tool', phase: 'started', tool_call_id: 'call-1', tool: 'search', input: { query: '账本模型', filters: { scope: 'channel' } } } } } },
-      { seq: 4, status: 'processing', envelope: { id: 'p-1', type: 'agent.ask', ts: 115, sender: { id: 'agent-1' }, payload: { status: 'processing', process: { kind: 'stage', stage: 'thinking', text: LONG } } } },
-      { seq: 5, status: 'processing', envelope: { id: 'p-tool-end', type: 'agent.ask', ts: 120, sender: { id: 'agent-1' }, payload: { status: 'processing', process: { kind: 'tool', phase: 'ended', tool_call_id: 'call-1', tool: 'search', outcome: 'completed', detail: '命中 3 条', output: { hits: 3 } } } } },
-      { seq: 6, status: 'processing', envelope: { id: 'p-2', type: 'agent.ask', ts: 125, sender: { id: 'agent-1' }, payload: { status: 'processing', process: { kind: 'stage', stage: 'text', text: '先说结论' } } } },
+      { seq: 2, status: 'processing', core: true, envelope: { id: 'p-0', type: 'agent.ask', ts: 105, sender: { id: 'agent-1' }, payload: { body: { status: 'processing', turn_id: 't-1', process: { kind: 'turn', phase: 'started' } } } } },
+      { seq: 3, status: 'processing', envelope: { id: 'p-tool-start', type: 'agent.ask', ts: 110, sender: { id: 'agent-1' }, payload: { body: { status: 'processing', process: { kind: 'tool', phase: 'started', tool_call_id: 'call-1', tool: 'search', input: { query: '账本模型', filters: { scope: 'channel' } } } } } } },
+      { seq: 4, status: 'processing', envelope: { id: 'p-1', type: 'agent.ask', ts: 115, sender: { id: 'agent-1' }, payload: { body: { status: 'processing', process: { kind: 'stage', stage: 'thinking', text: LONG } } } } },
+      { seq: 5, status: 'processing', envelope: { id: 'p-tool-end', type: 'agent.ask', ts: 120, sender: { id: 'agent-1' }, payload: { body: { status: 'processing', process: { kind: 'tool', phase: 'ended', tool_call_id: 'call-1', tool: 'search', outcome: 'completed', detail: '命中 3 条', output: { hits: 3 } } } } } },
+      { seq: 6, status: 'processing', envelope: { id: 'p-2', type: 'agent.ask', ts: 125, sender: { id: 'agent-1' }, payload: { body: { status: 'processing', process: { kind: 'stage', stage: 'text', text: '先说结论' } } } } },
     ],
     anomalies: [],
   };
@@ -75,7 +75,7 @@ it('处理中：stage:text 显示为正文，工具与思考留在可展开的�
 });
 
 it('落定后过程仍在：收成入口，展开是同一条轨迹', () => {
-  const terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '最终答复' } };
+  const terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed', text: '最终答复' } } };
   renderTurn(turnWith({ terminal }));
   expect(document.querySelector('.agent-progress-text').textContent).toBe('先说结论');
   expect(screen.getByText('最终答复')).toBeTruthy();
@@ -88,7 +88,7 @@ it('落定后过程仍在：收成入口，展开是同一条轨迹', () => {
 
 it('没有文本的思考区间是状态不是记录：显示但点不开', () => {
   const turn = turnWith();
-  turn.provisional = [turn.provisional[0], { seq: 4, status: 'processing', envelope: { id: 'p-1', type: 'agent.ask', ts: 115, sender: { id: 'agent-1' }, payload: { status: 'processing', process: { kind: 'stage', stage: 'thinking', text: '' } } } }];
+  turn.provisional = [turn.provisional[0], { seq: 4, status: 'processing', envelope: { id: 'p-1', type: 'agent.ask', ts: 115, sender: { id: 'agent-1' }, payload: { body: { status: 'processing', process: { kind: 'stage', stage: 'thinking', text: '' } } } } }];
   renderTurn(turn);
   const row = document.querySelector('.progress-row');
   expect(row.textContent).toContain('思考中…');
@@ -135,7 +135,7 @@ it('运行气泡没有过程时只显示 header，一条过程时只占一行；
   expect(document.querySelectorAll('.progress-trail.running .progress-row')).toHaveLength(1);
   cleanup();
 
-  const terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '完成' } };
+  const terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed', text: '完成' } } };
   renderTurn(turnWith({ terminal }));
   fireEvent.click(document.querySelector('.progress-trail.settled .progress-trail-toggle'));
   expect(document.querySelectorAll('.progress-trail.settled .progress-row time')).toHaveLength(0);

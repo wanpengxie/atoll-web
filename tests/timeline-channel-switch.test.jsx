@@ -118,7 +118,7 @@ describe('历史自动懒加载', () => {
   function historyState(count = 160, startSeq = 1) {
     const standalone = Array.from({ length: count }, (_, index) => ({
       seq: startSeq + index,
-      envelope: { id: `history-${startSeq + index}`, kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: `历史 ${startSeq + index}` } },
+      envelope: { id: `history-${startSeq + index}`, kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { body: { text: `历史 ${startSeq + index}` } } },
     }));
     return { channelId: 'c0', rows: new Map(standalone.map((row) => [row.seq, row.envelope])), turns: new Map(), standalone, orphans: [], narration: [], lastSeq: startSeq + count - 1 };
   }
@@ -211,7 +211,7 @@ describe('历史自动懒加载', () => {
 
     const hidden = {
       seq: 90,
-      envelope: { id: 'hidden-session', kind: 'event', type: 'terminal.session', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { event: 'closed' } },
+      envelope: { id: 'hidden-session', kind: 'event', type: 'terminal.session', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { body: { event: 'closed' } } },
     };
     const next = {
       ...initial,

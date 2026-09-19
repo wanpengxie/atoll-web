@@ -22,12 +22,12 @@ afterEach(() => {
 });
 
 function runningTurn() {
-  const request = { id: 'req-1', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { text: '整理研究报告', token: 'secret' } };
+  const request = { id: 'req-1', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { body: { text: '整理研究报告', token: 'secret' } } };
   return {
     requestId: request.id, request, requestSeq: 1, status: 'processing', latestStatus: 'processing', terminal: null,
     provisional: [
-      { seq: 2, status: 'processing', core: true, envelope: { id: 'p-1', type: 'agent.ask', ts: 110, sender: { id: 'agent-1' }, payload: { status: 'processing', detail: '正在整理资料' } } },
-      { seq: 3, status: 'processing', core: true, envelope: { id: 'p-tool', type: 'agent.ask', ts: 120, sender: { id: 'agent-1' }, payload: { status: 'processing', process: { kind: 'tool', phase: 'started', tool_call_id: 'call-1', tool: 'search' } } } },
+      { seq: 2, status: 'processing', core: true, envelope: { id: 'p-1', type: 'agent.ask', ts: 110, sender: { id: 'agent-1' }, payload: { body: { status: 'processing', detail: '正在整理资料' } } } },
+      { seq: 3, status: 'processing', core: true, envelope: { id: 'p-tool', type: 'agent.ask', ts: 120, sender: { id: 'agent-1' }, payload: { body: { status: 'processing', process: { kind: 'tool', phase: 'started', tool_call_id: 'call-1', tool: 'search' } } } } },
     ],
     anomalies: [{ code: 'sample', seq: 4 }],
   };
@@ -64,7 +64,7 @@ it('main Dynamic keeps one rolling activity line inside the processing agent bub
 it('completed answer stays in the agent bubble immediately after its user message', () => {
   const turn = runningTurn();
   turn.status = 'completed';
-  turn.terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '最终答复' } };
+  turn.terminal = { id: 'terminal-1', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed', text: '最终答复' } } };
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 4 };
   const view = render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" turnDetail={{ selected: turn, onClose: () => {} }} />);
   const card = view.container.querySelector('.turn-card');
@@ -82,7 +82,7 @@ it('Agent 最终答复可以建立临时回复目标，处理中气泡不提供�
   expect(screen.queryByRole('button', { name: /回复/ })).toBeNull();
 
   turn.status = 'completed';
-  turn.terminal = { id: 'terminal-reply', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '可以回复我' } };
+  turn.terminal = { id: 'terminal-reply', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed', text: '可以回复我' } } };
   state.lastSeq = 4;
   view.rerender(<Timeline state={state} roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" onReply={onReply} />);
   fireEvent.click(screen.getByRole('button', { name: /回复/ }));
@@ -96,7 +96,7 @@ it('PC 可复制回复正文；移动端短按回复、长按复制且不误触�
   const onReply = vi.fn();
   const turn = runningTurn();
   turn.status = 'completed';
-  turn.terminal = { id: 'terminal-copy', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '只复制这一段正文' } };
+  turn.terminal = { id: 'terminal-copy', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed', text: '只复制这一段正文' } } };
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 4 };
   const view = render(<Timeline state={state} roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent-1', kind: 'agent', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} access="member_active" onReply={onReply} />);
 
@@ -130,8 +130,8 @@ it('PC 可复制回复正文；移动端短按回复、长按复制且不误触�
 });
 
 it('agent.new 成功后只显示一条轻量确认，不伪装成用户聊天消息', () => {
-  const request = { id: 'new-1', type: 'agent.new', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: {} };
-  const turn = { requestId: request.id, request, requestSeq: 1, status: 'completed', provisional: [], anomalies: [], terminal: { id: 'new-1-terminal', type: 'agent.new', ts: 110, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed' } } };
+  const request = { id: 'new-1', type: 'agent.new', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { body: {} } };
+  const turn = { requestId: request.id, request, requestSeq: 1, status: 'completed', provisional: [], anomalies: [], terminal: { id: 'new-1-terminal', type: 'agent.new', ts: 110, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed' } } } };
   const state = { channelId: 'c0', rows: new Map([[1, request], [2, turn.terminal]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 2 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} />);
   expect(screen.getByText('研究员 已开始新对话').getAttribute('role')).toBe('status');
@@ -139,8 +139,8 @@ it('agent.new 成功后只显示一条轻量确认，不伪装成用户聊天消
 });
 
 it('agent.select compact closure 不把缺失 usage 当成成功配置', () => {
-  const request = { id: 'select-1', type: 'agent.select', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { model: 'old' } };
-  const terminal = { id: 'select-terminal', type: 'agent.select', kind: 'response', parent_id: 'select-1', ts: 110, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', usage: { model: 'new', effort: 'high' } } };
+  const request = { id: 'select-1', type: 'agent.select', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { body: { model: 'old' } } };
+  const terminal = { id: 'select-terminal', type: 'agent.select', kind: 'response', parent_id: 'select-1', ts: 110, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed', usage: { model: 'new', effort: 'high' } } } };
   const turn = { requestId: request.id, request, requestSeq: 1, terminalSeq: 2, status: 'completed', latestStatus: 'completed', provisional: [], anomalies: [], terminal, terminalClosureOnly: true };
   const state = { channelId: 'c0', rows: new Map([[1, request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 2 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} capabilityIndex={new Map()} />);
@@ -160,8 +160,8 @@ it('Turn detail exposes audit identifiers without serializing payload JSON', () 
 });
 
 it('同作者五分钟内的连续消息合并身份，但保留每条可聚焦事实', () => {
-  const first = { seq: 1, envelope: { id: 'm-1', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'me', kind: 'human' }, payload: { text: '第一条' } } };
-  const second = { seq: 2, envelope: { id: 'm-2', kind: 'event', type: 'human.note', ts: 2_000, sender: { id: 'me', kind: 'human' }, payload: { text: '第二条' } } };
+  const first = { seq: 1, envelope: { id: 'm-1', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'me', kind: 'human' }, payload: { body: { text: '第一条' } } } };
+  const second = { seq: 2, envelope: { id: 'm-2', kind: 'event', type: 'human.note', ts: 2_000, sender: { id: 'me', kind: 'human' }, payload: { body: { text: '第二条' } } } };
   const state = { channelId: 'c0', rows: new Map([[1, first.envelope], [2, second.envelope]]), turns: new Map(), standalone: [first, second], orphans: [], narration: [], lastSeq: 2 };
   const view = render(<Timeline state={state} roster={[{ id: 'me', name: '我' }]} selfId="me" pending={[]} approvalStates={{}} />);
   expect(view.container.querySelectorAll('.standalone-row')).toHaveLength(2);
@@ -172,7 +172,7 @@ it('同作者五分钟内的连续消息合并身份，但保留每条可聚焦�
 });
 
 it('sender 尚未进入 roster 时按 actor_id 中间段显示名称', () => {
-  const envelope = { id: 'm-actor-id', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'human:root:1787128257816', kind: 'human' }, payload: { text: '名称降级测试' } };
+  const envelope = { id: 'm-actor-id', kind: 'event', type: 'human.note', ts: 1_000, sender: { id: 'human:root:1787128257816', kind: 'human' }, payload: { body: { text: '名称降级测试' } } };
   const state = { channelId: 'c0', rows: new Map([[1, envelope]]), turns: new Map(), standalone: [{ seq: 1, envelope }], orphans: [], narration: [], lastSeq: 1 };
   render(<Timeline state={state} roster={[]} selfId="another-actor" pending={[]} approvalStates={{}} />);
   fireEvent.click(screen.getByRole('button', { name: '@我' }));
@@ -181,7 +181,7 @@ it('sender 尚未进入 roster 时按 actor_id 中间段显示名称', () => {
 });
 
 it('终端会话生命周期不进入动态时间线', () => {
-  const envelope = { id: 'terminal-session-1', kind: 'event', type: 'terminal.session', ts: 1_000, sender: { id: 'me', kind: 'human' }, payload: { session_id: 'session-1', event: 'closed', exit_code: 0 } };
+  const envelope = { id: 'terminal-session-1', kind: 'event', type: 'terminal.session', ts: 1_000, sender: { id: 'me', kind: 'human' }, payload: { body: { session_id: 'session-1', event: 'closed', exit_code: 0 } } };
   const state = { channelId: 'c0', rows: new Map([[1, envelope]]), turns: new Map(), standalone: [{ seq: 1, envelope }], orphans: [], narration: [], lastSeq: 1 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }]} selfId="me" pending={[]} approvalStates={{}} />);
   expect(document.body.textContent).not.toContain('提交了一项操作');
@@ -196,8 +196,8 @@ it('终端会话生命周期不进入动态时间线', () => {
 // "不出现"，而不是它长什么样——等它有了合适的落位，连同这条一起重写。
 it('频道活动不铺进时间线', () => {
   const narration = [
-    { seq: 1, envelope: { id: 'joined-steward', type: 'system.member.created', ts: 1_000, sender: { id: 'system', kind: 'system' }, payload: { member: 'steward', decl_id: 'mock:steward' } } },
-    { seq: 2, envelope: { id: 'joined-service', type: 'system.member.created', ts: 2_000, sender: { id: 'system', kind: 'system' }, payload: { member: 'svcactor', decl_id: 'svcactor' } } },
+    { seq: 1, envelope: { id: 'joined-steward', type: 'system.member.created', ts: 1_000, sender: { id: 'system', kind: 'system' }, payload: { body: { member: 'steward', decl_id: 'mock:steward' } } } },
+    { seq: 2, envelope: { id: 'joined-service', type: 'system.member.created', ts: 2_000, sender: { id: 'system', kind: 'system' }, payload: { body: { member: 'svcactor', decl_id: 'svcactor' } } } },
   ];
   const state = { channelId: 'c0', rows: new Map(), turns: new Map(), standalone: [], orphans: [], narration, lastSeq: 2 };
   render(<Timeline state={state} roster={[{ id: 'steward', name: 'Steward' }]} selfId="me" pending={[]} approvalStates={{}} />);
@@ -208,7 +208,7 @@ it('频道活动不铺进时间线', () => {
 it('消息附件只显示产品摘要，点击整卡进入统一预览', async () => {
   const user = userEvent.setup();
   const turn = runningTurn();
-  turn.request.payload.attachments = [{ resource_id: 'file:report', name: '研究报告.pdf', media_type: 'application/pdf', size: 4096 }];
+  turn.request.payload.body.attachments = [{ resource_id: 'file:report', name: '研究报告.pdf', media_type: 'application/pdf', size: 4096 }];
   const onPreviewResource = vi.fn();
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 3 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }]} selfId="me" pending={[]} approvalStates={{}} onPreviewResource={onPreviewResource} />);
@@ -216,14 +216,14 @@ it('消息附件只显示产品摘要，点击整卡进入统一预览', async (
   expect(screen.queryByText('file:report')).toBeNull();
   expect(screen.queryByText('application/pdf')).toBeNull();
   await user.click(screen.getByRole('button', { name: '预览 研究报告.pdf' }));
-  expect(onPreviewResource).toHaveBeenCalledWith('c0', turn.request.payload.attachments[0]);
+  expect(onPreviewResource).toHaveBeenCalledWith('c0', turn.request.payload.body.attachments[0]);
 });
 
 it('Agent 答复中的显式绝对路径在当前频道打开受控预览', async () => {
   const user = userEvent.setup();
   const turn = runningTurn();
   turn.status = 'completed';
-  turn.terminal = { id: 'terminal-file-ref', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '[main.go](/srv/atoll/channels/c0/main.go:42)' } };
+  turn.terminal = { id: 'terminal-file-ref', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed', text: '[main.go](/srv/atoll/channels/c0/main.go:42)' } } };
   const onPreviewResource = vi.fn();
   const state = { channelId: 'c0', rows: new Map([[1, turn.request]]), turns: new Map([[turn.requestId, turn]]), standalone: [], orphans: [], narration: [], lastSeq: 4 };
   render(<Timeline state={state} roster={[{ id: 'me', name: '我' }, { id: 'agent-1', name: '研究员' }]} selfId="me" pending={[]} approvalStates={{}} onPreviewResource={onPreviewResource} />);
@@ -242,13 +242,13 @@ it('Agent 答复中的显式绝对路径在当前频道打开受控预览', asyn
 it('agent 回合中调用的其它 actor 不铺进对话时间线', () => {
   const ask = { id: 'ask', type: 'agent.ask', kind: 'request', ts: 100, sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], payload: { body: { text: '把 root 拉进来' } } };
   const askTurn = {
-    requestId: 'ask', request: ask, requestSeq: 1, status: 'completed', provisional: [{ seq: 3, status: 'processing', envelope: { payload: { status: 'processing' } } }], anomalies: [],
-    terminal: { id: 'ask-r', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { status: 'completed', text: '已加入' } },
+    requestId: 'ask', request: ask, requestSeq: 1, status: 'completed', provisional: [{ seq: 3, status: 'processing', envelope: { payload: { body: { status: 'processing' } } } }], anomalies: [],
+    terminal: { id: 'ask-r', type: 'agent.ask', ts: 130, sender: { id: 'agent-1', kind: 'agent' }, payload: { body: { status: 'completed', text: '已加入' } } },
   };
   const admit = { id: 'admit', type: 'system.member.admit', kind: 'request', ts: 110, parent_id: 'ask', sender: { id: 'agent-1', kind: 'agent' }, audience: ['system'], payload: { body: { principal: 'root' } } };
   const admitTurn = {
     requestId: 'admit', request: admit, requestSeq: 2, status: 'completed', provisional: [], anomalies: [],
-    terminal: { id: 'admit-r', type: 'system.member.admit', ts: 115, sender: { id: 'system', kind: 'system' }, payload: { status: 'completed', member: 'human:root:1' } },
+    terminal: { id: 'admit-r', type: 'system.member.admit', ts: 115, sender: { id: 'system', kind: 'system' }, payload: { body: { status: 'completed', member: 'human:root:1' } } },
   };
   const state = {
     channelId: 'c0', rows: new Map([[1, ask], [2, admit]]),
@@ -269,22 +269,22 @@ it('裁剪后的 nested compact closure 只关闭调用，不渲染成调用结�
   append(300, {
     id: 'child-final', parent_id: 'child-request', kind: 'response', type: 'tool.lookup', ts: 300,
     sender: { id: 'tool-1', kind: 'tool' }, audience: ['agent-1'], visibility: 'public',
-    payload: { status: 'completed', text: '不应由 compact closure 显示的结果' },
+    payload: { body: { status: 'completed', text: '不应由 compact closure 显示的结果' } },
   });
   for (let seq = 401; seq < 425; seq += 1) append(seq, {
     id: `noise-${seq}`, kind: 'event', type: 'human.note', ts: seq,
-    sender: { id: 'other', kind: 'human' }, visibility: 'public', payload: { text: 'noise' },
+    sender: { id: 'other', kind: 'human' }, visibility: 'public', payload: { body: { text: 'noise' } },
   });
   trimChannelState(state, { maxRows: 8, maxBytes: 1e9 });
   append(100, {
     id: 'root-request', kind: 'request', type: 'report.generate', ts: 100,
     sender: { id: 'me', kind: 'human' }, audience: ['agent-1'], visibility: 'public',
-    payload: { text: '生成报告' },
+    payload: { body: { text: '生成报告' } },
   });
   append(110, {
     id: 'child-request', parent_id: 'root-request', kind: 'request', type: 'tool.lookup', ts: 110,
     sender: { id: 'agent-1', kind: 'agent' }, audience: ['tool-1'], visibility: 'public',
-    payload: { text: '查找资料' },
+    payload: { body: { text: '查找资料' } },
   });
   expect(state.turns.get('child-request')).toMatchObject({ terminalClosureOnly: true });
 
@@ -300,11 +300,11 @@ it('裁剪后的 nested compact closure 只关闭调用，不渲染成调用结�
 
 it('Agent 调用按 parent_id 渲染消息树，每个子节点独立折叠且子过程只留在自己的节点', async () => {
   const user = userEvent.setup();
-  const root = { id: 'root-ask', kind: 'request', type: 'agent.ask', ts: 100, sender: { kind: 'human', id: 'me' }, audience: ['agent-a'], visibility: 'public', correlation_id: 'root-ask', payload: { text: '请协作回答' } };
-  const child = { id: 'child-b', kind: 'request', type: 'agent.ask', ts: 120, sender: { kind: 'agent', id: 'agent-a' }, audience: ['agent-b'], visibility: 'public', parent_id: 'root-ask', correlation_id: 'root-ask', payload: { text: 'B 负责查资料' } };
-  const grandchild = { id: 'child-d', kind: 'request', type: 'agent.ask', ts: 140, sender: { kind: 'agent', id: 'agent-b' }, audience: ['agent-d'], visibility: 'public', parent_id: 'child-b', correlation_id: 'root-ask', payload: { text: 'D 负责核验' } };
-  const response = (id, parentId, sender, process, ts) => ({ id, kind: 'response', type: 'agent.ask', ts, sender: { kind: 'agent', id: sender }, audience: ['me'], visibility: 'public', parent_id: parentId, correlation_id: 'root-ask', payload: { status: 'processing', process } });
-  const terminal = (id, parentId, sender, text, ts) => ({ id, kind: 'response', type: 'agent.ask', ts, sender: { kind: 'agent', id: sender }, audience: ['me'], visibility: 'public', parent_id: parentId, correlation_id: 'root-ask', payload: { status: 'completed', text } });
+  const root = { id: 'root-ask', kind: 'request', type: 'agent.ask', ts: 100, sender: { kind: 'human', id: 'me' }, audience: ['agent-a'], visibility: 'public', correlation_id: 'root-ask', payload: { body: { text: '请协作回答' } } };
+  const child = { id: 'child-b', kind: 'request', type: 'agent.ask', ts: 120, sender: { kind: 'agent', id: 'agent-a' }, audience: ['agent-b'], visibility: 'public', parent_id: 'root-ask', correlation_id: 'root-ask', payload: { body: { text: 'B 负责查资料' } } };
+  const grandchild = { id: 'child-d', kind: 'request', type: 'agent.ask', ts: 140, sender: { kind: 'agent', id: 'agent-b' }, audience: ['agent-d'], visibility: 'public', parent_id: 'child-b', correlation_id: 'root-ask', payload: { body: { text: 'D 负责核验' } } };
+  const response = (id, parentId, sender, process, ts) => ({ id, kind: 'response', type: 'agent.ask', ts, sender: { kind: 'agent', id: sender }, audience: ['me'], visibility: 'public', parent_id: parentId, correlation_id: 'root-ask', payload: { body: { status: 'processing', process } } });
+  const terminal = (id, parentId, sender, text, ts) => ({ id, kind: 'response', type: 'agent.ask', ts, sender: { kind: 'agent', id: sender }, audience: ['me'], visibility: 'public', parent_id: parentId, correlation_id: 'root-ask', payload: { body: { status: 'completed', text } } });
   const envelopes = [
     root,
     response('a-call-b-start', 'root-ask', 'agent-a', { kind: 'tool', phase: 'started', tool_call_id: 'call-b', tool: 'call_actor', input: { actor_id: 'agent-b', type: 'agent.ask', payload: { text: 'B 负责查资料' } } }, 110),

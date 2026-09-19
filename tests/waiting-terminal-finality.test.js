@@ -14,28 +14,28 @@ function row(seq, envelope) {
 function requestRow(seq, id) {
   return row(seq, {
     id, kind: 'request', type: 'agent.ask', sender: { id: SELF, kind: 'human' },
-    audience: [AGENT.id], visibility: 'public', payload: { text: id },
+    audience: [AGENT.id], visibility: 'public', payload: { body: { text: id } },
   });
 }
 
 function queuedRow(seq, id) {
   return row(seq, {
     id: `${id}-queued`, parent_id: id, kind: 'response', type: 'agent.ask', sender: AGENT,
-    audience: [SELF], visibility: 'public', payload: { status: 'queued', controls: [] },
+    audience: [SELF], visibility: 'public', payload: { body: { status: 'queued', controls: [] } },
   });
 }
 
 function terminalRow(seq, id, status = 'completed') {
   return row(seq, {
     id: `${id}-final`, parent_id: id, kind: 'response', type: 'agent.ask', sender: AGENT,
-    audience: [SELF], visibility: 'public', payload: { status, text: 'done' },
+    audience: [SELF], visibility: 'public', payload: { body: { status, text: 'done' } },
   });
 }
 
 function noteRow(seq) {
   return row(seq, {
     id: `note-${seq}`, kind: 'event', type: 'human.note', sender: { id: SELF, kind: 'human' },
-    visibility: 'public', payload: { text: String(seq) },
+    visibility: 'public', payload: { body: { text: String(seq) } },
   });
 }
 
@@ -108,7 +108,7 @@ describe('等待区终态不倒退（Replica fold 为唯一权威）', () => {
     apply(state, { channel_id: CHANNEL, seq: 0.5, envelope: null }, SELF);
     apply(state, row(1000, {
       id: 'older-queued', parent_id: 'older', kind: 'response', type: 'agent.ask', sender: AGENT,
-      audience: [SELF], visibility: 'public', payload: { status: 'queued', controls: [] },
+      audience: [SELF], visibility: 'public', payload: { body: { status: 'queued', controls: [] } },
     }), SELF);
     const waiting = selectWaitingPresentation(state, { controlCurrent: true });
     expect(waiting.map((item) => item.requestId)).toEqual(['older']);
@@ -166,7 +166,7 @@ describe('只有精确 closure 才能替窗口外的 terminal 作证', () => {
     const state = createChannelState(CHANNEL);
     const ask = (seq, id) => row(seq, {
       id, kind: 'request', type: 'human.approve', sender: AGENT,
-      audience: [SELF], visibility: 'public', payload: { text: 'approve me' },
+      audience: [SELF], visibility: 'public', payload: { body: { text: 'approve me' } },
     });
     apply(state, ask(1, 'ask'), SELF);
     expect(state.approvals.has('ask')).toBe(true);

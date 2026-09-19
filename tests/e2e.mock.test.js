@@ -108,15 +108,15 @@ describe('local mock end-to-end', () => {
     const add = (envelope) => rows.push({ channel_id: 'c0', seq: rows.length + 1, envelope: { visibility: 'public', ...envelope } });
     for (let turn = 1; turn <= 7; turn += 1) {
       const root = `root-${turn}`;
-      add({ id: root, kind: 'request', type: 'agent.ask', payload: {}, correlation_id: root });
+      add({ id: root, kind: 'request', type: 'agent.ask', payload: { body: {} }, correlation_id: root });
       for (let step = 1; step <= (turn === 7 ? 300 : 4); step += 1) {
-        add({ id: `${root}-progress-${step}`, kind: 'response', type: 'agent.ask', parent_id: root, correlation_id: root, payload: { status: 'processing' } });
+        add({ id: `${root}-progress-${step}`, kind: 'response', type: 'agent.ask', parent_id: root, correlation_id: root, payload: { body: { status: 'processing' } } });
       }
       if (turn === 6) {
-        add({ id: 'root-6-child', kind: 'request', type: 'tool.call', parent_id: root, correlation_id: root, payload: {} });
-        add({ id: 'root-6-child-terminal', kind: 'response', type: 'tool.call', parent_id: 'root-6-child', correlation_id: root, payload: { status: 'completed' } });
+        add({ id: 'root-6-child', kind: 'request', type: 'tool.call', parent_id: root, correlation_id: root, payload: { body: {} } });
+        add({ id: 'root-6-child-terminal', kind: 'response', type: 'tool.call', parent_id: 'root-6-child', correlation_id: root, payload: { body: { status: 'completed' } } });
       }
-      add({ id: `${root}-terminal`, kind: 'response', type: 'agent.ask', parent_id: root, correlation_id: root, payload: { status: 'completed' } });
+      add({ id: `${root}-terminal`, kind: 'response', type: 'agent.ask', parent_id: root, correlation_id: root, payload: { body: { status: 'completed' } } });
     }
 
     const newest = historyWindow(rows, { targetRows: 200, minimumCompleteRoots: 3 });
@@ -133,7 +133,7 @@ describe('local mock end-to-end', () => {
   it('scheduler history pages are exact raw cursor batches after attach', () => {
     const rows = Array.from({ length: 450 }, (_, index) => ({
       channel_id: 'c0', seq: index + 1,
-      envelope: { id: `row-${index + 1}`, kind: 'event', type: 'human.note', visibility: 'public', payload: {} },
+      envelope: { id: `row-${index + 1}`, kind: 'event', type: 'human.note', visibility: 'public', payload: { body: {} } },
     }));
     const newest = rawHistoryPage(rows, { limit: 200 });
     expect(newest.rows).toHaveLength(200);
@@ -221,9 +221,9 @@ describe('local mock end-to-end', () => {
     await expect(advance()).resolves.toMatchObject({ computation: { status: 'completed', request_id: first.message_id, resumed_request_id: third.message_id, merged_request_ids: [second.message_id] } });
     await waitFor(() => {
       const state = fold(rows, 'root');
-      return state.turns.get(first.message_id)?.terminal?.payload?.status === 'completed'
+      return state.turns.get(first.message_id)?.terminal?.payload?.body?.status === 'completed'
         && state.turns.get(third.message_id)?.latestStatus === 'processing'
-        && state.turns.get(second.message_id)?.terminal?.payload?.merged_into === third.message_id;
+        && state.turns.get(second.message_id)?.terminal?.payload?.body?.merged_into === third.message_id;
     }, 'manual terminal and FIFO resume');
     wire.close();
     await closeServer(server);
@@ -260,22 +260,22 @@ describe('local mock end-to-end', () => {
     }, 'agent-tree terminal');
 
     const entry = orderedTimeline(state).find((item) => item.turn?.requestId === rootId);
-    expect(entry.thread.map((item) => [item.turn.request.payload.text, item.depth])).toEqual([
+    expect(entry.thread.map((item) => [item.turn.request.payload.body.text, item.depth])).toEqual([
       ['B 负责资料分析', 1],
       ['D 负责核验关键事实', 2],
       ['C 负责独立复核', 1],
     ]);
-    const rootProcesses = entry.turn.provisional.map((item) => item.envelope.payload?.process).filter(Boolean);
+    const rootProcesses = entry.turn.provisional.map((item) => item.envelope.payload?.body?.process).filter(Boolean);
     const childB = entry.thread[0].turn;
     const childD = entry.thread[1].turn;
     expect(rootProcesses.filter((process) => process.kind === 'tool').map((process) => process.tool_call_id)).toEqual([
       `${rootId}-call-b`, `${rootId}-call-b`, `${rootId}-call-c`, `${rootId}-call-c`,
     ]);
-    expect(childB.provisional.map((item) => item.envelope.payload?.process?.kind).filter(Boolean)).toEqual(['turn', 'stage', 'tool', 'tool']);
-    expect(childD.provisional.map((item) => item.envelope.payload?.process?.kind).filter(Boolean)).toEqual(['stage']);
+    expect(childB.provisional.map((item) => item.envelope.payload?.body?.process?.kind).filter(Boolean)).toEqual(['turn', 'stage', 'tool', 'tool']);
+    expect(childD.provisional.map((item) => item.envelope.payload?.body?.process?.kind).filter(Boolean)).toEqual(['stage']);
     expect(JSON.stringify(rows)).not.toContain('progress_events');
-    expect(childB.terminal.payload.text).toBe('B 汇总完成');
-    expect(childD.terminal.payload.text).toBe('D 核验完成');
+    expect(childB.terminal.payload.body.text).toBe('B 汇总完成');
+    expect(childD.terminal.payload.body.text).toBe('D 核验完成');
 
     wire.close();
     await closeServer(server);
@@ -315,19 +315,19 @@ describe('local mock end-to-end', () => {
     const hold = await submit('agent.hold', { target: a.message_id });
     await waitFor(() => {
       const state = fold(rows, 'root');
-      return state.turns.get(hold.message_id)?.terminal?.payload?.status === 'completed'
+      return state.turns.get(hold.message_id)?.terminal?.payload?.body?.status === 'completed'
         && state.turns.get(a.message_id)?.latestStatus === 'queued';
     }, 'A held and resumed to queue');
     const replace = await submit('agent.replace', { target: a.message_id, old_text: 'A original', new_text: 'A edited' });
     await waitFor(() => {
       const state = fold(rows, 'root');
-      return state.turns.get(a.message_id)?.terminal?.payload?.replaced_by === replace.message_id
+      return state.turns.get(a.message_id)?.terminal?.payload?.body?.replaced_by === replace.message_id
         && state.turns.get(replace.message_id)?.latestStatus === 'queued';
     }, 'A replaced by the replacement row');
     const unhold = await submit('agent.unhold', {});
     await waitFor(() => {
       const state = fold(rows, 'root');
-      return state.turns.get(unhold.message_id)?.terminal?.payload?.status === 'completed'
+      return state.turns.get(unhold.message_id)?.terminal?.payload?.body?.status === 'completed'
         && state.turns.get(replace.message_id)?.latestStatus === 'processing';
     }, 'replacement row resumed processing');
 
@@ -406,8 +406,8 @@ describe('local mock end-to-end', () => {
       () => new Set(pulses.map((item) => item.channelId)).size === 2,
       'live events in both channels',
     );
-    expect(pulses.some((item) => item.value.payload.text.includes('steward 在线'))).toBe(true);
-    expect(pulses.some((item) => item.value.payload.text.includes('project-agent 正在整理'))).toBe(true);
+    expect(pulses.some((item) => item.value.payload.body.text.includes('steward 在线'))).toBe(true);
+    expect(pulses.some((item) => item.value.payload.body.text.includes('project-agent 正在整理'))).toBe(true);
     expect(pulses.some((item) => item.channelId === 'c0.lobby')).toBe(false);
 
     wire.close();
@@ -487,8 +487,8 @@ describe('local mock end-to-end', () => {
     // attach path now follows the same contract.
     expect(replay.narration).toHaveLength(0);
     expect(replay.approvals).toHaveLength(1);
-    expect(states.get('c0').standalone.at(-1).envelope.payload.text).toContain('c0 独立账本');
-    expect(states.get('c0.project').standalone.at(-1).envelope.payload.text).toContain('c0.project 独立账本');
+    expect(states.get('c0').standalone.at(-1).envelope.payload.body.text).toContain('c0 独立账本');
+    expect(states.get('c0.project').standalone.at(-1).envelope.payload.body.text).toContain('c0.project 独立账本');
     expect(states.has('c0.lobby')).toBe(false);
 
     const accepted = await wire.submit({
@@ -507,7 +507,7 @@ describe('local mock end-to-end', () => {
       'live completed PONG turn',
     );
     expect(liveTurn.provisional.map((value) => value.status)).toEqual(['queued', 'processing', 'processing', 'processing', 'processing']);
-    expect(liveTurn.provisional.filter((value) => value.envelope.payload?.process?.kind === 'tool')).toHaveLength(2);
+    expect(liveTurn.provisional.filter((value) => value.envelope.payload?.body?.process?.kind === 'tool')).toHaveLength(2);
     expect(liveTurn.text).toBe('PONG');
 
     const approvalId = [...states.get('c0').approvals.keys()][0];
@@ -515,7 +515,7 @@ describe('local mock end-to-end', () => {
     await expect(wire.resolve({ channel_id: 'c0', req_id: approvalId, decision: 'approve' }))
       .resolves.toEqual({ req_id: approvalId });
     await waitFor(() => !states.get('c0').approvals.has(approvalId), 'approval terminal response');
-    expect(states.get('c0').turns.get(approvalId).terminal.payload).toMatchObject({
+    expect(states.get('c0').turns.get(approvalId).terminal.payload.body).toMatchObject({
       status: 'completed',
       decision: 'approve',
     });
@@ -576,7 +576,7 @@ describe('local mock end-to-end', () => {
     await requestInitialTails(wire, attachDetail, ['c0']);
     await waitFor(() => states.get('c0')?.lastSeq >= 25, 'seeded replay');
     const terminalOf = (id) => [...(states.get('c0')?.rows.values() || [])]
-      .find((row) => row.kind === 'response' && row.parent_id === id && ['completed', 'failed'].includes(row.payload?.status));
+      .find((row) => row.kind === 'response' && row.parent_id === id && ['completed', 'failed'].includes(row.payload?.body?.status));
 
     // ① request 恒单收件人：多 audience 广播在 gate 整条被拒。
     await expect(wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'broadcast' }, audience: ['steward', 'claude'], visibility: 'public' }))
@@ -586,7 +586,7 @@ describe('local mock end-to-end', () => {
     const describeOf = async (actorId) => {
       const { message_id: id } = await wire.submit({ channel_id: 'c0', msg_type: 'actor.describe', kind: 'request', payload: {}, audience: [actorId], visibility: 'public' });
       await waitFor(() => terminalOf(id), `describe ${actorId}`);
-      return terminalOf(id).payload;
+      return terminalOf(id).payload.body;
     };
     const stewardDescribe = await describeOf('steward');
     expect(stewardDescribe.words['agent.new']).toMatchObject({ description: '新建对话' });
@@ -600,35 +600,35 @@ describe('local mock end-to-end', () => {
     const contextOf = async () => {
       const { message_id: id } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.context', kind: 'request', payload: {}, audience: ['steward'], visibility: 'public' });
       await waitFor(() => terminalOf(id), 'context terminal');
-      return terminalOf(id).payload;
+      return terminalOf(id).payload.body;
     };
     expect(await contextOf()).toMatchObject({ status: 'completed', model: 'gpt-5.6-sol', effort: 'medium', context_window: 200_000 });
 
     // ④ new 是唯一的跨 Provider 语义；前端不提交 Claude 私有的 /clear。
     const { message_id: newId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.new', kind: 'request', payload: {}, audience: ['steward'], visibility: 'public' });
     await waitFor(() => terminalOf(newId), 'new terminal');
-    expect(terminalOf(newId).payload).toMatchObject({ status: 'completed', value: { new: true } });
+    expect(terminalOf(newId).payload.body).toMatchObject({ status: 'completed', value: { new: true } });
 
     // ⑤ select 完整周期：queued→processing→turn process→terminal(新 usage)，成功后 sticky。
     const { message_id: selectId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'light' }, audience: ['steward'], visibility: 'public' });
-    await waitFor(() => terminalOf(selectId)?.payload?.status === 'completed', 'select terminal');
+    await waitFor(() => terminalOf(selectId)?.payload?.body?.status === 'completed', 'select terminal');
     const selectRows = [...states.get('c0').rows.values()].filter((row) => row.parent_id === selectId || row.correlation_id === selectId);
-    expect(selectRows.filter((row) => row.kind === 'response').map((row) => row.payload.status)).toEqual(['queued', 'processing', 'processing', 'completed']);
-    expect(selectRows.find((row) => row.payload?.process?.kind === 'turn')).toBeTruthy();
-    expect(terminalOf(selectId).payload.usage).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
+    expect(selectRows.filter((row) => row.kind === 'response').map((row) => row.payload.body.status)).toEqual(['queued', 'processing', 'processing', 'completed']);
+    expect(selectRows.find((row) => row.payload?.body?.process?.kind === 'turn')).toBeTruthy();
+    expect(terminalOf(selectId).payload.body.usage).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
     expect(await contextOf()).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
 
     // ⑥ 非法组合：failed invalid_args（组合对不是笛卡尔积——gpt-5.4 名下没有 high）。
     const { message_id: badId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'high' }, audience: ['steward'], visibility: 'public' });
     await waitFor(() => terminalOf(badId), 'invalid select terminal');
-    expect(terminalOf(badId).payload).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(terminalOf(badId).payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
     expect(await contextOf()).toMatchObject({ model: 'gpt-5.4', effort: 'light' });
 
     // ⑦ 空对象同样非法（宽松形对齐 loop.go：{} 两字段全空 → 全不匹配 → invalid_args，
     // 恒不"沿用当前值成功"）。
     const { message_id: emptyId } = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: {}, audience: ['steward'], visibility: 'public' });
     await waitFor(() => terminalOf(emptyId), 'empty select terminal');
-    expect(terminalOf(emptyId).payload).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(terminalOf(emptyId).payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
 
     wire.close();
     await closeServer(server);
@@ -663,26 +663,26 @@ describe('local mock end-to-end', () => {
     });
     await waitFor(() => attached, 'slot test attach');
     const terminalOf = (id) => rows.map((row) => row.envelope)
-      .find((value) => value.kind === 'response' && value.parent_id === id && ['completed', 'failed'].includes(value.payload?.status));
+      .find((value) => value.kind === 'response' && value.parent_id === id && ['completed', 'failed'].includes(value.payload?.body?.status));
 
     const busy = await wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'long task' }, audience: ['steward'] });
-    await waitFor(() => rows.some((row) => row.envelope.parent_id === busy.message_id && row.envelope.payload?.status === 'processing'), 'busy turn processing');
+    await waitFor(() => rows.some((row) => row.envelope.parent_id === busy.message_id && row.envelope.payload?.body?.status === 'processing'), 'busy turn processing');
 
     const held = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.4', effort: 'light' }, audience: ['steward'] });
-    await waitFor(() => rows.some((row) => row.envelope.parent_id === held.message_id && row.envelope.payload?.status === 'queued'), 'slot registration receipt');
+    await waitFor(() => rows.some((row) => row.envelope.parent_id === held.message_id && row.envelope.payload?.body?.status === 'queued'), 'slot registration receipt');
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(terminalOf(held.message_id)).toBeUndefined(); // 忙时挂槽，恒不提前生效
 
     const winner = await wire.submit({ channel_id: 'c0', msg_type: 'agent.select', kind: 'request', payload: { model: 'gpt-5.6-terra', effort: 'medium' }, audience: ['steward'] });
     await waitFor(() => terminalOf(held.message_id), 'superseded terminal');
-    expect(terminalOf(held.message_id).payload).toMatchObject({ status: 'failed', error_code: 'superseded' });
+    expect(terminalOf(held.message_id).payload.body).toMatchObject({ status: 'failed', error_code: 'superseded' });
 
     const advance = () => fetchWithSession('/mock/control/advance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms: 0, compute: { channel_id: 'c0' } }) }).then((response) => response.json());
     await advance();
     await advance();
     await advance(); // 第三次步进收口当前 turn → 槽插队执行
-    await waitFor(() => terminalOf(winner.message_id)?.payload?.status === 'completed', 'slot ran after turn close');
-    expect(terminalOf(winner.message_id).payload.usage).toMatchObject({ model: 'gpt-5.6-terra', effort: 'medium' });
+    await waitFor(() => terminalOf(winner.message_id)?.payload?.body?.status === 'completed', 'slot ran after turn close');
+    expect(terminalOf(winner.message_id).payload.body.usage).toMatchObject({ model: 'gpt-5.6-terra', effort: 'medium' });
 
     wire.close();
     await closeServer(server);

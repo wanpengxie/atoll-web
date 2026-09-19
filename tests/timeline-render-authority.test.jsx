@@ -35,7 +35,7 @@ const request = (id, text) => ({
   sender: { kind: 'human', id: 'me' },
   audience: ['agent'],
   visibility: 'public',
-  payload: { text },
+  payload: { body: { text } },
 });
 
 const response = (id, parentId, payload, ts = 110) => ({
@@ -47,7 +47,7 @@ const response = (id, parentId, payload, ts = 110) => ({
   sender: { kind: 'agent', id: 'agent' },
   audience: ['me'],
   visibility: 'public',
-  payload,
+  payload: { body: payload },
 });
 
 function add(state, seq, envelope) {
@@ -59,11 +59,11 @@ function processingState(channelId) {
   add(state, 1, request('work', 'committed work'));
   add(state, 2, response('work-p', 'work', {
     status: 'processing',
-    controls: [{ word: 'agent.interrupt' }],
+    controls: [{ word: 'agent.interrupt', payload: { target: 'work' } }],
   }));
   add(state, 3, response('work-tool', 'work', {
     status: 'processing',
-    controls: [{ word: 'agent.interrupt' }],
+    controls: [{ word: 'agent.interrupt', payload: { target: 'work' } }],
     process: {
       kind: 'tool', phase: 'started', tool_call_id: 'read-1', tool: 'read_file',
     },

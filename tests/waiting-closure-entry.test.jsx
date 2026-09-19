@@ -13,28 +13,28 @@ const AGENT = { id: 'agent:worker:1', kind: 'agent' };
 function request(seq = 1) {
   return { channel_id: CHANNEL, seq, envelope: {
     id: 'work', kind: 'request', type: 'agent.ask', sender: { id: SELF, kind: 'human' },
-    audience: [AGENT.id], visibility: 'public', payload: { text: 'work' },
+    audience: [AGENT.id], visibility: 'public', payload: { body: { text: 'work' } },
   } };
 }
 
 function queued(seq = 2) {
   return { channel_id: CHANNEL, seq, envelope: {
     id: 'work-queued', parent_id: 'work', kind: 'response', type: 'agent.ask', sender: AGENT,
-    audience: [SELF], visibility: 'public', payload: { status: 'queued' },
+    audience: [SELF], visibility: 'public', payload: { body: { status: 'queued' } },
   } };
 }
 
 function terminal(seq = 3) {
   return { channel_id: CHANNEL, seq, envelope: {
     id: 'work-done', parent_id: 'work', kind: 'response', type: 'agent.ask', sender: AGENT,
-    audience: [SELF], visibility: 'public', payload: { status: 'completed', text: 'done' },
+    audience: [SELF], visibility: 'public', payload: { body: { status: 'completed', text: 'done' } },
   } };
 }
 
 function note(seq) {
   return { channel_id: CHANNEL, seq, envelope: {
     id: `note-${seq}`, kind: 'event', type: 'human.note', sender: { id: SELF, kind: 'human' },
-    visibility: 'public', payload: { text: `${seq}` },
+    visibility: 'public', payload: { body: { text: `${seq}` } },
   } };
 }
 

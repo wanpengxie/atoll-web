@@ -15,7 +15,7 @@ function row({ source = 'live', generation = 1, channelId = 'c0', requestId = 'r
       parent_id: requestId,
       sender: { id: agentId, kind: 'agent' },
       ts,
-      payload: { status, ...(process ? { process } : {}) },
+      payload: { body: { status, ...(process ? { process } : {}) } },
     },
   };
 }

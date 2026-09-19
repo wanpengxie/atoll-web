@@ -34,8 +34,8 @@ const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'ag
 // progress 契约：凡带 status（queued/processing）的进度帧必带 controls——受理方在
 // 这条消息自己的账上宣告"此刻可以对它用哪些控制词"。全量快照，后帧覆盖前帧；
 // 控制词消息自身的进度帧恒为空集；终态帧恒不带。前端据此画按钮，不查任何表。
-const QUEUED_CONTROLS = Object.freeze([{ word: 'agent.replace' }, { word: 'agent.steer' }]);
-const PROCESSING_CONTROLS = Object.freeze([{ word: 'agent.interrupt' }, { word: 'agent.replace' }]);
+const QUEUED_CONTROLS = Object.freeze([{ word: 'agent.replace', payload: {} }, { word: 'agent.steer', payload: {} }]);
+const PROCESSING_CONTROLS = Object.freeze([{ word: 'agent.interrupt', payload: {} }, { word: 'agent.replace', payload: {} }]);
 // selections 是组合对目录（协议 §4.2：不是 model×effort 笛卡尔积——某 model
 // 只有某些 effort 合法）。与真后端同源：decl config 的 selections 数组，
 // default 恒是第一条。label 是展示元数据，恒不进当前值/判等。
@@ -169,7 +169,7 @@ function envelope({
     sender,
     kind,
     type,
-    payload,
+    payload: { body: payload },
     ...(parentId ? { parent_id: parentId } : {}),
     ...(correlationId ? { correlation_id: correlationId } : {}),
     visibility,
@@ -392,7 +392,7 @@ export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimu
     if (visibleCount <= target) tailBoundary = index;
     const envelope = row.envelope;
     if (['request', 'response'].includes(envelope.kind)) hasTurnRows = true;
-    if (envelope.kind === 'response' && TERMINAL_STATUSES.has(envelope.payload?.status) && envelope.parent_id) {
+    if (envelope.kind === 'response' && TERMINAL_STATUSES.has(envelope.payload?.body?.status) && envelope.parent_id) {
       terminalParents.add(envelope.parent_id);
     }
     const root = envelope.kind === 'request' && !envelope.parent_id && !isHousekeepingWord(envelope.type);
@@ -418,17 +418,17 @@ export function historyWindow(allRows, { beforeSeq = 0, targetRows = 200, minimu
     .filter((row) => row.envelope.kind === 'request' && isHousekeepingWord(row.envelope.type))
     .map((row) => row.envelope.id));
   const rawTerminalParents = new Set(raw
-    .filter((row) => row.envelope.kind === 'response' && TERMINAL_STATUSES.has(row.envelope.payload?.status) && row.envelope.parent_id)
+    .filter((row) => row.envelope.kind === 'response' && TERMINAL_STATUSES.has(row.envelope.payload?.body?.status) && row.envelope.parent_id)
     .map((row) => row.envelope.parent_id));
   const latestProvisional = new Map();
   for (const row of raw) {
-    if (row.envelope.kind !== 'response' || !row.envelope.parent_id || TERMINAL_STATUSES.has(row.envelope.payload?.status)) continue;
+    if (row.envelope.kind !== 'response' || !row.envelope.parent_id || TERMINAL_STATUSES.has(row.envelope.payload?.body?.status)) continue;
     latestProvisional.set(row.envelope.parent_id, row.seq);
   }
   const rows = raw.filter((row) => {
     if (housekeeping.has(row.envelope.id) || housekeeping.has(row.envelope.parent_id)) return false;
     if (row.envelope.kind !== 'response') return true;
-    if (TERMINAL_STATUSES.has(row.envelope.payload?.status)) return true;
+    if (TERMINAL_STATUSES.has(row.envelope.payload?.body?.status)) return true;
     return !rawTerminalParents.has(row.envelope.parent_id) && latestProvisional.get(row.envelope.parent_id) === row.seq;
   });
   let hasOlder = false;
@@ -687,7 +687,7 @@ export function createMockServer({
   function hasTerminal(channelId, requestId) {
     return (histories.get(channelId) || []).some((row) => row.envelope.kind === 'response'
       && row.envelope.parent_id === requestId
-      && ['completed', 'failed'].includes(row.envelope.payload?.status));
+      && ['completed', 'failed'].includes(row.envelope.payload?.body?.status));
   }
 
   function activeAgentTask(channelId, actorId, excludedId = '') {
@@ -702,8 +702,8 @@ export function createMockServer({
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const value = rows[index].envelope;
       if (value.kind === 'response' && value.parent_id) {
-        if (!latestStatus.has(value.parent_id)) latestStatus.set(value.parent_id, value.payload?.status || '');
-        if (TERMINAL_STATUSES.has(value.payload?.status)) terminalParents.add(value.parent_id);
+        if (!latestStatus.has(value.parent_id)) latestStatus.set(value.parent_id, value.payload?.body?.status || '');
+        if (TERMINAL_STATUSES.has(value.payload?.body?.status)) terminalParents.add(value.parent_id);
         continue;
       }
       if (value.id === excludedId
@@ -721,12 +721,12 @@ export function createMockServer({
   function latestTaskStatus(channelId, requestId) {
     return [...(histories.get(channelId) || [])].reverse()
       .map((row) => row.envelope)
-      .find((value) => value.kind === 'response' && value.parent_id === requestId)?.payload?.status || '';
+      .find((value) => value.kind === 'response' && value.parent_id === requestId)?.payload?.body?.status || '';
   }
 
   function isResumedTask(channelId, requestId) {
     return [...(histories.get(channelId) || [])].reverse().map((row) => row.envelope)
-      .find((value) => value.kind === 'response' && value.parent_id === requestId && value.payload?.status === 'queued')?.payload?.resumed === true;
+      .find((value) => value.kind === 'response' && value.parent_id === requestId && value.payload?.body?.status === 'queued')?.payload?.body?.resumed === true;
   }
 
   function bufferedAgentTasks(channelId, actorId) {
@@ -754,7 +754,7 @@ export function createMockServer({
     const history = histories.get(channelId) || [];
     const previousStep = history
       .filter((row) => row.envelope.kind === 'response' && row.envelope.parent_id === active.id)
-      .map((row) => Number(row.envelope.payload?.mock_compute_step || 0))
+      .map((row) => Number(row.envelope.payload?.body?.mock_compute_step || 0))
       .reduce((maximum, value) => Math.max(maximum, value), 0);
     const selfActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
     const base = {
@@ -778,7 +778,7 @@ export function createMockServer({
       return { status: 'processing', request_id: active.id, step, message };
     }
 
-    const requestText = String(active.payload?.text || '').trim();
+    const requestText = String(active.payload?.body?.text || '').trim();
     append(channelId, envelope({
       ...base,
       id: domain.nextId(`${active.id}-manual-terminal`),
@@ -1177,12 +1177,12 @@ export function createMockServer({
       && value.type !== 'actor.describe' && !value.type.startsWith('system.');
     // 队首行是否带 Resumed 标记（最新 queued 帧 resumed:true；replace 帧继承）。
     const isResumedRow = (requestId) => [...history].reverse().map((row) => row.envelope)
-      .find((value) => value.kind === 'response' && value.parent_id === requestId && value.payload?.status === 'queued')?.payload?.resumed === true;
+      .find((value) => value.kind === 'response' && value.parent_id === requestId && value.payload?.body?.status === 'queued')?.payload?.body?.resumed === true;
 
     const bufferedConversation = () => history.map((row) => row.envelope).filter((value) => (
       isContentRow(value)
       && !hasTerminal(channelId, value.id)
-      && [...history].reverse().map((row) => row.envelope).find((reply) => reply.kind === 'response' && reply.parent_id === value.id)?.payload?.status === 'queued'
+      && [...history].reverse().map((row) => row.envelope).find((reply) => reply.kind === 'response' && reply.parent_id === value.id)?.payload?.body?.status === 'queued'
     // Resumed 件恒在队首（协议：打断退回原下标；replace 新行继承）。mock 无下标，
     // 显式前置；其余保持 FIFO（稳定排序）。
     )).sort((left, right) => Number(isResumedRow(right.id)) - Number(isResumedRow(left.id)));
@@ -1257,7 +1257,7 @@ export function createMockServer({
         if (targetId) {
           if (text.trim() || Object.keys(payload.payload || {}).length !== 1) { fail('invalid_args', 'target form only accepts target'); return; }
           const targetRequest = history.find((row) => row.envelope.id === targetId)?.envelope;
-          const targetPosition = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === targetId)?.payload?.status;
+          const targetPosition = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === targetId)?.payload?.body?.status;
           if (!targetRequest || targetPosition !== 'queued') { fail('cas_mismatch', 'steer target is not buffered'); return; }
           if (targetRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'steer target belongs to another sender'); return; }
           complete({});
@@ -1341,7 +1341,7 @@ export function createMockServer({
         append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed' } }));
         // hold 带 target 且目标正在处理：打断当前 turn，目标消息回到队列头（Resumed）。
         if (targetRequest) {
-          const targetPosition = [...history].reverse().map((value) => value.envelope).find((value) => value.kind === 'response' && value.parent_id === holdTarget)?.payload?.status;
+          const targetPosition = [...history].reverse().map((value) => value.envelope).find((value) => value.kind === 'response' && value.parent_id === holdTarget)?.payload?.body?.status;
           if (targetPosition === 'processing') {
             // 只发 Resumed 帧：消息回队列头，不打终态（活动判定本就从账推，最新帧
             // 变 queued 即不再是活动 turn）。
@@ -1359,15 +1359,15 @@ export function createMockServer({
         if (expectedHold && (currentHold?.source !== 'hold' || currentHold.holdId !== expectedHold)) { fail('cas_mismatch', 'agent hold was superseded before replacement'); return; }
         if (!replaceRequest) { fail('cas_mismatch', 'replace target not found'); return; }
         if (replaceRequest.sender?.id !== selfActorId) { fail('target_not_owned', 'replace target belongs to another sender'); return; }
-        const replacePosition = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === replaceTarget)?.payload?.status;
+        const replacePosition = [...history].reverse().map((row) => row.envelope).find((value) => value.kind === 'response' && value.parent_id === replaceTarget)?.payload?.body?.status;
         if (replacePosition !== 'queued') { fail('cas_mismatch', 'replace target is not buffered'); return; }
         // 当前缓冲文本 = 目标行自己的正文：普通消息在 text，replace 行（新行）在 new_text。
-        const currentText = String(replaceRequest.payload?.new_text ?? replaceRequest.payload?.text ?? '');
+        const currentText = String(replaceRequest.payload?.body?.new_text ?? replaceRequest.payload?.body?.text ?? '');
         if (String(payload.payload?.old_text ?? '') !== currentText) { fail('cas_mismatch', 'old_text does not match the buffered content'); return; }
         // 协议形（§4.6 / loop.go TypeReplace 分支）：原行终态 replaced_by = replace
         // 请求 id；replace 请求自身以原下标入队成为新行，继承 Resumed 标记。
         const targetResumed = [...history].reverse().map((row) => row.envelope)
-          .find((value) => value.kind === 'response' && value.parent_id === replaceTarget && value.payload?.status === 'queued')?.payload?.resumed === true;
+          .find((value) => value.kind === 'response' && value.parent_id === replaceTarget && value.payload?.body?.status === 'queued')?.payload?.body?.resumed === true;
         later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-terminal`, parentId: replaceTarget, correlationId: replaceTarget, kind: 'response', type: replaceRequest.type, payload: { status: 'completed', replaced_by: messageId } })));
         later(30, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', ...(targetResumed ? { resumed: true } : {}), controls: QUEUED_CONTROLS } })));
         return;

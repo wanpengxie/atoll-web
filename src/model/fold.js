@@ -197,8 +197,10 @@ function compactTerminalClosure(envelope) {
     audience: envelope.audience,
     visibility: envelope.visibility,
     payload: {
-      status: payload.status,
-      ...retained,
+      body: {
+        status: payload.status,
+        ...retained,
+      },
     },
   };
 }

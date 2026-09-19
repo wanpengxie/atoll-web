@@ -8,11 +8,12 @@ const base = {
   visibility: 'public',
   audience: ['agent'],
   sender: { kind: 'human', id: 'me' },
-  payload: {},
+  payload: { body: {} },
 };
 
 function env(id, kind, type, extra = {}) {
-  return { ...base, id, kind, type, ...extra };
+  const { payload = {}, ...rest } = extra;
+  return { ...base, id, kind, type, ...rest, payload: { body: payload } };
 }
 
 describe('feed fold', () => {
@@ -57,15 +58,15 @@ describe('feed fold', () => {
   // 那句和 agent 的六次查询在同一层，读的人分不出哪句是主线。
   it('hangs the calls a turn made under that turn instead of beside it', () => {
     const rows = [
-      { channel_id: 'c0', seq: 1, envelope: env('ask', 'request', 'agent.ask', { correlation_id: 'ask', payload: { body: { text: '把 root 拉进来' } } }) },
-      { channel_id: 'c0', seq: 2, envelope: env('describe', 'request', 'actor.describe', { parent_id: 'ask', correlation_id: 'ask', sender: { kind: 'agent', id: 'agent' }, payload: { body: {} } }) },
+      { channel_id: 'c0', seq: 1, envelope: env('ask', 'request', 'agent.ask', { correlation_id: 'ask', payload: { text: '把 root 拉进来' } }) },
+      { channel_id: 'c0', seq: 2, envelope: env('describe', 'request', 'actor.describe', { parent_id: 'ask', correlation_id: 'ask', sender: { kind: 'agent', id: 'agent' }, payload: {} }) },
       { channel_id: 'c0', seq: 3, envelope: env('describe-r', 'response', 'actor.describe', { parent_id: 'describe', correlation_id: 'ask', sender: { kind: 'system', id: 'system' }, payload: { status: 'completed' } }) },
-      { channel_id: 'c0', seq: 4, envelope: env('admit', 'request', 'system.member.admit', { parent_id: 'ask', correlation_id: 'ask', sender: { kind: 'agent', id: 'agent' }, payload: { body: { principal: 'root' } } }) },
+      { channel_id: 'c0', seq: 4, envelope: env('admit', 'request', 'system.member.admit', { parent_id: 'ask', correlation_id: 'ask', sender: { kind: 'agent', id: 'agent' }, payload: { principal: 'root' } }) },
       // 孙代：被 admit 叫出来的再一跳，也归到同一条 thread 上。
-      { channel_id: 'c0', seq: 5, envelope: env('nested', 'request', 'system.member.list', { parent_id: 'admit', correlation_id: 'ask', sender: { kind: 'agent', id: 'agent' }, payload: { body: {} } }) },
+      { channel_id: 'c0', seq: 5, envelope: env('nested', 'request', 'system.member.list', { parent_id: 'admit', correlation_id: 'ask', sender: { kind: 'agent', id: 'agent' }, payload: {} }) },
       { channel_id: 'c0', seq: 6, envelope: env('ask-r', 'response', 'agent.ask', { parent_id: 'ask', correlation_id: 'ask', sender: { kind: 'agent', id: 'agent' }, payload: { status: 'completed', text: '已加入' } }) },
       // 另一条主线：没有 parent 的请求仍然是根。
-      { channel_id: 'c0', seq: 7, envelope: env('own', 'request', 'system.channel.list', { correlation_id: 'own', payload: { body: {} } }) },
+      { channel_id: 'c0', seq: 7, envelope: env('own', 'request', 'system.channel.list', { correlation_id: 'own', payload: {} }) },
     ];
     const state = fold(rows, 'me');
     expect(state.turns.size).toBe(5);
@@ -82,7 +83,7 @@ describe('feed fold', () => {
   // 父不在本频道（跨频道来的、或还没回放到）时宁可平铺，也不能让它从时间线上消失。
   it('keeps a call whose parent this channel never saw', () => {
     const rows = [
-      { channel_id: 'c0', seq: 1, envelope: env('orphaned', 'request', 'system.member.list', { parent_id: 'elsewhere', correlation_id: 'elsewhere', payload: { body: {} } }) },
+      { channel_id: 'c0', seq: 1, envelope: env('orphaned', 'request', 'system.member.list', { parent_id: 'elsewhere', correlation_id: 'elsewhere', payload: {} }) },
     ];
     expect(orderedTimeline(fold(rows, 'me')).map((entry) => entry.turn.requestId)).toEqual(['orphaned']);
   });
@@ -90,7 +91,7 @@ describe('feed fold', () => {
   it('does not reparent an exposed root when an older history page reveals its parent', () => {
     const state = createChannelState('c0');
     apply(state, { channel_id: 'c0', seq: 20, envelope: env('child', 'request', 'system.member.list', {
-      parent_id: 'parent', correlation_id: 'parent', payload: { body: {} },
+      parent_id: 'parent', correlation_id: 'parent', payload: {},
     }) }, 'me');
 
     expect(orderedTimeline(state).map((entry) => entry.turn.requestId)).toEqual(['child']);
@@ -107,7 +108,7 @@ describe('feed fold', () => {
   it('keeps publishing an exposed child root after a late parent arrives', () => {
     const state = createChannelState('c0');
     apply(state, { channel_id: 'c0', seq: 20, envelope: env('child', 'request', 'system.member.list', {
-      parent_id: 'parent', correlation_id: 'parent', payload: { body: {} },
+      parent_id: 'parent', correlation_id: 'parent', payload: {},
     }) }, 'me');
     orderedTimeline(state);
 

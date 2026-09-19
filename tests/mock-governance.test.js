@@ -66,19 +66,19 @@ describe('mock system actor governance', () => {
     // 所有治理词都发给本频道的 system actor；空间词由它转交 registrar。
     const call = async (channelId, msgType, payload = {}, id = undefined) => {
       const receipt = await wire.submit({ channel_id: channelId, ...(id ? { id } : {}), msg_type: msgType, kind: 'request', payload, audience: ['system'] });
-      return waitFor(() => envelopes.find((entry) => entry.parent_id === receipt.message_id && ['completed', 'failed'].includes(entry.payload?.status)));
+      return waitFor(() => envelopes.find((entry) => entry.parent_id === receipt.message_id && ['completed', 'failed'].includes(entry.payload?.body?.status)));
     };
 
     const list = await call('c0', 'system.channel.list');
-    expect(list.payload.value.map((channel) => channel.id)).toEqual(expect.arrayContaining(['c0', 'c0.project', 'c0.public']));
-    expect(list.payload.value.some((channel) => channel.id === 'c0.lobby')).toBe(false);
+    expect(list.payload.body.value.map((channel) => channel.id)).toEqual(expect.arrayContaining(['c0', 'c0.project', 'c0.public']));
+    expect(list.payload.body.value.some((channel) => channel.id === 'c0.lobby')).toBe(false);
 
     // 子频道里同样只认识 system actor。
     const peerList = await call('c0.project', 'system.channel.list', {}, 'peer-list');
-    expect(peerList.payload.status).toBe('completed');
+    expect(peerList.payload.body.status).toBe('completed');
 
     const created = await call('c0', 'system.member.create', { decl_id: 'mock:analyst' });
-    const memberId = created.payload.member;
+    const memberId = created.payload.body.member;
     expect(memberId).toBeTruthy();
     const roster = await fetchWithSession('/obs/channel/c0/actors').then((response) => response.json());
     expect(roster.items.map((entry) => entry.declared.id)).toContain(memberId);
@@ -86,22 +86,22 @@ describe('mock system actor governance', () => {
     expect(roster.items.map((entry) => entry.declared.id)).not.toContain('coreactor');
 
     const restarted = await call('c0', 'system.member.restart', { member: memberId });
-    expect(restarted.payload.member).toBe(memberId);
+    expect(restarted.payload.body.member).toBe(memberId);
 
     const invalid = await call('c0', 'system.member.restart', { member: memberId, actor_id: 'legacy' });
-    expect(invalid.payload).toMatchObject({ status: 'failed', error_code: 'bad_payload' });
+    expect(invalid.payload.body).toMatchObject({ status: 'failed', error_code: 'bad_payload' });
 
     const guarded = await call('c0', 'system.member.restart', { member: 'system' });
-    expect(guarded.payload).toMatchObject({ status: 'failed', error_code: 'protected_actor' });
+    expect(guarded.payload.body).toMatchObject({ status: 'failed', error_code: 'protected_actor' });
 
     const removed = await call('c0', 'system.member.delete', { member: memberId });
-    expect(removed.payload.removed).toEqual([memberId]);
+    expect(removed.payload.body.removed).toEqual([memberId]);
 
     const invalidAdmit = await call('c0', 'system.member.admit', { principal: 'steward' });
-    expect(invalidAdmit.payload).toMatchObject({ status: 'failed' });
+    expect(invalidAdmit.payload.body).toMatchObject({ status: 'failed' });
 
 		const design = await call('c0', 'system.channel.create', { name: 'design', recipe: { declarations: [] }, initial_actor_ids: ['root'] });
-    expect(design.payload.value).toMatchObject({ channel_id: 'c0.design' });
+    expect(design.payload.body.value).toMatchObject({ channel_id: 'c0.design' });
     const children = await fetchWithSession('/obs/space/channels?parent_id=c0').then((response) => response.json());
     expect(children.items.map((entry) => entry.declared.id)).toContain('c0.design');
 

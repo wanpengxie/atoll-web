@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { fold } from '../src/model/fold.js';
 
-const base = { ts: 1, channel_id: 'c0', visibility: 'public', audience: ['agent'], sender: { kind: 'human', id: 'me' }, payload: {} };
-const env = (id, kind, type, extra = {}) => ({ ...base, id, kind, type, ...extra });
+const base = { ts: 1, channel_id: 'c0', visibility: 'public', audience: ['agent'], sender: { kind: 'human', id: 'me' }, payload: { body: {} } };
+const env = (id, kind, type, extra = {}) => {
+  const { payload = {}, ...rest } = extra;
+  return { ...base, id, kind, type, ...rest, payload: { body: payload } };
+};
 const rows = (envelopes) => envelopes.map((envelope, index) => ({ channel_id: 'c0', seq: index + 1, envelope }));
 
 describe('Phase B request fold', () => {
@@ -16,7 +19,7 @@ describe('Phase B request fold', () => {
     expect([...state.turns.keys()]).toEqual(['req-1', 'req-2']);
     expect(state.correlations.get('work')).toEqual(['req-1', 'req-2']);
     expect(state.turns.get('req-1').text).toBe('one');
-    expect(state.turns.get('req-2').terminal.payload.merged).toBe(true);
+    expect(state.turns.get('req-2').terminal.payload.body.merged).toBe(true);
   });
 
   it('reconciles state and process responses that arrive before their request', () => {
@@ -28,7 +31,7 @@ describe('Phase B request fold', () => {
     ]));
     const turn = state.turns.get('req');
     expect(turn.provisional.map((item) => item.status)).toEqual(['queued', 'processing']);
-    expect(turn.provisional[1].envelope.payload.process.tool_call_id).toBe('tool-1');
+    expect(turn.provisional[1].envelope.payload.body.process.tool_call_id).toBe('tool-1');
     expect(turn.phase).toBe('completed');
     expect(turn.anomalies.map((item) => item.code)).toContain('tool_start_missing');
   });
@@ -51,7 +54,7 @@ describe('Phase B request fold', () => {
       ['received', true], ['queued', true], ['processing', true], ['deferred', true], ['unavailable', true],
       ['provider.waiting', false],
     ]);
-    expect(turn.provisional.find((item) => item.status === 'deferred').envelope.payload.retry_after_ms).toBe(500);
+    expect(turn.provisional.find((item) => item.status === 'deferred').envelope.payload.body.retry_after_ms).toBe(500);
     expect(turn.phase).toBe('completed');
     expect(turn.terminal.id).toBe('done');
     expect(turn.lastSeq).toBe(10);

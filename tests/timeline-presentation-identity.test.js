@@ -9,7 +9,7 @@ import {
 
 const message = (id, seq, text = id, sender = 'agent-a') => ({
   kind: 'standalone', seq,
-  envelope: { id, seq, ts: seq * 1_000, sender: { id: sender }, payload: { text } },
+  envelope: { id, seq, ts: seq * 1_000, sender: { id: sender }, payload: { body: { text } } },
 });
 
 const turnEntry = (id, seq, {
@@ -27,11 +27,11 @@ const turnEntry = (id, seq, {
     request: {
       id, seq, kind: 'request', type, ts: seq * 1_000,
       sender: { id: 'human-a' }, audience: ['agent-a'],
-      payload: target ? { target } : {},
+      payload: { body: target ? { target } : {} },
     },
     terminal: replacedBy ? {
       id: `${id}:terminal`, seq: seq + 1, kind: 'response', type,
-      parent_id: id, sender: { id: 'agent-a' }, payload: { status: 'completed', replaced_by: replacedBy },
+      parent_id: id, sender: { id: 'agent-a' }, payload: { body: { status: 'completed', replaced_by: replacedBy } },
     } : null,
     terminalSeq: replacedBy ? seq + 1 : 0,
   },
@@ -179,8 +179,8 @@ describe('immutable conversation presentation', () => {
     const projector = createConversationPresentation();
     const entry = message('m1', 1, 'before');
     const snapshot = projector.project([entry], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
-    entry.envelope.payload.text = 'after';
-    expect(snapshot.entities.get('m1').body.envelope.payload.text).toBe('before');
+    entry.envelope.payload.body.text = 'after';
+    expect(snapshot.entities.get('m1').body.envelope.payload.body.text).toBe('before');
     expect(Object.isFrozen(snapshot.entities.get('m1').body)).toBe(true);
     expect(snapshot.entities).not.toHaveProperty('set');
   });
@@ -227,7 +227,7 @@ describe('immutable conversation presentation', () => {
     const progress = {
       id: 'progress', type: childRequest.type, kind: 'response', parent_id: childRequest.id,
       seq: 9_001, ts: 9_001_000, sender: { id: 'agent-a' },
-      payload: { status: 'processing', process: { kind: 'stage', text: 'working' } },
+      payload: { body: { status: 'processing', process: { kind: 'stage', text: 'working' } } },
     };
     // Fold owns and mutates this input turn in place. Presentation must read
     // that committed source fact while keeping the already-published snapshot
@@ -371,7 +371,7 @@ describe('immutable conversation presentation', () => {
     });
     const control = {
       kind: 'standalone', seq: 21,
-      envelope: { id: 'expired', type: 'agent.hold_expired', seq: 21, sender: { id: 'system' }, payload: {} },
+      envelope: { id: 'expired', type: 'agent.hold_expired', seq: 21, sender: { id: 'system' }, payload: { body: {} } },
     };
     const prepended = projector.project([message('m1', 10), current, control], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 21,

@@ -16,7 +16,7 @@ const roster = [
 const emptyState = () => ({ turns: new Map() });
 
 function completedTurn(channelId = 'new-id') {
-  return { terminal: { payload: { status: 'completed', value: { channel_id: channelId } } } };
+  return { terminal: { payload: { body: { status: 'completed', value: { channel_id: channelId } } } } };
 }
 
 describe('ChannelCreateModal', () => {
@@ -72,7 +72,7 @@ describe('ChannelCreateModal', () => {
 
     const body = { declarations: [{ decl_id: 'mock:analyst' }], profile: { serving: 1 } };
     rerender(<ChannelCreateModal {...props} state={{ turns: new Map([['template-request', {
-      terminal: { payload: { status: 'completed', value: { id: 'team', body } } },
+      terminal: { payload: { body: { status: 'completed', value: { id: 'team', body } } } },
     }]]) }} />);
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
     expect(onSubmit).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -94,7 +94,7 @@ describe('ChannelCreateModal', () => {
     await user.click(screen.getByRole('button', { name: '创建频道' }));
     rerender(<ChannelCreateModal {...props} state={{ turns: new Map([['template-request', {
       terminalClosureOnly: true,
-      terminal: { payload: { status: 'completed' } },
+      terminal: { payload: { body: { status: 'completed' } } },
     }]]) }} />);
     await Promise.resolve();
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -131,7 +131,7 @@ describe('ChannelCreateModal', () => {
     expect(screen.getByLabelText('新频道名称').value).toBe('backend');
 
     await user.click(screen.getByRole('button', { name: '创建频道' }));
-    rerender(<ChannelCreateModal channel={channel} channels={[]} roster={roster} selfId="human:root:1" state={{ turns: new Map([['request-2', { terminal: { payload: { status: 'failed', reason: '名称已存在' } } }]]) }} onSubmit={onSubmit} onClose={() => {}} />);
+    rerender(<ChannelCreateModal channel={channel} channels={[]} roster={roster} selfId="human:root:1" state={{ turns: new Map([['request-2', { terminal: { payload: { body: { status: 'failed', reason: '名称已存在' } } } }]]) }} onSubmit={onSubmit} onClose={() => {}} />);
     expect(screen.getByText(/账本失败：名称已存在/)).toBeTruthy();
     expect(screen.getByLabelText('频道用途').value).toBe('后端协作');
     expect(screen.getByRole('button', { name: '重新创建' })).toBeTruthy();

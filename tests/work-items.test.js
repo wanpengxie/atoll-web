@@ -3,7 +3,7 @@ import { fold } from '../src/model/fold.js';
 import { buildWorkItemIndex, filterWorkItems, taskProviders, workItemGroup } from '../src/model/work-items.js';
 
 function env(id, kind, type, payload, extra = {}) {
-  return { id, kind, type, payload, ts: extra.ts || 100, sender: extra.sender || { kind: 'human', id: 'me' }, audience: extra.audience || ['agent'], ...extra };
+  return { id, kind, type, payload: { body: payload }, ts: extra.ts || 100, sender: extra.sender || { kind: 'human', id: 'me' }, audience: extra.audience || ['agent'], ...extra };
 }
 
 function row(seq, envelope) { return { channel_id: 'c1', seq, envelope }; }

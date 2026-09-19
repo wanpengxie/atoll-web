@@ -40,24 +40,24 @@ function mixedAgentTurns() {
   append(1, {
     id: 'ask-codex', kind: 'request', type: 'agent.ask',
     sender: { id: selfId, kind: 'human' }, audience: ['agent:codex:200'],
-    correlation_id: 'ask-codex', payload: { text: 'Codex question' },
+    correlation_id: 'ask-codex', payload: { body: { text: 'Codex question' } },
   });
   append(2, {
     id: 'done-codex', kind: 'response', type: 'agent.ask',
     sender: { id: 'agent:codex:200', kind: 'agent' }, audience: [selfId],
     parent_id: 'ask-codex', correlation_id: 'ask-codex',
-    payload: { status: 'completed', text: 'Codex answer' },
+    payload: { body: { status: 'completed', text: 'Codex answer' } },
   });
   append(3, {
     id: 'ask-claude', kind: 'request', type: 'agent.ask',
     sender: { id: selfId, kind: 'human' }, audience: ['agent:claude:300'],
-    correlation_id: 'ask-claude', payload: { text: 'Claude question' },
+    correlation_id: 'ask-claude', payload: { body: { text: 'Claude question' } },
   });
   append(4, {
     id: 'done-claude', kind: 'response', type: 'agent.ask',
     sender: { id: 'agent:claude:300', kind: 'agent' }, audience: [selfId],
     parent_id: 'ask-claude', correlation_id: 'ask-claude',
-    payload: { status: 'completed', text: 'Claude answer' },
+    payload: { body: { status: 'completed', text: 'Claude answer' } },
   });
   return { state, selfId };
 }
@@ -84,19 +84,19 @@ function incarnationAndSystemHeavyState() {
       visibility: 'system',
       sender: { id: 'system:c0:1', kind: 'system' },
       audience: [],
-      payload: { member: `opaque-${seq}` },
+      payload: { body: { member: `opaque-${seq}` } },
     });
   }
   applyEnvelope(25, {
     id: 'opaque-ask-claude', kind: 'request', type: 'agent.ask',
     sender: { id: historicalSelf, kind: 'human' }, audience: [claude],
-    correlation_id: 'opaque-ask-claude', payload: { text: '跨 incarnation 的 Claude 问题' },
+    correlation_id: 'opaque-ask-claude', payload: { body: { text: '跨 incarnation 的 Claude 问题' } },
   });
   applyEnvelope(26, {
     id: 'opaque-done-claude', kind: 'response', type: 'agent.ask',
     sender: { id: claude, kind: 'agent' }, audience: [historicalSelf],
     parent_id: 'opaque-ask-claude', correlation_id: 'opaque-ask-claude',
-    payload: { status: 'completed', text: '跨 incarnation 的 Claude 回答' },
+    payload: { body: { status: 'completed', text: '跨 incarnation 的 Claude 回答' } },
   });
   return { state, claude };
 }
@@ -107,7 +107,7 @@ it('same-phase Admission authority advance forces a fresh projection after stale
     envelope: {
       id: 'baseline', kind: 'event', type: 'message.posted', ts: 1,
       sender: { id: 'agent:test:1', kind: 'agent' },
-      payload: { text: 'baseline' },
+      payload: { body: { text: 'baseline' } },
     },
   }]);
   const admission = {
@@ -241,7 +241,7 @@ it('无 self 身份的全部视图仍会静默补齐被协议事实遮住的语�
     seq: 9,
     envelope: {
       id: 'hidden-session-tail', kind: 'event', type: 'terminal.session', visibility: 'public',
-      sender: { id: 'system:channel:1', kind: 'system' }, audience: [], payload: { event: 'closed' },
+      sender: { id: 'system:channel:1', kind: 'system' }, audience: [], payload: { body: { event: 'closed' } },
     },
   }]);
   const request = vi.fn(() => new Promise(() => {}));
@@ -276,7 +276,7 @@ it('断线本地首批无匹配行时继续读取更深 IndexedDB 语义供给',
     seq: 90,
     envelope: {
       id: 'cached-other-tail', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { text: 'not mine' },
+      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { body: { text: 'not mine' } },
     },
   }]);
   const request = vi.fn(() => new Promise(() => {}));
@@ -418,7 +418,7 @@ it('零行筛选供给失败后由 scheduler 状态推进恢复并保留前台�
     seq: 9,
     envelope: {
       id: 'unrelated-tail', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { text: 'not mine' },
+      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { body: { text: 'not mine' } },
     },
   }]);
   const request = vi.fn()
@@ -465,7 +465,7 @@ it('零行且已扫描过页面时仍展示当前 source 失败并由 Retry 重�
     seq: 9,
     envelope: {
       id: 'unrelated-before-source-failure', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { text: 'not mine' },
+      sender: { id: 'other', kind: 'human' }, audience: ['other'], payload: { body: { text: 'not mine' } },
     },
   }]);
   const request = vi.fn(() => new Promise(() => {}));
@@ -504,7 +504,7 @@ it('已缓存正文在前台历史失败时保持可读并显示同一 Retry 入
     seq: 9,
     envelope: {
       id: 'cached-visible', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'me', kind: 'human' }, audience: ['me'], payload: { text: 'Cached body stays' },
+      sender: { id: 'me', kind: 'human' }, audience: ['me'], payload: { body: { text: 'Cached body stays' } },
     },
   }]);
   const request = vi.fn(() => new Promise(() => {}));
@@ -539,7 +539,7 @@ it('已缓存正文不被纯后台 source 错误覆盖', async () => {
     seq: 9,
     envelope: {
       id: 'cached-visible-background-error', kind: 'event', type: 'human.note', visibility: 'public',
-      sender: { id: 'me', kind: 'human' }, audience: ['me'], payload: { text: 'Readable cached body' },
+      sender: { id: 'me', kind: 'human' }, audience: ['me'], payload: { body: { text: 'Readable cached body' } },
     },
   }]);
   render(<Timeline
@@ -622,7 +622,7 @@ it('成员过滤按钮收窄呈现条目', async () => {
       visibility: 'public',
       sender: { id: agentId, kind: 'agent' },
       audience: ['me'],
-      payload: { text: `来自 ${agentId}` },
+      payload: { body: { text: `来自 ${agentId}` } },
     },
   }));
   const state = timelineState(standalone);
@@ -650,7 +650,7 @@ it('旧incarnation的持久筛选始终可见可移除，不装作未过滤空�
     envelope: {
       id: 'new-incarnation-message', kind: 'event', type: 'human.note', visibility: 'public',
       sender: { id: 'agent:codex:new', kind: 'agent' }, audience: ['me'],
-      payload: { text: '新 incarnation 的真实动态' },
+      payload: { body: { text: '新 incarnation 的真实动态' } },
     },
   }]);
   render(<Timeline
@@ -731,7 +731,7 @@ it('过滤后的首个物理批次显示稳定查找说明并保持同一前台�
     envelope: {
       id: 'unrelated-first-page', kind: 'event', type: 'human.note', visibility: 'public',
       sender: { id: 'other', kind: 'human' }, audience: ['other'],
-      payload: { text: '首批仅有不相关事实' },
+      payload: { body: { text: '首批仅有不相关事实' } },
     },
   }]);
   const base = {
@@ -777,8 +777,8 @@ it('过滤后的首个物理批次显示稳定查找说明并保持同一前台�
 
 it('身份迟到前临时显示全部但保留 Mine 偏好，身份到达后原地恢复 Mine', async () => {
   const standalone = [
-    { seq: 1, envelope: { id: 'mine', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: '我的动态' } } },
-    { seq: 2, envelope: { id: 'other', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other', kind: 'human' }, payload: { text: '其他动态' } } },
+    { seq: 1, envelope: { id: 'mine', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { body: { text: '我的动态' } } } },
+    { seq: 2, envelope: { id: 'other', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other', kind: 'human' }, payload: { body: { text: '其他动态' } } } },
   ];
   const state = timelineState(standalone);
   const viewSessions = createViewSessionStore();
@@ -809,8 +809,8 @@ it('身份迟到前临时显示全部但保留 Mine 偏好，身份到达后原�
 
 it('身份迟到不覆盖用户明确保存的 All 偏好', async () => {
   const standalone = [
-    { seq: 1, envelope: { id: 'mine-all', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { text: '我的 All 动态' } } },
-    { seq: 2, envelope: { id: 'other-all', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other', kind: 'human' }, payload: { text: '其他 All 动态' } } },
+    { seq: 1, envelope: { id: 'mine-all', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'me', kind: 'human' }, payload: { body: { text: '我的 All 动态' } } } },
+    { seq: 2, envelope: { id: 'other-all', kind: 'event', type: 'human.note', visibility: 'public', sender: { id: 'other', kind: 'human' }, payload: { body: { text: '其他 All 动态' } } } },
   ];
   const viewSessions = createViewSessionStore();
   viewSessions.writeConversation('c0', { scope: 'all' });

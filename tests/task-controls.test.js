@@ -11,19 +11,19 @@ describe('task control eligibility', () => {
   const currentTarget = { current: true, actorIDs: new Set(['agent']) };
   const processing = {
     request: { id: 'r1', type: 'agent.ask', sender: { id: 'me' }, audience: ['agent'], expires_at: 2000 },
-    provisional: [{ envelope: { payload: { status: 'processing', turn_id: 'turn-7', controls: [{ word: 'agent.interrupt' }, { word: 'agent.replace' }] } } }],
+    provisional: [{ envelope: { payload: { body: { status: 'processing', turn_id: 'turn-7', controls: [{ word: 'agent.interrupt', payload: { target: 'request' } }, { word: 'agent.replace', payload: { target: 'request' } }] } } } }],
     terminal: null,
   };
   const queued = {
     ...processing,
-    provisional: [{ envelope: { payload: { status: 'queued', controls: [{ word: 'agent.replace' }, { word: 'agent.dismiss' }, { word: 'agent.steer' }] } } }],
+    provisional: [{ envelope: { payload: { body: { status: 'queued', controls: [{ word: 'agent.replace', payload: { target: 'request' } }, { word: 'agent.dismiss', payload: { target: 'request' } }, { word: 'agent.steer', payload: { target: 'request' } }] } } } }],
   };
 
   it('requires a writable channel and an advertised control', () => {
     expect(taskControlContext(processing, { selfId: 'me', access: 'member_active', now: 1000, targetAuthority: currentTarget })).toMatchObject({ canCancel: false, canInsert: false, canEdit: true, canStop: true, location: 'processing', turnId: 'turn-7', expired: false });
     expect(taskControlContext(processing, { selfId: 'me', access: 'member_stale' })).toMatchObject({ canEdit: false, canStop: false });
     expect(taskControlContext(queued, { selfId: 'me', access: 'member_active', targetAuthority: currentTarget })).toMatchObject({ canCancel: true, canInsert: true, canEdit: true, canStop: false, location: 'queued' });
-    expect(taskControlContext({ ...processing, terminal: { payload: { status: 'completed' } } }, { selfId: 'me', access: 'member_active' })).toMatchObject({ canCancel: false, canEdit: false, canStop: false, controls: [] });
+    expect(taskControlContext({ ...processing, terminal: { payload: { body: { status: 'completed' } } } }, { selfId: 'me', access: 'member_active' })).toMatchObject({ canCancel: false, canEdit: false, canStop: false, controls: [] });
   });
 
   // 转发的活是这条规则的真实来由：agent 代人转发的请求，sender 是转发的 agent，
@@ -45,21 +45,21 @@ describe('task control eligibility', () => {
 
   // 受理方没宣告 dismiss，就没有请它放弃的路——按钮不该凭空出现。
   it('offers no drop for others when the holder does not advertise it', () => {
-    const noDismiss = { ...queued, provisional: [{ envelope: { payload: { status: 'queued', controls: [{ word: 'agent.replace' }] } } }] };
+    const noDismiss = { ...queued, provisional: [{ envelope: { payload: { body: { status: 'queued', controls: [{ word: 'agent.replace', payload: { target: 'request' } }] } } } }] };
     expect(taskControlContext(noDismiss, { selfId: 'other', access: 'member_active', targetAuthority: currentTarget })).toMatchObject({ canCancel: false });
     // 自己那条仍然可以撤回：撤回不依赖对方宣告什么。
     expect(taskControlContext(noDismiss, { selfId: 'me', access: 'member_active' })).toMatchObject({ canCancel: true });
   });
 
   it('draws nothing when the account advertises no controls', () => {
-    const silent = { ...processing, provisional: [{ envelope: { payload: { status: 'processing', turn_id: 'turn-7' } } }] };
+    const silent = { ...processing, provisional: [{ envelope: { payload: { body: { status: 'processing', turn_id: 'turn-7' } } } }] };
     expect(taskControlContext(silent, { selfId: 'me', access: 'member_active' })).toMatchObject({ canEdit: false, canStop: false, canInsert: false, controls: [] });
-    const overridden = { ...processing, provisional: [...queued.provisional, { envelope: { payload: { status: 'processing', turn_id: 'turn-7', controls: [] } } }] };
+    const overridden = { ...processing, provisional: [...queued.provisional, { envelope: { payload: { body: { status: 'processing', turn_id: 'turn-7', controls: [] } } } }] };
     expect(taskControlContext(overridden, { selfId: 'me', access: 'member_active' })).toMatchObject({ canEdit: false, canInsert: false, location: 'processing' });
   });
 
   it('routes unknown advertised words to the generic path with label fallback', () => {
-    const custom = { ...processing, provisional: [{ envelope: { payload: { status: 'processing', controls: [{ word: 'agent.interrupt' }, { word: 'agent.escalate', label: '升级' }, { word: 'agent.retry' }] } } }] };
+    const custom = { ...processing, provisional: [{ envelope: { payload: { body: { status: 'processing', controls: [{ word: 'agent.interrupt', payload: { target: 'request' } }, { word: 'agent.escalate', label: '升级', payload: { target: 'request' } }, { word: 'agent.retry', payload: { target: 'request' } }] } } } }] };
     const context = taskControlContext(custom, { selfId: 'me', access: 'member_active', targetAuthority: currentTarget });
     expect(extraControls(context).map((entry) => entry.word)).toEqual(['agent.escalate', 'agent.retry']);
     expect(controlLabel({ word: 'agent.escalate', label: '升级' })).toBe('升级');
@@ -124,11 +124,10 @@ describe('task control eligibility', () => {
 
 describe('steering 状态', () => {
   it('并入中的排队请求：按钮清空，steering 事实为真', async () => {
-    const { taskControlContext } = await import('../src/model/task-controls.js');
     const request = { id: 'q', kind: 'request', type: 'agent.ask', sender: { id: 'me' }, audience: ['agent'], expires_at: 0 };
     const steering = { request, requestId: 'q', terminal: null, provisional: [
-      { envelope: { payload: { status: 'queued', controls: [{ word: 'agent.steer' }, { word: 'agent.replace' }] } } },
-      { envelope: { payload: { status: 'queued', steering: true, controls: [] } } },
+      { envelope: { payload: { body: { status: 'queued', controls: [{ word: 'agent.steer', payload: { target: 'q' } }, { word: 'agent.replace', payload: { target: 'q' } }] } } } },
+      { envelope: { payload: { body: { status: 'queued', steering: true, controls: [] } } } },
     ] };
     const context = taskControlContext(steering, { selfId: 'me', access: 'member_active' });
     expect(context).toMatchObject({ location: 'queued', steering: true, canInsert: false, canEdit: false });

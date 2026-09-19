@@ -9,12 +9,12 @@ const base = {
   visibility: 'public',
   audience: ['agent'],
   sender: { kind: 'human', id: 'me' },
-  payload: {},
+  payload: { body: {} },
 };
 
 function env(id, kind, type, extra = {}) {
-  const envelope = { ...base, id, kind, type, ...extra };
-  return { ...envelope, payload: { body: envelope.payload || {} } };
+  const { payload = {}, ...rest } = extra;
+  return { ...base, id, kind, type, ...rest, payload: { body: payload } };
 }
 
 // One channel, two conversations that share nothing: mine with the agent, and
@@ -165,9 +165,9 @@ describe('canonical timer 进入「@我」，普通 agent self-audience 不进�
   const agent = { id: 'agent:codex:1', kind: 'agent' };
   // 闹钟到点：触发事件 → 自己给自己的 agent.timer.wake → 进展 → 它由此发出的子请求。
   // 每一条的 sender 和 audience 都是同一个 agent，没有一条跟人有关。
-  const fire = { id: 'timer:t1', kind: 'event', type: 'agent.resume', sender: agent, audience: [agent.id], correlation_id: 'timer:t1', payload: { task: 'resume deployment' } };
+  const fire = { id: 'timer:t1', kind: 'event', type: 'agent.resume', sender: agent, audience: [agent.id], correlation_id: 'timer:t1', payload: { body: { task: 'resume deployment' } } };
   const wake = { id: 'wake-1', kind: 'request', type: 'agent.timer.wake', parent_id: 'timer:t1', correlation_id: 'timer:t1', sender: agent, audience: [agent.id], payload: { body: { text: '闹钟到点了' } } };
-  const progress = { id: 'wake-1-p', kind: 'response', type: 'agent.timer.wake', parent_id: 'wake-1', correlation_id: 'timer:t1', sender: agent, audience: [agent.id], payload: { status: 'processing' } };
+  const progress = { id: 'wake-1-p', kind: 'response', type: 'agent.timer.wake', parent_id: 'wake-1', correlation_id: 'timer:t1', sender: agent, audience: [agent.id], payload: { body: { status: 'processing' } } };
   const child = { id: 'child-1', kind: 'request', type: 'agent.ask', correlation_id: 'timer:t1', sender: agent, audience: ['peer:other:1'], payload: { body: { text: 'ping' } } };
   const rows = new Map([['timer:t1', fire], ['wake-1', wake], ['wake-1-p', progress], ['child-1', child]]);
 
@@ -177,32 +177,32 @@ describe('canonical timer 进入「@我」，普通 agent self-audience 不进�
   });
 
   it('peer 分页里的普通 self-audience 请求仍不算 timer', () => {
-    const query = { id: 'peer-query', kind: 'request', type: 'agent.ask', sender: agent, audience: [agent.id], correlation_id: 'peer-query', payload: {} };
+    const query = { id: 'peer-query', kind: 'request', type: 'agent.ask', sender: agent, audience: [agent.id], correlation_id: 'peer-query', payload: { body: {} } };
     const visible = relatedEnvelopeIds({ rows: new Map([['peer-query', query]]) }, selfId);
     expect(visible.has('peer-query')).toBe(false);
   });
 
   it('只有 timer 前缀不够，普通 self event 不获得归属', () => {
-    const lookalike = { id: 'timer:lookalike', kind: 'event', type: 'agent.resume', sender: agent, audience: [agent.id], correlation_id: 'different-root', payload: {} };
+    const lookalike = { id: 'timer:lookalike', kind: 'event', type: 'agent.resume', sender: agent, audience: [agent.id], correlation_id: 'different-root', payload: { body: {} } };
     const visible = relatedEnvelopeIds({ rows: new Map([['timer:lookalike', lookalike]]) }, selfId);
     expect(visible.has('timer:lookalike')).toBe(false);
   });
 
   it('一旦同 correlation 有 human 边，自委托仍由二层闭包保留', () => {
-    const humanRoot = { id: 'human-root', kind: 'request', type: 'agent.ask', sender: { id: selfId, kind: 'human' }, audience: [agent.id], correlation_id: 'human-root', payload: {} };
-    const delegated = { id: 'delegated', kind: 'request', type: 'agent.ask', sender: agent, audience: [agent.id], parent_id: 'human-root', correlation_id: 'human-root', payload: {} };
+    const humanRoot = { id: 'human-root', kind: 'request', type: 'agent.ask', sender: { id: selfId, kind: 'human' }, audience: [agent.id], correlation_id: 'human-root', payload: { body: {} } };
+    const delegated = { id: 'delegated', kind: 'request', type: 'agent.ask', sender: agent, audience: [agent.id], parent_id: 'human-root', correlation_id: 'human-root', payload: { body: {} } };
     const visible = relatedEnvelopeIds({ rows: new Map([['human-root', humanRoot], ['delegated', delegated]]) }, selfId);
     expect([...visible].sort()).toEqual(['delegated', 'human-root']);
   });
 
   it('普通 self-audience 请求仍在「全部」账本可见', () => {
-    const query = { id: 'peer-query', kind: 'request', type: 'agent.ask', sender: agent, audience: [agent.id], correlation_id: 'peer-query', payload: {} };
+    const query = { id: 'peer-query', kind: 'request', type: 'agent.ask', sender: agent, audience: [agent.id], correlation_id: 'peer-query', payload: { body: {} } };
     const entries = [{ kind: 'message', envelope: query }];
     expect(scopeEntries(entries, { scope: TIMELINE_SCOPE.all, state: { rows }, selfId })).toEqual(entries);
   });
 
   it('人给自己发的不算委托——那条线走的是"我发/我收"，不受这条规则影响', () => {
-    const note = { id: 'n1', kind: 'event', type: 'note', sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:other:1'], payload: {} };
+    const note = { id: 'n1', kind: 'event', type: 'note', sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:other:1'], payload: { body: {} } };
     const visible = relatedEnvelopeIds({ rows: new Map([['n1', note]]) }, selfId);
     expect(visible.has('n1')).toBe(false);
   });

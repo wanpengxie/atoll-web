@@ -75,8 +75,8 @@ describe('最近交互判据的抗污染（§2.1.3）', () => {
 });
 
 describe('当前值恒只认本连接证据（§4.1）', () => {
-  const terminal = (id, sender, usage) => ({ id, kind: 'response', type: 'agent.ask', parent_id: `${id}-request`, sender: { id: sender }, payload: { status: 'completed', usage } });
-  const contextDone = (id, parentId, flat = {}) => ({ id, kind: 'response', type: 'agent.context', parent_id: parentId, sender: { id: 'steward' }, payload: { status: 'completed', ...flat } });
+  const terminal = (id, sender, usage) => ({ id, kind: 'response', type: 'agent.ask', parent_id: `${id}-request`, sender: { id: sender }, payload: { body: { status: 'completed', usage } } });
+  const contextDone = (id, parentId, flat = {}) => ({ id, kind: 'response', type: 'agent.context', parent_id: parentId, sender: { id: 'steward' }, payload: { body: { status: 'completed', ...flat } } });
 
   it('账本历史 usage 是旧生命期读数，无本连接探测恒返回 null', () => {
     const state = stateOf([
@@ -100,7 +100,7 @@ describe('当前值恒只认本连接证据（§4.1）', () => {
       terminal('old', 'steward', { model: 'stale', effort: 'stale' }),
       contextDone('a', 'probe-1', { model: 'm3', effort: 'medium' }),
       terminal('b', 'steward', { model: 'm4', effort: 'high', context_tokens: 20 }),
-      { id: 'c', kind: 'response', type: 'agent.ask', sender: { id: 'steward' }, payload: { status: 'failed' } },
+      { id: 'c', kind: 'response', type: 'agent.ask', sender: { id: 'steward' }, payload: { body: { status: 'failed' } } },
       terminal('d', 'steward', { model: '', effort: '' }),
     ]);
     expect(latestAgentUsage(state, 'steward', 'probe-1')).toMatchObject({ model: 'm4', effort: 'high', contextTokens: 20 });
@@ -166,8 +166,8 @@ describe('agent.options incarnation 快照', () => {
 
   it('只认本连接发出的 options request 对应终态', () => {
     const state = stateOf([
-      { id: 'old', kind: 'response', type: 'agent.options', parent_id: 'old-probe', sender: { id: 'steward' }, payload },
-      { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload },
+      { id: 'old', kind: 'response', type: 'agent.options', parent_id: 'old-probe', sender: { id: 'steward' }, payload: { body: payload } },
+      { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload: { body: payload } },
     ]);
     expect(latestAgentOptions(state, 'steward', 'old-never')).toBeNull();
     expect(latestAgentOptions(state, 'steward', 'live-probe')).toMatchObject({ provider: 'codex', source: 'native', current: { model: 'gpt-new', effort: 'high' } });
@@ -177,7 +177,7 @@ describe('agent.options incarnation 快照', () => {
   // （2026-09-18 "又不能切换了"：删掉旧 id 让值域瞬间为 null，面板刚开就被关）。
   it('按"新在前"的 id 列表取第一份完成的 options', () => {
     const state = stateOf([
-      { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload },
+      { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload: { body: payload } },
     ]);
     expect(latestAgentOptions(state, 'steward', ['newer-still-in-flight', 'live-probe']))
       .toMatchObject({ current: { model: 'gpt-new', effort: 'high' } });
@@ -186,7 +186,7 @@ describe('agent.options incarnation 快照', () => {
   });
 
   it('live options compact closure 不提供目录或 current', () => {
-    const response = { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload };
+    const response = { id: 'live', kind: 'response', type: 'agent.options', parent_id: 'live-probe', sender: { id: 'steward' }, payload: { body: payload } };
     const state = {
       rows: new Map([[1, response]]),
       turns: new Map([['live-probe', { terminal: response, terminalClosureOnly: true }]]),

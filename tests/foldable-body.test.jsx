@@ -113,16 +113,16 @@ describe('FoldableBody', () => {
 });
 
 const request = (id, text, sender = { kind: 'human', id: 'me' }, audience = ['agent']) => ({
-  id, kind: 'request', type: 'agent.ask', ts: Date.now(), sender, audience, visibility: 'public', payload: { text },
+  id, kind: 'request', type: 'agent.ask', ts: Date.now(), sender, audience, visibility: 'public', payload: { body: { text } },
 });
 const done = (id, parentId, text) => ({
   id, parent_id: parentId, kind: 'response', type: 'agent.ask', ts: Date.now(),
-  sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { status: 'completed', text },
+  sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { body: { status: 'completed', text } },
 });
 const progressText = (id, parentId, text) => ({
   id, parent_id: parentId, kind: 'response', type: 'agent.ask', ts: Date.now(),
   sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public',
-  payload: { status: 'processing', process: { kind: 'stage', stage: 'text', text } },
+  payload: { body: { status: 'processing', process: { kind: 'stage', stage: 'text', text } } },
 });
 const roster = [{ id: 'me', kind: 'human', name: '我' }, { id: 'agent', kind: 'agent', name: 'Agent' }];
 const capability = () => ({ describe: normalizeDescribe({ class: 'agent', capabilities: {}, words: { 'agent.ask': {} } }) });
@@ -296,7 +296,7 @@ describe('Timeline 正文自动折叠', () => {
 
     apply(state, { channel_id: 'c0', seq: 4, envelope: {
       ...progressText('r1-progress-3', 'r1', '第三段'),
-      payload: { status: 'processing', controls: [{ word: 'agent.interrupt' }] },
+      payload: { body: { status: 'processing', controls: [{ word: 'agent.interrupt', payload: { target: 'r1' } }] } },
     } });
     expect(state._timelineProjectionVersion).toBe(version);
     expect(state._timelineControlVersion).toBe(controlVersion + 1);

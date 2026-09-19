@@ -7,9 +7,9 @@ describe('F3 turn presentation', () => {
       status: 'processing',
       latestStatus: 'processing',
       provisional: [
-        { status: 'processing', envelope: { payload: { detail: '正在整理报告' } } },
-        { status: 'processing', envelope: { payload: { status: 'processing', process: { kind: 'tool', phase: 'started' } } } },
-        { status: 'processing', envelope: { payload: { status: 'processing', process: { kind: 'tool', phase: 'ended' } } } },
+        { status: 'processing', envelope: { payload: { body: { detail: '正在整理报告' } } } },
+        { status: 'processing', envelope: { payload: { body: { status: 'processing', process: { kind: 'tool', phase: 'started' } } } } },
+        { status: 'processing', envelope: { payload: { body: { status: 'processing', process: { kind: 'tool', phase: 'ended' } } } } },
       ],
       anomalies: [{ code: 'terminal_conflict' }],
     };

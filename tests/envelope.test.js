@@ -15,10 +15,10 @@ describe('envelope algebra', () => {
   });
 
   it('only treats final responses as terminal', () => {
-    expect(isTerminal({ kind: 'response', payload: { status: 'completed' } })).toBe(true);
-    expect(isTerminal({ kind: 'response', payload: { status: 'failed' } })).toBe(true);
-    expect(isTerminal({ kind: 'response', payload: { status: 'processing' } })).toBe(false);
-    expect(isTerminal({ kind: 'event', payload: { status: 'completed' } })).toBe(false);
+    expect(isTerminal({ kind: 'response', payload: { body: { status: 'completed' } } })).toBe(true);
+    expect(isTerminal({ kind: 'response', payload: { body: { status: 'failed' } } })).toBe(true);
+    expect(isTerminal({ kind: 'response', payload: { body: { status: 'processing' } } })).toBe(false);
+    expect(isTerminal({ kind: 'event', payload: { body: { status: 'completed' } } })).toBe(false);
   });
 
   it('uses correlation_id and falls back to id', () => {

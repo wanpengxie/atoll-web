@@ -44,7 +44,7 @@ describe('product capability manifest', () => {
 
 const envelope = (id, kind, type, payload, extra = {}) => ({
   id, ts: 1, channel_id: 'c0', sender: kind === 'request' ? { kind: 'human', id: 'me' } : { kind: 'agent', id: 'agent' },
-  kind, type, payload, audience: kind === 'request' ? ['agent'] : ['me'], visibility: 'public', ...extra,
+  kind, type, payload: { body: payload }, audience: kind === 'request' ? ['agent'] : ['me'], visibility: 'public', ...extra,
 });
 
 describe('actor capabilities', () => {

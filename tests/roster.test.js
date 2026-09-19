@@ -85,9 +85,9 @@ describe('roster self fallback', () => {
 describe('roster OBS invalidation', () => {
   it('用公开的成员治理成功终态刷新名册，不依赖网页不可见的 system 叙事', () => {
     expect(invalidatesRoster({ kind: 'request', type: 'system.member.create', payload: { body: { decl_id: 'claude' } } })).toBe(false);
-    expect(invalidatesRoster({ kind: 'response', type: 'system.member.create', payload: { status: 'failed' } })).toBe(false);
-    expect(invalidatesRoster({ kind: 'response', type: 'system.member.create', payload: { status: 'completed', member: 'agent:claude:1' } })).toBe(true);
-    expect(invalidatesRoster({ kind: 'event', type: 'system.member.created', payload: { member: 'agent:claude:1' } })).toBe(true);
+    expect(invalidatesRoster({ kind: 'response', type: 'system.member.create', payload: { body: { status: 'failed' } } })).toBe(false);
+    expect(invalidatesRoster({ kind: 'response', type: 'system.member.create', payload: { body: { status: 'completed', member: 'agent:claude:1' } } })).toBe(true);
+    expect(invalidatesRoster({ kind: 'event', type: 'system.member.created', payload: { body: { member: 'agent:claude:1' } } })).toBe(true);
   });
 
   it('成功终态到达后防抖重取 Actor OBS 并回报新成员', async () => {
@@ -98,7 +98,7 @@ describe('roster OBS invalidation', () => {
     const roster = createRoster({ obs: { channelActors }, debounceMs: 20 });
     const refreshed = vi.fn();
     roster.handleEnvelope('c0', {
-      kind: 'response', type: 'system.member.create', payload: { status: 'completed', member: 'agent:claude:1' },
+      kind: 'response', type: 'system.member.create', payload: { body: { status: 'completed', member: 'agent:claude:1' } },
     }, refreshed);
     await vi.advanceTimersByTimeAsync(20);
     expect(channelActors).toHaveBeenCalledWith('c0');

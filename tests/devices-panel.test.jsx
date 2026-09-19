@@ -57,7 +57,7 @@ describe('device administration uses the real registry vocabulary', () => {
   it('refreshes the authoritative projection after an operation reaches terminal state', async () => {
     const onRefresh = vi.fn();
     renderPanel({
-      states: [{ turns: new Map([['request-1', { terminal: { payload: { status: 'completed' } } }]]) }],
+      states: [{ turns: new Map([['request-1', { terminal: { payload: { body: { status: 'completed' } } } }]]) }],
       onRefresh,
     });
     fireEvent.change(screen.getByLabelText('设备名称'), { target: { value: 'laptop' } });

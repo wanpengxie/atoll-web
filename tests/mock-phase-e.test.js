@@ -23,7 +23,7 @@ async function harness(scenario = 'space-administration') {
 
 async function submitTerminal(h, msgType, payload, audience = ['system'], channelId = 'c0') {
   const receipt = await h.wire.submit({ channel_id: channelId, msg_type: msgType, kind: 'request', payload, audience });
-  return waitFor(() => h.envelopes.find((row) => row.parent_id === receipt.message_id && ['completed', 'failed'].includes(row.payload?.status)));
+  return waitFor(() => h.envelopes.find((row) => row.parent_id === receipt.message_id && ['completed', 'failed'].includes(row.payload?.body?.status)));
 }
 
 afterEach(async () => Promise.all([...servers].map(close)));
@@ -31,24 +31,24 @@ afterEach(async () => Promise.all([...servers].map(close)));
 describe('phase E stateful mock', () => {
   it('supports templates, channel configuration and secret-safe devices', async () => {
     const h = await harness();
-    expect((await submitTerminal(h, 'system.actor.template.create', { id: 'demo:assistant', name: 'Demo', class: 'codex', config: { model: 'mock' }, visibility: 'private' })).payload.status).toBe('completed');
+    expect((await submitTerminal(h, 'system.actor.template.create', { id: 'demo:assistant', name: 'Demo', class: 'codex', config: { model: 'mock' }, visibility: 'private' })).payload.body.status).toBe('completed');
     const list = await submitTerminal(h, 'system.actor.template.list', {});
-    expect(list.payload.value.map((row) => row.id)).toContain('demo:assistant');
-    expect((await submitTerminal(h, 'system.channel.template.create', { id: 'demo:channel', name: 'Demo channel', visibility: 'private', body: { declarations: [{ decl_id: 'demo:assistant' }] } })).payload.status).toBe('completed');
-    expect((await submitTerminal(h, 'system.actor.overlay.set', { channel_id: 'c0', decl_id: 'demo:assistant', config: { model: 'overlay' } })).payload.value.applied).toBe(true);
+    expect(list.payload.body.value.map((row) => row.id)).toContain('demo:assistant');
+    expect((await submitTerminal(h, 'system.channel.template.create', { id: 'demo:channel', name: 'Demo channel', visibility: 'private', body: { declarations: [{ decl_id: 'demo:assistant' }] } })).payload.body.status).toBe('completed');
+    expect((await submitTerminal(h, 'system.actor.overlay.set', { channel_id: 'c0', decl_id: 'demo:assistant', config: { model: 'overlay' } })).payload.body.value.applied).toBe(true);
     // system.channel.set 的字段闭集不含 endpoints。
-    expect((await submitTerminal(h, 'system.channel.set', { channel_id: 'c0', description: 'Configured', serving: 1 })).payload.status).toBe('completed');
+    expect((await submitTerminal(h, 'system.channel.set', { channel_id: 'c0', description: 'Configured', serving: 1 })).payload.body.status).toBe('completed');
     const devices = await submitTerminal(h, 'system.channel.device.list', {});
-    expect(devices.payload.value).toEqual(expect.arrayContaining([
+    expect(devices.payload.body.value).toEqual(expect.arrayContaining([
       expect.objectContaining({ channel_id: 'c0', device_id: 'local-device' }),
     ]));
     const minted = await submitTerminal(h, 'system.device.create', { name: 'Laptop' });
-    expect(minted.payload.value.key).toMatch(/^mock-key-/);
+    expect(minted.payload.body.value.key).toMatch(/^mock-key-/);
     const daemons = await h.fetchSession('/obs/space/daemons').then((response) => response.json());
-    expect(daemons.items.map((row) => row.declared.id)).toContain(minted.payload.value.device_id);
-    expect(JSON.stringify(daemons)).not.toContain(minted.payload.value.key);
+    expect(daemons.items.map((row) => row.declared.id)).toContain(minted.payload.body.value.device_id);
+    expect(JSON.stringify(daemons)).not.toContain(minted.payload.body.value.key);
     const snapshot = await h.fetchSession('/mock/control/state').then((response) => response.json());
-    expect(JSON.stringify(snapshot)).not.toContain(minted.payload.value.key);
+    expect(JSON.stringify(snapshot)).not.toContain(minted.payload.body.value.key);
     h.wire.close(); await close(h.server);
   });
 

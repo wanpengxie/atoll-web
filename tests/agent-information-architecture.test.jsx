@@ -15,7 +15,7 @@ afterEach(cleanup);
 
 const request = (id, text, actorId = 'agent') => ({
   id, kind: 'request', type: 'agent.ask', ts: Date.now(), sender: { kind: 'human', id: 'me' },
-  audience: [actorId], visibility: 'public', payload: { text },
+  audience: [actorId], visibility: 'public', payload: { body: { text } },
 });
 
 // progress 契约：凡带 status 的进度帧必带 controls（受理方全量宣告可用控制词）。
@@ -34,13 +34,13 @@ function contractControls(status, target) {
 const response = (id, parentId, payload) => ({
   id, parent_id: parentId, kind: 'response', type: 'agent.ask', ts: Date.now(),
   sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public',
-  payload: contractControls(payload.status, parentId) && !payload.controls
+  payload: { body: contractControls(payload.status, parentId) && !payload.controls
     ? { controls: contractControls(payload.status, parentId), ...payload }
-    : payload,
+    : payload },
 });
 
 function add(state, seq, envelope) {
-  apply(state, { channel_id: 'c0', seq, envelope: { ...envelope, payload: { body: envelope.payload || {} } } });
+  apply(state, { channel_id: 'c0', seq, envelope });
 }
 
 function capabilities({ expectedHold = true } = {}) {
@@ -280,7 +280,7 @@ describe('agent control v7 information architecture', () => {
     add(state, 4, {
       ...request('replacement', 'replacement text'),
       type: 'agent.replace',
-      payload: { target: 'work', old_text: 'reciprocal edit', new_text: 'replacement text' },
+      payload: { body: { target: 'work', old_text: 'reciprocal edit', new_text: 'replacement text' } },
     });
     view.rerender(<Timeline {...props} />);
     expect(onComposerEditChange).toHaveBeenLastCalledWith(null);
@@ -327,8 +327,8 @@ describe('agent control v7 information architecture', () => {
     expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ targetId: 'queued', text: 'edit me' }) }));
     expect(screen.getByRole('region', { name: '等待区' }).textContent).not.toMatch(/锁定|核对|提交修改|替换生效/);
     await waitFor(() => expect(onTaskControl).toHaveBeenCalled());
-    add(state, 3, { id: 'h1', kind: 'request', type: 'agent.hold', ts: Date.now(), sender: { kind: 'human', id: 'me' }, audience: ['agent'], visibility: 'public', payload: { target: 'queued' } });
-    add(state, 4, { id: 'h1-d', parent_id: 'h1', kind: 'response', type: 'agent.hold', ts: Date.now(), sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { status: 'failed', error_code: 'busy', detail: '稍后重试' } });
+    add(state, 3, { id: 'h1', kind: 'request', type: 'agent.hold', ts: Date.now(), sender: { kind: 'human', id: 'me' }, audience: ['agent'], visibility: 'public', payload: { body: { target: 'queued' } } });
+    add(state, 4, { id: 'h1-d', parent_id: 'h1', kind: 'response', type: 'agent.hold', ts: Date.now(), sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { body: { status: 'failed', error_code: 'busy', detail: '稍后重试' } } });
     view.rerender(<Timeline {...props} />);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('稍后重试'));
     expect(screen.queryByText('正在编辑')).toBeNull();
@@ -346,7 +346,7 @@ describe('agent control v7 information architecture', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     await waitFor(() => expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
-    add(state, 3, { ...request('hold-edit', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 3, { ...request('hold-edit', '', 'agent'), type: 'agent.hold', payload: { body: { target: 'queued' } } });
     add(state, 4, { ...response('hold-edit-d', 'hold-edit', { status: 'completed' }), type: 'agent.hold' });
     view.rerender(<Timeline {...props} />);
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
@@ -371,12 +371,12 @@ describe('agent control v7 information architecture', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     await waitFor(() => expect(onTaskControl).toHaveBeenCalled());
-    add(state, 3, { ...request('hold-edit', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 3, { ...request('hold-edit', '', 'agent'), type: 'agent.hold', payload: { body: { target: 'queued' } } });
     add(state, 4, { ...response('hold-edit-d', 'hold-edit', { status: 'completed' }), type: 'agent.hold' });
     view.rerender(<Timeline {...props} />);
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
 
-    add(state, 5, { ...request('stop', '', 'agent'), type: 'agent.interrupt', payload: {} });
+    add(state, 5, { ...request('stop', '', 'agent'), type: 'agent.interrupt', payload: { body: {} } });
     add(state, 6, { ...response('stop-d', 'stop', { status: 'completed' }), type: 'agent.interrupt' });
     view.rerender(<Timeline {...props} />);
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(null));
@@ -411,7 +411,7 @@ describe('agent control v7 information architecture', () => {
     const stateB = createChannelState('c0');
     add(stateB, 1, request('queued-b', 'discarded editor'));
     add(stateB, 2, response('queued-b-q', 'queued-b', { status: 'queued' }));
-    add(stateB, 3, { ...request('discarded-stop', '', 'agent'), type: 'agent.interrupt', payload: {} });
+    add(stateB, 3, { ...request('discarded-stop', '', 'agent'), type: 'agent.interrupt', payload: { body: {} } });
     add(stateB, 4, { ...response('discarded-stop-d', 'discarded-stop', { status: 'completed' }), type: 'agent.interrupt' });
     let resolveHold;
     const holdReceipt = new Promise((resolve) => { resolveHold = resolve; });
@@ -497,7 +497,7 @@ describe('agent control v7 information architecture', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
-    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { body: { target: 'queued' } } });
     add(state, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
     view.rerender(<Timeline {...common} state={state} capabilityIndex={capabilities()} onTaskControl={onTaskControlB} />);
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
@@ -510,9 +510,9 @@ describe('agent control v7 information architecture', () => {
     const latestState = createChannelState('c0');
     add(latestState, 1, request('queued', 'edit through one owner'));
     add(latestState, 2, response('queued-q', 'queued', { status: 'queued' }));
-    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { body: { target: 'queued' } } });
     add(latestState, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
-    add(latestState, 5, { ...request('context-a', '', 'agent'), type: 'agent.context', payload: {} });
+    add(latestState, 5, { ...request('context-a', '', 'agent'), type: 'agent.context', payload: { body: {} } });
     add(latestState, 6, { ...response('context-a-d', 'context-a', { status: 'completed', frozen: { held_by: 'hold-a', until: Date.now() + 60_000 } }), type: 'agent.context' });
     view.rerender(<Timeline {...common} state={latestState} capabilityIndex={capabilities()} onTaskControl={onTaskControlA2} />);
     await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({
@@ -539,7 +539,7 @@ describe('agent control v7 information architecture', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
-    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { body: { target: 'queued' } } });
     add(state, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
     view.rerender(<Timeline {...common} state={state} access="member_active" onTaskControl={onTaskControlB} />);
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
@@ -548,7 +548,7 @@ describe('agent control v7 information architecture', () => {
     const latestState = createChannelState('c0');
     add(latestState, 1, request('queued', 'reconnect edit'));
     add(latestState, 2, response('queued-q', 'queued', { status: 'queued' }));
-    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { body: { target: 'queued' } } });
     add(latestState, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
     view.rerender(<Timeline {...common} state={latestState} access="member_active" onTaskControl={onTaskControlC} />);
 
@@ -572,7 +572,7 @@ describe('agent control v7 information architecture', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
-    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { body: { target: 'queued' } } });
     add(state, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
     view.rerender(<Timeline {...common} state={state} capabilityIndex={capabilities()} onTaskControl={onTaskControlB} />);
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
@@ -581,7 +581,7 @@ describe('agent control v7 information architecture', () => {
     const latestState = createChannelState('c0');
     add(latestState, 1, request('queued', 'abandon latest state'));
     add(latestState, 2, response('queued-q', 'queued', { status: 'queued' }));
-    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
+    add(latestState, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { body: { target: 'queued' } } });
     add(latestState, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
     view.rerender(<Timeline {...common} state={latestState} capabilityIndex={capabilities()} onTaskControl={onTaskControlC} />);
     await committedEditor.onAbandon();
@@ -611,7 +611,7 @@ describe('agent control v7 information architecture', () => {
     const latestState = createChannelState('c0');
     add(latestState, 1, request('queued', 'late superseded hold'));
     add(latestState, 2, response('queued-q', 'queued', { status: 'queued' }));
-    add(latestState, 3, { ...request('stop', '', 'agent'), type: 'agent.interrupt', payload: {} });
+    add(latestState, 3, { ...request('stop', '', 'agent'), type: 'agent.interrupt', payload: { body: {} } });
     add(latestState, 4, { ...response('stop-d', 'stop', { status: 'completed' }), type: 'agent.interrupt' });
     view.rerender(<Timeline {...common} state={latestState} onTaskControl={onTaskControlB} />);
     view.unmount();
@@ -647,8 +647,8 @@ describe('agent control v7 information architecture', () => {
     add(state, 2, response('owner-p', 'owner', { status: 'processing', turn_id: 'turn' }));
     add(state, 3, request('queued', 'waiting'));
     add(state, 4, response('queued-q', 'queued', { status: 'queued' }));
-    add(state, 5, { id: 'i1', parent_id: 'owner', kind: 'request', type: 'agent.interrupt', ts: Date.now(), sender: { kind: 'human', id: 'me' }, audience: ['agent'], visibility: 'public', payload: {} });
-    add(state, 6, { id: 'i1-d', parent_id: 'i1', kind: 'response', type: 'agent.interrupt', ts: Date.now(), sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { status: 'completed' } });
+    add(state, 5, { id: 'i1', parent_id: 'owner', kind: 'request', type: 'agent.interrupt', ts: Date.now(), sender: { kind: 'human', id: 'me' }, audience: ['agent'], visibility: 'public', payload: { body: {} } });
+    add(state, 6, { id: 'i1-d', parent_id: 'i1', kind: 'response', type: 'agent.interrupt', ts: Date.now(), sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { body: { status: 'completed' } } });
     add(state, 7, response('owner-d', 'owner', { status: 'failed', error_code: 'interrupted' }));
     render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} />);
     expect(screen.getByText('✗ 已停止 · 发消息即继续')).toBeTruthy();
@@ -659,8 +659,8 @@ describe('agent control v7 information architecture', () => {
     const state = createChannelState('c0');
     add(state, 1, request('queued', 'waiting'));
     add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
-    add(state, 3, { id: 'h1', kind: 'request', type: 'agent.hold', ts: Date.now(), sender: { kind: 'human', id: 'me' }, audience: ['agent'], visibility: 'public', payload: { target: 'queued' } });
-    add(state, 4, { id: 'h1-d', parent_id: 'h1', kind: 'response', type: 'agent.hold', ts: Date.now(), sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { status: 'completed' } });
+    add(state, 3, { id: 'h1', kind: 'request', type: 'agent.hold', ts: Date.now(), sender: { kind: 'human', id: 'me' }, audience: ['agent'], visibility: 'public', payload: { body: { target: 'queued' } } });
+    add(state, 4, { id: 'h1-d', parent_id: 'h1', kind: 'response', type: 'agent.hold', ts: Date.now(), sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public', payload: { body: { status: 'completed' } } });
     render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities()} />);
     expect(screen.getByRole('region', { name: '等待区' }).textContent).toContain('已暂停');
     expect(screen.queryByText(/已停止/)).toBeNull();

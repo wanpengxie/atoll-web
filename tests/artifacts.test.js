@@ -3,7 +3,7 @@ import { artifactKey, artifactList, buildArtifactIndex } from '../src/model/arti
 import { apply, createChannelState } from '../src/model/fold.js';
 
 function row(channelId, seq, envelope) {
-  return { channel_id: channelId, seq, envelope: { ts: 1_700_000_000_000 + seq, visibility: 'public', audience: [], sender: { kind: 'human', id: 'alice' }, ...envelope } };
+  return { channel_id: channelId, seq, envelope: { ts: 1_700_000_000_000 + seq, visibility: 'public', audience: [], sender: { kind: 'human', id: 'alice' }, ...envelope, payload: { body: envelope.payload || {} } } };
 }
 
 describe('Artifact 账本索引', () => {

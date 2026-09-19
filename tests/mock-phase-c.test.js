@@ -75,7 +75,7 @@ function request(id, type, payload = {}, parentId = '') {
 function terminal(feeds, requestId) {
   return feeds.find((row) => row.envelope.kind === 'response'
     && row.envelope.parent_id === requestId
-    && ['completed', 'failed'].includes(row.envelope.payload?.status))?.envelope;
+    && ['completed', 'failed'].includes(row.envelope.payload?.body?.status))?.envelope;
 }
 
 afterEach(async () => Promise.all([...servers].map(close)));
@@ -88,14 +88,14 @@ describe('Phase C mock contract', () => {
       () => terminal(feeds, 'describe-live'),
       'live actor.describe terminal',
     );
-    expect(describe.payload).toMatchObject({ class: 'codex', interfaces: ['actor', 'agent'] });
-    expect(describe.payload.words['mock.order.create']).toMatchObject({
+    expect(describe.payload.body).toMatchObject({ class: 'codex', interfaces: ['actor', 'agent'] });
+    expect(describe.payload.body.words['mock.order.create']).toMatchObject({
       input_schema: { type: 'object', required: ['name', 'count'] },
     });
 
     await wire.submit(request('order-c', 'mock.order.create', { name: '保真订单', count: 4, priority: 'urgent', notify: true }));
     const result = await waitFor(() => terminal(feeds, 'order-c'), 'structured order terminal');
-    expect(result.payload).toMatchObject({
+    expect(result.payload.body).toMatchObject({
       status: 'completed',
       value: { accepted: true, name: '保真订单', count: 4, priority: 'urgent', notify: true },
     });
@@ -106,11 +106,11 @@ describe('Phase C mock contract', () => {
   it('separates cancel receipt from the original cancelled terminal and keeps stable errors', async () => {
     const { server, wire, feeds } = await connect('long-running');
     await wire.submit(request('long-cancel', 'agent.ask', { text: '持续运行' }));
-    await waitFor(() => feeds.some((row) => row.envelope.parent_id === 'long-cancel' && row.envelope.payload?.turn_id), 'processing turn id');
+    await waitFor(() => feeds.some((row) => row.envelope.parent_id === 'long-cancel' && row.envelope.payload?.body?.turn_id), 'processing turn id');
     await expect(wire.cancel({ channel_id: 'c0', req_id: 'long-cancel' })).resolves.toEqual({ req_id: 'long-cancel' });
     expect(terminal(feeds, 'long-cancel')).toBeUndefined();
     const cancelled = await waitFor(() => terminal(feeds, 'long-cancel'), 'cancelled terminal');
-    expect(cancelled.payload).toMatchObject({ status: 'failed', cancelled: true });
+    expect(cancelled.payload.body).toMatchObject({ status: 'failed', cancelled: true });
     await expect(wire.cancel({ channel_id: 'c0', req_id: 'long-cancel' })).rejects.toMatchObject({ code: 'already_closed' });
     await expect(wire.cancel({ channel_id: 'c0', req_id: 'missing' })).rejects.toMatchObject({ code: 'request_not_found' });
     wire.close();
@@ -127,17 +127,17 @@ describe('Phase C mock contract', () => {
     const { server, wire, feeds } = await connect('long-running');
     await wire.submit(request('long-steer', 'agent.ask', { text: '原任务' }));
     const processing = await waitFor(
-      () => feeds.find((row) => row.envelope.parent_id === 'long-steer' && row.envelope.payload?.turn_id)?.envelope,
+      () => feeds.find((row) => row.envelope.parent_id === 'long-steer' && row.envelope.payload?.body?.turn_id)?.envelope,
       'steerable processing',
     );
-    const turnId = processing.payload.turn_id;
+    const turnId = processing.payload.body.turn_id;
     await wire.submit(request('steer-bad', 'agent.steer', { text: '错误 CAS', expected_turn_id: 'stale-turn' }, 'long-steer'));
-    expect((await waitFor(() => terminal(feeds, 'steer-bad'), 'CAS failure')).payload).toMatchObject({ status: 'failed', reason: 'cas_mismatch' });
+    expect((await waitFor(() => terminal(feeds, 'steer-bad'), 'CAS failure')).payload.body).toMatchObject({ status: 'failed', reason: 'cas_mismatch' });
 
     await wire.submit(request('steer-good', 'agent.steer', { text: '新的方向', expected_turn_id: turnId }, 'long-steer'));
     const control = await waitFor(() => terminal(feeds, 'steer-good'), 'steer terminal');
-    expect(control.payload).toMatchObject({ status: 'completed', value: { merged_into: turnId, direction: '新的方向' } });
-    expect((await waitFor(() => terminal(feeds, 'long-steer'), 'preempted original')).payload)
+    expect(control.payload.body).toMatchObject({ status: 'completed', value: { merged_into: turnId, direction: '新的方向' } });
+    expect((await waitFor(() => terminal(feeds, 'long-steer'), 'preempted original')).payload.body)
       .toMatchObject({ status: 'completed', value: { preempted_by: 'steer-good' } });
     wire.close();
     await close(server);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { actorCommand, actorConvergence, createChannelCommand, creationConvergence, isProtectedActor, usableDeclarations, usablePrincipals, validateChannelName } from '../src/model/channel-governance.js';
+const terminalTurn = (body, extra = {}) => ({ ...extra, terminal: { payload: { body } } });
 
 const roster = [
   { id: 'system', kind: 'system', name: 'system' },
@@ -39,21 +40,21 @@ describe('阶段 D 频道治理模型', () => {
   });
 
   it('创建成功必须分别收敛账本、OBS、membership 和 serving', () => {
-    const turn = { terminal: { payload: { status: 'completed', value: { channel_id: 'new-id' } } } };
+    const turn = terminalTurn({ status: 'completed', value: { channel_id: 'new-id' } });
     const waiting = creationConvergence({ turn, expectedQualifiedName: 'c0.new', channels: [{ id: 'new-id', qualified_name: 'c0.new', open: false }], membership: () => true });
     expect(waiting).toMatchObject({ ledger: true, observable: true, membership: true, serving: false, ready: false });
     expect(creationConvergence({ turn, expectedQualifiedName: 'c0.new', channels: [{ id: 'new-id', qualified_name: 'c0.new', open: true }], membership: () => true }).ready).toBe(true);
   });
 
   it('成员操作把账本终态和 roster 收敛分开判断', () => {
-    const turn = { terminal: { payload: { status: 'completed', member: 'agent-1' } } };
+    const turn = terminalTurn({ status: 'completed', member: 'agent-1' });
     expect(actorConvergence({ turn, type: 'system.member.create', roster: [] })).toMatchObject({ ledger: true, rosterConverged: false, ready: false });
     expect(actorConvergence({ turn, type: 'system.member.create', roster: [{ id: 'agent-1', bound: true }] }).ready).toBe(true);
-    expect(actorConvergence({ turn: { terminal: { payload: { status: 'completed', removed: ['agent-1'] } } }, type: 'system.member.delete', actorId: 'agent-1', roster: [] }).ready).toBe(true);
+    expect(actorConvergence({ turn: terminalTurn({ status: 'completed', removed: ['agent-1'] }), type: 'system.member.delete', actorId: 'agent-1', roster: [] }).ready).toBe(true);
   });
 
   it('compact closure 保留 ledger lifecycle，但不以缺失业务结果宣告 ready', () => {
-    const createTurn = { terminalClosureOnly: true, terminal: { payload: { status: 'completed' } } };
+    const createTurn = terminalTurn({ status: 'completed' }, { terminalClosureOnly: true });
     expect(creationConvergence({
       turn: createTurn,
       expectedQualifiedName: 'c0.new',
@@ -69,7 +70,7 @@ describe('阶段 D 频道治理模型', () => {
   });
 
   it('failed compact closure 保留失败生命周期，但不猜失败原因', () => {
-    const failedClosure = { terminalClosureOnly: true, terminal: { payload: { status: 'failed' } } };
+    const failedClosure = terminalTurn({ status: 'failed' }, { terminalClosureOnly: true });
     expect(creationConvergence({ turn: failedClosure, expectedQualifiedName: 'c0.new' }))
       .toMatchObject({ failed: true, resultCurrent: false, error: '终态详情不可用，请刷新或重新进入频道' });
     expect(actorConvergence({ turn: failedClosure, type: 'system.member.create' }))
@@ -77,10 +78,7 @@ describe('阶段 D 频道治理模型', () => {
   });
 
   it('compact result 缺失是稳定可观测的不可用终态', () => {
-    const turn = {
-      terminalClosureOnly: true,
-      terminal: { payload: { status: 'completed' } },
-    };
+    const turn = terminalTurn({ status: 'completed' }, { terminalClosureOnly: true });
     expect(creationConvergence({ turn, expectedQualifiedName: 'c0.new' })).toMatchObject({
       ledger: true,
       resultCurrent: false,

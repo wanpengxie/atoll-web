@@ -34,7 +34,7 @@ function response({ id, type, parentId, sender, audience, correlationId = parent
     parent_id: parentId,
     correlation_id: correlationId,
     visibility: 'public',
-    payload: { status: 'completed' },
+    payload: { body: { status: 'completed' } },
   };
 }
 
@@ -109,7 +109,7 @@ describe('projectTimeline 的 @我 对话投影', () => {
           sender: { id: AGENT_ID, kind: 'agent' }, audience: [HUMAN_ID],
           correlationId: root.id,
         }),
-        payload: { status: 'processing', process: { kind: 'stage', text: 'first' } },
+        payload: { body: { status: 'processing', process: { kind: 'stage', text: 'first' } } },
       },
     }, HUMAN_ID);
     const first = projectTimeline(state, options).presentation;
@@ -117,7 +117,7 @@ describe('projectTimeline 的 @我 对话投影', () => {
     expect(firstRow).not.toBe(initialRow);
     expect(first.changes.updated).toEqual([root.id]);
     expect(firstRow.seqHigh).toBe(3);
-    expect(firstRow.body.thread[0].turn.provisional.at(-1).envelope.payload.process.text).toBe('first');
+    expect(firstRow.body.thread[0].turn.provisional.at(-1).envelope.payload.body.process.text).toBe('first');
 
     apply(state, {
       channel_id: CHANNEL_ID,
@@ -128,7 +128,7 @@ describe('projectTimeline 的 @我 对话投影', () => {
           sender: { id: AGENT_ID, kind: 'agent' }, audience: [HUMAN_ID],
           correlationId: root.id,
         }),
-        payload: { status: 'processing', process: { kind: 'stage', text: 'second' } },
+        payload: { body: { status: 'processing', process: { kind: 'stage', text: 'second' } } },
       },
     }, HUMAN_ID);
     const second = projectTimeline(state, options).presentation;
@@ -136,7 +136,7 @@ describe('projectTimeline 的 @我 对话投影', () => {
     expect(secondRow).not.toBe(firstRow);
     expect(second.changes.updated).toEqual([root.id]);
     expect(secondRow.seqHigh).toBe(4);
-    expect(secondRow.body.thread[0].turn.provisional.at(-1).envelope.payload.process.text).toBe('second');
+    expect(secondRow.body.thread[0].turn.provisional.at(-1).envelope.payload.body.process.text).toBe('second');
 
     apply(state, {
       channel_id: CHANNEL_ID,
@@ -231,7 +231,7 @@ describe('projectTimeline 的 @我 对话投影', () => {
           sender: { id: HUMAN_ID, kind: 'human' }, audience: [AGENT_ID],
           correlationId: conversation.id,
         }),
-        payload: { status: 'processing', message: 'hidden operation progress' },
+        payload: { body: { status: 'processing', message: 'hidden operation progress' } },
       },
     }, HUMAN_ID);
     const advanced = projectTimeline(state, options).presentation;

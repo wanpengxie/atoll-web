@@ -10,19 +10,19 @@ import { mergedInto, preemptedBy } from '../src/model/agent-control.js';
 const ME = 'human:me:1';
 
 function ask(seq, id, { text = 'hi', open = false } = {}) {
-  return { channel_id: 'c', seq, envelope: { id, kind: 'request', type: 'agent.ask', sender: { id: ME }, audience: ['agent:a:1'], payload: { text }, correlation_id: id } };
+  return { channel_id: 'c', seq, envelope: { id, kind: 'request', type: 'agent.ask', sender: { id: ME }, audience: ['agent:a:1'], payload: { body: { text } }, correlation_id: id } };
 }
 function answer(seq, id, parent) {
-  return { channel_id: 'c', seq, envelope: { id, kind: 'response', type: 'agent.ask', parent_id: parent, sender: { id: 'agent:a:1' }, audience: [ME], payload: { status: 'completed', text: 'ok' }, correlation_id: parent } };
+  return { channel_id: 'c', seq, envelope: { id, kind: 'response', type: 'agent.ask', parent_id: parent, sender: { id: 'agent:a:1' }, audience: [ME], payload: { body: { status: 'completed', text: 'ok' } }, correlation_id: parent } };
 }
 
 function progress(seq, id, parent, status = 'queued') {
-  return { channel_id: 'c', seq, envelope: { id, kind: 'response', type: 'agent.ask', parent_id: parent, sender: { id: 'agent:a:1' }, audience: [ME], payload: { status, controls: [] }, correlation_id: parent } };
+  return { channel_id: 'c', seq, envelope: { id, kind: 'response', type: 'agent.ask', parent_id: parent, sender: { id: 'agent:a:1' }, audience: [ME], payload: { body: { status, controls: [] } }, correlation_id: parent } };
 }
 
 function forceTrimPast(state, fromSeq = 301) {
   for (let seq = fromSeq; seq < fromSeq + 24; seq += 1) {
-    apply(state, { channel_id: 'c', seq, envelope: { id: `noise-${seq}`, kind: 'event', type: 'human.note', payload: { text: 'noise' } } }, ME);
+    apply(state, { channel_id: 'c', seq, envelope: { id: `noise-${seq}`, kind: 'event', type: 'human.note', payload: { body: { text: 'noise' } } } }, ME);
   }
   trimChannelState(state, { maxRows: 8, maxBytes: 1e9 });
 }
@@ -61,7 +61,7 @@ describe('内存窗口', () => {
     trimChannelState(state, { maxRows: 40, maxBytes: 1e9 });
     expect(state.rows.size).toBeLessThan(40);
     const next = Math.max(...state.rows.keys()) + 1;
-    apply(state, { channel_id: 'c', seq: next, envelope: { id: 'tail', kind: 'event', type: 'human.note', payload: { text: 'tail' } } }, ME);
+    apply(state, { channel_id: 'c', seq: next, envelope: { id: 'tail', kind: 'event', type: 'human.note', payload: { body: { text: 'tail' } } } }, ME);
     expect(trimChannelState(state, { maxRows: 40, maxBytes: 1e9 })).toBe(0);
   });
 
@@ -123,9 +123,9 @@ describe('内存窗口', () => {
     expect(state._unmatchedTerminalClosures.get('closed-request')).toMatchObject({
       seq: 300,
       closureOnly: true,
-      envelope: { id: 'closed-terminal', parent_id: 'closed-request', payload: { status: 'completed' } },
+      envelope: { id: 'closed-terminal', parent_id: 'closed-request', payload: { body: { status: 'completed' } } },
     });
-    expect(state._unmatchedTerminalClosures.get('closed-request').envelope.payload).not.toHaveProperty('text');
+    expect(state._unmatchedTerminalClosures.get('closed-request').envelope.payload.body).not.toHaveProperty('text');
 
     // A later page may end before the terminal suffix which was already
     // scanned and trimmed. The request atomically drains its retained closure;
@@ -137,9 +137,9 @@ describe('内存窗口', () => {
       terminalSeq: 300,
       latestStatus: 'completed',
       terminalClosureOnly: true,
-      terminal: { payload: { status: 'completed' } },
+      terminal: { payload: { body: { status: 'completed' } } },
     });
-    expect(state.turns.get('closed-request').terminal.payload).not.toHaveProperty('text');
+    expect(state.turns.get('closed-request').terminal.payload.body).not.toHaveProperty('text');
     expect(requestClosure(state, 'closed-request')?.source).toBe('closure');
     expect(terminalResultPayload(state.turns.get('closed-request'))).toBeNull();
     expect(terminalResultState(state.turns.get('closed-request'))).toEqual({
@@ -155,7 +155,7 @@ describe('内存窗口', () => {
     expect(state.turns.get('closed-request')).toMatchObject({
       terminalSeq: 300,
       terminalClosureOnly: false,
-      terminal: { id: 'closed-terminal', payload: { status: 'completed', text: 'ok' } },
+      terminal: { id: 'closed-terminal', payload: { body: { status: 'completed', text: 'ok' } } },
       text: 'ok',
     });
     expect(requestClosure(state, 'closed-request')?.source).toBe('turn');
@@ -169,14 +169,14 @@ describe('内存窗口', () => {
     const state = createChannelState('c');
     const request = {
       channel_id: 'c', seq: 100,
-      envelope: { id: 'steer', kind: 'request', type: 'agent.steer', sender: { id: ME }, audience: ['agent:a:1'], payload: { text: '改道' } },
+      envelope: { id: 'steer', kind: 'request', type: 'agent.steer', sender: { id: ME }, audience: ['agent:a:1'], payload: { body: { text: '改道' } } },
     };
     const terminal = {
       channel_id: 'c', seq: 300,
       envelope: {
         id: 'steer-terminal', parent_id: 'steer', kind: 'response', type: 'agent.steer',
         sender: { id: 'agent:a:1' }, audience: [ME],
-        payload: { status: 'completed', value: { merged_into: 'turn-7', preempted_by: 'replacement-8', replaced_by: 'turn-9' } },
+        payload: { body: { status: 'completed', value: { merged_into: 'turn-7', preempted_by: 'replacement-8', replaced_by: 'turn-9' } } },
       },
     };
     apply(state, request, ME);
@@ -187,9 +187,9 @@ describe('内存窗口', () => {
     const turn = state.turns.get('steer');
     expect(turn).toMatchObject({
       terminalClosureOnly: true,
-      terminal: { payload: { status: 'completed', merged_into: 'turn-7', preempted_by: 'replacement-8', replaced_by: 'turn-9' } },
+      terminal: { payload: { body: { status: 'completed', merged_into: 'turn-7', preempted_by: 'replacement-8', replaced_by: 'turn-9' } } },
     });
-    expect(turn.terminal.payload).not.toHaveProperty('value');
+    expect(turn.terminal.payload.body).not.toHaveProperty('value');
     expect(mergedInto(turn)).toBe('turn-7');
     expect(preemptedBy(turn)).toBe('replacement-8');
     expect(terminalRetainedValue(turn, 'replaced_by')).toBe('turn-9');
@@ -216,7 +216,7 @@ describe('内存窗口', () => {
     apply(state, answer(300, 'canonical-terminal', 'work'), ME);
     const canonical = state.turns.get('work').terminal;
     expect(state.turns.get('work').terminalClosureOnly).toBe(false);
-    expect(canonical.payload.text).toBe('ok');
+    expect(canonical.payload.body.text).toBe('ok');
     state._seenIds.delete('canonical-terminal');
     state._envelopesById.delete('canonical-terminal');
     apply(state, answer(300, 'canonical-terminal', 'work'), ME);
@@ -239,7 +239,7 @@ describe('内存窗口', () => {
     expect(state.turns.get('work')).toMatchObject({
       terminalSeq: 200,
       terminalClosureOnly: false,
-      terminal: { id: 'earlier-terminal', payload: { status: 'completed', text: 'ok' } },
+      terminal: { id: 'earlier-terminal', payload: { body: { status: 'completed', text: 'ok' } } },
     });
     expect(state.anomalies.filter((entry) => entry.code === 'terminal_conflict')).toMatchObject([
       { seq: 300, envelopeId: 'later-terminal', requestId: 'work' },
@@ -256,7 +256,7 @@ describe('内存窗口', () => {
     apply(closed, channelRow('closed-channel', answer(300, 'closed-terminal', 'same-request')), ME);
     for (let seq = 401; seq < 425; seq += 1) apply(closed, {
       channel_id: 'closed-channel', seq,
-      envelope: { id: `closed-noise-${seq}`, kind: 'event', type: 'human.note', payload: { text: 'noise' } },
+      envelope: { id: `closed-noise-${seq}`, kind: 'event', type: 'human.note', payload: { body: { text: 'noise' } } },
     }, ME);
     trimChannelState(closed, { maxRows: 8, maxBytes: 1e9 });
 
@@ -337,7 +337,7 @@ describe('内存窗口', () => {
   });
 
   it('估字节只量顶层字符串,恒不整条序列化', () => {
-    expect(estimateRowBytes({ payload: { text: 'x'.repeat(1000) } })).toBeGreaterThan(1000);
+    expect(estimateRowBytes({ payload: { body: { text: 'x'.repeat(1000) } } })).toBeGreaterThan(1000);
     expect(estimateRowBytes({})).toBeGreaterThan(0);
   });
 

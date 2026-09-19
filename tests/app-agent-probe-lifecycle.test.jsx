@@ -249,8 +249,8 @@ function failedDescribe(requestId) {
     requestId,
     requestSeq: 1,
     lastSeq: 2,
-    request: { id: requestId, type: 'actor.describe', audience: ['agent-1'], payload: {} },
-    terminal: { id: `${requestId}-terminal`, type: 'actor.describe', payload: { status: 'failed', error_code: 'unavailable' } },
+    request: { id: requestId, type: 'actor.describe', audience: ['agent-1'], payload: { body: {} } },
+    terminal: { id: `${requestId}-terminal`, type: 'actor.describe', payload: { body: { status: 'failed', error_code: 'unavailable' } } },
   };
 }
 

@@ -15,7 +15,7 @@ function envelope(id, kind, type, payload, extra = {}) {
     id,
     kind,
     type,
-    payload,
+    payload: { body: payload },
     ts: extra.ts || 100,
     sender: extra.sender || { kind: 'human', id: 'alice' },
     audience: extra.audience || ['agent'],

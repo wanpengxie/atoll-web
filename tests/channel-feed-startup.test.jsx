@@ -79,14 +79,14 @@ describe('channel feed startup lanes', () => {
             channel_id: 'c1', seq: 1,
             envelope: {
               id: 'cached-request', kind: 'request', type: 'human.ask', visibility: 'public',
-              sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:root:1'], payload: { text: 'question' },
+              sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:root:1'], payload: { body: { text: 'question' } },
             },
           },
           {
             channel_id: 'c1', seq: 3,
             envelope: {
               id: 'cached-final', parent_id: 'cached-request', kind: 'response', type: 'human.ask', visibility: 'public',
-              sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'], payload: { status: 'completed', text: 'answer' },
+              sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'], payload: { body: { status: 'completed', text: 'answer' } },
             },
           },
         ],
@@ -297,7 +297,7 @@ describe('channel feed startup lanes', () => {
         source: 'history', ref: call.ref, generation: 1, channel_id: 'c0', seq: 101,
         envelope: {
           id: 'reconnect-related', kind: 'event', type: 'human.note', visibility: 'public',
-          sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:root:1'], payload: { text: 'after reconnect' },
+          sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:root:1'], payload: { body: { text: 'after reconnect' } },
         },
       });
       hook.result.current.pageEnd({
@@ -351,7 +351,7 @@ describe('channel feed startup lanes', () => {
       source: 'live', generation: 1, channel_id: 'c0', seq: 1,
       envelope: {
         id: 'principal-a-row', kind: 'event', type: 'channel.info',
-        sender: { id: 'system:c0:1', kind: 'system' }, payload: {},
+        sender: { id: 'system:c0:1', kind: 'system' }, payload: { body: {} },
       },
     }));
     await waitFor(() => expect(onSubmissionFeed).toHaveBeenCalledOnce());
@@ -370,7 +370,7 @@ describe('channel feed startup lanes', () => {
       source: 'live', generation: 1, channel_id: 'c0', seq: 2,
       envelope: {
         id: 'late-principal-a-row', kind: 'event', type: 'channel.info',
-        sender: { id: 'system:c0:1', kind: 'system' }, payload: {},
+        sender: { id: 'system:c0:1', kind: 'system' }, payload: { body: {} },
       },
     }));
     await act(async () => {
@@ -384,7 +384,7 @@ describe('channel feed startup lanes', () => {
       source: 'live', generation: 1, channel_id: 'c0', seq: 3,
       envelope: {
         id: 'principal-b-row', kind: 'event', type: 'channel.info',
-        sender: { id: 'system:c0:2', kind: 'system' }, payload: {},
+        sender: { id: 'system:c0:2', kind: 'system' }, payload: { body: {} },
       },
     }));
     await waitFor(() => expect(onSubmissionFeed).toHaveBeenCalledTimes(2));
@@ -418,7 +418,7 @@ describe('channel feed startup lanes', () => {
       source: 'live', generation: 1, channel_id: channelId, seq,
       envelope: {
         id, kind: 'request', type: 'human.note', visibility: 'public',
-        sender: { id: senderId, kind: 'human', principal }, payload: { text: id },
+        sender: { id: senderId, kind: 'human', principal }, payload: { body: { text: id } },
       },
     }));
 
@@ -484,7 +484,7 @@ describe('channel feed startup lanes', () => {
       source: 'live', generation: 7, channel_id: 'c0', seq: 1,
       envelope: {
         id: 'work-processing', parent_id: 'work', kind: 'response', type: 'agent.ask', ts: 1_000,
-        sender: { id: 'agent:steward:7', kind: 'agent' }, payload: { status: 'processing' },
+        sender: { id: 'agent:steward:7', kind: 'agent' }, payload: { body: { status: 'processing' } },
       },
     }));
     await waitFor(() => expect(tracker.snapshot().byChannel.c0?.active).toEqual([
@@ -498,7 +498,7 @@ describe('channel feed startup lanes', () => {
       source: 'live', generation: 7, channel_id: 'c0', seq: 2,
       envelope: {
         id: 'work-completed', parent_id: 'work', kind: 'response', type: 'agent.ask', ts: 4_000,
-        sender: { id: 'agent:steward:7', kind: 'agent' }, payload: { status: 'completed' },
+        sender: { id: 'agent:steward:7', kind: 'agent' }, payload: { body: { status: 'completed' } },
       },
     }));
     await waitFor(() => expect(tracker.snapshot().byChannel.c0?.agents['agent:steward:7'])
@@ -869,7 +869,7 @@ describe('channel feed startup lanes', () => {
       ], { generation: 1, focus: 'c0', boot: 'boot-a' });
       hook.result.current.enqueue({
         source: 'live', generation: 1, channel_id: 'c0', seq: 1,
-        envelope: { id: 'live-1', kind: 'event', type: 'human.note', payload: { text: 'now' } },
+        envelope: { id: 'live-1', kind: 'event', type: 'human.note', payload: { body: { text: 'now' } } },
       });
     });
 
@@ -1035,7 +1035,7 @@ describe('channel feed startup lanes', () => {
 
     expect(hook.result.current.enqueue({
       source: 'live', generation: 1, channel_id: 'c1', seq: 4,
-      envelope: { id: 'late-live', kind: 'event', type: 'human.note', payload: { text: 'late' } },
+      envelope: { id: 'late-live', kind: 'event', type: 'human.note', payload: { body: { text: 'late' } } },
     })).toBe(false);
     expect(hook.result.current.pageEnd({ channel_id: 'c1', generation: 1 })).toBe(false);
     expect(hook.result.current.liveCheckpoint({ channel_id: 'c1', scan_low_seq: 4, scanned_seq: 4 })).toBe(false);
@@ -1082,7 +1082,7 @@ describe('channel feed startup lanes', () => {
       ], { generation: 1, focus: 'c0', boot: 'boot-a' });
       hook.result.current.enqueue({
         source: 'live', generation: 1, channel_id: 'c0', seq: 1,
-        envelope: { id: 'live-before-owner', kind: 'event', type: 'human.note', payload: { text: 'live' } },
+        envelope: { id: 'live-before-owner', kind: 'event', type: 'human.note', payload: { body: { text: 'live' } } },
       });
     });
     await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(1)).toBe(true));
@@ -1163,7 +1163,7 @@ describe('channel feed startup lanes', () => {
 
     act(() => hook.result.current.enqueue({
       source: 'live', channel_id: 'c0', seq: 101,
-      envelope: { id: 'live', kind: 'event', type: 'human.note', payload: { text: 'live first' } },
+      envelope: { id: 'live', kind: 'event', type: 'human.note', payload: { body: { text: 'live first' } } },
     }));
     await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(101)).toBe(true));
     expect(hook.result.current.statesRef.current.get('c0')?.rows.has(100)).toBe(false);
@@ -1187,7 +1187,7 @@ describe('channel feed startup lanes', () => {
       readBefore: vi.fn(async () => ({
         rows: [{
           channel_id: 'c0', seq: 1,
-          envelope: { id: 'cached-governance', kind: 'response', type: 'system.channel.set', payload: { status: 'completed' } },
+          envelope: { id: 'cached-governance', kind: 'response', type: 'system.channel.set', payload: { body: { status: 'completed' } } },
         }],
         nextBeforeSeq: 1, exhausted: true, bytes: 10,
       })),
@@ -1209,7 +1209,7 @@ describe('channel feed startup lanes', () => {
 
     act(() => hook.result.current.enqueue({
       source: 'live', generation: 1, channel_id: 'c0', seq: 2,
-      envelope: { id: 'live-governance', kind: 'response', type: 'system.channel.set', payload: { status: 'completed' } },
+      envelope: { id: 'live-governance', kind: 'response', type: 'system.channel.set', payload: { body: { status: 'completed' } } },
     }));
     await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(2)).toBe(true));
     expect(access.live).toHaveBeenCalledWith('c0');
@@ -1240,7 +1240,7 @@ describe('canonical waiting read path', () => {
       envelope: {
         id: 'old-query-terminal', parent_id: 'old-query', kind: 'response', type: 'system.log.query',
         visibility: 'public', sender: { id: 'system', kind: 'system' },
-        payload: { status: 'completed', head_seq: 50, turns: [] },
+        payload: { body: { status: 'completed', head_seq: 50, turns: [] } },
       },
     }));
     await waitFor(() => expect(hook.result.current.statesRef.current.get('c0')?.rows.has(1)).toBe(true));
@@ -1277,7 +1277,7 @@ describe('canonical waiting read path', () => {
         source: 'live', generation: 7, channel_id: 'c0', seq: 1,
         envelope: {
           id: 'work', kind: 'request', type: 'agent.ask', sender: { id: 'human:root:1', kind: 'human' },
-          audience: [agentID], visibility: 'public', payload: { text: '完整接线任务' },
+          audience: [agentID], visibility: 'public', payload: { body: { text: '完整接线任务' } },
         },
       });
       hook.result.current.feed.enqueue({
@@ -1285,7 +1285,7 @@ describe('canonical waiting read path', () => {
         envelope: {
           id: 'work-queued', parent_id: 'work', kind: 'response', type: 'agent.ask',
           sender: { id: agentID, kind: 'agent' }, audience: ['human:root:1'], visibility: 'public',
-          payload: { status: 'queued', controls: [{ word: 'agent.interrupt' }] },
+          payload: { body: { status: 'queued', controls: [{ word: 'agent.interrupt', payload: { target: 'work' } }] } },
         },
       });
     });
@@ -1313,7 +1313,7 @@ describe('canonical waiting read path', () => {
       envelope: {
         id: 'work-done', parent_id: 'work', kind: 'response', type: 'agent.ask',
         sender: { id: agentID, kind: 'agent' }, audience: ['human:root:1'], visibility: 'public',
-        payload: { status: 'completed', text: 'done' },
+        payload: { body: { status: 'completed', text: 'done' } },
       },
     }));
     await waitFor(() => expect(
@@ -1326,7 +1326,7 @@ describe('canonical waiting read path', () => {
       envelope: {
         id: 'work-late-queued', parent_id: 'work', kind: 'response', type: 'agent.ask',
         sender: { id: agentID, kind: 'agent' }, audience: ['human:root:1'], visibility: 'public',
-        payload: { status: 'queued', controls: [{ word: 'agent.interrupt' }] },
+        payload: { body: { status: 'queued', controls: [{ word: 'agent.interrupt', payload: { target: 'work' } }] } },
       },
     }));
     await waitFor(() => expect(
@@ -1371,12 +1371,12 @@ describe('canonical waiting read path', () => {
     const terminal = {
       id: 'old-terminal', parent_id: 'old-request', kind: 'response', type: 'agent.ask',
       sender: { id: 'agent:a:7', kind: 'agent' }, audience: ['human:root:1'], visibility: 'public',
-      payload: { status: 'completed', text: 'old answer' },
+      payload: { body: { status: 'completed', text: 'old answer' } },
     };
     act(() => {
       for (let seq = 429; seq < 460; seq += 1) hook.result.current.feed.enqueue({
         source: 'history', ref: suffix.ref, generation: 7, channel_id: 'c0', seq,
-        envelope: { id: `suffix-noise-${seq}`, kind: 'event', type: 'human.note', payload: { text: 'noise' } },
+        envelope: { id: `suffix-noise-${seq}`, kind: 'event', type: 'human.note', payload: { body: { text: 'noise' } } },
       });
       hook.result.current.feed.enqueue({
         source: 'history', ref: suffix.ref, generation: 7, channel_id: 'c0', seq: 460, envelope: terminal,
@@ -1394,7 +1394,7 @@ describe('canonical waiting read path', () => {
     act(() => {
       for (let seq = 461; seq <= 970; seq += 1) hook.result.current.feed.enqueue({
         source: 'live', generation: 7, channel_id: 'c0', seq,
-        envelope: { id: `live-noise-${seq}`, kind: 'event', type: 'human.note', payload: { text: 'noise' } },
+        envelope: { id: `live-noise-${seq}`, kind: 'event', type: 'human.note', payload: { body: { text: 'noise' } } },
       });
     });
     await waitFor(() => expect(hook.result.current.feed.statesRef.current.get('c0')?.rows.size).toBeGreaterThan(500));
@@ -1411,7 +1411,7 @@ describe('canonical waiting read path', () => {
         source: 'history', ref: older.ref, generation: 7, channel_id: 'c0', seq: 100,
         envelope: {
           id: 'old-request', kind: 'request', type: 'agent.ask', sender: { id: 'human:root:1', kind: 'human' },
-          audience: ['agent:a:7'], visibility: 'public', payload: { text: 'old queued work' },
+          audience: ['agent:a:7'], visibility: 'public', payload: { body: { text: 'old queued work' } },
         },
       });
       hook.result.current.feed.enqueue({
@@ -1419,7 +1419,7 @@ describe('canonical waiting read path', () => {
         envelope: {
           id: 'old-queued', parent_id: 'old-request', kind: 'response', type: 'agent.ask',
           sender: { id: 'agent:a:7', kind: 'agent' }, audience: ['human:root:1'], visibility: 'public',
-          payload: { status: 'queued', controls: [{ word: 'agent.interrupt' }] },
+          payload: { body: { status: 'queued', controls: [{ word: 'agent.interrupt', payload: { target: 'old-work' } }] } },
         },
       });
       hook.result.current.feed.pageEnd({
