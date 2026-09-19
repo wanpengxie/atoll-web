@@ -8,6 +8,8 @@ const source = (relative) => readFileSync(resolve(process.cwd(), relative), 'utf
 describe('conversation architecture boundaries', () => {
   it('has one mature virtual-list geometry executor and no legacy engine', () => {
     const list = source('src/ui/timeline/LegendMessageList.jsx');
+    const browsing = source('src/ui/timeline/useBrowsingReadingController.js');
+    const following = source('src/ui/timeline/following-scroll-controller.js');
     const timeline = source('src/ui/Timeline.jsx');
     expect(list).toContain("from 'react-virtuoso'");
     expect(list).not.toContain("from '@tanstack/react-virtual'");
@@ -16,13 +18,19 @@ describe('conversation architecture boundaries', () => {
     // Semantic browsing restore has one activation/input-scoped public
     // Virtuoso positioning command. It never writes raw scrollTop, retries by
     // timer, or performs a pixel-delta correction.
-    expect(list.match(/virtuosoRef\.current\.scrollToIndex\(\{/g)).toHaveLength(1);
+    expect(list.match(/\.scrollToIndex\(\{/g)).toHaveLength(1);
     expect(list).not.toContain('autoscrollToBottom');
     expect(list).toMatch(/followOutput=\{false\}/);
     // One local DOM write is the only application geometry writer. Every
     // authorized trigger enters the same issuer; runtime geometry remains a
     // Chromium contract, not a jsdom assertion.
     expect(list.match(/\broot\.scrollTo\(\{\s*top:\s*root\.scrollHeight,\s*behavior:\s*'auto'\s*\}\)/g)).toHaveLength(1);
+    expect(following.match(/type:\s*'scroll-tail'/g)).toHaveLength(1);
+    expect(list).not.toMatch(/\bon(?:ReadingObservation|PresentationMaterialized|AtTop|NearTop|Underfill)\b/);
+    expect(browsing).toMatch(/\bonReadingObservation\b/);
+    expect(browsing).toMatch(/\bonPresentationMaterialized\b/);
+    expect(browsing).toMatch(/\bon(?:AtTop|NearTop|Underfill)\b/);
+    expect(`${browsing}\n${following}`).not.toMatch(/document\.|window\.|querySelector|getBoundingClientRect|\.scrollTo\(/);
     expect(list).toContain("issueBottomIfCurrent('explicit-bottom')");
     expect(list).toContain("issueBottomIfCurrent('item-layout')");
     expect(list).toContain("issueBottomIfCurrent('list-commit')");

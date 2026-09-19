@@ -12,21 +12,22 @@ import React, {
   useState,
 } from 'react';
 import { Virtuoso } from 'react-virtuoso';
-import { diagnostic, isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
+import { isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
 import { READING_MODE } from '../../model/reading-session.js';
 import { HistoryStartBoundary } from './HistoryStartBoundary.jsx';
-import {
-  advanceSendScrollTransaction,
-  createSendScrollTransaction,
-  sendScrollTransactionCanWrite,
-} from '../../model/send-scroll-transaction.js';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
 import {
   ReadingNavigationOwner,
   useReadingNavigationHost,
   useReadingNavigationOwner,
 } from './ReadingNavigationOwner.jsx';
-import { consumeHistoryConsumerResult } from './history-consumer-demand.js';
+import { useBrowsingReadingController } from './useBrowsingReadingController.js';
+import {
+  commitFollowingPresentation,
+  decideFollowingScroll,
+  invalidateFollowingSend,
+  resetFollowingScroll,
+} from './following-scroll-controller.js';
 
 function traceReadingAdapter(stage, detail = {}) {
   const sink = globalThis.__ATOLL_READING_TRACE__;
@@ -55,7 +56,6 @@ const READING_TRACE_CONFIG = Object.freeze({
   estimatedItemSize: 132,
   drawDistance: 900,
   atBottomThreshold: 24,
-  historyRunwayMinimumPx: 800,
 });
 
 const CommitAwareList = forwardRef(function CommitAwareList({ children, context, ...props }, ref) {
@@ -74,6 +74,31 @@ const VIRTUOSO_COMPONENTS = Object.freeze({
   List: CommitAwareList,
   Footer: WaitingObstructionFooter,
 });
+
+function executeReadingCommand(command, { virtuoso, root }) {
+  if (command.type === 'position-row') {
+    if (typeof virtuoso?.scrollToIndex !== 'function') return false;
+    virtuoso.scrollToIndex({
+      index: command.index,
+      align: 'start',
+      ...(Number.isFinite(command.viewportOffset)
+        ? { offset: -command.viewportOffset }
+        : {}),
+    });
+    return true;
+  }
+  if (command.type === 'scroll-tail') {
+    if (typeof root?.scrollTo !== 'function') return false;
+    root.dispatchEvent(new CustomEvent('atoll:timeline-bottom-write', { bubbles: true }));
+    root.scrollTo({ top: root.scrollHeight, behavior: 'auto' });
+    return true;
+  }
+  if (command.type === 'claim-focus') {
+    root?.focus?.({ preventScroll: true });
+    return true;
+  }
+  return false;
+}
 
 class RowErrorBoundary extends Component {
   constructor(props) {
@@ -372,6 +397,7 @@ function sameNavigationTarget(left, right) {
 function MessageListBody({
   snapshot,
   reading,
+  readingController,
   rowRevision,
   rowPresentationState,
   renderRow,
@@ -409,25 +435,8 @@ function MessageListBody({
   const materializationAckRef = useRef(null);
   const observationFrameRef = useRef(0);
   const coverageFrameRef = useRef(0);
-  const coverageDemandKeyRef = useRef('');
-  const coverageForceRef = useRef('');
-  const topDemandKeyRef = useRef('');
   const pendingObservationRef = useRef(null);
-  const atBottomRef = useRef(false);
-  const atTopRef = useRef(false);
   const geometryRevisionRef = useRef(0);
-  const inputRef = useRef({
-    activationID: reading.activationID,
-    epoch: reading.session.inputEpoch,
-    direction: '',
-    gestureID: '',
-    geometryRevision: 0,
-    kind: '',
-    canFollowTail: true,
-    canRequestHistory: true,
-    active: false,
-  });
-  const scrollTopRef = useRef(0);
   const followAuthorizationRef = useRef({
     activationID: reading.activationID,
     authorized: reading.session.mode === READING_MODE.following
@@ -447,15 +456,19 @@ function MessageListBody({
   const scheduleObserveRef = useRef(null);
   const listCommitMicrotaskRef = useRef(0);
   const itemLayoutIssueMicrotaskRef = useRef(0);
-  const coverageStatusKey = JSON.stringify([
-    reading.status?.attached === true,
-    Number(reading.status?.generation || 0),
-    reading.status?.hasOlder === true,
-    reading.status?.loading === true,
-    String(reading.status?.error || ''),
-    Number(reading.status?.completedPages || 0),
-    Number(reading.status?.revealVersion || 0),
-  ]);
+  const followingControl = useMemo(() => Object.freeze({
+    followAuthorization: followAuthorizationRef,
+    followRevision: followRevisionAuthorizationRef,
+    viewport: viewportAuthorizationRef,
+    layoutHeight: layoutHeightAuthorizationRef,
+    role: roleAuthorizationRef,
+    lastListHeight: lastListHeightRef,
+    viewportSize: viewportSizeRef,
+    intentGeometry: intentGeometryRef,
+    sendTransaction: sendScrollTransactionRef,
+    sendOwnedRevision: sendOwnedRevisionRef,
+    itemLayout: itemLayoutAckRef,
+  }), []);
 
   const positionDelayedBookmark = useCallback((source) => {
     const pending = delayedRestoreRef.current;
@@ -484,7 +497,7 @@ function MessageListBody({
         || ack?.presentationRevision !== Number(data.revision || 0)
       ))) return false;
     const targetIndex = data.rows.findIndex((row) => row.id === pending.targetID);
-    if (targetIndex < 0 || typeof virtuosoRef.current?.scrollToIndex !== 'function') return false;
+    if (targetIndex < 0) return false;
     const root = scrollerRef.current;
     const targetNode = presentationRowNode(root, pending.targetID);
     const targetMaterialized = Boolean(
@@ -557,13 +570,12 @@ function MessageListBody({
       if (pending.navigationTarget === true) scheduleRevealReceiptRef.current?.('restore-complete');
       return true;
     }
-    virtuosoRef.current.scrollToIndex({
+    const executed = executeReadingCommand(Object.freeze({
+      type: 'position-row',
       index: targetIndex,
-      align: 'start',
-      ...(Number.isFinite(desiredOffset)
-        ? { offset: -desiredOffset }
-        : {}),
-    });
+      viewportOffset: desiredOffset,
+    }), { virtuoso: virtuosoRef.current, root });
+    if (!executed) return false;
     delayedRestoreRef.current = {
       ...pending,
       phase: 'issued',
@@ -581,366 +593,29 @@ function MessageListBody({
   }, []);
 
   const issueBottomIfCurrent = useCallback((source = 'layout') => {
-    const binding = activationOwnerRef.current;
     const root = scrollerRef.current;
-    const geometry = () => ({
+    const geometry = Object.freeze({
+      canScroll: typeof root?.scrollTo === 'function',
       scrollTop: Number(root?.scrollTop || 0),
       scrollHeight: Number(root?.scrollHeight || 0),
       clientHeight: Number(root?.clientHeight || 0),
+      offsetHeight: Number(root?.offsetHeight || 0),
     });
-    const reject = (reason, detail = {}) => {
-      traceReadingAdapter('issuer-reject', () => ({ source, reason, ...geometry(), ...detail }));
-      return false;
-    };
-    traceReadingAdapter('issuer-enter', () => ({
+    const decision = decideFollowingScroll({
       source,
-      ...geometry(),
-    }));
-    if (!binding) return reject('no-binding');
-    if (!root) return reject('no-scroller');
-    if (typeof root.scrollTo !== 'function') return reject('no-scroll-method');
-    const owner = binding.reading;
-    const current = owner.getSession?.() || owner.session;
-    const intent = current.bottomIntent?.id ? current.bottomIntent : null;
-    if (binding.activationID !== current.activationID) return reject('owner-activation');
-    const validIntent = Boolean(intent?.id && intent.inputEpoch === current.inputEpoch);
-    const latestIntent = validIntent && String(intent.id).startsWith('latest:');
-    if (validIntent && intentGeometryRef.current?.id !== intent.id) {
-      intentGeometryRef.current = { id: intent.id, scrollHeight: Number(root.scrollHeight || 0) };
+      binding: activationOwnerRef.current,
+      presentation: bottomIntentPresentationRef.current,
+      geometry,
+      control: followingControl,
+      trace: (stage, detail) => traceReadingAdapter(stage, detail),
+    });
+    if (!decision) return false;
+    if (decision.command) {
+      executeReadingCommand(decision.command, { virtuoso: virtuosoRef.current, root });
     }
-    const afterPresentationRevision = Math.max(0, Number(intent?.afterPresentationRevision) || 0);
-    const sendTargets = String(intent?.id || '').startsWith('composer:send-start:')
-      ? (intent?.targetMessageIDs || [])
-      : [];
-    if (validIntent && sendTargets.length
-      && sendScrollTransactionRef.current?.intentID !== intent.id) {
-      sendScrollTransactionRef.current = createSendScrollTransaction(intent, current.activationID);
-    }
-    const itemLayoutAck = itemLayoutAckRef.current;
-    const validItemLayoutAck = Boolean(
-      itemLayoutAck
-      && itemLayoutAck.activationID === current.activationID
-      && itemLayoutAck.inputEpoch === current.inputEpoch
-      && itemLayoutAck.snapshotRevision === binding.snapshotRevision
-      && itemLayoutAck.roleRevision === Number(binding.roleRevision || 0),
-    );
-    let sendTransaction = sendScrollTransactionRef.current;
-    const presentation = bottomIntentPresentationRef.current;
-    if (sendTransaction && presentation?.ready === true
-      && presentation.intentID === intent?.id
-      && presentation.activationID === current.activationID
-      && presentation.inputEpoch === current.inputEpoch) {
-      sendTransaction = advanceSendScrollTransaction(sendTransaction, {
-        type: 'ready',
-        activationID: current.activationID,
-        inputEpoch: current.inputEpoch,
-        intentID: intent.id,
-        targetIDs: sendTargets,
-        revision: Number(presentation.presentationRevision || binding.snapshotRevision || 0),
-        destinations: presentation.destinations,
-      });
-      // A waiting destination is outside the list's flow. Its committed
-      // presentation acknowledgement therefore also measures that the list
-      // geometry for the same revision is final; no Virtuoso height callback
-      // is expected when the list data did not change.
-      if (sendTransaction?.destination === 'waiting'
-        && sendTransaction.readyRevision === Number(presentation.presentationRevision || binding.snapshotRevision || 0)) {
-        sendTransaction = advanceSendScrollTransaction(sendTransaction, {
-          type: 'measured',
-          activationID: current.activationID,
-          inputEpoch: current.inputEpoch,
-          revision: sendTransaction.readyRevision,
-        });
-      }
-    }
-    if (sendTransaction && validItemLayoutAck) {
-      sendTransaction = advanceSendScrollTransaction(sendTransaction, {
-        type: 'measured',
-        activationID: current.activationID,
-        inputEpoch: current.inputEpoch,
-        revision: itemLayoutAck.snapshotRevision,
-        height: itemLayoutAck.height,
-        targetIDs: sendTargets.filter((messageID) => (
-          itemLayoutAck.rowIDs.includes(messageID)
-        )),
-      });
-    }
-    sendScrollTransactionRef.current = sendTransaction;
-    const sendTransactionReady = sendScrollTransactionCanWrite(sendTransaction);
-    const intentTargetCommitted = validIntent && (sendTargets.length
-      ? sendTransactionReady
-      : latestIntent || Number(binding.snapshotRevision || 0) > afterPresentationRevision);
-    const revisionAuthorization = followRevisionAuthorizationRef.current;
-    const validRevisionAuthorization = Boolean(
-      revisionAuthorization
-      && revisionAuthorization.activationID === current.activationID
-      && revisionAuthorization.inputEpoch === current.inputEpoch
-      && revisionAuthorization.snapshotRevision === binding.snapshotRevision
-      && revisionAuthorization.roleRevision === Number(binding.roleRevision || 0)
-      && current.mode === READING_MODE.following,
-    );
-    const viewportAuthorization = viewportAuthorizationRef.current;
-    const validViewportAuthorization = Boolean(
-      viewportAuthorization
-      && viewportAuthorization.activationID === current.activationID
-      && viewportAuthorization.inputEpoch === current.inputEpoch
-      && current.mode === READING_MODE.following,
-    );
-    const roleAuthorization = roleAuthorizationRef.current;
-    const validRoleAuthorization = Boolean(
-      !validIntent
-      && roleAuthorization
-      && roleAuthorization.ready === true
-      && roleAuthorization.activationID === current.activationID
-      && roleAuthorization.inputEpoch === current.inputEpoch
-      && roleAuthorization.snapshotRevision === Number(binding.snapshotRevision || 0)
-      && roleAuthorization.roleRevision === Number(binding.roleRevision || 0)
-      && current.mode === READING_MODE.following,
-    );
-    let sendOwnedRevision = sendOwnedRevisionRef.current;
-    const currentOwnsRevision = Boolean(
-      validIntent
-      && sendOwnedRevision
-      && sendOwnedRevision.intentID === intent.id
-      && sendOwnedRevision.activationID === current.activationID
-      && sendOwnedRevision.inputEpoch === current.inputEpoch
-    );
-    // Revocation/replacement releases the exact baseline measurement. While
-    // following it becomes an ordinary committed-height obligation; after
-    // takeover it is discarded without geometry work.
-    if (sendOwnedRevision && !currentOwnsRevision) {
-      if (sendOwnedRevision.activationID === current.activationID
-        && sendOwnedRevision.inputEpoch === current.inputEpoch
-        && sendOwnedRevision.snapshotRevision === Number(binding.snapshotRevision || 0)
-        && current.mode === READING_MODE.following
-        && sendOwnedRevision.baselineObserved === true) {
-        const existingHeight = layoutHeightAuthorizationRef.current;
-        const existingDominatesBaseline = existingHeight
-          && existingHeight.activationID === current.activationID
-          && existingHeight.inputEpoch === current.inputEpoch
-          && existingHeight.snapshotRevision === Number(binding.snapshotRevision || 0)
-          && existingHeight.roleRevision === Number(binding.roleRevision || 0);
-        if (!existingDominatesBaseline) {
-          layoutHeightAuthorizationRef.current = {
-            activationID: current.activationID,
-            inputEpoch: current.inputEpoch,
-            snapshotRevision: Number(binding.snapshotRevision || 0),
-            roleRevision: Number(binding.roleRevision || 0),
-            height: Number(sendOwnedRevision.baselineHeight),
-            tokenID: `height:released-send:${sendOwnedRevision.intentID}:${binding.snapshotRevision}`,
-          };
-        }
-      }
-      sendOwnedRevisionRef.current = null;
-      sendOwnedRevision = null;
-    }
-    const layoutHeightAuthorization = layoutHeightAuthorizationRef.current;
-    const validLayoutHeightAuthorization = Boolean(
-      layoutHeightAuthorization
-      && layoutHeightAuthorization.activationID === current.activationID
-      && layoutHeightAuthorization.inputEpoch === current.inputEpoch
-      && layoutHeightAuthorization.snapshotRevision === binding.snapshotRevision
-      && layoutHeightAuthorization.roleRevision === Number(binding.roleRevision || 0)
-      && current.mode === READING_MODE.following,
-    );
-    const intentOwnsRevision = Boolean(
-      currentOwnsRevision
-      && sendOwnedRevision?.snapshotRevision === binding.snapshotRevision,
-    );
-    const ordinaryRevisionAuthorized = validRevisionAuthorization
-      && (!intentOwnsRevision || revisionAuthorization.independent === true);
-    // A viewport resize is an independent committed geometry obligation. A
-    // pending send owns only its presentation/list-height join and must not
-    // suppress a real client-size change or consume that send intent.
-    const ordinaryViewportAuthorized = validViewportAuthorization;
-    // The owned baseline never becomes a height token. Any valid token here
-    // is either a tail-relevant non-target delta or a later, distinct public
-    // height and therefore represents an independent layout obligation.
-    const ordinaryHeightAuthorized = validLayoutHeightAuthorization;
-    const authorization = intentTargetCommitted
-      ? {
-        kind: 'send-ready',
-        tokenID: `intent:${intent.id}`,
-        label: 'intent',
-      }
-      : ordinaryRevisionAuthorized
-        ? {
-          kind: 'presentation',
-          tokenID: revisionAuthorization.tokenID
-            || `presentation:${current.activationID}:${current.inputEpoch}:${binding.snapshotRevision}`,
-          label: 'presentation-revision',
-        }
-        : validRoleAuthorization
-          ? {
-            kind: 'role',
-            tokenID: roleAuthorization.tokenID,
-            label: 'presentation-role',
-          }
-        : ordinaryViewportAuthorized
-          ? {
-            kind: 'viewport',
-            tokenID: viewportAuthorization.tokenID
-              || `viewport:${current.activationID}:${current.inputEpoch}:${viewportAuthorization.geometryRevision}`,
-            label: 'viewport-revision',
-          }
-          : ordinaryHeightAuthorized
-            ? {
-              kind: 'height',
-              tokenID: layoutHeightAuthorization.tokenID
-                || `height:${current.activationID}:${current.inputEpoch}:${binding.snapshotRevision}:${layoutHeightAuthorization.height}`,
-              label: 'presentation-height',
-            }
-            : null;
-    if (!authorization && validIntent) {
-      return reject('intent-target-pending', {
-        intentID: intent.id,
-        snapshotRevision: Number(binding.snapshotRevision || 0),
-        afterPresentationRevision,
-        targetMessageIDs: sendTargets,
-        sendTransaction: sendTransaction ? {
-          readyRevision: sendTransaction.readyRevision,
-          measuredRevision: sendTransaction.measuredRevision,
-        } : null,
-      });
-    }
-    if (!authorization) {
-      return reject('not-authorized', {
-        snapshotRevision: Number(binding.snapshotRevision || 0),
-        intentID: intent?.id || '',
-      });
-    }
-    if (owner.initializing && !latestIntent) return reject('initializing');
-    if (owner.bottomReady === false && !latestIntent) return reject('bottom-not-ready');
-    if (!binding.rows.length) return reject('no-rows');
-    const offsetHeight = Number(root.offsetHeight || 0);
-    const clientHeight = Number(root.clientHeight || 0);
-    const scrollHeight = Number(root.scrollHeight || 0);
-    if (offsetHeight <= 0 || clientHeight <= 0 || scrollHeight <= 0) return reject('zero-geometry');
-
-    const intentBaselineHeight = intentGeometryRef.current
-      && intentGeometryRef.current.id === intent?.id
-      ? Number(intentGeometryRef.current.scrollHeight || 0)
-      : 0;
-    if (authorization.kind === 'presentation' && !validItemLayoutAck) {
-      return reject('presentation-layout-pending', {
-        snapshotRevision: Number(binding.snapshotRevision || 0),
-      });
-    }
-    if (authorization.kind === 'presentation'
-      && validItemLayoutAck
-      && Number(itemLayoutAck.height || 0) > Number(root.scrollHeight || 0)) {
-      return reject('presentation-layout-pending', {
-        snapshotRevision: Number(binding.snapshotRevision || 0),
-        measuredHeight: Number(itemLayoutAck.height || 0),
-      });
-    }
-    if (authorization.kind === 'height'
-      && Number(layoutHeightAuthorization.height || 0) > Number(root.scrollHeight || 0)) {
-      return reject('presentation-layout-pending', {
-        snapshotRevision: Number(binding.snapshotRevision || 0),
-        measuredHeight: Number(layoutHeightAuthorization.height || 0),
-      });
-    }
-    if (authorization.kind === 'role'
-      && Number(roleAuthorization.height || 0) > Number(root.scrollHeight || 0)) {
-      return reject('presentation-layout-pending', {
-        roleRevision: Number(binding.roleRevision || 0),
-        measuredHeight: Number(roleAuthorization.height || 0),
-      });
-    }
-    if (intentTargetCommitted
-      && !sendTargets.length
-      && !latestIntent
-      && Number(root.scrollHeight || 0) <= intentBaselineHeight
-      && !validItemLayoutAck) {
-      return reject('intent-layout-pending', {
-        intentID: intent.id,
-        intentBaselineHeight,
-        snapshotRevision: Number(binding.snapshotRevision || 0),
-      });
-    }
-    if (intentTargetCommitted
-      && sendTargets.length
-      && sendTransaction?.destination !== 'waiting'
-      && sendTransaction?.measuredHeight > Number(root.scrollHeight || 0)) {
-      return reject('intent-layout-pending', {
-        intentID: intent.id,
-        measuredHeight: sendTransaction.measuredHeight,
-        snapshotRevision: Number(binding.snapshotRevision || 0),
-      });
-    }
-    const consumeAuthorization = () => {
-      if (authorization.kind === 'send-ready') {
-        if (sendTargets.length) {
-          sendScrollTransactionRef.current = null;
-          if (sendOwnedRevisionRef.current?.intentID === intent.id) sendOwnedRevisionRef.current = null;
-        }
-        owner.consumeBottomIntent(intent);
-        intentGeometryRef.current = null;
-      } else if (authorization.kind === 'presentation') {
-        if (followRevisionAuthorizationRef.current === revisionAuthorization) {
-          followRevisionAuthorizationRef.current = null;
-        }
-        if (validItemLayoutAck) itemLayoutAckRef.current = null;
-      } else if (authorization.kind === 'viewport') {
-        if (viewportAuthorizationRef.current === viewportAuthorization) viewportAuthorizationRef.current = null;
-      } else if (authorization.kind === 'role') {
-        if (roleAuthorizationRef.current === roleAuthorization) roleAuthorizationRef.current = null;
-      } else if (authorization.kind === 'height') {
-        if (layoutHeightAuthorizationRef.current === layoutHeightAuthorization) {
-          layoutHeightAuthorizationRef.current = null;
-        }
-      }
-    };
-    if (isAtTail(root)) {
-      consumeAuthorization();
-      traceReadingAdapter('issuer-satisfy', () => ({
-        source,
-        activationID: binding.activationID,
-        inputEpoch: current.inputEpoch,
-        snapshotRevision: binding.snapshotRevision,
-        intentID: intent?.id || '',
-        authorization: authorization.label,
-        authorityLabel: authorization.label,
-        authorizationToken: authorization.tokenID,
-        sendDestination: sendTransaction?.destination || '',
-        sendReadyRevision: Number(sendTransaction?.readyRevision || 0),
-        sendTargetIDs: sendTargets,
-        afterPresentationRevision,
-        reason: 'already-at-tail',
-        ...geometry(),
-      }));
-      scheduleObserveRef.current?.('layout');
-      return true;
-    }
-
-    traceReadingAdapter('issuer-write', () => ({
-      source,
-      activationID: binding.activationID,
-      inputEpoch: current.inputEpoch,
-      snapshotRevision: binding.snapshotRevision,
-      intentID: intent?.id || '',
-      authorization: authorization.label,
-      authorityLabel: authorization.label,
-      authorizationToken: authorization.tokenID,
-      sendDestination: sendTransaction?.destination || '',
-      sendReadyRevision: Number(sendTransaction?.readyRevision || 0),
-      sendTargetIDs: sendTargets,
-      afterPresentationRevision,
-      ...geometry(),
-    }));
-    // This is the only continuous geometry write in the adapter. It runs
-    // synchronously from a committed public list/layout acknowledgement and
-    // leaves no queued library request that can outlive a later user input.
-    root.dispatchEvent(new CustomEvent('atoll:timeline-bottom-write', { bubbles: true }));
-    root.scrollTo({ top: root.scrollHeight, behavior: 'auto' });
-    // A bottom write is not itself read evidence. Schedule the normal public
-    // viewport observation so unseen is acknowledged only after the installed
-    // visible tail is observed, including an already-at-tail no-op write.
-    scheduleObserveRef.current?.('layout');
-    consumeAuthorization();
+    if (decision.observe) scheduleObserveRef.current?.('layout');
     return true;
-  }, []);
+  }, [followingControl]);
 
   // Publish lifecycle ownership only after React commits this render. A
   // suspended or otherwise abandoned render must not replace the old
@@ -970,25 +645,7 @@ function MessageListBody({
           issuedRevision: 0,
         }
         : null;
-      inputRef.current = { ...inputRef.current, activationID: reading.activationID, active: false };
-      topDemandKeyRef.current = '';
-      coverageDemandKeyRef.current = '';
-      followAuthorizationRef.current = {
-        activationID: reading.activationID,
-        authorized: current.mode === READING_MODE.following
-          && reading.initializing !== true
-          && reading.bottomReady !== false,
-      };
-      followRevisionAuthorizationRef.current = null;
-      viewportAuthorizationRef.current = null;
-      layoutHeightAuthorizationRef.current = null;
-      roleAuthorizationRef.current = null;
-      lastListHeightRef.current = 0;
-      viewportSizeRef.current = null;
-      intentGeometryRef.current = null;
-      sendScrollTransactionRef.current = null;
-      sendOwnedRevisionRef.current = null;
-      itemLayoutAckRef.current = null;
+      resetFollowingScroll(followingControl, reading, current);
       activationOwnerRef.current = {
         activationID: reading.activationID,
         reading,
@@ -1000,167 +657,12 @@ function MessageListBody({
       };
       positionDelayedBookmark('activation-materialized');
     } else {
-      const previousRows = activationOwnerRef.current.rows;
-      const previousRevision = Number(activationOwnerRef.current.snapshotRevision || 0);
-      const nextRevision = Number(snapshot.revision || 0);
-      const previousRoleRevision = Number(activationOwnerRef.current.roleRevision || 0);
-      const nextRoleRevision = Number(snapshot.roleRevision || 0);
-      const previousTail = previousRows.at(-1);
-      const nextTail = snapshot.rows.at(-1);
-      const intent = current.bottomIntent?.id
-        && current.bottomIntent.inputEpoch === current.inputEpoch
-        ? current.bottomIntent
-        : null;
-      const transactionTargets = intent?.targetMessageIDs || [];
-      const transactionOwnsRevision = Boolean(
-        intent
-        && nextRevision > Math.max(0, Number(intent.afterPresentationRevision) || 0),
-      );
-      const tailChanged = previousTail?.id !== nextTail?.id
-        || previousTail?.contentRevision !== nextTail?.contentRevision
-        || previousTail !== nextTail;
-      const changeKind = snapshot.changes?.kind || '';
-      const insertedIDs = snapshot.changes?.inserted || [];
-      const updatedIDs = snapshot.changes?.updated || [];
-      const removedIDs = snapshot.changes?.removed || [];
-      const deltaIDs = [...insertedIDs, ...updatedIDs, ...removedIDs];
-      const transactionOwnsDelta = transactionOwnsRevision
-        && deltaIDs.some((id) => transactionTargets.includes(id));
-      // A revision which also changes any non-target row carries an ordinary
-      // presentation obligation of its own. This includes an insertion just
-      // before a target which remains the exact tail; looking only at the
-      // previous/next tail identity would incorrectly let the send join own
-      // the whole revision.
-      const nonTargetTailDelta = transactionOwnsDelta
-        && (
-          insertedIDs.some((id) => (
-            !transactionTargets.includes(id)
-            && !previousRows.some((row) => row.id === id)
-          ))
-          || updatedIDs.some((id) => !transactionTargets.includes(id))
-          || removedIDs.some((id) => (
-            !transactionTargets.includes(id)
-            && !snapshot.rows.some((row) => row.id === id)
-          ))
-        );
-      if (transactionOwnsDelta) {
-        const childFirstAck = itemLayoutAckRef.current;
-        const baselineObserved = Boolean(
-          childFirstAck
-          && childFirstAck.activationID === current.activationID
-          && childFirstAck.inputEpoch === current.inputEpoch
-          && childFirstAck.snapshotRevision === nextRevision
-          && childFirstAck.roleRevision === nextRoleRevision,
-        );
-        const baselineHeight = baselineObserved
-          ? Number(childFirstAck.firstHeight ?? childFirstAck.height ?? 0)
-          : 0;
-        const laterHeight = baselineObserved
-          ? Number(childFirstAck.height ?? baselineHeight)
-          : 0;
-        sendOwnedRevisionRef.current = {
-          intentID: intent.id,
-          activationID: current.activationID,
-          inputEpoch: current.inputEpoch,
-          snapshotRevision: nextRevision,
-          roleRevision: nextRoleRevision,
-          baselineObserved,
-          baselineHeight,
-          independentOrdinary: nonTargetTailDelta,
-        };
-        // A child public-height effect for this render may run before the
-        // parent establishes exact send ownership. It cannot authorize a
-        // generic follow write for the send target's own revision.
-        if (baselineObserved) {
-          if (nonTargetTailDelta || laterHeight !== baselineHeight) {
-            layoutHeightAuthorizationRef.current = current.mode === READING_MODE.following
-              ? {
-                activationID: current.activationID,
-                inputEpoch: current.inputEpoch,
-                snapshotRevision: nextRevision,
-                roleRevision: nextRoleRevision,
-                height: laterHeight,
-                tokenID: `height:child-first:${current.activationID}:${current.inputEpoch}:${nextRevision}:${childFirstAck.ackSeq || 1}`,
-              }
-              : null;
-          } else {
-            layoutHeightAuthorizationRef.current = null;
-          }
-        }
-      }
-      let sendTransaction = sendScrollTransactionRef.current;
-      if (sendTransaction
-        && (sendTransaction.activationID !== current.activationID
-          || sendTransaction.inputEpoch !== current.inputEpoch)) {
-        sendTransaction = null;
-        sendScrollTransactionRef.current = null;
-      }
-      const previousTailIndexInNext = previousTail?.id
-        ? snapshot.rows.findIndex((candidate) => candidate.id === previousTail.id)
-        : -1;
-      const forwardTailExtension = previousTailIndexInNext >= 0
-        && previousTailIndexInNext < snapshot.rows.length - 1
-        && snapshot.rows.slice(previousTailIndexInNext + 1)
-          .some((candidate) => insertedIDs.includes(candidate.id));
-      const tailRevision = nextRevision > previousRevision
-        && tailChanged
-        && (changeKind === 'append'
-          || forwardTailExtension
-          || (changeKind === 'revise'
-            && (snapshot.changes?.updated || []).includes(nextTail?.id)));
-      if (tailRevision && current.mode === READING_MODE.following
-        && (!transactionOwnsDelta || nonTargetTailDelta)) {
-        followRevisionAuthorizationRef.current = {
-          activationID: current.activationID,
-          inputEpoch: current.inputEpoch,
-          snapshotRevision: nextRevision,
-          roleRevision: nextRoleRevision,
-          tokenID: `presentation:${current.activationID}:${current.inputEpoch}:${nextRevision}`,
-          independent: nonTargetTailDelta,
-        };
-      } else if (nextRevision > previousRevision) {
-        followRevisionAuthorizationRef.current = null;
-      }
-      const roleUpdatedIDs = snapshot.roleChanges?.updated || [];
-      if (nextRoleRevision > previousRoleRevision) {
-        const currentIntent = current.bottomIntent?.id
-          && current.bottomIntent.inputEpoch === current.inputEpoch
-          ? current.bottomIntent
-          : null;
-        const childFirstRoleAck = itemLayoutAckRef.current;
-        const roleAckReady = Boolean(
-          childFirstRoleAck
-          && childFirstRoleAck.activationID === current.activationID
-          && childFirstRoleAck.inputEpoch === current.inputEpoch
-          && childFirstRoleAck.snapshotRevision === nextRevision
-          && childFirstRoleAck.roleRevision === nextRoleRevision,
-        );
-        roleAuthorizationRef.current = current.mode === READING_MODE.following
-          && roleUpdatedIDs.length
-          ? {
-            activationID: current.activationID,
-            inputEpoch: current.inputEpoch,
-            snapshotRevision: nextRevision,
-            roleRevision: nextRoleRevision,
-            updatedIDs: Object.freeze([...roleUpdatedIDs]),
-            ready: roleAckReady && !currentIntent,
-            blocked: Boolean(currentIntent),
-            height: roleAckReady ? Number(childFirstRoleAck.height || 0) : 0,
-            tokenID: `role:${current.activationID}:${current.inputEpoch}:${nextRoleRevision}`,
-          }
-          : null;
-        if (roleAckReady) {
-          const pendingHeight = layoutHeightAuthorizationRef.current;
-          if (pendingHeight
-            && pendingHeight.activationID === current.activationID
-            && pendingHeight.inputEpoch === current.inputEpoch
-            && pendingHeight.snapshotRevision === nextRevision
-            && pendingHeight.roleRevision === nextRoleRevision) {
-            layoutHeightAuthorizationRef.current = null;
-          }
-          if (currentIntent) roleAuthorizationRef.current = null;
-        }
-      }
+      const issueRole = commitFollowingPresentation({
+        control: followingControl,
+        current,
+        previous: activationOwnerRef.current,
+        snapshot,
+      });
       // Same-activation data commits keep the object captured by the lifecycle
       // cleanup but advance it to that activation's latest committed owner/data.
       activationOwnerRef.current.reading = reading;
@@ -1170,9 +672,7 @@ function MessageListBody({
       activationOwnerRef.current.roleRevision = Number(snapshot.roleRevision || 0);
       activationOwnerRef.current.inputEpoch = current.inputEpoch;
       positionDelayedBookmark('target-materialized');
-      if (roleAuthorizationRef.current?.ready === true) {
-        issueBottomIfCurrent('role-commit');
-      }
+      if (issueRole) issueBottomIfCurrent('role-commit');
     }
     traceReadingAdapter('owner-commit', () => ({
       activationID: reading.activationID,
@@ -1202,7 +702,8 @@ function MessageListBody({
       scrollHeight: Number(scrollerRef.current?.scrollHeight || 0),
       clientHeight: Number(scrollerRef.current?.clientHeight || 0),
     }));
-  }, [bottomIntentPresentation, issueBottomIfCurrent, reading, reading.activationID, snapshot, snapshot.rows, surfaceVisible]);
+  }, [bottomIntentPresentation, followingControl, issueBottomIfCurrent, reading,
+    reading.activationID, snapshot, snapshot.rows, surfaceVisible]);
 
   useLayoutEffect(() => {
     handoffPendingRef.current = handoffPending === true;
@@ -1260,6 +761,8 @@ function MessageListBody({
     if (surfaceVisible !== true) reading.onSurfaceVisibilityChange?.(false);
   }, [reading, reading.activationID, surfaceVisible]);
 
+  const { navigationPolicy, reportDomEvidence } = readingController;
+
   const observe = useCallback((evidence, observedRoot = scrollerRef.current) => {
     const owner = readingRef.current;
     const session = owner.getSession?.() || owner.session;
@@ -1274,7 +777,7 @@ function MessageListBody({
     const visibleRows = visibleRowEvidence(observedRoot, snapshotRef.current.rows);
     traceReadingAdapter('observation', () => ({
       activationID: evidence?.activationID || session.activationID,
-      inputEpoch: evidence?.inputEpoch ?? inputRef.current.epoch,
+      inputEpoch: evidence?.inputEpoch ?? session.inputEpoch,
       geometryRevision: evidence?.geometryRevision ?? geometryRevisionRef.current,
       source: evidence?.source || 'layout',
       settled: evidence?.settled === true,
@@ -1287,7 +790,8 @@ function MessageListBody({
       scrollHeight: Number(observedRoot?.scrollHeight || 0),
       clientHeight: Number(observedRoot?.clientHeight || 0),
     }));
-    owner.onReadingObservation({
+    reportDomEvidence(Object.freeze({
+      type: 'reading-observation',
       bookmark,
       atTail: evidence?.atTail ?? isAtTail(observedRoot),
       surfaceVisible: surfaceVisibleRef.current === true && isReadingSurfaceVisible(observedRoot),
@@ -1295,15 +799,16 @@ function MessageListBody({
       visibleRows,
       source: evidence?.source || 'layout',
       settled: evidence?.settled === true,
-      inputEpoch: evidence?.inputEpoch ?? inputRef.current.epoch,
+      inputEpoch: evidence?.inputEpoch ?? session.inputEpoch,
       geometryRevision: evidence?.geometryRevision ?? geometryRevisionRef.current,
       activationID: evidence?.activationID || session.activationID,
-    });
-  }, []);
+    }));
+  }, [reportDomEvidence]);
 
   const scheduleObserve = useCallback((source = 'layout') => {
     const owner = readingRef.current;
     const session = owner.getSession?.() || owner.session;
+    const input = navigationPolicy.currentInput();
     // Preserve the evidence at the event boundary. The latest event in a frame
     // wins, so a later layout invalidation cannot inherit an earlier scroll's
     // `user` source, and a real gesture after layout gets fresh evidence.
@@ -1311,7 +816,7 @@ function MessageListBody({
       source,
       settled: source === 'settled',
       atTail: isAtTail(scrollerRef.current),
-      inputEpoch: inputRef.current.epoch,
+      inputEpoch: input.active ? input.inputEpoch : session.inputEpoch,
       geometryRevision: geometryRevisionRef.current,
       activationID: session.activationID,
     };
@@ -1332,129 +837,69 @@ function MessageListBody({
       pendingObservationRef.current = null;
       observe(evidence);
     });
-  }, [observe]);
+  }, [navigationPolicy, observe]);
   scheduleObserveRef.current = scheduleObserve;
 
-  const scheduleCoverageCheck = useCallback((expectedWakeKey = '') => {
-    if (handoffPendingRef.current) {
-      coverageDemandKeyRef.current = '';
-      return;
-    }
-    if (expectedWakeKey) coverageForceRef.current = expectedWakeKey;
+  const scheduleCoverageCheck = useCallback(() => {
     if (coverageFrameRef.current) return;
     coverageFrameRef.current = requestAnimationFrame(() => {
       coverageFrameRef.current = 0;
-      const expectedCurrent = coverageForceRef.current;
-      coverageForceRef.current = '';
       const root = scrollerRef.current;
-      const owner = readingRef.current;
       const rows = snapshotRef.current.rows;
-      const status = owner.status || {};
-      if (!root || !rows.length || root.clientHeight <= 0) {
-        coverageDemandKeyRef.current = '';
-        return;
-      }
-      // Under-fill is a persistent history obligation only after the scheduler
-      // has installed positive evidence that older data exists. A pre-attach
-      // `hasOlder:false` is unknown, not permission to synthesize a request;
-      // the published status transition re-runs this check after attach.
-      if (status.attached !== true || status.messageCurrent !== true || status.hasOlder !== true) {
-        coverageDemandKeyRef.current = '';
-        return;
-      }
-      // `messageCurrent` describes the Replica. Presentation can still be one
-      // commit behind it. A real remote head must also be installed in this
-      // view before short partial content can prove an under-fill obligation.
-      // Tests without a remote-head contract keep using the explicit
-      // attached/hasOlder evidence above.
-      if (Number(status.headSeq || 0) > 0 && owner.bottomReady !== true) {
-        coverageDemandKeyRef.current = '';
-        return;
-      }
-      // A virtualizer's initial zero window and a partially materialized long
-      // list are not evidence that history is under-supplied. Only a committed
-      // window containing both data boundaries can prove that the available
-      // content physically fails to fill a real viewport.
+      const owner = readingRef.current;
+      const session = owner.getSession?.() || owner.session;
+      if (!root || !rows.length || root.clientHeight <= 0) return;
       const materialized = [...root.querySelectorAll('[data-presentation-row-id]')];
-      const first = materialized.find((node) => node.dataset.presentationRowId === rows[0].id);
-      const last = materialized.find((node) => node.dataset.presentationRowId === rows.at(-1).id);
-      if (!first || !last || root.scrollHeight > root.clientHeight + 1) {
-        coverageDemandKeyRef.current = '';
-        return;
-      }
-      const key = `${owner.activationID}:${snapshotRef.current.revision}:${root.clientHeight}:${root.scrollHeight}:${coverageStatusKey}`;
-      if (expectedCurrent && coverageDemandKeyRef.current !== expectedCurrent) return;
-      if (!expectedCurrent && coverageDemandKeyRef.current === key) return;
-      coverageDemandKeyRef.current = key;
-      diagnostic('debug', 'history.viewport_underfilled', {
-        channelId: status.channelId || '',
-        clientHeight: root.clientHeight,
-        scrollHeight: root.scrollHeight,
-        rowCount: rows.length,
-        attached: status.attached === true,
-        messageCurrent: status.messageCurrent === true,
-        bottomReady: owner.bottomReady === true,
-        hasOlder: status.hasOlder === true,
-      });
-      const pending = (owner.onUnderfill || owner.onAtTop)({
+      reportDomEvidence(Object.freeze({
+        type: 'viewport-coverage',
+        activationID: session.activationID,
+        presentationRevision: Number(snapshotRef.current.revision || 0),
+        hasBothBoundaries: materialized.some((node) => node.dataset.presentationRowId === rows[0].id)
+          && materialized.some((node) => node.dataset.presentationRowId === rows.at(-1).id),
+        underfilled: Number(root.scrollHeight || 0) <= Number(root.clientHeight || 0) + 1,
+        clientHeight: Number(root.clientHeight || 0),
+        scrollHeight: Number(root.scrollHeight || 0),
         demandUnits: completeViewportUnits(root),
-      });
-      void consumeHistoryConsumerResult(pending, () => {
-        // The current MessageList, not Reading, owns the virtualized DOM fact.
-        // Re-enter the existing rAF measurement path so a filled/retired list
-        // drops the debt and a still-short list uses the latest viewport budget.
-        scheduleCoverageCheck(key);
-      });
+        onWake: scheduleCoverageCheck,
+      }));
     });
-  }, [coverageStatusKey]);
-
-  const requestTopDemand = useCallback((reason = 'top') => {
-    const owner = readingRef.current;
-    const current = owner.getSession?.() || owner.session;
-    const first = snapshotRef.current.rows[0];
-    const key = `${current.activationID}:${current.inputEpoch}:${first?.id || ''}:${first?.seqLow || 0}`;
-    // `scroll` and `scrollend` may both expose the same physical edge. A fast
-    // cache can satisfy between them, so in-flight request dedupe alone is not
-    // enough. The visible frontier participates so continuous native momentum
-    // can request the next bounded segment after a real prepend, while layout
-    // callbacks for the same frontier cannot drain the reservoir.
-    if (topDemandKeyRef.current === key) return;
-    topDemandKeyRef.current = key;
-    const detail = { demandUnits: completeViewportUnits(scrollerRef.current) };
-    if (reason === 'runway') (owner.onNearTop || owner.onAtTop)(detail);
-    else owner.onAtTop(detail);
-  }, []);
+  }, [reportDomEvidence]);
 
   const finishNavigationObservation = useCallback((transaction) => {
     const root = scrollerRef.current;
     const owner = readingRef.current;
     if (!root || !owner) return;
     const current = owner.getSession?.() || owner.session;
-    const input = inputRef.current;
-    if (root.scrollTop <= 1 && input.active
-      && input.activationID === current.activationID
-      && input.epoch === current.inputEpoch
-      && input.canRequestHistory
-      && (input.direction === 'older' || input.direction === 'browse')) {
-      requestTopDemand('top');
-    }
+    const input = navigationPolicy.currentInput();
+    reportDomEvidence(Object.freeze({
+      type: 'scroll-position',
+      activationID: transaction.activationID,
+      inputEpoch: transaction.inputGeneration,
+      direction: input.direction === 'browse' ? 'older' : input.direction,
+      atTop: Number(root.scrollTop || 0) <= 1,
+      scrollTop: Number(root.scrollTop || 0),
+      clientHeight: Number(root.clientHeight || 0),
+      demandUnits: completeViewportUnits(root),
+    }));
     const pending = pendingObservationRef.current;
     const settlesCurrentUser = Boolean(
       input.active
       && input.activationID === current.activationID
-      && input.epoch === current.inputEpoch
-      && input.epoch === transaction.inputGeneration
+      && input.inputEpoch === current.inputEpoch
+      && input.inputEpoch === transaction.inputGeneration
       && pending?.source === 'user'
       && pending.activationID === current.activationID
       && pending.inputEpoch === current.inputEpoch
       && pending.geometryRevision === geometryRevisionRef.current
     );
-    if (settlesCurrentUser) {
+    const accepted = navigationPolicy.onNavigationEnd(transaction);
+    if (settlesCurrentUser && accepted) {
       pendingObservationRef.current = { ...pending, atTail: isAtTail(root), settled: true };
+    } else {
+      if (pendingObservationRef.current?.source === 'user') pendingObservationRef.current = null;
+      scheduleObserve('settled');
     }
-    inputRef.current = { ...inputRef.current, active: false };
-    if (!settlesCurrentUser) scheduleObserve('settled');
-  }, [requestTopDemand, scheduleObserve]);
+  }, [navigationPolicy, reportDomEvidence, scheduleObserve]);
 
   const navigationHost = useMemo(() => ({
     readBookmark: () => visibleBookmark(scrollerRef.current, snapshotRef.current.rows),
@@ -1466,34 +911,23 @@ function MessageListBody({
       const owner = readingRef.current;
       const current = owner.getSession?.() || owner.session;
       if (reason === 'begin') {
-        sendScrollTransactionRef.current = advanceSendScrollTransaction(
-          sendScrollTransactionRef.current,
-          { type: 'invalidate', activationID: current.activationID, inputEpoch: current.inputEpoch - 1 },
-        );
+        invalidateFollowingSend(sendScrollTransactionRef, current);
         sendOwnedRevisionRef.current = null;
         roleAuthorizationRef.current = null;
         delayedRestoreRef.current = null;
       }
-      inputRef.current = {
-        activationID: transaction.activationID,
-        epoch: transaction.inputGeneration,
-        direction: transaction.direction,
-        gestureID: transaction.id,
-        geometryRevision: geometryRevisionRef.current,
-        kind: transaction.source,
-        canFollowTail: transaction.canFollowTail,
-        canRequestHistory: transaction.canRequestHistory,
-        active: true,
-      };
+      navigationPolicy.onNavigationUpdate(transaction, reason);
       const root = scrollerRef.current;
-      if (transaction.direction === 'older' && root && transaction.canRequestHistory) {
-        const runwayPx = Math.max(
-          READING_TRACE_CONFIG.historyRunwayMinimumPx,
-          Number(root.clientHeight || 0),
-        );
-        if (atTopRef.current || Number(root.scrollTop || 0) <= 1) requestTopDemand('top');
-        else if (Number(root.scrollTop || 0) <= runwayPx) requestTopDemand('runway');
-      }
+      reportDomEvidence(Object.freeze({
+        type: 'scroll-position',
+        activationID: transaction.activationID,
+        inputEpoch: transaction.inputGeneration,
+        direction: transaction.direction,
+        atTop: Number(root?.scrollTop || 0) <= 1,
+        scrollTop: Number(root?.scrollTop || 0),
+        clientHeight: Number(root?.clientHeight || 0),
+        demandUnits: completeViewportUnits(root),
+      }));
       traceReadingAdapter('input-owner', () => ({
         activationID: transaction.activationID,
         inputEpoch: transaction.inputGeneration,
@@ -1508,79 +942,58 @@ function MessageListBody({
     },
     onNavigationEnd: finishNavigationObservation,
     onNavigationCancel() {
-      inputRef.current = { ...inputRef.current, active: false };
+      navigationPolicy.onNavigationCancel();
       // A cancelled contact cannot lend its already-coalesced user sample to
       // a later rAF. Drop that evidence before publishing observation-only
       // layout state; ReadingSession cancellation clears matching tailEvidence.
       if (pendingObservationRef.current?.source === 'user') pendingObservationRef.current = null;
       scheduleObserve('layout');
     },
-  }), [finishNavigationObservation, requestTopDemand, scheduleObserve]);
+  }), [finishNavigationObservation, navigationPolicy, reportDomEvidence, scheduleObserve]);
   useReadingNavigationHost('browsing', navigationHost, scrollerNode);
 
   useLayoutEffect(() => {
     const root = scrollerRef.current;
     if (!root) return undefined;
-    scrollTopRef.current = Number(root.scrollTop || 0);
+    let previousTop = Number(root.scrollTop || 0);
     const onScroll = () => {
-      const previousTop = scrollTopRef.current;
       const nextTop = Number(root.scrollTop || 0);
-      scrollTopRef.current = nextTop;
-      atBottomRef.current = Number(root.scrollHeight || 0) - Number(root.clientHeight || 0) - nextTop <= 24;
-      atTopRef.current = nextTop <= 1;
       const direction = nextTop > previousTop ? 'newer' : nextTop < previousTop ? 'older' : '';
+      const priorTop = previousTop;
+      previousTop = nextTop;
       const owner = readingRef.current;
-      let input = inputRef.current;
+      const input = navigationPolicy.currentInput();
       const current = owner.getSession?.() || owner.session;
       traceReadingAdapter('scroll-observed', () => ({
         activationID: current.activationID,
         inputEpoch: current.inputEpoch,
         mode: current.mode,
-        inputActive: inputRef.current.active,
-        inputDirection: inputRef.current.direction,
-        previousScrollTop: previousTop,
+        inputActive: input.active,
+        inputDirection: input.direction,
+        previousScrollTop: priorTop,
         scrollTop: nextTop,
-        scrollDelta: nextTop - previousTop,
+        scrollDelta: nextTop - priorTop,
         scrollHeight: Number(root.scrollHeight || 0),
         clientHeight: Number(root.clientHeight || 0),
       }));
-      if (direction && input.active && input.activationID === current.activationID
-        && input.epoch === current.inputEpoch
-        && (input.direction === direction || input.direction === 'browse')) {
-        if (input.direction === 'browse') {
-          // A real scrollbar drag starts directionless and may legitimately
-          // restore following when it reaches the tail. Selection autoscroll
-          // also starts directionless, but must stay browsing: translating its
-          // downward movement into a newer intent would let append steal the
-          // user's selected text.
-          input = {
-            ...input,
-            direction,
-            geometryRevision: geometryRevisionRef.current,
-          };
-          inputRef.current = input;
-        }
-        scheduleObserve('user');
-        if (direction === 'older' && input.canRequestHistory) {
-          const runwayPx = Math.max(
-            READING_TRACE_CONFIG.historyRunwayMinimumPx,
-            Number(root.clientHeight || 0),
-          );
-          // Wheel/touch/key events can start above the runway and native
-          // momentum may cross it without another input callback. The actual
-          // upward scroll event may therefore ask for the next frontier while
-          // its current activation/input evidence remains live. Layout/range
-          // callbacks cannot enter this path, and scrollend/reversal clears or
-          // replaces the evidence.
-          if (nextTop <= 1) requestTopDemand('top');
-          else if (nextTop <= runwayPx) requestTopDemand('runway');
-        }
-      } else {
-        scheduleObserve('layout');
-      }
+      const userOwned = Boolean(direction && input.active
+        && input.activationID === current.activationID
+        && input.inputEpoch === current.inputEpoch
+        && (input.direction === direction || input.direction === 'browse'));
+      reportDomEvidence(Object.freeze({
+        type: 'scroll-position',
+        activationID: current.activationID,
+        inputEpoch: current.inputEpoch,
+        direction,
+        atTop: nextTop <= 1,
+        scrollTop: nextTop,
+        clientHeight: Number(root.clientHeight || 0),
+        demandUnits: completeViewportUnits(root),
+      }));
+      scheduleObserve(userOwned ? 'user' : 'layout');
     };
     const onGeometryScrollEnd = () => {
-      if (!inputRef.current.active && pendingObservationRef.current?.source !== 'user') {
+      if (!navigationPolicy.currentInput().active && pendingObservationRef.current?.source !== 'user') {
         scheduleObserve('settled');
       }
     };
@@ -1590,7 +1003,7 @@ function MessageListBody({
       root.removeEventListener('scroll', onScroll);
       root.removeEventListener('scrollend', onGeometryScrollEnd);
     };
-  }, [requestTopDemand, scheduleObserve, scrollerNode]);
+  }, [navigationPolicy, reportDomEvidence, scheduleObserve, scrollerNode]);
 
   useLayoutEffect(() => {
     if (!scrollerNode) return;
@@ -1684,7 +1097,8 @@ function MessageListBody({
       if (!node || !binding) return;
       const owner = binding.reading;
       const session = owner.getSession?.() || owner.session;
-      owner.onReadingObservation({
+      reportDomEvidence(Object.freeze({
+        type: 'reading-observation',
         bookmark: visibleBookmark(node, binding.rows, {
           detailed: true,
           previous: session.bookmark,
@@ -1696,9 +1110,9 @@ function MessageListBody({
         inputEpoch: session.inputEpoch,
         geometryRevision: session.geometryRevision,
         activationID: binding.activationID,
-      });
+      }));
     };
-  }, [reading.activationID, scrollerNode]);
+  }, [reading.activationID, reportDomEvidence, scrollerNode]);
 
   const bindScroller = useCallback((node) => {
     const candidate = node?.getScrollableNode?.() || node;
@@ -1712,7 +1126,10 @@ function MessageListBody({
     const root = scrollerRef.current;
     if (!root || handoffPending || !focusOnMount || focusClaimedRef.current) return;
     focusClaimedRef.current = true;
-    root.focus?.({ preventScroll: true });
+    executeReadingCommand(Object.freeze({ type: 'claim-focus' }), {
+      virtuoso: virtuosoRef.current,
+      root,
+    });
   }, [focusOnMount, handoffPending]);
 
   const scheduleNavigationRevealReceipt = useCallback((source) => {
@@ -2148,18 +1565,18 @@ function MessageListBody({
       scheduleObserve('layout');
       scheduleCoverageCheck();
       if (Number(info?.endIndex ?? -1) >= Number(info?.startIndex ?? 0)) {
-        reading.onPresentationMaterialized?.({
+        reportDomEvidence(Object.freeze({
+          type: 'materialized-range',
           activationID: reading.activationID,
           presentationRevision: Number(snapshot.revision || 0),
           startIndex: Number(info.startIndex),
           endIndex: Number(info.endIndex),
-        });
+        }));
         positionDelayedBookmark('range-materialized');
         scheduleNavigationRevealReceipt('range-materialized');
       }
     }}
     atBottomStateChange={(atBottom) => {
-      atBottomRef.current = atBottom === true;
       traceReadingAdapter('at-bottom', () => ({
         atBottom: atBottom === true,
         scrollTop: Number(scrollerRef.current?.scrollTop || 0),
@@ -2167,9 +1584,6 @@ function MessageListBody({
         clientHeight: Number(scrollerRef.current?.clientHeight || 0),
       }));
       scheduleObserve('layout');
-    }}
-    atTopStateChange={(atTop) => {
-      atTopRef.current = atTop === true;
     }}
     totalListHeightChanged={(height) => {
       const committedHeight = Number(height || 0);
@@ -2305,10 +1719,19 @@ function StandaloneMessageList(props) {
     reading={props.reading}
     stackRef={stackRef}
     visibleRole="browsing"
-  ><div ref={stackRef}><MessageListBody {...props} /></div></ReadingNavigationOwner>;
+  ><div ref={stackRef}><ControlledMessageList {...props} /></div></ReadingNavigationOwner>;
+}
+
+function ControlledMessageList(props) {
+  const readingController = useBrowsingReadingController({
+    reading: props.reading,
+    snapshot: props.snapshot,
+    handoffPending: props.handoffPending,
+  });
+  return <MessageListBody {...props} readingController={readingController} />;
 }
 
 export function MessageList(props) {
   const navigationOwner = useReadingNavigationOwner();
-  return navigationOwner ? <MessageListBody {...props} /> : <StandaloneMessageList {...props} />;
+  return navigationOwner ? <ControlledMessageList {...props} /> : <StandaloneMessageList {...props} />;
 }

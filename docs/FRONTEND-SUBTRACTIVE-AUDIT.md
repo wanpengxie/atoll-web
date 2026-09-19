@@ -17,10 +17,13 @@ Execution status on `refactor/frontend-subtractive-cleanup`:
 - C3 complete: ReadingSession remains the sole semantic/persistent owner while
   history obligations, notification confirmation, and DOM evidence are pure
   value ports with explicit inputs and receipts.
+- C4 complete: `LegendMessageList` is the sole virtual-list DOM adapter and
+  scroll writer. Browsing/history policy and following authorization consume
+  typed evidence above it and can return only typed commands.
 - E partially complete: tracked browser prototypes and diagnostic-only specs
   are deleted; the vendor directory now keeps one final package and one
   reproducible source patch instead of intermediate generations.
-- C1, C4–C7, and E remain the active subtractive work. They require owner movement
+- C1, C5–C7, and E remain the active subtractive work. They require owner movement
   and deletion, not compatibility wrappers.
 
 ## Acceptance rule
@@ -233,15 +236,12 @@ pure ports with explicit inputs/outputs:
 
 No extracted module may create another persisted reading state.
 
-### C4. `LegendMessageList.jsx` (2,286 lines)
+### C4. `LegendMessageList.jsx` — complete
 
-Currently contains the virtualizer adapter, measurement, DOM coverage, input
-transactions, underfill demand, following/browsing handoff, public commands, and
-instrumentation.
-
-Target: the adapter executes typed Reading commands and reports typed DOM
-evidence. Input ownership and history-demand policy belong above it. Vendor
-workarounds belong in the pinned vendor patch, not in parallel App logic.
+The adapter now measures the DOM, reports typed evidence, and owns the only
+`scrollTo`/`scrollToIndex` executor. `useBrowsingReadingController` owns input
+attribution and history-demand policy; `following-scroll-controller` consumes
+committed evidence and returns a typed tail command without DOM access.
 
 ### C5. `history-scheduler.js` (2,274 lines, 22 exports)
 
