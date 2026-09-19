@@ -1143,3 +1143,116 @@ UI-VIS-11 的 c0/c0.project、access filter、点击导航合同继续通过；�
 `600×301`，`7868 pixels / 0.05`）。本轮未调阈值、未更新 ignored snapshot。
 Feed/runtime、composition、Search projection、management、accessibility
 定向合计 **5 files / 20 passed**。
+
+## 第二十一轮：Search lease 生命周期、权限切换与 UI-VIS-11 视觉裁决（4d87546，真实 Chromium）
+
+本轮不改产品、测试断言、截图阈值或 snapshot。验证对象是
+`4d87546` 的 Feed-owned typed interest：Search 只持有 lease，Feed 持有物理
+`loadHistory`、AbortController 与同 `intent + channel` 的 coalescing record。
+
+### Search open / close / reopen 与多频道访问
+
+用 `multi-channel` seed `924`、Chromium `600×720` 登录后打开频道列表和全局搜索，
+输入 `history 1`，再关闭并重新打开。公开 DOM、真实 wire frame 如下：
+
+| 阶段 | 可见结果 | background `history_before` | 不可访问频道 |
+|---|---|---|---|
+| 首开 | `c0 history 1`、`c0.project history 1` | `c0.project` 1 条 | `c0.public` 0 条 |
+| 重开 | 同两条，project 点击仍走真实导航 | 累计 2 条（每次打开 1 条） | `c0.public` 0 条 |
+
+`c0.project` 两次 request 的 payload 均为 `purpose=initial-tail`、
+`priority=background`、`intent=search-context`；没有因 Feed 回填/导航 revision
+重复发送同一轮 interest。`c0.public` 既没有 history frame，也没有搜索结果，
+说明 Search 的 readable-access filter 在请求和 projection 两侧都生效。
+
+在 `deep-history-delayed` seed `921`（750ms page delay）中，首开 request 为
+`history_before-15`，关闭后真实发送
+`history_cancel(target_ref=history_before-15,generation=1)`；重开产生
+`history_before-17`，再次关闭产生对应 `history_cancel-18`。这证明 close 不是
+仅隐藏 UI，而是释放最后一个 typed lease。
+
+### Feed owner coalesce / release / unattached settle probe
+
+用 fake wire 直接驱动公开 `createChannelFeedRuntime().getSnapshot()`（不改测试文件）：
+
+```text
+setHistoryGrants: c0 + c0.project, generation=1, boot=round21
+lease A = requestBackgroundInterest(c0.project, search-context)
+lease B = requestBackgroundInterest(c0.project, search-context)
+```
+
+A/B 均 `accepted=true`，但 wire 只有 1 个 `history_before`，payload 为
+`c0.project / initial-tail / background / search-context / anticipatory`；第一次
+`release()` 不 cancel（仍有 B），最后一次 `release()` 发出
+`cancelHistory(c0.project,direct-1,1)`，随后
+`historyFor(c0.project).historyDemand = { revision: 1, phase: "idle", error: "" }`
+且 `loading=false`。对未 attach 的 `c0.public` 做同样的 release probe 后，状态也
+从 `pending` 回到 `idle`；真实 Search 路径不会为该频道取得 lease（上一节的
+wire/DOM 均为 0）。这确认 pending 不会因 dialog cleanup 永久悬挂。
+
+### 权限 revoke / grant 回归与首断点
+
+以 `deep-history-delayed` seed `925` 打开 Search 并确保 `c0.project` 的
+`history_before-15` 尚在 pending，随后 POST `/mock/control/action`
+`revoke_membership(c0.project)`。真实 Chromium 收到新 attach generation=2，
+Search index 立即去掉 project，query `history 1` 的 project row 数为 `0`；generation=2
+只发送 c0 的 foreground/background history，不再为被撤销的 project 发 Search
+interest。随后 grant 并 reconnect generation=3，project background history 再次
+出现，Search 恢复 project rows（18 条），`c0.public` 仍为 0。
+
+权限 revoke 的产品缺口也被固定下来：旧 generation 的待取消操作在 socket 已
+关闭、尚未 attach 新 generation 的窗口，Feed → adapter → wire 的
+`cancelHistory` rejection 没有被消费。一次 revoke 真实记录 3 条
+`window.unhandled_rejection`，错误为 `WireError: wire is not attached`，调用链为
+`history-source-adapters.js:144 → channel-feed-runtime.js:511 → wire.js:588`。
+这不是环境阻塞，也不影响随后 `historyDemand.phase="idle"` 或 access redaction，
+但它是当前 cancellation owner 的真实产品缺口：应由现有 Feed/adapter cancellation
+边界消费 detached-wire rejection；本轮只报告，不在 Search 或测试侧吞错/放宽。
+
+### UI-VIS-11 297px / 301px 裁决
+
+当前 UI-VIS-11 定向 Chromium 仍是 **行为通过、截图 1 RED**：期望旧
+`600×297`，实际 `600×301`，`7868 pixels / 0.05`。没有运行
+`--update-snapshots`，也没有改变 diff threshold/mask。
+
+这 4px 是合法布局语义，不是当前回归：
+
+| 版本 | Search 挂载位置 | close button | header | dialog |
+|---|---|---:|---:|---:|
+| `fae8b70` | `App` 在 `AppShell` 外部的 sibling overlay | `36×36` base `.icon-button` | `69px` | `600×297` |
+| current / `4d87546` | `WorkspaceLayout` 的 `SurfaceShell` overlay | mobile contract `44×44` | `73px` | `600×301` |
+
+旧 `fae8b70:src/App.jsx:2215` 把 `GlobalSearch` 放在 `</AppShell>` 后，故
+`.mobile-shell .global-search > header button` 选择器不匹配；当前
+`src/app/WorkspaceLayout.jsx:364-365` 把 overlay 放在 `SurfaceShell` 内，而
+`src/styles/responsive.css:106-110` 明确规定 Search header button 的
+`min-width/min-height:44px`。`src/styles/features.css:380` 的 header padding
+仍是 `14px 16px`，因此 text column 的 69px 旧高度被真实 44px touch target
+推到 73px，正好产生 4px 总差异。当前 `301px` 是现行触控布局的正确结果；旧
+`297px` 不能作为当前截图 oracle。UI-VIS-11 视觉项保持 RED/合同迁移状态，
+不以回调 CSS 或放宽阈值追绿。
+
+### 定向结果与归类
+
+```text
+npx vitest run tests/channel-feed-runtime.test.jsx \
+  tests/workspace-real-runtime-composition.test.jsx tests/feature-search.test.js \
+  --reporter=dot
+3 files / 15 passed
+
+ATOLL_TEST_WEB_PORT=15523 ATOLL_TEST_MOCK_PORT=19953 \
+  npx playwright test tests/browser/ui-visual.spec.js -g '搜索后台兴趣' \
+  --workers=1 --reporter=line
+1 passed (4.7s)
+
+ATOLL_TEST_WEB_PORT=15522 ATOLL_TEST_MOCK_PORT=19952 \
+  npx playwright test tests/browser/ui-visual.spec.js -g 'UI-VIS-11 600px' \
+  --workers=1 --reporter=line
+1 failed: screenshot only (600×301 vs legacy 600×297)
+```
+
+最终归类：Search open/close/reopen、multi-channel readable filter、typed lease
+coalesce/release、unattached pending settle 均 **PASS**；UI-VIS-11 screenshot
+为已证明的旧视觉合同差异 **RED/不计产品回归**；permission revoke 的 detached
+wire cancel rejection 是独立 **产品缺口（待 Feed/adapter owner 修复）**，不是
+测试迁移错误或环境阻塞。当前工作树其它 dirty 文件均属他人，本轮只改本审计报告。
