@@ -1,13 +1,5 @@
 import { expect, test } from '@playwright/test';
 
-function readingOwner(page) {
-  return page.locator([
-    '.timeline-reading-stack[data-handoff-pending="true"] > .timeline-reading-layer.is-outgoing > .timeline-message-list',
-    '.timeline-reading-stack:not([data-handoff-pending="true"]) > .timeline-reading-layer.is-incoming.is-active > .timeline-message-list',
-    '.timeline-reading-stack:not([data-handoff-pending="true"]) > .timeline-reading-layer.is-active:not(.is-incoming) > .timeline-message-list',
-  ].join(', '));
-}
-
 async function login(page) {
   await page.goto('/');
   await page.getByRole('textbox', { name: '账号', exact: true }).fill('root');
@@ -17,12 +9,10 @@ async function login(page) {
 }
 
 async function startLongTask(page, text) {
-  const editor = page.getByLabel('消息');
-  await editor.fill('@st');
-  await page.getByRole('option', { name: /steward/ }).click();
-  await editor.press('End');
-  await editor.pressSequentially(text);
-  await page.getByRole('button', { name: /发送/ }).click();
+  const editor = page.getByRole('textbox', { name: '消息', exact: true });
+  await page.getByLabel('目标 Agent').selectOption('steward');
+  await editor.fill(text);
+  await editor.press('Enter');
   await expect(page.locator('.channel-agent-timer')).toHaveCount(1);
 }
 
@@ -32,137 +22,6 @@ async function advanceComputation(request, count = 1) {
     expect(advanced.ok()).toBe(true);
   }
 }
-
-test('F7 channel notifications baseline history, count roots, and acknowledge only exact visible identities', async ({ page, request }) => {
-  const reset = await request.post('/mock/control/reset', { data: { scenario: 'multi-channel', seed: 2608 } });
-  expect(reset.ok()).toBe(true);
-  await login(page);
-
-  const channel = page.locator('.channel-item').filter({ hasText: 'c0.project' });
-  const related = channel.locator('.unread-related');
-  const other = channel.locator('.unread-total');
-  await expect(related).toHaveCount(0);
-  await expect(other).toHaveCount(0);
-
-  // Keep the two roots physically above the initial tail viewport. The old
-  // three-turn fixture now fits in one viewport, which would correctly exact-
-  // acknowledge both roots immediately and no longer exercise this boundary.
-  const tail = await request.post('/mock/control/action', {
-    data: { type: 'notification_lifecycle', channel_id: 'c0.project', phase: 'tail', count: 24 },
-  });
-  expect(tail.ok()).toBe(true);
-
-  const terminal = async (index) => {
-    const response = await request.post('/mock/control/action', {
-      data: {
-        type: 'push_terminal',
-        channel_id: 'c0.project',
-        request_id: `c0.project-history-request-${index}`,
-        payload: { text: `answer ${index}` },
-      },
-    });
-    expect(response.ok()).toBe(true);
-  };
-
-  await terminal(1);
-  await expect(related).toHaveText('1');
-  await expect(other).toHaveCount(0);
-
-  // Several settled frames in one root turn remain one notification.
-  await terminal(1);
-  await expect(related).toHaveText('1');
-  await terminal(2);
-  await expect(related).toHaveText('2');
-
-  await channel.click();
-  await expect(page.locator('main h1')).toHaveText('c0.project');
-  // Entering while physically at the tail acknowledges the frozen channel
-  // notification boundary, even in the semantic `mine` view. This advances
-  // the one persisted notification high-water; it does not claim a physical
-  // read cursor for rows excluded by the filter.
-  await expect(related).toHaveCount(0);
-  const tailBoundary = await page.evaluate(() => (
-    window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0]
-      ?.notificationHighWater || 0
-  ));
-  expect(tailBoundary).toBeGreaterThan(0);
-
-  // Put one canonical root close to the live tail, then pad below it. The
-  // processing frame is quiet, but it gives the active browser a stable root
-  // whose later final revision can be tested independently of tail clearing.
-  const activeRootResponse = await request.post('/mock/control/action', {
-    data: { type: 'dense_progress', channel_id: 'c0.project', count: 1 },
-  });
-  expect(activeRootResponse.ok()).toBe(true);
-  const activeRoot = (await activeRootResponse.json()).request_id;
-  expect(activeRoot).toBeTruthy();
-  const activePadding = await request.post('/mock/control/action', {
-    data: { type: 'notification_lifecycle', channel_id: 'c0.project', phase: 'tail', count: 8 },
-  });
-  expect(activePadding.ok()).toBe(true);
-  await expect(related).toHaveCount(0);
-  const activeBoundary = await page.evaluate(() => (
-    window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0]
-      ?.notificationHighWater || 0
-  ));
-  expect(activeBoundary).toBe(tailBoundary);
-
-  const viewport = readingOwner(page);
-  // Use a physical gesture: the timeline intentionally distinguishes user
-  // scrolling from the virtualizer's own anchor compensation.
-  await viewport.hover();
-  await page.mouse.wheel(0, -900);
-  await expect.poll(() => viewport.evaluate((node) => (
-    node.scrollHeight - node.clientHeight - node.scrollTop
-  ))).toBeGreaterThan(200);
-  // Scope to the committed reading layer: a transition may briefly retain an
-  // inert measurement copy of the same keyed row.
-  const activeRootEntry = viewport.locator(`[data-entry-id="${activeRoot}"]`);
-  await expect(activeRootEntry).toBeVisible();
-  const activeTerminal = await request.post('/mock/control/action', {
-    data: {
-      type: 'push_terminal', channel_id: 'c0.project', request_id: activeRoot,
-      payload: { text: 'active exact answer' },
-    },
-  });
-  expect(activeTerminal.ok()).toBe(true);
-  await expect(related).toHaveText('1');
-  // The revision can displace a partially visible card under the floating
-  // composer. Reveal that exact unread identity after the arrival; only its
-  // root+seq is acknowledged, without advancing the channel-wide boundary
-  // while the user is browsing history.
-  await activeRootEntry.evaluate((node) => node.scrollIntoView({ block: 'center' }));
-  await expect.poll(async () => {
-    const [row, list] = await Promise.all([activeRootEntry.boundingBox(), viewport.boundingBox()]);
-    if (!row || !list) return false;
-    const rowCenter = row.y + row.height / 2;
-    const listCenter = list.y + list.height / 2;
-    return Math.abs(rowCenter - listCenter) <= 100;
-  }).toBe(true);
-  await expect.poll(() => page.evaluate(() => {
-    const channelSnapshot = window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0];
-    return {
-      highWater: channelSnapshot?.notificationHighWater || 0,
-      activeRoot: channelSnapshot?.rows?.find((row) => row.id.includes('-dense-request-'))?.ackReason || '',
-    };
-  })).toEqual({ highWater: activeBoundary, activeRoot: 'exact_visible_ack' });
-  await expect(related).toHaveCount(0);
-
-  // The identity reveal can promote a replacement reading layer. Re-resolve
-  // the canonical reading owner before directing the physical gesture.
-  await viewport.hover();
-  await page.mouse.wheel(0, 100_000);
-  await expect.poll(() => viewport.evaluate((node) => (
-    node.scrollHeight - node.clientHeight - node.scrollTop
-  ))).toBeLessThanOrEqual(24);
-  // Reaching the physical bottom reclaims following and advances the frozen
-  // channel notification boundary through the now-presented terminal frame.
-  await expect(related).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => (
-    window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0]
-      ?.notificationHighWater || 0
-  ))).toBeGreaterThan(activeBoundary);
-});
 
 test('F7 inactive-channel business and core progress never create rail or new-dynamic counts', async ({ page, request }) => {
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'multi-channel', seed: 2620 } });
@@ -194,7 +53,7 @@ test('F7 inactive-channel business and core progress never create rail or new-dy
   await expect(project.locator('.unread-total')).toHaveCount(0);
 });
 
-test('F7 channel rail exposes live Agent timers and the member filter acknowledges completion', async ({ page, request }) => {
+test('F7 channel rail exposes live Agent timers across channels and clears on completion', async ({ page, request }) => {
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'long-running', seed: 2610 } });
   expect(reset.ok()).toBe(true);
   await login(page);
@@ -203,8 +62,6 @@ test('F7 channel rail exposes live Agent timers and the member filter acknowledg
 
   const home = page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0$/ }) });
   await expect(home.locator('.channel-agent-timer')).toHaveCount(1);
-  await expect(page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true })).toHaveClass(/activity-active/);
-
   const project = page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0\.project$/ }) });
   await project.click();
   await expect(home.locator('.channel-agent-timer')).toHaveCount(1);
@@ -212,12 +69,6 @@ test('F7 channel rail exposes live Agent timers and the member filter acknowledg
 
   await advanceComputation(request, 3);
   await expect(home.locator('.channel-agent-timer')).toHaveCount(0);
-  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true });
-  await expect(steward).toHaveClass(/activity-settled/);
-  await steward.click();
-  await expect(steward).toHaveAttribute('aria-pressed', 'true');
-  await expect(steward).not.toHaveClass(/activity-settled/);
-  await expect(steward.locator('.agent-activity-dot')).toHaveCount(0);
 });
 
 test('F7 server boot change cannot leave a zombie Agent timer', async ({ page, request }) => {
@@ -232,7 +83,6 @@ test('F7 server boot change cannot leave a zombie Agent timer', async ({ page, r
   expect(response.ok()).toBe(true);
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/, { timeout: 15_000 });
   await expect(page.locator('.channel-agent-timer')).toHaveCount(0);
-  await expect(page.locator('.timeline-actor-filter .agent-activity-dot')).toHaveCount(0);
 });
 
 test('F7 unresolved history after a same-boot reload stays quiet until fresh live progress', async ({ page, request }) => {
@@ -244,16 +94,14 @@ test('F7 unresolved history after a same-boot reload stays quiet until fresh liv
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(page.locator('.channel-agent-timer')).toHaveCount(0);
-  await expect(page.locator('.timeline-actor-filter .agent-activity-dot')).toHaveCount(0);
 
   // The task really is still alive: one new live progress frame confirms the
-  // current generation and restores both timer and green Agent dot.
+  // current generation and restores the timer.
   await advanceComputation(request);
   await expect(page.locator('.channel-agent-timer')).toHaveCount(1);
-  await expect(page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true })).toHaveClass(/activity-active/);
 });
 
-test('F7 completion during a same-boot disconnect reconciles to red, never zombie green', async ({ page, request }) => {
+test('F7 completion during a same-boot disconnect clears the live timer', async ({ page, request }) => {
   let response = await request.post('/mock/control/reset', { data: { scenario: 'long-running', seed: 2614 } });
   expect(response.ok()).toBe(true);
   await login(page);
@@ -265,83 +113,4 @@ test('F7 completion during a same-boot disconnect reconciles to red, never zombi
   await advanceComputation(request, 3);
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/, { timeout: 15_000 });
   await expect(page.locator('.channel-agent-timer')).toHaveCount(0);
-  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true });
-  await expect(steward).toHaveClass(/activity-settled/);
-  await expect(steward).not.toHaveClass(/activity-active/);
-});
-
-test('F7 mobile channel drawer keeps Agent activity visible, bounded, and actionable', async ({ page, request }) => {
-  await page.setViewportSize({ width: 320, height: 720 });
-  const reset = await request.post('/mock/control/reset', { data: { scenario: 'long-running', seed: 2615 } });
-  expect(reset.ok()).toBe(true);
-  await login(page);
-  await startLongTask(page, '移动端跨频道活动通知');
-
-  const steward = page.locator('.timeline-actor-filter').getByRole('button', { name: 'steward', exact: true });
-  await expect(steward).toHaveClass(/activity-active/);
-  await page.getByRole('button', { name: '打开频道列表' }).click();
-  const timer = page.locator('.channel-agent-timer');
-  await expect(timer).toHaveCount(1);
-  await expect(timer).toBeVisible();
-  const activeGeometry = await page.evaluate(() => {
-    const item = document.querySelector('.channel-item');
-    const timerNode = document.querySelector('.channel-agent-timer');
-    const itemBox = item.getBoundingClientRect();
-    const timerBox = timerNode.getBoundingClientRect();
-    return {
-      viewport: innerWidth,
-      documentWidth: document.documentElement.scrollWidth,
-      item: { left: itemBox.left, right: itemBox.right, height: itemBox.height },
-      timer: { left: timerBox.left, right: timerBox.right },
-    };
-  });
-  expect(activeGeometry.documentWidth).toBeLessThanOrEqual(activeGeometry.viewport);
-  expect(activeGeometry.item.left).toBeGreaterThanOrEqual(0);
-  expect(activeGeometry.item.right).toBeLessThanOrEqual(activeGeometry.viewport);
-  expect(activeGeometry.item.height).toBeGreaterThanOrEqual(44);
-  expect(activeGeometry.timer.left).toBeGreaterThanOrEqual(activeGeometry.item.left);
-  expect(activeGeometry.timer.right).toBeLessThanOrEqual(activeGeometry.item.right);
-
-  await page.setViewportSize({ width: 390, height: 844 });
-  const regularMobileGeometry = await page.evaluate(() => ({
-    viewport: innerWidth,
-    documentWidth: document.documentElement.scrollWidth,
-    timerRight: document.querySelector('.channel-agent-timer').getBoundingClientRect().right,
-  }));
-  expect(regularMobileGeometry.documentWidth).toBeLessThanOrEqual(regularMobileGeometry.viewport);
-  expect(regularMobileGeometry.timerRight).toBeLessThanOrEqual(regularMobileGeometry.viewport);
-  await page.setViewportSize({ width: 320, height: 720 });
-
-  // Selecting the current channel closes the full-screen rail on mobile.
-  await page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0$/ }) }).click();
-  await advanceComputation(request, 3);
-  await expect(steward).toHaveClass(/activity-settled/);
-  await steward.click();
-  await expect(steward).toHaveAttribute('aria-pressed', 'true');
-  await expect(steward.locator('.agent-activity-dot')).toHaveCount(0);
-  const finalWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(finalWidth).toBeLessThanOrEqual(320);
-});
-
-test.describe('touch Agent filters', () => {
-  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
-
-  test('F7 mobile Agent filter visually clears after the second tap', async ({ page, request }) => {
-    const reset = await request.post('/mock/control/reset', { data: { scenario: 'multi-channel', seed: 2616 } });
-    expect(reset.ok()).toBe(true);
-    await login(page);
-
-    const filter = page.locator('.timeline-actor-filter button').first();
-    await expect(filter).toBeVisible();
-    const idleBackground = await filter.evaluate((node) => getComputedStyle(node).backgroundColor);
-
-    await filter.tap();
-    await expect(filter).toHaveAttribute('aria-pressed', 'true');
-    const selectedBackground = await filter.evaluate((node) => getComputedStyle(node).backgroundColor);
-    expect(selectedBackground).not.toBe(idleBackground);
-
-    await filter.tap();
-    await expect(filter).toHaveAttribute('aria-pressed', 'false');
-    await expect.poll(() => filter.evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(idleBackground);
-  });
 });

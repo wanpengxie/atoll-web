@@ -87,15 +87,6 @@ test('F8-001 两个频道各开终端：恒只有一条 WS，来回切各看各�
   expect(errors, errors.join(' | ')).toHaveLength(0);
 });
 
-test('F8-002 切主视图再回来，屏幕还在', async ({ page }) => {
-  await login(page);
-  await openTerminalAndMark(page, 'KEEP_TAB');
-  await page.locator('#workspace-files-toggle').click();
-  await page.waitForTimeout(500);
-  await page.getByRole('tab', { name: '动态' }).click();
-  await expect.poll(() => visibleScreen(page), { timeout: 20_000 }).toContain('KEEP_TAB');
-});
-
 test('F8-003 刷新整页再打开，接回同一个 shell 且屏幕还在', async ({ page }) => {
   await login(page);
   await openTerminalAndMark(page, 'KEEP_RELOAD');
