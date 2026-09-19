@@ -292,7 +292,12 @@ function latestStage(turn) {
     .filter(Boolean).at(-1);
   if (status === 'processing') return 'processing';
   if (['received', 'queued', 'deferred'].includes(status)) return 'queued';
-  return WAITING_MESSAGE_TYPES.has(turn?.request?.type) ? 'queued' : '';
+  // A request type names the protocol operation, not its lifecycle position.
+  // Waiting is admitted only by an explicit non-terminal position fact; a
+  // canonical request with no provisional status must stay out until Replica
+  // receives that fact. Local durable submissions use pendingWaitingTurns and
+  // therefore do not rely on this canonical-lifecycle guard.
+  return '';
 }
 
 function timelineTurn(state, requestId) {
