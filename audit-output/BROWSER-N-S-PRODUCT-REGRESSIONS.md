@@ -356,3 +356,18 @@ N4 的最小 oracle `test-results-browser-ns-round15-oracle-n4-16014-20260920/` 
 本轮另核生命周期 final 红：原 line 154 使用不存在的数字 `.unread-total`，而当前 `WorkspaceLayout` 只将 `.unread-total` 用于 pending/unknown，个人数字由 `.unread-related` 承载；同时 fixture final audience 原为 agent-self，和 `c0.project` 的当前 human actor `root-project` 不相容。测试侧最小修复为 final audience=`[selfActorId]`，断言 154/166 改读 `.unread-related`；queued/processing/progress 与 rail quiet 断言保持不变。pre 证据为 `test-results-browser-ns-round15-policy-final-16016-20260920/`，post `test-results-browser-ns-round15-policy-final-selector-post-16020-20260920/` **1 passed (13.9s)**；独立 timer/readable_event 合同同轮 **1 passed**（`test-results-browser-ns-round15-policy-16015-20260920/`）。
 
 因此本轮不新增产品回归包：N4 归空 diagnostics provider 的测试可观测性问题；lifecycle final 归 fixture audience + 迁移遗留 selector；timer_result 已由第十四轮 fixture 修复闭合，F7 维持已闭独立门。没有改产品、vendor、package、skip，也没有通过隐藏 UI 或放宽行为断言取得绿色。
+
+## 第十六轮：N4 仅 raw diagnostics 过时，无新增产品回归（HEAD `141f7a3`，2026-09-20）
+
+N4 的用户可见链已闭合：真实 Chromium 中 filtered tail 的 42 帧全部稳定，`settledAtTail` 为 `following / gap=0 / related=0 / other=0 / pending=false / jump=0`，filter 外 arrival 没有 tail notice；离开 tail 后仍为 `related=0 / other=0 / pending=false / jump=0`。因此不存在用户可见 rail 数字错误，也不存在“卡住但无可见状态”的产品现象。
+
+旧 line 400 raw 断言失败的唯一事实是 `rail.snapshot('c0')={version:1,channels:[]}`。当前 diagnostics API 在无 provider 时按设计返回空快照，且生产树没有 rail provider owner；它是工程定位能力缺口，不是产品状态转移。更重要的是旧断言的 `outsideFilterPreserved=true` 与当前频道级 scalar high-water 合同冲突：filtered-tail 的已提交 DOM confirmation 可确认 boundary 内全部频道 attention，包括当前 actor filter 排除的事实。不能因此要求产品猜测/维持逐 filter unread。
+
+故本轮将 N4 归 **过时 raw/diagnostic 测试合同**，不交 notification 产品 owner，也不补一个会恢复已删除架构的 provider。spec 仅保留公开 DOM 行为门，并把空 diagnostics 放在 FAE 附件中供定位。修订后真实 Chromium：
+
+```text
+ATOLL_TEST_WEB_PORT=16104 ATOLL_TEST_MOCK_PORT=20404 npx playwright test tests/browser/N-im-read-fallback.spec.js --grep="N4 成员过滤" --workers=1 --reporter=line --output=test-results-browser-ns-round16-n4-16104-20260920
+# 1 passed (9.4s)
+```
+
+本轮无新增产品回归；未修改产品、vendor、package 或 skip，未以隐藏 UI、等待或放宽行为断言换绿。

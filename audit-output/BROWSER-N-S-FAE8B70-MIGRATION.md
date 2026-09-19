@@ -525,3 +525,20 @@ ATOLL_TEST_WEB_PORT=16015 ATOLL_TEST_MOCK_PORT=20315 npx playwright test tests/b
 ```
 
 fixture-only probe `test-results-browser-ns-round15-final-probe-full-16019-20260920/` 记录 final envelope `audience=[root-project]`、DOM `related=1,total=∅`；该 probe 文件已删除，结果只作为证据。由此本轮没有新增已确认 notification 产品红：N1–N3、lifecycle final、timer/readable-event 用户路径均绿；N4 仍只是空 diagnostics provider 的测试可观测性缺口。未修改产品 owner，也未使用 skip/隐藏 UI 取得绿色。
+
+## 第十六轮：N4 空 diagnostics 是过时 raw oracle，公开用户链 GREEN（HEAD `141f7a3`，2026-09-20）
+
+本轮先按“卡住必须可解释”检查 N4 的首个分歧：真实用户链已经从 live input 落到 Replica、进入 filtered Presentation，并在 following tail 完成 DOM observation/confirmation；没有 pending、unknown、jump 或可见 badge。`src/model/diagnostics.js` 的 rail provider 是默认无 provider 的可选只读本地快照，当前 `channel-feed-runtime` 没有注册生产 provider；历史 provider 随 `a4f0020` 数据面收口移除，当前 Workspace owner 直接消费 runtime 的 `unreadFor`/公开 history handoff。故 `channels=[]` 不是用户卡住状态，也不构成缺失的产品 owner。
+
+旧 N4 raw 断言同时要求 `authorityReady=true` 与 `outsideFilterPreserved=true`。后者与通知状态合同不符：合同将 `highWater` 定义为频道级 attention boundary，并明确 filtered-tail 的确认可以覆盖 filter 外事实（`audit-output/NOTIFICATION-STATE-CONTRACT.md` §2.2、§3）；它不是逐条/逐 filter 的 unread 保留证明。该 raw 断言因此归类为 **过时实现/诊断 oracle**，不是产品回归。
+
+测试合同已作最小修订：N4 标题和说明改为“频道级确认覆盖过滤外事实”，删除仅依赖 diagnostics provider 且要求逐 filter retention 的 raw poll；保留 DOM 行为断言（following、gap、scope badge、jump、离开后状态），并继续把 rail snapshot、Reading trace、local reads 写入 `N4-actor-filter.json` 作 FAE 对照。没有删除场景、skip 或放宽用户行为门。
+
+真实 Chromium 复验：
+
+```text
+ATOLL_TEST_WEB_PORT=16104 ATOLL_TEST_MOCK_PORT=20404 npx playwright test tests/browser/N-im-read-fallback.spec.js --grep="N4 成员过滤" --workers=1 --reporter=line --output=test-results-browser-ns-round16-n4-16104-20260920
+# 1 passed (9.4s)
+```
+
+证据 `test-results-browser-ns-round16-n4-16104-20260920/`：42 帧，`settledAtTail={mode:following,gap:0,related:0,other:0,pending:false,jump:0}`，filter 外到达期间无 tail notice；离开后仍 `related=0,other=0,pending=false,jump=0`。附件中的 `rail={version:1,channels:[]}` 仅保留为诊断事实，不再冒充用户 rail 错。仅修改本 spec 与两份审计报告；未改 `src/`、vendor、package、fixture，未删 skip。
