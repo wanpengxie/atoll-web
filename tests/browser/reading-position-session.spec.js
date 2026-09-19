@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
+import {
+  installReadingOwnerHelper,
+  readingOwner,
+} from './reading-owner.js';
 
 const PRINCIPAL = 'root';
 const STORAGE_KEY = `atoll.view-session.v3.${PRINCIPAL}`;
@@ -56,7 +60,8 @@ async function login(page) {
 async function viewportState(page) {
   return page.evaluate(() => {
     const timeline = document.querySelector('.timeline');
-    const viewport = document.querySelector('.timeline-message-list');
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const viewport = owner.current();
     const bounds = viewport.getBoundingClientRect();
     const rows = [...viewport.querySelectorAll('[data-presentation-row-id]')]
       .map((row) => {
@@ -71,7 +76,7 @@ async function viewportState(page) {
     return {
       mode: timeline?.dataset.viewportMode || '',
       hasInitialAnchor: timeline?.dataset.hasInitialAnchor || '',
-      tailDistance: viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
+      tailDistance: owner.tailDistance(viewport),
       visible: rows.filter((row) => row.bottom > 0 && row.top < bounds.height),
       firstVisible: rows.find((row) => row.bottom > 0 && row.top < bounds.height) || null,
       lastVisible: rows.findLast((row) => row.bottom > 0 && row.top < bounds.height) || null,
@@ -83,11 +88,12 @@ async function viewportState(page) {
 async function waitAtTail(page) {
   await page.waitForFunction(() => {
     const timeline = document.querySelector('.timeline');
-    const viewport = document.querySelector('.timeline-message-list');
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const viewport = owner.current();
     return timeline?.dataset.viewportMode === 'following'
       && !timeline.dataset.hasInitialAnchor
       && viewport
-      && viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 24;
+      && owner.tailDistance(viewport) <= 24;
   });
 }
 
@@ -105,6 +111,7 @@ async function fingerprint() {
 
 test('F7 reading position is document-session memory: cold and cached page starts use latest', async ({ page, request }, testInfo) => {
   test.setTimeout(60_000);
+  await installReadingOwnerHelper(page);
   await reset(request, 29601);
   await page.goto('/');
   expect(await cachedRows(page, 'c0')).toBe(0);
@@ -134,7 +141,7 @@ test('F7 reading position is document-session memory: cold and cached page start
   expect(uncachedStart.tailDistance).toBeLessThanOrEqual(24);
   expect(uncachedStart.visible.some((row) => row.text.includes('c0 history 120'))).toBe(true);
 
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   await viewport.hover();
   await page.mouse.wheel(0, -1800);
   await page.waitForFunction(() => document.querySelector('.timeline')?.dataset.viewportMode === 'browsing');
@@ -147,8 +154,9 @@ test('F7 reading position is document-session memory: cold and cached page start
   await page.getByRole('button', { name: '# c0', exact: true }).click();
   await expect(page.locator('main h1')).toHaveText('c0');
   await page.waitForFunction((id) => (
-    [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
-      .some((row) => row.dataset.presentationRowId === id && row.getBoundingClientRect().bottom > document.querySelector('.timeline-message-list').getBoundingClientRect().top)
+    [...window.__ATOLL_TEST_READING_OWNER__.current().querySelectorAll('[data-presentation-row-id]')]
+      .some((row) => row.dataset.presentationRowId === id
+        && row.getBoundingClientRect().bottom > window.__ATOLL_TEST_READING_OWNER__.current().getBoundingClientRect().top)
   ), beforeSwitch.firstVisible.id);
   const afterSwitch = await viewportState(page);
   expect(afterSwitch.mode).toBe('browsing');

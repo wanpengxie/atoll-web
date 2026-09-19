@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom';
 import { ReadingContainerHandoff } from '../../../src/ui/timeline/ReadingContainerHandoff.jsx';
 import { useReadingSession } from '../../../src/ui/timeline/useReadingSession.js';
 import { createViewSessionStore } from '../../../src/model/view-session.js';
+import { currentReadingOwner, tailDistance } from '../reading-owner.js';
 import '../../../src/styles/timeline.css';
 
 document.documentElement.style.cssText = '--workspace: white; --timeline-track: 760px;';
@@ -70,7 +71,10 @@ function Fixture() {
 }
 
 const paint = () => flushSync(() => root.render(<Fixture />));
-const scroller = () => document.querySelector('.timeline-message-list');
+// The renderer may atomically hand ownership from Following to browsing. Test
+// actions must resolve the committed owner at the instant of the action rather
+// than retaining the outgoing DOM node across that ownership transfer.
+const scroller = () => currentReadingOwner();
 const anchor = () => {
   const top = scroller().getBoundingClientRect().top;
   const node = [...scroller().querySelectorAll('[data-presentation-row-id]')]
@@ -103,7 +107,7 @@ window.readingFixture = {
     const sample = () => {
       const node = scroller();
       frameTrace.push({
-        gap: node.scrollHeight - node.clientHeight - node.scrollTop,
+        gap: tailDistance(node),
         mode: reading?.session.mode,
         anchor: anchor().id,
       });
@@ -164,11 +168,9 @@ window.readingFixture = {
     const row = [...scroller().querySelectorAll('[data-presentation-row-id]')]
       .find((node) => node.getBoundingClientRect().bottom > scroller().getBoundingClientRect().top + 20);
     if (!row) return false;
-    const measuredItem = row.closest('[data-known-size]');
-    if (!measuredItem) return false;
     const nested = document.createElement('div');
     nested.className = 'fixture-nested-scroll';
-    nested.dataset.hostKnownSizeBefore = measuredItem.dataset.knownSize || '0';
+    nested.dataset.hostHeightBefore = String(row.getBoundingClientRect().height);
     nested.tabIndex = 0;
     nested.style.cssText = 'height:64px; overflow-y:auto; border:1px solid #999';
     const content = document.createElement('div');
@@ -181,12 +183,12 @@ window.readingFixture = {
   },
   nestedLayout() {
     const nested = document.querySelector('.fixture-nested-scroll');
-    const measuredItem = nested?.closest('[data-known-size]');
+    const host = nested?.closest('[data-presentation-row-id]');
     return {
-      knownSizeBefore: Number(nested?.dataset.hostKnownSizeBefore || 0),
-      knownSize: Number(measuredItem?.dataset.knownSize || 0),
+      hostHeightBefore: Number(nested?.dataset.hostHeightBefore || 0),
+      hostHeight: Number(host?.getBoundingClientRect().height || 0),
       mainTop: Number(scroller()?.scrollTop || 0),
-      gap: Number((scroller()?.scrollHeight || 0) - (scroller()?.clientHeight || 0) - (scroller()?.scrollTop || 0)),
+      gap: tailDistance(scroller()),
     };
   },
   growNestedHost() {

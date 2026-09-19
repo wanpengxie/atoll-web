@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
+import {
+  installReadingOwnerHelper,
+  readingOwner,
+} from './reading-owner.js';
 
 // This fixture exercises the browser's real native thumb. Chromium otherwise
 // uses a headless overlay scrollbar whose painted handle is not mouse-hit-testable.
@@ -11,6 +15,10 @@ test.use({
       ? { executablePath: process.env.ATOLL_CHROMIUM_EXECUTABLE || '/usr/bin/google-chrome' }
       : {}),
   },
+});
+
+test.beforeEach(async ({ page }) => {
+  await installReadingOwnerHelper(page);
 });
 
 async function openFixture(page) {
@@ -35,11 +43,12 @@ async function readingFrames(page, count = 3) {
     const values = [];
     for (let index = 0; index < amount; index += 1) {
       await new Promise(requestAnimationFrame);
-      const node = document.querySelector('.timeline-message-list');
+      const owner = window.__ATOLL_TEST_READING_OWNER__;
+      const node = owner.current();
       values.push({
         ...window.readingFixture.anchor(),
         mode: window.readingFixture.state().mode,
-        gap: node.scrollHeight - node.clientHeight - node.scrollTop,
+        gap: owner.tailDistance(node),
       });
     }
     return values;
@@ -76,8 +85,9 @@ async function startVisualProbe(page) {
         });
       }
     });
-    const root = document.querySelector('.timeline-message-list');
-    observer.observe(root, { subtree: true, childList: true });
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const stack = document.querySelector('.timeline-reading-stack');
+    observer.observe(stack, { subtree: true, childList: true });
     let performanceObserver = null;
     try {
       performanceObserver = new PerformanceObserver((list) => {
@@ -87,6 +97,7 @@ async function startVisualProbe(page) {
     } catch { /* Long-task entries are not available in every browser mode. */ }
     const sample = () => {
       if (!running) return;
+      const root = owner.current();
       const viewport = root.getBoundingClientRect();
       const style = getComputedStyle(root);
       const materialized = [...root.querySelectorAll('[data-presentation-row-id]')];
@@ -109,7 +120,7 @@ async function startVisualProbe(page) {
         visible: visibleMeta,
         emptyViewport: visibleMeta.length === 0,
         uncoveredTop: root.scrollTop > 1 && (!first || first.top > 1),
-        uncoveredBottom: root.scrollHeight - root.clientHeight - root.scrollTop > 24
+        uncoveredBottom: owner.tailDistance(root) > 24
           && (!last || last.bottom < root.clientHeight - 1),
         rowErrorCount: root.querySelectorAll('.timeline-row-error').length,
         visibility: style.visibility,
@@ -163,10 +174,16 @@ test('F6-PERF-04/C3/C5 cold prepend keeps the tail window bounded and survives f
     const delta = step % 2 ? 480 : -520;
     await page.mouse.wheel(0, delta);
     await page.waitForTimeout(24);
-    await expect(page.locator('[data-presentation-row-id]').first()).toBeVisible();
+    await expect.poll(() => readingOwner(page).evaluate((node) => {
+      const bounds = node.getBoundingClientRect();
+      return [...node.querySelectorAll('[data-presentation-row-id]')].some((row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.bottom > bounds.top + 0.5 && rect.top < bounds.bottom - 0.5;
+      });
+    })).toBe(true);
     evidence.push({ step, delta, before, samples, afterInput: await page.evaluate(() => window.readingFixture.anchor()) });
   }
-  expect(await page.locator('[data-presentation-row-id]').count()).toBeLessThan(100);
+  expect(await readingOwner(page).locator('[data-presentation-row-id]').count()).toBeLessThan(100);
   const readingTrace = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.snapshot());
   await testInfo.attach('cold-prepend-fast-reverse-reading-trace.json', {
     body: Buffer.from(JSON.stringify({ evidence, readingTrace }, null, 2)),
@@ -215,7 +232,7 @@ test('fixed-seed reading fuzz keeps semantic content painted through delayed his
       });
       const samples = await frames(page, 12);
       steps.push({ step, delta, baseline, samples });
-      const screenshot = await page.locator('.timeline-message-list').screenshot();
+      const screenshot = await readingOwner(page).screenshot();
       await testInfo.attach(`reading-fuzz-${seed}-${step}.png`, { body: screenshot, contentType: 'image/png' });
       for (const frame of samples) {
         if (frame.id !== baseline.id || Math.abs(frame.offset - baseline.offset) > 1) {
@@ -249,22 +266,21 @@ test('fixed-seed reading fuzz keeps semantic content painted through delayed his
 
 test('C1 return-bottom or follow hands off to immediate upward input before late tail resize', async ({ page }) => {
   await openFixture(page);
-  expect(await page.locator('.timeline-message-list').evaluate((node) => getComputedStyle(node).scrollBehavior)).toBe('auto');
+  expect(await readingOwner(page).evaluate((node) => getComputedStyle(node).scrollBehavior)).toBe('auto');
   await page.mouse.move(300, 260);
   await page.mouse.wheel(0, -1800);
   await page.waitForTimeout(120);
   await page.evaluate(() => window.readingFixture.append());
   await page.evaluate(() => window.readingFixture.returnToBottom());
-  const afterIntent = await page.evaluate(() => ({ state: window.readingFixture.state(), gap: document.querySelector('.timeline-message-list').scrollHeight - document.querySelector('.timeline-message-list').clientHeight - document.querySelector('.timeline-message-list').scrollTop }));
+  const afterIntent = await page.evaluate(() => ({ state: window.readingFixture.state(), gap: window.__ATOLL_TEST_READING_OWNER__.tailDistance() }));
   await page.mouse.wheel(0, -420);
-  const afterWheel = await page.evaluate(() => ({ state: window.readingFixture.state(), gap: document.querySelector('.timeline-message-list').scrollHeight - document.querySelector('.timeline-message-list').clientHeight - document.querySelector('.timeline-message-list').scrollTop }));
+  const afterWheel = await page.evaluate(() => ({ state: window.readingFixture.state(), gap: window.__ATOLL_TEST_READING_OWNER__.tailDistance() }));
   await page.evaluate(() => window.readingFixture.growTail());
   await page.waitForTimeout(180);
-  const afterGrow = await page.evaluate(() => ({ state: window.readingFixture.state(), gap: document.querySelector('.timeline-message-list').scrollHeight - document.querySelector('.timeline-message-list').clientHeight - document.querySelector('.timeline-message-list').scrollTop }));
+  const afterGrow = await page.evaluate(() => ({ state: window.readingFixture.state(), gap: window.__ATOLL_TEST_READING_OWNER__.tailDistance() }));
   expect(await page.evaluate(() => window.readingFixture.state().mode)).toBe('browsing');
   const gap = await page.evaluate(() => {
-    const node = document.querySelector('.timeline-message-list');
-    return node.scrollHeight - node.clientHeight - node.scrollTop;
+    return window.__ATOLL_TEST_READING_OWNER__.tailDistance();
   });
   expect(gap, JSON.stringify({ afterIntent, afterWheel, afterGrow })).toBeGreaterThan(40);
   const before = await page.evaluate(() => window.readingFixture.anchor());
@@ -299,27 +315,27 @@ test('following append work cannot reclaim the viewport after immediate upward i
 test('P1 tail downward wheel with no movement keeps following and the next append reachable', async ({ page }) => {
   await openFixture(page);
   await page.evaluate(() => window.readingFixture.returnToBottom());
-  await expect.poll(() => page.locator('.timeline-message-list').evaluate(
-    (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+  await expect.poll(() => readingOwner(page).evaluate(
+    (node) => window.__ATOLL_TEST_READING_OWNER__.tailDistance(node),
   )).toBeLessThanOrEqual(1);
   const before = await page.evaluate(() => ({
     session: window.readingFixture.state(),
-    top: document.querySelector('.timeline-message-list').scrollTop,
+    top: window.__ATOLL_TEST_READING_OWNER__.current().scrollTop,
   }));
   await page.mouse.move(300, 540);
   await page.mouse.wheel(0, 560);
   await page.waitForTimeout(80);
   const afterInput = await page.evaluate(() => ({
     session: window.readingFixture.state(),
-    top: document.querySelector('.timeline-message-list').scrollTop,
+    top: window.__ATOLL_TEST_READING_OWNER__.current().scrollTop,
   }));
   expect(afterInput.top).toBe(before.top);
   expect(afterInput.session.mode).toBe('following');
   expect(afterInput.session.inputEpoch).toBe(before.session.inputEpoch);
 
   await page.evaluate(() => window.readingFixture.append());
-  await expect.poll(() => page.locator('.timeline-message-list').evaluate(
-    (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+  await expect.poll(() => readingOwner(page).evaluate(
+    (node) => window.__ATOLL_TEST_READING_OWNER__.tailDistance(node),
   )).toBeLessThanOrEqual(1);
   expect(await page.evaluate(() => window.readingFixture.state().mode)).toBe('following');
 });
@@ -330,8 +346,9 @@ test('P1 native content selection autoscroll reaching the tail remains browsing'
   await page.mouse.wheel(0, -720);
   await expect.poll(() => page.evaluate(() => window.readingFixture.state().mode)).toBe('browsing');
   const points = await page.evaluate(() => {
-    const viewport = document.querySelector('.timeline-message-list').getBoundingClientRect();
-    const blocks = [...document.querySelectorAll('[data-reading-block-id]')]
+    const owner = window.__ATOLL_TEST_READING_OWNER__.current();
+    const viewport = owner.getBoundingClientRect();
+    const blocks = [...owner.querySelectorAll('[data-reading-block-id]')]
       .filter((node) => {
         const rect = node.getBoundingClientRect();
         return rect.bottom > viewport.top + 16 && rect.top < viewport.bottom - 16;
@@ -351,10 +368,11 @@ test('P1 native content selection autoscroll reaching the tail remains browsing'
   }
   await page.mouse.up();
   const atTail = await page.evaluate(() => {
-    const node = document.querySelector('.timeline-message-list');
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const node = owner.current();
     return {
       selection: getSelection().toString(),
-      gap: node.scrollHeight - node.clientHeight - node.scrollTop,
+      gap: owner.tailDistance(node),
       session: window.readingFixture.state(),
     };
   });
@@ -365,9 +383,10 @@ test('P1 native content selection autoscroll reaching the tail remains browsing'
   await page.evaluate(() => window.readingFixture.append());
   await page.waitForTimeout(120);
   const afterAppend = await page.evaluate(() => {
-    const node = document.querySelector('.timeline-message-list');
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const node = owner.current();
     return {
-      gap: node.scrollHeight - node.clientHeight - node.scrollTop,
+      gap: owner.tailDistance(node),
       mode: window.readingFixture.state().mode,
       selection: getSelection().toString(),
     };
@@ -379,7 +398,7 @@ test('P1 native content selection autoscroll reaching the tail remains browsing'
 
 test('follow policy is owned by ReadingSession intent rather than transient tail geometry', async ({ page }) => {
   await openFixture(page);
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
 
   // A layout-origin gap does not revoke following. The literal `auto` prop
   // lets Virtuoso consume the next append even though geometry is briefly no
@@ -389,12 +408,12 @@ test('follow policy is owned by ReadingSession intent rather than transient tail
     node.dispatchEvent(new Event('scroll'));
   });
   await expect.poll(() => viewport.evaluate(
-    (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+    (node) => window.__ATOLL_TEST_READING_OWNER__.tailDistance(node),
   )).toBeGreaterThan(40);
   expect(await page.evaluate(() => window.readingFixture.state().mode)).toBe('following');
   await page.evaluate(() => window.readingFixture.append());
   await expect.poll(() => viewport.evaluate(
-    (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+    (node) => window.__ATOLL_TEST_READING_OWNER__.tailDistance(node),
   )).toBeLessThanOrEqual(1);
 
   // Conversely, clamping a browsing viewport to the geometric tail must not
@@ -403,13 +422,13 @@ test('follow policy is owned by ReadingSession intent rather than transient tail
   await page.mouse.wheel(0, -900);
   await expect.poll(() => page.evaluate(() => window.readingFixture.state().mode)).toBe('browsing');
   await page.evaluate(() => window.readingFixture.expandViewportToClamp());
-  await expect.poll(() => viewport.evaluate(
-    (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+  await expect.poll(() => readingOwner(page).evaluate(
+    (node) => window.__ATOLL_TEST_READING_OWNER__.tailDistance(node),
   )).toBeLessThanOrEqual(24);
   expect(await page.evaluate(() => window.readingFixture.state().mode)).toBe('browsing');
   await page.evaluate(() => window.readingFixture.append());
-  await expect.poll(() => viewport.evaluate(
-    (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+  await expect.poll(() => readingOwner(page).evaluate(
+    (node) => window.__ATOLL_TEST_READING_OWNER__.tailDistance(node),
   )).toBeGreaterThan(24);
   expect(await page.evaluate(() => window.readingFixture.state().mode)).toBe('browsing');
 });
@@ -456,17 +475,15 @@ test('nested code scrolling never takes over the main reading intent', async ({ 
   // settle before attributing any later main-scroller motion to the wheel.
   // Content-resize following has separate coverage; this sample isolates
   // which scroll container owns the input.
-  await expect.poll(() => page.evaluate(() => window.readingFixture.nestedLayout()))
-    .toMatchObject({ gap: 0 });
   await expect.poll(async () => {
     const layout = await page.evaluate(() => window.readingFixture.nestedLayout());
-    return layout.knownSize > layout.knownSizeBefore;
+    return layout.hostHeight > layout.hostHeightBefore;
   }).toBe(true);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const before = await page.evaluate(() => ({
     inputEpoch: window.readingFixture.state().inputEpoch,
     mode: window.readingFixture.state().mode,
-    mainTop: document.querySelector('.timeline-message-list').scrollTop,
+    mainTop: window.__ATOLL_TEST_READING_OWNER__.current().scrollTop,
     nestedTop: document.querySelector('.fixture-nested-scroll').scrollTop,
   }));
   await page.locator('.fixture-nested-scroll').hover();
@@ -475,7 +492,7 @@ test('nested code scrolling never takes over the main reading intent', async ({ 
   const after = await page.evaluate(() => ({
     inputEpoch: window.readingFixture.state().inputEpoch,
     mode: window.readingFixture.state().mode,
-    mainTop: document.querySelector('.timeline-message-list').scrollTop,
+    mainTop: window.__ATOLL_TEST_READING_OWNER__.current().scrollTop,
     nestedTop: document.querySelector('.fixture-nested-scroll').scrollTop,
   }));
   expect(after.nestedTop).toBeGreaterThan(before.nestedTop);
@@ -489,7 +506,7 @@ test('nested input stays with the inner scroller while the containing row grows'
   expect(await page.evaluate(() => window.readingFixture.installNestedScroller())).toBe(true);
   await expect.poll(async () => {
     const layout = await page.evaluate(() => window.readingFixture.nestedLayout());
-    return layout.knownSize > layout.knownSizeBefore;
+    return layout.hostHeight > layout.hostHeightBefore;
   }).toBe(true);
   const before = await page.evaluate(() => ({
     inputEpoch: window.readingFixture.state().inputEpoch,
@@ -502,13 +519,14 @@ test('nested input stays with the inner scroller while the containing row grows'
     const values = [];
     for (let index = 0; index < 4; index += 1) {
       await new Promise(requestAnimationFrame);
-      const main = document.querySelector('.timeline-message-list');
+      const owner = window.__ATOLL_TEST_READING_OWNER__;
+      const main = owner.current();
       values.push({
         mode: window.readingFixture.state().mode,
         inputEpoch: window.readingFixture.state().inputEpoch,
         nestedTop: document.querySelector('.fixture-nested-scroll').scrollTop,
         mainTop: main.scrollTop,
-        gap: main.scrollHeight - main.clientHeight - main.scrollTop,
+        gap: owner.tailDistance(main),
       });
     }
     return values;
@@ -557,9 +575,10 @@ test('layout clamping cannot grant following; the synthetic pointer model can ha
   await page.evaluate(() => window.readingFixture.expandViewportToClamp());
   await page.waitForTimeout(160);
   const clamped = await page.evaluate(() => {
-    const node = document.querySelector('.timeline-message-list');
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const node = owner.current();
     return {
-      gap: node.scrollHeight - node.clientHeight - node.scrollTop,
+      gap: owner.tailDistance(node),
       mode: window.readingFixture.state().mode,
     };
   });
@@ -580,7 +599,7 @@ test('a native Chromium scrollbar drag to tail resumes following when a classic 
   await page.mouse.move(300, 260);
   await page.mouse.wheel(0, -2400);
   await page.waitForTimeout(100);
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   const box = await viewport.boundingBox();
   const metrics = await viewport.evaluate((node) => ({
     gutter: node.offsetWidth - node.clientWidth,
