@@ -4,34 +4,82 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactPreviewPanel } from '../src/ui/features/files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from '../src/ui/features/files/FilesFeature.jsx';
+import { WorkspaceRightPanel } from '../src/ui/features/WorkspaceFeatures.jsx';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 // src/app/RightPanelHost.jsx was deleted. Its artifact-preview mode is now
-// src/ui/features/files/ArtifactPreviewPanel.jsx, rendered by
-// WorkspaceRightPanel with no wrapper around it (grepped: WorkspaceApp never
-// imports MarkdownFileReferenceProvider). Its reading-history mode moved
-// inside FilesFeature (`port.recent`, wired from attachments.recentFiles in
-// WorkspaceApp.jsx:738).
+// src/ui/features/files/ArtifactPreviewPanel.jsx, rendered by WorkspaceRightPanel.
+// The current composition root owns the only navigation command:
+// files.commands.preview (WorkspaceApp.filesPort). The panel-level provider
+// must pass parsed references into that public command, and must fail closed
+// when the command or source channel is unavailable. Its reading-history mode
+// moved inside FilesFeature (`port.recent`, wired from attachments.recentFiles).
 const MARKDOWN = '见 [设计文档](/home/xiewanpeng/atoll/DESIGN.md:20) 和 [外部](https://example.com/x)';
 
+function rightPanelProps({ channelId = 'c0', selectedChannelId = channelId, previewCommand, commands } = {}) {
+  const preview = previewCommand || vi.fn();
+  return {
+    panel: 'artifact',
+    channel: { id: channelId },
+    files: {
+      selectedArtifact: { key: 'k', channelId: selectedChannelId, name: 'notes.md', mediaType: 'text/markdown', resourceId: 'r1' },
+      preview: { status: 'ready', text: MARKDOWN },
+      commands: commands === undefined ? { preview } : commands,
+    },
+    tasks: {},
+    roster: {},
+    governance: {},
+    automation: {},
+    activity: {},
+    onClose: () => {},
+  };
+}
+
 describe('右侧文件详情面板里的文件链接', () => {
-  it.fails('【缺陷】绝对路径链接应在 Atoll 里打开、恒不让浏览器去访问那条路径 —— ArtifactPreviewPanel 没有被 MarkdownFileReferenceProvider 包裹，历史 bug 复现', async () => {
-    // This renders exactly what WorkspaceRightPanel renders for the
-    // WORKSPACE_FEATURE_PANEL.artifact branch: <ArtifactPreviewPanel
-    // port={files} onClose={onClose} /> with no provider around it, because
-    // that is genuinely what production does.
-    render(<ArtifactPreviewPanel
-      port={{ selectedArtifact: { name: 'notes.md', mediaType: 'text/markdown', resourceId: 'r1' }, preview: { status: 'ready', text: MARKDOWN } }}
-      onClose={() => {}}
-    />);
+  it('公开 preview owner 存在时，绝对路径链接通过当前频道 command 在 Atoll 内打开', async () => {
+    const previewCommand = vi.fn();
+    render(<WorkspaceRightPanel {...rightPanelProps({ previewCommand })} />);
     const link = await screen.findByRole('link', { name: '设计文档' });
-    // Desired (old, still-correct) behaviour: an absolute-path reference is
-    // intercepted and never left as a plain new-tab external link.
-    expect(link.getAttribute('target')).not.toBe('_blank');
+    expect(link.getAttribute('target')).toBeNull();
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     link.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
+    expect(previewCommand).toHaveBeenCalledWith(expect.objectContaining({
+      channelId: 'c0',
+      resourceId: '/home/xiewanpeng/atoll/DESIGN.md',
+      resource_id: '/home/xiewanpeng/atoll/DESIGN.md',
+      name: 'DESIGN.md',
+      mediaType: 'text/markdown',
+      line: 20,
+    }));
+    const external = screen.getByRole('link', { name: '外部' });
+    const externalEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    external.dispatchEvent(externalEvent);
+    expect(externalEvent.defaultPrevented).toBe(false);
+    expect(external.getAttribute('target')).toBe('_blank');
+  });
+
+  it('缺少公开 preview command 时，文件引用阻止 host 导航但不伪造内部打开', async () => {
+    render(<WorkspaceRightPanel {...rightPanelProps({ commands: {} })} />);
+    const link = await screen.findByRole('link', { name: '设计文档' });
+    expect(link.getAttribute('target')).toBeNull();
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('频道切换后，旧 artifact 不能借当前 command 打开到新频道', async () => {
+    const previewCommand = vi.fn();
+    const view = render(<WorkspaceRightPanel {...rightPanelProps({ previewCommand })} />);
+    view.rerender(<WorkspaceRightPanel {...rightPanelProps({
+      channelId: 'c1', selectedChannelId: 'c0', previewCommand,
+    })} />);
+    const link = await screen.findByRole('link', { name: '设计文档' });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(previewCommand).not.toHaveBeenCalled();
   });
 
   it('保留外链的新标签页语义，不把普通网页链接拦成文件引用', async () => {
