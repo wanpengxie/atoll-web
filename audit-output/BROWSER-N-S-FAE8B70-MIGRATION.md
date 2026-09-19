@@ -25,7 +25,7 @@ ATOLL_TEST_WEB_PORT=15260 ATOLL_TEST_MOCK_PORT=18900 npx playwright test \
 |---|---:|---|
 | `N-im-read-fallback.spec.js` | 1 passed / 3 failed | N3 通过；N1/N2 在唯一 owner `gap=0` 时仍出现 related badge；N4 raw rail `authorityReady=false` 且过滤外 unread 未保留。 |
 | `notification-high-water.spec.js` | 4 failed | 频道切换可继续，但 high-water rail snapshot/hydration 未建立或未推进；没有再被 disconnect/Composer 崩溃截断。 |
-| `notification-policy.spec.js` | 2 failed | final readable root 没有产生预期 rail unread；readable-event row 已物化，但没有对应物理 `reading.observation`。 |
+| `notification-policy.spec.js` | 2 failed | readable-event row 已物化但没有对应物理 `reading.observation`；final line 154 的 unread 期待与 fixture audience 关系门控不相容，待合同裁决。 |
 | `offline-composer-recovery.spec.js` | 1 passed | 离线 draft/recipient/reconnect exactly-once 仍通过。 |
 | `performance-budget.spec.js` | 3 passed | huge ledger、waiting queue、mobile browsing 均通过。 |
 | `reading-position-session.spec.js` | 1 failed | 频道往返已不再清空 workspace，但回返后原 browsing row 未在 reading owner 中恢复到可见位置。 |
@@ -39,19 +39,20 @@ ATOLL_TEST_WEB_PORT=15260 ATOLL_TEST_MOCK_PORT=18900 npx playwright test \
 | spec 总数 / 已读 / 已迁 / 未处理 | 6 / 6 / 6 / 0 |
 | test 总数 / 已读 / 已迁 / 未处理 | 15 / 15 / 15 / 0 |
 | 当前真实入口通过 | 5 |
-| 当前真实产品缺口（失败，不是旧 selector/import 误报） | 10 |
+| 当前已确认真实产品缺口（失败，不是旧 selector/import 误报） | 9 |
+| fixture/合同语义待决失败 | 1 |
 | fixture 删除 | 0 |
 
 迁移后的单 spec 运行结果：
 
 - `N-im-read-fallback.spec.js`: **1 passed, 3 failed**；N3 通过，N1/N2/N4 分别暴露尾部几何、频道切换 owner、过滤读权威缺口。
 - `notification-high-water.spec.js`: **4 failed**；四条都已进入真实 `main.jsx → WorkspaceApp.jsx`，失败由频道切换崩溃或当前持久化/读行缺口造成。
-- `notification-policy.spec.js`: **2 failed**；旧 `[data-entry-id]` 已迁至真实 `[data-presentation-row-id]`，失败为频道切换崩溃及 readable event 未物化。
+- `notification-policy.spec.js`: **2 failed**；旧 `[data-entry-id]` 已迁至真实 `[data-presentation-row-id]`；readable event 的失败是 DOM→Reading observation，final line 154 另受 fixture audience/合同语义门控影响。
 - `offline-composer-recovery.spec.js`: **1 passed (13.9s)**。
 - `performance-budget.spec.js`: **3 passed (27.6s)**。
 - `reading-position-session.spec.js`: **1 failed**；已进入真实 reading owner，失败为频道切换时 `feed.disconnectHistory owner 尚未连接`。
 
-合计：**5 passed / 10 failed**。失败都保留为产品缺口，未用删除断言、跳过场景或改产品来伪造绿色。
+合计：**5 passed / 10 failed**；其中 9 条已确认产品缺口，1 条为 fixture/合同语义待决。失败均保留，未用删除断言、跳过场景或改产品来伪造绿色。
 
 冻结头聚合复核（`ATOLL_TEST_WEB_PORT=15220 ATOLL_TEST_MOCK_PORT=18870 npx playwright test <六个 spec> --reporter=line`）：**15 tests，5 passed，10 failed（3.2m）**；与逐 spec 裁决一致。
 
@@ -94,7 +95,7 @@ ATOLL_TEST_WEB_PORT=15260 ATOLL_TEST_MOCK_PORT=18900 npx playwright test \
 
 | test | UX 合同 | 能力 / 架构价值 | 裁决 |
 |---|---|---|---|
-| rail follows presented lifecycle roots and persists only unacknowledged exact identities | lifecycle processing/tool/control 等 transport root 不应冒充用户提醒；可读 final root 按 exact identity 跨刷新保留。 | 验证 `notification-policy` 的事件分类、root identity、presentation receipt 与持久化 rail 的边界。 | **RED（产品缺口）**：频道切换可完成，但 readable final 后 `.unread-total` 没有出现 `1`；当前 lifecycle→rail readable root 没有物化为未读。 |
+| rail follows presented lifecycle roots and persists only unacknowledged exact identities | lifecycle processing/tool/control 等 transport root 不应冒充用户提醒；可读 final root 按 exact identity 跨刷新保留。 | 验证 `notification-policy` 的事件分类、root identity、presentation receipt 与持久化 rail 的边界。 | **RED（fixture/合同语义待决）**：实际 lifecycle final 的 audience 是 `project-agent` 而非当前 root actor `root-project`，关系门控使 `.unread-total` 不出现 `1`；不能直接交产品 rail owner。 |
 | tool, timer, and public-event notifications follow independent readable roots | tool/timer/public event 各自独立 readable root；只有物理可见 row 触发对应提醒。 | 验证事件 taxonomy 不把独立 readable body 合并/吞掉，并把可见性绑定真实 presentation row。 | **RED（产品缺口）**：`c0.project-notification-readable-event` row 已在真实 DOM 出现，但没有被唯一 owner 的 `reading.observation.visibleRowIDs` 记录；不是旧 `data-entry-id` 选择器误报。 |
 
 ### offline-composer-recovery.spec.js
@@ -127,15 +128,15 @@ ATOLL_TEST_WEB_PORT=15260 ATOLL_TEST_MOCK_PORT=18900 npx playwright test \
 
 ## 运行时共同缺口（当前复验）
 
-`cbd8591` 的 disconnect 幂等修复已生效：最终 15-test 轮没有 `feed.disconnectHistory owner 尚未连接`，频道切换也不会再直接清空 workspace。Composer owner 的 Tiptap guard 复验同样没有 uncaught；N2 越过切换继续暴露通知合同失败。当前 10 个 RED 应按公开 owner 分组交接：
+`cbd8591` 的 disconnect 幂等修复已生效：最终 15-test 轮没有 `feed.disconnectHistory owner 尚未连接`，频道切换也不会再直接清空 workspace。Composer owner 的 Tiptap guard 复验同样没有 uncaught；N2 越过切换继续暴露通知合同失败。当前 9 个已确认产品 RED 与 1 个 fixture/合同待决失败应分开处理：
 
 - following/tail receipt 时序：N1、N2；物理 owner 已保持 `gap=0`，但可见尾部 arrival 仍短暂产生 related badge。
 - filter/rail authority：N4；raw rail 没有建立 authority，过滤外 unread 不保留。
 - high-water/replica projection：notification-high-water 四条；rail snapshot/hydration 缺失或 high-water 不推进。
-- lifecycle/readable presentation：notification-policy 两条；final readable root 不产生预期 unread，readable-event 虽有 row 但没有 physical reading observation。
+- lifecycle/readable presentation：notification-policy 的 readable-event 是 DOM→Reading observation 缺口；final root line 154 受 fixture audience/合同语义待决，不计入产品 RED。
 - reading-session admission：F7；频道往返不再崩溃，但原 browsing row 未恢复到可见 owner。
 
-这些均是产品 owner 的公开边界问题；本分区没有通过修改 fixture、增加兼容 owner、删除断言或改动 `src/` 来掩盖失败。
+除 final root 的 fixture/合同待决项外，其余均是产品 owner 的公开边界问题；本分区没有通过修改 fixture、增加兼容 owner、删除断言或改动 `src/` 来掩盖失败。
 
 ## notification owner 独立验收（提交前后）
 
@@ -308,3 +309,21 @@ F7 时序主证据（`test-results-browser-ns-reading-probe-05b1fff-20260920/...
 共享分支在上述长采样期间继续前进；为核对最新产品入口，当前 HEAD `ef8f906`（`fix: gate waiting edit and restore interrupt pause`）立即重跑同一 F7 oracle：**1 passed（12.2s）**，`firstDivergence` 仍为 `presentation`，cursor `readSeq/high-water=844`、replica head `848` 且含 target 112，唯一 owner visible IDs 仍为 120/approval/summary。新证据：`test-results-browser-ns-f7-oracle-ef8f906-20260920/`。这次重跑未改变第八轮裁决。
 
 当前 `ef8f906` 再跑 notification-policy 两条合同仍分别在 line 154（final readable badge）和 line 243（readable_event observation）失败；证据目录为 `test-results-browser-ns-readable-badge-current-ef8f906-20260920/` 与 `test-results-browser-ns-readable-current-ef8f906-20260920/`。该两次输出没有新的 Hook/pageerror 截断。
+
+## 第九轮只读复验：Reading 候选与三个断点重分层（当前 HEAD `12e5e90`）
+
+本轮没有修改产品、fixture、断言或 skip。当前 HEAD 逐条重跑了 notification-policy 两条合同和 `34d6f0c` F7 oracle；同时读取了新的 Reading 候选：`/tmp/reading-round7-5aef9f4`（基于 `5aef9f4`，仅有未提交的 `VendorListExecutor.jsx` anchor-retention/overscan diff，候选服务 `:15305`、mock `:20005`）。候选不等于当前产品 HEAD，结果仅作交叉证据。
+
+### 三个问题分别裁决
+
+1. **readable_event 的 DOM → Reading observation：仍 RED。** 当前真实合同在 line 243 超时，但本轮及候选浏览器采样都确认 `c0.project-notification-readable-event` 已进入唯一 active owner 的真实 DOM 可见区（候选 `ownerCount=1`、row hit-test 命中）；reading trace 仍只有 `trace.enabled`，没有 `reading.observation.visibleRowIDs`。候选没有移动这个首断点。`npx vitest run tests/reading-observation-settle.test.jsx tests/reading-session-ports.test.js` 在当前树和候选树均为 **4 passed / 4 failed**（settled/user authority、selection autoscroll、epoch invalidation 断言均未闭合）。
+
+2. **final root badge：先核 disposition，再定责任。** 规范 canonical final（`payload.body.status=completed` 且含 text）被 `notificationDisposition` 分类为 `final`，`isRailNotifiableDisposition('final') === true`；独立 `human.note` readable event 分类为 `event`，rail predicate 为 false、viewport predicate 为 true。这一语义边界由纯模型 **12/12 passed** 验证，不能把 event 的 quiet rail 当作 badge 回归。
+
+   但本轮浏览器动作返回的实际 final envelope 是 `sender=project-agent`、`audience=["project-agent"]`；`multi-channel` fixture 的 root actor 是 `root-project`。`channel-feed-runtime` 的 `notificationRelatesTo`/`unreadFor` 只对当前 human actor 关系计 rail，因此该 fixture final 对 root 不 related，DOM 没有 badge 是当前 fixture/合同不一致，而不是已证实的产品 rail bug。原断言 line 154 仍期待 `.unread-total=1`，但在 fixture audience 未改、且未明确“非 root audience 的 final 也应进 channel rail”之前，不向 notification 产品 owner 交接这条 badge 缺失；fixture/断言保持不改，待合同 owner 先决定 audience 语义。
+
+3. **F7 row 112：当前 HEAD 仍是 presentation 首断点；候选只显示局部改善。** 当前 HEAD 的 `34d6f0c` oracle 观测成功但 `firstDivergence=presentation`：cursor read/high-water=844，replica head=848 且含 `c0-history-request-112`，回返唯一 owner 仍只把最新 120/approval/summary 放入 visible IDs，目标已 mounted 但在视口上方。证据：`test-results-browser-ns-round9-f7-12e5e90-20260920/`。
+
+   Reading 候选的同一浏览器序列中，回返后唯一 owner 保持 `mode=browsing`，且 `c0-history-request-111/112/113/114` 均在物理可见区，说明 deferred content-anchor + 增大 retention 确实把 row 112 的 presentation 首断点向前闭合；但候选 focused settle tests 仍 4/4 RED，不能据此宣称 F7 产品修复已验收。当前公开 owner 仍是 reading-session/admission → virtualized presentation，候选只作为待 owner 复验的非合入证据。
+
+本轮逐条运行结果：当前 HEAD 的 `notification-policy.spec.js --grep "rail follows presented"` 在 line 154 RED；`--grep "tool, timer, and public-event"` 在 line 243 RED；F7 oracle **1 passed（采集完成，契约首断点仍 RED）**。因此本轮最终分层是：readable_event = DOM→Reading handoff 产品缺口；final root badge = fixture audience/合同语义待决，不冒充产品 bug；F7 row 112 = 当前产品 presentation 缺口，Reading 候选仅局部改善。
