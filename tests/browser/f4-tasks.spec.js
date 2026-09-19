@@ -38,6 +38,12 @@ test('F4-004 只有真实 task.create provider 时可从回合创建并恢复正
   await reset(request, 'task-capability', 1402); await login(page);
   const turn = page.locator('.turn-card').filter({ hasText: 'c0 history 1' });
   await turn.hover();
+  await expect(turn.getByRole('button', { name: '创建任务' })).toHaveCount(0);
+  // Provider availability is a live runtime reading, not a historical ledger
+  // fact. Explicitly ask the selected actor for its current words before
+  // asserting that the task action is available.
+  await page.getByRole('button', { name: 'steward，点击读取可用模型' }).click();
+  await turn.hover();
   await expect(turn.getByRole('button', { name: '创建任务' })).toBeVisible();
   await turn.getByRole('button', { name: '创建任务' }).click();
   const modal = page.getByRole('dialog', { name: '新建任务' });
