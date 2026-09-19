@@ -3,7 +3,15 @@
 This packet is read-only diagnosis for AD-011 and a recovery ordering for the
 100 rows previously classified as `FIXTURE_MISSING` in
 [`A-D-AD011-AD143-BLOCKED-QUANTIFICATION-20260920.md`](./A-D-AD011-AD143-BLOCKED-QUANTIFICATION-20260920.md).
-It does not change product code or reclassify any baseline case.
+It does not change product code; the nine recovered ledger rows and the
+remaining blocked row are recorded in the A–D case ledger.
+
+The first P0 recovery batch now has nine PASS fixtures: AD-057/058,
+AD-125–127, and AD-138–141. AD-316 remains `BLOCKED` with a public red
+reproduction because the current SpaceDevices owner does not expose a terminal
+to authoritative-refresh transition. The priority table below therefore lists
+the 91 rows still awaiting fixture evidence and records the completed P0 rows
+separately.
 
 This packet was re-audited after notification-owner commit `77760c8`
 (`fix(notification): require frozen owner receipts`). That commit adds and
@@ -96,21 +104,24 @@ would hide the owner boundary and is not part of this packet.
 
 ## 100 `FIXTURE_MISSING` rows ordered by recovery priority
 
-Priority is recovery cost, not product importance. All 100 rows already name a
-current public owner; these groups describe the safest order for building a
+Priority is recovery cost, not product importance. The remaining 91 rows name
+a current public owner; these groups describe the safest order for building a
 faithful public fixture, without claiming any row is obsolete.
 
 | Priority | Count | Recovery rule | Baseline groups |
 |---|---:|---|---|
-| P0 — direct owner fixture | 10 | Small public-owner harness or focused projection fixture; no cross-surface lifecycle choreography | `agent-selection` 2; `atoll-session` 3; `capabilities` 4; `devices-panel` 1 |
+| P0 — direct owner fixture (remaining) | 1 | Small public-owner harness or focused projection fixture; no cross-surface lifecycle choreography | `devices-panel` 1 (`AD-316`, blocked red reproduction) |
 | P1 — composed interaction fixture | 30 | Public event/DOM sequence across two or more current owners; preserve committed callback/command identity | `agent-control` 2; `agent-information-architecture` 4; `app-agent-probe-lifecycle` 1; `channel-governance` 7; `dynamic-f3` 16 |
 | P2 — lifecycle/epoch/viewport fixture | 60 | Requires bounded reconnect, terminal-split handoff, Replica/cache epoch, or cursor/read authority setup; recover only after the public lifecycle fixture is frozen | `app-shell-terminal-split` 15; `channel-feed-startup` 18; `cursors` 27 |
-| **Total** | **100** | Every row remains `BLOCKED/FIXTURE_MISSING` | — |
+| **Total** | **91** | Nine P0 rows are now PASS; the listed rows remain `BLOCKED/FIXTURE_MISSING` | — |
 
 ### Exact row membership
 
-- **P0 (10):** `AD-057`, `AD-058`; `AD-125`–`AD-127`; `AD-138`–`AD-141`;
-  `AD-316`.
+- **P0 recovered (9):** `AD-057`, `AD-058`; `AD-125`–`AD-127`;
+  `AD-138`–`AD-141`; evidence is in the public-owner tests named in the
+  blocked-quantification report.
+- **P0 remaining (1):** `AD-316`; the current `SpaceDevices` owner submits the
+  command but does not call an authoritative refresh after terminal.
 - **P1 (30):** `AD-014`, `AD-017`; `AD-027`, `AD-034`, `AD-037`, `AD-039`;
   `AD-074`; `AD-191`–`AD-197`; `AD-327`–`AD-329`, `AD-331`, `AD-333`–`AD-338`,
   `AD-340`–`AD-343`, `AD-350`–`AD-351`.

@@ -3,8 +3,11 @@
 This is a follow-up to
 [`RESTORE-CASES-A-D-20260919.md`](./RESTORE-CASES-A-D-20260919.md) and
 [`A-D-UNIT-MIGRATION-VERIFICATION-20260920.md`](./A-D-UNIT-MIGRATION-VERIFICATION-20260920.md).
-It does not change a case disposition: all 116 rows classified below remain
-`BLOCKED`, and none is obsolete, deleted, or skipped.
+At creation, the packet classified 116 rows as `BLOCKED`. The P0 public-owner
+fixture batch has since recovered nine rows (AD-057/058, AD-125–127, and
+AD-138–141); 107 rows remain blocked. AD-316 remains an explicit blocked
+reproduction because the current `SpaceDevices` owner submits but does not
+refresh its authoritative projection. No row is obsolete, deleted, or skipped.
 
 ## Minimal regression packets
 
@@ -89,9 +92,9 @@ The classification is an evidence triage, not a verdict on product scope:
 | Category | Count | Rule |
 |---|---:|---|
 | 缺 owner (`OWNER_MISSING`) | 11 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. |
-| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 100 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. |
+| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 91 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Nine P0 rows now have public fixtures and are PASS. |
 | 真实能力缺口 (`CAPABILITY_GAP`) | 5 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. |
-| **Total** | **116** | Every row remains `BLOCKED`. |
+| **Total** | **107** | Nine P0 rows moved to PASS after focused public-owner verification. |
 
 ### `OWNER_MISSING` — 11 rows
 
@@ -108,7 +111,7 @@ The classification is an evidence triage, not a verdict on product scope:
 | `activity.test.js` | 3 | `AD-002`–`AD-004`; cross-channel Operation index/Center is absent. Search, task, and artifact owners are not an equivalent operation index. |
 | `channel-list.test.jsx` | 2 | `AD-202`–`AD-203`; current `VersionIncompatible` is a protocol terminal, not a node-version/update capability, and no node-update port/UI is mounted. |
 
-### `FIXTURE_MISSING` — 100 rows
+### `FIXTURE_MISSING` — 91 rows
 
 These rows have a named current owner and an evidence successor, but the
 successor is not yet a one-to-one public fixture for the baseline scenario.
@@ -119,22 +122,22 @@ auditable:
 |---|---:|---|
 | `agent-control.test.js` | 2 | `AD-014`, `AD-017` |
 | `agent-information-architecture.test.jsx` | 4 | `AD-027`, `AD-034`, `AD-037`, `AD-039` |
-| `agent-selection.test.js` | 2 | `AD-057`, `AD-058` |
+| `agent-selection.test.js` | 0 | `AD-057`, `AD-058` recovered in `tests/agent-selection.test.js:150,163` |
 | `app-agent-probe-lifecycle.test.jsx` | 1 | `AD-074` |
 | `app-shell-terminal-split.test.jsx` | 15 | `AD-093`–`AD-102`, `AD-104`–`AD-108` |
-| `atoll-session.test.jsx` | 3 | `AD-125`–`AD-127` |
-| `capabilities.test.js` | 4 | `AD-138`–`AD-141` |
+| `atoll-session.test.jsx` | 0 | `AD-125`–`AD-127` recovered in `tests/atoll-session.test.jsx:26,43,60` |
+| `capabilities.test.js` | 0 | `AD-138`–`AD-141` recovered in `tests/agent-describe-capability-index.test.jsx:49,83,124,145` |
 | `channel-feed-startup.test.jsx` | 18 | `AD-156`–`AD-161`, `AD-163`, `AD-165`–`AD-173`, `AD-178`, `AD-182` |
 | `channel-governance.test.js` | 7 | `AD-191`–`AD-197` |
 | `cursors.test.js` | 27 | `AD-277`–`AD-278`, `AD-282`–`AD-304`, `AD-306`–`AD-307` |
 | `devices-panel.test.jsx` | 1 | `AD-316` |
 | `dynamic-f3.test.jsx` | 16 | `AD-327`–`AD-329`, `AD-331`, `AD-333`–`AD-338`, `AD-340`–`AD-343`, `AD-350`–`AD-351` |
-| **Total** | **100** | — |
+| **Total** | **91** | Nine P0 fixture rows now PASS; AD-316 remains blocked with a public red reproduction. |
 
-No category above changes the ledger's `BLOCKED` status. A future migration
-may add a public owner or a faithful fixture and then re-run the original
-capability/invariant; it must not infer obsolescence from the current absence
-of evidence.
+The remaining categories above retain their ledger `BLOCKED` status. A future
+migration may add a public owner or a faithful fixture and then re-run the
+original capability/invariant; it must not infer obsolescence from the current
+absence of evidence.
 
 ## Boundary audit
 
