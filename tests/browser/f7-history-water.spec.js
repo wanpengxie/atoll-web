@@ -1525,6 +1525,45 @@ test('F7 scope and participant-filter activation exits save and restore through 
 });
 
 test('F7 access loss saves the old activation and a later membership grant restores it', async ({ page, request }, testInfo) => {
+  const readOwnerAnchor = () => readingOwner(page).evaluate((node) => {
+    const root = node.getBoundingClientRect();
+    return [...node.querySelectorAll('[data-presentation-row-id]')]
+      .map((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return {
+          id: candidate.dataset.presentationRowId,
+          top: rect.top - root.top,
+          bottom: rect.bottom - root.top,
+        };
+      })
+      .filter((candidate) => candidate.bottom > 0 && candidate.top < node.clientHeight)
+      .sort((left, right) => left.top - right.top)[0] || null;
+  });
+  const expectOwnerAnchorRestored = async (expected) => {
+    const owner = readingOwner(page);
+    await expect.poll(() => owner.evaluate((node, anchor) => {
+      const row = [...node.querySelectorAll('[data-presentation-row-id]')]
+        .find((candidate) => candidate.dataset.presentationRowId === anchor.id);
+      if (!row) return false;
+      const rect = row.getBoundingClientRect();
+      const root = node.getBoundingClientRect();
+      return rect.bottom > root.top && rect.top < root.bottom;
+    }, expected)).toBe(true);
+    const samples = await owner.evaluate((node, anchor) => new Promise((resolve) => {
+      const values = [];
+      const collect = () => {
+        const row = [...node.querySelectorAll('[data-presentation-row-id]')]
+          .find((candidate) => candidate.dataset.presentationRowId === anchor.id);
+        values.push(row ? row.getBoundingClientRect().top - node.getBoundingClientRect().top : null);
+        if (values.length >= 8) resolve(values);
+        else requestAnimationFrame(collect);
+      };
+      requestAnimationFrame(collect);
+    }), expected);
+    expect(samples.every(Number.isFinite), JSON.stringify(samples)).toBe(true);
+    expect(Math.abs(samples.at(-1) - expected.top), JSON.stringify({ expected, samples })).toBeLessThanOrEqual(32);
+    expect(Math.max(...samples) - Math.min(...samples), JSON.stringify(samples)).toBeLessThanOrEqual(2);
+  };
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1716 } });
   expect(reset.ok()).toBe(true);
   await login(page);
@@ -1532,54 +1571,81 @@ test('F7 access loss saves the old activation and a later membership grant resto
   await page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0\.project$/ }) }).click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   await page.waitForTimeout(1_000);
-  const initialEvidence = await page.evaluate(() => ({
-    reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || null,
-    sequence: document.querySelector('.seq-label')?.textContent || '',
-    rows: [...document.querySelectorAll('[data-presentation-row-id]')].map((row) => row.dataset.presentationRowId || ''),
-  }));
+  const initialEvidence = await page.evaluate(() => {
+    const owner = window.__ATOLL_TEST_READING_OWNER__.current();
+    return {
+      reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || null,
+      sequence: document.querySelector('.seq-label')?.textContent || '',
+      rows: [...owner.querySelectorAll('[data-presentation-row-id]')].map((row) => row.dataset.presentationRowId || ''),
+    };
+  });
   const initialEvidencePath = testInfo.outputPath('access-initial-current-tail.json');
   await writeFile(initialEvidencePath, JSON.stringify(initialEvidence, null, 2));
   await testInfo.attach('access-initial-current-tail', { path: initialEvidencePath, contentType: 'application/json' });
   await expect(page.getByText('c0.project history 119: ask project-agent for PONG', { exact: true })).toBeVisible();
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   await viewport.hover();
   await page.mouse.wheel(0, -2_400);
-  await page.waitForTimeout(150);
-  const anchor = await captureVisibleAnchor(page);
+  await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
+  await expect.poll(async () => (await readOwnerAnchor())?.id || '').not.toBe('');
+  const anchor = await readOwnerAnchor();
   expect(anchor?.id).toBeTruthy();
   await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'access-restore-current-tail' }));
 
   const revoked = await request.post('/mock/control/action', { data: { type: 'revoke_membership', channel_id: 'c0.project' } });
   expect(revoked.ok()).toBe(true);
   await expect(page.getByText('频道内容不可访问', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(readingOwner(page)).toHaveCount(0);
+  await expect(page.locator('[data-presentation-row-id]')).toHaveCount(0);
   expect(await persistedBookmark(page, 'c0.project', 'c0.project:mine:')).toBeNull();
 
+  const metaBeforeGrant = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+    .filter((entry) => entry.event === 'history.channel_meta' && entry.detail?.channelId === 'c0.project').length);
   const granted = await request.post('/mock/control/action', { data: { type: 'grant_membership', channel_id: 'c0.project' } });
   expect(granted.ok()).toBe(true);
-  await expect(page.locator('.timeline-message-list')).toBeVisible({ timeout: 10_000 });
-  await page.waitForTimeout(1_000);
-  const restoreEvidence = await page.evaluate(() => ({
-    reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || null,
-    diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
-    sequence: document.querySelector('.seq-label')?.textContent || '',
-    rows: [...document.querySelectorAll('[data-presentation-row-id]')].map((row) => ({
-      id: row.dataset.presentationRowId || '',
-      text: row.textContent?.slice(0, 120) || '',
-    })),
-  }));
+  await expect(readingOwner(page)).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+    .filter((entry) => entry.event === 'history.channel_meta' && entry.detail?.channelId === 'c0.project').length)).toBeGreaterThan(metaBeforeGrant);
+  await page.waitForFunction((anchorID) => window.__ATOLL_DIAGNOSTICS__.reading.snapshot().entries.some((entry) => (
+    entry.event === 'reading.restore-complete' && entry.detail?.targetID === anchorID
+  )), anchor.id);
+  const restoreEvidence = await page.evaluate(() => {
+    const owner = window.__ATOLL_TEST_READING_OWNER__.current();
+    return {
+      reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || null,
+      diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
+      sequence: document.querySelector('.seq-label')?.textContent || '',
+      rows: [...owner.querySelectorAll('[data-presentation-row-id]')].map((row) => ({
+        id: row.dataset.presentationRowId || '',
+        text: row.textContent?.slice(0, 120) || '',
+      })),
+    };
+  });
   const restoreEvidencePath = testInfo.outputPath('access-restore-current-tail.json');
   await writeFile(restoreEvidencePath, JSON.stringify(restoreEvidence, null, 2));
   await testInfo.attach('access-restore-current-tail', { path: restoreEvidencePath, contentType: 'application/json' });
   // The saved bookmark is intentionally allowed to keep 119 virtualized off
-  // screen. It is not allowed to omit 119 from the committed Presentation,
-  // which was the stale cache-frontier failure hidden by the old anchor-only
-  // oracle.
-  const currentTailCommit = restoreEvidence.reading?.entries?.find((entry) => (
-    entry.event === 'reading.owner-commit'
-      && entry.detail?.insertedIDs?.includes('c0.project-history-request-119')
+  // screen. Prove the refreshed activation owns the complete current suffix
+  // by its stable semantic boundaries. Depending on background progress that
+  // suffix can be the bounded 20-row cold entry or the fully hydrated 122-row
+  // view. `insertedIDs` is only a 50-entry diagnostic sample, so it cannot be
+  // the completeness oracle for the latter.
+  const restoreReceipt = restoreEvidence.reading?.entries?.find((entry) => (
+    entry.event === 'reading.restore-complete' && entry.detail?.targetID === anchor.id
   ));
+  expect(restoreReceipt, JSON.stringify(restoreEvidence, null, 2)).toBeTruthy();
+  const currentTailCommit = restoreEvidence.reading?.entries?.find((entry) => {
+    if (entry.event !== 'reading.owner-commit'
+      || entry.detail?.activationID !== restoreReceipt.detail.activationID
+      || entry.detail?.changeKind !== 'rebase'
+      || entry.detail?.lastRowID !== 'c0.project-summary') return false;
+    const firstHistory = Number(entry.detail?.firstRowID?.match(/history-request-(\d+)$/)?.[1] || 0);
+    const expectedSuffixRows = firstHistory > 0 ? (120 - firstHistory + 1) + 2 : 0;
+    return firstHistory > 0 && Number(entry.detail?.rowCount) === expectedSuffixRows;
+  });
   expect(currentTailCommit, JSON.stringify(restoreEvidence, null, 2)).toBeTruthy();
-  await expectAnchorRestored(page, anchor);
+  expect(restoreEvidence.sequence).toBe('SEQ 844');
+  await expectOwnerAnchorRestored(anchor);
 });
 
 test('F7 revoked active channel sends no freshness request and a later grant resumes exactly once', async ({ page, request }, testInfo) => {
