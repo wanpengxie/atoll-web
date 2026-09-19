@@ -414,6 +414,46 @@ deleted import, private production function, compatibility parser, or source
 edit. The targeted command is `npx vitest run
 tests/i-m-exact-path-contracts.test.jsx` → **8/8 GREEN**.
 
+## Round 13 exact-path recovery: message-list-lifecycle public-owner batch
+
+The global ledger still marks `fae8b70:tests/message-list-lifecycle.test.jsx`
+(64 declarations) as an absent target path. This round adds **16 independent
+public-owner tests** to the same exact-path bridge. Each row below names one
+static ledger case and one executable `it`; multi-invariant lifecycle cases are
+deliberately split where the current owner exposes separate state transitions.
+The tests use only the current Presentation,
+Reading-session, and navigation-coordinator APIs. They do not recreate the old
+list adapter, import a private helper, or claim UI-only status/DOM geometry that
+the current public owner does not expose.
+
+| static case | current public owner | executable contract |
+|---|---|---|
+| TC-0976 data-relative prepend origin | `createConversationPresentation` | `tests/i-m-exact-path-contracts.test.jsx:316-339` — one committed prepend decrements `firstItemIndex` once |
+| TC-0976 exact restore index | `resolveReadingBookmark` | `tests/i-m-exact-path-contracts.test.jsx:341-353` — exact target resolves at its data-relative row index |
+| TC-0980 stale activation restore | `observeReading` | `tests/i-m-exact-path-contracts.test.jsx:355-371` — stale activation is a no-op and keeps the bookmark |
+| TC-0981 provisional successor | `resolveReadingBookmark` | `tests/i-m-exact-path-contracts.test.jsx:373-383` — successor fallback cannot reuse a row-local offset |
+| TC-0981 exact materialization | `resolveReadingBookmark` | `tests/i-m-exact-path-contracts.test.jsx:385-393` — only the exact materialized identity reuses the offset |
+| TC-0996 tail no-op | `observeReading` | `tests/i-m-exact-path-contracts.test.jsx:395-407` — tail evidence without current newer input leaves following unchanged |
+| TC-0996 older takeover | `takeReadingControl` | `tests/i-m-exact-path-contracts.test.jsx:409-417` — older input advances the epoch and enters browsing |
+| TC-0997 selection autoscroll | `observeReading` | `tests/i-m-exact-path-contracts.test.jsx:419-432` — selection-at-tail does not grant following authority |
+| TC-0998 zero geometry | `requestLatest` + `observeReading` | `tests/i-m-exact-path-contracts.test.jsx:434-450` — layout evidence with zero geometry leaves explicit latest pending |
+| TC-0999 later height | `requestLatest` + `observeReading` | `tests/i-m-exact-path-contracts.test.jsx:452-467` — a later layout revision does not consume explicit latest |
+| TC-1002 exact consume | `consumeLatestIntent` | `tests/i-m-exact-path-contracts.test.jsx:469-483` — exact consumption clears once and rejects a second consume |
+| TC-1005 native takeover | `takeReadingControl` | `tests/i-m-exact-path-contracts.test.jsx:485-493` — native input clears the pending following intent |
+| TC-1009 real tail after latest | `requestLatest` + `consumeLatestIntent` | `tests/i-m-exact-path-contracts.test.jsx:495-508` — consumed latest leaves the session following |
+| TC-1017 target identity set | `bindLatestIntentTargets` | `tests/i-m-exact-path-contracts.test.jsx:510-519` — durable target identities are de-duplicated |
+| TC-1017 activation fence | `bindLatestIntentTargets` | `tests/i-m-exact-path-contracts.test.jsx:521-534` — stale activation cannot mutate bound targets |
+| TC-1026 scrollend settlement slice | `createReadingNavigationCoordinator` | `tests/i-m-exact-path-contracts.test.jsx:536-557` — one wheel transaction emits one public scrollend completion |
+
+The final row is explicitly an owner-level transaction slice of the old
+scroll/list coalescing case; it does not silently assert the deleted list
+adapter's DOM commit loop. UI-only restore status, physical runway geometry,
+and DOM-write counts remain outside this batch and remain ledger-visible for a
+future owner-specific test. The targeted command after this batch is `npx
+vitest run tests/i-m-exact-path-contracts.test.jsx` → **24/24 GREEN** (8 prior
+bridge cases + 16 new cases). These supplemental cases do not inflate the
+159-case baseline count.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -430,6 +470,9 @@ tests/i-m-exact-path-contracts.test.jsx` → **8/8 GREEN**.
   not revived. Any unrelated red successor (for example Replica root
   stability or projection-version efficiency tests) remains outside this I–M
   focused accounting and is not relabeled as green here.
+- Round 13 adds 16 independent exact-path public-owner cases from the absent
+  `message-list-lifecycle` path; the bridge command is 24/24 green and the
+  baseline count remains 159.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
