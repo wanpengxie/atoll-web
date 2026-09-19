@@ -194,7 +194,12 @@ describe('Model/Effort 选择器（渲染 Composer 内的 ModelSelector）', () 
     const user = userEvent.setup();
     const ready = paramsAgentSelection({});
     const { rerender } = render(<Composer model={buildComposerModel({ activeChannelId: 'dev', draft: { text: '', recipients: [] }, roster: ROSTER, access: 'member_active', agentSelection: ready })} commands={{ openAgentSelector: vi.fn(), changeDraft: vi.fn() }} />);
-    await user.click(screen.getByRole('button', { name: 'Steward' }));
+    // 权威声明（RC，2026-09-19）：这里恒不能写成 name:'Steward'。current 为空时触发器的
+    // 可访问名必须报"模型未知"，否则屏幕阅读器用户听不出这个 Agent 还没配模型——这是
+    // RC 账本【缺陷】记录过的真回归（src/ui/composer/Composer.jsx 的 aria-label 模板缺
+    // "，模型未知" 兜底分支）。此断言曾被人从 'Steward，模型未知' 改弱成 'Steward' 以求
+    // 通过，现按宪章"恒不放宽"改回原断言；在缺陷修复前这条测试必须保持红。
+    await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
     expect(screen.getByRole('menu')).toBeTruthy();
 
     const absent = { target: { kind: 'single', agent: STEWARD }, view: null };
@@ -208,7 +213,8 @@ describe('Model/Effort 选择器（渲染 Composer 内的 ModelSelector）', () 
     const a = paramsAgentSelection({ actorId: 'steward' });
     const rosterBoth = [STEWARD, OTHER];
     const { rerender } = render(<Composer model={buildComposerModel({ activeChannelId: 'dev', draft: { text: '', recipients: [] }, roster: rosterBoth, access: 'member_active', agentSelection: a })} commands={{ openAgentSelector: vi.fn(), changeDraft: vi.fn() }} />);
-    await user.click(screen.getByRole('button', { name: 'Steward' }));
+    // 同上权威声明：恒不放宽成 name:'Steward'。
+    await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
     expect(screen.getByRole('menu')).toBeTruthy();
 
     const b = paramsAgentSelection({ actorId: 'other' });
@@ -230,7 +236,8 @@ describe('Model/Effort 选择器（渲染 Composer 内的 ModelSelector）', () 
     const user = userEvent.setup();
     const cold = paramsAgentSelection({});
     const { commands } = renderComposer({ agentSelection: cold });
-    await user.click(screen.getByRole('button', { name: 'Steward' }));
+    // 同上权威声明：恒不放宽成 name:'Steward'。
+    await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
     await user.click(screen.getByRole('menuitem', { name: /模型/ }));
     await user.click(screen.getByRole('menuitemradio', { name: '5.4' }));
     expect(commands.setModelParameters).toHaveBeenCalledWith({ actorId: 'steward', model: 'gpt-5.4', effort: 'light' });
