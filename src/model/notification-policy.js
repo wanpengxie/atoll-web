@@ -41,7 +41,7 @@ function turnFor(state, requestID) {
 // install/update that row in Presentation, but they remain lifecycle facts;
 // only its terminal content is a new notification for an agent-owned task.
 export function notificationDisposition(channelState, envelope, selfId = '') {
-  if (envelope && !hasCanonicalBody(envelope)) return 'not_presented';
+  if (envelope && !hasCanonicalBody(envelope) && envelope.visibility !== 'system') return 'not_presented';
   const directTurn = envelope?.kind === KIND.response && envelope.parent_id
     ? turnFor(channelState, envelope.parent_id)
     : null;

@@ -507,6 +507,31 @@ compatibility promises:
 
 Targeted evidence: `npx vitest run src/ui/timeline/message-body-presentation.test.jsx -t 'protocol payloads|unknown payload|sensitive' tests/message-presentation.test.js` → **2 files, 3 passed, 6 skipped**; the current public-owner `tests/message-presentation.test.js` is **4/4 GREEN**. The full strict successor is **4/5** because its separate TC-1031 flat-payload compatibility assertion remains red by deliberate protocol-cutover decision; it is not a TC-1028/1029 failure and was not altered. No test was edited, skipped, or weakened.
 
+## Round 16 TC-1031 canonical-boundary contract
+
+The clarified user contract is that old flat business-payload rows may still
+arrive at the transport boundary, but they are not business messages:
+ingestion must not throw; no business timeline/narration row, notification,
+live-presentation arrival, or empty card may be created; and neither
+all-channel nor mine business projection may contain the row. Existing typed
+bodyless system narration remains metadata-only and is not a flat business
+message. This is an ignore-at-normalization contract, not permission to parse
+the old shape back into a message.
+
+| user invariant | unique public owner | strict evidence |
+|---|---|---|
+| Flat request/response/event rows remain transport-safe but do not become lifecycle, narration, or standalone entries. | `createChannelReplicaStore().commit` → Replica `rebuildState` canonical-body boundary | `src/model/channel-replica.js:347-353` keeps the raw row in public `state.rows` while skipping non-canonical envelopes before all business entry construction. Bodyless system narration remains the existing metadata exception. |
+| Flat rows do not produce all/mine timeline items or an empty Presentation card; a canonical event remains visible as the control. | `selectTimelineItems` → `createConversationPresentation().evaluate` | `tests/i-m-exact-path-contracts.test.jsx:930-982` — flat IDs are absent and only `canonical-event` has a Presentation row. |
+| Flat rows do not produce rail notifications or live Presentation arrival receipts. | `notificationDisposition` + Replica `arrivalReceipts.presentation()` | The same strict case asserts every flat disposition is `not_presented`, rail-notifiable is false, and the receipt contains only `canonical-event`; guards are `src/model/notification-policy.js:44` and `src/model/channel-replica.js:567-569`. |
+
+The focused command is `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t
+'TC-1031'` → **2/2 GREEN** (the prior canonical-wrapper case plus this strict
+flat-boundary case). The full exact bridge is now **45/45 GREEN**. The
+pre-existing successor test that expects a flat request to render old text is
+an obsolete compatibility oracle; it remains untouched and is not used to
+weaken this contract. No compatibility parser, second ledger, or private
+production map was introduced.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -530,8 +555,9 @@ Targeted evidence: `npx vitest run src/ui/timeline/message-body-presentation.tes
   absent `memory-window`, `management-actors`, `message-presentation`, and
   `model-selector` paths; the bridge command is 44/44 green and the baseline
   count remains 159. Round 15 revalidated TC-1028 and minimally repaired
-  TC-1029 in its existing owner; TC-1031 remains the separate flat-payload
-  cutover handoff.
+  TC-1029 in its existing owner. Round 16 adds the strict TC-1031
+  canonical-boundary contract; exact bridge is 45/45 and the stale
+  compatibility oracle remains deliberately unmodified.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

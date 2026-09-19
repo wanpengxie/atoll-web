@@ -40,6 +40,17 @@ function sanitizedCacheRow(row) {
   return { row: sanitized, changed };
 }
 
+function bodylessSystemNarration(envelope) {
+  const payload = envelope?.payload;
+  return envelope?.visibility === 'system'
+    && (payload == null
+      || (typeof payload === 'object' && !Array.isArray(payload) && Object.keys(payload).length === 0));
+}
+
+function hasProjectionBody(envelope) {
+  return hasCanonicalBody(envelope) || bodylessSystemNarration(envelope);
+}
+
 export function mergeReplicaCoverage(ranges = [], addition = null) {
   const ordered = [...ranges, ...(addition ? [addition] : [])]
     .map((range) => ({ lowSeq: numeric(range?.lowSeq), highSeq: numeric(range?.highSeq) }))
@@ -338,7 +349,7 @@ function rebuildState(state) {
     if (envelope.id) state._envelopesById.set(envelope.id, envelope);
     // Historical flat payloads remain durable transport rows, but never
     // become lifecycle, narration, or standalone business entries.
-    if (!hasCanonicalBody(envelope)) continue;
+    if (!hasProjectionBody(envelope)) continue;
     if (envelope.visibility === 'system') { state.narration.push({ seq, envelope }); continue; }
     if (envelope.kind === 'request' && envelope.id) {
       requests.set(envelope.id, envelope);
@@ -554,7 +565,7 @@ function livePresentationRowIDs(state, envelope, seq, entry) {
 }
 
 function recordLivePresentationArrival(state, envelope, seq) {
-  if (!state._livePresentationArrivalConsumerTokens.size || !hasCanonicalBody(envelope)) return;
+  if (!state._livePresentationArrivalConsumerTokens.size || !hasProjectionBody(envelope)) return;
   const rowIDs = livePresentationRowIDs(state, envelope, seq, rootTimelineEntry(state, envelope));
   if (!rowIDs.length) return;
   const event = Object.freeze({
