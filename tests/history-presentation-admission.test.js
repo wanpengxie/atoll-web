@@ -39,35 +39,34 @@ const viewportAuthority = (overrides = {}) => ({
   ...overrides,
 });
 
-// Model scenarios below describe committed UI renders. Production performs
-// the same publication from Timeline's layout effect; keeping it explicit in
-// this helper prevents render evaluation itself from acquiring authority.
-function createHistoryPresentationAdmission(options) {
-  const authority = createAdmissionAuthority(options);
-  return Object.freeze({
-    ...authority,
-    admit(channelID, items, admissionMeta) {
-      const candidate = authority.evaluate(channelID, items, admissionMeta);
-      authority.commitCandidate(channelID, candidate);
-      return candidate.items;
-    },
-  });
+// Drive the current owner contracts explicitly, as Timeline does in its
+// committed layout effect. These are not aliases for removed public methods.
+function commitAdmission(authority, channelID, items, admissionMeta) {
+  const candidate = authority.evaluate(channelID, items, admissionMeta);
+  expect(authority.commitCandidate(channelID, candidate)).toBe(true);
+  return candidate.items;
+}
+
+function commitPresentation(presentation, items, presentationMeta) {
+  const candidate = presentation.evaluate(items, presentationMeta);
+  expect(presentation.commitCandidate(candidate)).toBe(true);
+  return candidate.snapshot;
 }
 
 describe('history presentation admission', () => {
   it('keeps incremental prefixes out of the visible snapshot and publishes them once', () => {
     const changed = vi.fn();
-    const admission = createHistoryPresentationAdmission({ onChange: changed });
+    const admission = createAdmissionAuthority({ onChange: changed });
     admission.begin('channel', token());
 
     const first = [item('a', 10), item('b', 20), item('c', 30), item('tail', 40)];
-    expect(ids(admission.admit('channel', first, meta(12)))).toEqual(['b', 'c', 'tail']);
+    expect(ids(commitAdmission(admission, 'channel', first, meta(12)))).toEqual(['b', 'c', 'tail']);
     expect(admission.observe('channel', first, meta(12))).toMatchObject({
       stagedIDs: ['a'], completeUnits: 1, fulfilled: false,
     });
 
     const second = [item('x', 5), ...first];
-    expect(ids(admission.admit('channel', second, meta(13)))).toEqual(['b', 'c', 'tail']);
+    expect(ids(commitAdmission(admission, 'channel', second, meta(13)))).toEqual(['b', 'c', 'tail']);
     expect(admission.observe('channel', second, meta(13))).toMatchObject({
       stagedIDs: ['x', 'a'], completeUnits: 2, fulfilled: true,
     });
@@ -77,7 +76,7 @@ describe('history presentation admission', () => {
       stagedIDs: ['x', 'a'], candidateSourceRevision: 13,
       candidatePresentationRevision: 0,
     });
-    expect(ids(admission.admit('channel', second, meta(13)))).toEqual(['b', 'c', 'tail']);
+    expect(ids(commitAdmission(admission, 'channel', second, meta(13)))).toEqual(['b', 'c', 'tail']);
     expect(admission.prepareCommit('channel', {
       revision: 11, sourceRevision: 13,
       rows: [
@@ -86,39 +85,46 @@ describe('history presentation admission', () => {
         { id: 'tail', body: item('tail', 40) },
       ],
     })).toBe(true);
-    expect(ids(admission.admit('channel', second, meta(13)))).toEqual(['x', 'a', 'b', 'c', 'tail']);
-
-    const bound = admission.bindPresentation('channel', 12);
-    expect(bound.candidatePresentationRevision).toBe(12);
-    expect(admission.acknowledge('channel', bound.commitID)).toBe(true);
+    const release = admission.evaluate('channel', second, meta(13));
+    expect(ids(release.items)).toEqual(['x', 'a', 'b', 'c', 'tail']);
+    const validation = admission.validatePresentation('channel', release, {
+      revision: 12,
+      rows: ['x', 'a', 'b', 'c', 'tail'].map((id) => ({ id })),
+      changes: {
+        kind: 'prepend', inserted: ['x', 'a'], frontInsertedIDs: ['x', 'a'],
+        backInsertedIDs: [], updated: [], removed: [],
+      },
+    }, viewportAuthority());
+    expect(validation.accepted).toBe(true);
+    expect(admission.commitPresentationGrant('channel', validation.grant)).toBe(true);
     expect(admission.snapshot('channel').phase).toBe('idle');
     expect(changed).toHaveBeenCalledTimes(4);
   });
 
   it('withholds every candidate for an empty baseline until semantic demand is fulfilled', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     admission.begin('channel', token({ baselineIDs: [], demandUnits: 2 }));
 
     const first = [item('a', 10)];
-    expect(admission.admit('channel', first, meta(12))).toEqual([]);
+    expect(commitAdmission(admission, 'channel', first, meta(12))).toEqual([]);
     expect(admission.observe('channel', first, meta(12)).fulfilled).toBe(false);
 
     const second = [item('x', 5), item('a', 10)];
-    expect(admission.admit('channel', second, meta(13))).toEqual([]);
+    expect(commitAdmission(admission, 'channel', second, meta(13))).toEqual([]);
     expect(admission.observe('channel', second, meta(13))).toMatchObject({
       stagedIDs: ['x', 'a'], completeUnits: 2, fulfilled: true,
     });
 
     admission.settle('channel');
     admission.prepareCommit('channel', { revision: 1, sourceRevision: 13, rows: [] });
-    expect(ids(admission.admit('channel', second, meta(13)))).toEqual(['x', 'a']);
+    expect(ids(commitAdmission(admission, 'channel', second, meta(13)))).toEqual(['x', 'a']);
   });
 
   it('atomically acknowledges an exact first publish from an empty baseline', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     admission.begin('channel', token({ baselineIDs: [], demandUnits: 1 }));
     const first = [item('a', 10)];
-    admission.admit('channel', first, meta(12));
+    commitAdmission(admission, 'channel', first, meta(12));
     expect(admission.observe('channel', first, meta(12))).toMatchObject({
       stagedIDs: ['a'], fulfilled: true,
     });
@@ -142,14 +148,14 @@ describe('history presentation admission', () => {
   });
 
   it('rejects a polluted release atomically instead of binding an impossible revision', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const baseline = [item('b', 20), item('c', 30)];
     const withOlder = [item('a', 10), ...baseline];
     admission.begin('channel', token({ demandUnits: 1 }));
-    admission.admit('channel', baseline, meta(11));
+    commitAdmission(admission, 'channel', baseline, meta(11));
     admission.observe('channel', withOlder, meta(12));
     admission.settle('channel');
-    admission.admit('channel', withOlder, meta(12));
+    commitAdmission(admission, 'channel', withOlder, meta(12));
     expect(admission.prepareCommit('channel', {
       revision: 11, sourceRevision: 12,
       rows: baseline.map((body) => ({ id: body.envelope.id, body })),
@@ -172,14 +178,14 @@ describe('history presentation admission', () => {
   });
 
   it('lets no stale layout receipt complete or reject a renewed transaction', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const baseline = [item('b', 20), item('c', 30)];
     const withOlder = [item('a', 10), ...baseline];
     admission.begin('channel', token({ demandUnits: 1 }));
-    admission.admit('channel', baseline, meta(11));
+    commitAdmission(admission, 'channel', baseline, meta(11));
     admission.observe('channel', withOlder, meta(12));
     admission.settle('channel');
-    admission.admit('channel', withOlder, meta(12));
+    commitAdmission(admission, 'channel', withOlder, meta(12));
     admission.prepareCommit('channel', {
       revision: 11, sourceRevision: 12,
       rows: baseline.map((body) => ({ id: body.envelope.id, body })),
@@ -214,14 +220,14 @@ describe('history presentation admission', () => {
   });
 
   it('grants publication only to the exact committed Reading viewport owner', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const baseline = [item('b', 20)];
     const withOlder = [item('a', 10), ...baseline];
     admission.begin('channel', token({ baselineIDs: ['b'], demandUnits: 1 }));
-    admission.admit('channel', baseline, meta(11));
+    commitAdmission(admission, 'channel', baseline, meta(11));
     admission.observe('channel', withOlder, meta(12));
     admission.settle('channel');
-    admission.admit('channel', withOlder, meta(12));
+    commitAdmission(admission, 'channel', withOlder, meta(12));
     admission.prepareCommit('channel', {
       revision: 11, sourceRevision: 12,
       rows: [{ id: 'b', body: baseline[0] }],
@@ -246,12 +252,12 @@ describe('history presentation admission', () => {
   });
 
   it('keeps cancelled facts staged and lets the next same-view intent inherit them', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const firstToken = token({ demandUnits: 3 });
     admission.begin('channel', firstToken);
     admission.observe('channel', [item('a', 10), item('b', 20), item('c', 30)], meta(12));
     expect(admission.cancel('channel', firstToken.operationID)).toBe(true);
-    expect(ids(admission.admit(
+    expect(ids(commitAdmission(admission,
       'channel',
       [item('a', 10), item('b', 20), item('c', 30)],
       meta(12),
@@ -269,10 +275,10 @@ describe('history presentation admission', () => {
   });
 
   it('does not inherit held facts across a new reading activation in the same view', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const firstToken = token({ demandUnits: 3 });
     admission.begin('channel', firstToken);
-    admission.admit('channel', [item('b', 20), item('c', 30)], meta(11));
+    commitAdmission(admission, 'channel', [item('b', 20), item('c', 30)], meta(11));
     admission.observe('channel', [item('a', 10), item('b', 20), item('c', 30)], meta(12));
     expect(admission.cancel('channel', firstToken.operationID)).toBe(true);
 
@@ -292,27 +298,27 @@ describe('history presentation admission', () => {
 
   it('fails closed and rebases when the baseline stops being an ordered subsequence', () => {
     const changed = vi.fn();
-    const admission = createHistoryPresentationAdmission({ onChange: changed });
+    const admission = createAdmissionAuthority({ onChange: changed });
     admission.begin('channel', token());
     const candidate = [item('a', 10), item('c', 30), item('b', 20)];
     expect(admission.observe('channel', candidate, meta(12))).toMatchObject({ rebased: true });
     expect(admission.snapshot('channel').phase).toBe('pending');
-    expect(ids(admission.admit('channel', candidate, meta(12)))).toEqual([]);
+    expect(ids(commitAdmission(admission, 'channel', candidate, meta(12)))).toEqual([]);
     expect(admission.snapshot('channel').phase).toBe('holding');
   });
 
   it('does not release a committed prefix into a different view or epoch', () => {
     const changed = vi.fn();
-    const admission = createHistoryPresentationAdmission({ onChange: changed });
+    const admission = createAdmissionAuthority({ onChange: changed });
     admission.begin('channel', token({ demandUnits: 1 }));
     const candidate = [item('a', 10), item('b', 20), item('c', 30)];
     admission.observe('channel', candidate, meta(12));
     admission.settle('channel');
     const changesBeforeStaleRender = changed.mock.calls.length;
 
-    expect(ids(admission.admit('channel', candidate, {
+    expect(ids(admission.evaluate('channel', candidate, {
       viewID: 'channel:all', epoch: 'channel:8', sourceRevision: 13,
-    }))).toEqual(['a', 'b', 'c']);
+    }).items)).toEqual([]);
     expect(admission.snapshot('channel').phase).toBe('pending-baseline-commit');
     expect(changed).toHaveBeenCalledTimes(changesBeforeStaleRender);
     expect(admission.reconcileCurrent('channel', {
@@ -345,7 +351,7 @@ describe('history presentation admission', () => {
   });
 
   it('renews only the same operation for exact current older input', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const active = token({ demandUnits: 1 });
     admission.begin('channel', active);
     const renewed = admission.advanceInputEpoch('channel', {
@@ -366,7 +372,7 @@ describe('history presentation admission', () => {
       direction: 'older', inputEpoch: 6, currentInputEpoch: 7,
     })).toBeNull();
 
-    admission.admit('channel', [item('b', 20), item('c', 30)], meta(11));
+    commitAdmission(admission, 'channel', [item('b', 20), item('c', 30)], meta(11));
     admission.observe('channel', [item('a', 10), item('b', 20), item('c', 30)], meta(12));
     expect(admission.settle('channel').inputEpoch).toBe(5);
     expect(admission.advanceInputEpoch('channel', {
@@ -386,10 +392,10 @@ describe('history presentation admission', () => {
   });
 
   it('commits an existing-row revision before releasing an exact pure prepend', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const presentation = createConversationPresentation();
     const baseline = [item('b', 20), item('c', 30)];
-    const first = presentation.project(baseline, {
+    const first = commitPresentation(presentation, baseline, {
       nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: 11,
     });
     admission.begin('channel', token({ demandUnits: 1 }), baseline);
@@ -400,9 +406,9 @@ describe('history presentation admission', () => {
     expect(admission.observe('channel', candidate, meta(12)).fulfilled).toBe(true);
     admission.settle('channel');
 
-    const admittedBaseline = admission.admit('channel', candidate, meta(12));
+    const admittedBaseline = commitAdmission(admission, 'channel', candidate, meta(12));
     expect(ids(admittedBaseline)).toEqual(['b', 'c']);
-    const baselineUpdate = presentation.project(admittedBaseline, {
+    const baselineUpdate = commitPresentation(presentation, admittedBaseline, {
       nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: 12,
       sourceChanges: [{ revision: 12, id: 'b', kind: 'content' }],
     });
@@ -411,29 +417,32 @@ describe('history presentation admission', () => {
     const settledB = baselineUpdate.entities.get('b');
 
     expect(admission.prepareCommit('channel', baselineUpdate)).toBe(true);
-    const released = presentation.project(admission.admit('channel', candidate, meta(12)), {
+    const released = commitPresentation(
+      presentation,
+      commitAdmission(admission, 'channel', candidate, meta(12)), {
       nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: 12,
       sourceChanges: [{ revision: 12, id: 'b', kind: 'content' }],
-    });
+      },
+    );
     expect(released.changes).toMatchObject({ kind: 'prepend', inserted: ['a'], updated: [] });
     expect(released.entities.get('b')).toBe(settledB);
   });
 
   it('keeps live append and baseline revise after the exact prefix release commit', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const presentation = createConversationPresentation();
     const b = item('b', 20);
     const c = item('c', 30);
-    const initial = presentation.project([b, c], {
+    const initial = commitPresentation(presentation, [b, c], {
       nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: 11,
     });
     admission.begin('channel', token({ demandUnits: 1 }));
-    admission.admit('channel', [b, c], meta(11));
+    commitAdmission(admission, 'channel', [b, c], meta(11));
     admission.observe('channel', [item('a', 10), b, c], meta(12));
     const commit = admission.settle('channel');
 
-    const barrierItems = admission.admit('channel', [item('a', 10), b, c], meta(12));
-    const barrier = presentation.project(barrierItems, {
+    const barrierItems = commitAdmission(admission, 'channel', [item('a', 10), b, c], meta(12));
+    const barrier = commitPresentation(presentation, barrierItems, {
       nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: 12,
     });
     expect(admission.prepareCommit('channel', barrier)).toBe(true);
@@ -441,12 +450,12 @@ describe('history presentation admission', () => {
     const updatedB = item('b', 20);
     updatedB.envelope.payload.text = 'late baseline update';
     const current = [item('a', 10), updatedB, c, item('d', 40)];
-    const releaseItems = admission.admit('channel', current, meta(13));
+    const releaseItems = commitAdmission(admission, 'channel', current, meta(13));
     expect(ids(releaseItems)).toEqual(['a', 'b', 'c']);
     expect(releaseItems[1]).toBe(barrier.entities.get('b').body);
     expect(releaseItems[1].envelope.payload.text).toBe('b');
     const sourceFence = admission.sourceFence('channel');
-    const released = presentation.project(releaseItems, {
+    const released = commitPresentation(presentation, releaseItems, {
       nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: sourceFence,
       sourceChanges: [],
     });
@@ -455,7 +464,7 @@ describe('history presentation admission', () => {
     });
     expect(admission.acknowledge('channel', commit.commitID)).toBe(true);
 
-    const ordinary = presentation.project(current, {
+    const ordinary = commitPresentation(presentation, current, {
       nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: 13,
       sourceChanges: [{ revision: 13, id: 'b', kind: 'content' }],
     });
@@ -466,20 +475,20 @@ describe('history presentation admission', () => {
   });
 
   it('releases only the exact settled prefix and defers later older facts', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const active = token({ demandUnits: 1 });
     admission.begin('channel', active);
     const settledCandidate = [item('a', 10), item('b', 20), item('c', 30)];
     admission.observe('channel', settledCandidate, meta(12));
     const committed = admission.settle('channel');
-    expect(ids(admission.admit('channel', settledCandidate, meta(12)))).toEqual(['b', 'c']);
+    expect(ids(commitAdmission(admission, 'channel', settledCandidate, meta(12)))).toEqual(['b', 'c']);
     admission.prepareCommit('channel', {
       revision: 11, sourceRevision: 12,
       rows: [{ id: 'b', body: item('b', 20) }, { id: 'c', body: item('c', 30) }],
     });
 
     const racedCandidate = [item('x', 5), ...settledCandidate];
-    expect(ids(admission.admit('channel', racedCandidate, meta(13)))).toEqual(['a', 'b', 'c']);
+    expect(ids(commitAdmission(admission, 'channel', racedCandidate, meta(13)))).toEqual(['a', 'b', 'c']);
     expect(admission.snapshot('channel').committed.stagedIDs).toEqual(['a']);
     expect(admission.acknowledge('channel', committed.commitID)).toBe(true);
     expect(admission.snapshot('channel')).toMatchObject({
@@ -495,18 +504,18 @@ describe('history presentation admission', () => {
   });
 
   it('keeps deferred prefix held when newer input cancels an already published commit', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const active = token({ demandUnits: 1 });
     admission.begin('channel', active);
     const settledCandidate = [item('a', 10), item('b', 20), item('c', 30)];
     admission.observe('channel', settledCandidate, meta(12));
     admission.settle('channel');
-    expect(ids(admission.admit('channel', settledCandidate, meta(12)))).toEqual(['b', 'c']);
+    expect(ids(commitAdmission(admission, 'channel', settledCandidate, meta(12)))).toEqual(['b', 'c']);
     admission.prepareCommit('channel', {
       revision: 11, sourceRevision: 12,
       rows: [{ id: 'b', body: item('b', 20) }, { id: 'c', body: item('c', 30) }],
     });
-    expect(ids(admission.admit(
+    expect(ids(commitAdmission(admission,
       'channel', [item('x', 5), ...settledCandidate], meta(13),
     ))).toEqual(['a', 'b', 'c']);
 
@@ -514,7 +523,7 @@ describe('history presentation admission', () => {
     expect(admission.snapshot('channel')).toMatchObject({
       phase: 'holding', stagedIDs: ['x'], committed: null,
     });
-    expect(ids(admission.admit(
+    expect(ids(commitAdmission(admission,
       'channel', [item('x', 5), ...settledCandidate], meta(13),
     ))).toEqual(['a', 'b', 'c']);
     expect(admission.advanceInputEpoch('channel', {
@@ -524,7 +533,7 @@ describe('history presentation admission', () => {
   });
 
   it('ignores a late old-operation observation after a new-view token begins', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const oldToken = token();
     admission.begin('channel', oldToken);
     const newToken = token({
@@ -546,25 +555,25 @@ describe('history presentation admission', () => {
   });
 
   it('uses a durable feed baseline without hiding a UI-only local echo tail', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const echo = { id: 'local-echo', kind: 'turn', local: true };
     admission.begin('channel', token({
       uiBaselineIDs: ['b', 'local-echo'],
       durableBaselineIDs: ['b'],
       demandUnits: 1,
     }));
-    expect(ids(admission.admit('channel', [item('b', 20), echo], meta(11))))
+    expect(ids(commitAdmission(admission, 'channel', [item('b', 20), echo], meta(11))))
       .toEqual(['b', 'local-echo']);
     expect(admission.observe('channel', [item('a', 10), item('b', 20)], meta(12)))
       .toMatchObject({ stagedIDs: ['a'], completeUnits: 1, fulfilled: true, rebased: false });
-    expect(ids(admission.admit('channel', [item('a', 10), item('b', 20), echo], meta(12))))
+    expect(ids(commitAdmission(admission, 'channel', [item('a', 10), item('b', 20), echo], meta(12))))
       .toEqual(['b', 'local-echo']);
     admission.settle('channel');
     admission.prepareCommit('channel', {
       revision: 11, sourceRevision: 12,
       rows: [{ id: 'b', body: item('b', 20) }, { id: 'local-echo', body: echo }],
     });
-    expect(ids(admission.admit('channel', [item('a', 10), item('b', 20), echo], meta(12))))
+    expect(ids(commitAdmission(admission, 'channel', [item('a', 10), item('b', 20), echo], meta(12))))
       .toEqual(['a', 'b', 'local-echo']);
   });
 
@@ -583,12 +592,12 @@ describe('history presentation admission', () => {
     const withOlder = [item('a', 10), ...baseline];
     const baselineRows = [{ id: 'b', body: item('b', 20) }, { id: 'c', body: item('c', 30) }];
 
-    const renewing = createHistoryPresentationAdmission();
+    const renewing = createAdmissionAuthority();
     renewing.begin('channel', active);
-    renewing.admit('channel', baseline, meta(11));
+    commitAdmission(renewing, 'channel', baseline, meta(11));
     renewing.observe('channel', withOlder, meta(12));
     renewing.settle('channel');
-    renewing.admit('channel', withOlder, meta(12));
+    commitAdmission(renewing, 'channel', withOlder, meta(12));
     expect(renewing.prepareCommit('channel', {
       revision: 12, sourceRevision: 12, rows: baselineRows,
     })).toBe(true);
@@ -598,7 +607,7 @@ describe('history presentation admission', () => {
     const open = renewing.snapshot('channel');
     expect(open.phase).toBe('committed-awaiting-layout');
     expect(open.token.operationID).toBe(active.operationID);
-    expect(renewing.bindPresentation('channel', 12).inputEpoch).toBe(2);
+    expect(renewing.snapshot('channel').committed.inputEpoch).toBe(2);
 
     // Continued older input renewed through that handle keeps the bound token
     // level with the reading session, so exactOwner can still pass.
@@ -609,18 +618,18 @@ describe('history presentation admission', () => {
       inputEpoch: 3,
       currentInputEpoch: 3,
     })).toEqual(expect.objectContaining({ fromInputEpoch: 2, toInputEpoch: 3 }));
-    expect(renewing.bindPresentation('channel', 12).inputEpoch).toBe(3);
+    expect(renewing.snapshot('channel').committed.inputEpoch).toBe(3);
     expect(renewing.acknowledge('channel', renewing.snapshot('channel').committed.commitID)).toBe(true);
     expect(renewing.snapshot('channel').phase).toBe('idle');
 
     // Reverse input reaches the same operation through the same handle and
     // retires it, so a blocked demand is never left with no way out.
-    const cancelling = createHistoryPresentationAdmission();
+    const cancelling = createAdmissionAuthority();
     cancelling.begin('channel', active);
-    cancelling.admit('channel', baseline, meta(11));
+    commitAdmission(cancelling, 'channel', baseline, meta(11));
     cancelling.observe('channel', withOlder, meta(12));
     cancelling.settle('channel');
-    cancelling.admit('channel', withOlder, meta(12));
+    commitAdmission(cancelling, 'channel', withOlder, meta(12));
     cancelling.prepareCommit('channel', { revision: 12, sourceRevision: 12, rows: baselineRows });
     expect(cancelling.snapshot('channel').phase).toBe('committed-awaiting-layout');
     expect(cancelling.cancel('channel', cancelling.snapshot('channel').token.operationID)).toBe(true);
@@ -628,15 +637,15 @@ describe('history presentation admission', () => {
   });
 
   it('keeps a local-only UI baseline visible while durable history is staged', () => {
-    const admission = createHistoryPresentationAdmission();
+    const admission = createAdmissionAuthority();
     const echo = { id: 'local-echo', kind: 'turn', local: true };
     admission.begin('channel', token({
       uiBaselineIDs: ['local-echo'], durableBaselineIDs: [], demandUnits: 1,
     }));
-    expect(ids(admission.admit('channel', [echo], meta(11)))).toEqual(['local-echo']);
+    expect(ids(commitAdmission(admission, 'channel', [echo], meta(11)))).toEqual(['local-echo']);
     expect(admission.observe('channel', [item('a', 10)], meta(12)))
       .toMatchObject({ stagedIDs: ['a'], completeUnits: 1, fulfilled: true });
-    expect(ids(admission.admit('channel', [item('a', 10), echo], meta(12))))
+    expect(ids(commitAdmission(admission, 'channel', [item('a', 10), echo], meta(12))))
       .toEqual(['local-echo']);
   });
 });

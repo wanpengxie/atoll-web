@@ -1,89 +1,82 @@
 import { describe, expect, it } from 'vitest';
-import {
-  apply,
-  createChannelState,
-} from '../src/model/fold.js';
+import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import {
   acknowledgeLivePresentationArrivals,
-  livePresentationArrivals,
-  recordLivePresentationArrival,
-  registerLivePresentationArrivalConsumer,
+  LIVE_ARRIVAL_RECEIPT,
 } from '../src/model/live-arrivals.js';
 
 function request(id, sender = 'agent') {
   return {
-    id,
-    kind: 'request',
-    type: 'agent.ask',
-    sender: { id: sender },
-    audience: ['me'],
+    id, kind: 'request', type: 'agent.ask', sender: { id: sender }, audience: ['me'],
     payload: { body: { text: id } },
   };
 }
 
-describe('ephemeral live Presentation arrival provenance', () => {
-  it('records only while a visual consumer exists and drops the backlog on release', () => {
-    const state = createChannelState('c0');
-    const beforeMount = request('before-mount');
-    apply(state, { channel_id: 'c0', seq: 1, envelope: beforeMount }, 'me');
-    expect(recordLivePresentationArrival(state, beforeMount, 1)).toBeNull();
+function liveRow(seq, envelope) {
+  return { source: 'live', generation: 1, channel_id: 'c0', seq, envelope };
+}
 
-    const release = registerLivePresentationArrivalConsumer(state, Symbol('timeline'));
-    const live = request('live');
-    apply(state, { channel_id: 'c0', seq: 2, envelope: live }, 'me');
-    expect(recordLivePresentationArrival(state, live, 2)).toMatchObject({
+describe('live presentation arrival receipts', () => {
+  it('records only while a presentation consumer exists and drops the backlog on release', () => {
+    const replica = createChannelReplicaStore();
+    replica.commit(liveRow(1, request('before-mount')), 'me', (value) => value, { source: 'live' });
+    const state = replica.state('c0');
+    expect(state.arrivalReceipts.presentation().events).toEqual([]);
+
+    const release = state.arrivalReceipts.attachPresentationConsumer(Symbol('timeline'));
+    replica.commit(liveRow(2, request('live')), 'me', (value) => value, { source: 'live' });
+    expect(state.arrivalReceipts.presentation()).toMatchObject({
       revision: 1,
-      rowIDs: ['live'],
-      sourceRevision: state._timelineRevision,
+      headRevision: 1,
+      events: [{ revision: 1, rowIDs: ['live'], sourceRevision: 2 }],
     });
-    expect(livePresentationArrivals(state, state._timelineRevision).events).toHaveLength(1);
 
     release();
-    expect(livePresentationArrivals(state, state._timelineRevision).events).toHaveLength(0);
-    const afterRelease = request('after-release');
-    apply(state, { channel_id: 'c0', seq: 3, envelope: afterRelease }, 'me');
-    expect(recordLivePresentationArrival(state, afterRelease, 3)).toBeNull();
+    expect(state.arrivalReceipts.presentation().events).toEqual([]);
+    replica.commit(liveRow(3, request('after-release')), 'me', (value) => value, { source: 'live' });
+    expect(state.arrivalReceipts.presentation().events).toEqual([]);
   });
 
-  it('exposes and acknowledges only the prefix represented by a Presentation source revision', () => {
-    const state = createChannelState('c0');
-    registerLivePresentationArrivalConsumer(state, Symbol('timeline'));
+  it('exposes and acknowledges only the prefix represented by a source revision', () => {
+    const replica = createChannelReplicaStore();
+    const state = replica.ensure('c0').state;
+    state.arrivalReceipts.attachPresentationConsumer(Symbol('timeline'));
 
-    const first = request('first');
-    apply(state, { channel_id: 'c0', seq: 1, envelope: first }, 'me');
-    const firstEvent = recordLivePresentationArrival(state, first, 1);
-    const firstSourceRevision = firstEvent.sourceRevision;
+    replica.commit(liveRow(1, request('first')), 'me', (value) => value, { source: 'live' });
+    replica.commit(liveRow(2, request('second')), 'me', (value) => value, { source: 'live' });
 
-    const second = request('second');
-    apply(state, { channel_id: 'c0', seq: 2, envelope: second }, 'me');
-    const secondEvent = recordLivePresentationArrival(state, second, 2);
-    expect(secondEvent.sourceRevision).toBeGreaterThan(firstSourceRevision);
-
-    const firstCommit = livePresentationArrivals(state, firstSourceRevision);
+    const firstCommit = state.arrivalReceipts.presentation(1);
     expect(firstCommit).toMatchObject({ revision: 1, headRevision: 2 });
     expect(firstCommit.events.map((event) => event.rowIDs[0])).toEqual(['first']);
-    acknowledgeLivePresentationArrivals(state, firstCommit.revision);
+    const command = acknowledgeLivePresentationArrivals(firstCommit.revision);
+    expect(command).toEqual({
+      type: LIVE_ARRIVAL_RECEIPT.acknowledgePresentation,
+      throughRevision: 1,
+    });
+    expect(state.arrivalReceipts.dispatch(command)).toBe(1);
 
-    const secondCommit = livePresentationArrivals(state, secondEvent.sourceRevision);
+    const secondCommit = state.arrivalReceipts.presentation(2);
     expect(secondCommit.events.map((event) => event.rowIDs[0])).toEqual(['second']);
-    acknowledgeLivePresentationArrivals(state, secondCommit.revision);
-    expect(livePresentationArrivals(state, secondEvent.sourceRevision).events).toEqual([]);
+    expect(state.arrivalReceipts.dispatch(
+      acknowledgeLivePresentationArrivals(secondCommit.revision),
+    )).toBe(2);
+    expect(state.arrivalReceipts.presentation(2).events).toEqual([]);
   });
 
-  it('maps response candidates to both their stable root and exact envelope identity', () => {
-    const state = createChannelState('c0');
-    registerLivePresentationArrivalConsumer(state, Symbol('timeline'));
-    const root = request('root', 'me');
-    apply(state, { channel_id: 'c0', seq: 1, envelope: root }, 'me');
+  it('maps responses to both their stable root and exact envelope identity', () => {
+    const replica = createChannelReplicaStore();
+    const state = replica.ensure('c0').state;
+    state.arrivalReceipts.attachPresentationConsumer(Symbol('timeline'));
+    replica.commit(liveRow(1, request('root', 'me')), 'me', (value) => value, { source: 'live' });
+    state.arrivalReceipts.dispatch(acknowledgeLivePresentationArrivals(1));
+
     const progress = {
       id: 'progress', kind: 'response', parent_id: 'root', sender: { id: 'agent' },
       payload: { body: { status: 'processing', text: 'still the same row' } },
     };
-    apply(state, { channel_id: 'c0', seq: 2, envelope: progress }, 'me');
-    expect(recordLivePresentationArrival(state, progress, 2)).toMatchObject({
-      rowIDs: ['root', 'progress'],
-    });
-    // The journal is provenance only. Timeline's exact backInsertedIDs
-    // intersection is what rejects this ordinary content update.
+    replica.commit(liveRow(2, progress), 'me', (value) => value, { source: 'live' });
+    expect(state.arrivalReceipts.presentation(2).events).toEqual([
+      expect.objectContaining({ rowIDs: ['root', 'progress'], sourceRevision: 2 }),
+    ]);
   });
 });

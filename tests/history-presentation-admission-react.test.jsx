@@ -28,6 +28,12 @@ const meta = (sourceRevision) => ({
   sourceRevision,
 });
 
+function commitAdmission(authority, items, admissionMeta) {
+  const candidate = authority.evaluate('channel', items, admissionMeta);
+  expect(authority.commitCandidate('channel', candidate)).toBe(true);
+  return candidate.items;
+}
+
 describe('history presentation admission React ownership', () => {
   it('does not move a pending owner to holding from a suspended render', () => {
     const admission = createHistoryPresentationAdmission();
@@ -35,7 +41,7 @@ describe('history presentation admission React ownership', () => {
     const never = new Promise(() => {});
 
     function DiscardedCandidate() {
-      admission.admit('channel', [item('c', 30)], meta(12));
+      admission.evaluate('channel', [item('c', 30)], meta(12));
       throw never;
     }
 
@@ -54,10 +60,10 @@ describe('history presentation admission React ownership', () => {
     const candidate = [item('a', 10), ...baseline];
 
     admission.begin('channel', token, baseline);
-    admission.admit('channel', baseline, meta(11));
+    commitAdmission(admission, baseline, meta(11));
     admission.observe('channel', candidate, meta(12));
     admission.settle('channel');
-    admission.admit('channel', candidate, meta(12));
+    commitAdmission(admission, candidate, meta(12));
     admission.prepareCommit('channel', {
       revision: 11,
       sourceRevision: 12,
@@ -67,7 +73,7 @@ describe('history presentation admission React ownership', () => {
 
     const never = new Promise(() => {});
     function DiscardedCandidate() {
-      admission.admit('channel', [item('x', 5), ...candidate], meta(13));
+      admission.evaluate('channel', [item('x', 5), ...candidate], meta(13));
       throw never;
     }
 
