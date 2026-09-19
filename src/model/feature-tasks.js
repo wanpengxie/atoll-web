@@ -1,7 +1,8 @@
 import { argsOf } from '../protocol/envelope.js';
-import { TYPES } from '../protocol/vocab.js';
+import { TYPES, isSystemWord } from '../protocol/vocab.js';
+import { terminalResultPayload, terminalResultState } from './terminal-result.js';
 
-const ACTIVE_STATES = new Set(['active', 'waiting', 'blocked', 'uncertain', 'queued', 'running']);
+const ACTIVE_STATES = new Set(['active', 'waiting', 'blocked', 'uncertain', 'queued', 'running', 'held']);
 const FINISHED_STATES = new Set(['completed', 'failed', 'cancelled', 'expired']);
 const RECOVERY_STATES = new Set(['uncertain', 'rejected']);
 const LOCAL_WAITING_STATES = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain']);
@@ -12,7 +13,10 @@ export const FEATURE_TASK_ACTION = Object.freeze({
   reject: 'approval.reject',
   retry: 'recovery.retry',
   cancel: 'request.cancel',
+  cancelAutomation: 'automation.cancel',
 });
+
+export const FEATURE_TASK_PAGE_SIZE = 120;
 
 export const FEATURE_COMMAND_STATE = Object.freeze({
   ready: 'ready',
@@ -97,10 +101,32 @@ function timelineTurns(timeline = []) {
 
 function terminalState(turn) {
   if (!turn?.terminal) return 'active';
+  if (turn.terminalClosureOnly === true) return 'uncertain';
   const terminal = argsOf(turn.terminal);
   if (terminal.status === 'completed') return 'completed';
   const reason = String(terminal.reason || terminal.error_code || '');
   return ['cancelled', 'interrupted'].includes(reason) ? 'cancelled' : 'failed';
+}
+
+function isControlRequest(type = '') {
+  return type === TYPES.describe
+    || isSystemWord(type)
+    || [
+      TYPES.agentSteer,
+      TYPES.agentQueue,
+      TYPES.agentInterrupt,
+      TYPES.agentDismiss,
+      TYPES.agentHold,
+      TYPES.agentUnhold,
+      TYPES.agentReplace,
+      TYPES.agentHoldExpired,
+      TYPES.agentFork,
+      TYPES.agentCompact,
+      TYPES.agentNew,
+      TYPES.agentSelect,
+      TYPES.agentOptions,
+      TYPES.agentContext,
+    ].includes(type);
 }
 
 function explicitActions(actionFacts, keys, source, context) {
@@ -137,10 +163,10 @@ function titleOf(request, fallback) {
 function taskFact(turn, channelId, actionFacts) {
   const request = turn.request;
   const body = argsOf(request);
-  const terminal = argsOf(turn.terminal);
+  const terminal = terminalResultPayload(turn) || {};
   const value = terminal.value && typeof terminal.value === 'object' && !Array.isArray(terminal.value)
     ? terminal.value
-    : {};
+    : terminal;
   const id = String(value.task_id || value.id || turn.requestId);
   const key = `task:${channelId}:${id}`;
   return Object.freeze({
@@ -150,13 +176,62 @@ function taskFact(turn, channelId, actionFacts) {
     kind: 'task',
     title: String(value.title || body.title || body.description || '未命名任务'),
     description: String(body.description || ''),
-    state: String(value.state || value.status || terminalState(turn)),
+    state: normalizeTaskState(value.state || value.status || terminalState(turn)),
     assigneeActorIds: Object.freeze([value.assignee || request.audience?.[0]].filter(Boolean)),
     ownerId: String(request.sender?.id || ''),
+    requesterActorId: String(request.sender?.id || ''),
+    nativeId: id,
+    dueAt: value.due_at || body.due_at || '',
+    priority: value.priority || body.priority || 'normal',
+    relatedArtifacts: Object.freeze([...(value.related_artifacts || [])]),
     createdAt: request.ts,
     updatedAt: turn.terminal?.ts || request.ts,
     actions: explicitActions(actionFacts, [key, id, turn.requestId], null, { kind: 'task', key, id, turn }),
-    source: Object.freeze({ kind: 'canonical', requestId: turn.requestId, seq: turn.requestSeq }),
+    actionableBySelf: false,
+    provenance: 'ledger',
+    diagnostic: Object.freeze({ providerActorId: request.audience?.[0] || '', rawStatus: value.status || value.state || '' }),
+    source: Object.freeze(body.source?.channelId === channelId && body.source?.objectId
+      ? { ...body.source, channelId }
+      : { channelId, view: 'dynamic', objectType: 'turn', objectId: turn.requestId, requestId: turn.requestId, seq: turn.requestSeq }),
+  });
+}
+
+function normalizeTaskState(value) {
+  const state = String(value || 'active');
+  if (['active', 'waiting', 'blocked', 'uncertain', 'completed', 'failed', 'cancelled', 'expired'].includes(state)) return state;
+  if (['queued', 'processing', 'received', 'open', 'todo', 'in_progress'].includes(state)) return 'active';
+  if (['done', 'closed', 'resolved'].includes(state)) return 'completed';
+  return 'active';
+}
+
+function agentRunFact(turn, channelId, selfId, actionFacts) {
+  const request = turn.request;
+  const resultState = terminalResultState(turn);
+  const resultUnavailable = turn.terminalClosureOnly === true
+    && (request.type === 'task.create' || argsOf(turn.terminal)?.status === 'failed');
+  const id = String(turn.requestId);
+  const key = `agent_run:${channelId}:${id}`;
+  const state = resultUnavailable ? 'uncertain' : terminalState(turn);
+  return Object.freeze({
+    key,
+    id,
+    nativeId: id,
+    requestId: id,
+    channelId,
+    kind: 'agent_run',
+    title: titleOf(request, request.type || '未命名工作'),
+    state,
+    assigneeActorIds: Object.freeze([...(request.audience || [])]),
+    ownerId: String(request.sender?.id || ''),
+    requesterActorId: String(request.sender?.id || ''),
+    waitingFor: resultUnavailable ? resultState.error : String(turn.latestStatus || ''),
+    createdAt: request.ts,
+    updatedAt: turn.terminal?.ts || turn.provisional?.at(-1)?.envelope?.ts || request.ts,
+    actions: explicitActions(actionFacts, [key, id], null, { kind: 'agent_run', key, id, turn, state }),
+    actionableBySelf: !turn.terminal && request.sender?.id === selfId,
+    provenance: 'ledger',
+    diagnostic: Object.freeze({ requestType: request.type, requestId: id, resultUnavailable, resultPhase: resultState.phase }),
+    source: Object.freeze({ channelId, view: 'dynamic', objectType: 'turn', objectId: id, requestId: id, seq: turn.requestSeq }),
   });
 }
 
@@ -178,12 +253,19 @@ function approvalFact(turn, channelId, selfId, now, actionFacts) {
     state,
     assigneeActorIds: assignees,
     ownerId: String(request.sender?.id || ''),
+    requesterActorId: String(request.sender?.id || ''),
+    nativeId: id,
     needsYou: state === 'waiting' && assignees.includes(selfId),
+    actionableBySelf: state === 'waiting' && assignees.includes(selfId),
     waitingFor: state === 'waiting' ? '等待决定' : '',
+    dueAt: request.expires_at || '',
+    priority: argsOf(request).priority || 'high',
     createdAt: request.ts,
     updatedAt: turn.terminal?.ts || request.ts,
     actions: explicitActions(actionFacts, [key, id], null, { kind: 'approval', key, id, turn, state }),
-    source: Object.freeze({ kind: 'canonical', requestId: id, seq: turn.requestSeq }),
+    provenance: 'ledger',
+    diagnostic: Object.freeze({ requestType: request.type, impact: argsOf(request).impact || '' }),
+    source: Object.freeze({ channelId, view: 'dynamic', objectType: 'turn', objectId: id, requestId: id, seq: turn.requestSeq }),
   });
 }
 
@@ -199,13 +281,54 @@ function recoveryFact(row, channelId, selfId, actionFacts) {
     state: row.state === 'uncertain' ? 'uncertain' : 'failed',
     assigneeActorIds: Object.freeze([selfId].filter(Boolean)),
     ownerId: selfId,
+    requesterActorId: selfId,
+    nativeId: id,
     needsYou: Boolean(selfId),
+    actionableBySelf: Boolean(selfId),
     waitingFor: String(row.error?.detail || (row.state === 'uncertain' ? '等待频道账本确认' : '等待安全重试')),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     actions: explicitActions(actionFacts, [key, id], row, { kind: 'recovery', key, id, row }),
     submission: row,
-    source: Object.freeze({ kind: 'submission', messageId: id }),
+    provenance: 'local_durable',
+    localScope: 'this_device',
+    diagnostic: Object.freeze({ submissionKey: row.key, error: row.error }),
+    source: Object.freeze({ channelId, view: 'dynamic', objectType: 'message', objectId: id, messageId: id }),
+  });
+}
+
+function automationFact(row, channelId, selfId, actionFacts) {
+  const id = String(row?.timerId || row?.timer_id || row?.id || '');
+  if (!id) return null;
+  const key = `automation:${channelId}:${id}`;
+  const rawState = String(row.state || 'scheduled');
+  const state = rawState === 'scheduled' ? 'waiting' : rawState === 'fired' ? 'completed' : 'cancelled';
+  const actions = explicitActions(actionFacts, [key, id], row, { kind: 'automation', key, id, row, state });
+  const declaredActions = actions.length || state !== 'waiting'
+    ? actions
+    : Object.freeze([FEATURE_TASK_ACTION.cancelAutomation]);
+  const payload = row.payload && typeof row.payload === 'object' ? row.payload : {};
+  return Object.freeze({
+    key,
+    id,
+    nativeId: id,
+    channelId,
+    kind: 'automation',
+    title: String(payload.text || row.msgType || row.msg_type || '自动动作'),
+    state,
+    assigneeActorIds: Object.freeze([]),
+    ownerId: selfId,
+    requesterActorId: selfId,
+    dueAt: row.dueAt || row.due_at || '',
+    waitingFor: state === 'waiting' ? '等待本设备定时触发' : '',
+    createdAt: row.createdAt || row.created_at || row.dueAt || row.due_at,
+    updatedAt: row.firedAt || row.fired_at || row.cancelledAt || row.cancelled_at || row.createdAt || row.created_at,
+    actions: declaredActions,
+    actionableBySelf: state === 'waiting',
+    provenance: 'local_durable',
+    localScope: 'this_device',
+    diagnostic: Object.freeze({ msgType: row.msgType || row.msg_type || '', payload, durationMs: row.durationMs || row.duration_ms || 0 }),
+    source: Object.freeze({ channelId, view: 'tasks', objectType: 'automation', objectId: id }),
   });
 }
 
@@ -219,6 +342,7 @@ export function selectFeatureTaskFacts({
   selfId = '',
   now = 0,
   actionFacts = new Map(),
+  automationRecords = [],
 } = {}) {
   if (!channelId) return Object.freeze([]);
   const facts = [];
@@ -226,10 +350,14 @@ export function selectFeatureTaskFacts({
   for (const turn of timelineTurns(state?.timeline || [])) {
     const request = turn.request;
     canonicalRequestIds.add(String(turn.requestId || request.id));
-    if (request.type === 'task.create') facts.push(taskFact(turn, channelId, actionFacts));
+    const taskPayload = request.type === 'task.create' ? terminalResultPayload(turn) : null;
+    const taskValue = taskPayload?.value && typeof taskPayload.value === 'object' && !Array.isArray(taskPayload.value)
+      ? taskPayload.value
+      : taskPayload;
+    if (request.type === 'task.create' && (taskValue?.task_id || taskValue?.id)) facts.push(taskFact(turn, channelId, actionFacts));
     else if (request.type === TYPES.humanApprove || request.type === TYPES.humanAsk) {
       facts.push(approvalFact(turn, channelId, selfId, now, actionFacts));
-    }
+    } else if (!isControlRequest(request.type)) facts.push(agentRunFact(turn, channelId, selfId, actionFacts));
   }
   for (const row of pending) {
     if ((!row?.channelId && !row?.frame?.channel_id)
@@ -238,6 +366,12 @@ export function selectFeatureTaskFacts({
       || !row.messageId
       || canonicalRequestIds.has(String(row.messageId))) continue;
     facts.push(recoveryFact(row, channelId, selfId, actionFacts));
+  }
+  for (const row of automationRecords) {
+    const rowChannelId = String(row?.channelId || row?.channel_id || channelId);
+    if (rowChannelId !== channelId) continue;
+    const fact = automationFact(row, channelId, selfId, actionFacts);
+    if (fact) facts.push(fact);
   }
   facts.sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0)
     || left.key.localeCompare(right.key));
@@ -320,15 +454,44 @@ export function selectFeatureWaitingFacts({
 }
 
 export function filterFeatureTasks(items = [], { scope = 'me', status = 'active', kind = 'all', selfId = '' } = {}) {
-  return items.filter((item) => {
+  return [...items].filter((item) => {
     if (kind !== 'all' && item?.kind !== kind) return false;
     const state = String(item?.state || 'active');
     if (status === 'active' && !ACTIVE_STATES.has(state)) return false;
-    if (status === 'completed' && state !== 'completed') return false;
-    if (status === 'failed' && !FINISHED_STATES.has(state)) return false;
+    if (status === 'completed' && !['completed', 'cancelled', 'expired'].includes(state)) return false;
+    if (status === 'failed' && state !== 'failed') return false;
     if (scope !== 'me') return true;
     const assignees = item?.assigneeActorIds || item?.assignees || [];
-    return item?.needsYou === true || item?.ownerId === selfId || assignees.includes(selfId);
+    return item?.needsYou === true
+      || item?.actionableBySelf === true
+      || item?.ownerId === selfId
+      || assignees.includes(selfId)
+      || ['automation', 'recovery'].includes(item?.kind);
+  }).sort((left, right) => {
+    const priority = { urgent: 0, high: 1, normal: 2 };
+    return (priority[left?.priority] ?? 2) - (priority[right?.priority] ?? 2)
+      || Number(Boolean(right?.actionableBySelf || right?.needsYou)) - Number(Boolean(left?.actionableBySelf || left?.needsYou))
+      || Number(right?.updatedAt || 0) - Number(left?.updatedAt || 0)
+      || String(left?.key || '').localeCompare(String(right?.key || ''));
+  });
+}
+
+export function boundedFeatureTaskPage(items = [], page = 0, size = FEATURE_TASK_PAGE_SIZE) {
+  const values = Array.isArray(items) ? items : [];
+  const windowSize = Math.max(1, Math.floor(Number(size) || FEATURE_TASK_PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(values.length / windowSize));
+  const safePage = Math.min(Math.max(0, Math.floor(Number(page) || 0)), pageCount - 1);
+  const end = Math.max(0, values.length - safePage * windowSize);
+  const start = Math.max(0, end - windowSize);
+  return Object.freeze({
+    items: Object.freeze(values.slice(start, end)),
+    page: safePage,
+    pageCount,
+    start,
+    end,
+    total: values.length,
+    hasOlder: start > 0,
+    hasNewer: end < values.length,
   });
 }
 
