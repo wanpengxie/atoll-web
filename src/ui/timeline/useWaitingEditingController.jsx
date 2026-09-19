@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
-import { argsOf } from '../../protocol/envelope.js';
+import { argsOf, PROVISIONAL } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';
 import { newId } from '../../util/id.js';
 
@@ -134,7 +134,11 @@ function allTimelineTurns(state) {
 }
 
 function terminalCompleted(turn) {
-  return argsOf(turn?.terminal)?.status === 'completed';
+  // A compact terminal closure retains status/identity only.  Its business
+  // result is intentionally unavailable, so it cannot authoritatively prove
+  // that a control operation completed (notably unhold released=true).
+  return turn?.terminalClosureOnly !== true
+    && argsOf(turn?.terminal)?.status === 'completed';
 }
 
 function requestTimestamp(request) {
@@ -197,12 +201,25 @@ function heldActors(state, now = Date.now()) {
     if (type !== TYPES.agentReplace && (enteredBuffer || capacityFailure)) {
       operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'new-content' });
     }
-    for (const item of turn.provisional || []) {
+    // A processing progress row is not automatically queue advancement.  A
+    // normalized row may carry the explicit `core` marker, while public
+    // timeline rows often expose only the status body, so infer core only when
+    // that marker is absent.  This preserves a core status transition
+    // (queued -> processing) while ignoring business progress such as
+    // tool.started between two processing rows.
+    let coreStatus = '';
+    const provisional = [...(turn.provisional || [])]
+      .sort((left, right) => Number(left.seq || 0) - Number(right.seq || 0));
+    for (const item of provisional) {
       const body = argsOf(item.envelope);
-      if (body?.status === 'processing') {
+      const status = item.status || body?.status;
+      const isCore = item.core === true
+        || (item.core == null && PROVISIONAL.has(status));
+      if (!isCore) continue;
+      if (status === 'processing' && coreStatus !== 'processing') {
         operations.push({ actorId: id, seq: Number(item.seq || 0), kind: 'advanced' });
-        break;
       }
+      coreStatus = status;
     }
     if (argsOf(turn.terminal)?.merged_into) {
       operations.push({ actorId: id, seq: Number(turn.terminalSeq || 0), kind: 'advanced' });

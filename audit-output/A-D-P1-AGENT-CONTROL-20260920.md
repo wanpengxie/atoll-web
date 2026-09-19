@@ -1,11 +1,11 @@
-# A–D P1 composed interaction fixture batch: AD-014 / AD-017 (2026-09-20)
+# A–D P1 composed interaction fixture batch: AD-014 / AD-017 / AD-018 / AD-021 (2026-09-20)
 
-This batch recovers the first two P1 `agent-control` cases through the current
-public Waiting composition. The fixtures retain the baseline user capability,
-causal state transition, and observable result. They do not import private
-helpers, change Feed/runtime product code, delete declarations, or add skips.
-The two lifecycle gaps are now fixed in the existing Waiting/edit owner and
-both cases are green `PASS` entries in the A–D ledger.
+This batch recovers four P1 `agent-control` cases through the current public
+Waiting composition. The fixtures retain the baseline user capability, causal
+state transition, and observable result. They do not import private helpers,
+change Feed/runtime product code, delete declarations, or add skips. The four
+Waiting lifecycle gaps are fixed in the existing Waiting/edit owner and are
+green `PASS` entries in the A–D ledger.
 
 ## Case matrix
 
@@ -13,6 +13,8 @@ both cases are green `PASS` entries in the A–D ledger.
 |---|---|---|---|---|
 | AD-014 | Edit a waiting request only after its own processing target has been admitted back to the queue as `queued + resumed`. | A processing fact must not expose an edit affordance before the target's causal queued-resumed fact; once that fact is committed, the edit action is handed to the current owner. | Exported `TimelineRowRenderer` + `useWaitingEditingController` + `WaitingLayer` composition; click the public timeline `编辑` button, then rerender the public queued-resumed state and inspect the Composer edit port. | **PASS:** the owner keeps Composer closed while processing, rejects a mismatched `held_by`, and hands off only after matching queued+resumed evidence. |
 | AD-017 | Temporarily edit/hold work that is already paused by an interrupt, then retain the original pause after release or expiry. | A newer temporary edit hold must not erase the earlier interrupt authority; releasing or expiring the overlay must restore the interrupt pause. | Exported `WaitingLayer`; render public interrupt/hold/unhold turn facts and a wall-clock-expired hold, then inspect the visible `.agent-wait-paused` result. | **PASS:** the owner restores the interrupt pause on both release and expiry, while a hold with no interrupt restore point returns to no pause. |
+| AD-018 | Keep an edit hold when its unhold terminal is only a compact closure. | A compact terminal retains lifecycle identity/status but not authoritative business result fields; missing release proof cannot clear a visible hold. | Exported `WaitingLayer`; render a completed hold, a `terminalClosureOnly` unhold carrying `released:true`, and a queued target; inspect `.agent-wait-paused`. | **PASS:** the compact closure is ignored as an authoritative unhold, so the hold remains visible. |
+| AD-021 | Clear an edit hold when its held target truly resumes after a paused stretch. | Only a core status transition to processing advances the target; repeated processing business progress from another already-running turn must not release the hold. | Exported `WaitingLayer`; render first processing → matching `queued+resumed(held_by)` → second processing and inspect `.agent-wait-paused`, with AD-020 as the unrelated-progress control. | **PASS:** the resumed target clears the hold; `tool.started` plus repeated processing leaves an unrelated hold intact. |
 
 ## Public-composition audit
 
@@ -24,10 +26,11 @@ the production composition supplies: `useWaitingEditingController` filters
 `TimelineRowRenderer` → `useWaitingEditingController` → `WaitingLayer`, using
 the exported Composer edit callback port and no mocked private helper.
 
-AD-017's direct `WaitingLayer` fixture remains valid: production supplies the
+AD-017 and AD-018/021 direct `WaitingLayer` fixtures remain valid: production supplies the
 queued target plus the complete public channel state, and the assertion observes
-only the rendered pause affordance. The private `heldActors` reducer is not
-imported or mocked.
+only the rendered pause affordance. AD-021 uses the public `queued+resumed` handoff
+fact from the baseline, while the owner derives core-vs-business status without
+exporting its reducer. The private `heldActors` reducer is not imported or mocked.
 
 ## Focused verification
 
@@ -46,6 +49,22 @@ Tests       2 passed | 6 skipped
   a stale `held_by` is also rejected.
 - AD-017 now proves `{ pauseAfterRelease: true, pauseAfterExpiry: true }` with
   an interrupt restore point and `pauseWithoutInterrupt: false` without one.
+
+```text
+npx vitest run tests/agent-control.test.jsx tests/task-controls-restore.test.jsx --reporter=dot
+```
+
+Observed on 2026-09-20:
+
+```text
+Test Files  2 passed
+Tests       21 passed
+```
+
+- AD-018 rejects a `terminalClosureOnly` unhold as an authoritative release.
+- AD-021 recognizes the second core `processing` transition after matching
+  `queued+resumed`, while AD-020 keeps non-core `tool.started` progress from
+  releasing another turn's hold.
 
 The earlier red results were direct public-owner evidence. The product fix is
 limited to the existing Waiting/edit owner; no Workspace, Reading, Outbox, or

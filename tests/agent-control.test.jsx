@@ -326,12 +326,11 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
     expect(pausedFor('agent')).toBeNull();
   });
 
-  it('【缺陷】37 clears the lease when the held target resumes processing after a paused stretch——只认第一条 processing 帧，之后再恢复运行认不出来', () => {
+  it('[AD-021] clears the lease when the held target resumes processing after a paused stretch', () => {
     // target 在 hold 之前已经跑过一次（target-p），随后被 hold 成 queued+resumed，
     // 之后又真的恢复处理（target-p2）——这第二次 processing 才是"队列真的前进"，
-    // hold 应该失效。旧 agentFrozenState 逐帧扫描能看到这第二次；新 heldActors 对每个
-    // turn 只取 provisional 里"第一条" status==='processing' 帧（找到就 break），
-    // 第二次恢复处理的证据被永久丢弃。
+    // hold 应该失效。queued+resumed 是公开的权威交接事实；单独重复的 processing
+    // 业务进度不能释放别的 turn 的 hold（由 36 覆盖）。
     const targetFirstProcessing = { seq: 2, envelope: { kind: 'response', type: 'agent.ask', parent_id: 'target', payload: { body: { status: 'processing' } } } };
     const targetTurn = turn({ requestId: 'target', actorId: 'agent', type: 'agent.ask', requestSeq: 1, provisional: [targetFirstProcessing] });
     const holdOp = turn({ requestId: 'h2', actorId: 'agent', type: 'agent.hold', requestSeq: 3, terminal: completedTerminal({ requestId: 'h2', type: 'agent.hold' }) });
@@ -339,17 +338,17 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
     render(<WaitingLayer {...baseProps({ turns: [targetTurn], state })} />);
     expect(pausedFor('agent')).toBeTruthy();
     cleanup();
-    targetTurn.provisional = [targetFirstProcessing, { seq: 6, envelope: { kind: 'response', type: 'agent.ask', parent_id: 'target', payload: { body: { status: 'processing' } } } }];
+    const targetResumedQueued = { seq: 5, envelope: { kind: 'response', type: 'agent.ask', parent_id: 'target', payload: { body: { status: 'queued', resumed: true, held_by: 'h2' } } } };
+    targetTurn.provisional = [targetFirstProcessing, targetResumedQueued,
+      { seq: 6, envelope: { kind: 'response', type: 'agent.ask', parent_id: 'target', payload: { body: { status: 'processing' } } } }];
     render(<WaitingLayer {...baseProps({ turns: [targetTurn], state })} />);
-    // 期望（旧行为）：第二次恢复处理清掉 hold；实际：仍然显示已暂停。
     expect(pausedFor('agent')).toBeNull();
   });
 
-  it('【缺陷】compact unhold closure 不把缺失 released 猜成 legacy true——heldActors 的 terminalCompleted 未排除 terminalClosureOnly', () => {
+  it('[AD-018] compact unhold closure 不把缺失 released 猜成 legacy true', () => {
     // unhold 响应被压缩（terminalClosureOnly=true）时，即便压缩后的 payload 仍然带着
     // released:true 字样，也不能当作真的已释放来处理——旧 agentFrozenState 对此有专门保护。
-    // 新 heldActors 的私有 terminalCompleted() 直接读 argsOf(turn.terminal)?.status，完全不看
-    // turn.terminalClosureOnly，等价于无条件相信压缩闭包里的字段。
+    // compact terminal closure 不应被 Waiting owner 当作真实完成事实。
     const holdOp = turn({ requestId: 'hold', actorId: 'agent', type: 'agent.hold', requestSeq: 1, terminal: completedTerminal({ requestId: 'hold', type: 'agent.hold' }) });
     const releaseOp = turn({
       requestId: 'release', actorId: 'agent', type: 'agent.unhold', requestSeq: 2,
@@ -359,7 +358,7 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
     const queuedTurn = turn({ requestId: 'q1', actorId: 'agent', type: 'agent.ask', requestSeq: 3 });
     const state = { channelId: 'c0', rows: new Map(), timeline: timeline([holdOp, releaseOp, queuedTurn]) };
     render(<WaitingLayer {...baseProps({ turns: [queuedTurn], state })} />);
-    // 期望（旧行为）：压缩闭包不可信，编辑锁仍显示"已暂停"；实际：被当作真释放，冻结消失。
+    // 压缩闭包不可信，编辑锁仍显示"已暂停"。
     expect(pausedFor('agent')).toBeTruthy();
   });
 });

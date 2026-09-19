@@ -7,6 +7,8 @@ At creation, the packet classified 116 rows as `BLOCKED`. The P0 public-owner
 fixture batch has since recovered nine rows (AD-057/058, AD-125–127, and
 AD-138–141); the first P1 composed-interaction fixture batch has now fixed the
 public-owner fixes for AD-014 and AD-017, so 105 rows remain blocked.
+The subsequent Waiting-owner regression packet also closes AD-018 and AD-021;
+they were REGRESSION rows, not part of the 105 BLOCKED count.
 AD-316 remains an explicit blocked reproduction because the current
 `SpaceDevices` owner submits but does not refresh its authoritative projection.
 No row is obsolete, deleted, or skipped.
@@ -145,6 +147,8 @@ obsolescence from the current absence of evidence.
 
 ## Boundary audit
 
-This packet changes only A–D unit tests and audit-output reports. It does not
-modify `src/`, `vendor/`, package or lock files, export private production
-helpers, delete/skip baseline declarations, or implement either product gap.
+This packet changes A–D unit tests, audit-output reports, and the existing
+Waiting/edit owner only for the separately authorized AD-018/AD-021 lifecycle
+fix. It does not modify Workspace, Reading, Outbox, Feed runtime, vendor,
+package or lock files, export private production helpers, delete/skip baseline
+declarations, or implement either AD-011/AD-143 product gap.
