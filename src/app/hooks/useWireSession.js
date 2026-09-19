@@ -349,7 +349,9 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   if (initialRef.current === null) initialRef.current = readInitialRoute();
   const [profiles, setProfiles] = useState(new Map());
   const [revision, setRevision] = useState(0);
-  const [activeChannelId, setActiveChannelId] = useState(initialRef.current.channelId);
+  // The URL is only a request. A freshly authenticated principal has no
+  // active channel until its own directory/access owner validates that id.
+  const [activeChannelId, setActiveChannelId] = useState('');
   const [activeView, setActiveViewState] = useState(initialRef.current.view);
   const activeChannelRef = useRef(activeChannelId);
   useLayoutEffect(() => { activeChannelRef.current = activeChannelId; }, [activeChannelId]);
@@ -371,7 +373,8 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     if (!channels.length) return;
     if (!activeChannelId || !channels.some((row) => row.id === activeChannelId)) {
       if (activeChannelId && accessRef.current?.state?.(activeChannelId)?.existence === 'retired') onNotice(`${activeChannelId} 已退役，已切换到其他可用频道。`);
-      const next = channels.find((row) => row.access === 'member_active') || channels[0];
+      const requested = channels.find((row) => row.id === initialRef.current.channelId);
+      const next = requested || channels.find((row) => row.access === 'member_active') || channels[0];
       commitActiveChannel(next.id);
       writeRoute(next.id, activeView, true);
     }

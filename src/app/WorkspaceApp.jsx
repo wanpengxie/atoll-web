@@ -21,8 +21,8 @@ import { createChannelFeedRuntime } from '../model/channel-feed-runtime.js';
 import { createViewSessionStore } from '../model/view-session.js';
 import { readServerWorld } from './hooks/useWireSession.js';
 import { ptyClient } from '../net/pty.js';
-import { argsOf } from '../protocol/envelope.js';
-import { TYPES } from '../protocol/vocab.js';
+import { diagnostic } from '../model/diagnostics.js';
+import { selectFeatureTaskFacts } from '../model/feature-tasks.js';
 import { Auth } from '../ui/Auth.jsx';
 import { VersionIncompatible } from '../ui/VersionIncompatible.jsx';
 import { ConversationSurface } from '../ui/conversation/ConversationSurface.jsx';
@@ -33,15 +33,20 @@ import {
 } from '../ui/features/index.js';
 
 const EMPTY_ARRAY = Object.freeze([]);
-const EMPTY_MAP = new Map();
-const NOOP = () => {};
+
+function unavailableError(port) {
+  return Object.assign(new Error(`${port} owner 尚未连接`), { code: 'owner_unavailable', port });
+}
 
 function useFeedOwner({ refs, ownerToken, bindings }) {
   const runtimeRef = useRef(null);
-  const bindingsRef = useRef(bindings);
-  bindingsRef.current = bindings;
+  const bindingsRef = useRef(null);
   if (runtimeRef.current === null) {
-    const forward = (name) => (...args) => bindingsRef.current[name]?.(...args);
+    const forward = (name) => (...args) => {
+      const owner = bindingsRef.current;
+      if (typeof owner?.[name] !== 'function') throw unavailableError(`feed.${name}`);
+      return owner[name](...args);
+    };
     runtimeRef.current = createChannelFeedRuntime({
       ...refs,
       ownerToken,
@@ -56,7 +61,14 @@ function useFeedOwner({ refs, ownerToken, bindings }) {
     });
   }
   const runtime = runtimeRef.current;
-  useLayoutEffect(() => runtime.bind({ ...bindings, ownerToken }), [bindings, ownerToken, runtime]);
+  useLayoutEffect(() => {
+    bindingsRef.current = bindings;
+    const release = runtime.bind({ ...bindings, ownerToken });
+    return () => {
+      if (bindingsRef.current === bindings) bindingsRef.current = null;
+      release?.();
+    };
+  }, [bindings, ownerToken, runtime]);
   useEffect(() => runtime.mount(), [runtime]);
   const snapshot = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot, runtime.getSnapshot);
   return runtime.getOwnerSnapshot(ownerToken, snapshot);
@@ -70,84 +82,13 @@ function isRetiredOwnerError(error) {
   return error?.code === 'cache_owner_changed';
 }
 
-function taskState(turn) {
-  if (!turn?.terminal) return 'active';
-  const status = String(argsOf(turn.terminal)?.status || 'completed');
-  if (status === 'completed') return 'completed';
-  return ['cancelled', 'interrupted'].includes(String(argsOf(turn.terminal)?.reason || '')) ? 'cancelled' : 'failed';
-}
-
-// Port adapter only: lifecycle truth remains in ChannelReplica and the durable
-// submission owner. This projection deliberately exposes only formal tasks,
-// human decisions, and failed/uncertain local submissions.
-function taskFacts(state, pending, selfId) {
-  const rows = [];
-  for (const turn of state?.turns?.values?.() || []) {
-    const request = turn.request || {};
-    const payload = argsOf(request) || {};
-    if (request.type === 'task.create') {
-      const terminal = argsOf(turn.terminal) || {};
-      const value = terminal?.value && typeof terminal.value === 'object' ? terminal.value : {};
-      rows.push({
-        key: `task:${turn.requestId}`,
-        id: value.task_id || value.id || turn.requestId,
-        channelId: state.channelId,
-        kind: 'task',
-        title: value.title || payload.title || payload.description || '未命名任务',
-        description: payload.description || '',
-        state: String(value.state || value.status || taskState(turn)),
-        assigneeActorIds: [value.assignee || request.audience?.[0]].filter(Boolean),
-        ownerId: request.sender?.id || '',
-        createdAt: request.ts,
-        updatedAt: turn.terminal?.ts || request.ts,
-        actions: [],
-      });
-    } else if ([TYPES.humanApprove, TYPES.humanAsk].includes(request.type)) {
-      const stateValue = taskState(turn);
-      rows.push({
-        key: `approval:${turn.requestId}`,
-        id: turn.requestId,
-        channelId: state.channelId,
-        kind: 'approval',
-        title: payload.title || payload.text || payload.detail || '待处理请求',
-        state: stateValue === 'active' ? 'waiting' : stateValue,
-        assigneeActorIds: request.audience || [],
-        ownerId: request.sender?.id || '',
-        needsYou: !turn.terminal && (request.audience || []).includes(selfId),
-        createdAt: request.ts,
-        updatedAt: turn.terminal?.ts || request.ts,
-        actions: !turn.terminal && (request.audience || []).includes(selfId) ? ['approve', 'reject'] : [],
-      });
-    }
-  }
-  for (const item of pending || []) {
-    if (item.channelId !== state?.channelId || !['uncertain', 'rejected'].includes(item.state)) continue;
-    rows.push({
-      key: `recovery:${item.messageId}`,
-      id: item.messageId,
-      channelId: item.channelId,
-      kind: 'recovery',
-      title: item.text || item.frame?.msg_type || '待确认的提交',
-      state: item.state === 'uncertain' ? 'uncertain' : 'failed',
-      ownerId: selfId,
-      needsYou: true,
-      waitingFor: item.error?.detail || (item.state === 'uncertain' ? '等待频道账本确认' : '等待安全重试'),
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-      actions: item.state === 'rejected' ? ['retry'] : [],
-      submission: item,
-    });
-  }
-  return rows;
-}
-
 function IdentityBoundary() {
   const [error, setError] = useState('');
   const onError = useCallback((reason) => setError(reason?.detail || reason?.message || String(reason)), []);
   const identity = useIdentitySession({ onError });
   if (identity.booting) return <div className="boot-screen"><span className="brand-dot" />正在启动工作区…</div>;
   if (!identity.principal) return <><Auth identity={identity.identity} onAuthed={identity.accept} />{error && <div className="top-error" role="alert">{error}</div>}</>;
-  return <AuthenticatedWorkspace identity={identity} initialError={error} />;
+  return <AuthenticatedWorkspace key={identity.principal.id} identity={identity} initialError={error} />;
 }
 
 // Filled by the owner composition below; kept as a component boundary so a
@@ -160,7 +101,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const [serverWorld, setServerWorld] = useState(readServerWorld);
   const [panel, setPanel] = useState('');
   const [terminalVisible, setTerminalVisible] = useState(false);
-  const [composerEdit, setComposerEdit] = useState(null);
   const showError = useCallback((error) => setTopError(errorText(error)), []);
   const wire = useWireSessionPort();
   const navigation = useChannelNavigation({
@@ -173,28 +113,63 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const rosterSinkRef = useRef(null);
   const submissionSinkRef = useRef(null);
   const accessActionsRef = useRef({});
-  const deviceActionsRef = useRef({ refresh: async () => [] });
-  const probePortRef = useRef({});
-  const attachmentPortRef = useRef({});
-  const submissionPortRef = useRef({});
-  const activityRef = useRef({ attach() {}, disconnect() {}, observe() {} });
+  const deviceActionsRef = useRef({ refresh: () => Promise.reject(unavailableError('resources.devices')) });
+  const probePortRef = useRef(null);
+  const attachmentPortRef = useRef(null);
+  const submissionPortRef = useRef(null);
+  const unavailableReportsRef = useRef(new Set());
+  const reportUnavailable = useCallback((portName) => {
+    if (unavailableReportsRef.current.has(portName)) return false;
+    unavailableReportsRef.current.add(portName);
+    diagnostic('warn', 'workspace.owner_unavailable', { port: portName, principalId });
+    return false;
+  }, [principalId]);
+  const activityPort = useMemo(() => Object.freeze({
+    available: false,
+    attach: () => reportUnavailable('activity.attach'),
+    disconnect: () => reportUnavailable('activity.disconnect'),
+    observe: () => reportUnavailable('activity.observe'),
+  }), [reportUnavailable]);
+  const activityRef = useRef(activityPort);
+  const unavailableSessionObserver = useCallback(() => reportUnavailable('session.observer'), [reportUnavailable]);
 
   const submissionProxy = useMemo(() => Object.freeze({
-    send: (...args) => submissionPortRef.current.send?.(...args) || Promise.resolve(''),
-    resetWorld: (...args) => submissionPortRef.current.resetWorld?.(...args),
+    send: (...args) => {
+      const command = submissionPortRef.current?.send;
+      return typeof command === 'function'
+        ? command(...args)
+        : Promise.reject(unavailableError('submission.send'));
+    },
+    resetWorld: (...args) => {
+      const command = submissionPortRef.current?.resetWorld;
+      if (typeof command !== 'function') throw unavailableError('submission.resetWorld');
+      return command(...args);
+    },
   }), []);
 
   const feedBindings = useMemo(() => ({
     ownerToken,
-    onRoster: (...args) => rosterSinkRef.current?.(...args),
+    onRoster: (...args) => {
+      const sink = rosterSinkRef.current;
+      if (typeof sink !== 'function') throw unavailableError('roster.receive');
+      return sink(...args);
+    },
     onError: (error) => { if (!isRetiredOwnerError(error)) showError(error); },
     onChannelsDiscovered: () => navigation.bump(),
-    onDirectoryInvalidated: () => accessActionsRef.current.schedule?.(),
-    onTimerFired: () => {},
-    onSubmissionFeed: (...args) => submissionSinkRef.current?.(...args),
+    onDirectoryInvalidated: () => {
+      const schedule = accessActionsRef.current?.schedule;
+      if (typeof schedule !== 'function') throw unavailableError('directory.schedule');
+      return schedule();
+    },
+    onTimerFired: () => reportUnavailable('timers.feed'),
+    onSubmissionFeed: (...args) => {
+      const sink = submissionSinkRef.current;
+      if (typeof sink !== 'function') throw unavailableError('submission.reconcileFeed');
+      return sink(...args);
+    },
     onAccessChanged: navigation.bump,
-    onAgentActivity: (...args) => activityRef.current.observe?.(...args),
-  }), [navigation.bump, ownerToken, showError]);
+    onAgentActivity: (...args) => activityRef.current.observe(...args),
+  }), [navigation.bump, ownerToken, reportUnavailable, showError]);
   const feed = useFeedOwner({
     refs: {
       wireRef: wire.wireRef,
@@ -205,26 +180,38 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     ownerToken,
     bindings: feedBindings,
   });
-  const feedRef = useRef(feed);
-  feedRef.current = feed;
+  const feedRef = useRef(null);
+  useLayoutEffect(() => {
+    feedRef.current = feed;
+    return () => {
+      // Passive owner cleanup still needs the last committed feed command
+      // port. Retire after that cleanup, while allowing StrictMode's immediate
+      // re-commit to reclaim the same port.
+      queueMicrotask(() => { if (feedRef.current === feed) feedRef.current = null; });
+    };
+  }, [feed]);
+  const callFeed = useCallback((name, args) => {
+    const command = feedRef.current?.[name];
+    if (typeof command !== 'function') throw unavailableError(`feed.${name}`);
+    return command(...args);
+  }, []);
   const feedCommands = useMemo(() => Object.freeze({
-    bump: (...args) => feedRef.current.bump?.(...args),
-    cancel: (...args) => feedRef.current.cancel?.(...args),
-    disconnectHistory: (...args) => feedRef.current.disconnectHistory?.(...args),
-    enqueue: (...args) => feedRef.current.enqueue?.(...args),
-    focusHistory: (...args) => feedRef.current.focusHistory?.(...args),
-    generationFor: (...args) => feedRef.current.generationFor?.(...args),
-    liveCheckpoint: (...args) => feedRef.current.liveCheckpoint?.(...args),
-    loadHistory: (...args) => feedRef.current.loadHistory?.(...args),
-    pageEnd: (...args) => feedRef.current.pageEnd?.(...args),
-    prepareLocalReplica: (...args) => feedRef.current.prepareLocalReplica?.(...args),
-    reconcileIdentity: (...args) => feedRef.current.reconcileIdentity?.(...args),
-    refreshChannel: (...args) => feedRef.current.refreshChannel?.(...args),
-    resumeLocalReplica: (...args) => feedRef.current.resumeLocalReplica?.(...args),
-    setHistoryGrants: (...args) => feedRef.current.setHistoryGrants?.(...args),
-    stateFor: (...args) => feedRef.current.stateFor?.(...args),
-    stopIncompatible: (...args) => feedRef.current.stopIncompatible?.(...args),
-  }), []);
+    bump: (...args) => callFeed('bump', args),
+    cancel: (...args) => callFeed('cancel', args),
+    disconnectHistory: (...args) => callFeed('disconnectHistory', args),
+    enqueue: (...args) => callFeed('enqueue', args),
+    focusHistory: (...args) => callFeed('focusHistory', args),
+    generationFor: (...args) => callFeed('generationFor', args),
+    liveCheckpoint: (...args) => callFeed('liveCheckpoint', args),
+    loadHistory: (...args) => callFeed('loadHistory', args),
+    pageEnd: (...args) => callFeed('pageEnd', args),
+    prepareLocalReplica: (...args) => callFeed('prepareLocalReplica', args),
+    reconcileIdentity: (...args) => callFeed('reconcileIdentity', args),
+    refreshChannel: (...args) => callFeed('refreshChannel', args),
+    resumeLocalReplica: (...args) => callFeed('resumeLocalReplica', args),
+    setHistoryGrants: (...args) => callFeed('setHistoryGrants', args),
+    stopIncompatible: (...args) => callFeed('stopIncompatible', args),
+  }), [callFeed]);
   const roster = useChannelRoster({
     generationFor: feedCommands.generationFor,
     onError: showError,
@@ -247,10 +234,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     activeChannelId: navigation.activeChannelId,
     activeChannelRef: navigation.activeChannelRef,
     accessRef: wire.accessRef,
-    stateFor: feedCommands.stateFor,
+    stateFor: feed.stateFor,
     feedVersion: feed.version,
     handleSend: submissionProxy.send,
-    pending: submissionPortRef.current.pending || EMPTY_ARRAY,
+    pending: submissionPortRef.current?.pending || EMPTY_ARRAY,
     rosterRef: wire.rosterRef,
     rosters: roster.rosters,
     wireState: wire.state,
@@ -273,28 +260,25 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     selfId,
     access: access ? { ...access, transportOpen: wire.state === 'open' } : access,
     agentSelection: { selectedAgentId: probes.composerAgent?.actorId || '' },
-    probes,
-    channelState: feed.stateFor?.(navigation.activeChannelId),
+    channelState: feed.stateFor(navigation.activeChannelId),
     probesRef: probePortRef,
     attachmentRef: attachmentPortRef,
-    edit: composerEdit?.channelId === navigation.activeChannelId ? composerEdit.value : null,
   });
-  const submission = composer.submission || {};
+  const submission = composer.submission;
   const attachments = useAttachmentTransactions({
     activeChannel: navigation.activeChannel,
     activeChannelId: navigation.activeChannelId,
     activeChannelRef: navigation.activeChannelRef,
     accessRef: wire.accessRef,
-    channelDevices: EMPTY_ARRAY,
     deviceActionsRef,
     directoryVersion: navigation.revision,
-    draftFor: submission.draftFor || (() => ({})),
-    drafts: submission.drafts || EMPTY_MAP,
-    updateDraft: submission.updateDraft || (() => {}),
+    draftFor: submission.draftFor,
+    drafts: submission.drafts,
+    updateDraft: submission.updateDraft,
     onNotice: setChannelNotice,
     onOpenDynamic: () => navigation.setActiveView('conversation'),
     obsRef: wire.obsRef,
-    persistDraftAttachments: submission.persistDraftAttachments || (async () => {}),
+    persistDraftAttachments: submission.persistDraftAttachments,
     principalId,
     producerOwnerToken: ownerToken,
     generationFor: feedCommands.generationFor,
@@ -302,22 +286,43 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     wireRef: wire.wireRef,
     wireState: wire.state,
   });
+  const composerAttachmentPort = useMemo(() => Object.freeze({
+    attach: attachments.attach,
+    clear: attachments.clear,
+    downloadFile: attachments.downloadFile,
+    mutate: attachments.mutate,
+    reset: attachments.reset,
+    setSelectedArtifact: attachments.setSelectedArtifact,
+    upload: attachments.uploadComposerAttachments,
+  }), [
+    attachments.attach,
+    attachments.clear,
+    attachments.downloadFile,
+    attachments.mutate,
+    attachments.reset,
+    attachments.setSelectedArtifact,
+    attachments.uploadComposerAttachments,
+  ]);
   useLayoutEffect(() => {
     probePortRef.current = probes;
-    attachmentPortRef.current = attachments;
+    attachmentPortRef.current = composerAttachmentPort;
     submissionPortRef.current = submission;
-    submissionSinkRef.current = submission.reconcileFeed || null;
+    submissionSinkRef.current = submission.reconcileFeed;
     return () => {
-      if (probePortRef.current === probes) probePortRef.current = {};
-      if (attachmentPortRef.current === attachments) attachmentPortRef.current = {};
-      if (submissionPortRef.current === submission) submissionPortRef.current = {};
+      if (probePortRef.current === probes) probePortRef.current = null;
+      if (attachmentPortRef.current === composerAttachmentPort) attachmentPortRef.current = null;
+      if (submissionPortRef.current === submission) submissionPortRef.current = null;
       if (submissionSinkRef.current === submission.reconcileFeed) submissionSinkRef.current = null;
     };
-  }, [attachments, probes, submission.reconcileFeed]);
+  }, [composerAttachmentPort, probes, submission, submission.reconcileFeed]);
 
   const resetWorldOwners = useCallback(() => {
-    attachmentPortRef.current.reset?.();
-    probePortRef.current.reset?.();
+    const resetAttachments = attachmentPortRef.current?.reset;
+    const resetProbes = probePortRef.current?.reset;
+    if (typeof resetAttachments !== 'function') throw unavailableError('resources.reset');
+    if (typeof resetProbes !== 'function') throw unavailableError('probes.reset');
+    resetAttachments();
+    resetProbes();
   }, []);
 
   useWireConnection({
@@ -334,7 +339,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     finishHistoryPage: feedCommands.pageEnd,
     finishLiveCheckpoint: feedCommands.liveCheckpoint,
     onServerWorld: setServerWorld,
-    onSession: NOOP,
+    onSession: unavailableSessionObserver,
     onWorldChanged: resetWorldOwners,
     port: wire,
     prepareLocalReplica: feedCommands.prepareLocalReplica,
@@ -360,22 +365,44 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         urgency: 'blocking',
       });
     }
-    void roster.refresh(navigation.activeChannelId).catch(() => {});
-  }, [feedCommands, navigation.activeChannelId, roster.refresh, wire.state]);
+    void roster.refresh(navigation.activeChannelId).catch(showError);
+  }, [feedCommands, navigation.activeChannelId, roster.refresh, showError, wire.state]);
 
   const viewSessions = useMemo(() => createViewSessionStore({ principalID: principalId }), [principalId]);
-  const state = feed.stateFor?.(navigation.activeChannelId);
-  const historyStatus = feed.historyFor?.(navigation.activeChannelId);
+  const state = feed.stateFor(navigation.activeChannelId);
+  const historyStatus = feed.historyFor(navigation.activeChannelId);
   const history = historyStatus ? {
     status: { ...historyStatus, localReplicaReady: feed.localReplicaReady },
     request: (request) => feedCommands.loadHistory(navigation.activeChannelId, request),
     refreshLatest: () => feedCommands.refreshChannel(navigation.activeChannelId),
-    debugSnapshot: () => feed.coldEntryDiagnosticsFor?.(navigation.activeChannelId),
+    debugSnapshot: () => feed.coldEntryDiagnosticsFor(navigation.activeChannelId),
   } : null;
   const capabilities = probes.capabilitiesFor(navigation.activeChannelId);
-  const commitComposerEdit = useCallback((value) => {
-    setComposerEdit({ channelId: navigation.activeChannelId, value });
-  }, [navigation.activeChannelId]);
+  const resourceEntry = useCallback((channelId, resource) => ({
+    key: `resource:${channelId}:${resource?.resource_id || resource?.resourceId || resource?.path || ''}`,
+    channelId,
+    resourceId: resource?.resource_id || resource?.resourceId || resource?.path || '',
+    name: resource?.name || String(resource?.path || resource?.resource_id || resource?.resourceId || '').split('/').filter(Boolean).at(-1) || '文件',
+    mediaType: resource?.media_type || resource?.mediaType || 'application/octet-stream',
+    size: Number(resource?.size || 0),
+    ...(Number.isSafeInteger(Number(resource?.line)) ? { line: Number(resource.line) } : {}),
+  }), []);
+  const previewResource = useCallback((channelId, resource) => {
+    const artifact = resourceEntry(channelId, resource);
+    if (!artifact.resourceId) throw new TypeError('文件资源标识为空');
+    const command = attachmentPortRef.current?.setSelectedArtifact;
+    if (typeof command !== 'function') throw unavailableError('resources.preview');
+    command(artifact);
+    setPanel('artifact');
+  }, [resourceEntry]);
+  const downloadResource = useCallback((channelId, resource) => {
+    const artifact = resourceEntry(channelId, resource);
+    if (!artifact.resourceId) return Promise.reject(new TypeError('文件资源标识为空'));
+    const command = attachmentPortRef.current?.downloadFile;
+    return typeof command === 'function'
+      ? command(artifact)
+      : Promise.reject(unavailableError('resources.download'));
+  }, [resourceEntry]);
   const conversationPort = {
     state,
     history,
@@ -391,21 +418,22 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     surfaceVisible: navigation.activeView === 'conversation' || terminalVisible,
     composer: <Composer model={composer.model} commands={composer.commands} />,
     onTailCaughtUp: (receipt) => {
-      feed.markRead?.(navigation.activeChannelId, receipt);
-      feed.acknowledgeNotifications?.(navigation.activeChannelId, receipt);
+      feed.markRead(navigation.activeChannelId, receipt);
+      feed.acknowledgeNotifications(navigation.activeChannelId, receipt);
     },
     onResolve: submission.resolve,
     onCancel: submission.cancel,
     onTaskControl: submission.control,
+    onDownloadResource: downloadResource,
+    onPreviewResource: previewResource,
     onRequestCapability: probes.requestCapability,
-    onComposerEditChange: commitComposerEdit,
   };
   conversationPort.element = state && history
     ? <ConversationSurface {...conversationPort} />
     : <div className="boot-screen"><span className="brand-dot" />正在同步频道…</div>;
 
   const taskItems = useMemo(
-    () => taskFacts(state, submission.pending || EMPTY_ARRAY, selfId),
+    () => selectFeatureTaskFacts({ state, pending: submission.pending, selfId }),
     [feed.version, selfId, state, submission.pending],
   );
   const filesPort = {
@@ -421,7 +449,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     attachments: attachments.composerAttachments,
     commands: {
       upload: async ({ files, directory, deviceId }) => {
-        await attachments.upload(files, { directory, deviceId });
+        await attachments.uploadChannelFiles(files, { directory, deviceId });
         await attachments.refreshDirectory({ targetDirectory: directory, targetDeviceId: deviceId });
       },
       attach: (entry) => attachments.attach({
@@ -442,20 +470,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     },
   };
   const tasksPort = {
+    available: true,
     items: taskItems,
-    waiting: taskItems.filter((item) => item.state === 'waiting' && item.kind !== 'approval'),
+    waitingAvailable: false,
     roster: channelRoster,
     selfId,
     canWrite: access?.relationship === 'member',
-    commands: {
-      control: ({ action, item }) => {
-        if (action === 'approve' || action === 'reject') return submission.resolve?.(item.channelId, item.id, action, {});
-        if (action === 'retry' && item.submission) return submission.retry?.(item.submission);
-        if (action === 'cancel') return submission.cancel?.(item.channelId, item.id);
-        return undefined;
-      },
-      open: (item) => { setPanel({ kind: 'task', item }); },
-    },
+    commands: { open: (item) => { setPanel({ kind: 'task', item }); } },
   };
   const rosterPort = {
     rows: channelRoster,
@@ -507,7 +528,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       activeView: navigation.activeView,
       terminalVisible,
       channel: navigation.activeChannel,
-      unread: Object.fromEntries(navigation.channels.map((channel) => [channel.id, feed.unreadFor?.(channel.id, navigation.selfFor(channel.id)) || {}])),
+      unread: Object.fromEntries(navigation.channels.map((channel) => [channel.id, feed.unreadFor(channel.id, navigation.selfFor(channel.id))])),
       select: navigation.select,
       setActiveView: navigation.setActiveView,
       openTerminal: () => { setPanel(''); setTerminalVisible((value) => !value); },
