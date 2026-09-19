@@ -199,6 +199,40 @@ history/jump 六例在同一干净当前源 `2265cfa`、新端口 `15189/19889` 
 case 13 `jumpVisible=false`（gap=2121）、case 23 `browsingRowCount=0`。未修改或弱化
 history/jump oracle；证据在 `test-results-gm-history-jump-head-2265cfa-20260920/`。
 
+## Luna Max round：11 条能力 / DOM / owner 对照（`5aef9f4`）
+
+在 HEAD `5aef9f4` 的干净 detached snapshot 上，ModelSelector 五例为 **0 PASS / 5 回归 /
+0 阻塞**，history/jump 六例为 **0 PASS / 6 回归 / 0 阻塞**。干净树由新端口
+`15190/19890`（ModelSelector）和 `15191/19891`（history/jump）自行启动，未复用外部服务。
+随后用共享树新端口 `15192/19892`、`15193/19893` 对照，11 条首公共断点与干净树一致。
+
+| case | 用户能力合同 | 当前 DOM / 行为事实（首断点） | 唯一 owner |
+|---:|---|---|---|
+| 1 | 上滚一次后 sparse history 必须进入同一阅读 surface，新增行可见且 anchor 不跳 | `.timeline-message-list` `listCount=4`，没有超过 baseline 4；未进入后续 anchor/布局断言 | `useProjectionReadingOwner`（`useConversationProjection.js`）的 admission/presentation session |
+| 2 | history reveal 期间保持唯一 active layer/list，不能给用户空白帧 | sampled frame 出现 `visibleRows=0`；不是用私有 reveal event 代替可见 DOM 结果 | `useProjectionReadingOwner` 的 reveal/presentation handoff |
+| 3 | trusted wheel 必须把 reveal 阅读者交给 browsing，不能由 app writer 抢回 | wheel 后公开 timeline `mode=following`，不是 `browsing`；严格 takeover 首断点 | `useProjectionReadingOwner` 的 reading-intent/scroll owner |
+| 8 | 深历史 underfill 结束后应显示 `c0 history 1`，demand 唯一且 settle | `historyOneVisible=false`；失败发生在可见 history row，不以 pending/settle 私有状态假绿 | `useHistoryConsumer` underfill demand/recheck owner |
+| 13 | browsing 时 live pulse 要给出 jump affordance；点击后一次写入回 tail/following 并 ack unseen | `.timeline-jump-latest` `jumpVisible=false`；物理 gap=2121，仍记录一个 app `scrollTo` writer，未到 click 合同 | `useProjectionReadingOwner` 的 live-arrival/unseen/jump boundary |
+| 23 | browsing arrival 必须成为普通 presentation row，并由同一 session 提供 jump；再处理 inactive handoff | `browsingRowCount=0`；首个 arrival row 公共断言即失败，未声称后续 inactive handoff 成功 | `useProjectionReadingOwner` 的 live-arrival/reading-session boundary |
+| 28 | 一次真实 click 读取 capability 后，ModelSelector 面板自动打开并提供可选模型入口 | trigger `[expanded]`、dialog `steward Agent 状态` 可见；摘要显示 `模型 / gpt-5.6-sol`，但缺 `role=menuitem` name=`模型` | `Composer.jsx` `ModelSelector` capability → option projection |
+| 29 | 面板 refresh/reopen 期间不能丢失模型 option、focus 和键盘 ownership | dialog 保持可见，但仍无 `menuitem 模型`；首断点在 option，未进入第二次 reopen/focus 断言 | `Composer.jsx` `ModelSelector` refresh/probe projection |
+| 30 | 500px 视觉高度下 portal 脱离 composer scrollport，模型入口可命中并可选 | dialog bounds、center hit、portal 与 composer scrollport 隔离先通过；随后缺 `menuitem 模型` | `Composer.jsx` `ModelSelector`（含 `FloatingPortal`） |
+| 31 | 320px 窄视口仍需 portal 可见、鼠标/键盘可达和 option focus restore | panel geometry/hit 先通过；缺 `menuitem 模型`；共享脏树另见 Hook 顺序 runtime error，但不改变首 DOM 断点 | `Composer.jsx` `ModelSelector`（含 `FloatingPortal`） |
+| 32 | 200px 极窄视口仍需 portal 可达、模型可选和 trigger focus restore | panel geometry/hit 先通过；缺 `menuitem 模型`，option/focus 合同未执行 | `Composer.jsx` `ModelSelector`（含 `FloatingPortal`） |
+
+共享树的额外噪声已单独确认：在 ModelSelector 320px 对照和 history underfill 对照期间出现
+React “change in the order of Hooks”与 `Should have a queue`，stack 落在
+`AuthenticatedWorkspace → useComposerSubmissionRuntime/useComposerCommands`；干净
+`5aef9f4` 没有该 console/runtime error。当前共享唯一脏文件是未提交的
+`src/ui/timeline/useConversationProjection.js`，故该 Hook 缺陷归为并行脏树的独立 owner，
+不冒充上述 11 条用户能力结果，也不改产品/测试或放宽任何 oracle。
+
+本轮证据：
+`test-results-gm-model-head-5aef9f4-20260920/`、
+`test-results-gm-history-jump-head-5aef9f4-20260920/`、
+`test-results-gm-model-shared-5aef9f4-20260920/`、
+`test-results-gm-history-jump-shared-5aef9f4-20260920/`。
+
 ## Case ledger
 
 `owner` 是当前生产 owner；`result` 是上述 Chromium 全组轮的逐 case 裁决。每行保留
