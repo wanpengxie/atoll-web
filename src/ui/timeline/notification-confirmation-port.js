@@ -39,7 +39,7 @@ export function queuePresentedConfirmation(state, context, presentedBoundary) {
     ? { ...state, queuedPresented: event } : state;
 }
 
-export function nextNotificationConfirmation(state, context) {
+export function nextNotificationConfirmation(state) {
   if (state.pending) return { state, event: state.pending };
   return state.queuedPresented?.boundary > state.confirmedBoundary
     ? { state, event: state.queuedPresented } : { state, event: null };

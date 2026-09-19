@@ -28,7 +28,6 @@ export function useNotificationConfirmation({
     confirmationRef.current = reconcileNotificationConfirmation(confirmationRef.current, {
       authorityRevision: Number(historyStatus.notificationAuthorityRevision || 0),
       generation: Number(historyStatus.generation || 0),
-      observationRevision: domEvidence.observationRevision(),
       controllerChanged: previous.controller !== controller,
       previousMode: previous.mode,
       currentMode: session.mode,
@@ -51,14 +50,13 @@ export function useNotificationConfirmation({
     if (confirmation.authorityRevision !== Number(evidence.notificationAuthorityRevision || 0)) return false;
     const context = {
       channelID, viewKey, activationID: current.activationID, evidence,
-      attached: owner.historyStatus.attached,
       messageCurrent: owner.historyStatus.messageCurrent,
       presentationRevision: owner.historyStatus.presentationRevision,
     };
     confirmation = queuePresentedConfirmation(confirmation, context, presentedBoundary);
     let delivered = false;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const next = nextNotificationConfirmation(confirmation, context);
+      const next = nextNotificationConfirmation(confirmation);
       confirmation = next.state;
       confirmationRef.current = confirmation;
       if (!next.event) return delivered;
