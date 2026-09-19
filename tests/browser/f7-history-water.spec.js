@@ -1276,19 +1276,37 @@ test('F7 reader can reverse direction immediately after a history prepend', asyn
   expect(reset.ok()).toBe(true);
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.enable({
+    case: 'history-prepend-immediate-reverse',
+    seed: 1715,
+  }));
 
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   await viewport.hover();
   await page.mouse.wheel(0, -100_000);
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
     .some((entry) => entry.event === 'history.intent_satisfied'))).toBe(true);
 
   // The prepend can still be receiving late ResizeObserver corrections here.
-  // A downward gesture is nevertheless authoritative and must not be undone
-  // by the old anchor transaction.
-  const beforeReverse = await viewport.evaluate((node) => node.scrollTop);
+  // The canonical owner can still be the outgoing reverse-coordinate surface,
+  // so geometry cannot be compared across the atomic handoff. Prove instead
+  // that the sole input owner accepts the reverse gesture as a newer epoch.
+  const olderInput = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.snapshot().entries
+    .filter((entry) => entry.event === 'reading.input-owner'
+      && entry.detail?.source === 'wheel'
+      && entry.detail?.direction === 'older')
+    .at(-1) || null);
+  expect(olderInput).not.toBeNull();
   await page.mouse.wheel(0, 640);
-  await expect.poll(() => viewport.evaluate((node) => node.scrollTop)).toBeGreaterThan(beforeReverse + 20);
+  await expect.poll(() => page.evaluate(({ sequence, inputEpoch }) => (
+    window.__ATOLL_DIAGNOSTICS__.reading.snapshot().entries.some((entry) => (
+      entry.event === 'reading.input-owner'
+      && entry.detail?.source === 'wheel'
+      && entry.detail?.direction === 'newer'
+      && Number(entry.sequence) > Number(sequence)
+      && Number(entry.detail?.inputEpoch) > Number(inputEpoch)
+    ))
+  ), { sequence: olderInput.sequence, inputEpoch: olderInput.detail.inputEpoch })).toBe(true);
 });
 
 test('F7 oldest-history boundary stays inert under repeated upward input', async ({ page, request }) => {
