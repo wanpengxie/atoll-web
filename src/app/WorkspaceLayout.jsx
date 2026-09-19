@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 
 const VIEW_LABELS = Object.freeze({ conversation: '动态', files: '文件', tasks: '任务' });
+const VIEW_ENTRIES = Object.freeze(Object.entries(VIEW_LABELS));
 
 function connectionLabel(state) {
   return ({ open: 'OPEN', connecting: 'CONNECTING', reconnecting: 'RECONNECTING', closed: 'CLOSED' })[state]
@@ -96,17 +97,34 @@ export function WorkspaceLayout({
 }) {
   const topology = useSurfaceTopology();
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
+  const mobileChannelToggleRef = useRef(null);
+  const viewTabRefs = useRef([]);
   const channel = navigation.channel;
+  const closeMobileChannels = () => {
+    setMobileChannelsOpen(false);
+    globalThis.requestAnimationFrame(() => mobileChannelToggleRef.current?.focus());
+  };
+  const moveViewTab = (event, index) => {
+    let nextIndex = index;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % VIEW_ENTRIES.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + VIEW_ENTRIES.length) % VIEW_ENTRIES.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = VIEW_ENTRIES.length - 1;
+    else return;
+    event.preventDefault();
+    navigation.setActiveView(VIEW_ENTRIES[nextIndex][0]);
+    viewTabRefs.current[nextIndex]?.focus();
+  };
   return <SurfaceShell
     topology={topology}
     className={['shell', mobileChannelsOpen && 'mobile-channels-open', rightPanel && 'has-context'].filter(Boolean).join(' ')}
     data-workspace-view={navigation.activeView}
   >
-    <WorkspaceRail session={session} navigation={navigation} onClose={mobileChannelsOpen ? () => setMobileChannelsOpen(false) : null} />
+    <WorkspaceRail session={session} navigation={navigation} onClose={mobileChannelsOpen ? closeMobileChannels : null} />
     <main className="workspace">
       <header className="channel-header">
         <div className="channel-identity">
-          <button type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button>
+          <button ref={mobileChannelToggleRef} type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button>
           <div><p className="eyebrow">频道</p><h1>{channel?.qualified_name || channel?.name || '选择频道'}</h1></div>
         </div>
         <div className="channel-header-actions">
@@ -118,13 +136,15 @@ export function WorkspaceLayout({
         </div>
       </header>
       <nav className="channel-view-tabs" role="tablist" aria-label="频道主视图">
-        {Object.entries(VIEW_LABELS).map(([view, label]) => <button
+        {VIEW_ENTRIES.map(([view, label], index) => <button
+          ref={(node) => { viewTabRefs.current[index] = node; }}
           type="button"
           role="tab"
           aria-selected={navigation.activeView === view}
           tabIndex={navigation.activeView === view ? 0 : -1}
           className={navigation.activeView === view ? 'active' : ''}
           key={view}
+          onKeyDown={(event) => moveViewTab(event, index)}
           onClick={() => navigation.setActiveView(view)}
         >{label}</button>)}
       </nav>

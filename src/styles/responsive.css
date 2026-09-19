@@ -53,9 +53,9 @@
   width: var(--visual-viewport-width);
   height: calc(var(--visual-viewport-height) - 5px);
 }
-  /* 标题只占一行。控件仍保持 44px 点击面；放不下的 workspace 动作进入 ••• 菜单，
-     恒不再为了三个图标给 header 追加第二条工具栏。 */
-  .mobile-shell .workspace { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: 44px auto minmax(0, 1fr); }
+  /* 当前 Workspace 的文件也是主视图，不再是 header 动作。移动端因此把三个
+     tab 放在独立 44px 行，避免它们与频道入口和右侧命令争抢同一网格。 */
+  .mobile-shell .workspace { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 44px 44px auto minmax(0, 1fr); }
   .mobile-shell .channel-rail { display: none; }
   /* Channel navigation is an independent mobile Surface. Conversation stays
      mounted underneath, but its grid must not size or stack the nav page. */
@@ -83,24 +83,25 @@
   .mobile-shell .channel-identity .eyebrow { display: none; }
   .mobile-shell .channel-header h1 { font-size: 13px; white-space: nowrap; }
   .mobile-shell .mobile-channel-toggle { display: grid; width: 44px; height: 44px; border-radius: 5px; font-size: 16px; }
-  .mobile-shell .channel-header-actions { grid-row: 1; grid-column: 3; height: 44px; flex: 0 0 auto; gap: 0; padding-right: 0; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
+  .mobile-shell .channel-header-actions { grid-row: 1; grid-column: 2; height: 44px; flex: 0 0 auto; gap: 0; padding-right: 0; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
   .mobile-shell .header-action { min-width: 44px; min-height: 44px; padding: 2px 4px; border-radius: 5px; font-size: 10px; }
   .mobile-shell .mock-advance-action { display: none; }
   .mobile-shell .mobile-channel-menu-action { display: block; min-height: 44px; }
-  .mobile-shell .channel-view-tabs { grid-row: 1; grid-column: 2; min-height: 44px; align-items: center; gap: 0; padding: 0; border-bottom: 1px solid var(--line-subtle); }
+  .mobile-shell .channel-view-tabs { grid-row: 2; grid-column: 1 / -1; min-height: 44px; align-items: center; gap: 0; padding: 0; border-bottom: 1px solid var(--line-subtle); }
   .mobile-shell .channel-view-tabs button { min-width: 44px; min-height: 44px; height: 44px; align-self: auto; border-bottom: 0; border-radius: 5px; font-size: 10px; }
   .mobile-shell .channel-view-tabs button.active { border-bottom-color: transparent; background: var(--surface-selected); }
   .mobile-shell .workspace-quick-actions { display: none; }
-  .mobile-shell .status-stack { grid-row: 2; grid-column: 1 / -1; }
-  .mobile-shell .dynamic-workspace { grid-row: 3; grid-column: 1 / -1; }
+  .mobile-shell .status-stack { grid-row: 3; grid-column: 1 / -1; }
+  .mobile-shell .dynamic-workspace { grid-row: 4; grid-column: 1 / -1; }
   /* 移动端一次只展示一个主 Surface。文件和终端不是把 Conversation 挤成半屏的
      “分屏”，而是占满 header 以下的完整可用区域；关闭后原消息树仍在并恢复阅读态。 */
-  /* Only page-level surfaces belong on the workspace's third row. Timeline and
+  /* Only page-level surfaces belong on the workspace's content row. Timeline and
      the private placeholder live one grid deeper, inside dynamic-message-pane;
-     assigning them row 3 creates implicit empty rows and can collapse the real
+     assigning them to the outer grid creates implicit empty rows and can collapse the real
      scroller to zero height on mobile. */
+  .mobile-shell .workspace > .conversation-surface,
   .mobile-shell .workspace > .workspace-view,
-  .mobile-shell .workspace > .channel-private-empty { grid-row: 3; grid-column: 1 / -1; }
+  .mobile-shell .workspace > .channel-private-empty { grid-row: 4; grid-column: 1 / -1; }
   .mobile-shell .conversation-surface { --conversation-composer-base-height: 120px; }
   .mobile-shell .send-button, .mobile-shell .task-create-modal > header button, .mobile-shell .task-create-modal footer button,
   .mobile-shell .global-search > header button, .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
