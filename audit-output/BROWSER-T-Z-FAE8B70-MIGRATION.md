@@ -360,6 +360,45 @@ wheel `-900` → public browsing mode → send `send browsing` → inspect publi
 geometry. This is the Composer/reading-intent handoff plus reading command
 executor owner boundary; the browser contract stays hard.
 
+## Follow-up: commit-boundary recheck (`77760c8` → current HEAD `6b2984b`)
+
+The strict UX-A08/case38 contracts were compared before running:
+
+```text
+git diff 61c8758 HEAD -- \
+  tests/browser/ux-unseen-persistence.spec.js \
+  tests/browser/waiting-production-contract.spec.js
+```
+
+The target spec diff is empty: the `61c8758` hard checks remain intact,
+including live finite `unseenRecords`, duplicate/invalid-record normalization,
+reload jump text, exact tuple persistence, jump-clear empty records, and
+visible-row acknowledgement; case38 still requires browsing `gap > 1` at line
+298. No product change was staged or made by this recheck.
+
+Each commit was run in its own detached worktree with independent ports, using
+only the two strict cases:
+
+| revision | UX-A08 durable unseen | Waiting case38 | disposition |
+|---|---|---|---|
+| `77760c8` | RED at line 91: visible approval/jump, then `unseenRecords=[]` | RED at line 298: `after.list.gap=0` vs `>1` | same product gaps; this historical worktree also logged a recoverable React `ReferenceError: controller is not defined` during mount |
+| current HEAD `6b2984b` | RED at line 91: visible approval/jump, then `unseenRecords=[]` | RED at line 298: `after.list.gap=0` vs `>1` | same strict results; no environment timeout or selector fallback |
+
+Commands used for both revisions were the equivalent of:
+
+```text
+ATOLL_TEST_WEB_PORT=<isolated> ATOLL_TEST_MOCK_PORT=<isolated> \
+npx playwright test tests/browser/ux-unseen-persistence.spec.js \
+  tests/browser/waiting-production-contract.spec.js \
+  --grep "reload normalizes durable unseen|wheel-takeover-after-send" \
+  --reporter=line
+```
+
+The unchanged red outcomes across the commit boundary strengthen ownership:
+UX-A08 remains Reading persistence/arrival acknowledgement, and case38 remains
+Composer/reading-intent handoff plus the reading command executor. Neither is a
+migration artifact, so neither assertion is relaxed.
+
 ## Current files changed in this partition
 
 - `tests/browser/ui-visual.spec.js` (current public governance/files selectors;
