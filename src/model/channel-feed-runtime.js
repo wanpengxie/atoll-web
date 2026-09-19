@@ -284,6 +284,28 @@ function controlParentClosure(state, tail) {
   return true;
 }
 
+// A DOM tail boundary is only a candidate notification fence. Walk the
+// canonical installed rows up to that frozen boundary and stop at the first
+// physical gap or response-first terminal whose exact parent is not yet in
+// Replica's envelope index. This is deliberately a Feed/Replica join rather
+// than a second notification fold: a late parent must be able to make the
+// earlier terminal visible even after a tail observation has arrived.
+function closedNotificationBoundary(state, boundary, previous = 0) {
+  if (!state || !(state.rows instanceof Map)) return previous;
+  const target = historyNumeric(boundary);
+  let closed = historyNumeric(previous);
+  for (let seq = closed + 1; seq <= target; seq += 1) {
+    if (!state.rows.has(seq)) break;
+    const envelope = state.rows.get(seq);
+    if (envelope?.kind === 'response'
+      && envelope.parent_id
+      && FINAL.has(argsOf(envelope)?.status)
+      && !state._envelopesById?.has?.(String(envelope.parent_id))) break;
+    closed = seq;
+  }
+  return closed;
+}
+
 // One lifetime owner for source admission, canonical commit, cache and
 // publication. Cache/history/live are ingress provenance, never stores that a
 // consumer can observe independently of Replica.commit.
@@ -1243,7 +1265,15 @@ export function createChannelFeedRuntime(options = {}) {
       || boundary <= 0 || boundary > status.headSeq) return false;
 
     const previous = cursors.notificationHighWater(channelId);
-    const acknowledged = cursors.acknowledgeNotifications(channelId, boundary);
+    // The installed boundary is captured by Presentation, but only the
+    // canonical Feed rows can prove that it is a continuous, parent-closed
+    // notification frontier. In particular, do not let a response-first
+    // terminal disappear behind high-water before its request arrives.
+    const acknowledgedBoundary = closedNotificationBoundary(
+      replica.state(channelId), boundary, previous,
+    );
+    if (acknowledgedBoundary <= previous) return previous || false;
+    const acknowledged = cursors.acknowledgeNotifications(channelId, acknowledgedBoundary);
     followingObservations.set(channelId, Object.freeze({
       authority: Object.freeze({ ...authority }),
       owner: Object.freeze({ ...owner }),
@@ -1251,7 +1281,7 @@ export function createChannelFeedRuntime(options = {}) {
       // Only facts at or below the frozen DOM boundary are confirmed. A
       // lower backlog receipt must leave later already-committed rows
       // visible; subsequent live ingress advances this lease incrementally.
-      headSeq: boundary,
+      headSeq: acknowledged,
     }));
     if (acknowledged > previous) publish();
     return acknowledged;

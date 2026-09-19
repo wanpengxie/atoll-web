@@ -197,6 +197,49 @@ describe('notification confirmation contract', () => {
     expect(runtime.getSnapshot().notificationAuthorityPort.reset()).toBe(true);
     expect(Object.keys(localStorage).filter((key) => key.startsWith('atoll.feed-cursors.v1.'))).toEqual([]);
   });
+
+  it('does not let a response-first terminal acknowledgment swallow its late parent', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    const terminal = {
+      id: 'ack-fence-final',
+      parent_id: 'ack-fence-request',
+      kind: 'response',
+      type: 'agent.ask',
+      sender: { kind: 'agent', id: 'agent:reviewer:1' },
+      audience: [selfId],
+      payload: { body: { status: 'completed', text: 'arrived before request' } },
+    };
+    expect(feed.enqueue({ channel_id: channelId, seq: 1, source: 'live', envelope: terminal })).toBe(true);
+    const status = feed.historyFor(channelId);
+
+    // The user is already at the rendered tail, but the only candidate row
+    // is still unresolved lifecycle provenance. Acknowledgment must not hide
+    // the row before the exact parent can close that obligation.
+    expect(feed.acknowledgeNotifications(confirmationFor(channelId, status, 1))).toBe(false);
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(0);
+
+    expect(feed.enqueue({
+      channel_id: channelId,
+      seq: 2,
+      source: 'live',
+      envelope: {
+        id: 'ack-fence-request',
+        kind: 'request',
+        type: 'agent.ask',
+        sender: { kind: 'human', id: selfId },
+        audience: ['agent:reviewer:1'],
+        payload: { body: { text: 'late request' } },
+      },
+    })).toBe(true);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    // Once the parent is installed, the same canonical boundary is now
+    // closed and may be acknowledged explicitly.
+    const closedStatus = feed.historyFor(channelId);
+    expect(feed.acknowledgeNotifications(confirmationFor(channelId, closedStatus, 2))).toBe(2);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+  });
 });
 
 describe('notification presentation facts', () => {
