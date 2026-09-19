@@ -10,16 +10,24 @@ Status at the latest runs:
 - 38/38 cases have an executable current test (10 existing migrated specs, 14
   visual cases in `ui-visual.spec.js`, and 14 Waiting cases in
   `waiting-production-contract.spec.js`).
-- The existing behavior group was 8 green / 2 red; the Waiting replacement was
-  12 green / 2 red after correcting reduced-motion setup; the visual group is
-  intentionally red against the preserved screenshot/geometry contract (the
-  current run recorded 14 red, including the missing global activity entry).
+- The latest full browser behavior pass (including the canonical-history case)
+  is 8 green / 2 red. UX-A01 remains red at the post-mount localStorage
+  seeding seam: one run removed the stale chip but returned no rows, while an
+  isolated rerun never exposed the chip. UX-A08 is red at the restored durable
+  contract because the live arrival still writes no `unseenRecords` tuple.
+  Neither result is evidence to weaken its case.
+  The Waiting replacement is 13 green / 1 red after the Composer handoff guard
+  and clamped-wheel fix; the remaining red is the browsing send takeover. The
+  visual group is intentionally red against the preserved screenshot/geometry
+  contract: the latest production run recorded all 14 red, including the
+  missing global activity entry.
 - The red cases are not skipped or weakened. They are regression packets for
   product/contract decisions. Mock-control HTTP `ok` checks are setup checks
   only; product assertions are made against the rendered production surface.
-- No source hash, source-path fingerprint, React fiber read, product diagnostic
+- No source hash, source-path fingerprint, React fiber read, private product
   journal, vendor/package change, compatibility selector, or fixture-only entry
-  remains in the migrated target specs.
+  remains in the migrated target specs. The persistence case uses only the
+  explicit opt-in reading trace as a black-box acknowledgement receipt.
 
 ## Case ledger
 
@@ -49,7 +57,7 @@ setup → action → result; current evidence and disposition.
    roster. Invariant: member controls stay inside the governance panel. Owner:
    `ChannelAdministrationPanel`/`ChannelMembers`/`SelectMenu`. Original:
    same scenario/seed → `成员` tab → screenshot. Current: public tab reaches
-   `频道治理`; screenshot differs by 15%. **RED: visual regression packet.**
+   `频道治理`; screenshot differs by 11%. **RED: visual regression packet.**
 
 4. **UI-VIS-02 频道管理 危险操作 视觉基线** — Capability: reach protected
    retirement controls without accidentally retiring the root. Invariant:
@@ -92,10 +100,9 @@ setup → action → result; current evidence and disposition.
    on a narrow screen. Invariant: the listbox stays within the panel and remains
    reachable. Owner: `ChannelMembers`/`SelectMenu`. Original:
    `actor-governance` seed 906 → 600×720 → members → participant combobox →
-   listbox screenshot. Current: the path uses the public combobox/listbox
-   contract, but the latest production run is blocked during login by
-   `Maximum update depth exceeded` in the live workspace; the preserved
-   screenshot remains red. **RED: responsive visual/product packet.**
+   listbox screenshot. Current: the public combobox/listbox path reaches the
+   listbox at 600×720; the preserved screenshot differs by 4%. **RED:
+   responsive visual regression packet; no environment block.**
 
 10. **UI-VIS-09 用户消息与 Agent 答案气泡视觉基线** — Capability: read a user
     request and Agent answer without horizontal clipping. Invariant: all owned
@@ -156,9 +163,9 @@ setup → action → result; current evidence and disposition.
 
 16. **UX-A09 covered Surface keeps arrival unseen until a fresh visible materialized-tail observation** — Capability: an arrival while Files covers the compact conversation is not acted on by an invisible reader; reopening returns to canonical history. Invariant: hidden content cannot manufacture a viewport notice. Owner: `WorkspaceLayout` surface visibility + `ConversationSurface`/history consumer. Original: mobile `multi-channel` seed 29101 → open Files → `push_terminal` → expect hidden materialization and one jump → reopen/ack. Current: canonical `approval` arrival → hidden pane has no jump → reopen sees `Approve live mock action` at tail with no stale jump. **PASS.**
 
-17. **UX-A09 an old channel activation cannot consume or publish unread state in the committed channel** — Capability: unread state belongs to the active channel and returns with that channel. Invariant: switching away clears the inactive view and switching back restores only its own notice. Owner: `useChannelNavigation`/`WorkspaceLayout` + per-channel `useConversationProjection`. Original: `multi-channel` seed 29103 → wheel c0 up → `push_terminal` → switch `c0.project` → return c0. Current: canonical approval and public `.channel-item` activation are used; switch-to-project never reaches the expected heading because the current wire/session owner disconnects while the editor is remounted. **RED: product regression packet (also logs Tiptap “editor view is not available” and `feed.disconnectHistory owner 尚未连接`).**
+17. **UX-A09 an old channel activation cannot consume or publish unread state in the committed channel** — Capability: unread state belongs to the active channel and returns with that channel. Invariant: switching away clears the inactive view and switching back restores only its own notice. Owner: `useChannelNavigation`/`WorkspaceLayout` + per-channel `useConversationProjection`. Original: `multi-channel` seed 29103 → wheel c0 up → `push_terminal` → switch `c0.project` → return c0. Current: canonical approval and public `.channel-item` activation are used; the targeted rerun after `effc8f0` reaches both headings and preserves the channel-owned notice. **PASS after product guard; the prior Tiptap/`feed.disconnectHistory owner 尚未连接` failure is retained in history, not hidden.**
 
-18. **UX-A09 history, replay, reconnect, filters and channel switches never manufacture viewport unseen** — Capability: history admission, duplicate replay, reconnect, filters, hidden surface, and channel switches do not invent a jump. Invariant: only a real active-channel unseen arrival can show the notice. Owner: `channel-replica`/history consumer + `useConversationProjection` and navigation. Original: `multi-channel` seed 29105 → dense history → terminal/replay → filter on/off → Files hidden → dense progress → drop/reconnect → switch channels. Current: dense canonical approval/replay and public filter/Files/reconnect evidence run; final channel switch cannot mount `c0.project` after the same owner-disconnect path. **RED: product regression packet; no selector weakening.**
+18. **UX-A09 history, replay, reconnect, filters and channel switches never manufacture viewport unseen** — Capability: history admission, duplicate replay, reconnect, filters, hidden surface, and channel switches do not invent a jump. Invariant: only a real active-channel unseen arrival can show the notice. Owner: `channel-replica`/history consumer + `useConversationProjection` and navigation. Original: `multi-channel` seed 29105 → dense history → terminal/replay → filter on/off → Files hidden → dense progress → drop/reconnect → switch channels. Current: dense canonical approval/replay and public filter/Files/reconnect evidence run; the targeted rerun after `effc8f0` completes the final channel switch without publishing a stale jump. **PASS after product guard; no selector weakening.**
 
 19. **UX-A01 stale exact-incarnation filter remains named and removable** —
     Capability: a stale actor identity remains an explicit applied filter until
@@ -167,13 +174,18 @@ setup → action → result; current evidence and disposition.
     Original: seed 29102 → inject old schema-2 ViewSession filter → reload →
     inspect/remove stale filter. Current: seed schema 3 (the live persisted
     contract), reload, use public stale filter button/`aria-pressed`, remove it,
-    and assert rows return. **PASS.**
+    and assert rows return. The preceding run observed the stale chip and then
+    removed it, but the post-remove rendered row set was empty; an isolated
+    rerun instead timed out before the stale chip appeared while the same
+    history rows were already visible. **BLOCKED as a migration/setup race:
+    seed the v3 preference before the live ViewSession owner mounts, then
+    re-run; do not weaken the row-return assertion.**
 
 20. **UX-A06 selecting a settled member filters and acknowledges without a second control** — Capability: clicking a settled member both selects the filter and acknowledges that member’s activity. Invariant: no separate acknowledgement button appears and list identity/mode stays stable. Owner: actor filter in `ConversationSurface`/activity projection. Original: `long-running` seed 29104 → send mention → advance 3 → settled member button → click. Current: same production composer/advance path; public activity classes, `aria-pressed`, row identity, and absence of `.agent-activity-ack` are asserted. **PASS.**
 
 ### `ux-unseen-persistence.spec.js` (1 case)
 
-21. **reload normalizes malformed legacy unseen around valid seq records, then verified latest clears exactly those records** — Capability: reload must not resurrect stale physical browsing or manufacture a notice; latest canonical presentation is readable. Invariant: persisted reading mode/bookmark is normalized to the current product contract. Owner: `view-session` + `ConversationSurface` initialization/history consumer. Original: deep-history seed 29109 → inject malformed legacy unseen records → wheel up → `pulse` → reload → assert durable unseen record tuples and diagnostic ack clearing. Current: seed schema-3 storage with malformed stale browsing/bookmark/unseen fields → real approval arrival while browsing → reload → assert latest text, following mode, null bookmark, no jump, tail ≤24, visible document. **PASS.** The old tuple/diagnostic assertions were retired implementation storage; the user-visible reload invariant is preserved without durable unseen compatibility code.
+21. **reload normalizes malformed unseen around valid sequence records, then verified latest clears exactly those records** — Capability: a browsing reader retains durable exact unseen evidence across reload, and the verified latest action clears precisely that evidence. Invariant: storage normalizes duplicate/invalid records, the jump reflects one valid record, and acknowledgement leaves no record behind. Owner: `view-session` persistence + `useConversationProjection`/`ConversationSurface` reading owner. Original: deep-history seed 29109 → wheel up → `pulse` → inspect durable `unseenRecords` → inject duplicate/invalid records → reload → jump-latest → assert normalized tuples and black-box visible-row acknowledgement. Current: canonical `approval` arrival, public `view-session.v3` storage, rendered jump/mode/physical gap, and opt-in read trace; no legacy owner helper or source internals. **RED: product persistence gap at the first result boundary** — after the visible approval jump, `readingState().value.unseenRecords` is `[]` instead of one finite sequence-backed tuple (`ux-unseen-persistence.spec.js:91`). The test retains the subsequent normalization, reload, jump-clear, and ack assertions for when the owner writes the contract; no test-only seed or soft fallback hides the missing write.
 
 ### `visible-unseen-ack.spec.js` (2 cases)
 
@@ -196,7 +208,7 @@ setup → action → result; current evidence and disposition.
 
 25. **queued request hands off once to a rapidly completed canonical row without duplicate semantics** — Capability: a queued request becomes one completed canonical row. Invariant: Waiting disappears and exactly one matching row remains. Owner: `useWaitingHandoff`/`WaitingLayer` + `channel-replica` canonical turn. Original: long-running-canonical seed `0x921801` → owner send, target queue, advance 3, `push_terminal`, replay envelope → inspect handoff animation/probe. Current: same production composer/advance/terminal path; public row count and Waiting absence. **PASS.**
 
-26. **browsing-up handoff stays offscreen, preserves its anchor, and cleans up on channel exit** — Capability: a browsed reader keeps its anchor while a queued task completes and leaving the channel cleans Waiting. Invariant: no hidden handoff writes the browsing position. Owner: `ReadingContainerHandoff` + `useBrowsingReadingController`/navigation. Original: long-running-history seed `0x921802` → queue → wheel up → advance/terminal → switch c0.project. Current: public anchor and channel-button path; switch still fails to mount `c0.project` after the owner-disconnect/Tiptap error. **RED: product regression packet.**
+26. **browsing-up handoff stays offscreen, preserves its anchor, and cleans up on channel exit** — Capability: a browsed reader keeps its anchor while a queued task completes and leaving the channel cleans Waiting. Invariant: no hidden handoff writes the browsing position. Owner: `ReadingContainerHandoff` + `useBrowsingReadingController`/navigation. Original: long-running-history seed `0x921802` → queue → wheel up → advance/terminal → switch c0.project. Current: the targeted rerun after `effc8f0` preserves the anchor and mounts `c0.project`; the earlier owner-disconnect/Tiptap failure is retained as the fixed regression history. **PASS after product guard.**
 
 27. **reduced motion performs the same semantic handoff without transition state** — Capability: reduced-motion users receive the same completed row and no transition animation. Invariant: semantic owner is singular; visual animation is absent. Owner: `useWaitingHandoff` + CSS reduced-motion rules. Original: reduced-motion context → long-running-canonical seed `0x921803` → queue → advance 3 → inspect handoff probe. Current: emulate reduced motion after production queue exists, complete terminal, assert row/Waiting semantics and zero `waiting-handoff` animations. **PASS.**
 
@@ -228,6 +240,71 @@ setup → action → result; current evidence and disposition.
 
 38. **real App send transaction keeps queued WaitingLayer out of wheel-takeover-after-send geometry** — Capability: send after trusted wheel takeover preserves browsing ownership and anchor. Invariant: send must not silently force Following or perform a competing programmatic scroll. Owner: `useBrowsingReadingController` + submission runtime/reading command executor. Original: wheel takeover → send → instrument scroll writers/anchor. Current: production wheel then send; public result gap was 0 (Following) instead of the required browsing gap >1. **RED: product regression packet; no forced test pass.**
 
+## Follow-up: durable unseen result ownership (read-only)
+
+The persistence migration was previously weakened to assert only that reload
+starts at Following and ignores stale hints. That removed the product results
+that make the durable unseen contract observable. The corrected spec restores
+the exact-sequence tuple normalization (`unseenRecords`/`unseenKeys`/count),
+reload jump restoration, jump-latest clearing, physical-tail convergence, and
+black-box acknowledgement evidence from the public opt-in reading trace. It
+uses current schema-3 localStorage and the public approval arrival; it does not
+reintroduce the old reading-owner helper, React/fiber probes, or source-path
+assertions.
+
+Targeted run: `ATOLL_TEST_WEB_PORT=15279
+ATOLL_TEST_MOCK_PORT=19838 npx playwright test
+tests/browser/ux-unseen-persistence.spec.js`; **1 red** at line 92, where the
+live approval is visible and the jump is present but the persisted reading has
+zero `unseenRecords`. Source read-only audit shows `view-session` can normalize
+such records, while `persistentReadingSession()` emits only mode/bookmark and
+the live-arrival/ack owner never supplies durable unseen records. Ownership is
+the reading persistence/arrival acknowledgement product path, not a migration
+fixture. The remaining assertions are intentionally left hard and unskipped so
+the product gap cannot be mistaken for a passing reload contract.
+
+## Follow-up: actor-control payload ownership (read-only)
+
+The architecture guard is a real current product gap, distinct from the four
+browser trajectory cases above. The old `fae8b70` behavior is unambiguous:
+`src/model/task-controls.js` merged an actor-provided entry payload over a
+caller fallback, `src/ui/Timeline.jsx` supplied `{ target: context.requestId }`
+for generic controls, and `task-controls.work.test.js` explicitly locked this
+legacy no-payload fallback. The current `useWaitingEditingController` still
+implements the same shape at `controlPayload()` and the generic button at its
+WaitingLayer.
+
+The correct post-`fae8b70` owner contract is stricter. The subtractive audit's
+B5 target says an actor-authored control payload is mandatory; missing payload
+must make the control unavailable, never reconstruct an older request shape.
+The current feature owner already demonstrates the intended boundary:
+`createFeatureWaitingControlSubmission()` only constructs the known `steer` /
+`interrupt` requests and throws for an unowned control word; `WorkspaceApp`
+passes that typed request to the single `submission.control` owner, whose
+outbox frame preserves the supplied payload unchanged.
+
+Minimal red example (no product edit made): use a queued turn `r-1` whose
+latest progress declares `controls: [{ word: 'agent.retry' }]` with no
+`payload`, render `WaitingLayer` as a writable member with current actor
+authority, then click `retry`. The current callback is
+`onTaskControl(turn, 'agent', 'agent.retry', { target: 'r-1' })`. Under B5 the
+button must be unavailable (or the owner must reject it); it must never receive
+the fabricated target. This is a **product ownership gap** at the generic
+Waiting control boundary (`useWaitingEditingController` → `submission.control`);
+it is not a reason to weaken the migrated browser cases. The fix belongs to
+the Waiting/feature control owner, not to a T–Z test or fixture.
+
+The four post-fix targeted trajectories were run with unique mock/web ports:
+the two UX-A09 channel-switch cases and Waiting case 26 now pass; Waiting case
+38 still fails at `waiting-production-contract.spec.js:298` with
+`after.list.gap === 0`. Reproduction is `long-running-history`, seed
+`0x92_18_38` (the helper computes `0x92_18_30 + 'browsing'.length`), viewport
+1120×760: login at tail, hover `.timeline-message-list`, wheel `-900` until
+`data-viewport-mode="browsing"`, send `send browsing`, then assert the public
+tail gap remains `>1`. Current send handoff owns Following/tail instead. The
+minimal owners are the Composer submission/reading-intent handoff and the
+reading command executor; no test-only scroll writer was added.
+
 ## Current files changed in this partition
 
 - `tests/browser/ui-visual.spec.js` (current public governance/files selectors;
@@ -236,7 +313,8 @@ setup → action → result; current evidence and disposition.
   replacements for the deleted Waiting cases)
 - `tests/browser/unseen-following-timeline.spec.js`
 - `tests/browser/ux-reading-evidence.spec.js`
-- `tests/browser/ux-unseen-persistence.spec.js`
+- `tests/browser/ux-unseen-persistence.spec.js` (restored durable unseen
+  normalization, reload, jump-clear, and acknowledgement result contract)
 - `tests/browser/visible-unseen-ack.spec.js`
 - `tests/browser/helpers/profile-cold-entry.mjs`
 - `tests/browser/reading-owner.js`

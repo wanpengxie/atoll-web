@@ -32,7 +32,7 @@ async function approval(request) {
   return response.json();
 }
 
-async function persistedReading(page) {
+async function readingState(page) {
   return page.evaluate(() => {
     const storage = JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null');
     const readings = storage?.readings || {};
@@ -44,50 +44,40 @@ async function persistedReading(page) {
 async function evidence(page, stage) {
   return page.evaluate((label) => {
     const viewport = document.querySelector('.timeline-message-list');
-    const reading = JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null');
-    const readings = reading?.readings || {};
+    const storage = JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null');
+    const readings = storage?.readings || {};
     const key = Object.keys(readings).find((candidate) => candidate.startsWith('c0\u0000c0:mine:')) || '';
+    const trace = window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || {};
+    const entries = trace.entries || [];
+    const acks = entries.filter((entry) => entry.event === 'reading.visible-rows-ack');
+    const owner = [...entries].reverse().find((entry) => entry.event === 'reading.owner-commit');
     return {
       stage: label,
+      readingKey: key,
       saved: key ? readings[key] : null,
       jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
+      physicalGap: viewport ? viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop : null,
+      installedTailID: [...(viewport?.querySelectorAll('[data-presentation-row-id]') || [])]
+        .at(-1)?.dataset.presentationRowId || '',
       mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
-      tailDistance: viewport
-        ? viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop
-        : null,
-      latestVisible: [...(viewport?.querySelectorAll('[data-presentation-row-id]') || [])]
-        .at(-1)?.textContent || '',
+      surfaceVisibility: document.querySelector('.dynamic-message-pane')
+        ? getComputedStyle(document.querySelector('.dynamic-message-pane')).visibility
+        : '',
       documentVisibility: document.visibilityState,
+      activationID: owner?.detail?.activationID || '',
+      lastAck: acks.at(-1)?.detail || null,
+      acks: acks.map((entry) => entry.detail),
+      trace,
     };
   }, stage);
 }
 
-test('reload starts at the latest committed presentation and ignores stale persisted browsing hints', async ({ page, request }, testInfo) => {
+test('reload normalizes durable unseen records, then verified latest clears exactly those records', async ({ page, request }, testInfo) => {
   test.setTimeout(60_000);
   await reset(request, 29109);
-  await page.goto('/');
-
-  // The product deliberately persists preferences and durable identity only;
-  // a reload must not resurrect an old physical position or manufacture a
-  // viewport notice from malformed historical fields.
-  await page.evaluate(() => {
-    localStorage.setItem('atoll.view-session.v3.root', JSON.stringify({
-      schema: 3,
-      preferences: { c0: { scope: 'mine', actorFilter: [], foldOverrides: [], foldDefaults: [], layoutChoices: [] } },
-      readings: {
-        'c0\u0000c0:mine:': {
-          revision: 7,
-          mode: 'browsing',
-          bookmark: { messageID: 'c0-history-request-40', rowViewportOffset: -12, seq: 79 },
-          unseenTail: 7,
-          unseenKeys: ['legacy-key-only'],
-          unseenRecords: [['legacy-key-only', 0], ['malformed', 'Infinity']],
-        },
-      },
-    }));
-  });
-
   await login(page);
+  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'ux-unseen-persistence' }));
+
   const viewport = page.locator('.timeline-message-list');
   await viewport.hover();
   await page.mouse.wheel(0, -2_000);
@@ -95,26 +85,64 @@ test('reload starts at the latest committed presentation and ignores stale persi
 
   const arrival = await approval(request);
   await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
-  const beforeReload = await evidence(page, 'before-reload');
-  await attachJSON(testInfo, 'ux-unseen-persistence-before-reload.json', { arrival, beforeReload });
-  expect(beforeReload.mode).toBe('browsing');
-  expect(beforeReload.jumpText).toBe('↓ 1 条新动态');
+
+  const live = await readingState(page);
+  expect(live.key).toBeTruthy();
+  expect(live.value?.unseenRecords).toHaveLength(1);
+  const [validKey, validSeq] = live.value.unseenRecords[0];
+  expect(Number.isSafeInteger(validSeq) && validSeq > 0).toBe(true);
+
+  await page.evaluate(({ readingKey, key, seq }) => {
+    const storageKey = 'atoll.view-session.v3.root';
+    const stored = JSON.parse(localStorage.getItem(storageKey));
+    const current = stored.readings[readingKey];
+    stored.readings[readingKey] = {
+      ...current,
+      revision: Number(current.revision || 0) + 1,
+      unseenTail: 7,
+      // A durable sequence-backed identity is authoritative; malformed and
+      // legacy key-only entries must be discarded at the storage boundary.
+      unseenKeys: ['legacy-key-only', 'another-legacy-key'],
+      unseenRecords: [
+        [key, seq - 1],
+        [key, seq],
+        ['invalid-zero', 0],
+        ['invalid-infinity', 'Infinity'],
+      ],
+    };
+    localStorage.setItem(storageKey, JSON.stringify(stored));
+  }, { readingKey: live.key, key: validKey, seq: validSeq });
 
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(page.locator('main h1')).toHaveText('c0');
-  await expect(page.getByRole('button', { name: /条新动态/ })).toHaveCount(0);
-  await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'following');
-  await expect(page.getByText('Approve live mock action', { exact: true })).toBeVisible();
+  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'ux-unseen-persistence-reloaded' }));
+  await expect.poll(async () => (await readingState(page)).value?.unseenTail).toBeGreaterThan(0);
+  const restored = await evidence(page, 'restored');
+  await attachJSON(testInfo, 'ux-unseen-persistence-restored.json', {
+    source: { validKey, validSeq, arrival },
+    restored,
+  });
 
-  const restored = await persistedReading(page);
-  const afterReload = await evidence(page, 'after-reload');
-  await attachJSON(testInfo, 'ux-unseen-persistence-after-reload.json', { arrival, beforeReload, restored, afterReload });
-  expect(restored.key).toBeTruthy();
-  expect(restored.value?.mode).toBe('following');
-  expect(restored.value?.bookmark).toBeNull();
-  expect(afterReload.jumpText).toBe('');
-  expect(afterReload.mode).toBe('following');
-  expect(afterReload.tailDistance).toBeLessThanOrEqual(24);
-  expect(afterReload.documentVisibility).toBe('visible');
+  expect(restored.jumpText).toBe('↓ 1 条新动态');
+  expect(restored.saved?.unseenTail).toBe(1);
+  expect(restored.saved?.unseenKeys).toEqual([validKey]);
+  expect(restored.saved?.unseenRecords).toEqual([[validKey, validSeq]]);
+
+  await page.getByRole('button', { name: /1 条新动态/ }).click();
+  await expect(page.locator('.timeline-jump-latest')).toHaveCount(0);
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(24);
+  const cleared = await evidence(page, 'cleared');
+  await attachJSON(testInfo, 'ux-unseen-persistence-cleared.json', cleared);
+
+  expect(cleared.saved?.unseenTail).toBe(0);
+  expect(cleared.saved?.unseenKeys).toEqual([]);
+  expect(cleared.saved?.unseenRecords).toEqual([]);
+  expect(cleared.acks.some((ack) => ack.before?.records?.some(
+    (record) => record.key === validKey && record.seq === validSeq,
+  ))).toBe(true);
+  expect(cleared.lastAck?.remaining).toBe(0);
+  expect(cleared.mode).toBe('following');
+  expect(cleared.surfaceVisibility).toBe('visible');
+  expect(cleared.documentVisibility).toBe('visible');
 });
