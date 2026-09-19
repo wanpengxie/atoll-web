@@ -37,11 +37,20 @@ async function login(page) {
 }
 
 async function chooseSteward(page) {
+  const steward = page.locator('.model-selector-trigger').filter({ hasText: 'steward' });
+  if (await steward.isVisible().catch(() => false)) return;
+
   const choose = page.getByRole('button', { name: '选择 Agent' });
-  await expect(choose).toBeVisible();
-  await choose.click();
-  await page.getByRole('menu', { name: '选择目标 Agent' })
-    .getByRole('menuitem', { name: 'steward' }).click();
+  // The fae user path starts with the sole steward already selected in the
+  // recipient banner. Keep the explicit menu path when it is exposed, but do
+  // not require an otherwise unnecessary chooser click after the composer
+  // derives steward as its default target.
+  if (await choose.isVisible().catch(() => false)) {
+    await choose.click();
+    await page.getByRole('menu', { name: '选择目标 Agent' })
+      .getByRole('menuitem', { name: 'steward' }).click();
+  }
+  await expect(steward).toBeVisible();
 }
 
 async function send(page, text) {
@@ -220,13 +229,14 @@ function rowOf(page, marker) {
 // but only the current viewport is mounted. Reaching a row is therefore a
 // reader action, not a locator retry. Walk the real scroller until the row is
 // materialized before measuring its fold geometry.
-async function revealRow(page, marker) {
+async function revealRow(page, marker, direction = 'up') {
   const scroller = page.locator(SCROLLER);
   const row = rowOf(page, marker);
+  const wheelDirection = direction === 'down' ? 1 : -1;
   for (let attempt = 0; attempt < 80; attempt += 1) {
     if (await row.count() && await row.boundingBox()) return row;
     await scroller.hover();
-    await page.mouse.wheel(0, -Math.max(320, Math.round((await scroller.evaluate((node) => node.clientHeight)) * 0.8)));
+    await page.mouse.wheel(0, wheelDirection * Math.max(320, Math.round((await scroller.evaluate((node) => node.clientHeight)) * 0.8)));
     await page.waitForTimeout(80);
   }
   return row;
@@ -323,7 +333,10 @@ test('角色转移导致的自动折叠，不得移动正在阅读的内容', as
   const frames = await stopSampling(page);
   const after = await readGeometry(page, anchorSelector);
   const report = analyse(before, after, frames);
-  const latestFolded = await (await revealRow(page, markers[5])).locator('.message-fold-toggle').first().getAttribute('aria-expanded');
+  // The pulse leaves the reader at the historical anchor. Return to the latest
+  // entry with the same real downward gesture a reader uses; an upward-only
+  // locator walk can scroll the canonical row out of the virtualized window.
+  const latestFolded = await (await revealRow(page, markers[5], 'down')).locator('.message-fold-toggle').first().getAttribute('aria-expanded');
   await record(testInfo, 'role-transition-anchor', { anchorMarker, before, after, latestFolded, report, frames });
 
   // 角色确实转移了（否则这条 spec 什么都没测）。

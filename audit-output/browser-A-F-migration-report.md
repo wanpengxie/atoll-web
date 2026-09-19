@@ -419,6 +419,36 @@ selector，也没有把名称变化当作等价通过，故不计入 #31 结果�
 Reading fold owner。此前 `668bd55` clean run 的 #31 PASS 仍保留为可比证据，待测试
 合同 owner 处理该公开入口后再在同一当前 HEAD 重跑。
 
+### 第十六轮：#31 两道 gate 的 clean Chromium 复验（`31a892d`，测试侧修复）
+
+本轮把 #31 的两个 gate 分开处理，没有改 product、selector、几何阈值或断言。
+旧 `fae8b70:tests/browser/f3-message-fold.spec.js` 的
+`sendToSteward()` 明确说明 recipient banner 已经选中唯一 steward；因此当当前
+composer 已经显示 steward 时，菜单点击不是 fae 用户路径的必要动作。测试 helper
+现在先确认现有 `.model-selector-trigger` 的 steward 语义状态，只有没有默认目标时
+才走现有公开 chooser 菜单，最后仍用同一 steward trigger 做 gate。
+
+第二个 gate 的旧首断点是 pulse 后从 `H-ROLE-2` 历史锚点寻找位于下方的
+`H-ROLE-6`：冻结 `revealRow()` 只向上滚轮，canonical row 被虚拟列表留在窗口外，
+所以 `.message-fold-toggle` 尚未物化就进入 locator timeout。这不是 row identity 或
+fold eligibility 缺失。helper 仅增加显式 reader 方向，pulse 后用向下真实滚轮回到
+latest row；所有 fold selector、`aria-expanded` 断言和 anchor 几何 oracle 均保持原样。
+
+在干净 snapshot `31a892d`（共享脏树未参与归因）用真实 Chromium 跑合约 #31：
+`1 passed (16.5s)`。独立 diagnostic 的 actual-paint 记录为
+`/tmp/role-transition-diagnostic-31a892d.json`：
+
+| 阶段 | canonical row / authority | actual paint 与几何 |
+| --- | --- | --- |
+| 初始 latest | `H-ROLE-6` row `28961e6d-9282-4850-91ac-0a653c4d710a`；seq `884..890`；content `890:84`；render `890:84\u00011\u00010\u0001\u0001\u0001\u00015` | fold `aria-expanded=true`，latest-role 位已物化 |
+| pulse 锚点 before/after | `H-ROLE-2` row `51c8907d-b582-4c60-9e61-71fd587a67ba`；top `271.38 → 271.38`；scrollTop `4728 → 4728`；scrollHeight `9663 → 9738` | `anchorDrift=0`、`worstDrift=0`、`maxFrameStep=0`、`vanished=false`、`unmountedFrames=0`（105 rAF frames） |
+| latest actual paint | 同一 `H-ROLE-6` row，seq/content 仍为 `884..890` / `890:84`；render `890:84\u00010\u00010\u0001\u0001\u0001\u00015` | 向下真实滚轮 5 步后 top `344.19`；fold `true → false`；最终 mounted IDs 含 `fc3e514f-7736-49cb-a610-fc826f3eaff7`、`840e1057-21d3-4975-857c-138647e65137`、`28961e6d-9282-4850-91ac-0a653c4d710a`、`c0-live-20260918-1` |
+
+pageerror 与 request failure 均为 0。结论是 #31 在 clean `31a892d` 上达到测试侧
+等价闭环；H-ROLE-6 的 semantic row、presentation revision 和 fold eligibility
+均存在，首断点是旧 helper 的单向 materialization，不是产品 owner 缺口。冻结
+`7ba308c` 的 `23/8` aggregate 不改写；本轮只计为当前 HEAD 的 #31 PASS 证据。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
