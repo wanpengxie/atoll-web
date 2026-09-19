@@ -556,6 +556,87 @@ visibleRows=2`。
 当前真正的 reveal 无空帧断言。当前首断点是产品真实冷加载/首帧 materialization 与旧
 fixture 的可读初始面差异；case 2 红测继续交 reading/presentation owner。
 
+### G. Round 18 case 1 admission → DOM anchor causal packet（只读）
+
+本节只解释此前未保留的 4→7 owner-only 实验，不代表产品提交，也没有再修改临时代码。
+证据为 /tmp/gm16-case1-evidence-r3.json。基线是同一个 active list 中的四行：
+
+    activation   = 91dc0b4d-e2d5-4b38-8773-7ceecd0cd40e
+    view         = c0:mine:claude
+    generation   = c0:2
+    anchorID     = c0-claude-target-1-9584913-284
+    anchorSeq    = 1411
+    baselineTop  = -394px (row top - list top)
+    baselineRows = [...-284, ...-285, ...-286, ...-287]
+
+#### Typed chain and observed handoff
+
+| 阶段 | 当前 typed identity / command | 实际证据 |
+|---|---|---|
+| physical top → history request | historyRevealIntent: activationID, inputEpoch, operationID=history:<activation>:<epoch>, viewID=c0:mine:claude, epoch=c0:2, anchorID=...-284, anchorSeq=1411, uiBaselineIDs=[...-284..287], demandUnits | runway epoch 2 先启动；实验随后把同一顶部事实转成 interactive top |
+| Admission staging | presentationAdmission token exact-fences (channel, operationID, activationID, viewID, generation epoch, inputEpoch); staged IDs must be an exact front prefix | epoch 9 的 history.admission_commit_check 为 accepted=true，inserted/staged=[...-142,...-213]，presentationRevision=4 |
+| Projection commit | commitPresentationGrant publishes the accepted candidate and commit token; currentAdmissionAuthority only exposes activation/input/view/epoch | history.admission_commit 为 operationID=history:<activation>:9、inputEpoch=8、presentationRevision=4 |
+| DOM paint | mounted .timeline-message-list is the sole list witness; no admission-specific DOM anchor command is emitted | DOM 从 4 行变为 7 行，active list=1，全部采样帧 visibleRows=3 |
+
+实验中的 intent 时序（这些 start/cancel 是临时 handoff 为区分 runway/top 而主动
+abort 的结果，不应复制为生产行为）为：
+
+    16.890  start epoch=2 reason=runway urgency=anticipatory anchorSeq=1411
+    17.081  start epoch=3 reason=top    urgency=interactive  anchorSeq=1411
+    17.115  cancel epoch=2 (reason field remains runway)
+    17.164  start epoch=4 reason=top; 17.199 cancel epoch=3 (top)
+    17.248  start epoch=5 reason=top; 17.280 cancel epoch=4 (top)
+    17.331  start epoch=6 reason=top; 17.367 cancel epoch=5 (top)
+    17.416  start epoch=7 reason=top; 17.450 cancel epoch=6 (top)
+    17.499  start epoch=8 reason=top; 17.532 cancel epoch=7 (top)
+    17.581  start epoch=9 reason=top; 17.618 cancel epoch=8 (top)
+    18.449  commit-check epoch=9 accepted; staged [...-142,...-213]
+    18.450  commit epoch=9 inputEpoch=8 presentationRevision=4
+    18.494  satisfied epoch=9 reason=top
+    18.594  start epoch=10 reason=top anchorSeq=1127
+    19.487  commit epoch=10 staged [...-71], presentationRevision=5
+    19.527  satisfied epoch=10; 19.627 start epoch=11 anchorSeq=985 (still pending in snapshot)
+
+#### First public error and minimum owner contract
+
+After the accepted epoch-9 grant, the old baseline anchor ID ...-284 remained connected,
+but its measured offset was -33.4375px rather than -394px; delta is +360.5625px.
+The final seven row IDs were [...-71,...-142,...-213,...-284,...-285,...-286,...-287],
+so supply and paint were real. The first error after admission is therefore the
+Reading/Projection → DOM anchor handoff, not Admission identity validation or history
+supply. The DOM adapter is an executor/witness and remains outside this round.
+
+The current grant does not carry the baseline anchor geometry. historyRevealIntent carries
+anchorID/anchorSeq but not rowViewportOffset; currentAdmissionAuthority() carries only
+activationID/inputEpoch/viewID/epoch; and contentAnchorCommand() is explicitly the fold
+command (restore-content-anchor) that searches [data-fold-id], not a message prepend.
+The existing position-row executor can preserve a message row, but the Reading owner must
+publish it from the accepted admission rather than rely on an unrelated scheduler/DOM query.
+
+The smallest actionable contract for the Reading owner is one immutable, single-use admission
+anchor lease bound to the accepted operation:
+
+    {
+      type: 'position-row',
+      activationID,
+      inputEpoch,
+      intentRevision,
+      operationID,
+      viewID,
+      epoch,
+      presentationRevision: <accepted post-commit revision>,
+      messageID: 'c0-claude-target-1-9584913-284',
+      viewportOffset: -394
+    }
+
+Publish it once only after the exact staged prepend grant; consume it only after the connected
+row reaches the captured offset within the existing tolerance. Revoke it before execution when
+activation/view/generation, inputEpoch/intentRevision, browsing mode, or older direction
+changes. A newer top request must not start until this lease settles; no total-height heuristic,
+global DOM re-query, or private scheduler settle event substitutes for the typed identity and
+visible offset. This gives the Reading owner a direct implementation target without changing
+VendorListExecutor, useHistoryConsumer, or the other five red cases.
+
 ## Boundary audit
 
 - This partition edits only the G–M `tests/browser` specs and this `audit-output` report. No
