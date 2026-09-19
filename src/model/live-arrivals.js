@@ -43,10 +43,14 @@ function entryContainsEnvelope(entry, envelopeID) {
     || turn.provisional?.some((item) => item.envelope?.id === envelopeID));
 }
 
-function rootTurnID(state, envelope) {
-  const entry = (state?.timeline || []).find((candidate) => entryContainsEnvelope(candidate, envelope?.id));
+function rootTimelineEntry(state, envelope) {
+  return (state?.timeline || []).find((candidate) => entryContainsEnvelope(candidate, envelope?.id));
+}
+
+function rootTurnID(state, envelope, entry = rootTimelineEntry(state, envelope)) {
   if (entry?.kind === 'turn') return entry.turn.requestId;
-  return entry?.envelope?.id || envelope?.id || envelope?.parent_id || envelope?.correlation_id || '';
+  if (envelope?.kind === 'request') return envelope.id || '';
+  return envelope?.correlation_id || envelope?.parent_id || envelope?.id || entry?.envelope?.id || '';
 }
 
 // Replica commit provenance for the personal viewport. This owner contains no
@@ -58,8 +62,9 @@ export function recordLiveTimelineArrival(state, envelope, seq, selfId = '') {
   let rowID = '';
   let key = '';
   if (disposition === 'request' || disposition === 'final') {
-    key = rootTurnID(state, envelope);
-    rowID = state.turns?.has?.(key) ? key : envelope.id || key;
+    const rootEntry = rootTimelineEntry(state, envelope);
+    key = rootTurnID(state, envelope, rootEntry);
+    rowID = rootEntry?.kind === 'turn' ? key : envelope.id || key;
   } else if (disposition === 'event') {
     rowID = envelope.id || '';
     key = rowID;

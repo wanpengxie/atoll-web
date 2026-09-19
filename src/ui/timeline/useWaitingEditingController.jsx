@@ -48,6 +48,16 @@ function latestStage(turn) {
   return AGENT_MESSAGE_TYPES.has(turn?.request?.type) ? 'queued' : '';
 }
 
+function timelineTurn(state, requestId) {
+  if (!requestId) return null;
+  for (const entry of state?.timeline || []) {
+    if (entry?.turn?.requestId === requestId) return entry.turn;
+    const child = entry?.thread?.find((item) => item?.turn?.requestId === requestId);
+    if (child) return child.turn;
+  }
+  return null;
+}
+
 function queuedTurnsOf(state, editingTargetId) {
   const turns = [];
   for (const entry of state?.timeline || []) {
@@ -226,7 +236,7 @@ export function useWaitingEditingController({
     if (!session?.holdId) return false;
     await onTaskControl?.({
       channelId: session.channelId,
-      turn: state.turns?.get?.(session.targetId),
+      turn: timelineTurn(state, session.targetId),
       actorId: session.actorId,
       type: TYPES.agentUnhold,
       messageId: session.releaseMessageId,
@@ -286,7 +296,7 @@ export function useWaitingEditingController({
     try {
       const replacementId = await onTaskControl?.({
         channelId: session.channelId,
-        turn: state.turns?.get?.(session.targetId),
+        turn: timelineTurn(state, session.targetId),
         actorId: session.actorId,
         type: TYPES.agentReplace,
         payload: exactHoldPayload({
@@ -318,9 +328,9 @@ export function useWaitingEditingController({
 
   useEffect(() => {
     if (!resumePin) return;
-    const turn = state.turns?.get?.(resumePin);
+    const turn = timelineTurn(state, resumePin);
     if (!turn || turn.terminal || latestStage(turn) === 'timeline') setResumePin('');
-  }, [controlVersion, resumePin, state.turns]);
+  }, [controlVersion, resumePin, state]);
   useLayoutEffect(() => {
     onComposerEditChange?.(editing
       ? { session: editing, onSave: verifyAndSave, onAbandon: abandonEditing }
