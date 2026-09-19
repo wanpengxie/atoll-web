@@ -17,18 +17,15 @@ const roster = [
   { id: 'agent-1', kind: 'agent', name: 'Agent One' },
 ];
 
-const describe = {
-  words: {
-    'agent.select': {
-      input_schema: {
-        type: 'object',
-        oneOf: [
-          { required: ['model', 'effort'], properties: { model: { const: 'model-one', title: 'Model One' }, effort: { const: 'medium', title: '中等' } } },
-          { required: ['model', 'effort'], properties: { model: { const: 'model-two', title: 'Model Two' }, effort: { const: 'high', title: '高' } } },
-        ],
-      },
-    },
-  },
+const options = {
+  models: [
+    { id: 'model-one', label: 'Model One' },
+    { id: 'model-two', label: 'Model Two' },
+  ],
+  selections: [
+    { model: 'model-one', effort: 'medium', modelLabel: 'Model One', effortLabel: '中等' },
+    { model: 'model-two', effort: 'high', modelLabel: 'Model Two', effortLabel: '高' },
+  ],
 };
 
 function Fixture() {
@@ -39,7 +36,7 @@ function Fixture() {
   const [sent, setSent] = useState(0);
   const [selection, setSelection] = useState({ model: 'model-one', effort: 'medium' });
   const [selectionCount, setSelectionCount] = useState(0);
-  const selectionView = agentSelectionView({ actorId: 'agent-1', describe, usage: selection });
+  const selectionView = agentSelectionView({ actorId: 'agent-1', options, usage: selection });
   return <SurfaceShell topology="mobile" className="shell">
     <main style={{ position: 'relative', minWidth: 0, minHeight: 0, height: '100%' }}>
       <header style={{ height: 44, borderBottom: '1px solid var(--line-subtle)' }}>short viewport</header>
