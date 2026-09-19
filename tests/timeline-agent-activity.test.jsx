@@ -8,10 +8,13 @@ import { recordLiveTimelineArrival } from '../src/model/live-arrivals.js';
 import { Timeline } from '../src/ui/Timeline.jsx';
 
 const readingProbe = vi.hoisted(() => ({ current: null, observations: [] }));
-vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => {
+// FollowingTailList is the canonical renderer while ReadingSession is in
+// following mode. Mock that public role boundary rather than the browsing-only
+// Virtuoso adapter: otherwise the probe silently observes no mounted owner.
+vi.mock('../src/ui/timeline/FollowingTailList.jsx', async () => {
   const { PresentationMessageList } = await import('./helpers/PresentationMessageList.jsx');
   return {
-    MessageList(props) {
+    FollowingTailList(props) {
       readingProbe.current = props.reading;
       React.useLayoutEffect(() => {
         if (props.surfaceVisible !== true || !props.snapshot.rows.length) return;

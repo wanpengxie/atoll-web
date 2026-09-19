@@ -136,9 +136,6 @@ export function ReadingContainerHandoff({ reading, surfaceVisible, ...props }) {
     ? navigationTarget
     : null;
   const handoffPending = browsing && Boolean(exactTarget) && !ready;
-  const followingKey = browsing
-    ? `following:${exactTarget?.activationID || reading.activationID}:${outgoingEpochRef.current}`
-    : `following:${reading.activationID}:${currentSession.inputEpoch}`;
   const focusIncoming = exactTarget?.focusOwned === true || focusWithinRef.current;
 
   const visibleRole = handoffPending || !browsing ? 'following' : 'browsing';
@@ -164,7 +161,6 @@ export function ReadingContainerHandoff({ reading, surfaceVisible, ...props }) {
       aria-hidden={undefined}
     >
       <FollowingTailList
-        key={followingKey}
         {...props}
         reading={reading}
         surfaceVisible={surfaceVisible}
