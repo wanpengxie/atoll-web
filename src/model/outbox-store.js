@@ -1,6 +1,6 @@
 import Dexie from 'dexie';
 
-const DATABASE_NAME = 'atoll-outbox-v1';
+const DATABASE_NAME = 'atoll-outbox-v2';
 
 function meaningfulDraft(draft) {
   return Boolean(
@@ -83,10 +83,6 @@ export function createOutboxStore({
     const candidate = new Dexie(databaseName, { indexedDB: indexedDBImpl, IDBKeyRange: IDBKeyRangeImpl });
     database = candidate;
     candidate.version(1).stores({
-      submissions: '&[principalId+messageId], principalId, channelId, state, updatedAt',
-      drafts: '&[principalId+channelId], principalId, updatedAt',
-    });
-    candidate.version(2).stores({
       submissions: '&[principalId+messageId], principalId, channelId, state, updatedAt, leaseUntil',
       drafts: '&[principalId+channelId], principalId, updatedAt',
     });

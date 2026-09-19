@@ -931,6 +931,16 @@ export function createChannelFeedRuntime(options) {
     setVersion((value) => value + 1);
     setIndexVersion((value) => value + 1);
   });
+  const stateFor = (channelId) => replicaRef.current.state(channelId);
+  const stateEntries = () => Object.freeze([...replicaRef.current.states().entries()]);
+  const reconcileIdentity = (channelId, selfId) => {
+    if (!channelId || !selfId) return false;
+    const state = replicaRef.current.state(channelId);
+    if (!state) return false;
+    reconcileApprovals(state, selfId);
+    bump();
+    return true;
+  };
   const markRead = ((channelId, acknowledgement = {}) => {
     if (!channelId) return 0;
     if (!cursorsRef.current.isReadAuthorityReady()) return false;
@@ -1145,8 +1155,9 @@ export function createChannelFeedRuntime(options) {
   ));
 
   const commands = Object.freeze({
-    statesRef, cursorsRef, version, indexVersion, bump, enqueue, cancel, clear, resetPersistent,
+    cursorsRef, version, indexVersion, bump, enqueue, cancel, clear, resetPersistent,
 	revisionFor: (channelId) => replicaRef.current.revision(channelId),
+	stateFor, stateEntries, reconcileIdentity,
 	unreadFor,
 		prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode,
 		setHistoryGrants, pageEnd, liveCheckpoint, disconnectHistory, stopIncompatible, focusHistory, generationFor, refreshChannel,

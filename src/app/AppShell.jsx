@@ -330,10 +330,6 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
   }, [workspace.channel, workspace.view, dynamicVisible, terminalActionReady, navigation.activeChannelId]);
 
   useEffect(() => setComposerEdit(null), [navigation.activeChannelId]);
-  useLayoutEffect(() => {
-    workspace.onComposerEditChange?.(composerEdit);
-    return () => workspace.onComposerEditChange?.(null);
-  }, [composerEdit, workspace.onComposerEditChange]);
   useEffect(() => {
     if (!composerEdit || !navigation.activeChannelId) return;
     setReplyTargets((current) => ({ ...current, [navigation.activeChannelId]: null }));
@@ -473,7 +469,7 @@ export function AppShell({ session, navigation, workspace, notices, panel }) {
             选中都在这棵树里，卸一次人就得从根目录重新点回来。按频道 key 重挂，
             所以换频道时位置从 fileLocationsRef 里恢复，而不是靠这棵树活着。 */}
         {filesEverOpened[navigation.activeChannelId] && workspace.channel && contentVisible
-          && <Suspense fallback={<section className="split-loading" role="status">正在加载文件…</section>}><ArtifactsView key={`files-${navigation.activeChannelId}`} channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} attachDisabled={fileAttachDisabled} attachDisabledReason={fileAttachDisabledReason} onResource={workspace.resources.onResource} onFileOperation={workspace.resources.onFileOperation} onAttach={attachFileToDraft} onPreview={workspace.resources.onPreview} recentFiles={workspace.resources.recentFiles} visible={filesOpen} initialLocation={fileLocationsRef.current.get(navigation.activeChannelId) || null} onLocationChange={rememberFileLocation} onClose={toggleFiles} autoFocusOnOpen={singleSurfaceShell} /></Suspense>}
+          && <Suspense fallback={<section className="split-loading" role="status">正在加载文件…</section>}><ArtifactsView key={`files-${navigation.activeChannelId}`} channel={workspace.channel} devices={workspace.resources.devices} disabled={workspace.resources.disabled} attachDisabled={fileAttachDisabled} attachDisabledReason={fileAttachDisabledReason} onFileOperation={workspace.resources.onFileOperation} onAttach={attachFileToDraft} onPreview={workspace.resources.onPreview} recentFiles={workspace.resources.recentFiles} visible={filesOpen} initialLocation={fileLocationsRef.current.get(navigation.activeChannelId) || null} onLocationChange={rememberFileLocation} onClose={toggleFiles} autoFocusOnOpen={singleSurfaceShell} /></Suspense>}
         {/* 恒只挂当前频道这一块。切走就卸载——**这是安全的**，因为终端的真相
             恒在服务端：shell 由宽限期保住，屏幕由会话的回放环保住，attach 时
             先回放再转直播。上一版为了不黑屏把 N 块常驻在 DOM 里，那是把真相

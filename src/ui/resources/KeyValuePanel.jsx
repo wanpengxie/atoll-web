@@ -5,7 +5,7 @@ import { PanelCard } from '../primitives/PanelCard.jsx';
 
 const ACTION_LABELS = { create: '创建', read: '读取', write: '写入', stat: '状态', list: '列出', delete: '删除' };
 
-export function KeyValuePanel({ channel, disabled, onResource }) {
+export function KeyValuePanel({ channel, disabled, onFileOperation }) {
   const [resourceId, setResourceId] = useState('kv:demo');
   const [args, setArgs] = useState('{"value":"hello"}');
   const [result, setResult] = useState(null);
@@ -15,7 +15,8 @@ export function KeyValuePanel({ channel, disabled, onResource }) {
     setError('');
     try {
       const command = kvResource({ channelId: channel.id, op, id: resourceId, ...(op === 'create' || op === 'write' ? { args: parseJSONObject(args, 'KV args') } : {}) });
-      setResult(await onResource(command));
+      const access = ['create', 'write', 'delete'].includes(op) ? 'write' : 'read';
+      setResult(await onFileOperation({ channelId: channel.id, access }, ({ resource }) => resource(command)));
     } catch (failure) {
       setError(failure.message || String(failure));
     }

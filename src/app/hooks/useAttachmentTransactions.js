@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { availableDefaultStorageDeviceId } from '../../model/channel-files.js';
 import { availableUploadName, uploadChannelFile } from '../../model/channel-file-transfer.js';
 import { diagnostic } from '../../model/diagnostics.js';
@@ -19,30 +19,42 @@ export function useAttachmentTransactions({
   activeChannelRef,
   accessRef,
   channelDevices,
-  committedOwnerRef,
   deviceActionsRef,
   directoryVersion,
   draftFor,
   drafts,
+  updateDraft,
   onNotice,
   onOpenDynamic,
-  onResource,
   persistDraftAttachments,
+  principalId,
+  producerOwnerToken,
+  generationFor,
   serverWorld,
-  serverWorldCommittedRef,
   wireRef,
   wireState,
-  wireStateCommittedRef,
 }) {
-  const [, setRevision] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const ledgerRef = useRef(new Map());
-  const draftEpochsRef = useRef(new Map());
   const worldRevisionRef = useRef(0);
   const uploadQueuesRef = useRef(new Map());
   const activeUploadsRef = useRef(new Map());
   const activeFileOperationsRef = useRef(new Map());
-  const composerEditRef = useRef(null);
+  const committedOwnerRef = useRef(null);
+  const serverWorldCommittedRef = useRef(serverWorld);
+  const wireStateCommittedRef = useRef(wireState);
+  useLayoutEffect(() => {
+    const owner = Object.freeze({ principalId, producerOwnerToken, generationFor });
+    committedOwnerRef.current = owner;
+    serverWorldCommittedRef.current = serverWorld;
+    wireStateCommittedRef.current = wireState;
+    return () => {
+      if (committedOwnerRef.current === owner) committedOwnerRef.current = null;
+    };
+  }, [generationFor, principalId, producerOwnerToken, serverWorld, wireState]);
+  const sendResource = useCallback((payload) => {
+    if (!wireRef.current) throw new TypeError('连接尚未就绪');
+    return wireRef.current.resource(payload);
+  }, [wireRef]);
 
   const abortUploads = useCallback((channelId = '') => {
     for (const [key, active] of activeUploadsRef.current) {
@@ -79,9 +91,9 @@ export function useAttachmentTransactions({
       transport: wireRef.current,
       transportEpoch: Number(committed?.generationFor?.(owner.channelId) || 0),
       transportOpen: wireStateCommittedRef.current === 'open' && Boolean(wireRef.current),
-      draft: { epoch: Number(draftEpochsRef.current.get(owner.channelId) || 0) },
+      draft: { editorRevision: Number(drafts.get(owner.channelId)?.editorRevision || 0) },
     };
-  }, [accessRef, committedOwnerRef, serverWorldCommittedRef, wireRef, wireStateCommittedRef]);
+  }, [accessRef, committedOwnerRef, drafts, serverWorldCommittedRef, wireRef, wireStateCommittedRef]);
 
   const assessFileOperation = useCallback((active, phase, { requireTransport = phase !== REQUEST_PHASE.settle } = {}) => {
     const current = { ...ownerFacts(active.owner), channelId: activeChannelRef.current || '' };
@@ -119,7 +131,7 @@ export function useAttachmentTransactions({
       accessState: accessRef.current?.state?.(channelId),
       transport: wireRef.current,
       transportEpoch: Number(committed.generationFor?.(channelId) || 0),
-      draft: { epoch: Number(draftEpochsRef.current.get(channelId) || 0) },
+      draft: { editorRevision: Number(drafts.get(channelId)?.editorRevision || 0) },
     });
     const controller = new AbortController();
     const operationKey = `${channelId}:${newId()}`;
@@ -146,7 +158,7 @@ export function useAttachmentTransactions({
         owner,
         signal: controller.signal,
         authorize,
-        resource: (payload) => ownedAwait(REQUEST_PHASE.submit, () => onResource(payload)),
+        resource: (payload) => ownedAwait(REQUEST_PHASE.submit, () => sendResource(payload)),
         fetch: (input, init = {}) => ownedAwait(
           REQUEST_PHASE.submit,
           () => fetch(input, { ...init, signal: controller.signal }),
@@ -160,7 +172,7 @@ export function useAttachmentTransactions({
       externalSignal?.removeEventListener?.('abort', abortFromCaller);
       if (activeFileOperationsRef.current.get(operationKey) === active) activeFileOperationsRef.current.delete(operationKey);
     }
-  }, [accessRef, assessFileOperation, committedOwnerRef, onResource, serverWorldCommittedRef, wireRef]);
+  }, [accessRef, assessFileOperation, committedOwnerRef, drafts, sendResource, serverWorldCommittedRef, wireRef]);
 
   useEffect(() => {
     for (const [key, active] of activeUploadsRef.current) {
@@ -193,16 +205,12 @@ export function useAttachmentTransactions({
     [WORLD_FIELD]: serverWorldCommittedRef.current,
   })), [serverWorldCommittedRef]);
   const currentDraftAttachments = useCallback((channelId, readDraft = draftFor) => inCurrentWorld(
-    ledgerRef.current.has(channelId)
-      ? ledgerRef.current.get(channelId)
-      : (readDraft(channelId).attachments || []),
+    readDraft(channelId).attachments || [],
   ), [draftFor, inCurrentWorld]);
 
   const activeDraftRecord = drafts.get(activeChannelId);
   const activeDurableDraft = activeDraftRecord?.draft || activeDraftRecord;
-  const activeRows = ledgerRef.current.has(activeChannelId)
-    ? ledgerRef.current.get(activeChannelId)
-    : (activeDurableDraft?.attachments || []);
+  const activeRows = activeDurableDraft?.attachments || [];
   const composerAttachments = useMemo(
     () => inCurrentWorld(activeRows, serverWorld).map(stripWorld),
     [activeRows, inCurrentWorld, serverWorld, stripWorld],
@@ -212,52 +220,32 @@ export function useAttachmentTransactions({
     return { ...draft, attachments: inCurrentWorld(draft.attachments, serverWorld).map(stripWorld) };
   }, [activeChannelId, activeDraftRecord, draftFor, inCurrentWorld, serverWorld, stripWorld]);
 
-  const commit = useCallback((channelId, rows) => {
-    const nextRows = inCurrentWorld(rows);
-    ledgerRef.current.set(channelId, nextRows);
-    setRevision((current) => current + 1);
-    return nextRows;
-  }, [inCurrentWorld]);
-  const mutate = useCallback((channelId, mutateRows, readDraft = draftFor) => (
-    commit(channelId, mutateRows([...currentDraftAttachments(channelId, readDraft)]))
-  ), [commit, currentDraftAttachments, draftFor]);
+  const mutate = useCallback((channelId, mutateRows, readDraft = draftFor) => {
+    const current = readDraft(channelId);
+    const attachments = mutateRows([...currentDraftAttachments(channelId, readDraft)]);
+    return updateDraft(channelId, { ...current, attachments: tagForCurrentWorld(attachments) });
+  }, [currentDraftAttachments, draftFor, tagForCurrentWorld, updateDraft]);
   const clear = useCallback((channelId) => {
     abortUploads(channelId);
-    draftEpochsRef.current.set(channelId, Number(draftEpochsRef.current.get(channelId) || 0) + 1);
-    return commit(channelId, []);
-  }, [abortUploads, commit]);
-
-  const publishComposerEdit = useCallback((value) => {
-    const entering = Boolean(value) && !composerEditRef.current;
-    composerEditRef.current = value;
-    if (!entering) return;
-    const channelId = activeChannelRef.current;
-    if (channelId) {
-      abortUploads(channelId);
-      draftEpochsRef.current.set(channelId, Number(draftEpochsRef.current.get(channelId) || 0) + 1);
-    }
-    setPickerOpen(false);
-  }, [abortUploads, activeChannelRef]);
+    return mutate(channelId, () => []);
+  }, [abortUploads, mutate]);
 
   const attach = useCallback(async (attachment, requestedChannelId = activeChannelRef.current) => {
     const channelId = String(requestedChannelId || '');
-    if (composerEditRef.current) throw new TypeError('编辑已有消息时不能附加频道文件；请先完成或取消编辑');
     const capturedDraftRevision = Number(drafts.get(channelId)?.revision || 0);
     return runFileOperation({ channelId, access: 'write', requireDraft: true }, async (operation) => {
       const tagged = { ...attachment, [WORLD_FIELD]: operation.owner.worldEpoch };
-      const record = await operation.persist(() => persistDraftAttachments(channelId, [tagged], {
+      await operation.persist(() => persistDraftAttachments(channelId, [tagged], {
         expectedRevision: capturedDraftRevision,
         authorize: () => operation.authorize(REQUEST_PHASE.persist, { requireTransport: false }),
       }));
       operation.authorize(REQUEST_PHASE.persist, { requireTransport: false });
-      commit(channelId, record?.draft?.attachments || []);
       if (activeChannelRef.current === channelId) onOpenDynamic();
       return stripWorld(tagged);
     });
-  }, [activeChannelRef, commit, drafts, onOpenDynamic, persistDraftAttachments, runFileOperation, stripWorld]);
+  }, [activeChannelRef, drafts, onOpenDynamic, persistDraftAttachments, runFileOperation, stripWorld]);
 
   const upload = useCallback(async (files) => {
-    if (composerEditRef.current) throw new TypeError('编辑已有消息时不能上传普通草稿附件；请先完成或取消编辑');
     const channel = activeChannel;
     if (!channel?.id) throw new TypeError('请先选择频道');
     const committed = committedOwnerRef.current;
@@ -271,7 +259,7 @@ export function useAttachmentTransactions({
       accessState: accessRef.current?.state?.(channel.id),
       transport: wireRef.current,
       transportEpoch: Number(committed.generationFor?.(channel.id) || 0),
-      draft: { epoch: Number(draftEpochsRef.current.get(channel.id) || 0) },
+      draft: { editorRevision: Number(drafts.get(channel.id)?.editorRevision || 0) },
     });
     const capturedDraftRevision = Number(drafts.get(channel.id)?.revision || 0);
     const assessUpload = (phase, options = {}) => assessRequestOwner(
@@ -318,7 +306,7 @@ export function useAttachmentTransactions({
                 channel,
                 deviceName: daemon.name,
                 uploadName,
-                onResource,
+                onResource: sendResource,
                 signal: controller.signal,
                 authorize: (phase) => {
                   const assessment = assessUpload(phase === 'settle' ? REQUEST_PHASE.submit : phase);
@@ -341,7 +329,7 @@ export function useAttachmentTransactions({
       if (uploaded.length) {
         const authorizeAssociation = () => assessUpload(REQUEST_PHASE.persist, { requireTransport: false }).current;
         try {
-          const record = await persistDraftAttachments(channel.id, uploaded, {
+          await persistDraftAttachments(channel.id, uploaded, {
             expectedRevision: capturedDraftRevision,
             authorize: authorizeAssociation,
           });
@@ -350,7 +338,6 @@ export function useAttachmentTransactions({
             stale.code = 'attachment_unassociated';
             throw stale;
           }
-          commit(channel.id, record?.draft?.attachments || []);
         } catch (error) {
           error.code ||= 'attachment_unassociated';
           error.attachments = uploaded.map(stripWorld);
@@ -378,18 +365,14 @@ export function useAttachmentTransactions({
     } finally {
       if (uploadQueuesRef.current.get(channel.id) === task) uploadQueuesRef.current.delete(channel.id);
     }
-  }, [accessRef, activeChannel, channelDevices, commit, committedOwnerRef, currentDraftAttachments, deviceActionsRef, drafts, onNotice, onResource, ownerFacts, persistDraftAttachments, serverWorldCommittedRef, stripWorld, wireRef]);
+  }, [accessRef, activeChannel, channelDevices, committedOwnerRef, currentDraftAttachments, deviceActionsRef, drafts, onNotice, ownerFacts, persistDraftAttachments, sendResource, serverWorldCommittedRef, stripWorld, wireRef]);
 
   const reset = useCallback(() => {
     worldRevisionRef.current += 1;
     abortUploads();
     abortFileOperations();
-    draftEpochsRef.current.clear();
-    ledgerRef.current.clear();
     uploadQueuesRef.current.clear();
-    composerEditRef.current = null;
     setPickerOpen(false);
-    setRevision((current) => current + 1);
   }, [abortFileOperations, abortUploads]);
 
   const abortChannel = useCallback((channelId) => {
@@ -405,9 +388,7 @@ export function useAttachmentTransactions({
     composerDraft,
     mutate,
     pickerOpen,
-    publishComposerEdit,
     reset,
-    resource: onResource,
     runFileOperation,
     setPickerOpen,
     tagForCurrentWorld,

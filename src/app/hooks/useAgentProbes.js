@@ -20,7 +20,7 @@ export function useAgentProbes({
   activeChannelId,
   activeChannelRef,
   accessRef,
-  channelStatesRef,
+  stateFor,
   feedVersion,
   handleSend,
   pending,
@@ -63,7 +63,7 @@ export function useAgentProbes({
     if (!channelId) return;
     const manual = manualAgentsRef.current.get(channelId);
     if (!manual) return;
-    const state = channelStatesRef.current.get(channelId);
+    const state = stateFor(channelId);
     if (!state) return;
     const agents = new Set((rosters.get(channelId) || [])
       .filter((row) => row.kind === 'agent')
@@ -73,7 +73,7 @@ export function useAgentProbes({
       manualAgentsRef.current.delete(channelId);
       setVersion((current) => current + 1);
     }
-  }, [activeChannelRef, channelStatesRef, feedVersion, rosterRef, rosters]);
+  }, [activeChannelRef, feedVersion, rosterRef, rosters, stateFor]);
 
   useEffect(() => {
     advanceAgentProbeGeneration(lifecycleRef.current);
@@ -126,7 +126,7 @@ export function useAgentProbes({
     if (channelAccess?.relationship !== 'member' || channelAccess?.unavailable) return false;
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId && row.kind === 'agent');
     if (!actor) return false;
-    const state = channelStatesRef.current.get(channelId);
+    const state = stateFor(channelId);
     const capability = capabilityIndexFromState(state, liveRequestIds).get(actorId);
     const probeKey = `${channelId}:${actorId}`;
     const describeProbe = lifecycleRef.current.entries.get(probeKey);
@@ -137,7 +137,7 @@ export function useAgentProbes({
     if (capability?.describe || capability?.loading) return false;
     void describeActor(actor, channelId).catch(() => {});
     return true;
-  }, [accessRef, activeChannelRef, channelStatesRef, describeActor, liveRequestIds, pending, rosters, wireState]);
+  }, [accessRef, activeChannelRef, describeActor, liveRequestIds, pending, rosters, stateFor, wireState]);
 
   useEffect(() => {
     if (wireState !== 'open') return;
@@ -147,7 +147,7 @@ export function useAgentProbes({
     if (channelAccess?.relationship !== 'member' || channelAccess?.unavailable) return;
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId);
     if (!actor) return;
-    const state = channelStatesRef.current.get(channelId);
+    const state = stateFor(channelId);
     const capability = capabilityIndexFromState(state, liveRequestIds).get(actorId);
     const probeKey = `${channelId}:${actorId}`;
     const describeProbe = lifecycleRef.current.entries.get(probeKey);
@@ -205,7 +205,7 @@ export function useAgentProbes({
     if (settled(TYPES.agentOptions, optionsProbedRef) && settled(TYPES.agentContext, contextProbedRef)) {
       manualProbeRef.current.delete(probeKey);
     }
-  }, [accessRef, activeChannelId, channelStatesRef, composerAgent, describeActor, feedVersion, handleSend, liveRequestIds, pending, rosters, version, wireState]);
+  }, [accessRef, activeChannelId, composerAgent, describeActor, feedVersion, handleSend, liveRequestIds, pending, rosters, stateFor, version, wireState]);
 
   const selectorOpened = useCallback(() => {
     authorize(composerAgent.channelId, composerAgent.actorId);
@@ -220,21 +220,23 @@ export function useAgentProbes({
     setComposerAgent({ channelId: '', actorId: '' });
   }, []);
 
-  const probeRequestKey = useCallback((registry, channelId, actorId) => {
-    if (!actorId) return '';
-    const record = registry.current.get(`${channelId}:${actorId}`);
-    return [record?.requestId, record?.previousRequestId].filter(Boolean).join('|');
+  const requestKeys = useCallback((channelId, actorId) => {
+    if (!actorId) return { context: '', options: '' };
+    const key = `${channelId}:${actorId}`;
+    const serialize = (record) => [record?.requestId, record?.previousRequestId].filter(Boolean).join('|');
+    return {
+      context: serialize(contextProbedRef.current.get(key)),
+      options: serialize(optionsProbedRef.current.get(key)),
+    };
   }, []);
 
   return {
     composerAgent,
-    contextProbedRef,
     describeActor,
     liveRequestIds,
     manualAgentIdFor: (channelId) => manualAgentsRef.current.get(channelId) || '',
-    optionsProbedRef,
     pickAgent,
-    probeRequestKey,
+    requestKeys,
     requestCapability,
     reset,
     selectorOpened,

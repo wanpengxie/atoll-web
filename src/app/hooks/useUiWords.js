@@ -7,10 +7,9 @@ import { execute, requestBody } from '../../model/ui-words.js';
 // 没有任何"服务端推给浏览器"的通道，也不需要——**账本本身就是下行**。请求落进
 // 日志，客户端本来就在订阅，看见发给自己的就干活。这也是为什么这条链路一行传输
 // 代码都不用加。
-// version 是必需的，不是可选优化：channelStatesRef.current 是一个**原地变更**
-// 的 Map，它的身份从不改变，所以拿它当依赖的 effect 永远不会因为"来了新请求"
-// 而重跑。feed 的版本号是这里唯一如实反映"账本动过了"的东西。
-export function useUiWords({ channelStatesRef, version, session, selfIdFor, wireRef, actions, readSnapshot, onActivity, enabled = true }) {
+// version 是必需的，不是可选优化：feed 的版本号是这里唯一如实反映
+// "账本动过了"的东西；stateEntries 只提供一次只读快照。
+export function useUiWords({ stateEntries, version, session, selfIdFor, wireRef, actions, readSnapshot, onActivity, enabled = true }) {
   // 一条请求在终态回到账本之前会一直留在 uiRequests 里，所以必须自己记住做过
   // 什么，否则同一条会被反复执行——ui.navigate 反复执行只是多余，
   // 但任何有副作用的词都会因此出错。
@@ -25,7 +24,7 @@ export function useUiWords({ channelStatesRef, version, session, selfIdFor, wire
   useEffect(() => {
     if (!enabled) return;
     (async () => {
-      for (const [channelId, state] of channelStatesRef.current) {
+      for (const [channelId, state] of stateEntries()) {
         if (!state?.uiRequests?.size) continue;
         const selfId = selfIdFor(channelId);
         if (!selfId) continue;
@@ -63,5 +62,5 @@ export function useUiWords({ channelStatesRef, version, session, selfIdFor, wire
       }
     })();
 
-  }, [channelStatesRef, enabled, selfIdFor, session, version, wireRef]);
+  }, [enabled, selfIdFor, session, stateEntries, version, wireRef]);
 }

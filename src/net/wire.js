@@ -223,6 +223,18 @@ export function createWire({
         } catch (error) {
           diagnostic('error', 'wire.attach_meta_failed', { generation: detail.generation, error });
           onError(error);
+          incompatibility = Object.freeze({
+            expectedVersion: FRAME_VERSION,
+            receivedVersion: FRAME_VERSION,
+            generation,
+            detail: error?.message || '当前协议所需的 attach 事实不完整',
+          });
+          stopped = true;
+          attached = false;
+          rejectPending('version_incompatible', incompatibility.detail);
+          onState('incompatible', incompatibility);
+          socket?.close(1002, 'attach contract incompatible');
+          return;
         }
         if (!stopped && attached && Number(detail.generation) === generation) onState('attached', detail);
       }

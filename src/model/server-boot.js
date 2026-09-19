@@ -1,13 +1,13 @@
 // 服务器世代守卫：本地缓存（feed/cursor/submissions/timers…）只在"同一个服务器
 // 世界"里有效。服务器在 attach 回执里报世代号（boot）；世代变了（重装、mock 重启、
 // 账本 reset），旧账、旧游标全是另一个世界的真相，整体作废——恒不把"清缓存"
-// 转嫁给使用者。不报 boot 的服务器（旧后端）视为恒同世界，零行为变化。
-const BOOT_KEY = 'atoll.server.boot.v1';
+// 转嫁给使用者。world 是当前协议的必需事实，缺失时拒绝启动数据面。
+const BOOT_KEY = 'atoll.server.boot.v2';
 const WORLD_SCOPED_KEYS = [
   'atoll.channel.names.v1',
 ];
 const WORLD_SCOPED_PREFIXES = [
-  'atoll.workspace.bootstrap.v1.',
+  'atoll.workspace.bootstrap.v2.',
   'atoll.history.priority.v1.',
   'atoll.cursor.v3.',
   'atoll.read.v4.',
@@ -21,7 +21,8 @@ function belongsToServerWorld(key) {
 }
 
 export function ensureServerBoot(boot, storage = globalThis.localStorage) {
-  if (!boot || !storage) return true;
+  if (!boot) throw new TypeError('服务端 attach 缺少必需的 world 标识');
+  if (!storage) return true;
   const known = storage.getItem(BOOT_KEY);
   if (known === boot) return true;
   // First observation establishes the world identity. Login/session state may

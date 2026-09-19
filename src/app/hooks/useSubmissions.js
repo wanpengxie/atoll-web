@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createControlState } from '../../model/control-actions.js';
-import { reconcileApprovals } from '../../model/fold.js';
 import {
   createSubmission,
   isUncertainWireError,
@@ -38,7 +37,7 @@ function queuedAccessRejection(access) {
   return null;
 }
 
-export function useSubmissions({ principalId, serverWorld = '', activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion = 0, channelStatesRef, onError, onNotice, onFeedChanged, onAccessChanged }) {
+export function useSubmissions({ principalId, serverWorld = '', activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion = 0, stateFor, reconcileIdentity, onError, onNotice, onFeedChanged, onAccessChanged }) {
   const [projection, setProjection] = useState(() => ({ pending: [], drafts: new Map() }));
   const { pending, drafts } = projection;
   const [approvalStates, setApprovalStates] = useState({});
@@ -67,6 +66,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
   const attemptedOpenEpochRef = useRef(new Map());
   const landedMessageIdsRef = useRef(new Set());
   const reconciledLandedMessageIdsRef = useRef(new Set());
+  const durableControlObligationsRef = useRef(new Map());
   if (!outboxRef.current) outboxRef.current = createOutboxStore();
   const publishTransaction = useCallback((reduce, authorize) => {
     if (authorize && authorize() !== true) return null;
@@ -409,6 +409,10 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     timersRef.current.clear();
     setApprovalStates({});
     setControlStates({});
+    for (const obligation of durableControlObligationsRef.current.values()) {
+      if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
+    }
+    durableControlObligationsRef.current.clear();
   }, []);
 
   const resetWorld = useCallback(() => {
@@ -521,7 +525,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     }, 5_000);
     let preparedFrame;
     try {
-      preparedFrame = wireRef.current.prepareSubmit?.(submission.frame) || submission.frame;
+      preparedFrame = wireRef.current.prepareSubmit(submission.frame);
     } catch (error) {
       if (renewLease != null) globalThis.clearInterval?.(renewLease);
       transmittingRef.current.delete(key);
@@ -600,13 +604,13 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       const receipt = submitPhase.value;
       if (receipt.message_id !== messageId) throw new Error(`协议异常：回执消息编号 ${receipt.message_id} 与客户端编号 ${messageId} 不一致`);
       diagnostic('debug', 'submission.receipt_accepted', { channelId, messageId, openEpoch: openEpochRef.current });
-      const state = settleCurrent() ? channelStatesRef.current.get(channelId) : null;
+      const state = settleCurrent() ? stateFor(channelId) : null;
       const landedEnvelope = state?._envelopesById?.get?.(messageId)
         || [...(state?.rows?.values?.() || [])].find((envelope) => envelope.id === messageId);
       if (landedEnvelope) {
         if (settleCurrent()) {
           const learnedSelf = rosterRef.current?.observeFeed(channelId, landedEnvelope);
-          if (learnedSelf) reconcileApprovals(state, learnedSelf);
+          if (learnedSelf) reconcileIdentity(channelId, learnedSelf);
         }
         if (settleCurrent()) mutatePending((current) => current.filter((item) => item.key !== key));
         await outboxRef.current.remove(principalId, messageId, ['transmitting', 'accepted', 'delayed', 'uncertain']);
@@ -652,11 +656,11 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
         currentOwnerFacts(owner),
         REQUEST_PHASE.submit,
       ).current;
-      const state = settleCurrent() ? channelStatesRef.current.get(channelId) : null;
+      const state = settleCurrent() ? stateFor(channelId) : null;
       const landedEnvelope = state?._envelopesById?.get?.(messageId);
       if (isUncertainWireError(error) && landedEnvelope && settleCurrent()) {
         const learnedSelf = rosterRef.current?.observeFeed(channelId, landedEnvelope);
-        if (learnedSelf) reconcileApprovals(state, learnedSelf);
+        if (learnedSelf) reconcileIdentity(channelId, learnedSelf);
         await outboxRef.current.remove(principalId, messageId, ['queued', 'transmitting', 'accepted', 'delayed', 'uncertain']);
         if (settleCurrent()) {
           mutatePending((current) => current.filter((item) => item.key !== key || item.messageId !== messageId || item.channelId !== channelId));
@@ -717,7 +721,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
         onError(error);
       }
     }
-  }, [accessRef, channelStatesRef, currentOwnerFacts, mutatePending, onAccessChanged, onError, onFeedChanged, onNotice, ownerForSubmission, persistTransition, principalId, rosterRef, wireRef, wireState]);
+  }, [accessRef, currentOwnerFacts, mutatePending, onAccessChanged, onError, onFeedChanged, onNotice, ownerForSubmission, persistTransition, principalId, reconcileIdentity, rosterRef, stateFor, wireRef, wireState]);
 
   const send = useCallback(async (request) => {
     const requests = request?.batch?.length ? request.batch : [request];
@@ -815,6 +819,71 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     const messageIds = submissions.map((item) => item.messageId);
     return request?.batch ? messageIds : messageIds[0];
   }, [activeChannelId, canDurablyOwnChannel, currentOwnerFacts, hydratePrincipal, principalId, publishDraft, publishTransaction, requestOwner, submissionAuthority, transmit, wireRef]);
+
+  const sendDurableControl = useCallback((request, requestedMessageId = '') => {
+    const messageId = requestedMessageId || newId();
+    let obligation = durableControlObligationsRef.current.get(messageId);
+    if (!obligation) {
+      obligation = { messageId, principalId, request, inFlight: null, retryTimer: null };
+      durableControlObligationsRef.current.set(messageId, obligation);
+    }
+    const run = () => {
+      if (obligation.inFlight) return obligation.inFlight;
+      if (committedPrincipalRef.current !== obligation.principalId) {
+        durableControlObligationsRef.current.delete(messageId);
+        const error = new Error('控制请求的登录身份已变化');
+        error.code = 'identity_changed';
+        return Promise.reject(error);
+      }
+      const attempt = send({ ...obligation.request, messageId }).then((acceptedId) => {
+        if (!acceptedId) throw new Error('控制请求未进入持久发送队列');
+        if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
+        durableControlObligationsRef.current.delete(messageId);
+        return acceptedId;
+      }).catch((error) => {
+        const access = accessRef.current?.state?.(obligation.request.channelId);
+        if (durableControlObligationsRef.current.get(messageId) === obligation
+          && wireStateRef.current === 'open'
+          && access?.relationship === 'member'
+          && access?.existence !== 'retired'
+          && obligation.retryTimer == null) {
+          obligation.retryTimer = setTimeout(() => {
+            obligation.retryTimer = null;
+            void run().catch((retryError) => {
+              diagnostic('warn', 'submission.durable_control_retry_failed', {
+                channelId: obligation.request.channelId,
+                messageId,
+                error: retryError,
+              });
+            });
+          }, 2_000);
+        }
+        throw error;
+      }).finally(() => {
+        if (obligation.inFlight === attempt) obligation.inFlight = null;
+      });
+      obligation.inFlight = attempt;
+      return attempt;
+    };
+    obligation.run = run;
+    return run();
+  }, [accessRef, principalId, send]);
+
+  useEffect(() => {
+    if (wireState !== 'open') return;
+    for (const obligation of durableControlObligationsRef.current.values()) {
+      if (obligation.inFlight) continue;
+      const access = accessRef.current?.state?.(obligation.request.channelId);
+      if (access?.relationship !== 'member' || access?.existence === 'retired') continue;
+      void obligation.run?.().catch((error) => {
+        diagnostic('warn', 'submission.durable_control_retry_failed', {
+          channelId: obligation.request.channelId,
+          messageId: obligation.messageId,
+          error,
+        });
+      });
+    }
+  }, [accessRef, accessVersion, wireState]);
 
   useEffect(() => {
     const opened = wireState === 'open' && previousWireStateRef.current !== 'open';
@@ -929,7 +998,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       if (!phase.started) throw requestAccessError(phase.invalidation);
       const settled = assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.settle);
       if (!settled.current) return;
-      const terminal = channelStatesRef.current.get(channelId)?.turns.get(reqId)?.terminal;
+      const terminal = stateFor(channelId)?.turns.get(reqId)?.terminal;
       setControlStates((current) => {
         if (!terminal) return { ...current, [key]: createControlState('accepted') };
         const next = { ...current }; delete next[key]; return next;
@@ -941,7 +1010,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       setControlStates((current) => ({ ...current, [key]: createControlState(uncertain ? 'uncertain' : 'error', error) }));
       onAccessChanged();
     }
-  }, [channelStatesRef, currentOwnerFacts, onAccessChanged, requestOwner]);
+  }, [currentOwnerFacts, onAccessChanged, requestOwner, stateFor]);
 
   const reconcileFeed = useCallback((landedMessageIds, closedRequestIds) => {
     if (committedPrincipalRef.current !== principalId) return;
@@ -990,6 +1059,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     approvalStates,
     controlStates,
     send,
+    sendDurableControl,
     retry,
     resolve,
     cancel,

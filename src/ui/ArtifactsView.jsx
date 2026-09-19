@@ -7,21 +7,14 @@ import { FileBreadcrumbs, FileBrowserRows } from './files/ChannelFileBrowser.jsx
 import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 
-export function ArtifactsView({ channel, devices = [], disabled, attachDisabled = disabled, attachDisabledReason = '', onResource, onFileOperation, onAttach, onPreview, recentFiles = [], visible = true, initialLocation = null, onLocationChange, onClose, autoFocusOnOpen = false }) {
+export function ArtifactsView({ channel, devices = [], disabled, attachDisabled = disabled, attachDisabledReason = '', onFileOperation, onAttach, onPreview, recentFiles = [], visible = true, initialLocation = null, onLocationChange, onClose, autoFocusOnOpen = false }) {
   const surfaceRef = useRef(null);
-  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource, onFileOperation, initialLocation, onLocationChange });
+  const browser = useChannelFileBrowser({ channel, devices, disabled, onFileOperation, initialLocation, onLocationChange });
   const [uploadedMeta, setUploadedMeta] = useState(new Map());
   const [uploading, setUploading] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderName, setFolderName] = useState('');
-  const runOperation = (options, effect) => (onFileOperation
-    ? onFileOperation({ channelId: channel.id, ...options }, effect)
-    : effect({
-      signal: undefined,
-      authorize: () => true,
-      resource: onResource,
-      fetch: (input, init) => fetch(input, init),
-    }));
+  const runOperation = (options, effect) => onFileOperation({ channelId: channel.id, ...options }, effect);
 
   useEffect(() => {
     if (!visible || !autoFocusOnOpen) return undefined;

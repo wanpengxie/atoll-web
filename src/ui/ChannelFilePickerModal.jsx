@@ -6,8 +6,8 @@ import { useChannelFileBrowser } from './files/useChannelFileBrowser.js';
 import { SelectMenu } from './primitives/SelectMenu.jsx';
 import { useModalFocus } from './primitives/useModalFocus.js';
 
-export function ChannelFilePickerModal({ channel, devices = [], disabled = false, onResource, onFileOperation, onChoose, onClose }) {
-  const browser = useChannelFileBrowser({ channel, devices, disabled, onResource, onFileOperation });
+export function ChannelFilePickerModal({ channel, devices = [], disabled = false, onFileOperation, onChoose, onClose }) {
+  const browser = useChannelFileBrowser({ channel, devices, disabled, onFileOperation });
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
   useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });

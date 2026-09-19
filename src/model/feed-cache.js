@@ -1,7 +1,7 @@
 import Dexie from 'dexie';
 import { diagnostic } from './diagnostics.js';
 
-const DB_NAME = 'atoll-feed-v8';
+const DB_NAME = 'atoll-feed-v9';
 const GLOBAL_META_ID = 'global';
 export const FEED_CACHE_ROWS_PER_CHANNEL = 5_000;
 export const FEED_CACHE_GLOBAL_BYTES = 256 * 1024 * 1024;
@@ -29,7 +29,7 @@ export function resumeSnapshot(source) {
   const entries = source instanceof Map ? [...source] : Object.entries(source || {});
   return Object.fromEntries(entries.flatMap(([channelId, value]) => {
     const coverageHigh = normalizeCoverage(value?.coverage).reduce((high, interval) => Math.max(high, interval.highSeq), 0);
-    const seq = Math.max(Number(value?.newestSeq ?? value?.newest_seq ?? value?.lastSeq ?? 0), coverageHigh);
+    const seq = Math.max(Number(value?.newestSeq ?? 0), coverageHigh);
     return Number.isSafeInteger(seq) && seq > 0 ? [[channelId, seq]] : [];
   }));
 }
@@ -617,15 +617,7 @@ export function createFeedCache({
       const global = await database.globalMeta.get(GLOBAL_META_ID)
         || { id: GLOBAL_META_ID, totalBytes: 0, schemaVersion: 2, serverBoot: '', owner: '' };
       const previous = String(global.owner || '');
-      // Databases created before owner scoping contain rows but no owner. There
-      // is no trustworthy way to assign those rows to the first principal that
-      // happens to open the upgraded app, so treat that state as foreign too.
-      const ownerlessData = !previous && (
-        Number(global.totalBytes || 0) > 0
-        || await database.rows.count() > 0
-        || await database.channelMeta.count() > 0
-      );
-      if (ownerlessData || (previous && previous !== requested)) {
+      if (previous && previous !== requested) {
         await database.rows.clear();
         await database.channelMeta.clear();
         global.totalBytes = 0;
@@ -708,7 +700,6 @@ export function createFeedCache({
     ensureOwner,
     cancelOwnerSelection,
     destroy,
-    openMeta: async () => { await open(); return new Map([...meta].map(([id, value]) => [id, { ...value }])); },
     metaSnapshot: () => new Map([...meta].map(([id, value]) => [id, { ...value }])),
     readBefore,
     readNotificationContext,

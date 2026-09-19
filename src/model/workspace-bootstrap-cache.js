@@ -1,5 +1,6 @@
-const SESSION_KEY = 'atoll.session.principal.v1';
-const ACCESS_PREFIX = 'atoll.workspace.bootstrap.v1.';
+const SESSION_KEY = 'atoll.session.principal.v2';
+const ACCESS_PREFIX = 'atoll.workspace.bootstrap.v2.';
+const CACHE_SCHEMA = 1;
 
 function storage() {
   try { return globalThis.localStorage || null; } catch { return null; }
@@ -20,11 +21,13 @@ function writeJSON(key, value) {
 
 export function readCachedPrincipal() {
   const value = readJSON(SESSION_KEY, null);
-  return value?.id ? { id: String(value.id), display_name: String(value.display_name || '') } : null;
+  return value?.schema === CACHE_SCHEMA && value?.id
+    ? { id: String(value.id), display_name: String(value.display_name || '') }
+    : null;
 }
 
 export function rememberCachedPrincipal(value) {
-  if (value?.id) writeJSON(SESSION_KEY, { id: String(value.id), display_name: String(value.display_name || '') });
+  if (value?.id) writeJSON(SESSION_KEY, { schema: CACHE_SCHEMA, id: String(value.id), display_name: String(value.display_name || '') });
 }
 
 export function forgetCachedPrincipal() {
@@ -38,7 +41,7 @@ function accessKey(principalId) {
 export function readWorkspaceBootstrap(principalId) {
   if (!principalId) return { profiles: [], memberships: [], rosters: {} };
   const value = readJSON(accessKey(principalId), null);
-  if (value?.principalId !== principalId) return { profiles: [], memberships: [], rosters: {} };
+  if (value?.schema !== CACHE_SCHEMA || value?.principalId !== principalId) return { profiles: [], memberships: [], rosters: {} };
   return {
     profiles: Array.isArray(value.profiles) ? value.profiles.filter((row) => row?.id) : [],
     memberships: Array.isArray(value.memberships) ? value.memberships.filter((row) => row?.channel_id) : [],
@@ -53,6 +56,7 @@ export function writeWorkspaceBootstrap(principalId, snapshot) {
   if (!principalId || !snapshot?.channels) return;
   const members = snapshot.channels.filter((row) => row.relationship === 'member');
   writeJSON(accessKey(principalId), {
+    schema: CACHE_SCHEMA,
     principalId,
     profiles: members.flatMap((row) => row.profile?.id ? [row.profile] : []),
     memberships: members.map((row) => ({

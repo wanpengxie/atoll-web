@@ -4,7 +4,6 @@ import { rememberChannelNames } from '../../model/channel-name-cache.js';
 import { describeClient } from '../../model/client-label.js';
 import { isMobileProfile } from '../../model/device-profile.js';
 import { diagnostic } from '../../model/diagnostics.js';
-import { reconcileApprovals } from '../../model/fold.js';
 import { ensureServerBoot, readServerBoot } from '../../model/server-boot.js';
 import { readWorkspaceBootstrap, writeWorkspaceBootstrap } from '../../model/workspace-bootstrap-cache.js';
 import { createObsClient } from '../../net/obs.js';
@@ -83,9 +82,7 @@ export function useWireConnection({
   activeChannelRef,
   agentActivityRef,
   bumpAccess,
-  bumpFeed,
   cancelFeedTask,
-  channelStatesRef,
   clearRoster,
   disconnectHistory,
   displayError,
@@ -99,6 +96,7 @@ export function useWireConnection({
   port,
   prepareLocalReplica,
   principalId,
+  reconcileIdentity,
   resetSubmissionWorld,
   resumeLocalReplica,
   seedRoster,
@@ -265,10 +263,8 @@ export function useWireConnection({
             writeWorkspaceBootstrap(principalId, access.snapshot());
             for (const entry of rows) {
               if (!roster.noteSelf(entry.channel_id, entry.actor_id)) continue;
-              const channelState = channelStatesRef.current.get(entry.channel_id);
-              if (channelState) reconcileApprovals(channelState, entry.actor_id);
+              reconcileIdentity(entry.channel_id, entry.actor_id);
             }
-            bumpFeed();
             for (const channelId of memberedBefore) {
               if (access.state(channelId)?.relationship !== 'member') roster.clearSelf(channelId);
             }
@@ -311,7 +307,7 @@ export function useWireConnection({
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, bumpFeed, cancelFeedTask, channelStatesRef, clearRoster, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onSession, onWorldChanged, prepareLocalReplica, principalId, resetSubmissionWorld, resumeLocalReplica, rosterRef, seedRoster, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
+  }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, cancelFeedTask, clearRoster, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onSession, onWorldChanged, prepareLocalReplica, principalId, reconcileIdentity, resetSubmissionWorld, resumeLocalReplica, rosterRef, seedRoster, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
 
   return accessRefreshActionsRef;
 }

@@ -17,7 +17,6 @@ import { buildWorkItemIndex, taskProviders } from './model/work-items.js';
 import { parseWorkspaceHash, writeWorkspaceRoute } from './model/workspace-route.js';
 import { messagePresentation } from './model/message-presentation.js';
 import { isSystemWord, SYSTEM_ACTOR_ID, TYPES } from './protocol/vocab.js';
-import { newId } from './util/id.js';
 import { activeOperations, buildActivityIndex, buildGlobalSearchIndex, buildOperationIndex } from './model/activity.js';
 import { createWaitingTargetAuthority } from './model/task-controls.js';
 import { agentSelectionView, latestAgentOptions, latestAgentUsage, resolveParameterAgent } from './model/agent-selection.js';
@@ -158,9 +157,6 @@ export default function App() {
   const [spaceDeclarations, setSpaceDeclarations] = useState([]);
   const [spaceDaemons, setSpaceDaemons] = useState([]);
   const [channelDevices, setChannelDevices] = useState([]);
-  const editReleaseObligationsRef = useRef(new Map());
-  const serverWorldCommittedRef = useRef(serverWorld);
-  const wireStateCommittedRef = useRef(wireState);
   // 草稿是编辑器私有的临时状态，不是工作区渲染状态。这里仅用 ref 做跨频道、
   // 跨主视图的本地持久化；逐字输入不得触发 App/Timeline 重渲染。
   const [taskCreateSource, setTaskCreateSource] = useState(undefined);
@@ -205,25 +201,8 @@ export default function App() {
   );
   const nodeUpdate = useNodeUpdate({ principalId: me?.id, wireState });
 
-  const roster = useChannelRoster({
-    committedOwnerRef: committedFeedOwnerRef,
-    onError: showRosterError,
-    principalId,
-    rosterRef,
-    versionIncompatibleEpochRef,
-    versionIncompatibleRef,
-  });
-  const {
-    authorities: rosterAuthorities,
-    busy: rosterBusy,
-    clear: clearRoster,
-    clearChannel: clearRosterChannel,
-    publishRows: setRosters,
-    receive: receiveRoster,
-    refresh: refreshRosterOwner,
-    rosters,
-    seed: seedRoster,
-  } = roster;
+  const rosterSinkRef = useRef(null);
+  const forwardRoster = useCallback((...args) => rosterSinkRef.current?.(...args), []);
 
   useEffect(() => {
     setRecentFiles(readFileReadingHistory(me?.id, serverWorld));
@@ -258,7 +237,33 @@ export default function App() {
   }, []);
   const forwardAccessChanged = useCallback(() => directoryActionsRef.current.bump?.(), []);
   const forwardAgentActivity = useCallback((payload, context) => agentActivityRef.current.observe(payload, context), []);
-  const { statesRef: channelStatesRef, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, stopIncompatible: stopIncompatibleFeed, focusHistory, generationFor, refreshChannel, historyFor, coldEntryDiagnosticsFor, loadHistory, markRead, acknowledgeNotifications, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: receiveRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
+  const { stateFor, stateEntries, reconcileIdentity, version: feedVersion, indexVersion: feedIndexVersion, bump: bumpFeed, enqueue: enqueueFeed, cancel: cancelFeedTask, clear: clearFeed, prepareLocalReplica, resumeLocalReplica, localReplicaReady, localReplicaError, localReplicaErrorCode, setHistoryGrants, pageEnd: finishHistoryPage, liveCheckpoint: finishLiveCheckpoint, disconnectHistory, stopIncompatible: stopIncompatibleFeed, focusHistory, generationFor, refreshChannel, historyFor, coldEntryDiagnosticsFor, loadHistory, markRead, acknowledgeNotifications, unreadFor } = useChannelFeed({ wireRef, rosterRef, accessRef, activeChannelRef, ownerToken: feedProducerOwnerToken, onRoster: forwardRoster, onError: receiveFeedError, onChannelsDiscovered: forwardChannels, onDirectoryInvalidated: forwardDirectoryInvalidated, onTimerFired: markTimerFired, onSubmissionFeed: forwardSubmissionFeed, onAccessChanged: forwardAccessChanged, onAgentActivity: forwardAgentActivity });
+  const roster = useChannelRoster({
+    generationFor,
+    onError: showRosterError,
+    ownerToken: feedProducerOwnerToken,
+    principalId,
+    reconcileIdentity,
+    rosterRef,
+    versionIncompatibleEpochRef,
+    versionIncompatibleRef,
+  });
+  const {
+    authorities: rosterAuthorities,
+    busy: rosterBusy,
+    clear: clearRoster,
+    clearChannel: clearRosterChannel,
+    receive: receiveRoster,
+    refresh: refreshRosterOwner,
+    rosters,
+    seed: seedRoster,
+  } = roster;
+  useLayoutEffect(() => {
+    rosterSinkRef.current = receiveRoster;
+    return () => {
+      if (rosterSinkRef.current === receiveRoster) rosterSinkRef.current = null;
+    };
+  }, [receiveRoster]);
   const channelChanged = useCallback(() => { setSelectedActor(null); setContextFocus(null); setFilePreviewStack([]); setRightPanel(''); setTaskCreateSource(undefined); setChannelCreateOpen(false); setGlobalSearchOpen(false); }, []);
   const directory = useChannelDirectory({ accessRef, rosterRef, onChannelChanged: channelChanged, onNotice: setChannelNotice, initialChannelId: initialRouteRef.current.channelId });
   const { channels, setChannels, rows: channelList, bump: bumpAccess, activeChannelId, setActiveChannelId, select: selectChannel, clear: clearDirectory } = directory;
@@ -315,17 +320,15 @@ export default function App() {
       writeWorkspaceRoute({ channelId: activeChannelId, view }, { replace: true });
     }
   }, [activeChannelId, workspaceView]);
-  const submissions = useSubmissions({ principalId: me?.id, serverWorld, activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion: directory.version, channelStatesRef, onError: receiveSubmissionError, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
-  const { pending, drafts, draftFor, updateDraft, persistDraftAttachments, approvalStates, controlStates, send: handleSend, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions, resetWorld: resetSubmissionWorld } = submissions;
+  const submissions = useSubmissions({ principalId: me?.id, serverWorld, activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion: directory.version, stateFor, reconcileIdentity, onError: receiveSubmissionError, onNotice: setChannelNotice, onFeedChanged: bumpFeed, onAccessChanged: bumpAccess });
+  const { pending, drafts, draftFor, updateDraft, persistDraftAttachments, approvalStates, controlStates, send: handleSend, sendDurableControl, retry: handleRetry, resolve: handleResolve, cancel: handleCancel, reconcileFeed: reconcileSubmissionFeed, clear: clearSubmissions, resetWorld: resetSubmissionWorld } = submissions;
   const {
     composerAgent,
-    contextProbedRef,
     describeActor,
     liveRequestIds: liveProbeRequestIds,
     manualAgentIdFor,
-    optionsProbedRef,
     pickAgent: handlePickAgent,
-    probeRequestKey,
+    requestKeys: probeRequestKeys,
     requestCapability,
     reset: resetAgentProbes,
     selectorOpened: handleSelectorOpen,
@@ -335,7 +338,7 @@ export default function App() {
     activeChannelId,
     activeChannelRef,
     accessRef,
-    channelStatesRef,
+    stateFor,
     feedVersion,
     handleSend,
     pending,
@@ -344,24 +347,16 @@ export default function App() {
     wireState,
   });
   const feedOwnerCandidate = useMemo(() => ({
-    principalId,
     producerOwnerToken: feedProducerOwnerToken,
-    generationFor,
     reconcile: reconcileSubmissionFeed,
-  }), [feedProducerOwnerToken, generationFor, principalId, reconcileSubmissionFeed]);
+  }), [feedProducerOwnerToken, reconcileSubmissionFeed]);
   useLayoutEffect(() => {
     const committed = feedOwnerCandidate;
     committedFeedOwnerRef.current = committed;
-    serverWorldCommittedRef.current = serverWorld;
-    wireStateCommittedRef.current = wireState;
     return () => {
       if (committedFeedOwnerRef.current === committed) committedFeedOwnerRef.current = null;
     };
-  }, [feedOwnerCandidate, serverWorld, wireState]);
-  const handleResource = useCallback(async (payload) => {
-    if (!wireRef.current) throw new TypeError('连接尚未就绪');
-    return wireRef.current.resource(payload);
-  }, []);
+  }, [feedOwnerCandidate]);
   const activeChannel = channelList.find((channel) => channel.id === activeChannelId)
     || channels.get(activeChannelId);
   const attachmentTransactions = useAttachmentTransactions({
@@ -370,20 +365,20 @@ export default function App() {
     activeChannelRef,
     accessRef,
     channelDevices,
-    committedOwnerRef: committedFeedOwnerRef,
     deviceActionsRef: channelDeviceActionsRef,
     directoryVersion: directory.version,
     draftFor,
     drafts,
+    generationFor,
+    updateDraft,
     onNotice: setChannelNotice,
     onOpenDynamic: () => workspaceActionsRef.current.openDynamic?.(),
-    onResource: handleResource,
     persistDraftAttachments,
+    principalId,
+    producerOwnerToken: feedProducerOwnerToken,
     serverWorld,
-    serverWorldCommittedRef,
     wireRef,
     wireState,
-    wireStateCommittedRef,
   });
   const {
     abortChannel: abortAttachmentChannel,
@@ -393,7 +388,6 @@ export default function App() {
     composerDraft: composerDraftProjection,
     mutate: mutateDraftAttachments,
     pickerOpen: attachmentPickerOpen,
-    publishComposerEdit,
     reset: resetAttachmentTransactions,
     runFileOperation,
     setPickerOpen: setAttachmentPickerOpen,
@@ -417,7 +411,6 @@ export default function App() {
     closeWireSession();
     clearFeed();
     clearDirectory();
-    accessRef.current = null;
     // 参数面板态是会话私有的：换账号不得继承上一账号的手选/切换中/探测标记。
     resetAgentProbes();
     setPendingSelect(null);
@@ -435,10 +428,6 @@ export default function App() {
     clearTimers();
     agentActivityRef.current.clear();
     resetAttachmentTransactions();
-    for (const obligation of editReleaseObligationsRef.current.values()) {
-      if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
-    }
-    editReleaseObligationsRef.current.clear();
     setTaskCreateSource(undefined);
     setChannelCreateOpen(false);
     setGlobalSearchOpen(false);
@@ -448,10 +437,6 @@ export default function App() {
   const resetWorldSurfaces = useCallback(() => {
     clearTimers();
     resetAttachmentTransactions();
-    for (const obligation of editReleaseObligationsRef.current.values()) {
-      if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
-    }
-    editReleaseObligationsRef.current.clear();
     setRecentFiles([]);
     setFilePreviewStack([]);
     setAttachmentPickerOpen(false);
@@ -464,9 +449,7 @@ export default function App() {
     activeChannelRef,
     agentActivityRef,
     bumpAccess,
-    bumpFeed,
     cancelFeedTask,
-    channelStatesRef,
     clearRoster,
     disconnectHistory,
     displayError,
@@ -480,6 +463,7 @@ export default function App() {
     port: wireSession,
     prepareLocalReplica,
     principalId,
+    reconcileIdentity,
     resetSubmissionWorld,
     resumeLocalReplica,
     seedRoster,
@@ -490,11 +474,10 @@ export default function App() {
     stopIncompatibleFeed,
   });
 
-  const refreshRoster = useCallback((channelId, force = false) => refreshRosterOwner(
-    channelId,
-    force,
-    { channelStatesRef, onFeedChanged: bumpFeed },
-  ), [bumpFeed, channelStatesRef, refreshRosterOwner]);
+  const refreshRoster = useCallback(
+    (channelId, force = false) => refreshRosterOwner(channelId, force),
+    [refreshRosterOwner],
+  );
 
   const activeRosterGeneration = Number(generationFor(activeChannelId) || 0);
   const activeHistoryStatus = historyFor(activeChannelId);
@@ -639,67 +622,6 @@ export default function App() {
     } catch (error) { setTopError(displayError(error)); }
   }, [runFileOperation]);
 
-  const runEditReleaseObligation = useCallback((obligation) => {
-    if (obligation.inFlight) return obligation.inFlight;
-    if (committedFeedOwnerRef.current?.principalId !== obligation.principalId) {
-      if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
-      editReleaseObligationsRef.current.delete(obligation.messageId);
-      const error = new Error('编辑锁释放义务的登录身份已变化');
-      error.code = 'identity_changed';
-      return Promise.reject(error);
-    }
-    const attempt = handleSend({
-      ...obligation.request,
-      messageId: obligation.messageId,
-    }).then((messageId) => {
-      if (!messageId) throw new Error('解除编辑锁请求未进入发送队列');
-      if (obligation.retryTimer != null) clearTimeout(obligation.retryTimer);
-      editReleaseObligationsRef.current.delete(obligation.messageId);
-      return messageId;
-    }).catch((error) => {
-      obligation.error = error;
-      setChannelNotice(`解除编辑锁未持久：${displayError(error)}；保留原请求编号等待重试。`);
-      const access = accessRef.current?.state?.(obligation.request.channelId);
-      if (editReleaseObligationsRef.current.get(obligation.messageId) === obligation
-        && wireStateCommittedRef.current === 'open'
-        && access?.relationship === 'member'
-        && access?.existence !== 'retired'
-        && obligation.retryTimer == null) {
-        obligation.retryTimer = setTimeout(() => {
-          obligation.retryTimer = null;
-          void runEditReleaseObligation(obligation).catch((retryError) => {
-            diagnostic('warn', 'edit.release_retry_failed', {
-              channelId: obligation.request.channelId,
-              messageId: obligation.messageId,
-              error: retryError,
-            });
-          });
-        }, 2_000);
-      }
-      throw error;
-    }).finally(() => {
-      if (obligation.inFlight === attempt) obligation.inFlight = null;
-    });
-    obligation.inFlight = attempt;
-    return attempt;
-  }, [handleSend]);
-
-  useEffect(() => {
-    if (wireState !== 'open') return;
-    for (const obligation of editReleaseObligationsRef.current.values()) {
-      if (obligation.inFlight) continue;
-      const access = accessRef.current?.state?.(obligation.request.channelId);
-      if (access?.relationship !== 'member' || access?.existence === 'retired') continue;
-      void runEditReleaseObligation(obligation).catch((error) => {
-        diagnostic('warn', 'edit.release_retry_failed', {
-          channelId: obligation.request.channelId,
-          messageId: obligation.messageId,
-          error,
-        });
-      });
-    }
-  }, [directory.version, runEditReleaseObligation, wireState]);
-
   const handleTaskControl = useCallback(async ({ channelId, turn, actorId, type, payload, messageId = '' }) => {
     if (!channelId || !actorId) return '';
     const request = {
@@ -714,14 +636,8 @@ export default function App() {
       parentId: type === TYPES.agentReplace ? '' : (turn?.requestId || ''),
     };
     if (type !== TYPES.agentUnhold) return handleSend({ ...request, ...(messageId ? { messageId } : {}) });
-    const fixedId = messageId || newId();
-    let obligation = editReleaseObligationsRef.current.get(fixedId);
-    if (!obligation) {
-      obligation = { messageId: fixedId, principalId, request, inFlight: null, retryTimer: null, error: null };
-      editReleaseObligationsRef.current.set(fixedId, obligation);
-    }
-    return runEditReleaseObligation(obligation);
-  }, [handleSend, principalId, runEditReleaseObligation]);
+    return sendDurableControl(request, messageId);
+  }, [handleSend, sendDurableControl]);
 
   // 「取消」按钮背后的两条路。自己发的那条走 wire.cancel（调用方给自己开的账写
   // 终态）；别人发的没有那一臂——第三方不是合法的终态作者——所以改为请**持有它
@@ -729,7 +645,7 @@ export default function App() {
   const handleCancelAny = useCallback(async (channelId, reqId, asDismiss) => {
     if (!channelId || !reqId) return '';
     if (!asDismiss) return handleCancel(channelId, reqId);
-    const turn = channelStatesRef.current.get(channelId)?.turns.get(reqId);
+    const turn = stateFor(channelId)?.turns.get(reqId);
     const holder = turn?.request?.audience?.length === 1 ? turn.request.audience[0] : '';
     if (!holder) return '';
     return handleSend({
@@ -740,7 +656,7 @@ export default function App() {
       targetLabel: holder,
       payload: { target: reqId },
     });
-  }, [channelStatesRef, handleCancel, handleSend]);
+  }, [handleCancel, handleSend, stateFor]);
 
   // 破窗恢复：把"重启这个频道"作为一条普通控制请求发给 system actor。它和其它
   // 控制词走同一条路，所以请求与终态自然落在时间线上——不需要另造一套结果 UI，
@@ -789,7 +705,7 @@ export default function App() {
       setPendingSelect(null);
       return;
     }
-    const state = channelStatesRef.current.get(pendingSelect.channelId);
+    const state = stateFor(pendingSelect.channelId);
     if (!state) return;
     for (const row of state.rows.values()) {
       if (row.kind !== 'response' || row.parent_id !== pendingSelect.requestId) continue;
@@ -877,7 +793,7 @@ export default function App() {
   }), []);
 
   useUiWords({
-    channelStatesRef,
+    stateEntries,
     version: feedIndexVersion,
     session: uiSession,
     selfIdFor: uiSelfIdFor,
@@ -934,7 +850,7 @@ export default function App() {
     const focus = { type: 'participant', key: actor.id };
     setContextFocus(focus);
     if (activeChannelId) writeWorkspaceRoute({ channelId: activeChannelId, view: workspaceView, focus }, { contextEntry: true });
-    const state = channelStatesRef.current.get(activeChannelId);
+    const state = stateFor(activeChannelId);
     const capability = capabilityIndexFromState(state, liveProbeRequestIds).get(actor.id);
     // 点开某个成员看它的能力是真人动作，force 绕过频次闸门：限流只管自动探测。
     if (!capability?.describe && !capability?.loading) describeActor(actor, activeChannelId, { force: true });
@@ -956,7 +872,7 @@ export default function App() {
   // 恒不为了一个关闭着的右侧面板重扫几万条消息。
   const activeArtifactIndex = useMemo(
     () => contextFocus?.type === 'artifact'
-      ? buildArtifactIndex(channelStatesRef.current.get(activeChannelId))
+      ? buildArtifactIndex(stateFor(activeChannelId))
       : EMPTY_INDEX,
     [activeChannelId, feedVersion, contextFocus?.type],
   );
@@ -986,7 +902,7 @@ export default function App() {
   const globalData = useMemo(() => {
     if (!globalProjection) return EMPTY_GLOBAL_DATA;
     const channelData = channelList.map((channel) => {
-      const state = channelStatesRef.current.get(channel.id) || createChannelState(channel.id);
+      const state = stateFor(channel.id) || createChannelState(channel.id);
       const roster = visibleRosterRows(rosters.get(channel.id) || []);
       const capabilityIndex = capabilityIndexFromState(state, liveProbeRequestIds);
       const selfId = channel.selfActorId || rosterRef.current?.self(channel.id) || '';
@@ -1032,7 +948,7 @@ export default function App() {
     onRefresh={() => window.location.reload()}
   />;
 
-  const activeState = channelStatesRef.current.get(activeChannelId) || createChannelState(activeChannelId);
+  const activeState = stateFor(activeChannelId) || createChannelState(activeChannelId);
   const agentActivity = agentActivityRef.current.snapshot();
   const acknowledgeAgentActivity = (channelId, agentId) => agentActivityRef.current.acknowledge(channelId, agentId);
   const readActiveLatest = derived(
@@ -1111,8 +1027,9 @@ export default function App() {
   const composerAgentId = composerAgent.channelId === activeChannelId ? composerAgent.actorId : '';
   // 读数按"新在前"的一列探测 id 取第一份完成的：手动刷新期间新的还没回、旧的
   // 仍是当前真值。derived 按 Object.is 比较依赖，所以这里传拼接后的字符串键。
-  const composerProbeKey = probeRequestKey(contextProbedRef, activeChannelId, composerAgentId);
-  const composerOptionsProbeKey = probeRequestKey(optionsProbedRef, activeChannelId, composerAgentId);
+  const composerProbeKeys = probeRequestKeys(activeChannelId, composerAgentId);
+  const composerProbeKey = composerProbeKeys.context;
+  const composerOptionsProbeKey = composerProbeKeys.options;
   const composerAgentUsage = derived(
     'composerAgentUsage',
     [activeState, terminalVersion, composerAgentId, composerProbeKey],
@@ -1174,7 +1091,7 @@ export default function App() {
     if (!artifact?.channelId || !artifact?.resourceId) return;
     setRecentFiles((current) => {
       const next = rememberFileRead(current, artifact);
-      writeFileReadingHistory(me?.id, serverWorldCommittedRef.current, next);
+      writeFileReadingHistory(me?.id, serverWorld, next);
       return next;
     });
   };
@@ -1328,8 +1245,8 @@ export default function App() {
     panel: { value: rightPanel, focus: contextFocus, close: closeContext, turn: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource } },
     active: { channel: activeChannel, state: activeState, roster: activeRoster, access: activeAccess, selfId, wireState, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } },
     directory: { channels: channelList },
-    governance: { principals: spacePrincipals, declarations: spaceDeclarations, daemons: spaceDaemons, channelDevices, registrarRoster: rosters.get('c0') || (activeChannelId === 'c0' ? activeRoster : []), rootState: channelStatesRef.current.get('c0'), version: feedIndexVersion, onSubmit: handleSend, onRefresh: refreshGovernanceData },
-    artifacts: { selected: previewArtifact || selectedArtifact, authorName: activeRoster.find((row) => row.id === (previewArtifact || selectedArtifact)?.authorActorId)?.name, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), canGoBack: filePreviewStack.length > 1, onBack: backFilePreview, onClose: closeFilePreview, onPreview: showFilePreview, onResource: handleResource, onFileOperation: runFileOperation, onDownload: (attachment) => handleDownloadResource((previewArtifact || selectedArtifact)?.channelId || activeChannelId, attachment), onAttach: attachToDraft, onSource: openArtifactSource, onFileReference: (reference) => previewMessageAttachment(activeChannelId, attachmentFromFileReference(reference)) },
+    governance: { principals: spacePrincipals, declarations: spaceDeclarations, daemons: spaceDaemons, channelDevices, registrarRoster: rosters.get('c0') || (activeChannelId === 'c0' ? activeRoster : []), rootState: stateFor('c0'), version: feedIndexVersion, onSubmit: handleSend, onRefresh: refreshGovernanceData },
+    artifacts: { selected: previewArtifact || selectedArtifact, authorName: activeRoster.find((row) => row.id === (previewArtifact || selectedArtifact)?.authorActorId)?.name, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), canGoBack: filePreviewStack.length > 1, onBack: backFilePreview, onClose: closeFilePreview, onPreview: showFilePreview, onFileOperation: runFileOperation, onDownload: (attachment) => handleDownloadResource((previewArtifact || selectedArtifact)?.channelId || activeChannelId, attachment), onAttach: attachToDraft, onSource: openArtifactSource, onFileReference: (reference) => previewMessageAttachment(activeChannelId, attachmentFromFileReference(reference)) },
     workItems: { selected: selectedWorkItem, roster: activeRoster, onSource: openWorkItemSource, onResolve: (item, decision) => handleResolve(activeChannelId, item.nativeId, decision, {}), onOpenTurn: openTurnDetail, onRetry: (item) => { const submission = pending.find((row) => row.key === item.diagnostic?.submissionKey); if (submission) handleRetry(submission); }, onCancelAutomation: handleCancelTimer },
     roster: { busy: rosterBusy, onRefresh: () => refreshRoster(activeChannelId, true), selectedActor, capability: selectedCapability, onSelectActor: handleSelectActor, onCloseActor: () => {
       setSelectedActor(null);
@@ -1343,7 +1260,7 @@ export default function App() {
   <AppShell
     session={{ me, wireState, update: nodeUpdate, onLogout: handleLogout }}
     navigation={{ channels: channelList, activeChannelId, unread, agentActivity, onSelect: selectWorkspaceChannel, onCreate: () => { setRightPanel(''); setContextFocus(null); setChannelCreateOpen(true); }, onSearch: () => { setRightPanel(''); setContextFocus(null); setGlobalSearchOpen(true); }, onActivity: () => openContext('activity'), onSpaceManage: () => openContext('space') }}
-    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, waitingRosterAuthority, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, onRequestCapability: requestCapability, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: composerDraftProjection, onDraftChange: (value) => updateDraft(activeChannelId, { ...value, attachments: tagAttachmentsForCurrentWorld(value?.attachments) }), draftRevision: drafts.get(activeChannelId)?.revision || 0, attachments: composerAttachmentProjection, onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: ({ editing = false } = {}) => { if (editing) { setChannelNotice('编辑已有消息时不能附加频道文件；请先完成或取消编辑。'); return; } setAttachmentPickerOpen(true); }, onComposerEditChange: publishComposerEdit, onRemoveAttachment: (resourceId) => mutateDraftAttachments(activeChannelId, (rows) => rows.filter((row) => row.resource_id !== resourceId)), onClearAttachments: () => clearDraftAttachments(activeChannelId), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onResource: handleResource, onFileOperation: runFileOperation, onAttach: attachToDraft, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), onOpen: (artifact) => { rememberFilePreview(artifact); openContext('artifact-focus', { type: 'artifact', key: artifact.key }); }, onPreview: showFilePreview }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
+    workspace={{ channel: activeChannel, view: workspaceView, onViewChange: changeWorkspaceView, state: activeState, history: activeHistory, access: activeAccess, roster: activeRoster, waitingRosterAuthority, selfId, agentActivity: agentActivity.byChannel[activeChannelId], onAcknowledgeAgentActivity: (agentId) => acknowledgeAgentActivity(activeChannelId, agentId), pending: activePending, approvalStates, controlStates, capabilityIndex, onRequestCapability: requestCapability, mockAdvance: { ...mockAdvance, onAdvance: advanceMockComputation }, agentSelection: composerAgentSelection, onResolve: handleResolve, onRetry: handleRetry, onCancel: handleCancelAny, onTaskControl: handleTaskControl, onDownloadResource: handleDownloadResource, onPreviewResource: previewMessageAttachment, onOpenTurn: (turn) => openTurnDetail(turn.requestId), onCreateTask: createTaskFromSource, onFocusAgentChange: handleFocusAgentChange, onSend: handleSend, onRestartChannel: handleRestartChannel, draft: composerDraftProjection, onDraftChange: (value) => updateDraft(activeChannelId, { ...value, attachments: tagAttachmentsForCurrentWorld(value?.attachments) }), draftRevision: drafts.get(activeChannelId)?.revision || 0, attachments: composerAttachmentProjection, onPreviewAttachment: (attachment) => previewMessageAttachment(activeChannelId, attachment), onUploadAttachments: uploadComposerAttachments, onOpenChannelFiles: ({ editing = false } = {}) => { if (editing) { setChannelNotice('编辑已有消息时不能附加频道文件；请先完成或取消编辑。'); return; } setAttachmentPickerOpen(true); }, onRemoveAttachment: (resourceId) => mutateDraftAttachments(activeChannelId, (rows) => rows.filter((row) => row.resource_id !== resourceId)), onClearAttachments: () => clearDraftAttachments(activeChannelId), turnDetail: { selected: selectedTurn, capability: capabilityIndex.get(selectedTurnActorId), controlState: controlStates[selectedTurnControlKey], onCancel: () => handleCancel(activeChannelId, selectedTurn?.requestId), onControl: (type, payload) => handleTaskControl({ channelId: activeChannelId, turn: selectedTurn, actorId: selectedTurnActorId, type, payload }), onDownload: (attachment) => handleDownloadResource(activeChannelId, attachment), onSource: openDynamicSource, onCreateTask: createTaskFromSource, onClose: closeContext }, resources: { devices: channelDevices, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onFileOperation: runFileOperation, onAttach: attachToDraft, recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId), onOpen: (artifact) => { rememberFilePreview(artifact); openContext('artifact-focus', { type: 'artifact', key: artifact.key }); }, onPreview: showFilePreview }, tasks: { items: [...workItemIndex.values()], providers, canWrite: wireState === 'open' && canWriteChannel(activeAccess), onNewTask: createTaskFromSource, onOpen: (item) => openContext('work-item-focus', { type: 'work_item', key: item.key }), onNewAutomation: () => openContext('automation') }, automation: { records: timerRecords, disabled: wireState !== 'open' || !canWriteChannel(activeAccess), onAfter: handleAfter, onCancel: handleCancelTimer } }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     panel={{ value: rightPanel, open: openContext, host }}
   />
@@ -1351,6 +1268,6 @@ export default function App() {
   {channelCreateOpen && activeChannel && <ChannelCreateModal channel={activeChannel} channels={channelList} roster={activeRoster} selfId={selfId} state={activeState} disabled={wireState !== 'open' || !canWriteChannel(activeAccess)} onSubmit={handleSend} onClose={() => setChannelCreateOpen(false)} onEnterChannel={(channel) => { setChannelCreateOpen(false); selectWorkspaceChannel(channel.id); }} />}
   {globalSearchOpen && <GlobalSearch index={globalData.searchIndex} onOpen={navigateToSource} onClose={() => setGlobalSearchOpen(false)} />}
   <UiActivityOverlay entries={uiActivity} />
-  {attachmentPickerOpen && activeChannel && <ChannelFilePickerModal channel={activeChannel} devices={channelDevices} disabled={wireState !== 'open' || !canWriteChannel(activeAccess)} onResource={handleResource} onFileOperation={runFileOperation} onChoose={(attachment) => attachToDraft(attachment, activeChannel.id)} onClose={() => setAttachmentPickerOpen(false)} />}
+  {attachmentPickerOpen && activeChannel && <ChannelFilePickerModal channel={activeChannel} devices={channelDevices} disabled={wireState !== 'open' || !canWriteChannel(activeAccess)} onFileOperation={runFileOperation} onChoose={(attachment) => attachToDraft(attachment, activeChannel.id)} onClose={() => setAttachmentPickerOpen(false)} />}
   </>;
 }

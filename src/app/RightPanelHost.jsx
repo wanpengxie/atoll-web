@@ -54,7 +54,7 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
     content = <Roster rows={active.roster} selfId={active.selfId} identityPending={isMemberAccess(active.access) && !active.selfId} busy={roster.busy} focused onClosePanel={close} onRefresh={roster.onRefresh} selectedActor={roster.selectedActor} capability={roster.capability} disabled={!canWriteChannel(active.access)} onSelectActor={roster.onSelectActor} onCloseActor={roster.onCloseActor} onDescribe={roster.onDescribe} onInvoke={roster.onInvoke} />;
   }
   else if (panel.value === 'artifact-focus' && artifacts.selected) {
-    content = <ArtifactContext key={`${artifacts.selected.channelId}:${artifacts.selected.resourceId}:${artifacts.selected.line || 0}`} artifact={artifacts.selected} authorName={artifacts.authorName} onResource={artifacts.onResource} onFileOperation={artifacts.onFileOperation} onDownload={artifacts.onDownload} onAttach={artifacts.onAttach} onSource={artifacts.onSource} canGoBack={artifacts.canGoBack} onBack={artifacts.onBack} onClose={artifacts.onClose || close} />;
+    content = <ArtifactContext key={`${artifacts.selected.channelId}:${artifacts.selected.resourceId}:${artifacts.selected.line || 0}`} artifact={artifacts.selected} authorName={artifacts.authorName} onFileOperation={artifacts.onFileOperation} onDownload={artifacts.onDownload} onAttach={artifacts.onAttach} onSource={artifacts.onSource} canGoBack={artifacts.canGoBack} onBack={artifacts.onBack} onClose={artifacts.onClose || close} />;
   }
   else if (panel.value === 'work-item-focus' && workItems.selected) {
     content = <WorkItemContext item={workItems.selected} roster={workItems.roster} onSource={workItems.onSource} onResolve={workItems.onResolve} onOpenTurn={workItems.onOpenTurn} onRetry={workItems.onRetry} onCancelAutomation={workItems.onCancelAutomation} onClose={close} />;
@@ -63,7 +63,7 @@ export function RightPanelHost({ panel, active, directory, governance, roster, a
     content = <ChannelAutomation channel={active.channel} records={active.automation.records} disabled={active.automation.disabled} onAfter={active.automation.onAfter} onCancel={active.automation.onCancel} onClose={close} />;
   }
   else if (panel.value === 'resources' && active.channel) {
-    content = <ChannelResources channel={active.channel} devices={governance.channelDevices} disabled={active.wireState !== 'open' || !canWriteChannel(active.access)} attachDisabled={artifacts.attachDisabled} attachDisabledReason={artifacts.attachDisabledReason} onResource={artifacts.onResource} onFileOperation={artifacts.onFileOperation} onAttach={artifacts.onAttach} onClose={close} />;
+    content = <ChannelResources channel={active.channel} devices={governance.channelDevices} disabled={active.wireState !== 'open' || !canWriteChannel(active.access)} attachDisabled={artifacts.attachDisabled} attachDisabledReason={artifacts.attachDisabledReason} onFileOperation={artifacts.onFileOperation} onAttach={artifacts.onAttach} onClose={close} />;
   }
   else if (panel.value === 'activity') {
     content = <ActivityCenter activities={activity.activities} operations={activity.operations} onOpen={activity.onOpen} onClose={close} />;

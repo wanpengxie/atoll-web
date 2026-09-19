@@ -89,7 +89,7 @@ export function looksLikeText(bytes) {
   }
 }
 
-export function useArtifactPreview(rawArtifact, onResource, onFileOperation) {
+export function useArtifactPreview(rawArtifact, onFileOperation) {
   const [preview, setPreview] = useState({ phase: 'idle', url: '', text: '', error: '' });
   const artifact = resolveArtifact(rawArtifact);
   const previewKind = artifact?.preview;
@@ -130,13 +130,7 @@ export function useArtifactPreview(rawArtifact, onResource, onFileOperation) {
       if (raw.size > limit) throw new RangeError(sizeError(limit));
       return { phase: 'ready', raw };
     };
-    const pending = onFileOperation
-      ? onFileOperation({ channelId: artifact.channelId, access: 'read', signal: controller.signal }, load)
-      : load({
-        signal: controller.signal,
-        resource: onResource,
-        fetch: (input, init = {}) => fetch(input, { ...init, signal: controller.signal }),
-      });
+    const pending = onFileOperation({ channelId: artifact.channelId, access: 'read', signal: controller.signal }, load);
     pending.then((result) => {
       if (!alive) return;
       if (!result.raw) { setPreview(result); return; }
@@ -149,7 +143,7 @@ export function useArtifactPreview(rawArtifact, onResource, onFileOperation) {
     }).catch((error) => { if (alive && error?.name !== 'AbortError') setPreview({ phase: 'error', url: '', text: '', error: error.message || String(error) }); });
     return () => { alive = false; controller.abort(); if (objectURL) URL.revokeObjectURL(objectURL); };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- resolveArtifact 每次返回新对象，按稳定键重跑
-  }, [resourceKey, onFileOperation, onResource]);
+  }, [resourceKey, onFileOperation]);
   return preview;
 }
 
@@ -305,9 +299,9 @@ export function ArtifactPreviewBody({ artifact: rawArtifact, preview, textMode, 
   </>;
 }
 
-export function ArtifactContext({ artifact: rawArtifact, onResource, onFileOperation, onDownload, canGoBack = false, onBack, onClose }) {
+export function ArtifactContext({ artifact: rawArtifact, onFileOperation, onDownload, canGoBack = false, onBack, onClose }) {
   const artifact = resolveArtifact(rawArtifact);
-  const preview = useArtifactPreview(artifact, onResource, onFileOperation);
+  const preview = useArtifactPreview(artifact, onFileOperation);
   const format = textPreviewFormat(artifact || {});
   const targetLine = Number.isSafeInteger(artifact?.line) && artifact.line > 0 ? artifact.line : 0;
   const [textMode, setTextMode] = useState(format.rich && !targetLine ? 'preview' : 'source');

@@ -10,7 +10,7 @@ const PAGE_SIZE = 100;
 // 个实例。谁活得比实例长，谁就该记——所以由 AppShell 拿着一张按频道的表，挂载时
 // 交进来、变了再交回去。文件区从整屏 tab 改成分屏之后这条才成立：以前每次切走
 // 都是真卸载，人回来恒从根目录重新往下点。
-export function useChannelFileBrowser({ channel, devices = [], disabled = false, onResource, onFileOperation, initialLocation = null, onLocationChange }) {
+export function useChannelFileBrowser({ channel, devices = [], disabled = false, onFileOperation, initialLocation = null, onLocationChange }) {
   const defaultDaemonId = availableDefaultStorageDeviceId(channel, devices);
   const [daemonId, setDaemonId] = useState(initialLocation?.daemonId || defaultDaemonId);
   const [directory, setDirectory] = useState(initialLocation?.directory || '');
@@ -33,11 +33,10 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
   locationRef.current = locationKey;
   const entries = useMemo(() => directoryEntries(items, prefix), [items, prefix]);
   const selected = entries.find((entry) => entry.key === selectedKey) || null;
-  const performResource = useCallback((payload, access = 'read') => (
-    onFileOperation
-      ? onFileOperation({ channelId: channel?.id, access }, ({ resource }) => resource(payload))
-      : onResource(payload)
-  ), [channel?.id, onFileOperation, onResource]);
+  const performResource = useCallback((payload, access = 'read') => {
+    if (typeof onFileOperation !== 'function') throw new TypeError('文件操作 owner 不可用');
+    return onFileOperation({ channelId: channel?.id, access }, ({ resource }) => resource(payload));
+  }, [channel?.id, onFileOperation]);
 
   // 下面两条都判"变了没有"而不是无条件写。挂载时无条件写等于把恢复来的位置立刻
   // 冲掉——恢复与重置会在同一次提交里打架，而重置恒在后面。频道换了是整个实例换
@@ -77,7 +76,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
 
   const load = useCallback(async ({ append = false, cursor = '', expectedLocation = locationKey } = {}) => {
     if (locationRef.current !== expectedLocation) return false;
-    if (!channel?.id || !daemonId || !deviceName || !channelName || !onResource) {
+    if (!channel?.id || !daemonId || !deviceName || !channelName) {
       setItems([]); setNext(''); setStatus('ready');
       return true;
     }
@@ -110,7 +109,7 @@ export function useChannelFileBrowser({ channel, devices = [], disabled = false,
       setError(failure?.message || String(failure));
       return false;
     }
-  }, [channel?.id, channelName, daemonId, deviceName, directory, locationKey, onResource, performResource]);
+  }, [channel?.id, channelName, daemonId, deviceName, directory, locationKey, performResource]);
 
   useEffect(() => {
     setItems([]); setNext(''); setSelectedKey('');

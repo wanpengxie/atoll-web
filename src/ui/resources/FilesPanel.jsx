@@ -6,7 +6,7 @@ import { PanelCard } from '../primitives/PanelCard.jsx';
 import { SelectMenu } from '../primitives/SelectMenu.jsx';
 
 
-export function FilesPanel({ channel, devices = [], disabled, attachDisabled = disabled, attachDisabledReason = '', onResource, onFileOperation, onAttach }) {
+export function FilesPanel({ channel, devices = [], disabled, attachDisabled = disabled, attachDisabledReason = '', onFileOperation, onAttach }) {
   const [error, setError] = useState('');
   const defaultDaemonId = availableDefaultStorageDeviceId(channel, devices);
   const [daemonId, setDaemonId] = useState(defaultDaemonId);
@@ -14,9 +14,7 @@ export function FilesPanel({ channel, devices = [], disabled, attachDisabled = d
   const [path, setPath] = useState('uploads/demo.txt');
   const [files, setFiles] = useState([]);
   const [uploadState, setUploadState] = useState('idle');
-  const runOperation = (options, effect) => (onFileOperation
-    ? onFileOperation({ channelId: channel.id, ...options }, effect)
-    : effect({ resource: onResource, fetch: (input, init) => fetch(input, init) }));
+  const runOperation = (options, effect) => onFileOperation({ channelId: channel.id, ...options }, effect);
 
   useEffect(() => {
     setDaemonId(defaultDaemonId);

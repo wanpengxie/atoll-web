@@ -1,10 +1,11 @@
-import { useCallback, useState } from 'react';
-import { reconcileApprovals } from '../../model/fold.js';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 
 export function useChannelRoster({
-  committedOwnerRef,
+  generationFor,
   onError,
+  ownerToken,
   principalId,
+  reconcileIdentity,
   rosterRef,
   versionIncompatibleEpochRef,
   versionIncompatibleRef,
@@ -12,6 +13,14 @@ export function useChannelRoster({
   const [rosters, setRosters] = useState(new Map());
   const [authorities, setAuthorities] = useState(new Map());
   const [busy, setBusy] = useState(false);
+  const committedOwnerRef = useRef(null);
+  useLayoutEffect(() => {
+    const owner = Object.freeze({ principalId, producerOwnerToken: ownerToken, generationFor });
+    committedOwnerRef.current = owner;
+    return () => {
+      if (committedOwnerRef.current === owner) committedOwnerRef.current = null;
+    };
+  }, [generationFor, ownerToken, principalId]);
 
   const publishAuthority = useCallback((channelId, authority, owner, generation) => {
     setAuthorities((current) => {
@@ -42,7 +51,7 @@ export function useChannelRoster({
     );
   }, [committedOwnerRef, publishAuthority, rosterRef]);
 
-  const refresh = useCallback(async (channelId, force, { channelStatesRef, onFeedChanged }) => {
+  const refresh = useCallback(async (channelId, force) => {
     if (versionIncompatibleRef.current || !channelId || !rosterRef.current) return;
     const incompatibilityEpoch = versionIncompatibleEpochRef.current;
     const owner = committedOwnerRef.current;
@@ -68,11 +77,7 @@ export function useChannelRoster({
         );
       }
       const selfId = rosterRef.current.self(channelId);
-      const state = channelStatesRef.current.get(channelId);
-      if (state && selfId) {
-        reconcileApprovals(state, selfId);
-        onFeedChanged();
-      }
+      if (selfId) reconcileIdentity(channelId, selfId);
     } catch (error) {
       if (!versionIncompatibleRef.current
         && incompatibilityEpoch === versionIncompatibleEpochRef.current
@@ -81,7 +86,7 @@ export function useChannelRoster({
       if (!versionIncompatibleRef.current
         && incompatibilityEpoch === versionIncompatibleEpochRef.current) setBusy(false);
     }
-  }, [committedOwnerRef, onError, publishAuthority, rosterRef, versionIncompatibleEpochRef, versionIncompatibleRef]);
+  }, [committedOwnerRef, onError, publishAuthority, reconcileIdentity, rosterRef, versionIncompatibleEpochRef, versionIncompatibleRef]);
 
   const seed = useCallback((rows) => {
     setRosters(new Map(Object.entries(rows || {})));
@@ -109,7 +114,6 @@ export function useChannelRoster({
     clear,
     clearChannel,
     principalId,
-    publishRows: setRosters,
     receive,
     refresh,
     rosters,
