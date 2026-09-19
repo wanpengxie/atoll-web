@@ -729,6 +729,90 @@ reverse/exit/new generation 后继续落地。
 `scrollTo` writer；无需为此继续扩展 top continuation，也不触碰 case 1/Reading lease，
 等待 Reading owner 提交后再做 case 1 repeat3 actual-paint 验收。
 
+### I. Round 20 Reading dirty candidate edge revalidation (read-only)
+
+本节针对 Reading 候选 `6181c71 + 32c021a` 的真实共享树复验。测试期间相关
+`VendorListExecutor`、`useConversationProjection`、`reading-session`、`useHistoryConsumer`
+没有未提交 tracked diff；共享 HEAD 随其他分区推进到 `5a5fa1a`，但相对候选在上述四个
+文件无差异。未改产品、正式 browser spec 或 fixture；四个 edge case 用临时 probe 跑完即
+删除。
+
+#### 公共 G–M gates（candidate）
+
+```text
+# case 1 exact prepend + row-local anchor, repeat3
+ATOLL_TEST_MOCK_PORT=20051 ATOLL_TEST_WEB_PORT=15351 npx playwright test \
+  tests/browser/history-presentation-admission-prototype.spec.js \
+  --grep='one older gesture stages sparse history' --repeat-each=3 --reporter=line \
+  --output=/tmp/gm20-current-32c021a-case1-repeat3
+# 0 pass / 3 regression; first public assertion line 133: listCount 4 > baseline 4
+
+# case 3 trusted wheel takeover, repeat3
+ATOLL_TEST_MOCK_PORT=20052 ATOLL_TEST_WEB_PORT=15352 npx playwright test \
+  tests/browser/history-reveal-prototype.spec.js \
+  --grep='trusted wheel takes over history work' --repeat-each=3 --reporter=line \
+  --output=/tmp/gm20-current-32c021a-case3-repeat3
+# 0 pass / 3 regression; this repeat's first public assertion line 103: mode following != browsing
+
+# candidate pure lease/direction checks
+npx vitest run tests/conversation-viewport.test.js tests/history-demand.test.js --reporter=dot
+# 2 files / 19 tests passed
+```
+
+case 1 单次 JSON（`/tmp/gm20-current-32c021a-case1-json`）给出 exact anchor 的可见首断：
+baseline first row `c0-claude-target-1-9584913-284` offset `-394px`，最终同一 row
+仍 connected 但 offset `35px`；listCount 始终 `4`。诊断只有 `history.intent_started`
+(`runway`, epoch 2)、`history.intent_promoted` 和 `history.intent_satisfied`，没有
+`history.admission_commit`，因此本轮 **没有 accepted position lease**，不能把 lease
+revoke 当成通过。首断先是 admission/presentation（4→未 prepend），随后 anchor offset
+也不满足 exact gate。
+
+case 3 repeat3 的严格首断全部是 `mode=following`；另一次单次 JSON 与 reverse probe
+在同一 candidate 可得到 `mode=browsing`，但仍有一个 app
+`scrollTo({behavior:'auto', top:1963})`。这说明 candidate 的 first-public boundary
+受 timer/paint 时序影响，在任何时序下都不能判 PASS：模式必须 browsing，且 writer 必须
+为空。
+
+#### Four edge probes and lease coverage
+
+| edge | 实际动作 / visible evidence | 首断与 lease 裁决 |
+|---|---|---|
+| unmount | c0 older wheel 后切到 `c0.project` 再返回 c0；旧 list 被替换，project 与返回 list 都 connected。c0 侧没有 admission commit/lease；切换期间观察到 project `scrollTo(top=4350)`，返回观察到 `scrollTo(top=3964)` | **未覆盖 accepted lease revoke**：上游 c0 没有 grant。可见 writer 仍来自唯一 Vendor adapter 的 tail restore；必须保持为独立 writer 边界，不得当作 lease PASS |
+| restore failure | older wheel 后切换 Claude filter（旧 list 暂时 `activeLists=0`, `connected=false`），再观察新 presentation | **未覆盖 accepted lease revoke**：旧 view 没有 grant；filter replacement 的 history 只出现新的 `projection-underfill` intents，没有 `positionLease`。不能用 unmount 本身声称 restore failure 已安全收尾 |
+| second continuation | 连续 14 次 `wheel(-420)`，观察每帧 rows/scroll/writer/history diagnostics | 第 12 wheel 出现 `history.admission_commit_check accepted=false reason=stale-viewport-owner`；随后没有 grant/lease，不能验证“第二 continuation 等待 lease consume 后才发”。writer 累计 7 次，首个可见失败仍是 stale viewport owner / 未形成 accepted prepend |
+| reverse input | `wheel(-2000)` 后 `wheel(+520)`；before 为 browsing、scrollTop 1963、已有 `scrollTo(top=1963)`；after 单次 probe 为 browsing、connected、scrollTop 2483，但旧 writer 仍存在 | **lease 未形成**；reverse 的真实产品合同仍 RED（writer 非空；repeat3 更早红在 following）。纯模型 reverse gate 通过：同 inputEpoch 的 newer update 清掉 positionRowLease/tail evidence，但未证明 Vendor pending RAF/unmount 真实路径已撤销 |
+
+临时 probe 的完整输出在 `/tmp/gm20-reading-edge-probe`；其四个 attachment 只读记录
+DOM/diagnostics/writer，没有修改产品或正式测试。关键负证据是：四个场景都没有
+`history.admission_commit` 带 `positionLease` 的 accepted grant，因此不能以
+`demand=idle`、connected list 或没有公开 error 推断 `position-lease-pending` 已被消费。
+
+#### 不能提前放行的两个可达边界
+
+1. `VendorListExecutor` 的 unmount cleanup 只取消 `positionRestoreRef` 的 RAF；没有调用
+   `reading.revokeHistoryPositionLease`。同样，`restoreReadingPosition` 的 `live()` 在
+   `currentInput?.active`、root/owner/view 早退时直接 `clear()`，只有进入 `finish()` 或
+   `historyPositionLeaseCommand()` 的 revision/generation 检查才会显式 revoke。若 accepted
+   grant 在实际 paint 前发生 unmount/restore early-return，必须用真实 grant 证明不会留下
+   永久 `position-lease-pending`。
+2. `useHistoryConsumer.request()` 对当前 lease 在 `continuation || reason==='top' ||
+   reason==='runway'` 时返回 `{kind:'position-lease-pending'}`。已有 continuation timer
+   会先清掉 `topContinuationRef` 再发这次 request；若 lease 没有被 consume/revoke，代码
+   没有第二个 retry owner 将该 continuation 重新排队。当前 probe 因 stale-viewport-owner
+   在更早阶段被挡住，尚未证明这条路径的永久 pending 是否出现；必须在下一轮构造 accepted
+   grant 后独立 repeat。
+
+#### 当前裁决
+
+候选没有闭合 case 1 exact anchor，也没有闭合 case 3 wheel takeover；四个 edge case
+只能报 **blocked by earlier admission/stale-viewport-owner**, 不能报 lease revoke PASS。
+唯一 geometry writer 仍是 `VendorListExecutor → reading-dom-command-executor`，但其旧
+tail/position write 已在 reverse/unmount 证据中可见。Reading owner 下一步最小验证顺序是：
+先让一个真实 accepted grant 完成 actual-paint lease，再分别在 lease pending 时做
+unmount、restore target failure、第二次 continuation、reverse；每项必须观察 lease
+被 consume 或 revoke、无永久 pending、且 `Element.prototype.scrollTo/scrollBy` 只有
+被当前唯一 Vendor command 授权的写入。
+
 ## Boundary audit
 
 - This partition edits only the G–M `tests/browser` specs and this `audit-output` report. No
