@@ -399,6 +399,43 @@ UX-A08 remains Reading persistence/arrival acknowledgement, and case38 remains
 Composer/reading-intent handoff plus the reading command executor. Neither is a
 migration artifact, so neither assertion is relaxed.
 
+## Follow-up: historical `controller is not defined` first divergence
+
+The extra error logged by the clean `77760c8` worktree is a source-level
+product defect, not a browser fixture or migration selector. The first
+unresolved identifier is:
+
+```text
+src/ui/timeline/useConversationProjection.js:735
+  }, [state.channelId, controller.activationID, messageListKey]);
+```
+
+At that revision, `controller` is declared only inside the nested
+`useProjectionReadingOwner()` owner (`useConversationProjection.js:134`); the
+outer `useConversationProjection()` scope has only the returned `viewport`
+(`useConversationProjection.js:582–591`). React evaluates the dependency array
+during the outer render, before the cleanup can run, so the dereference throws
+immediately. The browser call chain is:
+
+```text
+WorkspaceApp → ConversationSurface → useConversationProjection
+  → dependency-array evaluation → ReferenceError
+  → React root onUncaughtError → diagnostics react.uncaught
+```
+
+The stack observed in the historical run resolves to
+`useConversationProjection.js:727:3` after Vite's source mapping. The minimal
+owner correction landed separately in `07ed014`: it changes only that teardown
+dependency to `viewport.activationID`, which is the value actually owned by the
+outer hook. The current clean HEAD strict pair no longer logs this error; no
+test-side workaround was added.
+
+No newer notification/Reading product commit has landed after `07ed014` in the
+current working session. The remaining uncommitted Reading owner edits are
+deliberately excluded from the commit-boundary result; once their product
+commit lands, rerun the unchanged UX-A08 and case38 commands above with fresh
+isolated ports. Their hard RED contracts remain in force.
+
 ## Current files changed in this partition
 
 - `tests/browser/ui-visual.spec.js` (current public governance/files selectors;
