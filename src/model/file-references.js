@@ -1,4 +1,12 @@
-import { mediaTypeFromFileName } from './channel-file-transfer.js';
+function mediaTypeFromFileName(name) {
+  const extension = String(name || '').split('.').pop()?.toLowerCase();
+  return ({
+    avif: 'image/avif', gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg',
+    png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
+    md: 'text/markdown', txt: 'text/plain', json: 'application/json',
+    pdf: 'application/pdf', mp3: 'audio/mpeg', mp4: 'video/mp4', wav: 'audio/wav',
+  })[extension] || 'application/octet-stream';
+}
 
 // Markdown 的 href 是 URI 形态，文件门需要的是 daemon 看到的宿主路径。
 // 只解码 URI 字符，不把普通文本、相对链接或 //host/path 猜成文件。

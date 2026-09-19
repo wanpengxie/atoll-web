@@ -1,6 +1,9 @@
 import { isNarrationEnvelope } from '../protocol/vocab.js';
+import {
+  CONVERSATION_SCOPE,
+  selectTimelineItems,
+} from './conversation-presentation.js';
 import { isViewportNotifiableDisposition, notificationDisposition } from './notification-policy.js';
-import { isSelfActor, relatedEnvelopeIdsIncremental } from './timeline-scope.js';
 
 const LIVE_ARRIVAL_LIMIT = 1_024;
 const LIVE_PRESENTATION_ARRIVAL_LIMIT = 1_024;
@@ -19,26 +22,31 @@ export function createLiveArrivalState() {
   };
 }
 
+function humanPrincipal(id) {
+  const [kind, principal] = String(id || '').split(':');
+  return kind === 'human' ? principal : '';
+}
+
+function isSelfActor(actorId, selfId) {
+  if (!actorId || !selfId) return false;
+  if (actorId === selfId) return true;
+  const principal = humanPrincipal(selfId);
+  return Boolean(principal && principal === humanPrincipal(actorId));
+}
+
+function entryContainsEnvelope(entry, envelopeID) {
+  if (!entry || !envelopeID) return false;
+  if (entry.envelope?.id === envelopeID) return true;
+  const turns = [entry.turn, ...(entry.thread || []).map((item) => item.turn)].filter(Boolean);
+  return turns.some((turn) => turn.request?.id === envelopeID
+    || turn.terminal?.id === envelopeID
+    || turn.provisional?.some((item) => item.envelope?.id === envelopeID));
+}
+
 function rootTurnID(state, envelope) {
-  let id = envelope?.kind === 'request'
-    ? envelope.id
-    : envelope?.parent_id || envelope?.correlation_id || '';
-  const seen = new Set();
-  while (id && !seen.has(id)) {
-    seen.add(id);
-    const turn = state?.turns?.get?.(id);
-    const parent = turn?.request?.parent_id;
-    if (!parent || !state?.turns?.has?.(parent)) break;
-    id = parent;
-  }
-  const unresolvedParent = state?.turns?.get?.(id)?.request?.parent_id;
-  if (unresolvedParent && !state?.turns?.has?.(unresolvedParent)) {
-    return state.turns.get(id)?.request?.correlation_id
-      || envelope?.correlation_id
-      || unresolvedParent;
-  }
-  if (!state?.turns?.has?.(id) && envelope?.correlation_id) return envelope.correlation_id;
-  return id;
+  const entry = (state?.timeline || []).find((candidate) => entryContainsEnvelope(candidate, envelope?.id));
+  if (entry?.kind === 'turn') return entry.turn.requestId;
+  return entry?.envelope?.id || envelope?.id || envelope?.parent_id || envelope?.correlation_id || '';
 }
 
 // Replica commit provenance for the personal viewport. This owner contains no
@@ -57,8 +65,11 @@ export function recordLiveTimelineArrival(state, envelope, seq, selfId = '') {
     key = rowID;
   }
   if (!isViewportNotifiableDisposition(disposition) || !rowID) return null;
-  const related = relatedEnvelopeIdsIncremental(state, selfId);
-  if (!related.has(envelope.id) && !related.has(key) && !related.has(rowID)) return null;
+  const related = selectTimelineItems(state, {
+    scope: CONVERSATION_SCOPE.mine,
+    selfId,
+  }).items;
+  if (!related.some((entry) => entryContainsEnvelope(entry, envelope.id))) return null;
 
   const previousRevision = Number(state._liveArrivalRevision || 0);
   const hadUndisposedArrival = Number(state._liveArrivalAckRevision || 0) < previousRevision;

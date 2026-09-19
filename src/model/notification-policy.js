@@ -8,9 +8,32 @@ import {
   personConversationRequestVisible,
   personConversationTurnVisible,
 } from './conversation-visibility.js';
-import { isCanonicalAgentTimerFire } from './timeline-scope.js';
 
 const TIMER_WAKE_TYPE = 'agent.timer.wake';
+
+function isCanonicalAgentTimerFire(envelope) {
+  const sender = envelope?.sender;
+  return envelope?.kind === 'event'
+    && typeof envelope.id === 'string'
+    && envelope.id.startsWith('timer:')
+    && !envelope.parent_id
+    && envelope.correlation_id === envelope.id
+    && sender?.kind === 'agent'
+    && Boolean(sender.id)
+    && Array.isArray(envelope.audience)
+    && envelope.audience.length === 1
+    && envelope.audience[0] === sender.id;
+}
+
+function turnFor(state, requestID) {
+  if (!requestID) return null;
+  for (const entry of state?.timeline || []) {
+    if (entry?.turn?.requestId === requestID) return entry.turn;
+    const child = entry?.thread?.find((item) => item.turn?.requestId === requestID);
+    if (child) return child.turn;
+  }
+  return null;
+}
 
 // Notification classification follows canonical lifecycle/presentation facts,
 // not the transport shape alone. In particular, a request that only exists in
@@ -19,7 +42,7 @@ const TIMER_WAKE_TYPE = 'agent.timer.wake';
 // only its terminal content is a new notification for an agent-owned task.
 export function notificationDisposition(channelState, envelope, selfId = '') {
   const directTurn = envelope?.kind === KIND.response && envelope.parent_id
-    ? channelState?.turns?.get?.(envelope.parent_id)
+    ? turnFor(channelState, envelope.parent_id)
     : null;
   const semanticType = directTurn?.request?.type || envelope?.type;
   if (envelope?.visibility === 'system' || directTurn?.request?.visibility === 'system') return 'system_narration';
@@ -41,7 +64,7 @@ export function notificationDisposition(channelState, envelope, selfId = '') {
   }
 
   if (envelope?.kind === KIND.request) {
-    const turn = envelope?.id ? channelState?.turns?.get?.(envelope.id) : null;
+    const turn = envelope?.id ? turnFor(channelState, envelope.id) : null;
     if (turn && !personConversationRequestVisible(turn)) return 'not_presented';
     return 'request';
   }

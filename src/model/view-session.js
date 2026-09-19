@@ -1,6 +1,5 @@
+import { CONVERSATION_SCOPE } from './conversation-presentation.js';
 import { READING_MODE } from './reading-session.js';
-
-const CONVERSATION_SCOPE = Object.freeze({ mine: 'mine', all: 'all' });
 
 function defaultPreferences() {
   return {

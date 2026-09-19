@@ -1,9 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { actorNameMap } from '../../model/actor-display.js';
-import { attachmentFromFileReference } from '../../model/file-references.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { MessageLayoutProvider } from '../timeline/MessageLayoutState.jsx';
-import { ProgressTrailHost } from '../timeline/ProgressTrail.jsx';
 import { ReadingContainerHandoff } from '../timeline/ReadingContainerHandoff.jsx';
 import {
   EMPTY_CAPABILITY_INDEX,
@@ -201,7 +199,7 @@ export function ConversationSurface({
     toggleFold,
   });
   const openFileReference = useCallback((reference) => {
-    onPreviewResource?.(state.channelId, attachmentFromFileReference(reference));
+    onPreviewResource?.(state.channelId, reference);
   }, [onPreviewResource, state.channelId]);
   const acceptedComposerTokensRef = useRef(new WeakSet());
   const readingIntent = useMemo(() => ({
@@ -235,7 +233,6 @@ export function ConversationSurface({
   return <ReadingIntentProvider value={readingIntent}>
     <MessageLayoutProvider store={messageLayoutStore}>
       <MarkdownFileReferenceProvider onOpen={openFileReference}>
-        <ProgressTrailHost>
           <div className={surfaceClass}>
             <div className="conversation-reading-slot">
               <section
@@ -324,7 +321,6 @@ export function ConversationSurface({
               <div className="conversation-input-slot">{composer}</div>
             </div>
           </div>
-        </ProgressTrailHost>
       </MarkdownFileReferenceProvider>
     </MessageLayoutProvider>
   </ReadingIntentProvider>;

@@ -1,6 +1,25 @@
 import { argsOf } from '../protocol/envelope.js';
-import { agentMessageStage, isAgentMessageTurn, isAgentMessageType } from './agent-control.js';
 import { TYPES } from '../protocol/vocab.js';
+
+const AGENT_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+
+function isAgentMessageType(type) {
+  return AGENT_MESSAGE_TYPES.has(type);
+}
+
+function isAgentMessageTurn(turn) {
+  return isAgentMessageType(turn?.request?.type);
+}
+
+function agentMessageStage(turn) {
+  if (!isAgentMessageTurn(turn)) return '';
+  if (turn.terminal) return 'timeline';
+  const status = [...(turn.provisional || [])]
+    .sort((left, right) => Number(left.seq || 0) - Number(right.seq || 0))
+    .map((item) => String(argsOf(item.envelope)?.status || ''))
+    .filter(Boolean).at(-1);
+  return status === 'processing' ? 'timeline' : 'queued';
+}
 
 export const HIDDEN_TURN_TYPES = new Set([
   TYPES.agentHold,

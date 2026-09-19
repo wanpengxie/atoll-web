@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { CONVERSATION_SCOPE } from '../../model/conversation-presentation.js';
 import { createMessageLayoutStore } from './MessageLayoutState.jsx';
 
-export const CONVERSATION_SCOPE = Object.freeze({ mine: 'mine', all: 'all' });
+export { CONVERSATION_SCOPE };
 
 export function useTimelinePreferences({ channelId, viewSessions }) {
   const initialRef = useRef(null);

@@ -9,7 +9,10 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { emptyBrowsingFoldLease, reconcileBrowsingFoldLease } from '../../model/browsing-fold-lease.js';
-import { createConversationPresentation } from '../../model/conversation-presentation.js';
+import {
+  createConversationPresentation,
+  projectTimeline,
+} from '../../model/conversation-presentation.js';
 import { diagnostic } from '../../model/diagnostics.js';
 import { HISTORY_URGENCY } from '../../model/history-demand.js';
 import {
@@ -24,7 +27,6 @@ import {
   takeReadingControl,
   updateReadingControl,
 } from '../../model/reading-session.js';
-import { projectTimeline } from '../../model/timeline-projection.js';
 import { newId } from '../../util/id.js';
 import { useColdEntryDiagnostics } from './useColdEntryDiagnostics.js';
 import { currentEntryAuthority } from './dom-evidence-adapter.js';
@@ -35,7 +37,6 @@ import { usePresentationArrivalReceipt, useTimelineArrivalReceipt } from './useL
 const IDLE_HISTORY_DEMAND = Object.freeze({ revision: 0, phase: 'idle', error: '' });
 const HISTORY_RUNWAY_REVEAL_RECORDS = 8;
 const HISTORY_RUNWAY_REVEAL_BYTES = 256 * 1024;
-
 function createSessionController({ channelID, viewKey, viewSessions }) {
   const activationID = newId();
   const saved = viewSessions?.readView?.(channelID, viewKey) || {};
