@@ -275,10 +275,15 @@ export function WorkspaceLayout({
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}
         {notices.channel && <div className="channel-notice" role="status"><span>{notices.channel}</span><button type="button" onClick={notices.dismissChannel} aria-label="关闭频道提示">×</button></div>}
       </div>
-      {navigation.terminalVisible
-        ? <div className="dynamic-workspace terminal-split-open"><div className="dynamic-message-pane">{conversation?.element}</div>{features}</div>
-        : navigation.activeView === 'tasks' ? features
-          : <div className={`dynamic-workspace${filesOpen ? ' files-split-open' : ''}`}><div className="dynamic-message-pane">{conversation?.element}</div>{filesOpen && features}</div>}
+      <div className={[
+        'dynamic-workspace',
+        navigation.terminalVisible && 'terminal-split-open',
+        filesOpen && !navigation.terminalVisible && 'files-split-open',
+        navigation.activeView === 'tasks' && !navigation.terminalVisible && 'tasks-view-open',
+      ].filter(Boolean).join(' ')}>
+        <div className="dynamic-message-pane">{conversation?.element}</div>
+        {features}
+      </div>
     </main>
     {rightPanel}
     {overlays}

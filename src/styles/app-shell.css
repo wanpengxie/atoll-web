@@ -104,6 +104,9 @@
 .dynamic-workspace { grid-row: 4 / 6; display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
 .dynamic-workspace.terminal-split-open { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .dynamic-message-pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--workspace); }
+.dynamic-workspace.tasks-view-open > .dynamic-message-pane { display: none; }
+.dynamic-workspace.tasks-view-open > .tasks-view,
+.dynamic-workspace.tasks-view-open > .channel-private-empty { grid-row: 1; grid-column: 1; }
 .conversation-surface { --conversation-composer-base-height: 100px; --conversation-input-max-height: 320px; --conversation-reading-gap: 32px; --conversation-bottom-reserve: calc(var(--conversation-composer-base-height) + var(--conversation-reading-gap)); --conversation-waiting-reserve: 48px; position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; background: var(--workspace); }
 .conversation-reading-slot { position: absolute; inset: 0 0 var(--conversation-bottom-reserve); min-width: 0; min-height: 0; overflow: hidden; }
 .conversation-reading-slot > .timeline, .conversation-reading-slot > .channel-private-empty { width: 100%; height: 100%; min-height: 0; }

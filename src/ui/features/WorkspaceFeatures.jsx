@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from './files/FilesFeature.jsx';
 import { ChannelAdministrationPanel, ChannelAutomationPanel, SpaceAdministrationPanel } from './governance/GovernanceFeature.jsx';
@@ -34,10 +34,27 @@ export function WorkspaceFeatures({
 }) {
   const filesActive = activeView === 'files';
   const tasksActive = activeView === 'tasks';
+  const terminalChannelId = channel?.id || terminal.channelId || '';
+  // This is only a view-lifetime latch: PTY session/screen truth remains in
+  // the retained terminal owner. Once opened for a channel, keeping the view
+  // mounted while hidden prevents close/reopen from tearing down its attach.
+  const [openedTerminalChannels, setOpenedTerminalChannels] = useState(() => new Set());
+  useEffect(() => {
+    if (!terminal.visible || !terminalChannelId) return;
+    setOpenedTerminalChannels((current) => {
+      if (current.has(terminalChannelId)) return current;
+      const next = new Set(current);
+      next.add(terminalChannelId);
+      return next;
+    });
+  }, [terminal.visible, terminalChannelId]);
+  const terminalMounted = terminal.mounted !== false
+    && contentVisible
+    && openedTerminalChannels.has(terminalChannelId);
   return <>
-    {filesActive && (contentVisible ? <FilesFeature channel={channel} port={files} visible onClose={files.commands?.close} /> : <InaccessibleFeature label="文件" />)}
-    {tasksActive && (contentVisible ? <TasksFeature port={tasks} /> : <InaccessibleFeature label="任务" />)}
-    {terminal.mounted !== false && terminal.visible && contentVisible && <TerminalFeature channelId={channel?.id || terminal.channelId || ''} port={terminal} visible={terminal.visible} onClose={terminal.commands?.close} />}
+    {filesActive && (contentVisible ? <FilesFeature key="files" channel={channel} port={files} visible onClose={files.commands?.close} /> : <InaccessibleFeature key="files-inaccessible" label="文件" />)}
+    {tasksActive && (contentVisible ? <TasksFeature key="tasks" port={tasks} /> : <InaccessibleFeature key="tasks-inaccessible" label="任务" />)}
+    {terminalMounted && <TerminalFeature key={`terminal:${terminalChannelId}`} channelId={terminalChannelId} port={terminal} visible={terminal.visible} onClose={terminal.commands?.close} />}
   </>;
 }
 
