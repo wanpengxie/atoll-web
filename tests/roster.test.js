@@ -1,41 +1,67 @@
 // @vitest-environment jsdom
 //
-// The old roster store and createSessionRoster helper are gone.  The public
-// owner is the channel-roster hook, whose committed producer token and
-// authority projection are what the workspace and RosterFeature consume.
+// The old session roster helper is gone. The channel-roster hook owns the
+// canonical OBS/cache facts and publishes the authority projection consumed by
+// the workspace and RosterFeature.
 import React from 'react';
 import { act, cleanup, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useChannelRoster } from '../src/app/hooks/useChannelRoster.js';
+import { TYPES } from '../src/protocol/vocab.js';
 import { RosterFeature } from '../src/ui/features/roster/RosterFeature.jsx';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 const actors = [
-  { id: 'human:root', kind: 'human', name: 'Root' },
-  { id: 'agent:demo:1', kind: 'agent', name: 'Demo' },
+  {
+    id: 'human:root', kind: 'human', name: 'Root', decl_id: '', description: '',
+    principal: 'principal-root', bound: false, deviceOnline: false,
+  },
+  {
+    id: 'agent:demo:1', kind: 'agent', name: 'Demo', decl_id: '', description: '',
+    principal: '', bound: false, deviceOnline: false,
+  },
 ];
 
+function observation(rows) {
+  return {
+    complete: true,
+    items: rows.map((row) => ({
+      declared: {
+        id: row.id,
+        kind: row.kind,
+        name: row.name,
+        principal: row.principal,
+      },
+      actual: { measures: [] },
+    })),
+  };
+}
+
 function setup({ ownerToken = 'attach-1', generation = 4, roster = {} } = {}) {
-  const rosterRef = { current: {
-    authority: (channelId) => ({ principalId: 'principal-root', channelId, complete: true }),
-    ensure: vi.fn(async () => actors),
-    refresh: vi.fn(async () => actors),
-    self: vi.fn(() => 'human:root'),
-  } };
+  const obsRef = { current: { channelActors: vi.fn(async () => observation(actors)) } };
+  const rosterRef = { current: null };
+  const onError = vi.fn();
   const reconcileIdentity = vi.fn();
-  const hook = renderHook(() => useChannelRoster({
-    generationFor: () => generation,
-    onError: vi.fn(),
-    ownerToken,
+  const generationRef = { current: generation };
+  const versionIncompatibleEpochRef = { current: 0 };
+  const versionIncompatibleRef = { current: false };
+  const hook = renderHook(({ token }) => useChannelRoster({
+    generationFor: () => generationRef.current,
+    obsRef,
+    onError,
+    ownerToken: token,
     principalId: 'principal-root',
     reconcileIdentity,
     rosterRef,
-    versionIncompatibleEpochRef: { current: 0 },
-    versionIncompatibleRef: { current: false },
-  }));
+    versionIncompatibleEpochRef,
+    versionIncompatibleRef,
+  }), { initialProps: { token: ownerToken } });
   if (Object.keys(roster).length) act(() => hook.result.current.seed(roster));
-  return { ...hook, rosterRef, reconcileIdentity };
+  return { ...hook, generationRef, obsRef, onError, rosterRef, reconcileIdentity };
 }
 
 describe('public channel roster owner', () => {
@@ -54,12 +80,6 @@ describe('public channel roster owner', () => {
     expect(reconcileIdentity).toHaveBeenCalledWith('c0', 'human:root');
   });
 
-  it('rejects rows from a stale attach producer instead of replacing the committed roster', () => {
-    const { result } = setup({ roster: { c0: actors } });
-    act(() => result.current.receive('c0', [{ id: 'stale', kind: 'agent' }], 'old-attach'));
-    expect(result.current.rosters.get('c0')).toEqual(actors);
-  });
-
   it('does not label a roster row as the current human when the public identity is unknown', () => {
     render(React.createElement(RosterFeature, {
       port: { rows: [{ id: 'human:root', kind: 'human', name: 'Root' }], selfId: '' },
@@ -68,15 +88,21 @@ describe('public channel roster owner', () => {
   });
 
   it('refreshes the public projection after a successful member observation', async () => {
-    const { result, rosterRef } = setup();
-    rosterRef.current.refresh.mockResolvedValueOnce([
+    const { result, obsRef } = setup();
+    obsRef.current.channelActors.mockResolvedValueOnce(observation([
       ...actors,
-      { id: 'agent:new:1', kind: 'agent', name: 'New' },
-    ]);
+      {
+        id: 'agent:new:1', kind: 'agent', name: 'New', decl_id: '', description: '',
+        principal: '', bound: false, deviceOnline: false,
+      },
+    ]));
     await act(async () => { await result.current.refresh('c0', true); });
     expect(result.current.rosters.get('c0')).toEqual([
       ...actors,
-      { id: 'agent:new:1', kind: 'agent', name: 'New' },
+      {
+        id: 'agent:new:1', kind: 'agent', name: 'New', decl_id: '', description: '',
+        principal: '', bound: false, deviceOnline: false,
+      },
     ]);
     expect(result.current.authorities.get('c0')?.current).toBe(true);
   });
@@ -87,5 +113,91 @@ describe('public channel roster owner', () => {
     act(() => result.current.clearChannel('c0'));
     expect(result.current.rosters.get('c0')).toEqual([]);
     expect(result.current.authorities.has('c0')).toBe(false);
+  });
+
+  it('does not republish an already-cleared channel projection', () => {
+    const { result } = setup();
+    act(() => result.current.clearChannel('c0'));
+    const cleared = result.current.rosters;
+    act(() => result.current.clearChannel('c0'));
+    expect(result.current.rosters).toBe(cleared);
+  });
+
+  it('rejects a cached ensure from a port after its owner hands off', async () => {
+    const { result, obsRef, rosterRef, rerender } = setup({ roster: { c0: actors } });
+    const oldPort = rosterRef.current;
+    const replacement = [
+      ...actors,
+      {
+        id: 'agent:new-owner:1', kind: 'agent', name: 'New owner', decl_id: '', description: '',
+        principal: '', bound: false, deviceOnline: false,
+      },
+    ];
+    obsRef.current.channelActors.mockResolvedValueOnce(observation(replacement));
+    rerender({ token: 'attach-2' });
+
+    await expect(oldPort.ensure('c0')).resolves.toBeNull();
+    let refreshed;
+    await act(async () => { refreshed = await rosterRef.current.ensure('c0'); });
+    expect(refreshed).toEqual(replacement);
+    expect(obsRef.current.channelActors).toHaveBeenCalledTimes(1);
+    expect(result.current.rosters.get('c0')).toEqual(replacement);
+  });
+
+  it('refetches cache rows when the committed owner generation advances', async () => {
+    const { generationRef, obsRef, rosterRef } = setup({ roster: { c0: actors } });
+    const replacement = [
+      ...actors,
+      {
+        id: 'agent:new-generation:1', kind: 'agent', name: 'New generation', decl_id: '', description: '',
+        principal: '', bound: false, deviceOnline: false,
+      },
+    ];
+    obsRef.current.channelActors.mockResolvedValueOnce(observation(replacement));
+    generationRef.current = 5;
+
+    let refreshed;
+    await act(async () => { refreshed = await rosterRef.current.ensure('c0'); });
+    expect(refreshed).toEqual(replacement);
+    expect(obsRef.current.channelActors).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a scheduled member refresh when the channel is cleared', () => {
+    vi.useFakeTimers();
+    const { result, obsRef, rosterRef } = setup();
+    act(() => rosterRef.current.handleEnvelope('c0', { type: TYPES.narration.memberCreated }));
+    act(() => result.current.clearChannel('c0'));
+    act(() => { vi.advanceTimersByTime(301); });
+    expect(obsRef.current.channelActors).not.toHaveBeenCalled();
+    expect(result.current.rosters.get('c0')).toEqual([]);
+  });
+
+  it('fences a late OBS result so a cleared channel cannot be resurrected', async () => {
+    let resolveObservation;
+    const { result, obsRef } = setup();
+    obsRef.current.channelActors.mockReturnValueOnce(new Promise((resolve) => {
+      resolveObservation = resolve;
+    }));
+    let pending;
+    act(() => { pending = result.current.refresh('c0', true); });
+    act(() => result.current.clearChannel('c0'));
+    resolveObservation(observation(actors));
+    await act(async () => { await pending; });
+    expect(result.current.rosters.get('c0')).toEqual([]);
+    expect(result.current.authorities.has('c0')).toBe(false);
+  });
+
+  it('does not report a late OBS error after the channel generation is cleared', async () => {
+    let rejectObservation;
+    const { result, obsRef, onError } = setup();
+    obsRef.current.channelActors.mockReturnValueOnce(new Promise((resolve, reject) => {
+      rejectObservation = reject;
+    }));
+    let pending;
+    act(() => { pending = result.current.refresh('c0', true); });
+    act(() => result.current.clearChannel('c0'));
+    rejectObservation(new Error('late OBS failure'));
+    await act(async () => { await pending; });
+    expect(onError).not.toHaveBeenCalled();
   });
 });

@@ -1,61 +1,56 @@
 // @vitest-environment jsdom
 //
-// Attach identity is committed by the session owner and projected through the
-// public channel-roster hook.  This test deliberately does not import the
-// private createSessionRoster helper from useWireSession.js.
-import React from 'react';
+// Attach identity is committed through the canonical channel-roster port.
+// The owner exposes one stable port shared by attach, feed, and UI consumers.
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { useChannelRoster } from '../src/app/hooks/useChannelRoster.js';
 
 function rosterHook() {
-  const rosterRef = { current: { authority: () => null, self: () => '' } };
-  return renderHook(() => useChannelRoster({
-    generationFor: () => 1,
-    onError: vi.fn(),
+  const rosterRef = { current: null };
+  const obsRef = { current: { channelActors: async () => ({ complete: true, items: [] }) } };
+  const versionIncompatibleEpochRef = { current: 0 };
+  const versionIncompatibleRef = { current: false };
+  const onError = vi.fn();
+  const reconcileIdentity = vi.fn();
+  const generationFor = () => 1;
+  const hook = renderHook(() => useChannelRoster({
+    generationFor,
+    obsRef,
+    onError,
     ownerToken: 'attach-1',
     principalId: 'root',
-    reconcileIdentity: vi.fn(),
+    reconcileIdentity,
     rosterRef,
-    versionIncompatibleEpochRef: { current: 0 },
-    versionIncompatibleRef: { current: false },
+    versionIncompatibleEpochRef,
+    versionIncompatibleRef,
   }));
+  return { ...hook, obsRef, rosterRef };
 }
 
-describe('attach roster publication through the public owner', () => {
-  it('publishes an attach roster immediately for the current producer', () => {
-    const { result } = rosterHook();
+describe('canonical channel roster port', () => {
+  it('seeds rows and exposes the same facts through the stable port', () => {
+    const { result, rosterRef } = rosterHook();
+    const port = rosterRef.current;
     const rows = [{ id: 'human:root:1', kind: 'human', principal: 'root' }];
-    act(() => result.current.receive('c0', rows, 'attach-1'));
+    act(() => result.current.seed({ c0: rows }));
+    expect(rosterRef.current).toBe(port);
     expect(result.current.rosters.get('c0')).toEqual(rows);
+    expect(rosterRef.current.get('c0')).toBe(rows);
+    act(() => rosterRef.current.noteSelf('c0', rows[0].id));
+    expect(rosterRef.current.self('c0')).toBe(rows[0].id);
   });
 
-  it('does not duplicate an identical attach roster', () => {
-    const { result } = rosterHook();
+  it('clears the canonical facts when the channel is no longer current', () => {
+    const { result, rosterRef } = rosterHook();
     const rows = [{ id: 'human:root:1', kind: 'human', principal: 'root' }];
     act(() => {
-      result.current.receive('c0', rows, 'attach-1');
-      result.current.receive('c0', rows, 'attach-1');
-    });
-    expect(result.current.rosters.get('c0')).toEqual(rows);
-  });
-
-  it('ignores an attach roster from a retired producer', () => {
-    const { result } = rosterHook();
-    const current = [{ id: 'human:root:2', kind: 'human', principal: 'root' }];
-    act(() => {
-      result.current.receive('c0', current, 'attach-1');
-      result.current.receive('c0', [{ id: 'human:root:1', kind: 'human' }], 'attach-0');
-    });
-    expect(result.current.rosters.get('c0')).toEqual(current);
-  });
-
-  it('clears the projected identity surface when the channel is no longer current', () => {
-    const { result } = rosterHook();
-    act(() => {
-      result.current.receive('c0', [{ id: 'human:root:1', kind: 'human' }], 'attach-1');
+      result.current.seed({ c0: rows });
+      rosterRef.current.noteSelf('c0', rows[0].id);
       result.current.clearChannel('c0');
     });
     expect(result.current.rosters.get('c0')).toEqual([]);
+    expect(rosterRef.current.get('c0')).toEqual([]);
+    expect(rosterRef.current.self('c0')).toBe('');
   });
 });

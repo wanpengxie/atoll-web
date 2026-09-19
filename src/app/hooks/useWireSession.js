@@ -9,13 +9,10 @@ import {
   rememberCachedPrincipal,
   writeWorkspaceBootstrap,
 } from '../../model/workspace-bootstrap-cache.js';
-import { actorDisplayName } from '../../model/actor-display.js';
 import { createIdentityClient } from '../../net/identity.js';
 import { createObsClient } from '../../net/obs.js';
 import { foregroundWake } from '../../net/wake.js';
 import { createWire } from '../../net/wire.js';
-import { argsOf } from '../../protocol/envelope.js';
-import { TYPES } from '../../protocol/vocab.js';
 import { newId } from '../../util/id.js';
 
 const SERVER_WORLD_KEY = 'atoll.server.boot.v2';
@@ -281,73 +278,6 @@ async function loadSpaceDirectory(obs) {
   });
 }
 
-function projectActor(item) {
-  const declared = item?.declared || {};
-  const id = declared.id || item?.key || '';
-  const measure = (name) => item?.actual?.measures?.find((row) => row.name === name);
-  const bound = measure('bound');
-  const device = measure('device_online');
-  return {
-    id,
-    kind: declared.kind || '',
-    name: actorDisplayName({ id, name: declared.name }),
-    decl_id: declared.decl_id || '',
-    description: declared.description || '',
-    principal: declared.principal || '',
-    bound: bound?.unknown ? null : Boolean(bound?.value),
-    deviceOnline: device?.unknown ? null : Boolean(device?.value),
-  };
-}
-
-function createSessionRoster({ obs, principalId }) {
-  const cache = new Map();
-  const authorities = new Map();
-  const selves = new Map();
-  const submissions = new Map();
-  const refreshTimers = new Map();
-  const refresh = async (channelId) => {
-    const observation = await obs.channelActors(channelId);
-    const rows = (observation.items || []).map(projectActor).filter((row) => row.id);
-    cache.set(channelId, rows);
-    authorities.set(channelId, { principalId, channelId, complete: observation.complete !== false });
-    const self = rows.find((row) => row.kind === 'human' && row.principal === principalId)?.id;
-    if (self) selves.set(channelId, self);
-    return rows;
-  };
-  return {
-    refresh,
-    ensure: (channelId) => cache.has(channelId) ? Promise.resolve(cache.get(channelId)) : refresh(channelId),
-    seed(rowsByChannel = {}) { for (const [channelId, rows] of Object.entries(rowsByChannel)) if (Array.isArray(rows)) cache.set(channelId, rows); },
-    get: (channelId) => cache.get(channelId) || [],
-    authority: (channelId) => authorities.get(channelId) || null,
-    self(channelId) { return cache.get(channelId)?.find((row) => row.kind === 'human' && row.principal === principalId)?.id || selves.get(channelId) || ''; },
-    candidates(channelId) { const selfId = this.self(channelId); return (cache.get(channelId) || []).filter((row) => row.id !== selfId); },
-    noteSelf(channelId, actorId) { if (!channelId || !actorId || selves.get(channelId) === actorId) return ''; selves.set(channelId, actorId); return actorId; },
-    clearSelf: (channelId) => selves.delete(channelId),
-    recordSubmission(channelId, messageId) { if (channelId && messageId) submissions.set(messageId, channelId); },
-    ownsSubmission: (channelId, messageId) => submissions.get(messageId) === channelId,
-    forgetSubmission(channelId, messageId) { if (submissions.get(messageId) !== channelId) return false; submissions.delete(messageId); return true; },
-    observeFeed(channelId, envelope) {
-      if (submissions.get(envelope?.id) !== channelId || envelope?.sender?.kind !== 'human' || !envelope.sender.id) return '';
-      selves.set(channelId, envelope.sender.id); submissions.delete(envelope.id); return envelope.sender.id;
-    },
-    handleEnvelope(channelId, envelope, onRefresh) {
-      const invalidating = [TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)
-        || (envelope?.kind === 'response'
-          && [TYPES.member.create, TYPES.member.admit, TYPES.member.remove, TYPES.member.restart].includes(envelope.type)
-          && argsOf(envelope)?.status === 'completed');
-      if (!invalidating) return;
-      if (refreshTimers.has(channelId)) clearTimeout(refreshTimers.get(channelId));
-      refreshTimers.set(channelId, setTimeout(() => {
-        refreshTimers.delete(channelId);
-        void refresh(channelId).then((rows) => onRefresh?.(rows), (error) => onRefresh?.(null, error));
-      }, 300));
-    },
-    reset() { for (const timer of refreshTimers.values()) clearTimeout(timer); refreshTimers.clear(); cache.clear(); authorities.clear(); selves.clear(); submissions.clear(); },
-    close() { for (const timer of refreshTimers.values()) clearTimeout(timer); refreshTimers.clear(); },
-  };
-}
-
 async function loadChannelTree(obs) {
   const found = new Map();
   let level = [undefined];
@@ -598,7 +528,6 @@ export function useWireConnection({
   agentActivityRef,
   bumpAccess,
   cancelFeedTask,
-  clearRoster,
   disconnectHistory,
   displayError,
   enqueueFeed,
@@ -613,7 +542,6 @@ export function useWireConnection({
   reconcileIdentity,
   resetSubmissionWorld,
   resumeLocalReplica,
-  seedRoster,
   setActiveChannelId,
   setChannels,
   setHistoryGrants,
@@ -637,18 +565,16 @@ export function useWireConnection({
     if (!principalId) return undefined;
     setTopError('');
     const obs = createObsClient({ onUnauthorized: expireSession });
-    const roster = createSessionRoster({ obs, principalId });
+    const roster = rosterRef.current;
     const access = createSessionAccess({ principalId });
     obsRef.current = obs;
-    rosterRef.current = roster;
     accessRef.current = access;
 
     const cachedBootstrap = readWorkspaceBootstrap(principalId);
     let localFocus = activeChannelRef.current;
     if (cachedBootstrap.memberships.length) {
-      roster.seed(cachedBootstrap.rosters);
-      for (const entry of cachedBootstrap.memberships) roster.noteSelf(entry.channel_id, entry.actor_id);
-      seedRoster(cachedBootstrap.rosters);
+      roster?.seed(cachedBootstrap.rosters);
+      for (const entry of cachedBootstrap.memberships) roster?.noteSelf(entry.channel_id, entry.actor_id);
       access.channelsObserved(cachedBootstrap.profiles, { complete: false });
       access.membershipsObserved(cachedBootstrap.memberships, { complete: false, supported: true });
       access.wire('disconnected');
@@ -720,9 +646,8 @@ export function useWireConnection({
         onServerWorld(String(detail?.boot || readServerWorld()));
         if (!sameServerWorld) {
           access.reset();
-          roster.reset();
+          roster?.reset();
           resetSubmissionWorld();
-          clearRoster();
           setChannels(new Map());
           bumpAccess();
           const worldReset = onWorldChanged();
@@ -766,7 +691,7 @@ export function useWireConnection({
           refreshTimer = null;
           accessRefreshActionsRef.current = {};
           agentActivityRef.current.disconnect();
-          roster.close();
+          roster?.close();
           access.wire('disconnected');
           stopIncompatibleFeed(detail?.generation);
           setState('incompatible');
@@ -784,11 +709,11 @@ export function useWireConnection({
             access.membershipsObserved(rows, { complete: detail.memberships_complete === true, supported: true });
             writeWorkspaceBootstrap(principalId, access.snapshot());
             for (const entry of rows) {
-              if (!roster.noteSelf(entry.channel_id, entry.actor_id)) continue;
+              if (!roster?.noteSelf(entry.channel_id, entry.actor_id)) continue;
               reconcileIdentity(entry.channel_id, entry.actor_id);
             }
             for (const channelId of memberedBefore) {
-              if (access.state(channelId)?.relationship !== 'member') roster.clearSelf(channelId);
+              if (access.state(channelId)?.relationship !== 'member') roster?.clearSelf(channelId);
             }
           }
           setState('open');
@@ -822,14 +747,13 @@ export function useWireConnection({
       if (refreshTimer != null) clearTimeout(refreshTimer);
       accessRefreshActionsRef.current = {};
       wire?.close();
-      roster.close();
+      roster?.close();
       cancelFeedTask();
       obsRef.current = null;
-      rosterRef.current = null;
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, cancelFeedTask, clearRoster, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onWorldChanged, prepareLocalReplica, principalId, reconcileIdentity, resetSubmissionWorld, resumeLocalReplica, rosterRef, seedRoster, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
+  }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, cancelFeedTask, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onWorldChanged, prepareLocalReplica, principalId, reconcileIdentity, resetSubmissionWorld, resumeLocalReplica, rosterRef, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
 
   return accessRefreshActionsRef;
 }

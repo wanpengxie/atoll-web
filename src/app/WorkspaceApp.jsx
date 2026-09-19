@@ -94,7 +94,6 @@ function useFeedOwner({ refs, ownerToken, bindings }) {
     runtimeRef.current = createChannelFeedRuntime({
       ...refs,
       ownerToken,
-      onRoster: forward('onRoster'),
       onError: forward('onError'),
       onChannelsDiscovered: forward('onChannelsDiscovered'),
       onDirectoryInvalidated: forward('onDirectoryInvalidated'),
@@ -153,34 +152,42 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     onNotice: setChannelNotice,
   });
   const ownerToken = useMemo(() => Object.freeze({ principalId }), [principalId]);
-  const rosterSinkRef = useRef(null);
-  const submissionSinkRef = useRef(null);
   const accessActionsRef = useRef({});
   const probePortRef = useRef(null);
   const attachmentPortRef = useRef(null);
   const submissionPortRef = useRef(null);
 
-  const submissionProxy = useMemo(() => Object.freeze({
-    send: (...args) => {
-      const command = submissionPortRef.current?.send;
-      return typeof command === 'function'
-        ? command(...args)
-        : Promise.reject(unavailableError('submission.send'));
-    },
-    resetWorld: (...args) => {
-      const command = submissionPortRef.current?.resetWorld;
-      if (typeof command !== 'function') throw unavailableError('submission.resetWorld');
-      return command(...args);
-    },
-  }), []);
+  const submissionProxy = useMemo(() => {
+    const submissionCorrelationPort = Object.freeze({
+      owns: (identity) => submissionPortRef.current?.submissionCorrelationPort?.owns?.(identity) === true,
+      markLanded: (identity) => submissionPortRef.current?.submissionCorrelationPort?.markLanded?.(identity) === true,
+    });
+    return Object.freeze({
+      send: (...args) => {
+        const command = submissionPortRef.current?.send;
+        return typeof command === 'function'
+          ? command(...args)
+          : Promise.reject(unavailableError('submission.send'));
+      },
+      resetWorld: (...args) => {
+        const command = submissionPortRef.current?.resetWorld;
+        if (typeof command !== 'function') throw unavailableError('submission.resetWorld');
+        return command(...args);
+      },
+      reconcileFeed: (...args) => {
+        const submission = submissionPortRef.current;
+        if (typeof submission?.reconcileFeed !== 'function'
+          || !submission.submissionCorrelationPort) {
+          throw unavailableError('submission.reconcileFeed');
+        }
+        return submission.reconcileFeed(...args);
+      },
+      submissionCorrelationPort,
+    });
+  }, []);
 
   const feedBindings = useMemo(() => ({
     ownerToken,
-    onRoster: (...args) => {
-      const sink = rosterSinkRef.current;
-      if (typeof sink !== 'function') throw unavailableError('roster.receive');
-      return sink(...args);
-    },
     onError: (error) => { if (!isRetiredOwnerError(error)) showError(error); },
     onChannelsDiscovered: () => navigation.bump(),
     onDirectoryInvalidated: () => {
@@ -188,13 +195,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       if (typeof schedule !== 'function') throw unavailableError('directory.schedule');
       return schedule();
     },
-    onSubmissionFeed: (...args) => {
-      const sink = submissionSinkRef.current;
-      if (typeof sink !== 'function') throw unavailableError('submission.reconcileFeed');
-      return sink(...args);
-    },
+    onSubmissionFeed: submissionProxy.reconcileFeed,
+    submissionCorrelationPort: submissionProxy.submissionCorrelationPort,
     onAccessChanged: navigation.bump,
-  }), [navigation.bump, ownerToken, showError]);
+  }), [navigation.bump, ownerToken, showError, submissionProxy.reconcileFeed, submissionProxy.submissionCorrelationPort]);
   const feed = useFeedOwner({
     refs: {
       wireRef: wire.wireRef,
@@ -248,6 +252,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   }), [callFeed]);
   const roster = useChannelRoster({
     generationFor: feedCommands.generationFor,
+    obsRef: wire.obsRef,
     onError: showError,
     ownerToken,
     principalId,
@@ -256,10 +261,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     versionIncompatibleEpochRef: wire.incompatibleEpochRef,
     versionIncompatibleRef: wire.incompatibleRef,
   });
-  useLayoutEffect(() => {
-    rosterSinkRef.current = roster.receive;
-    return () => { if (rosterSinkRef.current === roster.receive) rosterSinkRef.current = null; };
-  }, [roster.receive]);
 
   const access = wire.accessRef.current?.state?.(navigation.activeChannelId) || null;
   const activeAccess = navigation.activeChannel?.access || 'loading';
@@ -288,7 +289,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     wireState: wire.state,
     wireRef: wire.wireRef,
     accessRef: wire.accessRef,
-    rosterRef: wire.rosterRef,
     producerOwnerToken: ownerToken,
     generationFor: feedCommands.generationFor,
     serverWorld,
@@ -409,14 +409,12 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     probePortRef.current = probes;
     attachmentPortRef.current = composerAttachmentPort;
     submissionPortRef.current = submission;
-    submissionSinkRef.current = submission.reconcileFeed;
     return () => {
       if (probePortRef.current === probes) probePortRef.current = null;
       if (attachmentPortRef.current === composerAttachmentPort) attachmentPortRef.current = null;
       if (submissionPortRef.current === submission) submissionPortRef.current = null;
-      if (submissionSinkRef.current === submission.reconcileFeed) submissionSinkRef.current = null;
     };
-  }, [composerAttachmentPort, probes, submission, submission.reconcileFeed]);
+  }, [composerAttachmentPort, probes, submission]);
 
   const resetWorldOwners = useCallback(async () => {
     const resetAttachments = attachmentPortRef.current?.reset;
@@ -434,7 +432,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     agentActivityRef: activityRef,
     bumpAccess: navigation.bump,
     cancelFeedTask: feedCommands.cancel,
-    clearRoster: roster.clear,
     disconnectHistory: feedCommands.disconnectHistory,
     displayError: errorText,
     enqueueFeed: feedCommands.enqueue,
@@ -449,7 +446,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     reconcileIdentity: feedCommands.reconcileIdentity,
     resetSubmissionWorld: submissionProxy.resetWorld,
     resumeLocalReplica: feedCommands.resumeLocalReplica,
-    seedRoster: roster.seed,
     setActiveChannelId: navigation.setActiveChannelId,
     setChannels: navigation.setChannels,
     setHistoryGrants: feedCommands.setHistoryGrants,
