@@ -102,6 +102,14 @@ function assertInterruptContext(context, actorId) {
   if (!turn.controls.includes(TYPES.agentInterrupt)) {
     throw failure('control_capability_missing', '目标回合未宣告 agent.interrupt 能力');
   }
+  assertTargetAuthority(context, actorId);
+}
+
+function assertTargetAuthority(context, actorId) {
+  const turn = context?.turn;
+  if (!turn?.requestId || turn.audience.length !== 1 || turn.audience[0] !== actorId) {
+    throw failure('control_target_invalid', '控制命令目标与请求收件人不一致');
+  }
   const authority = context.targetAuthority;
   if (!authority || !authority.current || !authority.actorIDs.includes(actorId)) {
     throw failure('control_authority_stale', '目标 Agent 当前权威已失效');
@@ -147,9 +155,12 @@ export function createControlCommand(request = {}) {
   delete command.actorId;
   delete command.turn;
   delete command.targetAuthority;
+  const context = normalizeControlContext(request, actorId);
   if (msgType === TYPES.agentInterrupt) {
-    const context = normalizeControlContext(request, actorId);
     assertInterruptContext(context, actorId);
+    command.controlContext = context;
+  } else if (msgType === TYPES.agentSteer && context.source === CONTROL_COMMAND_SOURCE.feature) {
+    assertTargetAuthority(context, actorId);
     command.controlContext = context;
   }
   return Object.freeze(command);

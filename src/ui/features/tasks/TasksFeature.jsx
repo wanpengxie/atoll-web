@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap, actorNameMap } from '../../../model/actor-display.js';
-import { boundedFeatureTaskPage, FEATURE_COMMAND_STATE, FEATURE_TASK_ACTION, featureTaskGroup, featureWaitingActions, filterFeatureTasks } from '../../../model/feature-tasks.js';
+import { boundedFeatureTaskPage, FEATURE_COMMAND_STATE, FEATURE_TASK_ACTION, FEATURE_WAITING_CONTROL, featureTaskGroup, featureWaitingActions, filterFeatureTasks } from '../../../model/feature-tasks.js';
 import { PanelTabs } from '../../primitives/PanelTabs.jsx';
 import { useModalFocus } from '../../primitives/useModalFocus.js';
 
@@ -23,6 +23,13 @@ function stateFor(port, item, action) {
   const key = `${item.key}:${action}`;
   if (facts instanceof Map) return facts.get(key) || null;
   return facts?.[key] || null;
+}
+
+function targetAuthorityReady(item) {
+  const authority = item?.targetAuthority;
+  if (authority?.current !== true) return false;
+  if (authority.actorIDs instanceof Set) return authority.actorIDs.has(item?.actorId);
+  return Array.isArray(authority.actorIDs) && authority.actorIDs.includes(item?.actorId);
 }
 
 function TaskRow({ item, names, onOpen }) {
@@ -49,10 +56,13 @@ function WaitingRow({ item, port }) {
       const callerCancel = action === FEATURE_TASK_ACTION.cancel;
       const execute = callerCancel ? port.commands?.cancelRequest : port.commands?.controlWaiting;
       const supported = callerCancel || supportedControls.has(action);
+      const needsTargetAuthority = [FEATURE_WAITING_CONTROL.steer, FEATURE_WAITING_CONTROL.interrupt].includes(action);
+      const authorityReady = !needsTargetAuthority || targetAuthorityReady(item);
       const disabled = typeof execute !== 'function'
         || !supported
+        || !authorityReady
         || [FEATURE_COMMAND_STATE.submitting, FEATURE_COMMAND_STATE.disabled, FEATURE_COMMAND_STATE.unsupported].includes(commandState?.state);
-      return <button type="button" className={action === 'agent.interrupt' || action === 'agent.dismiss' || callerCancel ? 'danger' : ''} disabled={disabled} title={commandState?.reason || (!execute ? '等待区控制命令未接入' : !supported ? '此控制词没有已接入的安全命令' : '')} key={action} onClick={() => callerCancel ? execute({ item }) : execute({ item, type: action })}>{ACTION_LABELS[action] || action}</button>;
+      return <button type="button" className={action === 'agent.interrupt' || action === 'agent.dismiss' || callerCancel ? 'danger' : ''} disabled={disabled} title={commandState?.reason || (!execute ? '等待区控制命令未接入' : !supported ? '此控制词没有已接入的安全命令' : !authorityReady ? '正在核验收件人' : '')} key={action} onClick={() => callerCancel ? execute({ item }) : execute({ item, type: action })}>{ACTION_LABELS[action] || action}</button>;
     })}{!actions.length && <span className="task-provider-note">当前账本未声明可用控制</span>}{failures.map((failure, index) => <span className="governance-error" role="alert" key={`error:${index}`}>{failure.error || failure.reason || '控制命令失败'}</span>)}</span>
   </article>;
 }

@@ -48,6 +48,15 @@ describe('canonical control command owner', () => {
     expect(command.actorId).toBeUndefined();
   });
 
+  it('keeps non-interrupt controls usable without an interrupt turn context', () => {
+    expect(createControlCommand({
+      channelId: 'c0', type: TYPES.agentSteer, actorId: 'agent:worker:1', payload: { target: 'request-1' },
+    })).toMatchObject({ msgType: TYPES.agentSteer, audience: ['agent:worker:1'] });
+    expect(createControlCommand({
+      channelId: 'c0', type: TYPES.agentCompact, actorId: 'agent:worker:1', payload: {},
+    })).toMatchObject({ msgType: TYPES.agentCompact, audience: ['agent:worker:1'] });
+  });
+
   it('rejects a direct interrupt without a current turn authority', () => {
     expect(() => createControlCommand({
       channelId: 'c0',

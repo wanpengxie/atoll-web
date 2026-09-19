@@ -67,6 +67,20 @@ describe('任务区从 ChannelReplica 投影等待控制', () => {
       audience: [AGENT_ID],
       targetLabel: AGENT_ID,
       payload: { target: 'request-1' },
+      controlContext: {
+        source: 'feature',
+        targetAuthority: { current: true, actorIDs: [AGENT_ID] },
+        turn: {
+          requestId: 'request-1',
+          requestType: 'agent.ask',
+          audience: [AGENT_ID],
+          terminal: false,
+          local: false,
+          status: 'processing',
+          controls: ['agent.steer', 'agent.interrupt'],
+          actorId: AGENT_ID,
+        },
+      },
     });
     expect(createFeatureWaitingControlSubmission({ item, type: FEATURE_WAITING_CONTROL.interrupt })).toEqual({
       channelId: CHANNEL_ID,
@@ -97,7 +111,7 @@ describe('任务区从 ChannelReplica 投影等待控制', () => {
     replica.commit(row(1, request()));
     replica.commit(row(2, response('progress-1', 'request-1', {
       status: 'processing',
-      controls: [{ word: FEATURE_WAITING_CONTROL.interrupt }],
+      controls: [{ word: FEATURE_WAITING_CONTROL.steer }, { word: FEATURE_WAITING_CONTROL.interrupt }],
     })));
 
     const [item] = selectFeatureWaitingFacts({ state: replica.state(CHANNEL_ID) });
@@ -105,6 +119,10 @@ describe('任务区从 ChannelReplica 投影等待控制', () => {
     expect(() => createFeatureWaitingControlSubmission({
       item,
       type: FEATURE_WAITING_CONTROL.interrupt,
+    })).toThrowError(expect.objectContaining({ code: 'control_authority_stale' }));
+    expect(() => createFeatureWaitingControlSubmission({
+      item,
+      type: FEATURE_WAITING_CONTROL.steer,
     })).toThrowError(expect.objectContaining({ code: 'control_authority_stale' }));
   });
 

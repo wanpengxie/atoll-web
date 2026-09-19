@@ -88,7 +88,7 @@ export function createFeatureWaitingControlSubmission({ item, type, intent = 'si
     targetLabel: String(targetLabel || actorId),
     payload: Object.freeze(payload),
   };
-  if (type === FEATURE_WAITING_CONTROL.interrupt) {
+  if ([FEATURE_WAITING_CONTROL.interrupt, FEATURE_WAITING_CONTROL.steer].includes(type)) {
     request.controlContext = {
       source: 'feature',
       turn: item.turn,
