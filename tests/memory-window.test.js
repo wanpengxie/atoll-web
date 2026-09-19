@@ -286,6 +286,26 @@ describe('current bounded Replica ownership (baseline memory-window UX)', () => 
     await cache.clear();
   });
 
+  it('reconciles cache coverage to physical rows without materializing a gap on restart', async () => {
+    const cache = createChannelReplicaCache({ indexedDB: null });
+    await cache.ensureOwner('root', { world: 'coverage-reconcile' });
+    await cache.clear();
+    await cache.saveRows([row(1), row(3)], {
+      coverage: { channelId: CHANNEL, lowSeq: 1, highSeq: 3 },
+    });
+    expect((await cache.readBefore(CHANNEL, 99, 10, 10_000)).rows.map((item) => item.seq)).toEqual([1, 3]);
+
+    // Re-selecting the same owner exercises the public startup/reload path;
+    // physical rows remain the only source of materialized coverage.
+    await cache.ensureOwner('root', { world: 'coverage-reconcile' });
+    expect(cache.metaSnapshot().get(CHANNEL)).toMatchObject({
+      rowCount: 2, oldestSeq: 1, newestSeq: 3,
+      coverage: [{ lowSeq: 1, highSeq: 1 }, { lowSeq: 3, highSeq: 3 }],
+    });
+    expect((await cache.readBefore(CHANNEL, 99, 10, 10_000)).rows.map((item) => item.seq)).toEqual([1, 3]);
+    await cache.clear();
+  });
+
   it('does not let a different principal/world read the prior cache owner', async () => {
     const cache = createChannelReplicaCache({ indexedDB: null });
     await cache.ensureOwner('root', { world: 'owner-a' });

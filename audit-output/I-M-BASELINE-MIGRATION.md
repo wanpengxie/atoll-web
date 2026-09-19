@@ -603,6 +603,28 @@ message-body successor still has its pre-existing flat-payload compatibility
 red case; it remains untouched because this round does not restore legacy
 parsing.
 
+## Round 20 Replica cache durability and next I–M bridge
+
+The Replica cache contract now treats physical rows as the startup source of
+truth. A stale Meta row cannot claim rows or coverage that are absent; old
+physical survivors are redacted again when startup or quota rebuild rewrites
+the window. `saveRows` and `clear` share a serialized owner queue, and clear
+publishes its in-memory reset only after the durable transaction commits.
+
+| user invariant | unique public owner | strict evidence |
+|---|---|---|
+| Startup reconciles stale Meta/physical rows, removes metadata-only channels, and does not materialize a seq gap. | `createChannelReplicaCache.ensureOwner` → Replica cache rows/meta | `tests/channel-replica-cache-redaction.test.js` startup reconciliation case; `tests/memory-window.test.js` additive TC-0951 bridge re-selects the owner and observes physical-only coverage `{1,1},{3,3}`. |
+| A quota-window survivor that was written in an old unredacted shape is redacted again at the rebuild boundary. | `replaceChannelRows` → shared `redactSensitive` | `tests/channel-replica-cache-redaction.test.js` quota survivor case inspects raw IndexedDB rows after bounded save and finds no old key/token. |
+| Concurrent bounded saves retain both ordered new rows; failed clear leaves durable rows and published Meta intact. | Replica cache serialized `saveRows`/`clear` owner queue | `tests/channel-replica-cache-redaction.test.js` concurrent save and injected clear-transaction failure cases. |
+
+The focused Replica/cache command is `npx vitest run
+tests/channel-replica-cache-redaction.test.js tests/memory-window.test.js` → **2
+files, 27/27 GREEN**. The additive memory case is mapped to static ledger
+`TC-0951` only as a new public-owner bridge; it does not increase the 159-case
+I–M baseline count or duplicate the existing merge-coverage assertion. The
+historical FEED-CACHE wording in the E–H and global ledgers now points to this
+current Replica contract; notification owners were not changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

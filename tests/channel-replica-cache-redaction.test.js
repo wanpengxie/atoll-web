@@ -10,13 +10,13 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createChannelReplicaCache } from '../src/model/channel-replica.js';
 
-function rawDbRows(databaseName) {
+function rawDbEntries(databaseName, storeName) {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(databaseName);
     request.onsuccess = () => {
       const db = request.result;
-      const tx = db.transaction(['rows'], 'readonly');
-      const getAll = tx.objectStore('rows').getAll();
+      const tx = db.transaction([storeName], 'readonly');
+      const getAll = tx.objectStore(storeName).getAll();
       let result;
       getAll.onsuccess = () => { result = getAll.result; };
       getAll.onerror = () => reject(getAll.error);
@@ -27,6 +27,14 @@ function rawDbRows(databaseName) {
   });
 }
 
+function rawDbRows(databaseName) {
+  return rawDbEntries(databaseName, 'rows');
+}
+
+function rawDbMeta(databaseName) {
+  return rawDbEntries(databaseName, 'meta');
+}
+
 function rawDbPut(databaseName, row) {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(databaseName);
@@ -34,6 +42,20 @@ function rawDbPut(databaseName, row) {
       const db = request.result;
       const tx = db.transaction(['rows'], 'readwrite');
       tx.objectStore('rows').put(row);
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function rawDbMetaPut(databaseName, entry) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction(['meta'], 'readwrite');
+      tx.objectStore('meta').put(entry);
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onabort = tx.onerror = () => { db.close(); reject(tx.error); };
     };
@@ -249,6 +271,107 @@ describe('Replica 缓存持久化前应隐藏设备密钥/凭据（恢复自 tes
     await reloaded.ensureOwner('root', { world: 'boot-a' });
     expect(reloaded.metaSnapshot().get('c0')).toMatchObject({ rowCount: 8, coverage: [{ lowSeq: 1, highSeq: 8 }] });
     await reloaded.destroy();
+  });
+
+  it('启动时以物理 rows 重建旧 Meta、删除孤儿 Meta，并再次脱敏 survivors', async () => {
+    await clearCache();
+    await rawDbPut('atoll-channel-replica-v1', {
+      owner: 'root\u0000boot-a', channelId: 'c0', seq: 4, row: sensitiveRow(4),
+    });
+    await rawDbMetaPut('atoll-channel-replica-v1', {
+      owner: 'root\u0000boot-a', channelId: 'c0',
+      value: {
+        headSeq: 99, oldestSeq: 1, newestSeq: 99, rowCount: 99,
+        quotaTailRows: 8, coverage: [{ lowSeq: 1, highSeq: 99 }],
+      },
+    });
+    await rawDbMetaPut('atoll-channel-replica-v1', {
+      owner: 'root\u0000boot-a', channelId: 'orphan-meta',
+      value: { headSeq: 50, oldestSeq: 1, newestSeq: 50, rowCount: 50, coverage: [{ lowSeq: 1, highSeq: 50 }] },
+    });
+
+    const cache = createChannelReplicaCache({ indexedDB });
+    await cache.ensureOwner('root', { world: 'boot-a' });
+    expect(cache.metaSnapshot().get('c0')).toMatchObject({
+      headSeq: 4, oldestSeq: 4, newestSeq: 4, rowCount: 1,
+      quotaTailRows: 8, coverage: [{ lowSeq: 4, highSeq: 4 }],
+    });
+    expect(cache.metaSnapshot().has('orphan-meta')).toBe(false);
+    expectRedactedBusinessRow((await cache.readBefore('c0', 5, 10, 10_000)).rows[0], 4);
+    const stored = JSON.stringify(await rawDbRows('atoll-channel-replica-v1'));
+    expect(stored).not.toContain('one-time-key-4-should-not-persist');
+    expect(stored).not.toContain('token-value-4-should-not-persist');
+    expect((await rawDbMeta('atoll-channel-replica-v1')).some((entry) => entry.channelId === 'orphan-meta')).toBe(false);
+    await cache.destroy();
+  });
+
+  it('quota window rebuild re-redacts an old physical survivor before writing it back', async () => {
+    await clearCache();
+    await rawDbPut('atoll-channel-replica-v1', {
+      owner: 'root\u0000boot-a', channelId: 'c0', seq: 4, row: sensitiveRow(4),
+    });
+    await rawDbMetaPut('atoll-channel-replica-v1', {
+      owner: 'root\u0000boot-a', channelId: 'c0',
+      value: { headSeq: 4, oldestSeq: 4, newestSeq: 4, rowCount: 1, quotaTailRows: 8, coverage: [{ lowSeq: 4, highSeq: 4 }] },
+    });
+    const cache = createChannelReplicaCache({ indexedDB });
+    await cache.ensureOwner('root', { world: 'boot-a' });
+
+    // Simulate an old raw row arriving between startup reconciliation and the
+    // bounded rebuild. The rebuild itself must remain a durable redaction boundary.
+    await rawDbPut('atoll-channel-replica-v1', {
+      owner: 'root\u0000boot-a', channelId: 'c0', seq: 4, row: sensitiveRow(4),
+    });
+    await cache.saveRows([sensitiveRow(9)]);
+    const stored = JSON.stringify(await rawDbRows('atoll-channel-replica-v1'));
+    expect(stored).not.toContain('one-time-key-4-should-not-persist');
+    expect(stored).not.toContain('token-value-4-should-not-persist');
+    expectRedactedBusinessRow((await cache.readBefore('c0', 10, 10, 10_000)).rows[0], 4);
+    await cache.destroy();
+  });
+
+  it('serializes concurrent bounded saveRows calls without losing the later row', async () => {
+    await clearCache();
+    for (let seq = 1; seq <= 8; seq += 1) {
+      await rawDbPut('atoll-channel-replica-v1', {
+        owner: 'root\u0000boot-a', channelId: 'c0', seq, row: sensitiveRow(seq),
+      });
+    }
+    await rawDbMetaPut('atoll-channel-replica-v1', {
+      owner: 'root\u0000boot-a', channelId: 'c0',
+      value: { headSeq: 8, oldestSeq: 1, newestSeq: 8, rowCount: 8, quotaTailRows: 8, coverage: [{ lowSeq: 1, highSeq: 8 }] },
+    });
+    const cache = createChannelReplicaCache({ indexedDB });
+    await cache.ensureOwner('root', { world: 'boot-a' });
+    await Promise.all([cache.saveRows([sensitiveRow(9)]), cache.saveRows([sensitiveRow(10)])]);
+    expect((await cache.readBefore('c0', 11, 20, 100_000)).rows.map((row) => row.seq))
+      .toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+    await cache.destroy();
+  });
+
+  it('publishes clear only after its durable transaction succeeds', async () => {
+    await clearCache();
+    const cache = createChannelReplicaCache({ indexedDB });
+    await cache.ensureOwner('root', { world: 'boot-a' });
+    await cache.saveRows([sensitiveRow(1)]);
+    const originalDelete = IDBObjectStore.prototype.delete;
+    let injected = false;
+    IDBObjectStore.prototype.delete = function deleteRow(key, ...args) {
+      if (!injected && this.name === 'rows' && key?.[2] === 1) {
+        injected = true;
+        throw new Error('injected clear failure');
+      }
+      return originalDelete.call(this, key, ...args);
+    };
+    try {
+      await expect(cache.clear()).rejects.toThrow('injected clear failure');
+    } finally {
+      IDBObjectStore.prototype.delete = originalDelete;
+    }
+    expect(injected).toBe(true);
+    expect(cache.metaSnapshot().get('c0')).toMatchObject({ rowCount: 1, oldestSeq: 1, newestSeq: 1 });
+    expect((await cache.readBefore('c0', 2, 10, 10_000)).rows.map((row) => row.seq)).toEqual([1]);
+    await cache.destroy();
   });
 
   it('写入事务失败时不提前发布 Meta 或留下半条 row', async () => {
