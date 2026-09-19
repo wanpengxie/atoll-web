@@ -297,10 +297,16 @@ export function useAttachmentTransactions({
   const previewObjectURLRef = useRef('');
   const fileSessionsRef = useRef(new Map());
   const activeFileChannelRef = useRef(activeChannelId || '');
+  const pendingDeviceIdRef = useRef('');
+  const skipChannelDirectoryEffectRef = useRef('');
   const restoredDirectoryRef = useRef('');
   const committedOwnerRef = useRef(null);
   const serverWorldCommittedRef = useRef(serverWorld);
   const wireStateCommittedRef = useRef(wireState);
+  const currentDirectoryRef = useRef(directory);
+  const currentDeviceIdRef = useRef(deviceId);
+  currentDirectoryRef.current = directory;
+  currentDeviceIdRef.current = deviceId;
   useLayoutEffect(() => {
     const owner = Object.freeze({ principalId, producerOwnerToken, generationFor });
     committedOwnerRef.current = owner;
@@ -493,9 +499,14 @@ export function useAttachmentTransactions({
       if (deviceRequestRef.current.request !== request || request.controller.signal.aborted) return [];
       if (activeChannelRef.current !== channelId) return [];
       setDevices(rows);
-      setDeviceId((current) => rows.some((row) => row.id === current)
-        ? current
-        : availableDefaultStorageDeviceId(activeChannel, rows));
+      setDeviceId((current) => {
+        const preferred = current || pendingDeviceIdRef.current;
+        const next = rows.some((row) => row.id === preferred)
+          ? preferred
+          : availableDefaultStorageDeviceId(activeChannel, rows);
+        pendingDeviceIdRef.current = '';
+        return next;
+      });
       return rows;
     } catch (error) {
       if (
@@ -576,20 +587,23 @@ export function useAttachmentTransactions({
 
   useEffect(() => {
     const previousChannelId = activeFileChannelRef.current;
-    if (previousChannelId && previousChannelId !== activeChannelId) {
+    const changingChannel = previousChannelId !== activeChannelId;
+    if (previousChannelId && changingChannel) {
       fileSessionsRef.current.set(previousChannelId, {
         deviceId, directory, selectedKey, selectedArtifact, previewStack, scrollTop: filesScrollTop,
       });
     }
+    if (changingChannel) skipChannelDirectoryEffectRef.current = activeChannelId || '';
     activeFileChannelRef.current = activeChannelId || '';
     const restored = previousChannelId === activeChannelId
       ? { deviceId, directory, selectedKey, selectedArtifact, previewStack, scrollTop: filesScrollTop }
       : fileSessionsRef.current.get(activeChannelId) || null;
+    pendingDeviceIdRef.current = changingChannel ? (restored?.deviceId || '') : '';
     abortRequest(deviceRequestRef);
     abortRequest(directoryRequestRef);
     abortRequest(previewRequestRef);
     setDevices([]);
-    setDeviceId(restored?.deviceId || '');
+    setDeviceId(changingChannel ? '' : (restored?.deviceId || ''));
     setDirectory(restored?.directory || '');
     restoredDirectoryRef.current = restored?.directory || '';
     setEntries([]);
@@ -601,7 +615,10 @@ export function useAttachmentTransactions({
     setFilesScrollTop(Number(restored?.scrollTop || 0));
     publishArtifactPreview({ status: 'idle' });
     setFilesError('');
-    if (!activeChannelId || wireState !== 'open') return;
+    if (!activeChannelId || wireState !== 'open') {
+      skipChannelDirectoryEffectRef.current = '';
+      return;
+    }
     void refreshDevices(activeChannelId);
   // Switching channels is the ownership boundary. The values intentionally
   // come from the last committed channel render, not from dependencies that
@@ -615,6 +632,10 @@ export function useAttachmentTransactions({
 
   useEffect(() => {
     if (!activeChannelId || !deviceId || wireState !== 'open') return;
+    if (skipChannelDirectoryEffectRef.current === activeChannelId) {
+      skipChannelDirectoryEffectRef.current = '';
+      return;
+    }
     void refreshDirectory({ channelId: activeChannelId, targetDirectory: directory, targetDeviceId: deviceId });
   }, [activeChannelId, deviceId, directory, refreshDirectory, wireState]);
 
@@ -650,12 +671,20 @@ export function useAttachmentTransactions({
   const removeFile = useCallback(async (entry) => {
     if (!activeChannelId || !entry?.resourceId) return;
     const channelId = activeChannelId;
+    const targetDirectory = currentDirectoryRef.current;
+    const targetDeviceId = currentDeviceIdRef.current;
     setFilesBusy(true);
     setFilesError('');
     try {
       await runFileOperation({ channelId, access: 'write' }, (operation) => operation.resource({ channel_id: channelId, op: 'delete', resource_id: entry.resourceId }));
-      if (activeChannelRef.current === channelId) setSelectedKey('');
-      await refreshDirectory({ channelId });
+      if (
+        activeChannelRef.current === channelId
+        && currentDirectoryRef.current === targetDirectory
+        && currentDeviceIdRef.current === targetDeviceId
+      ) {
+        setSelectedKey('');
+        await refreshDirectory({ channelId, targetDirectory, targetDeviceId });
+      }
     } catch (error) {
       if (activeChannelRef.current === channelId) setFilesError(errorText(error));
       throw error;
@@ -849,16 +878,21 @@ export function useAttachmentTransactions({
   const attach = useCallback(async (attachment, requestedChannelId = activeChannelRef.current) => {
     const channelId = String(requestedChannelId || '');
     const capturedDraftRevision = Number(drafts.get(channelId)?.revision || 0);
-    return runFileOperation({ channelId, access: 'write', requireDraft: true }, async (operation) => {
-      const tagged = { ...attachment, [WORLD_FIELD]: operation.owner.worldEpoch };
-      await operation.persist(() => persistDraftAttachments(channelId, [tagged], {
-        expectedRevision: capturedDraftRevision,
-        authorize: () => operation.authorize(REQUEST_PHASE.persist, { requireTransport: false }),
-      }));
-      operation.authorize(REQUEST_PHASE.persist, { requireTransport: false });
-      if (activeChannelRef.current === channelId) onOpenDynamic();
-      return stripWorld(tagged);
-    });
+    try {
+      return await runFileOperation({ channelId, access: 'write', requireDraft: true }, async (operation) => {
+        const tagged = { ...attachment, [WORLD_FIELD]: operation.owner.worldEpoch };
+        await operation.persist(() => persistDraftAttachments(channelId, [tagged], {
+          expectedRevision: capturedDraftRevision,
+          authorize: () => operation.authorize(REQUEST_PHASE.persist, { requireTransport: false }),
+        }));
+        operation.authorize(REQUEST_PHASE.persist, { requireTransport: false });
+        if (activeChannelRef.current === channelId) onOpenDynamic();
+        return stripWorld(tagged);
+      });
+    } catch (error) {
+      if (activeChannelRef.current === channelId) setFilesError(errorText(error));
+      throw error;
+    }
   }, [activeChannelRef, drafts, onOpenDynamic, persistDraftAttachments, runFileOperation, stripWorld]);
 
   const uploadFiles = useCallback(async (files, {

@@ -109,7 +109,7 @@ function FileRows({ entries, selectedKey, disabled, attachDisabled, attachDisabl
       <span className="channel-file-actions" role="cell">
         {entry.kind === 'file' && <>
           <button type="button" aria-label="下载" title={`下载 ${entry.name}`} onClick={(event) => { event.stopPropagation(); void commands.download?.(entry); }}><Download size={15} /></button>
-          <button type="button" aria-label="附加" title={attachDisabled ? attachDisabledReason : `附加 ${entry.name}`} disabled={attachDisabled} onClick={(event) => { event.stopPropagation(); void commands.attach?.(entry); }}><Paperclip size={15} /></button>
+          <button type="button" aria-label="附加" title={attachDisabled ? attachDisabledReason : `附加 ${entry.name}`} disabled={attachDisabled} onClick={(event) => { event.stopPropagation(); void Promise.resolve(commands.attach?.(entry)).catch(() => {}); }}><Paperclip size={15} /></button>
         </>}
         <button type="button" className="danger" aria-label="删除" title={`删除 ${entry.name}`} disabled={disabled} onClick={(event) => { event.stopPropagation(); void remove(entry); }}><Trash2 size={15} /></button>
       </span>
