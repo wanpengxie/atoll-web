@@ -623,3 +623,54 @@ Reading arrival-to-persistence seam, not storage parsing, reload hydration, or
 view authority. The hard A08 normalization/reload/jump-clear/ack assertions
 remain intact for the product owner to satisfy; no fallback or assertion
 change was made.
+
+## Follow-up: ninth-round Reading wait and current case38 recheck at `12e5e90`
+
+The Reading owner change has not landed yet. At current HEAD, the source paths
+that own the session persistence seam have no dirty changes, and the product
+history has no commit after `5aef9f4` touching
+`src/model/view-session.js`, `src/model/reading-session.js`,
+`src/ui/timeline/useConversationProjection.js`, or
+`src/ui/timeline/useLiveArrivalReceipts.js`. The current owner still saves
+`persistentReadingSession(session)` with only `revision`, `mode`, and
+`bookmark` (`reading-session.js:315-321`); the controller calls that value at
+`useConversationProjection.js:86-92`. The durable record producer is
+therefore still the first missing link identified above: the live Reading
+arrival is visible and the transient jump is rendered, but no
+`unseenRecords` tuple is written.
+
+Because no Reading product submission is present, the requested live → storage
+→ reload A08 chain was not rerun prematurely. The strict A08 spec remains
+unchanged from `61c8758` (the current diff against that commit has no change to
+`tests/browser/ux-unseen-persistence.spec.js`), including the finite
+sequence-backed `unseenRecords` producer assertion, normalization, reload,
+jump-clear, and acknowledgement checks. The last exact chain remains the
+RED at the producer boundary recorded above; this is a product gap, not an
+environment or hydration failure.
+
+The canonical-materialization case38 was independently rerun in a clean
+detached worktree at current HEAD, excluding all shared-worktree dirt:
+
+```text
+ATOLL_TEST_WEB_PORT=15296 ATOLL_TEST_MOCK_PORT=19855 npx playwright test \
+  tests/browser/waiting-production-contract.spec.js \
+  --grep "wheel-takeover-after-send" --reporter=line \
+  --output=test-results-tz-case38-current
+```
+
+Result: **1 passed (7.0s)**. The `72c9165` helper was also checked for row
+confusion. It scopes candidates to
+`.timeline-message-list [data-presentation-row-id]` containing the submitted
+text, requires exactly one candidate row and exactly one nested
+`.turn-card[data-request-id]`, then requires zero non-AI
+`header > small` submission-state markers before geometry is sampled. A
+second row containing the same text makes the exact-count gate return false;
+the broad pre-wait text visibility at line 308 is not the acceptance oracle.
+The canonical gate at line 309 precedes the geometry and browsing-gap
+assertion, so the passing result does not mistake another row or the local
+optimistic echo for materialization. The prior E-send conflict witness is
+still retained as obsolete and was not deleted or weakened.
+
+No product source, target spec, or contract was changed in this round; only
+this audit entry records the pending Reading owner handoff and the current
+case38 PASS.
