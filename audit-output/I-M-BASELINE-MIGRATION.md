@@ -388,6 +388,32 @@ red cases in this run. The separately added Replica root-stability and
 projection-version probes are outside this I–M focused ledger; their findings
 remain handoffs to their owning partition rather than being relabeled here.
 
+## Round 12 exact-path recovery from the global static ledger
+
+`audit-output/TEST-CASE-MIGRATION-LEDGER.md` still lists the five I–M source
+paths (`management-actors`, `memory-window`, `message-list-lifecycle`,
+`message-presentation`, and `model-selector`) as `absent target path`, even
+though the semantic migration above is green. The missing status is a path
+provenance problem, not permission to revive the deleted modules. The new
+public-owner bridge is `tests/i-m-exact-path-contracts.test.jsx` (8/8 pass):
+
+| static baseline case | current public owner | executable bridge |
+|---|---|---|
+| management actor route (`management-actors`: system actor fallback) | `buildComposerModel` + `createComposerCommandRequest` + `SYSTEM_ACTOR_ID` | `tests/i-m-exact-path-contracts.test.jsx:158-173` |
+| open turn under trim (`memory-window`: incomplete turn) | `createChannelReplicaStore().trim` / open-turn floor | `tests/i-m-exact-path-contracts.test.jsx:175-194` |
+| response-first terminal (`memory-window`: compact closure/full upgrade) | Replica public `commit`/`trim`/`state().timeline` | `tests/i-m-exact-path-contracts.test.jsx:196-213` |
+| channel closure isolation (`memory-window`: same request id) | channel-keyed Replica records | `tests/i-m-exact-path-contracts.test.jsx:215-222` |
+| protocol language precedence (`message-presentation`: body beats label) | `useTimelineRowRenderer` / canonical `payload.body` | `tests/i-m-exact-path-contracts.test.jsx:224-230` |
+| canonical options with no ledger truth (`model-selector`) | `projectAgentParameters` / `agent.options` | `tests/i-m-exact-path-contracts.test.jsx:232-240` |
+| target change closes selector (`model-selector`) | Composer-embedded public `ModelSelector` | `tests/i-m-exact-path-contracts.test.jsx:242-260` |
+| detached visible snapshot (`message-list-lifecycle`) | `createConversationPresentation` | `tests/i-m-exact-path-contracts.test.jsx:262-281` |
+
+These eight cases are supplemental exact-path evidence; they do not inflate
+the 159-case baseline count. The bridge is intentionally additive and uses no
+deleted import, private production function, compatibility parser, or source
+edit. The targeted command is `npx vitest run
+tests/i-m-exact-path-contracts.test.jsx` → **8/8 GREEN**.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
