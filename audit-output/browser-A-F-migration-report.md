@@ -529,6 +529,20 @@ continuity 与 user override 均通过；不向 Workspace/Feed 或 Reading owner
 结论：#28 当前 clean HEAD 用户体验等价 **PASS**，无首个公开 owner 缺口；不改写
 冻结 `7ba308c` 的 `23/8` 历史 aggregate。
 
+### 第十九轮续：#15 F6-003 responsive viewport/accessibility（clean `9c8b7b5`）
+
+按旧 `fae8b70` 用户合同在真实 Chromium 遍历 `1280/800/640/600/320` 视口，并在
+320px 窄屏检查可见 mobile/channel/header/tab/send controls 的实际盒子尺寸；随后
+打开、关闭频道列表，确认关闭后 opener focus 恢复。该合同不依赖 Reading、notification
+或 search owner，也没有 debug-only UI。
+
+clean snapshot `9c8b7b5` 执行
+`tests/browser/f6-accessibility-responsive.spec.js --grep 'F6-003'`：
+`1 passed (5.2s)`。所有视口均满足 `document.scrollWidth ≤ innerWidth`；320px 下每个
+可见 control 的短边均 `≥44px`，频道列表开关及焦点恢复通过。结论：#15 当前 clean
+HEAD 用户体验等价 **PASS**，无首个公开 owner 缺口；不改写冻结 `7ba308c` 的
+`23/8` 历史 aggregate。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
