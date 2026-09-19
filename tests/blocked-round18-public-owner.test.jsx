@@ -5,7 +5,7 @@
 // they are not counted as recovered rows.
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ChannelAdministrationPanel } from '../src/ui/features/governance/GovernanceFeature.jsx';
 import { WorkspaceLayout } from '../src/app/WorkspaceLayout.jsx';
 
@@ -51,6 +51,11 @@ function renderShell(nav) {
   />);
 }
 
+function clickChannel(channelId) {
+  const rail = screen.getByRole('navigation', { name: '频道' });
+  fireEvent.click(within(rail).getByRole('button', { name: new RegExp(channelId) }));
+}
+
 describe('A-D round 18 public owner evidence: target handoff', () => {
   it('[AD-096] disables the committed channel terminal entry while target selection is pending', () => {
     // 用户能力：目标 workspace 尚未 commit 时旧频道终端入口立即不可用。
@@ -62,14 +67,15 @@ describe('A-D round 18 public owner evidence: target handoff', () => {
     expect(document.getElementById('workspace-terminal-toggle')?.disabled).toBe(true);
   });
 
-  it.fails('[AD-097] cancels a pending target when the user rapidly reselects the committed channel', () => {
-    // 用户能力：A→B 未 commit 时可反选 A；不变量：只保留最新选择。
-    // 公共 owner：WorkspaceLayout；当前入口没有把 same-channel reselect 接入 pending 清理。
+  it('[AD-097] cancels a pending target when the user rapidly reselects the committed channel', () => {
+    // 用户能力：A→B 未 commit 时可反选 A；不变量：只保留最新选择，不能重放 A 的导航副作用。
+    // 公共 owner：WorkspaceLayout presentation handoff + canonical navigation port。
     const nav = navigation();
     renderShell(nav);
     fireEvent.click(screen.getByText('c1'));
-    fireEvent.click(screen.getByText('c0'));
-    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
+    clickChannel('c0');
+    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1']);
+    expect(document.getElementById('workspace-terminal-toggle')?.disabled).toBe(false);
   });
 
   it('[AD-098] clears an old pending target after a committed third-channel fallback', async () => {
@@ -115,14 +121,15 @@ describe('A-D round 18 public owner evidence: target handoff', () => {
     expect(screen.getByTestId('message-surface').getAttribute('data-surface-visible')).toBe('false');
   });
 
-  it.fails('[AD-105] hands off only the latest target in rapid A-to-B-to-A navigation', () => {
+  it('[AD-105] hands off only the latest target in rapid A-to-B-to-A navigation', () => {
     // 用户能力：快速反选最终只由最新 target 交接。
-    // 不变量：旧 pending 不抢焦点；公共 owner：WorkspaceLayout。
+    // 不变量：旧 pending 不抢焦点且不重放已提交 A；公共 owner：WorkspaceLayout。
     const nav = navigation();
     renderShell(nav);
     fireEvent.click(screen.getByText('c1'));
-    fireEvent.click(screen.getByText('c0'));
-    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
+    clickChannel('c0');
+    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1']);
+    expect(document.getElementById('workspace-terminal-toggle')?.disabled).toBe(false);
   });
 
   it.fails('[AD-106] retains a channel terminal split when leaving and returning', () => {

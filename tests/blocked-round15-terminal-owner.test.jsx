@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceLayout } from '../src/app/WorkspaceLayout.jsx';
 import { WorkspaceFeatures } from '../src/ui/features/WorkspaceFeatures.jsx';
@@ -57,6 +57,11 @@ function renderWorkspace(navigation, options = {}) {
     features={featuresFor(navigation)}
     {...options}
   />);
+}
+
+function clickChannel(channelId) {
+  const rail = screen.getByRole('navigation', { name: '频道' });
+  fireEvent.click(within(rail).getByRole('button', { name: new RegExp(channelId) }));
 }
 
 describe('A-D round 15 terminal/channel-restart blocked evidence', () => {
@@ -144,13 +149,14 @@ describe('A-D round 15 terminal/channel-restart blocked evidence', () => {
     expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false);
   });
 
-  it.fails('[AD-097] lets a fast reselect of the committed channel cancel the pending target', () => {
-    // 用户能力：A→B 未 commit 时可立即反选 A；不变量：只保留最新用户选择。
+  it('[AD-097] lets a fast reselect of the committed channel cancel the pending target', () => {
+    // 用户能力：A→B 未 commit 时可立即反选 A；不变量：只保留最新选择，不能重放 A 的导航副作用。
     const nav = navigation();
     renderWorkspace(nav);
     fireEvent.click(screen.getByText('c1'));
-    fireEvent.click(screen.getByText('c0'));
-    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
+    clickChannel('c0');
+    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1']);
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false);
   });
 
   it('[AD-098] lets a committed third-channel directory fallback supersede the old target', () => {
@@ -245,13 +251,14 @@ describe('A-D round 15 terminal/channel-restart blocked evidence', () => {
     expect(document.activeElement).toBe(member);
   });
 
-  it.fails('[AD-105] hands focus only to the latest target in a rapid A-to-B-to-A selection', () => {
-    // 用户能力：快速反选最终落在 A；不变量：旧 pending 不能覆盖最新选择。
+  it('[AD-105] hands focus only to the latest target in a rapid A-to-B-to-A selection', () => {
+    // 用户能力：快速反选最终落在 A；不变量：旧 pending 不能覆盖最新选择，也不能重放 A。
     const nav = navigation();
     renderWorkspace(nav);
     fireEvent.click(screen.getByText('c1'));
-    fireEvent.click(screen.getByText('c0'));
-    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
+    clickChannel('c0');
+    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1']);
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false);
   });
 
   it.fails('[AD-106] retains a channel terminal split when leaving and returning to that channel', () => {

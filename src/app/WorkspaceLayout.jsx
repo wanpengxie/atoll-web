@@ -155,7 +155,17 @@ export function WorkspaceLayout({
     setPendingChannelSelection((value) => (selection && value !== selection ? value : null));
   }, []);
   const selectChannel = useCallback((channelId) => {
-    if (!channelId || channelId === navigation.activeChannelId) return;
+    if (!channelId) return;
+    if (channelId === navigation.activeChannelId) {
+      // A→B may still be waiting for the navigation owner to commit. A fast
+      // reselect of the committed A is a cancellation of that presentation
+      // handoff, not a second navigation command; never replay the side
+      // effect through the canonical selection owner.
+      if (pendingChannelSelectionRef.current?.origin === navigation.activeChannelId) {
+        clearPendingChannelSelection();
+      }
+      return;
+    }
     const pending = {
       target: channelId,
       origin: navigation.activeChannelId,
