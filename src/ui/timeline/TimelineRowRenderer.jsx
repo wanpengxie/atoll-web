@@ -9,6 +9,16 @@ import { FoldableBody } from './FoldableBody.jsx';
 
 const RESULT_META = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
 const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
+const FAILURE_LABELS = Object.freeze({
+  unanswered_timeout: '请求在截止时间前没有得到最终响应',
+  receiver_unavailable: '接收方已不可用',
+  receiver_internal_error: '接收方处理失败',
+  type_unsupported: '接收方不支持这个操作',
+  payload_invalid: '请求参数不符合要求',
+  bad_payload: '请求格式不正确',
+  forbidden: '没有执行该操作的权限',
+  permission_denied: '没有执行该操作的权限',
+});
 
 function MessageFrame({ className = '', actions = null, identity = null, contentClassName = '', children, ...articleProps }) {
   return <article className={`message-row ${className}`.trim()} tabIndex="0" {...articleProps}>
@@ -259,17 +269,32 @@ function StructuredData({ title, value }) {
   return <div className="structured-result"><details className="structured-result-details"><summary><span>{title}</span><small>{summary}</small><span className="structured-result-action">展开</span></summary><div className="structured-result-scroll"><StructuredTree value={safe} /></div></details></div>;
 }
 
-function StructuredResult({ payload = {}, contentKey }) {
+function resultTitle(requestType, payload) {
+  if (requestType === TYPES.describe || (payload.words && payload.class)) return payload.class ? `${payload.class} 的能力` : 'Actor 能力';
+  if (requestType === TYPES.channel.list) return requestType;
+  return '结构化结果';
+}
+
+function failureTitle(payload) {
+  if (payload.cancelled === true) return '任务已取消';
+  const code = payload.error_code || payload.reason || '';
+  return FAILURE_LABELS[code] || FAILURE_LABELS[payload.reason] || '请求失败';
+}
+
+function StructuredResult({ requestType = '', payload = {}, contentKey }) {
   const safe = redactSensitive(payload);
   const business = Object.fromEntries(Object.entries(safe).filter(([key]) => !RESULT_META.has(key)));
-  if (payload.status === 'failed') return <div className="failure-result"><strong>{payload.cancelled ? '任务已取消' : '请求失败'}</strong>{(payload.error_code || payload.reason) && <code>{payload.error_code || payload.reason}</code>}{payload.detail && <p>{payload.detail}</p>}{Object.keys(business).length > 0 && <StructuredData title="错误数据" value={business} />}</div>;
+  if (payload.status === 'failed') {
+    const code = payload.cancelled === true ? 'cancelled' : payload.error_code || payload.reason || '';
+    return <div className="failure-result"><strong>{failureTitle(payload)}</strong>{code && <code>{code}</code>}{payload.detail && <p>{payload.detail}</p>}{Object.keys(business).length > 0 && <StructuredData title="错误数据" value={business} />}</div>;
+  }
   if (Object.prototype.hasOwnProperty.call(payload, 'text')) {
     const text = String(payload.text ?? '');
     if (!text) return <p className="empty-result">返回了空文本</p>;
     const parsed = parseJSON(text);
     return parsed === undefined ? <MarkdownContent contentKey={contentKey} text={text} /> : <StructuredData title="JSON 结果" value={parsed} />;
   }
-  if (Object.keys(business).length > 0) return <StructuredData title="结构化结果" value={business} />;
+  if (Object.keys(business).length > 0) return <StructuredData title={resultTitle(requestType, payload)} value={business} />;
   return <p className="completion-ack">✓ 已完成</p>;
 }
 
@@ -306,7 +331,7 @@ function ApprovalCard({ turn, names, state, onResolve }) {
     {expiresAt > 0 && <p className={expired ? 'approval-expired' : 'approval-deadline'}>{expired ? '已过期，不能再处理' : `截止：${new Date(expiresAt).toLocaleString('zh-CN')}`}</p>}
     <div className="approval-actions">{!settled && onResolve && (isText ? <button type="button" className="approve" disabled={busy || expired} onClick={submitAnswer}>提交回答</button> : <><button type="button" className="approve" disabled={busy || expired} onClick={() => decide(DECISIONS.approve)}>批准</button><button type="button" className="reject" disabled={busy || expired} onClick={() => decide(DECISIONS.reject)}>拒绝</button></>)}{settled && <span>已回执</span>}</div>
     {formError && <p className="approval-form-error" role="alert">{formError}</p>}
-    {terminal && <footer className={turn.status === 'failed' ? 'final-answer failed' : 'final-answer'}><p className="answer-label">RESPONSE · {String(argsOf(terminal).status || '').toUpperCase()}</p><p className="approval-resolver">处理者：{nameOf(terminal.sender?.id, names)}{argsOf(terminal).decision && ` · ${argsOf(terminal).decision}`}</p><StructuredResult payload={argsOf(terminal)} contentKey={`terminal:${terminal.id || turn.requestId}:body`} /></footer>}
+    {terminal && <footer className={turn.status === 'failed' ? 'final-answer failed' : 'final-answer'}><p className="answer-label">RESPONSE · {String(argsOf(terminal).status || '').toUpperCase()}</p><p className="approval-resolver">处理者：{nameOf(terminal.sender?.id, names)}{argsOf(terminal).decision && ` · ${argsOf(terminal).decision}`}</p><StructuredResult requestType={request.type} payload={argsOf(terminal)} contentKey={`terminal:${terminal.id || turn.requestId}:body`} /></footer>}
     {turn.terminalClosureOnly && <footer className="final-answer unavailable">{terminalResultState(turn).error}</footer>}{error && <WireErrorLine error={error} />}
   </article>;
 }
@@ -344,10 +369,10 @@ function finalEchoObservation(observations, terminalText) {
   const body = last.endsWith('…[truncated]') ? last.slice(0, -'…[truncated]'.length) : last;
   return body && answer.startsWith(body) ? observations.at(-1) : null;
 }
-function ConversationAnswerSlot({ text, terminalPayload = null, contentKey }) {
+function ConversationAnswerSlot({ text, requestType = '', terminalPayload = null, contentKey }) {
   if (!terminalPayload) return <MarkdownContent contentKey={contentKey} text={text} />;
   if (Object.prototype.hasOwnProperty.call(terminalPayload, 'text') && terminalPayload.text !== '' && parseJSON(terminalPayload.text) === undefined) return <MarkdownContent contentKey={contentKey} text={String(terminalPayload.text)} />;
-  return <StructuredResult payload={terminalPayload} contentKey={contentKey} />;
+  return <StructuredResult requestType={requestType} payload={terminalPayload} contentKey={contentKey} />;
 }
 
 function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen }) {
@@ -358,8 +383,8 @@ function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen
   const echo = terminal ? finalEchoObservation(observations, terminalText) : null;
   const visible = echo ? observations.slice(0, -1) : observations;
   const foldText = [...visible.map((item) => item.process.text), terminalText].filter(Boolean).join('\n\n');
-  const content = visible.map(({ seq, envelope, process }) => { const slot = envelope.id || `${turn.requestId}:${seq}`; return <div key={slot} className="agent-progress-text" data-seq={seq}><ConversationAnswerSlot text={process.text} contentKey={`answer:${turn.requestId}:${slot}:body`} /></div>; });
-  if (terminal) content.push(echo ? <div key={echo.envelope.id || `${turn.requestId}:${echo.seq}`} className="agent-final-text" data-seq={echo.seq} data-answer-slot={turn.requestId}><ConversationAnswerSlot text={echo.process.text} terminalPayload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:${echo.envelope.id || echo.seq}:body`} /></div> : <div key={terminal.id || `${turn.requestId}:terminal`} className="agent-final-text" data-answer-slot={turn.requestId}><StructuredResult payload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:terminal:body`} /></div>);
+  const content = visible.map(({ seq, envelope, process }) => { const slot = envelope.id || `${turn.requestId}:${seq}`; return <div key={slot} className="agent-progress-text" data-seq={seq}><ConversationAnswerSlot text={process.text} requestType={request.type} contentKey={`answer:${turn.requestId}:${slot}:body`} /></div>; });
+  if (terminal) content.push(echo ? <div key={echo.envelope.id || `${turn.requestId}:${echo.seq}`} className="agent-final-text" data-seq={echo.seq} data-answer-slot={turn.requestId}><ConversationAnswerSlot text={echo.process.text} requestType={request.type} terminalPayload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:${echo.envelope.id || echo.seq}:body`} /></div> : <div key={terminal.id || `${turn.requestId}:terminal`} className="agent-final-text" data-answer-slot={turn.requestId}><StructuredResult requestType={request.type} payload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:terminal:body`} /></div>);
   const answerEnvelope = terminal || liveEnvelope || { id: `${turn.requestId}:answer`, sender: { id: agentId, kind: 'agent' }, payload: { body: { text: '' } } };
   return <ReplyableMessageFrame envelope={answerEnvelope} turn={turn} onReply={terminal ? onReply : null} onOpen={onOpen}
     className={`agent-turn-bubble ${turn.terminal ? 'settled' : 'processing'}`} contentClassName="response-body"
@@ -379,7 +404,7 @@ function ThreadCall({ item, names }) {
   const [open, setOpen] = useState(false); const child = item.turn; const terminal = terminalContentEnvelope(child);
   const receivers = (child.request.audience || []).map((id) => nameOf(id, names)).join('、');
   const status = child.terminal ? (child.status === 'failed' ? '失败' : '已完成') : '处理中';
-  return <li className={`turn-thread-item status-${child.status}`} style={{ '--thread-depth': item.depth }}><button type="button" className="turn-thread-row" onClick={() => setOpen((value) => !value)} aria-expanded={open}><strong>{textOf(child.request) || child.request.type}</strong><small>{nameOf(child.request.sender?.id, names)} → {receivers || '—'} · {status} · {messageTimeLabel(child.request.ts)}</small></button>{open && (terminal ? <div className="turn-thread-result"><StructuredResult payload={argsOf(terminal)} contentKey={`thread:${terminal.id || child.requestId}:body`} /></div> : <p className="turn-thread-result empty">{child.terminalClosureOnly ? terminalResultState(child).error : '还没有终态。'}</p>)}</li>;
+  return <li className={`turn-thread-item status-${child.status}`} style={{ '--thread-depth': item.depth }}><button type="button" className="turn-thread-row" onClick={() => setOpen((value) => !value)} aria-expanded={open}><strong>{textOf(child.request) || child.request.type}</strong><small>{nameOf(child.request.sender?.id, names)} → {receivers || '—'} · {status} · {messageTimeLabel(child.request.ts)}</small></button>{open && (terminal ? <div className="turn-thread-result"><StructuredResult requestType={child.request.type} payload={argsOf(terminal)} contentKey={`thread:${terminal.id || child.requestId}:body`} /></div> : <p className="turn-thread-result empty">{child.terminalClosureOnly ? terminalResultState(child).error : '还没有终态。'}</p>)}</li>;
 }
 function ThreadCalls({ root, thread, names }) {
   const [open, setOpen] = useState(false); const items = threadDepths(root, thread || []);
