@@ -13,6 +13,8 @@ REGRESSION rows, not part of the 105 BLOCKED count. The next pair closes
 AD-032 and AD-038 under the same owner, also without changing BLOCKED count.
 AD-316 remains an explicit blocked reproduction because the current
 `SpaceDevices` owner submits but does not refresh its authoritative projection.
+AD-041 is now closed by the current timeline presentation owner; this also does
+not change the 105 BLOCKED count.
 No row is obsolete, deleted, or skipped.
 
 ## Minimal regression packets

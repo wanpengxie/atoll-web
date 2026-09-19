@@ -353,7 +353,7 @@ describe('气泡呈现（TurnCard/AgentAnswer，useTimelineRowRenderer 直接 re
     unmount();
   });
 
-  it('【缺陷】shows interrupt freeze only on the stopped agent bubble, never as hold pause——新气泡对 interrupted 失败没有专门文案，和普通失败一样显示"处理失败"', () => {
+  it('[AD-041] shows interrupt freeze only on the stopped agent bubble, never as hold pause', () => {
     const interrupted = {
       requestId: 'owner',
       request: { id: 'owner', type: 'agent.ask', audience: ['agent'], sender: { id: 'me', kind: 'human' }, ts: Date.now(), payload: { body: { text: 'running' } } },
@@ -361,9 +361,11 @@ describe('气泡呈现（TurnCard/AgentAnswer，useTimelineRowRenderer 直接 re
       status: 'failed', provisional: [], thread: [],
     };
     renderTurnRow(interrupted);
-    // 期望（旧行为）：气泡显示"✗ 已停止 · 发消息即继续"；实际：和任何其它失败一样只显示"处理失败"，
-    // 用户分不清是"可以直接发消息继续"还是"彻底失败需要别的处理"。
+    // 用户能力：被 interrupt 的 Agent 气泡明确可继续发消息；
+    // 不变量：该停止事实不伪装成普通失败，也不落到 Waiting hold 暂停区。
     expect(document.body.textContent).toContain('✗ 已停止 · 发消息即继续');
+    expect(document.querySelector('.agent-stopped')).toBeTruthy();
+    expect(document.querySelector('.response-failed')).toBeNull();
   });
 });
 

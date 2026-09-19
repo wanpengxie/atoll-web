@@ -1,11 +1,11 @@
-# A–D P1 composed interaction fixture batch: AD-014 / AD-017 / AD-018 / AD-021 / AD-022 / AD-031 / AD-032 / AD-038 (2026-09-20)
+# A–D P1 composed interaction fixture batch: AD-014 / AD-017 / AD-018 / AD-021 / AD-022 / AD-031 / AD-032 / AD-038 / AD-041 (2026-09-20)
 
-This batch recovers eight P1 Waiting-owner cases through the current public
+This batch recovers nine P1 Waiting-owner cases through the current public
 Waiting composition. The fixtures retain the baseline user capability, causal
 state transition, and observable result. They do not import private helpers,
 change Feed/runtime product code, delete declarations, or add skips. The six
-Waiting lifecycle gaps plus two information-architecture cases are fixed in the
-existing Waiting/edit owner and are
+Waiting lifecycle gaps, two edit-ownership cases, and one bubble-presentation
+case are fixed in the existing Waiting/timeline owner and are
 green `PASS` entries in the A–D ledger.
 
 ## Case matrix
@@ -20,6 +20,7 @@ green `PASS` entries in the A–D ledger.
 | AD-031 | Exit editing when the target reaches a cancellation terminal. | A target cancellation closes the Composer and releases only the exact edit hold owned by that session. | Exported `useWaitingEditingController`; start editing through the public hook, rerender the cancelled target, inspect `presentationEditing/editNotice`, and observe the exact-hold unhold callback. | **PASS:** session closes, `已退出编辑` is shown, and the captured owner sends `agent.unhold(expected_hold_id)`. |
 | AD-032 | Exit editing when a newer interrupt supersedes the edit hold. | Interrupt is a stronger control fact; the Composer must close without sending a stale unhold that would fight interrupt ownership. | Exported `useWaitingEditingController`; start editing, rerender a later completed `agent.interrupt`, inspect `presentationEditing/editNotice`, and inspect control calls. | **PASS:** session closes with `另一项控制已接管编辑`; no `agent.unhold` is sent. |
 | AD-038 | Save through the latest committed callback and target while retaining the original hold owner for release. | Committed callback/state ownership is split: replace follows the latest committed render, unhold remains bound to the hold owner. | Exported `useWaitingEditingController`; start with callback A, commit callback B plus a fresh target turn, invoke the public Composer `onSave`, and inspect both callback logs. | **PASS:** callback B receives `agent.replace` with the latest turn; callback A receives no replace. |
+| AD-041 | See that an interrupted Agent bubble can continue from a new message without presenting it as an ordinary failure or a Waiting hold. | An `interrupted` terminal is a stopped/resumable presentation fact; it must stay on the stopped bubble and must not create `.agent-wait-paused`. | Exported `useTimelineRowRenderer().renderRow`; render a public `agent.ask` turn with failed `error_code: interrupted`, inspect `.agent-stopped`, and verify no ordinary failure badge. | **PASS:** the bubble says `✗ 已停止 · 发消息即继续`; it has no `response-failed` badge and the hold-only public fixture remains unaffected. |
 
 ## Public-composition audit
 
@@ -40,6 +41,9 @@ AD-031 uses the exported hook's public edit port; it does not import the private
 session-owner map or any legacy edit admission helper.
 AD-032 and AD-038 likewise exercise exported hook state/callback ports; their
 tests keep interrupt supersession and latest-commit ownership as separate cases.
+AD-041 exercises the exported `useTimelineRowRenderer().renderRow` boundary;
+the interrupted terminal is presented as a stopped bubble and does not route
+through Waiting's hold pause.
 
 ## Focused verification
 
@@ -106,13 +110,28 @@ Tests       2 passed | 14 skipped
 - AD-038 proves save uses the latest committed callback/turn while release
   ownership remains separate.
 
+```text
+npx vitest run tests/agent-information-architecture.test.jsx --reporter=verbose -t '\[AD-041\]'
+```
+
+Observed on 2026-09-20:
+
+```text
+Test Files  1 passed
+Tests       1 passed | 15 skipped
+```
+
+- AD-041 proves the interrupted terminal stays on the stopped Agent bubble,
+  exposes the resumable user action, and omits the ordinary failure badge.
+
 The earlier red results were direct public-owner evidence. The product fix is
-limited to the existing Waiting/edit owner; no Workspace, Reading, Outbox, or
-legacy API surface changed.
+limited to the existing Waiting/timeline presentation owner; no Workspace,
+Reading, Outbox, Feed, or legacy API surface changed.
 
 ## Boundary audit
 
 Changed paths are limited to the existing A–D test/audit files and
-`src/ui/timeline/useWaitingEditingController.jsx`, the current Waiting/edit
-owner. No Feed runtime, Workspace, Reading, Outbox, vendor, package/lock file,
+`src/ui/timeline/TimelineRowRenderer.jsx`, the current Waiting/timeline
+presentation owner. No Feed runtime, Workspace, Reading, Outbox, vendor,
+package/lock file,
 private export, declaration deletion, or skip was introduced.

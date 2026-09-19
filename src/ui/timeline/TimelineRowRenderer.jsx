@@ -393,6 +393,13 @@ function finalEchoObservation(observations, terminalText) {
   const body = last.endsWith('…[truncated]') ? last.slice(0, -'…[truncated]'.length) : last;
   return body && answer.startsWith(body) ? observations.at(-1) : null;
 }
+
+function isInterruptedTerminal(turn) {
+  const payload = argsOf(turn?.terminal);
+  return payload?.status === 'failed'
+    && (payload.error_code === 'interrupted' || payload.reason === 'interrupted');
+}
+
 function ConversationAnswerSlot({ text, requestType = '', terminalPayload = null, contentKey }) {
   if (!terminalPayload) return <MarkdownContent contentKey={contentKey} text={text} />;
   if (Object.prototype.hasOwnProperty.call(terminalPayload, 'text') && terminalPayload.text !== '' && parseJSON(terminalPayload.text) === undefined) return <MarkdownContent contentKey={contentKey} text={String(terminalPayload.text)} />;
@@ -401,21 +408,23 @@ function ConversationAnswerSlot({ text, requestType = '', terminalPayload = null
 
 function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen }) {
   const request = turn.request; const terminal = terminalContentEnvelope(turn);
+  const stopped = isInterruptedTerminal(turn);
   const liveEnvelope = terminal || turn.provisional?.at(-1)?.envelope || null;
   const agentId = terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0] || '';
-  const observations = conversationObservations(turn); const terminalText = terminal ? textContent(argsOf(terminal)) : '';
+  const observations = conversationObservations(turn); const terminalText = terminal && !stopped ? textContent(argsOf(terminal)) : '';
   const echo = terminal ? finalEchoObservation(observations, terminalText) : null;
   const visible = echo ? observations.slice(0, -1) : observations;
   const foldText = [...visible.map((item) => item.process.text), terminalText].filter(Boolean).join('\n\n');
   const content = visible.map(({ seq, envelope, process }) => { const slot = envelope.id || `${turn.requestId}:${seq}`; return <div key={slot} className="agent-progress-text" data-seq={seq}><ConversationAnswerSlot text={process.text} requestType={request.type} contentKey={`answer:${turn.requestId}:${slot}:body`} /></div>; });
-  if (terminal) content.push(echo ? <div key={echo.envelope.id || `${turn.requestId}:${echo.seq}`} className="agent-final-text" data-seq={echo.seq} data-answer-slot={turn.requestId}><ConversationAnswerSlot text={echo.process.text} requestType={request.type} terminalPayload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:${echo.envelope.id || echo.seq}:body`} /></div> : <div key={terminal.id || `${turn.requestId}:terminal`} className="agent-final-text" data-answer-slot={turn.requestId}><StructuredResult requestType={request.type} payload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:terminal:body`} /></div>);
+  if (terminal && !stopped) content.push(echo ? <div key={echo.envelope.id || `${turn.requestId}:${echo.seq}`} className="agent-final-text" data-seq={echo.seq} data-answer-slot={turn.requestId}><ConversationAnswerSlot text={echo.process.text} requestType={request.type} terminalPayload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:${echo.envelope.id || echo.seq}:body`} /></div> : <div key={terminal.id || `${turn.requestId}:terminal`} className="agent-final-text" data-answer-slot={turn.requestId}><StructuredResult requestType={request.type} payload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:terminal:body`} /></div>);
   const answerEnvelope = terminal || liveEnvelope || { id: `${turn.requestId}:answer`, sender: { id: agentId, kind: 'agent' }, payload: { body: { text: '' } } };
   return <ReplyableMessageFrame envelope={answerEnvelope} turn={turn} onReply={terminal ? onReply : null} onOpen={onOpen}
     className={`agent-turn-bubble ${turn.terminal ? 'settled' : 'processing'}`} contentClassName="response-body"
     identity={<span className="actor-icon kind-agent">{String(nameOf(agentId, names) || 'A').slice(0, 1).toUpperCase()}</span>}
   >
-    <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{liveEnvelope?.ts && <time>{messageTimeLabel(liveEnvelope.ts)}</time>}{turn.terminal && (turn.status === 'failed' ? <span className="response-failed">处理失败</span> : <small>已完成</small>)}</header>
+    <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{liveEnvelope?.ts && <time>{messageTimeLabel(liveEnvelope.ts)}</time>}{turn.terminal && (stopped ? null : turn.status === 'failed' ? <span className="response-failed">处理失败</span> : <small>已完成</small>)}</header>
     {content.length > 0 && <div className="response-content"><FoldableBody id={`${turn.requestId}:response`} text={foldText} exempt={fold?.latest === true} automaticExpanded={fold?.automaticExpanded === true} expanded={fold?.overrides?.get(`${turn.requestId}:response`)} onToggle={fold?.onToggle}>{content}</FoldableBody></div>}
+    {stopped && <p className="agent-stopped">✗ 已停止 · 发消息即继续</p>}
     <ProgressTrail turn={turn} title={textOf(request)} />{turn.terminalClosureOnly && <p className="terminal-result-unavailable">{terminalResultState(turn).error}</p>}<Attachments envelope={answerEnvelope} onDownload={onDownload} onPreview={onPreview} />
   </ReplyableMessageFrame>;
 }

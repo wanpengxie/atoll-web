@@ -6,7 +6,7 @@ suites and 365 declarations. The complete case ledger remains
 row per baseline declaration and the current result, public owner, invariant,
 and disposition. After the P0 batch and the first P1 composed-interaction
 fixture batch plus the follow-up Waiting-owner regression packet, accepted case
-totals are **254 PASS / 6 REGRESSION / 105 BLOCKED**.
+totals are **255 PASS / 5 REGRESSION / 105 BLOCKED**.
 
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
@@ -33,6 +33,10 @@ closes its Composer session with an exact-hold release.
 The next same-owner pair closes AD-032 and AD-038 independently: a newer
 interrupt ends editing without stale unhold, while save follows the latest
 committed callback/turn and release remains with the original hold owner.
+
+The next Waiting/timeline presentation fix closes AD-041: an interrupted
+terminal stays on the stopped Agent bubble with the resumable user action and
+does not render as an ordinary failure or Waiting hold pause.
 
 ## Public-boundary migration completed in this pass
 
@@ -76,7 +80,8 @@ The focused slices were run with Vitest against current public owners:
 | `tests/agent-control.test.jsx tests/task-controls-restore.test.jsx` | 21 passed | AD-018/021 now pass through the Waiting owner; AD-020's unrelated business-progress guard remains green |
 | `tests/agent-information-architecture.test.jsx -t '\[AD-(022|031)\]'` | 2 passed | AD-022 authority gate and AD-031 cancelled-target cleanup pass through the Waiting owner |
 | `tests/agent-information-architecture.test.jsx -t '\[AD-(032|038)\]'` | 2 passed | AD-032 interrupt supersession and AD-038 latest committed save owner pass through the Waiting hook |
-| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-041, AD-062, AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
+| `tests/agent-information-architecture.test.jsx -t '\[AD-041\]'` | 1 passed | AD-041 interrupted terminal presents the stopped/resumable Agent bubble and stays out of ordinary failure/hold presentation |
+| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-062, AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
 
 The red assertions are intentionally not weakened, skipped, or deleted. The
 unrelated `tests/channel-replica-cache-redaction.test.js` red result belongs to
@@ -86,7 +91,7 @@ the deleted `feed-cache.test.js` successor (data-plane/F scope), not to the
 ## Boundary proof
 
 - Changed files are confined to `tests/` A–D unit tests, A–D audit reports, and
-  the existing Waiting/edit owner `src/ui/timeline/useWaitingEditingController.jsx`.
+  the existing Waiting/timeline presentation owner `src/ui/timeline/TimelineRowRenderer.jsx`.
 - No Workspace, Reading, Outbox, Feed runtime, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
