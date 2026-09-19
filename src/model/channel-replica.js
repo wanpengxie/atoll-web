@@ -60,19 +60,113 @@ function rootRequestId(envelope, requests) {
   return '';
 }
 
+const TERMINAL_RETAINED_FIELDS = Object.freeze([
+  'merged_into',
+  'replaced_by',
+  'preempted_by',
+]);
+
+function terminalRetainedFields(payload = {}) {
+  const nested = payload?.value && typeof payload.value === 'object' && !Array.isArray(payload.value)
+    ? payload.value
+    : {};
+  const retained = {};
+  for (const key of TERMINAL_RETAINED_FIELDS) {
+    const value = payload?.[key] ?? nested[key];
+    if (value !== undefined && value !== null && value !== '') retained[key] = value;
+  }
+  return retained;
+}
+
+// A closure is lifecycle provenance, not a second copy of a result. Keep the
+// routing and status facts needed to join a later request/response, while
+// deliberately dropping the potentially large terminal body.
+function compactTerminalClosure(envelope) {
+  const payload = argsOf(envelope);
+  return {
+    id: envelope?.id || '',
+    parent_id: envelope?.parent_id || '',
+    correlation_id: envelope?.correlation_id || '',
+    kind: 'response',
+    type: envelope?.type || '',
+    ts: envelope?.ts,
+    sender: envelope?.sender,
+    audience: envelope?.audience,
+    visibility: envelope?.visibility,
+    payload: {
+      body: {
+        status: payload.status,
+        ...terminalRetainedFields(payload),
+      },
+    },
+  };
+}
+
+// The request is only needed when a surviving terminal row has lost its
+// parent row. Scalar body fields keep a closure useful for rendering/routing
+// without retaining an arbitrarily large request payload in the memory index.
+function compactClosureRequest(request) {
+  if (!request?.id) return null;
+  const body = argsOf(request);
+  const compactBody = {};
+  for (const [key, value] of Object.entries(body || {})) {
+    if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+      compactBody[key] = value;
+    } else if (typeof value === 'string' && value.length <= 4096) {
+      compactBody[key] = value;
+    }
+  }
+  return {
+    id: request.id,
+    parent_id: request.parent_id || '',
+    correlation_id: request.correlation_id || '',
+    kind: 'request',
+    type: request.type || '',
+    ts: request.ts,
+    sender: request.sender,
+    audience: request.audience,
+    visibility: request.visibility,
+    payload: { body: compactBody },
+  };
+}
+
+function terminalClosureMatchesRow(closure, item) {
+  if (!(
+    closure
+    && item
+    && Number(closure.seq) === Number(item.seq)
+    && closure.envelope?.id
+    && closure.envelope.id === item.envelope?.id
+  )) return false;
+  try {
+    return JSON.stringify(closure.envelope) === JSON.stringify(compactTerminalClosure(item.envelope));
+  } catch {
+    return false;
+  }
+}
+
 function buildTurn(request, requestSeq, responses) {
   const provisional = [];
   let terminal = null;
   let terminalSeq = 0;
   let lastSeq = requestSeq;
-  for (const response of responses || []) {
+  let terminalClosureOnly = false;
+  for (const response of [...(responses || [])].sort((left, right) => left.seq - right.seq)) {
     lastSeq = Math.max(lastSeq, response.seq);
     if (FINAL.has(argsOf(response.envelope)?.status)) {
-      if (response.seq >= terminalSeq) { terminal = response.envelope; terminalSeq = response.seq; }
+      // The first terminal in ledger order is authoritative. A later final
+      // is a conflict, never a replacement that can change a closed turn
+      // back to a different outcome.
+      if (!terminal) {
+        terminal = response.envelope;
+        terminalSeq = response.seq;
+        terminalClosureOnly = response.closureOnly === true;
+      }
     } else provisional.push({ seq: response.seq, envelope: response.envelope });
   }
   return {
     requestId: request.id, request, requestSeq, lastSeq, provisional, terminal, terminalSeq,
+    terminalClosureOnly,
     status: terminal ? String(argsOf(terminal)?.status || 'completed') : 'pending',
   };
 }
@@ -143,6 +237,69 @@ function openTurnFloor(state) {
   return floor;
 }
 
+function retainTerminalClosure(state, requestID, request, requestSeq, terminalSeq, terminal) {
+  if (!requestID || !terminal || !FINAL.has(argsOf(terminal)?.status)) return;
+  const closures = state._unmatchedTerminalClosures;
+  if (!(closures instanceof Map)) return;
+  const current = closures.get(requestID);
+  if (current && Number(current.seq) <= Number(terminalSeq)) return;
+  closures.set(requestID, {
+    seq: terminalSeq,
+    closureOnly: true,
+    envelope: compactTerminalClosure(terminal),
+    request: compactClosureRequest(request),
+    requestSeq: numeric(requestSeq),
+  });
+}
+
+// Capture closure provenance before rows cross the trim cut. This covers both
+// a matched turn and a terminal-first suffix that has never had a request in
+// the current materialized window. The latter deliberately stores no guessed
+// request: a future exact request is required before a turn can be projected.
+function retainTrimmedTerminalClosures(state, cut) {
+  const requestRows = new Map();
+  const orderedRows = [...state.rows.entries()].sort((left, right) => left[0] - right[0]);
+  for (const [seq, envelope] of orderedRows) {
+    if (envelope?.kind === 'request' && envelope.id) {
+      requestRows.set(envelope.id, { seq, envelope });
+    }
+  }
+
+  const visit = (entry) => {
+    if (entry?.kind !== 'turn' || !entry.turn?.terminal) return;
+    const turn = entry.turn;
+    const terminalSeq = numeric(turn.terminalSeq);
+    const requestSeq = numeric(turn.requestSeq);
+    if (terminalSeq >= cut && requestSeq >= cut) return;
+    retainTerminalClosure(
+      state,
+      String(turn.requestId || ''),
+      turn.request || requestRows.get(turn.requestId)?.envelope,
+      requestSeq || requestRows.get(turn.requestId)?.seq || 0,
+      terminalSeq,
+      turn.terminal,
+    );
+    for (const child of entry.thread || []) visit(child);
+  };
+  for (const entry of state.timeline || []) visit(entry);
+
+  // A response-first terminal may not have a materialized timeline entry at
+  // all. Retain only the exact parent-id fact; do not manufacture a request.
+  for (const [seq, envelope] of orderedRows) {
+    if (seq >= cut || envelope?.kind !== 'response' || !envelope.parent_id) continue;
+    if (!FINAL.has(argsOf(envelope)?.status)) continue;
+    const requestRow = requestRows.get(envelope.parent_id);
+    retainTerminalClosure(
+      state,
+      String(envelope.parent_id),
+      requestRow?.envelope,
+      requestRow?.seq || 0,
+      seq,
+      envelope,
+    );
+  }
+}
+
 // Replica is the only mutable materialized ledger. Every source commits here;
 // the fold is recomputed from that canonical row set so out-of-order cache,
 // history and live delivery cannot create competing folds. Reconciliation
@@ -167,6 +324,52 @@ function rebuildState(state) {
       list.push({ seq, envelope });
       responses.set(envelope.parent_id, list);
     } else standalone.push({ kind: 'standalone', seq, envelope });
+  }
+
+  // Merge compact lifecycle proof with whatever full rows remain. A closure
+  // is removed only once both its exact request and exact terminal row are
+  // present; until then it may complete a raw request or pair a surviving
+  // terminal with its compact parent. No closure can create a turn without a
+  // real terminal row or an exact request re-admission.
+  const closureResponses = new Map();
+  for (const [requestID, closure] of state._unmatchedTerminalClosures || []) {
+    const rawResponses = responses.get(requestID) || [];
+    const exactTerminal = rawResponses.some((item) => terminalClosureMatchesRow(closure, item));
+    if (exactTerminal && requests.has(requestID)) {
+      state._unmatchedTerminalClosures.delete(requestID);
+      continue;
+    }
+    if (!rawResponses.some((item) => terminalClosureMatchesRow(closure, item))) {
+      closureResponses.set(requestID, {
+        seq: closure.seq,
+        envelope: closure.envelope,
+        closureOnly: true,
+      });
+    }
+    // A request row can be projected from closure provenance only when the
+    // terminal is still a raw row. If both rows were trimmed, keep the exact
+    // closure solely in `_envelopesById` to block stale local Waiting echoes.
+    if (!requests.has(requestID)
+      && closure.request?.id
+      && rawResponses.some((item) => FINAL.has(argsOf(item.envelope)?.status))) {
+      requests.set(requestID, closure.request);
+      requestSeqs.set(requestID, numeric(closure.requestSeq));
+    }
+  }
+  for (const [requestID, closureResponse] of closureResponses) {
+    const list = responses.get(requestID) || [];
+    // Put the retained first terminal before a same-seq conflicting reread;
+    // ledger order, not the latest full body, remains authoritative.
+    responses.set(requestID, [closureResponse, ...list]);
+  }
+  for (const [requestID, closure] of state._unmatchedTerminalClosures || []) {
+    const known = state._envelopesById.get(requestID);
+    if (!known) {
+      state._envelopesById.set(requestID, {
+        ...(closure.request || { id: requestID, kind: 'request' }),
+        __terminalClosureRequest: true,
+      });
+    }
   }
   const roots = new Map();
   for (const [id, request] of requests) {
@@ -422,6 +625,10 @@ function createState(channelId) {
   const state = {
     channelId, rows: new Map(), timeline: [], narration: [], lastSeq: 0,
     _envelopesById: new Map(), _timelineRevision: 0, _timelineProjectionVersion: 0,
+    // Exact parent-id lifecycle proofs survive row-window eviction. Complete
+    // envelopes remain exclusively in `rows`; this map only says that a
+    // terminal was observed, plus the fields required to join a later page.
+    _unmatchedTerminalClosures: new Map(),
     _timelineChangeBase: 0, _timelineChangeLog: [],
     _liveArrivalRevision: 0, _liveArrivalAckRevision: 0,
     _liveArrivalLog: [], _liveArrivalConsumerTokens: new Set(), _liveArrivalOverflow: new Map(),
@@ -454,7 +661,9 @@ export function createChannelReplicaStore() {
     if (!channelId || !seq || !envelope) return { accepted: false, record: null, reason: 'invalid-row' };
     const record = ensure(channelId);
     if (record.state.rows.has(seq)) return { accepted: false, record, reason: 'duplicate-seq' };
-    if (envelope.id && record.state._envelopesById.has(envelope.id)) {
+    const knownEnvelope = envelope.id ? record.state._envelopesById.get(envelope.id) : null;
+    const closurePlaceholder = knownEnvelope?.__terminalClosureRequest === true;
+    if (envelope.id && knownEnvelope && !(closurePlaceholder && envelope.kind === 'request')) {
       return { accepted: false, record, reason: 'duplicate-envelope' };
     }
     record.state.rows.set(seq, envelope);
@@ -503,11 +712,13 @@ export function createChannelReplicaStore() {
       ? Math.min(ordinaryCut, floor)
       : ordinaryCut;
     const remove = seqs.filter((seq) => seq < cut);
+    retainTrimmedTerminalClosures(record.state, cut);
     for (const seq of remove) record.state.rows.delete(seq);
     // Keep a response whose parent is outside this materialized window in the
     // canonical rows map. A later request may legally arrive first/after a
     // separate history batch; rebuildState will merge that raw response once
-    // its exact parent_id is present. The rows map is the only such buffer.
+    // its exact parent_id is present. Rows remain the only full-envelope
+    // buffer; terminal closures carry lifecycle proof only.
     const removed = remove.length;
     if (!removed) return 0;
     rebuildState(record.state);
