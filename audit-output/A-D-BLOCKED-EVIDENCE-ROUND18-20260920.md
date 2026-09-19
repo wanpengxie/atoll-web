@@ -12,11 +12,13 @@ owners. Every row retains its baseline user capability and invariant. An
 npx vitest run tests/blocked-round18-public-owner.test.jsx --reporter=dot
 
 Test Files  1 passed (1)
-Tests       4 passed | 16 expected fail (20)
+Tests       5 passed | 15 expected fail (20)
 ```
 
-Four rows are promoted to PASS in the ledger: AD-096, AD-098, AD-154, and
-AD-191. The other 16 rows remain BLOCKED. No source, vendor, package,
+Five rows are promoted to PASS in the ledger: AD-096, AD-098, AD-101, AD-154,
+and AD-191. The other 15 rows remain BLOCKED. AD-101 is green because the
+current public shell owner now publishes the mobile message-surface fact
+(owner commit `3d1c061`). No source, vendor, package,
 lockfile, private export, deletion, or skip was introduced.
 
 ## Per-case evidence
@@ -27,7 +29,7 @@ lockfile, private export, deletion, or skip was introduced.
 | AD-097 | A→B 未 commit 时快速反选 A，应取消旧 pending。 | 最新用户选择是唯一 pending owner。 | `WorkspaceLayout` public rail selection at [`blocked-round18-public-owner.test.jsx:65`](../tests/blocked-round18-public-owner.test.jsx:65). | **BLOCKED**: expected fail; same-channel reselect returns before clearing the pending target. |
 | AD-098 | 第三频道 committed 后应 supersede 旧 target。 | 新 committed identity 清除旧 pending，不能继续控制 terminal。 | `WorkspaceLayout` selects c1, then receives committed c2 navigation and checks the public terminal entry at [`blocked-round18-public-owner.test.jsx:75`](../tests/blocked-round18-public-owner.test.jsx:75). | **PASS**: the different committed identity clears the old pending gate. |
 | AD-099 | 无效 target 被拒绝并退回原频道后，旧 pending 应结束。 | Directory rollback 与 shell pending 必须同一 handoff。 | `WorkspaceLayout` public navigation is rerendered with the invalid target boundary at [`blocked-round18-public-owner.test.jsx:90`](../tests/blocked-round18-public-owner.test.jsx:90). | **BLOCKED**: expected fail; no current public directory rollback/fallback owner is exposed to the shell. |
-| AD-101 | 窄屏文件/终端覆盖消息面时发布 `false`，返回消息面恢复 `true`。 | Surface visibility 是显式事实，不由 CSS 猜测。 | `WorkspaceLayout` mobile topology/terminal boundary at [`blocked-round18-public-owner.test.jsx:105`](../tests/blocked-round18-public-owner.test.jsx:105). | **BLOCKED**: expected fail; current shell does not publish `data-surface-visible`. |
+| AD-101 | 窄屏文件/终端覆盖消息面时发布 `false`，返回消息面恢复 `true`。 | Surface visibility 是显式事实，不由 CSS 猜测。 | `WorkspaceLayout` mobile topology/terminal boundary at [`blocked-round18-public-owner.test.jsx:105`](../tests/blocked-round18-public-owner.test.jsx:105). | **PASS**: owner `3d1c061` publishes `data-surface-visible=false` under the mobile/compact cover and restores `true` after return. |
 | AD-105 | 快速 A→B→A 只交接最终选择。 | 旧 pending 不能抢焦点或 terminal owner。 | `WorkspaceLayout` public rail selection at [`blocked-round18-public-owner.test.jsx:118`](../tests/blocked-round18-public-owner.test.jsx:118). | **BLOCKED**: expected fail; current same-channel early return leaves the first pending selection. |
 | AD-106 | 离开频道再回来仍保留该频道 terminal split。 | PTY/session/layout visibility 按 channel 隔离并保留。 | `WorkspaceLayout` public channel rerenders at [`blocked-round18-public-owner.test.jsx:128`](../tests/blocked-round18-public-owner.test.jsx:128). | **BLOCKED**: expected fail; committed navigation does not publish retained per-channel visibility. |
 | AD-108 | 收起一个频道的 split 不影响另一个频道。 | Terminal visibility 是 channel-scoped。 | `WorkspaceLayout` public channel rerenders at [`blocked-round18-public-owner.test.jsx:140`](../tests/blocked-round18-public-owner.test.jsx:140). | **BLOCKED**: expected fail; current shell exposes only committed-channel visibility. |
@@ -46,9 +48,9 @@ lockfile, private export, deletion, or skip was introduced.
 
 ## Ledger and boundary handoff
 
-The ledger now records **287 PASS / 0 REGRESSION / 78 BLOCKED**. The four
-promoted rows are AD-096, AD-098, AD-154, and AD-191. The 16 expected-fail
-assertions remain explicit blocked evidence and are not counted as completion,
+The ledger now records **288 PASS / 0 REGRESSION / 77 BLOCKED**. The five
+promoted rows are AD-096, AD-098, AD-101, AD-154, and AD-191. The 15
+expected-fail assertions remain explicit blocked evidence and are not counted as completion,
 obsolete cases, deletion, or skip. Existing Activity/Operation gaps AD-002–004
 remain unchanged and are documented by the round-16/round-15 packets.
 

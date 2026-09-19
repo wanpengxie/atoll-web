@@ -15,13 +15,17 @@ npx vitest run tests/blocked-round15-activity-owner.test.js \
   tests/blocked-round15-terminal-owner.test.jsx --reporter=verbose
 
 Test Files  3 passed (3)
-Tests       6 passed | 14 expected fail (20)
+Tests       12 passed | 11 expected fail (23)
 ```
 
-The six green cases are promoted to `PASS` in the ledger: AD-094, AD-095,
-AD-100, AD-102, AD-104, and AD-107. The other 14 remain explicit `BLOCKED`
-packets. Their `it.fails` assertions are preserved public-owner reproductions,
-not an obsolete-case decision or a hidden skip.
+At the original packet boundary the six green cases were AD-094, AD-095,
+AD-100, AD-102, AD-104, and AD-107. The current public-owner rerun is **12
+passed / 11 expected-fail (23 declarations)**: AD-096 (four handoff
+declarations), AD-098, and AD-101 are now green through the subsequent shell
+owner closures (`764627c`, `3d1c061`); AD-002–004 and AD-202–203 remain
+explicit product-gap reproductions alongside the unresolved terminal rows.
+Expected-fail assertions remain public-owner evidence, not an obsolete-case
+decision or a hidden skip.
 
 ## Activity / Operation owner boundary
 
@@ -49,10 +53,10 @@ store.
 | AD-095 | Ctrl+F12 invokes the terminal toggle and prevents browser default behavior. | Keyboard and pointer use the same public terminal command. | Public `WorkspaceLayout` keydown owner at `:95` dispatches a cancelable Ctrl+F12 event. | PASS: browser default is canceled and `navigation.openTerminal` is called once. |
 | AD-096 | Disable the old terminal entry while a new channel selection is pending. | Terminal remains bound to the committed channel, not a pending target. | Public `WorkspaceLayout` selection path at `:104` clicks `c1` before commit and inspects the terminal entry. | `it.fails`: entry is not disabled. `BLOCKED` product-gap packet; WorkspaceLayout is the first boundary. |
 | AD-097 | A fast reselect of the committed channel cancels a pending target. | Latest user selection is the only handoff authority. | Public `WorkspaceLayout` selection path at `:114` performs `c0 → c1 → c0`. | `it.fails`: both selection calls are emitted without a latest-target cancellation owner. `BLOCKED`; WorkspaceLayout is the first boundary. |
-| AD-098 | A committed third-channel directory fallback supersedes the old pending target. | Directory fallback and committed Workspace identity are one handoff. | Public `WorkspaceLayout` rerender at `:123` changes the committed navigation from pending `c1` to `c2`. | `it.fails`: no supersession state disables the old terminal entry. `BLOCKED`; WorkspaceLayout is the first boundary. |
+| AD-098 | A committed third-channel directory fallback supersedes the old pending target. | Directory fallback and committed Workspace identity are one handoff. | Public `WorkspaceLayout` rerender at `:123` changes the committed navigation from pending `c1` to `c2`. | PASS in the current rerun: the committed identity clears the old terminal gate; the original blocked assertion is superseded by owner `764627c` and the round-18 fixture. |
 | AD-099 | An invalid target rolls back to the original channel and ends the old pending handoff. | Invalid commit cannot leave terminal pending. | Public `WorkspaceLayout` rerender at `:139` supplies an invalid channel record after selecting `c1`. | `it.fails`: public composition does not expose the invalid-target rollback/pending-end behavior. `BLOCKED`; WorkspaceLayout is the first boundary. |
 | AD-100 | Close an already-open terminal from its original entry after content access is revoked. | Closing does not depend on content write permission. | Public `WorkspaceLayout` rerender at `:155` changes access to `access_denied`, then clicks `#workspace-terminal-toggle`. | PASS: the entry remains enabled and calls the public close command once. |
-| AD-101 | Publish explicit message-surface visibility when a mobile terminal covers it. | Layout/accessibility consumers receive a truthful visible-surface fact. | Public `WorkspaceLayout` + `WorkspaceFeatures` composition at `:175` is rendered under mobile `matchMedia`. | `it.fails`: no `data-surface-visible="false"` fact is published. `BLOCKED`; WorkspaceLayout is the first boundary. |
+| AD-101 | Publish explicit message-surface visibility when a mobile terminal covers it. | Layout/accessibility consumers receive a truthful visible-surface fact. | Public `WorkspaceLayout` + `WorkspaceFeatures` composition at `:175` is rendered under mobile `matchMedia`. | PASS in the current rerun: `data-surface-visible="false"` is published and returns to `true`; owner `3d1c061`. |
 | AD-102 | Keep the message surface mounted and visible during a desktop terminal split. | Terminal is parallel to Dynamic rather than replacing the message tab. | Public composition at `:183` checks the message surface and real terminal region. | PASS: both surfaces are present and the terminal region is visible. |
 | AD-104 | Do not steal focus on initial render, background rerender, or supersession. | Only an explicitly committed user target may own focus. | Public `WorkspaceLayout` rerenders at `:191` with background and superseding navigation while the member control owns focus. | PASS: focus remains on the user-focused member control in every state. |
 | AD-105 | A rapid A→B→A handoff leaves focus with the latest target only. | Stale pending work cannot overwrite the latest selection. | Public `WorkspaceLayout` selection path at `:206` performs the rapid sequence. | `it.fails`: no latest-target focus handoff is exposed. `BLOCKED`; WorkspaceLayout is the first boundary. |

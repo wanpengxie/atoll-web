@@ -153,7 +153,7 @@ describe('A-D round 15 terminal/channel-restart blocked evidence', () => {
     expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
   });
 
-  it.fails('[AD-098] lets a committed third-channel directory fallback supersede the old target', () => {
+  it('[AD-098] lets a committed third-channel directory fallback supersede the old target', () => {
     // 用户能力：路由/目录把选择交给第三频道时，旧 pending 不再控制终端。
     // 不变量：directory fallback 与 Workspace committed identity 必须是同一 handoff。
     const nav = navigation();
@@ -166,7 +166,7 @@ describe('A-D round 15 terminal/channel-restart blocked evidence', () => {
       conversation={{ element: <div data-testid="message-surface">消息</div> }}
       features={featuresFor(c2)}
     />);
-    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false);
   });
 
   it.fails('[AD-099] returns from an invalid target to the original channel and ends the old pending handoff', () => {
