@@ -108,6 +108,13 @@ function readingKey(channelID, viewKey) {
 
 const VIEW_SESSION_SCHEMA = 3;
 
+// Reading's live-arrival producer and the durable view-session owner are
+// deliberately separate modules. Keep the bridge at this model boundary so
+// the list executor and conversation projection never become persistence
+// owners. A document normally has one principal store; the Set also keeps
+// tests and embedded surfaces from requiring a singleton store instance.
+const viewSessionStores = new Set();
+
 function storageKey(principalID) {
   return principalID ? `atoll.view-session.v3.${principalID}` : '';
 }
@@ -151,6 +158,7 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
   const preferences = restored.preferences;
   const readings = restored.readings;
   const active = new Map();
+  const unseenAcknowledgements = new Map();
 
   function mergeStoredReading(keyID, item) {
     const current = readings.get(keyID);
@@ -178,7 +186,7 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
 
   const persist = () => writeStored(storage, principalID, preferences, readings);
 
-  return Object.freeze({
+  const store = Object.freeze({
     read(channelID) {
       refresh();
       const prefs = copyPreferences(preferences.get(channelID) || defaultPreferences());
@@ -196,8 +204,18 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
       if (!channelID || !viewKey || !activationID) return defaultReading();
       const key = readingKey(channelID, viewKey);
       refresh(key);
+      let current = readings.get(key) || defaultReading();
+      // A persisted durable unseen record opens the active document in
+      // browsing mode even though copyPersistedReading deliberately stores
+      // the next reload at latest. This is in-memory activation state only;
+      // the durable record remains the source of the jump obligation.
+      if (current.unseenRecords.length && current.mode !== READING_MODE.browsing) {
+        current = copyReading({ ...current, mode: READING_MODE.browsing });
+        readings.set(key, current);
+      }
       active.set(key, activationID);
-      return copyReading(readings.get(key) || defaultReading());
+      unseenAcknowledgements.set(key, false);
+      return copyReading(current);
     },
     readView(channelID, viewKey) {
       const key = readingKey(channelID, viewKey);
@@ -215,17 +233,133 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
       persist();
       return true;
     },
+    recordLiveArrivals(channelID, events = []) {
+      if (!channelID || !Array.isArray(events) || !events.length) return false;
+      const incoming = new Map();
+      for (const event of events) {
+        const key = String(event?.key || '');
+        const seq = Number(event?.seq);
+        if (!key || !Number.isSafeInteger(seq) || seq <= 0) continue;
+        incoming.set(key, Math.max(incoming.get(key) || 0, seq));
+      }
+      if (!incoming.size) return false;
+      let changed = false;
+      const prefix = `${channelID}\u0000`;
+      for (const [key, activationID] of active) {
+        if (!key.startsWith(prefix) || !activationID) continue;
+        const current = readings.get(key) || defaultReading();
+        if (current.mode !== READING_MODE.browsing) continue;
+        const nextRecords = [...current.unseenRecords, ...incoming].map((record) => (
+          Array.isArray(record) ? record : [record[0], record[1]]
+        ));
+        const next = copyReading({
+          ...current,
+          revision: current.revision + 1,
+          unseenRecords: nextRecords,
+        });
+        const same = next.unseenRecords.length === current.unseenRecords.length
+          && next.unseenRecords.every(([recordKey, seq], index) => (
+            recordKey === current.unseenRecords[index]?.[0]
+            && seq === current.unseenRecords[index]?.[1]
+          ));
+        if (same) continue;
+        readings.set(key, next);
+        unseenAcknowledgements.set(key, true);
+        changed = true;
+      }
+      if (changed) persist();
+      return changed;
+    },
+    readActiveUnseen(channelID) {
+      const prefix = `${channelID}\u0000`;
+      const records = new Map();
+      for (const [key, activationID] of active) {
+        if (!key.startsWith(prefix) || !activationID) continue;
+        for (const [recordKey, seq] of (readings.get(key) || defaultReading()).unseenRecords) {
+          records.set(recordKey, Math.max(records.get(recordKey) || 0, seq));
+        }
+      }
+      return [...records];
+    },
+    prepareActiveUnseen(channelID) {
+      const prefix = `${channelID}\u0000`;
+      for (const [key, activationID] of active) {
+        if (!key.startsWith(prefix) || !activationID) continue;
+        if ((readings.get(key) || defaultReading()).unseenRecords.length) unseenAcknowledgements.set(key, true);
+      }
+    },
+    acknowledgeActiveUnseen(channelID) {
+      const prefix = `${channelID}\u0000`;
+      const before = new Map();
+      let changed = false;
+      for (const [key, activationID] of active) {
+        if (!key.startsWith(prefix) || !activationID) continue;
+        if (!unseenAcknowledgements.get(key)) {
+          unseenAcknowledgements.set(key, true);
+          continue;
+        }
+        const current = readings.get(key) || defaultReading();
+        for (const [recordKey, seq] of current.unseenRecords) {
+          before.set(recordKey, Math.max(before.get(recordKey) || 0, seq));
+        }
+        if (!current.unseenRecords.length) continue;
+        readings.set(key, copyReading({
+          ...current,
+          revision: current.revision + 1,
+          unseenRecords: [],
+        }));
+        changed = true;
+      }
+      if (changed) persist();
+      return Object.freeze({ records: Object.freeze([...before]), remaining: 0 });
+    },
     deactivate(channelID, viewKey, activationID) {
       const key = readingKey(channelID, viewKey);
       if (active.get(key) !== activationID) return false;
       active.delete(key);
+      unseenAcknowledgements.delete(key);
       return true;
     },
     forget(channelID) {
       preferences.delete(channelID);
       for (const key of [...readings.keys()]) if (key.startsWith(`${channelID}\u0000`)) readings.delete(key);
-      for (const key of [...active.keys()]) if (key.startsWith(`${channelID}\u0000`)) active.delete(key);
+      for (const key of [...active.keys()]) {
+        if (!key.startsWith(`${channelID}\u0000`)) continue;
+        active.delete(key);
+        unseenAcknowledgements.delete(key);
+      }
       persist();
     },
   });
+  viewSessionStores.add(store);
+  return store;
+}
+
+export function recordActiveReadingArrivals(channelID, events = []) {
+  let changed = false;
+  for (const store of viewSessionStores) changed = store.recordLiveArrivals(channelID, events) || changed;
+  return changed;
+}
+
+export function readActiveReadingUnseen(channelID) {
+  const records = new Map();
+  for (const store of viewSessionStores) {
+    for (const [key, seq] of store.readActiveUnseen(channelID)) records.set(key, Math.max(records.get(key) || 0, seq));
+  }
+  return [...records];
+}
+
+export function prepareActiveReadingUnseen(channelID) {
+  for (const store of viewSessionStores) store.prepareActiveUnseen(channelID);
+}
+
+export function acknowledgeActiveReadingUnseen(channelID) {
+  const records = new Map();
+  let remaining = 0;
+  for (const store of viewSessionStores) {
+    const result = store.acknowledgeActiveUnseen(channelID);
+    for (const [key, seq] of result.records) records.set(key, Math.max(records.get(key) || 0, seq));
+    remaining = Math.max(remaining, Number(result.remaining || 0));
+  }
+  return Object.freeze({ records: Object.freeze([...records]), remaining });
 }

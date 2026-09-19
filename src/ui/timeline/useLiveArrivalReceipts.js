@@ -1,8 +1,15 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
+import { readingTrace } from '../../model/diagnostics.js';
 import {
   acknowledgeLivePresentationArrivals,
   acknowledgeLiveTimelineArrivals,
 } from '../../model/live-arrivals.js';
+import {
+  acknowledgeActiveReadingUnseen,
+  prepareActiveReadingUnseen,
+  readActiveReadingUnseen,
+  recordActiveReadingArrivals,
+} from '../../model/view-session.js';
 
 export function useTimelineArrivalReceipt(state) {
   const tokenRef = useRef(null);
@@ -13,10 +20,47 @@ export function useTimelineArrivalReceipt(state) {
     [state.arrivalReceipts],
   );
 
+  const snapshot = state.arrivalReceipts.timeline();
+  const durableRecords = readActiveReadingUnseen(state.channelId);
+  const durableFingerprint = durableRecords.map(([key, seq]) => `${key}\u0000${seq}`).join('\u0001');
+  useLayoutEffect(() => {
+    recordActiveReadingArrivals(state.channelId, snapshot.events);
+    if (durableRecords.length) prepareActiveReadingUnseen(state.channelId);
+  }, [durableFingerprint, snapshot.events.length, snapshot.revision, state.channelId]);
+
+  const events = useMemo(() => {
+    const live = snapshot.events || [];
+    const liveRecords = new Set(live.map((event) => `${event.key}\u0000${event.seq}`));
+    const restored = durableRecords
+      .filter(([key, seq]) => !liveRecords.has(`${key}\u0000${seq}`))
+      .map(([key, seq], index) => Object.freeze({
+        revision: 0,
+        key,
+        rowID: key,
+        seq,
+        durable: true,
+        durableIndex: index,
+      }));
+    return Object.freeze([...live, ...restored]);
+  }, [durableFingerprint, snapshot.events, durableRecords]);
+
   return {
-    ...state.arrivalReceipts.timeline(),
+    ...snapshot,
+    events,
     acknowledge(revision) {
-      state.arrivalReceipts.dispatch(acknowledgeLiveTimelineArrivals(revision));
+      const acknowledged = state.arrivalReceipts.dispatch(acknowledgeLiveTimelineArrivals(revision));
+      const cleared = acknowledgeActiveReadingUnseen(state.channelId);
+      if (cleared.records.length) {
+        readingTrace('reading.visible-rows-ack', {
+          channelId: state.channelId,
+          before: {
+            count: cleared.records.length,
+            records: cleared.records.map(([key, seq]) => ({ key, seq })),
+          },
+          remaining: cleared.remaining,
+        });
+      }
+      return acknowledged;
     },
   };
 }

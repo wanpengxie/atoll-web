@@ -796,3 +796,55 @@ pre-existing unrelated `rows.find is not a function` console exception from
 dirty roster changes, while the clean case38 run had no such exception. No
 product or assertion change was made in this round; this entry records the
 pending Reading owner handoff and the exact A08/case38 evidence.
+
+## 第十一轮：Reading durable-unseen owner handoff at `1e699d0`
+
+本轮只允许补齐 A08 的 persistent Reading/view-session producer seam；没有
+修改 `VendorListExecutor`、`useConversationProjection`、history 或任何测试
+断言。唯一 owner/state machine 如下：
+
+- `channel-replica` 仍只产生 live arrival journal tuple `(key,rowID,seq)`；
+  它不拥有 Reading persistence。
+- `useLiveArrivalReceipts` 是唯一把当前 timeline receipt 交给 Reading
+  durable producer 的边界；它不重造 key/seq，并把恢复的 durable tuple 合并
+  为公开 jump 事件。
+- `view-session` 是 schema-3 active reading 的唯一 CAS/storage owner：只在
+  active browsing view 接受有限正整数 `(key,seq)`，按 key 去重取最大 seq，
+  写 `unseenRecords`，reload 时保留记录并在显式 jump/visible-row ack 后清空。
+- `reading-session` 只负责从保存结果 hydrate exact records；存在 durable
+  record 时进入 browsing obligation。`persistentReadingSession` 仍不把旧
+  bookmark/mode 作为跨页面位置写回，也不让 controller 越权成为 unseen
+  persistence owner。
+
+当前提交只改三处 producer/session owner：
+`src/model/reading-session.js`、`src/model/view-session.js`、
+`src/ui/timeline/useLiveArrivalReceipts.js`。严格真实浏览器 A08 未改动，命令：
+
+```text
+ATOLL_TEST_WEB_PORT=15423 ATOLL_TEST_MOCK_PORT=19865 npx playwright test \
+  tests/browser/ux-unseen-persistence.spec.js --reporter=line \
+  --output=test-results-tz-a08-owner-final2
+```
+
+结果：**1 passed (6.9s)**。固定证据为：
+
+| stage | fixed public/storage witness | result |
+|---|---|---|
+| live approval | message/arrival `c0-approval-29109-1`, `seq=849`; storage key `c0\u0000c0:mine:` | one finite tuple is written to `unseenRecords` |
+| reload/hydrate | saved revision `8`; `unseenTail=1`, `unseenKeys=[c0-approval-29109-1]`, `unseenRecords=[[c0-approval-29109-1,849]]`; jump `↓ 1 条新动态`; mode `browsing` | duplicate/invalid injected records normalize to the exact tuple |
+| explicit jump/ack | saved revision `11`; `unseenRecords=[]`; `reading.visible-rows-ack.before.records=[{key:c0-approval-29109-1,seq:849}]`; `remaining=0`; mode `following` | durable record is cleared only after the verified visible-row ack |
+
+Reading/view-session unit coverage is **11/11 PASS** (`view-session.test.js`,
+`reading-session-ports.test.js`). The canonical Waiting case38 regression was
+also run against the same candidate:
+
+```text
+ATOLL_TEST_WEB_PORT=15424 ATOLL_TEST_MOCK_PORT=19866 npx playwright test \
+  tests/browser/waiting-production-contract.spec.js \
+  --grep "wheel-takeover-after-send" --reporter=line \
+  --output=test-results-tz-case38-owner-final
+```
+
+Result: **1 passed (5.9s)**. No product gap remains at the A08 live → storage
+→ reload → exact ack chain on this candidate; no Vendor/Projection/history
+change was needed.

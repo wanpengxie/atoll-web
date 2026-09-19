@@ -76,9 +76,28 @@ function idleContentAnchor() {
   return null;
 }
 
+function normalizedUnseenRecords(value) {
+  const records = new Map();
+  for (const record of value?.unseenRecords || []) {
+    if (!Array.isArray(record) || !record[0]) continue;
+    const key = String(record[0]);
+    const seq = Number(record[1]);
+    if (!Number.isSafeInteger(seq) || seq <= 0) continue;
+    records.set(key, Math.max(records.get(key) || 0, seq));
+  }
+  return Object.freeze([...records]);
+}
+
 export function createReadingSession({ key, activationID, saved = {} } = {}) {
   if (!key || !activationID) throw new TypeError('reading session requires key and activationID');
-  const savedMode = saved.mode === READING_MODE.browsing ? READING_MODE.browsing : READING_MODE.following;
+  const unseenRecords = normalizedUnseenRecords(saved);
+  // A persisted unseen record is itself a durable browsing obligation. The
+  // storage boundary intentionally starts at the latest physical position,
+  // but the public jump must remain available until this obligation is
+  // explicitly acknowledged.
+  const savedMode = saved.mode === READING_MODE.browsing || unseenRecords.length
+    ? READING_MODE.browsing
+    : READING_MODE.following;
   return Object.freeze({
     key: String(key),
     activationID: String(activationID),
@@ -88,6 +107,7 @@ export function createReadingSession({ key, activationID, saved = {} } = {}) {
     geometryRevision: 0,
     mode: savedMode,
     bookmark: savedMode === READING_MODE.browsing ? normalizedBookmark(saved.bookmark) : null,
+    unseenRecords,
     bottomIntent: idleBottomIntent(),
     contentAnchor: idleContentAnchor(),
     tailEvidence: null,
