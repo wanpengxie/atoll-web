@@ -24,13 +24,17 @@ describe('conversation architecture boundaries', () => {
     expect(domExecutor).toMatch(/command\.type === 'position-row'/);
     expect(domExecutor).toMatch(/command\.type === 'scroll-tail'/);
     expect(list).not.toContain('autoscrollToBottom');
-    expect(list).toMatch(/followOutput=\{reading\.session\.mode === READING_MODE\.following \? 'auto' : false\}/);
+    expect(list).toMatch(/followOutput=\{false\}/);
+    expect(list).not.toMatch(/followOutput=\{[^}]*READING_MODE|followOutput=['"](?:auto|smooth)['"]/);
     // One local DOM write is the only application geometry writer. Every
     // authorized trigger enters the same issuer; runtime geometry remains a
     // Chromium contract, not a jsdom assertion.
     expect(domExecutor.match(/\broot\.scrollTo\(\{/g)).toHaveLength(1);
     expect(domExecutor).toMatch(/top:\s*command\.reverse === true \? 0 : root\.scrollHeight/);
-    expect(list.match(/type:\s*'scroll-tail'/g)).toHaveLength(1);
+    expect(list.match(/type:\s*'scroll-tail'/g)).toHaveLength(2);
+    expect(list).toMatch(/const enforceFollowingTail = useCallback[\s\S]*?current\.mode !== READING_MODE\.following[\s\S]*?navigationPolicy\.currentInput\(\)\.active[\s\S]*?executeReadingDOMCommand\([\s\S]*?type:\s*'scroll-tail'/);
+    expect(list).toMatch(/MutationObserver[\s\S]*?enforceFollowingTail\('layout'\)/);
+    expect(list).toMatch(/totalListHeightChanged=\{\(\) => \{[\s\S]*?enforceFollowingTail\('layout'\)/);
     expect(browsing).toMatch(/\bonReadingObservation\b/);
     expect(browsing).toMatch(/\bonPresentationMaterialized\b/);
     expect(browsing).toMatch(/\bon(?:AtTop|NearTop|Underfill)\b/);
