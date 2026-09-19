@@ -126,7 +126,7 @@ afterEach(() => {
 });
 
 describe('公开 Waiting currentness composition', () => {
-  it('does not publish a cache-only Waiting combination before current-tail proof', async () => {
+  it('keeps cache-only Waiting facts readable but publishes no operation entry', async () => {
     const runtime = await createRuntime();
     // Cache rows are readable facts, but they do not prove the current tail.
     enqueue(runtime, 1, requestEnvelope(), 'cache');
@@ -139,7 +139,7 @@ describe('公开 Waiting currentness composition', () => {
     renderWaiting(item);
     await user.click(screen.getByRole('tab', { name: /等待区/ }));
 
-    expect(screen.queryByText('继续工作', { exact: true })).toBeNull();
+    expect(screen.getByText('继续工作', { exact: true })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '插入指令' })).toBeNull();
     expect(screen.queryByRole('button', { name: '停止' })).toBeNull();
   });
@@ -185,11 +185,8 @@ describe('公开 Waiting currentness composition', () => {
       const user = userEvent.setup();
       const controlWaiting = renderWaiting(item);
       await user.click(screen.getByRole('tab', { name: /等待区/ }));
-      const steer = screen.getByRole('button', { name: '插入指令' });
-      const interrupt = screen.getByRole('button', { name: '停止' });
-      expect(steer.disabled).toBe(true);
-      expect(interrupt.disabled).toBe(true);
-      await user.click(steer);
+      expect(screen.queryByRole('button', { name: '插入指令' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '停止' })).toBeNull();
       expect(controlWaiting).not.toHaveBeenCalled();
       cleanup();
     }

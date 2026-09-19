@@ -41,3 +41,39 @@ declared actions despite stale target authority (disabled rather than absent).
 The product owner must decide/fix the cache-only presentation boundary; this
 test does not hide that gap, add a compatibility path, or alter the current
 owner.
+
+## Round 13 recheck after stale-action presentation fix
+
+The shared worktree now contains unit_s_z's pending product change (not part
+of this test/audit commit): `WaitingRow` derives `actionsReady` from the
+public target authority and mounts the operation span only when
+`targetAuthorityReady(item)` is true; both `rosterCurrent=false` and
+`controlCurrent=false` fail that gate. The Waiting fact itself remains
+readable.
+
+The independent public composition was rerun with the exact non-disabled
+contract:
+
+```text
+npx vitest run tests/waiting-currentness-public.test.jsx \
+  tests/feature-waiting-controls.test.jsx tests/f6-accessibility.test.jsx \
+  --reporter=verbose
+
+Test Files  3 passed (3)
+Tests  8 passed (8)
+```
+
+The three-state evidence is now:
+
+- cache-only: `继续工作` remains visible as a fact; `插入指令` and `停止`
+  operation entries are absent, rather than disabled;
+- current tail + current Roster actor authority: both entries appear enabled,
+  and steer reaches the public `controlWaiting` command port;
+- disconnect and higher-head re-admission: both entries disappear and no
+  control invocation occurs.
+
+F6 was also restored to the old exact accessible-name semantics: the opener is
+`打开搜索`, the input name is exactly
+`搜索频道、消息、文件、任务或成员`, and the test still checks both
+`inert=true/false` and `aria-hidden` restoration. No broad regex/name fallback
+was retained for green.
