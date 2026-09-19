@@ -15,6 +15,7 @@ import {
   revokePositionRowLease,
   requestLatest,
   takeReadingControl,
+  updateHistoryAnchor,
   updateReadingControl,
 } from '../src/model/reading-session.js';
 
@@ -141,6 +142,30 @@ describe('reading session authority', () => {
     expect(positionRowLeaseCommand(current)).not.toBeNull();
     expect(consumePositionRowLease(current, wrong)).toBe(current);
     expect(consumePositionRowLease(current, lease).positionRowLease).toBeNull();
+  });
+
+  it('records the new first-row anchor only after the accepted lease is consumed', () => {
+    let current = takeReadingControl(session(), {
+      direction: 'older',
+      historyAnchor: { messageID: 'm80', viewportOffset: -394 },
+    });
+    const lease = {
+      type: 'position-row', activationID: 'a1', inputEpoch: current.inputEpoch,
+      intentRevision: current.intentRevision, operationID: 'history:a1:anchor',
+      viewID: 'c0:all', epoch: 'c0:4', presentationRevision: 12,
+      messageID: 'm80', viewportOffset: -394,
+    };
+    current = acceptPositionRowLease(current, lease);
+    expect(updateHistoryAnchor(current, { messageID: 'm72', viewportOffset: -391.5 })).toBe(current);
+    const consumed = consumePositionRowLease(current, lease);
+    const updated = updateHistoryAnchor(consumed, {
+      messageID: 'm72', viewportOffset: -391.5,
+    });
+    expect(updated.historyAnchor).toMatchObject({
+      messageID: 'm72', viewportOffset: -391.5,
+      inputEpoch: current.inputEpoch, intentRevision: current.intentRevision,
+    });
+    expect(updateHistoryAnchor(updated, null)).toBe(updated);
   });
 
   it('does not arm content restoration in following and native input revokes browsing capture', () => {

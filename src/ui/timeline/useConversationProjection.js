@@ -32,6 +32,7 @@ import {
   READING_MODE,
   requestLatest,
   takeReadingControl,
+  updateHistoryAnchor,
   updateReadingControl,
 } from '../../model/reading-session.js';
 import { newId } from '../../util/id.js';
@@ -391,9 +392,12 @@ function useProjectionReadingOwner({
       && Number(existing.presentationRevision) === Number(lease.presentationRevision)
       && existing.messageID === lease.messageID);
   }, [channelID, controller, viewKey]);
-  const consumeHistoryPositionLease = useCallback((command) => {
+  const consumeHistoryPositionLease = useCallback((command, nextAnchor = null) => {
     const before = controller.getSnapshot().session;
-    const after = controller.update((active) => consumePositionRowLease(active, command));
+    const after = controller.update((active) => {
+      const consumed = consumePositionRowLease(active, command);
+      return consumed === active ? consumed : updateHistoryAnchor(consumed, nextAnchor);
+    });
     return after !== before;
   }, [controller]);
   const revokeHistoryPositionLease = useCallback((command = null) => {

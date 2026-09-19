@@ -494,52 +494,85 @@ export function VendorListExecutor({
       if (token.frameID) globalThis.cancelAnimationFrame?.(token.frameID);
       if (positionRestoreRef.current === token) positionRestoreRef.current = null;
     };
+    const markTerminal = (owner, session) => {
+      if (!token.operationID) return;
+      settledPositionLeaseRef.current = {
+        activationID: token.activationID,
+        inputEpoch: token.inputEpoch,
+        operationID: token.operationID,
+        succeeded: false,
+      };
+      // The command may have lost its owner between frames. The model-side
+      // identity fence makes this a no-op for a newer lease, while ensuring a
+      // stale accepted lease can never leave the scheduler waiting forever.
+      owner?.revokeHistoryPositionLease?.(command);
+    };
+    const transient = Object.freeze({ pending: true });
     const live = () => {
       const owner = readingRef.current;
       const session = owner.getSession?.();
       const currentSnapshot = snapshotRef.current;
       const currentInput = navigationPolicy.currentInput?.();
-      if (!session
-        || owner.activationID !== token.activationID
+      if (!session) return null;
+      if (token.operationID && !samePositionRowCommand(session.positionRowLease, command)) {
+        markTerminal(owner, session);
+        return null;
+      }
+      if (owner.activationID !== token.activationID
         || session.activationID !== token.activationID
         || Number(session.inputEpoch) !== token.inputEpoch
         || session.mode !== READING_MODE.browsing
-        || Number(currentSnapshot.revision || 0) !== token.presentationRevision
-        || currentInput?.active) return null;
+        || Number(currentSnapshot.revision || 0) !== token.presentationRevision) {
+        markTerminal(owner, session);
+        return null;
+      }
       if (token.operationID) {
         const currentLease = owner.historyPositionLeaseCommand?.();
         if (!samePositionRowCommand(currentLease, command)) {
-          settledPositionLeaseRef.current = {
-            activationID: token.activationID,
-            inputEpoch: token.inputEpoch,
-            operationID: token.operationID,
-            succeeded: false,
-          };
-          owner.revokeHistoryPositionLease?.(command);
+          markTerminal(owner, session);
           return null;
         }
       }
+      // Native input owns the viewport while the exact lease remains valid.
+      // Keep the lease pending for a later frame; a new input normally clears
+      // it synchronously through ReadingSession and is handled above.
+      if (currentInput?.active) return transient;
       const root = rootRef.current;
-      return root ? { owner, session, root, snapshot: currentSnapshot } : null;
+      if (!root) {
+        markTerminal(owner, session);
+        return null;
+      }
+      return { owner, session, root, snapshot: currentSnapshot };
     };
     const finish = (current, succeeded) => {
-      token.settled = succeeded;
+      const owner = current?.owner || readingRef.current;
+      let actualSuccess = succeeded;
+      // A successful target restore must also hand the newly painted first row
+      // back to Reading. Without this evidence a continuation would carry the
+      // pre-prepend anchor and could issue an unbound top request.
+      const nextAnchor = actualSuccess && current && command.operationID
+        ? firstRowViewportAnchor(current.root, current.snapshot.rows)
+        : null;
+      if (actualSuccess && command.operationID && !nextAnchor) actualSuccess = false;
+      token.settled = actualSuccess;
       clear();
       // A bounded retry fence is terminal even when the target never reaches
       // its captured offset. Do not publish a `settled` observation for a
       // failed restore; the next activation/presentation revision may issue a
       // fresh typed command instead.
-      if (current && command.operationID) {
+      if (command.operationID) {
         settledPositionLeaseRef.current = {
-          activationID: current.session.activationID,
-          inputEpoch: current.session.inputEpoch,
+          activationID: token.activationID,
+          inputEpoch: token.inputEpoch,
           operationID: command.operationID,
-          succeeded,
+          succeeded: actualSuccess,
         };
-        if (succeeded) current.owner.consumeHistoryPositionLease?.(command);
-        else current.owner.revokeHistoryPositionLease?.(command);
+        if (actualSuccess) {
+          const consumed = owner?.consumeHistoryPositionLease?.(command, nextAnchor);
+          if (consumed !== true) owner?.revokeHistoryPositionLease?.(command);
+        } else owner?.revokeHistoryPositionLease?.(command);
       }
-      if (succeeded && current) scheduleObserve('layout', true);
+      if (actualSuccess && current) scheduleObserve('layout', true);
     };
     const queue = () => {
       if (positionRestoreRef.current !== token || token.frameID) return;
@@ -547,7 +580,12 @@ export function VendorListExecutor({
         token.frameID = 0;
         if (positionRestoreRef.current !== token) return;
         const current = live();
+        if (current === transient) {
+          queue();
+          return;
+        }
         if (!current) {
+          markTerminal(readingRef.current, readingRef.current.getSession?.());
           clear();
           return;
         }
@@ -609,14 +647,19 @@ export function VendorListExecutor({
     };
 
     const current = live();
+    if (current === transient) {
+      queue();
+      return true;
+    }
     if (!current) {
+      markTerminal(readingRef.current, readingRef.current.getSession?.());
       clear();
       return false;
     }
     if (!executeReadingDOMCommand(command, {
       virtuoso: virtuosoRef.current, root: current.root,
     })) {
-      clear();
+      finish(current, false);
       return false;
     }
     queue();
@@ -854,6 +897,9 @@ export function VendorListExecutor({
     if (positionRestoreRef.current?.frameID) {
       globalThis.cancelAnimationFrame?.(positionRestoreRef.current.frameID);
     }
+    const owner = readingRef.current;
+    const lease = owner?.getSession?.().positionRowLease;
+    if (lease) owner.revokeHistoryPositionLease?.(lease);
     positionRestoreRef.current = null;
   }, []);
 

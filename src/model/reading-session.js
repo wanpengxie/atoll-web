@@ -112,6 +112,17 @@ function samePositionRowLease(left, right) {
     && Number(left.viewportOffset) === Number(right.viewportOffset);
 }
 
+function normalizedHistoryAnchor(session, value) {
+  if (!value?.messageID || !Number.isFinite(Number(value.viewportOffset))) return null;
+  return Object.freeze({
+    activationID: session.activationID,
+    inputEpoch: session.inputEpoch,
+    intentRevision: session.intentRevision,
+    messageID: String(value.messageID),
+    viewportOffset: Number(value.viewportOffset),
+  });
+}
+
 function normalizedUnseenRecords(value) {
   const records = new Map();
   for (const record of value?.unseenRecords || []) {
@@ -377,6 +388,23 @@ export function consumePositionRowLease(session, command = {}) {
   const lease = positionRowLeaseCommand(session);
   if (!lease || !samePositionRowLease(lease, command)) return session;
   return next(session, { positionRowLease: null });
+}
+
+// After a successful prepend the old first row is no longer the baseline for
+// the next top request. Capture the new first row only from the actual painted
+// DOM handoff; this updates semantic evidence without minting a scroll command.
+export function updateHistoryAnchor(session, anchor = null) {
+  if (session.mode !== READING_MODE.browsing || session.positionRowLease) return session;
+  const normalized = normalizedHistoryAnchor(session, anchor);
+  if (!normalized) return session;
+  const previous = session.historyAnchor;
+  if (previous
+    && previous.activationID === normalized.activationID
+    && previous.inputEpoch === normalized.inputEpoch
+    && previous.intentRevision === normalized.intentRevision
+    && previous.messageID === normalized.messageID
+    && previous.viewportOffset === normalized.viewportOffset) return session;
+  return next(session, { historyAnchor: normalized });
 }
 
 export function revokePositionRowLease(session, command = null) {
