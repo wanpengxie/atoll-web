@@ -39,17 +39,16 @@ function queuedAccessRejection(access) {
 }
 
 export function useSubmissions({ principalId, serverWorld = '', activeChannelId, wireState, wireRef, rosterRef, accessRef, accessVersion = 0, channelStatesRef, onError, onNotice, onFeedChanged, onAccessChanged }) {
-  const [pending, setPending] = useState([]);
-  const [drafts, setDrafts] = useState(new Map());
+  const [projection, setProjection] = useState(() => ({ pending: [], drafts: new Map() }));
+  const { pending, drafts } = projection;
   const [approvalStates, setApprovalStates] = useState({});
   const [controlStates, setControlStates] = useState({});
   const timersRef = useRef(new Map());
   const transmittingRef = useRef(new Set());
-  // Command ledgers may intentionally lead React paint after a durable/async
-  // transaction. They are not committed-view snapshots and are never written
-  // by a React state updater or candidate render.
-  const pendingLedgerRef = useRef(pending);
-  const draftLedgerRef = useRef(drafts);
+  // The transaction projection may intentionally lead React paint after a
+  // durable operation. Pending submissions and drafts share this one owner so
+  // no continuation can publish one side from a stale snapshot of the other.
+  const projectionRef = useRef(projection);
   const committedPrincipalRef = useRef(principalId);
   const persistedDraftRevisionRef = useRef(new Map());
   const outboxRef = useRef(null);
@@ -63,26 +62,23 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
   const openEpochRef = useRef(0);
   const worldEpochRef = useRef(0);
   const serverWorldRef = useRef(serverWorld);
-  // User actions are forwarded through AppShell's stable Composer port. Read
-  // transport authority at execution time so a callback captured by the last
-  // open render cannot transmit after the UI has already entered reconnecting.
   const wireStateRef = useRef(wireState);
   const previousWireStateRef = useRef('closed');
   const attemptedOpenEpochRef = useRef(new Map());
-  // Feed facts can arrive while IndexedDB restoration is still in flight.
-  // Keep a principal-scoped tombstone so hydration cannot resurrect and
-  // retransmit an id the ledger has already confirmed.
   const landedMessageIdsRef = useRef(new Set());
-  // Feed projection can publish the same durable id more than once before
-  // React commits the pending-state removal. Keep its cleanup/logging exactly
-  // once per principal; message ids are immutable submission identities.
   const reconciledLandedMessageIdsRef = useRef(new Set());
   if (!outboxRef.current) outboxRef.current = createOutboxStore();
-  // These refs are read by durable/user entry points. Publishing them during
-  // render let a suspended or discarded candidate world alter callbacks that
-  // still belonged to the committed DOM. Commit the snapshot atomically; a
-  // principal handoff exposes no rows from the former owner, even during the
-  // short window before the passive IndexedDB restore starts.
+  const publishTransaction = useCallback((reduce, authorize) => {
+    if (authorize && authorize() !== true) return null;
+    const current = projectionRef.current;
+    const next = reduce(current);
+    if (!next || next === current) return current;
+    if (authorize && authorize() !== true) return null;
+    projectionRef.current = next;
+    setProjection(next);
+    return next;
+  }, []);
+
   useLayoutEffect(() => {
     const principalChanged = committedPrincipalRef.current !== principalId;
     const worldChanged = serverWorldRef.current !== serverWorld;
@@ -91,12 +87,13 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       requestSessionRef.current = `request-session:${newId()}`;
     }
     if (principalChanged) {
-      pendingLedgerRef.current = [];
-      draftLedgerRef.current = new Map();
+      for (const timer of timersRef.current.values()) clearTimeout(timer);
+      timersRef.current.clear();
+      publishTransaction(() => ({ pending: [], drafts: new Map() }));
     }
     wireStateRef.current = wireState;
     serverWorldRef.current = serverWorld;
-  }, [principalId, serverWorld, wireState]);
+  }, [principalId, publishTransaction, serverWorld, wireState]);
 
   const enqueueWrite = useCallback((operation) => {
     const next = writeTailRef.current.catch(() => {}).then(operation);
@@ -104,18 +101,16 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     return next;
   }, []);
 
-  const mutatePending = useCallback((reduce) => {
-    const next = reduce(pendingLedgerRef.current);
-    pendingLedgerRef.current = next;
-    setPending(next);
-  }, []);
+  const mutatePending = useCallback((reduce, authorize) => publishTransaction((current) => ({
+    ...current,
+    pending: reduce(current.pending),
+  }), authorize), [publishTransaction]);
 
-  const publishDraft = useCallback((channelId, record) => {
-    const next = new Map(draftLedgerRef.current);
-    next.set(channelId, record);
-    draftLedgerRef.current = next;
-    setDrafts(next);
-  }, []);
+  const publishDraft = useCallback((channelId, record, authorize) => publishTransaction((current) => {
+    const drafts = new Map(current.drafts);
+    drafts.set(channelId, record);
+    return { ...current, drafts };
+  }, authorize), [publishTransaction]);
 
   const canDurablyOwnChannel = useCallback((channelId) => {
     if (!principalId || !channelId) return false;
@@ -125,6 +120,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
 
   const currentOwnerFacts = useCallback((owner) => {
     const access = accessRef.current?.state?.(owner.channelId);
+    const draft = projectionRef.current.drafts.get(owner.channelId);
     return {
       principalId: committedPrincipalRef.current,
       principalEpoch: restoreEpochRef.current,
@@ -141,8 +137,24 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       transport: wireRef.current,
       transportEpoch: openEpochRef.current,
       transportOpen: wireStateRef.current === 'open' && Boolean(wireRef.current),
+      draft: owner.draft ? Object.fromEntries(
+        Object.keys(owner.draft).map((key) => [key, draft?.[key]]),
+      ) : null,
     };
   }, [accessRef, wireRef]);
+
+  const ownsDurableDraft = useCallback((owner) => {
+    const current = currentOwnerFacts(owner);
+    const identity = assessRequestOwner(owner, current, REQUEST_PHASE.settle, {
+      requireAccess: false,
+      requireTransport: false,
+      requireDraft: true,
+    });
+    return identity.current
+      && owner.access.epoch === current.access.epoch
+      && current.access.relationship === 'member'
+      && current.access.existence !== 'retired';
+  }, [currentOwnerFacts]);
 
   const requestOwner = useCallback((channelId, draft = null) => captureRequestOwner({
     principalId,
@@ -176,9 +188,6 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       principalEpoch: restoreEpochRef.current,
       channelId: admission?.channelId || submission.channelId,
       worldEpoch: admission?.worldEpoch || serverWorldRef.current,
-      // The server boot is durable. The local reset counter only fences work
-      // started by this mounted hook; a restored record joins the new attempt
-      // incarnation instead of persisting a counter that resets on reload.
       attemptEpoch: sameRequestSession
         ? Number(admission?.attemptEpoch || 0)
         : worldEpochRef.current,
@@ -202,6 +211,16 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     const epoch = restoreEpochRef.current;
     const active = restoreAttemptRef.current;
     if (active.principalId === principalId && active.epoch === epoch && active.promise) return active.promise;
+    const world = serverWorldRef.current;
+    const attempt = worldEpochRef.current;
+    const requestSession = requestSessionRef.current;
+    const restoreCurrent = () => (
+      restoreEpochRef.current === epoch
+      && committedPrincipalRef.current === principalId
+      && serverWorldRef.current === world
+      && worldEpochRef.current === attempt
+      && requestSessionRef.current === requestSession
+    );
 
     const promise = Promise.all([
       outboxRef.current.restore(principalId),
@@ -209,11 +228,6 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     ]).then(async ([records, draftRecords]) => {
       const landedDuringRestore = landedMessageIdsRef.current;
       const submissionRecords = records;
-      // Keep feed tombstones authoritative through IndexedDB restore. A
-      // terminal may land during the await, so converge over the finite source
-      // snapshot before publishing.
-      // The final empty check, projection and clear are synchronous: no feed
-      // callback can interleave and resurrect an acknowledged request there.
       const removedLanded = new Set();
       for (;;) {
         const newlyLanded = submissionRecords.filter((item) => (
@@ -229,15 +243,10 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       }
       const restored = restoreSubmissionRecords(submissionRecords)
         .filter((item) => !landedDuringRestore.has(item.messageId));
-      // Only the restore window needs broad feed tombstones. Once every source
-      // snapshot has been filtered, later reconciliation tracks pending ids
-      // only and must not retain the channel's entire historical ledger.
       landedDuringRestore.clear();
-      if (restoreEpochRef.current !== epoch) return;
+      if (!restoreCurrent()) return;
       const nextDrafts = new Map(draftRecords.map((record) => [record.channelId, record]));
-      // A user may type before IndexedDB hydration completes. Hydration may
-      // fill missing channels, but cannot overwrite that newer in-memory edit.
-      for (const [channelId, local] of draftLedgerRef.current) {
+      for (const [channelId, local] of projectionRef.current.drafts) {
         const restoredDraft = nextDrafts.get(channelId);
         if (!restoredDraft || Number(local?.editorRevision || 0) > Number(restoredDraft?.editorRevision || 0)) {
           nextDrafts.set(channelId, local);
@@ -245,14 +254,11 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       }
       persistedDraftRevisionRef.current = new Map(draftRecords.map((record) => [record.channelId, Number(record.revision || 0)]));
       hydratedPrincipalRef.current = principalId;
-      pendingLedgerRef.current = restored;
-      draftLedgerRef.current = nextDrafts;
-      setPending(restored);
-      setDrafts(nextDrafts);
+      publishTransaction(() => ({
+        pending: restored,
+        drafts: nextDrafts,
+      }), restoreCurrent);
     }).catch((error) => {
-      // Recovery failures are retryable lifecycle events. Keep any optimistic
-      // draft in memory, forget only this failed attempt, and wait for the next
-      // explicit edit/send instead of starting a tight background loop.
       const current = restoreAttemptRef.current;
       if (current.principalId === principalId && current.epoch === epoch && current.promise === promise) {
         restoreAttemptRef.current = { principalId, epoch, promise: null };
@@ -261,33 +267,26 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     });
     restoreAttemptRef.current = { principalId, epoch, promise };
     return promise;
-  }, [principalId]);
+  }, [principalId, publishTransaction]);
 
   useEffect(() => {
     const epoch = ++restoreEpochRef.current;
     hydratedPrincipalRef.current = '';
     restoreAttemptRef.current = { principalId, epoch, promise: null };
-    pendingLedgerRef.current = [];
-    draftLedgerRef.current = new Map();
     persistedDraftRevisionRef.current = new Map();
     landedMessageIdsRef.current = new Set();
     reconciledLandedMessageIdsRef.current = new Set();
-    setPending([]);
-    setDrafts(new Map());
+    publishTransaction(() => ({ pending: [], drafts: new Map() }));
     setControlStates({});
     if (!principalId) return;
     const restore = hydratePrincipal();
     void restore.catch(onError);
-  }, [hydratePrincipal, onError, principalId]);
+  }, [hydratePrincipal, onError, principalId, publishTransaction]);
 
   useEffect(() => {
     const lifecycle = ++lifecycleRef.current;
     return () => {
       for (const timer of timersRef.current.values()) clearTimeout(timer);
-      // React StrictMode performs a mount-cleanup-remount probe while retaining
-      // hook refs. Closing the retained Dexie instance in that probe poisons the
-      // real mount. Defer irreversible disposal and cancel it when the next
-      // lifecycle starts, exactly as the feed scheduler does.
       queueMicrotask(() => {
         if (lifecycleRef.current !== lifecycle) return;
         void writeTailRef.current.catch(() => {}).finally(() => outboxRef.current?.close());
@@ -297,13 +296,10 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
 
   const updateDraft = useCallback((channelId, draft) => {
     if (!channelId || !principalId) return Promise.resolve(null);
+    if (committedPrincipalRef.current !== principalId) return Promise.resolve(null);
     if (!canDurablyOwnChannel(channelId)) return Promise.resolve(null);
-    const identityEpoch = restoreEpochRef.current;
-    const previous = draftLedgerRef.current.get(channelId);
+    const previous = projectionRef.current.drafts.get(channelId);
     const requestedRevision = Number(draft?.editorRevision);
-    // acceptDraft records a consumed editor revision with draft=null. An idle
-    // callback captured before that transaction may arrive afterwards; the
-    // same (or older) editor revision is stale and cannot recreate the draft.
     if (previous && previous.draft == null
       && Number.isFinite(requestedRevision)
       && requestedRevision <= Number(previous.editorRevision || 0)) {
@@ -314,12 +310,14 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       : Number(previous?.editorRevision || 0) + 1;
     const optimistic = { ...previous, principalId, channelId, editorRevision, draft };
     publishDraft(channelId, optimistic);
+    const owner = requestOwner(channelId, { editorRevision });
+    const authorize = () => ownsDurableDraft(owner);
     return enqueueWrite(async () => {
       await hydratePrincipal();
-      if (hydratedPrincipalRef.current !== principalId) throw new Error('当前身份的草稿尚未就绪');
-      if (!canDurablyOwnChannel(channelId)) return null;
+      if (!authorize() || hydratedPrincipalRef.current !== principalId) return null;
       const expected = Number(persistedDraftRevisionRef.current.get(channelId) || 0);
       let result = await outboxRef.current.writeDraft(principalId, channelId, { ...draft, editorRevision }, expected);
+      if (!authorize()) return null;
       if (result.conflict) {
         const remote = result.current;
         const preserved = {
@@ -328,31 +326,36 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
           conflicts: [...(draft?.conflicts || []), ...(remote?.draft ? [remote.draft] : [])],
         };
         result = await outboxRef.current.writeDraft(principalId, channelId, preserved, Number(remote?.revision || 0));
+        if (!authorize()) return null;
       }
       if (result.conflict || !result.record) throw new Error('草稿版本冲突，请重试');
       persistedDraftRevisionRef.current.set(channelId, result.record.revision);
-      const current = draftLedgerRef.current.get(channelId);
-      if (restoreEpochRef.current === identityEpoch
-        && hydratedPrincipalRef.current === principalId
-        && Number(current?.editorRevision || 0) <= editorRevision) publishDraft(channelId, result.record);
+      const current = projectionRef.current.drafts.get(channelId);
+      if (Number(current?.editorRevision || 0) <= editorRevision) publishDraft(channelId, result.record, authorize);
       return result.record;
     });
-  }, [canDurablyOwnChannel, enqueueWrite, hydratePrincipal, principalId, publishDraft]);
+  }, [canDurablyOwnChannel, enqueueWrite, hydratePrincipal, ownsDurableDraft, principalId, publishDraft, requestOwner]);
 
   const persistDraftAttachments = useCallback((channelId, attachments, {
     expectedRevision = 0,
     authorize,
   } = {}) => {
     if (!channelId || !principalId) return Promise.resolve(null);
+    if (committedPrincipalRef.current !== principalId) return Promise.resolve(null);
+    const draft = projectionRef.current.drafts.get(channelId);
+    const owner = requestOwner(channelId, { editorRevision: draft?.editorRevision });
+    const authorizeCurrent = () => ownsDurableDraft(owner) && (!authorize || authorize() === true);
     return enqueueWrite(async () => {
       await hydratePrincipal();
-      if (hydratedPrincipalRef.current !== principalId) throw new Error('当前身份的草稿尚未就绪');
+      if (!authorizeCurrent() || hydratedPrincipalRef.current !== principalId) {
+        throw new Error('草稿附件授权已变化');
+      }
       const result = await outboxRef.current.mergeDraftAttachments({
         principalId,
         channelId,
         attachments,
         expectedRevision,
-        authorize,
+        authorize: authorizeCurrent,
       });
       if (result.conflict || !result.record) {
         const error = new Error(result.reason === 'draft_consumed'
@@ -362,17 +365,17 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
         error.attachments = attachments;
         throw error;
       }
-      if (authorize && authorize() !== true) {
+      if (!authorizeCurrent()) {
         const error = new Error('草稿在附件关联完成前已变化，已上传资源未发布到当前草稿');
         error.code = 'attachment_unassociated';
         error.attachments = attachments;
         throw error;
       }
       persistedDraftRevisionRef.current.set(channelId, result.record.revision);
-      publishDraft(channelId, result.record);
+      publishDraft(channelId, result.record, authorizeCurrent);
       return result.record;
     });
-  }, [enqueueWrite, hydratePrincipal, principalId, publishDraft]);
+  }, [enqueueWrite, hydratePrincipal, ownsDurableDraft, principalId, publishDraft, requestOwner]);
 
   const persistTransition = useCallback((next, expectedStates, { authorize } = {}) => {
     if (!principalId || !next?.messageId) return Promise.resolve(null);
@@ -390,39 +393,44 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     timersRef.current.clear();
     setApprovalStates({});
     setControlStates({});
-    // A transport/world reset clears ephemeral command feedback only. Pending
-    // submissions are durable user intent and remain visible until the ledger
-    // confirms them or the user explicitly cancels them. Principal changes are
-    // handled by the owner-scoped restore effect above.
   }, []);
 
   const resetWorld = useCallback(() => {
     worldEpochRef.current += 1;
     clear();
     const worldError = { code: 'world_changed', detail: '服务端数据世界已更换，请确认后重新发送' };
-    const currentPending = [...pendingLedgerRef.current];
-    mutatePending((current) => current.map((item) => (
-      ['landed', 'rejected'].includes(item.state)
-        ? item
-        : { ...item, state: 'rejected', error: worldError, updatedAt: Date.now(), leaseOwner: '', leaseUntil: 0 }
-    )));
+    const currentPending = [...projectionRef.current.pending];
+    const draftsToClear = [...projectionRef.current.drafts].flatMap(([channelId, record]) => {
+      const draft = record?.draft;
+      return draft?.attachments?.length || draft?.replyTarget
+        ? [[channelId, { ...draft, attachments: [], replyTarget: null }]]
+        : [];
+    });
+    publishTransaction((current) => ({
+      pending: current.pending.map((item) => (
+        ['landed', 'rejected'].includes(item.state)
+          ? item
+          : { ...item, state: 'rejected', error: worldError, updatedAt: Date.now(), leaseOwner: '', leaseUntil: 0 }
+      )),
+      drafts: new Map([...current.drafts].map(([channelId, record]) => {
+        const cleared = draftsToClear.find(([id]) => id === channelId)?.[1];
+        return [channelId, cleared ? { ...record, draft: cleared } : record];
+      })),
+    }));
     for (const item of currentPending) {
       if (['landed', 'rejected'].includes(item.state)) continue;
       void enqueueWrite(() => outboxRef.current.patch(principalId, item.messageId, null, {
         state: 'rejected', error: worldError, leaseOwner: '', leaseUntil: 0,
       })).catch(onError);
     }
-    for (const [channelId, record] of draftLedgerRef.current) {
-      const draft = record?.draft;
-      if (!draft?.attachments?.length && !draft?.replyTarget) continue;
-      void updateDraft(channelId, { ...draft, attachments: [], replyTarget: null }).catch(onError);
-    }
-  }, [clear, enqueueWrite, mutatePending, onError, principalId, updateDraft]);
+    for (const [channelId, draft] of draftsToClear) void updateDraft(channelId, draft).catch(onError);
+  }, [clear, enqueueWrite, onError, principalId, publishTransaction, updateDraft]);
 
   const transmit = useCallback(async (submission) => {
     const { channelId, messageId, key } = submission;
-    const identityEpoch = restoreEpochRef.current;
-    const currentIdentity = () => restoreEpochRef.current === identityEpoch && hydratedPrincipalRef.current === principalId;
+    const owner = ownerForSubmission(submission);
+    const currentIdentity = () => hydratedPrincipalRef.current === principalId
+      && assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.settle).current;
     if (!currentIdentity()) return;
     if (!wireRef.current || wireStateRef.current !== 'open') {
       const queued = transitionSubmission(submission, 'queued');
@@ -430,13 +438,9 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       await persistTransition(queued).catch(onError);
       return;
     }
-    const owner = ownerForSubmission(submission);
     const stopInvalidAttempt = async (invalidation, source = submission) => {
       if (!currentIdentity()) return;
       const accessError = queuedAccessRejection(accessRef.current?.state?.(channelId));
-      // Transport replacement preserves the durable user intent. An access
-      // epoch replacement does not: it may contain revoke -> regrant between
-      // two observations and requires an explicit user retry under a new owner.
       const transportOnly = ['transport_changed', 'channel_unavailable'].includes(invalidation?.code)
         && !accessError;
       const next = transitionSubmission(
@@ -485,12 +489,9 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       return;
     }
     const renewLease = globalThis.setInterval?.(() => {
+      if (!assessRequestOwner(owner, currentOwnerFacts(owner), REQUEST_PHASE.submit).current) return;
       void outboxRef.current.acquireLease(principalId, messageId, leaseOwnerRef.current).catch(onError);
     }, 5_000);
-    // Connection metadata that is part of the protocol payload must become
-    // part of the durable frame before the first attempt. Re-stamping origin
-    // after reconnect would change the semantics behind the same message id
-    // and correctly trigger an idempotency conflict at the server.
     let preparedFrame;
     try {
       preparedFrame = wireRef.current.prepareSubmit?.(submission.frame) || submission.frame;
@@ -508,10 +509,6 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       diagnostic('warn', 'submission.prepare_rejected', { channelId, messageId, code: error?.code || 'prepare_failed' });
       return;
     }
-    // A durable id may be retried after a real reconnect, but a timeout/close
-    // result must not feed its access publication straight back into another
-    // submit on the same open transport generation. The wire already owns
-    // reconnect backoff; this map is only per-id dedupe for that generation.
     attemptedOpenEpochRef.current.set(key, openEpochRef.current);
     const transmitting = transitionSubmission({ ...submission, frame: preparedFrame }, 'transmit');
     let persistPhase;
@@ -623,19 +620,16 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       }, 10_000);
       timersRef.current.set(key, timer);
     } catch (error) {
-      // A live feed can win the race against a lost receipt. The feed is the
-      // durable fact, so do not turn an already-landed submission back into an
-      // uncertain one merely because the socket closes a moment later.
+      const continuationCurrent = assessRequestOwner(
+        owner,
+        currentOwnerFacts(owner),
+        REQUEST_PHASE.submit,
+      ).current;
       const state = settleCurrent() ? channelStatesRef.current.get(channelId) : null;
-      // `_envelopesById` contains committed Replica facts only; presentation
-      // rows may also contain the local echo and therefore are not evidence.
       const landedEnvelope = state?._envelopesById?.get?.(messageId);
       if (isUncertainWireError(error) && landedEnvelope && settleCurrent()) {
         const learnedSelf = rosterRef.current?.observeFeed(channelId, landedEnvelope);
         if (learnedSelf) reconcileApprovals(state, learnedSelf);
-        // The principal+message id is the immutable submission identity. The
-        // state predicate makes deletion a CAS with a concurrent retry rather
-        // than an unconditional cleanup of whatever now occupies the key.
         await outboxRef.current.remove(principalId, messageId, ['queued', 'transmitting', 'accepted', 'delayed', 'uncertain']);
         if (settleCurrent()) {
           mutatePending((current) => current.filter((item) => item.key !== key || item.messageId !== messageId || item.channelId !== channelId));
@@ -645,20 +639,15 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
         return;
       }
       const retryableUnavailable = ['unavailable', 'channel_unavailable'].includes(error?.code);
-      if (settleCurrent() && error?.code === 'forbidden') {
+      if (continuationCurrent && error?.code === 'forbidden') {
         accessRef.current?.forbidden(channelId);
         rosterRef.current?.clearSelf(channelId);
-      } else if (settleCurrent() && error?.code === 'channel_not_found') {
+      } else if (continuationCurrent && error?.code === 'channel_not_found') {
         accessRef.current?.retire?.(channelId, error.code);
-      } else if (settleCurrent() && retryableUnavailable) {
+      } else if (continuationCurrent && retryableUnavailable) {
         accessRef.current?.unavailable(channelId, error.code);
       }
       if (retryableUnavailable) {
-        // This attempt was definitively refused, so its outcome is not
-        // uncertain; the durable user intent is nevertheless still valid.
-        // Close the synchronous access gate above before publishing `queued`:
-        // the pending-state effect may run immediately, but it will observe the
-        // unavailable channel and cannot resubmit on this transport epoch.
         const queued = transitionSubmission(transmitting, 'queued', error);
         const persisted = await persistTransition(queued, ['transmitting']).catch(onError);
         if (persisted && settleCurrent()) {
@@ -674,14 +663,10 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
           code: error?.code || 'unavailable',
           openEpoch: openEpochRef.current,
         });
-        if (settleCurrent()) onAccessChanged();
+        if (continuationCurrent && settleCurrent()) onAccessChanged();
         return;
       }
       const uncertain = isUncertainWireError(error);
-      // A timeout/closed transport may still deliver the exact ledger echo,
-      // so its ownership proof must survive reconnect. A definitive rejection
-      // cannot: release that exact channel+message id rather than leaking a
-      // stale local-ownership token for the rest of the session.
       if (!uncertain && settleCurrent()) rosterRef.current?.forgetSubmission?.(channelId, messageId);
       if (uncertain && settleCurrent()) onNotice('发送结果待确认，正在通过重连账本核对。');
       const failed = transitionSubmission(transmitting, uncertain ? 'uncertain' : 'rejected', error);
@@ -695,7 +680,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
         code: error?.code || 'unknown',
         openEpoch: openEpochRef.current,
       });
-      if (settleCurrent()) onAccessChanged();
+      if (continuationCurrent && settleCurrent()) onAccessChanged();
     } finally {
       if (renewLease != null) globalThis.clearInterval?.(renewLease);
       transmittingRef.current.delete(key);
@@ -776,17 +761,23 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       });
       if (!result.accepted) throw new Error('草稿在发送前已被其他页面修改，请确认内容后重试');
       submissions = result.submissions || submissions;
-      if (result.record) persistedDraftRevisionRef.current.set(channelId, result.record.revision);
-      const current = draftLedgerRef.current.get(channelId);
-      if (result.consumed && Number(current?.editorRevision || 0) === Number(request.editorRevision || 0)) publishDraft(channelId, result.record);
+      if (result.record && authorizePersist()) {
+        persistedDraftRevisionRef.current.set(channelId, result.record.revision);
+      }
+      const current = projectionRef.current.drafts.get(channelId);
+      if (result.consumed && Number(current?.editorRevision || 0) === Number(request.editorRevision || 0)) {
+        publishDraft(channelId, result.record, authorizePersist);
+      }
     } else {
       submissions = await outboxRef.current.putMany(principalId, submissions, { authorize: authorizePersist });
     }
     const ids = new Set(submissions.map((item) => item.messageId));
     if (committedPrincipalRef.current !== principalId || hydratedPrincipalRef.current !== principalId) return request?.batch ? [] : '';
-    const nextPending = [...pendingLedgerRef.current.filter((item) => !ids.has(item.messageId)), ...submissions];
-    pendingLedgerRef.current = nextPending;
-    setPending(nextPending);
+    const published = publishTransaction((current) => ({
+      ...current,
+      pending: [...current.pending.filter((item) => !ids.has(item.messageId)), ...submissions],
+    }), authorizePersist);
+    if (!published) return request?.batch ? [] : '';
     diagnostic('debug', 'submission.outbox_accepted', {
       channelId,
       messageIds: submissions.map((item) => item.messageId),
@@ -796,7 +787,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     if (connected) for (const submission of submissions) void transmit(submission);
     const messageIds = submissions.map((item) => item.messageId);
     return request?.batch ? messageIds : messageIds[0];
-  }, [activeChannelId, canDurablyOwnChannel, currentOwnerFacts, hydratePrincipal, principalId, publishDraft, requestOwner, submissionAuthority, transmit, wireRef, wireState]);
+  }, [activeChannelId, canDurablyOwnChannel, currentOwnerFacts, hydratePrincipal, principalId, publishDraft, publishTransaction, requestOwner, submissionAuthority, transmit, wireRef]);
 
   useEffect(() => {
     const opened = wireState === 'open' && previousWireStateRef.current !== 'open';
@@ -806,10 +797,6 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     for (const key of attemptedOpenEpochRef.current.keys()) {
       if (!liveKeys.has(key)) attemptedOpenEpochRef.current.delete(key);
     }
-    // A queued row has not crossed the wire. A later authoritative denial or
-    // retirement can therefore reject it locally without guessing a remote
-    // outcome. Accepted/delayed/uncertain/transmitting rows are deliberately
-    // untouched: a receipt or feed may still settle those monotonically.
     const rejectedQueued = pending.flatMap((submission) => {
       if (submission.state !== 'queued') return [];
       const error = queuedAccessRejection(accessRef.current?.state?.(submission.channelId));
@@ -930,13 +917,15 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
   }, [channelStatesRef, currentOwnerFacts, onAccessChanged, requestOwner]);
 
   const reconcileFeed = useCallback((landedMessageIds, closedRequestIds) => {
+    if (committedPrincipalRef.current !== principalId) return;
     if (landedMessageIds.size) {
+      const landedForPrincipal = landedMessageIdsRef.current;
       const hydrating = hydratedPrincipalRef.current !== principalId;
-      const pendingMessageIds = new Set(pendingLedgerRef.current.map((item) => item.messageId));
+      const pendingMessageIds = new Set(projectionRef.current.pending.map((item) => item.messageId));
       for (const messageId of landedMessageIds) {
         if (hydrating || pendingMessageIds.has(messageId)) landedMessageIdsRef.current.add(messageId);
       }
-      const landed = pendingLedgerRef.current.filter((item) => (
+      const landed = projectionRef.current.pending.filter((item) => (
         item.messageId
         && landedMessageIds.has(item.messageId)
         && !reconciledLandedMessageIdsRef.current.has(item.messageId)
@@ -950,7 +939,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
           timersRef.current.delete(item.key);
           void enqueueWrite(() => outboxRef.current.remove(principalId, item.messageId))
             .catch(onError)
-            .finally(() => landedMessageIdsRef.current.delete(item.messageId));
+            .finally(() => landedForPrincipal.delete(item.messageId));
         }
         diagnostic('debug', 'submission.feed_landed', {
           messageIds: landed.map((item) => item.messageId),

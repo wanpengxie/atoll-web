@@ -111,6 +111,31 @@ describe('W6 offline draft and recovery', () => {
     expect(result.current.draftFor('c0')).toMatchObject({ text: '数据库恢复后仍在', editorRevision: 1 });
   });
 
+  it('lets only the newest draft transaction publish and persist', async () => {
+    const principalId = `draft-owner-${crypto.randomUUID()}`;
+    const common = memberHarness({ principalId });
+    const { result } = renderHook(() => useSubmissions(common));
+    await waitFor(() => expect(result.current.draftFor('c0').text).toBe(''));
+
+    let transactions;
+    act(() => {
+      transactions = [
+        result.current.updateDraft('c0', { text: 'stale', editorRevision: 1 }),
+        result.current.updateDraft('c0', { text: 'current', editorRevision: 2 }),
+      ];
+    });
+    const [first] = await Promise.all(transactions);
+    await act(async () => {});
+
+    expect(first).toBeNull();
+    expect(result.current.draftFor('c0')).toMatchObject({ text: 'current', editorRevision: 2 });
+    const store = createOutboxStore();
+    expect((await store.restoreDrafts(principalId))[0]).toMatchObject({
+      draft: { text: 'current' }, editorRevision: 2,
+    });
+    store.close();
+  });
+
   it('rejects renderer-only attachment URLs before any durable submission is inserted', async () => {
     const store = createOutboxStore({ databaseName: `outbox-attachment-${crypto.randomUUID()}` });
     const submission = {
