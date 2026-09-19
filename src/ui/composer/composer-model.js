@@ -2,6 +2,14 @@ import { SYSTEM_ACTOR_ID, TYPES } from '../../protocol/vocab.js';
 
 const SENDABLE_KINDS = new Set(['agent', 'human']);
 const RETRYABLE_STATES = new Set(['rejected', 'uncertain']);
+const DELIVERY_SOURCE_LABELS = Object.freeze({
+  reply: '回复',
+  mention: '由 @ 指定',
+  filter: '默认 · 跟随筛选',
+  manual: '默认 · 手选',
+  recent: '默认 · 最近交互',
+  only: '默认 · 频道唯一 Agent',
+});
 export const COMPOSER_SLASH_COMMANDS = Object.freeze([
   Object.freeze({ command: 'compact', type: TYPES.agentCompact, scope: 'agent', label: '压缩上下文', description: '保留当前对话，压缩较早的上下文', usage: '/compact', minArgs: 0, maxArgs: 0 }),
   Object.freeze({ command: 'new', type: TYPES.agentNew, scope: 'agent', label: '新建对话', description: '保留当前 Agent，换成一段全新会话', usage: '/new', minArgs: 0, maxArgs: 0 }),
@@ -83,6 +91,22 @@ function recipientIdentity(recipient) {
   return typeof recipient === 'string' ? recipient : text(recipient?.id);
 }
 
+function deliverySourceLabel(source) {
+  return DELIVERY_SOURCE_LABELS[text(source)] || '';
+}
+
+// The current Workspace owner only supplies selectedAgentId. Preserve an
+// explicitly supplied fallback source when a future owner has one, but do not
+// infer filter/manual provenance from the same id: both routes intentionally
+// converge on the same Composer command.
+function selectedAgentSource(agentSelection, soleFallback) {
+  const source = text(agentSelection?.fallbackSource)
+    || text(agentSelection?.source)
+    || text(agentSelection?.target?.source)
+    || text(agentSelection?.view?.source);
+  return deliverySourceLabel(source) ? source : soleFallback ? 'only' : '';
+}
+
 export function resolveMentionRows(recipients, roster) {
   const rosterByID = new Map((roster || []).map((actor) => [actor.id, actor]));
   return Object.freeze(uniqueRows((recipients || []).flatMap((recipient) => {
@@ -124,10 +148,11 @@ export function resolveComposerDelivery({ draft, roster, agentSelection }) {
         source: 'reply',
         rows: Object.freeze([]),
         missing: Object.freeze([]),
+        sourceLabel: deliverySourceLabel('reply'),
         label: `@${text(reply.senderName) || id || '原发送者'} 已不在频道`,
       });
     }
-    return Object.freeze({ kind: 'direct', source: 'reply', rows: Object.freeze([actor]), missing: Object.freeze([]), label: `回复 @${actorName(actor)}` });
+    return Object.freeze({ kind: 'direct', source: 'reply', rows: Object.freeze([actor]), missing: Object.freeze([]), sourceLabel: deliverySourceLabel('reply'), label: `回复 @${actorName(actor)}` });
   }
 
   if (mentions.length) {
@@ -137,6 +162,7 @@ export function resolveComposerDelivery({ draft, roster, agentSelection }) {
       source: 'mention',
       rows: mentions,
       missing: Object.freeze(missing),
+      sourceLabel: deliverySourceLabel('mention'),
       label: mentions.map((row) => `@${actorName(row)}`).join('、'),
     });
   }
@@ -144,9 +170,10 @@ export function resolveComposerDelivery({ draft, roster, agentSelection }) {
   const selectedID = selectedAgentID(agentSelection);
   const selected = selectedID ? rosterByID.get(selectedID) : null;
   if (selected?.kind === 'agent') {
-    return Object.freeze({ kind: 'direct', source: 'agent-selection', rows: Object.freeze([selected]), missing: Object.freeze([]), label: `@${actorName(selected)}` });
+    const source = selectedAgentSource(agentSelection, false);
+    return Object.freeze({ kind: 'direct', source: 'agent-selection', sourceKey: source, rows: Object.freeze([selected]), missing: Object.freeze([]), sourceLabel: deliverySourceLabel(source), label: `@${actorName(selected)}` });
   }
-  return Object.freeze({ kind: 'none', source: '', rows: Object.freeze([]), missing: Object.freeze([]), label: '请选择收件人' });
+  return Object.freeze({ kind: 'none', source: '', rows: Object.freeze([]), missing: Object.freeze([]), sourceLabel: '', label: '请选择收件人' });
 }
 
 export function composerPermissions(access) {
@@ -275,7 +302,11 @@ export function buildComposerModel({
     draft: normalizedDraft,
     roster,
     agentSelection: selectedAgent
-      ? { ...agentSelection, selectedAgentId: selectedAgent.id }
+      ? {
+        ...agentSelection,
+        selectedAgentId: selectedAgent.id,
+        ...(selectedID ? {} : { fallbackSource: selectedAgentSource(agentSelection, true) }),
+      }
       : agentSelection,
   });
   const deliveryAgents = delivery.rows.filter((actor) => actor.kind === 'agent');

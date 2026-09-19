@@ -16,6 +16,25 @@ function selected(actor) {
 }
 
 describe('Composer 当前收件人合同', () => {
+  it('把收件人名单和判据来源分开，避免横幅 title 重复名字', () => {
+    expect(resolveComposerDelivery({
+      draft: { recipients: [CLAUDE] }, roster: ROSTER,
+    })).toMatchObject({ source: 'mention', sourceLabel: '由 @ 指定', label: '@claude' });
+
+    expect(resolveComposerDelivery({
+      draft: { recipients: [] },
+      roster: [HUMAN, CLAUDE],
+      agentSelection: { selectedAgentId: CLAUDE.id, fallbackSource: 'filter' },
+    })).toMatchObject({ source: 'agent-selection', sourceKey: 'filter', sourceLabel: '默认 · 跟随筛选', label: '@claude' });
+
+    expect(buildComposerModel({
+      activeChannelId: 'dev',
+      draft: { recipients: [] },
+      roster: [HUMAN, CLAUDE],
+      access: 'member_active',
+    }).delivery).toMatchObject({ source: 'agent-selection', sourceKey: 'only', sourceLabel: '默认 · 频道唯一 Agent' });
+  });
+
   it('参数选择提供默认 Agent，但正文里的 @ 仍然优先', () => {
     expect(resolveComposerDelivery({
       draft: { recipients: [] }, roster: ROSTER, agentSelection: selected(CODEX),
