@@ -39,6 +39,14 @@ AD-163, AD-168, AD-169, AD-171, AD-172, and AD-173 move to PASS. The current
 ledger is **71 BLOCKED** (**294 PASS / 0 REGRESSION / 71 BLOCKED**), with no
 row judged obsolete, deleted, or skipped.
 
+Round 21 adds ordinary red public-owner reproductions for the five priority
+Feed/Replica gaps AD-157/158/167/170/182 and direct public cursor evidence for
+AD-277/278/282–AD-294. Ten cursor rows now have equivalent green fixtures;
+five cursor rows expose capability gaps rather than merely missing evidence.
+The ledger is now **61 BLOCKED** (**304 PASS / 0 REGRESSION / 61 BLOCKED**).
+The ten red assertions remain BLOCKED and are not expected-fail completion
+signals.
+
 ## Minimal regression packets
 
 ### AD-011 — Activity retained-work settlement after reconnect
@@ -120,9 +128,9 @@ The classification is an evidence triage, not a verdict on product scope:
 | Category | Count | Rule |
 |---|---:|---|
 | 缺 owner (`OWNER_MISSING`) | 12 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. Round 20 adds AD-165/166 for channel-entry/reconnect freshness interests. |
-| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 49 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Six Round 20 rows now have public PASS fixtures and five startup rows remain fixture/owner proof gaps. |
-| 真实能力缺口 (`CAPABILITY_GAP`) | 10 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. Round 20 adds AD-157/158/167/170/182. |
-| **Total** | **71** | The remaining rows retain explicit blocked evidence; no row is obsolete, deleted, or skipped. |
+| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 34 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Round 21 promotes ten cursor fixtures; twelve cursor rows remain fixture-only. |
+| 真实能力缺口 (`CAPABILITY_GAP`) | 15 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. Round 20 adds AD-157/158/167/170/182; Round 21 adds AD-284/288/289/291/292. |
+| **Total** | **61** | The remaining rows retain explicit blocked evidence; no row is obsolete, deleted, or skipped. |
 
 ### `OWNER_MISSING` — 12 rows
 
@@ -133,15 +141,16 @@ The classification is an evidence triage, not a verdict on product scope:
 | `dynamic-form.test.js` | 2 | `AD-363`–`AD-364`; no public JSON-Schema/control-form owner for typed control payloads. |
 | `channel-feed-startup.test.jsx` | 2 | `AD-165`–`AD-166`; no public channel-entry/reconnect/foreground freshness-interest owner. |
 
-### `CAPABILITY_GAP` — 10 rows
+### `CAPABILITY_GAP` — 15 rows
 
 | Baseline source | Rows | Evidence boundary |
 |---|---:|---|
 | `activity.test.js` | 3 | `AD-002`–`AD-004`; cross-channel Operation index/Center is absent. Search, task, and artifact owners are not an equivalent operation index. |
 | `channel-list.test.jsx` | 2 | `AD-202`–`AD-203`; current `VersionIncompatible` is a protocol terminal, not a node-version/update capability, and no node-update port/UI is mounted. |
 | `channel-feed-startup.test.jsx` | 5 | `AD-157`, `AD-158`, `AD-167`, `AD-170`, `AD-182`; the current public Feed/Replica boundary shows the stale/revoked cache or trim behavior directly diverges from the baseline capability. |
+| `cursors.test.js` | 5 | `AD-284`, `AD-288`, `AD-289`, `AD-291`, `AD-292`; ordinary public Feed regressions show sparse identity acknowledgement, authority/head clamping, weak all-message count, and agent self-audience terminal content are not equivalent. |
 
-### `FIXTURE_MISSING` — 49 rows
+### `FIXTURE_MISSING` — 34 rows
 
 These rows have a named current owner and an evidence successor, but the
 successor is not yet a one-to-one public fixture for the baseline scenario.
@@ -159,10 +168,10 @@ auditable:
 | `capabilities.test.js` | 0 | `AD-138`–`AD-141` recovered in `tests/agent-describe-capability-index.test.jsx:49,83,124,145` |
 | `channel-feed-startup.test.jsx` | 5 | `AD-156`, `AD-159`–`AD-161`, `AD-178`; the Round 20 public boundary remains unable to supply the exact cached-context/Meta/body/arrival proof. |
 | `channel-governance.test.js` | 6 | `AD-192`–`AD-197`; AD-191 now has a green public governance filter fixture in `tests/blocked-round18-public-owner.test.jsx` |
-| `cursors.test.js` | 27 | `AD-277`–`AD-278`, `AD-282`–`AD-304`, `AD-306`–`AD-307` |
+| `cursors.test.js` | 12 | `AD-295`–`AD-304`, `AD-306`–`AD-307`; Round 21 promotes AD-277/278/282/283/285/286/287/290/293/294 and reclassifies AD-284/288/289/291/292 as capability gaps |
 | `devices-panel.test.jsx` | 1 | `AD-316` |
 | `dynamic-f3.test.jsx` | 2 | `AD-331`, `AD-334`; AD-327–329/333/335–338/340–343/350–351 now have green public presentation/Composer fixtures in `tests/blocked-round16-public-owner.test.jsx` |
-| **Total** | **49** | Six Round 20 Feed rows moved to PASS; the remaining rows retain explicit blocked evidence. |
+| **Total** | **34** | Round 21 moves ten cursor rows to PASS and five cursor rows to CAPABILITY_GAP; the remaining rows retain explicit blocked evidence. |
 
 The remaining categories above retain their ledger `BLOCKED` status. AD-014 and
 AD-017 no longer count as fixture-missing: their public-owner fixtures are
@@ -257,6 +266,26 @@ as follows:
 The ledger is now **294 PASS / 0 REGRESSION / 71 BLOCKED**. No expected-fail
 case was promoted, deleted, skipped, or judged obsolete; product gaps were
 returned as minimal reproductions without a cross-owner edit.
+
+## Round 21 evidence packet
+
+Round 21 adds the five priority Feed/Replica rows AD-157/158/167/170/182 as
+ordinary red assertions, so their product behavior cannot be hidden behind an
+expected-fail declaration. It also gives one-to-one public Feed/Replica
+fixtures to AD-277/278/282–AD-294.
+
+```text
+npx vitest run tests/blocked-round21-public-owner.test.jsx --reporter=dot
+
+Test Files  1 failed (1)
+Tests       10 failed | 10 passed (20)
+```
+
+Ten cursor rows move to PASS: AD-277/278/282/283/285/286/287/290/293/294.
+The ordinary red rows remain BLOCKED at the first public owner: the five
+priority Feed gaps and AD-284/288/289/291/292. They are reproducible
+capability gaps, not obsolete cases or migration completion. The ledger is
+**304 PASS / 0 REGRESSION / 61 BLOCKED**.
 
 ## Boundary audit
 
