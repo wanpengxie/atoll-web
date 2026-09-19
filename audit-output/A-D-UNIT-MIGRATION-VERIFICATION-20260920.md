@@ -16,6 +16,14 @@ probe, presentation, and Composer owners, leaving **283 PASS / 0 REGRESSION /
 82 BLOCKED**. AD-002–004 were rechecked at the existing Activity/Operation
 boundary and remain explicit product-gap evidence.
 
+Round 18 selected 20 rows from that remainder while avoiding flat/cache,
+Reading, and Composer conflict surfaces. The current WorkspaceLayout handoff
+gate closed AD-096 and AD-098; the current ChannelAdministrationPanel closed
+the submit/ledger-failure retry contract AD-154 and standard/foundation actor
+filtering AD-191. The other 16 rows remain explicit expected-fail evidence for
+missing dialog/convergence/rollback owners. The current ledger is therefore
+**287 PASS / 0 REGRESSION / 78 BLOCKED**.
+
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
 AD-316 remains an explicit blocked red reproduction: the current
@@ -110,6 +118,26 @@ only; they do not count as recovered cases.
 The ledger after this round is **283 PASS / 0 REGRESSION / 82 BLOCKED**. No
 baseline declaration was deleted, skipped, or marked obsolete.
 
+## Round 18 blocked-evidence recovery
+
+Round 18 selected exactly 20 rows from the 82-row blocked remainder, limited
+to the public target-handoff and governance/permission/failure boundaries:
+AD-096–099, AD-101, AD-105–106, AD-108, AD-149–155, and AD-191–195. The
+fixture is [`tests/blocked-round18-public-owner.test.jsx`](../tests/blocked-round18-public-owner.test.jsx).
+
+The focused result is **1 file passed; 4 passed, 16 expected-fail (20)**. The
+four green IDs are AD-096 and AD-098 through `WorkspaceLayout`, AD-154 through
+the public `ChannelAdministrationPanel` draft/failure/retry port, and AD-191
+through its roster/declaration filtering. The 16 expected-fail assertions are
+evidence only: AD-097/099/101/105/106/108 still lack the requested target
+rollback, mobile-surface, or per-channel terminal owner, while AD-149–153,
+AD-155, and AD-192–195 still lack the independent create-dialog or full
+ledger/OBS/membership/serving convergence owner. They remain BLOCKED and are
+not counted as recovered cases.
+
+No source, package, lockfile, flat/cache, Reading, Composer, or private export
+was changed by this round.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -159,6 +187,7 @@ The focused slices were run with Vitest against current public owners:
 | `tests/artifacts.test.jsx -t '\[AD-123\]'` | 1 passed | AD-123 preserves explicit same-channel version relation and repeated resource references through ChannelReplica + feature-search |
 | `tests/blocked-round15-activity-owner.test.js tests/blocked-round15-node-update.test.jsx tests/blocked-round15-terminal-owner.test.jsx` | 6 passed, 14 expected fail, 20 total | AD-094/095/100/102/104/107 pass through public Workspace owners; AD-002–004, AD-093, AD-096–099, AD-101, AD-105–106, AD-108, and AD-202–203 retain explicit public owner-gap reproductions |
 | `tests/blocked-round16-public-owner.test.jsx tests/blocked-round15-activity-owner.test.js` | 18 passed, 3 expected fail, 21 total | 17 new public-owner rows pass; AD-002–004 remain explicit Operation-index owner gaps |
+| `tests/blocked-round18-public-owner.test.jsx` | 4 passed, 16 expected fail, 20 total | AD-096/098/154/191 pass through current public shell/governance owners; the other 16 remain explicit target/create/convergence owner gaps |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; no registered regression case red | AD-011 and AD-143 are closed through their existing public owners; no AD-123 `it.fails` case remains |
 
 Historical red assertions were not weakened, skipped, or deleted; their public
@@ -178,6 +207,12 @@ scope), not to the 42-suite A–D baseline ledger.
   A–D evidence/ledger reports. It does not touch Feed runtime, terminal/node/
   restart product files, or any package boundary; the three Activity cases
   remain BLOCKED.
+- Round 18 changes only `tests/blocked-round18-public-owner.test.jsx` and
+  A–D evidence/ledger reports. It exercises the already-available
+  `WorkspaceLayout` handoff gate and `ChannelAdministrationPanel` public
+  failure/filter ports; it does not touch terminal/node/restart product code,
+  flat/cache, Reading, Composer, or any package boundary. The 16 red
+  assertions remain BLOCKED.
 - No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
