@@ -1,6 +1,7 @@
 import { createChannelReplicaCache, createChannelReplicaStore, replicaResumeSnapshot } from './channel-replica.js';
 import { selectTimelineItems } from './conversation-presentation.js';
 import { argsOf, FINAL } from '../protocol/envelope.js';
+import { TYPES } from '../protocol/vocab.js';
 import { createHistoryPresentationAdmission } from './history-presentation-admission.js';
 import { createHistoryBoundedExecutor } from './history-bounded-executor.js';
 import { historyNumeric, historySourceFor } from './history-candidate-reducer.js';
@@ -10,6 +11,43 @@ export const HISTORY_PAGE_SIZE = 128;
 export const HISTORY_BATCH_BYTES = 1024 * 1024;
 export const HISTORY_BATCH_TIMEOUT_MS = 30_000;
 export const HISTORY_RESERVOIR_SIZE = 5_000;
+
+const ACTIVITY_TYPES = new Set([
+  TYPES.agentAsk, TYPES.agentQueue, TYPES.agentCompact,
+  TYPES.agentNew, TYPES.agentReplace, TYPES.agentSteer,
+]);
+const AGENT_ACTIVITY_LIMIT = 512;
+const TIMER_FIRING_LIMIT = 256;
+
+function eventTimestamp(envelope, fallback = Date.now()) {
+  const value = new Date(envelope?.ts).getTime();
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function isRunningActivity(envelope) {
+  const body = argsOf(envelope);
+  return envelope?.kind === 'response'
+    && ACTIVITY_TYPES.has(envelope.type)
+    && (body.status === 'processing' || Boolean(body.process));
+}
+
+function isTerminalActivity(envelope) {
+  return envelope?.kind === 'response'
+    && ACTIVITY_TYPES.has(envelope.type)
+    && FINAL.has(argsOf(envelope)?.status);
+}
+
+function isCanonicalTimerFiring(envelope) {
+  const senderID = String(envelope?.sender?.id || '');
+  return envelope?.kind === 'event'
+    && String(envelope?.id || '').startsWith('timer:')
+    && !envelope.parent_id
+    && envelope.correlation_id === envelope.id
+    && envelope.sender?.kind === 'agent'
+    && Boolean(senderID)
+    && envelope.audience?.length === 1
+    && envelope.audience[0] === senderID;
+}
 
 function createCursorOwner(storage = globalThis.localStorage) {
   const reads = new Map();
@@ -94,6 +132,8 @@ export function createChannelFeedRuntime(options = {}) {
   const ownerCommands = new Map();
   const executor = createHistoryBoundedExecutor({ concurrency: 2, timeoutMs: HISTORY_BATCH_TIMEOUT_MS });
   const networkBatches = new Map();
+  const activityEntries = new Map();
+  const timerEvents = [];
   let generation = 0;
   let principalEpoch = 0;
   let attachEpoch = 0;
@@ -110,6 +150,114 @@ export function createChannelFeedRuntime(options = {}) {
   let mountGeneration = 0;
   let destroyed = false;
   let snapshot;
+  let activityConnected = false;
+  let activityRevision = 0;
+  let timerRevision = 0;
+  let timerAcknowledgedRevision = 0;
+  let timerOverflow = null;
+
+  const cacheError = (error) => {
+    if (error?.code !== 'cache_owner_changed') callback('onError', error);
+  };
+
+  function observeAgentActivity(row, source) {
+    const envelope = row?.envelope;
+    const channelId = String(row?.channel_id || envelope?.channel_id || '');
+    const requestId = String(envelope?.parent_id || '');
+    if (!channelId || !requestId) return false;
+    const key = `${channelId}\u0000${requestId}`;
+    const current = activityEntries.get(key);
+    if (isTerminalActivity(envelope)) {
+      if (!current || current.state === 'settled') return false;
+      const settledAt = eventTimestamp(envelope);
+      activityEntries.set(key, Object.freeze({
+        ...current, state: 'settled', updatedAt: settledAt, settledAt,
+        outcome: String(argsOf(envelope)?.status || ''),
+      }));
+      activityRevision += 1;
+      return true;
+    }
+    if (source !== 'live' || !activityConnected
+      || historyNumeric(row.generation) !== generation
+      || !isRunningActivity(envelope)
+      || current?.state === 'settled') return false;
+    const agentId = String(envelope.sender?.id || '');
+    if (!agentId) return false;
+    const updatedAt = eventTimestamp(envelope);
+    const request = replica.state(channelId)?._envelopesById?.get(requestId);
+    const requestStartedAt = eventTimestamp(request, updatedAt);
+    activityEntries.set(key, Object.freeze({
+      state: 'active', channelId, requestId, agentId, type: envelope.type, generation,
+      startedAt: current?.startedAt || requestStartedAt,
+      updatedAt, settledAt: 0, outcome: '',
+    }));
+    if (!current || current.agentId !== agentId || current.generation !== generation) activityRevision += 1;
+    while (activityEntries.size > AGENT_ACTIVITY_LIMIT) {
+      const removable = [...activityEntries].find(([, entry]) => entry.state === 'settled') || activityEntries.entries().next().value;
+      if (!removable) break;
+      activityEntries.delete(removable[0]);
+    }
+    return true;
+  }
+
+  function observeTimerFiring(row, source) {
+    if (source !== 'live' || historyNumeric(row?.generation) !== generation
+      || !isCanonicalTimerFiring(row?.envelope)) return false;
+    timerRevision += 1;
+    timerEvents.push(Object.freeze({
+      revision: timerRevision,
+      timerId: row.envelope.id,
+      channelId: row.channel_id,
+      seq: historyNumeric(row.seq),
+      firedAt: eventTimestamp(row.envelope),
+    }));
+    if (timerEvents.length > TIMER_FIRING_LIMIT) {
+      const removed = timerEvents.splice(0, timerEvents.length - TIMER_FIRING_LIMIT);
+      const unacknowledged = removed.filter((event) => event.revision > timerAcknowledgedRevision);
+      if (unacknowledged.length) {
+        timerOverflow = Object.freeze({
+          count: Number(timerOverflow?.count || 0) + unacknowledged.length,
+          throughRevision: unacknowledged.at(-1).revision,
+        });
+      }
+    }
+    return true;
+  }
+
+  function agentActivitySnapshot(channelId = '') {
+    const byChannel = {};
+    for (const entry of activityEntries.values()) {
+      const visibleActive = entry.state === 'active' && activityConnected && entry.generation === generation;
+      if ((!visibleActive && entry.state !== 'settled') || (channelId && entry.channelId !== channelId)) continue;
+      const channel = byChannel[entry.channelId] || { active: [], agents: {} };
+      byChannel[entry.channelId] = channel;
+      const agent = channel.agents[entry.agentId] || { active: 0, settled: 0, state: '' };
+      channel.agents[entry.agentId] = agent;
+      if (visibleActive) { channel.active.push(entry); agent.active += 1; }
+      else agent.settled += 1;
+    }
+    for (const channel of Object.values(byChannel)) {
+      channel.active.sort((left, right) => right.updatedAt - left.updatedAt);
+      for (const agent of Object.values(channel.agents)) {
+        agent.state = agent.active ? 'active' : 'settled';
+        Object.freeze(agent);
+      }
+      Object.freeze(channel.active); Object.freeze(channel.agents); Object.freeze(channel);
+    }
+    return Object.freeze({
+      revision: activityRevision, boot: world, generation, connected: activityConnected,
+      byChannel: Object.freeze(byChannel),
+    });
+  }
+
+  function timerFiringSnapshot() {
+    return Object.freeze({
+      revision: timerRevision,
+      acknowledgedRevision: timerAcknowledgedRevision,
+      overflow: timerOverflow,
+      events: Object.freeze(timerEvents.filter((event) => event.revision > timerAcknowledgedRevision)),
+    });
+  }
 
   const adapters = createHistorySourceAdapters({
     requestPage(channelId, beforeSeq, limit, requestOptions) {
@@ -162,7 +310,6 @@ export function createChannelFeedRuntime(options = {}) {
       }
       if (row.envelope?.id) {
         landedMessageIDs.add(row.envelope.id);
-        callback('onTimerFired', row.envelope.id, row.envelope.ts || Date.now());
       }
       if (row.envelope?.kind === 'response'
         && FINAL.has(argsOf(row.envelope)?.status)
@@ -173,7 +320,8 @@ export function createChannelFeedRuntime(options = {}) {
         const closedTarget = String(argsOf(request)?.target || argsOf(row.envelope)?.target || '');
         if (closedTarget) closedRequestIDs.add(closedTarget);
       }
-      callback('onAgentActivity', row);
+      observeAgentActivity(result.row, source);
+      observeTimerFiring(result.row, source);
     }
     if (accepted.length) {
       callback('onChannelsDiscovered', discoveredChannels);
@@ -183,7 +331,7 @@ export function createChannelFeedRuntime(options = {}) {
       if (accessChanged) callback('onAccessChanged');
       statesRef.current = replica.states();
       if (publishChange) publish({ index: true });
-      if (persist) void cache.saveRows(accepted).catch((error) => callback('onError', error));
+      if (persist) void cache.saveRows(accepted).catch(cacheError);
     }
     return accepted;
   }
@@ -278,7 +426,7 @@ export function createChannelFeedRuntime(options = {}) {
       const accepted = applyRows(outcome.rows, {
         source: batch.source === 'network' ? 'history' : 'cache', persist: false, publishChange: false,
       });
-      if (batch.source === 'network') void cache.saveRows(outcome.rows).catch((error) => callback('onError', error));
+      if (batch.source === 'network') void cache.saveRows(outcome.rows).catch(cacheError);
       const result = outcome.result;
       status.completedPages += 1;
       status.lastSource = batch.source;
@@ -334,6 +482,8 @@ export function createChannelFeedRuntime(options = {}) {
     if (principal && principal !== selectedPrincipal) {
       for (const channelId of histories.keys()) admission.reset(channelId);
       histories.clear(); grants.clear(); replica.reset(); statesRef.current = replica.states(); cursors.resetReads();
+      activityEntries.clear(); timerEvents.splice(0); timerOverflow = null;
+      timerAcknowledgedRevision = timerRevision; activityConnected = false; activityRevision += 1;
     }
     principal = selectedPrincipal;
     localReplicaReady = false; localReplicaError = ''; localReplicaErrorCode = '';
@@ -360,6 +510,7 @@ export function createChannelFeedRuntime(options = {}) {
       publish({ index: true });
       return { resume: replicaResumeSnapshot(selected.meta) };
     } catch (error) {
+      if (epoch !== principalEpoch || error?.code === 'cache_owner_changed') return { resume: {} };
       localReplicaError = error?.message || '本地缓存初始化失败';
       localReplicaErrorCode = String(error?.code || 'cache_selection_failed');
       callback('onError', error);
@@ -378,12 +529,23 @@ export function createChannelFeedRuntime(options = {}) {
     world = nextWorld;
     let selectedMeta = cache.metaSnapshot();
     if (principal && world) {
-      const selected = await cache.ensureOwner(principal, { world });
+      let selected;
+      try {
+        selected = await cache.ensureOwner(principal, { world });
+      } catch (error) {
+        if (epoch !== attachEpoch || error?.code === 'cache_owner_changed') return { stale: true, meta: new Map() };
+        throw error;
+      }
       if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: new Map() };
       selectedMeta = selected.meta;
       if (worldChanged) {
         for (const channelId of histories.keys()) admission.reset(channelId);
         histories.clear(); grants.clear(); replica.reset(); statesRef.current = replica.states(); cursors.resetReads();
+        activityEntries.clear();
+        timerEvents.splice(0);
+        timerAcknowledgedRevision = timerRevision;
+        timerOverflow = null;
+        activityRevision += 1;
       }
     }
     grants.clear();
@@ -409,6 +571,15 @@ export function createChannelFeedRuntime(options = {}) {
       applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
     }
     if (principal && world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
+    let retiredActivity = false;
+    for (const [key, entry] of activityEntries) {
+      if (entry.state !== 'active' || entry.generation === generation) continue;
+      activityEntries.delete(key);
+      retiredActivity = true;
+    }
+    const connectionChanged = !activityConnected || retiredActivity;
+    activityConnected = true;
+    if (connectionChanged) activityRevision += 1;
     localReplicaReady = true;
     publish({ index: true });
     return { changed: true, meta: selectedMeta };
@@ -419,7 +590,7 @@ export function createChannelFeedRuntime(options = {}) {
     const low = historyNumeric(payload.scan_low_seq);
     const high = historyNumeric(payload.scanned_seq);
     if (!payload.channel_id || !low || high < low) return false;
-    void cache.saveCoverage(payload.channel_id, low, high).catch((error) => callback('onError', error));
+    void cache.saveCoverage(payload.channel_id, low, high).catch(cacheError);
     return true;
   }
 
@@ -444,6 +615,12 @@ export function createChannelFeedRuntime(options = {}) {
     networkBatches.clear();
     for (const channelId of histories.keys()) admission.reset(channelId);
     histories.clear(); grants.clear();
+    activityEntries.clear();
+    timerEvents.splice(0);
+    timerAcknowledgedRevision = timerRevision;
+    timerOverflow = null;
+    activityConnected = false;
+    activityRevision += 1;
     replica.reset(); statesRef.current = replica.states(); publish({ index: true });
   }
 
@@ -452,6 +629,7 @@ export function createChannelFeedRuntime(options = {}) {
     if (requestGeneration && requestGeneration !== generation) return false;
     for (const status of histories.values()) status.attached = false;
     attachEpoch += 1;
+    if (activityConnected) { activityConnected = false; activityRevision += 1; }
     generation = 0;
     for (const batch of networkBatches.values()) void adapters.cancel(batch, 'history disconnected');
     networkBatches.clear(); publish(); return true;
@@ -468,11 +646,53 @@ export function createChannelFeedRuntime(options = {}) {
     if (!cursors.isReadAuthorityReady() || (confirmation.generation && confirmation.generation !== generation)) return false;
     return cursors.acknowledgeNotifications(channelId, historyNumeric(confirmation.boundary));
   }
+  function acknowledgeAgentActivity(channelId, agentId) {
+    let changed = false;
+    for (const [key, entry] of activityEntries) {
+      if (entry.state !== 'settled' || entry.channelId !== channelId || entry.agentId !== agentId) continue;
+      activityEntries.delete(key);
+      changed = true;
+    }
+    if (changed) { activityRevision += 1; publish(); }
+    return changed;
+  }
+  function acknowledgeTimerFirings(throughRevision = timerRevision) {
+    const next = Math.min(timerRevision, Math.max(timerAcknowledgedRevision, historyNumeric(throughRevision)));
+    if (next === timerAcknowledgedRevision) return false;
+    timerAcknowledgedRevision = next;
+    while (timerEvents[0]?.revision <= next) timerEvents.shift();
+    if (timerOverflow && timerOverflow.throughRevision <= next) timerOverflow = null;
+    publish();
+    return true;
+  }
+  function attachAgentActivity(detail = {}) {
+    const nextGeneration = historyNumeric(detail.generation);
+    if (!nextGeneration || nextGeneration !== generation || incompatible) return false;
+    if (activityConnected) return true;
+    activityConnected = true;
+    activityRevision += 1;
+    publish();
+    return true;
+  }
+  function disconnectAgentActivity() {
+    if (!activityConnected) return false;
+    activityConnected = false;
+    activityRevision += 1;
+    publish();
+    return true;
+  }
+  const agentActivityPort = Object.freeze({
+    attach: attachAgentActivity,
+    disconnect: disconnectAgentActivity,
+  });
   const resumeLocalReplica = () => localReplicaReady ? replicaResumeSnapshot(cache.metaSnapshot()) : {};
 
   function buildSnapshot() {
+    const agentActivity = agentActivitySnapshot();
+    const timerFirings = timerFiringSnapshot();
     return Object.freeze({
       cursorsRef, statesRef, version, indexVersion, localReplicaReady, localReplicaError, localReplicaErrorCode,
+      agentActivity, timerFirings, agentActivityPort,
       bump: () => publish({ index: true }),
       enqueue, pageEnd, liveCheckpoint, setHistoryGrants, prepareLocalReplica, resumeLocalReplica,
       disconnectHistory, stopIncompatible, cancel: disconnectHistory, clear, resetPersistent,
@@ -484,6 +704,10 @@ export function createChannelFeedRuntime(options = {}) {
       refreshChannel: async (channelId) => Boolean(await wireRef.current?.channelMeta?.(channelId)),
       reconcileIdentity: (channelId) => { if (!replica.state(channelId)) return false; publish(); return true; },
       loadHistory, markRead, acknowledgeNotifications,
+      agentActivityFor: (channelId) => agentActivity.byChannel[channelId]
+        || Object.freeze({ active: Object.freeze([]), agents: Object.freeze({}) }),
+      acknowledgeAgentActivity,
+      acknowledgeTimerFirings,
       coldEntryDiagnosticsFor: (channelId) => Object.freeze({
         feed: { localReplicaReady, localReplicaErrorCode },
         replica: { revision: replica.revision(channelId), rows: replica.state(channelId)?.rows.size || 0 },
@@ -499,6 +723,7 @@ export function createChannelFeedRuntime(options = {}) {
     destroyed = true;
     for (const batch of networkBatches.values()) void adapters.cancel(batch, 'feed runtime destroyed');
     networkBatches.clear(); executor.clear('feed runtime destroyed');
+    activityEntries.clear(); timerEvents.splice(0);
     replica.destroy(); statesRef.current = replica.states(); cursors.destroy(); void cache.destroy();
     subscribers.clear(); ownerCommands.clear();
   }
