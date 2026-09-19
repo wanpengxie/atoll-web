@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   createConversationPresentation,
-  createConversationRoleFinalizer,
-  finalizeConversationPresentation,
   presentationEntryId,
-  presentationGeometryKey,
 } from '../src/model/conversation-presentation.js';
+
+function publish(owner, entries, options) {
+  const candidate = owner.evaluate(entries, options);
+  expect(owner.commitCandidate(candidate)).toBe(true);
+  return candidate.snapshot;
+}
 
 const message = (id, seq, text = id, sender = 'agent-a') => ({
   kind: 'standalone', seq,
@@ -47,24 +50,24 @@ describe('immutable conversation presentation', () => {
     const projector = createConversationPresentation();
     const m2 = message('m2', 2);
     const m3 = message('m3', 3);
-    const initial = projector.project([m2], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
-    const prepend = projector.project([message('m1', 1), m2], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 2 });
+    const initial = publish(projector, [m2], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
+    const prepend = publish(projector, [message('m1', 1), m2], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 2 });
     expect(prepend.changes).toMatchObject({ kind: 'prepend', prefixCount: 1 });
     expect(prepend.entities.get('m2')).toBe(initial.entities.get('m2'));
-    const append = projector.project([message('m1', 1), m2, m3], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 3 });
+    const append = publish(projector, [message('m1', 1), m2, m3], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 3 });
     expect(append.changes.kind).toBe('append');
-    const mixed = projector.project([m3, m2], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 4 });
+    const mixed = publish(projector, [m3, m2], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 4 });
     expect(mixed.changes.kind).toBe('mixed');
   });
 
   it('hands a visual slot only to a reciprocal replacement at the same committed row position', () => {
     const projector = createConversationPresentation();
     const old = turnEntry('old', 2, { replacedBy: 'new' });
-    const initial = projector.project([message('before', 1), old, message('after', 4)], {
+    const initial = publish(projector, [message('before', 1), old, message('after', 4)], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 4,
     });
     const replacement = turnEntry('new', 5, { target: 'old' });
-    const next = projector.project([message('before', 1), replacement, message('after', 4)], {
+    const next = publish(projector, [message('before', 1), replacement, message('after', 4)], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 5,
     });
 
@@ -75,10 +78,10 @@ describe('immutable conversation presentation', () => {
 
   it('keeps the replacement position relative to surviving rows across an unrelated prepend', () => {
     const projector = createConversationPresentation();
-    projector.project([message('before', 2), turnEntry('old', 3, { replacedBy: 'new' }), message('after', 4)], {
+    publish(projector, [message('before', 2), turnEntry('old', 3, { replacedBy: 'new' }), message('after', 4)], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 4,
     });
-    const next = projector.project([
+    const next = publish(projector, [
       message('prepended', 1), message('before', 2), turnEntry('new', 5, { target: 'old' }), message('after', 4),
     ], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 5,
@@ -88,10 +91,10 @@ describe('immutable conversation presentation', () => {
 
   it('does not infer a visual slot from one-way protocol facts, reorders, or a new view epoch', () => {
     const oneWay = createConversationPresentation();
-    oneWay.project([turnEntry('old', 1)], {
+    publish(oneWay, [turnEntry('old', 1)], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
     });
-    const incomplete = oneWay.project([turnEntry('new', 2, { target: 'old' })], {
+    const incomplete = publish(oneWay, [turnEntry('new', 2, { target: 'old' })], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
     });
     expect(incomplete.entities.get('new').visualSlotID).toBe('new');
@@ -99,16 +102,16 @@ describe('immutable conversation presentation', () => {
     const reorder = createConversationPresentation();
     const a = turnEntry('a', 1, { replacedBy: 'b' });
     const b = turnEntry('b', 2, { target: 'a' });
-    reorder.project([a, b], { nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2 });
-    const swapped = reorder.project([b, a], { nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 3 });
+    publish(reorder, [a, b], { nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2 });
+    const swapped = publish(reorder, [b, a], { nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 3 });
     expect(swapped.entities.get('a').visualSlotID).toBe('a');
     expect(swapped.entities.get('b').visualSlotID).toBe('b');
 
     const rebase = createConversationPresentation();
-    rebase.project([turnEntry('old', 1, { replacedBy: 'new' })], {
+    publish(rebase, [turnEntry('old', 1, { replacedBy: 'new' })], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
     });
-    const rebased = rebase.project([turnEntry('new', 2, { target: 'old' })], {
+    const rebased = publish(rebase, [turnEntry('new', 2, { target: 'old' })], {
       nextViewID: 'c0:all', epoch: 'generation:2', sourceRevision: 2,
     });
     expect(rebased.entities.get('new').visualSlotID).toBe('new');
@@ -116,13 +119,13 @@ describe('immutable conversation presentation', () => {
 
   it('retains the original visual slot across committed reciprocal replacement chains', () => {
     const projector = createConversationPresentation();
-    projector.project([turnEntry('a', 1, { replacedBy: 'b' })], {
+    publish(projector, [turnEntry('a', 1, { replacedBy: 'b' })], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
     });
-    const b = projector.project([turnEntry('b', 2, { target: 'a', replacedBy: 'c' })], {
+    const b = publish(projector, [turnEntry('b', 2, { target: 'a', replacedBy: 'c' })], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
     });
-    const c = projector.project([turnEntry('c', 3, { target: 'b' })], {
+    const c = publish(projector, [turnEntry('c', 3, { target: 'b' })], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 3,
     });
     expect(b.entities.get('b').visualSlotID).toBe('a');
@@ -131,12 +134,12 @@ describe('immutable conversation presentation', () => {
 
   it('does not hand a stable child root slot to a replacement folded into another visual root', () => {
     const projector = createConversationPresentation();
-    projector.project([turnEntry('child', 2, { replacedBy: 'replacement' })], {
+    publish(projector, [turnEntry('child', 2, { replacedBy: 'replacement' })], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
     });
     const replacement = turnEntry('replacement', 4, { target: 'child' });
     const parent = turnEntry('parent', 1, { thread: [replacement] });
-    const next = projector.project([parent], {
+    const next = publish(projector, [parent], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 4,
     });
 
@@ -149,10 +152,10 @@ describe('immutable conversation presentation', () => {
     const projector = createConversationPresentation();
     const b = message('b', 2);
     const c = message('c', 3);
-    const initial = projector.project([b, c], {
+    const initial = publish(projector, [b, c], {
       nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1,
     });
-    const mixed = projector.project([message('a', 1), b, c, message('d', 4)], {
+    const mixed = publish(projector, [message('a', 1), b, c, message('d', 4)], {
       nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 2,
     });
     expect(mixed.changes).toMatchObject({
@@ -164,9 +167,9 @@ describe('immutable conversation presentation', () => {
   it('keeps prepend structure orthogonal from an existing-row revision', () => {
     const projector = createConversationPresentation();
     const b = message('b', 2, 'before');
-    projector.project([b], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
+    publish(projector, [b], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
     const updatedB = message('b', 2, 'after');
-    const next = projector.project([message('a', 1), updatedB], {
+    const next = publish(projector, [message('a', 1), updatedB], {
       nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 2,
       sourceChanges: [{ revision: 2, id: 'b', kind: 'content' }],
     });
@@ -178,7 +181,7 @@ describe('immutable conversation presentation', () => {
   it('detaches published rows from mutable replica entries', () => {
     const projector = createConversationPresentation();
     const entry = message('m1', 1, 'before');
-    const snapshot = projector.project([entry], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
+    const snapshot = publish(projector, [entry], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
     entry.envelope.payload.body.text = 'after';
     expect(snapshot.entities.get('m1').body.envelope.payload.body.text).toBe('before');
     expect(Object.isFrozen(snapshot.entities.get('m1').body)).toBe(true);
@@ -218,7 +221,7 @@ describe('immutable conversation presentation', () => {
         return Reflect.get(target, property, receiver);
       },
     });
-    const initial = projector.project(entries, {
+    const initial = publish(projector, entries, {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
     });
     const initialRoot = initial.entities.get(rootRequest.id);
@@ -235,7 +238,7 @@ describe('immutable conversation presentation', () => {
     childTurn.lastSeq = progress.seq;
     childTurn.provisional.push({ seq: progress.seq, envelope: progress });
     entryVisits = 0;
-    const advanced = projector.project(entries, {
+    const advanced = publish(projector, entries, {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
       sourceChanges: [{ revision: 2, id: rootRequest.id, subjectID: childRequest.id, kind: 'content' }],
     });
@@ -251,10 +254,10 @@ describe('immutable conversation presentation', () => {
 
     const filteredProjector = createConversationPresentation();
     const filteredEntries = [{ ...rootEntry, thread: [] }];
-    const filteredInitial = filteredProjector.project(filteredEntries, {
+    const filteredInitial = publish(filteredProjector, filteredEntries, {
       nextViewID: 'c0:mine', epoch: 'generation:1', sourceRevision: 1,
     });
-    const filteredAdvanced = filteredProjector.project(filteredEntries, {
+    const filteredAdvanced = publish(filteredProjector, filteredEntries, {
       nextViewID: 'c0:mine', epoch: 'generation:1', sourceRevision: 2,
       sourceChanges: [{ revision: 2, id: rootRequest.id, subjectID: childRequest.id, kind: 'content' }],
     });
@@ -268,7 +271,7 @@ describe('immutable conversation presentation', () => {
     const projector = createConversationPresentation();
     const rootCount = 4_096;
     const initialEntries = Array.from({ length: rootCount }, (_, index) => message(`m${index}`, index + 1));
-    projector.project(initialEntries, {
+    publish(projector, initialEntries, {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
     });
 
@@ -285,7 +288,7 @@ describe('immutable conversation presentation', () => {
       subjectID: `m${rootCount - 1}`,
       kind: 'structure',
     }));
-    const rebuilt = projector.project(replacementEntries, {
+    const rebuilt = publish(projector, replacementEntries, {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 129, sourceChanges,
     });
 
@@ -299,8 +302,8 @@ describe('immutable conversation presentation', () => {
   it('does not reinterpret the old window head when a predecessor arrives', () => {
     const projector = createConversationPresentation();
     const current = message('m2', 2);
-    const initial = projector.project([current], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
-    const prepended = projector.project([message('m1', 1), current], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 2 });
+    const initial = publish(projector, [current], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1 });
+    const prepended = publish(projector, [message('m1', 1), current], { nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 2 });
     expect(prepended.entities.get('m2')).toBe(initial.entities.get('m2'));
     expect(prepended.entities.get('m2').continuation).toBe(false);
   });
@@ -308,16 +311,16 @@ describe('immutable conversation presentation', () => {
   it('publishes consumed source readiness without rewriting unchanged rows or geometry', () => {
     const projector = createConversationPresentation();
     const entry = message('m1', 1);
-    const initial = projector.project([entry], {
+    const initial = publish(projector, [entry], {
       nextViewID: 'c0:all', epoch: 'p:b', sourceRevision: 1,
     });
-    const advanced = projector.project([entry], {
+    const advanced = publish(projector, [entry], {
       nextViewID: 'c0:all',
       epoch: 'p:b',
       sourceRevision: 2,
       sourceChanges: [{ revision: 2, id: 'hidden-protocol-fact', kind: 'content' }],
     });
-    const structurallyAdvanced = projector.project([entry], {
+    const structurallyAdvanced = publish(projector, [entry], {
       nextViewID: 'c0:all',
       epoch: 'p:b',
       sourceRevision: 3,
@@ -336,44 +339,26 @@ describe('immutable conversation presentation', () => {
     expect(structurallyAdvanced.entities.get('m1')).toBe(initial.entities.get('m1'));
   });
 
-  it('includes content and local layout decisions in the geometry key', () => {
-    const rows = [{ id: 'm1', contentRevision: '1:0', layoutClass: 'normal' }];
-    expect(presentationGeometryKey(rows, 'fold:0')).not.toBe(presentationGeometryKey([{ ...rows[0], contentRevision: '2:0' }], 'fold:0'));
-    expect(presentationGeometryKey(rows, 'fold:0')).not.toBe(presentationGeometryKey(rows, 'fold:1'));
-  });
-
-  it('publishes latest only from an exact authority token and keeps role out of geometry', () => {
+  it('publishes the current-entry candidate without mutating row geometry', () => {
     const projector = createConversationPresentation();
-    const snapshot = projector.project([message('m1', 1), message('m2', 2)], {
+    const snapshot = publish(projector, [message('m1', 1), message('m2', 2)], {
       nextViewID: 'c0:all', epoch: 'generation:4', sourceRevision: 9,
     });
     expect(snapshot.currentEntryCandidate).toEqual({ id: 'm2', seqHigh: 2, local: false });
-    expect(snapshot.rows.every((row) => row.role.latest === false)).toBe(true);
-
-    const authority = { epoch: 'generation:4', viewID: 'c0:all', sourceRevision: 9, candidateID: 'm2' };
-    const finalized = finalizeConversationPresentation(snapshot, authority);
-    expect(finalized.entities.get('m1')).toBe(snapshot.entities.get('m1'));
-    expect(finalized.entities.get('m2')).not.toBe(snapshot.entities.get('m2'));
-    expect(finalized.entities.get('m2').role.latest).toBe(true);
-    expect(finalized.revision).toBe(snapshot.revision);
-    expect(finalized.entities.get('m2').contentRevision).toBe(snapshot.entities.get('m2').contentRevision);
-    expect(presentationGeometryKey(finalized.rows)).toBe(presentationGeometryKey(snapshot.rows));
-    expect(finalizeConversationPresentation(snapshot, authority).entities.get('m2').role.latest).toBe(true);
-    expect(finalizeConversationPresentation(snapshot, { ...authority, epoch: 'generation:3' })).toBe(snapshot);
-    expect(finalizeConversationPresentation(snapshot, { ...authority, sourceRevision: 8 })).toBe(snapshot);
+    expect(snapshot.rows).toEqual([snapshot.entities.get('m1'), snapshot.entities.get('m2')]);
   });
 
   it('keeps the same candidate across prepend and excludes control-only tail rows', () => {
     const projector = createConversationPresentation();
     const current = message('m2', 20);
-    const initial = projector.project([current], {
+    const initial = publish(projector, [current], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 20,
     });
     const control = {
       kind: 'standalone', seq: 21,
       envelope: { id: 'expired', type: 'agent.hold_expired', seq: 21, sender: { id: 'system' }, payload: { body: {} } },
     };
-    const prepended = projector.project([message('m1', 10), current, control], {
+    const prepended = publish(projector, [message('m1', 10), current, control], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 21,
     });
     expect(initial.currentEntryCandidate.id).toBe('m2');
@@ -381,48 +366,9 @@ describe('immutable conversation presentation', () => {
     expect(prepended.entities.get('m2')).toBe(initial.entities.get('m2'));
   });
 
-  it('publishes exact role deltas on a separate monotonic revision', () => {
-    const projector = createConversationPresentation();
-    const roles = createConversationRoleFinalizer();
-    const initial = projector.project([message('m1', 1)], {
-      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
-    });
-    const none = roles.finalize(initial, null);
-    expect(none).toMatchObject({ roleRevision: 0, roleChanges: { updated: [] } });
-
-    const m1 = roles.finalize(initial, {
-      epoch: initial.epoch, viewID: initial.viewID, sourceRevision: 1, candidateID: 'm1',
-    });
-    expect(m1).toMatchObject({ roleRevision: 1, roleChanges: { updated: ['m1'] } });
-    expect(roles.finalize(initial, {
-      epoch: initial.epoch, viewID: initial.viewID, sourceRevision: 1, candidateID: 'm1',
-    })).toBe(m1);
-
-    const appended = projector.project([message('m1', 1), message('m2', 2)], {
-      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 2,
-    });
-    const m2 = roles.finalize(appended, {
-      epoch: appended.epoch, viewID: appended.viewID, sourceRevision: 2, candidateID: 'm2',
-    });
-    expect(m2).toMatchObject({ roleRevision: 2, roleChanges: { updated: ['m1', 'm2'] } });
-    expect(m2.entities.get('m1').role.latest).toBe(false);
-    expect(m2.entities.get('m2').role.latest).toBe(true);
-    expect(m2.revision).toBe(appended.revision);
-    expect(presentationGeometryKey(m2.rows)).toBe(presentationGeometryKey(appended.rows));
-
-    const revoked = roles.finalize(appended, null);
-    expect(revoked).toMatchObject({ roleRevision: 3, roleChanges: { updated: ['m2'] } });
-    expect(revoked.entities.get('m2').role.latest).toBe(false);
-    const restored = roles.finalize(appended, {
-      epoch: appended.epoch, viewID: appended.viewID, sourceRevision: 2, candidateID: 'm2',
-    });
-    expect(restored).toMatchObject({ roleRevision: 4, roleChanges: { updated: ['m2'] } });
-    expect(restored.entities.get('m2').role.latest).toBe(true);
-  });
-
   it('publishes a projection candidate exactly once after commit', () => {
     const projector = createConversationPresentation();
-    const initial = projector.project([message('a', 1)], {
+    const initial = publish(projector, [message('a', 1)], {
       nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
     });
     const candidate = projector.evaluate([message('a', 1), message('b', 2)], {
@@ -437,22 +383,4 @@ describe('immutable conversation presentation', () => {
     expect(projector.current().revision).toBe(initial.revision + 1);
   });
 
-  it('publishes a latest-role candidate exactly once after commit', () => {
-    const projector = createConversationPresentation();
-    const roles = createConversationRoleFinalizer();
-    const snapshot = projector.project([message('a', 1)], {
-      nextViewID: 'c0:all', epoch: 'generation:1', sourceRevision: 1,
-    });
-    const candidate = roles.evaluate(snapshot, {
-      epoch: snapshot.epoch, viewID: snapshot.viewID,
-      sourceRevision: snapshot.sourceRevision, candidateID: 'a',
-    });
-
-    expect(roles.current()).toBeNull();
-    expect(candidate.snapshot).toMatchObject({ roleRevision: 1, roleChanges: { updated: ['a'] } });
-    expect(roles.commitCandidate(candidate)).toBe(true);
-    expect(roles.current()).toBe(candidate.snapshot);
-    expect(roles.commitCandidate(candidate)).toBe(false);
-    expect(roles.current().roleRevision).toBe(1);
-  });
 });

@@ -7,11 +7,11 @@ const source = (relative) => readFileSync(resolve(process.cwd(), relative), 'utf
 
 describe('conversation architecture boundaries', () => {
   it('has one mature virtual-list geometry executor and no legacy engine', () => {
-    const list = source('src/ui/timeline/LegendMessageList.jsx');
+    const list = source('src/ui/timeline/VendorListExecutor.jsx');
     const domExecutor = source('src/ui/timeline/reading-dom-command-executor.js');
     const browsing = source('src/ui/timeline/useBrowsingReadingController.js');
-    const following = source('src/ui/timeline/following-scroll-controller.js');
-    const timeline = source('src/ui/Timeline.jsx');
+    const navigation = source('src/ui/timeline/reading-navigation-coordinator.js');
+    const surface = source('src/ui/conversation/ConversationSurface.jsx');
     expect(list).toContain("from 'react-virtuoso'");
     expect(list).not.toContain("from '@tanstack/react-virtual'");
     expect(list).not.toMatch(/scrollTop\s*=|scrollBy\(|\.scrollTo(?:Index)?\s*\(/);
@@ -24,25 +24,21 @@ describe('conversation architecture boundaries', () => {
     expect(domExecutor).toMatch(/command\.type === 'position-row'/);
     expect(domExecutor).toMatch(/command\.type === 'scroll-tail'/);
     expect(list).not.toContain('autoscrollToBottom');
-    expect(list).toMatch(/followOutput=\{false\}/);
+    expect(list).toMatch(/followOutput=\{reading\.session\.mode === READING_MODE\.following \? 'auto' : false\}/);
     // One local DOM write is the only application geometry writer. Every
     // authorized trigger enters the same issuer; runtime geometry remains a
     // Chromium contract, not a jsdom assertion.
     expect(domExecutor.match(/\broot\.scrollTo\(\{/g)).toHaveLength(1);
     expect(domExecutor).toMatch(/top:\s*command\.reverse === true \? 0 : root\.scrollHeight/);
-    expect(following.match(/type:\s*'scroll-tail'/g)).toHaveLength(1);
-    expect(list).not.toMatch(/\bon(?:ReadingObservation|PresentationMaterialized|AtTop|NearTop|Underfill)\b/);
+    expect(list.match(/type:\s*'scroll-tail'/g)).toHaveLength(1);
     expect(browsing).toMatch(/\bonReadingObservation\b/);
     expect(browsing).toMatch(/\bonPresentationMaterialized\b/);
     expect(browsing).toMatch(/\bon(?:AtTop|NearTop|Underfill)\b/);
-    expect(`${browsing}\n${following}`).not.toMatch(/document\.|window\.|querySelector|getBoundingClientRect|\.scrollTo\(/);
-    expect(`${list}\n${browsing}\n${following}`).not.toMatch(/atoll:input-resize-prepared|data-input-resize-transition|timeline-input-resize-content/);
-    expect(list).toContain("issueBottomIfCurrent('explicit-bottom')");
-    expect(list).toContain("issueBottomIfCurrent('item-layout')");
-    expect(list).toContain("issueBottomIfCurrent('list-commit')");
-    expect(list).toContain("issueBottomIfCurrent('snapshot-commit')");
-    expect(list).toContain("issueBottomIfCurrent('viewport-layout')");
-    expect(timeline).not.toMatch(/scrollTop\s*=|scrollBy\(|scrollToIndex/);
+    expect(`${browsing}\n${navigation}`).not.toMatch(/document\.|window\.|querySelector|getBoundingClientRect|\.scrollTo\(/);
+    expect(`${list}\n${browsing}\n${navigation}`).not.toMatch(/atoll:input-resize-prepared|data-input-resize-transition|timeline-input-resize-content/);
+    expect(list).toMatch(/current\.bottomIntent/);
+    expect(list).toMatch(/reading\.consumeBottomIntent\(intent\)/);
+    expect(surface).not.toMatch(/scrollTop\s*=|scrollBy\(|scrollToIndex/);
     expect(() => source('src/ui/timeline/VirtualTimelineAdapter.jsx')).toThrow();
     expect(() => source('src/ui/timeline/useConversationViewport.js')).toThrow();
     expect(() => source('src/ui/timeline/scroll-authority.js')).toThrow();
@@ -57,14 +53,15 @@ describe('conversation architecture boundaries', () => {
 
   it('keeps Composer outside the fixed reading geometry contract', () => {
     const surface = source('src/ui/conversation/ConversationSurface.jsx');
-    const timeline = source('src/ui/Timeline.jsx');
+    const workspace = source('src/app/WorkspaceApp.jsx');
     const css = source('src/styles/app-shell.css');
     const composer = source('src/styles/composer.css');
     expect(surface).not.toMatch(/ResizeObserver|MutationObserver|requestAnimationFrame|dispatchEvent/);
     expect(surface).not.toMatch(/prepareSendClear|ComposerPresentation|sendClearRevision/);
     expect(surface).toMatch(/className="conversation-bottom-stack"/);
     expect(surface).not.toMatch(/floatingRef|waiting.*height|inputMaxHeight|scroll(?:Top|To|By|IntoView)/i);
-    expect(timeline).toMatch(/<ConversationSurface input=\{composer\} floating=\{floatingInput\}>/);
+    expect(workspace).toMatch(/composer:\s*<Composer model=\{composer\.model\} commands=\{composer\.commands\} \/>/);
+    expect(workspace).toMatch(/<ConversationSurface \{\.\.\.conversationPort\} \/>/);
     expect(css).toMatch(/\.conversation-surface\s*\{[^}]*--conversation-composer-base-height:\s*100px[^}]*--conversation-reading-gap:\s*32px[^}]*--conversation-bottom-reserve:/s);
     expect(css).toMatch(/\.conversation-reading-slot\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0 0 var\(--conversation-bottom-reserve\)/s);
     expect(css).toMatch(/\.conversation-bottom-stack\s*\{[^}]*position:\s*absolute[^}]*bottom:\s*0[^}]*max-height:\s*min\(var\(--conversation-input-max-height\), 100%\)/s);
@@ -76,7 +73,7 @@ describe('conversation architecture boundaries', () => {
   it('gives mobile keyboard geometry to one visual viewport owner', () => {
     const shell = source('src/app/SurfaceShell.jsx');
     const responsive = source('src/styles/responsive.css');
-    const composer = source('src/ui/Composer.jsx');
+    const composer = source('src/ui/composer/Composer.jsx');
     expect(shell).toContain('globalThis.visualViewport');
     expect(shell).toContain("viewport.addEventListener('resize', commitFrame)");
     expect(shell).toContain("viewport.addEventListener('scroll', commitFrame)");

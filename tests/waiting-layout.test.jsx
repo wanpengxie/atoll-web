@@ -4,11 +4,65 @@ import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConversationSurface } from '../src/ui/conversation/ConversationSurface.jsx';
 
+vi.mock('../src/ui/timeline/useTimelinePreferences.js', () => ({
+  CONVERSATION_SCOPE: { mine: 'mine', all: 'all' },
+  useTimelinePreferences: () => ({
+    scope: 'all', actorFilter: new Set(), foldOverrides: new Map(), messageLayoutStore: {},
+    toggleScope: vi.fn(), toggleActorFilter: vi.fn(), removeActorFilter: vi.fn(), toggleFold: vi.fn(),
+  }),
+}));
+
+vi.mock('../src/ui/timeline/useConversationProjection.js', () => ({
+  useConversationProjection: () => ({
+    projection: { presentation: { rows: [] } },
+    viewport: {
+      activationID: 'activation-1', session: { mode: 'following' }, availability: 'empty-known',
+      historyDemand: { phase: 'idle' }, historyBoundary: null, unseenNotice: 0,
+      captureBottomIntent: vi.fn(), requestBottom: vi.fn(), bindBottomIntentTargets: vi.fn(),
+      revokeBottomIntent: vi.fn(), jumpToLatest: vi.fn(),
+    },
+    latestRowID: '', browsingExpandedSlots: new Set(), livePresentationArrivals: [],
+  }),
+}));
+
+vi.mock('../src/ui/timeline/useWaitingEditingController.jsx', async (load) => {
+  const actual = await load();
+  return {
+    ...actual,
+    useWaitingEditingController: ({ pending }) => ({
+      editingTargetId: '', editingReplacementId: '', presentationEditing: null,
+      timelineLocalEchoes: [], queuedTurns: pending, editNotice: '', startEditing: vi.fn(),
+    }),
+    useWaitingHandoff: () => ({ enteringRequestIDs: new Set(), exiting: [] }),
+    WaitingLayer: ({ turns }) => turns.length
+      ? <section className="agent-wait-layer">waiting</section>
+      : null,
+  };
+});
+
+vi.mock('../src/ui/timeline/useTimelineRowRenderer.jsx', () => ({
+  useTimelineRowRenderer: () => ({ rowRenderRevision: 0, renderRow: () => null }),
+}));
+
+vi.mock('../src/ui/timeline/ReadingContainerHandoff.jsx', () => ({
+  ReadingContainerHandoff: () => <div data-testid="reading">reading</div>,
+}));
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+
+const callbacks = {
+  onComposerEditChange: vi.fn(), onTaskControl: vi.fn(), onRequestCapability: vi.fn(), onCancel: vi.fn(),
+};
+
+function Surface({ composer, pending = [], className = '' }) {
+  return <ConversationSurface
+    state={{ channelId: 'c0' }} composer={composer} pending={pending} className={className} {...callbacks}
+  />;
+}
 
 describe('fixed conversation surface ownership', () => {
   it('does not install a size/mutation/frame observer or publish a scroll intent', () => {
@@ -19,13 +73,7 @@ describe('fixed conversation surface ownership', () => {
     vi.stubGlobal('MutationObserver', MutationObserver);
     vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
 
-    function Input() {
-      return <section className="composer-wrap">composer</section>;
-    }
-    const view = render(<ConversationSurface
-      input={<Input />}
-      floating={<section className="agent-wait-layer">waiting</section>}
-    ><div className="timeline-message-list">reading</div></ConversationSurface>);
+    const view = render(<Surface composer={<section className="composer-wrap">composer</section>} />);
 
     expect(ResizeObserver).not.toHaveBeenCalled();
     expect(MutationObserver).not.toHaveBeenCalled();
@@ -35,15 +83,15 @@ describe('fixed conversation surface ownership', () => {
     expect(view.container.querySelector('[data-send-clear-transition]')).toBeNull();
   });
 
-  it('keeps reading and focused Composer DOM identities across input and Waiting changes', () => {
+  it('keeps reading and focused Composer DOM identities across Composer and Waiting changes', () => {
     function Subject({ lines, waiting }) {
-      return <ConversationSurface
-        input={<section className="composer-wrap">
+      return <Surface
+        pending={waiting ? [{ id: 'waiting-1' }] : []}
+        composer={<section className="composer-wrap">
           <button type="button" data-testid="composer-control">send</button>
           {Array.from({ length: lines }, (_, index) => <p key={index}>{index}</p>)}
         </section>}
-        floating={waiting ? <section className="agent-wait-layer">waiting</section> : null}
-      ><div data-testid="reading">reading</div></ConversationSurface>;
+      />;
     }
 
     const view = render(<Subject lines={1} waiting={false} />);
@@ -66,21 +114,22 @@ describe('fixed conversation surface ownership', () => {
     expect(document.activeElement).toBe(control);
   });
 
-  it('keeps the floating stack separate from the reading subtree and preserves caller classes', () => {
-    const view = render(<ConversationSurface
+  it('keeps the waiting layer and Composer outside the reading subtree', () => {
+    const view = render(<Surface
       className="is-test-surface"
-      input={<div data-testid="composer">composer</div>}
-      floating={<div data-testid="waiting">waiting</div>}
-    ><div data-testid="reading">reading</div></ConversationSurface>);
+      pending={[{ id: 'waiting-1' }]}
+      composer={<div data-testid="composer">composer</div>}
+    />);
     const surface = view.container.querySelector('.conversation-surface');
     const readingSlot = view.container.querySelector('.conversation-reading-slot');
     const bottomStack = view.container.querySelector('.conversation-bottom-stack');
+    const waiting = view.container.querySelector('.agent-wait-layer');
 
     expect(surface.classList.contains('is-test-surface')).toBe(true);
     expect(readingSlot.contains(view.getByTestId('reading'))).toBe(true);
     expect(readingSlot.contains(view.getByTestId('composer'))).toBe(false);
-    expect(readingSlot.contains(view.getByTestId('waiting'))).toBe(false);
+    expect(readingSlot.contains(waiting)).toBe(false);
     expect(bottomStack.contains(view.getByTestId('composer'))).toBe(true);
-    expect(bottomStack.contains(view.getByTestId('waiting'))).toBe(true);
+    expect(bottomStack.contains(waiting)).toBe(true);
   });
 });
