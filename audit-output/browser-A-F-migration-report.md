@@ -214,6 +214,44 @@ aggregate。
   `conversation-presentation` current-entry authority → `TimelineRowRenderer`/
   `FoldableBody`，尚未进入 Reading anchor 或 role-transition 几何判定。
 
+### 第九轮前置：#29/#30 第5行→第4行最小对照矩阵（只读，HEAD `05b1fff`）
+
+以下证据来自当前共享工位的真实 Chromium trace；这是给 `reading_tail_owner` 的
+首断点包，不计入冻结 `7ba308c` 的 `23/8` aggregate，也没有改 product 或断言。
+`data-content-revision` 是 DOM 已提交的 presentation content revision；render
+revision 中的 `true/false` 位对应折叠展开状态。
+
+| case | 对照行（第5行，已完成采样） | 第5行状态/paint | 第4行展开卸载首断点 | 点击前/后 mounted IDs |
+| --- | --- | --- | --- | --- |
+| #29 mid | row `aa28d78e-52c2-47a0-bc4a-b197a4c758ea`，fold `…:body`，content `885:79` | `false → true → false`；`top 344.72 → 345.19`（约 `+0.47px`）；collapse 后 `scrollTop=6753`、`scrollHeight=8087` | row `af497a3f-34eb-4755-9d2f-33ab892ee0dc`，content `878:72`；初始 `aria-expanded=false`，点击后 row 从 DOM/mounted 集合卸载，未观察到 `true` paint，断在 line 257 | 第4行 click 前仅 `af497a3f…`；click 后 frame snapshot 无 `data-presentation-row-id`（随后断言等待该 toggle） |
+| #30 near-top | row `f8ec99ff-3103-4751-aa8f-d1e7d371ef5e`，fold `…:body`，content `885:79` | `false → true → false`；`top 173.72 → 174.19`（约 `+0.47px`）；collapse 后 `scrollTop=6924`、`scrollHeight=8087` | row `c2a30544-fd7a-4a8f-a3a1-5a333ba88a2e`，content `878:72`；初始 `aria-expanded=false`，点击后同样卸载，未观察到 `true` paint，断在 line 257 | 第4行 click 前仅 `c2a30544…`；click 后 frame snapshot 无 `data-presentation-row-id` |
+
+第5行 collapse 后再 reveal 第4行之前，#29 的 mounted 集合为
+`40411436-5b69-48d3-a1e1-161b66af55ac` /
+`af497a3f-34eb-4755-9d2f-33ab892ee0dc` /
+`aa28d78e-52c2-47a0-bc4a-b197a4c758ea` /
+`afa7da6d-4c90-4439-803e-93d6e2729a81` /
+`30dfc613-06b7-4a6e-b06f-d755b93e120b`（row3–7），#30 为
+`1798f2a5-602e-4c94-929d-44cf5455667b` /
+`c2a30544-fd7a-4a8f-a3a1-5a333ba88a2e` /
+`f8ec99ff-3103-4751-aa8f-d1e7d371ef5e` /
+`8d526980-c5aa-450f-86dd-4b8485ad4d52` /
+`637070e6-b531-43a6-8399-ee3d9ad9029a`（row3–7）。
+两案均在 `revealRow` 后只剩第4行；点击展开导致列表滚动/重物化，目标 row 在
+`aria-expanded=true` 断言前消失。这是 materialization/presentation handoff，
+不是 selector 变化冒充等价。
+
+### 第九轮前置：#31 current-entry authority 矩阵（只读）
+
+`H-ROLE-6` 的 mounted row 为 `b8c99bd6-ccb8-42de-93b5-32ea79323eb2`，content
+revision `892:86`，render revision 的 latest/fold 位为 false，
+`data-presentation-state=handoff-enter`，timeline/reading mode 均为 `following`，
+composer owner 为 `current`，request type 为 `agent.ask`。该 row 的 fold toggle
+连续 24 次解析均为 `aria-expanded=false`；因此 `currentEntryAuthority` 未把
+candidate 传成 `latestRowID`，`TimelineRowRenderer/FoldableBody` 未获得 latest
+豁免，pulse/anchor geometry 尚未执行。首个公开 owner 交
+`reading_tail_owner`（`conversation-presentation current-entry authority`）。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
