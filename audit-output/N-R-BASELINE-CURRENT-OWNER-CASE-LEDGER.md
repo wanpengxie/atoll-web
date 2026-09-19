@@ -44,7 +44,7 @@
 | NR11 | `reading-container-handoff.test.jsx` | 2 | following↔browsing 切换不重复 list，restore/visibility 正确 | 一个 `VendorListExecutor`，Reading owner 变化不创建第二棵 row tree | `ReadingContainerHandoff` → `VendorListExecutor`；同名 current tests | 旧 handoff wrapper；当前 rerender same stack/region，并检查 visibility/restore status | 2/2 `PASS/current` |
 | NR12 | `reading-navigation-coordinator.test.js` | 10 | wheel/touch/key/pointer 交易有界、可取消、host/activation 不串 | 一个 input generation；native scrollend/quiet fallback 只结算当前 host | `createReadingNavigationCoordinator`；同名 tests | 旧 navigation host timing fixture；当前同公开 coordinator 输入/事件/clock | 10/10 `PASS/current` |
 | NR13 | `reading-navigation-owner.test.jsx` | 7 | 物理 touch、following displacement、bookmark、selection autoscroll 的 Reading ownership | 输入潜势不夺权；有效 displacement 才产生 bookmark；epoch/host replacement 取消旧交易 | 当前 `ReadingSession` + `VendorListExecutor` + coordinator；`reading-observation-settle`、`message-list-lifecycle`、browser reading owner evidence | 旧 `ReadingNavigationOwner`/`useReadingNavigationHost` 已删；当前按 session/coordinator/list public ports 分层验证 | cases 1–6 为 `COVERED/current` 或 `ORACLE/current`；case 7 的 selection pointer owner 已不存在，列 `GAP-NR08`，不恢复 wrapper |
-| NR14 | `reading-observation-settle.test.jsx` | 4 | scrollend/layout 采样只在同一 input epoch 下改变 following | source/settled/geometry/bookmark 与 input epoch 同步；layout 不能取得 user authority | `VendorListExecutor` `reportDomEvidence` → `useBrowsingReadingController` → `ReadingSession`; 同名 current test | 旧 MessageList mock；当前 fake Virtuoso +真实 VendorListExecutor/reading session | case 1 `PASS/current`；cases 2–4 当前 source/settlement 与 baseline owner contract 分歧（selection/layout/stale epoch），`GAP-NR08`，未弱化断言 |
+| NR14 | `reading-observation-settle.test.jsx` | 4 | scrollend/layout 采样只在同一 input epoch 下改变 following | source/settled/geometry/bookmark 与 input epoch 同步；layout 不能取得 user authority | `VendorListExecutor` `reportDomEvidence` → `useBrowsingReadingController` → `ReadingSession`; 同名 current test | 旧 MessageList mock；当前 fake Virtuoso +真实 VendorListExecutor/reading session | case 1 的 source/settlement/mode 通过，但当前 bookmark 缺少基线 `blockID`，列 `GAP-NR08`；cases 2–4 当前 source/settlement 与 baseline owner contract 分歧（selection/layout/stale epoch），均保留断言 |
 | NR15 | `reading-session-admission-handle.test.jsx` | 6 | history admission 在 settle 后续期/反向取消/频道切换/重连时不持有退休句柄 | operation 绑定 activation/view/input/generation；新 owner 才能 settle/cancel | `history-presentation-admission.js`、`history-consumer-obligation.js`、`reading-session.js`；`reading-session-ports`、`history-presentation-admission`、`message-list-lifecycle` | 旧 `useReadingSession` handle；当前用 admission begin/observe/settle/validate、owner tuple 和 ReadingSession ports | 6/6 `COVERED/current`；旧 hook handle 是 implementation oracle，不恢复 hook/API |
 | NR16 | `reply-target.test.js` | 2 | 终态消息可回复到 sender，缺席/self/system 不静默错投，parent/excerpt 保留 | 回复 delivery 必须绑定当前 roster；lost target 不 fallback 到 selected Agent | `composer-model.js` `resolveComposerDelivery`/`createMessageRequest`；`composer-model.test.js`、本分区 public owner test、`agent-answer-reply-gating` | 旧 `replyTargetOf/replyRecipient` pure adapter；当前从真实 Composer delivery 生成 typed batch，并保留 sourceId→parentId | case 1 `COVERED/current`（截断 excerpt 的旧 helper 是 ORACLE）；case 2 `COVERED/current`，self/system gating 由当前 message action/Composer owner 证据，不 export `beginReply` |
 | NR17 | `request-owner.test.js` | 3 | revoke/regrant、world/attempt、awaited draft side-effect 不越权写入 | exact principal/access/world/attempt/draft fence 每阶段重验 | `src/model/request-owner.js`；同名 tests | 同一 capture/assess/execute owner facts 与 async effect | 3/3 `PASS/current` |
@@ -126,7 +126,7 @@
 | NR13-05 | `reading-navigation-owner.test.jsx` — ends touch ownership only when the tracked contact ends | two contacts → only tracked end settles | coordinator | `PASS/current` via coordinator touch contract |
 | NR13-06 | `reading-navigation-owner.test.jsx` — cancels the captured transaction when another control advances the committed epoch | new session epoch → old transaction cancel | ReadingSession + coordinator | `COVERED/current` via lifecycle/ports |
 | NR13-07 | `reading-navigation-owner.test.jsx` — keeps selection autoscroll in browsing evidence even when geometry moves newer | pointer selection + scroll → browse transaction | no selection-navigation public owner in current list | `GAP-NR08`: current VendorListExecutor does not publish this old selection owner contract |
-| NR14-01 | `reading-observation-settle.test.jsx` — keeps current downward user authority when scrollend adds the settled sampling phase | wheel/scrollend/tail → user settled, following | VendorListExecutor → ReadingSession | `PASS/current` |
+| NR14-01 | `reading-observation-settle.test.jsx` — keeps current downward user authority when scrollend adds the settled sampling phase | wheel/scrollend/tail → user settled, following | VendorListExecutor → ReadingSession | `GAP-NR08`: source/settlement/mode pass and the rAF-before-observation timing remains asserted, but current bookmark omits baseline `blockID`; assertion retained |
 | NR14-02 | `reading-observation-settle.test.jsx` — does not let selection autoscroll acquire following authority at the tail | selection + tail → browsing | same | `GAP-NR08`: current evidence source/layout differs from baseline and selection path is absent; assertion retained |
 | NR14-03 | `reading-observation-settle.test.jsx` — keeps an input-free layout arrival at the tail non-authoritative | layout at tail → settled non-authoritative | same | `GAP-NR08`: current report source is layout/non-settled; no test weakening |
 | NR14-04 | `reading-observation-settle.test.jsx` — rejects pending user authority after the reading input epoch advances | wheel then epoch advance → settled evidence must be stale | same | `GAP-NR08`: current evidence still reports user source after epoch advance though mode stays browsing |
@@ -225,6 +225,9 @@
   `source: layout`/`settled: false`; after an input epoch advances, a user-sourced settled
   observation is still reported even though `ReadingSession` correctly remains browsing.
   The old selection navigation owner is also absent from the current single-list path.
+- The same public-owner test's case 1 retains the baseline rAF timing check but shows that
+  `VendorListExecutor`'s bookmark has `messageID`/row geometry without the baseline
+  `blockID`; this is an additional reading-position evidence gap, not a selector failure.
 - Baseline/current: fae8b70 required selection autoscroll to remain browsing evidence,
   layout tail arrival to be settled but non-authoritative, and stale user evidence to be
   rejected by epoch. Current mode safety is partly preserved, but evidence ownership and
@@ -263,7 +266,7 @@ npx vitest run \
   --reporter=dot
 ```
 
-Latest focused run after the public-owner rewrites: **17 files, 71 passed, 3 red
+Latest focused run after the public-owner rewrites: **17 files, 72 passed, 4 red
 assertions in `reading-observation-settle.test.jsx`, 1 expected red `it.fails` in
 `right-panel-file-reference.test.jsx`**. The three Reading reds are retained as
 `GAP-NR08`; the right-panel red is retained as `GAP-NR09`. A broader supporting run also

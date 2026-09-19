@@ -189,21 +189,18 @@ describe('W6 offline draft and recovery', () => {
       if (opens <= 2) throw new Error('retryable indexeddb failure');
       return durableIndexedDB.open(...args);
     };
+    const draft = {
+      text: '数据库恢复后仍在',
+      editorRevision: 1,
+    };
     const store = createOutboxStore({
       databaseName: `retryable-outbox-${crypto.randomUUID()}`,
       indexedDBImpl: flakyIndexedDB,
       IDBKeyRangeImpl: globalThis.IDBKeyRange,
     });
-
-    const draft = {
-      text: '数据库恢复后仍在',
-      editorRevision: 1,
-    };
     await expect(store.writeDraft('offline-root', 'c0', draft, 0)).rejects.toThrow('retryable indexeddb failure');
     await expect(store.writeDraft('offline-root', 'c0', draft, 0)).rejects.toThrow('retryable indexeddb failure');
-    const saved = await store.writeDraft('offline-root', 'c0', {
-      ...draft,
-    }, 0);
+    const saved = await store.writeDraft('offline-root', 'c0', { ...draft }, 0);
     expect(opens).toBe(3);
     expect(saved).toMatchObject({
       conflict: false,
@@ -213,6 +210,35 @@ describe('W6 offline draft and recovery', () => {
       draft: { text: '数据库恢复后仍在' }, editorRevision: 1,
     });
     store.close();
+
+    // The public submission runtime owns the optimistic editor projection. A
+    // failed durable write must not erase that dirty draft before the next
+    // explicit save retries the public Outbox port.
+    const runtimeStore = createOutboxStore({ databaseName: `runtime-retry-${crypto.randomUUID()}` });
+    let runtimeWrites = 0;
+    const runtimeOutbox = {
+      ...runtimeStore,
+      restore: vi.fn((...args) => runtimeStore.restore(...args)),
+      restoreDrafts: vi.fn((...args) => runtimeStore.restoreDrafts(...args)),
+      async writeDraft(...args) {
+        runtimeWrites += 1;
+        if (runtimeWrites === 1) throw new Error('retryable draft persistence failure');
+        return runtimeStore.writeDraft(...args);
+      },
+    };
+    const common = memberHarness({ outboxFactory: () => runtimeOutbox });
+    const { result } = renderHook(() => useComposerSubmissionRuntime(common));
+    await waitFor(() => expect(runtimeOutbox.restoreDrafts).toHaveBeenCalledOnce());
+    await act(async () => {
+      await expect(result.current.updateDraft('c0', draft)).rejects.toMatchObject({ message: 'retryable draft persistence failure' });
+    });
+    expect(result.current.draftFor('c0')).toMatchObject({ text: '数据库恢复后仍在', editorRevision: 1 });
+    let runtimeSaved;
+    await act(async () => {
+      runtimeSaved = await result.current.updateDraft('c0', draft, { preserveEditorRevision: true });
+    });
+    expect(runtimeSaved).toMatchObject({ draft: { text: '数据库恢复后仍在' }, editorRevision: 1 });
+    expect(result.current.draftFor('c0')).toMatchObject({ text: '数据库恢复后仍在', editorRevision: 1 });
   });
 
   it('rejects renderer-only attachment URLs before any durable submission is inserted', async () => {
