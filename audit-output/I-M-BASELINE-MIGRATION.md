@@ -582,6 +582,27 @@ tests/memory-window.test.js tests/i-m-exact-path-contracts.test.jsx` → **8 fil
 The separate feed-runtime `controlParentClosure` path remains outside this
 Replica-only change and is not relabeled as fixed by this evidence.
 
+## Round 19 shared redaction policy
+
+Replica persistence and Timeline structured rendering now consume one pure
+redaction policy. The policy remains boundary-local in effect: cache writes and
+legacy-row migration sanitize before durable storage, while rendering sanitizes
+both JSON fallback text and structured result trees. No quota or notification
+owner was changed.
+
+| user invariant | unique public owner | strict evidence |
+|---|---|---|
+| Exact sensitive field names are recursively replaced at arbitrary object/array depth, without mutating the input. | `redactSensitive` in `src/model/terminal-result.js` | `src/model/terminal-result.test.js:4-31` — nested/array `key`, `token`, `password`, and `private_key` become `已隐藏`; `token_count`, `keynote`, `tokenized`, `text`, and labels remain unchanged; source input remains intact. |
+| Durable Replica rows and old-row migration use the shared policy before IndexedDB exposure. | `createChannelReplicaCache().saveRows/readBefore` → `redactSensitive` | `tests/channel-replica-cache-redaction.test.js` — raw IndexedDB, reload, and migration paths retain business text while hiding nested credentials. |
+| Timeline JSON fallback and structured terminal trees use the same policy at render time. | `TimelineRowRenderer` → `redactSensitive` | `tests/message-presentation.test.js` and `tests/structured-result-restore.test.jsx`, plus `src/ui/timeline/message-body-presentation.test.jsx -t 'protocol payloads|unknown payload|sensitive'` → **2/2 GREEN** for the redaction cases. |
+
+Focused evidence: `npx vitest run src/model/terminal-result.test.js
+tests/channel-replica-cache-redaction.test.js tests/message-presentation.test.js
+tests/structured-result-restore.test.jsx` → **4 files, 19/19 GREEN**. The full
+message-body successor still has its pre-existing flat-payload compatibility
+red case; it remains untouched because this round does not restore legacy
+parsing.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

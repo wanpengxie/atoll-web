@@ -2,12 +2,12 @@ import { argsOf, FINAL, hasCanonicalBody } from '../protocol/envelope.js';
 import { isNarrationEnvelope } from '../protocol/vocab.js';
 import { LIVE_ARRIVAL_RECEIPT } from './live-arrivals.js';
 import { isViewportNotifiableDisposition, notificationDisposition } from './notification-policy.js';
+import { redactSensitive } from './terminal-result.js';
 
 const CACHE_DATABASE = 'atoll-channel-replica-v1';
 const CACHE_VERSION = 1;
 const LIVE_ARRIVAL_LIMIT = 1_024;
 const LIVE_PRESENTATION_ARRIVAL_LIMIT = 1_024;
-const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
 // A quota retry keeps a small usable suffix even when the cache has no
 // caller-provided per-channel bound. This is only activated for a channel
 // that has actually hit quota; ordinary writes keep their current retention.
@@ -27,17 +27,8 @@ function rowBytes(row) {
 // Cache persistence is the last boundary before a row leaves the process. Keep
 // the historical feed-cache contract here, rather than relying on a renderer
 // to hide values after they have already reached IndexedDB.
-function redactReplicaSecrets(value, key = '') {
-  if (key && SENSITIVE_FIELD.test(key)) return '已隐藏';
-  if (Array.isArray(value)) return value.map((item) => redactReplicaSecrets(item));
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactReplicaSecrets(item, name)]));
-  }
-  return value;
-}
-
 function sanitizedCacheRow(row) {
-  const sanitized = redactReplicaSecrets(row);
+  const sanitized = redactSensitive(row);
   let changed = row !== sanitized;
   try { changed = JSON.stringify(row) !== JSON.stringify(sanitized); }
   catch { /* non-JSON rows are not expected, but the sanitized value is safe */ }
@@ -998,7 +989,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     const operationOwner = owner;
     const epoch = ownerEpoch;
     const accepted = (rows || []).filter((row) => row?.channel_id && numeric(row?.seq));
-    const persistedRows = accepted.map((row) => redactReplicaSecrets(row));
+    const persistedRows = accepted.map((row) => redactSensitive(row));
     const db = await dbPromise;
     assertOwner(operationOwner, epoch);
     const touchedChannels = new Set(accepted.map((row) => row.channel_id));

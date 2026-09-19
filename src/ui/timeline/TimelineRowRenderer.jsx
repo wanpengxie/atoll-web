@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
-import { terminalContentEnvelope, terminalResultState } from '../../model/terminal-result.js';
+import { redactSensitive, terminalContentEnvelope, terminalResultState } from '../../model/terminal-result.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
@@ -8,7 +8,6 @@ import { MarkdownContent } from '../MarkdownContent.jsx';
 import { FoldableBody } from './FoldableBody.jsx';
 
 const RESULT_META = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
-const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
 const FAILURE_LABELS = Object.freeze({
   unanswered_timeout: '请求在截止时间前没有得到最终响应',
   receiver_unavailable: '接收方已不可用',
@@ -233,13 +232,6 @@ function EnvelopeBody({ envelope, fold, onDownload, onPreview, contentKeyPrefix 
     automaticExpanded={fold?.automaticExpanded === true} expanded={fold?.overrides?.get(foldID)} onToggle={fold?.onToggle}
   ><MarkdownContent contentKey={`${contentKeyPrefix}:${envelope?.id || foldID}:body`} text={text} /></FoldableBody>}
   <Attachments envelope={envelope} onDownload={onDownload} onPreview={onPreview} /></>;
-}
-
-function redactSensitive(value, key = '') {
-  if (key && SENSITIVE_FIELD.test(key)) return '已隐藏';
-  if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactSensitive(item, name)]));
-  return value;
 }
 
 function Scalar({ value }) {

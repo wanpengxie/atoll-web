@@ -1,5 +1,19 @@
 import { argsOf } from '../protocol/envelope.js';
 
+const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
+
+// Keep the same pure policy at both security boundaries: cache persistence and
+// structured result rendering. Match complete field names only so ordinary
+// business fields such as `token_count` or `keynote` remain readable.
+export function redactSensitive(value, key = '') {
+  if (key && SENSITIVE_FIELD.test(String(key))) return '已隐藏';
+  if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactSensitive(item, name)]));
+  }
+  return value;
+}
+
 const TERMINAL_RETAINED_FIELDS = Object.freeze([
   'merged_into',
   'replaced_by',
