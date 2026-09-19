@@ -1199,6 +1199,12 @@ export function useReadingSession({
       // effects. A reducer no-op alone still lets an old scroller claim tail.
       if (committedOwnerRef.current !== commitOwnerCandidate
         || activationID !== current.activationID) return current;
+      // During a renderer handoff the incoming list may already be mounted
+      // and measuring while the outgoing list is still the sole visible
+      // reading surface. Its geometry belongs to the separate materialization
+      // receipt; it must not overwrite the semantic bookmark or publish read
+      // side effects before visibility ownership transfers.
+      if (observation.surfaceVisible !== true) return current;
       const observedCurrentRow = observation.surfaceVisible === true
         && observation.visibleRows?.some((visible) => (
           snapshotRef.current.rows.some((row) => row.id === visible.messageID)

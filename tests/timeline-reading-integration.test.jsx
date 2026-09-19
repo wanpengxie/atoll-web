@@ -2637,6 +2637,59 @@ it('冷入口只在Virtuoso报告当前activation首个公开range后退出mater
   await waitFor(() => expect(port.availability).toBe('readable'));
 });
 
+it('隐藏的handoff候选不能覆盖当前可见阅读面的语义锚', async () => {
+  let port;
+  const savedBookmark = { messageID: 'visible-owner', seq: 9, rowViewportOffset: -24 };
+  const viewSessions = {
+    readView: () => ({ mode: 'browsing', revision: 1, bookmark: savedBookmark }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  const rows = [
+    { id: 'visible-owner', seqLow: 9, seqHigh: 9 },
+    { id: 'hidden-candidate', seqLow: 10, seqHigh: 10 },
+  ];
+  const snapshot = {
+    rows,
+    entities: new Map(rows.map((row) => [row.id, row])),
+    revision: 2,
+    sourceRevision: 2,
+  };
+  function Harness() {
+    const reading = useReadingSession({
+      channelID: 'handoff-owner', viewKey: 'handoff-owner:all', snapshot,
+      surfaceVisible: true, history: { status: {} }, viewSessions,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  render(<Harness />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 1, atTail: false,
+    surfaceVisible: false, installedHighSeq: 10,
+    bookmark: { messageID: 'hidden-candidate', seq: 10, rowViewportOffset: -240 },
+    visibleRows: [{ messageID: 'hidden-candidate', seqHigh: 10 }],
+  }));
+
+  expect(port.getSession().bookmark).toEqual(expect.objectContaining(savedBookmark));
+  expect(viewSessions.save).not.toHaveBeenCalled();
+
+  act(() => port.onReadingObservation({
+    activationID: port.activationID,
+    source: 'layout', geometryRevision: 2, atTail: false,
+    surfaceVisible: true, installedHighSeq: 10,
+    bookmark: { messageID: 'hidden-candidate', seq: 10, rowViewportOffset: -40 },
+    visibleRows: [{ messageID: 'hidden-candidate', seqHigh: 10 }],
+  }));
+
+  expect(port.getSession().bookmark).toEqual(expect.objectContaining({
+    messageID: 'hidden-candidate', seq: 10, rowViewportOffset: -40,
+  }));
+  expect(viewSessions.save).toHaveBeenCalledOnce();
+});
+
 it('冷入口丢失range回调后由当前可见DOM观测收敛materializing', async () => {
   let port;
   const viewSessions = {
