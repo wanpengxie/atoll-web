@@ -77,7 +77,7 @@ describe('channel feed startup lanes', () => {
         envelope: {
           id: 'visible-root', kind: 'request', type: 'agent.ask', visibility: 'public',
           sender: { id: 'human:root:1', kind: 'human' }, audience: ['agent:worker:1'],
-          payload: { text: 'question' },
+          payload: { body: { text: 'question' } },
         },
       });
       hook.result.current.enqueue({
@@ -86,7 +86,7 @@ describe('channel feed startup lanes', () => {
           id: 'visible-final', parent_id: 'visible-root', correlation_id: 'visible-root',
           kind: 'response', type: 'agent.ask', visibility: 'public',
           sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'],
-          payload: { status: 'completed', text: 'answer' },
+          payload: { body: { status: 'completed', text: 'answer' } },
         },
       });
     });

@@ -1,5 +1,13 @@
 import { expect, test } from '@playwright/test';
 
+function readingOwner(page) {
+  return page.locator([
+    '.timeline-reading-stack[data-handoff-pending="true"] > .timeline-reading-layer.is-outgoing > .timeline-message-list',
+    '.timeline-reading-stack:not([data-handoff-pending="true"]) > .timeline-reading-layer.is-incoming.is-active > .timeline-message-list',
+    '.timeline-reading-stack:not([data-handoff-pending="true"]) > .timeline-reading-layer.is-active:not(.is-incoming) > .timeline-message-list',
+  ].join(', '));
+}
+
 async function login(page) {
   await page.goto('/');
   await page.getByRole('textbox', { name: '账号', exact: true }).fill('root');
@@ -99,7 +107,7 @@ test('F7 channel notifications baseline history, count roots, and acknowledge on
   ));
   expect(activeBoundary).toBe(tailBoundary);
 
-  const viewport = page.locator('.timeline-reading-layer.is-active .timeline-message-list');
+  const viewport = readingOwner(page);
   // Use a physical gesture: the timeline intentionally distinguishes user
   // scrolling from the virtualizer's own anchor compensation.
   await viewport.hover();
@@ -140,6 +148,9 @@ test('F7 channel notifications baseline history, count roots, and acknowledge on
   })).toEqual({ highWater: activeBoundary, activeRoot: 'exact_visible_ack' });
   await expect(related).toHaveCount(0);
 
+  // The identity reveal can promote a replacement reading layer. Re-resolve
+  // the canonical reading owner before directing the physical gesture.
+  await viewport.hover();
   await page.mouse.wheel(0, 100_000);
   await expect.poll(() => viewport.evaluate((node) => (
     node.scrollHeight - node.clientHeight - node.scrollTop
