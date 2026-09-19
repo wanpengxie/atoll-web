@@ -52,7 +52,12 @@ export function ActorDetailPanel({ port = {}, onClose }) {
     try {
       const payload = JSON.parse(argumentsText || '{}');
       if (typeof port.commands?.invoke !== 'function') throw new Error('能力调用当前不可用');
-      await port.commands.invoke({ actor, type: selectedCapability, payload });
+      await port.commands.invoke({
+        actor,
+        type: selectedCapability,
+        payload,
+        targetAuthority: port.targetAuthority || null,
+      });
     } catch (failure) {
       setError(failure?.message || String(failure));
     }

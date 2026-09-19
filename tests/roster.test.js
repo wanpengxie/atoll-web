@@ -4,11 +4,11 @@
 // canonical OBS/cache facts and publishes the authority projection consumed by
 // the workspace and RosterFeature.
 import React from 'react';
-import { act, cleanup, render, renderHook, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useChannelRoster } from '../src/app/hooks/useChannelRoster.js';
 import { TYPES } from '../src/protocol/vocab.js';
-import { RosterFeature } from '../src/ui/features/roster/RosterFeature.jsx';
+import { ActorDetailPanel, RosterFeature } from '../src/ui/features/roster/RosterFeature.jsx';
 
 afterEach(() => {
   cleanup();
@@ -85,6 +85,30 @@ describe('public channel roster owner', () => {
       port: { rows: [{ id: 'human:root', kind: 'human', name: 'Root' }], selfId: '' },
     }));
     expect(screen.queryByText('我')).toBeNull();
+  });
+
+  it('passes the current target authority through the capability invocation port', async () => {
+    const authority = { current: true, actorIDs: new Set(['agent:demo:1']) };
+    const invoke = vi.fn().mockResolvedValue(true);
+    render(React.createElement(ActorDetailPanel, {
+      port: {
+        selectedActor: { id: 'agent:demo:1', kind: 'agent', name: 'Demo' },
+        actorDetail: { capabilities: [{ type: 'agent.compact', label: '压缩上下文' }] },
+        targetAuthority: authority,
+        commands: { invoke },
+      },
+    }));
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'agent.compact' } });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '{"depth":1}' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交调用' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith({
+      actor: expect.objectContaining({ id: 'agent:demo:1' }),
+      type: 'agent.compact',
+      payload: { depth: 1 },
+      targetAuthority: authority,
+    }));
   });
 
   it('refreshes the public projection after a successful member observation', async () => {

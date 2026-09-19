@@ -607,7 +607,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     state,
     pending: submission.pending,
     actionFacts: taskActionFacts,
-  }), [feed.version, state, submission.pending, taskActionFacts]);
+    targetAuthority: waitingRosterAuthority,
+  }), [feed.version, state, submission.pending, taskActionFacts, waitingRosterAuthority]);
   const taskProviders = useMemo(
     () => selectFeatureTaskProviders(capabilities, channelRoster),
     [capabilities, channelRoster],
@@ -832,6 +833,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const rosterPort = {
     rows: channelRoster,
     selfId,
+    targetAuthority: waitingRosterAuthority,
     identityPending: memberVisible && (!selfId || !roster.authorities.get(navigation.activeChannelId)?.current),
     busy: roster.busy,
     selectedActor,
@@ -845,13 +847,17 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       refresh: () => roster.refresh(navigation.activeChannelId, true),
       select: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
       describe: (actor) => probes.requestCapability(actor.id, selectedActorChannelId),
-      invoke: ({ actor, type, payload }) => submission.send({
+      invoke: ({ actor, type, payload, targetAuthority = waitingRosterAuthority }) => submission.control({
         channelId: selectedActorChannelId,
         text: '',
         msgType: type,
         audience: [actor.id],
         targetLabel: actor.name || actor.id,
         payload,
+        controlContext: {
+          source: 'feature',
+          targetAuthority: targetAuthority || null,
+        },
       }),
     },
   };
