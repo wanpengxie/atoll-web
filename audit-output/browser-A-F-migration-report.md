@@ -285,6 +285,57 @@ ATOLL_TEST_MOCK_PORT=19872 ATOLL_TEST_WEB_PORT=15172 npx playwright test \
   --output=/tmp/af-fold-after-reading --reporter=line
 ```
 
+### 第十轮：Reading fold 提交后的 clean current-HEAD 复验（只读，`dfea6d2`）
+
+`418c31e fix(reading): retain fold anchors through list reflow` 已进入当前产品祖先。
+为避免共享工位的脏改动污染归因，本轮从最新 `dfea6d2` 建立独立 clean worktree
+`/tmp/af-clean-dfea6d2`，仅通过共享 `node_modules` 只读复用依赖；真实 Chromium
+命令如下：
+
+```text
+ATOLL_TEST_MOCK_PORT=19874 ATOLL_TEST_WEB_PORT=15174 npx playwright test \
+  tests/browser/fold-collapse-anchor.spec.js \
+  --grep '收起：|角色转移导致' --output=/tmp/af-fold-clean-dfea6d2 \
+  --trace=on --reporter=line
+```
+
+结果为 `2 passed, 1 failed (54.0s)`，没有 `outbox_closed`。#29/#30 的三轮实际
+`aria-expanded` paint 均为 `false → true → false`；收起后 `scrollTop` 按收缩量
+补偿，逐帧锚点没有消失。以下 row ID、content revision、mounted IDs 和几何均从
+clean trace/JSON attachment 读取，未改 selector、断言、fixture 或阈值。
+
+| case/round | target row / fold / content | actual paint；收起后 mounted row IDs | actual paint geometry |
+| --- | --- | --- | --- |
+| #29 mid / 5 | `c4ef447f-531a-43e8-976d-d8da5f0630b8` / `…:body` / `883:77` | `false → true → false`; `69c3d313-57c9-4686-9563-d6b720151708`, `66111369-da4f-4c43-b0a7-ba499b55f361`, `c4ef447f-531a-43e8-976d-d8da5f0630b8`, `7ecf4fca-a193-49b2-b7bb-311c3293f6fc`, `3181b5b9-4b0b-425e-b924-669a36b70695` | top `344.72 → 345.19`; `8579 → 6753`, shrink `1825`, desired `6754`; anchor drift `0.47`, worst `0.56`, vanished `false` |
+| #29 mid / 4 | `66111369-da4f-4c43-b0a7-ba499b55f361` / `…:body` / `876:70` | `false → true → false`; mounted `66111369-da4f-4c43-b0a7-ba499b55f361` | top `357.91 → 358.19`; `7988 → 6162`, shrink `1825`, desired `6163`; drift/worst `0.28`, vanished `false` |
+| #29 mid / 3 | `69c3d313-57c9-4686-9563-d6b720151708` / `…:body` / `869:63` | `false → true → false`; mounted `69c3d313-57c9-4686-9563-d6b720151708` | top `358.91 → 359.19`; `7409 → 5583`, shrink `1825`, desired `5584`; drift/worst `0.28`, vanished `false` |
+| #30 near-top / 5 | `2d446973-9e08-4c39-91f0-6f1535c7fa61` / `…:body` / `883:77` | `false → true → false`; `267a1208-a7ff-4aa9-888d-45f5d25b1eb3`, `ce6fa9a7-5caa-40c8-88ea-8ff82d9c9eb6`, `2d446973-9e08-4c39-91f0-6f1535c7fa61`, `7e9f16e4-15b4-4e81-9211-0bb955954a15`, `c017f031-586d-4bae-b130-da3d7dd50425` | top `173.72 → 174.19`; `8750 → 6924`, shrink `1825`, desired `6925`; drift `0.47`, worst `0.56`, vanished `false` |
+| #30 near-top / 4 | `ce6fa9a7-5caa-40c8-88ea-8ff82d9c9eb6` / `…:body` / `876:70` | `false → true → false`; mounted `267a1208-a7ff-4aa9-888d-45f5d25b1eb3`, `ce6fa9a7-5caa-40c8-88ea-8ff82d9c9eb6` | top `173.91 → 174.19`; `8172 → 6346`, shrink `1825`, desired `6347`; drift/worst `0.28`, vanished `false` |
+| #30 near-top / 3 | `267a1208-a7ff-4aa9-888d-45f5d25b1eb3` / `…:body` / `869:63` | `false → true → false`; mounted `267a1208-a7ff-4aa9-888d-45f5d25b1eb3` | top `173.91 → 174.19`; `7594 → 5768`, shrink `1825`, desired `5769`; drift/worst `0.28`, vanished `false` |
+
+所有六轮的 `allowedDrift=0`、`compensationError=-1`，逐帧 `unmountedFrames=0`；
+因此本轮将 #29/#30 标为 **PASS on clean current HEAD**，但不改写冻结
+`7ba308c` 的 `23/8` aggregate。
+
+#### #31 latest-role 最小 owner 包（同一 clean current HEAD）
+
+六个真实长回合送达后，`H-ROLE-6` 的当前 mounted row 为
+`ca7285ff-2123-438d-b7bb-5b52474ab604`，fold
+`ca7285ff-2123-438d-b7bb-5b52474ab604:body`，content revision `890:84`，render
+revision 的 fold 位为 `false`；row 为 `data-presentation-state=handoff-enter`、
+`data-request-type=agent.ask`、`status-completed`，timeline/reading/viewport mode
+均为 `following`，composer owner 为 `current`。在任何 pulse、上滑或 role-transition
+动作前，line 300 的 baseline gate 读取到 `aria-expanded=false`（期望 `true`），
+因此 #31 首断点仍是 latest-role precondition，没有进入 anchor geometry。
+
+首个公开 owner 仍为 `reading_tail_owner` 的
+`conversation-presentation current-entry authority → TimelineRowRenderer/FoldableBody`；
+不要把本轮 #31 失败归因给 Reading anchor，也不要通过改 selector/放宽断言来掩盖。
+
+本轮证据目录：`/tmp/af-fold-clean-dfea6d2`（mid/near JSON + trace，#31 trace
+含 line-300 failure）；即时 Reading commit `418c31e` 的独立复验保留在
+`/tmp/af-fold-clean-418c31e`，结论相同。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
