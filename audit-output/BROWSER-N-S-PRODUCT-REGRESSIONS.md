@@ -224,6 +224,30 @@ readable_event 是本轮真实可见回归：`notification-policy` 的 final rea
 - 首个公开 owner 边界：reading-session startup/admission 与 canonical reading owner 的 virtualized row admission；不是旧 `LegendMessageList` 或旧 DB 名。
 - 交接：由 reading-session/admission owner 修复文档 session 内 browsing anchor 的跨频道回返恢复；不改测试成滚底或删除 anchor assertion。
 
+## 第八轮只读复验：readable_event badge 与 F7 handoff（执行起点 HEAD `05b1fff`，2026-09-20）
+
+本轮使用临时 observation-only probe 采集真实 DOM hit-test、唯一 active owner、owner activation、`coldEntry` history/presentation revision、reading trace 和左 rail DOM；probe 已在运行后删除。另用 `34d6f0c` notification owner oracle 重跑 F7。未改产品、fixture、断言或 skip。
+
+### readable_event：两个断点分开裁决
+
+- `notification-policy.spec.js` 的 readable_event 合同仍在 line 243 超时，但 probe 证明 `c0.project-notification-readable-event` 从首个 project sample 起就在唯一 owner 的真实可见区域，`ownerCount=1`，`mode=following`，`Presentation revision=4/sourceRevision=18`、history `presentationRevision=18` 稳定，target 连续通过 element hit-test。故旧 R5“row 未物化”已关闭。
+- reading trace 只有 `trace.enabled`，没有 `reading.observation`/`visibleRowIDs`/`installed-tail-ack`/`arrival-resolution`；显式滚动 target 后仍如此。首个产品 owner 边界是 **Presentation/DOM → reading observation handoff**，不是空 diagnostics。
+- final readable root 的用户可见 badge 另由独立 probe 复验：c0 上 request → processing → progress → final 后立即和 1.5s settle，project `.unread-related/.unread-total/.unread-pending/jump=0/0/false/0`；原合同 line 154 要求 `.unread-total=1`，所以这是实际 rail badge RED。空 `rail.snapshot` 不参与该判断。公开 owner：notification policy → rail projection。
+
+### F7：input/replica 已到位，回返 presentation 仍红
+
+F7 timing probe 中 browsing 前 `c0-history-request-112/113/114` 均真实可见；回返 55 个 100ms samples 内 owner 始终单一、`mode=browsing`，但 target 112 始终在视口上方，visible 只含 120/approval/summary。回返时 Presentation `revision=7/sourceRevision=80` 稳定、replica head=848 且已含 target，cursor=844；因此不是 input、replica、cursor 或 rail diagnostics 分歧。当前 34d6f0c oracle 的 `firstDivergence=presentation`，公开 owner：reading-session/admission → virtualized presentation。
+
+### 共享工作树错误隔离
+
+当前共享树含未提交 `WorkspaceApp.jsx`/Composer 变更；一次独立 final-badge 合同运行出现 React Hook-order / `Should have a queue` console，但该运行仍确定性落在 line 154 badge 缺失。readable_event/F7 timing probe 均无 pageerror，F7 oracle 完整采集且 ownerCount 未为 0；Hook 仅记为共享 dirty 旁证，不能用来解释 readable badge 或 F7 首断点。启动期 401 console 也没有 pageerror。
+
+本轮证据目录：`test-results-browser-ns-reading-probe-05b1fff-20260920/`、`test-results-browser-ns-readable-final-badge-20260920/`、`test-results-browser-ns-f7-oracle-current-20260920/`；可重跑命令和逐阶段 activation/revision 详见迁移报告对应第八轮节。notification owner 交接保持：final readable badge 归 notification policy/rail projection；readable_event observation 归 DOM→reading handoff；F7 归 reading-session/presentation admission。 
+
+共享分支随后推进到当前 HEAD `ef8f906`；立即重跑同一 F7 oracle 仍为 **1 passed**，`firstDivergence=presentation`，cursor=844、replica head=848 且含 target 112，visible owner 仍只显示 120/approval/summary。新证据目录：`test-results-browser-ns-f7-oracle-ef8f906-20260920/`；未改变上述公开 owner 裁决。
+
+当前 `ef8f906` 的 notification-policy 两条合同也仍保持 RED：line 154 final readable badge 缺失、line 243 readable_event observation 超时；对应目录为 `test-results-browser-ns-readable-badge-current-ef8f906-20260920/`、`test-results-browser-ns-readable-current-ef8f906-20260920/`，没有新的 Hook/pageerror 截断。
+
 ## 结论
 
 以上当前 R2–R8 覆盖最终 10 个 RED case 的真实分歧；历史 R1 disconnect 已关闭，Composer/Tiptap guard 的 uncaught 也未在最终轮复现。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。

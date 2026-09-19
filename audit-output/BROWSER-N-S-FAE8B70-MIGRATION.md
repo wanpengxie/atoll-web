@@ -265,3 +265,46 @@ DOM 主判据与 Outbox P0 闭合状态：
 readable_event 额外复验（`notification-policy.spec.js`）：final readable root 期待 `.unread-total=1` 但 DOM 始终无该 badge（真实可见 rail 缺口，不是 diagnostics）；独立 `c0.project-notification-readable-event` row 可见，但 `reading.observation.visibleRowIDs` 未包含它（presentation→reading handoff 缺口）。证据：`test-results-readable-event-5aef9f4-20260920/`。
 
 因此 `451d7b2/0145d6d/2265cfa` 对 reload、ack 后不复活和 following DOM 数字已有用户路径收益；仍不能宣称 notification 合同全闭合：rail diagnostics/high-water provider 未发布、readable final badge 缺失、readable_event reading observation 缺失、F7 presentation owner 不稳定。全程没有修改产品、fixture、断言或 skip。
+
+## 第八轮：readable_event / F7 reading 时序复验（执行起点 HEAD `05b1fff`，2026-09-20）
+
+本轮只读当前真实浏览器入口；没有修改产品、fixture、既有断言或 skip。为避免把 diagnostics 空值当作产品事实，临时 probe 仅采集唯一 active reading owner 的 DOM hit-test、owner activation、`coldEntry` 的 history/presentation revision、reading trace 和左 rail DOM，采集完成后删除。`notification-owner-oracle.spec.js` 的 F7 合同也用同一 `34d6f0c` oracle 交叉重跑。
+
+运行与结果：
+
+```text
+ATOLL_TEST_WEB_PORT=15371 ATOLL_TEST_MOCK_PORT=18971 npx playwright test tests/browser/zz-notification-reading-probe.spec.js --reporter=line
+# readable_event + F7 timing probe: 2 passed
+ATOLL_TEST_WEB_PORT=15374 ATOLL_TEST_MOCK_PORT=18974 npx playwright test tests/browser/zz-notification-reading-probe.spec.js --grep "readable final rail badge" --reporter=line
+# final badge timing probe: 1 passed
+ATOLL_TEST_WEB_PORT=15372 ATOLL_TEST_MOCK_PORT=18972 npx playwright test tests/browser/notification-owner-oracle.spec.js --grep "F7 input" --reporter=line
+# F7 oracle: 1 passed (observation completed; contract result remains RED)
+ATOLL_TEST_WEB_PORT=15370 ATOLL_TEST_MOCK_PORT=18970 npx playwright test tests/browser/notification-policy.spec.js --grep "tool, timer" --reporter=line
+# notification-policy readable_event contract: RED at line 243
+ATOLL_TEST_WEB_PORT=15373 ATOLL_TEST_MOCK_PORT=18973 npx playwright test tests/browser/notification-policy.spec.js --grep "rail follows presented" --reporter=line
+# final readable badge contract: RED at line 154
+```
+
+readable_event 时序主证据（`test-results-browser-ns-reading-probe-05b1fff-20260920/.../readable-event-timing.json`）：
+
+- 离开 `c0.project` 发送 request、nested tool、timer control、activity、readable_event 后，`c0` 仍只有一个 owner，`mode=following`；project 返回后 target `c0.project-notification-readable-event` 从首个 sample 起即在唯一 owner 的真实 hit-test 可见区域，`visibleIDs` 连续包含 target。没有出现双 owner、空层或 target 仅 CSS mounted 的假可见。
+- project 的 Presentation 在整个稳定窗口为 `revision=4/sourceRevision=18`，history `presentationRevision=18`，8 rows 的最后一行就是 readable target；`coldEntry.result.presentationVisible=true`。因此当前 RED 不是 row admission/DOM 物化失败。
+- reading trace 从 `trace.enabled` 后始终没有 `reading.observation`、`visibleRowIDs`、`installed-tail-ack` 或 `arrival-resolution` 事件；显式 `scrollIntoView` 后仍无这些事件。首个可见链断点为 **Presentation/DOM → reading observation handoff**。
+- project 返回后 owner activation 先为一个值并在约 2.5s 后替换为第二个值；替换前后 owner 数均为 1、target 仍可见、Presentation revision 未变。替换恰与 history demand 短暂进入 `pending/loading` 同步，记录为共享工作树下的时序信号，不把它冒充为 badge 根因。
+
+readable final badge 主证据（`test-results-browser-ns-readable-final-badge-20260920/.../readable-final-badge-timing.json`）：在 c0 上依次注入 request → processing → progress → final，并在 final 后再等 1.5s；project 左侧 `.unread-related`、`.unread-total`、`.unread-pending` 和底部 jump 始终为 `0/0/false/0`，而原合同 line 154 期望 `.unread-total=1`。这是实际用户可见 rail badge 缺口，不是空 `rail.snapshot` provider 诊断；公开 owner 交给 notification policy/rail projection。
+
+F7 时序主证据（`test-results-browser-ns-reading-probe-05b1fff-20260920/.../f7-return-timing.json`）及 oracle（`test-results-browser-ns-f7-oracle-current-20260920/.../notification-owner-oracle-F7.json`）：
+
+- cold latest：唯一 owner，`mode=following`，target 不适用；Presentation `revision=2/sourceRevision=42`，最新 120 可见。
+- browsing before switch：同一 owner 切到 `mode=browsing`、`inputEpoch=1`、`gap≈1803`，`c0-history-request-112/113/114` 均真实可见；这证明滚动输入和目标 anchor 已被读取。
+- c0 → c0.project → c0 回返后的 55 个 100ms samples：唯一 owner 一直存在且保持 `mode=browsing`，但 target 112 始终在视口上方（约 `top=-938,bottom=-720`），可见的是 120/approval/summary；Presentation 稳定为 `revision=7/sourceRevision=80`，而 replica 已含 target，head=848。无 `reading.observation` 事件，rail DOM 仍 `0/0/false/0`。
+- 同 HEAD 的 F7 oracle `firstDivergence` 明确为 **presentation**：cursor `readSeq/high-water=844`，replica 80 rows、head=848 且包含 target，唯一 owner visible IDs 不含 target。不是 fixture、旧 DB、cursor 或空 diagnostics 问题；公开 owner 为 reading-session/admission → virtualized presentation。
+
+共享 dirty Hook 隔离：当前工作树另有未提交 `WorkspaceApp.jsx`/Composer 改动；一次原始 final-badge 合同运行曾输出 React Hook-order / `Should have a queue` console，但最终仍独立落在 line 154 badge 缺失。readable_event 与 F7 timing probe 均 `pageerror=[]`，F7 oracle 也完成，未观察到 Hook 截断或 owner=0；因此 Hook 日志只作为共享工作树旁证，不作为本轮 readable badge 或 F7 首断点。启动期 401 console 亦未升级为 page error。
+
+本轮裁决：readable_event 的 row/presentation 已绿，唯一用户可见缺口是 final readable root 的 rail badge；readable_event 的第二条合同仍红在 DOM→reading observation；F7 仍红在回返 presentation visibility。证据仅保留在测试结果目录，测试侧没有新增持久化探针。
+
+共享分支在上述长采样期间继续前进；为核对最新产品入口，当前 HEAD `ef8f906`（`fix: gate waiting edit and restore interrupt pause`）立即重跑同一 F7 oracle：**1 passed（12.2s）**，`firstDivergence` 仍为 `presentation`，cursor `readSeq/high-water=844`、replica head `848` 且含 target 112，唯一 owner visible IDs 仍为 120/approval/summary。新证据：`test-results-browser-ns-f7-oracle-ef8f906-20260920/`。这次重跑未改变第八轮裁决。
+
+当前 `ef8f906` 再跑 notification-policy 两条合同仍分别在 line 154（final readable badge）和 line 243（readable_event observation）失败；证据目录为 `test-results-browser-ns-readable-badge-current-ef8f906-20260920/` 与 `test-results-browser-ns-readable-current-ef8f906-20260920/`。该两次输出没有新的 Hook/pageerror 截断。
