@@ -1000,3 +1000,59 @@ viewport 偶发差异。`agent-answer-reply-gating`、progress trail 与信息�
 **1 passed**。本轮把旧 fae 的“没有 request rail”与当前保留 copy 能力的
 产品差异记录为已签 oracle 变化；未修改产品 store、Vendor、Projection、
 history 或截图阈值。
+
+## 第十八轮：UI-VIS-10 复核与 UI-VIS-11 全局搜索首断点（真实 Chromium）
+
+本轮先复核相邻的 UI-VIS-10：当前公开 `WorkspaceLayout → ActivityCenter`
+入口已经可用，`approval-schema` seed `909` 的真实 Chromium 路径打开
+“全局活动”、看到活动/操作 tabs 和 activity row，UI-VIS-10 定向测试为
+**1 passed**。这只是当前产品/行为闭环记录；没有把本机 ignored Linux
+截图当作仓库 oracle 交付。
+
+下一条仍有真实用户 RED 的是 UI-VIS-11。相同 `multi-channel` seed `910`、
+600×720 viewport、登录 → 打开频道列表 → 全局搜索 → 输入 `history 1`
+在两版 Chromium 的公开 DOM 结果如下：
+
+| owner / result | dialog | header | close target | search results | result click |
+|---|---:|---:|---:|---|---|
+| `fae8b70` | `600×297` | `69px` | `36×36` | `c0`、`c0.project` 两条 | 第二条进入 `c0.project` 并关闭 dialog |
+| current | `600×301` | `73px` | `44×44` | 只有 `c0` 一条 | 没有第二条可返回 `c0.project` |
+
+当前 UI-VIS-11 的行为路径本身能打开 dialog、填入搜索词并渲染结果；未
+mask 的截图断言是 **1 RED**（期望 `600×297`，实际 `600×301`，7868
+pixels / `0.05`）。首个视觉结构差异不是搜索结果列表：current
+`src/styles/responsive.css` 的公开移动端合同为
+`.mobile-shell .global-search > header button { min-width/min-height: 44px }`
+（现行 owner commit `9d82e41`），而 `fae8b70` 仍是 36px。因此 header
+由 69px 增至 73px 是 44px 触控目标带来的合法能力变化，不应 CSS 调回旧
+高度或放宽截图阈值。
+
+同时，结果数量差异是独立的真实产品缺口，不是 screenshot artifact：两版
+rail 都公开显示 `#c0`、`#c0.project`、`#c0.public`，但 current
+`WorkspaceApp` 的 `selectFeatureSearchIndex` wiring 只传入 channels、
+rosters、active-channel tasks/files，没有传入 feed 已公开的
+`stateEntries()`（`src/model/channel-feed-runtime.js:1305`）。因此
+`feature-search` 纯 projection 即使能消费 `states`，current SearchFeature
+也没有为非 active 的可见 `c0.project` materialize 历史 turn；fae 第二条
+结果及其点击回源证明确实缺失。最小可执行复现是：
+
+```text
+visible channels: #c0, #c0.project, #c0.public
+query: history 1
+fae rows: c0 history 1; c0.project history 1
+current rows: c0 history 1
+old second-row click: heading c0.project, dialog count 0
+current second-row click: unavailable (row absent)
+```
+
+这条缺口归属 `WorkspaceApp` search-index composition owner，修复方向是
+让该 owner 以公开 `feed.stateEntries()` 为 states 输入并保持 readable-access
+过滤；本轮不擅自改产品 wiring。现有纯 projection/accessibility 定向单测
+仍为 **3 files / 9 passed**，所以首断点在 composition wiring 而不是
+`SearchFeature` 内部或环境阻塞。
+
+UI-VIS-11 继续保留 **RED：移动 44px 合同导致旧视觉 oracle 冲突 + 非 active
+visible channel 历史搜索缺口**。本轮没有运行 `--update-snapshots`，也没有
+修改 `maxDiffPixels`、mask 或任何 ignored Linux screenshot；若要签发视觉
+合同，必须由负责 oracle 的 owner 提供版本管理中的 tracked baseline/合同，
+不能以本地 `*-linux.png` 作为交付。
