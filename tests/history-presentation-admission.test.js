@@ -181,7 +181,7 @@ describe('history presentation admission', () => {
     const admission = createAdmissionAuthority();
     const baseline = [item('b', 20), item('c', 30)];
     const withOlder = [item('a', 10), ...baseline];
-    admission.begin('channel', token({ demandUnits: 1 }));
+    admission.begin('channel', token({ demandUnits: 1, intentRevision: 9 }));
     commitAdmission(admission, 'channel', baseline, meta(11));
     admission.observe('channel', withOlder, meta(12));
     admission.settle('channel');
@@ -198,6 +198,7 @@ describe('history presentation admission', () => {
       direction: 'older',
       inputEpoch: 3,
       currentInputEpoch: 3,
+      intentRevision: 9,
     });
     const presentation = {
       revision: 12,
@@ -208,13 +209,13 @@ describe('history presentation admission', () => {
       },
     };
 
-    expect(admission.validatePresentation('channel', staleCandidate, presentation, viewportAuthority({ inputEpoch: 3 })))
+    expect(admission.validatePresentation('channel', staleCandidate, presentation, viewportAuthority({ inputEpoch: 3, intentRevision: 9 })))
       .toEqual({ accepted: false, reason: 'stale-transaction' });
     expect(admission.snapshot('channel')).toMatchObject({
-      phase: 'committed-awaiting-layout', committed: { inputEpoch: 3 },
+      phase: 'committed-awaiting-layout', committed: { inputEpoch: 3, intentRevision: 9 },
     });
     const currentCandidate = admission.evaluate('channel', withOlder, meta(12));
-    const current = admission.validatePresentation('channel', currentCandidate, presentation, viewportAuthority({ inputEpoch: 3 }));
+    const current = admission.validatePresentation('channel', currentCandidate, presentation, viewportAuthority({ inputEpoch: 3, intentRevision: 9 }));
     expect(current.accepted).toBe(true);
     expect(admission.commitPresentationGrant('channel', current.grant)).toBe(true);
   });

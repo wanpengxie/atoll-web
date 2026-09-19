@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useInsertionEffect, useRef, useState } from 'react';
 import { HISTORY_INTENT, HISTORY_URGENCY } from '../../model/history-demand.js';
-import { READING_MODE } from '../../model/reading-session.js';
+import { READING_MODE, revokePositionRowLease } from '../../model/reading-session.js';
 import { diagnostic, readingTrace } from '../../model/diagnostics.js';
 import {
   blockingAdmission,
@@ -16,6 +16,17 @@ import {
 function clearTopContinuation(ref) {
   if (ref.current?.timer) globalThis.clearTimeout?.(ref.current.timer);
   ref.current = null;
+}
+
+function cancelPositionLeaseWait(ref, reason, revoke = false) {
+  const waiter = ref.current;
+  if (!waiter) return;
+  if (waiter.timer) globalThis.clearTimeout?.(waiter.timer);
+  ref.current = null;
+  if (revoke && waiter.lease) {
+    waiter.controller.update((active) => revokePositionRowLease(active, waiter.lease));
+  }
+  waiter.resolve?.({ kind: 'cancelled', reason });
 }
 
 export function useReadingInitialization({
@@ -93,6 +104,7 @@ export function useHistoryConsumer({
   const terminalRef = useRef(null);
   const topContinuationRef = useRef(null);
   const topBoundaryRef = useRef(null);
+  const positionLeaseWaitRef = useRef(null);
   const epochRef = useRef(0);
   const sourceKey = historySourceKey(historyStatus);
   const supplyKey = historySupplyKey(historyStatus);
@@ -112,6 +124,7 @@ export function useHistoryConsumer({
     deferredAdmissionRef.current = null;
     deferredRecheckRef.current?.resolve?.({ kind: 'cancelled', reason: 'underfill-owner-replaced' });
     deferredRecheckRef.current = null;
+    cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-owner-replaced', true);
     clearTopContinuation(topContinuationRef);
     topBoundaryRef.current = null;
     failedAnticipatoryRef.current = null;
@@ -125,6 +138,9 @@ export function useHistoryConsumer({
       if (deferredRecheckRef.current?.controller === controller) {
         deferredRecheckRef.current.resolve({ kind: 'cancelled', reason: 'underfill-owner-unmounted' });
         deferredRecheckRef.current = null;
+      }
+      if (positionLeaseWaitRef.current?.controller === controller) {
+        cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-owner-unmounted', true);
       }
       if (topContinuationRef.current?.controller === controller) {
         clearTopContinuation(topContinuationRef);
@@ -150,6 +166,9 @@ export function useHistoryConsumer({
       && Number(session.intentRevision) === Number(continuation.intentRevision)
       && session.tailEvidence?.direction !== 'newer';
     if (!sameIntent) {
+      if (positionLeaseWaitRef.current?.controller === controller) {
+        cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-intent-replaced', true);
+      }
       clearTopContinuation(topContinuationRef);
       if (topBoundaryRef.current?.controller === controller) topBoundaryRef.current = null;
     }
@@ -165,12 +184,74 @@ export function useHistoryConsumer({
       return Promise.resolve({ kind: 'stale-owner', deduplicated: true });
     }
     const currentSession = controller.getSnapshot().session;
+    if (!currentSession.positionRowLease
+      && positionLeaseWaitRef.current?.controller === controller) {
+      cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-cleared');
+    }
+    if (continuation) {
+      const firstID = snapshotRef.current.rows[0]?.id;
+      const anchor = currentSession.historyAnchor;
+      if (!anchor || String(anchor.messageID) !== String(firstID || '')
+        || !Number.isFinite(Number(anchor.viewportOffset))) {
+        return Promise.resolve({ kind: 'position-anchor-missing', deduplicated: true });
+      }
+    }
     // A committed prepend owns the next physical boundary until the accepted
     // position-row lease reaches actual paint. Do not let a continuation or a
     // second top/runway request race that one-shot restore.
     if (currentSession.positionRowLease
       && (continuation || reason === 'top' || reason === 'runway')) {
-      return Promise.resolve({ kind: 'position-lease-pending', deduplicated: true });
+      const existing = positionLeaseWaitRef.current;
+      if (existing?.controller === controller) return existing.promise;
+      const waiter = {
+        controller,
+        lease: currentSession.positionRowLease,
+        activationID: controller.activationID,
+        inputEpoch: Number(currentSession.inputEpoch || 0),
+        intentRevision: Number(currentSession.intentRevision || 0),
+        reason,
+        urgency,
+        options,
+        continuation,
+        attempts: 0,
+        timer: null,
+        resolve: null,
+        promise: null,
+      };
+      waiter.promise = new Promise((resolve) => { waiter.resolve = resolve; });
+      positionLeaseWaitRef.current = waiter;
+      const check = () => {
+        if (positionLeaseWaitRef.current !== waiter) return;
+        waiter.timer = null;
+        const live = controller.getSnapshot().session;
+        const sameIntent = live.activationID === waiter.activationID
+          && live.mode === READING_MODE.browsing
+          && Number(live.inputEpoch) === waiter.inputEpoch
+          && Number(live.intentRevision) === waiter.intentRevision
+          && live.tailEvidence?.direction !== 'newer';
+        if (!sameIntent) {
+          cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-intent-replaced', true);
+          return;
+        }
+        if (!live.positionRowLease) {
+          positionLeaseWaitRef.current = null;
+          waiter.resolve?.(request(reason, urgency, { ...options, continuation }));
+          return;
+        }
+        // A failed lease may be replaced by the same older intent. Wait on
+        // that fresh exact lease rather than replaying a second operation.
+        waiter.lease = live.positionRowLease;
+        waiter.attempts += 1;
+        if (waiter.attempts >= 120) {
+          cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-timeout', true);
+          return;
+        }
+        waiter.timer = globalThis.setTimeout?.(check, 16) || 0;
+        if (!waiter.timer) check();
+      };
+      waiter.timer = globalThis.setTimeout?.(check, 16) || 0;
+      if (!waiter.timer) check();
+      return waiter.promise;
     }
     if (reason === 'top' && !continuation) {
       // `top` is only emitted by useBrowsingReadingController after the
@@ -403,7 +484,11 @@ export function useHistoryConsumer({
           === Number(settledSession?.inputEpoch || activeSession.inputEpoch)
         && Number(topBoundaryRef.current.intentRevision || 0)
           === Number(settledSession?.intentRevision || activeSession.intentRevision);
-      if (continueTop) {
+        const continuationAnchorReady = settledSession?.historyAnchor?.messageID
+          && String(settledSession.historyAnchor.messageID)
+            === String(currentOwner.snapshot?.rows?.[0]?.id || '')
+          && Number.isFinite(Number(settledSession.historyAnchor.viewportOffset));
+      if (continueTop && continuationAnchorReady) {
         const continuation = {
           controller, activationID: controller.activationID, channelID, viewKey,
           inputEpoch: Number(settledSession?.inputEpoch || activeSession.inputEpoch),
@@ -437,8 +522,13 @@ export function useHistoryConsumer({
             && ownerInputEpoch === Number(continuation.topBoundary.inputEpoch || 0)
             && Number(ownerSession?.intentRevision || 0)
               === Number(continuation.topBoundary.intentRevision || 0);
+          const ownerAnchorReady = ownerSession?.historyAnchor?.messageID
+            && String(ownerSession.historyAnchor.messageID)
+              === String(owner?.snapshot?.rows?.[0]?.id || '')
+            && Number.isFinite(Number(ownerSession.historyAnchor.viewportOffset));
           if (owner?.controller !== controller || owner.channelID !== channelID
             || owner.viewKey !== viewKey || !sameOlderIntent
+            || !ownerAnchorReady
             || ownerStatus.hasOlder !== true || ownerFrontier <= 1) {
             if (topBoundaryRef.current === continuation.topBoundary) topBoundaryRef.current = null;
             return;
@@ -453,6 +543,7 @@ export function useHistoryConsumer({
               direction: 'older',
               inputEpoch: ownerInputEpoch,
               currentInputEpoch: ownerInputEpoch,
+              intentRevision: Number(ownerSession?.intentRevision || 0),
             });
           }
           void request(continuation.reason, continuation.urgency, {

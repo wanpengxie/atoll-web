@@ -331,10 +331,13 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
   // the exact input-epoch gate. Every other direction cancels in ReadingSession
   // and therefore never reaches this method.
   function advanceInputEpoch(channelId, {
-    operationID, activationID, direction, inputEpoch, currentInputEpoch,
+    operationID, activationID, direction, inputEpoch, currentInputEpoch, intentRevision,
   } = {}) {
     const state = channels.get(channelId);
     const nextEpoch = Number(inputEpoch);
+    const nextIntentRevision = intentRevision == null
+      ? Number(state?.token?.intentRevision)
+      : Number(intentRevision);
     if (!state
       || !['pending', 'pending-baseline-commit', 'committed-awaiting-layout'].includes(state.phase)
       || direction !== 'older'
@@ -342,10 +345,13 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
       || state.token.activationID !== activationID
       || !Number.isFinite(nextEpoch)
       || nextEpoch !== Number(currentInputEpoch)
-      || nextEpoch <= Number(state.token.inputEpoch || 0)) return null;
+      || nextEpoch <= Number(state.token.inputEpoch || 0)
+      || (intentRevision != null && !Number.isFinite(nextIntentRevision))) return null;
     const previousInputEpoch = Number(state.token.inputEpoch || 0);
-    state.token = frozenToken(state.token, { inputEpoch: nextEpoch });
-    if (state.committed) state.committed = frozenToken(state.committed, { inputEpoch: nextEpoch });
+    const identity = { inputEpoch: nextEpoch };
+    if (intentRevision != null) identity.intentRevision = nextIntentRevision;
+    state.token = frozenToken(state.token, identity);
+    if (state.committed) state.committed = frozenToken(state.committed, identity);
     advanceAuthority(state);
     onChange(channelId);
     return Object.freeze({
