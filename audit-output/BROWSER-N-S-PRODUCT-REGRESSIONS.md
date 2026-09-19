@@ -31,6 +31,21 @@ ATOLL_TEST_WEB_PORT=15260 ATOLL_TEST_MOCK_PORT=18900 npx playwright test \
 
 Composer/Tiptap 说明：旧 disconnect 修复后的 N2 曾在 `Composer.jsx` passive effect 访问未挂载/已销毁 EditorView，导致 root 清空；当前 owner guard 候选后该 uncaught 不再出现。该 guard 属产品 owner 工作树，不是本测试包的改动；N2 当前 RED 已回到 notification receipt 合同，不能归因于 fixture。
 
+## notification owner 提交前后独立验收
+
+目标为 N2、N4、四条 high-water 与 F7；测试侧保持同一 spec、fixture、断言。提交前目录为 `test-results-notification-owner-pre-20260920`，`a721412` 后为 `test-results-notification-owner-post-20260920`，最终 `71dcb38` 后为 `test-results-notification-owner-final-20260920`。三阶段浏览器结果均为 **0/7 passed**。
+
+`a721412` 的 frozen confirmation 改善未改变公开 UI 状态：N2 仍在 `gap=0` following tail 显示 related badge，N4 仍 `authorityReady=false`/outside unread false，high-water rail snapshot/hydration/advancement 仍缺失，F7 仍无法恢复 browsing row。`71dcb38` 的 cursor authority reset 使新增 `tests/notification-state-contract.test.js` 达到 **5/5 unit passed**，但没有改变上述浏览器结果；unit persistence 绿色不能替代真实 owner 状态转移。
+
+验收状态转移合同：
+
+- N2：离开频道 `unread=3` → 切回真实到底 `badge/jump=0` → 6 次 following arrival 每帧 0；实际提交前后均为 `whileAway=3`、`gap=0`、`afterLeaving=0`，中间仍出现 badge（前：1/5；后：1/3/2）。
+- N4：安装 actor filter → `authorityReady=true` → scope 内 approval 清零且 outside row counted；提交前后 raw rail 都是 `channels=[]`。
+- high-water：H1 预期 `readSeq=25/highWater=27`、未来 row 后 `28`；H2 reload 恢复 `2` 再确认不复活；H3 filtered boundary `27`；H4 following arrival 推进 high-water。提交前后分别表现为 rail channel 缺失、reload badge 缺失、filtered snapshot 缺失、high-water 10s 不推进。
+- F7：cold/cached latest → browse → c0↔project→恢复同一 first-visible row/位置；提交前单行漂移，最终提交后回返 60s 超时。
+
+因此以上公开 owner 分歧仍需产品处理；测试侧不以 unit 结果、徽标暂时压零或修改 fixture 关闭交接。
+
 ## R1（历史记录，已由 `cbd8591` 关闭）：频道切换时 history owner 尚未连接
 
 这条历史分歧不再是当前复验结果：`cbd8591` 后频道切换可以继续进入真实页面；最终轮未记录该错误。以下步骤和栈保留作修复前 provenance，不应作为当前 RED 计数。

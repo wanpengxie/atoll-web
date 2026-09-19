@@ -136,3 +136,27 @@ ATOLL_TEST_WEB_PORT=15260 ATOLL_TEST_MOCK_PORT=18900 npx playwright test \
 - reading-session admission：F7；频道往返不再崩溃，但原 browsing row 未恢复到可见 owner。
 
 这些均是产品 owner 的公开边界问题；本分区没有通过修改 fixture、增加兼容 owner、删除断言或改动 `src/` 来掩盖失败。
+
+## notification owner 独立验收（提交前后）
+
+验收只读产品代码，未改 spec、fixture、断言或 `src/`。同一 7 条目标 case（N2、N4、4 条 high-water、F7）分别运行于 owner 提交前、`a721412` 后和最终 `71dcb38` 后：
+
+| 阶段 | 状态 | 结果 |
+|---|---|---|
+| 提交前（证据目录 `test-results-notification-owner-pre-20260920`，`a721412` 于证据完成后提交） | 预期行为基线 | **0/7 passed**；N2/N4/high-water/F7 全 RED。 |
+| `a721412` `fix(notification): commit frozen channel confirmations` 后（`test-results-notification-owner-post-20260920`） | frozen boundary / authority revision 候选 | **0/7 passed**；7 条失败边界与提交前一致。 |
+| `71dcb38` `fix(notification): reset cursor authority on world change` 后（`test-results-notification-owner-final-20260920`） | world cursor reset 完整候选 | 浏览器仍 **0/7 passed**；但新增 `tests/notification-state-contract.test.js` 为 **5/5 passed**，说明仅 unit persistence contract 变绿。 |
+
+每条场景的预期状态转移与观察结果：
+
+| 场景 | 预期状态转移 | 提交前 | `71dcb38` 后 |
+|---|---|---|---|
+| N2 | `c0` following → 离开；project arrival 计入 `unread=3`；切回并真实到底 → `badge/jump=0`；随后 6 次 following arrival 每帧保持 0；离开后 raw unread 仍 0。 | `whileAway=3`、`gap=0`、`afterLeaving=0`，但 following 帧出现 badge `1→5`。 | `whileAway=3`、`gap=0`、`afterLeaving=0`，仍出现 badge `1/3/2`；无 off-tail。 |
+| N4 | actor filter 安装 → rail `authorityReady=true`；6 个 steward approval ack；outside unrelated row 保持 counted。 | rail `channels=[]`，`authorityReady=false`、outside false。 | 相同；cursor reset 未建立过滤 rail authority。 |
+| high-water 1 | approvals 2 →切回确认 `readSeq=25, highWater=27, counts=0`；刷新不复活；未来 arrival → `highWater=28, counts=0`。 | afterAcknowledgement 的公开 rail channel 缺失。 | 相同，仍缺失。 |
+| high-water 2 | reload hydration 先恢复 badge `2`；尾部确认至 `highWater=27`；二次 reload 保持 0。 | reload 后 badge `2` 未恢复。 | 相同。 |
+| high-water 3 | filtered tail 只推进当前可见 boundary，rail channel `highWater=27, counts=0`，离开后不吞其他 scope。 | `atFilteredTail.rail.channels[0]` 缺失。 | 相同。 |
+| high-water 4 | following mounted tail 呈现 arrival 后 `highWater > beforeBoundary` 且 counts=0。 | 10s 内 high-water 仍未推进。 | 相同。 |
+| F7 | cold/cached 启动均 following 最新；browse 后 c0→project→c0 回返应恢复同一 `firstVisible.id` 与位置。 | 曾出现 `before=112 / after=111` 单行漂移。 | 回返等待 60s 超时，目标 row 未进入唯一 owner 可见区域。 |
+
+结论：`a721412`/`71dcb38` 的单元级 frozen confirmation 与 cursor authority reset 证据成立，但没有通过这组真实浏览器 owner 验收；N2、N4、high-water、F7 的产品交接仍保持 RED，不能以 unit 绿色替代公开 UI 状态转移。
