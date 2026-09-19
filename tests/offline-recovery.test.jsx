@@ -180,6 +180,41 @@ describe('W6 offline draft and recovery', () => {
     store.close();
   });
 
+  it('retries a rejected IndexedDB open on the next explicit draft write without losing the dirty draft', async () => {
+    const durableIndexedDB = globalThis.indexedDB;
+    let opens = 0;
+    const flakyIndexedDB = Object.create(durableIndexedDB);
+    flakyIndexedDB.open = (...args) => {
+      opens += 1;
+      if (opens <= 2) throw new Error('retryable indexeddb failure');
+      return durableIndexedDB.open(...args);
+    };
+    const store = createOutboxStore({
+      databaseName: `retryable-outbox-${crypto.randomUUID()}`,
+      indexedDBImpl: flakyIndexedDB,
+      IDBKeyRangeImpl: globalThis.IDBKeyRange,
+    });
+
+    const draft = {
+      text: '数据库恢复后仍在',
+      editorRevision: 1,
+    };
+    await expect(store.writeDraft('offline-root', 'c0', draft, 0)).rejects.toThrow('retryable indexeddb failure');
+    await expect(store.writeDraft('offline-root', 'c0', draft, 0)).rejects.toThrow('retryable indexeddb failure');
+    const saved = await store.writeDraft('offline-root', 'c0', {
+      ...draft,
+    }, 0);
+    expect(opens).toBe(3);
+    expect(saved).toMatchObject({
+      conflict: false,
+      record: { draft: { text: '数据库恢复后仍在' }, editorRevision: 1 },
+    });
+    expect((await store.restoreDrafts('offline-root'))[0]).toMatchObject({
+      draft: { text: '数据库恢复后仍在' }, editorRevision: 1,
+    });
+    store.close();
+  });
+
   it('rejects renderer-only attachment URLs before any durable submission is inserted', async () => {
     const store = createOutboxStore({ databaseName: `outbox-attachment-${crypto.randomUUID()}` });
     const submission = {
