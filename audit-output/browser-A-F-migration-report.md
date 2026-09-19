@@ -1,6 +1,6 @@
 # Browser A–F migration ledger
 
-基线：`fae8b70`；执行 head：`f6cebbb`（执行期间 product source 未改）。范围是当前 `tests/browser` 中 basename A–F 的 13 个 spec、31 个 Playwright case；fixtures `content-focus.{html,jsx}` 与 `content-selection.{html,jsx}` 均保留并继续由真实 fixture URL 使用。
+基线：`fae8b70`；复核 head：`7ba308c`（复核使用现有脏工作树；本分区未改 product source）。范围是当前 `tests/browser` 中 basename A–F 的 13 个 spec、31 个 Playwright case；fixtures `content-focus.{html,jsx}` 与 `content-selection.{html,jsx}` 均保留并继续由真实 fixture URL 使用。
 
 ## Aggregate
 
@@ -27,11 +27,11 @@ ATOLL_TEST_MOCK_PORT=19853 ATOLL_TEST_WEB_PORT=15193 npx playwright test \
   tests/browser/fold-collapse-anchor.spec.js --reporter=line
 ```
 
-结果：`23 passed, 8 failed (3.9m)`。失败没有 skip 或放宽行为/几何断言。
+结果（`7ba308c` + 复核时已有脏工作树）：`23 passed, 8 failed (4.4m)`。失败 case 身份与此前 ledger 一致；失败没有 skip 或放宽行为/几何断言。
 
 ## Case ledger
 
-`owner` 是当前真实生产 owner；`result` 是冻结 head 上的结果。每行保留了 baseline 的用户动作、可观察结果和架构不变量。
+`owner` 是当前真实生产 owner；`result` 是本次 `7ba308c` + 现有脏工作树复核结果。每行保留了 baseline 的用户动作、可观察结果和架构不变量。
 
 | # | Spec / exact case | User action → protected capability / invariant | Current owner / public entry | Result and evidence | Disposition |
 |---:|---|---|---|---|---|
