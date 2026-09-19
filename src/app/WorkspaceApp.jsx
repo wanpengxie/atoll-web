@@ -223,7 +223,14 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const feedCommands = useMemo(() => Object.freeze({
     bump: (...args) => callFeed('bump', args),
     cancel: (...args) => callFeed('cancel', args),
-    disconnectHistory: (...args) => callFeed('disconnectHistory', args),
+    // Disconnect is a release from the wire owner. During React owner handoff
+    // there may be no committed feed command port; releasing that absence is
+    // a legal no-op, while a committed runtime still enforces generation
+    // matching and rejects stale releases.
+    disconnectHistory: (...args) => {
+      const command = feedRef.current?.disconnectHistory;
+      return typeof command === 'function' ? command(...args) : false;
+    },
     enqueue: (...args) => callFeed('enqueue', args),
     focusHistory: (...args) => callFeed('focusHistory', args),
     generationFor: (...args) => callFeed('generationFor', args),
