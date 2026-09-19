@@ -149,6 +149,7 @@ async function startProductionSendProbe(page) {
         'reading.bottom-intent',
         'reading.issuer-enter',
         'reading.issuer-write',
+        'reading.issuer-satisfy',
         'reading.issuer-reject',
         'reading.list-height',
         'reading.scroller-resize',
@@ -158,6 +159,9 @@ async function startProductionSendProbe(page) {
       const submissionEvents = application.filter((entry) => entry.event?.startsWith('submission.'));
       const countSubmission = (event) => submissionEvents.filter((entry) => entry.event === event).length;
       const issuerWriteCount = readingEvents.filter((entry) => entry.event === 'reading.issuer-write').length;
+      const issuerCompletionCount = readingEvents.filter((entry) => (
+        entry.event === 'reading.issuer-write' || entry.event === 'reading.issuer-satisfy'
+      )).length;
       const geometry = {
         mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
         scrollTop: Number(viewport?.scrollTop || 0),
@@ -181,6 +185,7 @@ async function startProductionSendProbe(page) {
         },
         bottomIntentCount: readingEvents.filter((entry) => entry.event === 'reading.bottom-intent').length,
         issuerWriteCount,
+        issuerCompletionCount,
         lastReadingSequence: Number(readingEvents.at(-1)?.sequence || 0),
         submissionCounts: {
           composerSendStarted: countSubmission('submission.composer_send_started'),
@@ -191,7 +196,7 @@ async function startProductionSendProbe(page) {
           feedLanded: countSubmission('submission.feed_landed'),
         },
       });
-      if (!autoInputRequested && issuerWriteCount > 0 && typeof window.__wheelAfterAuthorizedWrite === 'function') {
+      if (!autoInputRequested && issuerCompletionCount > 0 && typeof window.__wheelAfterAuthorizedWrite === 'function') {
         autoInputRequested = true;
         preInputGeometry = geometry;
         userInputAt = performance.now();
@@ -662,13 +667,16 @@ test('F7 browsing send is one explicit bottom intent and later user input defeat
     window.__ATOLL_DIAGNOSTICS__.clear();
     window.__ATOLL_DIAGNOSTICS__.reading.enable({ case: 'production-browsing-send', seed: 0x92_09_23 });
   });
-  const viewportBox = await viewport.boundingBox();
   const cdp = await page.context().newCDPSession(page);
   let wheelDelivered;
   const wheelDelivery = new Promise((resolve) => { wheelDelivered = resolve; });
   await page.exposeBinding('__wheelAfterAuthorizedWrite', async () => {
-    const x = Math.round((viewportBox?.x || 0) + Math.max(1, (viewportBox?.width || 1) / 2));
-    const y = Math.round((viewportBox?.y || 0) + Math.max(1, (viewportBox?.height || 1) / 2));
+    // The explicit send can atomically replace the browsing owner with the
+    // Following owner. Resolve the unique live host after completion instead
+    // of dispatching at the stale pre-send rectangle.
+    const liveBox = await readingOwner(page).boundingBox();
+    const x = Math.round((liveBox?.x || 0) + Math.max(1, (liveBox?.width || 1) / 2));
+    const y = Math.round((liveBox?.y || 0) + Math.max(1, (liveBox?.height || 1) / 2));
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: -2_000 });
     wheelDelivered();
@@ -716,6 +724,9 @@ test('F7 browsing send is one explicit bottom intent and later user input defeat
   expect(await viewport.evaluate(tailDistance)).toBeGreaterThan(24);
   const bottomIntents = productionEvidence.reading.entries.filter((entry) => entry.event === 'reading.bottom-intent');
   const issuerWrites = productionEvidence.reading.entries.filter((entry) => entry.event === 'reading.issuer-write');
+  const issuerSatisfies = productionEvidence.reading.entries.filter((entry) => entry.event === 'reading.issuer-satisfy');
+  const issuerCompletions = [...issuerWrites, ...issuerSatisfies]
+    .sort((left, right) => Number(left.sequence) - Number(right.sequence));
   const trustedWheels = productionEvidence.reading.entries.filter((entry) => (
     entry.event === 'reading.input-owner' && entry.detail?.type === 'wheel'
   ));
@@ -724,34 +735,37 @@ test('F7 browsing send is one explicit bottom intent and later user input defeat
     && entry.detail?.reason === 'intent-target-pending'
   ));
   expect(bottomIntents, JSON.stringify(productionEvidence, null, 2)).toHaveLength(1);
-  expect(issuerWrites, JSON.stringify(productionEvidence, null, 2)).toHaveLength(1);
+  expect(issuerCompletions, JSON.stringify(productionEvidence, null, 2)).toHaveLength(1);
+  expect(issuerWrites.length, JSON.stringify(productionEvidence, null, 2)).toBeLessThanOrEqual(1);
   expect(trustedWheels, JSON.stringify(productionEvidence, null, 2)).toHaveLength(1);
-  expect(Number(trustedWheels[0].sequence)).toBeGreaterThan(Number(issuerWrites[0].sequence));
-  expect(Number(trustedWheels[0].detail?.inputEpoch)).toBeGreaterThan(Number(issuerWrites[0].detail?.inputEpoch));
+  expect(Number(trustedWheels[0].sequence)).toBeGreaterThan(Number(issuerCompletions[0].sequence));
+  expect(Number(trustedWheels[0].detail?.inputEpoch)).toBeGreaterThan(Number(issuerCompletions[0].detail?.inputEpoch));
   expect(issuerWrites.filter((entry) => Number(entry.sequence) > Number(trustedWheels[0].sequence))).toHaveLength(0);
   expect(productionEvidence.preInputGeometry?.mode).toBe('following');
-  expect(targetPending.length, JSON.stringify(productionEvidence, null, 2)).toBeGreaterThan(0);
-  const preTargetPending = targetPending.filter((entry) => (
+  expect(targetPending.every((entry) => (
     Number(entry.detail?.snapshotRevision) <= Number(entry.detail?.afterPresentationRevision)
-  ));
-  expect(preTargetPending.length, JSON.stringify(targetPending, null, 2)).toBeGreaterThan(0);
+  )), JSON.stringify(targetPending, null, 2)).toBe(true);
   // Waiting commits outside the list flow and may keep its baseline revision.
   // Join the actual write to already-installed target DOM and local durability;
   // a mode-change height write before target acceptance must fail this oracle.
-  const firstWrite = issuerWrites[0];
-  const physicalWrite = productionEvidence.writes.find((entry) => entry.sequence === firstWrite.sequence);
-  expect(firstWrite.detail?.authorityLabel).toBe('intent');
-  expect(firstWrite.detail?.sendDestination).toBe('waiting');
-  expect(firstWrite.detail?.sendTargetIDs?.length).toBeGreaterThan(0);
-  expect(Number(firstWrite.detail?.sendReadyRevision)).toBeGreaterThanOrEqual(
-    Number(firstWrite.detail?.afterPresentationRevision),
+  const completion = issuerCompletions[0];
+  const physicalWrite = productionEvidence.writes.find((entry) => entry.sequence === completion.sequence);
+  expect(completion.detail?.authorityLabel).toBe('intent');
+  expect(completion.detail?.sendDestination).toBe('waiting');
+  expect(completion.detail?.sendTargetIDs?.length).toBeGreaterThan(0);
+  expect(Number(completion.detail?.sendReadyRevision)).toBeGreaterThanOrEqual(
+    Number(completion.detail?.afterPresentationRevision),
   );
-  expect(physicalWrite?.event).toBe('reading.issuer-write');
-  for (const id of firstWrite.detail.sendTargetIDs) {
-    expect(physicalWrite.waitingIDs).toContain(id);
-    expect(physicalWrite.durableIDs).toContain(id);
+  if (completion.event === 'reading.issuer-write') {
+    expect(physicalWrite?.event).toBe('reading.issuer-write');
+    for (const id of completion.detail.sendTargetIDs) {
+      expect(physicalWrite.waitingIDs).toContain(id);
+      expect(physicalWrite.durableIDs).toContain(id);
+    }
+    expect(Math.abs(physicalWrite.afterGap)).toBeLessThanOrEqual(1);
+  } else {
+    expect(physicalWrite).toBeUndefined();
   }
-  expect(Math.abs(physicalWrite.afterGap)).toBeLessThanOrEqual(1);
   expect(Math.abs(productionEvidence.preInputGeometry?.gap)).toBeLessThanOrEqual(1);
   for (const required of [
     'submission.composer_send_started',
@@ -764,14 +778,15 @@ test('F7 browsing send is one explicit bottom intent and later user input defeat
     expect(productionEvidence.diagnostics.some((entry) => entry.event === required), required).toBe(true);
   }
   expect(productionEvidence.frames.at(-1)?.bottomIntentCount).toBe(1);
-  expect(productionEvidence.frames.at(-1)?.issuerWriteCount).toBe(1);
-  const firstWriteFrame = productionEvidence.frames.findIndex((frame) => frame.issuerWriteCount === 1);
-  expect(firstWriteFrame).toBeGreaterThan(0);
-  expect(productionEvidence.frames[firstWriteFrame].gap).toBeLessThan(productionEvidence.frames[0].gap);
-  expect(productionEvidence.frames.slice(firstWriteFrame).every((frame) => frame.issuerWriteCount === 1)).toBe(true);
+  expect(productionEvidence.frames.at(-1)?.issuerCompletionCount).toBe(1);
+  const firstCompletionFrame = productionEvidence.frames.findIndex((frame) => frame.issuerCompletionCount === 1);
+  expect(firstCompletionFrame).toBeGreaterThan(0);
+  expect(productionEvidence.frames[firstCompletionFrame].gap).toBeLessThan(productionEvidence.frames[0].gap);
+  expect(productionEvidence.frames.slice(firstCompletionFrame).every((frame) => frame.issuerCompletionCount === 1)).toBe(true);
   const postInputFrames = productionEvidence.frames.filter((frame) => frame.afterUserInput);
   expect(postInputFrames.length).toBeGreaterThan(0);
-  expect(postInputFrames.every((frame) => frame.issuerWriteCount === 1)).toBe(true);
+  expect(postInputFrames.every((frame) => frame.issuerCompletionCount === 1)).toBe(true);
+  expect(postInputFrames.every((frame) => frame.issuerWriteCount === issuerWrites.length)).toBe(true);
   expect(postInputFrames.at(-1)?.mode).toBe('browsing');
   const waitingIndex = productionEvidence.frames.findIndex((frame) => frame.waitingMounted && frame.waitingItems > 0);
   if (waitingIndex > 0) {

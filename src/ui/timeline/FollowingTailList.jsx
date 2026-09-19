@@ -249,17 +249,25 @@ export function FollowingTailList({
     geometryRevision: () => 0,
     isEffectiveMotion: (_previous, next) => Number(next) <= -LEAVE_TAIL_THRESHOLD,
     atTail: () => isAtTail(rootRef.current),
-    bottomIntentReady(intent) {
+    bottomIntentReceipt(intent) {
       const committed = committedRef.current;
-      if (!committed.active || !intent?.id || !committed.snapshot.rows.length) return false;
+      if (!committed.active || !intent?.id || !committed.snapshot.rows.length) return null;
       const targets = intent.targetMessageIDs || [];
-      if (!targets.length) return true;
+      // A latest/jump intent is targetless by definition. A composer send is
+      // not: it becomes eligible only after the durable outbox binds concrete
+      // message IDs and Timeline proves where every target was presented.
+      if (!targets.length) return intent.id.startsWith('composer:send-start:')
+        ? null : Object.freeze({ ready: true, destinations: Object.freeze([]) });
       const receipt = committed.bottomIntentPresentation;
-      return Boolean(receipt?.ready === true
+      return receipt?.ready === true
         && receipt.intentID === intent.id
         && receipt.activationID === committed.reading.activationID
         && Number(receipt.inputEpoch) === Number(intent.inputEpoch)
-        && targets.every((id) => receipt.destinations?.some((entry) => entry.messageID === id)));
+        && targets.every((id) => receipt.destinations?.some((entry) => entry.messageID === id))
+        ? receipt : null;
+    },
+    bottomIntentReady(intent) {
+      return Boolean(this.bottomIntentReceipt(intent));
     },
     onNavigationUpdate(transaction, reason) {
       if (reason !== 'begin') return;

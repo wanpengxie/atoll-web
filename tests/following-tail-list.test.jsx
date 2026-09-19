@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import React, { startTransition, Suspense } from 'react';
+import React, { startTransition, Suspense, useRef } from 'react';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { FollowingTailList } from '../src/ui/timeline/FollowingTailList.jsx';
+import { ReadingNavigationOwner } from '../src/ui/timeline/ReadingNavigationOwner.jsx';
 
 afterEach(() => {
   cleanup();
@@ -41,6 +42,72 @@ function snapshot(count = 100) {
   }));
   return { rows, revision: 7, roleRevision: 3, firstItemIndex: 900 };
 }
+
+function OwnedFollowing({ reading, bottomIntentPresentation = null }) {
+  const stackRef = useRef(null);
+  return <ReadingNavigationOwner
+    activationID={reading.activationID}
+    reading={reading}
+    stackRef={stackRef}
+    visibleRole="following"
+    onFollowingNavigationTarget={() => {}}
+  ><div ref={stackRef}><FollowingTailList
+    snapshot={snapshot(2)}
+    reading={reading}
+    rowRevision={(index) => String(index)}
+    renderRow={(row) => <div>{row.id}</div>}
+    bottomIntentPresentation={bottomIntentPresentation}
+    surfaceVisible
+    active
+  /></div></ReadingNavigationOwner>;
+}
+
+it('does not complete a composer intent before durable target binding and presentation receipt', () => {
+  let session = {
+    activationID: 'activation-1',
+    inputEpoch: 2,
+    geometryRevision: 0,
+    mode: 'following',
+    bottomIntent: {
+      id: 'composer:send-start:pending',
+      inputEpoch: 2,
+      afterPresentationRevision: 7,
+      targetMessageIDs: [],
+    },
+  };
+  const consumeBottomIntent = vi.fn(() => true);
+  const reading = readingPort({
+    session,
+    getSession: () => session,
+    consumeBottomIntent,
+  });
+  const view = render(<OwnedFollowing reading={reading} />);
+
+  expect(consumeBottomIntent).not.toHaveBeenCalled();
+
+  session = {
+    ...session,
+    bottomIntent: { ...session.bottomIntent, targetMessageIDs: ['queued-1'] },
+  };
+  reading.session = session;
+  view.rerender(<OwnedFollowing
+    reading={reading}
+    bottomIntentPresentation={{
+      ready: true,
+      intentID: session.bottomIntent.id,
+      activationID: session.activationID,
+      inputEpoch: session.inputEpoch,
+      presentationRevision: 8,
+      destinations: [{ messageID: 'queued-1', destination: 'waiting' }],
+    }}
+  />);
+
+  expect(consumeBottomIntent).toHaveBeenCalledTimes(1);
+  expect(consumeBottomIntent).toHaveBeenCalledWith({
+    id: session.bottomIntent.id,
+    inputEpoch: session.inputEpoch,
+  });
+});
 
 it('uses the presentation absolute coordinate for tail row revisions and materialization', () => {
   const reading = readingPort();

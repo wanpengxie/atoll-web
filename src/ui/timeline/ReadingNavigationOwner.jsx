@@ -259,12 +259,13 @@ export function ReadingNavigationOwner({
     const owner = committed.reading;
     let session = owner.getSession?.() || owner.session;
     const intent = session.bottomIntent;
+    const receipt = host?.bottomIntentReceipt?.(intent) || null;
     if (!host?.node
       || committed.visibleRole !== role
       || !expectedIntentID
       || intent?.id !== expectedIntentID
       || intent.inputEpoch !== session.inputEpoch
-      || host.bottomIntentReady?.(intent) !== true) return false;
+      || (!receipt && host.bottomIntentReady?.(intent) !== true)) return false;
 
     // An explicit application command supersedes an unfinished physical-input
     // transaction before it receives geometry authority. The cancellation is
@@ -278,6 +279,29 @@ export function ReadingNavigationOwner({
     }
 
     const alreadyAtTail = host.atTail?.() === true;
+    if (!alreadyAtTail && typeof host.node.scrollTo !== 'function') return false;
+    const destinations = receipt?.destinations || [];
+    const destinationKinds = [...new Set(destinations.map((entry) => entry.destination).filter(Boolean))];
+    const detail = {
+      source: 'application-control',
+      activationID: session.activationID,
+      inputEpoch: session.inputEpoch,
+      intentID: expectedIntentID,
+      hostRole: role,
+      authorityLabel: expectedIntentID.startsWith('composer:send-start:') ? 'intent' : 'bottom-intent',
+      sendDestination: destinationKinds.length === 1 ? destinationKinds[0]
+        : destinationKinds.length > 1 ? 'mixed' : '',
+      sendReadyRevision: Number(receipt?.presentationRevision || 0),
+      sendTargetIDs: [...(intent.targetMessageIDs || [])],
+      afterPresentationRevision: Number(intent.afterPresentationRevision || 0),
+      scrollTop: Number(host.node.scrollTop || 0),
+      scrollHeight: Number(host.node.scrollHeight || 0),
+      clientHeight: Number(host.node.clientHeight || 0),
+    };
+    // The issuer event is the authorization boundary for the physical write,
+    // so publish it before calling the single DOM capability. Tests and runtime
+    // diagnostics can then join the command to the exact intent/epoch.
+    if (!alreadyAtTail) readingTrace('reading.issuer-write', detail);
     const executed = alreadyAtTail || executeReadingDOMCommand(Object.freeze({
       type: 'scroll-tail',
       reverse: role === 'following',
@@ -292,14 +316,9 @@ export function ReadingNavigationOwner({
       id: expectedIntentID,
       inputEpoch: current.inputEpoch,
     }) === true;
-    if (consumed) {
-      readingTrace(alreadyAtTail ? 'reading.issuer-satisfy' : 'reading.issuer-write', {
-        source: 'application-control',
-        activationID: current.activationID,
-        inputEpoch: current.inputEpoch,
-        intentID: expectedIntentID,
-        hostRole: role,
-        authorityLabel: 'bottom-intent',
+    if (consumed && alreadyAtTail) {
+      readingTrace('reading.issuer-satisfy', {
+        ...detail,
         reason: alreadyAtTail ? 'already-at-tail' : 'explicit-bottom',
         scrollTop: Number(host.node.scrollTop || 0),
         scrollHeight: Number(host.node.scrollHeight || 0),
