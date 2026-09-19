@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { buildComposerModel } from '../src/ui/composer/composer-model.js';
 
-// The old src/model/capabilities.js projection was retired with the fold
-// compatibility surface.  The product capability manifest remains the
-// canonical acceptance inventory; live actor capability truth is now owned by
-// useAgentProbes + agent-parameters, covered by the Composer tests.
+// The manifest is the product acceptance inventory. Live actor capability
+// truth is projected by useAgentProbes and consumed by the public Composer
+// command/model owners; these tests intentionally assert the manifest rather
+// than importing a deleted projection or recreating a second capability store.
 const manifest = JSON.parse(readFileSync(new URL('../contracts/product-capabilities.json', import.meta.url), 'utf8'));
 
 describe('current capability manifest contract', () => {
@@ -34,10 +35,26 @@ describe('current capability manifest contract', () => {
     }
   });
 
-  it('covers every planned stage without reviving the retired capability index', () => {
+  it('covers every planned stage and leaves live actor truth to the Composer owner', () => {
     for (const stage of manifest.stages) {
       expect(manifest.capabilities.some((capability) => capability.stage === stage), stage).toBe(true);
     }
-    expect(manifest.capabilities.some((capability) => capability.id === 'actor.capabilities')).toBe(false);
+  });
+
+  it('gates a current Agent command from the public Composer model without a second capability store', () => {
+    const roster = [{ id: 'agent-1', kind: 'agent', name: '研究员' }];
+    const capabilityIndex = new Map([['agent-1', {
+      describe: { types: new Map([['agent.compact', { inputSchema: { type: 'object' } }]]) },
+    }]]);
+    const model = buildComposerModel({
+      activeChannelId: 'c0',
+      draft: { text: '/compact', recipients: [] },
+      roster,
+      access: 'member_active',
+      agentSelection: { target: { kind: 'single', agent: roster[0] } },
+      capabilityIndex,
+    });
+    expect(model.controls.commands.compact).toMatchObject({ state: 'supported', enabled: true });
+    expect(model.controls.commands.fork).toMatchObject({ state: 'unsupported', enabled: false });
   });
 });
