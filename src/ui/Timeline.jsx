@@ -83,7 +83,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   const {
     projection,
     viewport,
-    rolePresentation,
+    latestRowID,
     browsingExpandedSlots,
     livePresentationArrivals,
   } = useConversationProjection({
@@ -110,8 +110,8 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
   }, [actorFilterApplies, actorFilter, filterableAgents]);
   useEffect(() => { onFocusAgentChange?.(focusAgentId); }, [focusAgentId, onFocusAgentChange]);
   const messageListRenderKey = state.channelId;
-  const withNarration = rolePresentation.rows;
-  const waitingHandoff = useWaitingHandoff(state.channelId, queuedTurns, rolePresentation.rows);
+  const withNarration = projection.presentation.rows;
+  const waitingHandoff = useWaitingHandoff(state.channelId, queuedTurns, projection.presentation.rows);
   const rowPresentationState = useCallback(
     (row) => waitingHandoff.enteringRequestIDs.has(row.id) ? 'handoff-enter' : '',
     [waitingHandoff.enteringRequestIDs],
@@ -194,6 +194,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     mergedCounts,
     preemptedSources,
     turnDetail,
+    latestRowID,
     onResolve,
     onCancel,
     onTaskControl,
@@ -355,7 +356,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 		  * already-committed bookmark. */}
 		<ReadingContainerHandoff
 		  key={messageListRenderKey}
-		  snapshot={rolePresentation}
+		  snapshot={projection.presentation}
 		  reading={viewport}
 		  surfaceVisible={surfaceVisible}
 		  bottomIntentPresentation={bottomIntentPresentation}

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { emptyBrowsingFoldLease, reconcileBrowsingFoldLease } from '../../model/browsing-fold-lease.js';
-import { createConversationPresentation, createConversationRoleFinalizer } from '../../model/conversation-presentation.js';
+import { createConversationPresentation } from '../../model/conversation-presentation.js';
 import { diagnostic } from '../../model/diagnostics.js';
 import { READING_MODE } from '../../model/reading-session.js';
 import { projectTimeline } from '../../model/timeline-projection.js';
@@ -20,8 +20,6 @@ export function useConversationProjection({
 }) {
   const presentationRef = useRef(null);
   if (!presentationRef.current) presentationRef.current = createConversationPresentation();
-  const roleFinalizerRef = useRef(null);
-  if (!roleFinalizerRef.current) roleFinalizerRef.current = createConversationRoleFinalizer();
   const [commitVersion, setCommitVersion] = useState(0);
   const projectionVersion = state._timelineProjectionVersion ?? state.lastSeq;
   const contentVersion = state._timelineRevision ?? state.lastSeq;
@@ -186,39 +184,26 @@ export function useConversationProjection({
     onTailCaughtUp(viewport.tailCaughtUp);
     return () => onTailCaughtUp({ ...viewport.tailCaughtUp, caughtUp: false });
   }, [onTailCaughtUp, viewport.tailCaughtUp]);
-  const roleCandidate = useMemo(
-    () => roleFinalizerRef.current.evaluate(projection.presentation, viewport.presentationAuthority),
-    [projection.presentation, viewport.presentationAuthority],
-  );
-  const rolePresentation = roleCandidate.snapshot;
+  const latestRowID = viewport.presentationAuthority?.candidateID || '';
   useColdEntryDiagnostics({
     channelId: state.channelId,
     viewKey: messageListKey,
     selfReady: !identityPending,
     surfaceVisible,
-    presentation: rolePresentation,
+    presentation: projection.presentation,
     reading: viewport,
     history,
   });
-  useLayoutEffect(() => {
-    const presentationCurrent = presentationRef.current.current() === projection.presentation;
-    const committed = presentationCurrent
-      && roleFinalizerRef.current.commitCandidate(roleCandidate);
-    if (!presentationCurrent
-      || (!committed && roleFinalizerRef.current.current() !== rolePresentation)) {
-      setCommitVersion((value) => value + 1);
-    }
-  }, [projection.presentation, roleCandidate, rolePresentation]);
   const [browsingFoldLease, setBrowsingFoldLease] = useState(emptyBrowsingFoldLease);
   useLayoutEffect(() => {
     setBrowsingFoldLease((current) => reconcileBrowsingFoldLease(current, {
       activationID: viewport.activationID,
       mode: viewport.session.mode,
-      rows: rolePresentation.rows,
+      rows: projection.presentation.rows,
       bookmarkID: viewport.session.bookmark?.messageID || '',
     }));
   }, [
-    rolePresentation,
+    projection.presentation,
     viewport.activationID,
     viewport.session.bookmark?.messageID,
     viewport.session.mode,
@@ -232,7 +217,7 @@ export function useConversationProjection({
   return {
     projection,
     viewport,
-    rolePresentation,
+    latestRowID,
     browsingExpandedSlots,
     livePresentationArrivals,
   };

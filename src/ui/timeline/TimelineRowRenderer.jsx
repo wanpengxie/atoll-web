@@ -589,6 +589,7 @@ export function useTimelineRowRenderer({
   mergedCounts,
   preemptedSources,
   turnDetail,
+  latestRowID = '',
   onResolve,
   onCancel,
   onTaskControl,
@@ -631,7 +632,7 @@ export function useTimelineRowRenderer({
   }, [capabilityIndex]);
   const rowRenderRevision = useCallback((_index, row) => {
     const entry = row.body;
-    const isLatest = row.role?.latest === true ? 1 : 0;
+    const isLatest = row.id === latestRowID ? 1 : 0;
     const browsingExpanded = browsingExpandedSlots.has(row.visualSlotID || row.id) ? 1 : 0;
     if (entry?.kind === 'turn') {
       const requestId = entry.turn.requestId;
@@ -674,7 +675,7 @@ export function useTimelineRowRenderer({
   }, [
     approvalStates, capabilityIndex, capabilityRevisions, controlStates, presentationEditing,
     browsingExpandedSlots, effectiveFoldOverrides, frozenByActor, hasApprovalStates, hasControlStates,
-    mergedCounts, names, preemptedSources, resumePin, sharedRowRevision,
+    latestRowID, mergedCounts, names, preemptedSources, resumePin, sharedRowRevision,
     state.channelId, targetAuthorityRevision, turnDetail?.selected?.requestId,
   ]);
   useLayoutEffect(() => {
@@ -774,7 +775,7 @@ export function useTimelineRowRenderer({
       const detailsOpen = rowSelectedTurnID === entry.turn.requestId;
       const browsingExpanded = browsingExpandedSlots.has(row.visualSlotID || row.id);
       const fold = {
-        latest: row.role?.latest === true || browsingExpanded,
+        latest: row.id === latestRowID || browsingExpanded,
         automaticExpanded: browsingExpanded,
         overrides: effectiveFoldOverrides,
         onToggle: toggleFold,
@@ -787,12 +788,12 @@ export function useTimelineRowRenderer({
     if (!content) {
       const source = { view: 'dynamic', objectType: 'message', objectId: entry.envelope.id, seq: entry.seq };
       const browsingExpanded = browsingExpandedSlots.has(row.visualSlotID || row.id);
-      content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.role?.latest === true || browsingExpanded, automaticExpanded: browsingExpanded, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={hasCreateTask ? () => rowActions.createTask(source) : null} onReply={rowReply} /></div>;
+      content = <div className="timeline-entry" data-continuation={continuation || undefined} data-entry-id={entry.envelope.id}><Standalone envelope={entry.envelope} names={names} roster={roster} selfId={selfId} continuation={continuation} fold={{ latest: row.id === latestRowID || browsingExpanded, automaticExpanded: browsingExpanded, overrides: effectiveFoldOverrides, onToggle: toggleFold }} onCreateTask={hasCreateTask ? () => rowActions.createTask(source) : null} onReply={rowReply} /></div>;
     }
     return <div className="timeline-virtual-item">{content}{boundaryAfterTimestamp > 0 && <div className="timeline-day"><span>{dayLabel(boundaryAfterTimestamp)}</span></div>}</div>;
   }, [
     access, approvalStates, browsingExpandedSlots, capabilityIndex, controlStates, presentationEditing,
-    effectiveFoldOverrides, frozenByActor, hasCreateTask, mergedCounts, names,
+    effectiveFoldOverrides, frozenByActor, hasCreateTask, latestRowID, mergedCounts, names,
     preemptedSources, roster, rowActions, rowReply, rowSelectedTurnID, selfId,
     state, toggleFold, waitingRosterAuthority,
   ]);
