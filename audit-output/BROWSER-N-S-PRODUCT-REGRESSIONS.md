@@ -401,3 +401,34 @@ owner oracle 的首断点包：
 | H4 following-after-arrival | c0.project `readSeq=25, high-water=28`；Replica `headSeq=28`, arrival row present | following, gap0，新 approval visible，Reading visible IDs 含新 row；DOM `0/0/false/0` | `present=false, authorityReady=false, channels=[]`，reason `rail high-water 0 < expected 1` |
 
 这不是 fixture、selector、Replica、cursor、Presentation 或 Reading 回归：所有前置链均已落地且用户 rail 数字正确；当前真实产品缺口是 `channel-feed-runtime` 未向 `__ATOLL_DIAGNOSTICS__.rail` 注册当前 channel authority/high-water projection。最小回归包交 **notification_owner**：在既有 runtime owner 内恢复只读、同源的 rail projection（不得新增第二状态源），然后重跑四条 high-water 与 N4/H4。N4 spec 已恢复 authority 门，未恢复与 scalar high-water 冲突的逐 filter `outsideFilterPreserved` 断言；本轮不改产品代码。
+
+## 第十八轮复验：rail authority 已绿；只交连续 follow 的 Reading trace 红（HEAD `e644e9e`）
+
+第十七轮交给 notification owner 的 `registerRailDiagnosticProvider` 已在 `e644e9e` 接入。按同一 FAE8B70 fixture 真实 Chromium 重跑四条 high-water：原字面合同 **3 failed / 1 passed**，但失败不再是 rail channel 缺失：
+
+```text
+ATOLL_TEST_WEB_PORT=16301 ATOLL_TEST_MOCK_PORT=20601 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round18-highwater-16301-20260920
+# 3 failed, 1 passed
+```
+
+逐条证据：
+
+- persistence 的 DOM 链 `2→0→0(reload)→1(future)→0` 全部通过；旧断言把 high-water 固定为 27，但新增 `actor.describe` request/response 占据物理 seq 28/29，reload 后合法 frozen boundary 为 29。它们分别被 rail 标成 `self`/`hidden_control`，不计用户通知；该失败是物理 seq 实现 oracle 过时，不是产品回归。
+- hydration **通过**；provider authority 已恢复，ack 与二次 reload counts 均为 0。
+- filtered 的 DOM、scope、jump 全 `0/0/false/0`；新增 control seq 26/27 与 approval seq 28/29 使 boundary=29，旧字面 27 同样是测试合同过时，不是用户可见 rail 错。
+- continuously-followed 的 arrival 已让 high-water `25→28`，新 row 在 mounted following owner，gap=0，DOM `related/total/pending/jump=0/0/false/0`；唯一失败是 Reading trace 没有 `reading.installed-tail-ack` 或 `reading.arrival-resolution`。采样只有 `trace.enabled` 与 `reading.observation`，因此首断点是 **Reading mounted-tail observation/receipt handoff**，不是 rail authority。
+
+测试侧只把旧物理 seq 计算改为“以 rail 中注入 approval 的实际 seq 建 boundary”：要求 ack boundary 覆盖该 row、future row 位于 boundary 外、counts/authority/readSeq/reload 单调性不变；没有删 continuous-follow trace 门。修订后重跑：
+
+```text
+ATOLL_TEST_WEB_PORT=16304 ATOLL_TEST_MOCK_PORT=20604 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round18-highwater-contract-16304-20260920
+# 3 passed, 1 failed（唯一失败为 line 221 Reading trace）
+```
+
+独立 N4/H4 oracle 在同一产品 HEAD **2 passed（observation-only）**：
+
+```text
+ATOLL_TEST_WEB_PORT=16302 ATOLL_TEST_MOCK_PORT=20602 npx playwright test tests/browser/notification-owner-oracle.spec.js --grep="N4 filtered|H4 following" --workers=1 --reporter=line --output=test-results-browser-ns-round18-owner-16302-20260920
+```
+
+N4 为 cursor/high-water=`25/61`、Replica head=`61`、filtered Presentation gap=0、DOM=`0/0/false/0`、rail `authorityReady=true`；H4 为 high-water=`25→28`、Replica=`27→28`、arrival visible、DOM=`0/0/false/0`、rail `authorityReady=true`。因此不新增 notification rail 产品回归，也不再把 actor.describe 的物理 seq 误报成产品问题。唯一新增公开交接包是连续 follow 的 Reading trace：保留真实 DOM/rail 通过证据，交现有 Reading owner 补齐其 observation/receipt 完成门；不得通过删除 trace 断言、空 diagnostics 或放宽用户状态门收绿。证据目录：`test-results-browser-ns-round18-observe-16303-20260920/`、`test-results-browser-ns-round18-highwater-contract-16304-20260920/`、`test-results-browser-ns-round18-owner-16302-20260920/`。

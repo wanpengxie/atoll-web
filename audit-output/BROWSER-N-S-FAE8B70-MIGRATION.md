@@ -569,3 +569,43 @@ N4/H4 owner oracle 在同一 HEAD **2 passed（oracle 本身只采集）**，但
 因此第16轮结论在当前冻结 high-water 合同下被修正：filter 外逐条 retention 仍不是本轮要求，但**rail channel authority/high-water projection 是真实 notification owner 合同**，不是可删除的测试细节。首个公开 owner 边界为 `channel-feed-runtime` → `registerRailDiagnosticProvider` 当前未接入；其前置 cursor、Replica、Presentation、DOM/Reading 均已有证据。该回归交 `notification_owner`，不归 fixture/selector，不改产品实现。
 
 为避免测试被“删 raw”假绿，N4 已恢复仅要求 `channelPresent=true && authorityReady=true` 的 authority 门，保留 DOM 与 scalar high-water 语义，不恢复过时的 `outsideFilterPreserved` 逐 filter 断言。当前 N4 复验故意 **1 failed**，证据 `test-results-browser-ns-round17-n4-16204-20260920/`：44 帧、DOM `0/0/false/0`、Replica/confirmation 链已完成，末尾 authority 轮询仍 `{channelPresent:false,authorityReady:false}`。
+
+## 第十八轮：`e644e9e` rail authority 已恢复；旧物理 seq oracle 与 Reading trace 分离
+
+本轮在当前产品 HEAD `e644e9e`（`fix(feed): expose rail authority observation`）以 FAE8B70 同一 `multi-channel` fixture 重跑四条 `notification-high-water.spec.js`，并独立重跑 N4/H4 owner oracle。未修改产品、vendor、package、fixture 或 skip；仅在确认旧字面 high-water 是物理控制行差异后，按当前公开语义修订 spec 的 seq 计算。
+
+初始合同重跑：
+
+```text
+ATOLL_TEST_WEB_PORT=16301 ATOLL_TEST_MOCK_PORT=20601 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round18-highwater-16301-20260920
+# 3 failed, 1 passed
+```
+
+失败分层不是四条 rail 都红：
+
+| case | 当前首断点 | 物理/公开事实 | 裁决 |
+|---|---|---|---|
+| persistence | 旧字面 `notificationHighWater=27` | ack 后注入 approval 为 seq 26/27；真实 `actor.describe` request/response 为 seq 28/29（`self`/`hidden_control`），reload 后 frozen high-water=29，DOM 仍 `2→0→0→1→0` | **测试物理 seq oracle 过时**，不是通知 rail 回归 |
+| hydration | none | high-water provider 已存在，hydrated ack 与二次 reload 均 counts=0 | **PASS** |
+| filtered | 旧字面 `notificationHighWater=27` | filtered tail 的 control rows seq 26/27，新增 approval seq 28/29，high-water=29；DOM 与 jump 均 `0/0/false/0` | **测试物理 seq oracle 过时**，不是用户 rail 回归 |
+| continuously-followed | Reading trace event 门 | arrival seq 28 后 high-water 从 25→28，mounted following/gap=0、DOM `0/0/false/0`；trace 只有 `trace.enabled` 与 `reading.observation`，没有 `reading.installed-tail-ack`/`reading.arrival-resolution` | **Reading owner RED**，交公开 Reading owner；不以空/旧 diagnostics 代替 |
+
+临时 observation-only probe（已删除）在 `test-results-browser-ns-round18-observe-16303-20260920/` 保留上述行级证据：persistence 的 future approval 为 seq 30，future ack 后 high-water=30；filtered 的两条新增 approval 为 seq 28/29；follow 的新 approval 为 seq 28 且 visible owner 已完成观察。`actor.describe` 是当前产品合法的 hidden-control 生命周期，会占用物理 seq，但不产生 rail count；因此不能继续把 `27/28` 当作 capability invariant。
+
+测试侧合同最小修订仅发生在 `tests/browser/notification-high-water.spec.js`：以 rail 中注入 `human.approve` 的实际 seq 建立 boundary，断言 high-water 覆盖该 row、future row 在 boundary 外且 counts 正确，并保留 `authorityReady`、`readSeq`、DOM/rail 计数、reload 单调性等行为门；没有压低失败门或移除 continuous-follow trace assertion。修订后真实 Chromium：
+
+```text
+ATOLL_TEST_WEB_PORT=16304 ATOLL_TEST_MOCK_PORT=20604 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round18-highwater-contract-16304-20260920
+# 3 passed, 1 failed；唯一失败为 continuous-follow Reading trace line 221
+```
+
+同 HEAD 的 N4/H4 oracle：
+
+```text
+ATOLL_TEST_WEB_PORT=16302 ATOLL_TEST_MOCK_PORT=20602 npx playwright test tests/browser/notification-owner-oracle.spec.js --grep="N4 filtered|H4 following" --workers=1 --reporter=line --output=test-results-browser-ns-round18-owner-16302-20260920
+# 2 passed（observation-only）
+```
+
+N4 的 c0 cursor/high-water=`25/61`、Replica head=`61`、filtered Presentation gap=`0`、DOM=`0/0/false/0`，rail `present=true/authorityReady=true`；H4 的 c0.project high-water=`25→28`、Replica=`27→28`、新 row 已进入 visible owner、DOM=`0/0/false/0`，rail 同样 `authorityReady=true`。这证明 `e644e9e` 已闭合第十七轮 rail authority 首断点；剩余 follow trace 是 Reading handoff/receipt 合同，不是 actor.describe、fixture、selector 或 notification rail。
+
+本轮逐 case disposition：四条 high-water 的 persistence/filtered 旧字面值归 **过时实现 oracle → 测试合同已按物理 seq 修订**；hydration **GREEN**；continuous-follow **Reading 产品回归 RED**，最小交接为 mounted tail observation/receipt owner，保持行为门不变。

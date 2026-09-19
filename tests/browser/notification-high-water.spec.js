@@ -50,6 +50,31 @@ async function railEvidence(page, channelID) {
   }), channelID);
 }
 
+function channelSnapshot(evidence) {
+  return evidence.rail?.channels?.[0];
+}
+
+function addedApprovalRows(evidence) {
+  return (channelSnapshot(evidence)?.rows || [])
+    .filter((row) => row.type === 'human.approve' && row.id !== 'c0.project-approval-1')
+    .sort((left, right) => left.seq - right.seq);
+}
+
+function latestAddedApprovalSeq(evidence) {
+  const row = addedApprovalRows(evidence).at(-1);
+  expect(row, 'rail evidence must retain the injected approval row').toBeTruthy();
+  return Number(row.seq);
+}
+
+function expectAcknowledgedTail(evidence, minimumBoundary) {
+  const snapshot = channelSnapshot(evidence);
+  expect(snapshot).toMatchObject({
+    authorityReady: true,
+    counts: { related: 0, total: 0 },
+  });
+  expect(snapshot.notificationHighWater).toBeGreaterThanOrEqual(minimumBoundary);
+}
+
 test('tail acknowledgement survives channel switches and reload while a future row notifies', async ({ page, request }, testInfo) => {
   await reset(request, 0x4e_05);
 
@@ -83,24 +108,24 @@ test('tail acknowledgement survives channel switches and reload while a future r
   await expect(project.locator('.unread-related')).toHaveCount(0);
   const afterFutureAcknowledgement = await railEvidence(page, 'c0.project');
 
-  const channelSnapshot = (evidence) => evidence.rail?.channels?.[0];
+  const initialApprovalBoundary = latestAddedApprovalSeq(afterAcknowledgement);
   expect(channelSnapshot(afterAcknowledgement)).toMatchObject({
     readSeq: 25,
-    notificationHighWater: 27,
     counts: { related: 0, total: 0 },
   });
-  expect(channelSnapshot(afterReload)).toMatchObject({
-    notificationHighWater: 27,
-    counts: { related: 0, total: 0 },
-  });
+  expectAcknowledgedTail(afterAcknowledgement, initialApprovalBoundary);
+  expect(channelSnapshot(afterReload)).toMatchObject({ counts: { related: 0, total: 0 } });
+  expect(channelSnapshot(afterReload).notificationHighWater)
+    .toBeGreaterThanOrEqual(channelSnapshot(afterAcknowledgement).notificationHighWater);
+  const futureApprovalBoundary = latestAddedApprovalSeq(futureUnread);
   expect(channelSnapshot(futureUnread)).toMatchObject({
-    notificationHighWater: 27,
     counts: { related: 1, total: 1 },
   });
-  expect(channelSnapshot(afterFutureAcknowledgement)).toMatchObject({
-    notificationHighWater: 28,
-    counts: { related: 0, total: 0 },
-  });
+  // actor.describe is a valid hidden-control lifecycle and may occupy physical
+  // seqs between the acknowledged approvals and the next approval. The
+  // semantic boundary is therefore row-relative, not the old literal 27/28.
+  expect(channelSnapshot(futureUnread).notificationHighWater).toBeLessThan(futureApprovalBoundary);
+  expectAcknowledgedTail(afterFutureAcknowledgement, futureApprovalBoundary);
   await attachEvidence(testInfo, 'notification-high-water-persistence.json', {
     afterAcknowledgement,
     afterReload,
@@ -131,14 +156,8 @@ test('cached hydration cannot resurrect a tail-acknowledged notification', async
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(project.locator('.unread-related')).toHaveCount(0);
   const afterSecondHydration = await railEvidence(page, 'c0.project');
-  expect(afterHydratedAcknowledgement.rail?.channels?.[0]).toMatchObject({
-    notificationHighWater: 27,
-    counts: { related: 0, total: 0 },
-  });
-  expect(afterSecondHydration.rail?.channels?.[0]).toMatchObject({
-    notificationHighWater: 27,
-    counts: { related: 0, total: 0 },
-  });
+  expectAcknowledgedTail(afterHydratedAcknowledgement, latestAddedApprovalSeq(afterHydratedAcknowledgement));
+  expectAcknowledgedTail(afterSecondHydration, latestAddedApprovalSeq(afterSecondHydration));
   await attachEvidence(testInfo, 'notification-high-water-hydration.json', {
     afterHydratedAcknowledgement,
     afterSecondHydration,
@@ -167,14 +186,10 @@ test('a filtered tail acknowledges the channel notification boundary', async ({ 
   await expect(project.locator('.unread-related')).toHaveCount(0);
   const afterLeaving = await railEvidence(page, 'c0.project');
 
-  expect(atFilteredTail.rail?.channels?.[0]).toMatchObject({
-    notificationHighWater: 27,
-    counts: { related: 0, total: 0 },
-  });
-  expect(afterLeaving.rail?.channels?.[0]).toMatchObject({
-    notificationHighWater: 27,
-    counts: { related: 0, total: 0 },
-  });
+  expectAcknowledgedTail(atFilteredTail, latestAddedApprovalSeq(atFilteredTail));
+  expectAcknowledgedTail(afterLeaving, latestAddedApprovalSeq(afterLeaving));
+  expect(channelSnapshot(afterLeaving).notificationHighWater)
+    .toBeGreaterThanOrEqual(channelSnapshot(atFilteredTail).notificationHighWater);
   await attachEvidence(testInfo, 'notification-high-water-filtered.json', {
     atFilteredTail,
     afterLeaving,
