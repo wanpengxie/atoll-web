@@ -106,4 +106,30 @@ describe('TerminalFeature terminal-session owner', () => {
     expect(binary).toHaveLength(1);
     expect(new TextDecoder().decode(binary[0].subarray(4))).toBe('echo buffered\r');
   });
+
+  it('keeps the shared terminal stream attached when the view is hidden', async () => {
+    resetPtyClient();
+    const port = {
+      devices: [DEVICE],
+      commands: {
+        connect: (options) => ptyClient().attach(options.channelId, options),
+      },
+    };
+    const { rerender } = render(<TerminalFeature channelId="c0" port={port} visible />);
+
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const socket = sockets[0];
+    const open = socket.control().find((entry) => entry.type === 'open');
+    expect(open).toBeTruthy();
+    socket.reply({ type: 'ready', id: open.id, session: 'pty-visible' });
+
+    await act(async () => {
+      rerender(<TerminalFeature channelId="c0" port={port} visible={false} />);
+    });
+
+    expect(terminals).toHaveLength(1);
+    expect(sockets).toHaveLength(1);
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+    expect(socket.control().filter((entry) => entry.type === 'detach' || entry.type === 'close')).toEqual([]);
+  });
 });
