@@ -241,6 +241,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     prepareLocalReplica: (...args) => callFeed('prepareLocalReplica', args),
     reconcileIdentity: (...args) => callFeed('reconcileIdentity', args),
     refreshChannel: (...args) => callFeed('refreshChannel', args),
+    resetPersistent: (...args) => callFeed('resetPersistent', args),
     resumeLocalReplica: (...args) => callFeed('resumeLocalReplica', args),
     setHistoryGrants: (...args) => callFeed('setHistoryGrants', args),
     stopIncompatible: (...args) => callFeed('stopIncompatible', args),
@@ -417,14 +418,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     };
   }, [composerAttachmentPort, probes, submission, submission.reconcileFeed]);
 
-  const resetWorldOwners = useCallback(() => {
+  const resetWorldOwners = useCallback(async () => {
     const resetAttachments = attachmentPortRef.current?.reset;
     const resetProbes = probePortRef.current?.reset;
     if (typeof resetAttachments !== 'function') throw unavailableError('resources.reset');
     if (typeof resetProbes !== 'function') throw unavailableError('probes.reset');
     resetAttachments();
     resetProbes();
-  }, []);
+    await feedCommands.resetPersistent();
+  }, [feedCommands.resetPersistent]);
 
   useWireConnection({
     accessActionsRef,

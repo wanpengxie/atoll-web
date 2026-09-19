@@ -704,8 +704,16 @@ export function useWireConnection({
           resetSubmissionWorld();
           clearRoster();
           setChannels(new Map());
-          onWorldChanged();
           bumpAccess();
+          const worldReset = onWorldChanged();
+          const applyHistoryGrants = () => setHistoryGrants(detail?.history_meta || [], {
+            ...detail,
+            focus: activeChannelRef.current,
+            forceReset: true,
+          });
+          return worldReset && typeof worldReset.then === 'function'
+            ? Promise.resolve(worldReset).then(applyHistoryGrants)
+            : applyHistoryGrants();
         }
         return setHistoryGrants(detail?.history_meta || [], {
           ...detail,
