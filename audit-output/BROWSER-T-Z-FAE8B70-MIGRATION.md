@@ -360,7 +360,7 @@ wheel `-900` → public browsing mode → send `send browsing` → inspect publi
 geometry. This is the Composer/reading-intent handoff plus reading command
 executor owner boundary; the browser contract stays hard.
 
-## Follow-up: commit-boundary recheck (`77760c8` → current HEAD `6b2984b`)
+## Follow-up: commit-boundary recheck (`77760c8` → current HEAD `868abe6`)
 
 The strict UX-A08/case38 contracts were compared before running:
 
@@ -382,7 +382,7 @@ only the two strict cases:
 | revision | UX-A08 durable unseen | Waiting case38 | disposition |
 |---|---|---|---|
 | `77760c8` | RED at line 91: visible approval/jump, then `unseenRecords=[]` | RED at line 298: `after.list.gap=0` vs `>1` | same product gaps; this historical worktree also logged a recoverable React `ReferenceError: controller is not defined` during mount |
-| current HEAD `6b2984b` | RED at line 91: visible approval/jump, then `unseenRecords=[]` | RED at line 298: `after.list.gap=0` vs `>1` | same strict results; no environment timeout or selector fallback |
+| current HEAD `868abe6` (product parent `07ed014`) | RED at line 91: visible approval/jump, then `unseenRecords=[]` | RED at line 298: `after.list.gap=0` vs `>1` | same strict results; no environment timeout or selector fallback |
 
 Commands used for both revisions were the equivalent of:
 
