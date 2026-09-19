@@ -28,6 +28,7 @@ function stateFor(port, item, action) {
 function targetAuthorityReady(item) {
   const authority = item?.targetAuthority;
   if (authority?.current !== true) return false;
+  if (authority.rosterCurrent === false || authority.controlCurrent === false) return false;
   if (authority.actorIDs instanceof Set) return authority.actorIDs.has(item?.actorId);
   return Array.isArray(authority.actorIDs) && authority.actorIDs.includes(item?.actorId);
 }
@@ -44,6 +45,7 @@ function TaskRow({ item, names, onOpen }) {
 
 function WaitingRow({ item, port }) {
   const actions = featureWaitingActions(item);
+  const actionsReady = targetAuthorityReady(item);
   const supportedControls = port.supportedWaitingControls instanceof Set
     ? port.supportedWaitingControls
     : new Set(port.supportedWaitingControls || []);
@@ -51,7 +53,7 @@ function WaitingRow({ item, port }) {
   return <article className={`work-item-row kind-agent_run state-${item.state || 'queued'}`}>
     <span className="work-item-kind">等待</span>
     <span className="work-item-copy"><strong>{item.title || item.text || item.request?.payload?.text || '排队指令'}</strong><small>{item.actorName || item.actorId || item.target || 'Agent'} · {STATE_LABELS[item.state] || item.state || '排队中'}</small></span>
-    <span className="work-item-actions">{actions.map((action) => {
+    {actionsReady && <span className="work-item-actions">{actions.map((action) => {
       const commandState = stateFor(port, item, action);
       const callerCancel = action === FEATURE_TASK_ACTION.cancel;
       const execute = callerCancel ? port.commands?.cancelRequest : port.commands?.controlWaiting;
@@ -63,7 +65,7 @@ function WaitingRow({ item, port }) {
         || !authorityReady
         || [FEATURE_COMMAND_STATE.submitting, FEATURE_COMMAND_STATE.disabled, FEATURE_COMMAND_STATE.unsupported].includes(commandState?.state);
       return <button type="button" className={action === 'agent.interrupt' || action === 'agent.dismiss' || callerCancel ? 'danger' : ''} disabled={disabled} title={commandState?.reason || (!execute ? '等待区控制命令未接入' : !supported ? '此控制词没有已接入的安全命令' : !authorityReady ? '正在核验收件人' : '')} key={action} onClick={() => callerCancel ? execute({ item }) : execute({ item, type: action })}>{ACTION_LABELS[action] || action}</button>;
-    })}{!actions.length && <span className="task-provider-note">当前账本未声明可用控制</span>}{failures.map((failure, index) => <span className="governance-error" role="alert" key={`error:${index}`}>{failure.error || failure.reason || '控制命令失败'}</span>)}</span>
+    })}{!actions.length && <span className="task-provider-note">当前账本未声明可用控制</span>}{failures.map((failure, index) => <span className="governance-error" role="alert" key={`error:${index}`}>{failure.error || failure.reason || '控制命令失败'}</span>)}</span>}
   </article>;
 }
 
