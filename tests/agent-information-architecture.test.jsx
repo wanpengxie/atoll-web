@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, createChannelState } from '../src/model/fold.js';
 import { normalizeDescribe } from '../src/model/capabilities.js';
 import { Timeline as ProductTimeline } from '../src/ui/Timeline.jsx';
+import { exactHoldPayload } from '../src/ui/timeline/useWaitingEditingController.jsx';
 
 vi.mock('../src/ui/timeline/LegendMessageList.jsx', async () => ({
   MessageList: (await import('./helpers/PresentationMessageList.jsx')).PresentationMessageList,
@@ -18,19 +19,28 @@ const request = (id, text, actorId = 'agent') => ({
 });
 
 // progress 契约：凡带 status 的进度帧必带 controls（受理方全量宣告可用控制词）。
-const CONTRACT_CONTROLS = {
-  queued: [{ word: 'agent.replace' }, { word: 'agent.steer' }],
-  processing: [{ word: 'agent.interrupt' }, { word: 'agent.replace' }],
-};
+function contractControls(status, target) {
+  if (status === 'queued') return [
+    { word: 'agent.replace', payload: { target } },
+    { word: 'agent.steer', payload: { target } },
+  ];
+  if (status === 'processing') return [
+    { word: 'agent.interrupt', payload: {} },
+    { word: 'agent.replace', payload: { target } },
+  ];
+  return null;
+}
 
 const response = (id, parentId, payload) => ({
   id, parent_id: parentId, kind: 'response', type: 'agent.ask', ts: Date.now(),
   sender: { kind: 'agent', id: 'agent' }, audience: ['me'], visibility: 'public',
-  payload: CONTRACT_CONTROLS[payload.status] && !payload.controls ? { controls: CONTRACT_CONTROLS[payload.status], ...payload } : payload,
+  payload: contractControls(payload.status, parentId) && !payload.controls
+    ? { controls: contractControls(payload.status, parentId), ...payload }
+    : payload,
 });
 
 function add(state, seq, envelope) {
-  apply(state, { channel_id: 'c0', seq, envelope });
+  apply(state, { channel_id: 'c0', seq, envelope: { ...envelope, payload: { body: envelope.payload || {} } } });
 }
 
 function capabilities({ expectedHold = true } = {}) {
@@ -111,6 +121,20 @@ describe('agent control v7 information architecture', () => {
     expect(within(waiting).queryByRole('button', { name: '插入' })).toBeNull();
     expect(within(waiting).queryByRole('button', { name: '编辑' })).toBeNull();
     expect(within(waiting).queryByRole('button', { name: '全部取消' })).toBeNull();
+  });
+
+  it('fails closed when edit lease CAS is unavailable or has no exact hold owner', () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'requires exact hold ownership'));
+    add(state, 2, response('queued-q', 'queued', { status: 'queued' }));
+    const onTaskControl = vi.fn();
+
+    render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControl} />);
+
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
+    expect(screen.getByText('Agent 版本不支持安全编辑')).toBeTruthy();
+    expect(onTaskControl).not.toHaveBeenCalled();
+    expect(() => exactHoldPayload({ target: 'queued' }, '')).toThrow('exact hold owner');
   });
 
   it('semantic history keeps a completed request visible without progress frames', () => {
@@ -469,13 +493,13 @@ describe('agent control v7 information architecture', () => {
       roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active',
       onComposerEditChange,
     };
-    const view = render(<Timeline {...common} state={state} capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControlA} />);
+    const view = render(<Timeline {...common} state={state} capabilityIndex={capabilities()} onTaskControl={onTaskControlA} />);
 
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
     add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
     add(state, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
-    view.rerender(<Timeline {...common} state={state} capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControlB} />);
+    view.rerender(<Timeline {...common} state={state} capabilityIndex={capabilities()} onTaskControl={onTaskControlB} />);
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
 
     const editor = onComposerEditChange.mock.lastCall[0];
@@ -544,13 +568,13 @@ describe('agent control v7 information architecture', () => {
     const onTaskControlC = vi.fn(async ({ type }) => `${type}-c`);
     const onComposerEditChange = vi.fn();
     const common = { roster, selfId: 'me', pending: [], approvalStates: {}, access: 'member_active', onComposerEditChange };
-    const view = render(<Timeline {...common} state={state} capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControlA} />);
+    const view = render(<Timeline {...common} state={state} capabilityIndex={capabilities()} onTaskControl={onTaskControlA} />);
 
     fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     await waitFor(() => expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.hold' })));
     add(state, 3, { ...request('hold-a', '', 'agent'), type: 'agent.hold', payload: { target: 'queued' } });
     add(state, 4, { ...response('hold-a-d', 'hold-a', { status: 'completed' }), type: 'agent.hold' });
-    view.rerender(<Timeline {...common} state={state} capabilityIndex={capabilities({ expectedHold: false })} onTaskControl={onTaskControlB} />);
+    view.rerender(<Timeline {...common} state={state} capabilityIndex={capabilities()} onTaskControl={onTaskControlB} />);
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({ session: expect.objectContaining({ phase: 'editing' }) })));
     const committedEditor = onComposerEditChange.mock.lastCall[0];
 

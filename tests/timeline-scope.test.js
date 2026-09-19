@@ -13,7 +13,8 @@ const base = {
 };
 
 function env(id, kind, type, extra = {}) {
-  return { ...base, id, kind, type, ...extra };
+  const envelope = { ...base, id, kind, type, ...extra };
+  return { ...envelope, payload: { body: envelope.payload || {} } };
 }
 
 // One channel, two conversations that share nothing: mine with the agent, and

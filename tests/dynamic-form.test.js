@@ -17,6 +17,12 @@ describe('dynamic capability form', () => {
     expect(valuesToPayload(steer, { text: '换个方向' })).toEqual({ text: '换个方向' });
     expect(valuesToPayload(steer, { text: '换个方向', expected_turn_id: 't1' })).toEqual({ text: '换个方向', expected_turn_id: 't1' });
     expect(() => valuesToPayload(steer, { text: '' })).toThrow('text 为必填项');
+
+    const unhold = buildFormSpec('agent.unhold', {});
+    const replace = buildFormSpec('agent.replace', {});
+    expect(() => valuesToPayload(unhold, {})).toThrow('expected_hold_id 为必填项');
+    expect(() => valuesToPayload(replace, { target: 't1', old_text: 'old', new_text: 'new' })).toThrow('expected_hold_id 为必填项');
+    expect(valuesToPayload(unhold, { expected_hold_id: 'hold-1' })).toEqual({ expected_hold_id: 'hold-1' });
   });
 
   it('resolve 帧的字段闭集由后端定死，没有动态表单空间', () => {
