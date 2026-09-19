@@ -308,6 +308,31 @@ jump 首断点：
 `test-results-gm-history-jump-head-ef8f906-20260920/`；共享 ModelSelector 对照为
 `test-results-gm-model-shared-ef8f906-20260920/`。
 
+## 第九轮：history/jump 六条逐条可见完成门（tested snapshot `a1ee6c9`）
+
+本轮只读复核 detached tested snapshot `a1ee6c9`（产品路径自 `4b7e5e3` 之后仅有
+feed/composer correlation 相关提交；没有 history/reading owner 代码变更），没有修改
+产品或测试。每条 case 的 PASS 必须同时满足该行自己的全部可见完成门；一个 case 的
+active list、私有 event 或后续 jump 结果不能替另一个 case 充当宽泛 PASS。六条批量跑
+曾出现一次非稳定的 case 2 通过（**1 passed / 5 failed**）；随后同一 snapshot 将
+case 2 单独 `--repeat-each=3`，得到 **3/3 failed**。因此按严格可见 oracle 裁决为
+**0 个稳定 PASS、6 个回归、0 个阻塞**，不把一次时序性绿灯记为闭合。
+
+| case | 独立的可见完成门（全部满足才算 PASS） | 当前 Chromium DOM / 首断点 | 唯一 owner |
+|---:|---|---|---|
+| 1 | `.timeline-reading-layer.is-active .timeline-message-list` 恰有 1 个；presentation row 数必须严格大于 gesture 前 baseline；原 anchor 仍 connected 且 offset 与 baseline 相同；每个 probe frame 都 connected 且 `visibleRows > 0` | active list=1，但 row/list count 仍为 `4`（baseline=`4`），未发生 prepend；probe 可见行仍为现有行（最终 `visibleRows=3`），首断点为 `listCount > 4`，未宣称后续 anchor/event 门通过 | `useProjectionReadingOwner`（`useConversationProjection.js`） admission/presentation session；`useHistoryConsumer` 仅供给历史数据 |
+| 2 | 每个 sampled frame 都 connected、`activeLayers=1`、`activeLists=1` 且 `visibleRows>0`；最终 frame 仍保持唯一 layer/list 且有可见行 | 独立 Chromium 重跑 3/3 均复现：前两帧 DOM 是 connected、activeLayers/list=1 但 `rowCount=0`、`visibleRows=0`、mode=`following`；后续才物化 rows，final 为唯一 surface、`visibleRows=3`。首断点是空白 sampled frame；批量中的一次绿灯不抵销该不稳定缺口 | `useProjectionReadingOwner` reveal/presentation handoff |
+| 3 | trusted wheel 后同一 connected list 必须把 viewport mode 交给 `browsing`；`Element.prototype`/list `scrollTo`/`scrollBy` writer probe 必须为空 | list connected，但 wheel 后 mode 仍 `following`；DOM probe 记录 2 次 app `scrollTo`（`top=4350`、`top=3964`，均 `behavior=auto`）。首断点为 mode，writer 门也未通过 | `useProjectionReadingOwner` reading-intent/scroll owner |
+| 8 | 深历史 underfill 后目标 `c0 history 1` presentation row 必须可见；demand 回到 `idle`；pending failures=0；至少一次 `history.intent_satisfied`/`history.intent_exhausted` settle | `historyOneVisible=false`，但 demand=`idle`、starts=5、settles=5、pending=0；首断点是可见 history row，scheduler 私有 settle 不能替代它 | `useHistoryConsumer` underfill demand/recheck owner |
+| 13 | live pulse 后 browsing 中 `.timeline-jump-latest` 必须可见；点击应恰产生 1 次 owner scroll write；最终物理 gap≤1、`scrollTop≈maxScrollTop`、last row visible、jump 清空且 mode=`following` | jump=`false`；before/全部 45 frames gap=`2121`、mode=`browsing`、jump text 为空；尚未 click，probe 另见 1 次 app `scrollTo(top=1862)`。首断点为 affordance 不可见，click 后门未评估 | `useProjectionReadingOwner` live-arrival/unseen/jump boundary（`useLiveArrivalReceipts` 仅为 receipt witness） |
+| 23 | browsing arrival 必须先成为当前 presentation 中恰 1 个普通 row；同时 jump affordance 可见；click 后 tail gap≤1、mode=`following`；再验证 inactive-channel arrival 回返后 exact row 恰 1 个 | append 的 request `c0-q-append-1968409-1` 当前 `[data-presentation-row-id]` count=`0`；jump=`true`，tail gap=`1740`、mode=`browsing`。首断点为 ordinary row 缺失，测试停在这里，未把后续 takeover/inactive handoff 记为失败或 PASS | `useProjectionReadingOwner` live-arrival/reading-session boundary；inactive handoff 仅在首门通过后评估 |
+
+本轮 clean 证据目录：`/tmp/gm-head-e416185-20260920/test-results-gm-history-jump-head-a1ee6c9-20260920/`；
+case 2 的严格复核：`/tmp/gm-history-reveal-repeat-a1ee6c9-20260920/`。较早
+`12e5e90` 共享 dirty 对照的六个首断点与 clean 一致，未引入额外 Hook-order/runtime
+首断点；以上 clean/重复结果才是本轮产品回归裁决。Reading owner 后续提交后仍按这六行
+各自的可见完成门原样重跑，不放宽 oracle、不删 skip。
+
 ## Case ledger
 
 `owner` 是当前生产 owner；`result` 是上述 Chromium 全组轮的逐 case 裁决。每行保留
