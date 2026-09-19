@@ -1,55 +1,24 @@
 // @vitest-environment jsdom
 
 import React from 'react';
-import { act, cleanup, render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ReadingContainerHandoff } from '../src/ui/timeline/ReadingContainerHandoff.jsx';
 
-const probes = vi.hoisted(() => ({ following: null, browsing: null, navigation: null }));
+afterEach(cleanup);
 
-vi.mock('../src/ui/timeline/ReadingNavigationOwner.jsx', () => ({
-  ReadingNavigationOwner(props) {
-    probes.navigation = props;
-    return props.children;
-  },
-}));
-
-vi.mock('../src/ui/timeline/FollowingTailList.jsx', () => ({
-  FollowingTailList(props) {
-    probes.following = props;
-    return <div data-testid="following-adapter" />;
-  },
-}));
-
-vi.mock('../src/ui/timeline/LegendMessageList.jsx', () => ({
-  MessageList(props) {
-    probes.browsing = props;
-    return <div data-testid="browsing-adapter" />;
-  },
-}));
-
-afterEach(() => {
-  cleanup();
-  probes.following = null;
-  probes.browsing = null;
-  probes.navigation = null;
-});
-
-function reading(mode, inputEpoch = 1) {
-  let session = { mode, inputEpoch, activationID: 'activation-1' };
-  const port = {
+function reading(mode, change = {}) {
+  const session = { mode, inputEpoch: 1, activationID: 'activation-1' };
+  return {
     activationID: session.activationID,
     session,
     getSession: () => session,
-    setSession(next) {
-      session = next;
-      port.session = session;
-    },
+    onSurfaceVisibilityChange: vi.fn(),
+    ...change,
   };
-  return port;
 }
 
-it('keeps one inert outgoing paint only until browsing commits readiness', () => {
+it('keeps one list executor while the reading owner changes mode', () => {
   const following = reading('following');
   const view = render(<ReadingContainerHandoff
     reading={following}
@@ -57,66 +26,44 @@ it('keeps one inert outgoing paint only until browsing commits readiness', () =>
     snapshot={{ rows: [] }}
     renderRow={() => null}
   />);
-  expect(view.queryByTestId('following-adapter')).not.toBeNull();
-  expect(view.queryByTestId('browsing-adapter')).toBeNull();
 
-  const ownerToken = {};
-  const activeTarget = {
-    ownerToken,
-    activationID: 'activation-1', originInputEpoch: 1, inputGeneration: 2,
-    transactionID: 'navigation:1', hostToken: 3, targetRevision: 1,
-    presentationRevision: 7,
-    bookmark: { messageID: 'row-7', rowViewportOffset: -12 },
-    focusOwned: true, phase: 'active',
-  };
-  following.setSession({ mode: 'browsing', inputEpoch: 2, activationID: 'activation-1' });
-  act(() => probes.navigation.onFollowingNavigationTarget(activeTarget));
+  const stack = view.container.querySelector('.timeline-reading-stack');
+  const list = view.getByRole('region', { name: '频道动态' });
+  expect(stack.dataset.readingMode).toBe('following');
+  expect(stack.dataset.readingActivation).toBe('activation-1');
+  expect(stack.querySelectorAll('.timeline-reading-layer')).toHaveLength(1);
 
-  const browsing = following;
+  const browsing = reading('browsing');
   view.rerender(<ReadingContainerHandoff
     reading={browsing}
     surfaceVisible
     snapshot={{ rows: [] }}
     renderRow={() => null}
   />);
-  const outgoing = view.getByTestId('following-adapter').parentElement;
-  const incoming = view.getByTestId('browsing-adapter').parentElement;
-  expect(outgoing.hasAttribute('inert')).toBe(false);
-  expect(outgoing.hasAttribute('aria-hidden')).toBe(false);
-  expect(probes.following.active).toBe(true);
-  expect(probes.browsing.handoffPending).toBe(true);
-  expect(incoming.getAttribute('aria-hidden')).toBe('true');
-  expect(incoming.hasAttribute('inert')).toBe(true);
-  expect(probes.browsing.navigationTarget).toBe(activeTarget);
 
-  const exactReceipt = {
-    ...activeTarget,
-    targetID: 'row-7',
-    materialized: true,
-    paintRevision: 1,
-  };
-  act(() => probes.browsing.onNavigationRevealReceipt({ ...exactReceipt, targetRevision: 0 }));
-  expect(view.queryByTestId('following-adapter')).not.toBeNull();
-
-  act(() => probes.navigation.onFollowingNavigationTarget({ ...activeTarget, phase: 'settled' }));
-  act(() => probes.browsing.onNavigationRevealReceipt({ ...exactReceipt, targetRevision: 0 }));
-  expect(view.queryByTestId('following-adapter')).not.toBeNull();
-
-  act(() => probes.browsing.onNavigationRevealReceipt(exactReceipt));
-  expect(view.queryByTestId('following-adapter')).toBeNull();
-  expect(view.getByTestId('browsing-adapter').parentElement.className).toContain('is-active');
-  expect(probes.browsing.handoffPending).toBe(false);
+  expect(stack.dataset.readingMode).toBe('browsing');
+  expect(stack.querySelectorAll('.timeline-reading-layer')).toHaveLength(1);
+  expect(view.getByRole('region', { name: '频道动态' })).toBe(list);
 });
 
-it('mounts a restored browsing session directly without duplicating the row tree', () => {
-  const restored = reading('browsing', 4);
+it('publishes visibility through the reading owner and keeps restore state in the sole executor', () => {
+  const owner = reading('browsing', { restorePending: true });
   const view = render(<ReadingContainerHandoff
-    reading={restored}
+    reading={owner}
     surfaceVisible
     snapshot={{ rows: [] }}
     renderRow={() => null}
   />);
-  expect(view.queryByTestId('following-adapter')).toBeNull();
-  expect(view.getByTestId('browsing-adapter').parentElement.className).toContain('is-active');
-  expect(probes.browsing.handoffPending).toBe(false);
+
+  expect(owner.onSurfaceVisibilityChange).toHaveBeenLastCalledWith(true);
+  expect(view.getByRole('status').textContent).toContain('正在恢复上次阅读位置');
+  expect(view.container.querySelectorAll('.timeline-message-list')).toHaveLength(1);
+
+  view.rerender(<ReadingContainerHandoff
+    reading={owner}
+    surfaceVisible={false}
+    snapshot={{ rows: [] }}
+    renderRow={() => null}
+  />);
+  expect(owner.onSurfaceVisibilityChange).toHaveBeenLastCalledWith(false);
 });

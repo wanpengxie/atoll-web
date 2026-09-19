@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  projectChannelUnread,
   readerCaughtUp,
   viewportUnseenNotice,
 } from '../src/model/notification-policy.js';
@@ -27,38 +26,4 @@ describe('IM 读侧兜底', () => {
     expect(viewportUnseenNotice(undefined, false)).toBe(0);
   });
 
-  const counts = { related: 3, total: 5 };
-
-  it('无过滤的全部视图追平后，活动频道的两格徽标都归零', () => {
-    expect(projectChannelUnread(counts, 'c0', {
-      channelId: 'c0', caughtUp: true, scope: 'all', actorFiltered: false,
-    })).toEqual({ related: 0, total: 0, pending: false, unknown: false });
-  });
-
-  it('@我视图只覆盖 related，过滤外 other 仍显示', () => {
-    expect(projectChannelUnread(counts, 'c0', {
-      channelId: 'c0', caughtUp: true, scope: 'mine', actorFiltered: false,
-    })).toEqual({ related: 0, total: 2 });
-  });
-
-  it('actorFilter 不用聚合显示兜底掩盖过滤外真值', () => {
-    const caughtUp = {
-      channelId: 'c0', caughtUp: true, scope: 'all', actorFiltered: true,
-    };
-    expect(projectChannelUnread(counts, 'c0', caughtUp)).toBe(counts);
-    expect(projectChannelUnread(counts, 'c0', { ...caughtUp, caughtUp: false })).toBe(counts);
-  });
-
-  it('只清活动频道：别的频道与未追平时原样返回', () => {
-    const caught = { channelId: 'c0', caughtUp: true, scope: 'all', actorFiltered: false };
-    expect(projectChannelUnread(counts, 'c1', caught)).toBe(counts);
-    expect(projectChannelUnread(counts, 'c0', { ...caught, caughtUp: false })).toBe(counts);
-    expect(projectChannelUnread(counts, 'c0', null)).toBe(counts);
-  });
-
-  it('追平时活动频道不再显示待同步占位', () => {
-    expect(projectChannelUnread({ related: 0, total: 0, pending: true }, 'c0', {
-      channelId: 'c0', caughtUp: true, scope: 'all', actorFiltered: false,
-    })).toMatchObject({ pending: false, unknown: false });
-  });
 });

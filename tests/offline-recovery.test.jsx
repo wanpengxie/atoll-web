@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import 'fake-indexeddb/auto';
-import React from 'react';
+import React, { useState } from 'react';
 import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useSubmissions } from '../src/app/hooks/useSubmissions.js';
 import { createOutboxStore } from '../src/model/outbox-store.js';
-import { Composer } from '../src/ui/Composer.jsx';
+import { Composer } from '../src/ui/composer/Composer.jsx';
+import { useComposerSubmissionRuntime } from '../src/ui/composer/useComposerSubmissionRuntime.js';
 
 afterEach(() => {
   cleanup();
@@ -15,14 +15,24 @@ afterEach(() => {
 });
 
 function memberHarness(overrides = {}) {
+  const databaseName = `current-composer-${crypto.randomUUID()}`;
   return {
     principalId: 'offline-root',
     activeChannelId: 'c0',
     wireState: 'reconnecting',
     wireRef: { current: null },
     rosterRef: { current: { recordSubmission: vi.fn(), observeFeed: vi.fn() } },
-    accessRef: { current: { state: () => ({ relationship: 'member', runtime: 'open', unavailable: false }) } },
-    channelStatesRef: { current: new Map() },
+    accessRef: { current: { state: () => ({
+      authorityEpoch: 1,
+      relationship: 'member',
+      existence: 'present',
+      runtime: 'open',
+      unavailable: false,
+    }) } },
+    producerOwnerToken: 'owner:offline-root',
+    generationFor: () => 1,
+    serverWorld: 'world-a',
+    outboxFactory: () => createOutboxStore({ databaseName }),
     onError: vi.fn(),
     onNotice: vi.fn(),
     onFeedChanged: vi.fn(),
@@ -31,36 +41,55 @@ function memberHarness(overrides = {}) {
   };
 }
 
+function composerModel(draft, permissions) {
+  return {
+    channelId: 'c0',
+    draft,
+    permissions,
+    delivery: { kind: 'channel', rows: [], label: '频道成员' },
+    mentionCandidates: [],
+    mentionQuery: null,
+    commandMenu: null,
+    agents: [],
+    selectedAgent: null,
+    parameters: null,
+    controls: { actorId: '', steer: { state: 'unsupported', enabled: false, reason: '' } },
+    busy: false,
+    failure: null,
+    edit: null,
+    editSession: null,
+    canSubmit: permissions.canDurablyAccept && Boolean(draft.text.trim()),
+  };
+}
+
+function OfflineComposer({ onSend }) {
+  const [draft, setDraft] = useState({
+    text: '', recipients: [], attachments: [], replyTarget: null, editorRevision: 0,
+  });
+  const permissions = { canEditDraft: true, canDurablyAccept: true, canTransmit: false, reason: '' };
+  const commands = {
+    changeDraft(change) {
+      setDraft((current) => ({ ...current, ...change, editorRevision: current.editorRevision + 1 }));
+    },
+    send() { return onSend(draft); },
+  };
+  return <Composer model={composerModel(draft, permissions)} commands={commands} />;
+}
+
 describe('W6 offline draft and recovery', () => {
   it('keeps an offline member editor writable, accepts text locally, and disables live attachment entry', async () => {
     const user = userEvent.setup();
     const onSend = vi.fn().mockResolvedValue(['offline-message']);
-    render(<Composer
-      channelId="c0"
-      roster={[{ id: 'me', kind: 'human', name: '我' }, { id: 'agent', kind: 'agent', name: 'Agent' }]}
-      selfId="me"
-      canEditDraft
-      canDurablyAccept
-      canTransmit={false}
-      onDraftChange={vi.fn().mockResolvedValue({ revision: 1 })}
-      onSend={onSend}
-      onUploadAttachments={vi.fn()}
-      onOpenChannelFiles={vi.fn()}
-    />);
+    render(<OfflineComposer onSend={onSend} />);
 
     const editor = screen.getByRole('textbox', { name: '消息' });
-    expect(editor.getAttribute('contenteditable')).toBe('true');
+    expect(editor.disabled).toBe(false);
     expect(screen.getByText(/离线编辑/)).toBeTruthy();
     expect(screen.getByLabelText('上传本机文件到频道').disabled).toBe(true);
-    expect(screen.getByRole('button', { name: '从频道文件选择' }).disabled).toBe(true);
 
-    await user.type(editor, '@Ag');
-    await user.click(screen.getByRole('option', { name: /Agent/ }));
     await user.type(editor, '离线也能保存{Enter}');
     await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
-    expect(onSend.mock.calls[0][0]).toMatchObject({
-      batch: [expect.objectContaining({ text: '离线也能保存', audience: ['agent'] })],
-    });
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: '离线也能保存' }));
   });
 
   it.each([
@@ -69,53 +98,67 @@ describe('W6 offline draft and recovery', () => {
     ['revoked member', { canEditDraft: false, canDurablyAccept: false, canTransmit: false }],
   ])('does not expose a durable send seam for %s', async (_label, capabilities) => {
     const onSend = vi.fn();
-    render(<Composer channelId="c0" roster={[]} disabledReason="不可写" onSend={onSend} {...capabilities} />);
+    const draft = { text: '不能发送', recipients: [], attachments: [], replyTarget: null, editorRevision: 0 };
+    render(<Composer
+      model={composerModel(draft, { ...capabilities, reason: '不可写' })}
+      commands={{ changeDraft: vi.fn(), send: onSend }}
+    />);
     const editor = screen.getByRole('textbox', { name: '消息' });
-    expect(editor.getAttribute('contenteditable')).toBe('false');
+    expect(editor.disabled).toBe(true);
     expect(screen.getByRole('button', { name: '发送' }).disabled).toBe(true);
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('retries a rejected IndexedDB open on the next explicit draft write without losing the dirty draft', async () => {
-    const durableIndexedDB = globalThis.indexedDB;
-    let opens = 0;
-    const flakyIndexedDB = Object.create(durableIndexedDB);
-    flakyIndexedDB.open = (...args) => {
-      opens += 1;
-      if (opens <= 2) throw new Error('retryable indexeddb failure');
-      return durableIndexedDB.open(...args);
+  it('rejects a draft write before persistence when the exact access owner is absent', async () => {
+    const outbox = {
+      restore: vi.fn().mockResolvedValue([]),
+      restoreDrafts: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
     };
-    vi.stubGlobal('indexedDB', flakyIndexedDB);
-    const common = memberHarness();
-    const { result } = renderHook(() => useSubmissions(common));
+    const common = memberHarness({
+      outboxFactory: () => outbox,
+      accessRef: { current: { state: () => ({
+        authorityEpoch: 2,
+        relationship: 'observer',
+        existence: 'present',
+        runtime: 'open',
+        unavailable: false,
+      }) } },
+    });
+    const { result } = renderHook(() => useComposerSubmissionRuntime(common));
+    await waitFor(() => expect(outbox.restoreDrafts).toHaveBeenCalledOnce());
 
-    await waitFor(() => expect(common.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'retryable indexeddb failure' })));
-    let firstFailure;
-    await act(async () => {
-      try {
-        await result.current.updateDraft('c0', { text: '数据库恢复后仍在', editorRevision: 1 });
-      } catch (error) {
-        firstFailure = error;
-      }
-    });
-    expect(firstFailure).toMatchObject({ message: 'retryable indexeddb failure' });
-    // The failed durable attempt must not roll back the user's optimistic
-    // editor state. A later explicit edit/save retries the lifecycle.
-    expect(result.current.draftFor('c0')).toMatchObject({ text: '数据库恢复后仍在', editorRevision: 1 });
-    let saved;
-    await act(async () => {
-      saved = await result.current.updateDraft('c0', { text: '数据库恢复后仍在', editorRevision: 1 });
-    });
-    expect(opens).toBe(3);
-    expect(saved).toMatchObject({ draft: { text: '数据库恢复后仍在' }, editorRevision: 1 });
-    expect(result.current.draftFor('c0')).toMatchObject({ text: '数据库恢复后仍在', editorRevision: 1 });
+    let failure;
+    try {
+      result.current.updateDraft('c0', { text: '不属于当前成员 owner', editorRevision: 1 });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: 'forbidden', message: '频道成员权限已撤销' });
+    expect(result.current.draftFor('c0')).toMatchObject({ text: '', editorRevision: 0 });
   });
 
-  it('lets only the newest draft transaction publish and persist', async () => {
+  it('serializes draft CAS writes without letting an older settlement replace the newer editor state', async () => {
     const principalId = `draft-owner-${crypto.randomUUID()}`;
-    const common = memberHarness({ principalId });
-    const { result } = renderHook(() => useSubmissions(common));
-    await waitFor(() => expect(result.current.draftFor('c0').text).toBe(''));
+    const databaseName = `draft-owner-${crypto.randomUUID()}`;
+    const storeOwner = createOutboxStore({ databaseName });
+    let hydrationComplete;
+    const hydrated = new Promise((resolve) => { hydrationComplete = resolve; });
+    const outbox = {
+      ...storeOwner,
+      async restoreDrafts(...args) {
+        const rows = await storeOwner.restoreDrafts(...args);
+        hydrationComplete();
+        return rows;
+      },
+    };
+    const common = memberHarness({
+      principalId,
+      outboxFactory: () => outbox,
+    });
+    const { result } = renderHook(() => useComposerSubmissionRuntime(common));
+    await hydrated;
+    await act(async () => {});
 
     let transactions;
     act(() => {
@@ -124,12 +167,13 @@ describe('W6 offline draft and recovery', () => {
         result.current.updateDraft('c0', { text: 'current', editorRevision: 2 }),
       ];
     });
-    const [first] = await Promise.all(transactions);
+    const [first, second] = await Promise.all(transactions);
     await act(async () => {});
 
-    expect(first).toBeNull();
+    expect(first).toMatchObject({ revision: 1, editorRevision: 1, draft: { text: 'stale' } });
+    expect(second).toMatchObject({ revision: 2, editorRevision: 2, draft: { text: 'current' } });
     expect(result.current.draftFor('c0')).toMatchObject({ text: 'current', editorRevision: 2 });
-    const store = createOutboxStore();
+    const store = createOutboxStore({ databaseName });
     expect((await store.restoreDrafts(principalId))[0]).toMatchObject({
       draft: { text: 'current' }, editorRevision: 2,
     });

@@ -1,22 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HISTORY_INTENT } from '../src/model/history-demand.js';
 import {
+  admissionOperationID,
   blockingAdmission,
   historyConsumerObligation,
   historyRevealIntent,
+  ownsHistoryOperation,
 } from '../src/ui/timeline/history-consumer-obligation.js';
-import {
-  emptyDOMEvidence,
-  observedDOMEvidence,
-  transferDOMEvidence,
-} from '../src/ui/timeline/dom-evidence-adapter.js';
-import {
-  createNotificationConfirmation,
-  nextNotificationConfirmation,
-  queuePresentedConfirmation,
-  reconcileNotificationConfirmation,
-  settleNotificationConfirmation,
-} from '../src/ui/timeline/notification-confirmation-port.js';
+import { executeReadingDOMCommand } from '../src/ui/timeline/reading-dom-command-executor.js';
 
 describe('ReadingSession pure ports', () => {
   it('names one exact history obligation without owning its lifecycle', () => {
@@ -49,55 +40,52 @@ describe('ReadingSession pure ports', () => {
     })).toMatchObject({ operationID: 'history:a:7', inputEpoch: 2, demandUnits: 2 });
   });
 
-  it('adapts DOM observations and transfers them only across an exact owner tuple', () => {
-    const controller = { activationID: 'a' };
-    const owner = {
-      controller, activationID: 'a', channelID: 'c', viewKey: 'v',
-      session: { inputEpoch: 1 }, snapshot: { revision: 2, sourceRevision: 3 },
+  it('addresses and settles history only through the exact current owner tuple', () => {
+    const controller = {};
+    const promise = Promise.resolve();
+    const requestOwner = {
+      controller,
+      activationID: 'a',
+      channelID: 'c',
+      viewKey: 'v',
       historyStatus: { generation: 4 },
     };
-    const evidence = observedDOMEvidence({
-      owner, controller, activationID: 'a', observationRevision: 5,
-      observation: { atTail: true, surfaceVisible: true, installedHighSeq: 8, visibleRows: [{ messageID: 'm8' }] },
-      snapshot: owner.snapshot,
-      historyStatus: { generation: 4, headSeq: 9, notificationAuthorityRevision: 6 },
-    });
-    const successor = { ...owner };
-    expect(transferDOMEvidence(evidence, owner, successor, { controller, surfaceVisible: true })).toMatchObject({
-      owner: successor, atTail: true, observationRevision: 5,
-    });
-    expect(transferDOMEvidence(evidence, owner, { ...owner, controller: {} }, {
-      controller, surfaceVisible: true, notificationAuthorityRevision: 7, observationRevision: 6,
-    })).toMatchObject({ atTail: false, visibleRows: [] });
-    expect(emptyDOMEvidence({ owner, controller, activationID: 'a' }).readPending).toBe(false);
+    const presentationAdmission = {
+      snapshot: () => ({
+        phase: 'pending',
+        token: { activationID: 'a', viewID: 'v', epoch: 'c:4', operationID: 'history:a:7' },
+      }),
+    };
+
+    expect(admissionOperationID({ generation: 4, presentationAdmission }, requestOwner))
+      .toBe('history:a:7');
+    expect(ownsHistoryOperation(requestOwner, requestOwner, controller, promise, promise)).toBe(true);
+    expect(ownsHistoryOperation(
+      { ...requestOwner, historyStatus: { generation: 5 } },
+      requestOwner,
+      controller,
+      promise,
+      promise,
+    )).toBe(false);
   });
 
-  it('plans notification receipts without delivering or persisting them', () => {
-    let state = createNotificationConfirmation(3, 2, 4);
-    const evidence = {
-      notificationAuthorityRevision: 3, generation: 2, observationRevision: 5,
-      headSeq: 10, installedHighSeq: 9, sourceRevision: 8, presentationRevision: 7,
-    };
-    const context = {
-      channelID: 'c', viewKey: 'v', activationID: 'a', evidence,
-      attached: true, messageCurrent: true, presentationRevision: 8,
-    };
-    state = queuePresentedConfirmation(state, context, 8);
-    let planned = nextNotificationConfirmation(state, context);
-    expect(planned.event).toMatchObject({ cause: 'tail-backlog', boundary: 10 });
-    state = settleNotificationConfirmation(planned.state, planned.event, true);
-    const advanced = {
-      ...context,
-      evidence: { ...evidence, headSeq: 12, installedHighSeq: 11 },
-    };
-    state = queuePresentedConfirmation(state, advanced, 11);
-    planned = nextNotificationConfirmation(state, advanced);
-    expect(planned.event).toMatchObject({ cause: 'presented-follow', boundary: 11 });
-    state = settleNotificationConfirmation(planned.state, planned.event, false);
-    expect(state.pending).toBe(planned.event);
-    expect(reconcileNotificationConfirmation(state, {
-      authorityRevision: 4, generation: 3, observationRevision: 6,
-      controllerChanged: true, previousMode: 'following', currentMode: 'browsing', activationID: 'b',
-    })).toMatchObject({ authorityRevision: 4, generation: 3, pending: null, needsBacklog: true });
+  it('executes only typed DOM commands through the sole list adapter capability', () => {
+    const scrollToIndex = vi.fn();
+    const scrollTo = vi.fn();
+    const focus = vi.fn();
+    const root = { scrollHeight: 900, scrollTo, focus };
+
+    expect(executeReadingDOMCommand(
+      { type: 'position-row', index: 14, viewportOffset: -20 },
+      { virtuoso: { scrollToIndex }, root },
+    )).toBe(true);
+    expect(scrollToIndex).toHaveBeenCalledWith({ index: 14, align: 'start', offset: 20 });
+
+    expect(executeReadingDOMCommand({ type: 'scroll-tail' }, { root })).toBe(true);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 900, behavior: 'auto' });
+
+    expect(executeReadingDOMCommand({ type: 'claim-focus' }, { root })).toBe(true);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(executeReadingDOMCommand({ type: 'unknown' }, { root })).toBe(false);
   });
 });
