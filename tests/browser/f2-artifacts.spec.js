@@ -13,6 +13,7 @@ async function login(page) {
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('atoll.server.boot.v1'))).not.toBe('');
 }
 
 test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯引用', async ({ page, request }) => {
@@ -63,7 +64,7 @@ test('F2-001..005 频道挂载目录上传、附加到消息并保留可追溯�
   await page.getByLabel('消息').fill('交付研究结果');
   await page.getByRole('button', { name: /发送/ }).click();
   await expect(page.getByRole('tab', { name: '动态' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByText('交付研究结果', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '频道动态' }).getByText('交付研究结果', { exact: true })).toBeVisible();
   const messageAttachment = page.getByRole('button', { name: '预览 研究交付物.txt' });
   await expect(messageAttachment).toContainText('文本');
   await expect(messageAttachment).not.toContainText('resource:');

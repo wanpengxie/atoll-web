@@ -27,6 +27,40 @@ function activeMemberAccess(principalId, channelId = 'c0') {
 }
 
 describe('offline submission outbox', () => {
+  it('rehydrates the attachment draft owner when the canonical server world arrives after login', async () => {
+    const principalId = `attachment-world-${globalThis.crypto.randomUUID()}`;
+    const common = {
+      principalId,
+      activeChannelId: 'c0',
+      wireState: 'open',
+      wireRef: { current: { submit: vi.fn() } },
+      rosterRef: { current: { recordSubmission: vi.fn(), observeFeed: vi.fn() } },
+      accessRef: { current: { state: () => ({ relationship: 'member', existence: 'present', runtime: 'open', unavailable: false }) } },
+      channelStatesRef: { current: new Map() },
+      onError: vi.fn(), onNotice: vi.fn(), onFeedChanged: vi.fn(), onAccessChanged: vi.fn(),
+    };
+    const { result, rerender } = renderHook(({ serverWorld }) => useSubmissions({
+      ...common,
+      serverWorld,
+    }), { initialProps: { serverWorld: '' } });
+
+    // The attach receipt establishes the canonical world after the login
+    // render has already begun restoring the principal's durable owner.
+    rerender({ serverWorld: 'boot-current' });
+    await act(async () => {
+      await expect(result.current.persistDraftAttachments('c0', [{
+        resource_id: 'daemon://local-device/c0/report.txt',
+        name: 'report.txt',
+        _atoll_world_epoch: 'boot-current',
+      }])).resolves.toMatchObject({
+        draft: { attachments: [expect.objectContaining({ name: 'report.txt' })] },
+      });
+    });
+    await waitFor(() => expect(result.current.draftFor('c0').attachments).toEqual([
+      expect.objectContaining({ name: 'report.txt', _atoll_world_epoch: 'boot-current' }),
+    ]));
+  });
+
   it('does not publish transport authority from a suspended candidate render', async () => {
     const submit = vi.fn().mockResolvedValue({ message_id: 'committed-world-message' });
     const wireRef = { current: { submit } };
