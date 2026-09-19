@@ -54,10 +54,8 @@ function useFeedOwner({ refs, ownerToken, bindings }) {
       onError: forward('onError'),
       onChannelsDiscovered: forward('onChannelsDiscovered'),
       onDirectoryInvalidated: forward('onDirectoryInvalidated'),
-      onTimerFired: forward('onTimerFired'),
       onSubmissionFeed: forward('onSubmissionFeed'),
       onAccessChanged: forward('onAccessChanged'),
-      onAgentActivity: forward('onAgentActivity'),
     });
   }
   const runtime = runtimeRef.current;
@@ -124,13 +122,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     diagnostic('warn', 'workspace.owner_unavailable', { port: portName, principalId });
     return false;
   }, [principalId]);
-  const activityPort = useMemo(() => Object.freeze({
-    available: false,
-    attach: () => reportUnavailable('activity.attach'),
-    disconnect: () => reportUnavailable('activity.disconnect'),
-    observe: () => reportUnavailable('activity.observe'),
-  }), [reportUnavailable]);
-  const activityRef = useRef(activityPort);
   const unavailableSessionObserver = useCallback(() => reportUnavailable('session.observer'), [reportUnavailable]);
 
   const submissionProxy = useMemo(() => Object.freeze({
@@ -161,15 +152,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       if (typeof schedule !== 'function') throw unavailableError('directory.schedule');
       return schedule();
     },
-    onTimerFired: () => reportUnavailable('timers.feed'),
     onSubmissionFeed: (...args) => {
       const sink = submissionSinkRef.current;
       if (typeof sink !== 'function') throw unavailableError('submission.reconcileFeed');
       return sink(...args);
     },
     onAccessChanged: navigation.bump,
-    onAgentActivity: (...args) => activityRef.current.observe(...args),
-  }), [navigation.bump, ownerToken, reportUnavailable, showError]);
+  }), [navigation.bump, ownerToken, showError]);
   const feed = useFeedOwner({
     refs: {
       wireRef: wire.wireRef,
@@ -180,6 +169,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     ownerToken,
     bindings: feedBindings,
   });
+  const activityRef = useRef(feed.agentActivityPort);
   const feedRef = useRef(null);
   useLayoutEffect(() => {
     feedRef.current = feed;
@@ -368,6 +358,28 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     void roster.refresh(navigation.activeChannelId).catch(showError);
   }, [feedCommands, navigation.activeChannelId, roster.refresh, showError, wire.state]);
 
+  const timerNotice = useMemo(() => {
+    const firings = feed.timerFirings;
+    const count = firings.events.length + Number(firings.overflow?.count || 0);
+    if (!count) return null;
+    const channelIds = [...new Set(firings.events.map((event) => event.channelId).filter(Boolean))];
+    const labels = channelIds.map((channelId) => {
+      const channel = navigation.channels.find((row) => row.id === channelId);
+      return channel?.qualified_name || channel?.name || channelId;
+    });
+    return Object.freeze({
+      revision: firings.revision,
+      message: `${count} 个定时任务已触发${labels.length ? ` · ${labels.join('、')}` : ''}`,
+    });
+  }, [feed.timerFirings, navigation.channels]);
+  useEffect(() => {
+    if (timerNotice) setChannelNotice(timerNotice.message);
+  }, [timerNotice]);
+  useEffect(() => {
+    if (!timerNotice || channelNotice !== timerNotice.message) return;
+    feed.acknowledgeTimerFirings(timerNotice.revision);
+  }, [channelNotice, feed, timerNotice]);
+
   const viewSessions = useMemo(() => createViewSessionStore({ principalID: principalId }), [principalId]);
   const state = feed.stateFor(navigation.activeChannelId);
   const historyStatus = feed.historyFor(navigation.activeChannelId);
@@ -414,6 +426,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     approvalStates: submission.approvalStates || {},
     controlStates: submission.controlStates || {},
     capabilityIndex: capabilities,
+    agentActivity: feed.agentActivityFor(navigation.activeChannelId),
     access: navigation.activeChannel?.access || 'loading',
     surfaceVisible: navigation.activeView === 'conversation' || terminalVisible,
     composer: <Composer model={composer.model} commands={composer.commands} />,
@@ -427,6 +440,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     onDownloadResource: downloadResource,
     onPreviewResource: previewResource,
     onRequestCapability: probes.requestCapability,
+    onAcknowledgeAgentActivity: (agentId) => feed.acknowledgeAgentActivity(navigation.activeChannelId, agentId),
   };
   conversationPort.element = state && history
     ? <ConversationSurface {...conversationPort} />
@@ -529,6 +543,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       terminalVisible,
       channel: navigation.activeChannel,
       unread: Object.fromEntries(navigation.channels.map((channel) => [channel.id, feed.unreadFor(channel.id, navigation.selfFor(channel.id))])),
+      agentActivity: feed.agentActivity,
+      acknowledgeAgentActivity: feed.acknowledgeAgentActivity,
       select: navigation.select,
       setActiveView: navigation.setActiveView,
       openTerminal: () => { setPanel(''); setTerminalVisible((value) => !value); },
