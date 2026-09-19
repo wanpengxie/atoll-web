@@ -6,7 +6,7 @@ Scope: top-level tests whose basename begins with a digit or S–Z; it.each rows
 
 - Baseline: 331 executable cases in 39 suites.
 - Focused pre-fix candidates: 30 files / 143 cases → 135 passed, 8 failed, plus one Outbox teardown DatabaseClosedError. Post-fix direct owner checks: 12/12 StructuredResult/message-presentation tests and 13/13 processing-control tests passed.
-- Disposition: 117 GREEN, 3 RED, 1 PARTIAL, 187 OPEN, 20 GAP, 3 BLOCKED. Action rows: 214 (OPEN + GAP + PARTIAL + RED + BLOCKED pending ruling).
+- Disposition: 128 GREEN, 3 RED, 1 PARTIAL, 176 OPEN, 20 GAP, 3 BLOCKED. Action rows: 203 (OPEN + GAP + PARTIAL + RED + BLOCKED pending ruling).
 - Remaining product regressions without source changes: daemon secret projection and the separately listed WorkspaceLayout pointer-focus packet. R-SZ-002A/B/C and R-SZ-005 are resolved in the public renderer and Outbox races remain handoff-only to `composer_owner`, with no duplicate packet here.
 
 ## Suite contracts
@@ -47,7 +47,7 @@ Scope: top-level tests whose basename begins with a digit or S–Z; it.each rows
 | S32 | tests/waiting-closure-entry.test.jsx | 6 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | current public owner boundary for waiting-closure-entry; successor still required | 0 GREEN / 0 RED / 6 OPEN / 0 GAP / 0 BLOCKED |
 | S33 | tests/waiting-layout.test.jsx | 3 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | ConversationSurface + WaitingLayer + Composer layout | 3 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
 | S34 | tests/waiting-presentation.test.js | 6 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | current public owner boundary for waiting-presentation; successor still required | 0 GREEN / 0 RED / 6 OPEN / 0 GAP / 0 BLOCKED |
-| S35 | tests/waiting-terminal-finality.test.js | 11 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | current public owner boundary for waiting-terminal-finality; successor still required | 0 GREEN / 0 RED / 11 OPEN / 0 GAP / 0 BLOCKED |
+| S35 | tests/waiting-terminal-finality.test.js | 11 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | `createChannelReplicaStore().commit/trim/state` plus the public Waiting controller; runtime reset remains the lifecycle boundary | 11 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
 | S36 | tests/wire.test.js | 18 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | createWire public client | 18 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
 | S37 | tests/work-items.test.js | 4 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | feature-tasks + task feature port | 4 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
 | S38 | tests/workspace-bootstrap-cache.test.js | 1 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | workspace-bootstrap-cache public store | 1 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
@@ -353,17 +353,70 @@ GREEN=current public-owner proof; RED=product regression; PARTIAL=related path o
 | SZ-292 | tests/waiting-presentation.test.js — keeps one stable id through local, landed-open, and canonical queued commits | S34 | **OPEN** — retained; build public-owner successor or hand off regression |
 | SZ-293 | tests/waiting-presentation.test.js — never guesses that an unrelated open request is queued | S34 | **OPEN** — retained; build public-owner successor or hand off regression |
 | SZ-294 | tests/waiting-presentation.test.js — releases local continuity when the canonical request starts running | S34 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-295 | tests/waiting-terminal-finality.test.js — R1：窗口摘掉已终态 turn 后，local echo 恒不把它复活进等待区 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-296 | tests/waiting-terminal-finality.test.js — R1b：continuity 也不能把窗口外的已终态请求留在等待区 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-297 | tests/waiting-terminal-finality.test.js — R2：没有精确 closure 时，Replica 不得把历史空洞里的 request 猜成已终态 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-298 | tests/waiting-terminal-finality.test.js — R2b：窗口从未装入过的更老请求仍可以是真的 queued（恒不过度声明） | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-299 | tests/waiting-terminal-finality.test.js — R3：窗口摘掉 request 行但 turn 因终态在窗口内而存活，历史页重装 request 恒不抹掉终态 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-300 | tests/waiting-terminal-finality.test.js — R3b：重装 request 恒不丢失已装入的进度帧与终态序号 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-301 | tests/waiting-terminal-finality.test.js — 未终态的请求恒不被归档误伤：开着的 turn 整段留在窗口内 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-302 | tests/waiting-terminal-finality.test.js — 精确 closure 被破坏后，human.approve 保守地重新成为待办 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-303 | tests/waiting-terminal-finality.test.js — 超过 512 条时仍保留每个 request id 的精确终态证明 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-304 | tests/waiting-terminal-finality.test.js — terminal 先于 request 的历史后缀超过 512 条时也不能丢精确保护 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-305 | tests/waiting-terminal-finality.test.js — 真实 history/live/trim 交错：非连续历史空洞里的 queued 恒不被区间压缩吞掉 | S35 | **OPEN** — retained; build public-owner successor or hand off regression |
+| SZ-295 | tests/waiting-terminal-finality.test.js — R1：窗口摘掉已终态 turn 后，local echo 恒不把它复活进等待区 | S35 | **GREEN** — `src/model/channel-replica-terminal-closure.test.jsx:52-71` passes: trim retains the exact closure and the public Waiting controller suppresses the stale local echo. |
+| SZ-296 | tests/waiting-terminal-finality.test.js — R1b：continuity 也不能把窗口外的已终态请求留在等待区 | S35 | **GREEN** — the current Waiting owner uses the same exact `_envelopesById` closure guard; the post-trim owner probe leaves no timeline turn and no local Waiting entry for the closure id (the retired `continuityIDs` argument is not reintroduced). |
+| SZ-297 | tests/waiting-terminal-finality.test.js — R2：没有精确 closure 时，Replica 不得把历史空洞里的 request 猜成已终态 | S35 | **GREEN** — after clearing the exact closure and re-admitting request+queued, the current Replica turn is `pending` with no terminal; coverage/range never supplies a guessed terminal. |
+| SZ-298 | tests/waiting-terminal-finality.test.js — R2b：窗口从未装入过的更老请求仍可以是真的 queued（恒不过度声明） | S35 | **GREEN** — an id never seen in the retained ledger, re-admitted after trim with request+queued rows, remains `pending` with no terminal in the current owner probe. |
+| SZ-299 | tests/waiting-terminal-finality.test.js — R3：窗口摘掉 request 行但 turn 因终态在窗口内而存活，历史页重装 request 恒不抹掉终态 | S35 | **GREEN** — `src/model/channel-replica-terminal-closure.test.jsx:73-87` passes: the terminal surviving the request trim remains authoritative after the request page returns. |
+| SZ-300 | tests/waiting-terminal-finality.test.js — R3b：重装 request 恒不丢失已装入的进度帧与终态序号 | S35 | **GREEN** — current Replica probe with a failed terminal preserves `status=failed`, `terminalSeq=100`, and the same provisional count before/after request re-admission (zero when trim already evicted the queued row). |
+| SZ-301 | tests/waiting-terminal-finality.test.js — 未终态的请求恒不被归档误伤：开着的 turn 整段留在窗口内 | S35 | **GREEN** — `src/model/channel-replica-terminal-closure.test.jsx:179-189` and `tests/memory-window.test.js:106-130` pass: the open request/progress rows remain coherent and may temporarily exceed the row limit. |
+| SZ-302 | tests/waiting-terminal-finality.test.js — 精确 closure 被破坏后，human.approve 保守地重新成为待办 | S35 | **GREEN** — after removing the exact closure, a re-admitted `human.approve` is `pending` with no terminal in the current Replica owner probe; no approval-specific second store is used. |
+| SZ-303 | tests/waiting-terminal-finality.test.js — 超过 512 条时仍保留每个 request id 的精确终态证明 | S35 | **GREEN** — `src/model/channel-replica-terminal-closure.test.jsx:151-177` passes; 700-turn measurement retains 690 exact closures with a 30-row raw window, and re-admitting the oldest request+queued remains `terminalClosureOnly=true`. |
+| SZ-304 | tests/waiting-terminal-finality.test.js — terminal 先于 request 的历史后缀超过 512 条时也不能丢精确保护 | S35 | **GREEN** — `src/model/channel-replica-terminal-closure.test.jsx:89-125` passes for response-first trim/upgrade; a 700-terminal probe trimmed to 30 rows retains 670 exact parent proofs and does not synthesize a request for a terminal-only id. |
+| SZ-305 | tests/waiting-terminal-finality.test.js — 真实 history/live/trim 交错：非连续历史空洞里的 queued 恒不被区间压缩吞掉 | S35 | **GREEN** — sparse history/live/trim owner probe re-admits a request from an unseen gap with queued progress and observes `pending`/no terminal; exact parent closures, not coverage ranges, decide terminality. |
+
+### S35 post-98/078 evidence and closure-bound measurement (read-only, 2026-09-20)
+
+The semantic disposition above is based on the current public Replica owner and
+the Waiting controller, not the deleted fold or its private maps. The strict
+successor cases in `src/model/channel-replica-terminal-closure.test.jsx` cover
+R1, R3, response-first ordering/full-row upgrade, earlier-terminal precedence,
+the >512 request+queued path, and the open-turn floor. The remaining S35 rows
+were replayed as deterministic owner probes with the same `commit → trim →
+state` API; no test was skipped, weakened, or changed to make these results
+green.
+
+#### Long-run retained closure measurement
+
+Each probe committed request + queued + completed terminal, called
+`trim('measure', 30)` after every turn, then measured
+`JSON.stringify([...state._unmatchedTerminalClosures])`. The byte column is a
+serialized lower bound for the Map entries (not a JS heap measurement; object
+and Map overhead make the real retained heap larger).
+
+| completed turns | raw rows | exact closures | `_envelopesById` entries | closure Map JSON bytes | bytes / closure |
+|---:|---:|---:|---:|---:|---:|
+| 100 | 30 | 90 | 120 | 52,529 | 584 |
+| 500 | 30 | 490 | 520 | 288,793 | 589 |
+| 1,000 | 30 | 990 | 1,020 | 584,793 | 591 |
+| 2,000 | 30 | 1,990 | 2,020 | 1,181,743 | 594 |
+
+The 700-turn lifecycle probe is the concrete S35 scale case: 30 raw rows,
+690 exact closures, and 720 envelope-index entries. Re-admitting the oldest
+request+queued changes this to 32 raw rows while retaining 690 closures and
+projects `terminalClosureOnly=true`; re-reading that exact terminal changes it
+to 33 raw rows, 689 closures, and `terminalClosureOnly=false`. A whole-store
+`reset()` clears the one state and all 689 remaining closures (`states: 1 → 0`).
+This proves exact reread consumption and reset reclamation, but also shows that
+closure growth is linear when old full rows are continuously trimmed.
+
+#### Existing reset boundary and simplest safe fallback
+
+- Exact request + exact terminal reread consumes one closure; a stale
+  request+queued pair alone deliberately does not consume it.
+- Principal replacement, server-world change, and explicit runtime clear call
+  `replica.reset()` (`src/model/channel-feed-runtime.js:713-723`, `:757-774`,
+  `:901-917`). A same-world generation change only rejects stale ingress
+  (`src/model/channel-feed-runtime.js:677-686`); it does not silently discard
+  lifecycle proofs.
+- There is intentionally no count/byte cap or LRU in this round. A cap would
+  turn a missing exact proof back into Waiting and violate R1/R1b/R3/S35-303.
+  The simplest user-acceptable interim fallback is diagnostic-only observation:
+  report per-channel closure count, serialized-byte estimate, oldest closure
+  sequence, growth-per-trim, exact-upgrade count, and reset reason, with a
+  warning threshold but no automatic eviction. Existing principal/world/session
+  reset remains the only whole-store reclamation action. This is an audit
+  recommendation, not a product change in this commit.
 | SZ-306 | tests/wire.test.js — sends attach as the first and only attach frame | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
 | SZ-307 | tests/wire.test.js — attaches immediately without waiting for local Replica metadata | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
 | SZ-308 | tests/wire.test.js — delivers live immediately while attach persistence remains unfinished | S36 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
