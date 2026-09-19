@@ -841,7 +841,13 @@ test('F7 continuous upward scrolling does not fight history prepend anchoring', 
   await expect(viewport).toHaveCSS('overflow-anchor', 'none');
   const samplesPromise = page.evaluate(async () => {
     const samples = [];
-    for (let frame = 0; frame < 180; frame += 1) {
+    const baselineEpoch = window.__ATOLL_DIAGNOSTICS__.snapshot()
+      .filter((entry) => entry.event === 'history.intent_started')
+      .reduce((latest, entry) => Math.max(latest, Number(entry.detail?.epoch || 0)), 0);
+    let targetEpoch = 0;
+    let satisfied = false;
+    let postTerminalFrames = 0;
+    for (let frame = 0; frame < 600; frame += 1) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
       const node = window.__ATOLL_TEST_READING_OWNER__.current();
       const viewportRect = node.getBoundingClientRect();
@@ -858,22 +864,43 @@ test('F7 continuous upward scrolling does not fight history prepend anchoring', 
         height: Math.round(node.scrollHeight),
         positions,
       });
+      if (frame % 4 === 0 || targetEpoch > 0) {
+        const diagnostics = window.__ATOLL_DIAGNOSTICS__.snapshot();
+        if (!targetEpoch) {
+          targetEpoch = Number(diagnostics.find((entry) => (
+            entry.event === 'history.intent_started'
+              && entry.detail?.reason === 'runway'
+              && Number(entry.detail?.epoch || 0) > baselineEpoch
+          ))?.detail?.epoch || 0);
+        }
+        if (targetEpoch && diagnostics.some((entry) => (
+          entry.event === 'history.intent_satisfied'
+            && Number(entry.detail?.epoch || 0) === targetEpoch
+        ))) {
+          satisfied = true;
+          postTerminalFrames += 1;
+          if (postTerminalFrames >= 12) break;
+        }
+      }
     }
-    return samples;
+    return { samples, targetEpoch, satisfied };
   });
   await viewport.hover();
   // Keep producing real upward input while the first historical batch arrives.
   // The list owns anchor compensation; application code must not overwrite the
   // reader's wheel momentum with an absolute scrollTop from another frame.
+  // Do not infer the top boundary from scrollTop here: Following uses reverse
+  // coordinates while the browsing owner uses ordinary positive coordinates.
+  // This journey is specifically the continuous-input contract, so all forty
+  // input transactions must be delivered and the resulting operation awaited.
   for (let step = 0; step < 40; step += 1) {
     await page.mouse.wheel(0, -360);
     await page.waitForTimeout(18);
-    if (await viewport.evaluate((node) => node.scrollTop <= 1)) break;
   }
-  const samples = await samplesPromise;
-  const historySatisfied = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
-    .some((entry) => entry.event === 'history.intent_satisfied'));
-  expect(historySatisfied).toBe(true);
+  const sampledOperation = await samplesPromise;
+  const { samples } = sampledOperation;
+  expect(sampledOperation.targetEpoch).toBeGreaterThan(0);
+  expect(sampledOperation.satisfied).toBe(true);
   const geometryCommands = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
     .filter((entry) => entry.event.startsWith('timeline.geometry_command')));
   const screenMotion = [];
