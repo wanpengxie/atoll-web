@@ -93,6 +93,7 @@ export function createChannelReplicaStore() {
   }
 
   return {
+    destroy: reset,
     ensure,
     commit,
     installMeta,

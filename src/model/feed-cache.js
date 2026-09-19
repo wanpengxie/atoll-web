@@ -117,6 +117,7 @@ export function createFeedCache({
   let flushTimer = null;
   let owner = '';
   let ownerSelection = null;
+  let destroyed = false;
   let persistenceEpoch = 0;
   let persistenceCancellation = deferred();
   void persistenceCancellation.promise.catch(() => {});
@@ -146,6 +147,7 @@ export function createFeedCache({
   }
 
   function open() {
+    if (destroyed) return Promise.resolve(null);
     if (openPromise) return openPromise;
     if (!indexedDBImpl || !IDBKeyRangeImpl) {
       diagnostic('warn', 'feed_cache.unavailable', { databaseName });
@@ -418,6 +420,7 @@ export function createFeedCache({
   }
 
   function saveRows(rows, { coverageByChannel = new Map() } = {}) {
+    if (destroyed) return Promise.resolve();
     const records = (rows || []).flatMap((row) => {
       const channelId = row?.channel_id;
       const seq = Number(row?.seq);
@@ -673,9 +676,38 @@ export function createFeedCache({
     return true;
   }
 
+  function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+    persistenceEpoch += 1;
+    const error = new Error('本地缓存生命周期已结束');
+    if (flushTimer != null) clearTimeout(flushTimer);
+    flushTimer = null;
+    pendingRecords = [];
+    pendingCoverage = [];
+    for (const waiter of pendingWaiters) waiter.reject(error);
+    pendingWaiters = [];
+    persistenceCancellation.reject(error);
+    persistenceCancellation = deferred();
+    void persistenceCancellation.promise.catch(() => {});
+    if (ownerSelection && !ownerSelection.cancelled) {
+      ownerSelection.cancelled = true;
+      ownerSelection.cancellation.reject(error);
+    }
+    for (const record of activeWriteTransactions) {
+      try { record.transaction?.abort(); } catch { /* lifecycle release is best-effort */ }
+    }
+    try { database?.close(); } catch { /* lifecycle release is best-effort */ }
+    database = null;
+    openPromise = null;
+    owner = '';
+    meta.clear();
+  }
+
   return {
     ensureOwner,
     cancelOwnerSelection,
+    destroy,
     openMeta: async () => { await open(); return new Map([...meta].map(([id, value]) => [id, { ...value }])); },
     metaSnapshot: () => new Map([...meta].map(([id, value]) => [id, { ...value }])),
     readBefore,

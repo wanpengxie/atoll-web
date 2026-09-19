@@ -83,6 +83,11 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
   }
 
   return {
+    destroy() {
+      readAuthorityReady = false;
+      selectedReadAuthority = null;
+      memory.clear();
+    },
     selectReadAuthority({ principalId = '', serverBoot = '' } = {}) {
       if (!requireReadAuthority) return Object.freeze({ ready: true, reused: true, changed: false });
       const target = {
