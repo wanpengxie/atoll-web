@@ -101,6 +101,56 @@ describe('Composer 当前收件人合同', () => {
     })).toMatchObject({ kind: 'lost', source: 'reply', rows: [] });
   });
 
+  it('回复发送保留来源消息 parent identity，并按 sender kind 选择词', () => {
+    const agentReply = buildComposerModel({
+      activeChannelId: 'dev',
+      draft: {
+        text: '继续这个方向',
+        recipients: [CODEX],
+        replyTarget: {
+          sourceId: 'answer-1',
+          senderId: CLAUDE.id,
+          senderKind: CLAUDE.kind,
+          senderName: CLAUDE.name,
+        },
+      },
+      roster: ROSTER,
+      access: 'member_active',
+      agentSelection: selected(CODEX),
+    });
+    expect(createMessageRequest(agentReply, { revision: 9 })).toMatchObject({
+      batch: [{
+        msgType: 'agent.ask',
+        audience: [CLAUDE.id],
+        parentId: 'answer-1',
+      }],
+    });
+
+    const humanReply = buildComposerModel({
+      activeChannelId: 'dev',
+      draft: {
+        text: '我来跟进',
+        recipients: [CODEX],
+        replyTarget: {
+          sourceId: 'message-1',
+          senderId: HUMAN.id,
+          senderKind: HUMAN.kind,
+          senderName: HUMAN.name,
+        },
+      },
+      roster: ROSTER,
+      access: 'member_active',
+      agentSelection: selected(CODEX),
+    });
+    expect(createMessageRequest(humanReply, { revision: 10 })).toMatchObject({
+      batch: [{
+        msgType: 'human.message',
+        audience: [HUMAN.id],
+        parentId: 'message-1',
+      }],
+    });
+  });
+
   it('多目标消息按当前 delivery 生成逐目标 typed batch', () => {
     const model = buildComposerModel({
       activeChannelId: 'dev',
