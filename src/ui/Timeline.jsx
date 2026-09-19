@@ -311,7 +311,7 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
 		{presentationEmpty && viewport.availability === 'partial' && (
 		  <div className="empty-ledger" data-scope-state="partial"><span>@</span>{staleActorFilters.length
 		    ? <><h2>当前应用了已失效的成员筛选。</h2><p>从上方移除已失效筛选后即可查看当前范围。</p></>
-		    : <><h2>正在查找符合筛选的往来…</h2><p>会继续读取更早内容，找到后自动显示。</p></>}</div>
+		    : <><h2>当前已加载的动态里没有符合筛选的往来</h2><p>更早内容会在后台继续准备；切回「全部」可查看当前动态。</p></>}</div>
 		)}
 	  </div>
 		  {((presentationEmpty && ['syncing', 'unknown'].includes(viewport.availability)) || viewport.availability === 'materializing') && <div className="timeline-history-status" role="status">{historyWaitingLabel}</div>}

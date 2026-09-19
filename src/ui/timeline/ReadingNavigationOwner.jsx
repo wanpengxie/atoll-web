@@ -27,7 +27,10 @@ function wheelDeltaPixels(event, root) {
 
 function navigationKey(event) {
   if (event.target.closest?.('input, textarea, select, button, a, [contenteditable="true"]')) return null;
-  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) {
+  if (event.key === 'Home') {
+    return { direction: 'older', sourceID: event.code || event.key, absoluteBoundary: 'top' };
+  }
+  if (['ArrowUp', 'PageUp'].includes(event.key) || (event.key === ' ' && event.shiftKey)) {
     return { direction: 'older', sourceID: event.code || event.key };
   }
   if (['ArrowDown', 'PageDown', 'End'].includes(event.key) || event.key === ' ') {
@@ -285,7 +288,13 @@ export function ReadingNavigationOwner({
       const session = owner.getSession?.() || owner.session;
       if (detail.direction === 'newer' && session.mode === READING_MODE.following
         && host.atTail?.() === true) return null;
-      if (shouldDeferFollowing(host)) return coordinator.beginPotential(eventDetail(host, detail));
+      // Relative following input becomes authoritative only after the browser
+      // supplies physical displacement. Home is already an explicit semantic
+      // request for the start boundary, so it must not depend on a scroll edge
+      // that column-reverse browsers are allowed to omit.
+      if (shouldDeferFollowing(host) && detail.absoluteBoundary !== 'top') {
+        return coordinator.beginPotential(eventDetail(host, detail));
+      }
       return coordinator.recordInput(eventDetail(host, detail));
     };
     const onWheel = (event) => {

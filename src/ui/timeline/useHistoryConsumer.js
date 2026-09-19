@@ -427,10 +427,11 @@ export function useHistoryConsumer({
     const bookmark = session.bookmark;
     if (session.mode !== 'following' && bookmark
       && !snapshot.rows.some((row) => row.id === bookmark.messageID)) return;
-    const foreground = Number(historyViewSpec?.actorFilter?.size || 0) > 0
-      || historyViewSpec?.scope === 'mine';
-    void request('projection-underfill', foreground
-      ? HISTORY_URGENCY.interactive : HISTORY_URGENCY.anticipatory);
+    // A zero-row semantic projection is a data-supply obligation, not proof
+    // that the user is waiting at a physical boundary. Keep its one Scheduler
+    // operation anticipatory: it scans until matching supply or authoritative
+    // EOF, while the committed partial presentation stays usable and silent.
+    void request('projection-underfill', HISTORY_URGENCY.anticipatory);
   }, [hasManagedHistoryLifecycle, historyStatus, historyViewSpec, knownHead, request, session.bookmark, session.mode, snapshot.rows, sourceKey, viewKey]);
 
   const retry = useCallback(() => {

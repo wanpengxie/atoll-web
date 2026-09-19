@@ -10,7 +10,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
+import { diagnostic, isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
 import { READING_MODE } from '../../model/reading-session.js';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
 import { useReadingNavigationHost } from './ReadingNavigationOwner.jsx';
@@ -54,6 +54,12 @@ const LIVE_ENTRY_DURATION_MS = 180;
 function isAtTail(root) {
   if (!root) return false;
   return Math.abs(Number(root.scrollTop || 0)) <= 1;
+}
+
+function isAtHistoryStart(root) {
+  if (!root) return false;
+  const extent = Math.max(0, Number(root.scrollHeight || 0) - Number(root.clientHeight || 0));
+  return Math.abs(Number(root.scrollTop || 0)) >= extent - 1;
 }
 
 function ownsActiveInteraction(root) {
@@ -261,6 +267,18 @@ export function FollowingTailList({
           ? null
           : transaction.latestBookmark || topVisibleBookmark(root, committedOwner.snapshot.rows),
       });
+      // The following surface can consume the one native displacement that
+      // activates browsing before Virtuoso becomes the visible owner. Preserve
+      // the DATA consequence of that same input here: an absolute Home command
+      // is semantic top demand, while a wheel/touch demand needs the committed
+      // physical start boundary. ReadingSession deduplicates both against the
+      // one active history consumer operation.
+      if (transaction.canRequestHistory !== false
+        && transaction.direction === 'older'
+        && ((transaction.source === 'key' && transaction.sourceID === 'Home')
+          || isAtHistoryStart(root))) {
+        void owner.onAtTop?.({ demandUnits: completeViewportUnits(root) });
+      }
       if (isReadingTraceEnabled()) {
         const committed = owner.getSession?.() || owner.session;
         readingTrace('reading.following-handoff', {
@@ -336,6 +354,16 @@ export function FollowingTailList({
     ]);
     if (!expectedWakeKey && underfillKeyRef.current === wakeKey) return;
     underfillKeyRef.current = wakeKey;
+    diagnostic('debug', 'history.viewport_underfilled', {
+      channelId: status.channelId || '',
+      clientHeight,
+      scrollHeight,
+      rowCount: committed.snapshot.rows.length,
+      attached: status.attached === true,
+      messageCurrent: status.messageCurrent === true,
+      bottomReady: owner.bottomReady === true,
+      hasOlder: status.hasOlder === true,
+    });
     const pending = owner.onUnderfill?.({ demandUnits: completeViewportUnits(root) });
     void consumeHistoryConsumerResult(pending, () => issueUnderfillIfCurrent(wakeKey));
   }, []);
