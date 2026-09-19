@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useInsertionEffect, useRef, useState } from 'react';
 import { HISTORY_INTENT, HISTORY_URGENCY } from '../../model/history-demand.js';
 import { diagnostic, readingTrace } from '../../model/diagnostics.js';
 import {
@@ -111,7 +111,11 @@ export function useHistoryConsumer({
     if (terminal && (terminal.controller !== controller || terminal.sourceKey !== sourceKey)) terminalRef.current = null;
   }, [controller, sourceKey]);
 
-  useEffect(() => {
+  // Activation replacement is an ownership edge, not an eventual side
+  // effect. Publish it before either reading container may establish a DOM
+  // consumer debt in its layout effect. A passive reset here used to erase an
+  // operation that the newly committed child had already started.
+  useInsertionEffect(() => {
     activeRef.current?.abortController?.abort();
     activeRef.current = null;
     deferredAdmissionRef.current = null;
@@ -171,6 +175,16 @@ export function useHistoryConsumer({
           channelId: channelID, viewKey, fromSourceLease: active.sourceKey,
           toSourceLease: obligation.sourceKey, sourceChanged,
         });
+        // Acquisition owns only the physical request. A viewport-underfill
+        // obligation belongs to the committed DOM consumer, so a replacement
+        // presentation/source must be remeasured there before another request
+        // may start. Other semantic obligations carry immutable targets and
+        // can hand those targets directly to their successor.
+        if (consumer === HISTORY_CONSUMER.viewportUnderfill) {
+          return active.promise.then(() => ({
+            kind: 'consumer-recheck', reason: 'obligation-replaced',
+          }));
+        }
         return active.promise.then(() => request(reason, urgency, options));
       }
       if (active.controller === controller && active.key === obligation.key

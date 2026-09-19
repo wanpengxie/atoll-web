@@ -124,10 +124,10 @@ describe('历史自动懒加载', () => {
   }
 
   it('后台蓄水池增长不推动可见列表，且不存在手动加载按钮', async () => {
-    const view = render(<Timeline state={historyState(120)} history={managedHistory({ hasOlder: true, buffered: 0 })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={historyState(120)} history={managedHistory({ hasOlder: true, buffered: 0 })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     expect(await screen.findByText('历史 120')).toBeTruthy();
     const before = view.container.querySelectorAll('.standalone-row').length;
-    view.rerender(<Timeline state={historyState(120)} history={managedHistory({ hasOlder: true, buffered: 5_000 })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={historyState(120)} history={managedHistory({ hasOlder: true, buffered: 5_000 })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     expect(view.container.querySelectorAll('.standalone-row').length).toBe(before);
     expect(document.body.textContent).not.toContain('查看更早动态');
   });
@@ -143,7 +143,7 @@ describe('历史自动懒加载', () => {
 
   it('短首屏已经触顶时自动释放一批 reservoir', async () => {
     const loadOlder = vi.fn(async () => ({ kind: 'exhausted' }));
-    render(<Timeline state={historyState(4)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 5_000 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    render(<Timeline state={historyState(4)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 5_000 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledOnce());
     expect(loadOlder.mock.calls[0][0]).toMatchObject({ anchorSeq: 1 });
   });
@@ -152,13 +152,13 @@ describe('历史自动懒加载', () => {
     let finish;
     const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const state = historyState(4, 100);
-    const view = render(<Timeline state={state} history={managedHistory({ attached: false, hasOlder: false, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={state} history={managedHistory({ attached: false, hasOlder: false, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(loadOlder).not.toHaveBeenCalled();
 
     // The scheduler's authoritative attach transition, rather than the
     // virtualizer's initial zero window, establishes the persistent duty.
-    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 5_000 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 5_000 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledOnce());
     finish({ kind: 'exhausted' });
   });
@@ -166,10 +166,10 @@ describe('历史自动懒加载', () => {
   it('attach 前的非权威 false 不会封死 attach 后的同一欠供给视口', async () => {
     const loadOlder = vi.fn().mockResolvedValue({ kind: 'satisfied', firstVisibleSeq: 68 });
     const state = historyState(4, 100);
-    const view = render(<Timeline state={state} history={managedHistory({ attached: false, hasOlder: false, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={state} history={managedHistory({ attached: false, hasOlder: false, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(loadOlder).not.toHaveBeenCalled();
-    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 2, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 2, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledOnce());
   });
 
@@ -178,7 +178,7 @@ describe('历史自动懒加载', () => {
       .mockResolvedValueOnce({ kind: 'failed', error: new Error('temporary') })
       .mockResolvedValueOnce({ kind: 'satisfied', firstVisibleSeq: 68 });
     const state = historyState(4, 100);
-    const view = render(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 1, hasOlder: true, loading: false, error: '' }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 1, hasOlder: true, loading: false, error: '' }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
     // Let the failed operation release its in-flight ownership before the
     // scheduler publishes the next status revision. The old global observer
@@ -187,16 +187,16 @@ describe('历史自动懒加载', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     // The scheduler owns retry timing. Its published loading/error transition,
     // not a viewport poller, re-drives the persistent coverage obligation.
-    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 1, hasOlder: true, loading: true, error: 'temporary' }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={state} history={managedHistory({ attached: true, messageCurrent: true, generation: 1, hasOlder: true, loading: true, error: 'temporary' }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(2));
   });
 
   it('scheduler 兑现 demand 且真正 prepend 可见项后不重复消费 reservoir', async () => {
     let finish;
     const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    const view = render(<Timeline state={historyState(4, 100)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={historyState(4, 100)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
-    view.rerender(<Timeline state={historyState(36, 68)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={historyState(36, 68)} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     finish({ kind: 'satisfied', firstVisibleSeq: 68 });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(loadOlder).toHaveBeenCalledTimes(1);
@@ -206,7 +206,7 @@ describe('历史自动懒加载', () => {
     let finish;
     const loadOlder = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const initial = historyState(4, 100);
-    const view = render(<Timeline state={initial} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    const view = render(<Timeline state={initial} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 0 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await vi.waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
 
     const hidden = {
@@ -218,7 +218,7 @@ describe('历史自动懒加载', () => {
       rows: new Map([[hidden.seq, hidden.envelope], ...initial.rows]),
       standalone: [hidden, ...initial.standalone],
     };
-    view.rerender(<Timeline state={next} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" />);
+    view.rerender(<Timeline state={next} history={managedHistory({ attached: true, messageCurrent: true, hasOlder: true, buffered: 16 }, { loadOlder })} roster={[]} selfId="me" pending={[]} approvalStates={{}} access="member_active" surfaceVisible />);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(loadOlder).toHaveBeenCalledTimes(1);
     finish({ kind: 'exhausted' });

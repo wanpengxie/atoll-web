@@ -296,13 +296,21 @@ export function FollowingTailList({
     const committed = committedRef.current;
     const owner = committed.reading;
     const status = owner?.status || {};
+    const scrollHeight = Number(root?.scrollHeight || 0);
+    const clientHeight = Number(root?.clientHeight || 0);
+    // A real browser publishes physical extent. jsdom/SSR-style hosts do not;
+    // in that case a full bounded consumer batch is the only conservative
+    // evidence that this activation no longer owes another acquisition.
+    const geometryUnderfilled = clientHeight > 0 || scrollHeight > 0
+      ? scrollHeight <= clientHeight + 1
+      : committed.snapshot.rows.length <= completeViewportUnits(root);
     if (!committed.active
       || committed.surfaceVisible !== true
       || !root
       || !owner
       || status.hasOlder !== true
       || committed.snapshot.rows.length > Number(committed.windowSize || FOLLOWING_TAIL_WINDOW)
-      || Number(root.scrollHeight || 0) > Number(root.clientHeight || 0) + 1) {
+      || !geometryUnderfilled) {
       underfillKeyRef.current = '';
       return;
     }
@@ -312,14 +320,19 @@ export function FollowingTailList({
     if (expectedWakeKey && underfillKeyRef.current !== expectedWakeKey) return;
     const wakeKey = JSON.stringify([
       owner.activationID,
-      committed.snapshot.revision,
+      committed.snapshot.rows.length,
+      String(committed.snapshot.rows[0]?.id || ''),
+      String(committed.snapshot.rows[committed.snapshot.rows.length - 1]?.id || ''),
       String(status.sourceLease || ''),
       Number(status.completedPages || 0),
       Number(status.revealVersion || 0),
       Number(status.buffered || 0),
       status.hasOlder === true,
-      Number(root.clientHeight || 0),
-      Number(root.scrollHeight || 0),
+      status.loading === true,
+      String(status.error || ''),
+      Number(status.retryAt || 0),
+      clientHeight,
+      scrollHeight,
     ]);
     if (!expectedWakeKey && underfillKeyRef.current === wakeKey) return;
     underfillKeyRef.current = wakeKey;
