@@ -11,7 +11,15 @@ import {
 import { newId } from '../../util/id.js';
 
 const WORLD_FIELD = '_atoll_world_epoch';
-const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
+const FILE_READING_HISTORY_LIMIT = 24;
+const FILE_PREVIEW_STACK_LIMIT = 20;
+const FILE_READING_HISTORY_PREFIX = 'atoll.web.file-reading-history.v1.';
+const PREVIEW_LIMITS = Object.freeze({
+  text: 512 * 1024,
+  image: 20 * 1024 * 1024,
+  media: 50 * 1024 * 1024,
+  inline: 25 * 1024 * 1024,
+});
 
 const TEXT_EXTENSIONS = new Set([
   'c', 'cc', 'conf', 'cpp', 'css', 'csv', 'go', 'h', 'hpp', 'html', 'ini', 'java',
@@ -49,6 +57,89 @@ async function sniffText(blob) {
   }
 }
 
+async function readBoundedText(response, limit, signal) {
+  const declared = Number(response.headers?.get?.('content-length') || 0);
+  if (declared > limit) throw new RangeError(previewSizeError(limit));
+  if (!response.body?.getReader) {
+    const value = await response.text();
+    if (new TextEncoder().encode(value).byteLength > limit) throw new RangeError(previewSizeError(limit));
+    return value;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = '';
+  try {
+    while (true) {
+      if (signal?.aborted) throw new DOMException('预览已取消', 'AbortError');
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) {
+        await reader.cancel();
+        throw new RangeError(previewSizeError(limit));
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock?.();
+  }
+}
+
+function previewLimit(kind) {
+  if (['markdown', 'text', 'unsupported'].includes(kind)) return PREVIEW_LIMITS.text;
+  if (kind === 'image') return PREVIEW_LIMITS.image;
+  if (['audio', 'video'].includes(kind)) return PREVIEW_LIMITS.media;
+  if (kind === 'pdf') return PREVIEW_LIMITS.inline;
+  return 0;
+}
+
+function previewSizeError(limit) {
+  const mib = limit / 1024 / 1024;
+  return `文件超过站内预览上限（${Number.isInteger(mib) ? mib : mib.toFixed(1)} MB），请下载后打开。`;
+}
+
+function safeRecentFile(value) {
+  if (!value || typeof value !== 'object' || !value.channelId || !(value.resourceId || value.resource_id)) return null;
+  const resourceId = String(value.resourceId || value.resource_id);
+  const size = Number(value.size);
+  const line = Number(value.line);
+  return {
+    key: String(value.key || `recent-file:${value.channelId}:${resourceId}`),
+    channelId: String(value.channelId),
+    resourceId,
+    name: String(value.name || resourceId),
+    mediaType: String(value.mediaType || value.media_type || 'application/octet-stream'),
+    ...(Number.isFinite(size) && size >= 0 ? { size } : {}),
+    ...(Number.isSafeInteger(line) && line > 0 ? { line } : {}),
+    lastOpenedAt: Number.isFinite(Number(value.lastOpenedAt)) ? Number(value.lastOpenedAt) : 0,
+  };
+}
+
+function historyStorageKey(principalId, worldEpoch) {
+  return `${FILE_READING_HISTORY_PREFIX}${encodeURIComponent(String(principalId || ''))}.${encodeURIComponent(String(worldEpoch || ''))}`;
+}
+
+function readRecentFiles(principalId, worldEpoch) {
+  if (!principalId || !worldEpoch) return [];
+  try {
+    const value = JSON.parse(globalThis.localStorage?.getItem(historyStorageKey(principalId, worldEpoch)) || '[]');
+    return (Array.isArray(value) ? value : []).map(safeRecentFile).filter(Boolean).slice(0, FILE_READING_HISTORY_LIMIT);
+  } catch { return []; }
+}
+
+function writeRecentFiles(principalId, worldEpoch, rows) {
+  if (!principalId || !worldEpoch) return;
+  try { globalThis.localStorage?.setItem(historyStorageKey(principalId, worldEpoch), JSON.stringify(rows)); } catch { /* in-memory state remains usable */ }
+}
+
+function samePreview(left, right) {
+  return left?.channelId === right?.channelId
+    && String(left?.resourceId || left?.resource_id || '') === String(right?.resourceId || right?.resource_id || '')
+    && Number(left?.line || 0) === Number(right?.line || 0);
+}
+
 function errorText(error) {
   return error?.detail || error?.message || String(error);
 }
@@ -83,7 +174,7 @@ function resourcePrefix(channel, device, directory = '') {
   return `daemon://${deviceName}/${channelName}/${path ? `${path}/` : ''}`;
 }
 
-function projectResourceEntries(items, prefix) {
+function projectResourceEntries(items, prefix, directory = '') {
   return (items || []).flatMap((item) => {
     const resourceId = String(item?.id || item?.resource_id || item?.address || '');
     if (!resourceId.startsWith(prefix)) return [];
@@ -92,13 +183,13 @@ function projectResourceEntries(items, prefix) {
     let name = relative;
     try { name = decodeURIComponent(relative); } catch { /* keep the readable resource segment */ }
     const nodeType = String(item?.meta?.node_type || 'regular');
-    const kind = nodeType === 'directory' ? 'directory' : 'file';
+    const kind = nodeType === 'directory' ? 'directory' : nodeType === 'regular' ? 'file' : 'other';
     return [{
       key: `${kind}:${resourceId}`,
       kind,
       name,
       resourceId,
-      ...(kind === 'directory' ? { directory: `${name}/` } : {}),
+      ...(kind === 'directory' ? { directory: `${normalizeFeatureDirectory(directory)}${name}/` } : {}),
       ...(item?.meta?.media_type ? { mediaType: String(item.meta.media_type) } : {}),
       ...(Number.isFinite(Number(item?.meta?.size)) ? { size: Number(item.meta.size) } : {}),
       ...(item?.meta?.modified_at || item?.meta?.mtime || item?.updated_at
@@ -186,10 +277,16 @@ export function useAttachmentTransactions({
   const [directory, setDirectory] = useState('');
   const [deviceId, setDeviceId] = useState('');
   const [entries, setEntries] = useState([]);
+  const [filesNext, setFilesNext] = useState('');
   const [filesBusy, setFilesBusy] = useState(false);
+  const [filesUploading, setFilesUploading] = useState(false);
   const [filesError, setFilesError] = useState('');
+  const [selectedKey, setSelectedKey] = useState('');
+  const [filesScrollTop, setFilesScrollTop] = useState(0);
   const [selectedArtifact, setSelectedArtifactState] = useState(null);
   const [artifactPreview, setArtifactPreview] = useState({ status: 'idle' });
+  const [previewStack, setPreviewStack] = useState([]);
+  const [recentFiles, setRecentFiles] = useState(() => readRecentFiles(principalId, serverWorld));
   const worldRevisionRef = useRef(0);
   const uploadQueuesRef = useRef(new Map());
   const activeUploadsRef = useRef(new Map());
@@ -198,6 +295,9 @@ export function useAttachmentTransactions({
   const directoryRequestRef = useRef({ generation: 0, request: null });
   const previewRequestRef = useRef({ generation: 0, request: null });
   const previewObjectURLRef = useRef('');
+  const fileSessionsRef = useRef(new Map());
+  const activeFileChannelRef = useRef(activeChannelId || '');
+  const restoredDirectoryRef = useRef('');
   const committedOwnerRef = useRef(null);
   const serverWorldCommittedRef = useRef(serverWorld);
   const wireStateCommittedRef = useRef(wireState);
@@ -266,9 +366,22 @@ export function useAttachmentTransactions({
 
   const selectArtifact = useCallback((entry) => {
     abortRequest(previewRequestRef);
+    setSelectedKey(entry?.key || '');
     setSelectedArtifactState(entry || null);
+    if (!entry) setPreviewStack([]);
     publishArtifactPreview({ status: 'idle' });
   }, [abortRequest, publishArtifactPreview]);
+
+  const rememberRecentFile = useCallback((entry, channelId) => {
+    const recent = safeRecentFile({ ...entry, channelId, lastOpenedAt: Date.now() });
+    if (!recent) return;
+    setRecentFiles((current) => {
+      const next = [recent, ...current.filter((row) => row.channelId !== recent.channelId || row.resourceId !== recent.resourceId)]
+        .slice(0, FILE_READING_HISTORY_LIMIT);
+      writeRecentFiles(principalId, serverWorldCommittedRef.current, next);
+      return next;
+    });
+  }, [principalId]);
 
   const ownerFacts = useCallback((owner) => {
     const committed = committedOwnerRef.current;
@@ -401,13 +514,18 @@ export function useAttachmentTransactions({
     channelId = activeChannelRef.current,
     targetDirectory = directory,
     targetDeviceId = deviceId,
+    cursor = '',
+    append = false,
   } = {}) => {
     if (!channelId) return [];
     const request = beginRequest(directoryRequestRef, channelId);
     const channel = channelId === activeChannel?.id ? activeChannel : null;
     const device = devices.find((row) => row.id === targetDeviceId);
     if (!channel || !device) {
-      if (directoryRequestRef.current.request === request && activeChannelRef.current === channelId) setEntries([]);
+      if (directoryRequestRef.current.request === request && activeChannelRef.current === channelId) {
+        setEntries([]);
+        setFilesNext('');
+      }
       finishRequest(directoryRequestRef, request);
       return [];
     }
@@ -419,9 +537,9 @@ export function useAttachmentTransactions({
       const receipt = await runFileOperation({ channelId, access: 'read', signal: request.controller.signal }, (operation) => operation.resource({
         channel_id: channelId,
         op: 'list',
-        query: { prefix, limit: 200 },
+        query: { prefix, limit: 100, ...(cursor ? { cursor } : {}) },
       }));
-      const rows = projectResourceEntries(receipt?.items, prefix);
+      const rows = projectResourceEntries(receipt?.items, prefix, normalized);
       if (
         directoryRequestRef.current.request === request
         && !request.controller.signal.aborted
@@ -429,7 +547,14 @@ export function useAttachmentTransactions({
       ) {
         setDirectory(normalized);
         setDeviceId(targetDeviceId);
-        setEntries(rows);
+        setEntries((current) => {
+          if (!append) return rows;
+          const merged = new Map(current.map((row) => [row.resourceId, row]));
+          for (const row of rows) merged.set(row.resourceId, row);
+          return [...merged.values()];
+        });
+        setFilesNext(String(receipt?.next || ''));
+        restoredDirectoryRef.current = '';
       }
       return rows;
     } catch (error) {
@@ -437,7 +562,12 @@ export function useAttachmentTransactions({
         directoryRequestRef.current.request === request
         && !request.controller.signal.aborted
         && activeChannelRef.current === channelId
-      ) setFilesError(errorText(error));
+      ) {
+        if (restoredDirectoryRef.current && normalized === restoredDirectoryRef.current) {
+          restoredDirectoryRef.current = '';
+          setDirectory('');
+        } else setFilesError(errorText(error));
+      }
       return [];
     } finally {
       if (finishRequest(directoryRequestRef, request) && activeChannelRef.current === channelId) setFilesBusy(false);
@@ -445,30 +575,59 @@ export function useAttachmentTransactions({
   }, [activeChannel, activeChannelRef, beginRequest, deviceId, devices, directory, finishRequest, runFileOperation]);
 
   useEffect(() => {
+    const previousChannelId = activeFileChannelRef.current;
+    if (previousChannelId && previousChannelId !== activeChannelId) {
+      fileSessionsRef.current.set(previousChannelId, {
+        deviceId, directory, selectedKey, selectedArtifact, previewStack, scrollTop: filesScrollTop,
+      });
+    }
+    activeFileChannelRef.current = activeChannelId || '';
+    const restored = previousChannelId === activeChannelId
+      ? { deviceId, directory, selectedKey, selectedArtifact, previewStack, scrollTop: filesScrollTop }
+      : fileSessionsRef.current.get(activeChannelId) || null;
     abortRequest(deviceRequestRef);
     abortRequest(directoryRequestRef);
     abortRequest(previewRequestRef);
     setDevices([]);
-    setDeviceId('');
-    setDirectory('');
+    setDeviceId(restored?.deviceId || '');
+    setDirectory(restored?.directory || '');
+    restoredDirectoryRef.current = restored?.directory || '';
     setEntries([]);
+    setFilesNext('');
     setFilesBusy(false);
-    setSelectedArtifactState(null);
+    setSelectedKey(restored?.selectedKey || '');
+    setSelectedArtifactState(restored?.selectedArtifact || null);
+    setPreviewStack(restored?.previewStack || []);
+    setFilesScrollTop(Number(restored?.scrollTop || 0));
     publishArtifactPreview({ status: 'idle' });
     setFilesError('');
     if (!activeChannelId || wireState !== 'open') return;
     void refreshDevices(activeChannelId);
-  }, [abortRequest, activeChannelId, publishArtifactPreview, refreshDevices, serverWorld, wireState]);
+  // Switching channels is the ownership boundary. The values intentionally
+  // come from the last committed channel render, not from dependencies that
+  // would make ordinary directory navigation reset the browser.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChannelId, serverWorld, wireState]);
+
+  useEffect(() => {
+    setRecentFiles(readRecentFiles(principalId, serverWorld));
+  }, [principalId, serverWorld]);
 
   useEffect(() => {
     if (!activeChannelId || !deviceId || wireState !== 'open') return;
     void refreshDirectory({ channelId: activeChannelId, targetDirectory: directory, targetDeviceId: deviceId });
   }, [activeChannelId, deviceId, directory, refreshDirectory, wireState]);
 
-  const navigateFiles = useCallback((value) => setDirectory(normalizeFeatureDirectory(value)), []);
+  const navigateFiles = useCallback((value) => {
+    setDirectory(normalizeFeatureDirectory(value));
+    setSelectedKey('');
+    setFilesScrollTop(0);
+  }, []);
   const selectDevice = useCallback((value) => {
     setDeviceId(String(value || ''));
     setDirectory('');
+    setSelectedKey('');
+    setFilesScrollTop(0);
   }, []);
   const createDirectory = useCallback(async ({ name, directory: requestedDirectory = directory, deviceId: requestedDeviceId = deviceId }) => {
     const channel = activeChannel;
@@ -476,14 +635,34 @@ export function useAttachmentTransactions({
     const safeName = safeUploadName(name);
     if (!channel?.id || !device || safeName !== String(name || '').trim()) throw new TypeError('文件夹名称无效');
     const address = `${resourcePrefix(channel, device, requestedDirectory)}${encodeURIComponent(safeName)}`;
-    await runFileOperation({ channelId: channel.id, access: 'write' }, (operation) => operation.resource({ channel_id: channel.id, op: 'create', address, node_type: 'directory' }));
-    return refreshDirectory({ channelId: channel.id, targetDirectory: requestedDirectory, targetDeviceId: requestedDeviceId });
-  }, [activeChannel, deviceId, devices, directory, refreshDirectory, runFileOperation]);
+    setFilesBusy(true);
+    setFilesError('');
+    try {
+      await runFileOperation({ channelId: channel.id, access: 'write' }, (operation) => operation.resource({ channel_id: channel.id, op: 'create', address, node_type: 'directory' }));
+      return await refreshDirectory({ channelId: channel.id, targetDirectory: requestedDirectory, targetDeviceId: requestedDeviceId });
+    } catch (error) {
+      if (activeChannelRef.current === channel.id) setFilesError(errorText(error));
+      throw error;
+    } finally {
+      if (activeChannelRef.current === channel.id) setFilesBusy(false);
+    }
+  }, [activeChannel, activeChannelRef, deviceId, devices, directory, refreshDirectory, runFileOperation]);
   const removeFile = useCallback(async (entry) => {
     if (!activeChannelId || !entry?.resourceId) return;
-    await runFileOperation({ channelId: activeChannelId, access: 'write' }, (operation) => operation.resource({ channel_id: activeChannelId, op: 'delete', resource_id: entry.resourceId }));
-    await refreshDirectory();
-  }, [activeChannelId, refreshDirectory, runFileOperation]);
+    const channelId = activeChannelId;
+    setFilesBusy(true);
+    setFilesError('');
+    try {
+      await runFileOperation({ channelId, access: 'write' }, (operation) => operation.resource({ channel_id: channelId, op: 'delete', resource_id: entry.resourceId }));
+      if (activeChannelRef.current === channelId) setSelectedKey('');
+      await refreshDirectory({ channelId });
+    } catch (error) {
+      if (activeChannelRef.current === channelId) setFilesError(errorText(error));
+      throw error;
+    } finally {
+      if (activeChannelRef.current === channelId) setFilesBusy(false);
+    }
+  }, [activeChannelId, activeChannelRef, refreshDirectory, runFileOperation]);
   const downloadFile = useCallback(async (entry) => {
     if (!activeChannelId || !entry?.resourceId) return;
     const blob = await runFileOperation({ channelId: activeChannelId, access: 'read' }, async (operation) => {
@@ -501,12 +680,21 @@ export function useAttachmentTransactions({
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }, [activeChannelId, runFileOperation]);
 
-  const previewArtifact = useCallback(async (entry, requestedChannelId = activeChannelRef.current) => {
+  const previewArtifact = useCallback(async (entry, requestedChannelId = activeChannelRef.current, historyMode = 'push') => {
     const channelId = String(requestedChannelId || '');
     const resourceId = String(entry?.resourceId || entry?.resource_id || '');
     const descriptor = previewDescriptor(entry);
     const request = beginRequest(previewRequestRef, channelId);
-    setSelectedArtifactState(entry || null);
+    const artifact = entry ? { ...entry, channelId, resourceId } : null;
+    setSelectedKey(entry?.key || '');
+    setSelectedArtifactState(artifact);
+    if (artifact) {
+      rememberRecentFile(artifact, channelId);
+      if (historyMode === 'push') setPreviewStack((current) => {
+        if (samePreview(current.at(-1), artifact)) return [...current.slice(0, -1), artifact];
+        return [...current, artifact].slice(-FILE_PREVIEW_STACK_LIMIT);
+      });
+    }
     publishArtifactPreview(entry ? { ...descriptor, status: 'loading' } : { status: 'idle' });
     if (!entry || !channelId || !resourceId) {
       if (previewRequestRef.current.request === request) {
@@ -515,14 +703,16 @@ export function useAttachmentTransactions({
       finishRequest(previewRequestRef, request);
       return null;
     }
-    if (['markdown', 'text', 'unsupported'].includes(descriptor.kind) && Number(entry.size || 0) > MAX_TEXT_PREVIEW_BYTES) {
+    const declaredLimit = previewLimit(descriptor.kind);
+    if (declaredLimit && Number(entry.size || 0) > declaredLimit) {
       if (previewRequestRef.current.request === request) {
         publishArtifactPreview({
           ...descriptor,
-          status: 'unsupported',
+          status: descriptor.kind === 'unsupported' ? 'unsupported' : 'error',
           reason: descriptor.kind === 'unsupported'
             ? `不支持预览 ${descriptor.mediaType || '未知媒体类型'} 文件`
-            : '文本文件超过 2 MiB 站内预览上限',
+            : previewSizeError(declaredLimit),
+          ...(descriptor.kind === 'unsupported' ? {} : { error: previewSizeError(declaredLimit) }),
         });
       }
       finishRequest(previewRequestRef, request);
@@ -534,14 +724,20 @@ export function useAttachmentTransactions({
         if (!receipt?.ticket) throw new TypeError('服务端没有返回预览凭据');
         const response = await operation.fetch(downloadURL(channelId, receipt.ticket), { credentials: 'include' });
         if (!response.ok) throw new TypeError(`预览读取失败 (${response.status})`);
-        const blob = await response.blob();
         const responseMediaType = response.headers?.get?.('content-type')?.split(';')[0]?.trim() || '';
         const responseDescriptor = responseMediaType
           ? previewDescriptor({ ...entry, mediaType: responseMediaType })
           : descriptor;
         const resolved = descriptor.kind === 'unsupported' ? responseDescriptor : descriptor;
+        const limit = previewLimit(resolved.kind || descriptor.kind);
+        const responseLength = Number(response.headers?.get?.('content-length') || 0);
+        if (limit && responseLength > limit) throw new RangeError(previewSizeError(limit));
+        if (['markdown', 'text'].includes(resolved.kind)) {
+          return { ...resolved, status: 'ready', text: await readBoundedText(response, PREVIEW_LIMITS.text, operation.signal) };
+        }
+        const blob = await response.blob();
         if (resolved.kind === 'unsupported') {
-          if (blob.size > MAX_TEXT_PREVIEW_BYTES) return {
+          if (blob.size > PREVIEW_LIMITS.text) return {
             ...resolved,
             status: 'unsupported',
             reason: `不支持预览 ${resolved.mediaType || '未知媒体类型'} 文件`,
@@ -549,19 +745,13 @@ export function useAttachmentTransactions({
           const text = await sniffText(blob);
           return text === null
             ? { ...resolved, status: 'unsupported', reason: `不支持预览 ${resolved.mediaType || '未知媒体类型'} 文件` }
-            : { ...resolved, kind: 'text', status: 'ready', text };
+            : { ...resolved, kind: 'text', status: 'ready', text, sniffed: true };
         }
-        if (['markdown', 'text'].includes(resolved.kind)) {
-          if (blob.size > MAX_TEXT_PREVIEW_BYTES) return {
-            ...resolved,
-            status: 'unsupported',
-            reason: '文本文件超过 2 MiB 站内预览上限',
-          };
-          return { ...resolved, status: 'ready', text: await blob.text() };
-        }
-        const previewBlob = resolved.kind === 'pdf' && blob.type !== 'application/pdf'
-          ? new Blob([blob], { type: 'application/pdf' })
-          : blob;
+        if (limit && blob.size > limit) throw new RangeError(previewSizeError(limit));
+        const declaredType = String(blob.type || '').toLowerCase();
+        const wantedType = resolved.kind === 'pdf' ? 'application/pdf' : resolved.mediaType;
+        const previewBlob = wantedType && (!declaredType || declaredType === 'application/octet-stream')
+          ? new Blob([blob], { type: wantedType }) : blob;
         return { ...resolved, status: 'ready', url: URL.createObjectURL(previewBlob) };
       });
       if (previewRequestRef.current.request !== request || request.controller.signal.aborted) {
@@ -578,7 +768,29 @@ export function useAttachmentTransactions({
     } finally {
       finishRequest(previewRequestRef, request);
     }
-  }, [activeChannelRef, beginRequest, finishRequest, publishArtifactPreview, runFileOperation]);
+  }, [activeChannelRef, beginRequest, finishRequest, publishArtifactPreview, rememberRecentFile, runFileOperation]);
+
+  const backArtifactPreview = useCallback(() => {
+    const previous = previewStack.at(-2);
+    if (!previous) return false;
+    setPreviewStack((current) => current.slice(0, -1));
+    void previewArtifact(previous, previous.channelId, 'back');
+    return true;
+  }, [previewArtifact, previewStack]);
+
+  const rememberFilesScroll = useCallback((value) => {
+    const next = Math.max(0, Number(value) || 0);
+    setFilesScrollTop(next);
+    const channelId = activeChannelRef.current;
+    if (!channelId) return;
+    const current = fileSessionsRef.current.get(channelId) || {};
+    fileSessionsRef.current.set(channelId, { ...current, scrollTop: next });
+  }, [activeChannelRef]);
+
+  const loadMoreDirectory = useCallback((cursor = filesNext) => {
+    if (!cursor) return Promise.resolve([]);
+    return refreshDirectory({ cursor, append: true });
+  }, [filesNext, refreshDirectory]);
 
   useEffect(() => {
     for (const [key, active] of activeUploadsRef.current) {
@@ -777,10 +989,19 @@ export function useAttachmentTransactions({
     }
   }, [accessRef, activeChannel, committedOwnerRef, currentDraftAttachments, deviceId, directory, drafts, entries, onNotice, ownerFacts, persistDraftAttachments, refreshDevices, sendResource, serverWorldCommittedRef, stripWorld, wireRef]);
 
-  const uploadChannelFiles = useCallback((files, options = {}) => uploadFiles(files, {
-    ...options,
-    associateDraft: false,
-  }), [uploadFiles]);
+  const uploadChannelFiles = useCallback(async (files, options = {}) => {
+    const channelId = activeChannelRef.current;
+    setFilesUploading(true);
+    setFilesError('');
+    try {
+      return await uploadFiles(files, { ...options, associateDraft: false });
+    } catch (error) {
+      if (activeChannelRef.current === channelId) setFilesError(errorText(error));
+      throw error;
+    } finally {
+      if (activeChannelRef.current === channelId) setFilesUploading(false);
+    }
+  }, [activeChannelRef, uploadFiles]);
 
   const uploadComposerAttachments = useCallback((files, options = {}) => uploadFiles(files, {
     ...options,
@@ -799,9 +1020,15 @@ export function useAttachmentTransactions({
     setDeviceId('');
     setDirectory('');
     setEntries([]);
+    setFilesNext('');
     setFilesBusy(false);
+    setFilesUploading(false);
     setFilesError('');
+    setSelectedKey('');
+    setFilesScrollTop(0);
     setSelectedArtifactState(null);
+    setPreviewStack([]);
+    fileSessionsRef.current.clear();
     publishArtifactPreview({ status: 'idle' });
   }, [abortFileOperations, abortRequest, abortUploads, publishArtifactPreview]);
 
@@ -819,6 +1046,8 @@ export function useAttachmentTransactions({
   return {
     attach,
     artifactPreview,
+    backArtifactPreview,
+    canGoBack: previewStack.length > 1,
     clear,
     composerAttachments,
     createDirectory,
@@ -829,14 +1058,21 @@ export function useAttachmentTransactions({
     entries,
     filesBusy,
     filesError,
+    filesNext,
+    filesScrollTop,
+    filesUploading,
+    loadMoreDirectory,
     mutate,
     navigateFiles,
     previewArtifact,
+    recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId),
     refreshDirectory,
+    rememberFilesScroll,
     removeFile,
     reset,
     selectDevice,
     selectedArtifact,
+    selectedKey,
     setSelectedArtifact: selectArtifact,
     uploadChannelFiles,
     uploadComposerAttachments,
