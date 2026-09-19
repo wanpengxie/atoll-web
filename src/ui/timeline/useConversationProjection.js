@@ -340,11 +340,13 @@ function useProjectionReadingOwner({
     const presentationRevision = Number(historyStatus.presentationRevision || 0);
     const authorityRevision = Number(historyStatus.notificationAuthorityRevision || 0);
     const sourceRevision = Number(snapshot.sourceRevision || 0);
-    const caughtUp = session.mode === READING_MODE.following
+    const following = session.mode === READING_MODE.following;
+    const atTail = evidence.atTail === true;
+    const surfaceReady = evidence.surfaceVisible === true && documentVisible === true;
+    const caughtUp = following
       && evidence.activationID === controller.activationID
-      && evidence.atTail === true
-      && evidence.surfaceVisible === true
-      && documentVisible === true;
+      && atTail
+      && surfaceReady;
     const current = caughtUp
       && historyStatus.attached === true
       && historyStatus.messageCurrent === true
@@ -361,6 +363,18 @@ function useProjectionReadingOwner({
       channelId: channelID,
       viewKey,
       activationID: controller.activationID,
+      authority: historyStatus.authority,
+      owner: Object.freeze({
+        channelId: channelID,
+        viewKey,
+        activationID: controller.activationID,
+        generation,
+      }),
+      captured: Object.freeze({
+        presentationRevision: Number(evidence.presentationRevision || 0),
+        sourceRevision: Number(evidence.sourceRevision || 0),
+        installedHighSeq: Number(evidence.installedHighSeq || 0),
+      }),
       caughtUp,
       scope,
       actorFiltered: actorFilterCount > 0,
@@ -371,9 +385,9 @@ function useProjectionReadingOwner({
       sourceRevision: Number(evidence.sourceRevision || 0),
       presentationRevision: Number(evidence.presentationRevision || 0),
       installedHighSeq: Number(evidence.installedHighSeq || 0),
-      atTail: caughtUp,
-      following: session.mode === READING_MODE.following,
-      surfaceVisible: caughtUp,
+      atTail,
+      following,
+      surfaceVisible: surfaceReady,
       physicalSeq: current && scope === 'all' && actorFilterCount === 0
         ? evidence.installedHighSeq
         : 0,
@@ -381,7 +395,7 @@ function useProjectionReadingOwner({
       // claim that filtered-out bodies were physically read. A current
       // semantic tail may therefore confirm the frozen channel head while its
       // physical cursor remains zero.
-      boundary: current ? headSeq : 0,
+      boundary: current ? evidence.installedHighSeq : 0,
     });
   }, [
     channelID, controller, documentVisible, historyStatus.attached, historyStatus.generation,
@@ -679,18 +693,46 @@ export function useConversationProjection({
     presentation: projection.presentation,
     presentationOwner: presentationRef.current,
   });
+  const tailReceiptRef = useRef(viewport.tailCaughtUp);
+  const tailCallbackRef = useRef(onTailCaughtUp);
+  useLayoutEffect(() => {
+    tailCallbackRef.current = onTailCaughtUp;
+  }, [onTailCaughtUp]);
   useLayoutEffect(() => {
     if (typeof onTailCaughtUp !== 'function') return undefined;
-    onTailCaughtUp(viewport.tailCaughtUp);
-    return () => onTailCaughtUp(Object.freeze({
-      ...viewport.tailCaughtUp,
+    const previous = tailReceiptRef.current;
+    const next = viewport.tailCaughtUp;
+    tailReceiptRef.current = next;
+    if (next.caughtUp === true) {
+      onTailCaughtUp(next);
+    } else if (previous?.caughtUp === true
+      && (next.following !== true || next.atTail !== true || next.surfaceVisible !== true)) {
+      // A stale status/head render while following keeps the observation
+      // lease alive until the next DOM sample. Retract only after the
+      // committed reader leaves its physical visible tail.
+      onTailCaughtUp(Object.freeze({
+        ...next,
+        caughtUp: false,
+        physicalSeq: 0,
+        boundary: 0,
+        cause: '',
+      }));
+    }
+    return undefined;
+  }, [onTailCaughtUp, viewport.tailCaughtUp]);
+  useLayoutEffect(() => () => {
+    const receipt = tailReceiptRef.current;
+    if (receipt?.caughtUp !== true || typeof tailCallbackRef.current !== 'function') return;
+    tailCallbackRef.current(Object.freeze({
+      ...receipt,
       caughtUp: false,
       atTail: false,
       surfaceVisible: false,
       physicalSeq: 0,
       boundary: 0,
+      cause: '',
     }));
-  }, [onTailCaughtUp, viewport.tailCaughtUp]);
+  }, [state.channelId, controller.activationID, messageListKey]);
   const latestRowID = viewport.presentationAuthority?.candidateID || '';
   useColdEntryDiagnostics({
     channelId: state.channelId,

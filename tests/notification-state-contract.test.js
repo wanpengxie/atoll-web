@@ -61,9 +61,60 @@ function relatedRequest(channelId, id, selfId) {
   };
 }
 
+function confirmationFor(channelId, status, boundary, overrides = {}) {
+  return {
+    authority: status.authority,
+    owner: {
+      channelId,
+      viewKey: `${channelId}:conversation`,
+      activationID: 'activation-1',
+      generation: status.generation,
+      authorityRevision: status.notificationAuthorityRevision,
+    },
+    captured: {
+      presentationRevision: Number(status.presentationRevision || 0),
+      sourceRevision: Number(status.presentationRevision || 0),
+      installedHighSeq: boundary,
+    },
+    generation: status.generation,
+    authorityRevision: status.notificationAuthorityRevision,
+    caughtUp: true,
+    atTail: true,
+    following: true,
+    surfaceVisible: true,
+    cause: 'presented-follow',
+    boundary,
+    ...overrides,
+  };
+}
+
 describe('notification confirmation contract', () => {
+  it('rejects the retired flat receipt and any mutable-boundary substitution', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
+    const status = feed.historyFor(channelId);
+    expect(feed.acknowledgeNotifications(channelId, {
+      channelId,
+      generation: status.generation,
+      authorityRevision: status.notificationAuthorityRevision,
+      cause: 'presented-follow',
+      boundary: 1,
+    })).toBe(false);
+    const receipt = confirmationFor(channelId, status, 1);
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      captured: { ...receipt.captured, installedHighSeq: 1 },
+      boundary: 2,
+    })).toBe(false);
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      authorityRevision: receipt.authorityRevision + 1,
+    })).toBe(false);
+  });
+
   it('commits a frozen backlog boundary after the mutable head advances', async () => {
-    const { runtime, channelId, selfId, boot } = await readyRuntime();
+    const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
     const firstStatus = feed.historyFor(channelId);
@@ -71,20 +122,32 @@ describe('notification confirmation contract', () => {
     // A later arrival must not make the already-issued boundary invalid or
     // cause it to float to the later head.
     feed.enqueue({ ...relatedRequest(channelId, 'approval-2', selfId), seq: 2 });
-    const confirmation = {
-      authority: { principalId: selfId, serverBoot: boot, channelId },
-      owner: {
-        viewKey: `${channelId}:conversation`,
-        activationID: 'activation-1',
-        generation: firstStatus.generation,
-      },
-      captured: { presentationRevision: 1, sourceRevision: 1 },
-      cause: 'tail-backlog',
-      boundary: 1,
-    };
+    const confirmation = confirmationFor(channelId, firstStatus, 1, { cause: 'tail-backlog' });
     expect(feed.acknowledgeNotifications(confirmation)).toBe(1);
+    expect(feed.markRead(channelId, { ...confirmation, physicalSeq: 1 })).toBe(1);
     expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 1, total: 1 });
     expect(feed.acknowledgeNotifications(confirmation)).toBe(1);
+  });
+
+  it('holds a following observation lease without persisting an unpresented live row', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
+    const first = feed.historyFor(channelId);
+    const receipt = confirmationFor(channelId, first, 1);
+    expect(feed.acknowledgeNotifications(receipt)).toBe(1);
+    feed.enqueue({ ...relatedRequest(channelId, 'approval-2', selfId), seq: 2 });
+    expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 0, total: 0 });
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      caughtUp: false,
+      atTail: false,
+      surfaceVisible: false,
+      boundary: 0,
+      captured: { ...receipt.captured, installedHighSeq: 1 },
+      cause: '',
+    })).toBe(false);
+    expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 1, total: 1 });
   });
 
   it('restores channel high-water without allowing cache/grant hydration to resurrect it', async () => {
@@ -100,13 +163,7 @@ describe('notification confirmation contract', () => {
     const firstFeed = first.getSnapshot();
     firstFeed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
     const status = firstFeed.historyFor(channelId);
-    expect(firstFeed.acknowledgeNotifications(channelId, {
-      channelId,
-      generation: status.generation,
-      authorityRevision: status.notificationAuthorityRevision,
-      cause: 'presented-follow',
-      boundary: 1,
-    })).toBe(1);
+    expect(firstFeed.acknowledgeNotifications(channelId, confirmationFor(channelId, status, 1))).toBe(1);
 
     const second = createChannelFeedRuntime(runtimeOptions(selfId));
     second.mount();
@@ -125,13 +182,7 @@ describe('notification confirmation contract', () => {
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'approval-world-1', selfId), seq: 1 });
     const status = feed.historyFor(channelId);
-    expect(feed.acknowledgeNotifications(channelId, {
-      channelId,
-      generation: status.generation,
-      authorityRevision: status.notificationAuthorityRevision,
-      cause: 'presented-follow',
-      boundary: 1,
-    })).toBe(1);
+    expect(feed.acknowledgeNotifications(channelId, confirmationFor(channelId, status, 1))).toBe(1);
     const authorityKey = (value) => `atoll.feed-cursors.v1.${selfId}\u0000${value}`;
     expect(localStorage.getItem(authorityKey(boot))).not.toBeNull();
 
