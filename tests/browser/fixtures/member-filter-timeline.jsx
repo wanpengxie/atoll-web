@@ -37,19 +37,19 @@ for (let seq = 1; seq <= 48; seq += 1) {
     visibility: 'system',
     sender: { id: 'system:opaque:1', kind: 'system' },
     audience: [],
-    payload: { member: `opaque-${seq}` },
+    payload: { body: { member: `opaque-${seq}` } },
   });
 }
 append(49, {
   id: 'ask-claude', kind: 'request', type: 'agent.ask',
   sender: { id: historicalSelf, kind: 'human' }, audience: [claude],
-  correlation_id: 'ask-claude', payload: { text: '历史 Claude 问题' },
+  correlation_id: 'ask-claude', payload: { body: { text: '历史 Claude 问题' } },
 });
 append(50, {
   id: 'done-claude', kind: 'response', type: 'agent.ask',
   sender: { id: claude, kind: 'agent' }, audience: [historicalSelf],
   parent_id: 'ask-claude', correlation_id: 'ask-claude',
-  payload: { status: 'completed', text: '历史 Claude 回答' },
+  payload: { body: { status: 'completed', text: '历史 Claude 回答' } },
 });
 
 const viewSessions = createViewSessionStore({ principalID: 'member-filter-browser' });

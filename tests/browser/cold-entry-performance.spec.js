@@ -27,7 +27,7 @@ async function hasCachedEnvelopeText(page, channelId, text) {
       const rows = transaction.objectStore('rows').getAll(IDBKeyRange.bound(
         [id, 0], [id, Number.MAX_SAFE_INTEGER],
       ));
-      rows.onsuccess = () => resolve(rows.result.some((row) => row.envelope?.payload?.text === expected));
+      rows.onsuccess = () => resolve(rows.result.some((row) => row.envelope?.payload?.body?.text === expected));
       rows.onerror = () => reject(rows.error);
     });
   }, { id: channelId, expected: text });

@@ -42,12 +42,12 @@ function appendTurn(requestID, requestSeq, responseSeq, agentID, marker) {
   apply(state, { channel_id: channelID, seq: requestSeq, envelope: {
     id: requestID, kind: 'request', type: 'agent.ask', ts: requestSeq,
     sender: { id: self, kind: 'human' }, audience: [agentID], visibility: 'public',
-    payload: { text: `${marker} question` },
+    payload: { body: { text: `${marker} question` } },
   } });
   apply(state, { channel_id: channelID, seq: responseSeq, envelope: {
     id: `${requestID}-done`, parent_id: requestID, kind: 'response', type: 'agent.ask', ts: responseSeq,
     sender: { id: agentID, kind: 'agent' }, audience: [self], visibility: 'public',
-    payload: { status: 'completed', text: longText(marker) },
+    payload: { body: { status: 'completed', text: longText(marker) } },
   } });
 }
 

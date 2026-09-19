@@ -12,7 +12,7 @@ test('F7 IndexedDB cache keeps the newest bounded tail and recovers from quota p
       type: 'human.note',
       sender: { kind: 'human', id: 'human:root:1' },
       visibility: 'public',
-      payload: { text: `message ${seq}`, token: `secret-${seq}` },
+      payload: { body: { text: `message ${seq}`, token: `secret-${seq}` } },
     });
 
     const cache = createFeedCache(options);
@@ -47,7 +47,7 @@ test('F7 IndexedDB cache keeps the newest bounded tail and recovers from quota p
     return {
       failed,
       seqs: [...rows.keys()],
-      token: rows.get(15)?.payload?.token,
+      token: rows.get(15)?.payload?.body?.token,
     };
   });
 

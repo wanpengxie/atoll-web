@@ -21,7 +21,7 @@ function envelope(id, kind, payload, parentId = '') {
     sender: kind === 'request' ? { kind: 'human', id: 'me' } : { kind: 'agent', id: 'agent' },
     audience: kind === 'request' ? ['agent'] : ['me'],
     visibility: 'public',
-    payload,
+    payload: { body: payload },
   };
 }
 

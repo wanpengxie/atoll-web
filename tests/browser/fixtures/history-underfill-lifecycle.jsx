@@ -21,7 +21,7 @@ apply(state, {
     visibility: 'public',
     sender: { id: 'system:channel:1', kind: 'system' },
     audience: [],
-    payload: { event: 'closed' },
+    payload: { body: { event: 'closed' } },
   },
 }, '');
 

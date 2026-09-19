@@ -37,7 +37,7 @@ apply(state, { channel_id: channelID, seq: 1, envelope: {
   sender: { id: self, kind: 'human' },
   audience: [agent],
   visibility: 'public',
-  payload: { text: 'write the answer' },
+  payload: { body: { text: 'write the answer' } },
 } });
 apply(state, { channel_id: channelID, seq: 2, envelope: {
   id: 'stage-text-1',
@@ -48,7 +48,7 @@ apply(state, { channel_id: channelID, seq: 2, envelope: {
   sender: { id: agent, kind: 'agent' },
   audience: [self],
   visibility: 'public',
-  payload: { status: 'processing', process: { kind: 'stage', stage: 'text', text: stageText } },
+  payload: { body: { status: 'processing', process: { kind: 'stage', stage: 'text', text: stageText } } },
 } });
 
 function paint() {
@@ -116,7 +116,7 @@ window.answerSlot = {
       sender: { id: agent, kind: 'agent' },
       audience: [self],
       visibility: 'public',
-      payload: { status: 'processing', process: { kind: 'stage', stage: 'text', text: secondStageText } },
+      payload: { body: { status: 'processing', process: { kind: 'stage', stage: 'text', text: secondStageText } } },
     } });
     paint();
   },
@@ -135,7 +135,7 @@ window.answerSlot = {
       sender: { id: agent, kind: 'agent' },
       audience: [self],
       visibility: 'public',
-      payload: { status: 'completed', text },
+      payload: { body: { status: 'completed', text } },
     } });
     paint();
   },

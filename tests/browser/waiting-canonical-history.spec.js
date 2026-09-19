@@ -46,11 +46,11 @@ async function canonicalSnapshot(page) {
           requestSeq: Number(turn?.requestSeq || 0),
           provisional: (turn?.provisional || []).map((item) => ({
             seq: Number(item.seq || 0),
-            status: String(item.status || item.envelope?.payload?.status || ''),
+            status: String(item.status || item.envelope?.payload?.body?.status || ''),
           })),
           latestStatus: String(turn?.latestStatus || ''),
           terminalSeq: Number(turn?.terminalSeq || 0),
-          terminalStatus: String(turn?.terminal?.payload?.status || ''),
+          terminalStatus: String(turn?.terminal?.payload?.body?.status || ''),
         };
       }),
     };
@@ -84,7 +84,7 @@ test('completed root-safe history pages never add canonical Waiting turns', asyn
         id: String(frame.payload.envelope?.id || ''),
         parentId: String(frame.payload.envelope?.parent_id || ''),
         kind: String(frame.payload.envelope?.kind || ''),
-        status: String(frame.payload.envelope?.payload?.status || ''),
+        status: String(frame.payload.envelope?.payload?.body?.status || ''),
       });
     } else if (frame.frame_type === 'page_end') {
       decodedPages.push({ pageEnd: frame.payload, rows });
