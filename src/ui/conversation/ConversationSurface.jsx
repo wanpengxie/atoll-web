@@ -17,7 +17,7 @@ import {
 import { ReadingIntentProvider } from './ReadingIntentContext.jsx';
 
 const EMPTY_CAPABILITY_INDEX = new Map();
-const SHOW_CHANNEL_NARRATION = false;
+const SHOW_CHANNEL_NARRATION = true;
 
 /**
  * The stable shell-facing conversation port.
@@ -205,6 +205,22 @@ export function ConversationSurface({
     },
   }), [state.channelId, viewport]);
   const presentationEmpty = projection.presentation.rows.length === 0 && queuedTurns.length === 0;
+  const filteredEntries = projection.filtered || [];
+  const channelEntries = projection.allEntries || filteredEntries;
+  const localEchoEntries = projection.localEchoes || [];
+  const conversationEmpty = filteredEntries.length === 0
+    && localEchoEntries.length === 0
+    && queuedTurns.length === 0;
+  const hasChannelNarration = Boolean(state.narration?.length);
+  const emptyFeedbackKind = !conversationEmpty
+    ? ''
+    : channelEntries.length === 0
+      ? hasChannelNarration ? '' : 'channel'
+      : actorFilterApplies && actorFilter.size > 0
+        ? 'actor-filter'
+        : projectionScope === CONVERSATION_SCOPE.mine ? 'mine' : '';
+  const emptyFeedbackSettled = viewport.availability === 'empty-known'
+    || viewport.historyBoundary?.kind === 'exhausted';
   const surfaceClass = ['conversation-surface', className].filter(Boolean).join(' ');
 
   return <ReadingIntentProvider value={readingIntent}>
@@ -219,42 +235,75 @@ export function ConversationSurface({
                 aria-labelledby="workspace-tab-dynamic"
                 data-viewport-mode={viewport.session.mode}
               >
-                {selfId && <div className="timeline-scope-bar">
-                  <div className="timeline-scope" role="group" aria-label="动态范围">
-                    <button type="button" onClick={toggleScope}>{scope === CONVERSATION_SCOPE.mine ? '与我相关' : '全部'}</button>
-                    {actorFilterApplies && filterableAgents.map((actor) => <button
-                      type="button"
-                      key={actor.id}
-                      className={actorFilter.has(actor.id) ? 'is-on' : ''}
-                      aria-pressed={actorFilter.has(actor.id)}
-                      onClick={() => {
-                        if (agentActivity?.agents?.[actor.id]?.state === 'settled') onAcknowledgeAgentActivity?.(actor.id);
-                        toggleActorFilter(actor.id);
-                      }}
-                    >{names.get(actor.id) || actor.id}</button>)}
-                    {staleActorFilters.map((actorID) => <button
-                      type="button"
-                      key={actorID}
-                      className="is-on is-stale"
-                      onClick={() => removeActorFilter(actorID)}
-                    >已失效 · {actorID}</button>)}
-                  </div>
-                </div>}
-                {presentationEmpty && viewport.availability === 'empty-known' && <div className="empty-ledger">
-                  <span>#</span><h2>这本账还没有可见条目</h2><p>从下方编辑器开始一段往来。</p>
-                </div>}
-                {presentationEmpty && ['syncing', 'unknown', 'partial'].includes(viewport.availability) && <div className="timeline-history-status" role="status">正在准备频道内容…</div>}
-                {viewport.availability === 'error' && <div className="timeline-history-status timeline-history-demand" role="alert">
-                  <span>{viewport.availabilityError || '确认频道内容失败'}</span>
-                  <button type="button" onClick={viewport.retryAvailability}>重试</button>
-                </div>}
-                {viewport.historyDemand?.phase !== 'idle' && !presentationEmpty && <div
-                  className="timeline-history-status timeline-history-demand"
-                  data-phase={viewport.historyDemand.phase}
-                  role={viewport.historyDemand.phase === 'error' ? 'alert' : 'status'}
-                >{viewport.historyDemand.phase === 'error'
-                    ? <><span>{viewport.historyDemand.error || '读取更早动态失败'}</span><button type="button" onClick={viewport.retryHistoryDemand}>重试</button></>
-                    : '正在读取更早动态…'}</div>}
+                <div className={`timeline-inner${emptyFeedbackKind ? '' : ' timeline-controls-overlay'}`}>
+                  {selfId && channelEntries.length > 0 && <div className="timeline-scope-bar">
+                    <div className="timeline-scope" role="group" aria-label="动态范围">
+                      <button
+                        type="button"
+                        aria-pressed={scope === CONVERSATION_SCOPE.mine}
+                        title={scope === CONVERSATION_SCOPE.mine ? '切换为全部动态' : '切换为与我相关'}
+                        onClick={toggleScope}
+                      >{scope === CONVERSATION_SCOPE.mine ? '与我相关' : '全部'}</button>
+                      {actorFilterApplies && (filterableAgents.length > 0 || staleActorFilters.length > 0) && <div
+                        className="timeline-actor-filter"
+                        role="group"
+                        aria-label="按成员过滤"
+                      >
+                        {filterableAgents.map((actor) => {
+                          const on = actorFilter.has(actor.id);
+                          const activityState = agentActivity?.agents?.[actor.id]?.state || '';
+                          const actorName = names.get(actor.id) || actor.id;
+                          return <button
+                            type="button"
+                            key={actor.id}
+                            className={[on && 'is-on', activityState && `activity-${activityState}`].filter(Boolean).join(' ')}
+                            aria-pressed={on}
+                            title={activityState === 'active'
+                              ? `${actorName} 正在运行`
+                              : activityState === 'settled'
+                                ? `${actorName} 已完成，点击确认`
+                                : on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
+                            onClick={() => {
+                              if (activityState === 'settled') onAcknowledgeAgentActivity?.(actor.id);
+                              toggleActorFilter(actor.id);
+                            }}
+                          >{activityState && <i className="agent-activity-dot" aria-hidden="true" />}{actorName}</button>;
+                        })}
+                        {staleActorFilters.map((actorID) => <button
+                          type="button"
+                          key={actorID}
+                          className="is-on is-stale"
+                          aria-pressed="true"
+                          onClick={() => removeActorFilter(actorID)}
+                        >已失效 · {actorID}</button>)}
+                      </div>}
+                    </div>
+                  </div>}
+                  {emptyFeedbackKind && emptyFeedbackSettled && <div className="empty-ledger">
+                    <span>{emptyFeedbackKind === 'channel' ? '#' : '@'}</span>
+                    {emptyFeedbackKind === 'channel'
+                      ? <><h2>这本账还没有可见条目</h2><p>从下方编辑器开始一段往来。</p></>
+                      : emptyFeedbackKind === 'actor-filter'
+                        ? <><h2>已扫描到频道开头，没有符合当前成员筛选的往来</h2><p>这不表示频道为空；移除成员筛选可查看当前范围。</p></>
+                        : <><h2>这个频道里还没有与你相关的往来</h2><p>切回「全部」可以看到频道里其他人的动态。</p></>}
+                  </div>}
+                  {emptyFeedbackKind && emptyFeedbackKind !== 'channel' && !emptyFeedbackSettled && <div
+                    className="empty-ledger"
+                    data-scope-state="partial"
+                  ><span>@</span><h2>正在查找符合筛选的往来…</h2><p>会继续读取更早内容，找到后自动显示。</p></div>}
+                  {emptyFeedbackKind === 'channel' && !emptyFeedbackSettled && <div className="timeline-history-status" role="status">正在准备频道内容…</div>}
+                  {viewport.availability === 'error' && <div className="timeline-history-status timeline-history-demand" role="alert">
+                    <span>{viewport.availabilityError || '确认频道内容失败'}</span>
+                    <button type="button" onClick={viewport.retryAvailability}>重试</button>
+                  </div>}
+                  {viewport.historyDemand?.phase !== 'idle' && !presentationEmpty && <div
+                    className="timeline-history-status timeline-history-demand"
+                    data-phase={viewport.historyDemand.phase}
+                    role={viewport.historyDemand.phase === 'error' ? 'alert' : 'status'}
+                  >{viewport.historyDemand.phase === 'error'
+                      ? <><span>{viewport.historyDemand.error || '读取更早动态失败'}</span><button type="button" onClick={viewport.retryHistoryDemand}>重试</button></>
+                      : '正在读取更早动态…'}</div>}
+                </div>
                 <ReadingContainerHandoff
                   key={state.channelId}
                   snapshot={projection.presentation}
