@@ -1659,7 +1659,7 @@ function StandaloneMessageList(props) {
     reading={props.reading}
     stackRef={stackRef}
     visibleRole="browsing"
-  ><div ref={stackRef}><ControlledMessageList {...props} /></div></ReadingNavigationOwner>;
+  ><div ref={stackRef} className="timeline-reading-stack"><ControlledMessageList {...props} /></div></ReadingNavigationOwner>;
 }
 
 function ControlledMessageList(props) {
