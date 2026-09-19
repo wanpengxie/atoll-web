@@ -110,7 +110,7 @@ describe('编辑锁生命周期（useWaitingEditingController 直接 renderHook�
     }));
   });
 
-  it('【缺陷】ends editing without releasing a newer interrupt that superseded its hold——同上，新 hook 也不监视 interrupt supersede', async () => {
+  it('[AD-032] ends editing without releasing a newer interrupt that superseded its hold', async () => {
     const queuedTurn = turn({ requestId: 'queued', actorId: 'agent', type: 'agent.ask', requestSeq: 1, provisional: [queuedFrame('queued')] });
     let state = stateOf([queuedTurn]);
     const onComposerEditChange = vi.fn();
@@ -125,9 +125,11 @@ describe('编辑锁生命周期（useWaitingEditingController 直接 renderHook�
     const interruptTurn = turn({ requestId: 'stop', actorId: 'agent', type: 'agent.interrupt', requestSeq: 2, terminal: completedTerminal({ requestId: 'stop', type: 'agent.interrupt' }) });
     state = stateOf([queuedTurn, interruptTurn]);
     rerender({ state, pending: [], capabilityIndex: CAP, onRequestCapability: vi.fn(), onTaskControl, onComposerEditChange });
-    // 期望（旧行为）：编辑会话结束（不主动 unhold，因为 interrupt 已经把它顶掉了），
-    // 提示含"另一项控制"；实际：编辑会话原样保留，onTaskControl 不会被再次调用。
+    // interrupt 是更强的公开控制事实：编辑会话结束，不主动 unhold，
+    // 并提示用户由另一项控制接管，避免旧 hold 与 interrupt 竞争。
     expect(result.current.presentationEditing).toBeNull();
+    expect(result.current.editNotice).toContain('另一项控制');
+    expect(onTaskControl.mock.calls.some(([value]) => value.type === 'agent.unhold')).toBe(false);
   });
 
   it('releases a late hold receipt after the editor is unmounted', async () => {
@@ -168,7 +170,7 @@ describe('编辑锁生命周期（useWaitingEditingController 直接 renderHook�
     expect(onTaskControlB.mock.calls.some(([value]) => value.type === 'agent.unhold')).toBe(false);
   });
 
-  it('【缺陷】routes context and replacement through the callback that owns the edit hold, using the latest committed turn——release/save 用起锁那一刻的旧 state，不追新', async () => {
+  it('[AD-038] routes replacement through the latest committed callback and turn', async () => {
     const queuedTurn = turn({ requestId: 'queued', actorId: 'agent', type: 'agent.ask', requestSeq: 1, provisional: [queuedFrame('queued')] });
     let state = stateOf([queuedTurn]);
     const onTaskControlA = vi.fn(async ({ type }) => type === 'agent.hold' ? 'hold-a' : `${type}-a`);
@@ -193,9 +195,13 @@ describe('编辑锁生命周期（useWaitingEditingController 直接 renderHook�
       return session.onSave('updated text');
     })();
     expect(saved).toBe(true);
-    // 期望（旧行为）：save 用最新提交的 onTaskControlB，turn 参数是 latestQueuedTurn；
-    // 实际：仍然用起锁时 frozen 的 onTaskControlA 和起锁时的旧 turn 引用。
+    // 用户能力：保存必须走最新 committed callback/target；释放则保留原
+    // hold owner，但携带最新 committed target，不得把候选渲染或旧账本带进操作。
     expect(onTaskControlB).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent.replace', turn: latestQueuedTurn }));
+    expect(onTaskControlA.mock.calls.some(([value]) => value.type === 'agent.replace')).toBe(false);
+    expect(onTaskControlA).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'agent.unhold', turn: latestQueuedTurn, payload: { expected_hold_id: 'hold-a' },
+    }));
   });
 });
 

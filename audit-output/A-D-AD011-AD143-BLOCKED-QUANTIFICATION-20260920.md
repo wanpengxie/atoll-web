@@ -9,7 +9,8 @@ AD-138–141); the first P1 composed-interaction fixture batch has now fixed the
 public-owner fixes for AD-014 and AD-017, so 105 rows remain blocked.
 The subsequent Waiting-owner regression packet also closes AD-018 and AD-021;
 the same-owner follow-up closes AD-022 and AD-031 as well; these were
-REGRESSION rows, not part of the 105 BLOCKED count.
+REGRESSION rows, not part of the 105 BLOCKED count. The next pair closes
+AD-032 and AD-038 under the same owner, also without changing BLOCKED count.
 AD-316 remains an explicit blocked reproduction because the current
 `SpaceDevices` owner submits but does not refresh its authoritative projection.
 No row is obsolete, deleted, or skipped.

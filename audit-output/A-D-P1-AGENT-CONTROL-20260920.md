@@ -1,10 +1,11 @@
-# A–D P1 composed interaction fixture batch: AD-014 / AD-017 / AD-018 / AD-021 / AD-022 / AD-031 (2026-09-20)
+# A–D P1 composed interaction fixture batch: AD-014 / AD-017 / AD-018 / AD-021 / AD-022 / AD-031 / AD-032 / AD-038 (2026-09-20)
 
-This batch recovers six P1 Waiting-owner cases through the current public
+This batch recovers eight P1 Waiting-owner cases through the current public
 Waiting composition. The fixtures retain the baseline user capability, causal
 state transition, and observable result. They do not import private helpers,
-change Feed/runtime product code, delete declarations, or add skips. The four
-Waiting lifecycle gaps plus two information-architecture cases are fixed in the existing Waiting/edit owner and are
+change Feed/runtime product code, delete declarations, or add skips. The six
+Waiting lifecycle gaps plus two information-architecture cases are fixed in the
+existing Waiting/edit owner and are
 green `PASS` entries in the A–D ledger.
 
 ## Case matrix
@@ -17,6 +18,8 @@ green `PASS` entries in the A–D ledger.
 | AD-021 | Clear an edit hold when its held target truly resumes after a paused stretch. | Only a core status transition to processing advances the target; repeated processing business progress from another already-running turn must not release the hold. | Exported `WaitingLayer`; render first processing → matching `queued+resumed(held_by)` → second processing and inspect `.agent-wait-paused`, with AD-020 as the unrelated-progress control. | **PASS:** the resumed target clears the hold; `tool.started` plus repeated processing leaves an unrelated hold intact. |
 | AD-022 | Hide cached queued controls until the backend control tail is current. | Cache-only queued facts must not resurrect waiting chrome/actions while `targetAuthority.current` is false; recovery restores the same public view. | Exported `WaitingLayer`; render a queued row with false authority, assert no waiting layer, then rerender with current authority and assert the layer returns. | **PASS:** false authority hides the cache-only row; current authority restores it. |
 | AD-031 | Exit editing when the target reaches a cancellation terminal. | A target cancellation closes the Composer and releases only the exact edit hold owned by that session. | Exported `useWaitingEditingController`; start editing through the public hook, rerender the cancelled target, inspect `presentationEditing/editNotice`, and observe the exact-hold unhold callback. | **PASS:** session closes, `已退出编辑` is shown, and the captured owner sends `agent.unhold(expected_hold_id)`. |
+| AD-032 | Exit editing when a newer interrupt supersedes the edit hold. | Interrupt is a stronger control fact; the Composer must close without sending a stale unhold that would fight interrupt ownership. | Exported `useWaitingEditingController`; start editing, rerender a later completed `agent.interrupt`, inspect `presentationEditing/editNotice`, and inspect control calls. | **PASS:** session closes with `另一项控制已接管编辑`; no `agent.unhold` is sent. |
+| AD-038 | Save through the latest committed callback and target while retaining the original hold owner for release. | Committed callback/state ownership is split: replace follows the latest committed render, unhold remains bound to the hold owner. | Exported `useWaitingEditingController`; start with callback A, commit callback B plus a fresh target turn, invoke the public Composer `onSave`, and inspect both callback logs. | **PASS:** callback B receives `agent.replace` with the latest turn; callback A receives no replace. |
 
 ## Public-composition audit
 
@@ -28,13 +31,15 @@ the production composition supplies: `useWaitingEditingController` filters
 `TimelineRowRenderer` → `useWaitingEditingController` → `WaitingLayer`, using
 the exported Composer edit callback port and no mocked private helper.
 
-AD-017, AD-018/021, and AD-022 direct `WaitingLayer` fixtures remain valid: production supplies the
+AD-017, AD-018/021/022 direct `WaitingLayer` fixtures remain valid: production supplies the
 queued target plus the complete public channel state, and the assertion observes
 only the rendered pause affordance. AD-021 uses the public `queued+resumed` handoff
 fact from the baseline, while the owner derives core-vs-business status without
 exporting its reducer. The private `heldActors` reducer is not imported or mocked.
 AD-031 uses the exported hook's public edit port; it does not import the private
 session-owner map or any legacy edit admission helper.
+AD-032 and AD-038 likewise exercise exported hook state/callback ports; their
+tests keep interrupt supersession and latest-commit ownership as separate cases.
 
 ## Focused verification
 
@@ -85,6 +90,21 @@ Tests       2 passed | 14 skipped
   control tail becomes current.
 - AD-031 proves cancellation closes the editing session, emits the user notice,
   and sends the captured exact-hold release.
+
+```text
+npx vitest run tests/agent-information-architecture.test.jsx --reporter=verbose -t '\[AD-(032|038)\]'
+```
+
+Observed on 2026-09-20:
+
+```text
+Test Files  1 passed
+Tests       2 passed | 14 skipped
+```
+
+- AD-032 proves a later interrupt closes editing without a stale unhold.
+- AD-038 proves save uses the latest committed callback/turn while release
+  ownership remains separate.
 
 The earlier red results were direct public-owner evidence. The product fix is
 limited to the existing Waiting/edit owner; no Workspace, Reading, Outbox, or

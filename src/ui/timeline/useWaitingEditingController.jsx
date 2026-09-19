@@ -133,6 +133,19 @@ function allTimelineTurns(state) {
   return turns;
 }
 
+function timelineMaxSeq(state) {
+  let max = 0;
+  const observe = (value) => {
+    const seq = Number(value);
+    if (Number.isFinite(seq)) max = Math.max(max, seq);
+  };
+  for (const turn of allTimelineTurns(state)) {
+    observe(turn.requestSeq);
+    observe(turn.terminalSeq);
+  }
+  return max;
+}
+
 function terminalCompleted(turn) {
   // A compact terminal closure retains status/identity only.  Its business
   // result is intentionally unavailable, so it cannot authoritatively prove
@@ -640,6 +653,8 @@ export function useWaitingEditingController({
   const [editing, setEditing] = useState(null);
   const editingRef = useRef(null);
   const sessionOwnersRef = useRef(new Map());
+  const sessionLatestOwnersRef = useRef(new Map());
+  const sessionStartSeqRef = useRef(new Map());
   const releasePendingRef = useRef(new Set());
   const releaseAcceptedRef = useRef(new Set());
   const releaseInFlightRef = useRef(new Map());
@@ -666,6 +681,11 @@ export function useWaitingEditingController({
     setEditing(null);
     void release(editing).catch(() => {});
   }, [editing?.channelId, state.channelId]);
+  useLayoutEffect(() => {
+    const session = editingRef.current;
+    if (!session?.sessionId) return;
+    sessionLatestOwnersRef.current.set(session.sessionId, { state, onTaskControl });
+  }, [editing?.sessionId, onTaskControl, state]);
   useEffect(() => {
     const session = editingRef.current;
     if (!session || session.phase !== 'waiting_for_resume' || !session.holdId) return;
@@ -694,6 +714,26 @@ export function useWaitingEditingController({
       setEditNotice(`已退出编辑：${error?.message || String(error)}`);
     });
   }, [controlVersion, editing?.holdId, editing?.sessionId, state]);
+  useEffect(() => {
+    const session = editingRef.current;
+    if (!session?.holdId) return;
+    const startSeq = sessionStartSeqRef.current.get(session.sessionId) || 0;
+    const superseded = allTimelineTurns(state).some((turn) => (
+      actorID(turn) === session.actorId
+      && terminalCompleted(turn)
+      && turn.request?.type === TYPES.agentInterrupt
+      && Number(turn.requestSeq || 0) > startSeq
+    ));
+    if (!superseded) return;
+    // Interrupt is a stronger control fact and owns the freeze now. Close the
+    // Composer without sending a stale unhold that would fight that control.
+    editingRef.current = null;
+    sessionOwnersRef.current.delete(session.sessionId);
+    sessionLatestOwnersRef.current.delete(session.sessionId);
+    sessionStartSeqRef.current.delete(session.sessionId);
+    setEditing((current) => current?.sessionId === session.sessionId ? null : current);
+    setEditNotice('另一项控制已接管编辑');
+  }, [controlVersion, editing?.holdId, editing?.sessionId, state]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
   useEffect(() => {
     if (typeof onRequestCapability !== 'function') throw new TypeError('Waiting 能力 owner 未连接');
@@ -719,9 +759,11 @@ export function useWaitingEditingController({
       return Promise.reject(new Error('编辑锁释放 owner 已失效'));
     }
     releasePendingRef.current.delete(session.sessionId);
+    const latest = sessionLatestOwnersRef.current.get(session.sessionId);
+    const latestTurn = latest ? timelineTurn(latest.state, session.targetId) : null;
     const operation = Promise.resolve(owner.onTaskControl({
       channelId: session.channelId,
-      turn: timelineTurn(owner.state, session.targetId) || targetTurn,
+      turn: latestTurn || timelineTurn(owner.state, session.targetId) || targetTurn,
       actorId: session.actorId,
       type: TYPES.agentUnhold,
       messageId: session.releaseMessageId,
@@ -730,6 +772,8 @@ export function useWaitingEditingController({
       if (!releaseId) throw new Error('解除编辑锁请求未进入发送队列');
       releaseAcceptedRef.current.add(session.sessionId);
       sessionOwnersRef.current.delete(session.sessionId);
+      sessionLatestOwnersRef.current.delete(session.sessionId);
+      sessionStartSeqRef.current.delete(session.sessionId);
       return true;
     }).finally(() => {
       if (releaseInFlightRef.current.get(session.sessionId) === operation) {
@@ -763,6 +807,8 @@ export function useWaitingEditingController({
     };
     const owner = { state, onTaskControl };
     sessionOwnersRef.current.set(draft.sessionId, owner);
+    sessionLatestOwnersRef.current.set(draft.sessionId, owner);
+    sessionStartSeqRef.current.set(draft.sessionId, timelineMaxSeq(state));
     editingRef.current = draft;
     setEditing(draft);
     try {
@@ -790,6 +836,8 @@ export function useWaitingEditingController({
       setEditing((current) => current?.sessionId === draft.sessionId ? locked : current);
     } catch (error) {
       sessionOwnersRef.current.delete(draft.sessionId);
+      sessionLatestOwnersRef.current.delete(draft.sessionId);
+      sessionStartSeqRef.current.delete(draft.sessionId);
       if (editingRef.current?.sessionId !== draft.sessionId) return;
       editingRef.current = null;
       setEditing((current) => current?.sessionId === draft.sessionId ? null : current);
@@ -805,7 +853,8 @@ export function useWaitingEditingController({
     editingRef.current = saving;
     setEditing((current) => current?.sessionId === session.sessionId ? saving : current);
     try {
-      const owner = sessionOwnersRef.current.get(session.sessionId);
+      const owner = sessionLatestOwnersRef.current.get(session.sessionId)
+        || sessionOwnersRef.current.get(session.sessionId);
       if (typeof owner?.onTaskControl !== 'function') throw new Error('编辑控制 owner 已失效');
       const replacementId = await owner.onTaskControl({
         channelId: session.channelId,
