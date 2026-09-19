@@ -98,6 +98,19 @@ ATOLL_TEST_WEB_PORT=15320 ATOLL_TEST_MOCK_PORT=18920 npx playwright test \
 
 因此 frozen owner receipts 的实质收益是 N2 瞬时 badge 消失及 H3 更早暴露 cursor boundary；N4/H1/H2/H4 的公开 rail 投影和 F7 的 presentation admission 仍需各自公开 owner 处理。全程未改产品、fixture、断言或 skip。
 
+## DOM 主证据与 diagnostics 分层（当前 HEAD `2265cfa` / `cfc26a7`）
+
+重新跑 oracle 及原 N4/high-water/F7 合同后，不能把空 `rail.snapshot` 直接算成用户 rail 回归：
+
+- **N4：** c0 左侧 `.unread-related/.unread-total/.unread-pending/jump` 均为 0，filtered owner `gap=0`；原测试在 raw `authorityReady/outsideFilterPreserved` 断言失败。结论是无用户可见 badge 错，只有 diagnostics/raw projection 缺失。
+- **H1：** 真实 DOM 已经历 related `2 → 0 → 1 → 0`，再在 `rail.channels[0]` 缺失处失败；无用户可见 badge 错。
+- **H2：** reload 后 project related=2、ack 后和二次 reload=0 的 DOM 断言先通过，再在 rail snapshot 缺失处失败；无用户可见 badge 错。
+- **H3：** 离开时 related=2、filtered tail/离开后=0 的 DOM 断言先通过；当前 cursor 已推进 27，失败仍是空 diagnostics channel；无用户可见 badge 错。
+- **H4：** diagnostics high-water poll 先超时；独立 oracle 随后确认 arrival 已进 visible owner 且 related/total/pending/jump 全 0、gap=0；无可见 badge 错，缺的是可观测 high-water 发布。
+- **F7：** oracle 的 return snapshot 曾看到目标 row 112 与 111–114 同屏，但严格原合同 line 145 仍超时，故仍保留为 presentation admission/timing 问题，不能归入 rail。
+
+产品交接应据此拆分：N4/H1–H4 当前主要是公开 diagnostics/provider 可观测性缺口（不是左侧数字或 jump 错）；F7 是 reading-session/presentation visibility 稳定性缺口。证据目录：`test-results-notification-owner-oracle-post-2265cfa-20260920/` 及对应 DOM 合同输出目录。未修改产品、fixture、断言或 skip。
+
 ## R1（历史记录，已由 `cbd8591` 关闭）：频道切换时 history owner 尚未连接
 
 这条历史分歧不再是当前复验结果：`cbd8591` 后频道切换可以继续进入真实页面；最终轮未记录该错误。以下步骤和栈保留作修复前 provenance，不应作为当前 RED 计数。

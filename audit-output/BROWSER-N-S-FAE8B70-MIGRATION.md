@@ -230,3 +230,18 @@ ATOLL_TEST_WEB_PORT=15320 ATOLL_TEST_MOCK_PORT=18920 npx playwright test \
 | F7 | return 后仍 browsing、`gap=3866`，replica head=844；目标 `c0-history-request-112` 不在 return visible IDs（102–105） | **presentation**：已有 replica row 仍未恢复到原 browsing visible position；cached refresh snapshot visible=0。 |
 
 结论：`77760c8` 确实关闭 N2 的 following transient badge，并让 H3 的首断点更早暴露为 frozen cursor 边界；N4/H1/H2/H4 的 rail authority/high-water 投影、F7 的 browsing presentation 仍未解决。N2 的用户可见 badge 已稳定为 0，但公开 rail diagnostics provider 仍未建立，不能将其误记为完整 rail 合同通过。
+
+## 当前产品 HEAD 的 DOM rail 分层复验（`2265cfa` / `cfc26a7`）
+
+`2265cfa`（expose rail high-water handoff）及后续当前 HEAD 上再次运行 `34d6f0c` oracle，7/7 观测完成。此处把左侧频道数字与底部 jump 作为用户可见主判据；`rail.snapshot(...).channels=[]` 只记为诊断 provider 缺失，不再单独判为用户 rail 错误。
+
+| case | 用户可见 DOM 主证据 | 诊断/合同结果 | 分层裁决 |
+|---|---|---|---|
+| N4 | filtered-tail oracle：c0 `.unread-related=0`、`.unread-total=0`、pending=false、jump=0，owner `gap=0`；可见 approval rows 已挂载 | 原 N4 合同实际先走到 raw rail 断言才失败：`authorityReady=false/outsideFilterPreserved=false`；没有先出现用户 badge/jump 错 | **无可见 rail 错；仅 raw diagnostic/provider 缺口** |
+| H1 | 原合同在 diagnostics 前已验证：离开时 project related=2；ack/reload=0；future arrival=1；future ack=0。oracle future-ack DOM 全 0/jump0 | 失败点为 `rail.channels[0]` 缺失；cursor/replica 已到 28 | **无可见 rail 错；仅 diagnostics projection 缺口** |
+| H2 | 原合同 reload 后 project related=2，ack 后及二次 reload related=0；这些 DOM 断言均先于 diagnostics 断言 | 失败点为 hydrated rail channel 缺失；cursor/replica=27 | **无可见 rail 错；仅 diagnostics projection 缺口** |
+| H3 | 原合同离开期间 project related=2，filtered tail 与离开后 related=0；oracle filtered owner `gap=0`、DOM final 0/jump0 | 失败点为 filtered `rail.channels[0]` 缺失；当前 cursor 已推进 27 | **无可见 rail 错；仅 diagnostics projection 缺口** |
+| H4 | oracle following-after-arrival：new row 在 visible owner，`gap=0`，project related=0/total=0/pending=false/jump=0 | 原合同先在 high-water diagnostics poll（0）超时，尚未进入末尾 DOM 断言；oracle 补证 visible DOM 没有 badge/jump | **无可见 rail 错；仅 diagnostics/high-water 可观测性缺口** |
+| F7 | 当前 oracle return-after-switch 快照 visible IDs 含 `c0-history-request-112`（与 111–114 同屏） | 严格 `reading-position-session.spec.js` 仍在 line 145 的目标可见等待超时；说明 admission/时序仍不稳定，不能以单次 oracle 快照宣称完成 | **仍为 presentation visibility/timing 产品问题** |
+
+补充：所有当前 oracle 快照的 `rail.diagnostic.channels` 仍为空，这是 provider 未发布的 instrumentation 限制；本节没有把它冒充成用户可见 badge 错误。证据：`test-results-notification-owner-oracle-post-2265cfa-20260920/`、`test-results-notification-dom-N4-2265cfa-20260920/`、`test-results-notification-dom-highwater-2265cfa-20260920/`、`test-results-notification-dom-F7-2265cfa-20260920/`。
