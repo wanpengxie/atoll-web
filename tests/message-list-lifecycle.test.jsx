@@ -800,7 +800,7 @@ it('disables built-in follow and lets the committed following owner issue one sy
   expect(legendHarness.scrollTo).toHaveBeenCalledTimes(callsAfterAppend);
 });
 
-it('joins a role-only presentation commit to its public height before following once', () => {
+it('joins a role-only presentation commit through the durable following activation', () => {
   const events = [];
   globalThis.__ATOLL_READING_TRACE__ = (event) => events.push(event);
   const owner = followingReading();
@@ -832,7 +832,7 @@ it('joins a role-only presentation commit to its public height before following 
 
   expect(legendHarness.scrollTo).toHaveBeenCalledOnce();
   expect(events.filter((event) => event.stage === 'issuer-write')).toEqual([
-    expect.objectContaining({ authorization: 'presentation-role' }),
+    expect.objectContaining({ authorization: 'following-activation' }),
   ]);
 });
 
@@ -1687,7 +1687,7 @@ it('keeps the first child-first target ack as baseline and the latest ack as ord
   expect(owner.consumeBottomIntent).not.toHaveBeenCalled();
 });
 
-it('does not overwrite a later same-revision height token when a send is revoked', async () => {
+it('preserves a later same-revision tail obligation when a send is revoked', async () => {
   const intent = {
     id: 'composer:send-start:revoke-after-media', inputEpoch: 0,
     afterPresentationRevision: 1, targetMessageIDs: ['target'],
@@ -1716,13 +1716,14 @@ it('does not overwrite a later same-revision height token when a send is revoked
 
   owner.setBottomIntent({ id: '', inputEpoch: 0 });
   view.rerender(<MessageList snapshot={snapshot([first, target], 2)} reading={owner} renderRow={renderRow} />);
-  expect(legendHarness.scrollTo).not.toHaveBeenCalled();
+  expect(legendHarness.scrollTo).toHaveBeenCalledOnce();
+  expect(legendHarness.scrollTo).toHaveBeenLastCalledWith({ top: 1132, behavior: 'auto' });
 
   setScrollerGeometry(scroller, { clientHeight: 600, scrollHeight: 1200, scrollTop: 400 });
   act(() => legendHarness.props.context.onListCommit());
   await act(async () => { await Promise.resolve(); });
-  expect(legendHarness.scrollTo).toHaveBeenCalledOnce();
-  expect(legendHarness.scrollTo).toHaveBeenCalledWith({ top: 1200, behavior: 'auto' });
+  expect(legendHarness.scrollTo).toHaveBeenCalledTimes(2);
+  expect(legendHarness.scrollTo).toHaveBeenLastCalledWith({ top: 1200, behavior: 'auto' });
 });
 
 it('releases an owned baseline to ordinary follow when its send intent is revoked', () => {
