@@ -737,17 +737,22 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     () => navigation.channels.filter((channel) => canViewChannelContent(channel.access)),
     [navigation.channels],
   );
+  const searchableStates = useMemo(() => {
+    const readableChannelIds = new Set(searchableChannels.map((channel) => channel.id));
+    return feed.stateEntries().filter(([channelId]) => readableChannelIds.has(channelId));
+  }, [feed, searchableChannels]);
   const searchableRosters = useMemo(() => new Map(
     searchableChannels
       .filter((channel) => isMemberAccess(channel.access))
       .map((channel) => [channel.id, roster.rosters.get(channel.id) || EMPTY_ARRAY]),
   ), [roster.rosters, searchableChannels]);
   const searchIndex = useMemo(() => selectFeatureSearchIndex({
+    states: searchableStates,
     channels: searchableChannels,
     rosters: searchableRosters,
     tasks: new Map([[navigation.activeChannelId, contentVisible ? taskItems : EMPTY_ARRAY]]),
     files: new Map([[navigation.activeChannelId, contentVisible ? attachments.entries : EMPTY_ARRAY]]),
-  }), [attachments.entries, contentVisible, navigation.activeChannelId, searchableChannels, searchableRosters, taskItems]);
+  }), [attachments.entries, contentVisible, navigation.activeChannelId, searchableChannels, searchableRosters, searchableStates, taskItems]);
   const panelKind = typeof panel === 'string' ? panel : panel?.kind || '';
   const selectedActor = panelKind === 'actor' ? panel.actor : null;
   const selectedActorChannelId = panelKind === 'actor' ? panel.channelId : navigation.activeChannelId;
@@ -976,6 +981,16 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     },
   };
   const searchOpen = panelKind === 'search';
+  useEffect(() => {
+    if (!searchOpen || wire.state !== 'open') return;
+    for (const channel of searchableChannels) {
+      if (channel.id === navigation.activeChannelId) continue;
+      void feedCommands.loadHistory(channel.id, {
+        intent: 'search-index',
+        urgency: 'anticipatory',
+      }).catch(showError);
+    }
+  }, [feedCommands, navigation.activeChannelId, searchOpen, searchableChannels, showError, wire.state]);
   const openSearchResult = (source) => {
     if (!source?.channelId) return;
     const sourceChannel = navigation.channels.find((row) => row.id === source.channelId);

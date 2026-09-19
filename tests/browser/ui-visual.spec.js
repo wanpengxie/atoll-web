@@ -199,12 +199,17 @@ test('UI-VIS-11 600px 全局搜索视觉基线', async ({ page, request }) => {
   await page.getByRole('button', { name: '全局搜索' }).click();
   const search = page.getByRole('dialog', { name: '全局搜索' });
   await search.getByLabel('搜索频道、消息、文件、任务或成员').fill('history 1');
+  await expect(search.getByRole('button', { name: /c0\.project history 1/ })).toBeVisible();
+  await expect(search.getByRole('button', { name: /c0\.public/ })).toHaveCount(0);
   await expect(search).toHaveScreenshot('global-search-600.png', {
     ...SCREENSHOT_OPTIONS,
     // Cross-channel result availability is a data/access contract, not part
     // of this dialog's visual baseline.
     mask: [search.locator('.global-search-results')],
   });
+  await search.getByRole('button', { name: /c0\.project history 1/ }).click();
+  await expect(search).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('c0.project');
 });
 
 test('UI-VIS-12 频道挂载文件主页面视觉基线', async ({ page, request }) => {

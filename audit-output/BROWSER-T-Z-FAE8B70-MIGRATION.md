@@ -1056,3 +1056,53 @@ visible channel 历史搜索缺口**。本轮没有运行 `--update-snapshots`�
 修改 `maxDiffPixels`、mask 或任何 ignored Linux screenshot；若要签发视觉
 合同，必须由负责 oracle 的 owner 提供版本管理中的 tracked baseline/合同，
 不能以本地 `*-linux.png` 作为交付。
+
+## 第十九轮：UI-VIS-11 跨频道搜索 owner 修复（真实 Chromium）
+
+本轮按上轮首断点只改 `WorkspaceApp` 的现有 search-index composition：
+公开 `feed.stateEntries()` 作为 `states` 输入，并以
+`canViewChannelContent(channel.access)` 生成的 readable channel ID 集合再
+过滤一次。`SearchFeature` 没有新建 store、复制 Feed 或读取私有 replica；
+`openSearchResult` 仍通过现有 navigation owner 回到来源频道。
+
+仅连接 `stateEntries()` 还不足以让冷启动的非 active 频道进入索引：Feed 的
+history grants 会先公开频道 metadata，但只 materialize active channel 的
+rows。故在同一 `WorkspaceApp` composition 边界，search dialog 打开时对其余
+readable channels 发起已有
+`feedCommands.loadHistory(channelId, { intent: "search-index", urgency: "anticipatory" })`；不访问 `c0.public`，也没有新的
+历史缓存 owner。这样公开 Feed row 在异步 materialize 后自然进入同一个纯
+projection。
+
+严格行为合同已加入 UI-VIS-11（query `history 1`，seed `910`）：
+
+| 公开证据 | 结果 |
+|---|---|
+| viewport | `600×720`，移动 shell 真实 Chromium |
+| search rows | `c0 history 1` 与 `c0.project history 1` 两条 |
+| access gate | `c0.public` 搜索结果数量 `0`，不可见 |
+| project click | 点击 `c0.project history 1` 后 dialog 数量 `0`，主标题为 `c0.project` |
+| layout | dialog 行为与移动布局均完成；未修改 44px 触控目标合同 |
+
+独立行为探针输出（未以编辑器文本匹配代替导航）为：
+
+```text
+search rows: ["任务c0 history 1: ask steward for PONGc0 · completed",
+              "回合c0.project history 1: ask project-agent for PONGc0.project · c0.project PONG 1"]
+publicCount: 0; viewport: 600×720
+navigate: heading="c0.project"; dialogCount=0; bodyRows=5
+```
+
+定向 projection/composition/accessibility 单测为 **4 files / 10 passed**：
+
+```text
+npx vitest run tests/workspace-real-runtime-composition.test.jsx \
+  tests/feature-search.test.js tests/f5-management.test.jsx \
+  tests/f6-accessibility.test.jsx --reporter=dot
+```
+
+完整 UI-VIS-11 仍只在截图 oracle 处 RED：current 移动触控目标使 dialog 为
+`600×301`，本地历史 ignored baseline 为 `600×297`，差异 `7868 pixels /
+0.05`；前面的 c0/c0.project、access filter 和 click assertions 已通过。
+本轮没有 `--update-snapshots`、没有放宽阈值/mask，也没有把 ignored Linux
+截图作为仓库交付。该视觉差异仍归现行 44px target 与旧 fae 36px target 的
+合同版本差异，不是本轮 search owner 修复引入的回归。
