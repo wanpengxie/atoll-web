@@ -951,3 +951,52 @@ ATOLL_TEST_WEB_PORT=15461 ATOLL_TEST_MOCK_PORT=19892 npx playwright test \
 | progress-demo 实时回合 | .progress-trail 有 1 条 tool: 理解任务 … | request [复制, ↩ 回复, 查看过程]，answer [查看过程] | 306.09375px；点击后真实打开工作项详情 panel |
 
 UI-VIS-09 原始截图断言仍为 **RED**（期望 958x180，当前 958x219；本轮已清除无 process 行的伪“查看过程”，剩余高度来自当前 row semantics 的 request 操作轨，未在本修复中扩大为回退回复语义）。因此该 RED 不是本修复引入的布局回归；产品可点与快照基线的其余差异保留为单独决策。
+
+## 第十七轮：UI-VIS-09 request 操作轨能力对照与 oracle 固化（真实 Chromium）
+
+本轮用相同的 `actor-capability` seed `908`、相同的历史行
+`c0-history-request-1`，在独立 `fae8b70` worktree 与当前源码分别跑真实
+Chromium；没有用 DOM 文本匹配代替点击结果。
+
+| 实现 / viewport | 行高 | 可见操作轨 | process/detail |
+|---|---:|---|---|
+| `fae8b70` / 1280、1120、850、800 | `179.1875px` | 仅 answer：`复制`、`↩ 回复` | `0 / 0` |
+| 当前（修复前）/ 同四个 viewport | `218.1875px` | request 与 answer 都有 `复制`、`↩ 回复` | `0 / 0` |
+| 当前（修复后）/ 同四个 viewport | `218.1875px` | request 仅 `复制`；answer 为 `复制`、`↩ 回复` | `0 / 0` |
+
+残差不是无效的“查看过程”入口：第十六轮已经在 row owner 处移除了无
+process 的该入口。本轮进一步对每个 request affordance 做实操作证：request
+`复制` 在授予 Chromium clipboard 权限后实际写入
+`c0 history 1: ask steward for PONG`；request `↩ 回复` 则产生
+`该条消息的回复对象已不在当前成员事实中。`，没有 `composer-reply`、draft
+或 reply target。`WorkspaceApp.beginReply` 的 self-sender guard 与
+`fae8b70` 的 `replyTargetOf` 语义一致，故当前 request 只去掉无效的 self
+reply，不删除仍可用的 copy 能力：
+
+```text
+const requestReply = request.sender?.id === selfId ? undefined : onReply;
+```
+
+这使剩余 39px 明确归属于可用的 request copy 操作轨。按现行产品能力更新
+本机 Linux UI-VIS-09 screenshot oracle 为 `958x219`，没有 CSS 压缩、截图
+阈值放宽或删除能力；随后同一测试正常运行 **1 passed**：
+
+```text
+ATOLL_TEST_WEB_PORT=15494 ATOLL_TEST_MOCK_PORT=19924 \
+  npx playwright test tests/browser/ui-visual.spec.js -g 'UI-VIS-09' \
+  --update-snapshots --reporter=line
+  1 passed (oracle regenerated: 958x219)
+
+ATOLL_TEST_WEB_PORT=15495 ATOLL_TEST_MOCK_PORT=19925 \
+  npx playwright test tests/browser/ui-visual.spec.js -g 'UI-VIS-09' \
+  --reporter=line
+  1 passed
+```
+
+相邻 viewport 复核在 1280×720、1120×760、850×720、800×600 均为当前
+`218.1875px`，而 `fae8b70` 均为 `179.1875px`；因此不是窄屏换行或单一
+viewport 偶发差异。`agent-answer-reply-gating`、progress trail 与信息架构
+定向单测共 **3 files / 22 passed**，layout 的无 process 行定向测试为
+**1 passed**。本轮把旧 fae 的“没有 request rail”与当前保留 copy 能力的
+产品差异记录为已签 oracle 变化；未修改产品 store、Vendor、Projection、
+history 或截图阈值。

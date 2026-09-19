@@ -455,13 +455,17 @@ function TurnCard({ turn, names, selfId, access, targetAuthority, fold, approval
   if ([TYPES.humanAsk, TYPES.humanApprove].includes(request.type) && request.audience?.includes(selfId)) return <ContentFrame><ApprovalCard turn={turn} names={names} state={approvalState} onResolve={onResolve} /></ContentFrame>;
   const pending = !turn.terminal; const local = request.local_submission_state;
   const recipients = (request.audience || []).map((id) => nameOf(id, names)).join('、');
+  // WorkspaceApp rejects a reply whose sender is the current user. Keep the
+  // renderer aligned with that owner contract so a self-authored request does
+  // not advertise a button that can only produce a notice and no draft state.
+  const requestReply = request.sender?.id === selfId ? undefined : onReply;
   // The process entry is the owner of the detail affordance. A turn without
   // an execution process must not advertise an action that openTurnDetail
   // cannot materialize; keep this gate at the row owner rather than hiding a
   // stale button with CSS or making the application invent an empty detail.
   const onOpenProcess = hasProcessSummary(turn) ? onOpen : undefined;
   return <section className={`turn-card agent-conversation-turn${request.sender?.id === selfId ? ' self' : ''} status-${turn.status || (pending ? 'pending' : 'completed')}`} data-request-id={turn.requestId} data-request-type={request.type}>
-    <ReplyableMessageFrame envelope={request} turn={turn} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpenProcess} className="request-message" identity={actorIcon(request, names)}>
+    <ReplyableMessageFrame envelope={request} turn={turn} onReply={requestReply} onCreateTask={onCreateTask} onOpen={onOpenProcess} className="request-message" identity={actorIcon(request, names)}>
       <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(request.ts)}</time>{recipients && <span className="recipient-label">发送给 {recipients}</span>}{local && <small>{local}</small>}</header>
       <div className="request-text"><EnvelopeBody envelope={request} fold={fold} onDownload={onDownload} onPreview={onPreview} contentKeyPrefix="request" /></div>{editing?.targetId === turn.requestId && <small className="message-editing-state">正在输入框中编辑</small>}
     </ReplyableMessageFrame>
