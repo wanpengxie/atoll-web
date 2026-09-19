@@ -2,10 +2,6 @@ import { useLayoutEffect, useRef } from 'react';
 import {
   acknowledgeLivePresentationArrivals,
   acknowledgeLiveTimelineArrivals,
-  livePresentationArrivals,
-  liveTimelineArrivals,
-  registerLivePresentationArrivalConsumer,
-  registerLiveTimelineArrivalConsumer,
 } from '../../model/live-arrivals.js';
 
 export function useTimelineArrivalReceipt(state) {
@@ -13,14 +9,14 @@ export function useTimelineArrivalReceipt(state) {
   if (!tokenRef.current) tokenRef.current = Symbol('timeline-live-arrival-consumer');
 
   useLayoutEffect(
-    () => registerLiveTimelineArrivalConsumer(state, tokenRef.current),
-    [state],
+    () => state.arrivalReceipts.attachTimelineConsumer(tokenRef.current),
+    [state.arrivalReceipts],
   );
 
   return {
-    ...liveTimelineArrivals(state),
+    ...state.arrivalReceipts.timeline(),
     acknowledge(revision) {
-      acknowledgeLiveTimelineArrivals(state, revision);
+      state.arrivalReceipts.dispatch(acknowledgeLiveTimelineArrivals(revision));
     },
   };
 }
@@ -42,12 +38,13 @@ export function usePresentationArrivalReceipt({
       const eligible = surfaceVisible === true
         && globalThis.document?.visibilityState !== 'hidden';
       if (eligible && !release) {
-        release = registerLivePresentationArrivalConsumer(state, tokenRef.current);
+        release = state.arrivalReceipts.attachPresentationConsumer(tokenRef.current);
       } else if (!eligible && release) {
         release();
         release = null;
       } else if (!eligible) {
-        acknowledgeLivePresentationArrivals(state, state._livePresentationArrivalRevision);
+        const headRevision = state.arrivalReceipts.presentation().headRevision;
+        state.arrivalReceipts.dispatch(acknowledgeLivePresentationArrivals(headRevision));
       }
     };
     reconcile();
@@ -56,13 +53,13 @@ export function usePresentationArrivalReceipt({
       globalThis.document?.removeEventListener?.('visibilitychange', reconcile);
       release?.();
     };
-  }, [state, surfaceVisible, viewKey]);
+  }, [state.arrivalReceipts, surfaceVisible, viewKey]);
 
-  const snapshot = livePresentationArrivals(state, Number(sourceRevision || 0));
+  const snapshot = state.arrivalReceipts.presentation(Number(sourceRevision || 0));
   useLayoutEffect(() => {
     if (presentationOwner.current() !== presentation) return;
-    acknowledgeLivePresentationArrivals(state, snapshot.revision);
-  }, [presentation, presentationOwner, snapshot.revision, state]);
+    state.arrivalReceipts.dispatch(acknowledgeLivePresentationArrivals(snapshot.revision));
+  }, [presentation, presentationOwner, snapshot.revision, state.arrivalReceipts]);
 
   return snapshot;
 }

@@ -5,6 +5,7 @@ import { TYPES } from '../protocol/vocab.js';
 import { createHistoryPresentationAdmission } from './history-presentation-admission.js';
 import { createHistoryBoundedExecutor } from './history-bounded-executor.js';
 import { createHistorySourceAdapters } from './history-source-adapters.js';
+import { isRailNotifiableDisposition, notificationDisposition } from './notification-policy.js';
 
 export const HISTORY_PAGE_SIZE = 128;
 export const HISTORY_BATCH_BYTES = 1024 * 1024;
@@ -28,6 +29,56 @@ function historySourceFor(localMeta, beforeSeq) {
   return frontier > 0 && localMeta?.coverage?.some((range) => (
     historyNumeric(range?.lowSeq) <= frontier && historyNumeric(range?.highSeq) >= frontier
   )) ? 'indexeddb' : 'network';
+}
+
+function humanPrincipal(actorID) {
+  const parts = String(actorID || '').split(String(actorID || '').includes('::') ? '::' : ':');
+  return parts[0] === 'human' && parts.length >= 3 ? parts[1] : '';
+}
+
+function samePerson(left, right) {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const principal = humanPrincipal(left);
+  return Boolean(principal && principal === humanPrincipal(right));
+}
+
+function envelopeRelatesTo(envelope, selfID) {
+  return samePerson(envelope?.sender?.id, selfID)
+    || envelope?.audience?.some((audience) => samePerson(audience, selfID));
+}
+
+function notificationRelatesTo(state, envelope, selfID) {
+  if (envelopeRelatesTo(envelope, selfID)) return true;
+  for (const entry of state?.timeline || []) {
+    if (entry?.kind !== 'turn') continue;
+    const turns = [entry.turn, ...(entry.thread || []).map((item) => item.turn)].filter(Boolean);
+    const contains = turns.some((turn) => turn.request?.id === envelope?.id
+      || turn.terminal?.id === envelope?.id
+      || turn.provisional?.some((item) => item.envelope?.id === envelope?.id));
+    if (!contains) continue;
+    return turns.some((turn) => [
+      turn.request,
+      turn.terminal,
+      ...(turn.provisional || []).map((item) => item.envelope),
+    ].some((candidate) => envelopeRelatesTo(candidate, selfID)));
+  }
+  return false;
+}
+
+function notificationRootID(state, envelope) {
+  for (const entry of state?.timeline || []) {
+    if (entry?.kind !== 'turn') {
+      if (entry?.envelope?.id === envelope?.id) return envelope.id || '';
+      continue;
+    }
+    const turns = [entry.turn, ...(entry.thread || []).map((item) => item.turn)].filter(Boolean);
+    const contains = turns.some((turn) => turn.request?.id === envelope?.id
+      || turn.terminal?.id === envelope?.id
+      || turn.provisional?.some((item) => item.envelope?.id === envelope?.id));
+    if (contains) return entry.turn?.requestId || envelope?.parent_id || envelope?.id || '';
+  }
+  return envelope?.parent_id || envelope?.id || '';
 }
 
 function eventTimestamp(envelope, fallback = Date.now()) {
@@ -74,27 +125,31 @@ function createCursorOwner(storage = globalThis.localStorage) {
   };
   const load = () => {
     reads.clear(); notifications.clear();
-    if (!authority || !storage) return;
+    if (!authority || !storage) return false;
     try {
-      const value = JSON.parse(storage.getItem(`atoll.feed-cursors.v1.${authority}`) || '{}');
+      const raw = storage.getItem(`atoll.feed-cursors.v1.${authority}`);
+      if (!raw) return false;
+      const value = JSON.parse(raw);
       for (const [id, seq] of Object.entries(value.reads || {})) reads.set(id, historyNumeric(seq));
       for (const [id, seq] of Object.entries(value.notifications || {})) notifications.set(id, historyNumeric(seq));
-    } catch { /* reject an invalid cursor snapshot */ }
+      return true;
+    } catch { return false; }
   };
   return Object.freeze({
     selectReadAuthority({ principalId = '', serverBoot = '' } = {}) {
       const next = principalId && serverBoot ? `${principalId}\u0000${serverBoot}` : '';
       const changed = next !== authority;
-      if (changed) { authority = next; load(); }
-      return { changed, reused: !changed && Boolean(authority) };
+      if (!changed) return { changed: false, reused: Boolean(authority), fresh: false };
+      authority = next;
+      const restored = load();
+      return { changed: true, reused: Boolean(authority) && restored, fresh: Boolean(authority) && !restored };
     },
     clearReadAuthority() { authority = ''; reads.clear(); notifications.clear(); },
     isReadAuthorityReady: () => Boolean(authority),
-    reconcile(snapshot = {}) {
+    reconcileReads(snapshot = {}) {
       for (const [channelId, seq] of Object.entries(snapshot)) {
         const value = historyNumeric(seq);
         reads.set(channelId, Math.max(reads.get(channelId) || 0, value));
-        notifications.set(channelId, Math.max(notifications.get(channelId) || 0, value));
       }
       persist();
     },
@@ -115,8 +170,9 @@ function createCursorOwner(storage = globalThis.localStorage) {
 function historyInitial(channelId) {
   return {
     channelId, generation: 0, attached: false, headSeq: 0, beforeSeq: 0,
+    messageCurrent: false, notificationAuthorityRevision: 0,
     hasOlder: false, loading: false, foregroundLoading: false, backgroundLoading: false,
-    error: '', errorCode: '', completedPages: 0, coverage: [], lastSource: '',
+    error: '', errorCode: '', completedPages: 0, coverage: [], lastSource: '', buffered: 0,
     historyDemand: Object.freeze({ revision: 0, phase: 'idle', error: '' }),
   };
 }
@@ -134,8 +190,6 @@ export function createChannelFeedRuntime(options = {}) {
   const replica = createChannelReplicaStore();
   const cache = createChannelReplicaCache();
   const cursors = createCursorOwner();
-  const cursorsRef = { current: cursors };
-  const statesRef = { current: replica.states() };
   const admission = createHistoryPresentationAdmission({ onChange: publish });
   const histories = new Map();
   const grants = new Map();
@@ -166,6 +220,7 @@ export function createChannelFeedRuntime(options = {}) {
   let timerRevision = 0;
   let timerAcknowledgedRevision = 0;
   let timerOverflow = null;
+  let notificationAuthorityRevision = 0;
 
   const cacheError = (error) => {
     if (error?.code !== 'cache_owner_changed') callback('onError', error);
@@ -311,6 +366,15 @@ export function createChannelFeedRuntime(options = {}) {
       if (!result.accepted) continue;
       accepted.push(result.row);
       discoveredChannels.add(row.channel_id);
+      const status = histories.get(row.channel_id);
+      if (source === 'live' && status?.attached && status.generation === generation) {
+        const nextHead = Math.max(status.headSeq, historyNumeric(row.seq));
+        if (nextHead !== status.headSeq || status.messageCurrent !== true) {
+          status.headSeq = nextHead;
+          status.messageCurrent = true;
+          status.notificationAuthorityRevision = ++notificationAuthorityRevision;
+        }
+      }
       rosterRef.current?.observeFeed?.(row.channel_id, row.envelope);
       if (source === 'live') {
         accessChanged = Boolean(accessRef.current?.live?.(row.channel_id)) || accessChanged;
@@ -340,7 +404,6 @@ export function createChannelFeedRuntime(options = {}) {
         callback('onSubmissionFeed', landedMessageIDs, closedRequestIDs, producerToken);
       }
       if (accessChanged) callback('onAccessChanged');
-      statesRef.current = replica.states();
       if (publishChange) publish({ index: true });
       if (persist) void cache.saveRows(accepted).catch(cacheError);
     }
@@ -348,16 +411,22 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   function unreadFor(channelId, selfID = '') {
-    if (!cursors.isReadAuthorityReady()) return Object.freeze({ related: 0, total: 0, pending: true });
-    const boundary = cursors.notificationHighWater(channelId);
-    let total = 0;
-    let related = 0;
-    for (const [seq, envelope] of replica.state(channelId)?.rows || []) {
-      if (seq <= boundary || envelope?.visibility === 'system') continue;
-      total += 1;
-      if (envelope?.sender?.id === selfID || envelope?.audience?.includes?.(selfID)) related += 1;
+    if (!cursors.isReadAuthorityReady() || !selfID) {
+      return Object.freeze({ related: 0, total: 0, pending: true });
     }
-    return Object.freeze({ related, total });
+    const boundary = cursors.notificationHighWater(channelId);
+    const state = replica.state(channelId);
+    const unreadRoots = new Set();
+    for (const [seq, envelope] of state?.rows || []) {
+      if (seq <= boundary || samePerson(envelope?.sender?.id, selfID)
+        || !notificationRelatesTo(state, envelope, selfID)) continue;
+      const disposition = notificationDisposition(state, envelope, selfID);
+      if (!isRailNotifiableDisposition(disposition)) continue;
+      const rootID = notificationRootID(state, envelope);
+      if (rootID) unreadRoots.add(rootID);
+    }
+    const unread = unreadRoots.size;
+    return Object.freeze({ related: unread, total: unread });
   }
 
   function batchFor(channelId, request = {}) {
@@ -492,7 +561,7 @@ export function createChannelFeedRuntime(options = {}) {
     const selectedPrincipal = String(nextPrincipal || '');
     if (principal && principal !== selectedPrincipal) {
       for (const channelId of histories.keys()) admission.reset(channelId);
-      histories.clear(); grants.clear(); replica.reset(); statesRef.current = replica.states(); cursors.resetReads();
+      histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
       activityEntries.clear(); timerEvents.splice(0); timerOverflow = null;
       timerAcknowledgedRevision = timerRevision; activityConnected = false; activityRevision += 1;
     }
@@ -509,8 +578,8 @@ export function createChannelFeedRuntime(options = {}) {
       const selected = await cache.ensureOwner(principal, { world });
       if (epoch !== principalEpoch) return { resume: {} };
       for (const [channelId, value] of selected.meta) replica.installMeta(channelId, value);
-      cursors.selectReadAuthority({ principalId: principal, serverBoot: world || selected.boot || 'local' });
-      cursors.reconcile(replicaResumeSnapshot(selected.meta));
+      if (world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
+      cursors.reconcileReads(replicaResumeSnapshot(selected.meta));
       if (focus && selected.meta.has(focus)) {
         const before = historyNumeric(selected.meta.get(focus)?.headSeq || selected.meta.get(focus)?.newestSeq) + 1;
         const cached = await cache.readBefore(focus, before, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
@@ -538,6 +607,15 @@ export function createChannelFeedRuntime(options = {}) {
     const nextWorld = String(detail.boot || world);
     const worldChanged = nextWorld !== world;
     world = nextWorld;
+    if (worldChanged) {
+      for (const channelId of histories.keys()) admission.reset(channelId);
+      histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
+      activityEntries.clear();
+      timerEvents.splice(0);
+      timerAcknowledgedRevision = timerRevision;
+      timerOverflow = null;
+      activityRevision += 1;
+    }
     let selectedMeta = cache.metaSnapshot();
     if (principal && world) {
       let selected;
@@ -549,15 +627,14 @@ export function createChannelFeedRuntime(options = {}) {
       }
       if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: new Map() };
       selectedMeta = selected.meta;
-      if (worldChanged) {
-        for (const channelId of histories.keys()) admission.reset(channelId);
-        histories.clear(); grants.clear(); replica.reset(); statesRef.current = replica.states(); cursors.resetReads();
-        activityEntries.clear();
-        timerEvents.splice(0);
-        timerAcknowledgedRevision = timerRevision;
-        timerOverflow = null;
-        activityRevision += 1;
-      }
+    }
+    if (principal && world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
+    const nextChannelIDs = new Set(entries.map((entry) => String(entry?.channel_id || '')).filter(Boolean));
+    for (const [channelId, status] of histories) {
+      if (nextChannelIDs.has(channelId) || (!status.attached && !status.messageCurrent)) continue;
+      status.attached = false;
+      status.messageCurrent = false;
+      status.notificationAuthorityRevision = ++notificationAuthorityRevision;
     }
     grants.clear();
     for (const entry of entries) {
@@ -565,14 +642,25 @@ export function createChannelFeedRuntime(options = {}) {
       if (!channelId) continue;
       grants.set(channelId, entry);
       const status = historyState(channelId);
+      const grantedHeadSeq = historyNumeric(entry.head_seq);
+      const headSeq = Math.max(status.headSeq, grantedHeadSeq, replica.visibleNewest(channelId));
+      const authorityChanged = status.generation !== generation
+        || status.attached !== true
+        || status.messageCurrent !== true
+        || status.headSeq !== headSeq;
       Object.assign(status, {
-        generation, attached: true, headSeq: historyNumeric(entry.head_seq),
-        beforeSeq: replica.visibleOldest(channelId) || historyNumeric(entry.head_seq) + 1,
-        hasOlder: historyNumeric(entry.head_seq) > 0,
+        generation, attached: true, messageCurrent: true, headSeq,
+        beforeSeq: replica.visibleOldest(channelId) || headSeq + 1,
+        hasOlder: headSeq > 0,
+        notificationAuthorityRevision: authorityChanged
+          ? ++notificationAuthorityRevision
+          : status.notificationAuthorityRevision,
       });
       replica.installMeta(channelId, { headSeq: entry.head_seq, coverage: selectedMeta.get(channelId)?.coverage });
-      cursors.baselineRead(channelId, entry.head_seq);
-      cursors.baselineNotifications(channelId, entry.head_seq);
+      if (cursors.isReadAuthorityReady()) {
+        cursors.baselineRead(channelId, grantedHeadSeq);
+        cursors.baselineNotifications(channelId, grantedHeadSeq);
+      }
     }
     const focus = String(detail.focus || activeChannelRef.current || '');
     if (focus && selectedMeta.has(focus) && replica.visibleNewest(focus) === 0) {
@@ -581,7 +669,6 @@ export function createChannelFeedRuntime(options = {}) {
       if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
       applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
     }
-    if (principal && world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
     let retiredActivity = false;
     for (const [key, entry] of activityEntries) {
       if (entry.state !== 'active' || entry.generation === generation) continue;
@@ -607,14 +694,26 @@ export function createChannelFeedRuntime(options = {}) {
 
   function historyFor(channelId) {
     const status = historyState(channelId);
+    const presentationRevision = replica.state(channelId)?._timelineRevision || 0;
+    const syncRevision = status.notificationAuthorityRevision;
     return Object.freeze({
       ...status,
       oldestSeq: replica.visibleOldest(channelId),
       loaded: replica.visibleNewest(channelId) > 0,
+      localReplicaReady,
+      localReplicaError,
+      localReplicaErrorCode,
       presentationAdmission: admission,
       presentationAdmissionState: admission.snapshot(channelId),
-      presentationRevision: replica.state(channelId)?._timelineRevision || 0,
-      sync: Object.freeze({ generation, attached: status.attached }),
+      presentationRevision,
+      sync: Object.freeze({
+        generation: status.generation,
+        attached: status.attached,
+        interestRevision: syncRevision,
+        fulfilledRevision: status.messageCurrent ? syncRevision : 0,
+        targetHead: status.headSeq,
+        error: status.error,
+      }),
     });
   }
 
@@ -632,13 +731,19 @@ export function createChannelFeedRuntime(options = {}) {
     timerOverflow = null;
     activityConnected = false;
     activityRevision += 1;
-    replica.reset(); statesRef.current = replica.states(); publish({ index: true });
+    replica.reset(); publish({ index: true });
   }
 
   async function resetPersistent() { await cache.clear(); clear(); cursors.resetReads(); return true; }
   function disconnectHistory(requestGeneration = generation) {
     if (requestGeneration && requestGeneration !== generation) return false;
-    for (const status of histories.values()) status.attached = false;
+    for (const status of histories.values()) {
+      if (status.attached || status.messageCurrent) {
+        status.attached = false;
+        status.messageCurrent = false;
+        status.notificationAuthorityRevision = ++notificationAuthorityRevision;
+      }
+    }
     attachEpoch += 1;
     if (activityConnected) { activityConnected = false; activityRevision += 1; }
     generation = 0;
@@ -650,12 +755,23 @@ export function createChannelFeedRuntime(options = {}) {
     incompatible = true; disconnectHistory(generation); return true;
   }
   function markRead(channelId, acknowledgement = {}) {
-    if (!cursors.isReadAuthorityReady()) return false;
-    return cursors.markRead(channelId, historyNumeric(acknowledgement.physicalSeq));
+    const status = histories.get(channelId);
+    const physicalSeq = historyNumeric(acknowledgement.physicalSeq);
+    if (!cursors.isReadAuthorityReady() || !status?.attached || !status.messageCurrent
+      || acknowledgement.generation !== status.generation
+      || acknowledgement.authorityRevision !== status.notificationAuthorityRevision
+      || physicalSeq <= 0 || physicalSeq > status.headSeq) return false;
+    return cursors.markRead(channelId, physicalSeq);
   }
   function acknowledgeNotifications(channelId, confirmation = {}) {
-    if (!cursors.isReadAuthorityReady() || (confirmation.generation && confirmation.generation !== generation)) return false;
-    return cursors.acknowledgeNotifications(channelId, historyNumeric(confirmation.boundary));
+    const status = histories.get(channelId);
+    const boundary = historyNumeric(confirmation.boundary);
+    if (!cursors.isReadAuthorityReady() || !status?.attached || !status.messageCurrent
+      || confirmation.generation !== status.generation
+      || confirmation.authorityRevision !== status.notificationAuthorityRevision
+      || confirmation.cause !== 'presented-follow'
+      || boundary !== status.headSeq) return false;
+    return cursors.acknowledgeNotifications(channelId, boundary);
   }
   function acknowledgeAgentActivity(channelId, agentId) {
     let changed = false;
@@ -702,7 +818,7 @@ export function createChannelFeedRuntime(options = {}) {
     const agentActivity = agentActivitySnapshot();
     const timerFirings = timerFiringSnapshot();
     return Object.freeze({
-      cursorsRef, statesRef, version, indexVersion, localReplicaReady, localReplicaError, localReplicaErrorCode,
+      version, indexVersion, localReplicaReady, localReplicaError, localReplicaErrorCode,
       agentActivity, timerFirings, agentActivityPort,
       bump: () => publish({ index: true }),
       enqueue, pageEnd, liveCheckpoint, setHistoryGrants, prepareLocalReplica, resumeLocalReplica,
@@ -735,7 +851,7 @@ export function createChannelFeedRuntime(options = {}) {
     for (const batch of networkBatches.values()) void adapters.cancel(batch, 'feed runtime destroyed');
     networkBatches.clear(); executor.clear('feed runtime destroyed');
     activityEntries.clear(); timerEvents.splice(0);
-    replica.destroy(); statesRef.current = replica.states(); cursors.destroy(); void cache.destroy();
+    replica.destroy(); cursors.destroy(); void cache.destroy();
     subscribers.clear(); ownerCommands.clear();
   }
 

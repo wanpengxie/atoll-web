@@ -126,10 +126,8 @@ function useProjectionReadingOwner({
   surfaceVisible,
   arrivals,
 }) {
-  const historyStatus = history.status || history || {};
-  const requestPort = typeof history.request === 'function'
-    ? history.request
-    : () => Promise.resolve({ kind: 'exhausted', localOnly: true });
+  const historyStatus = history.status;
+  const requestPort = history.request;
   const controller = useMemo(
     () => createSessionController({ channelID, viewKey, viewSessions }),
     [channelID, viewKey, viewSessions],
@@ -185,34 +183,27 @@ function useProjectionReadingOwner({
     arrivals?.acknowledge?.(Number(arrivals.revision || 0));
   }, [arrivals, session.mode, surfaceVisible]);
 
-  const hasManagedHistoryLifecycle = Object.prototype.hasOwnProperty.call(historyStatus, 'attached')
-    && Object.prototype.hasOwnProperty.call(historyStatus, 'messageCurrent')
-    && Object.prototype.hasOwnProperty.call(historyStatus, 'headSeq');
-  const syncStatus = historyStatus.sync || {};
-  const syncObservationCurrent = !Object.prototype.hasOwnProperty.call(historyStatus, 'sync')
-    || (Number(syncStatus.interestRevision || 0) > 0
-      && Number(syncStatus.fulfilledRevision || 0) >= Number(syncStatus.interestRevision || 0));
+  const syncStatus = historyStatus.sync;
+  const syncObservationCurrent = Number(syncStatus.interestRevision || 0) > 0
+    && Number(syncStatus.fulfilledRevision || 0) >= Number(syncStatus.interestRevision || 0);
   const knownHead = Math.max(Number(historyStatus.headSeq || 0), Number(syncStatus.targetHead || 0));
   const currentPresentationKnown = Number(historyStatus.presentationRevision || 0) <= 0
     || Number(snapshot.sourceRevision || 0) >= Number(historyStatus.presentationRevision || 0);
-  const bottomReady = !hasManagedHistoryLifecycle || Boolean(
+  const bottomReady = Boolean(
     historyStatus.attached === true
     && Number(historyStatus.generation || 0) > 0
     && historyStatus.messageCurrent === true
     && currentPresentationKnown,
   );
-  const authoritativeEmpty = hasManagedHistoryLifecycle
-    && historyStatus.attached === true
+  const authoritativeEmpty = historyStatus.attached === true
     && Number(historyStatus.generation || 0) > 0
     && historyStatus.messageCurrent === true
     && historyStatus.localReplicaReady !== false
     && knownHead === 0
     && syncObservationCurrent;
-  const semanticRangeEstablished = !hasManagedHistoryLifecycle
-    || historyStatus.loaded === true
+  const semanticRangeEstablished = historyStatus.loaded === true
     || Number(historyStatus.completedPages || 0) > 0;
-  const semanticExhausted = hasManagedHistoryLifecycle
-    && semanticRangeEstablished
+  const semanticExhausted = semanticRangeEstablished
     && historyStatus.attached === true
     && historyStatus.messageCurrent === true
     && historyStatus.hasOlder === false
@@ -224,7 +215,7 @@ function useProjectionReadingOwner({
     session,
     snapshot,
     historyStatus,
-    hasManagedHistoryLifecycle,
+    hasManagedHistoryLifecycle: true,
     authoritativeEmpty,
     semanticExhausted,
     channelID,
@@ -241,7 +232,7 @@ function useProjectionReadingOwner({
     ? 'readable'
     : availabilityError
       ? 'error'
-      : !hasManagedHistoryLifecycle || authoritativeEmpty || semanticExhausted
+      : authoritativeEmpty || semanticExhausted
         ? 'empty-known'
         : semanticRangeEstablished && historyStatus.hasOlder === true
           ? 'partial'
@@ -275,7 +266,7 @@ function useProjectionReadingOwner({
     requestPort,
     authoritativeEmpty,
     semanticExhausted,
-    hasManagedHistoryLifecycle,
+    hasManagedHistoryLifecycle: true,
     knownHead,
     history,
     localReplicaError: String(historyStatus.localReplicaError || ''),

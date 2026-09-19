@@ -1,5 +1,6 @@
 import { argsOf, FINAL } from '../protocol/envelope.js';
 import { isNarrationEnvelope } from '../protocol/vocab.js';
+import { LIVE_ARRIVAL_RECEIPT } from './live-arrivals.js';
 import { isViewportNotifiableDisposition, notificationDisposition } from './notification-policy.js';
 
 const CACHE_DATABASE = 'atoll-channel-replica-v1';
@@ -252,8 +253,99 @@ function recordLivePresentationArrival(state, envelope, seq) {
   }
 }
 
+function timelineArrivalSnapshot(state) {
+  const overflow = [...state._liveArrivalOverflow.values()];
+  const hot = [...state._liveArrivalLog];
+  return Object.freeze({
+    revision: state._liveArrivalRevision,
+    acknowledgedRevision: state._liveArrivalAckRevision,
+    events: Object.freeze([...overflow, ...hot].sort((left, right) => left.revision - right.revision)),
+  });
+}
+
+function presentationArrivalSnapshot(state, throughSourceRevision = Number.POSITIVE_INFINITY) {
+  const events = [];
+  let revision = state._livePresentationArrivalAckRevision;
+  for (const event of state._livePresentationArrivalLog) {
+    if (event.revision <= state._livePresentationArrivalAckRevision) continue;
+    if (event.sourceRevision > Number(throughSourceRevision)) break;
+    events.push(event);
+    revision = event.revision;
+  }
+  return Object.freeze({
+    revision,
+    headRevision: state._livePresentationArrivalRevision,
+    acknowledgedRevision: state._livePresentationArrivalAckRevision,
+    events: Object.freeze(events),
+  });
+}
+
+function acknowledgeTimelineArrivals(state, throughRevision) {
+  const revision = Math.min(
+    state._liveArrivalRevision,
+    Math.max(state._liveArrivalAckRevision, numeric(throughRevision)),
+  );
+  state._liveArrivalAckRevision = revision;
+  state._liveArrivalLog = state._liveArrivalLog.filter((event) => event.revision > revision);
+  for (const [key, event] of state._liveArrivalOverflow) {
+    if (event.revision <= revision) state._liveArrivalOverflow.delete(key);
+  }
+  return revision;
+}
+
+function acknowledgePresentationArrivals(state, throughRevision) {
+  const revision = Math.min(
+    state._livePresentationArrivalRevision,
+    Math.max(state._livePresentationArrivalAckRevision, numeric(throughRevision)),
+  );
+  state._livePresentationArrivalAckRevision = revision;
+  state._livePresentationArrivalLog = state._livePresentationArrivalLog
+    .filter((event) => event.revision > revision);
+  return revision;
+}
+
+function arrivalReceiptPort(state) {
+  return Object.freeze({
+    timeline: () => timelineArrivalSnapshot(state),
+    presentation: (throughSourceRevision) => presentationArrivalSnapshot(state, throughSourceRevision),
+    attachTimelineConsumer(consumerToken) {
+      state._liveArrivalConsumerTokens.add(consumerToken);
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        state._liveArrivalConsumerTokens.delete(consumerToken);
+      };
+    },
+    attachPresentationConsumer(consumerToken) {
+      if (state._livePresentationArrivalConsumerTokens.size === 0) {
+        acknowledgePresentationArrivals(state, state._livePresentationArrivalRevision);
+      }
+      state._livePresentationArrivalConsumerTokens.add(consumerToken);
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        state._livePresentationArrivalConsumerTokens.delete(consumerToken);
+        if (state._livePresentationArrivalConsumerTokens.size === 0) {
+          acknowledgePresentationArrivals(state, state._livePresentationArrivalRevision);
+        }
+      };
+    },
+    dispatch(command) {
+      if (command?.type === LIVE_ARRIVAL_RECEIPT.acknowledgeTimeline) {
+        return acknowledgeTimelineArrivals(state, command.throughRevision);
+      }
+      if (command?.type === LIVE_ARRIVAL_RECEIPT.acknowledgePresentation) {
+        return acknowledgePresentationArrivals(state, command.throughRevision);
+      }
+      throw new TypeError('Unknown live-arrival receipt command');
+    },
+  });
+}
+
 function createState(channelId) {
-  return {
+  const state = {
     channelId, rows: new Map(), timeline: [], narration: [], lastSeq: 0,
     _envelopesById: new Map(), _timelineRevision: 0, _timelineProjectionVersion: 0,
     _timelineChangeBase: 0, _timelineChangeLog: [],
@@ -262,6 +354,8 @@ function createState(channelId) {
     _livePresentationArrivalRevision: 0, _livePresentationArrivalAckRevision: 0,
     _livePresentationArrivalLog: [], _livePresentationArrivalConsumerTokens: new Set(),
   };
+  state.arrivalReceipts = arrivalReceiptPort(state);
+  return state;
 }
 
 export function createChannelReplicaStore() {
