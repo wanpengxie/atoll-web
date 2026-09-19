@@ -14,6 +14,18 @@ const LIVE_PRESENTATION_ARRIVAL_LIMIT = 1_024;
 const QUOTA_MIN_RETAINED_ROWS = 8;
 const memoryCache = new Map();
 
+function isQuotaError(error) {
+  return error?.name === 'QuotaExceededError'
+    || error?.code === 'QuotaExceededError'
+    || error?.cause?.name === 'QuotaExceededError';
+}
+
+function cacheUnavailableError() {
+  return Object.assign(new Error('本地缓存不可用，已转网络重取'), {
+    code: 'cache_unavailable',
+  });
+}
+
 function numeric(value) {
   const result = Number(value);
   return Number.isSafeInteger(result) && result >= 0 ? result : 0;
@@ -847,10 +859,21 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
   const assertOwner = (operationOwner, epoch) => {
     if (epoch !== ownerEpoch || operationOwner !== owner) throw ownerChanged();
   };
-  const copyMeta = (value = {}) => ({
-    ...value,
-    coverage: mergeReplicaCoverage(value.coverage || []),
-  });
+  const copyMeta = (value = {}) => {
+    const copied = {
+      ...value,
+      coverage: mergeReplicaCoverage(value.coverage || []),
+    };
+    const quotaTailRows = numeric(value.quotaTailRows);
+    if (quotaTailRows > 0) copied.quotaTailRows = quotaTailRows;
+    else delete copied.quotaTailRows;
+    return copied;
+  };
+  const physicalCoverage = (entries = []) => {
+    const seqs = [...new Set(entries.map((entry) => numeric(entry?.seq)).filter((seq) => seq > 0))]
+      .sort((left, right) => left - right);
+    return seqs.reduce((ranges, seq) => mergeReplicaCoverage(ranges, { lowSeq: seq, highSeq: seq }), []);
+  };
   const metadataForEntries = (entries, base = {}) => {
     const seqs = entries.map((entry) => numeric(entry?.seq)).filter(Boolean);
     return {
@@ -861,6 +884,54 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       rowCount: seqs.length,
     };
   };
+  const metadataForPhysicalEntries = (entries, base = {}, quotaTailRows = 0) => {
+    const value = metadataForEntries(entries, { ...base, headSeq: 0, coverage: [] });
+    value.headSeq = value.newestSeq;
+    value.coverage = physicalCoverage(entries);
+    if (numeric(quotaTailRows) > 0) value.quotaTailRows = numeric(quotaTailRows);
+    else delete value.quotaTailRows;
+    return value;
+  };
+
+  function mergePhysicalRecords(existing = [], incoming = [], operationOwner, channelId) {
+    const bySeq = new Map();
+    for (const entry of existing) {
+      const seq = numeric(entry?.seq);
+      if (seq > 0) bySeq.set(seq, {
+        owner: operationOwner,
+        channelId,
+        seq,
+        row: entry.row,
+      });
+    }
+    for (const row of incoming) {
+      const seq = numeric(row?.seq);
+      if (seq > 0) bySeq.set(seq, {
+        owner: operationOwner,
+        channelId,
+        seq,
+        row: structuredClone(row),
+      });
+    }
+    return [...bySeq.values()].sort((left, right) => left.seq - right.seq);
+  }
+
+  // Keep every incoming row. When a quota recovery or an already bounded
+  // channel needs a smaller window, evict old physical rows first; otherwise
+  // the API could report a successful write for a row that was never stored.
+  function physicalWindow(existing, incoming, limit, operationOwner, channelId, recovering = false) {
+    const incomingSeqs = new Set(incoming.map((row) => numeric(row?.seq)).filter((seq) => seq > 0));
+    const retainedExisting = recovering
+      ? existing.slice(-Math.floor(existing.length / 2))
+      : existing;
+    const merged = mergePhysicalRecords(retainedExisting, incoming, operationOwner, channelId);
+    const maximum = numeric(limit);
+    if (!maximum || merged.length <= maximum) return merged;
+    const removable = merged.filter((entry) => !incomingSeqs.has(entry.seq));
+    const removeCount = Math.min(merged.length - maximum, removable.length);
+    const remove = new Set(removable.slice(0, removeCount).map((entry) => entry.seq));
+    return merged.filter((entry) => !remove.has(entry.seq));
+  }
 
   async function ownedRows(db, operationOwner, epoch) {
     assertOwner(operationOwner, epoch);
@@ -930,33 +1001,50 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     for (const [channelId, value] of touched) meta.set(channelId, copyMeta(value));
   }
 
-  async function trimChannelRows(channelId, keep, db, operationOwner, epoch) {
-    const records = (await ownedRows(db, operationOwner, epoch))
-      .filter((entry) => entry.channelId === channelId)
-      .sort((left, right) => numeric(left.seq) - numeric(right.seq));
-    const retained = Math.max(0, numeric(keep));
-    const remove = records.slice(0, Math.max(0, records.length - retained));
-    if (!remove.length) return 0;
-    const survivorRecords = records.slice(remove.length);
-    const value = metadataForEntries(survivorRecords, meta.get(channelId));
+  // Quota recovery is one clear/rebuild transaction. The old implementation
+  // trimmed in one transaction, appended in another, and copied the old
+  // broad coverage into Meta; a later failure could therefore leave physical
+  // rows and Meta describing different windows. The replacement below deletes
+  // only this owner/channel's known rows, installs the retained redacted
+  // window, and commits its physical coverage together with the rows.
+  async function replaceChannelRows(db, operationOwner, epoch, replacements) {
     assertOwner(operationOwner, epoch);
+    if (!replacements.size) return;
     if (!db) {
       const memory = memoryForOwner();
-      for (const entry of remove) memory.rows.delete(`${channelId}\u0000${numeric(entry.seq)}`);
-      meta.set(channelId, copyMeta(value));
+      for (const [channelId, replacement] of replacements) {
+        for (const entry of replacement.existing) {
+          memory.rows.delete(`${channelId}\u0000${numeric(entry.seq)}`);
+        }
+        for (const entry of replacement.target) {
+          memory.rows.set(`${channelId}\u0000${numeric(entry.seq)}`, structuredClone(entry.row));
+        }
+        meta.set(channelId, copyMeta(replacement.value));
+      }
       memory.meta = new Map([...meta].map(([id, item]) => [id, copyMeta(item)]));
-      return remove.length;
+      return;
     }
     const transaction = db.transaction(['rows', 'meta'], 'readwrite');
     const completion = transactionDone(transaction);
     try {
       const rowsStore = transaction.objectStore('rows');
-      for (const entry of remove) rowsStore.delete([operationOwner, channelId, numeric(entry.seq)]);
-      transaction.objectStore('meta').put({
-        owner: operationOwner,
-        channelId,
-        value: structuredClone(copyMeta(value)),
-      });
+      const metaStore = transaction.objectStore('meta');
+      for (const [channelId, replacement] of replacements) {
+        for (const entry of replacement.existing) {
+          rowsStore.delete([operationOwner, channelId, numeric(entry.seq)]);
+        }
+        for (const entry of replacement.target) rowsStore.put({
+          owner: operationOwner,
+          channelId,
+          seq: numeric(entry.seq),
+          row: structuredClone(entry.row),
+        });
+        metaStore.put({
+          owner: operationOwner,
+          channelId,
+          value: structuredClone(copyMeta(replacement.value)),
+        });
+      }
     } catch (error) {
       try { transaction.abort(); } catch { /* already inactive */ }
       try { await completion; } catch { /* preserve original request error */ }
@@ -964,8 +1052,9 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     }
     await completion;
     assertOwner(operationOwner, epoch);
-    meta.set(channelId, copyMeta(value));
-    return remove.length;
+    for (const [channelId, replacement] of replacements) {
+      meta.set(channelId, copyMeta(replacement.value));
+    }
   }
 
   async function ensureOwner(principalId, { world = '' } = {}) {
@@ -976,11 +1065,22 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     quotaBounds.clear();
     const db = await dbPromise;
     assertOwner(selectedOwner, epoch);
-    if (!db) meta = new Map(memoryForOwner().meta);
+    if (!db) {
+      meta = new Map(memoryForOwner().meta);
+      for (const [channelId, value] of meta) {
+        const limit = numeric(value?.quotaTailRows);
+        if (limit > 0) quotaBounds.set(channelId, limit);
+      }
+    }
     else {
       const entries = await requestResult(db.transaction('meta', 'readonly').objectStore('meta').getAll());
       assertOwner(selectedOwner, epoch);
-      for (const entry of entries) if (entry.owner === selectedOwner) meta.set(entry.channelId, entry.value);
+      for (const entry of entries) if (entry.owner === selectedOwner) {
+        const value = copyMeta(entry.value);
+        meta.set(entry.channelId, value);
+        const limit = numeric(value?.quotaTailRows);
+        if (limit > 0) quotaBounds.set(entry.channelId, limit);
+      }
     }
     return { changed: false, boot: world, meta: new Map(meta) };
   }
@@ -1022,35 +1122,89 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       return touched;
     };
 
+    const incomingByChannel = new Map();
+    for (const row of persistedRows) {
+      if (!incomingByChannel.has(row.channel_id)) incomingByChannel.set(row.channel_id, []);
+      incomingByChannel.get(row.channel_id).push(row);
+    }
+
+    const replacementFor = async (channels, { recovering = false, bounds = new Map() } = {}) => {
+      const physical = await ownedRows(db, operationOwner, epoch);
+      const touched = buildTouched();
+      const replacements = new Map();
+      for (const channelId of channels) {
+        const existing = physical
+          .filter((entry) => entry.channelId === channelId)
+          .sort((left, right) => numeric(left.seq) - numeric(right.seq));
+        const incoming = incomingByChannel.get(channelId) || [];
+        const limit = numeric(bounds.get(channelId) || quotaBounds.get(channelId));
+        const target = physicalWindow(
+          existing,
+          incoming,
+          limit || Math.max(QUOTA_MIN_RETAINED_ROWS, existing.length),
+          operationOwner,
+          channelId,
+          recovering,
+        );
+        const value = metadataForPhysicalEntries(
+          target,
+          touched.get(channelId) || meta.get(channelId),
+          limit,
+        );
+        replacements.set(channelId, { existing, target, value });
+      }
+      return replacements;
+    };
+
     const persist = () => persistBatch(db, operationOwner, epoch, persistedRows, buildTouched());
+    const boundedTouched = [...touchedChannels].filter((channelId) => quotaBounds.has(channelId));
+    if (boundedTouched.length) {
+      // Once a channel has hit quota, every later write to it uses the same
+      // atomic physical-window transaction. This also clips an explicit broad
+      // coverage hint to rows that really exist after a reload.
+      const replacements = await replacementFor(boundedTouched);
+      try {
+        await replaceChannelRows(db, operationOwner, epoch, replacements);
+      } catch (error) {
+        if (isQuotaError(error)) throw cacheUnavailableError();
+        throw error;
+      }
+      const unboundedChannels = [...touchedChannels].filter((channelId) => !quotaBounds.has(channelId));
+      const unboundedRows = persistedRows.filter((row) => !quotaBounds.has(row.channel_id));
+      if (unboundedChannels.length && (unboundedRows.length || coverage?.channelId && unboundedChannels.includes(coverage.channelId))) {
+        const unboundedTouched = new Map([...buildTouched()]
+          .filter(([channelId]) => unboundedChannels.includes(channelId)));
+        await persistBatch(db, operationOwner, epoch, unboundedRows, unboundedTouched);
+      }
+      return accepted.length;
+    }
+
     try {
       await persist();
     } catch (error) {
-      if (error?.name !== 'QuotaExceededError') throw error;
+      if (!isQuotaError(error)) throw error;
 
-      // The failed transaction is rolled back before any eviction. Trim the
-      // oldest half of each affected channel, then retry the exact redacted
-      // rows. A channel that has recovered from quota keeps a small tail so
-      // subsequent appends do not immediately recreate the same pressure.
+      // The failed transaction is rolled back before eviction. Rebuild every
+      // touched channel in one rows+meta transaction so a retry either
+      // commits a physically represented window or leaves the old window and
+      // its metadata untouched.
       const bounds = new Map();
       for (const channelId of touchedChannels) {
         const records = (await ownedRows(db, operationOwner, epoch))
           .filter((entry) => entry.channelId === channelId);
         const count = records.length;
-        if (!count) throw error;
-        bounds.set(channelId, Math.max(QUOTA_MIN_RETAINED_ROWS, count));
-        await trimChannelRows(channelId, Math.floor(count / 2), db, operationOwner, epoch);
+        if (count || (incomingByChannel.get(channelId) || []).length) {
+          bounds.set(channelId, Math.max(QUOTA_MIN_RETAINED_ROWS, count));
+        }
+      }
+      const replacements = await replacementFor(touchedChannels, { recovering: true, bounds });
+      try {
+        await replaceChannelRows(db, operationOwner, epoch, replacements);
+      } catch (retryError) {
+        if (isQuotaError(retryError)) throw cacheUnavailableError();
+        throw retryError;
       }
       for (const [channelId, limit] of bounds) quotaBounds.set(channelId, limit);
-      await persist();
-    }
-
-    // Keep the retry's durable metadata and row order in sync with the
-    // actual rows store. This is a second transaction only after the append
-    // has committed; a failed append never publishes a speculative Meta map.
-    for (const [channelId, limit] of quotaBounds) {
-      if (!touchedChannels.has(channelId)) continue;
-      await trimChannelRows(channelId, limit, db, operationOwner, epoch);
     }
     return accepted.length;
   }
@@ -1088,10 +1242,15 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
         }
         const migration = db.transaction('rows', 'readwrite');
         for (const { entry, row } of legacyRows) migration.objectStore('rows').put({ ...entry, row });
-        await new Promise((resolve, reject) => {
-          migration.oncomplete = resolve;
-          migration.onabort = migration.onerror = () => reject(migration.error || new Error('replica cache redaction migration failed'));
-        });
+        try {
+          await new Promise((resolve, reject) => {
+            migration.oncomplete = resolve;
+            migration.onabort = migration.onerror = () => reject(migration.error || new Error('replica cache redaction migration failed'));
+          });
+        } catch (error) {
+          if (isQuotaError(error)) throw cacheUnavailableError();
+          throw error;
+        }
         if (epoch !== ownerEpoch || operationOwner !== owner) {
           throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
         }

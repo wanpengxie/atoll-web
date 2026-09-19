@@ -746,6 +746,12 @@ export function createChannelFeedRuntime(options = {}) {
     } catch (error) {
       if (signal?.aborted || error?.code === 'history_cancelled') return { kind: 'cancelled' };
       adapters.fail(batch);
+      // A durable cache quota failure is a recoverable source failure, not a
+      // history terminal. Let loadHistory issue the same request against the
+      // network and keep the user-facing diagnostic understandable.
+      if (batch.source === 'indexeddb' && error?.code === 'cache_unavailable') {
+        return { kind: 'cache-miss', cacheUnavailable: true };
+      }
       return { kind: 'failed', error };
     } finally {
       signal?.removeEventListener('abort', abort);

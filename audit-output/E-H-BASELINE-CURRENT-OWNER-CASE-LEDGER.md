@@ -11,7 +11,8 @@
 - HEAD 同名保留 7 套件 / 42 case（含 `history-scheduler-modules.test.js`）；既有删改提交删除 20 套件 / 218 case。删除不是本轮“隐藏 import 失败”：每条旧 import、UX 能力和当前 owner 都在下表与 case ledger 中裁决；本轮不恢复旧 store/compat/vendor/package。
 - Suite contract record 保留 C（用户能力）、I（架构不变量）、O（当前公开 owner）、S（旧 setup/action/result）、F（suite 事实）作为导航；旧的 EHxx.C/I/O/S/F 泛化行已被下面的严格逐 case ledger 替代，不再单独计为证明。
 - 当前 owner 直接替代文件的新增证据：本 agent 的 `f6-accessibility` 2、`final-echo` 5、`foldable-body` 5、`history-demand` 5，以及本轮 `history-scheduler-modules` 5、`following-tail-list` 4、`f6-composer-isolation` 的 public command/runtime harness；本轮还补了 `live-timeline-arrivals` 的 Replica arrival journal 与 `channel-feed-runtime` 的 generation fence。共享树已有 f5/files/hook replacements。下表不把未提交他 agent 文件冒充本 agent 改动。
-- 本 agent 只编辑 tests/report；未改 `src/`、`vendor/`、`package.json` 或旧模块。测试失败不以放宽断言、删 import 或产品补丁消除。
+- 当前 quota owner 修正（2026-09-20）：EH08-05 的历史 `feed-cache` 两阶段 trim/retry 描述仅保留为基线行为；`createChannelReplicaCache` 现以同一 `rows`+`meta` transaction 原子重建实际窗口，coverage 只覆盖 surviving rows，二次 quota 回滚并发布 `cache_unavailable` 供 Feed network retry。证据见 `tests/channel-replica-cache-redaction.test.js` 的跨频道/coverage/reload 反例及浏览器 F7 quota case；不引入 `globalMeta` 或第二 cache。
+- 本 baseline ledger 的原始审计未改 `vendor/`、`package.json` 或旧模块；2026-09-20 quota owner correction 另改动 `src/model/channel-replica.js` 与 Feed 定向测试，未恢复旧 `feed-cache`/compat。测试失败不以放宽断言、删 import 或产品补丁消除。
 
 ## Suite contract records（C/I/O/S/F）
 

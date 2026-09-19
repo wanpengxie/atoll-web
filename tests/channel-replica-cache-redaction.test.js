@@ -159,12 +159,22 @@ describe('Replica 缓存持久化前应隐藏设备密钥/凭据（恢复自 tes
       IDBObjectStore.prototype.put = originalPut;
     }
 
-    // Deliberately arrive out of order after recovery. The canonical rows
-    // store, not insertion order or a second cache, owns the restored order.
-    await cache.saveRows([15, 10, 12, 11, 14, 13].map((seq) => ({
+    // Reload before the next append: the bound is part of the same channel
+    // Meta row, so a new cache instance must continue atomic tail recovery.
+    await cache.destroy();
+    const reloaded = createChannelReplicaCache({ indexedDB });
+    await reloaded.ensureOwner('root', { world: 'boot-a' });
+    expect(reloaded.metaSnapshot().get('c0')).toMatchObject({
+      oldestSeq: 5, newestSeq: 9, rowCount: 5, quotaTailRows: 8,
+      coverage: [{ lowSeq: 5, highSeq: 9 }],
+    });
+
+    // Deliberately arrive out of order after reload. The canonical rows store,
+    // not insertion order or a second cache, owns the restored order.
+    await reloaded.saveRows([15, 10, 12, 11, 14, 13].map((seq) => ({
       channel_id: 'c0', seq, envelope: envelope(seq),
     })), { coverage: { channelId: 'c0', lowSeq: 1, highSeq: 15 } });
-    await cache.destroy();
+    await reloaded.destroy();
 
     const restored = createChannelReplicaCache({ indexedDB });
     await restored.ensureOwner('root', { world: 'boot-a' });
@@ -177,8 +187,68 @@ describe('Replica 缓存持久化前应隐藏设备密钥/凭据（恢复自 tes
     });
     expect(restored.metaSnapshot().get('c0')).toMatchObject({
       oldestSeq: 8, newestSeq: 15, rowCount: 8,
+      // Quota recovery may only publish coverage for physical surviving rows;
+      // the discarded 1..7 range must not become a resume promise.
+      coverage: [{ lowSeq: 8, highSeq: 15 }],
     });
     await restored.destroy();
+  });
+
+  it('quota recovery is channel-local and a second quota leaves the old window for network refetch', async () => {
+    await clearCache();
+    const cache = createChannelReplicaCache({ indexedDB });
+    await cache.ensureOwner('root', { world: 'boot-a' });
+    const row = (channel_id, seq) => ({
+      channel_id, seq,
+      envelope: { id: `${channel_id}-row-${seq}`, kind: 'event', type: 'human.note',
+        payload: { body: { text: `${channel_id}:${seq}` } } },
+    });
+    await cache.saveRows([
+      ...Array.from({ length: 8 }, (_, index) => row('c0', index + 1)),
+      row('c1', 1), row('c1', 2),
+    ]);
+
+    const originalPut = IDBObjectStore.prototype.put;
+    let quotaFailures = 0;
+    IDBObjectStore.prototype.put = function put(value, ...args) {
+      if (this.name === 'rows' && value?.channelId === 'c0' && value?.seq === 9) {
+        quotaFailures += 1;
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      return originalPut.call(this, value, ...args);
+    };
+    try {
+      await expect(cache.saveRows([row('c0', 9)], {
+        coverage: { channelId: 'c0', lowSeq: 1, highSeq: 9 },
+      })).rejects.toMatchObject({
+        code: 'cache_unavailable',
+        message: '本地缓存不可用，已转网络重取',
+      });
+    } finally {
+      IDBObjectStore.prototype.put = originalPut;
+    }
+
+    // The failed clear/rebuild is atomic: c0 keeps its old rows and broad
+    // coverage, while c1 is never touched by the c0 quota attempt.
+    expect(quotaFailures).toBe(2);
+    expect((await cache.readBefore('c0', 10, 20, 10_000)).rows.map((item) => item.seq))
+      .toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect((await cache.readBefore('c1', 3, 20, 10_000)).rows.map((item) => item.seq))
+      .toEqual([1, 2]);
+    expect(cache.metaSnapshot().get('c0')).toMatchObject({
+      oldestSeq: 1, newestSeq: 8, rowCount: 8,
+      coverage: [{ lowSeq: 1, highSeq: 8 }],
+    });
+    expect(cache.metaSnapshot().get('c1')).toMatchObject({
+      oldestSeq: 1, newestSeq: 2, rowCount: 2,
+      coverage: [{ lowSeq: 1, highSeq: 2 }],
+    });
+    await cache.destroy();
+
+    const reloaded = createChannelReplicaCache({ indexedDB });
+    await reloaded.ensureOwner('root', { world: 'boot-a' });
+    expect(reloaded.metaSnapshot().get('c0')).toMatchObject({ rowCount: 8, coverage: [{ lowSeq: 1, highSeq: 8 }] });
+    await reloaded.destroy();
   });
 
   it('写入事务失败时不提前发布 Meta 或留下半条 row', async () => {
