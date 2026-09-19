@@ -23,12 +23,15 @@ import { readServerWorld } from './hooks/useWireSession.js';
 import { ptyClient } from '../net/pty.js';
 import { diagnostic } from '../model/diagnostics.js';
 import { selectFeatureTaskFacts } from '../model/feature-tasks.js';
+import { selectFeatureSearchIndex } from '../model/feature-search.js';
+import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
 import { VersionIncompatible } from '../ui/VersionIncompatible.jsx';
 import { ConversationSurface } from '../ui/conversation/ConversationSurface.jsx';
 import { Composer, useComposerCommands } from '../ui/composer/index.js';
 import {
   WorkspaceFeatures,
+  WorkspaceFeatureOverlays,
   WorkspaceRightPanel,
 } from '../ui/features/index.js';
 
@@ -227,7 +230,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     stateFor: feed.stateFor,
     feedVersion: feed.version,
     handleSend: submissionProxy.send,
-    pending: submissionPortRef.current?.pending || EMPTY_ARRAY,
+    pending: submissionPortRef.current?.pending,
     rosterRef: wire.rosterRef,
     rosters: roster.rosters,
     wireState: wire.state,
@@ -255,6 +258,21 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     attachmentRef: attachmentPortRef,
   });
   const submission = composer.submission;
+  const sendSystemCommand = useCallback((channelId, msgType, payload) => {
+    if (!channelId) return Promise.reject(new TypeError('请先选择频道'));
+    const channelAccess = wire.accessRef.current?.state?.(channelId);
+    if (channelAccess?.relationship !== 'member' || channelAccess.unavailable) {
+      return Promise.reject(new TypeError('当前身份不能治理该频道'));
+    }
+    return submission.send({
+      channelId,
+      text: '',
+      msgType,
+      audience: [SYSTEM_ACTOR_ID],
+      targetLabel: SYSTEM_ACTOR_ID,
+      payload,
+    });
+  }, [submission.send, wire.accessRef]);
   const attachments = useAttachmentTransactions({
     activeChannel: navigation.activeChannel,
     activeChannelId: navigation.activeChannelId,
@@ -390,6 +408,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     debugSnapshot: () => feed.coldEntryDiagnosticsFor(navigation.activeChannelId),
   } : null;
   const capabilities = probes.capabilitiesFor(navigation.activeChannelId);
+  const searchIndex = useMemo(() => selectFeatureSearchIndex({
+    states: feed.stateEntries(),
+    channels: navigation.channels,
+    rosters: roster.rosters,
+  }), [feed.version, navigation.channels, roster.rosters]);
   const resourceEntry = useCallback((channelId, resource) => ({
     key: `resource:${channelId}:${resource?.resource_id || resource?.resourceId || resource?.path || ''}`,
     channelId,
@@ -422,7 +445,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     roster: channelRoster,
     waitingRosterAuthority: roster.authorities.get(navigation.activeChannelId) || null,
     selfId,
-    pending: submission.pending || EMPTY_ARRAY,
+    pending: submission.pending,
     approvalStates: submission.approvalStates || {},
     controlStates: submission.controlStates || {},
     capabilityIndex: capabilities,
@@ -450,6 +473,18 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     () => selectFeatureTaskFacts({ state, pending: submission.pending, selfId }),
     [feed.version, selfId, state, submission.pending],
   );
+  const panelKind = typeof panel === 'string' ? panel : panel?.kind || '';
+  const selectedActor = panelKind === 'actor' ? panel.actor : null;
+  const selectedActorChannelId = panelKind === 'actor' ? panel.channelId : navigation.activeChannelId;
+  const selectedActorCapability = selectedActor
+    ? probes.capabilitiesFor(selectedActorChannelId).get(selectedActor.id)
+    : null;
+  const directory = wire.accessRef.current?.directory?.() || {
+    principals: EMPTY_ARRAY,
+    declarations: EMPTY_ARRAY,
+    devices: EMPTY_ARRAY,
+    support: {},
+  };
   const filesPort = {
     devices: attachments.devices,
     deviceId: attachments.deviceId,
@@ -495,8 +530,103 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const rosterPort = {
     rows: channelRoster,
     selfId,
+    identityPending: !selfId || !roster.authorities.get(navigation.activeChannelId)?.current,
     busy: roster.busy,
-    commands: { refresh: () => roster.refresh(navigation.activeChannelId, true) },
+    selectedActor,
+    actorDetail: selectedActorCapability?.describe ? {
+      capabilities: [...selectedActorCapability.describe.types.values()],
+    } : null,
+    detailBusy: Boolean(selectedActorCapability?.loading),
+    detailError: selectedActorCapability?.error?.detail || selectedActorCapability?.error?.code || '',
+    disabled: access?.relationship !== 'member',
+    commands: {
+      refresh: () => roster.refresh(navigation.activeChannelId, true),
+      select: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
+      describe: (actor) => probes.requestCapability(actor.id, selectedActorChannelId),
+      invoke: ({ actor, type, payload }) => submission.send({
+        channelId: selectedActorChannelId,
+        text: '',
+        msgType: type,
+        audience: [actor.id],
+        targetLabel: actor.name || actor.id,
+        payload,
+      }),
+    },
+  };
+  const submitGovernance = ({ scope, action, payload }) => {
+    if (scope !== 'channel') return Promise.reject(unavailableError('governance.space'));
+    const channelId = String(payload.channelId || navigation.activeChannelId || '');
+    if (action === 'update_profile') return sendSystemCommand(channelId, TYPES.channel.set, {
+      channel_id: channelId,
+      description: String(payload.description || ''),
+    });
+    if (action === 'create_child') return sendSystemCommand(channelId, TYPES.channel.create, {
+      name: String(payload.name || '').trim(),
+      recipe: {
+        declarations: [],
+        profile: {
+          ...(attachments.deviceId ? { default_storage_device_id: attachments.deviceId } : {}),
+          description: String(payload.purpose || ''),
+        },
+      },
+      initial_actor_ids: [selfId].filter(Boolean),
+    });
+    if (action === 'introduce_actor') {
+      const human = payload.candidateType === 'principal';
+      return sendSystemCommand(channelId, human ? TYPES.member.admit : TYPES.member.create, human
+        ? { principal: payload.candidateId }
+        : { decl_id: payload.candidateId });
+    }
+    if (action === 'remove_actor') return sendSystemCommand(channelId, TYPES.member.remove, { member: payload.actorId });
+    if (action === 'retire') return sendSystemCommand(channelId, TYPES.channel.remove, { channel_id: channelId });
+    return Promise.reject(unavailableError(`governance.channel.${action}`));
+  };
+  const governancePort = {
+    channel: {
+      disabled: access?.relationship !== 'member',
+      children: navigation.channels.filter((channel) => channel.parent_id === navigation.activeChannelId),
+      principals: directory.support?.principals
+        ? directory.principals.filter((row) => row.id !== principalId && row.kind === 'human')
+        : EMPTY_ARRAY,
+      declarations: directory.support?.declarations
+        ? directory.declarations.filter((row) => !['registrar', 'svcactor'].includes(row.id)
+          && !String(row.id).startsWith('atoll-internal:') && !String(row.id).startsWith('peer:'))
+        : EMPTY_ARRAY,
+      candidatesUnavailable: !directory.support?.principals || !directory.support?.declarations,
+      roster: channelRoster,
+      selfId,
+      commands: {
+        refresh: (kind) => {
+          if (kind === 'members') return roster.refresh(navigation.activeChannelId, true);
+          const refresh = accessActionsRef.current.refresh;
+          if (typeof refresh !== 'function') throw unavailableError('directory.refresh');
+          return refresh();
+        },
+        selectActor: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
+        submit: submitGovernance,
+      },
+    },
+    space: {
+      disabled: true,
+      unsupported: '当前 wire/session 没有空间治理结果投影；此版本仅展示 OBS 目录，不会伪造成功。',
+      actorTemplates: directory.declarations,
+      channelTemplates: EMPTY_ARRAY,
+      devices: directory.devices.map((device) => ({
+        ...device,
+        attached: attachments.devices.some((row) => row.id === device.id),
+      })),
+      commands: {
+        submit: () => Promise.reject(unavailableError('governance.space')),
+      },
+    },
+  };
+  const searchOpen = panelKind === 'search';
+  const openSearchResult = (source) => {
+    if (!source?.channelId) return;
+    navigation.select(source.channelId);
+    navigation.setActiveView('conversation');
+    if (source.kind === 'actor') setPanel({ kind: 'actor', actor: source.actor, channelId: source.channelId });
+    else setPanel('');
   };
   const featureElement = <WorkspaceFeatures
     activeView={terminalVisible ? 'conversation' : navigation.activeView}
@@ -518,7 +648,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       },
     }}
   />;
-  const rightPanel = panel ? <WorkspaceRightPanel
+  const rightPanel = panel && !searchOpen ? <WorkspaceRightPanel
     panel={panel}
     channel={navigation.activeChannel}
     files={filesPort}
@@ -526,8 +656,14 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       ? { ...tasksPort, selectedItem: panel.item }
       : tasksPort}
     roster={rosterPort}
+    governance={governancePort}
     onClose={() => setPanel('')}
   /> : null;
+  const overlays = <WorkspaceFeatureOverlays search={{
+    open: searchOpen,
+    index: searchIndex,
+    commands: { close: () => setPanel(''), open: openSearchResult },
+  }} />;
 
   if (wire.incompatible) return <VersionIncompatible
     expectedVersion={wire.incompatible.expected_version ?? wire.incompatible.expected}
@@ -549,11 +685,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       setActiveView: navigation.setActiveView,
       openTerminal: () => { setPanel(''); setTerminalVisible((value) => !value); },
       openRoster: () => setPanel('roster'),
+      openSearch: () => setPanel('search'),
+      openChannelAdministration: () => setPanel('channel-administration'),
+      openSpaceAdministration: () => setPanel('space-administration'),
     }}
     notices={{ error: topError, channel: channelNotice, dismissError: () => setTopError(''), dismissChannel: () => setChannelNotice('') }}
     conversation={conversationPort}
     features={featureElement}
     rightPanel={rightPanel}
+    overlays={overlays}
   />;
 }
 

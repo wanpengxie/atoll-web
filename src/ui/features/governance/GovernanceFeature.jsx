@@ -13,7 +13,10 @@ function useCommand(commands, scope) {
   const [error, setError] = useState('');
   const submit = async (action, payload = {}) => {
     setError('');
-    try { return await commands?.submit?.({ scope, action, payload }); }
+    try {
+      if (typeof commands?.submit !== 'function') throw new TypeError(`${scope} 治理命令不可用`);
+      return await commands.submit({ scope, action, payload });
+    }
     catch (failure) { setError(errorMessage(failure)); return undefined; }
   };
   return { error, submit };
@@ -26,6 +29,7 @@ function ChannelOverview({ channel, port }) {
   useEffect(() => setDescription(channel?.description || ''), [channel?.description, channel?.id]);
   return <>
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
+    {port.candidatesUnavailable && <p className="governance-error" role="status">成员候选目录当前不可用；已有名册仍可查看和刷新。</p>}
     <PanelCard className="governance-form" title="频道资料"><label>频道 ID<input readOnly value={channel?.id || ''} /></label><label>说明<textarea rows="3" value={description} onChange={(event) => setDescription(event.target.value)} /></label><button type="button" className="primary-button" disabled={port.disabled} onClick={() => action.submit('update_profile', { channelId: channel?.id, description })}>保存频道资料</button></PanelCard>
     <PanelCard className="governance-form" title="创建子频道"><label>名称<input value={child.name} onChange={(event) => setChild({ ...child, name: event.target.value })} /></label><label>用途<textarea rows="3" value={child.purpose} onChange={(event) => setChild({ ...child, purpose: event.target.value })} /></label><label>频道模板<SelectMenu ariaLabel="频道模板" value={child.templateId} options={(port.space?.channelTemplates || []).map((row) => ({ value: row.id, label: row.name || row.id }))} onChange={(templateId) => setChild({ ...child, templateId })} /></label><button type="button" className="primary-button" disabled={port.disabled || !child.name.trim()} onClick={() => action.submit('create_child', { ...child, parentId: channel?.id })}>创建子频道</button></PanelCard>
     <PanelCard title="子频道">{(port.children || []).map((row) => <div className="device-row" key={row.id}><div><strong>{row.name || row.id}</strong><small>{row.id} · {row.status || 'present'}</small></div></div>)}{!port.children?.length && <p className="governance-empty">没有子频道。</p>}</PanelCard>
@@ -104,6 +108,7 @@ export function SpaceAdministrationPanel({ channel, port = {}, onClose }) {
   const action = useCommand(port.commands, 'space');
   const tabs = [{ id: 'actor_templates', label: 'Actor 模板' }, { id: 'channel_templates', label: '频道模板' }, { id: 'configuration', label: '频道配置' }, { id: 'devices', label: '设备' }];
   return <SidePanel className="space-administration" ariaLabel="空间管理" eyebrow="SPACE CONTROL" title="空间管理" tabs={tabs} activeTab={tab} onTabChange={setTab} onClose={onClose}>
+    {port.unsupported && <p className="governance-error" role="status">{port.unsupported}</p>}
     {port.operation && <p className={`operation-state state-${port.operation.state || 'pending'}`} role="status">{port.operation.message || '空间命令已提交'}</p>}
     {tab === 'actor_templates' && <SpaceTemplates kind={tab} port={port} />}
     {tab === 'channel_templates' && <SpaceTemplates kind={tab} port={port} />}

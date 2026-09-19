@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 
 const VIEW_LABELS = Object.freeze({ conversation: '动态', files: '文件', tasks: '任务' });
@@ -8,20 +8,55 @@ function connectionLabel(state) {
     || String(state || 'CLOSED').toUpperCase();
 }
 
+function activityDuration(startedAt, now) {
+  const seconds = Math.max(0, Math.floor((now - Number(startedAt || now)) / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function actorShortName(actorId) {
+  return String(actorId || '').split(':')[1] || String(actorId || 'agent');
+}
+
 function WorkspaceRail({ session, navigation, onClose }) {
   const memberChannels = navigation.channels.filter((channel) => String(channel.access || '').startsWith('member_'));
   const otherChannels = navigation.channels.filter((channel) => !String(channel.access || '').startsWith('member_'));
+  const activeCount = Object.values(navigation.agentActivity?.byChannel || {})
+    .reduce((count, channel) => count + (channel.active?.length || 0), 0);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!activeCount) return undefined;
+    setNow(Date.now());
+    const timer = globalThis.setInterval(() => setNow(Date.now()), 1_000);
+    return () => globalThis.clearInterval(timer);
+  }, [activeCount]);
   const renderRows = (rows, empty) => <div className="channel-items">
-    {rows.map((channel) => <button
-      type="button"
-      className={channel.id === navigation.activeChannelId ? 'channel-item active' : 'channel-item'}
-      key={channel.id}
-      onClick={() => { navigation.select(channel.id); onClose?.(); }}
-    >
-      <span className="channel-glyph">#</span>
-      <span className="channel-main"><span className="channel-name">{channel.qualified_name || channel.name || channel.id}</span></span>
-      {navigation.unread?.[channel.id]?.related > 0 && <span className="unread-badge unread-related">{navigation.unread[channel.id].related}</span>}
-    </button>)}
+    {rows.map((channel) => {
+      const activity = navigation.agentActivity?.byChannel?.[channel.id] || {};
+      const active = activity.active || [];
+      const settled = Object.entries(activity.agents || {}).filter(([, value]) => value.state === 'settled');
+      return <button
+        type="button"
+        className={channel.id === navigation.activeChannelId ? 'channel-item active' : 'channel-item'}
+        key={channel.id}
+        onClick={() => {
+          for (const [agentId] of settled) navigation.acknowledgeAgentActivity?.(channel.id, agentId);
+          navigation.select(channel.id);
+          onClose?.();
+        }}
+      >
+        <span className="channel-glyph">#</span>
+        <span className="channel-main">
+          <span className="channel-name">{channel.qualified_name || channel.name || channel.id}</span>
+          {active.length > 0 && <span className="channel-agent-activity" aria-label={`${active.length} 项 Agent 正在运行`}>
+            {active.slice(0, 2).map((entry) => <span className="channel-agent-timer" key={entry.requestId}><i /><b>{actorShortName(entry.agentId)}</b><time>{activityDuration(entry.startedAt, now)}</time></span>)}
+            {active.length > 2 && <span className="channel-agent-more" title={`另有 ${active.length - 2} 项正在运行`}>+{active.length - 2}</span>}
+          </span>}
+          {settled.length > 0 && <span className="channel-agent-more" aria-label={`${settled.length} 项 Agent 已完成`}>✓ {settled.length}</span>}
+        </span>
+        {navigation.unread?.[channel.id]?.related > 0 && <span className="unread-badge unread-related">{navigation.unread[channel.id].related}</span>}
+      </button>;
+    })}
     {!rows.length && <p className="rail-empty">{empty}</p>}
   </div>;
   return <aside className="channel-rail">
@@ -31,6 +66,10 @@ function WorkspaceRail({ session, navigation, onClose }) {
       {onClose && <button type="button" className="mobile-rail-close" onClick={onClose} aria-label="关闭频道列表">×</button>}
     </header>
     <nav aria-label="频道">
+      <div className="rail-global-actions">
+        <button type="button" onClick={navigation.openSearch}>全局搜索</button>
+        <button type="button" onClick={navigation.openSpaceAdministration}>空间管理</button>
+      </div>
       <p className="rail-caption">我的频道 <span>{memberChannels.length}</span></p>
       {renderRows(memberChannels, '还没有加入频道')}
       <p className="rail-caption space-caption">空间 <span>{otherChannels.length}</span></p>
@@ -74,6 +113,7 @@ export function WorkspaceLayout({
           <span className="seq-label">SEQ {Number(conversation?.state?.lastSeq || 0)}</span>
           {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`header-action terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} disabled={!channel} onClick={navigation.openTerminal}>终端</button>}
           {navigation.openRoster && <button type="button" className="header-action" disabled={!channel} onClick={navigation.openRoster}>成员</button>}
+          {navigation.openChannelAdministration && <button type="button" className="header-action" disabled={!channel} onClick={navigation.openChannelAdministration}>频道治理</button>}
         </div>
       </header>
       <nav className="channel-view-tabs" role="tablist" aria-label="频道主视图">

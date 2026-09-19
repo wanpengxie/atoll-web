@@ -87,6 +87,12 @@ function accessMode(state, connected) {
 
 function createSessionAccess({ principalId }) {
   const states = new Map();
+  let spaceDirectory = Object.freeze({
+    principals: Object.freeze([]),
+    declarations: Object.freeze([]),
+    devices: Object.freeze([]),
+    support: Object.freeze({ principals: false, declarations: false, devices: false }),
+  });
   let connected = false;
   let authorityEpoch = 0;
   const ensure = (channelId, profile = null) => {
@@ -128,6 +134,7 @@ function createSessionAccess({ principalId }) {
       }
       if (complete) for (const state of states.values()) if (state.profile && !seen.has(state.channelId)) changeAuthority(state, (next) => { next.existence = 'retired'; });
     },
+    directoryObserved(directory) { spaceDirectory = directory; },
     membershipsObserved(rows, { complete = true } = {}) {
       const active = new Set();
       for (const row of rows || []) {
@@ -159,8 +166,15 @@ function createSessionAccess({ principalId }) {
     retire(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.existence = 'retired'; next.runtime = 'closed'; }); },
     wire(status) { connected = status === 'attached'; },
     clearSelf(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.selfActorId = ''; }); },
-    reset() { states.clear(); authorityEpoch += 1; },
+    reset() {
+      states.clear(); authorityEpoch += 1;
+      spaceDirectory = Object.freeze({
+        principals: Object.freeze([]), declarations: Object.freeze([]), devices: Object.freeze([]),
+        support: Object.freeze({ principals: false, declarations: false, devices: false }),
+      });
+    },
     state(channelId) { return states.get(channelId) || null; },
+    directory() { return spaceDirectory; },
     rows({ includeRetired = false } = {}) {
       return [...states.values()].filter((state) => includeRetired || state.existence !== 'retired').map((state) => {
         const profile = state.profile || { id: state.channelId, name: cachedChannelLabel(state.channelId) || state.channelId };
@@ -173,6 +187,44 @@ function createSessionAccess({ principalId }) {
       };
     },
   };
+}
+
+function projectDirectoryRows(observation, { withOnline = false } = {}) {
+  return Object.freeze((observation?.items || []).flatMap((item) => {
+    const declared = item?.declared || {};
+    if (!declared.id || (declared.status && declared.status !== 'present')) return [];
+    if (!withOnline) return [Object.freeze({ ...declared })];
+    const online = item?.actual?.measures?.find((measure) => measure.name === 'online');
+    return [Object.freeze({
+      ...declared,
+      online: online?.unknown ? null : Boolean(online?.value),
+    })];
+  }));
+}
+
+async function loadSpaceDirectory(obs) {
+  const load = async (request, options) => {
+    try { return { rows: projectDirectoryRows(await request(), options), supported: true }; }
+    catch (error) {
+      if (error?.status === 401) throw error;
+      return { rows: Object.freeze([]), supported: false };
+    }
+  };
+  const [principals, declarations, devices] = await Promise.all([
+    load(() => obs.spacePrincipals()),
+    load(() => obs.spaceDecls()),
+    load(() => obs.spaceDaemons(), { withOnline: true }),
+  ]);
+  return Object.freeze({
+    principals: principals.rows,
+    declarations: declarations.rows,
+    devices: devices.rows,
+    support: Object.freeze({
+      principals: principals.supported,
+      declarations: declarations.supported,
+      devices: devices.supported,
+    }),
+  });
 }
 
 function projectActor(item) {
@@ -552,11 +604,12 @@ export function useWireConnection({
         refreshQueued = true;
         return refreshInFlight;
       }
-      refreshInFlight = loadChannelTree(obs).then((result) => {
+      refreshInFlight = Promise.all([loadChannelTree(obs), loadSpaceDirectory(obs)]).then(([result, directory]) => {
         if (!alive || versionBlocked) return;
         const profiles = [...result.channels.values()];
         rememberChannelLabels(profiles);
         access.channelsObserved(profiles, { complete: result.complete });
+        access.directoryObserved(directory);
         writeWorkspaceBootstrap(principalId, access.snapshot());
         setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
         bumpAccess();
