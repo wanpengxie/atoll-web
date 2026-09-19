@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useInsertionEffect, useRef, useState } from 'react';
 import { HISTORY_INTENT, HISTORY_URGENCY } from '../../model/history-demand.js';
+import { READING_MODE } from '../../model/reading-session.js';
 import { diagnostic, readingTrace } from '../../model/diagnostics.js';
 import {
   blockingAdmission,
@@ -11,6 +12,11 @@ import {
   historySourceKey,
   historySupplyKey,
 } from './history-consumer-obligation.js';
+
+function clearTopContinuation(ref) {
+  if (ref.current?.timer) globalThis.clearTimeout?.(ref.current.timer);
+  ref.current = null;
+}
 
 export function useReadingInitialization({
   controller,
@@ -86,6 +92,7 @@ export function useHistoryConsumer({
   const failedAnticipatoryRef = useRef(null);
   const terminalRef = useRef(null);
   const topContinuationRef = useRef(null);
+  const topBoundaryRef = useRef(null);
   const epochRef = useRef(0);
   const sourceKey = historySourceKey(historyStatus);
   const supplyKey = historySupplyKey(historyStatus);
@@ -105,10 +112,8 @@ export function useHistoryConsumer({
     deferredAdmissionRef.current = null;
     deferredRecheckRef.current?.resolve?.({ kind: 'cancelled', reason: 'underfill-owner-replaced' });
     deferredRecheckRef.current = null;
-    if (topContinuationRef.current?.timer) {
-      globalThis.clearTimeout?.(topContinuationRef.current.timer);
-    }
-    topContinuationRef.current = null;
+    clearTopContinuation(topContinuationRef);
+    topBoundaryRef.current = null;
     failedAnticipatoryRef.current = null;
     terminalRef.current = null;
     return () => {
@@ -122,12 +127,33 @@ export function useHistoryConsumer({
         deferredRecheckRef.current = null;
       }
       if (topContinuationRef.current?.controller === controller) {
-        globalThis.clearTimeout?.(topContinuationRef.current.timer);
-        topContinuationRef.current = null;
+        clearTopContinuation(topContinuationRef);
       }
+      if (topBoundaryRef.current?.controller === controller) topBoundaryRef.current = null;
       if (failedAnticipatoryRef.current?.controller === controller) failedAnticipatoryRef.current = null;
     };
   }, [controller]);
+
+  // A continuation is leased to the exact semantic older intent that caused
+  // the typed top request. Any newer input, latest intent, direction reversal,
+  // or exit from browsing invalidates that lease at the commit boundary before
+  // a stale timer can issue another request.
+  useInsertionEffect(() => {
+    const continuation = topContinuationRef.current;
+    if (!continuation) return;
+    const sameIntent = continuation.controller === controller
+      && continuation.activationID === controller.activationID
+      && continuation.channelID === channelID
+      && continuation.viewKey === viewKey
+      && session.mode === READING_MODE.browsing
+      && Number(session.inputEpoch) === Number(continuation.inputEpoch)
+      && Number(session.intentRevision) === Number(continuation.intentRevision)
+      && session.tailEvidence?.direction !== 'newer';
+    if (!sameIntent) {
+      clearTopContinuation(topContinuationRef);
+      if (topBoundaryRef.current?.controller === controller) topBoundaryRef.current = null;
+    }
+  }, [channelID, controller, session.inputEpoch, session.intentRevision, session.mode, session.tailEvidence, viewKey]);
 
   const request = useCallback((reason, urgency = HISTORY_URGENCY.interactive, options = {}) => {
     const {
@@ -137,6 +163,18 @@ export function useHistoryConsumer({
     } = options;
     if (!continuation && committedOwnerRef.current !== commitOwnerCandidate) {
       return Promise.resolve({ kind: 'stale-owner', deduplicated: true });
+    }
+    if (reason === 'top' && !continuation) {
+      const currentSession = controller.getSnapshot().session;
+      // `top` is only emitted by useBrowsingReadingController after the
+      // typed Vendor scroll-position evidence reported the physical boundary.
+      // Keep that evidence as an identity lease; do not re-query global DOM
+      // from this scheduler after prepend/remount changes the native offset.
+      topBoundaryRef.current = Object.freeze({
+        controller, activationID: controller.activationID, channelID, viewKey,
+        inputEpoch: Number(currentSession.inputEpoch || 0),
+        intentRevision: Number(currentSession.intentRevision || 0),
+      });
     }
     const requestOwner = committedOwnerRef.current;
     const first = snapshotRef.current.rows[0];
@@ -332,24 +370,37 @@ export function useHistoryConsumer({
         anchorSeq: Number(first?.seqLow || 0), result: result?.kind || 'failed',
       });
       // A top request is issued at the physical boundary, before the prepend
-      // can move that boundary away from scrollTop=0.  The old history
+      // can move that boundary away from scrollTop=0. The old history
       // scheduler kept this one boundary obligation alive until the next
-      // committed page had either reached EOF or exposed a fresh DOM boundary.
-      // The feed runtime now settles one page at a time, so retain that
-      // obligation in this owner and schedule its successor after React has
-      // published the new supply.  Same-direction older input may renew the
-      // admission token; a newer-direction intent cancels the continuation.
+      // committed page had either reached EOF or exposed fresh typed boundary
+      // evidence. The feed runtime now settles one page at a time, so retain
+      // that obligation in this owner and schedule its successor after React
+      // has published the new supply. A newer-direction intent cancels it.
       const settledSession = current ? currentOwner.controller.getSnapshot().session : null;
       const frontierSeq = Number(currentStatus.oldestSeq
         || currentOwner.snapshot?.rows?.[0]?.seqLow || 0);
       const continueTop = current && reason === 'top' && result?.kind === 'satisfied'
         && currentStatus.hasOlder === true && frontierSeq > 1
+        && settledSession?.mode === READING_MODE.browsing
         && Number(settledSession?.inputEpoch || activeSession.inputEpoch) > 0
-        && settledSession?.tailEvidence?.direction !== 'newer';
+        && settledSession?.tailEvidence?.direction !== 'newer'
+        && Number(settledSession?.intentRevision || activeSession.intentRevision)
+          === Number(activeSession.intentRevision || 0)
+        && topBoundaryRef.current?.controller === controller
+        && topBoundaryRef.current.activationID === controller.activationID
+        && topBoundaryRef.current.channelID === channelID
+        && topBoundaryRef.current.viewKey === viewKey
+        && Number(topBoundaryRef.current.inputEpoch || 0)
+          === Number(settledSession?.inputEpoch || activeSession.inputEpoch)
+        && Number(topBoundaryRef.current.intentRevision || 0)
+          === Number(settledSession?.intentRevision || activeSession.intentRevision);
       if (continueTop) {
         const continuation = {
           controller, activationID: controller.activationID, channelID, viewKey,
-          inputEpoch: Number(settledSession?.inputEpoch || activeSession.inputEpoch), reason, urgency, options,
+          inputEpoch: Number(settledSession?.inputEpoch || activeSession.inputEpoch),
+          intentRevision: Number(settledSession?.intentRevision || activeSession.intentRevision),
+          reason, urgency, options,
+          topBoundary: topBoundaryRef.current,
           timer: null,
         };
         topContinuationRef.current?.timer
@@ -365,13 +416,27 @@ export function useHistoryConsumer({
           const ownerDirection = ownerSession?.tailEvidence?.direction
             || (ownerSession?.mode === 'browsing' && Number(ownerSession?.inputEpoch || 0) > 0
               ? 'older' : '');
+          const ownerInputEpoch = Number(ownerSession?.inputEpoch || 0);
+          const sameOlderIntent = ownerSession?.mode === READING_MODE.browsing
+            && ownerDirection === 'older'
+            && ownerInputEpoch === Number(continuation.inputEpoch || 0)
+            && Number(ownerSession?.intentRevision || 0) === Number(continuation.intentRevision || 0)
+            && continuation.topBoundary?.controller === controller
+            && continuation.topBoundary.activationID === controller.activationID
+            && continuation.topBoundary.channelID === channelID
+            && continuation.topBoundary.viewKey === viewKey
+            && ownerInputEpoch === Number(continuation.topBoundary.inputEpoch || 0)
+            && Number(ownerSession?.intentRevision || 0)
+              === Number(continuation.topBoundary.intentRevision || 0);
           if (owner?.controller !== controller || owner.channelID !== channelID
-            || owner.viewKey !== viewKey || ownerDirection !== 'older'
-            || ownerStatus.hasOlder !== true || ownerFrontier <= 1) return;
+            || owner.viewKey !== viewKey || !sameOlderIntent
+            || ownerStatus.hasOlder !== true || ownerFrontier <= 1) {
+            if (topBoundaryRef.current === continuation.topBoundary) topBoundaryRef.current = null;
+            return;
+          }
           const admission = ownerStatus.presentationAdmission;
           const admissionState = admission?.snapshot?.(channelID);
           const admissionToken = admissionState?.token || admissionState?.committed;
-          const ownerInputEpoch = Number(ownerSession?.inputEpoch || 0);
           if (admissionToken && ownerInputEpoch > Number(admissionToken.inputEpoch || 0)) {
             admission?.advanceInputEpoch?.(channelID, {
               operationID: admissionToken.operationID,
@@ -517,6 +582,8 @@ export function useHistoryConsumer({
     cancel(reason) {
       activeRef.current?.abortController?.abort(reason);
       activeRef.current = null;
+      clearTopContinuation(topContinuationRef);
+      if (topBoundaryRef.current?.controller === controller) topBoundaryRef.current = null;
     },
   });
 }
