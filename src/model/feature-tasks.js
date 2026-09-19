@@ -186,7 +186,7 @@ function taskFact(turn, channelId, actionFacts) {
     relatedArtifacts: Object.freeze([...(value.related_artifacts || [])]),
     createdAt: request.ts,
     updatedAt: turn.terminal?.ts || request.ts,
-    actions: explicitActions(actionFacts, [key, id, turn.requestId], null, { kind: 'task', key, id, turn }),
+    actions: explicitActions(actionFacts, [key, id, turn.requestId], { actions: value.actions }, { kind: 'task', key, id, turn, value }),
     actionableBySelf: false,
     provenance: 'ledger',
     diagnostic: Object.freeze({ providerActorId: request.audience?.[0] || '', rawStatus: value.status || value.state || '' }),
