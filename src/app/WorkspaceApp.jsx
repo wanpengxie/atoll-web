@@ -21,7 +21,16 @@ import { createChannelFeedRuntime } from '../model/channel-feed-runtime.js';
 import { createViewSessionStore } from '../model/view-session.js';
 import { readServerWorld } from './hooks/useWireSession.js';
 import { ptyClient } from '../net/pty.js';
-import { selectFeatureTaskFacts } from '../model/feature-tasks.js';
+import {
+  createFeatureTaskSubmission,
+  createFeatureWaitingControlSubmission,
+  FEATURE_COMMAND_STATE,
+  FEATURE_TASK_ACTION,
+  FEATURE_WAITING_CONTROL,
+  selectFeatureTaskFacts,
+  selectFeatureTaskProviders,
+  selectFeatureWaitingFacts,
+} from '../model/feature-tasks.js';
 import { selectFeatureSearchIndex } from '../model/feature-search.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
@@ -269,6 +278,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       payload,
     });
   }, [submission.send, wire.accessRef]);
+  const sendGovernanceCommand = useCallback(async (channelId, msgType, payload) => {
+    const refresh = accessActionsRef.current.refresh;
+    if (typeof refresh !== 'function') throw unavailableError('directory.refresh');
+    const result = await sendSystemCommand(channelId, msgType, payload);
+    await refresh();
+    return result;
+  }, [sendSystemCommand]);
   const attachments = useAttachmentTransactions({
     activeChannel: navigation.activeChannel,
     activeChannelId: navigation.activeChannelId,
@@ -401,11 +417,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     refreshLatest: () => feedCommands.refreshChannel(navigation.activeChannelId),
     debugSnapshot: () => feed.coldEntryDiagnosticsFor(navigation.activeChannelId),
   } : null;
-  const searchIndex = useMemo(() => selectFeatureSearchIndex({
-    states: feed.stateEntries(),
-    channels: navigation.channels,
-    rosters: roster.rosters,
-  }), [feed.version, navigation.channels, roster.rosters]);
   const resourceEntry = useCallback((channelId, resource) => ({
     key: `resource:${channelId}:${resource?.resource_id || resource?.resourceId || resource?.path || ''}`,
     channelId,
@@ -418,11 +429,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const previewResource = useCallback((channelId, resource) => {
     const artifact = resourceEntry(channelId, resource);
     if (!artifact.resourceId) throw new TypeError('文件资源标识为空');
-    const command = attachmentPortRef.current?.setSelectedArtifact;
-    if (typeof command !== 'function') throw unavailableError('resources.preview');
-    command(artifact);
+    const operation = attachments.previewArtifact(artifact, channelId);
     setPanel('artifact');
-  }, [resourceEntry]);
+    return operation;
+  }, [attachments.previewArtifact, resourceEntry]);
   const downloadResource = useCallback((channelId, resource) => {
     const artifact = resourceEntry(channelId, resource);
     if (!artifact.resourceId) return Promise.reject(new TypeError('文件资源标识为空'));
@@ -462,10 +472,73 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     ? <ConversationSurface {...conversationPort} />
     : <div className="boot-screen"><span className="brand-dot" />正在同步频道…</div>;
 
-  const taskItems = useMemo(
-    () => selectFeatureTaskFacts({ state, pending: submission.pending, selfId }),
-    [feed.version, selfId, state, submission.pending],
+  const canWrite = access?.relationship === 'member' && !access.unavailable && wire.state === 'open';
+  const taskActionFacts = useCallback((context) => {
+    if (context?.kind === 'approval'
+      && context.state === 'waiting'
+      && context.turn?.request?.audience?.includes(selfId)
+      && canWrite
+      && typeof submission.resolve === 'function') {
+      return [FEATURE_TASK_ACTION.approve, FEATURE_TASK_ACTION.reject];
+    }
+    if (context?.kind === 'recovery'
+      && context.row?.state === 'rejected'
+      && typeof submission.retry === 'function') return [FEATURE_TASK_ACTION.retry];
+    if (context?.kind === 'waiting'
+      && context.frame?.status === 'queued'
+      && context.turn?.request?.sender?.id === selfId
+      && canWrite
+      && typeof submission.cancel === 'function') return [FEATURE_TASK_ACTION.cancel];
+    return EMPTY_ARRAY;
+  }, [canWrite, selfId, submission.cancel, submission.resolve, submission.retry]);
+  const taskItems = useMemo(() => selectFeatureTaskFacts({
+    state,
+    pending: submission.pending,
+    selfId,
+    now: Date.now(),
+    actionFacts: taskActionFacts,
+  }), [feed.version, selfId, state, submission.pending, taskActionFacts]);
+  const waitingItems = useMemo(() => selectFeatureWaitingFacts({
+    state,
+    pending: submission.pending,
+    actionFacts: taskActionFacts,
+  }), [feed.version, state, submission.pending, taskActionFacts]);
+  const taskProviders = useMemo(
+    () => selectFeatureTaskProviders(capabilities, channelRoster),
+    [capabilities, channelRoster],
   );
+  const taskCommandStates = useMemo(() => {
+    const result = new Map();
+    for (const item of [...taskItems, ...waitingItems]) {
+      for (const action of item.actions || []) {
+        let commandState = canWrite
+          ? { state: FEATURE_COMMAND_STATE.ready }
+          : { state: FEATURE_COMMAND_STATE.disabled, reason: '当前频道不可写' };
+        if ([FEATURE_TASK_ACTION.approve, FEATURE_TASK_ACTION.reject].includes(action)) {
+          const approval = submission.approvalStates?.[item.id];
+          if (approval === 'sending') commandState = { state: FEATURE_COMMAND_STATE.submitting };
+          else if (approval === 'resolved') commandState = { state: FEATURE_COMMAND_STATE.disabled, reason: '决定已提交' };
+          else if (approval?.error) commandState = { state: FEATURE_COMMAND_STATE.failed, error: errorText(approval.error) };
+        } else if (action === FEATURE_TASK_ACTION.cancel) {
+          const control = submission.controlStates?.[`${item.channelId}:${item.requestId || item.id}:cancel`];
+          if (control?.state === 'sending') commandState = { state: FEATURE_COMMAND_STATE.submitting };
+          else if (control?.state === 'accepted') commandState = { state: FEATURE_COMMAND_STATE.disabled, reason: '取消已提交' };
+          else if (control?.error) commandState = { state: FEATURE_COMMAND_STATE.failed, error: errorText(control.error) };
+        }
+        result.set(`${item.key}:${action}`, Object.freeze(commandState));
+      }
+    }
+    return result;
+  }, [canWrite, submission.approvalStates, submission.controlStates, taskItems, waitingItems]);
+  const searchIndex = useMemo(() => selectFeatureSearchIndex({
+    // ConversationSurface currently exposes no Reading locator port. Omitting
+    // message rows keeps Search's advertised scope truthful instead of merely
+    // switching channels and pretending the target message was opened.
+    channels: navigation.channels,
+    rosters: roster.rosters,
+    tasks: new Map([[navigation.activeChannelId, taskItems]]),
+    files: new Map([[navigation.activeChannelId, attachments.entries]]),
+  }), [attachments.entries, navigation.activeChannelId, navigation.channels, roster.rosters, taskItems]);
   const panelKind = typeof panel === 'string' ? panel : panel?.kind || '';
   const selectedActor = panelKind === 'actor' ? panel.actor : null;
   const selectedActorChannelId = panelKind === 'actor' ? panel.channelId : navigation.activeChannelId;
@@ -485,6 +558,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     entries: attachments.entries,
     selectedKey: attachments.selectedArtifact?.key || '',
     selectedArtifact: attachments.selectedArtifact,
+    preview: attachments.artifactPreview,
     busy: attachments.filesBusy,
     error: attachments.filesError,
     disabled: access?.relationship !== 'member',
@@ -504,21 +578,64 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       createDirectory: attachments.createDirectory,
       download: attachments.downloadFile,
       navigate: attachments.navigateFiles,
-      preview: (entry) => { attachments.setSelectedArtifact(entry); setPanel('artifact'); },
+      preview: (entry) => {
+        const operation = attachments.previewArtifact(entry, navigation.activeChannelId);
+        setPanel('artifact');
+        return operation;
+      },
       refresh: () => attachments.refreshDirectory(),
       remove: attachments.removeFile,
       select: attachments.setSelectedArtifact,
       selectDevice: attachments.selectDevice,
     },
   };
+  const taskCapabilityPending = [...capabilities.values()].some((entry) => entry?.loading);
   const tasksPort = {
-    available: true,
     items: taskItems,
-    waitingAvailable: false,
+    waiting: waitingItems,
+    waitingState: state ? FEATURE_COMMAND_STATE.ready : FEATURE_COMMAND_STATE.disabled,
+    waitingReason: state ? '' : '频道事实仍在同步',
+    supportedWaitingControls: new Set(Object.values(FEATURE_WAITING_CONTROL)),
     roster: channelRoster,
     selfId,
-    canWrite: access?.relationship === 'member',
-    commands: { open: (item) => { setPanel({ kind: 'task', item }); } },
+    creation: canWrite && taskProviders.length
+      ? { state: FEATURE_COMMAND_STATE.ready, providers: taskProviders }
+      : {
+        state: taskCapabilityPending ? FEATURE_COMMAND_STATE.disabled : FEATURE_COMMAND_STATE.unsupported,
+        reason: canWrite
+          ? taskCapabilityPending ? '正在确认 Agent 的 task.create 能力' : '当前频道没有 Agent 公布 task.create 能力'
+          : '当前频道不可写',
+        providers: taskProviders,
+      },
+    automation: {
+      state: FEATURE_COMMAND_STATE.unsupported,
+      reason: '当前 submission owner 未提供可靠的自动动作生命周期',
+    },
+    commandStates: taskCommandStates,
+    commands: {
+      open: (item) => { setPanel({ kind: 'task', item }); },
+      createTask: (input) => {
+        const provider = taskProviders.find((row) => row.actorId === input.providerId);
+        if (!provider) return Promise.reject(new TypeError('任务执行者没有当前 task.create 能力事实'));
+        return submission.send(createFeatureTaskSubmission({
+          channelId: navigation.activeChannelId,
+          providerId: provider.actorId,
+          providerName: provider.name,
+          ...input,
+        }));
+      },
+      resolveApproval: ({ item, decision }) => submission.resolve(item.channelId, item.id, decision, {}),
+      retryRecovery: ({ submission: failedSubmission }) => submission.retry(failedSubmission),
+      cancelRequest: ({ item }) => submission.cancel(item.channelId, item.requestId || item.id),
+      controlWaiting: ({ item, type }) => {
+        const provider = channelRoster.find((row) => row.id === item.actorId);
+        return submission.control(createFeatureWaitingControlSubmission({
+          item,
+          type,
+          targetLabel: provider?.name || provider?.label || item.actorId,
+        }));
+      },
+    },
   };
   const rosterPort = {
     rows: channelRoster,
@@ -549,11 +666,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const submitGovernance = ({ scope, action, payload }) => {
     if (scope !== 'channel') return Promise.reject(unavailableError('governance.space'));
     const channelId = String(payload.channelId || navigation.activeChannelId || '');
-    if (action === 'update_profile') return sendSystemCommand(channelId, TYPES.channel.set, {
+    if (action === 'update_profile') return sendGovernanceCommand(channelId, TYPES.channel.set, {
       channel_id: channelId,
       description: String(payload.description || ''),
     });
-    if (action === 'create_child') return sendSystemCommand(channelId, TYPES.channel.create, {
+    if (action === 'create_child') return sendGovernanceCommand(channelId, TYPES.channel.create, {
       name: String(payload.name || '').trim(),
       recipe: {
         declarations: [],
@@ -566,12 +683,12 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     });
     if (action === 'introduce_actor') {
       const human = payload.candidateType === 'principal';
-      return sendSystemCommand(channelId, human ? TYPES.member.admit : TYPES.member.create, human
+      return sendGovernanceCommand(channelId, human ? TYPES.member.admit : TYPES.member.create, human
         ? { principal: payload.candidateId }
         : { decl_id: payload.candidateId });
     }
-    if (action === 'remove_actor') return sendSystemCommand(channelId, TYPES.member.remove, { member: payload.actorId });
-    if (action === 'retire') return sendSystemCommand(channelId, TYPES.channel.remove, { channel_id: channelId });
+    if (action === 'remove_actor') return sendGovernanceCommand(channelId, TYPES.member.remove, { member: payload.actorId });
+    if (action === 'retire') return sendGovernanceCommand(channelId, TYPES.channel.remove, { channel_id: channelId });
     return Promise.reject(unavailableError(`governance.channel.${action}`));
   };
   const governancePort = {
@@ -613,13 +730,64 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       },
     },
   };
+  const automationPort = {
+    disabled: !canWrite,
+    commands: {
+      after: ({ channelId, durationMs, msgType, payload }) => {
+        const channelAccess = wire.accessRef.current?.state?.(channelId);
+        const command = wire.wireRef.current?.after;
+        if (!canWrite || channelAccess?.relationship !== 'member' || typeof command !== 'function') {
+          return Promise.reject(unavailableError('timer.after'));
+        }
+        return command({ channel_id: channelId, duration_ms: durationMs, msg_type: msgType, payload });
+      },
+      cancel: ({ channelId, timerId }) => {
+        const channelAccess = wire.accessRef.current?.state?.(channelId);
+        const command = wire.wireRef.current?.cancelTimer;
+        if (!canWrite || channelAccess?.relationship !== 'member' || typeof command !== 'function') {
+          return Promise.reject(unavailableError('timer.cancel'));
+        }
+        return command({ channel_id: channelId, timer_id: timerId });
+      },
+    },
+  };
   const searchOpen = panelKind === 'search';
   const openSearchResult = (source) => {
     if (!source?.channelId) return;
+    if (source.kind === 'message') {
+      setChannelNotice('当前 Reading owner 没有公开消息定位端口；搜索不会把切换频道冒充为定位成功。');
+      return;
+    }
+    if (source.kind === 'actor') {
+      const actor = (roster.rosters.get(source.channelId) || EMPTY_ARRAY).find((row) => row.id === source.actorId);
+      if (!actor) { setChannelNotice('该成员已不在当前名册快照中。'); return; }
+      navigation.select(source.channelId);
+      navigation.setActiveView('conversation');
+      setPanel({ kind: 'actor', actor, channelId: source.channelId });
+      return;
+    }
+    if (source.kind === 'task') {
+      const item = taskItems.find((row) => (row.key || row.id) === source.taskId);
+      if (!item) { setChannelNotice('该任务已不在当前任务事实中。'); return; }
+      navigation.select(source.channelId);
+      navigation.setActiveView('tasks');
+      setPanel({ kind: 'task', item });
+      return;
+    }
+    if (source.kind === 'file') {
+      const entry = attachments.entries.find((row) => [row.resourceId, row.path, row.key].includes(source.fileId));
+      if (!entry || source.channelId !== navigation.activeChannelId) {
+        setChannelNotice('该文件不在当前 attachment owner 的目录快照中。');
+        return;
+      }
+      navigation.setActiveView('files');
+      void attachments.previewArtifact(entry, source.channelId);
+      setPanel('artifact');
+      return;
+    }
     navigation.select(source.channelId);
     navigation.setActiveView('conversation');
-    if (source.kind === 'actor') setPanel({ kind: 'actor', actor: source.actor, channelId: source.channelId });
-    else setPanel('');
+    setPanel('');
   };
   const featureElement = <WorkspaceFeatures
     activeView={terminalVisible ? 'conversation' : navigation.activeView}
@@ -650,6 +818,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       : tasksPort}
     roster={rosterPort}
     governance={governancePort}
+    automation={automationPort}
     onClose={() => setPanel('')}
   /> : null;
   const overlays = <WorkspaceFeatureOverlays search={{
@@ -677,6 +846,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       select: navigation.select,
       setActiveView: navigation.setActiveView,
       openTerminal: () => { setPanel(''); setTerminalVisible((value) => !value); },
+      openAutomation: () => setPanel('automation'),
       openRoster: () => setPanel('roster'),
       openSearch: () => setPanel('search'),
       openChannelAdministration: () => setPanel('channel-administration'),
