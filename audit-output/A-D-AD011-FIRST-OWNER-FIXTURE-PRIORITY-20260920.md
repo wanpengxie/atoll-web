@@ -5,11 +5,18 @@ This packet is read-only diagnosis for AD-011 and a recovery ordering for the
 [`A-D-AD011-AD143-BLOCKED-QUANTIFICATION-20260920.md`](./A-D-AD011-AD143-BLOCKED-QUANTIFICATION-20260920.md).
 It does not change product code or reclassify any baseline case.
 
+This packet was re-audited after notification-owner commit `77760c8`
+(`fix(notification): require frozen owner receipts`). That commit adds and
+invalidates `followingObservations` for the notification contract; it does not
+retain or settle `activityEntries`. The AD-011 first divergent owner and the
+same-boot reconnect result are therefore unchanged. The line references below
+use the post-`77760c8` source.
+
 ## AD-011 first divergent owner
 
 The first owner that destroys the evidence is
 `ChannelFeedRuntime.setHistoryGrants()` at
-`src/model/channel-feed-runtime.js:775-780`:
+`src/model/channel-feed-runtime.js:805-810`:
 
 ```text
 for (const [key, entry] of activityEntries) {
@@ -25,11 +32,11 @@ cause:
 
 | Boundary | Current public operation | AD-011 observation |
 |---|---|---|
-| `ChannelFeedRuntime.applyRows` → `observeAgentActivity` (`:437-481`) | commits each accepted row, then observes activity | the history terminal is accepted by Replica, but `observeAgentActivity` finds no `current` entry and returns `false` |
-| `observeAgentActivity` (`:278-316`) | live processing creates/updates; terminal settles an existing entry | terminal settlement requires an existing `(channelId, requestId)` entry; it does not create activity from history |
-| `agentActivitySnapshot` (`:342-365`) | projects active current-generation and settled entries | it would include a retained entry once settled; with the entry deleted, `byChannel` is empty |
-| `buildSnapshot` / `useFeedOwner` (`:964-1017`, `WorkspaceApp.jsx:85-117`) | publishes through `useSyncExternalStore` | publishes the empty `byChannel` map faithfully |
-| `WorkspaceApp` / `WorkspaceLayout` / `ConversationSurface` (`WorkspaceApp.jsx:680-704, :1043-1065`; `WorkspaceLayout.jsx:37-70`) | filters and renders activity | no channel row or settled-agent acknowledgement exists to render; these consumers do not invent a row |
+| `ChannelFeedRuntime.applyRows` → `observeAgentActivity` (`:434-511`, `:284-321`) | commits each accepted row, then observes activity | the history terminal is accepted by Replica, but `observeAgentActivity` finds no `current` entry and returns `false` |
+| `observeAgentActivity` (`:284-321`) | live processing creates/updates; terminal settles an existing entry | terminal settlement requires an existing `(channelId, requestId)` entry; it does not create activity from history |
+| `agentActivitySnapshot` (`:348-371`) | projects active current-generation and settled entries | it would include a retained entry once settled; with the entry deleted, `byChannel` is empty |
+| `buildSnapshot` / `useFeedOwner` (`:1054-1083`, `WorkspaceApp.jsx:85-117`) | publishes through `useSyncExternalStore` | publishes the empty `byChannel` map faithfully |
+| `WorkspaceApp` / `WorkspaceLayout` / `ConversationSurface` (`WorkspaceApp.jsx:674-704, :1038-1059`; `WorkspaceLayout.jsx:37-70`) | filters and renders activity | no channel row or settled-agent acknowledgement exists to render; these consumers do not invent a row |
 
 ### Concrete public trace
 
