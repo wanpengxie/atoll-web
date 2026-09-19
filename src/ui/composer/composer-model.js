@@ -1,7 +1,15 @@
-import { TYPES } from '../../protocol/vocab.js';
+import { SYSTEM_ACTOR_ID, TYPES } from '../../protocol/vocab.js';
 
 const SENDABLE_KINDS = new Set(['agent', 'human']);
 const RETRYABLE_STATES = new Set(['rejected', 'uncertain']);
+export const COMPOSER_SLASH_COMMANDS = Object.freeze([
+  Object.freeze({ command: 'compact', type: TYPES.agentCompact, label: '压缩上下文', description: '保留当前对话，压缩较早的上下文', usage: '/compact' }),
+  Object.freeze({ command: 'new', type: TYPES.agentNew, label: '新建对话', description: '保留当前 Agent，换成一段全新会话', usage: '/new' }),
+  // Restart belongs to the channel system actor: a wedged Agent must not be
+  // asked to restart itself. The selected Agent is carried in payload.member.
+  Object.freeze({ command: 'restart', type: TYPES.member.restart, scope: 'system', label: '重启 Agent', description: '给卡住的 Agent 换一届任期；账本与文件不动', usage: '/restart' }),
+]);
+const SLASH_COMMAND_BY_NAME = new Map(COMPOSER_SLASH_COMMANDS.map((row) => [row.command, row]));
 
 function text(value) {
   return typeof value === 'string' ? value : '';
@@ -9,6 +17,30 @@ function text(value) {
 
 function actorName(actor) {
   return text(actor?.name) || text(actor?.label) || text(actor?.id) || '未知成员';
+}
+
+function commandError(message, code) {
+  const error = new TypeError(message);
+  error.code = code;
+  return error;
+}
+
+// A leading slash is never silently downgraded to an ordinary message.
+// `//literal` is the explicit escape and is sent as `/literal`.
+export function parseComposerCommand(value) {
+  const source = text(value).trim();
+  if (!source.startsWith('/')) return null;
+  if (source.startsWith('//')) return Object.freeze({ kind: 'escaped', text: source.slice(1) });
+  const [verb, ...args] = source.split(/\s+/u);
+  const command = verb.slice(1);
+  const definition = SLASH_COMMAND_BY_NAME.get(command);
+  if (!definition) {
+    throw commandError(`未知命令 ${verb || '/'}；普通正文以 / 开头时请写成 /${source}`, 'composer_command_unknown');
+  }
+  if (args.length) {
+    throw commandError(`用法：${definition.usage}`, 'composer_command_usage');
+  }
+  return Object.freeze({ kind: 'command', ...definition, payload: Object.freeze({}) });
 }
 
 function uniqueRows(rows, keyOf) {
@@ -161,6 +193,32 @@ function controlAvailability(capability, type, targetAgent, permissions) {
   return Object.freeze({ state: 'supported', enabled: true, reason: '' });
 }
 
+function commandAvailability(definition, capability, targetAgent, permissions) {
+  if (!targetAgent) return Object.freeze({ state: 'no-target', enabled: false, reason: '请先选择目标 Agent' });
+  if (!permissions.canTransmit) return Object.freeze({ state: 'offline', enabled: false, reason: '连接可用后才能发送命令' });
+  if (definition.scope === 'system') return Object.freeze({ state: 'supported', enabled: true, reason: '' });
+  return controlAvailability(capability, definition.type, targetAgent, permissions);
+}
+
+function slashCommandMenu(value, controls) {
+  const match = /^\/([^\s/]*)$/u.exec(text(value));
+  if (!match) return null;
+  const query = match[1].toLocaleLowerCase();
+  const matching = COMPOSER_SLASH_COMMANDS.filter((row) => (
+    `${row.command} ${row.label}`.toLocaleLowerCase().includes(query)
+  ));
+  const rows = matching.filter((row) => controls[row.command]?.enabled).map((row) => Object.freeze({
+    ...row,
+    availability: controls[row.command],
+  }));
+  const unavailable = matching.find((row) => controls[row.command]?.reason);
+  return Object.freeze({
+    query: match[1],
+    rows: Object.freeze(rows),
+    reason: rows.length ? '' : controls[unavailable?.command]?.reason || controls.restart?.reason || '没有匹配的命令',
+  });
+}
+
 export function buildComposerModel({
   activeChannelId = '',
   draft,
@@ -206,15 +264,23 @@ export function buildComposerModel({
     : agentSelection?.pending || null;
   const editOwner = edit || normalizedDraft.edit || null;
   const targetCapability = targetAgent ? capabilityIndex.get(targetAgent.id) : null;
+  const commandControls = Object.freeze(Object.fromEntries(COMPOSER_SLASH_COMMANDS.map((definition) => [
+    definition.command,
+    commandAvailability(definition, targetCapability, targetAgent, permissions),
+  ])));
   const controls = Object.freeze({
     actorId: targetAgent?.id || '',
     steer: controlAvailability(targetCapability, TYPES.agentSteer, targetAgent, permissions),
     interrupt: controlAvailability(targetCapability, TYPES.agentInterrupt, targetAgent, permissions),
+    commands: commandControls,
   });
   const hasBody = Boolean(normalizedDraft.text.trim() || normalizedDraft.attachments.length);
+  const commandLike = normalizedDraft.text.trim().startsWith('/') && !normalizedDraft.text.trim().startsWith('//');
   const canSubmit = editOwner
     ? Boolean(normalizedDraft.text.trim() && permissions.canTransmit && (!editSession?.phase || editSession.phase === 'editing'))
-    : Boolean(hasBody && permissions.canDurablyAccept && delivery.kind === 'direct');
+    : commandLike
+      ? Boolean(hasBody && permissions.canEditDraft)
+      : Boolean(hasBody && permissions.canDurablyAccept && delivery.kind === 'direct');
 
   return Object.freeze({
     channelId: activeChannelId,
@@ -231,6 +297,7 @@ export function buildComposerModel({
     parameters: parameterView,
     parameterPending,
     controls,
+    commandMenu: editOwner ? null : slashCommandMenu(normalizedDraft.text, commandControls),
     pending: Object.freeze(channelPending),
     failures: Object.freeze(failures),
     failure: failures.at(-1) || null,
@@ -254,7 +321,13 @@ function ensureSendableDelivery(delivery) {
 export function createMessageRequest(model, persistedDraft) {
   ensureSendableDelivery(model.delivery);
   if (!model.draft.text.trim() && !model.draft.attachments.length) throw new TypeError('消息内容不能为空');
-  const body = model.draft.text.trim() || `发送 ${model.draft.attachments.length} 个附件`;
+  const slash = parseComposerCommand(model.draft.text);
+  if (slash?.kind === 'command') {
+    throw commandError(`命令 /${slash.command} 必须通过命令端口发送`, 'composer_command_route_required');
+  }
+  const body = slash?.kind === 'escaped'
+    ? slash.text
+    : model.draft.text.trim() || `发送 ${model.draft.attachments.length} 个附件`;
   const parentId = text(model.draft.replyTarget?.sourceId);
   const batch = model.delivery.rows.map((actor) => ({
     channelId: model.channelId,
@@ -273,6 +346,27 @@ export function createMessageRequest(model, persistedDraft) {
     draftRevision: Number(persistedDraft?.revision ?? model.draft.revision ?? 0),
     editorRevision: model.draft.editorRevision,
   });
+}
+
+export function createComposerCommandRequest(model, parsed = parseComposerCommand(model?.draft?.text)) {
+  if (!parsed || parsed.kind !== 'command') throw commandError('没有可执行的 Composer 命令', 'composer_command_missing');
+  if (model.draft.replyTarget) throw commandError('回复模式下不能使用斜杠命令，请先取消回复', 'composer_command_reply');
+  if (model.draft.attachments.length) throw commandError('斜杠命令不能携带附件，请先移除附件', 'composer_command_attachments');
+  const availability = model.controls.commands?.[parsed.command];
+  if (!availability?.enabled) {
+    throw commandError(availability?.reason || `命令 /${parsed.command} 当前不可用`, `composer_command_${availability?.state || 'unavailable'}`);
+  }
+  if (parsed.scope === 'system') {
+    return Object.freeze({
+      channelId: model.channelId,
+      text: '',
+      msgType: parsed.type,
+      audience: [SYSTEM_ACTOR_ID],
+      targetLabel: SYSTEM_ACTOR_ID,
+      payload: Object.freeze({ member: model.targetAgent.id }),
+    });
+  }
+  return createControlRequest(model, parsed.type, parsed.payload, model.targetAgent.id);
 }
 
 export function createControlRequest(model, type, payload, actorId = '') {

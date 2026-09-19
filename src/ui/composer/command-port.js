@@ -5,6 +5,7 @@ const COMMAND_NAMES = Object.freeze([
   'removeMention',
   'clearReply',
   'send',
+  'executeCommand',
   'steer',
   'replace',
   'interrupt',

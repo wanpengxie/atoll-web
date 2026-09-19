@@ -1,12 +1,8 @@
-import React, { memo, useCallback } from 'react';
+import React, { memo, useCallback, useState } from 'react';
 import { useReadingIntent } from '../conversation/ReadingIntentContext.jsx';
 
 function actorName(actor) {
   return actor?.name || actor?.label || actor?.id || '未知成员';
-}
-
-function invoke(operation, ...args) {
-  void Promise.resolve(operation(...args)).catch(() => {});
 }
 
 function parameterChoices(parameters) {
@@ -21,6 +17,9 @@ function parameterChoices(parameters) {
 
 export const Composer = memo(function Composer({ model, commands, className = '' }) {
   const readingIntent = useReadingIntent();
+  const [interactionError, setInteractionError] = useState('');
+  const [activeCommand, setActiveCommand] = useState(0);
+  const [dismissedCommandText, setDismissedCommandText] = useState('');
   const choices = parameterChoices(model.parameters);
   const currentParameters = model.parameters?.current;
   const currentChoice = currentParameters
@@ -28,12 +27,37 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     : '';
   const editMode = Boolean(model.edit);
   const disabled = !model.permissions.canEditDraft;
+  const commandMenu = !editMode && model.commandMenu && dismissedCommandText !== model.draft.text
+    ? model.commandMenu
+    : null;
+  const commandRows = commandMenu?.rows || [];
+  const selectedCommand = commandRows[activeCommand % Math.max(commandRows.length, 1)] || commandRows[0] || null;
+
+  const invoke = useCallback((operation, ...args) => {
+    setInteractionError('');
+    try {
+      return Promise.resolve(operation(...args)).catch((error) => {
+        setInteractionError(error?.message || String(error));
+        return undefined;
+      });
+    } catch (error) {
+      setInteractionError(error?.message || String(error));
+      return Promise.resolve(undefined);
+    }
+  }, []);
+
+  const chooseCommand = useCallback((row) => {
+    if (!row) return;
+    setActiveCommand(0);
+    setDismissedCommandText('');
+    invoke(commands.changeDraft, { text: `/${row.command} ` });
+  }, [commands.changeDraft, invoke]);
 
   const submit = useCallback((event) => {
     event?.preventDefault?.();
     if (!model.canSubmit) return;
     invoke(editMode ? commands.edit : commands.send, editMode ? {} : { readingIntent });
-  }, [commands, editMode, model.canSubmit, readingIntent]);
+  }, [commands, editMode, invoke, model.canSubmit, readingIntent]);
 
   return <section
     className={`composer-wrap${editMode ? ' is-editing-message' : ''}${className ? ` ${className}` : ''}`}
@@ -68,15 +92,35 @@ export const Composer = memo(function Composer({ model, commands, className = ''
           <textarea
             className="composer-editor composer-richtext"
             aria-label="消息"
-            placeholder={editMode ? '编辑消息' : '输入消息'}
+            placeholder={editMode ? '编辑消息' : '输入消息；@ 选择成员，/ 使用命令'}
             disabled={disabled}
             value={model.draft.text}
-            onChange={(event) => invoke(commands.changeDraft, { text: event.currentTarget.value })}
+            onChange={(event) => {
+              setActiveCommand(0);
+              setDismissedCommandText('');
+              invoke(commands.changeDraft, { text: event.currentTarget.value });
+            }}
             onKeyDown={(event) => {
-              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent?.isComposing) return;
+              if (event.nativeEvent?.isComposing) return;
+              if (commandMenu && event.key === 'Escape') {
+                event.preventDefault();
+                setDismissedCommandText(model.draft.text);
+                return;
+              }
+              if (commandRows.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+                event.preventDefault();
+                const step = event.key === 'ArrowDown' ? 1 : -1;
+                setActiveCommand((current) => (current + step + commandRows.length) % commandRows.length);
+                return;
+              }
+              if (event.key !== 'Enter' || event.shiftKey) return;
               event.preventDefault();
               if (model.mentionQuery?.rows?.length) {
                 invoke(commands.pickMention, model.mentionQuery.rows[0]);
+                return;
+              }
+              if (selectedCommand) {
+                chooseCommand(selectedCommand);
                 return;
               }
               submit(event);
@@ -88,6 +132,14 @@ export const Composer = memo(function Composer({ model, commands, className = ''
             <span className={`actor-icon kind-${actor.kind}`}>{actor.kind.slice(0, 1).toUpperCase()}</span>
             <strong>{actorName(actor)}</strong><small>{actor.kind} · {actor.id}</small>
           </button>)}
+        </div>}
+        {commandMenu && <div className="command-menu" role="listbox" aria-label="Agent 命令">
+          {commandRows.length
+            ? commandRows.map((row, index) => <button type="button" role="option" aria-selected={index === activeCommand % commandRows.length} key={row.command} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(row)}>
+              <span className="command-menu-name">/{row.command}</span>
+              <span><strong>{row.label}</strong><small>{row.description}</small></span>
+            </button>)
+            : <p className="command-menu-empty" role="status">{commandMenu.reason}</p>}
         </div>}
       </div>
 
@@ -139,7 +191,9 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     </form>
 
     <div className="composer-state-rail">
-      {model.editSession?.error
+      {interactionError
+        ? <p className="composer-error" role="alert">{interactionError}</p>
+        : model.editSession?.error
         ? <p className="composer-error" role="alert">{model.editSession.error}</p>
         : model.failure
         ? <p className="composer-error" role="alert">{model.failure.error?.message || model.failure.error || '发送失败'}<button type="button" className="composer-retry" onClick={() => invoke(commands.retry, model.failure)}>使用原编号重试</button></p>

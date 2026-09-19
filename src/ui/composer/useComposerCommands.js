@@ -5,10 +5,12 @@ import { projectAgentParameters } from './agent-parameters.js';
 import { useComposerSubmissionRuntime } from './useComposerSubmissionRuntime.js';
 import {
   buildComposerModel,
+  createComposerCommandRequest,
   createControlRequest,
   createMessageRequest,
   editCASPayload,
   normalizeComposerDraft,
+  parseComposerCommand,
 } from './composer-model.js';
 
 function idsOf(result) {
@@ -69,6 +71,8 @@ function commandOwner(config, model) {
   };
   const performSend = async ({ readingIntent = null } = {}) => {
     requireChannel();
+    const slash = parseComposerCommand(model.draft.text);
+    if (slash?.kind === 'command') return performSlashCommand(slash, { readingIntent });
     if (!model.permissions.canDurablyAccept) throw new TypeError(model.permissions.reason || '当前频道不能保存发送');
     if (typeof submission.send !== 'function') throw new TypeError('发送 owner 未连接');
     const token = readingIntent?.composerSendStarted?.(model.channelId) || null;
@@ -80,6 +84,33 @@ function commandOwner(config, model) {
       const result = await submission.send(createMessageRequest(model, persisted));
       accepted = idsOf(result);
       if (!accepted.length) throw new Error('发送队列未返回消息编号');
+      readingIntent?.composerAccepted?.(model.channelId, accepted, token);
+      return accepted;
+    } catch (error) {
+      if (!accepted.length) readingIntent?.composerRejected?.(model.channelId, token);
+      throw error;
+    }
+  };
+  const performSlashCommand = async (parsed, { readingIntent = null } = {}) => {
+    requireChannel();
+    if (typeof submission.control !== 'function') throw new TypeError('Agent 控制 owner 未连接');
+    if (typeof submission.updateDraft !== 'function') throw new TypeError('草稿 owner 未连接');
+    const request = createComposerCommandRequest(model, parsed);
+    const token = readingIntent?.composerSendStarted?.(model.channelId) || null;
+    let accepted = [];
+    try {
+      const persisted = await submission.updateDraft(
+        model.channelId,
+        model.draft,
+        { preserveEditorRevision: true },
+      );
+      const result = await submission.control({
+        ...request,
+        draftRevision: Number(persisted?.revision ?? model.draft.revision ?? 0),
+        editorRevision: model.draft.editorRevision,
+      });
+      accepted = idsOf(result);
+      if (!accepted.length) throw new Error('发送队列未返回命令编号');
       readingIntent?.composerAccepted?.(model.channelId, accepted, token);
       return accepted;
     } catch (error) {
@@ -142,6 +173,18 @@ function commandOwner(config, model) {
       const existing = config.sendIntentRef.current.get(key);
       if (existing) return existing;
       const operation = performSend(options).finally(() => {
+        if (config.sendIntentRef.current.get(key) === operation) config.sendIntentRef.current.delete(key);
+      });
+      config.sendIntentRef.current.set(key, operation);
+      return operation;
+    },
+    executeCommand(options = {}) {
+      const parsed = parseComposerCommand(model.draft.text);
+      if (!parsed || parsed.kind !== 'command') throw new TypeError('当前草稿不是可执行命令');
+      const key = `${model.channelId}:${model.draft.editorRevision}`;
+      const existing = config.sendIntentRef.current.get(key);
+      if (existing) return existing;
+      const operation = performSlashCommand(parsed, options).finally(() => {
         if (config.sendIntentRef.current.get(key) === operation) config.sendIntentRef.current.delete(key);
       });
       config.sendIntentRef.current.set(key, operation);
