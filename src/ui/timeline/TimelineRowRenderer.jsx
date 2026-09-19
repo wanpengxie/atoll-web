@@ -34,6 +34,34 @@ export function revisionSlot(value) {
 export function revisionText(value) {
   return value ? `${value.length}${REVISION_SEP}${value}` : '0';
 }
+function stableRevisionValue(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return `[${value.map(stableRevisionValue).join(',')}]`;
+  if (value instanceof Map) return `{${[...value.entries()]
+    .sort(([left], [right]) => String(left).localeCompare(String(right)))
+    .map(([key, entry]) => `${stableRevisionValue(key)}:${stableRevisionValue(entry)}`)
+    .join(',')}}`;
+  if (value instanceof Set) return `[${[...value].map(stableRevisionValue).sort().join(',')}]`;
+  if (typeof value === 'object') return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${stableRevisionValue(key)}:${stableRevisionValue(value[key])}`)
+    .join(',')}}`;
+  return JSON.stringify(value);
+}
+function capabilityRowRevision(capability) {
+  const types = capability?.describe?.types;
+  const typeContext = types instanceof Map
+    ? new Map([...types].map(([type, meta]) => [type, {
+      description: meta?.description || '',
+      inputSchema: meta?.inputSchema || null,
+    }]))
+    : new Map();
+  return stableRevisionValue({
+    types: typeContext,
+    loading: capability?.loading === true,
+    error: capability?.error || null,
+  });
+}
 const ERROR_LABELS = {
   bad_payload: '请求格式不正确',
   not_in_audience: '收件人不在频道',
@@ -588,7 +616,7 @@ export function useTimelineRowRenderer({
   const capabilityRevisions = useMemo(() => {
     const rows = new Map();
     for (const [actorId, capability] of capabilityIndex) {
-      rows.set(actorId, `${[...(capability?.describe?.types?.keys?.() || [])].sort().join(',')}|${capability?.loading === true}|${capability?.error || ''}`);
+      rows.set(actorId, capabilityRowRevision(capability));
     }
     return rows;
   }, [capabilityIndex]);
