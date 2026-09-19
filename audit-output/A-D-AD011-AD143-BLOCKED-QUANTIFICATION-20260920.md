@@ -18,10 +18,11 @@ not change the 105 BLOCKED count.
 AD-062 is now closed by the current public parameter projection owner; this
 also does not change the 105 BLOCKED count.
 AD-103 is now closed by the existing `WorkspaceLayout` navigation owner; this
-also does not change the 105 BLOCKED count. AD-011 and AD-143 remain the two
-unresolved product regressions in the focused packet. AD-123 is now closed by
-the existing `feature-search` artifact projection owner; this also does not
-change the 105 BLOCKED count.
+also does not change the 105 BLOCKED count. AD-123 is now closed by the
+existing `feature-search` artifact projection owner; this also does not change
+the 105 BLOCKED count. The final owner verification closes AD-011 via `e09169e`
+and AD-143 via `6c880aa`; both are public-contract checks only and leave the
+105 BLOCKED rows unchanged.
 No row is obsolete, deleted, or skipped.
 
 ## Minimal regression packets
@@ -45,10 +46,11 @@ No row is obsolete, deleted, or skipped.
   clears and history-only processing does not revive it.
 - Baseline result: the retained Agent row is settled before the boot change,
   then the boot change yields an empty projection.
-- Current result: `byChannel.c0` is `undefined` immediately after the
-  generation-2 history terminal, so the retained settled projection is lost.
-  The explicit failure is at
-  `tests/agent-activity.test.js:110` (`expected undefined to be defined`).
+- Current result: the generation-2 history terminal settles the retained
+  `agent:codex:1` entry, and generation-3 `boot-b` clears it. The focused
+  public assertion is green in `tests/agent-activity.test.js -t '[AD-011]'`.
+- Owner evidence: `e09169e` keeps same-boot retained entries available to the
+  exact matching history terminal while preserving the generation/boot fences.
 - Stale-fixture check: the successor uses the public runtime factory and
   protocol vocabulary, not the deleted activity tracker or a private export;
   the input rows retain the baseline source, generation, channel, request,
@@ -77,12 +79,10 @@ No row is obsolete, deleted, or skipped.
   open/discoverable, but `.rows()` also returned `c0.agent-runtime` and
   `c0.lobby`. The preserved failure was at `tests/channel-access.test.js:142`
   (expected two rows, received four).
-- Current shared-worktree note: another agent's commit `6c880aa` adds actor/lobby
-  filtering in `src/app/hooks/useWireSession.js`, so the same test currently
-  passes in this worktree. That source change is outside this packet and is not
-  staged or amended here. The AD-143 assertion remains a regression guard; the
-  ledger's historical `REGRESSION` row should only be reconciled by the owning
-  coordinator after reviewing that product commit.
+- Current result: the same public test now passes with exactly `c0` and
+  `c0.public` rows. Owner evidence is commit `6c880aa`, which filters actor and
+  lobby implementation profiles in the existing session-access owner. That
+  product change is outside this packet and is not staged or amended here.
 - Stale-fixture check: the successor drives the exported hook with a mocked
   OBS/Wire attach boundary and makes no import of the old access reducer or
   predicate. The actor/lobby profile shapes are the exact baseline inputs.
@@ -93,12 +93,11 @@ No row is obsolete, deleted, or skipped.
 npx vitest run tests/agent-activity.test.js tests/channel-access.test.js --reporter=verbose
 ```
 
-Recorded pre-source-diff run on 2026-09-20: **2 files failed; 10 tests
-passed; 2 assertions red**. The two reds were AD-011 and AD-143 above. A
-subsequent run on the current shared worktree is **1 file failed; 11 tests
-passed; 1 assertion red** because commit `6c880aa` makes AD-143 pass. No
-test-only branch, skip, weakened expectation, or product change was introduced
-by this packet.
+Recorded pre-owner run on 2026-09-20: **2 files failed; 10 tests passed; 2
+assertions red**. The two reds were AD-011 and AD-143 above. Current direct
+verification is **2 files passed; 13 tests passed; 0 assertions red**, with
+focused `[AD-011]` and `[AD-143]` runs both green. No test-only branch, skip,
+weakened expectation, or product change was introduced by this packet.
 
 ## Quantification of all 116 BLOCKED rows
 
@@ -158,8 +157,9 @@ obsolescence from the current absence of evidence.
 
 ## Boundary audit
 
-This packet changes A–D unit tests, audit-output reports, and the existing
-Waiting/edit owner only for the separately authorized AD-018/AD-021 lifecycle
-fix. It does not modify Workspace, Reading, Outbox, Feed runtime, vendor,
-package or lock files, export private production helpers, delete/skip baseline
-declarations, or implement either AD-011/AD-143 product gap.
+This packet changes A–D unit tests and audit-output reports only. It does not
+modify Workspace, Reading, Outbox, Feed runtime, session-access product code,
+vendor, package or lock files, export private production helpers, or
+delete/skip baseline declarations. The existing owner commits `e09169e` and
+`6c880aa` supply the two product closures; this packet only verifies their
+public contracts.

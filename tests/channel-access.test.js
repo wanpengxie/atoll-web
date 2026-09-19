@@ -119,7 +119,7 @@ describe('channel access model (public useWireConnection port)', () => {
     await expect(accessFor({ id: 'f', status: 'retired', open: false }, { status: 'active' })).resolves.toBe('retired');
   });
 
-  it('always hides lobby and actor implementation channels and only permits writes in active member channels', async () => {
+  it('[AD-143] always hides lobby and actor implementation channels and only permits writes in active member channels', async () => {
     const harness = await accessPort({
       profiles: [
         { id: 'c0', name: 'home', status: 'present', open: true },
@@ -137,9 +137,8 @@ describe('channel access model (public useWireConnection port)', () => {
     // channel-access predicate.
     expect(access.state('c0')).toMatchObject({ relationship: 'member', runtime: 'open' });
     expect(access.state('c0.public')).toMatchObject({ relationship: 'discoverable', runtime: 'open' });
-    // Intentionally preserved product regression: the current owner only
-    // recognizes the protocol's systemReserved marker, while the legacy
-    // contract also excluded actor/lobby profile shapes.
+    // 公开 owner：useWireConnection().accessRef.rows() 是 WorkspaceApp 消费的
+    // 唯一访问边界；actor/lobby 资料即使由 OBS 声明，也不能成为用户频道行。
     expect(rows.map((row) => row.id)).toEqual(['c0', 'c0.public']);
     expect(rows.map((row) => row.access)).toEqual(['member_active', 'discoverable']);
     harness.unmount();

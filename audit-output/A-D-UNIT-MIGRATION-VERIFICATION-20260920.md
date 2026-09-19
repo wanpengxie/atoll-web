@@ -7,7 +7,8 @@ row per baseline declaration and the current result, public owner, invariant,
 and disposition. After the P0 batch and the first P1 composed-interaction
 fixture batch plus the follow-up Waiting-owner regression packet, the AD-103
 Workspace owner fix, and the AD-123 artifact owner fix, accepted case totals
-are **258 PASS / 2 REGRESSION / 105 BLOCKED**.
+plus the AD-011 and AD-143 owner closures are **260 PASS / 0 REGRESSION /
+105 BLOCKED**.
 
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
@@ -55,6 +56,14 @@ same-channel relation key for `version_of` and merging repeated references by
 resource ID. Missing relations remain absent, and filenames never create a
 link. The fixture stays on the public projected artifact rows.
 
+The final two owner closures are independently green. AD-011 now lets a
+same-boot history terminal settle retained live work and clears that state on a
+boot change; history-only processing remains invisible. AD-143 now filters
+actor/lobby implementation profiles from the public access rows while keeping
+the member write and public discoverable facts distinct. These behaviors come
+from existing owner commits `e09169e` and `6c880aa`; this verification only
+drives their public contracts.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -65,23 +74,23 @@ with a mocked OBS/Wire boundary and inspect the `accessRef` port consumed by
 `WorkspaceApp`. This keeps the user-visible access, membership, serving, label,
 restart, and cache invariants without widening production API surface.
 
-`tests/agent-activity.test.js` now fails at an explicit assertion when the
-current owner drops the boot-reset channel projection; it no longer crashes on
-an incidental `undefined.agents` access. That is the AD-011 product-gap
-reproduction recorded in the ledger.
+`tests/agent-activity.test.js` keeps the explicit same-boot settle and boot-reset
+assertions through the public `ChannelFeedRuntime` snapshot. The current owner
+now retains the matching entry for the history terminal and clears it on the
+new boot; no private tracker or compatibility API is used.
 
-The two red packets have reproducible public-owner boundaries:
+The two formerly red packets have reproducible public-owner boundaries:
 
 - AD-011: admit live processing for `c0` in generation 1, disconnect, admit a
   failed terminal from history in generation 2 with the same boot, then inspect
-  `runtime.getSnapshot().agentActivity`. The expected settled Agent projection
-  is absent (`byChannel.c0` is `undefined`) before the boot-change clear. The
-  first current owner is `ChannelFeedRuntime`'s public activity snapshot.
+  `runtime.getSnapshot().agentActivity`; the matching settled projection
+  remains visible, then a boot change clears it. The owner is
+  `ChannelFeedRuntime`'s public activity snapshot.
 - AD-143: attach profiles for `c0`, `c0.public`, `c0.agent-runtime` (actor), and
   `c0.lobby`, with active membership only for `c0`, then inspect the public
-  `useWireConnection().accessRef.rows()` port. The expected visible rows are
-  `c0` and `c0.public`; the current owner returns actor/lobby rows as well. No
-  private helper or production branch is used by the reproduction.
+  `useWireConnection().accessRef.rows()` port. The visible rows are exactly
+  `c0` and `c0.public`; actor/lobby implementation rows stay hidden. No
+  private helper is used by the reproduction.
 
 ## Focused verification
 
@@ -91,8 +100,9 @@ The focused slices were run with Vitest against current public owners:
 |---|---|---|
 | `tests/channel-name-cache.test.js` | 8 passed | all eight cache/access cases pass through `useWireConnection().accessRef` |
 | P0 public-owner fixture slices | 9 passed across Agent/Identity/Describe; AD-316 remains red | nine P0 rows now have one-to-one fixtures; the device refresh gap remains explicit |
-| `tests/channel-access.test.js` | 6 passed, 1 red | AD-143 only: current public owner exposes actor/lobby rows instead of hiding them |
-| `tests/agent-activity.test.js` | 4 passed, 1 red | AD-011 only: boot-reset history closure drops the settled projection |
+| `tests/channel-access.test.js -t '\[AD-143\]'` | 1 passed | AD-143 public access rows hide actor/lobby implementation channels and preserve member/discoverable access facts |
+| `tests/agent-activity.test.js -t '\[AD-011\]'` | 1 passed | AD-011 same-boot history terminal settles retained work, boot change clears it, and history-only processing cannot revive it |
+| `tests/agent-activity.test.js tests/channel-access.test.js` | 13 passed | final direct owner regression packet is fully green; no registered A–D regression remains |
 | `tests/agent-control.test.jsx -t '\[AD-(014|017)\]'` | 2 passed | AD-014/017: public Waiting composition now gates edit admission and restores interrupt overlay state |
 | `tests/agent-control.test.jsx tests/task-controls-restore.test.jsx` | 21 passed | AD-018/021 now pass through the Waiting owner; AD-020's unrelated business-progress guard remains green |
 | `tests/agent-information-architecture.test.jsx -t '\[AD-(022|031)\]'` | 2 passed | AD-022 authority gate and AD-031 cancelled-target cleanup pass through the Waiting owner |
@@ -101,19 +111,19 @@ The focused slices were run with Vitest against current public owners:
 | `tests/agent-selection.test.js -t '\[AD-062\]'` | 1 passed | AD-062 later same-Agent usage refreshes the live context projection and sparse terminal data does not clear it |
 | `tests/workspace-layout-channel-focus.test.jsx -t '\[AD-103\]'` | 1 passed | AD-103 focuses only the committed target heading and preserves the no-scroll handoff through the public Workspace owner |
 | `tests/artifacts.test.jsx -t '\[AD-123\]'` | 1 passed | AD-123 preserves explicit same-channel version relation and repeated resource references through ChannelReplica + feature-search |
-| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-011 and AD-143 remain explicit product-gap reproductions; no AD-123 `it.fails` case remains |
+| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; no registered regression case red | AD-011 and AD-143 are closed through their existing public owners; no AD-123 `it.fails` case remains |
 
-The red assertions are intentionally not weakened, skipped, or deleted. The
-unrelated `tests/channel-replica-cache-redaction.test.js` red result belongs to
-the deleted `feed-cache.test.js` successor (data-plane/F scope), not to the
-42-suite A–D baseline ledger.
+Historical red assertions were not weakened, skipped, or deleted; their public
+owner contracts now pass. The unrelated `tests/channel-replica-cache-redaction.test.js`
+red result belongs to the deleted `feed-cache.test.js` successor (data-plane/F
+scope), not to the 42-suite A–D baseline ledger.
 
 ## Boundary proof
 
-- Changed files are confined to `tests/` A–D unit tests, A–D audit reports, and
-  the existing Waiting/timeline presentation owner plus the existing
-  `WorkspaceLayout` navigation owner.
-- No Reading, Outbox, Feed runtime, vendor, package manifest,
+- This verification commit changes only A–D tests and audit reports. The
+  already-existing owner commits `e09169e` (Feed activity) and `6c880aa`
+  (session access rows) were reviewed, not modified or amended here.
+- No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
   product-gap packets until a product owner supplies a current public owner.

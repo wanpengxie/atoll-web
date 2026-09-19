@@ -96,16 +96,16 @@ describe('connection-scoped Agent activity（ChannelFeedRuntime）', () => {
     runtime.destroy();
   });
 
-  it('历史可以收敛保留的工作但恒不复活，boot 变化时清空', async () => {
+  it('[AD-011] 历史可以收敛保留的工作但恒不复活，boot 变化时清空', async () => {
     const { runtime, owner } = setup();
     await runtime.getSnapshot().setHistoryGrants([], { generation: 1, boot: 'boot-a' });
     owner().enqueue(processingRow({ seq: 1, generation: 1, ts: 1_000 }));
     runtime.getSnapshot().disconnectHistory();
     await runtime.getSnapshot().setHistoryGrants([], { generation: 2, boot: 'boot-a' });
     owner().enqueue(terminalRow({ seq: 2, generation: 2, status: 'failed', ts: 2_000, source: 'history' }));
-    // Preserve the baseline settled-work contract as an explicit assertion.
-    // The current owner drops the channel projection entirely here, so this
-    // fails with a behavioral mismatch rather than an incidental TypeError.
+    // 用户能力：同 boot 重连后，历史 terminal 可以结算断线前保留的工作；
+    // 不变量：boot 改变会清空它，history-only processing 不能重新制造活性。
+    // 公开 owner：只通过 ChannelFeedRuntime 的 agentActivity 快照观察结果。
     const settled = runtime.getSnapshot().agentActivity.byChannel.c0;
     expect(settled).toBeDefined();
     expect(settled.agents['agent:codex:1'].state).toBe('settled');
