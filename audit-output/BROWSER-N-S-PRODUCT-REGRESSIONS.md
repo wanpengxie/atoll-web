@@ -46,6 +46,30 @@ Composer/Tiptap 说明：旧 disconnect 修复后的 N2 曾在 `Composer.jsx` pa
 
 因此以上公开 owner 分歧仍需产品处理；测试侧不以 unit 结果、徽标暂时压零或修改 fixture 关闭交接。
 
+## 可重跑最小 oracle：0/7 首个分歧（2026-09-20）
+
+测试侧新增 `tests/browser/notification-owner-oracle.spec.js`，只读真实浏览器公开事实，不改产品、fixture 或既有断言。命令：
+
+```text
+ATOLL_TEST_WEB_PORT=15310 ATOLL_TEST_MOCK_PORT=18910 npx playwright test \
+  tests/browser/notification-owner-oracle.spec.js \
+  --reporter=line --output=test-results-notification-owner-oracle-pre-20260920
+```
+
+观测器 **7/7 完成**；按 `input → cursor/highwater → replica → presentation → rail → reading` 的顺序，首个产品分歧仍为 **7/7 RED**：
+
+| case | 首个分歧 | 复验事实 |
+|---|---|---|
+| N2 | rail | following `gap=0` 下 34 帧出现 related `1→4` 瞬时未读；之后归零。cursor/replica 已到位。 |
+| N4 | rail | cursor=63、replica 已含 unrelated 与 approval；公开 rail `channels=[]`、无 authority。 |
+| H1 | rail | cursor=30、replica head=32；future ack 公开 rail high-water=0/无 channel。 |
+| H2 | rail | cursor=29、rows/meta 已 hydrate；二次 reload 公开 rail 仍无 channel/high-water。 |
+| H3 | rail | filtered tail cursor=29、replica head=29；公开 filtered rail high-water=0。 |
+| H4 | rail | following arrival cursor=28、replica head=28、owner gap=0；公开 rail high-water 未推进（0）。 |
+| F7 | presentation | `c0-history-request-112` 在 replica（head=848）但回返后不在唯一 owner visible IDs。 |
+
+这组 oracle 的绿色仅表示证据采集成功，不能替代原有 0/7 合同断言。产品交接保持：N2/N4/H1–H4 由 notification rail/high-water authority owner 处理；F7 由 reading-session/presentation admission owner 处理。证据保存在 `test-results-notification-owner-oracle-pre-20260920/`。
+
 ## R1（历史记录，已由 `cbd8591` 关闭）：频道切换时 history owner 尚未连接
 
 这条历史分歧不再是当前复验结果：`cbd8591` 后频道切换可以继续进入真实页面；最终轮未记录该错误。以下步骤和栈保留作修复前 provenance，不应作为当前 RED 计数。

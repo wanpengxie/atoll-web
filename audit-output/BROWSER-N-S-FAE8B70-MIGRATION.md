@@ -160,3 +160,31 @@ ATOLL_TEST_WEB_PORT=15260 ATOLL_TEST_MOCK_PORT=18900 npx playwright test \
 | F7 | cold/cached 启动均 following 最新；browse 后 c0→project→c0 回返应恢复同一 `firstVisible.id` 与位置。 | 曾出现 `before=112 / after=111` 单行漂移。 | 回返等待 60s 超时，目标 row 未进入唯一 owner 可见区域。 |
 
 结论：`a721412`/`71dcb38` 的单元级 frozen confirmation 与 cursor authority reset 证据成立，但没有通过这组真实浏览器 owner 验收；N2、N4、high-water、F7 的产品交接仍保持 RED，不能以 unit 绿色替代公开 UI 状态转移。
+
+## 2026-09-20 notification owner chain oracle（同 HEAD 可重跑）
+
+为把 0/7 的首个分歧固定在可重跑证据中，新增测试侧观察器 `tests/browser/notification-owner-oracle.spec.js`。它不导入产品模块、不安装兼容 owner、不改 fixture 或已有断言；每条记录同一条状态链：
+
+`input → cursor/highwater (localStorage) → replica (atoll-channel-replica-v1 rows/meta) → presentation (唯一 reading owner) → rail (公开 diagnostics/DOM) → reading (公开 trace)`。
+
+运行命令（当前冻结 HEAD，独立 mock/web 端口）：
+
+```text
+ATOLL_TEST_WEB_PORT=15310 ATOLL_TEST_MOCK_PORT=18910 npx playwright test \
+  tests/browser/notification-owner-oracle.spec.js \
+  --reporter=line --output=test-results-notification-owner-oracle-pre-20260920
+```
+
+结果：**7/7 oracle tests passed**（7 条都产生完整链证据；“passed”只表示观测器完成，不代表产品合同通过）。每条首个分歧如下：
+
+| case | 首个分歧 | 链上证据与公开 owner |
+|---|---|---|
+| N2 | **rail** | `following-arrival` 期间唯一 owner `gap=0/mode=following`，但 34 帧中 related badge 出现 `1 → 4` 后才归零；input 已入 replica（19 rows）、cursor 已写 high-water 36。公开 owner：following presentation receipt → notification rail 时序。 |
+| N4 | **rail** | filtered-tail 时 cursor high-water=63、replica 已含 `-unrelated-` 和 approval rows，但 `rail.snapshot('c0')={channels:[]}`，无 `authorityReady`。公开 owner：actor-filter rail authority/projection。 |
+| H1 | **rail** | future-ack 时 cursor high-water=30、replica head=32，公开 rail channel 缺失且 high-water=0（预期公开边界 28）。公开 owner：replica/runtime cursor 已耐久，rail projection 未建立。 |
+| H2 | **rail** | second-hydration 时 cursor high-water=29、replica rows/meta 已恢复，公开 rail 仍 `channels=[]`/high-water=0。公开 owner：hydration 后 rail authority 发布。 |
+| H3 | **rail** | filtered-tail 时 cursor high-water=29、replica head=29，公开 rail channel 缺失/high-water=0（预期边界 27）。公开 owner：filtered boundary → rail projection。 |
+| H4 | **rail** | following-after-arrival 时 cursor high-water=28、replica head=28，唯一 owner 仍 `gap=0`，但公开 rail high-water=0。公开 owner：presented-follow receipt → rail high-water。 |
+| F7 | **presentation** | return-after-switch 时目标 `c0-history-request-112` 已在 replica（head=848、80 cached rows），但不在唯一 reading owner 的 visible IDs；公开 owner：reading-session/admission → virtualized presentation。 |
+
+证据目录：`test-results-notification-owner-oracle-pre-20260920/`，每条附件为 `notification-owner-oracle-{N2,N4,H1,H2,H3,H4,F7}.json`，含 input、cursor、replica、presentation、rail、reading 全量摘要及 `firstDivergence`。因此当前 0/7 的产品分歧可在同一 HEAD 直接重跑，并与下一次 notification owner 提交逐条对比。
