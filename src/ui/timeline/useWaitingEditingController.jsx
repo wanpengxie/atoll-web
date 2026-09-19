@@ -1,29 +1,27 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
-import { terminalRetainedValue } from '../../model/terminal-result.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';
 import { newId } from '../../util/id.js';
 
 const WAITING_HANDOFF_DURATION_MS = 180;
 const AGENT_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
-export const EMPTY_FROZEN_STATES = new Map();
 
-export function exactHoldPayload(payload, holdId) {
+function exactHoldPayload(payload, holdId) {
   if (typeof holdId !== 'string' || !holdId) throw new Error('编辑控制缺少 exact hold owner');
   return { ...payload, expected_hold_id: holdId };
 }
 
-export function supportsLeaseCAS(capability, type) {
+function supportsLeaseCAS(capability, type) {
   return Boolean(capability?.describe?.types?.get(type)?.inputSchema?.properties?.expected_hold_id);
 }
 
-export function supportsEditLeaseCAS(capability) {
+function supportsEditLeaseCAS(capability) {
   return supportsLeaseCAS(capability, TYPES.agentReplace)
     && supportsLeaseCAS(capability, TYPES.agentUnhold);
 }
 
-export function editLeaseCapabilityState(capability) {
+function editLeaseCapabilityState(capability) {
   if (!capability?.describe) return 'unknown';
   return supportsEditLeaseCAS(capability) ? 'supported' : 'unsupported';
 }
@@ -186,11 +184,7 @@ export function WaitingLayer({
 export function useWaitingEditingController({
   state,
   pending,
-  selfId,
-  access,
-  waitingRosterAuthority,
   capabilityIndex,
-  roster,
   onRequestCapability,
   onTaskControl,
   onComposerEditChange,
@@ -206,19 +200,6 @@ export function useWaitingEditingController({
     [controlVersion, editingTargetId, state],
   );
   const timelineLocalEchoes = useMemo(() => pending || [], [pending]);
-  const timelineControl = useMemo(() => {
-    const preempted = new Map();
-    const merged = new Map();
-    for (const entry of state?.timeline || []) {
-      if (entry?.kind !== 'turn') continue;
-      const turn = entry.turn;
-      const preemptedBy = String(terminalRetainedValue(turn, 'preempted_by') || '');
-      const mergedInto = String(terminalRetainedValue(turn, 'merged_into') || '');
-      if (preemptedBy) preempted.set(preemptedBy, [...(preempted.get(preemptedBy) || []), turn]);
-      if (mergedInto) merged.set(mergedInto, (merged.get(mergedInto) || 0) + 1);
-    }
-    return { preempted, merged };
-  }, [controlVersion, state]);
 
   useLayoutEffect(() => { editingRef.current = editing; }, [editing]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
@@ -345,18 +326,9 @@ export function useWaitingEditingController({
   return {
     editingTargetId,
     presentationEditing: editing,
-    resumePin,
     timelineLocalEchoes,
     queuedTurns,
-    frozenByActor: EMPTY_FROZEN_STATES,
-    preemptedSources: timelineControl.preempted,
-    mergedCounts: timelineControl.merged,
     editNotice,
     startEditing,
-    verifyAndSave,
-    abandonEditing,
-    onEditText(text) {
-      setEditing((current) => current ? { ...current, text, error: '' } : current);
-    },
   };
 }

@@ -3,12 +3,7 @@ import { actorNameMap } from '../../model/actor-display.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { MessageLayoutProvider } from '../timeline/MessageLayoutState.jsx';
 import { ReadingContainerHandoff } from '../timeline/ReadingContainerHandoff.jsx';
-import {
-  EMPTY_CAPABILITY_INDEX,
-  EMPTY_CONTROL_STATES,
-  SHOW_CHANNEL_NARRATION,
-  useTimelineRowRenderer,
-} from '../timeline/TimelineRowRenderer.jsx';
+import { useTimelineRowRenderer } from '../timeline/TimelineRowRenderer.jsx';
 import { useConversationProjection } from '../timeline/useConversationProjection.js';
 import {
   CONVERSATION_SCOPE,
@@ -20,6 +15,9 @@ import {
   useWaitingHandoff,
 } from '../timeline/useWaitingEditingController.jsx';
 import { ReadingIntentProvider } from './ReadingIntentContext.jsx';
+
+const EMPTY_CAPABILITY_INDEX = new Map();
+const SHOW_CHANNEL_NARRATION = false;
 
 /**
  * The stable shell-facing conversation port.
@@ -39,7 +37,6 @@ export function ConversationSurface({
   onAcknowledgeAgentActivity,
   pending = [],
   approvalStates = {},
-  controlStates = EMPTY_CONTROL_STATES,
   capabilityIndex = EMPTY_CAPABILITY_INDEX,
   onRequestCapability,
   access = '',
@@ -53,7 +50,6 @@ export function ConversationSurface({
   onOpenTurn,
   onCreateTask,
   onReply,
-  turnDetail,
   onComposerEditChange,
   onFocusAgentChange,
   className = '',
@@ -76,26 +72,14 @@ export function ConversationSurface({
   const {
     editingTargetId,
     presentationEditing,
-    resumePin,
     timelineLocalEchoes,
     queuedTurns,
-    frozenByActor,
-    preemptedSources,
-    mergedCounts,
     editNotice,
     startEditing,
-    verifyAndSave,
-    abandonEditing,
-    onEditText,
   } = useWaitingEditingController({
     state,
-    history,
     pending,
-    selfId,
-    access,
-    waitingRosterAuthority,
     capabilityIndex,
-    roster,
     onRequestCapability,
     onTaskControl,
     onComposerEditChange,
@@ -167,22 +151,12 @@ export function ConversationSurface({
     renderRow,
   } = useTimelineRowRenderer({
     state,
-    roster,
     names,
     selfId,
-    access,
-    waitingRosterAuthority,
-    capabilityIndex,
-    frozenByActor,
     presentationEditing,
-    resumePin,
     browsingExpandedSlots,
     effectiveFoldOverrides: foldOverrides,
     approvalStates,
-    controlStates,
-    mergedCounts,
-    preemptedSources,
-    turnDetail,
     latestRowID,
     onResolve,
     onCancel,
@@ -193,9 +167,6 @@ export function ConversationSurface({
     onCreateTask,
     onReply,
     startEditing,
-    verifyAndSave,
-    abandonEditing,
-    onEditText,
     toggleFold,
   });
   const openFileReference = useCallback((reference) => {
@@ -308,14 +279,10 @@ export function ConversationSurface({
                   access={access}
                   targetAuthority={waitingRosterAuthority}
                   capabilityIndex={capabilityIndex}
-                  frozenByActor={frozenByActor}
                   editing={presentationEditing}
                   onCancel={onCancel}
                   onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })}
                   onEdit={startEditing}
-                  onEditText={onEditText}
-                  onEditSave={verifyAndSave}
-                  onEditAbandon={abandonEditing}
                 />
               </div>
               <div className="conversation-input-slot">{composer}</div>

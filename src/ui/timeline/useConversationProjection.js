@@ -29,7 +29,6 @@ import {
 } from '../../model/reading-session.js';
 import { newId } from '../../util/id.js';
 import { useColdEntryDiagnostics } from './useColdEntryDiagnostics.js';
-import { currentEntryAuthority } from './dom-evidence-adapter.js';
 import { HISTORY_CONSUMER } from './history-consumer-obligation.js';
 import { useHistoryConsumer, useReadingInitialization } from './useHistoryConsumer.js';
 import { usePresentationArrivalReceipt, useTimelineArrivalReceipt } from './useLiveArrivalReceipts.js';
@@ -38,6 +37,28 @@ const IDLE_HISTORY_DEMAND = Object.freeze({ revision: 0, phase: 'idle', error: '
 const HISTORY_RUNWAY_REVEAL_RECORDS = 8;
 const HISTORY_RUNWAY_REVEAL_BYTES = 256 * 1024;
 const pageIsVisible = () => globalThis.document?.visibilityState !== 'hidden';
+
+function rangeCovers(ranges = [], low, high) {
+  const start = Number(low || 0);
+  const end = Number(high || 0);
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start > 0 && end >= start
+    && ranges.some((range) => Number(range?.lowSeq || 0) <= start && Number(range?.highSeq || 0) >= end);
+}
+
+function currentEntryAuthority({ snapshot, historyStatus, bottomReady, availability, authoritativeEmpty }) {
+  const candidate = snapshot?.currentEntryCandidate;
+  const durableCovered = candidate && candidate.local !== true
+    && rangeCovers(historyStatus?.coverage, candidate.seqHigh, historyStatus?.headSeq);
+  const localCovered = candidate?.local === true && (authoritativeEmpty
+    || (bottomReady && rangeCovers(historyStatus?.coverage, historyStatus?.headSeq, historyStatus?.headSeq)));
+  if (availability !== 'readable' || !candidate || !((bottomReady && durableCovered) || localCovered)) return null;
+  return Object.freeze({
+    epoch: snapshot.epoch,
+    viewID: snapshot.viewID,
+    sourceRevision: Number(snapshot.sourceRevision || 0),
+    candidateID: candidate.id,
+  });
+}
 
 function sameTailEvidence(left, right) {
   return left.activationID === right.activationID

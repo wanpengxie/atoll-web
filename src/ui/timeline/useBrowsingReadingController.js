@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { diagnostic } from '../../model/diagnostics.js';
-import { consumeHistoryConsumerResult } from './history-consumer-demand.js';
 
 const RUNWAY_MINIMUM_PX = 800;
 
@@ -14,6 +13,13 @@ const idleInput = (reading) => ({
   canRequestHistory: false,
   active: false,
 });
+
+function consumeHistoryConsumerResult(pending, recheck) {
+  return Promise.resolve(pending).then((result) => {
+    if (result?.kind !== 'consumer-recheck') return result;
+    return recheck(result);
+  });
+}
 
 // Owns input attribution, history dedupe, and semantic publication above DOM.
 export function useBrowsingReadingController({ reading, snapshot, handoffPending = false }) {

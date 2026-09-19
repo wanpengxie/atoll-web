@@ -97,6 +97,36 @@ function readingSummary(reading) {
   };
 }
 
+function historySummary(history) {
+  const status = history?.status || history || {};
+  return {
+    channelId: String(status.channelId || ''),
+    generation: finite(status.generation),
+    attached: status.attached === true,
+    headSeq: finite(status.headSeq),
+    beforeSeq: finite(status.beforeSeq),
+    oldestSeq: finite(status.oldestSeq),
+    hasOlder: status.hasOlder === true,
+    loaded: status.loaded === true,
+    loading: status.loading === true,
+    foregroundLoading: status.foregroundLoading === true,
+    backgroundLoading: status.backgroundLoading === true,
+    completedPages: finite(status.completedPages),
+    lastSource: String(status.lastSource || ''),
+    presentationRevision: finite(status.presentationRevision),
+    localReplicaReady: status.localReplicaReady === true,
+    localReplicaError: String(status.localReplicaError || ''),
+    localReplicaErrorCode: String(status.localReplicaErrorCode || ''),
+    error: String(status.error || ''),
+    errorCode: String(status.errorCode || ''),
+    demand: {
+      revision: finite(status.historyDemand?.revision),
+      phase: String(status.historyDemand?.phase || 'idle'),
+      error: String(status.historyDemand?.error || ''),
+    },
+  };
+}
+
 function classify(snapshot) {
   const rows = snapshot.dom.visibleRows;
   const small = rows <= 3;
@@ -113,14 +143,15 @@ function classify(snapshot) {
 function blockedBy(snapshot) {
   if (!snapshot.surfaceVisible) return 'surface-hidden';
   if (!snapshot.selfReady) return 'self-identity-pending';
-  if (snapshot.feed?.feed?.localReplicaErrorCode) return 'local-replica-error';
-  if (snapshot.feed?.feed?.localReplicaReady !== true) return 'local-replica-pending';
-  const schedulerReason = snapshot.feed?.scheduler?.channel?.blockedBy;
-  if (schedulerReason && schedulerReason !== 'ready') return `scheduler:${schedulerReason}`;
-  if (snapshot.feed?.replica?.rows > 0 && snapshot.presentation.rows === 0) return 'projection-empty';
+  if (snapshot.history.localReplicaErrorCode || snapshot.history.localReplicaError) return 'local-replica-error';
+  if (!snapshot.history.localReplicaReady) return 'local-replica-pending';
+  if (snapshot.history.errorCode || snapshot.history.error || snapshot.history.demand.error) return 'history-error';
+  if (snapshot.history.loaded && snapshot.presentation.rows === 0) return 'projection-empty';
   if (snapshot.presentation.rows > 0 && snapshot.dom.mountedRows === 0) return 'materialization-empty';
   if (snapshot.dom.handoffPending) return 'handoff-pending';
-  if (!snapshot.dom.canScroll && snapshot.feed?.scheduler?.channel?.hasOlder) return 'viewport-underfill';
+  if (!snapshot.dom.canScroll && snapshot.history.hasOlder) return 'viewport-underfill';
+  if (snapshot.history.loading || snapshot.history.demand.phase === 'pending') return 'history-loading';
+  if (!snapshot.history.attached) return 'history-detached';
   return snapshot.classification === 'entry-pending' ? 'entry-authority-pending' : 'none';
 }
 
@@ -129,18 +160,19 @@ function activationKey(snapshot) {
 }
 
 function workSummary(snapshot) {
-  const scheduler = snapshot.feed?.scheduler;
-  const inflight = scheduler?.inflight;
-  const candidate = scheduler?.candidate;
-  const reason = scheduler?.channel?.blockedBy || snapshot.blockedBy;
-  const noWorkNeeded = ['authoritative-eof', 'buffer-awaiting-release'].includes(reason)
-    || (snapshot.classification === 'authoritative-empty' && reason !== 'ready');
+  const status = snapshot.history;
+  const running = status.loading || status.demand.phase === 'pending';
+  const failed = Boolean(status.errorCode || status.error || status.demand.error);
+  const noWorkNeeded = !running && !failed && status.attached
+    && (snapshot.classification === 'authoritative-empty' || status.hasOlder === false);
   return {
-    state: inflight ? 'running' : candidate ? 'planned' : noWorkNeeded ? 'not-needed' : 'blocked',
-    action: inflight || candidate || null,
-    reason: inflight || candidate ? '' : reason,
-    replicaReady: snapshot.feed?.feed?.localReplicaReady === true,
-    dataRows: finite(snapshot.feed?.replica?.rows),
+    state: running ? 'running' : failed ? 'failed' : noWorkNeeded ? 'not-needed' : 'blocked',
+    action: running
+      ? status.foregroundLoading ? 'foreground-history' : status.backgroundLoading ? 'background-history' : 'history-demand'
+      : '',
+    reason: running ? '' : snapshot.blockedBy,
+    replicaReady: status.localReplicaReady,
+    dataLoaded: status.loaded,
     presentationVisible: snapshot.dom.visibleRows > 0,
   };
 }
@@ -148,21 +180,18 @@ function workSummary(snapshot) {
 function transitionEvents(previous, current) {
   if (!previous) return [];
   const events = [];
-  const beforeInflight = previous.feed?.scheduler?.inflight;
-  const afterInflight = current.feed?.scheduler?.inflight;
-  const inflightKey = (value) => value
-    ? `${value.channelId}:${value.source}:${value.purpose}:${value.rangeKind}:${value.beforeSeq}`
-    : '';
-  const beforeError = previous.feed?.scheduler?.channel?.errorCode || '';
-  const afterError = current.feed?.scheduler?.channel?.errorCode || '';
+  const beforeLoading = previous.history.loading || previous.history.demand.phase === 'pending';
+  const afterLoading = current.history.loading || current.history.demand.phase === 'pending';
+  const beforeError = previous.history.errorCode || previous.history.localReplicaErrorCode || '';
+  const afterError = current.history.errorCode || current.history.localReplicaErrorCode || '';
   if (afterError && afterError !== beforeError) events.push(['fail', 'warn']);
-  if (afterInflight && inflightKey(afterInflight) !== inflightKey(beforeInflight)) {
-    events.push(['dispatch', 'info']);
-  }
-  const dataChanged = current.feed?.replica?.revision !== previous.feed?.replica?.revision
-    || current.feed?.replica?.rows !== previous.feed?.replica?.rows;
+  if (afterLoading && !beforeLoading) events.push(['dispatch', 'info']);
+  const dataChanged = current.history.completedPages !== previous.history.completedPages
+    || current.history.oldestSeq !== previous.history.oldestSeq
+    || current.history.loaded !== previous.history.loaded
+    || current.presentation.sourceRevision !== previous.presentation.sourceRevision;
   if (dataChanged) events.push(['data-complete', 'info']);
-  else if (beforeInflight && !afterInflight && !afterError) events.push(['dispatch-settled-no-data', 'info']);
+  else if (beforeLoading && !afterLoading && !afterError) events.push(['dispatch-settled-no-data', 'info']);
   const bodyChanged = current.presentation.revision !== previous.presentation.revision
     || current.dom.visibleRows !== previous.dom.visibleRows
     || JSON.stringify(current.dom.visibleIDs) !== JSON.stringify(previous.dom.visibleIDs);
@@ -171,43 +200,10 @@ function transitionEvents(previous, current) {
 }
 
 function stateKey(snapshot) {
-  const scheduler = snapshot.feed?.scheduler;
   return JSON.stringify({
     classification: snapshot.classification,
     blockedBy: snapshot.blockedBy,
-    feed: snapshot.feed?.feed,
-    replica: snapshot.feed?.replica,
-    scheduler: scheduler ? {
-      channel: scheduler.channel && {
-        ...scheduler.channel,
-        retryInMs: Number(scheduler.channel.retryInMs || 0) > 0,
-      },
-      candidate: scheduler.candidate,
-      inflight: scheduler.inflight && {
-        channelId: scheduler.inflight.channelId,
-        source: scheduler.inflight.source,
-        purpose: scheduler.inflight.purpose,
-        rangeKind: scheduler.inflight.rangeKind,
-        phase: scheduler.inflight.phase,
-        beforeSeq: scheduler.inflight.beforeSeq,
-      },
-      global: {
-        focus: scheduler.global?.focus,
-        generation: scheduler.global?.generation,
-        localMetaReady: scheduler.global?.localMetaReady,
-        inflightCount: scheduler.global?.inflightCount,
-        reservedBytes: scheduler.global?.reservedBytes,
-        reservoirBytes: scheduler.global?.reservoirBytes,
-        occupants: scheduler.global?.occupants?.map((entry) => ({
-          channelId: entry.channelId,
-          source: entry.source,
-          purpose: entry.purpose,
-          rangeKind: entry.rangeKind,
-          phase: entry.phase,
-          priority: entry.priority,
-        })),
-      },
-    } : null,
+    history: snapshot.history,
     presentation: snapshot.presentation,
     reading: snapshot.reading,
     dom: snapshot.dom,
@@ -240,33 +236,37 @@ export function useColdEntryDiagnostics({
       viewKey: String(viewKey || ''),
       selfReady: selfReady === true,
       surfaceVisible: surfaceVisible === true,
-      feed: history.debugSnapshot?.() || null,
+      history: historySummary(history),
       presentation: presentationSummary(presentation),
       reading: readingSummary(reading),
       dom: domSnapshot(),
     };
     snapshot.classification = classify(snapshot);
     snapshot.blockedBy = blockedBy(snapshot);
-    snapshot.nextCondition = snapshot.blockedBy.startsWith('scheduler:')
-      ? 'scheduler candidate becomes runnable or current source settles'
-      : snapshot.blockedBy === 'projection-empty'
+    snapshot.nextCondition = snapshot.blockedBy === 'projection-empty'
         ? 'Replica revision is consumed by Presentation'
         : snapshot.blockedBy === 'materialization-empty'
           ? 'current Presentation rows mount in the active list'
           : snapshot.blockedBy === 'viewport-underfill'
-            ? 'edge demand opens or settles one Scheduler segment'
+            ? 'edge demand settles one history segment'
+            : snapshot.blockedBy === 'history-loading'
+              ? 'the current history demand settles'
+              : snapshot.blockedBy === 'history-error'
+                ? 'the current history demand is retried successfully'
+                : snapshot.blockedBy === 'history-detached'
+                  ? 'history attaches for this channel generation'
             : ['authoritative-empty', 'legitimate-small'].includes(snapshot.classification)
               && !snapshot.dom.canScroll
-              && snapshot.feed?.scheduler?.channel?.hasOlder !== true
+              && snapshot.history.hasOlder !== true
               ? 'no motion expected: the current channel has no scrollable range'
             : snapshot.blockedBy === 'none'
               ? 'none'
               : 'the named authority publishes a newer state';
     snapshot.work = workSummary(snapshot);
     snapshot.result = {
-      dataComplete: snapshot.feed?.replica?.revision > 0,
+      dataComplete: snapshot.history.loaded || (snapshot.history.attached && snapshot.history.headSeq === 0),
       presentationVisible: snapshot.dom.visibleRows > 0,
-      errorCode: String(snapshot.feed?.scheduler?.channel?.errorCode || ''),
+      errorCode: snapshot.history.errorCode || snapshot.history.localReplicaErrorCode,
     };
     return snapshot;
   }, [channelId, history, presentation, reading, selfReady, surfaceVisible, viewKey]);

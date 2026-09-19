@@ -12,7 +12,6 @@ import React, {
 } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { READING_MODE, resolveReadingBookmark } from '../../model/reading-session.js';
-import { HistoryStartBoundary } from './HistoryStartBoundary.jsx';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
 import { executeReadingDOMCommand } from './reading-dom-command-executor.js';
 import {
@@ -83,6 +82,17 @@ const List = React.forwardRef(function List({ children, ...props }, ref) {
 
 function WaitingObstructionFooter() {
   return <div className="timeline-waiting-obstruction" aria-hidden="true" />;
+}
+
+function HistoryStartBoundary({ boundary }) {
+  return <div className="timeline-history-boundary-slot" aria-hidden={boundary?.label ? undefined : 'true'}>
+    {boundary?.label && <div
+      className="timeline-history-boundary"
+      data-phase="exhausted"
+      data-generation={boundary.generation}
+      role="status"
+    >{boundary.label}</div>}
+  </div>;
 }
 
 function HistoryHeader({ context }) {

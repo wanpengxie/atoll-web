@@ -6,11 +6,21 @@ import { DECISIONS, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 import { FoldableBody } from './FoldableBody.jsx';
-import { ContentFrame, MessageFrame } from './InformationFlow.jsx';
 
-export const SHOW_CHANNEL_NARRATION = false;
-export const EMPTY_CAPABILITY_INDEX = new Map();
-export const EMPTY_CONTROL_STATES = {};
+function MessageFrame({ className = '', actions = null, identity = null, contentClassName = '', children, ...articleProps }) {
+  return <article className={`message-row ${className}`.trim()} tabIndex="0" {...articleProps}>
+    {actions}
+    <div className="information-flow-avatar-slot">{identity}</div>
+    <div className={`message-body information-flow-content ${contentClassName}`.trim()}>{children}</div>
+  </article>;
+}
+
+function ContentFrame({ children, contained = false }) {
+  return <div className={`information-flow-row ${contained ? 'contained' : ''}`.trim()}>
+    <div className="information-flow-avatar-slot" aria-hidden="true" />
+    <div className="information-flow-content">{children}</div>
+  </div>;
+}
 
 function textOf(envelope) {
   const body = argsOf(envelope);
