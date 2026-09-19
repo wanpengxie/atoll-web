@@ -254,7 +254,7 @@ assertions.
 
 Targeted run: `ATOLL_TEST_WEB_PORT=15279
 ATOLL_TEST_MOCK_PORT=19838 npx playwright test
-tests/browser/ux-unseen-persistence.spec.js`; **1 red** at line 92, where the
+tests/browser/ux-unseen-persistence.spec.js`; **1 red** at line 91, where the
 live approval is visible and the jump is present but the persisted reading has
 zero `unseenRecords`. Source read-only audit shows `view-session` can normalize
 such records, while `persistentReadingSession()` emits only mode/bookmark and
@@ -304,6 +304,61 @@ the two UX-A09 channel-switch cases and Waiting case 26 now pass; Waiting case
 tail gap remains `>1`. Current send handoff owns Following/tail instead. The
 minimal owners are the Composer submission/reading-intent handoff and the
 reading command executor; no test-only scroll writer was added.
+
+## Follow-up: strict Reading/notification oracle re-verification at `6060588`
+
+The `61c8758` UX-A08 contract is unchanged and was re-run independently:
+
+```text
+ATOLL_TEST_WEB_PORT=15282 ATOLL_TEST_MOCK_PORT=19841 npx playwright test \
+  tests/browser/ux-unseen-persistence.spec.js \
+  --reporter=line --output=test-results-browser-tz-a08-rerun-20260920
+```
+
+Result: **1 red**, line 91 (`unseenRecords` expected one finite tuple, received
+`[]`). The public approval row and `↓ 1 条新动态` jump are present before the
+assertion, so this is not an arrival or selector/environment failure. The hard
+normalization → reload → jump-clear → ack assertions remain after the first
+missing product write; no seed/fallback was added.
+
+The notification owner-chain oracle from the adjacent N–S partition was also
+re-run against the same current HEAD without changing that test:
+
+```text
+ATOLL_TEST_WEB_PORT=15281 ATOLL_TEST_MOCK_PORT=19840 npx playwright test \
+  tests/browser/notification-owner-oracle.spec.js \
+  --reporter=line --output=test-results-browser-tz-notification-owner-oracle-20260920
+```
+
+Result: **7/7 observation tests completed** (green means the chain snapshot was
+collected, not that the product contract passed). The strict first-divergence
+oracle is stable and assigns the next owner without guessing:
+
+| case | first divergence at current HEAD | strict evidence | owner handoff |
+|---|---|---|---|
+| N2 | rail | following `gap=0`; related badge frames transiently `1 → 3 → 0`; cursor notification high-water 36 and replica max seq 36 are already present | presented-follow receipt → notification rail |
+| N4 | rail | filtered input cursor high-water 63 and replica max seq 63; public rail has no channel/authority | filtered boundary → rail authority |
+| H1 | rail | future-ack cursor high-water 30, replica head 32; public rail high-water 0 vs expected 28 | reload/future receipt → rail projection |
+| H2 | rail | hydrated second reload cursor high-water 29, replica head 29; public rail remains absent/high-water 0 vs expected 27 | hydration → rail authority |
+| H3 | rail | filtered-tail cursor high-water 29, replica head 29; public rail remains absent/high-water 0 vs expected 27 | filtered tail → rail authority |
+| H4 | rail | following arrival cursor high-water 28, replica head 28; public rail high-water 0 vs expected 1; reading trace contains only `trace.enabled` | presented-follow → rail high-water |
+| F7 | presentation | replica contains target `c0-history-request-112` (head 848, 80 cached rows), but the sole reading owner returns a different visible range after channel switch | reading-session/admission → virtualized presentation |
+
+Waiting case38 was independently re-run after the same HEAD:
+
+```text
+ATOLL_TEST_WEB_PORT=15283 ATOLL_TEST_MOCK_PORT=19842 npx playwright test \
+  tests/browser/waiting-production-contract.spec.js \
+  --grep "wheel-takeover-after-send" --reporter=line \
+  --output=test-results-browser-tz-waiting-case38-rerun-20260920
+```
+
+Result: **1 red** at `waiting-production-contract.spec.js:298`:
+`after.list.gap === 0` where browsing requires `> 1`. Repro remains
+`long-running-history`, seed `0x92_18_38`, 1120×760: login at tail → trusted
+wheel `-900` → public browsing mode → send `send browsing` → inspect public
+geometry. This is the Composer/reading-intent handoff plus reading command
+executor owner boundary; the browser contract stays hard.
 
 ## Current files changed in this partition
 
