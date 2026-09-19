@@ -1,26 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-
-const SOURCE_PATHS = [
-  'src/ui/timeline/useReadingSession.js',
-  'src/ui/timeline/LegendMessageList.jsx',
-  'src/model/view-session.js',
-  'src/ui/Timeline.jsx',
-  'src/ui/conversation/ConversationSurface.jsx',
-  'src/styles/timeline.css',
-];
-
-async function fingerprint() {
-  const hash = createHash('sha256');
-  for (const path of SOURCE_PATHS) hash.update(path).update('\0').update(await readFile(path));
-  return hash.digest('hex');
-}
+import { writeFile } from 'node:fs/promises';
 
 async function attachJSON(testInfo, name, value) {
   const path = testInfo.outputPath(name);
   await writeFile(path, `${JSON.stringify({
-    capturedAt: new Date().toISOString(), sourceDigest: await fingerprint(), ...value,
+    capturedAt: new Date().toISOString(), ...value,
   }, null, 2)}\n`, 'utf8');
   await testInfo.attach(name, { path, contentType: 'application/json' });
 }
@@ -28,6 +12,14 @@ async function attachJSON(testInfo, name, value) {
 async function reset(request, scenario, seed) {
   const response = await request.post('/mock/control/reset', { data: { scenario, seed } });
   expect(response.ok()).toBe(true);
+}
+
+async function approval(request, channelId = 'c0') {
+  const response = await request.post('/mock/control/action', {
+    data: { type: 'approval', channel_id: channelId },
+  });
+  expect(response.ok()).toBe(true);
+  return response.json();
 }
 
 async function login(page) {
@@ -38,7 +30,6 @@ async function login(page) {
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(page.locator('main h1')).toHaveText('c0');
   await expect(page.locator('.timeline-message-list')).toBeVisible();
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'visible-unseen-ack' }));
 }
 
 async function sendToSteward(page, text) {
@@ -101,7 +92,6 @@ async function evidence(page, needle) {
       waiting: waitingRect ? { top: waitingRect.top, bottom: waitingRect.bottom, left: waitingRect.left, right: waitingRect.right } : null,
       waitingOverlap: Math.max(0, overlapBottom - overlapTop),
       overlapOwnedByWaiting: Boolean(waiting && overlapTarget && (waiting === overlapTarget || waiting.contains(overlapTarget))),
-      reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || [],
     };
   }, needle);
 }
@@ -115,13 +105,12 @@ test('wheel-visible committed arrival auto-acknowledges before exact physical ta
   await page.mouse.wheel(0, -800);
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
 
-  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
-  expect(pulse.ok()).toBe(true);
+  await approval(request);
   await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
   await wheelToPhysicalGap(page, 12);
   await page.waitForTimeout(150);
 
-  const sample = await evidence(page, 'c0 动态 #1');
+  const sample = await evidence(page, 'Approve live mock action');
   await attachJSON(testInfo, 'visible-gap-unseen.json', { sample });
   expect(sample.gap).toBeGreaterThan(1);
   expect(sample.rowIntersectsViewport).toBe(true);
@@ -142,13 +131,12 @@ test('Waiting-covered committed arrival remains unseen until actually exposed', 
   await viewport.hover();
   await page.mouse.wheel(0, -800);
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
-  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
-  expect(pulse.ok()).toBe(true);
+  await approval(request);
   await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
   await wheelToPhysicalGap(page, 70);
   await page.waitForTimeout(150);
 
-  const sample = await evidence(page, 'c0 动态 #1');
+  const sample = await evidence(page, 'Approve live mock action');
   await attachJSON(testInfo, 'waiting-covered-unseen.json', { sample });
   expect(sample.gap).toBeGreaterThan(1);
   expect(sample.rowIntersectsViewport).toBe(true);

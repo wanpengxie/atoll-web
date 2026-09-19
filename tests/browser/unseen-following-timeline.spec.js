@@ -1,28 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-
-const SOURCE_PATHS = [
-  'src/app/hooks/useChannelFeed.js',
-  'src/model/fold.js',
-  'src/model/timeline-projection.js',
-  'src/model/conversation-presentation.js',
-  'src/ui/timeline/useReadingSession.js',
-  'src/ui/timeline/LegendMessageList.jsx',
-  'src/ui/Timeline.jsx',
-];
-
-async function fingerprint() {
-  const hash = createHash('sha256');
-  for (const path of SOURCE_PATHS) hash.update(path).update('\0').update(await readFile(path));
-  return hash.digest('hex');
-}
+import { writeFile } from 'node:fs/promises';
 
 async function attachJSON(testInfo, name, payload) {
   const path = testInfo.outputPath(name);
   await writeFile(path, `${JSON.stringify({
     capturedAt: new Date().toISOString(),
-    sourceDigest: await fingerprint(),
     ...payload,
   }, null, 2)}\n`, 'utf8');
   await testInfo.attach(name, { path, contentType: 'application/json' });
@@ -40,7 +22,6 @@ async function login(page) {
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(page.locator('.timeline-message-list')).toBeVisible();
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'unseen-following-timeline' }));
 }
 
 async function startFrameCapture(page) {
@@ -94,7 +75,7 @@ async function sendToSteward(page) {
   await page.getByRole('button', { name: /发送/ }).click();
 }
 
-test('following physical tail never exposes a transient unseen prompt while the committed row is visible', async ({ page, request }, testInfo) => {
+test('following physical tail keeps a committed arrival visible without an unseen prompt', async ({ page, request }, testInfo) => {
   await reset(request, 'deep-history', 0x92_28_01);
   await login(page);
   const viewport = page.locator('.timeline-message-list');
@@ -104,37 +85,12 @@ test('following physical tail never exposes a transient unseen prompt while the 
 
   await startFrameCapture(page);
   await sendToSteward(page);
+  await expect(page.getByText('stationary bottom trigger probe', { exact: false })).toBeVisible();
   await page.waitForTimeout(1_500);
   const frames = await stopFrameCapture(page);
-  const reading = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || {});
-  const relevantEvents = (reading.entries || []).filter((entry) => [
-    'reading.unseen-arrival',
-    'reading.row-commit',
-    'reading.owner-commit',
-    'reading.observation',
-    'reading.arrival-resolution',
-    'reading.visible-rows-ack',
-  ].includes(entry.event));
-  const arrivals = relevantEvents.filter((entry) => entry.event === 'reading.unseen-arrival');
-  const records = arrivals.flatMap((entry) => entry.detail?.records || []);
-  const recordRowIDs = new Set(records.flatMap((record) => record.rowIDs || []));
-  const timeline = relevantEvents.filter((entry) => {
-    if (entry.event === 'reading.row-commit') return recordRowIDs.has(entry.detail?.rowID);
-    if (entry.event === 'reading.observation') return (entry.detail?.visibleRowIDs || []).some((id) => recordRowIDs.has(id));
-    if (entry.event === 'reading.arrival-resolution') {
-      return (entry.detail?.decisions || []).some((decision) => recordRowIDs.has(decision.key));
-    }
-    if (entry.event === 'reading.visible-rows-ack') {
-      return (entry.detail?.visibleRows || []).some((row) => recordRowIDs.has(row.messageID))
-        || (entry.detail?.before?.records || []).some((record) => recordRowIDs.has(record.key));
-    }
-    return entry.event === 'reading.unseen-arrival';
-  });
   const violatingFrames = frames.filter((frame) => frame.gap <= 1 && frame.jump);
 
   await attachJSON(testInfo, 'unseen-following-timeline.json', {
-    records,
-    timeline,
     frameTransitions: frames.filter((frame, index) => (
       index === 0
       || frame.jump !== frames[index - 1].jump
@@ -145,6 +101,10 @@ test('following physical tail never exposes a transient unseen prompt while the 
     final: frames.at(-1) || null,
   });
 
-  expect(records.length).toBeGreaterThan(0);
+  // The current arrival-receipt owner consumes a following-tail arrival as it
+  // commits. Evidence is sampled from the rendered surface rather than an
+  // implementation journal.
+  expect(frames.at(-1)?.visibleRowIDs.length).toBeGreaterThan(0);
+  expect(frames.at(-1)?.jump).toBe('');
   expect(violatingFrames).toEqual([]);
 });

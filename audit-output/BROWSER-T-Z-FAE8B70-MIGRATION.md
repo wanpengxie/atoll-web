@@ -1,0 +1,246 @@
+# Browser T–Z / numeric migration ledger for `fae8b70`
+
+This is the case-level ledger required by `f6cebbb`. The partition contains 10
+baseline spec files and 38 baseline test cases; there are no numeric-leading
+spec files. All 38 baseline cases were read. The old Waiting fixtures were not
+restored: the replacement enters `WorkspaceApp` through the login surface.
+
+Status at the latest runs:
+
+- 38/38 cases have an executable current test (10 existing migrated specs, 14
+  visual cases in `ui-visual.spec.js`, and 14 Waiting cases in
+  `waiting-production-contract.spec.js`).
+- The existing behavior group was 8 green / 2 red; the Waiting replacement was
+  12 green / 2 red after correcting reduced-motion setup; the visual group is
+  intentionally red against the preserved screenshot/geometry contract (the
+  current run recorded 14 red, including the missing global activity entry).
+- The red cases are not skipped or weakened. They are regression packets for
+  product/contract decisions. Mock-control HTTP `ok` checks are setup checks
+  only; product assertions are made against the rendered production surface.
+- No source hash, source-path fingerprint, React fiber read, product diagnostic
+  journal, vendor/package change, compatibility selector, or fixture-only entry
+  remains in the migrated target specs.
+
+## Case ledger
+
+Each row records: user capability and invariant; current owner; original
+setup → action → result; current evidence and disposition.
+
+### `ui-visual.spec.js` (14 cases)
+
+1. **UI-VIS-01 桌面三栏工作台视觉基线** — Capability: read the desktop rail,
+   conversation, and composer as one three-column workspace. Invariant: reading
+   remains above the composer and the input allocation is stable. Owner:
+   `WorkspaceLayout`/`SurfaceShell`/`ConversationSurface` and shell CSS. Original:
+   `multi-channel` seed 901 → login at 1280×720 → surface geometry and masked
+   screenshot. Current: the migrated production test reaches the real surface;
+   the contract reports a 30px reading/stack gap where the preserved baseline
+   requires 32px. **RED: layout regression packet.**
+
+2. **UI-VIS-02 频道管理 概览 视觉基线** — Capability: open channel governance
+   and inspect the overview tab. Invariant: the panel is modal/context-owned,
+   tabbed, and visually stable. Owner: `ChannelAdministrationPanel`/`SidePanel`.
+   Original: `actor-governance` seed 902 → channel menu → `频道详情` → overview
+   screenshot. Current: migrated to public `频道治理` and `概览` roles; panel
+   opens, but the preserved screenshot differs by 10%. **RED: visual contract
+   packet; no test masking added.**
+
+3. **UI-VIS-02 频道管理 成员 视觉基线** — Capability: inspect the channel
+   roster. Invariant: member controls stay inside the governance panel. Owner:
+   `ChannelAdministrationPanel`/`ChannelMembers`/`SelectMenu`. Original:
+   same scenario/seed → `成员` tab → screenshot. Current: public tab reaches
+   `频道治理`; screenshot differs by 15%. **RED: visual regression packet.**
+
+4. **UI-VIS-02 频道管理 危险操作 视觉基线** — Capability: reach protected
+   retirement controls without accidentally retiring the root. Invariant:
+   dangerous action remains explicitly gated. Owner: `ChannelDanger`.
+   Original: same scenario/seed → `危险操作` tab → screenshot. Current: public
+   tab reaches; screenshot differs by 1% (still over the 10-pixel contract).
+   **RED: visual regression packet.**
+
+5. **UI-VIS-03 新建频道独立任务视觉基线** — Capability: start child-channel
+   creation from the rail. Invariant: creation is an explicit governance form,
+   not an invented task/dialog. Owner: `WorkspaceLayout` →
+   `ChannelAdministrationPanel`/`ChannelOverview`. Original:
+   `channel-governance` seed 907 → `新建频道` → old dialog/template screenshot.
+   Current: migrated to the real `频道治理` `创建子频道` form and public
+   `频道模板` control; the preserved screenshot remains red. **RED: visual
+   contract packet; old dialog selector was not retained.**
+
+6. **UI-VIS-04 空间管理视觉基线** — Capability: open space administration and
+   inspect template/device tabs. Invariant: context panel owns focus and its
+   tabs stay reachable. Owner: `SpaceAdministrationPanel`/`SidePanel`.
+   Original: `space-administration` seed 903 → `空间管理` → screenshot. Current:
+   public panel opens; screenshot differs by 5%. **RED: visual regression
+   packet.**
+
+7. **UI-VIS-06 定时动作视觉基线** — Capability: open the Tasks view and arrange
+   an automation. Invariant: only the browser-session receipt boundary is shown;
+   no cross-device list is fabricated. Owner: `TasksFeature` →
+   `ChannelAutomationPanel`. Original: `scheduled-action` seed 905 → `任务` →
+   `安排自动动作` → screenshot. Current: public panel opens; screenshot differs
+   by 7%. **RED: visual regression packet.**
+
+8. **UI-VIS-07 850px 频道管理抽屉视觉基线** — Capability: use governance at
+   850px without losing the workspace. Invariant: responsive context panel does
+   not create horizontal overflow. Owner: `useSurfaceTopology`/`SidePanel`.
+   Original: `actor-governance` seed 905 → 850×720 → members panel screenshot.
+   Current: public panel opens; preserved screenshot is red. **RED: responsive
+   visual packet.**
+
+9. **UI-VIS-08 600px 选择用户菜单视觉基线** — Capability: choose a participant
+   on a narrow screen. Invariant: the listbox stays within the panel and remains
+   reachable. Owner: `ChannelMembers`/`SelectMenu`. Original:
+   `actor-governance` seed 906 → 600×720 → members → participant combobox →
+   listbox screenshot. Current: the path uses the public combobox/listbox
+   contract, but the latest production run is blocked during login by
+   `Maximum update depth exceeded` in the live workspace; the preserved
+   screenshot remains red. **RED: responsive visual/product packet.**
+
+10. **UI-VIS-09 用户消息与 Agent 答案气泡视觉基线** — Capability: read a user
+    request and Agent answer without horizontal clipping. Invariant: all owned
+    content and controls fit the reading viewport. Owner:
+    `ConversationSurface`/`VendorListExecutor`/`TimelineRowRenderer`. Original:
+    `actor-capability` seed 908 → wheel into history → request/answer row →
+    geometry and screenshot. Current: public row and horizontal containment
+    checks run; screenshot is 958×219 instead of the preserved 958×180. **RED:
+    message-bubble visual packet.**
+
+11. **UI-VIS-10 全局活动中心视觉基线** — Capability: open a cross-channel global
+    activity center. Invariant: activity and operation tabs expose only readable
+    live facts. Owner in the old product: global activity panel; current owner:
+    none (current `WorkspaceLayout` exposes rail timers, not this entry). Original:
+    `approval-schema` seed 909 → `打开活动中心` → panel screenshot. Current:
+    production surface has no public `打开活动中心` button and times out.
+    **RED: product capability gap; do not add a test-only button.**
+
+12. **UI-VIS-11 600px 全局搜索视觉基线** — Capability: search visible channels,
+    messages, files, tasks, and members on a narrow screen. Invariant: modal
+    focus/width stays inside the viewport. Owner: `SearchFeature`/`useModalFocus`.
+    Original: `multi-channel` seed 910 → mobile rail → global search → fill
+    `history 1` → screenshot. Current: public dialog/focus path runs; screenshot
+    differs by 5%. **RED: visual regression packet.**
+
+13. **UI-VIS-12 频道挂载文件主页面视觉基线** — Capability: upload and view a
+    file in the channel-mounted directory. Invariant: file rows and controls stay
+    in the Files region; no retired history-edge DOM is manipulated. Owner:
+    `FilesFeature`/attachment transaction owner. Original: `resource-workflow`
+    seed 911 → Files → upload `频道交付说明.txt` → screenshot. Current: upload
+    and public Files region pass; preserved screenshot differs by 1%. **RED:
+    visual regression packet.**
+
+14. **UI-VIS-13 频道挂载文件预览视觉基线** — Capability: select a Markdown file
+    and read its preview alongside the channel. Invariant: preview context does
+    not move the conversation/composer allocation. Owner: `FilesFeature` →
+    `ArtifactPreviewPanel` plus `ConversationSurface`. Original:
+    `resource-workflow` seed 912 → Files → upload/select Markdown → detail text,
+    geometry, screenshot. Current: public preview/text path runs; surface gap is
+    30px versus preserved 32px and screenshot is red. **RED: layout + visual
+    packet.**
+
+### `unseen-following-timeline.spec.js` (1 case)
+
+15. **following physical tail never exposes a transient unseen prompt while the
+    committed row is visible** — Capability: at physical tail, a user-sent
+    canonical arrival is immediately readable without a jump notice. Invariant:
+    following mode stays at the tail and no unseen button overlays it. Owner:
+    `useConversationProjection` + `useLiveArrivalReceipts` +
+    `VendorListExecutor`/`ConversationSurface`. Original: `deep-history` seed
+    `0x922801` → login at tail → send steward probe → frame-capture and old
+    diagnostic `reading.unseen-arrival` journal. Current: send the same user
+    path, assert the probe text is visible, sample rendered row visibility/gap/
+    jump only, and attach frame transitions. **PASS.** The retired journal was
+    an implementation oracle, not a user capability; it is not reintroduced.
+
+### `ux-reading-evidence.spec.js` (5 cases)
+
+16. **UX-A09 covered Surface keeps arrival unseen until a fresh visible materialized-tail observation** — Capability: an arrival while Files covers the compact conversation is not acted on by an invisible reader; reopening returns to canonical history. Invariant: hidden content cannot manufacture a viewport notice. Owner: `WorkspaceLayout` surface visibility + `ConversationSurface`/history consumer. Original: mobile `multi-channel` seed 29101 → open Files → `push_terminal` → expect hidden materialization and one jump → reopen/ack. Current: canonical `approval` arrival → hidden pane has no jump → reopen sees `Approve live mock action` at tail with no stale jump. **PASS.**
+
+17. **UX-A09 an old channel activation cannot consume or publish unread state in the committed channel** — Capability: unread state belongs to the active channel and returns with that channel. Invariant: switching away clears the inactive view and switching back restores only its own notice. Owner: `useChannelNavigation`/`WorkspaceLayout` + per-channel `useConversationProjection`. Original: `multi-channel` seed 29103 → wheel c0 up → `push_terminal` → switch `c0.project` → return c0. Current: canonical approval and public `.channel-item` activation are used; switch-to-project never reaches the expected heading because the current wire/session owner disconnects while the editor is remounted. **RED: product regression packet (also logs Tiptap “editor view is not available” and `feed.disconnectHistory owner 尚未连接`).**
+
+18. **UX-A09 history, replay, reconnect, filters and channel switches never manufacture viewport unseen** — Capability: history admission, duplicate replay, reconnect, filters, hidden surface, and channel switches do not invent a jump. Invariant: only a real active-channel unseen arrival can show the notice. Owner: `channel-replica`/history consumer + `useConversationProjection` and navigation. Original: `multi-channel` seed 29105 → dense history → terminal/replay → filter on/off → Files hidden → dense progress → drop/reconnect → switch channels. Current: dense canonical approval/replay and public filter/Files/reconnect evidence run; final channel switch cannot mount `c0.project` after the same owner-disconnect path. **RED: product regression packet; no selector weakening.**
+
+19. **UX-A01 stale exact-incarnation filter remains named and removable** —
+    Capability: a stale actor identity remains an explicit applied filter until
+    the reader removes it. Invariant: roster refresh may not silently remap the
+    identity. Owner: `useTimelinePreferences` + actor-filter presentation.
+    Original: seed 29102 → inject old schema-2 ViewSession filter → reload →
+    inspect/remove stale filter. Current: seed schema 3 (the live persisted
+    contract), reload, use public stale filter button/`aria-pressed`, remove it,
+    and assert rows return. **PASS.**
+
+20. **UX-A06 selecting a settled member filters and acknowledges without a second control** — Capability: clicking a settled member both selects the filter and acknowledges that member’s activity. Invariant: no separate acknowledgement button appears and list identity/mode stays stable. Owner: actor filter in `ConversationSurface`/activity projection. Original: `long-running` seed 29104 → send mention → advance 3 → settled member button → click. Current: same production composer/advance path; public activity classes, `aria-pressed`, row identity, and absence of `.agent-activity-ack` are asserted. **PASS.**
+
+### `ux-unseen-persistence.spec.js` (1 case)
+
+21. **reload normalizes malformed legacy unseen around valid seq records, then verified latest clears exactly those records** — Capability: reload must not resurrect stale physical browsing or manufacture a notice; latest canonical presentation is readable. Invariant: persisted reading mode/bookmark is normalized to the current product contract. Owner: `view-session` + `ConversationSurface` initialization/history consumer. Original: deep-history seed 29109 → inject malformed legacy unseen records → wheel up → `pulse` → reload → assert durable unseen record tuples and diagnostic ack clearing. Current: seed schema-3 storage with malformed stale browsing/bookmark/unseen fields → real approval arrival while browsing → reload → assert latest text, following mode, null bookmark, no jump, tail ≤24, visible document. **PASS.** The old tuple/diagnostic assertions were retired implementation storage; the user-visible reload invariant is preserved without durable unseen compatibility code.
+
+### `visible-unseen-ack.spec.js` (2 cases)
+
+22. **wheel-visible committed arrival auto-acknowledges before exact physical tail** — Capability: a reader approaching (but not reaching) the tail can expose the arrival and have it acknowledged. Invariant: the row is visibly hit-owned, gap remains positive, and the jump disappears only after exposure. Owner: `useLiveArrivalReceipts` + `ConversationSurface`/WaitingLayer and reading geometry. Original: deep-history seed `0x922401` → wheel up → `pulse` → jump → wheel to 12px → geometry/evidence. Current: canonical `approval` arrival and public row/hit/overlap geometry. **PASS.**
+
+23. **Waiting-covered committed arrival remains unseen until actually exposed** — Capability: a Waiting overlay prevents a covered arrival from being acknowledged. Invariant: overlap is owned by Waiting and the notice remains until the reader exposes it. Owner: `WaitingLayer` + `useLiveArrivalReceipts`/reading owner. Original: long-running-history seed `0x922402` → active + queued sends → wheel up → `pulse` → wheel to 70px → assert jump/Waiting overlap. Current: same real composer setup with canonical approval and public jump/row/Waiting hit geometry. **PASS.**
+
+### `waiting-canonical-history.spec.js` (1 case)
+
+24. **completed root-safe history pages never add canonical Waiting turns** —
+    Capability: browsing completed history never invents an active Waiting task.
+    Invariant: no Waiting region appears while history pages are admitted. Owner:
+    `channel-replica`/history consumer + `useWaitingEditingController`.
+    Original: long-running-history seed `0x921701` → capture wire history/page-end
+    frames and inspect Timeline React state while wheeling 10 pages. Current:
+    real login/scroll, public `频道动态`/history text, and zero visible `等待区`
+    assertions; private wire/fiber probes were removed. **PASS.**
+
+### `waiting-handoff.spec.js` → `waiting-production-contract.spec.js` (3 cases)
+
+25. **queued request hands off once to a rapidly completed canonical row without duplicate semantics** — Capability: a queued request becomes one completed canonical row. Invariant: Waiting disappears and exactly one matching row remains. Owner: `useWaitingHandoff`/`WaitingLayer` + `channel-replica` canonical turn. Original: long-running-canonical seed `0x921801` → owner send, target queue, advance 3, `push_terminal`, replay envelope → inspect handoff animation/probe. Current: same production composer/advance/terminal path; public row count and Waiting absence. **PASS.**
+
+26. **browsing-up handoff stays offscreen, preserves its anchor, and cleans up on channel exit** — Capability: a browsed reader keeps its anchor while a queued task completes and leaving the channel cleans Waiting. Invariant: no hidden handoff writes the browsing position. Owner: `ReadingContainerHandoff` + `useBrowsingReadingController`/navigation. Original: long-running-history seed `0x921802` → queue → wheel up → advance/terminal → switch c0.project. Current: public anchor and channel-button path; switch still fails to mount `c0.project` after the owner-disconnect/Tiptap error. **RED: product regression packet.**
+
+27. **reduced motion performs the same semantic handoff without transition state** — Capability: reduced-motion users receive the same completed row and no transition animation. Invariant: semantic owner is singular; visual animation is absent. Owner: `useWaitingHandoff` + CSS reduced-motion rules. Original: reduced-motion context → long-running-canonical seed `0x921803` → queue → advance 3 → inspect handoff probe. Current: emulate reduced motion after production queue exists, complete terminal, assert row/Waiting semantics and zero `waiting-handoff` animations. **PASS.**
+
+### `waiting-layout.spec.js` → `waiting-production-contract.spec.js` (4 cases)
+
+28. **Waiting and status facts never change the fixed reading or Composer allocation** — Capability: status/Waiting facts can change without moving reading or composer slots. Invariant: reading, stack, input, and composer rectangles are stable. Owner: `ConversationSurface` + `WaitingLayer`/`ConversationInput` geometry. Original: fixture `waiting-layout.html` → transition queued/partial/roster/edit/running/terminal/offline/queued/open → 16-frame geometry. Current: real app seed `0x921811`, owner+queued sends, collapse/expand, public rects and 48px reserve. **PASS.**
+
+29. **input growth and clear stay inside the overlay while reading client geometry is constant** — Capability: multiline editing grows inside the composer and clearing returns it without moving reading. Invariant: editor owns overflow and reading geometry is constant. Owner: `Composer`/`ConversationSurface`. Original: fixture transition lines 1→6→clear/queued → rect and transition-attribute assertions. Current: real editor multiline fill/clear and public client/scroll geometry. **PASS.**
+
+30. **short mobile-style Surface keeps focus and makes oversized Composer internally scrollable** — Capability: a short mobile viewport keeps keyboard focus and lets oversized input scroll internally. Invariant: no page overflow; send remains reachable. Owner: `SurfaceShell` topology + `Composer`. Original: fixture root height 300 → 24 lines → focus/overflow/hit geometry. Current: production 390×500, real editor, public focus/overflow/page-width/send geometry. **PASS.**
+
+31. **production Timeline keeps queued to running to terminal outside the fixed geometry** — Capability: queue/running/terminal lifecycle does not resize the reading allocation. Invariant: the same geometry remains through terminal cleanup. Owner: `channel-replica`/`WaitingLayer`/`ConversationSurface`. Original: fixture `waiting-timeline.html` transitions queued/partial/roster/running/terminal. Current: real long-running-canonical app, advance + terminal, row text and Waiting absence plus public rects. **PASS.**
+
+### `waiting-obstruction.spec.js` → `waiting-production-contract.spec.js` (3 cases)
+
+32. **following keeps a fixed Waiting reserve through mount, controls and handoff** — Capability: Following mode keeps a 48px reserve while Waiting mounts and collapses/expands. Invariant: reserve and reading allocation are fixed. Owner: `reading-geometry.js` + `WaitingLayer`/`ConversationSurface`. Original: long-running scenarios and DOM writer/animation probe. Current: production queue, public collapse/expand and reserve/rect assertions. **PASS.**
+
+33. **browsing keeps its anchor while the fixed Waiting reserve stays unchanged** — Capability: browsing up does not move its semantic anchor when Waiting appears. Invariant: same visible row/top and 48px reserve. Owner: `useBrowsingReadingController` + `WaitingLayer`. Original: establish owner/queue → wheel takeover → probe anchor/writers. Current: queue before trusted wheel, public row anchor and geometry; **PASS** after matching the original setup order.
+
+34. **reduced motion uses the same fixed Waiting reserve without hidden controls** — Capability: reduced-motion Waiting remains usable without hidden duplicate controls. Invariant: reserve is 48px and the visible collapse control is singular. Owner: `WaitingLayer` + reduced-motion CSS. Original: reduced-motion scenario → queue → probe reserve/semantic controls. Current: emulate reduced motion after queue, public reserve/control counts. **PASS.**
+
+### `waiting-send-transaction.spec.js` → `waiting-production-contract.spec.js` (4 cases)
+
+35. **real App send transaction keeps queued WaitingLayer out of following-at-bottom geometry** — Capability: send at the tail leaves the canonical row readable and Waiting out of the input allocation. Invariant: tail gap ≤24 and reading rect stable. Owner: `useComposerSubmissionRuntime`/outbox + `ConversationSurface`/`WaitingLayer`. Original: real App owner send → probe clear/queued transaction and scroll writers. Current: public send, row text, rect and tail evidence. **PASS.**
+
+36. **real App send transaction keeps queued WaitingLayer out of following-multiline-clear geometry** — Capability: multiline send clears without a layout jump. Invariant: reading rect remains stable and tail is followed. Owner: `Composer`/submission runtime + reading geometry. Original: multiline Shift+Enter send → probe input transition/writers. Current: production multiline editor and public rect/tail evidence. **PASS.**
+
+37. **real App send transaction keeps queued WaitingLayer out of following-existing-waiting geometry** — Capability: sending while another task waits does not cover the composer or move reading. Invariant: existing Waiting remains visible and reading allocation stable. Owner: `WaitingLayer` + submission runtime. Original: existing waiting queue → send → probe controls/geometry. Current: production owner+queued setup then send and public Waiting/rect/tail evidence. **PASS.**
+
+38. **real App send transaction keeps queued WaitingLayer out of wheel-takeover-after-send geometry** — Capability: send after trusted wheel takeover preserves browsing ownership and anchor. Invariant: send must not silently force Following or perform a competing programmatic scroll. Owner: `useBrowsingReadingController` + submission runtime/reading command executor. Original: wheel takeover → send → instrument scroll writers/anchor. Current: production wheel then send; public result gap was 0 (Following) instead of the required browsing gap >1. **RED: product regression packet; no forced test pass.**
+
+## Current files changed in this partition
+
+- `tests/browser/ui-visual.spec.js` (current public governance/files selectors;
+  no old dialog/fixture path)
+- `tests/browser/waiting-production-contract.spec.js` (14 production-entry
+  replacements for the deleted Waiting cases)
+- `tests/browser/unseen-following-timeline.spec.js`
+- `tests/browser/ux-reading-evidence.spec.js`
+- `tests/browser/ux-unseen-persistence.spec.js`
+- `tests/browser/visible-unseen-ack.spec.js`
+- `tests/browser/helpers/profile-cold-entry.mjs`
+- `tests/browser/reading-owner.js`
+- this report
+
+No `tests/browser/fixtures/waiting-*` file was added or used, and no product
+source was changed.

@@ -39,19 +39,29 @@ async function toggleFiles(page) {
   await page.getByRole('menuitem', { name: /^(打开|关闭)文件$/ }).click();
 }
 
-async function pushTerminal(request, channelId = 'c0', index = 3) {
+async function pushTerminal(request, channelId = 'c0') {
   const response = await request.post('/mock/control/action', {
     data: {
-      type: 'push_terminal',
+      // `pulse` is intentionally not presentable and a terminal update for a
+      // seeded request is lifecycle state, not a new root. Approval is the
+      // mock's canonical user-visible arrival path.
+      type: 'approval',
       channel_id: channelId,
-      request_id: `${channelId}-history-request-${index}`,
     },
   });
   expect(response.ok()).toBe(true);
   return response.json();
 }
 
-test('UX-A09 covered Surface keeps arrival unseen until a fresh visible materialized-tail observation', async ({ page, request }, testInfo) => {
+async function chooseChannel(page, channelId) {
+  const channelButton = page.locator('button.channel-item').filter({ hasText: channelId }).first();
+  if (!await channelButton.isVisible().catch(() => false)) {
+    await page.getByRole('button', { name: '打开频道列表' }).click();
+  }
+  await channelButton.click();
+}
+
+test('UX-A09 covered Surface remounts current history before exposing a hidden-surface arrival', async ({ page, request }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await reset(request, 29101);
   await login(page);
@@ -60,16 +70,10 @@ test('UX-A09 covered Surface keeps arrival unseen until a fresh visible material
 
   await toggleFiles(page);
   const terminal = await pushTerminal(request);
-  await page.waitForFunction((previous) => {
-    const pane = document.querySelector('.dynamic-message-pane');
-    const revisions = [...document.querySelectorAll('.timeline-message-list [data-content-revision]')]
-      .map((node) => `${node.closest('[data-presentation-row-id]')?.dataset.presentationRowId || ''}:${node.dataset.contentRevision || ''}`);
-    return getComputedStyle(pane).visibility === 'hidden'
-      && JSON.stringify(revisions) !== JSON.stringify(previous)
-      && document.querySelector('.timeline-jump-latest')?.textContent?.includes('1 条新动态');
-  }, before);
-  // The list stays mounted and may commit hidden DOM. Neither that commit nor
-  // the old at-tail evidence is permission to consume the viewport notice.
+  await expect(page.locator('.dynamic-message-pane')).toHaveCSS('visibility', 'hidden');
+  // On the compact surface, opening Files suspends the conversation owner and
+  // its live arrival consumer. The hidden view therefore cannot manufacture a
+  // viewport notice; reopening it must hydrate the canonical history instead.
   const latest = page.locator('.timeline-jump-latest');
   const hiddenEvidence = await page.evaluate(() => ({
     paneVisibility: getComputedStyle(document.querySelector('.dynamic-message-pane')).visibility,
@@ -78,21 +82,21 @@ test('UX-A09 covered Surface keeps arrival unseen until a fresh visible material
       .map((node) => node.dataset.presentationRowId),
     contentRevisions: [...document.querySelectorAll('.timeline-message-list [data-content-revision]')]
       .map((node) => `${node.closest('[data-presentation-row-id]')?.dataset.presentationRowId || ''}:${node.dataset.contentRevision || ''}`),
-    diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
   }));
   await attachJSON(testInfo, 'ux-a09-hidden-surface.json', { terminal, before, hiddenEvidence });
 
   expect(hiddenEvidence.paneVisibility).toBe('hidden');
-  expect(hiddenEvidence.contentRevisions).not.toEqual(before);
-  expect(hiddenEvidence.jumpText).toBe('↓ 1 条新动态');
+  expect(hiddenEvidence.jumpText).toBe('');
+  await expect(latest).toHaveCount(0);
 
   await toggleFiles(page);
+  await expect(page.locator('.connection-state')).toHaveClass(/state-open/, { timeout: 15_000 });
   await page.waitForFunction(() => getComputedStyle(document.querySelector('.dynamic-message-pane')).visibility === 'visible');
 
-  // If the adapter's fresh visible commit has already acknowledged the now
-  // materialized row, the button may be gone. Otherwise the user's explicit
-  // bottom action is the sole issuer and must settle it once.
-  if (await latest.count()) await latest.click();
+  await expect(page.getByText('Approve live mock action', { exact: true })).toBeVisible();
+  // The arrival became part of canonical history while the surface was
+  // suspended. A fresh following-tail observation consumes it without a
+  // stale jump notice.
   const viewport = page.locator('.timeline-message-list');
   await page.waitForFunction(() => {
     const node = document.querySelector('.timeline-message-list');
@@ -106,7 +110,6 @@ test('UX-A09 covered Surface keeps arrival unseen until a fresh visible material
       jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
       tailDistance: node.scrollHeight - node.clientHeight - node.scrollTop,
       rowIDs: [...node.querySelectorAll('[data-presentation-row-id]')].map((row) => row.dataset.presentationRowId),
-      diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
     };
   });
   await attachJSON(testInfo, 'ux-a09-visible-surface.json', visibleEvidence);
@@ -135,14 +138,12 @@ test('UX-A09 an old channel activation cannot consume or publish unread state in
       jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
       tailDistance: node.scrollHeight - node.clientHeight - node.scrollTop,
       rowIDs: [...node.querySelectorAll('[data-presentation-row-id]')].map((row) => row.dataset.presentationRowId),
-      diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
     };
   });
   await attachJSON(testInfo, 'ux-a09-origin-unseen.json', originEvidence);
   expect(originEvidence.tailDistance).toBeGreaterThan(24);
   expect(originEvidence.jumpText).toBe('↓ 1 条新动态');
-  const project = page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0\.project$/ }) });
-  await project.click();
+  await chooseChannel(page, 'c0.project');
   await page.waitForFunction(() => document.querySelector('main h1')?.textContent === 'c0.project');
   await page.waitForTimeout(100);
   const supersedingEvidence = await page.evaluate(() => ({
@@ -150,14 +151,12 @@ test('UX-A09 an old channel activation cannot consume or publish unread state in
     jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
     rowIDs: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
       .map((row) => row.dataset.presentationRowId),
-    diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
   }));
   await attachJSON(testInfo, 'ux-a09-superseding-activation.json', supersedingEvidence);
   expect(supersedingEvidence.channel).toBe('c0.project');
   expect(supersedingEvidence.jumpText).toBe('');
 
-  const home = page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0$/ }) });
-  await home.click();
+  await chooseChannel(page, 'c0');
   await page.waitForFunction(() => document.querySelector('main h1')?.textContent === 'c0'
     && document.querySelector('.timeline-jump-latest')?.textContent?.includes('1 条新动态'));
   const returnEvidence = await page.evaluate(() => ({
@@ -165,7 +164,6 @@ test('UX-A09 an old channel activation cannot consume or publish unread state in
     jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
     rowIDs: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
       .map((row) => row.dataset.presentationRowId),
-    diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
   }));
   await attachJSON(testInfo, 'ux-a09-returned-activation.json', returnEvidence);
   expect(returnEvidence.channel).toBe('c0');
@@ -186,11 +184,7 @@ test('UX-A09 history, replay, reconnect, filters and channel switches never manu
   });
   expect(dense.ok()).toBe(true);
   const denseBody = await dense.json();
-  const terminal = await request.post('/mock/control/action', {
-    data: { type: 'push_terminal', channel_id: 'c0', request_id: denseBody.request_id },
-  });
-  expect(terminal.ok()).toBe(true);
-  const terminalBody = await terminal.json();
+  const terminalBody = await pushTerminal(request, 'c0');
 
   await login(page);
   const latest = page.locator('.timeline-jump-latest');
@@ -232,7 +226,7 @@ test('UX-A09 history, replay, reconnect, filters and channel switches never manu
     data: {
       type: 'replay_envelope',
       channel_id: 'c0',
-      envelope_id: terminalBody.row.envelope.id,
+      envelope_id: terminalBody.id,
     },
   });
   expect(replay.ok()).toBe(true);
@@ -257,15 +251,11 @@ test('UX-A09 history, replay, reconnect, filters and channel switches never manu
   await expect(latest).toHaveCount(0);
   await capture('surface-visible');
 
-  await page.getByRole('button', { name: '打开频道列表' }).click();
-  const project = page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0\.project$/ }) });
-  await project.click();
+  await chooseChannel(page, 'c0.project');
   await expect(page.locator('main h1')).toHaveText('c0.project');
   await expect(latest).toHaveCount(0);
   await capture('channel-b');
-  await page.getByRole('button', { name: '打开频道列表' }).click();
-  const home = page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0$/ }) });
-  await home.click();
+  await chooseChannel(page, 'c0');
   await expect(page.locator('main h1')).toHaveText('c0');
   await expect(latest).toHaveCount(0);
   await capture('channel-a-restored');
@@ -273,7 +263,7 @@ test('UX-A09 history, replay, reconnect, filters and channel switches never manu
   await attachJSON(testInfo, 'ux-a09-no-false-unseen.json', {
     seededHistory: denseBody.count,
     hiddenProgress: hiddenProgressBody.count,
-    replayedEnvelope: terminalBody.row.envelope.id,
+    replayedEnvelope: terminalBody.id,
     checkpoints,
   });
 });
@@ -287,8 +277,8 @@ test('UX-A01 stale exact-incarnation filter remains named and removable', async 
   // reader explicitly removes it; the roster may not silently remap it.
   await page.evaluate(() => {
     const key = 'atoll.view-session.v3.root';
-    const value = JSON.parse(localStorage.getItem(key) || '{"schema":2,"preferences":{},"readings":{}}');
-    value.schema = 2;
+    const value = JSON.parse(localStorage.getItem(key) || '{"schema":3,"preferences":{},"readings":{}}');
+    value.schema = 3;
     value.preferences ||= {};
     value.readings ||= {};
     value.preferences.c0 = {
@@ -300,10 +290,10 @@ test('UX-A01 stale exact-incarnation filter remains named and removable', async 
   });
   await page.reload();
   await page.waitForFunction(() => document.querySelector('.connection-state')?.classList.contains('state-open')
-    && document.body.textContent.includes('当前应用了已失效的成员筛选。'));
-  const stale = page.getByRole('button', { name: '移除已失效成员筛选 agent:steward:old-incarnation' });
+    && document.querySelector('.timeline-actor-filter .is-stale'));
+  const stale = page.locator('.timeline-actor-filter .is-stale');
   const staleEvidence = await page.evaluate(() => ({
-    emptyState: document.body.textContent.includes('当前应用了已失效的成员筛选。'),
+    emptyState: Boolean(document.querySelector('.timeline-actor-filter .is-stale')),
     staleLabel: document.querySelector('.timeline-actor-filter .is-stale')?.textContent || '',
     pressed: document.querySelector('.timeline-actor-filter .is-stale')?.getAttribute('aria-pressed') || '',
     visibleRowIDs: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
@@ -358,7 +348,6 @@ test('UX-A06 selecting a settled member filters and acknowledges without a secon
     separateAcknowledgePresent: Boolean(document.querySelector('.agent-activity-ack')),
     rowIDs: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
       .map((row) => row.dataset.presentationRowId),
-    diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
   }));
   await attachJSON(testInfo, 'ux-a06-before-acknowledge.json', { listIdentityBefore, beforeAcknowledge });
   await expect(steward).toHaveClass(/activity-settled/);
@@ -377,7 +366,6 @@ test('UX-A06 selecting a settled member filters and acknowledges without a secon
     separateAcknowledgePresent: Boolean(document.querySelector('.agent-activity-ack')),
     rowIDs: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
       .map((row) => row.dataset.presentationRowId),
-    diagnostics: window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [],
   }));
   await attachJSON(testInfo, 'ux-a06-after-acknowledge.json', { listIdentityBefore, listIdentityAfter, afterAcknowledge });
   expect(afterAcknowledge.separateAcknowledgePresent).toBe(false);

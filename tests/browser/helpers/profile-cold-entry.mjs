@@ -1,34 +1,10 @@
 import { chromium } from '@playwright/test';
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 const baseURL = process.env.ATOLL_PERF_URL || 'http://127.0.0.1:24279';
 const runs = Number(process.env.ATOLL_PERF_RUNS || 5);
-const recordReactCommits = process.env.ATOLL_PERF_REACT_COMMITS === '1';
 const expected = 'c0.project history 120: ask project-agent for PONG';
-const sourcePaths = [
-  'src/app/hooks/useChannelFeed.js',
-  'src/model/history-scheduler.js',
-  'src/model/timeline-projection.js',
-  'src/model/conversation-presentation.js',
-  'src/ui/Timeline.jsx',
-  'src/ui/timeline/useReadingSession.js',
-  'src/ui/timeline/LegendMessageList.jsx',
-  'src/ui/MarkdownContent.jsx',
-  'src/ui/PreparedMarkdown.jsx',
-];
-
-async function sourceFingerprint() {
-  const files = {};
-  const combined = createHash('sha256');
-  for (const path of sourcePaths) {
-    const contents = await readFile(path);
-    files[path] = createHash('sha256').update(contents).digest('hex');
-    combined.update(path).update('\0').update(contents);
-  }
-  return { digest: combined.digest('hex'), files };
-}
 
 async function hasCachedEnvelopeText(page, channelId, text) {
   return page.evaluate(async ({ id, expectedText }) => {
@@ -73,7 +49,6 @@ async function measureOne(page, cdp) {
   await page.evaluate(() => {
     window.__COLD_PROD__ = {
       startedAt: performance.now(), frames: [], longTasks: [],
-      commitCursor: window.__ATOLL_REACT_COMMITS__?.length || 0,
     };
     const observer = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
@@ -118,13 +93,6 @@ async function measureOne(page, cdp) {
     for (const name of ['TaskDuration', 'ScriptDuration', 'LayoutDuration', 'RecalcStyleDuration']) {
       deltas[name] = afterMap[name] - beforeMap[name];
     }
-    const commits = (window.__ATOLL_REACT_COMMITS__ || []).slice(state.commitCursor);
-    const componentCommits = {};
-    for (const commit of commits) {
-      for (const [name, count] of Object.entries(commit.counts)) {
-        componentCommits[name] = (componentCommits[name] || 0) + count;
-      }
-    }
     return {
       firstReadableFrame,
       firstHeadingFrame: targetFrames[0]?.at ?? null,
@@ -140,15 +108,6 @@ async function measureOne(page, cdp) {
       markdownContents: document.querySelectorAll('.markdown-content').length,
       markdownBlocks: document.querySelectorAll('[data-reading-block-id]').length,
       domElements: document.querySelectorAll('*').length,
-      react: {
-        commitCount: commits.length,
-        commits: commits.map((commit) => ({
-          at: commit.at - state.startedAt,
-          componentTypes: Object.keys(commit.counts).length,
-          renderedFibers: Object.values(commit.counts).reduce((sum, count) => sum + count, 0),
-        })),
-        componentCommits,
-      },
       metrics: deltas,
     };
   }, { beforeMetrics: before, afterMetrics: after });
@@ -176,44 +135,10 @@ const reset = await fetch(`${baseURL}/mock/control/reset`, {
   body: JSON.stringify({ scenario: 'deep-history-delayed', seed: 2921 }),
 });
 if (!reset.ok) throw new Error(`mock reset failed: ${reset.status}`);
-const sourceBefore = await sourceFingerprint();
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext();
 const page = await context.newPage();
-if (recordReactCommits) await page.addInitScript(() => {
-  let rendererID = 0;
-  const renderers = new Map();
-  window.__ATOLL_REACT_COMMITS__ = [];
-  Object.defineProperty(window, '__REACT_DEVTOOLS_GLOBAL_HOOK__', {
-    configurable: true,
-    value: {
-      supportsFiber: true,
-      renderers,
-      inject(renderer) {
-        rendererID += 1;
-        renderers.set(rendererID, renderer);
-        return rendererID;
-      },
-      onCommitFiberRoot(_id, root) {
-        const counts = {};
-        const visit = (fiber) => {
-          if (!fiber) return;
-          if ((fiber.flags & 1) === 1) {
-            const name = fiber.type?.displayName || fiber.type?.name || (typeof fiber.type === 'string' ? fiber.type : 'anonymous');
-            counts[name] = (counts[name] || 0) + 1;
-          }
-          visit(fiber.child);
-          visit(fiber.sibling);
-        };
-        visit(root.current);
-        window.__ATOLL_REACT_COMMITS__.push({ at: performance.now(), counts });
-      },
-      onCommitFiberUnmount() {},
-      onPostCommitFiberRoot() {},
-    },
-  });
-});
 const cdp = await context.newCDPSession(page);
 await cdp.send('Performance.enable');
 try {
@@ -232,16 +157,11 @@ try {
   const values = results.map((result) => result.firstReadableFrame).sort((left, right) => left - right);
   const evidence = {
     baseURL,
-    source: {
-      before: sourceBefore,
-      after: await sourceFingerprint(),
-    },
     results,
     medianFirstReadableFrame: values[Math.floor(values.length / 2)],
     profiledRun,
     cpu: summarizeProfile(profile),
   };
-  evidence.source.stable = evidence.source.before.digest === evidence.source.after.digest;
   const outputPath = process.env.ATOLL_PERF_OUTPUT;
   if (outputPath) {
     await mkdir(dirname(outputPath), { recursive: true });

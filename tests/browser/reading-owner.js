@@ -1,14 +1,9 @@
 export const READING_OWNER_SELECTOR = [
-  // During an atomic Following -> browsing handoff, the outgoing Following
-  // surface remains the only interactive paint. The incoming virtualizer is
-  // mounted inert and must not be sampled yet.
-  '.timeline-reading-stack[data-handoff-pending="true"] > .timeline-reading-layer.is-outgoing > .timeline-message-list',
-  // Once the handoff is no longer pending, prefer the incoming browsing
-  // owner. This deliberately excludes a stale outgoing layer if React and the
-  // browser expose both layers at the commit boundary.
-  '.timeline-reading-stack:not([data-handoff-pending="true"]) > .timeline-reading-layer.is-incoming.is-active > .timeline-message-list',
-  // Ordinary Following mode has no incoming layer.
-  '.timeline-reading-stack:not([data-handoff-pending="true"]) > .timeline-reading-layer.is-active:not(.is-incoming) > .timeline-message-list',
+  // The production handoff is paint-only: one active layer owns the one
+  // virtualized list for both Following and browsing. Do not retain selectors
+  // for the retired dual-layer compatibility tree; tests sample the current
+  // owner exactly as the product does.
+  '.timeline-reading-stack > .timeline-reading-layer.is-active > .timeline-message-list',
 ].join(', ');
 
 export function readingOwnerNodes(root = document) {
