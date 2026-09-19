@@ -130,7 +130,6 @@ export function useAttachmentTransactions({
   activeChannelId,
   activeChannelRef,
   accessRef,
-  channelDevices,
   deviceActionsRef,
   obsRef,
   directoryVersion,
@@ -148,7 +147,7 @@ export function useAttachmentTransactions({
   wireState,
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [devices, setDevices] = useState(channelDevices || []);
+  const [devices, setDevices] = useState([]);
   const [directory, setDirectory] = useState('');
   const [deviceId, setDeviceId] = useState('');
   const [entries, setEntries] = useState([]);
@@ -159,6 +158,8 @@ export function useAttachmentTransactions({
   const uploadQueuesRef = useRef(new Map());
   const activeUploadsRef = useRef(new Map());
   const activeFileOperationsRef = useRef(new Map());
+  const deviceRequestRef = useRef({ generation: 0, request: null });
+  const directoryRequestRef = useRef({ generation: 0, request: null });
   const committedOwnerRef = useRef(null);
   const serverWorldCommittedRef = useRef(serverWorld);
   const wireStateCommittedRef = useRef(wireState);
@@ -190,6 +191,30 @@ export function useAttachmentTransactions({
       active.controller.abort();
       activeFileOperationsRef.current.delete(key);
     }
+  }, []);
+
+  const beginRequest = useCallback((requestRef, channelId) => {
+    requestRef.current.request?.controller.abort();
+    const request = {
+      channelId,
+      controller: new AbortController(),
+      generation: requestRef.current.generation + 1,
+    };
+    requestRef.current = { generation: request.generation, request };
+    return request;
+  }, []);
+
+  const finishRequest = useCallback((requestRef, request) => {
+    if (requestRef.current.request !== request) return false;
+    requestRef.current = { generation: request.generation, request: null };
+    return !request.controller.signal.aborted;
+  }, []);
+
+  const abortRequest = useCallback((requestRef, channelId = '') => {
+    const current = requestRef.current;
+    if (channelId && current.request?.channelId !== channelId) return;
+    current.request?.controller.abort();
+    requestRef.current = { generation: current.generation + 1, request: null };
   }, []);
 
   const ownerFacts = useCallback((owner) => {
@@ -296,20 +321,28 @@ export function useAttachmentTransactions({
 
   const refreshDevices = useCallback(async (channelId = activeChannelRef.current) => {
     if (!channelId || !obsRef?.current) return [];
+    const request = beginRequest(deviceRequestRef, channelId);
     try {
       const rows = projectChannelDevices(await obsRef.current.channelDevices(channelId));
-      if (activeChannelRef.current === channelId) {
-        setDevices(rows);
-        setDeviceId((current) => rows.some((row) => row.id === current)
-          ? current
-          : availableDefaultStorageDeviceId(activeChannel, rows));
-      }
+      if (deviceRequestRef.current.request !== request || request.controller.signal.aborted) return [];
+      if (activeChannelRef.current !== channelId) return [];
+      setDevices(rows);
+      setDeviceId((current) => rows.some((row) => row.id === current)
+        ? current
+        : availableDefaultStorageDeviceId(activeChannel, rows));
       return rows;
     } catch (error) {
-      if (activeChannelRef.current === channelId && error?.status !== 401) setFilesError(errorText(error));
+      if (
+        deviceRequestRef.current.request === request
+        && !request.controller.signal.aborted
+        && activeChannelRef.current === channelId
+        && error?.status !== 401
+      ) setFilesError(errorText(error));
       return [];
+    } finally {
+      finishRequest(deviceRequestRef, request);
     }
-  }, [activeChannel, activeChannelRef, obsRef]);
+  }, [activeChannel, activeChannelRef, beginRequest, finishRequest, obsRef]);
 
   useLayoutEffect(() => {
     deviceActionsRef.current.refresh = refreshDevices;
@@ -324,10 +357,12 @@ export function useAttachmentTransactions({
     targetDeviceId = deviceId,
   } = {}) => {
     if (!channelId) return [];
+    const request = beginRequest(directoryRequestRef, channelId);
     const channel = channelId === activeChannel?.id ? activeChannel : null;
     const device = devices.find((row) => row.id === targetDeviceId);
     if (!channel || !device) {
-      setEntries([]);
+      if (directoryRequestRef.current.request === request && activeChannelRef.current === channelId) setEntries([]);
+      finishRequest(directoryRequestRef, request);
       return [];
     }
     const normalized = normalizeFeatureDirectory(targetDirectory);
@@ -335,35 +370,47 @@ export function useAttachmentTransactions({
     setFilesError('');
     try {
       const prefix = resourcePrefix(channel, device, normalized);
-      const receipt = await runFileOperation({ channelId, access: 'read' }, (operation) => operation.resource({
+      const receipt = await runFileOperation({ channelId, access: 'read', signal: request.controller.signal }, (operation) => operation.resource({
         channel_id: channelId,
         op: 'list',
         query: { prefix, limit: 200 },
       }));
       const rows = projectResourceEntries(receipt?.items, prefix);
-      if (activeChannelRef.current === channelId) {
+      if (
+        directoryRequestRef.current.request === request
+        && !request.controller.signal.aborted
+        && activeChannelRef.current === channelId
+      ) {
         setDirectory(normalized);
         setDeviceId(targetDeviceId);
         setEntries(rows);
       }
       return rows;
     } catch (error) {
-      if (activeChannelRef.current === channelId) setFilesError(errorText(error));
+      if (
+        directoryRequestRef.current.request === request
+        && !request.controller.signal.aborted
+        && activeChannelRef.current === channelId
+      ) setFilesError(errorText(error));
       return [];
     } finally {
-      if (activeChannelRef.current === channelId) setFilesBusy(false);
+      if (finishRequest(directoryRequestRef, request) && activeChannelRef.current === channelId) setFilesBusy(false);
     }
-  }, [activeChannel, activeChannelRef, deviceId, devices, directory, runFileOperation]);
+  }, [activeChannel, activeChannelRef, beginRequest, deviceId, devices, directory, finishRequest, runFileOperation]);
 
   useEffect(() => {
-    setDevices(channelDevices || []);
+    abortRequest(deviceRequestRef);
+    abortRequest(directoryRequestRef);
+    setDevices([]);
+    setDeviceId('');
     setDirectory('');
     setEntries([]);
+    setFilesBusy(false);
     setSelectedArtifact(null);
     setFilesError('');
     if (!activeChannelId || wireState !== 'open') return;
     void refreshDevices(activeChannelId);
-  }, [activeChannelId, channelDevices, refreshDevices, wireState]);
+  }, [abortRequest, activeChannelId, refreshDevices, serverWorld, wireState]);
 
   useEffect(() => {
     if (!activeChannelId || !deviceId || wireState !== 'open') return;
@@ -408,7 +455,9 @@ export function useAttachmentTransactions({
 
   useEffect(() => {
     for (const [key, active] of activeUploadsRef.current) {
-      const assessment = assessRequestOwner(active.owner, ownerFacts(active.owner), REQUEST_PHASE.submit, { requireDraft: true });
+      const assessment = assessRequestOwner(active.owner, ownerFacts(active.owner), REQUEST_PHASE.submit, {
+        requireDraft: active.requireDraft,
+      });
       if (assessment.current) continue;
       active.controller.abort();
       activeUploadsRef.current.delete(key);
@@ -477,7 +526,11 @@ export function useAttachmentTransactions({
     });
   }, [activeChannelRef, drafts, onOpenDynamic, persistDraftAttachments, runFileOperation, stripWorld]);
 
-  const upload = useCallback(async (files, { directory: uploadDirectory = '', deviceId: uploadDeviceId = '' } = {}) => {
+  const uploadFiles = useCallback(async (files, {
+    associateDraft = false,
+    directory: uploadDirectory = '',
+    deviceId: uploadDeviceId = '',
+  } = {}) => {
     const channel = activeChannel;
     if (!channel?.id) throw new TypeError('请先选择频道');
     const committed = committedOwnerRef.current;
@@ -498,7 +551,7 @@ export function useAttachmentTransactions({
       owner,
       ownerFacts(owner),
       phase,
-      { requireDraft: true, ...options },
+      { requireDraft: associateDraft, ...options },
     );
     const previous = uploadQueuesRef.current.get(channel.id) || Promise.resolve();
     const task = previous.catch(() => {}).then(async () => {
@@ -506,10 +559,8 @@ export function useAttachmentTransactions({
         owner,
         current: () => ownerFacts(owner),
         phase: REQUEST_PHASE.acquire,
-        options: { requireDraft: true },
-        effect: () => channelDevices.length
-          ? channelDevices
-          : deviceActionsRef.current.refresh?.(channel.id),
+        options: { requireDraft: associateDraft },
+        effect: () => refreshDevices(channel.id),
       });
       if (!acquire.started || !acquire.current) throw requestAccessError(acquire.invalidation);
       const devices = acquire.value || [];
@@ -519,20 +570,23 @@ export function useAttachmentTransactions({
       if (daemon.online === false) throw new TypeError(`频道默认文件存储设备 ${daemon.name || daemon.id} 当前离线`);
       const uploaded = [];
       let uploadFailure = null;
-      const occupiedNames = new Set(currentDraftAttachments(channel.id).map((row) => row.name));
+      const occupiedNames = new Set((associateDraft
+        ? currentDraftAttachments(channel.id)
+        : entries.filter((row) => row.kind === 'file' && uploadDirectory === directory && uploadDeviceId === deviceId)
+      ).map((row) => row.name));
       try {
         for (const file of files) {
           const uploadName = availableUploadName(file.name, occupiedNames);
           occupiedNames.add(uploadName);
           const controller = new AbortController();
           const uploadKey = `${channel.id}:${newId()}`;
-          activeUploadsRef.current.set(uploadKey, { owner, controller });
+          activeUploadsRef.current.set(uploadKey, { owner, controller, requireDraft: associateDraft });
           try {
             const submitted = await executeOwnedPhase({
               owner,
               current: () => ownerFacts(owner),
               phase: REQUEST_PHASE.submit,
-              options: { requireDraft: true },
+              options: { requireDraft: associateDraft },
               effect: () => uploadChannelFile({
                 file,
                 channel,
@@ -559,7 +613,7 @@ export function useAttachmentTransactions({
         }
         uploadFailure = error;
       }
-      if (uploaded.length) {
+      if (associateDraft && uploaded.length) {
         const authorizeAssociation = () => assessUpload(REQUEST_PHASE.persist, { requireTransport: false }).current;
         try {
           await persistDraftAttachments(channel.id, uploaded, {
@@ -598,20 +652,49 @@ export function useAttachmentTransactions({
     } finally {
       if (uploadQueuesRef.current.get(channel.id) === task) uploadQueuesRef.current.delete(channel.id);
     }
-  }, [accessRef, activeChannel, channelDevices, committedOwnerRef, currentDraftAttachments, deviceActionsRef, drafts, onNotice, ownerFacts, persistDraftAttachments, sendResource, serverWorldCommittedRef, stripWorld, wireRef]);
+  }, [accessRef, activeChannel, committedOwnerRef, currentDraftAttachments, deviceId, directory, drafts, entries, onNotice, ownerFacts, persistDraftAttachments, refreshDevices, sendResource, serverWorldCommittedRef, stripWorld, wireRef]);
+
+  const uploadChannelFiles = useCallback((files, options = {}) => uploadFiles(files, {
+    ...options,
+    associateDraft: false,
+  }), [uploadFiles]);
+
+  const uploadComposerAttachments = useCallback((files, options = {}) => uploadFiles(files, {
+    ...options,
+    associateDraft: true,
+  }), [uploadFiles]);
 
   const reset = useCallback(() => {
     worldRevisionRef.current += 1;
+    abortRequest(deviceRequestRef);
+    abortRequest(directoryRequestRef);
     abortUploads();
     abortFileOperations();
     uploadQueuesRef.current.clear();
     setPickerOpen(false);
-  }, [abortFileOperations, abortUploads]);
+    setDevices([]);
+    setDeviceId('');
+    setDirectory('');
+    setEntries([]);
+    setFilesBusy(false);
+    setFilesError('');
+    setSelectedArtifact(null);
+  }, [abortFileOperations, abortRequest, abortUploads]);
 
   const abortChannel = useCallback((channelId) => {
+    abortRequest(deviceRequestRef, channelId);
+    abortRequest(directoryRequestRef, channelId);
     abortUploads(channelId);
     abortFileOperations(channelId);
-  }, [abortFileOperations, abortUploads]);
+  }, [abortFileOperations, abortRequest, abortUploads]);
+
+  useEffect(() => () => {
+    abortRequest(deviceRequestRef);
+    abortRequest(directoryRequestRef);
+    abortUploads();
+    abortFileOperations();
+    uploadQueuesRef.current.clear();
+  }, [abortFileOperations, abortRequest, abortUploads]);
 
   return {
     abortChannel,
@@ -639,6 +722,7 @@ export function useAttachmentTransactions({
     setSelectedArtifact,
     setPickerOpen,
     tagForCurrentWorld,
-    upload,
+    uploadChannelFiles,
+    uploadComposerAttachments,
   };
 }
