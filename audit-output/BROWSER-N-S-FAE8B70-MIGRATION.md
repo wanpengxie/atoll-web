@@ -456,3 +456,31 @@ ATOLL_TEST_WEB_PORT=15881 ATOLL_TEST_MOCK_PORT=20181 npx playwright test tests/b
 因此首断点属于现有 **Reading session / `VendorListExecutor` typed position restore** owner：row identity、activation、epoch、visible admission 与数据 receipt 都已连贯，只有旧 bookmark 的 `rowViewportOffset`（before 为 `-64.5`）在新 activation 的 position-row restore 后没有保持，最终把 row111 的底边留在 viewport 内约 `0.9375px`。最小机制建议已交 `reading_tail_owner`：在 activation return 记录 captured bookmark offset 与实际 applied offset，核对 `position-row` → Virtuoso 的 offset 符号/语义，并排除 `initialTopMostItemIndex` mount 或后续 layout 对精确 offset 的覆盖；补充 owner-level offset telemetry，不放宽 first-visible assertion。
 
 本轮结论：F7 row112 Presentation 独立门仍 GREEN；完整 Reading session 仍 RED，公开 owner 为 `reading_tail_owner`。不登记 notification/rail 产品问题，也不把空 diagnostics 当成产品证据。
+
+## 第十四轮只读裁决：`timer_result` 是 fixture audience 错配（2026-09-20）
+
+本轮回到 FAE8B70 迁移后的 `notification-policy.spec.js` timer 合同，只读核对真实 principal、channel actor 与三帧 lifecycle envelope；产品代码不改，Feed 不增加 `project-agent → human` 猜测。旧 fixture 的 `c0.project` membership 是 `principal=root`、当前 human actor=`root-project`；timer helper 却把 fire、wake 和 readable terminal result 的 audience 全部写成 `project-agent`。
+
+逐帧语义如下：
+
+| frame | sender / audience（旧） | 正确分层 | 裁决 |
+| --- | --- | --- | --- |
+| canonical fire `timer:c0.project-notification-result` | `project-agent → [project-agent]` | agent-self canonical seed/control | 保留；`notification-policy` 与 Presentation 的 timer seed 需要该闭合形状 |
+| wake request `…-wake` | `project-agent → [project-agent]` | transport/control，不产生 rail | 保留；不应改成用户消息 |
+| readable terminal `…-wake-done` | `project-agent → [project-agent]` | 面向当前 human 的可读结果，需显式关联 `root-project` | **fixture 错配**；Feed 的 `notificationRelatesTo` 对 root-project 合理返回 false，不能推断关联 |
+
+旧 fixture 因此在 line 306 缺 `.unread-related=1`；这不是产品传播缺口。最小 fixture 修复仅把 `timer_result` terminal 的 audience 改为 `[selfActorId]`（当前值 `root-project`），fire/wake 继续保持 agent-self audience。这样既保留 canonical timer seed，又让 terminal reply 直接携带真实 human audience。
+
+真实 Chromium 复验：
+
+```text
+# pre-fix
+ATOLL_TEST_WEB_PORT=15981 ATOLL_TEST_MOCK_PORT=20281 npx playwright test tests/browser/notification-policy.spec.js --grep="tool, timer, and public-event" --workers=1 --reporter=line --output=test-results-browser-ns-round14-timer-pre-15981-20260920
+# 1 failed at line 306: .unread-related expected 1, element absent
+
+# fixture-only fix
+ATOLL_TEST_WEB_PORT=15982 ATOLL_TEST_MOCK_PORT=20282 npx playwright test tests/browser/notification-policy.spec.js --grep="tool, timer, and public-event" --workers=1 --reporter=line --output=test-results-browser-ns-round14-timer-post-15982-20260920
+# 1 passed (9.5s)
+```
+
+post 运行同时保留 timer control quiet、readable terminal rail=`1` 与 terminal Presentation row 可见；没有改断言、产品、skip 或让 Feed 猜测 actor 关系。归类：**fixture 修复完成；notification 产品 owner 不新增回归**。

@@ -2301,7 +2301,13 @@ export function createMockServer({
                 payload: phase === 'timer_result'
                   ? { status: 'completed', text: 'scheduled work produced a readable result' }
                   : { status: 'completed' },
-                parentId: wakeId, correlationId: fireId, audience: [agentId],
+                parentId: wakeId,
+                correlationId: fireId,
+                // The canonical fire and wake remain agent-self addressed
+                // control facts. A readable terminal result is a user-facing
+                // reply, so the fixture must name the active human actor
+                // directly; Feed must not infer project-agent → root-project.
+                audience: phase === 'timer_result' ? [selfActorId] : [agentId],
               })),
             ];
           } else throw new TypeError('unknown notification lifecycle phase');

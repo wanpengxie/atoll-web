@@ -335,6 +335,14 @@ final root badge 仍为 fixture/合同语义待决：`audience=["project-agent"]
 
 本轮无 pageerror、Hook/order、`Should have a queue` 或 uncaught runtime error；console 仅有启动期 401。F7 row112 Presentation 独立门维持 GREEN，完整 Reading session 继续 RED；不新增 notification/rail 产品回归。
 
+## 第十四轮只读裁决：`timer_result` audience 是 fixture 错配（2026-09-20）
+
+旧 FAE8B70 timer fixture 在 `c0.project` 使用 `principal=root` 的真实 human actor `root-project`，但 `notification_lifecycle` 三帧均把 audience 写成 `project-agent`。逐条核对后，fire `project-agent → [project-agent]` 是合法 canonical timer seed，wake `project-agent → [project-agent]` 是合法 transport/control；真正要进入当前 human rail 的 readable terminal result 却没有 `[root-project]` audience。当前 `channel-feed-runtime` 的 `notificationRelatesTo` 对这种 terminal 返回 false 是正确的 fail-closed 行为，不存在应由 Feed 猜测的 agent→human 传播关系。
+
+因此 line 306 的 `.unread-related=1` 缺失属于 fixture/合同输入错误，不登记产品回归。仅对 fixture 做了最小修复：`timer_result` 的 terminal response audience 改为 active `selfActorId`（`root-project`）；canonical fire 与 wake audience 保持 `project-agent`，没有改产品、断言或 skip。
+
+真实 Chromium 对照：pre-fix 在 `test-results-browser-ns-round14-timer-pre-15981-20260920/` 于 line 306 失败；fixture-only 修复后使用同一 test/grep 在 `test-results-browser-ns-round14-timer-post-15982-20260920/` **1 passed (9.5s)**。该运行保留 timer control quiet、terminal rail badge=`1` 与 terminal Presentation row 可见，故本条 fixture 缺口已闭合，不向 notification 产品 owner 派发。
+
 ## 结论
 
 以上当前 R2–R8 覆盖最终 10 个 RED case 的真实分歧；历史 R1 disconnect 已关闭，Composer/Tiptap guard 的 uncaught 也未在最终轮复现。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。
