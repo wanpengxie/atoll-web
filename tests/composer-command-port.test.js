@@ -6,6 +6,7 @@ import {
   parseComposerCommand,
 } from '../src/ui/composer/composer-model.js';
 import { createComposerCommandPort } from '../src/ui/composer/command-port.js';
+import { createControlCommand } from '../src/model/control-command.js';
 
 const AGENT = { id: 'agent:steward:1', kind: 'agent', name: 'Steward' };
 const HUMAN = { id: 'human:root:1', kind: 'human', name: 'Root' };
@@ -24,12 +25,26 @@ function model(text, extra = {}) {
 describe('current Composer command owner', () => {
   it('routes /restart to the channel system actor and names the selected Agent', () => {
     const parsed = parseComposerCommand('/restart');
+    expect(model('/rest').commandMenu.rows.map((row) => row.command)).toContain('restart');
     expect(parsed).toMatchObject({
       kind: 'command', command: 'restart', type: 'system.member.restart', scope: 'system-target',
     });
 
     const request = createComposerCommandRequest(model('/restart'));
     expect(request).toEqual({
+      channelId: 'c0',
+      text: '',
+      msgType: 'system.member.restart',
+      audience: ['system'],
+      targetLabel: 'system',
+      payload: { member: AGENT.id },
+    });
+  });
+
+  it('keeps the public restart candidate on the same canonical control port', () => {
+    const request = createComposerCommandRequest(model('/restart'));
+    const command = createControlCommand(request);
+    expect(command).toEqual({
       channelId: 'c0',
       text: '',
       msgType: 'system.member.restart',
@@ -46,6 +61,82 @@ describe('current Composer command owner', () => {
     expect(noTarget.controls.commands.restart).toMatchObject({ state: 'no-target', enabled: false });
     expect(() => createComposerCommandRequest(noTarget)).toThrowError(
       expect.objectContaining({ code: 'composer_command_no-target' }),
+    );
+  });
+
+  it('does not expose restart while the current channel transport is unavailable', () => {
+    const unavailable = model('/restart', {
+      access: {
+        relationship: 'member',
+        existence: 'present',
+        runtime: 'open',
+        unavailable: true,
+        canEditDraft: true,
+        canDurablyAccept: true,
+        canTransmit: false,
+        reason: '频道暂不可用',
+        transportOpen: false,
+      },
+    });
+    expect(unavailable.controls.commands.restart).toMatchObject({ state: 'offline', enabled: false });
+    expect(() => createComposerCommandRequest(unavailable)).toThrowError(
+      expect.objectContaining({ code: 'composer_command_offline' }),
+    );
+  });
+
+  it('preserves rejected and uncertain restart outcomes as retryable public facts', () => {
+    const recovery = model('/restart', {
+      pending: [
+        {
+          messageId: 'restart-rejected',
+          channelId: 'c0',
+          frame: {
+            msg_type: 'system.member.restart',
+            audience: ['system'],
+            payload: { member: AGENT.id },
+          },
+          state: 'rejected',
+          error: { code: 'protected_actor' },
+        },
+        {
+          messageId: 'restart-uncertain',
+          channelId: 'c0',
+          frame: {
+            msg_type: 'system.member.restart',
+            audience: ['system'],
+            payload: { member: AGENT.id },
+          },
+          state: 'uncertain',
+          error: { code: 'closed' },
+        },
+      ],
+    });
+    expect(recovery.failures.map((row) => ({ id: row.messageId, state: row.state }))).toEqual([
+      { id: 'restart-rejected', state: 'rejected' },
+      { id: 'restart-uncertain', state: 'uncertain' },
+    ]);
+    expect(recovery.failures).toEqual([
+      expect.objectContaining({
+        frame: expect.objectContaining({
+          msg_type: 'system.member.restart',
+          audience: ['system'],
+          payload: { member: AGENT.id },
+        }),
+      }),
+      expect.objectContaining({
+        frame: expect.objectContaining({
+          msg_type: 'system.member.restart',
+          audience: ['system'],
+          payload: { member: AGENT.id },
+        }),
+      }),
+    ]);
+    expect(recovery.failure).toMatchObject({ messageId: 'restart-uncertain', state: 'uncertain' });
+  });
+
+  it('does not invent a channel-wide restart command', () => {
+    expect(() => parseComposerCommand('/restart_all')).toThrowError(
+      expect.objectContaining({ code: 'composer_command_unknown' }),
     );
   });
 
