@@ -20,7 +20,10 @@ Status at the latest runs:
   and clamped-wheel fix; the remaining red is the browsing send takeover. The
   visual group is intentionally red against the preserved screenshot/geometry
   contract: the latest production run recorded all 14 red, including the
-  missing global activity entry.
+  missing global activity entry. UI-VIS-01 (and the shared geometry assertion
+  in UI-VIS-13) is separately adjudicated below: `fae8b70` itself measures
+  30px, so its `32px` result is an old-baseline/oracle conflict, not a current
+  product regression.
 - The red cases are not skipped or weakened. They are regression packets for
   product/contract decisions. Mock-control HTTP `ok` checks are setup checks
   only; product assertions are made against the rendered production surface.
@@ -42,8 +45,9 @@ setup → action → result; current evidence and disposition.
    `WorkspaceLayout`/`SurfaceShell`/`ConversationSurface` and shell CSS. Original:
    `multi-channel` seed 901 → login at 1280×720 → surface geometry and masked
    screenshot. Current: the migrated production test reaches the real surface;
-   the contract reports a 30px reading/stack gap where the preserved baseline
-   requires 32px. **RED: layout regression packet.**
+   the contract reports a 30px reading/stack gap while the migrated assertion
+   says 32px. A same-browser run of `fae8b70` also reports 30px. **RED:
+   migration oracle/spec conflict, not a product regression.**
 
 2. **UI-VIS-02 频道管理 概览 视觉基线** — Capability: open channel governance
    and inspect the overview tab. Invariant: the panel is modal/context-owned,
@@ -142,8 +146,9 @@ setup → action → result; current evidence and disposition.
     `ArtifactPreviewPanel` plus `ConversationSurface`. Original:
     `resource-workflow` seed 912 → Files → upload/select Markdown → detail text,
     geometry, screenshot. Current: public preview/text path runs; surface gap is
-    30px versus preserved 32px and screenshot is red. **RED: layout + visual
-    packet.**
+    30px versus the migrated 32px assertion and screenshot is red. The shared
+    geometry result is the same old-baseline/oracle conflict as UI-VIS-01;
+    **RED: visual packet, not a new product-layout regression.**
 
 ### `unseen-following-timeline.spec.js` (1 case)
 
@@ -898,3 +903,31 @@ padding 都是 `8px`。因此把 rail 改成 16px、把 base/reserve 加 2px，�
 要把“自然 input stack + 32px”作为新合同，后续应由 Surface owner 设计一
 个经过布局/增长/compact 语义评审的结构性方案（而非 2px CSS 微调），并
 单独重签 UI-VIS-01 与 UI-VIS-13。
+
+## 第十五轮：UI-VIS-09 首红审计（真实 Chromium）
+
+UI-VIS-01 的裁决已固化：`fae8b70` 同一条测试本身也得到 30px，所以旧断言 32px 与真实旧行为冲突，不计作当前产品回归。本轮选择 T–Z 中下一个尚未闭合的 UI-VIS-09，不改 CSS、测试断言或截图阈值：
+
+```text
+ATOLL_TEST_WEB_PORT=15461 ATOLL_TEST_MOCK_PORT=19892 npx playwright test \
+  tests/browser/ui-visual.spec.js -g 'UI-VIS-09' --reporter=line \
+  --output=test-results-tz-uivis09-r15
+```
+
+结果为 **1 RED，仅截图失败**：行为断言、滚轮进入 browsing、消息文本、水平包绕、非 hover 状态全部通过；`.agent-conversation-turn` 的快照期望 `958x180`，当前真实 Chromium 为 `958x219`，差异 3,525 像素（比例 0.02）。这不是水平溢出或测试还没有进入目标行。
+
+本轮的定向 probe 固定了首个可复现结构差异（viewport `1280x720`，行 `c0-history-request-1`）：
+
+| 公开 DOM 证据 | 当前值 |
+|---|---:|
+| turn top / bottom / height | `136 / 354.1875 / 218.1875` |
+| request height | `117.09375` |
+| answer height | `99.09375` |
+| request actions | `复制`, `↩ 回复`, `查看过程` |
+| answer actions | `复制`, `↩ 回复`, `查看过程` |
+| process summary / inline detail before click | `0 / false` |
+| click first `查看过程` | detail count `0`，turn geometry unchanged |
+
+归因已与产品 owner 对齐：当前 `src/ui/timeline/TimelineRowRenderer.jsx` 的 `MessageActions` 在接收 `onOpen && turn` 时为 request 和 answer 都渲染“查看过程”，并由 `useTimelineRowRenderer` 接到 `WorkspaceApp` 的 `openTurnDetail`。上述两个按钮是当前 row owner 比 `fae8b70` 多出的资源：旧 `fae8b70` 的 `MessageActions` 没有 `onOpen` 与通用过程入口，而当前 `tests/browser/layout-responsive.spec.js` 已明确把这三个按钮列为现行合同。因此，快照红是旧 fae 视觉包与后续 row semantics 的时序差异，不应通过删除按钮或调整间距追图绿。
+
+同时，该最小复现揭示一个独立的产品语义缺口：无 process summary 的行也显示“查看过程”，点击后没有 detail 或几何变化。这个缺口属 `TimelineRowRenderer → openTurnDetail` 的 product owner 决策：应明确“无 process 时是否隐藏入口”或“为空 process 提供可见详情”。本轮不替 owner 擅自删除现行按钮，也不以截图阈值改动强合同；该 case 保留为 **RED（视觉基线与现行 owner semantics 不同）**，产品缺口只报告待决。
