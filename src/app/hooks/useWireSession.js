@@ -440,10 +440,13 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   }, [channels, commitActiveChannel]);
 
   const select = useCallback((channelId) => {
-    if (!channelId || channelId === activeChannelRef.current) return;
+    // The boolean is only an acceptance signal for shell handoff gates;
+    // activeChannelRef/state remains the sole selection authority.
+    if (!channelId || channelId === activeChannelRef.current) return false;
     commitActiveChannel(channelId);
     onSelect(channelId);
     writeRoute(channelId, activeView);
+    return true;
   }, [activeView, commitActiveChannel, onSelect]);
   const setActiveView = useCallback((view) => {
     if (!['conversation', 'files', 'tasks'].includes(view)) return;

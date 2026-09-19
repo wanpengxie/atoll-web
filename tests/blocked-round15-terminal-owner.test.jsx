@@ -101,14 +101,47 @@ describe('A-D round 15 terminal/channel-restart blocked evidence', () => {
     expect(nav.openTerminal).toHaveBeenCalledTimes(1);
   });
 
-  it.fails('[AD-096] disables the old terminal entry as soon as a channel selection is pending', () => {
+  it('[AD-096] disables the old terminal entry as soon as a channel selection is pending', () => {
     // 用户能力：目标尚未 commit 时不能再次打开旧频道终端；不变量：terminal 绑定 committed channel。
     const nav = navigation();
     const view = renderWorkspace(nav);
     fireEvent.click(screen.getByText('c1'));
     expect(nav.select).toHaveBeenCalledWith('c1');
     expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: /终端/ }));
+    const event = new KeyboardEvent('keydown', { key: 'F12', ctrlKey: true, bubbles: true, cancelable: true });
+    expect(document.dispatchEvent(event)).toBe(false);
+    expect(nav.openTerminal).not.toHaveBeenCalled();
     view.unmount();
+  });
+
+  it('[AD-096] leaves the current terminal entry enabled without a pending selection', () => {
+    renderWorkspace(navigation());
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false);
+  });
+
+  it('[AD-096] clears the terminal gate after the navigation owner commits the target', () => {
+    const nav = navigation();
+    const view = renderWorkspace(nav);
+    fireEvent.click(screen.getByText('c1'));
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(true);
+    const committed = navigation('c1');
+    view.rerender(<WorkspaceLayout
+      session={session()}
+      navigation={committed}
+      conversation={{ element: <div data-testid="message-surface">消息</div> }}
+      features={featuresFor(committed)}
+    />);
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false);
+  });
+
+  it('[AD-096] clears the terminal gate when the navigation owner explicitly rejects the target', () => {
+    const nav = navigation();
+    nav.select.mockReturnValue(false);
+    renderWorkspace(nav);
+    fireEvent.click(screen.getByText('c1'));
+    expect(nav.select).toHaveBeenCalledWith('c1');
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false);
   });
 
   it.fails('[AD-097] lets a fast reselect of the committed channel cancel the pending target', () => {

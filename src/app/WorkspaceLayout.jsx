@@ -124,17 +124,43 @@ export function WorkspaceLayout({
   const channelMenuButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
   const pendingChannelSelectionRef = useRef(null);
+  // Presentation-only handoff gate. `navigation.activeChannelId` remains the
+  // sole committed selection authority; this state only disables controls
+  // while that owner commits or explicitly rejects the request.
+  const [pendingChannelSelection, setPendingChannelSelection] = useState(null);
   const channel = navigation.channel;
   const filesOpen = navigation.activeView === 'files';
+  const terminalTransitionPending = Boolean(
+    pendingChannelSelection
+    && pendingChannelSelection.origin === navigation.activeChannelId
+    && pendingChannelSelection.target !== navigation.activeChannelId,
+  );
+  const clearPendingChannelSelection = useCallback((selection = null) => {
+    const current = pendingChannelSelectionRef.current;
+    if (selection && current !== selection) return;
+    pendingChannelSelectionRef.current = null;
+    setPendingChannelSelection((value) => (selection && value !== selection ? value : null));
+  }, []);
   const selectChannel = useCallback((channelId) => {
     if (!channelId || channelId === navigation.activeChannelId) return;
-    pendingChannelSelectionRef.current = {
+    const pending = {
       target: channelId,
       origin: navigation.activeChannelId,
       focusOrigin: document.activeElement,
     };
-    navigation.select(channelId);
-  }, [navigation.activeChannelId, navigation.select]);
+    pendingChannelSelectionRef.current = pending;
+    setPendingChannelSelection(pending);
+    try {
+      const accepted = navigation.select(channelId);
+      // The navigation owner may explicitly reject an invalid request. An
+      // omitted return remains pending because the public shell test doubles
+      // and async owners commit identity separately.
+      if (accepted === false) clearPendingChannelSelection(pending);
+    } catch (error) {
+      clearPendingChannelSelection(pending);
+      throw error;
+    }
+  }, [clearPendingChannelSelection, navigation.activeChannelId, navigation.select]);
   useLayoutEffect(() => {
     const pending = pendingChannelSelectionRef.current;
     if (!pending) return;
@@ -144,13 +170,13 @@ export function WorkspaceLayout({
       if (!activeElement || activeElement === document.body || activeElement === pending.focusOrigin) {
         channelHeadingRef.current?.focus({ preventScroll: true });
       }
-      pendingChannelSelectionRef.current = null;
+      clearPendingChannelSelection(pending);
       return;
     }
     // A different committed identity means another navigation owner superseded
     // this request. Do not let the stale selection focus the later channel.
-    if (activeChannelId !== pending.origin) pendingChannelSelectionRef.current = null;
-  }, [navigation.activeChannelId]);
+    if (activeChannelId !== pending.origin) clearPendingChannelSelection(pending);
+  }, [clearPendingChannelSelection, navigation.activeChannelId]);
   const closeMobileChannels = (focus = 'toggle') => {
     setMobileChannelsOpen(false);
     if (focus === 'none') return;
@@ -193,7 +219,7 @@ export function WorkspaceLayout({
     navigation.setActiveView(filesOpen ? 'conversation' : 'files');
   };
   const toggleTerminal = () => {
-    if (!channel) return;
+    if (!channel || terminalTransitionPending) return;
     navigation.openTerminal?.();
   };
   useEffect(() => {
@@ -201,11 +227,12 @@ export function WorkspaceLayout({
     const toggleByKey = (event) => {
       if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.key !== 'F12' || !channel) return;
       event.preventDefault();
-      navigation.openTerminal();
+      if (terminalTransitionPending) return;
+      toggleTerminal();
     };
     document.addEventListener('keydown', toggleByKey, true);
     return () => document.removeEventListener('keydown', toggleByKey, true);
-  }, [channel, navigation.openTerminal]);
+  }, [channel, navigation.openTerminal, terminalTransitionPending]);
   useEffect(() => {
     const switchChannel = (event) => {
       if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.defaultPrevented) return;
@@ -275,7 +302,7 @@ export function WorkspaceLayout({
               {navigation.openChannelAdministration && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelAdministration)}>频道详情</button>}
               {navigation.openAutomation && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openAutomation)}>定时动作</button>}
               <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleFiles)}>{filesOpen ? '关闭文件' : '打开文件'}</button>
-              {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}
+              {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!channel || terminalTransitionPending} onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}
             </div>}
           </div>
         </div>
@@ -295,7 +322,7 @@ export function WorkspaceLayout({
       </nav>
       <div className="workspace-quick-actions">
         <button id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} disabled={!channel} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
-        {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} aria-pressed={navigation.terminalVisible} disabled={!channel} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端</button>}
+        {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} aria-pressed={navigation.terminalVisible} disabled={!channel || terminalTransitionPending} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端</button>}
       </div>
       <div className="status-stack">
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}
