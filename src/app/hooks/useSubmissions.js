@@ -55,7 +55,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
   const writeTailRef = useRef(Promise.resolve());
   const restoreEpochRef = useRef(0);
   const hydratedPrincipalRef = useRef('');
-  const restoreAttemptRef = useRef({ principalId: '', epoch: 0, promise: null });
+  const restoreAttemptRef = useRef({ principalId: '', epoch: 0, world: '', attempt: 0, requestSession: '', promise: null });
   const leaseOwnerRef = useRef(`tab:${newId()}`);
   const requestSessionRef = useRef(`request-session:${newId()}`);
   const lifecycleRef = useRef(0);
@@ -209,11 +209,16 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     if (!principalId) return Promise.resolve();
     if (hydratedPrincipalRef.current === principalId) return Promise.resolve();
     const epoch = restoreEpochRef.current;
-    const active = restoreAttemptRef.current;
-    if (active.principalId === principalId && active.epoch === epoch && active.promise) return active.promise;
     const world = serverWorldRef.current;
     const attempt = worldEpochRef.current;
     const requestSession = requestSessionRef.current;
+    const active = restoreAttemptRef.current;
+    if (active.principalId === principalId
+      && active.epoch === epoch
+      && active.world === world
+      && active.attempt === attempt
+      && active.requestSession === requestSession
+      && active.promise) return active.promise;
     const restoreCurrent = () => (
       restoreEpochRef.current === epoch
       && committedPrincipalRef.current === principalId
@@ -244,7 +249,11 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       const restored = restoreSubmissionRecords(submissionRecords)
         .filter((item) => !landedDuringRestore.has(item.messageId));
       landedDuringRestore.clear();
-      if (!restoreCurrent()) return;
+      if (!restoreCurrent()) {
+        const current = restoreAttemptRef.current;
+        if (current.promise === promise) restoreAttemptRef.current = { ...current, promise: null };
+        return;
+      }
       const nextDrafts = new Map(draftRecords.map((record) => [record.channelId, record]));
       for (const [channelId, local] of projectionRef.current.drafts) {
         const restoredDraft = nextDrafts.get(channelId);
@@ -260,19 +269,26 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
       }), restoreCurrent);
     }).catch((error) => {
       const current = restoreAttemptRef.current;
-      if (current.principalId === principalId && current.epoch === epoch && current.promise === promise) {
-        restoreAttemptRef.current = { principalId, epoch, promise: null };
+      if (current.promise === promise) {
+        restoreAttemptRef.current = { ...current, promise: null };
       }
       throw error;
     });
-    restoreAttemptRef.current = { principalId, epoch, promise };
+    restoreAttemptRef.current = { principalId, epoch, world, attempt, requestSession, promise };
     return promise;
   }, [principalId, publishTransaction]);
 
   useEffect(() => {
     const epoch = ++restoreEpochRef.current;
     hydratedPrincipalRef.current = '';
-    restoreAttemptRef.current = { principalId, epoch, promise: null };
+    restoreAttemptRef.current = {
+      principalId,
+      epoch,
+      world: serverWorldRef.current,
+      attempt: worldEpochRef.current,
+      requestSession: requestSessionRef.current,
+      promise: null,
+    };
     persistedDraftRevisionRef.current = new Map();
     landedMessageIdsRef.current = new Set();
     reconciledLandedMessageIdsRef.current = new Set();
@@ -397,6 +413,17 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
 
   const resetWorld = useCallback(() => {
     worldEpochRef.current += 1;
+    hydratedPrincipalRef.current = '';
+    restoreAttemptRef.current = {
+      principalId,
+      epoch: restoreEpochRef.current,
+      world: serverWorldRef.current,
+      attempt: worldEpochRef.current,
+      requestSession: requestSessionRef.current,
+      promise: null,
+    };
+    landedMessageIdsRef.current = new Set();
+    reconciledLandedMessageIdsRef.current = new Set();
     clear();
     const worldError = { code: 'world_changed', detail: '服务端数据世界已更换，请确认后重新发送' };
     const currentPending = [...projectionRef.current.pending];

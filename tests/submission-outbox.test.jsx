@@ -61,6 +61,36 @@ describe('offline submission outbox', () => {
     ]));
   });
 
+  it('rehydrates the outbox when attach changes the server world during initial restore', async () => {
+    const principalId = `world-restore-${globalThis.crypto.randomUUID()}`;
+    const submit = vi.fn().mockResolvedValue({ message_id: 'new-world-message' });
+    const common = {
+      principalId,
+      activeChannelId: 'c0', wireState: 'open', wireRef: { current: { submit } },
+      rosterRef: { current: { recordSubmission: vi.fn(), observeFeed: vi.fn() } },
+      accessRef: { current: { state: () => ({ relationship: 'member', runtime: 'open', unavailable: false }) } },
+      channelStatesRef: { current: new Map() },
+      onError: vi.fn(), onNotice: vi.fn(), onFeedChanged: vi.fn(), onAccessChanged: vi.fn(),
+    };
+    const { result, rerender } = renderHook(({ serverWorld }) => useSubmissions({
+      ...common, serverWorld,
+    }), { initialProps: { serverWorld: 'boot-before-attach' } });
+
+    act(() => result.current.resetWorld());
+    rerender({ serverWorld: 'boot-from-attach' });
+
+    await act(async () => {
+      const original = globalThis.crypto.randomUUID;
+      globalThis.crypto.randomUUID = () => 'new-world-message';
+      try {
+        await result.current.send({ text: 'new world', msgType: 'agent.ask', audience: ['agent:a'] });
+      } finally {
+        globalThis.crypto.randomUUID = original;
+      }
+    });
+    await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  });
+
   it('does not publish transport authority from a suspended candidate render', async () => {
     const submit = vi.fn().mockResolvedValue({ message_id: 'committed-world-message' });
     const wireRef = { current: { submit } };
