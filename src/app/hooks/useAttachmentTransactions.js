@@ -146,7 +146,6 @@ export function useAttachmentTransactions({
   wireRef,
   wireState,
 }) {
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [devices, setDevices] = useState([]);
   const [directory, setDirectory] = useState('');
   const [deviceId, setDeviceId] = useState('');
@@ -496,10 +495,6 @@ export function useAttachmentTransactions({
     () => inCurrentWorld(activeRows, serverWorld).map(stripWorld),
     [activeRows, inCurrentWorld, serverWorld, stripWorld],
   );
-  const composerDraft = useMemo(() => {
-    const draft = draftFor(activeChannelId);
-    return { ...draft, attachments: inCurrentWorld(draft.attachments, serverWorld).map(stripWorld) };
-  }, [activeChannelId, activeDraftRecord, draftFor, inCurrentWorld, serverWorld, stripWorld]);
 
   const mutate = useCallback((channelId, mutateRows, readDraft = draftFor) => {
     const current = readDraft(channelId);
@@ -671,7 +666,6 @@ export function useAttachmentTransactions({
     abortUploads();
     abortFileOperations();
     uploadQueuesRef.current.clear();
-    setPickerOpen(false);
     setDevices([]);
     setDeviceId('');
     setDirectory('');
@@ -679,13 +673,6 @@ export function useAttachmentTransactions({
     setFilesBusy(false);
     setFilesError('');
     setSelectedArtifact(null);
-  }, [abortFileOperations, abortRequest, abortUploads]);
-
-  const abortChannel = useCallback((channelId) => {
-    abortRequest(deviceRequestRef, channelId);
-    abortRequest(directoryRequestRef, channelId);
-    abortUploads(channelId);
-    abortFileOperations(channelId);
   }, [abortFileOperations, abortRequest, abortUploads]);
 
   useEffect(() => () => {
@@ -697,11 +684,9 @@ export function useAttachmentTransactions({
   }, [abortFileOperations, abortRequest, abortUploads]);
 
   return {
-    abortChannel,
     attach,
     clear,
     composerAttachments,
-    composerDraft,
     createDirectory,
     deviceId,
     devices,
@@ -712,16 +697,12 @@ export function useAttachmentTransactions({
     filesError,
     mutate,
     navigateFiles,
-    pickerOpen,
     refreshDirectory,
     removeFile,
     reset,
-    runFileOperation,
     selectDevice,
     selectedArtifact,
     setSelectedArtifact,
-    setPickerOpen,
-    tagForCurrentWorld,
     uploadChannelFiles,
     uploadComposerAttachments,
   };
