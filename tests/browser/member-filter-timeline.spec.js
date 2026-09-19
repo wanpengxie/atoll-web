@@ -13,6 +13,65 @@ async function login(page) {
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
 }
 
+test('opaque member filter keeps a whole historical turn across roster and human incarnations', async ({ page, request }, testInfo) => {
+  // The fae8b70 case used a fixture to manufacture an old-incarnation roster.
+  // The current production session persists that preference through the same
+  // ViewSession contract, so exercise the real AppShell and real history rows.
+  await reset(request, 'deep-history', 29_210);
+  await login(page);
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await page.evaluate(() => {
+    const key = 'atoll.view-session.v3.root';
+    const value = JSON.parse(localStorage.getItem(key) || '{"schema":3,"preferences":{},"readings":{}}');
+    value.schema = 3;
+    value.preferences ||= {};
+    value.readings ||= {};
+    value.preferences.c0 = {
+      ...(value.preferences.c0 || {}),
+      scope: 'mine',
+      actorFilter: ['agent:steward:old-incarnation'],
+    };
+    localStorage.setItem(key, JSON.stringify(value));
+  });
+  await page.reload();
+  await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+
+  const stale = page.locator('.timeline-actor-filter .is-stale');
+  await expect(stale).toBeVisible();
+  await expect(stale).toHaveAttribute('aria-pressed', 'true');
+  await stale.click();
+
+  const historyQuestion = page.getByText('c0 history 120: ask steward for PONG', { exact: true });
+  await expect(historyQuestion).toBeVisible();
+  const steward = page.getByRole('group', { name: '按成员过滤' })
+    .getByRole('button', { name: 'steward', exact: true });
+  await expect(steward).toBeVisible();
+  await steward.click();
+  await expect(steward).toHaveAttribute('aria-pressed', 'true');
+
+  const turn = page.locator('[data-presentation-row-id]').filter({ hasText: 'c0 history 120: ask steward for PONG' }).first();
+  await expect(turn).toBeVisible();
+  await expect(turn).toContainText('c0 PONG 120');
+  const filtered = await page.evaluate(() => ({
+    rowIDs: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
+      .map((node) => node.dataset.presentationRowId || ''),
+    selected: [...document.querySelectorAll('.timeline-actor-filter button[aria-pressed="true"]')]
+      .map((node) => node.textContent?.trim() || ''),
+    scopeText: document.querySelector('[aria-label="动态范围"]')?.textContent || '',
+  }));
+  await testInfo.attach('member-filter-production-timeline.json', {
+    body: JSON.stringify({ filtered }, null, 2),
+    contentType: 'application/json',
+  });
+  expect(filtered.rowIDs.length).toBeGreaterThan(0);
+  expect(filtered.selected).toContain('steward');
+  expect(filtered.scopeText).not.toContain('正在确认频道内容');
+
+  await steward.click();
+  await expect(steward).toHaveAttribute('aria-pressed', 'false');
+  await expect(turn).toContainText('c0 PONG 120');
+});
+
 test('member filter keeps the selected Agent conversation visible and can be cleared', async ({ page, request }) => {
   await reset(request, 'deep-history', 29_211);
   await login(page);
