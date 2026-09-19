@@ -195,7 +195,6 @@ function stateKey(snapshot) {
         focus: scheduler.global?.focus,
         generation: scheduler.global?.generation,
         localMetaReady: scheduler.global?.localMetaReady,
-        selectionPending: scheduler.global?.selectionPending,
         inflightCount: scheduler.global?.inflightCount,
         reservedBytes: scheduler.global?.reservedBytes,
         reservoirBytes: scheduler.global?.reservoirBytes,
