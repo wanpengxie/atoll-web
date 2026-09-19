@@ -387,6 +387,11 @@ function useProjectionReadingOwner({
       sourceRevision: Number(evidence.sourceRevision || 0),
       presentationRevision: Number(evidence.presentationRevision || 0),
       installedHighSeq: Number(evidence.installedHighSeq || 0),
+      // Tail entry is a frozen backlog observation. The value is captured
+      // beside the evidence/head equality above; the callback must not
+      // re-read a later mutable head. Continuous arrivals use the DOM
+      // installedHighSeq below and never this entry boundary.
+      entryBoundary: current ? headSeq : 0,
       atTail,
       following,
       surfaceVisible: surfaceReady,
@@ -706,7 +711,19 @@ export function useConversationProjection({
     const next = viewport.tailCaughtUp;
     tailReceiptRef.current = next;
     if (next.caughtUp === true) {
-      onTailCaughtUp(next);
+      const enteringTail = previous?.caughtUp !== true;
+      if (enteringTail && Number(next.entryBoundary || 0) > 0) {
+        const boundary = Number(next.entryBoundary);
+        onTailCaughtUp(Object.freeze({
+          ...next,
+          cause: 'tail-backlog',
+          captured: Object.freeze({ ...next.captured, installedHighSeq: boundary }),
+          installedHighSeq: boundary,
+          boundary,
+        }));
+      } else {
+        onTailCaughtUp(next);
+      }
     } else if (previous?.caughtUp === true
       && (next.following !== true || next.atTail !== true || next.surfaceVisible !== true)) {
       // A stale status/head render while following keeps the observation
