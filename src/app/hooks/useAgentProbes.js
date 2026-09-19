@@ -182,6 +182,24 @@ function latestAgentInteraction(state, selfId, agentIds) {
   return latest;
 }
 
+// Composer's default target is a projection of the same public ledger that
+// owns probe capability facts. Manual selection remains a small override map;
+// when it has no valid actor, resolve the old contract from the latest
+// self-authored agent.ask, then the sole Agent fallback.
+function defaultComposerAgentId({ channelId, stateFor, rosters, rosterRef, manualAgentsRef }) {
+  if (!channelId) return '';
+  const agents = (rosters.get(channelId) || []).filter((row) => row.kind === 'agent');
+  const agentIds = new Set(agents.map((row) => row.id));
+  const manual = manualAgentsRef.current.get(channelId);
+  if (manual && agentIds.has(manual)) return manual;
+  const recent = latestAgentInteraction(
+    stateFor(channelId),
+    rosterRef.current?.self(channelId) || '',
+    agentIds,
+  );
+  return recent || (agents.length === 1 ? agents[0].id : '');
+}
+
 export function useAgentProbes({
   activeChannelId,
   activeChannelRef,
@@ -253,10 +271,21 @@ export function useAgentProbes({
   const targetChanged = useCallback((actorId) => {
     setComposerAgent((current) => {
       const channelId = activeChannelRef.current || '';
+      const nextActorId = actorId || defaultComposerAgentId({ channelId, stateFor, rosters, rosterRef, manualAgentsRef });
+      if (current.channelId === channelId && current.actorId === nextActorId) return current;
+      return { channelId, actorId: nextActorId };
+    });
+  }, [activeChannelRef, rosterRef, rosters, stateFor]);
+
+  useEffect(() => {
+    const channelId = activeChannelId || activeChannelRef.current || '';
+    if (!channelId) return;
+    const actorId = defaultComposerAgentId({ channelId, stateFor, rosters, rosterRef, manualAgentsRef });
+    setComposerAgent((current) => {
       if (current.channelId === channelId && current.actorId === actorId) return current;
       return { channelId, actorId };
     });
-  }, [activeChannelRef]);
+  }, [activeChannelId, activeChannelRef, feedVersion, rosterRef, rosters, stateFor, version]);
 
   const describeActor = useCallback(async (actor, channelId = activeChannelId, { force = false } = {}) => {
     if (!actor || !channelId) return '';
