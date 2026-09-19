@@ -331,3 +331,13 @@ Tests       24 passed (24)
 本报告。共享未提交文件、`src/app/hooks/useWireSession.js`、`tests/channel-feed-runtime.test.jsx`
 以及 browser/audit 产物均未纳入本次提交。
 
+## G1/G2 product-owner follow-up
+
+本节记录 parent 允许的治理过滤修复，不改变上述 baseline ledger 的逐 case 计数，也不处理 G3 Activity/Operation Center。
+
+- 根因：旧 `ChannelMembersPanel` 使用 `isProtectedActor`/`usableDeclarations`；当前 `GovernanceFeature` 直接消费 raw `port.roster`/`port.declarations`，而 `WorkspaceApp` 又维护另一份手写声明排除规则，导致治理面与公开 owner 的事实不一致。
+- 最小 owner diff：现有 `src/model/actor-visibility.js` 统一标准 actor、`atoll-internal:`/`peer:` genesis declaration 和显式非 present 状态判定；`WorkspaceApp` 的治理 port 与 `ChannelAdministrationPanel` 共同消费该 predicate。未新增 store、compat、第二 owner、vendor 或 package，未改测试。
+- 标准 actor 证据：`npx vitest run tests/f5-management.test.jsx tests/management-actors.test.js src/model/actor-visibility.test.js --reporter=verbose` → **3 files / 9 tests passed**；system/registrar/svcactor 不再出现在成员面板。
+- 可管理 actor 证据：同一 9 条中保留 Root/普通业务 Agent；纯 predicate probe 输出 `visibleActors=[root,agent:steward:1]`、`manageableDeclarations=[demo:agent]`，genesis/peer/retired 候选均被排除。
+- 治理 port 回归：`npx vitest run tests/workspace-governance-features.test.jsx --reporter=verbose` → **1 file / 2 tests passed**；命令仍经原 port 且 refresh 语义未改变。`npm run build` 通过。
+- 权限变化未决：当前 `tests/channel-access.test.js` 试图从 `src/app/hooks/useWireSession.js` 导入 `createSessionAccess/accessMode`，但当前公开模块不导出 `createSessionAccess`（运行结果 `TypeError: createSessionAccess is not a function`，7 cases）；按合同不为旧测试补私有 export，保留为 access-owner interface gap。治理 port 仍由既有 `disabled: !canWrite` 接线控制写操作。

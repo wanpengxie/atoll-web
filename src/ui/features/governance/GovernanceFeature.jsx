@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
+import { isManageableDeclaration, isVisibleActor } from '../../../model/actor-visibility.js';
 import { InlineConfirmation } from '../../primitives/InlineConfirmation.jsx';
 import { PanelCard } from '../../primitives/PanelCard.jsx';
 import { SelectMenu } from '../../primitives/SelectMenu.jsx';
@@ -68,14 +69,15 @@ function ChannelMembers({ channel, port }) {
   const action = useCommand(port.commands, 'channel');
   const candidates = [
     ...(port.principals || []).map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal' })),
-    ...(port.declarations || []).map((row) => ({ value: `declaration:${row.id}`, label: `${row.name || row.id} · 声明`, row, kind: 'declaration' })),
+    ...(port.declarations || []).filter(isManageableDeclaration).map((row) => ({ value: `declaration:${row.id}`, label: `${row.name || row.id} · 声明`, row, kind: 'declaration' })),
   ];
   const selected = candidates.find((row) => row.value === candidate);
+  const visibleRoster = (port.roster || []).filter(isVisibleActor);
   return <>
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
     <PanelCard className="governance-form" title="引入成员"><label>用户或声明<SelectMenu ariaLabel="待引入成员" value={candidate} options={candidates} onChange={setCandidate} /></label><button type="button" className="primary-button" disabled={port.disabled || !selected} onClick={() => action.submit('introduce_actor', { channelId: channel?.id, candidateType: selected?.kind, candidateId: selected?.row.id })}>引入</button></PanelCard>
     <PanelCard title="频道成员" action={<button type="button" className="text-button" onClick={() => port.commands?.refresh?.('members')}>刷新</button>}>
-      {(port.roster || []).map((row) => <div className="device-row" key={row.id}><div><strong>{actorDisplayName(row)}</strong><small>{row.id} · {row.kind || 'actor'}</small></div><div><button type="button" onClick={() => port.commands?.selectActor?.(row)}>详情</button><button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || row.protected} onClick={() => setConfirm(row)}>移除</button></div></div>)}
+      {visibleRoster.map((row) => <div className="device-row" key={row.id}><div><strong>{actorDisplayName(row)}</strong><small>{row.id} · {row.kind || 'actor'}</small></div><div><button type="button" onClick={() => port.commands?.selectActor?.(row)}>详情</button><button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || row.protected} onClick={() => setConfirm(row)}>移除</button></div></div>)}
     </PanelCard>
     {confirm && <InlineConfirmation title={`确认移除 ${actorDisplayName(confirm)}？`} description="该操作将通过频道治理命令提交，最终状态以频道事实为准。" tone="danger" onCancel={() => setConfirm(null)} onConfirm={() => { action.submit('remove_actor', { channelId: channel?.id, actorId: confirm.id }); setConfirm(null); }} />}
   </>;

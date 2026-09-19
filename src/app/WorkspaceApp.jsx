@@ -32,6 +32,7 @@ import {
   selectFeatureWaitingFacts,
 } from '../model/feature-tasks.js';
 import { selectFeatureSearchIndex } from '../model/feature-search.js';
+import { isManageableDeclaration } from '../model/actor-visibility.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
 import { VersionIncompatible } from '../ui/VersionIncompatible.jsx';
@@ -892,8 +893,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         ? directory.principals.filter((row) => row.id !== principalId && row.kind === 'human')
         : EMPTY_ARRAY,
       declarations: directory.support?.declarations
-        ? directory.declarations.filter((row) => !['registrar', 'svcactor'].includes(row.id)
-          && !String(row.id).startsWith('atoll-internal:') && !String(row.id).startsWith('peer:'))
+        ? directory.declarations.filter(isManageableDeclaration)
         : EMPTY_ARRAY,
       candidatesUnavailable: !directory.support?.principals || !directory.support?.declarations,
       roster: channelRoster,
