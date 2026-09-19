@@ -43,13 +43,13 @@ owner）为 PASS。历史 reveal 的空帧和 history admission/underfill 的失
 诊断事件替代用户可见结果；模型 selector 的失败先附带真实 dialog 几何，再在缺少
 可选模型项处失败。
 
-## 当前 HEAD 重验（`2b6f0b4`）
+## 当前 HEAD 重验（`c8feb32`）
 
-在 `2b6f0b4` 当前工作树上重新执行同一组 Chromium cases；本轮没有修改产品代码，
+在 `c8feb32` 当前工作树上重新执行同一组 Chromium cases；本轮没有修改产品代码，
 也没有因为旧分支已经有报告就复用旧结果：
 
 ```text
-ATOLL_TEST_MOCK_PORT=19877 ATOLL_TEST_WEB_PORT=15177 npx playwright test \
+ATOLL_TEST_MOCK_PORT=19881 ATOLL_TEST_WEB_PORT=15181 npx playwright test \
   tests/browser/history-presentation-admission-prototype.spec.js \
   tests/browser/history-reveal-prototype.spec.js \
   tests/browser/history-start-boundary.spec.js \
@@ -64,10 +64,12 @@ ATOLL_TEST_MOCK_PORT=19877 ATOLL_TEST_WEB_PORT=15177 npx playwright test \
   tests/browser/mobile-ux-isolation.spec.js \
   tests/browser/model-selector-manual.spec.js \
   tests/browser/model-selector-portal.spec.js --reporter=line \
-  --output=test-results-gm-head-20260920
+  --output=test-results-gm-head-20260920-r3
 ```
 
-HEAD 重验仍为 **32 tests，21 passed，11 failed（3.3m）**，失败身份没有漂移：
+HEAD 重验仍为 **32 tests，21 passed，11 failed（3.3m）**，失败身份没有漂移；同轮
+`member-filter-timeline.spec.js` 两例均 PASS。此前父分支提交在一轮并行运行中途造成的
+短暂 member-filter 红测，在 c8feb32 独立两例复验和本轮全组中均未复现。
 
 | 分区 | 红测 | 首个失败公共结果 | 唯一 owner |
 |---|---|---|---|
@@ -78,7 +80,7 @@ HEAD 重验仍为 **32 tests，21 passed，11 failed（3.3m）**，失败身份�
 
 同轮通过的 activation replacement、same-turn terminal、start boundary、layout、mobile、
 member filter 和 RO cases 不计入回归包。证据目录是
-`test-results-gm-head-20260920/`；没有 skip、删除或断言放宽。
+`test-results-gm-head-20260920-r3/`；没有 skip、删除或断言放宽。
 
 ## Case ledger
 
