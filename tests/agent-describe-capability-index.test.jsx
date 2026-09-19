@@ -46,6 +46,47 @@ function describeTerminal(id, parentId, words) {
 }
 
 describe('actor capabilities（恢复自 tests/capabilities.test.js）', () => {
+  it('routes Agent options/context probes through control owner while Describe stays on send', async () => {
+    const store = createChannelReplicaStore();
+    store.commit({ channel_id: 'c0', seq: 1, envelope: describeRequest('d1') });
+    const stateFor = () => store.state('c0');
+    const handleSend = vi.fn().mockResolvedValue('d1');
+    const handleControl = vi.fn((request) => `${request.msgType}-1`);
+    const { result } = renderHook((props) => useAgentProbes(props), {
+      initialProps: probeHarness({ handleSend, handleControl, stateFor }),
+    });
+
+    await act(async () => { await result.current.requestCapability('agent', 'c0'); });
+    store.commit({
+      channel_id: 'c0', seq: 2,
+      envelope: describeTerminal('d1-done', 'd1', {
+        [TYPES.agentOptions]: {},
+        [TYPES.agentContext]: {},
+      }),
+    });
+    await waitFor(() => expect(result.current.capabilitiesFor('c0').get('agent')?.describe).toBeTruthy());
+
+    act(() => {
+      result.current.pickAgent('agent');
+      result.current.targetChanged('agent');
+    });
+    await waitFor(() => expect(handleControl).toHaveBeenCalledTimes(2));
+
+    expect(handleSend).toHaveBeenCalledTimes(1);
+    expect(handleSend).toHaveBeenCalledWith(expect.objectContaining({ msgType: TYPES.describe }));
+    expect(handleControl.mock.calls.map(([request]) => request.msgType)).toEqual([
+      TYPES.agentOptions,
+      TYPES.agentContext,
+    ]);
+    for (const [request] of handleControl.mock.calls) {
+      expect(request).toMatchObject({
+        channelId: 'c0',
+        audience: ['agent'],
+        payload: {},
+      });
+    }
+  });
+
   it('[AD-138] 从账本 actor.describe 回合归一化出 Describe 结构（class/interfaces/capabilities/words）', async () => {
     // 用户能力：打开 Agent 详情时能看到 class、接口、能力和公开命令。
     // 不变量：Describe 只从本连接 request 的公开 terminal 投影，不能猜测旧账本。

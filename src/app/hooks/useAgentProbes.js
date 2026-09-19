@@ -189,6 +189,7 @@ export function useAgentProbes({
   stateFor,
   feedVersion,
   handleSend,
+  handleControl,
   pending,
   rosterRef,
   rosters,
@@ -364,7 +365,7 @@ export function useAgentProbes({
         stale: false,
       };
       registry.current.set(probeKey, entry);
-      void handleSend({
+      const request = {
         channelId,
         text: '',
         msgType: type,
@@ -372,7 +373,16 @@ export function useAgentProbes({
         targetLabel: actorId,
         payload: {},
         expiresAtMs: Date.now() + PROBE_TIMEOUT_MS,
-      }).then((requestId) => {
+      };
+      // agent.options/context are Agent control words. They must enter the
+      // canonical submission.control owner; sending the same frame through
+      // raw `send` is rejected by the owner gate and would bypass its
+      // control-specific authorization. A missing control owner fails closed
+      // as a rejected probe instead of silently downgrading to raw send.
+      const operation = typeof handleControl === 'function'
+        ? Promise.resolve().then(() => handleControl(request))
+        : Promise.reject(Object.assign(new TypeError('Agent 能力控制 owner 未连接'), { code: 'owner_unavailable' }));
+      void operation.then((requestId) => {
         entry.requestId = requestId || '';
         entry.failed = !entry.requestId;
         setVersion((current) => current + 1);
@@ -388,7 +398,7 @@ export function useAgentProbes({
     if (settled(TYPES.agentOptions, optionsProbedRef) && settled(TYPES.agentContext, contextProbedRef)) {
       manualProbeRef.current.delete(probeKey);
     }
-  }, [accessRef, activeChannelId, composerAgent, describeActor, feedVersion, handleSend, liveRequestIds, pending, rosters, stateFor, version, wireState]);
+  }, [accessRef, activeChannelId, composerAgent, describeActor, feedVersion, handleControl, liveRequestIds, pending, rosters, stateFor, version, wireState]);
 
   const selectorOpened = useCallback(() => {
     authorize(composerAgent.channelId, composerAgent.actorId);
