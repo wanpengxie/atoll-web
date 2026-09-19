@@ -449,6 +449,33 @@ pageerror 与 request failure 均为 0。结论是 #31 在 clean `31a892d` 上�
 均存在，首断点是旧 helper 的单向 materialization，不是产品 owner 缺口。冻结
 `7ba308c` 的 `23/8` aggregate 不改写；本轮只计为当前 HEAD 的 #31 PASS 证据。
 
+### 第十七轮：#1 `debug badge` 的 fae 用户语义裁决（clean `8feb531`）
+
+本轮把 `A-debug.spec.js` 的诊断读取与真正的用户通知能力分开复核。旧
+`fae8b70` 的用户可见通知合同是 `N-im-read-fallback.spec.js`：在底部的新到达
+恒不计数，离开底部或切到别的频道时，真实 rail `.unread-related` 与
+`.timeline-jump-latest` 出现，回到可见尾部后同时清零。`A-debug.spec.js` 本身只
+打印 `.unread-related`、`.unread-total`、`window.__A_*` 和可选的
+`__ATOLL_DIAGNOSTICS__.rail` 快照，没有要求或定义一个给用户看的 debug badge。
+
+在干净 snapshot `8feb531` 用真实 Chromium 跑 A-debug：`1 passed (8.9s)`。三次
+arrival 均为 tail-following 的用户语义，实际读数都是
+`related=0,total=0,jump=0`；`window.__A_TAIL`、`__A_TAIL_LOG`、
+`__A_PRESENCE`、`__A_PRESENCE_CALLS` 均为空/0，rail diagnostic snapshot 没有
+channel counts。页面没有新增 debug UI，也没有因测试而恢复任何标记。
+
+作为用户能力对照，同一 clean snapshot 跑旧 fae N1/N2 合同：`2 passed (14.8s)`。
+N1 的离底 arrival 真正 paint `related=3`、`jump=3`，回尾后两者都为 0；N2
+切到别的频道时 `related=3`，切回并回尾后为 0。N1 附件的 `noticeFrames=[]`、
+`clearGapMs=43`，N2 的 `noticeFrames=[]` / `offTailFrames=[]`，均未依赖 debug
+诊断 API。
+
+裁决：#1 的“debug badge”是开发诊断/历史定位名称，不是旧 fae 用户产品能力；
+当前可见 rail badge 与 jump 的用户合同已由 N1/N2 覆盖并通过。不能恢复只为测试的
+debug UI，也不向 Workspace/Feed owner 派发一个不存在的 badge 产品缺口。保留
+冻结 `7ba308c` 的 `23/8` 历史 aggregate；本轮仅记录 #1 在 clean `8feb531` 的
+诊断通过与用户通知对照证据。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
