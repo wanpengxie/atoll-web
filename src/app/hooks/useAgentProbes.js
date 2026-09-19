@@ -43,20 +43,99 @@ function describeOf(payload) {
   };
 }
 
-function capabilityIndex(state, liveRequestIds) {
+// ChannelReplica owns the ledger. Probe state is a read-only projection over
+// its public timeline plus the submission owner's explicit pending rows; it
+// must not recreate the retired mutable turn index.
+function turnIndex(state, requestIds) {
+  const wanted = new Set([...requestIds].filter(Boolean));
   const result = new Map();
-  if (!state?.turns?.get) return result;
-  const turns = [...liveRequestIds].map((requestId) => state.turns.get(requestId)).filter(Boolean)
-    .sort((left, right) => Number(left.requestSeq || 0) - Number(right.requestSeq || 0));
-  for (const turn of turns) {
-    if (turn.request?.type !== TYPES.describe) continue;
-    const actorId = turn.request?.audience?.[0];
+  const visit = (entry) => {
+    if (!entry || !wanted.size) return;
+    if (entry.kind === 'turn') {
+      const turn = entry.turn;
+      if (turn?.requestId && wanted.has(turn.requestId)) {
+        result.set(turn.requestId, turn);
+        wanted.delete(turn.requestId);
+      }
+    }
+    for (const child of entry.thread || []) visit(child);
+  };
+  for (const entry of state?.timeline || []) visit(entry);
+  return result;
+}
+
+function pendingIndex(pending, requestIds) {
+  const wanted = new Set(requestIds);
+  return new Map((pending || [])
+    .filter((row) => wanted.has(row?.messageId))
+    .map((row) => [row.messageId, row]));
+}
+
+function pendingError(row, fallbackCode) {
+  if (row?.state !== 'rejected') return null;
+  const error = row.error && typeof row.error === 'object' ? row.error : {};
+  return {
+    code: String(error.code || fallbackCode),
+    detail: String(error.detail || error.message || ''),
+  };
+}
+
+function probeFact(turns, pendingRows, requestId, expectedType) {
+  const turn = turns.get(requestId);
+  const submission = pendingRows.get(requestId);
+  const matchingSubmission = submission?.frame?.msg_type === expectedType ? submission : null;
+  if (turn?.request?.id === requestId && turn.request.type === expectedType) {
+    const terminal = turn.terminal?.parent_id === requestId && turn.terminal.type === expectedType
+      ? turn.terminal
+      : null;
+    return { request: turn.request, turn: { ...turn, terminal }, pending: matchingSubmission };
+  }
+  if (!matchingSubmission) return null;
+  return {
+    request: {
+      id: requestId,
+      type: expectedType,
+      audience: matchingSubmission.frame.audience,
+      ts: matchingSubmission.createdAt,
+    },
+    turn: null,
+    pending: matchingSubmission,
+  };
+}
+
+function probeFailed(state, pending, requestId, expectedType) {
+  if (!requestId) return false;
+  const turns = turnIndex(state, [requestId]);
+  const pendingRows = pendingIndex(pending, [requestId]);
+  const fact = probeFact(turns, pendingRows, requestId, expectedType);
+  if (!fact) return false;
+  const terminal = argsOf(fact.turn?.terminal);
+  if (terminal?.status) return terminal.status === 'failed';
+  return Boolean(pendingError(fact.pending, `${expectedType}_failed`));
+}
+
+function capabilityIndex(state, liveRequestIds, pending) {
+  const result = new Map();
+  const requestIds = [...liveRequestIds];
+  const turns = turnIndex(state, requestIds);
+  const pendingRows = pendingIndex(pending, requestIds);
+  const facts = requestIds.map((requestId, order) => {
+    const fact = probeFact(turns, pendingRows, requestId, TYPES.describe);
+    return fact ? { ...fact, requestId, order } : null;
+  }).filter(Boolean).sort((left, right) => {
+    const leftAt = Number(left.request?.ts || left.turn?.requestSeq || left.pending?.createdAt || 0);
+    const rightAt = Number(right.request?.ts || right.turn?.requestSeq || right.pending?.createdAt || 0);
+    return leftAt - rightAt || left.order - right.order;
+  });
+  for (const fact of facts) {
+    const { requestId, request, turn, pending: pendingRow } = fact;
+    const actorId = request?.audience?.[0];
     if (!actorId) continue;
     const entry = result.get(actorId) || { actorId, describe: null, loading: false, error: null, requestId: '', seq: 0 };
-    entry.requestId = turn.requestId;
-    entry.seq = Number(turn.lastSeq || 0);
-    entry.loading = !turn.terminal;
-    if (turn.terminal) {
+    entry.requestId = requestId;
+    entry.seq = Number(turn?.lastSeq || 0);
+    entry.loading = Boolean(turn ? !turn.terminal : pendingRow?.state !== 'rejected');
+    if (turn?.terminal) {
       const terminal = terminalResultPayload(turn);
       const outcome = terminalResultState(turn);
       if (terminal?.status === 'completed') {
@@ -67,8 +146,14 @@ function capabilityIndex(state, liveRequestIds) {
             : describe;
           entry.error = null;
         } else entry.error = { code: 'invalid_describe', detail: 'Actor 返回的能力结构无法识别' };
-      } else entry.error = { code: terminal?.error_code || 'describe_failed', detail: outcome.error || terminal?.detail || '' };
+      } else entry.error = { code: terminal?.error_code || terminal?.reason || 'describe_failed', detail: outcome.error || terminal?.detail || '' };
       entry.loading = false;
+    } else {
+      const rejected = pendingError(pendingRow, 'describe_failed');
+      if (rejected) {
+        entry.error = rejected;
+        entry.loading = false;
+      }
     }
     result.set(actorId, entry);
   }
@@ -76,14 +161,14 @@ function capabilityIndex(state, liveRequestIds) {
 }
 
 function latestAgentInteraction(state, selfId, agentIds) {
-  if (!state?.rows?.values || !selfId) return '';
+  if (!state?.rows?.entries || !selfId) return '';
   let latest = '';
   let latestSeq = -1;
-  for (const row of state.rows.values()) {
+  for (const [rowSeq, row] of state.rows.entries()) {
     if (row?.kind !== 'request' || row.type !== TYPES.agentAsk || row.sender?.id !== selfId) continue;
     const audience = Array.isArray(row.audience) ? row.audience : [];
     if (audience.length !== 1 || !agentIds.has(audience[0])) continue;
-    const seq = Number(row.seq || 0);
+    const seq = Number(rowSeq || 0);
     if (seq >= latestSeq) { latest = audience[0]; latestSeq = seq; }
   }
   return latest;
@@ -200,7 +285,7 @@ export function useAgentProbes({
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId && row.kind === 'agent');
     if (!actor) return false;
     const state = stateFor(channelId);
-    const capability = capabilityIndex(state, liveRequestIds).get(actorId);
+    const capability = capabilityIndex(state, liveRequestIds, pending).get(actorId);
     const probeKey = `${channelId}:${actorId}`;
     const describeProbe = lifecycleRef.current.entries.get(probeKey);
     const describeRejected = Boolean(describeProbe?.requestId && pending.some(
@@ -221,7 +306,7 @@ export function useAgentProbes({
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId);
     if (!actor) return;
     const state = stateFor(channelId);
-    const capability = capabilityIndex(state, liveRequestIds).get(actorId);
+    const capability = capabilityIndex(state, liveRequestIds, pending).get(actorId);
     const probeKey = `${channelId}:${actorId}`;
     const describeProbe = lifecycleRef.current.entries.get(probeKey);
     const describeRejected = Boolean(describeProbe?.requestId && pending.some(
@@ -240,9 +325,7 @@ export function useAgentProbes({
       const probe = registry.current.get(probeKey);
       if (probe && !probe.stale) {
         if (!probe.failed && probe.requestId) {
-          const failedRow = argsOf(state?.turns?.get?.(probe.requestId)?.terminal)?.status === 'failed';
-          const rejected = pending.some((item) => item.messageId === probe.requestId && item.state === 'rejected');
-          if (failedRow || rejected) probe.failed = true;
+          if (probeFailed(state, pending, probe.requestId, type)) probe.failed = true;
         }
         return;
       }
@@ -303,7 +386,10 @@ export function useAgentProbes({
     };
   }, []);
 
-  const capabilitiesFor = useCallback((channelId) => capabilityIndex(stateFor(channelId), liveRequestIds), [liveRequestIds, stateFor, version]);
+  const capabilitiesFor = useCallback(
+    (channelId) => capabilityIndex(stateFor(channelId), liveRequestIds, pending),
+    [liveRequestIds, pending, stateFor, version],
+  );
 
   return {
     capabilitiesFor,
