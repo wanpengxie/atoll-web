@@ -394,15 +394,11 @@ export function useAgentProbes({
   return {
     capabilitiesFor,
     composerAgent,
-    describeActor,
-    liveRequestIds,
-    manualAgentIdFor: (channelId) => manualAgentsRef.current.get(channelId) || '',
     pickAgent,
     requestKeys,
     requestCapability,
     reset,
     selectorOpened,
     targetChanged,
-    version,
   };
 }
