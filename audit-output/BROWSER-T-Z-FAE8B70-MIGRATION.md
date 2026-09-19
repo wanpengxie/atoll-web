@@ -480,3 +480,56 @@ probe; rerun the exact pair once its product commit is published.
 
 No `tests/browser/fixtures/waiting-*` file was added or used, and no product
 source was changed.
+
+## Follow-up: Luna Max real-browser recheck at `5aef9f4`
+
+The unchanged hard pair was run in a clean detached worktree at the current
+`5aef9f4` commit (the shared worktree's unrelated dirty files were excluded):
+
+```text
+ATOLL_TEST_WEB_PORT=15288 ATOLL_TEST_MOCK_PORT=19847 npx playwright test \
+  tests/browser/ux-unseen-persistence.spec.js \
+  tests/browser/waiting-production-contract.spec.js \
+  --grep "reload normalizes durable unseen|wheel-takeover-after-send" \
+  --reporter=line
+```
+
+Result: **A08 RED**, line 91 (`unseenRecords` expected one finite tuple,
+received `[]`); **Waiting case38 PASS**. A08 reached the public approval row and
+`↓ 1 条新动态` jump before the hard durable-record assertion. The strict
+`unseenRecords`/reload/jump-clear/ack checks remain unchanged, so this is still
+the Reading persistence/arrival-acknowledgement product gap. There was no
+`ReferenceError: controller is not defined` in this current-HEAD run, and the
+historical bad outer teardown expression is absent from this revision's browser
+execution.
+
+Because case38's original assertion used broad text visibility, a disposable
+browser-only probe repeated its exact trajectory (1120×760, `long-running-history`,
+seed `0x92_18_38`, browsing wheel `-900`, then `send browsing`) without changing
+the target spec. It recorded public state before/after send:
+
+| witness | before send | after send |
+|---|---:|---:|
+| public mode | `browsing` | `browsing` |
+| list gap | `901` | `1225` |
+| list `scrollTop` | `2924` | `2924` |
+| public `coldEntry.reading.inputEpoch` | — | `1` |
+| mock `feeds.c0` | `848` | `854` |
+
+The probe also proved the send was not satisfied by editor text alone. The
+real WebSocket sequence was `submit` (`ref=submit-38`, `msg_type=agent.ask`,
+payload text `send browsing`, audience `agent:steward:test`) → `receipt`
+(`message_id` equal to the submitted id) → live `feed` seq `849` carrying that
+same id and canonical `send browsing` body. The mounted public DOM then had
+exactly one `.timeline-message-list [data-presentation-row-id]` for that text,
+with the same submitted id and rendered request/agent processing content; the
+editor value was `null` and its text content was empty. The public cold-entry
+snapshot at that point reported `inputEpoch=1`, `mode=browsing`, readable
+presentation (`headSeq=854`, `presentationRevision=48`, 21 rows, 12 mounted,
+3 visible). Thus case38 is green on the current product, with materialization
+and browsing geometry independently witnessed; no assertion was weakened.
+
+Finally, `git diff 61c8758 HEAD -- tests/browser/ux-unseen-persistence.spec.js
+tests/browser/waiting-production-contract.spec.js` remains empty. The
+temporary probe was deleted after collection; no product, vendor, package, or
+target spec file was edited by this recheck.
