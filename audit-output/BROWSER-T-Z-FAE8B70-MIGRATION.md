@@ -533,3 +533,56 @@ Finally, `git diff 61c8758 HEAD -- tests/browser/ux-unseen-persistence.spec.js
 tests/browser/waiting-production-contract.spec.js` remains empty. The
 temporary probe was deleted after collection; no product, vendor, package, or
 target spec file was edited by this recheck.
+
+## Follow-up: case38 durable-materialization contract at `5aef9f4`
+
+The preceding disposable probe established that the old case38 wait for broad
+text visibility could observe the optimistic local echo before the durable
+receipt/feed. The unchanged product path publishes pending outbox rows before
+starting its asynchronous transmit, so text visibility alone is not a durable
+send oracle. The case38 trajectory now keeps its hard browsing geometry and
+adds a public rendered-boundary wait in
+`tests/browser/waiting-production-contract.spec.js`:
+
+- it still waits for the sent text to become visible;
+- it then requires exactly one matching public presentation row and one
+  `.turn-card[data-request-id]`;
+- it rejects a row while the rendered request header still exposes the local
+  submission-state marker (`queued`/`transmitting`/`accepted`), and proceeds
+  only after the canonical feed row has replaced the local echo;
+- it finally asserts the existing stable reading geometry and browsing
+  `gap > 1` contract.
+
+This uses only rendered DOM identity/content and does not read diagnostics,
+React state, private exports, or mock internals. The focused rerun was:
+
+```text
+ATOLL_TEST_WEB_PORT=15197 ATOLL_TEST_MOCK_PORT=18856 \
+npx playwright test tests/browser/waiting-production-contract.spec.js \
+  -g "wheel-takeover-after-send" --reporter=line
+```
+
+Result: **1 passed (7.0s)**. A four-send trajectory sweep was `3 passed, 1
+failed`: the unrelated `following-existing-waiting` setup timed out in its
+pre-existing `waitForRunning` helper; the focused case38 itself passed.
+
+For an independent timing check, a disposable real-browser probe delayed only
+the next `agent.ask` receipt and feed by 2.5s. It observed text at roughly
+690ms with only the outbound `submit-38` frame present; the receipt arrived at
+roughly 3225ms and the canonical request feed at roughly 3301ms. Public
+geometry was browsing/gap `901` before durable materialization and browsing/gap
+`1225` after it. This demonstrates why the new wait is needed while confirming
+the product invariant.
+
+### E-send conflict ledger
+
+The old E case is intentionally retained, not deleted or skipped:
+`tests/browser/e-send-scroll-writers.spec.js:274` says that browsing send
+hands off to Following and requires final gap `<=24`. At the same `5aef9f4`
+HEAD its focused run fails with the public frame `mode=browsing`,
+`gap=1225`, expected `following`. This is a contract conflict, not a
+case38 failure: V3 gives a trusted wheel/input epoch priority, and case38 is
+the replacement public coverage for send-after-browsing (canonical feed wait,
+anchor preservation, and `gap > 1`). The E assertion remains as an explicit
+conflict witness until its owner adjudicates it; it is not evidence for
+weakening case38.

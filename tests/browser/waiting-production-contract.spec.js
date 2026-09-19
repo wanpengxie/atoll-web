@@ -39,6 +39,20 @@ async function send(page, text) {
   await page.getByRole('button', { name: '发送', exact: true }).click();
 }
 
+async function waitForCanonicalMessage(page, text) {
+  const rows = page.locator('.timeline-message-list [data-presentation-row-id]').filter({ hasText: text });
+  await expect.poll(async () => {
+    if (await rows.count() !== 1) return false;
+    const cards = rows.locator('.turn-card[data-request-id]');
+    if (await cards.count() !== 1) return false;
+    // Pending/outbox local echoes expose their state in the request header.
+    // A canonical feed row keeps the same public row identity but has no local
+    // submission-state marker. This waits for feed materialization instead of
+    // treating the optimistic text echo as durable acceptance.
+    return await cards.locator('header > small:not(.ai-label)').count() === 0;
+  }, { timeout: 15_000 }).toBe(true);
+}
+
 async function waitForRunning(page, text) {
   await page.waitForFunction((needle) => [...document.querySelectorAll('[data-presentation-row-id]')]
     .some((row) => row.textContent?.includes(needle)
@@ -290,7 +304,9 @@ async function runSendTrajectory({ page, request, testInfo, mode }) {
   const before = await geometry(page);
   if (mode === 'existing-waiting') await establishQueued(page, 'send-existing-owner', 'send-existing-target');
   await send(page, mode === 'multiline' ? 'send line one\nsend line two\nsend line three' : `send ${mode}`);
-  await expect(page.getByText(mode === 'multiline' ? 'send line one' : `send ${mode}`, { exact: false })).toBeVisible();
+  const messageText = mode === 'multiline' ? 'send line one' : `send ${mode}`;
+  await expect(page.getByText(messageText, { exact: false })).toBeVisible();
+  await waitForCanonicalMessage(page, messageText);
   const after = await geometry(page);
   await attach(testInfo, `waiting-send-${mode}.json`, { before, after });
   expectStable(before, after, ['reading']);
