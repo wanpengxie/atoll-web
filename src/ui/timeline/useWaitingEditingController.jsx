@@ -5,8 +5,24 @@ import { TYPES } from '../../protocol/vocab.js';
 import { newId } from '../../util/id.js';
 
 const WAITING_HANDOFF_DURATION_MS = 180;
-const AGENT_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+const WAITING_HANDOFF_LEDGER_LIMIT = 512;
+const WAITING_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+const AGENT_CONTENT_TYPES = new Set([
+  TYPES.agentAsk,
+  TYPES.agentQueue,
+  TYPES.agentCompact,
+  TYPES.agentNew,
+  TYPES.agentReplace,
+  TYPES.agentSteer,
+]);
 const WAITING_SUBMISSION_STATES = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain']);
+const CORE_CONTROL_WORDS = new Set([
+  TYPES.agentReplace,
+  TYPES.agentInterrupt,
+  TYPES.agentSteer,
+  TYPES.agentDismiss,
+]);
+const DEFAULT_HOLD_DURATION_MS = 30 * 60 * 1000;
 
 function exactHoldPayload(payload, holdId) {
   if (typeof holdId !== 'string' || !holdId) throw new Error('编辑控制缺少 exact hold owner');
@@ -15,11 +31,6 @@ function exactHoldPayload(payload, holdId) {
 
 function supportsLeaseCAS(capability, type) {
   return Boolean(capability?.describe?.types?.get(type)?.inputSchema?.properties?.expected_hold_id);
-}
-
-function capabilityWordState(capability, type) {
-  if (!capability?.describe) return capability?.error ? 'unavailable' : 'unknown';
-  return capability.describe.types?.has?.(type) ? 'supported' : 'unsupported';
 }
 
 function supportsEditLeaseCAS(capability) {
@@ -41,6 +52,161 @@ function actorID(turn) {
   return String(turn?.request?.audience?.[0] || '');
 }
 
+function latestStatusFrame(turn) {
+  return [...(turn?.provisional || [])]
+    .sort((left, right) => Number(right.seq || 0) - Number(left.seq || 0))
+    .map((item) => argsOf(item.envelope))
+    .find((payload) => ['queued', 'processing'].includes(payload?.status)) || null;
+}
+
+function controlEntries(frame) {
+  if (!Array.isArray(frame?.controls)) return [];
+  return frame.controls.filter((entry) => entry && typeof entry.word === 'string' && entry.word);
+}
+
+function controlsAllowed(access) {
+  return access === 'member_active' || access === 'member'
+    || (access?.relationship === 'member' && access?.unavailable !== true);
+}
+
+function targetCurrentness(turn, authority) {
+  const id = actorID(turn);
+  if (!id || authority?.current !== true || !(authority.actorIDs instanceof Set)) return 'unknown';
+  return authority.actorIDs.has(id) ? 'current' : 'departed';
+}
+
+function waitingControlContext(turn, { selfId, access, targetAuthority }) {
+  const request = turn?.request;
+  const open = Boolean(request && !turn.terminal && !turn.local);
+  const writable = controlsAllowed(access);
+  const owned = Boolean(selfId && request?.sender?.id === selfId);
+  const frame = latestStatusFrame(turn);
+  const location = String(frame?.status || '');
+  const controls = open ? controlEntries(frame) : [];
+  const words = new Set(controls.map((entry) => entry.word));
+  const currentness = targetCurrentness(turn, targetAuthority);
+  const callerCancelEligible = open && writable && owned && location === 'queued';
+  const targetControlsEligible = open && writable && currentness === 'current';
+  return {
+    controls,
+    targetCurrentness: currentness,
+    targetControlsEligible,
+    steering: Boolean(frame?.steering),
+    canCancel: callerCancelEligible
+      || (targetControlsEligible && location === 'queued' && words.has(TYPES.agentDismiss)),
+    cancelsAsDismiss: !callerCancelEligible && targetControlsEligible && !owned,
+    canInsert: targetControlsEligible && words.has(TYPES.agentSteer),
+    canEdit: targetControlsEligible && words.has(TYPES.agentReplace),
+  };
+}
+
+function extraControls(context) {
+  if (!context?.targetControlsEligible) return [];
+  return context.controls.filter((entry) => !CORE_CONTROL_WORDS.has(entry.word));
+}
+
+function controlLabel(entry) {
+  return entry.label || entry.word.split('.').pop();
+}
+
+function controlPayload(context, entry, fallback) {
+  return entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
+    ? { ...fallback, ...entry.payload }
+    : fallback;
+}
+
+function allTimelineTurns(state) {
+  const turns = [];
+  const visit = (entry) => {
+    if (entry?.kind === 'turn' && entry.turn) turns.push(entry.turn);
+    for (const child of entry?.thread || []) visit(child);
+  };
+  for (const entry of state?.timeline || []) visit(entry);
+  return turns;
+}
+
+function terminalCompleted(turn) {
+  return argsOf(turn?.terminal)?.status === 'completed';
+}
+
+function requestTimestamp(request) {
+  const numeric = Number(request?.ts);
+  if (Number.isFinite(numeric)) return numeric;
+  const parsed = Date.parse(request?.ts || '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function holdDeadline(turn) {
+  const requested = Number(argsOf(turn?.request)?.duration_ms);
+  const duration = Number.isSafeInteger(requested) && requested >= 1 && requested <= DEFAULT_HOLD_DURATION_MS
+    ? requested
+    : DEFAULT_HOLD_DURATION_MS;
+  return requestTimestamp(turn?.request) + duration;
+}
+
+// Waiting no longer receives a second frozen-state store. Rebuild the visual
+// pause fact from this channel replica's own control turns and progress seqs.
+function heldActors(state, now = Date.now()) {
+  const operations = [];
+  const holdOwners = new Map();
+  for (const turn of allTimelineTurns(state)) {
+    const id = actorID(turn);
+    if (!id) continue;
+    const type = turn.request?.type;
+    if (terminalCompleted(turn) && type === TYPES.agentHold) {
+      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'hold', turn });
+      holdOwners.set(turn.requestId, id);
+    } else if (terminalCompleted(turn) && type === TYPES.agentUnhold
+      && argsOf(turn.terminal)?.released !== false) {
+      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'release' });
+    } else if (terminalCompleted(turn) && type === TYPES.agentInterrupt) {
+      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'release' });
+    }
+    if (!AGENT_CONTENT_TYPES.has(type)) continue;
+    const enteredBuffer = (turn.provisional || []).some((item) => {
+      const body = argsOf(item.envelope);
+      return body?.status === 'queued' && body.resumed !== true;
+    });
+    const capacityFailure = argsOf(turn.terminal)?.status === 'failed'
+      && argsOf(turn.terminal)?.error_code === 'base_capacity';
+    if (type !== TYPES.agentReplace && (enteredBuffer || capacityFailure)) {
+      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'release' });
+    }
+    for (const item of turn.provisional || []) {
+      const body = argsOf(item.envelope);
+      if (body?.status === 'processing') {
+        operations.push({ actorId: id, seq: Number(item.seq || 0), kind: 'advanced' });
+        break;
+      }
+    }
+    if (argsOf(turn.terminal)?.merged_into) {
+      operations.push({ actorId: id, seq: Number(turn.terminalSeq || 0), kind: 'advanced' });
+    }
+  }
+  if (holdOwners.size && state?.rows?.entries) {
+    for (const [seq, envelope] of state.rows.entries()) {
+      if (envelope?.kind !== 'event' || envelope.type !== TYPES.agentHoldExpired) continue;
+      const holdId = String(argsOf(envelope)?.hold_id || '');
+      const actorId = holdOwners.get(holdId);
+      if (actorId) operations.push({ actorId, seq: Number(seq || 0), kind: 'expire', holdId });
+    }
+  }
+  operations.sort((left, right) => left.seq - right.seq);
+  const held = new Map();
+  for (const operation of operations) {
+    if (operation.kind === 'hold') held.set(operation.actorId, {
+      holdId: operation.turn.requestId,
+      until: holdDeadline(operation.turn),
+    });
+    else if (operation.kind !== 'expire'
+      || held.get(operation.actorId)?.holdId === operation.holdId) held.delete(operation.actorId);
+  }
+  for (const [id, hold] of held) {
+    if (!(Number(now) < hold.until)) held.delete(id);
+  }
+  return held;
+}
+
 function latestStage(turn) {
   if (turn?.terminal) return 'timeline';
   const status = [...(turn?.provisional || [])]
@@ -49,7 +215,7 @@ function latestStage(turn) {
     .filter(Boolean).at(-1);
   if (status === 'processing') return 'processing';
   if (['received', 'queued', 'deferred'].includes(status)) return 'queued';
-  return AGENT_MESSAGE_TYPES.has(turn?.request?.type) ? 'queued' : '';
+  return WAITING_MESSAGE_TYPES.has(turn?.request?.type) ? 'queued' : '';
 }
 
 function timelineTurn(state, requestId) {
@@ -79,7 +245,7 @@ function isWaitingSubmission(row, channelId) {
   return Boolean(row?.messageId
     && (!row.channelId || row.channelId === channelId)
     && WAITING_SUBMISSION_STATES.has(row.state)
-    && AGENT_MESSAGE_TYPES.has(row.frame?.msg_type));
+    && WAITING_MESSAGE_TYPES.has(row.frame?.msg_type));
 }
 
 function pendingWaitingTurns(state, pending, editingTargetId) {
@@ -123,7 +289,9 @@ function pendingWaitingTurns(state, pending, editingTargetId) {
 }
 
 export function useWaitingHandoff(channelId, queuedTurns, presentationRows) {
+  const reducedMotion = useReducedMotionPreference();
   const previousRef = useRef({ channelId, turns: new Map() });
+  const completedRef = useRef(new Map());
   const timersRef = useRef(new Map());
   const [settling, setSettling] = useState(() => new Map());
   const currentTurns = useMemo(
@@ -131,24 +299,42 @@ export function useWaitingHandoff(channelId, queuedTurns, presentationRows) {
     [queuedTurns],
   );
   const presentedIDs = useMemo(() => new Set(presentationRows.map((row) => row.id)), [presentationRows]);
+  const sameChannel = previousRef.current.channelId === channelId;
+  const fresh = sameChannel ? [...previousRef.current.turns].flatMap(([requestId, entry]) => (
+    !currentTurns.has(requestId)
+    && presentedIDs.has(requestId)
+    && !completedRef.current.has(requestId)
+      ? [[requestId, entry]]
+      : []
+  )) : [];
+  let visibleHandoffs = settling;
+  if (!sameChannel || reducedMotion) visibleHandoffs = new Map();
+  else if (fresh.length) {
+    visibleHandoffs = new Map(settling);
+    for (const [requestId, entry] of fresh) visibleHandoffs.set(requestId, entry);
+  }
   useLayoutEffect(() => {
-    const previous = previousRef.current;
-    previousRef.current = { channelId, turns: currentTurns };
-    if (previous.channelId !== channelId) {
+    if (previousRef.current.channelId !== channelId) {
       for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
       timersRef.current.clear();
-      setSettling(new Map());
+      completedRef.current.clear();
+      previousRef.current = { channelId, turns: currentTurns };
+      setSettling((current) => current.size ? new Map() : current);
       return;
     }
-    const exiting = [...previous.turns].filter(([id]) => !currentTurns.has(id) && presentedIDs.has(id));
-    if (!exiting.length) return;
+    previousRef.current = { channelId, turns: currentTurns };
+    if (!fresh.length) return;
+    for (const [requestId] of fresh) completedRef.current.set(requestId, true);
+    while (completedRef.current.size > WAITING_HANDOFF_LEDGER_LIMIT) {
+      completedRef.current.delete(completedRef.current.keys().next().value);
+    }
+    if (reducedMotion) return;
     setSettling((current) => {
       const next = new Map(current);
-      for (const [id, entry] of exiting) next.set(id, entry);
+      for (const [id, entry] of fresh) next.set(id, entry);
       return next;
     });
-    for (const [id] of exiting) {
-      globalThis.clearTimeout(timersRef.current.get(id));
+    for (const [id] of fresh) {
       timersRef.current.set(id, globalThis.setTimeout(() => {
         timersRef.current.delete(id);
         setSettling((current) => {
@@ -159,14 +345,36 @@ export function useWaitingHandoff(channelId, queuedTurns, presentationRows) {
         });
       }, WAITING_HANDOFF_DURATION_MS));
     }
-  }, [channelId, currentTurns, presentedIDs]);
+  }, [channelId, currentTurns, fresh, reducedMotion]);
+  useLayoutEffect(() => {
+    if (!reducedMotion || !settling.size) return;
+    for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
+    timersRef.current.clear();
+    setSettling(new Map());
+  }, [reducedMotion, settling.size]);
   useEffect(() => () => {
     for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
-  }, []);
+    timersRef.current.clear();
+  }, [channelId]);
   return useMemo(() => ({
-    exiting: [...settling].map(([requestId, entry]) => ({ requestId, ...entry })),
-    enteringRequestIDs: new Set(settling.keys()),
-  }), [settling]);
+    exiting: [...visibleHandoffs].map(([requestId, entry]) => ({ requestId, ...entry })),
+    enteringRequestIDs: new Set(visibleHandoffs.keys()),
+  }), [visibleHandoffs]);
+}
+
+function useReducedMotionPreference() {
+  const [reduced, setReduced] = useState(
+    () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
+  );
+  useEffect(() => {
+    const query = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!query) return undefined;
+    const update = () => setReduced(query.matches === true);
+    update();
+    query.addEventListener?.('change', update);
+    return () => query.removeEventListener?.('change', update);
+  }, []);
+  return reduced;
 }
 
 export function WaitingLayer({
@@ -183,70 +391,161 @@ export function WaitingLayer({
   onControl,
   onEdit,
 }) {
+  const [bulk, setBulk] = useState({ actorId: '', error: '' });
   const [collapsed, setCollapsed] = useState(false);
+  const channelRef = useRef(state.channelId);
+  useLayoutEffect(() => {
+    if (channelRef.current === state.channelId) return;
+    channelRef.current = state.channelId;
+    setBulk({ actorId: '', error: '' });
+    setCollapsed(false);
+  }, [state.channelId]);
   if (!turns.length && !handoffs.length) return null;
-  const items = [
+  const presented = [
     ...turns.map((turn, order) => ({ turn, order, exiting: false })),
     ...handoffs.map((entry) => ({ turn: entry.turn, order: entry.order, exiting: true })),
   ].sort((left, right) => left.order - right.order);
   const groups = [];
-  const index = new Map();
-  for (const item of items) {
+  const byActor = new Map();
+  for (const item of presented) {
     const id = actorID(item.turn);
-    if (!index.has(id)) {
-      const group = { actorId: id, items: [] };
-      index.set(id, group);
+    if (!byActor.has(id)) {
+      const group = { actorId: id, turns: [], items: [] };
+      byActor.set(id, group);
       groups.push(group);
     }
-    index.get(id).items.push(item);
+    const group = byActor.get(id);
+    group.items.push(item);
+    if (!item.exiting) group.turns.push(item.turn);
   }
-  const controlsAllowed = access === 'member_active' || access === 'member'
-    || (access?.relationship === 'member' && access?.unavailable !== true);
-  const targetCurrentness = (id) => targetAuthority?.current !== true
-    || !(targetAuthority.actorIDs instanceof Set)
-    ? 'unknown'
-    : targetAuthority.actorIDs.has(id) ? 'current' : 'departed';
-  return <div className={`agent-wait-dock${collapsed ? ' is-collapsed' : ''}`}>
-    <section className={`agent-wait-layer${collapsed ? ' is-collapsed' : ''}`} aria-label="等待区">
-      <header className="agent-wait-header">
-        <strong>{turns.length} 条等待消息</strong>
-        <button type="button" onClick={() => setCollapsed((value) => !value)}>{collapsed ? '展开' : '收起'}</button>
-      </header>
-      {!collapsed && groups.map((group) => <section className="agent-wait-group" key={group.actorId || 'unknown'} data-agent-id={group.actorId}>
-        {groups.length > 1 && <header><strong>{actorNameFromMap(group.actorId, names)}</strong></header>}
+  const frozenByActor = heldActors(state);
+
+  async function cancelTurn(turn, group, context) {
+    if (context.cancelsAsDismiss) {
+      return onControl(turn, group.actorId, TYPES.agentDismiss, { target: turn.requestId });
+    }
+    return onCancel(state.channelId, turn.requestId, false);
+  }
+
+  async function cancelAll(group) {
+    if (bulk.actorId) return;
+    const ownerChannel = state.channelId;
+    const cancellable = group.turns.map((turn) => ({
+      turn,
+      context: waitingControlContext(turn, { selfId, access, targetAuthority }),
+    })).filter(({ context }) => context.canCancel);
+    if (!cancellable.length) return;
+    setBulk({ actorId: group.actorId, error: '' });
+    let holdId = '';
+    const failures = [];
+    try {
+      holdId = await onControl(cancellable[0].turn, group.actorId, TYPES.agentHold, {});
+      if (!holdId) throw new Error('暂停等待区失败');
+      for (const { turn, context } of cancellable) {
+        try {
+          await cancelTurn(turn, group, context);
+        } catch (error) {
+          failures.push(error?.message || String(error));
+        }
+      }
+    } catch (error) {
+      failures.push(error?.message || String(error));
+    } finally {
+      if (holdId) {
+        try {
+          await onControl(
+            cancellable[0].turn,
+            group.actorId,
+            TYPES.agentUnhold,
+            exactHoldPayload({}, String(holdId)),
+          );
+        } catch (error) {
+          failures.push(error?.message || String(error));
+        }
+      }
+      if (channelRef.current === ownerChannel) {
+        setBulk({ actorId: '', error: failures[0] || '' });
+      }
+    }
+  }
+
+  const soleGroup = groups.length === 1 ? groups[0] : null;
+  const hasQueuedEditor = turns.some((turn) => turn.requestId === editing?.targetId);
+  const handoffOnly = turns.length === 0;
+  return <div className={`agent-wait-dock${collapsed ? ' is-collapsed' : ''}${handoffOnly ? ' is-handoff-only' : ''}`}>
+    <section
+      className={`agent-wait-layer${collapsed ? ' is-collapsed' : ''}${hasQueuedEditor ? ' is-editing' : ''}${handoffOnly ? ' is-handoff-only' : ''}`}
+      aria-label={handoffOnly ? undefined : '等待区'}
+      aria-hidden={handoffOnly ? 'true' : undefined}
+      inert={handoffOnly ? true : undefined}
+    >
+      {collapsed && <div className="agent-wait-collapsed"><span aria-hidden="true">↳</span><strong>{turns.length || handoffs.length} 条等待消息</strong>{!handoffOnly && <button type="button" aria-expanded="false" onClick={() => setCollapsed(false)}>展开</button>}</div>}
+      {!collapsed && <header className="agent-wait-header" aria-label="等待区操作">
+        {!handoffOnly && <div>
+          {groups.map((group) => {
+            const canInsertAll = group.turns.some((turn) => waitingControlContext(
+              turn,
+              { selfId, access, targetAuthority },
+            ).canInsert);
+            return canInsertAll && <button type="button" className="agent-wait-insert-all" key={`insert-${group.actorId}`} onClick={() => onControl(group.turns[0], group.actorId, TYPES.agentSteer, { all: true })}>{soleGroup ? '全部插入' : `插入 ${actorNameFromMap(group.actorId, names)} 全部`}</button>;
+          })}
+          {groups.map((group) => {
+            const canCancelAll = group.turns.some((turn) => waitingControlContext(
+              turn,
+              { selfId, access, targetAuthority },
+            ).canCancel);
+            return canCancelAll && <button type="button" className="agent-wait-cancel-all" key={`cancel-${group.actorId}`} disabled={Boolean(bulk.actorId)} onClick={() => cancelAll(group)}>{bulk.actorId === group.actorId ? '正在取消…' : soleGroup ? '全部取消' : `取消 ${actorNameFromMap(group.actorId, names)} 全部`}</button>;
+          })}
+          <button type="button" onClick={() => setCollapsed(true)}>收起</button>
+        </div>}
+      </header>}
+      {!collapsed && groups.map((group) => {
+        const paused = frozenByActor.has(group.actorId);
+        return <section className="agent-wait-group" key={group.actorId || 'unknown'} data-agent-id={group.actorId}>
+        {!hasQueuedEditor && !soleGroup && <header><strong>{actorNameFromMap(group.actorId, names)}{paused ? '（已暂停）' : ''}</strong></header>}
         <ol>{group.items.map(({ turn, exiting }) => {
           const capability = capabilityIndex.get(group.actorId);
           const capabilityState = editLeaseCapabilityState(capability);
-          const steerState = capabilityWordState(capability, TYPES.agentSteer);
-          const currentness = targetCurrentness(group.actorId);
+          const context = waitingControlContext(turn, { selfId, access, targetAuthority });
+          const session = editing?.targetId === turn.requestId ? editing : null;
           const localStateLabel = turn.waitingPresentation === 'stored-local'
             ? '已保存在本机'
             : turn.waitingPresentation === 'transmitting'
               ? '正在发送'
               : turn.waitingPresentation === 'confirming' ? '等待账本确认' : '';
-          const canControl = !exiting && !turn.local && controlsAllowed && currentness === 'current';
           return <li
             key={turn.requestId}
-            className={`agent-wait-item${editing?.targetId === turn.requestId ? ' is-editing' : ''}${exiting ? ' is-handoff-exiting' : ''}`}
+            className={`agent-wait-item${session ? ' is-editing' : ''}${exiting ? ' is-handoff-exiting' : ''}`}
             data-request-id={turn.requestId}
+            data-handoff-state={exiting ? 'exit' : undefined}
             aria-hidden={exiting ? 'true' : undefined}
+            inert={exiting ? true : undefined}
           >
-            <div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{messageText(turn)}</strong></div>
-            {!exiting && <div className="agent-wait-actions">
-              {localStateLabel && <span className="agent-wait-local-state">{localStateLabel}</span>}
-              {!turn.local && currentness === 'unknown' && <span className="agent-wait-paused">正在核验收件人</span>}
-              {!turn.local && currentness === 'departed' && <span className="agent-wait-paused">收件人已离席</span>}
-              {canControl && steerState === 'supported' && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入到此处</button>}
-              {canControl && steerState === 'unknown' && <span className="agent-wait-paused">正在确认插入能力</span>}
-              {canControl && ['unsupported', 'unavailable'].includes(steerState) && <span className="agent-wait-paused">Agent 不支持插入</span>}
-              {canControl && capabilityState === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
-              {canControl && capabilityState === 'unknown' && <span className="agent-wait-paused">正在确认编辑能力</span>}
-              {canControl && ['unsupported', 'unavailable'].includes(capabilityState) && <span className="agent-wait-paused">Agent 不支持安全编辑</span>}
-              {canControl && <button type="button" onClick={() => onCancel(state.channelId, turn.requestId, turn.request?.sender?.id !== selfId)}>取消</button>}
-            </div>}
+            {exiting
+              ? <div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{messageText(turn)}</strong></div>
+              : session
+                ? <><div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{messageText(turn)}</strong></div><span className="agent-wait-editing-label">正在编辑</span></>
+                : <>
+                  <div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{messageText(turn)}</strong></div>
+                  <div className="agent-wait-actions">
+                    {localStateLabel && <span className="agent-wait-local-state">{localStateLabel}</span>}
+                    {paused && <span className="agent-wait-paused">已暂停</span>}
+                    {context.steering && <span className="agent-wait-paused">正在并入…</span>}
+                    {!turn.local && context.targetCurrentness === 'unknown' && <span className="agent-wait-paused">正在核验收件人</span>}
+                    {!turn.local && context.targetCurrentness === 'departed' && <span className="agent-wait-paused">收件人已离席，等待账本关闭</span>}
+                    {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
+                    {context.canEdit && capabilityState === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
+                    {context.canEdit && capabilityState === 'unknown' && <span className="agent-wait-paused">正在确认编辑能力</span>}
+                    {context.canEdit && ['unsupported', 'unavailable'].includes(capabilityState) && <span className="agent-wait-paused">Agent 不支持安全编辑</span>}
+                    {context.canCancel && <button type="button" title={context.cancelsAsDismiss ? '这条不是你发的，将请对方放弃它' : '撤回你自己发出的这条请求'} onClick={() => cancelTurn(turn, group, context)}>取消</button>}
+                    {extraControls(context).map((entry) => <button key={entry.word} type="button" onClick={() => onControl(turn, group.actorId, entry.word, controlPayload(context, entry, { target: turn.requestId }))}>{controlLabel(entry)}</button>)}
+                  </div>
+                </>}
           </li>;
         })}</ol>
-      </section>)}
+      </section>;
+      })}
+      {!collapsed && bulk.error && <p className="agent-wait-error" role="alert">{bulk.error}</p>}
     </section>
   </div>;
 }
