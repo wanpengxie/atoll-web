@@ -112,6 +112,10 @@ function directionFromKey(key) {
 }
 
 const CONTENT_ANCHOR_MAX_ATTEMPTS = 4;
+const POSITION_RESTORE_MAX_ATTEMPTS = 8;
+const POSITION_RESTORE_MAX_MOUNT_ATTEMPTS = 120;
+const POSITION_RESTORE_STABLE_FRAMES = 6;
+const POSITION_RESTORE_TOLERANCE_PX = 2;
 
 function contentAnchorIdentity(command) {
   if (!command) return '';
@@ -152,6 +156,11 @@ export function VendorListExecutor({
   // never consume or execute a later fold command from the same activation.
   const contentAnchorFrameRef = useRef(null);
   const contentAnchorRetryRef = useRef(null);
+  // Virtuoso may publish its first measured extent after the initial
+  // position-row command. Keep that one typed command alive until the actual
+  // painted row reaches its semantic offset; otherwise the first layout
+  // observation can mistake the preceding one-pixel sliver for the anchor.
+  const positionRestoreRef = useRef(null);
   const lastScrollTopRef = useRef(0);
   const consumedCommandRef = useRef('');
   const touchRef = useRef(null);
@@ -175,13 +184,19 @@ export function VendorListExecutor({
     const owner = readingRef.current;
     const data = snapshotRef.current;
     if (!root || !surfaceVisible) return;
+    const currentSession = owner.getSession();
+    const pendingPosition = positionRestoreRef.current;
+    const suppressBookmark = source === 'layout'
+      && pendingPosition?.activationID === owner.activationID
+      && Number(pendingPosition.inputEpoch) === Number(currentSession.inputEpoch)
+      && pendingPosition.settled !== true;
     const visibleRows = visibleRowEvidence(root, data.rows);
     const visibleRowIDs = Object.freeze(visibleRows.map((row) => row.messageID));
     const atTail = root.scrollHeight - root.clientHeight - root.scrollTop <= 24;
     reportDomEvidence(Object.freeze({
       type: 'reading-observation',
       activationID: owner.activationID,
-      bookmark: topVisibleBookmark(root, data.rows),
+      bookmark: suppressBookmark ? null : topVisibleBookmark(root, data.rows),
       atTail,
       surfaceVisible: isReadingSurfaceVisible(root),
       installedHighSeq: installedHighSeq(root, data.rows),
@@ -189,7 +204,7 @@ export function VendorListExecutor({
       visibleRowIDs,
       source,
       settled,
-      inputEpoch: owner.getSession().inputEpoch,
+      inputEpoch: currentSession.inputEpoch,
       geometryRevision: geometryRevisionRef.current,
     }));
   }, [reportDomEvidence, surfaceVisible]);
@@ -408,6 +423,138 @@ export function VendorListExecutor({
     return false;
   }, [scheduleObserve]);
 
+  const restoreReadingPosition = useCallback((command, key) => {
+    const previous = positionRestoreRef.current;
+    if (previous?.key === key) return false;
+    if (previous?.frameID) globalThis.cancelAnimationFrame?.(previous.frameID);
+    positionRestoreRef.current = null;
+    const token = {
+      key,
+      activationID: String(command.activationID || ''),
+      inputEpoch: Number(command.inputEpoch),
+      presentationRevision: Number(command.presentationRevision || 0),
+      messageID: String(command.messageID || ''),
+      viewportOffset: Number.isFinite(Number(command.viewportOffset))
+        ? Number(command.viewportOffset)
+        : Number.NaN,
+      attempts: 0,
+      mountAttempts: 0,
+      stableFrames: 0,
+      frameID: 0,
+      settled: false,
+    };
+    positionRestoreRef.current = token;
+
+    const clear = () => {
+      if (token.frameID) globalThis.cancelAnimationFrame?.(token.frameID);
+      if (positionRestoreRef.current === token) positionRestoreRef.current = null;
+    };
+    const live = () => {
+      const owner = readingRef.current;
+      const session = owner.getSession?.();
+      const currentSnapshot = snapshotRef.current;
+      const currentInput = navigationPolicy.currentInput?.();
+      if (!session
+        || owner.activationID !== token.activationID
+        || session.activationID !== token.activationID
+        || Number(session.inputEpoch) !== token.inputEpoch
+        || session.mode !== READING_MODE.browsing
+        || Number(currentSnapshot.revision || 0) !== token.presentationRevision
+        || currentInput?.active) return null;
+      const root = rootRef.current;
+      return root ? { owner, session, root, snapshot: currentSnapshot } : null;
+    };
+    const finish = (current, succeeded) => {
+      token.settled = succeeded;
+      clear();
+      // A bounded retry fence is terminal even when the target never reaches
+      // its captured offset. Do not publish a `settled` observation for a
+      // failed restore; the next activation/presentation revision may issue a
+      // fresh typed command instead.
+      if (succeeded && current) scheduleObserve('layout', true);
+    };
+    const queue = () => {
+      if (positionRestoreRef.current !== token || token.frameID) return;
+      const run = () => {
+        token.frameID = 0;
+        if (positionRestoreRef.current !== token) return;
+        const current = live();
+        if (!current) {
+          clear();
+          return;
+        }
+        const target = [...current.root.querySelectorAll('[data-presentation-row-id]')]
+          .find((node) => node.dataset.presentationRowId === token.messageID);
+        const targetInSnapshot = current.snapshot.rows.some((row) => row.id === token.messageID);
+        if (!targetInSnapshot) {
+          // The semantic anchor is permanently absent from this committed
+          // presentation. Do not let an old restore survive a source change.
+          finish(current, false);
+          return;
+        }
+        if (!target) {
+          // Virtuoso can take several paints to materialize the requested
+          // range. This is transient while the target still exists in the
+          // committed rows, so retain the identity fence and keep waiting.
+          token.mountAttempts += 1;
+          if (token.mountAttempts >= POSITION_RESTORE_MAX_MOUNT_ATTEMPTS) {
+            finish(current, false);
+            return;
+          }
+          queue();
+          return;
+        }
+        const rootRect = current.root.getBoundingClientRect?.();
+        const targetRect = target?.getBoundingClientRect?.();
+        const targetOffset = rootRect && targetRect
+          ? targetRect.top - rootRect.top
+          : Number.NaN;
+        const settled = !Number.isFinite(token.viewportOffset)
+          || (Number.isFinite(targetOffset)
+            && Math.abs(targetOffset - token.viewportOffset) <= POSITION_RESTORE_TOLERANCE_PX);
+        if (settled) {
+          token.stableFrames += 1;
+          if (token.stableFrames >= POSITION_RESTORE_STABLE_FRAMES) {
+            finish(current, true);
+            return;
+          }
+          queue();
+          return;
+        }
+        token.stableFrames = 0;
+        if (token.attempts >= POSITION_RESTORE_MAX_ATTEMPTS) {
+          finish(current, false);
+          return;
+        }
+        token.attempts += 1;
+        const executed = executeReadingDOMCommand(command, {
+          virtuoso: virtuosoRef.current, root: current.root,
+        });
+        if (!executed && token.attempts >= POSITION_RESTORE_MAX_ATTEMPTS) {
+          finish(current, false);
+          return;
+        }
+        queue();
+      };
+      token.frameID = globalThis.requestAnimationFrame?.(run) || 0;
+      if (!token.frameID) run();
+    };
+
+    const current = live();
+    if (!current) {
+      clear();
+      return false;
+    }
+    if (!executeReadingDOMCommand(command, {
+      virtuoso: virtuosoRef.current, root: current.root,
+    })) {
+      clear();
+      return false;
+    }
+    queue();
+    return true;
+  }, [navigationPolicy, scheduleObserve]);
+
   useLayoutEffect(() => {
     if (!rootNode || typeof globalThis.MutationObserver !== 'function') return undefined;
     // Virtuoso commits its measured spacer in a DOM mutation before paint.
@@ -549,17 +696,22 @@ export function VendorListExecutor({
     if (!resolved) return;
     const key = `row:${current.activationID}:${current.inputEpoch}:${snapshot.revision}:${resolved.messageID}`;
     if (consumedCommandRef.current === key) return;
-    if (executeReadingDOMCommand(Object.freeze({
+    const command = Object.freeze({
       type: 'position-row',
+      activationID: current.activationID,
+      inputEpoch: current.inputEpoch,
+      presentationRevision: snapshot.revision,
+      messageID: resolved.messageID,
       // Virtuoso's imperative location is data-local even when firstItemIndex
       // gives rendered rows a large logical origin for prepend stability.
       index: resolved.index,
       viewportOffset: resolved.rowViewportOffset,
-    }), { virtuoso: virtuosoRef.current, root })) {
+    });
+    if (restoreReadingPosition(command, key)) {
       consumedCommandRef.current = key;
-      scheduleObserve('layout', true);
+      scheduleObserve('layout');
     }
-  }, [enforceFollowingTail, navigationPolicy, reading, restoreContentAnchor, scheduleObserve, snapshot]);
+  }, [enforceFollowingTail, navigationPolicy, reading, restoreContentAnchor, restoreReadingPosition, scheduleObserve, snapshot]);
 
   useLayoutEffect(() => {
     if (focusOnMount && rootNode) executeReadingDOMCommand({ type: 'claim-focus' }, { root: rootNode });
@@ -572,6 +724,10 @@ export function VendorListExecutor({
     }
     contentAnchorFrameRef.current = null;
     contentAnchorRetryRef.current = null;
+    if (positionRestoreRef.current?.frameID) {
+      globalThis.cancelAnimationFrame?.(positionRestoreRef.current.frameID);
+    }
+    positionRestoreRef.current = null;
   }, []);
 
   if (reading.restorePending && !snapshot.rows.length) {
