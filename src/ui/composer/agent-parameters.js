@@ -41,6 +41,17 @@ function timelineTurnIndex(state, requestIDs) {
   return turns;
 }
 
+function timelineTurns(state) {
+  const turns = [];
+  const visit = (entry) => {
+    if (!entry) return;
+    if (entry.kind === 'turn' && entry.turn) turns.push(entry.turn);
+    for (const child of entry.thread || []) visit(child);
+  };
+  for (const entry of state?.timeline || []) visit(entry);
+  return turns;
+}
+
 function firstCompleted(turns, actorId, requestIDs, expectedType) {
   for (const requestID of ids(requestIDs)) {
     const turn = turns.get(requestID);
@@ -123,6 +134,47 @@ function usageView(value) {
   return { model, effort, contextTokens, contextWindow };
 }
 
+function mergeUsage(current, next) {
+  if (!next) return current;
+  return {
+    model: next.model || current?.model || '',
+    effort: next.model ? next.effort : (current?.effort || next.effort || ''),
+    contextTokens: next.contextTokens ?? current?.contextTokens ?? null,
+    contextWindow: next.contextWindow ?? current?.contextWindow ?? null,
+  };
+}
+
+function turnSequence(turn) {
+  for (const value of [turn?.terminalSeq, turn?.lastSeq, turn?.requestSeq]) {
+    const sequence = Number(value);
+    if (Number.isFinite(sequence) && sequence > 0) return sequence;
+  }
+  return 0;
+}
+
+function usageAfterContext(state, actorId, contextTurn, baseline) {
+  const turns = timelineTurns(state);
+  const contextIndex = turns.indexOf(contextTurn);
+  if (contextIndex < 0) return baseline;
+  const contextSeq = turnSequence(contextTurn);
+  let usage = baseline;
+  for (let index = contextIndex + 1; index < turns.length; index += 1) {
+    const turn = turns[index];
+    if (turn?.terminalClosureOnly === true) continue;
+    const sequence = turnSequence(turn);
+    // History can be appended after the probe in a sparse page. A known older
+    // sequence is not current-session evidence even if it arrived later.
+    if (contextSeq > 0 && sequence > 0 && sequence <= contextSeq) continue;
+    if (turn?.request?.type !== TYPES.agentAsk
+      || turn.request?.audience?.length !== 1
+      || turn.request.audience[0] !== actorId) continue;
+    const value = payloadValue(turn, actorId, turn.requestId, TYPES.agentAsk);
+    const next = usageView(value?.usage);
+    if (next) usage = mergeUsage(usage, next);
+  }
+  return usage;
+}
+
 function pendingView(turns, actorId, keys) {
   const requests = [
     ...ids(keys.options).map((requestID) => [requestID, TYPES.agentOptions]),
@@ -148,8 +200,11 @@ function pendingView(turns, actorId, keys) {
   return null;
 }
 
-// A current-only projection over probe-owned request ids. It never scans old
-// requests as a fallback: no live request id means no parameter truth.
+// A current-only projection over the live probe's public timeline. It never
+// scans old requests as a fallback: no live request id means no parameter
+// truth. Once a completed context probe establishes the current-session
+// boundary, later completed ask terminals may refresh usage; missing usage is
+// deliberately ignored so a sparse terminal cannot clear a good reading.
 export function projectAgentParameters({ state, actorId, requestKeys, capability }) {
   if (!actorId || !state) return Object.freeze({ view: null, pending: null });
   const keys = requestKeys || {};
@@ -157,7 +212,9 @@ export function projectAgentParameters({ state, actorId, requestKeys, capability
   const optionsResult = firstCompleted(turns, actorId, keys.options, TYPES.agentOptions);
   const contextResult = firstCompleted(turns, actorId, keys.context, TYPES.agentContext);
   const options = optionView(optionsResult?.value) || describeOptionView(capability);
-  const usage = usageView(contextResult?.value);
+  const usage = contextResult
+    ? usageAfterContext(state, actorId, contextResult.turn, usageView(contextResult.value))
+    : null;
   const current = usage?.model ? { model: usage.model, effort: usage.effort } : options?.current || null;
   const view = options || usage ? Object.freeze({
     actorId,

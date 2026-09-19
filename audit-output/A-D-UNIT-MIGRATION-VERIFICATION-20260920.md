@@ -6,7 +6,7 @@ suites and 365 declarations. The complete case ledger remains
 row per baseline declaration and the current result, public owner, invariant,
 and disposition. After the P0 batch and the first P1 composed-interaction
 fixture batch plus the follow-up Waiting-owner regression packet, accepted case
-totals are **255 PASS / 5 REGRESSION / 105 BLOCKED**.
+totals are **256 PASS / 4 REGRESSION / 105 BLOCKED**.
 
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
@@ -37,6 +37,10 @@ committed callback/turn and release remains with the original hold owner.
 The next Waiting/timeline presentation fix closes AD-041: an interrupted
 terminal stays on the stopped Agent bubble with the resumable user action and
 does not render as an ordinary failure or Waiting hold pause.
+
+The next public parameter-owner fix closes AD-062: after the live context
+probe, later same-Agent ask terminals refresh the usage projection while a
+sparse terminal leaves the last complete reading intact.
 
 ## Public-boundary migration completed in this pass
 
@@ -81,7 +85,8 @@ The focused slices were run with Vitest against current public owners:
 | `tests/agent-information-architecture.test.jsx -t '\[AD-(022|031)\]'` | 2 passed | AD-022 authority gate and AD-031 cancelled-target cleanup pass through the Waiting owner |
 | `tests/agent-information-architecture.test.jsx -t '\[AD-(032|038)\]'` | 2 passed | AD-032 interrupt supersession and AD-038 latest committed save owner pass through the Waiting hook |
 | `tests/agent-information-architecture.test.jsx -t '\[AD-041\]'` | 1 passed | AD-041 interrupted terminal presents the stopped/resumable Agent bubble and stays out of ordinary failure/hold presentation |
-| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-062, AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
+| `tests/agent-selection.test.js -t '\[AD-062\]'` | 1 passed | AD-062 later same-Agent usage refreshes the live context projection and sparse terminal data does not clear it |
+| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
 
 The red assertions are intentionally not weakened, skipped, or deleted. The
 unrelated `tests/channel-replica-cache-redaction.test.js` red result belongs to

@@ -189,19 +189,17 @@ describe('当前值恒只认本连接证据（projectAgentParameters 承接）',
     expect(view.usage).toMatchObject({ model: 'm3', effort: 'medium', contextWindow: 100 });
   });
 
-  it('【缺陷】探测之后新完成的 terminal 逐步覆盖；缺字段的帧跳过不清空显示——新结构不再扫描探测之后的 agent.ask 终态', () => {
-    // 旧 latestAgentUsageFor：agent.context 探测响应只是起点，其后账本里 steward 发出的
-    // 每个 agent.ask 终态（带 usage）都会逐步覆盖显示；没有 usage 字段的帧跳过，不清空。
-    // 新 agent-parameters.js 的 usageView 只读一次 agent.context 探测终态，完全不看
-    // 探测之后的普通 agent.ask 终态——上下文用量条会冻结在探测那一刻，用户继续对话后
-    // token 计数不再更新，除非再次手动刷新。
+  it('[AD-062] refreshes usage from later completed asks while skipping sparse terminals', () => {
+    // 用户能力：继续对话后，Composer 的参数面板反映该 Agent 最新已完成用量。
+    // 不变量：本连接 context probe 是起点；探测后的同 Agent ask 才能覆盖，
+    // 缺 usage 的终态跳过而不能清空既有读数。
+    // 公共 owner：projectAgentParameters(state, actorId, requestKeys) → Composer model。
     const state = timelineState([
       completedTurn({ requestId: 'probe-1', actorId: 'steward', type: 'agent.context', value: { model: 'm3', effort: 'medium' } }),
       completedTurn({ requestId: 'ask-b', actorId: 'steward', type: 'agent.ask', value: { usage: { model: 'm4', effort: 'high', context_tokens: 20 } } }),
+      completedTurn({ requestId: 'ask-c', actorId: 'steward', type: 'agent.ask', value: { text: '没有 usage 的回答' } }),
     ]);
     const { view } = projectAgentParameters({ state, actorId: 'steward', requestKeys: { context: 'probe-1' } });
-    // 期望（旧行为）：探测后的 ask-b 覆盖到 m4/high/20；实际：仍停在探测响应的 m3/medium，
-    // 且没有 context_tokens。
     expect(view.usage).toMatchObject({ model: 'm4', effort: 'high', contextTokens: 20 });
   });
 
