@@ -105,21 +105,17 @@ describe('Composer 默认目标状态（useAgentProbes.composerAgent，承接旧
     expect(model.targetAgent).toMatchObject({ id: 'steward' });
   });
 
-  it('【缺陷】最近交互取我发的最后一条 agent.ask——新结构里这条默认目标来源已经不存在', () => {
-    // 旧 resolveParameterAgent：无 @、无手选时，默认目标落到"我最近发 agent.ask 的那个 agent"
-    // （latestInteractedAgentId）。新 useAgentProbes.composerAgent 只由显式 pickAgent/
-    // targetChanged 驱动（见 selectAgent 命令），没有任何路径会在挂载时或收到新 agent.ask
-    // 后自动把 composerAgent 设成"最近互动的 agent"——它的内部 latestAgentInteraction()
-        // 只用来判断"是否可以清除一个手选覆盖"，从未被用作默认值来源。
+  it('最近交互取我发的最后一条 agent.ask，并在无手选时作为默认目标', () => {
+    // 68112a3 恢复了旧 resolveParameterAgent 的 latestInteractedAgentId 语义：
+    // 无 @、无手选时，最近由当前用户单独询问且仍在 roster 的 agent 是默认目标。
+    // 这里保留最终 targetAgent 断言，同时校正过时的 composerAgent 空值断言，
+    // 让测试覆盖“公共 owner 已 materialize 默认目标”的当前合同。
     const askRow = { kind: 'request', type: 'agent.ask', sender: { id: 'me' }, audience: ['claude'] };
     const { result } = renderHook(() => useAgentProbes(probeHarness({
       stateFor: () => ({ rows: new Map([[1, askRow]]), timeline: [] }),
     })));
-    // 旧行为：composerAgent 应该自动挂到 claude；新行为：什么都没做，仍是初始空值。
-    expect(result.current.composerAgent).toMatchObject({ channelId: '', actorId: '' });
+    expect(result.current.composerAgent).toMatchObject({ channelId: 'dev', actorId: 'claude' });
     const model = buildComposerModel({ activeChannelId: 'dev', draft: { text: '', recipients: [] }, roster: ROSTER, access: 'member_active', agentSelection: { selectedAgentId: result.current.composerAgent.actorId } });
-    // 期望是 claude（旧行为），实际是 null——这就是回归的用户可见后果：多 agent 频道里，
-    // 没有 @、没手选时composer 显示"选择 Agent"而不是自动跟随最近对话的 agent。
     expect(model.targetAgent).toMatchObject({ id: 'claude' });
   });
 });

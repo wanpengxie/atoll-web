@@ -16,6 +16,7 @@ import {
   selectTimelineItems,
 } from '../src/model/conversation-presentation.js';
 import { isStandardActorIdentity } from '../src/model/actor-visibility.js';
+import { isRailNotifiableDisposition, notificationDisposition } from '../src/model/notification-policy.js';
 import {
   bindLatestIntentTargets,
   consumeLatestIntent,
@@ -68,6 +69,14 @@ function envelope(seq, {
       ...(parentId ? { parent_id: parentId, correlation_id: parentId } : {}),
       payload: { body },
     },
+  };
+}
+
+function flatEnvelope(seq, options = {}) {
+  const row = envelope(seq, options);
+  return {
+    ...row,
+    envelope: { ...row.envelope, payload: options.body },
   };
 }
 
@@ -915,5 +924,60 @@ describe('I-M exact-path public-owner recovery (round 14)', () => {
 
     expect(screen.queryByRole('menu')).toBeNull();
     expect(commands.openAgentSelector).not.toHaveBeenCalled();
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 16)', () => {
+  it('message-presentation TC-1031: flat ledger rows are transport-safe but absent from every public projection', () => {
+    const store = createChannelReplicaStore();
+    const flatRows = [
+      flatEnvelope(1, {
+        id: 'flat-request', kind: 'request', type: TYPES.agentAsk, audience: [AGENT],
+        body: { text: '旧账本请求' },
+      }),
+      flatEnvelope(2, {
+        id: 'flat-response', kind: 'response', type: TYPES.agentAsk, parentId: 'flat-request',
+        sender: AGENT, audience: [SELF], body: { status: 'completed', text: '旧账本响应' },
+      }),
+      flatEnvelope(3, {
+        id: 'flat-event', kind: 'event', type: 'human.note', sender: AGENT, audience: [SELF],
+        body: { text: '旧账本事件' },
+      }),
+      flatEnvelope(4, {
+        id: 'flat-orphan-response', kind: 'response', type: 'vendor.custom', sender: AGENT,
+        audience: [SELF], body: { status: 'completed', text: '旧账本孤立响应' },
+      }),
+    ];
+    const canonicalEvent = envelope(5, {
+      id: 'canonical-event', kind: 'event', type: 'human.note', sender: AGENT, audience: [SELF],
+      body: { text: '当前规范事件' },
+    });
+    const state = store.ensure(CHANNEL).state;
+    const release = state.arrivalReceipts.attachPresentationConsumer(Symbol('flat-payload-contract'));
+    for (const row of [...flatRows, canonicalEvent]) {
+      expect(store.commit({ channel_id: CHANNEL, seq: row.seq, envelope: row.envelope }, SELF, (value) => value, { source: 'live' }).accepted).toBe(true);
+    }
+
+    const all = selectTimelineItems(store.state(CHANNEL), {
+      scope: CONVERSATION_SCOPE.all, selfId: SELF,
+    });
+    const mine = selectTimelineItems(store.state(CHANNEL), {
+      scope: CONVERSATION_SCOPE.mine, selfId: SELF,
+    });
+    const presentation = createConversationPresentation();
+    const candidate = presentation.evaluate(all.items, {
+      epoch: CHANNEL + ':flat-payload', nextViewID: CHANNEL + ':conversation', sourceRevision: 5,
+    });
+
+    expect([...store.state(CHANNEL).rows.keys()]).toEqual([1, 2, 3, 4, 5]);
+    expect(all.items.map((entry) => entry.envelope?.id || entry.turn?.requestId)).toEqual(['canonical-event']);
+    expect(mine.items.map((entry) => entry.envelope?.id || entry.turn?.requestId)).toEqual(['canonical-event']);
+    expect(candidate.snapshot.rows.map((row) => row.body.envelope?.id)).toEqual(['canonical-event']);
+    expect(store.state(CHANNEL).arrivalReceipts.presentation().events.map((event) => event.rowIDs)).toEqual([['canonical-event']]);
+    for (const row of flatRows) {
+      expect(notificationDisposition(store.state(CHANNEL), row.envelope, SELF)).toBe('not_presented');
+      expect(isRailNotifiableDisposition(notificationDisposition(store.state(CHANNEL), row.envelope, SELF))).toBe(false);
+    }
+    release();
   });
 });

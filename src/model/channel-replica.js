@@ -1,4 +1,4 @@
-import { argsOf, FINAL } from '../protocol/envelope.js';
+import { argsOf, FINAL, hasCanonicalBody } from '../protocol/envelope.js';
 import { isNarrationEnvelope } from '../protocol/vocab.js';
 import { LIVE_ARRIVAL_RECEIPT } from './live-arrivals.js';
 import { isViewportNotifiableDisposition, notificationDisposition } from './notification-policy.js';
@@ -7,6 +7,7 @@ const CACHE_DATABASE = 'atoll-channel-replica-v1';
 const CACHE_VERSION = 1;
 const LIVE_ARRIVAL_LIMIT = 1_024;
 const LIVE_PRESENTATION_ARRIVAL_LIMIT = 1_024;
+const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
 const memoryCache = new Map();
 
 function numeric(value) {
@@ -17,6 +18,26 @@ function numeric(value) {
 function rowBytes(row) {
   try { return new TextEncoder().encode(JSON.stringify(row)).byteLength; }
   catch { return 0; }
+}
+
+// Cache persistence is the last boundary before a row leaves the process. Keep
+// the historical feed-cache contract here, rather than relying on a renderer
+// to hide values after they have already reached IndexedDB.
+function redactReplicaSecrets(value, key = '') {
+  if (key && SENSITIVE_FIELD.test(key)) return '已隐藏';
+  if (Array.isArray(value)) return value.map((item) => redactReplicaSecrets(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactReplicaSecrets(item, name)]));
+  }
+  return value;
+}
+
+function sanitizedCacheRow(row) {
+  const sanitized = redactReplicaSecrets(row);
+  let changed = row !== sanitized;
+  try { changed = JSON.stringify(row) !== JSON.stringify(sanitized); }
+  catch { /* non-JSON rows are not expected, but the sanitized value is safe */ }
+  return { row: sanitized, changed };
 }
 
 export function mergeReplicaCoverage(ranges = [], addition = null) {
@@ -315,6 +336,9 @@ function rebuildState(state) {
   for (const [seq, envelope] of orderedRows) {
     if (!envelope) continue;
     if (envelope.id) state._envelopesById.set(envelope.id, envelope);
+    // Historical flat payloads remain durable transport rows, but never
+    // become lifecycle, narration, or standalone business entries.
+    if (!hasCanonicalBody(envelope)) continue;
     if (envelope.visibility === 'system') { state.narration.push({ seq, envelope }); continue; }
     if (envelope.kind === 'request' && envelope.id) {
       requests.set(envelope.id, envelope);
@@ -530,7 +554,7 @@ function livePresentationRowIDs(state, envelope, seq, entry) {
 }
 
 function recordLivePresentationArrival(state, envelope, seq) {
-  if (!state._livePresentationArrivalConsumerTokens.size) return;
+  if (!state._livePresentationArrivalConsumerTokens.size || !hasCanonicalBody(envelope)) return;
   const rowIDs = livePresentationRowIDs(state, envelope, seq, rootTimelineEntry(state, envelope));
   if (!rowIDs.length) return;
   const event = Object.freeze({
@@ -823,6 +847,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     const operationOwner = owner;
     const epoch = ownerEpoch;
     const accepted = (rows || []).filter((row) => row?.channel_id && numeric(row?.seq));
+    const persistedRows = accepted.map((row) => redactReplicaSecrets(row));
     const touched = new Map();
     for (const row of accepted) {
       const channelId = row.channel_id;
@@ -848,12 +873,14 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
     if (!db) {
       const memory = memoryForOwner();
-      for (const row of accepted) memory.rows.set(`${row.channel_id}\u0000${row.seq}`, structuredClone(row));
+      for (const row of persistedRows) memory.rows.set(`${row.channel_id}\u0000${row.seq}`, structuredClone(row));
       memory.meta = new Map(meta);
       return accepted.length;
     }
     const transaction = db.transaction(['rows', 'meta'], 'readwrite');
-    for (const row of accepted) transaction.objectStore('rows').put({ owner: operationOwner, channelId: row.channel_id, seq: numeric(row.seq), row });
+    for (const row of persistedRows) {
+      transaction.objectStore('rows').put({ owner: operationOwner, channelId: row.channel_id, seq: numeric(row.seq), row });
+    }
     for (const [channelId, value] of touched) transaction.objectStore('meta').put({ owner: operationOwner, channelId, value });
     await new Promise((resolve, reject) => {
       transaction.oncomplete = resolve;
@@ -872,13 +899,41 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
     let available;
     if (!db) {
-      available = [...memoryForOwner().rows.values()]
-        .filter((row) => row.channel_id === channelId && numeric(row.seq) < before)
-        .sort((left, right) => numeric(right.seq) - numeric(left.seq));
+      const memory = memoryForOwner();
+      available = [];
+      for (const [key, cachedRow] of memory.rows) {
+        const { row, changed } = sanitizedCacheRow(cachedRow);
+        if (changed) memory.rows.set(key, row);
+        if (row.channel_id === channelId && numeric(row.seq) < before) available.push(row);
+      }
+      available.sort((left, right) => numeric(right.seq) - numeric(left.seq));
     } else {
       const records = await requestResult(db.transaction('rows', 'readonly').objectStore('rows').getAll());
-      available = records.filter((entry) => entry.owner === operationOwner && entry.channelId === channelId && entry.seq < before)
-        .sort((left, right) => right.seq - left.seq).map((entry) => entry.row);
+      const ownedRecords = records.filter((entry) => entry.owner === operationOwner);
+      const sanitizedRecords = [];
+      for (const entry of ownedRecords) {
+        const { row, changed } = sanitizedCacheRow(entry.row);
+        sanitizedRecords.push({ entry, row, changed });
+      }
+      const legacyRows = sanitizedRecords.filter(({ changed }) => changed);
+      if (legacyRows.length) {
+        if (epoch !== ownerEpoch || operationOwner !== owner) {
+          throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+        }
+        const migration = db.transaction('rows', 'readwrite');
+        for (const { entry, row } of legacyRows) migration.objectStore('rows').put({ ...entry, row });
+        await new Promise((resolve, reject) => {
+          migration.oncomplete = resolve;
+          migration.onabort = migration.onerror = () => reject(migration.error || new Error('replica cache redaction migration failed'));
+        });
+        if (epoch !== ownerEpoch || operationOwner !== owner) {
+          throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+        }
+      }
+      available = sanitizedRecords
+        .filter(({ entry }) => entry.channelId === channelId && entry.seq < before)
+        .sort(({ entry: left }, { entry: right }) => right.seq - left.seq)
+        .map(({ row }) => row);
     }
     const selected = [];
     let bytes = 0;
