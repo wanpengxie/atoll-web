@@ -9,6 +9,7 @@ import React, {
 import { readingTrace } from '../../model/diagnostics.js';
 import { READING_MODE } from '../../model/reading-session.js';
 import { createReadingNavigationCoordinator } from './reading-navigation-coordinator.js';
+import { executeReadingDOMCommand } from './reading-dom-command-executor.js';
 
 const ReadingNavigationContext = createContext(null);
 
@@ -252,10 +253,67 @@ export function ReadingNavigationOwner({
     };
   }, []);
 
+  const commitBottomIntent = useCallback((role, expectedIntentID) => {
+    const committed = committedRef.current;
+    const host = hostsRef.current.get(role);
+    const owner = committed.reading;
+    let session = owner.getSession?.() || owner.session;
+    const intent = session.bottomIntent;
+    if (!host?.node
+      || committed.visibleRole !== role
+      || !expectedIntentID
+      || intent?.id !== expectedIntentID
+      || intent.inputEpoch !== session.inputEpoch
+      || host.bottomIntentReady?.(intent) !== true) return false;
+
+    // An explicit application command supersedes an unfinished physical-input
+    // transaction before it receives geometry authority. The cancellation is
+    // synchronous; a later native input advances inputEpoch and therefore makes
+    // this exact intent ineligible before any write can occur.
+    if (coordinatorRef.current.getSnapshot().transaction) {
+      coordinatorRef.current.cancel('application-control');
+      session = owner.getSession?.() || owner.session;
+      if (session.bottomIntent?.id !== expectedIntentID
+        || session.bottomIntent.inputEpoch !== session.inputEpoch) return false;
+    }
+
+    const alreadyAtTail = host.atTail?.() === true;
+    const executed = alreadyAtTail || executeReadingDOMCommand(Object.freeze({
+      type: 'scroll-tail',
+      reverse: role === 'following',
+    }), { root: host.node });
+    if (!executed || host.atTail?.() !== true) return false;
+
+    const current = owner.getSession?.() || owner.session;
+    if (current.bottomIntent?.id !== expectedIntentID
+      || current.bottomIntent.inputEpoch !== current.inputEpoch) return false;
+    if (typeof owner.consumeBottomIntent !== 'function') return false;
+    const consumed = owner.consumeBottomIntent({
+      id: expectedIntentID,
+      inputEpoch: current.inputEpoch,
+    }) === true;
+    if (consumed) {
+      readingTrace(alreadyAtTail ? 'reading.issuer-satisfy' : 'reading.issuer-write', {
+        source: 'application-control',
+        activationID: current.activationID,
+        inputEpoch: current.inputEpoch,
+        intentID: expectedIntentID,
+        hostRole: role,
+        authorityLabel: 'bottom-intent',
+        reason: alreadyAtTail ? 'already-at-tail' : 'explicit-bottom',
+        scrollTop: Number(host.node.scrollTop || 0),
+        scrollHeight: Number(host.node.scrollHeight || 0),
+        clientHeight: Number(host.node.clientHeight || 0),
+      });
+    }
+    return consumed;
+  }, []);
+
   const api = useMemo(() => Object.freeze({
     getTransaction: () => coordinatorRef.current.getSnapshot().transaction,
     registerHost,
-  }), [registerHost]);
+    commitBottomIntent,
+  }), [commitBottomIntent, registerHost]);
 
   useLayoutEffect(() => {
     const stack = stackRef.current;

@@ -28,7 +28,8 @@ describe('conversation architecture boundaries', () => {
     // One local DOM write is the only application geometry writer. Every
     // authorized trigger enters the same issuer; runtime geometry remains a
     // Chromium contract, not a jsdom assertion.
-    expect(domExecutor.match(/\broot\.scrollTo\(\{\s*top:\s*root\.scrollHeight,\s*behavior:\s*'auto'\s*\}\)/g)).toHaveLength(1);
+    expect(domExecutor.match(/\broot\.scrollTo\(\{/g)).toHaveLength(1);
+    expect(domExecutor).toMatch(/top:\s*command\.reverse === true \? 0 : root\.scrollHeight/);
     expect(following.match(/type:\s*'scroll-tail'/g)).toHaveLength(1);
     expect(list).not.toMatch(/\bon(?:ReadingObservation|PresentationMaterialized|AtTop|NearTop|Underfill)\b/);
     expect(browsing).toMatch(/\bonReadingObservation\b/);

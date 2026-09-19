@@ -926,8 +926,10 @@ for (const { seed, mode: startingMode } of SEND_WAITING_CASES) {
     if (startingMode === 'browsing') {
       const activeRow = page.locator('[data-presentation-row-id]').filter({ hasText: activeText.split('\n')[0] });
       const expand = activeRow.locator('.message-fold-toggle[aria-expanded="false"]');
-      await expect(expand).toBeVisible();
-      await expand.click();
+      // The current tail is deliberately unfolded; once the response moves it
+      // out of that role it may already be folded. Either committed state is a
+      // valid setup for the same native browsing displacement below.
+      if (await expand.isVisible()) await expand.click();
       await page.locator('.timeline-message-list').hover();
       await page.mouse.wheel(0, -900);
       await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
@@ -967,7 +969,7 @@ for (const { seed, mode: startingMode } of SEND_WAITING_CASES) {
     if (after.bottomIntentCount - before.bottomIntentCount !== 1) {
       violations.push({ kind: 'send-phase-bottom-intent-count', before, after });
     }
-    if (after.gap > 24) {
+    if (after.tailDistance > 1) {
       violations.push({ kind: 'send-did-not-reach-tail', before, after, phaseFrames });
     }
     const firstProbe = phaseFrames[0];

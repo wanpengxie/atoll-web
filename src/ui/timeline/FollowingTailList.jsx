@@ -136,6 +136,7 @@ export function FollowingTailList({
   active = true,
   focusOnMount = false,
   livePresentationArrivals = null,
+  bottomIntentPresentation = null,
   historyStartBoundary = null,
 }) {
   const rootRef = useRef(null);
@@ -146,6 +147,7 @@ export function FollowingTailList({
     active,
     surfaceVisible: surfaceVisible === true,
     windowSize,
+    bottomIntentPresentation,
   });
   const observationFrameRef = useRef(0);
   const consumedIntentRef = useRef('');
@@ -246,6 +248,19 @@ export function FollowingTailList({
     },
     geometryRevision: () => 0,
     isEffectiveMotion: (_previous, next) => Number(next) <= -LEAVE_TAIL_THRESHOLD,
+    atTail: () => isAtTail(rootRef.current),
+    bottomIntentReady(intent) {
+      const committed = committedRef.current;
+      if (!committed.active || !intent?.id || !committed.snapshot.rows.length) return false;
+      const targets = intent.targetMessageIDs || [];
+      if (!targets.length) return true;
+      const receipt = committed.bottomIntentPresentation;
+      return Boolean(receipt?.ready === true
+        && receipt.intentID === intent.id
+        && receipt.activationID === committed.reading.activationID
+        && Number(receipt.inputEpoch) === Number(intent.inputEpoch)
+        && targets.every((id) => receipt.destinations?.some((entry) => entry.messageID === id)));
+    },
     onNavigationUpdate(transaction, reason) {
       if (reason !== 'begin') return;
       const root = rootRef.current;
@@ -294,7 +309,7 @@ export function FollowingTailList({
       }
     },
   }), [settleLiveEntries]);
-  useReadingNavigationHost('following', navigationHost, rootNode);
+  const navigationOwner = useReadingNavigationHost('following', navigationHost, rootNode);
 
   // ---- lifecycle -----------------------------------------------------------
 
@@ -305,9 +320,10 @@ export function FollowingTailList({
       active,
       surfaceVisible: surfaceVisible === true,
       windowSize,
+      bottomIntentPresentation,
     };
     if (active && surfaceVisible !== true) reading.onSurfaceVisibilityChange?.(false);
-  }, [active, reading, snapshot, surfaceVisible, windowSize]);
+  }, [active, bottomIntentPresentation, reading, snapshot, surfaceVisible, windowSize]);
 
   const issueUnderfillIfCurrent = useCallback((expectedWakeKey = '') => {
     const root = rootRef.current;
@@ -519,24 +535,22 @@ export function FollowingTailList({
     settleLiveEntries('unmounted');
   }, [settleLiveEntries]);
 
-  // A bottom intent (send-start, jump-to-latest) asks for the tail. Mounted
-  // here the answer is already true, so the intent is retired rather than
-  // executed. Retiring it is state hygiene through the owner's public entry
-  // point, not a scroll.
+  // A bottom intent (send-start, jump-to-latest) asks for physical tail. The
+  // reverse container is structurally sticky only while it remains at origin;
+  // an outgoing handoff may still be mounted at a negative scrollTop. Delegate
+  // the exact committed intent to ReadingNavigationOwner, which revokes native
+  // input ownership and performs at most one typed DOM command before consume.
   const bottomIntentID = reading.session.bottomIntent?.id || '';
   useLayoutEffect(() => {
-    if (!active || !bottomIntentID || !snapshot.rows.length) return;
+    if (!active || !bottomIntentID || !snapshot.rows.length || !navigationOwner) return;
     const current = reading.getSession?.() || reading.session;
     if (current.bottomIntent?.id !== bottomIntentID
       || current.bottomIntent.inputEpoch !== current.inputEpoch
       || consumedIntentRef.current === bottomIntentID) return;
-    const targets = current.bottomIntent.targetMessageIDs || [];
-    const installed = !targets.length
-      || targets.every((id) => snapshot.rows.some((row) => row.id === id));
-    if (!installed) return;
-    consumedIntentRef.current = bottomIntentID;
-    reading.consumeBottomIntent?.({ id: bottomIntentID, inputEpoch: current.inputEpoch });
-  }, [active, bottomIntentID, reading, snapshot.revision, snapshot.rows]);
+    if (navigationOwner.commitBottomIntent('following', bottomIntentID)) {
+      consumedIntentRef.current = bottomIntentID;
+    }
+  }, [active, bottomIntentID, bottomIntentPresentation, navigationOwner, reading, snapshot.revision, snapshot.rows]);
 
   // Underfill is a persistent DOM-owned DATA demand, not a position. Supply,
   // admission settlement and viewport resize all return here to remeasure the

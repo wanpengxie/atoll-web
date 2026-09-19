@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
@@ -16,7 +16,7 @@ afterEach(() => {
 
 function reading(mode = 'browsing') {
   let session = {
-    activationID: 'activation:a', mode, inputEpoch: 4, geometryRevision: 2,
+    activationID: 'activation:a', mode, inputEpoch: 4, geometryRevision: 2, bottomIntent: null,
   };
   const port = {
     activationID: session.activationID,
@@ -29,12 +29,38 @@ function reading(mode = 'browsing') {
     updateNavigation: vi.fn(() => true),
     finishNavigation: vi.fn(() => true),
     cancelNavigation: vi.fn(() => true),
+    consumeBottomIntent: vi.fn((intent) => {
+      if (session.bottomIntent?.id !== intent?.id
+        || session.bottomIntent.inputEpoch !== session.inputEpoch) return false;
+      session = { ...session, bottomIntent: null };
+      port.session = session;
+      return true;
+    }),
+    setBottomIntent(intent) {
+      session = { ...session, mode: 'following', bottomIntent: intent };
+      port.session = session;
+    },
+    takeControl() {
+      session = {
+        ...session,
+        mode: 'browsing',
+        inputEpoch: session.inputEpoch + 1,
+        bottomIntent: null,
+      };
+      port.session = session;
+    },
     getSession: () => session,
   };
   return port;
 }
 
-function Host({ role, readBookmark, navigationEvents }) {
+function Host({
+  role,
+  readBookmark,
+  navigationEvents,
+  bottomIntentID = '',
+  bottomIntentReady = true,
+}) {
   const [node, setNode] = useState(null);
   const adapter = useMemo(() => ({
     prepareNavigationRead: () => navigationEvents?.push('prepare'),
@@ -44,9 +70,13 @@ function Host({ role, readBookmark, navigationEvents }) {
     },
     presentationRevision: () => 7,
     atTail: () => Number(node?.scrollTop || 0) === 0,
+    bottomIntentReady: () => bottomIntentReady,
     isEffectiveMotion: (_previous, next) => role !== 'following' || next <= -3,
-  }), [node, readBookmark, role, navigationEvents]);
-  useReadingNavigationHost(role, adapter, node);
+  }), [bottomIntentReady, node, readBookmark, role, navigationEvents]);
+  const owner = useReadingNavigationHost(role, adapter, node);
+  useLayoutEffect(() => {
+    if (bottomIntentID) owner?.commitBottomIntent(role, bottomIntentID);
+  }, [bottomIntentID, owner, role]);
   return <div ref={setNode} role="region" data-testid={role} tabIndex={0}>
     <span data-testid={`${role}-content`} />
   </div>;
@@ -58,6 +88,8 @@ function Subject({
   onFollowingNavigationTarget = vi.fn(),
   readBookmark,
   navigationEvents,
+  bottomIntentID = '',
+  bottomIntentReady = true,
 }) {
   const stackRef = useRef(null);
   return <ReadingNavigationOwner
@@ -66,7 +98,13 @@ function Subject({
     stackRef={stackRef}
     visibleRole={role}
     onFollowingNavigationTarget={onFollowingNavigationTarget}
-  ><div ref={stackRef}><Host role={role} readBookmark={readBookmark} navigationEvents={navigationEvents} /></div></ReadingNavigationOwner>;
+  ><div ref={stackRef}><Host
+    role={role}
+    readBookmark={readBookmark}
+    navigationEvents={navigationEvents}
+    bottomIntentID={bottomIntentID}
+    bottomIntentReady={bottomIntentReady}
+  /></div></ReadingNavigationOwner>;
 }
 
 function touch(type, { identifier = 7, y = 0, active = true } = {}) {
@@ -266,6 +304,76 @@ it('cancels the captured transaction when another control advances the committed
     inputGeneration: 5,
     reason: 'external-control',
   }));
+});
+
+it('cancels physical ownership and commits one reverse-tail write before consuming an explicit send intent', () => {
+  const port = reading('following');
+  const view = render(<Subject port={port} role="following" />);
+  const host = view.getByTestId('following');
+  Object.defineProperties(host, {
+    scrollTop: { configurable: true, writable: true, value: 0 },
+    scrollHeight: { configurable: true, value: 1800 },
+    clientHeight: { configurable: true, value: 600 },
+  });
+  const scrollTo = vi.fn(({ top }) => { host.scrollTop = top; });
+  Object.defineProperty(host, 'scrollTo', { configurable: true, value: scrollTo });
+
+  // Real native displacement first owns this epoch and leaves the reverse
+  // following host away from its physical tail while browsing handoff is open.
+  act(() => host.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -900 })));
+  host.scrollTop = -900;
+  act(() => host.dispatchEvent(new Event('scroll')));
+  expect(port.getSession()).toMatchObject({ mode: 'browsing', inputEpoch: 5 });
+
+  const intent = {
+    id: 'composer:send-start:1', inputEpoch: 5, targetMessageIDs: ['queued-1'],
+  };
+  port.setBottomIntent(intent);
+  view.rerender(<Subject
+    port={port}
+    role="following"
+    bottomIntentID={intent.id}
+  />);
+
+  expect(port.cancelNavigation).toHaveBeenCalledWith(expect.objectContaining({
+    inputGeneration: 5,
+    reason: 'application-control',
+  }));
+  expect(scrollTo).toHaveBeenCalledTimes(1);
+  expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'auto' });
+  expect(host.scrollTop).toBe(0);
+  expect(port.consumeBottomIntent).toHaveBeenCalledTimes(1);
+  expect(port.consumeBottomIntent).toHaveBeenCalledWith({ id: intent.id, inputEpoch: 5 });
+});
+
+it('does not execute a pending application intent after newer user input revokes its epoch', () => {
+  const port = reading('browsing');
+  const intent = {
+    id: 'composer:send-start:pending', inputEpoch: 4, targetMessageIDs: ['queued-pending'],
+  };
+  port.setBottomIntent(intent);
+  const view = render(<Subject
+    port={port}
+    role="following"
+    bottomIntentID={intent.id}
+    bottomIntentReady={false}
+  />);
+  const host = view.getByTestId('following');
+  Object.defineProperty(host, 'scrollTop', { configurable: true, writable: true, value: -400 });
+  const scrollTo = vi.fn(({ top }) => { host.scrollTop = top; });
+  Object.defineProperty(host, 'scrollTo', { configurable: true, value: scrollTo });
+
+  port.takeControl();
+  view.rerender(<Subject
+    port={port}
+    role="following"
+    bottomIntentID={intent.id}
+    bottomIntentReady
+  />);
+
+  expect(scrollTo).not.toHaveBeenCalled();
+  expect(port.consumeBottomIntent).not.toHaveBeenCalled();
+  expect(port.getSession()).toMatchObject({ mode: 'browsing', inputEpoch: 5, bottomIntent: null });
 });
 
 it('keeps selection autoscroll in browsing evidence even when geometry moves newer', () => {
