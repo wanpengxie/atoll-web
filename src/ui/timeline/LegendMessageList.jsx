@@ -535,7 +535,6 @@ function MessageListBody({
         rows: snapshot.rows,
         surfaceVisible: surfaceVisible === true,
         snapshotRevision: Number(snapshot.revision || 0),
-        roleRevision: Number(snapshot.roleRevision || 0),
         inputEpoch: current.inputEpoch,
       };
       positionDelayedBookmark('activation-materialized');
@@ -546,7 +545,6 @@ function MessageListBody({
       activationOwnerRef.current.rows = snapshot.rows;
       activationOwnerRef.current.surfaceVisible = surfaceVisible === true;
       activationOwnerRef.current.snapshotRevision = Number(snapshot.revision || 0);
-      activationOwnerRef.current.roleRevision = Number(snapshot.roleRevision || 0);
       activationOwnerRef.current.inputEpoch = current.inputEpoch;
       positionDelayedBookmark('target-materialized');
     }

@@ -519,7 +519,7 @@ export function FollowingTailList({
       endIndex: firstItemIndex + rows.length - 1,
     });
     scheduleObservation('layout');
-  }, [active, firstItemIndex, reading, rows.length, scheduleObservation, snapshot.revision, snapshot.roleRevision, tailRows.length, tailStartIndex]);
+  }, [active, firstItemIndex, reading, rows.length, scheduleObservation, snapshot.revision, tailRows.length, tailStartIndex]);
 
   // Rows whose intrinsic height resolves after first paint (images, code
   // blocks, fonts) still change the scroller's extent. Under column-reverse
