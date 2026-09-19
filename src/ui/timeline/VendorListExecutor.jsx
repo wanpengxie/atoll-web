@@ -220,9 +220,14 @@ export function VendorListExecutor({
   const enforceFollowingTail = useCallback((source = 'layout') => {
     const root = rootRef.current;
     const current = readingRef.current.getSession();
+    const input = navigationPolicy.currentInput();
     if (!root
       || current.mode !== READING_MODE.following
-      || navigationPolicy.currentInput().active
+      // A newer-direction native gesture that has already reached the physical
+      // tail is the same reading intent as following. Keep that intent alive if
+      // an append lands before the coordinator's quiet deadline; older input
+      // still revokes the writer immediately.
+      || (input.active && input.direction !== 'newer')
       || root.scrollHeight - root.clientHeight - root.scrollTop <= 24) return false;
     const executed = executeReadingDOMCommand(
       Object.freeze({ type: 'scroll-tail' }),
@@ -255,7 +260,19 @@ export function VendorListExecutor({
     const host = { activationID: reading.activationID, hostRole: 'conversation', hostToken: root };
     const wheel = (event) => {
       if (!event.deltaY) return;
-      coordinator.recordInput({ ...host, source: 'wheel', direction: event.deltaY < 0 ? 'older' : 'newer' });
+      const direction = event.deltaY < 0 ? 'older' : 'newer';
+      const atTail = root.scrollHeight - root.clientHeight - root.scrollTop <= 24;
+      const current = readingRef.current.getSession();
+      // A max-scroll wheel produces no native scroll event. Once following has
+      // already been committed, keep that semantic state instead of repeatedly
+      // demoting/re-promoting it for every wheel tick at the clamp.
+      if (direction === 'newer' && atTail && current.mode === READING_MODE.following) return;
+      coordinator.recordInput({ ...host, source: 'wheel', direction });
+      const input = navigationPolicy.currentInput();
+      // A wheel at an already-clamped tail emits no scroll event. Publish the
+      // same physical-tail evidence here so the input cannot transiently demote
+      // an otherwise-following session to browsing before a live append lands.
+      if (input.active && input.direction === 'newer' && atTail) observe('user', true);
     };
     const keydown = (event) => {
       const direction = directionFromKey(event.key);
@@ -322,7 +339,7 @@ export function VendorListExecutor({
       root.removeEventListener('scrollend', scrollend);
       coordinator.cancel('host-unmounted');
     };
-  }, [coordinator, navigationPolicy, reading.activationID, reportDomEvidence, rootNode, scheduleObserve]);
+  }, [coordinator, navigationPolicy, observe, reading.activationID, reportDomEvidence, rootNode, scheduleObserve]);
 
   useLayoutEffect(() => {
     const root = rootRef.current;

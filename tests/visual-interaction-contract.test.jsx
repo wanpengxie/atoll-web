@@ -32,7 +32,7 @@ describe('conversation architecture boundaries', () => {
     expect(domExecutor.match(/\broot\.scrollTo\(\{/g)).toHaveLength(1);
     expect(domExecutor).toMatch(/top:\s*command\.reverse === true \? 0 : root\.scrollHeight/);
     expect(list.match(/type:\s*'scroll-tail'/g)).toHaveLength(2);
-    expect(list).toMatch(/const enforceFollowingTail = useCallback[\s\S]*?current\.mode !== READING_MODE\.following[\s\S]*?navigationPolicy\.currentInput\(\)\.active[\s\S]*?executeReadingDOMCommand\([\s\S]*?type:\s*'scroll-tail'/);
+    expect(list).toMatch(/const enforceFollowingTail = useCallback[\s\S]*?current\.mode !== READING_MODE\.following[\s\S]*?input\.active && input\.direction !== 'newer'[\s\S]*?executeReadingDOMCommand\([\s\S]*?type:\s*'scroll-tail'/);
     expect(list).toMatch(/MutationObserver[\s\S]*?enforceFollowingTail\('layout'\)/);
     expect(list).toMatch(/totalListHeightChanged=\{\(\) => \{[\s\S]*?enforceFollowingTail\('layout'\)/);
     expect(browsing).toMatch(/\bonReadingObservation\b/);
