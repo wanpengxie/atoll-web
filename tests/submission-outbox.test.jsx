@@ -18,6 +18,7 @@
 // 一个持久层，没有 localStorage→IndexedDB 的迁移路径需要保护。
 // 判定逐条记在 audit-output/RESTORE-MATRIX.md。
 import 'fake-indexeddb/auto';
+import React from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useComposerSubmissionRuntime } from '../src/ui/composer/useComposerSubmissionRuntime.js';
@@ -45,7 +46,31 @@ function harness({ wireState = 'open', submit = vi.fn(), access = memberAccess()
 
 afterEach(() => { vi.restoreAllMocks(); });
 
+function StrictModeWrapper({ children }) {
+  return <React.StrictMode>{children}</React.StrictMode>;
+}
+
 describe('提交生命周期竞态（useComposerSubmissionRuntime，与 tests/submission-outbox-current.test.jsx 同一 owner）', () => {
+  it('keeps the durable send queue live through the StrictMode effect probe', async () => {
+    const submit = vi.fn().mockResolvedValue({ message_id: 'm-strict-mode' });
+    const config = harness({ wireState: 'open', submit });
+    const { result, unmount } = renderHook((props) => useComposerSubmissionRuntime(props), {
+      initialProps: config,
+      wrapper: StrictModeWrapper,
+    });
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    await act(async () => {
+      await result.current.send({ messageId: 'm-strict-mode', text: 'strict mode', msgType: 'agent.ask', audience: ['agent:a'] });
+    });
+    await waitFor(() => expect(result.current.pending[0]?.state).toBe('accepted'));
+    expect(submit).toHaveBeenCalledOnce();
+
+    unmount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    config.store.close();
+  });
+
   it('does not downgrade an in-flight submission when access changes before its accepted receipt', async () => {
     let resolveReceipt;
     const receipt = new Promise((resolve) => { resolveReceipt = resolve; });

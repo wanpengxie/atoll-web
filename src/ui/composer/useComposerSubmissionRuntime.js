@@ -79,6 +79,7 @@ export function useComposerSubmissionRuntime({
   const transmittingRef = useRef(new Set());
   const automaticReconnectRetryRef = useRef(new Set());
   const lifecycleRef = useRef({ generation: 0, active: true });
+  const lifecycleEffectTokenRef = useRef(0);
   const retryPrincipalRef = useRef(principalId);
   const acceptingRef = useRef(new Map());
   const landedRef = useRef(new Set());
@@ -229,13 +230,24 @@ export function useComposerSubmissionRuntime({
     return () => { alive = false; };
   }, [onError, principalId, publishDrafts, publishPending, wireRef]);
 
-  useEffect(() => () => {
-    lifecycleRef.current.active = false;
-    lifecycleRef.current.generation += 1;
-    hydrationRef.current += 1;
-    attemptEpochRef.current += 1;
-    automaticReconnectRetryRef.current.clear();
-    outboxRef.current?.close();
+  useEffect(() => {
+    // React.StrictMode probes effects with a setup -> cleanup -> setup cycle
+    // while retaining the mounted hook state.  Defer terminal teardown until
+    // the current task ends so that the probe's second setup can cancel it;
+    // a real unmount has no later setup and therefore still closes the store.
+    const effectToken = ++lifecycleEffectTokenRef.current;
+    lifecycleRef.current.active = true;
+    return () => {
+      queueMicrotask(() => {
+        if (lifecycleEffectTokenRef.current !== effectToken) return;
+        lifecycleRef.current.active = false;
+        lifecycleRef.current.generation += 1;
+        hydrationRef.current += 1;
+        attemptEpochRef.current += 1;
+        automaticReconnectRetryRef.current.clear();
+        outboxRef.current?.close();
+      });
+    };
   }, []);
 
   const draftFor = useCallback((channelId) => {
