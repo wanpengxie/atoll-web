@@ -1,6 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App.jsx';
+import { WorkspaceApp } from './app/WorkspaceApp.jsx';
 import { diagnostic, installGlobalDiagnostics } from './model/diagnostics.js';
 import './styles.css';
 
@@ -13,6 +13,6 @@ createRoot(document.getElementById('root'), {
   onRecoverableError: (error, info) => diagnostic('warn', 'react.recoverable', { error, componentStack: info?.componentStack || '' }),
 }).render(
   <React.StrictMode>
-    <App />
+    <WorkspaceApp />
   </React.StrictMode>,
 );
