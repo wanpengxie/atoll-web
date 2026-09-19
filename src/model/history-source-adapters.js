@@ -40,6 +40,11 @@ export function createHistorySourceAdapters({ requestPage, cancelPage, readCache
   const operations = new WeakMap();
   const terminal = new Set(['completed', 'failed', 'cancelled']);
 
+  function sourceKind(batch) {
+    if (batch?.source === 'indexeddb' || batch?.source === 'network') return batch.source;
+    throw new TypeError(`unknown history source: ${String(batch?.source || '')}`);
+  }
+
   function operationFor(batch) {
     const operation = operations.get(batch);
     if (!operation) throw new Error('history source operation was not prepared');
@@ -78,7 +83,7 @@ export function createHistorySourceAdapters({ requestPage, cancelPage, readCache
       if (operation.status !== 'pending') throw new Error('history source operation already started');
       operation.status = 'running';
       try {
-        const result = batch.source === 'indexeddb'
+        const result = sourceKind(batch) === 'indexeddb'
           ? await Promise.race([(operation.phase = 'cache-read',
             readCache(batch.channelId, batch.beforeSeq, batch.limit, batch.byteLimit)), operation.cancellation.promise])
           : await executeNetwork(batch, operation);
@@ -90,7 +95,7 @@ export function createHistorySourceAdapters({ requestPage, cancelPage, readCache
       }
     },
     validate: (batch, result, rows) =>
-      (batch.source === 'indexeddb' ? validateCachePage : validateNetworkPage)(batch, result, rows),
+      (sourceKind(batch) === 'indexeddb' ? validateCachePage : validateNetworkPage)(batch, result, rows),
     appendRow(batch, row) {
       const operation = operationFor(batch);
       if (terminal.has(operation.status)) return false;

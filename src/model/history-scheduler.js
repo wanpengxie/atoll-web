@@ -491,7 +491,7 @@ export function createHistoryScheduler({
     // Mutation happens only after the synchronous Replica handoff. If the
     // handoff throws, the reservoir remains the unique recoverable supply even
     // though the page cursor itself has already committed.
-    revealRows?.(state.id, selected.map(([seq, value]) => [seq, value.envelope]), {
+    revealRows(state.id, selected.map(([seq, value]) => [seq, value.envelope]), {
       initial,
       materializesCurrentTail,
     });

@@ -209,7 +209,7 @@ function reciprocalReplacement(oldEntry, newEntry, oldID, newID) {
   if (newEntry.turn?.request?.type !== TYPES.agentReplace) return false;
   const target = String(argsOf(newEntry.turn.request)?.target || '');
   const terminal = argsOf(oldEntry.turn?.terminal);
-  const replacedBy = String(terminal?.replaced_by ?? terminal?.value?.replaced_by ?? '');
+  const replacedBy = String(terminal?.replaced_by || '');
   return target === oldID && replacedBy === newID;
 }
 
@@ -254,7 +254,6 @@ function materialize(candidate, entry) {
   const { signature, currentEntryEligible: _currentEntryEligible, ...fields } = candidate;
   return Object.freeze({
     ...fields,
-    role: Object.freeze({ latest: false }),
     body: deepFreeze(clone(entry)),
   });
 }
@@ -269,8 +268,6 @@ function emptySnapshot() {
     epoch: '', viewID: '', revision: 0, baseRevision: 0, sourceRevision: 0,
     firstItemIndex: FIRST_ITEM_INDEX_ORIGIN,
     currentEntryCandidate: null,
-    roleRevision: 0,
-    roleChanges: Object.freeze({ updated: Object.freeze([]) }),
     orderedIDs: Object.freeze([]), entities: readonlyIndex(new Map()), rows: Object.freeze([]),
     changes: Object.freeze({
       kind: 'empty', prefixCount: 0,
@@ -538,105 +535,6 @@ export function createConversationPresentation() {
   }
 
   return Object.freeze({ evaluate, commitCandidate, current: () => owner.snapshot });
-}
-
-function authorizedLatestID(snapshot, authority) {
-  const candidate = snapshot?.currentEntryCandidate;
-  return authority
-    && authority.epoch === snapshot.epoch
-    && authority.viewID === snapshot.viewID
-    && Number(authority.sourceRevision || 0) === Number(snapshot.sourceRevision || 0)
-    && authority.candidateID === candidate?.id
-    ? candidate.id
-    : '';
-}
-
-function withLatestRole(snapshot, latestID, roleRevision, updated) {
-  if (!snapshot?.rows) return snapshot;
-  const rows = Object.freeze(snapshot.rows.map((row) => (
-    row.id === latestID
-      ? Object.freeze({ ...row, role: Object.freeze({ ...row.role, latest: true }) })
-      : row
-  )));
-  const entities = readonlyIndex(new Map(rows.map((row) => [row.id, row])));
-  return Object.freeze({
-    ...snapshot,
-    roleRevision,
-    roleChanges: Object.freeze({ updated: Object.freeze([...updated]) }),
-    rows,
-    entities,
-  });
-}
-
-// Role publication has its own monotonic commit clock. It deliberately does
-// not modify contentRevision, Presentation revision, or the geometry key, but
-// it does name the exact rows whose rendered fold role changed so the list can
-// admit the resulting public height acknowledgement through its existing
-// single-writer transaction.
-export function createConversationRoleFinalizer() {
-  let owner = {
-    roleKey: '', roleRevision: 0, latestID: '',
-    cachedSnapshot: null, cachedLatestID: '', published: null,
-  };
-  const consumedReceipts = new WeakSet();
-
-  function evaluate(snapshot, authority = null) {
-    if (!snapshot?.rows) {
-      return Object.freeze({ snapshot, receipt: Object.freeze({ owner, nextOwner: owner }) });
-    }
-    const nextRoleKey = `${snapshot.epoch}\u001f${snapshot.viewID}`;
-    const base = nextRoleKey === owner.roleKey ? owner : {
-      roleKey: nextRoleKey, roleRevision: 0, latestID: '',
-      cachedSnapshot: null, cachedLatestID: '', published: null,
-    };
-    const nextLatestID = authorizedLatestID(snapshot, authority);
-    if (base.cachedSnapshot === snapshot && base.cachedLatestID === nextLatestID) {
-      return Object.freeze({
-        snapshot: base.published,
-        receipt: Object.freeze({ owner, nextOwner: base }),
-      });
-    }
-    const updated = [];
-    let nextRoleRevision = base.roleRevision;
-    if (base.latestID !== nextLatestID) {
-      if (base.latestID && snapshot.entities.has(base.latestID)) updated.push(base.latestID);
-      if (nextLatestID && snapshot.entities.has(nextLatestID)) updated.push(nextLatestID);
-      if (updated.length) nextRoleRevision += 1;
-    }
-    const published = withLatestRole(snapshot, nextLatestID, nextRoleRevision, updated);
-    const nextOwner = {
-      roleKey: nextRoleKey,
-      roleRevision: nextRoleRevision,
-      latestID: nextLatestID,
-      cachedSnapshot: snapshot,
-      cachedLatestID: nextLatestID,
-      published,
-    };
-    return Object.freeze({
-      snapshot: published,
-      receipt: Object.freeze({ owner, nextOwner }),
-    });
-  }
-
-  function commitCandidate(candidate) {
-    if (!candidate?.receipt
-      || consumedReceipts.has(candidate.receipt)
-      || candidate.receipt.owner !== owner) return false;
-    consumedReceipts.add(candidate.receipt);
-    owner = candidate.receipt.nextOwner;
-    return true;
-  }
-
-  function finalize(snapshot, authority = null) {
-    const candidate = evaluate(snapshot, authority);
-    commitCandidate(candidate);
-    return candidate.snapshot;
-  }
-
-  return Object.freeze({
-    evaluate, commitCandidate, finalize,
-    current: () => owner.published,
-  });
 }
 
 export function presentationEntryId(entryOrRow) {
