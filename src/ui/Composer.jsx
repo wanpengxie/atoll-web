@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Extension } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -22,6 +23,80 @@ import { useReadingIntent } from './conversation/ReadingIntentContext.jsx';
 // "Adding different instances of a keyed plugin"。
 const MENTION_PLUGIN_KEY = new PluginKey('memberMention');
 const COMMAND_PLUGIN_KEY = new PluginKey('agentCommand');
+
+function composerMenuViewport() {
+  const viewport = globalThis.visualViewport;
+  const left = Number(viewport?.offsetLeft || 0);
+  const top = Number(viewport?.offsetTop || 0);
+  const width = Number(viewport?.width || globalThis.innerWidth || document.documentElement.clientWidth || 0);
+  const height = Number(viewport?.height || globalThis.innerHeight || document.documentElement.clientHeight || 0);
+  return { left, top, right: left + width, bottom: top + height, height };
+}
+
+function placeComposerMenu(node, anchor) {
+  if (!node || !anchor?.isConnected) return;
+  const frame = composerMenuViewport();
+  const margin = 8;
+  const gap = 5;
+  const anchorRect = anchor.getBoundingClientRect();
+  const availableWidth = Math.max(120, frame.right - frame.left - margin * 2);
+  const width = Math.min(anchorRect.width, availableWidth);
+  const maxHeight = Math.max(44, Math.min(250, frame.height * .4));
+
+  node.style.visibility = 'hidden';
+  node.style.width = `${width}px`;
+  node.style.maxHeight = `${maxHeight}px`;
+  node.style.left = '0px';
+  node.style.top = '0px';
+
+  const size = node.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(frame.left + margin, anchorRect.left),
+    Math.max(frame.left + margin, frame.right - margin - size.width),
+  );
+  const above = anchorRect.top - gap - size.height;
+  const below = anchorRect.bottom + gap;
+  const top = above >= frame.top + margin
+    ? above
+    : below + size.height <= frame.bottom - margin
+      ? below
+      : Math.max(frame.top + margin, Math.min(above, frame.bottom - margin - size.height));
+  node.style.left = `${left}px`;
+  node.style.top = `${top}px`;
+  node.style.visibility = 'visible';
+}
+
+function ComposerMenuPortal({ anchorRef, className, ariaLabel, children }) {
+  const menuRef = useRef(null);
+  useLayoutEffect(() => {
+    const node = menuRef.current;
+    const anchor = anchorRef.current;
+    if (!node || !anchor) return undefined;
+    const place = () => placeComposerMenu(node, anchor);
+    place();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : null;
+    observer?.observe(anchor);
+    globalThis.addEventListener?.('resize', place);
+    globalThis.visualViewport?.addEventListener?.('resize', place);
+    globalThis.visualViewport?.addEventListener?.('scroll', place);
+    document.addEventListener('scroll', place, true);
+    return () => {
+      observer?.disconnect();
+      globalThis.removeEventListener?.('resize', place);
+      globalThis.visualViewport?.removeEventListener?.('resize', place);
+      globalThis.visualViewport?.removeEventListener?.('scroll', place);
+      document.removeEventListener('scroll', place, true);
+    };
+  });
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div ref={menuRef} className={`${className} composer-menu-portal`} role="listbox" aria-label={ariaLabel} style={{ visibility: 'hidden' }}>
+      {children}
+    </div>,
+    document.body,
+  );
+}
 
 function editorDocument(text = '') {
   return {
@@ -123,6 +198,7 @@ export function slashCommand(value) {
 
 export const Composer = React.memo(function Composer({ channelId, roster, selfId, attachments = [], pending = [], draft = '', draftRevision = 0, onDraftChange, disabled = false, disabledReason = '当前频道不可写', canEditDraft = !disabled, canDurablyAccept = !disabled, canTransmit = !disabled, onSend, onRetry, onPreviewAttachment, onRemoveAttachment, onClearAttachments, onUploadAttachments, onOpenChannelFiles, agentSelection = null, editMode = null, replyTarget = null, onCancelReply, onReplySent }) {
   const readingIntent = useReadingIntent();
+  const inputAreaRef = useRef(null);
   const dragDepthRef = useRef(0);
   const initialDraft = useMemo(() => normalizedDraft(draft), [channelId]);
   const composingRef = useRef(false);
@@ -1073,7 +1149,7 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
           <button type="button" aria-label="取消回复" title="取消回复" onClick={onCancelReply}>×</button>
         </div>}
         {!editMode && attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{attachments.map((row) => <article key={row.resource_id}><button type="button" className="attachment-draft-preview" aria-label={`预览文件 ${row.name}`} onClick={() => onPreviewAttachment?.(row)}><span aria-hidden="true">◇</span><span><strong>{row.name}</strong><small>{formatArtifactSize(Number(row.size || 0))} · 点击预览</small></span></button><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name}`} onClick={() => onRemoveAttachment?.(row.resource_id)}>×</button></article>)}</div>}
-        <div className="composer-input-area">
+        <div className="composer-input-area" ref={inputAreaRef}>
           <div className="composer-box">
             <EditorContent
               editor={editor}
@@ -1088,24 +1164,24 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
             />
           </div>
           {query != null && candidates.length > 0 && (
-            <div className="mention-menu" role="listbox">
+            <ComposerMenuPortal anchorRef={inputAreaRef} className="mention-menu">
               {candidates.slice(0, 8).map((row, index) => (
                 <button type="button" role="option" aria-selected={index === activeCandidate} key={row.id} onMouseDown={(event) => event.preventDefault()} onClick={() => pick(row)}>
                   <span className={`actor-icon kind-${row.kind}`}>{row.kind.slice(0, 1).toUpperCase()}</span>
                   <strong title={row.id}>{actorDisplayName(row)}</strong><small>{row.kind} · {row.decl_id || row.id}</small>
                 </button>
               ))}
-            </div>
+            </ComposerMenuPortal>
           )}
           {commandQuery != null && commands.length > 0 && (
-            <div className="command-menu" role="listbox" aria-label="Agent 命令">
+            <ComposerMenuPortal anchorRef={inputAreaRef} className="command-menu" ariaLabel="Agent 命令">
               {commands.map((row, index) => (
                 <button type="button" role="option" aria-selected={index === activeCommandCandidate} key={row.command} onMouseDown={(event) => event.preventDefault()} onClick={() => commandSessionRef.current?.command(row)}>
                   <span className="command-menu-name">/{row.command}</span>
                   <span><strong>{row.label}</strong><small>{row.description}</small></span>
                 </button>
               ))}
-            </div>
+            </ComposerMenuPortal>
           )}
         </div>
         <div className="composer-toolbar">
