@@ -69,19 +69,22 @@ function commandOwner(config, model) {
     if (typeof submission.control !== 'function') throw new TypeError('Agent 控制 owner 未连接');
     return submission.control(createControlRequest(model, type, payload, actorId));
   };
-  const performSend = async ({ readingIntent = null } = {}) => {
+  const performSend = async ({ readingIntent = null, draft: draftSnapshot = null } = {}) => {
     requireChannel();
-    const slash = parseComposerCommand(model.draft.text);
-    if (slash?.kind === 'command') return performSlashCommand(slash, { readingIntent });
+    const effectiveModel = draftSnapshot
+      ? { ...model, draft: normalizeComposerDraft({ ...model.draft, ...draftSnapshot }) }
+      : model;
+    const slash = parseComposerCommand(effectiveModel.draft.text);
+    if (slash?.kind === 'command') return performSlashCommand(slash, { readingIntent, draft: effectiveModel.draft });
     if (!model.permissions.canDurablyAccept) throw new TypeError(model.permissions.reason || '当前频道不能保存发送');
     if (typeof submission.send !== 'function') throw new TypeError('发送 owner 未连接');
     const token = readingIntent?.composerSendStarted?.(model.channelId) || null;
     let accepted = [];
     try {
       const persisted = typeof submission.updateDraft === 'function'
-        ? await submission.updateDraft(model.channelId, model.draft, { preserveEditorRevision: true })
+        ? await submission.updateDraft(model.channelId, effectiveModel.draft, { preserveEditorRevision: true })
         : null;
-      const result = await submission.send(createMessageRequest(model, persisted));
+      const result = await submission.send(createMessageRequest(effectiveModel, persisted));
       accepted = idsOf(result);
       if (!accepted.length) throw new Error('发送队列未返回消息编号');
       readingIntent?.composerAccepted?.(model.channelId, accepted, token);
@@ -91,23 +94,26 @@ function commandOwner(config, model) {
       throw error;
     }
   };
-  const performSlashCommand = async (parsed, { readingIntent = null } = {}) => {
+  const performSlashCommand = async (parsed, { readingIntent = null, draft: draftSnapshot = null } = {}) => {
     requireChannel();
+    const effectiveModel = draftSnapshot
+      ? { ...model, draft: normalizeComposerDraft({ ...model.draft, ...draftSnapshot }) }
+      : model;
     if (typeof submission.control !== 'function') throw new TypeError('Agent 控制 owner 未连接');
     if (typeof submission.updateDraft !== 'function') throw new TypeError('草稿 owner 未连接');
-    const request = createComposerCommandRequest(model, parsed);
+    const request = createComposerCommandRequest(effectiveModel, parsed);
     const token = readingIntent?.composerSendStarted?.(model.channelId) || null;
     let accepted = [];
     try {
       const persisted = await submission.updateDraft(
         model.channelId,
-        model.draft,
+        effectiveModel.draft,
         { preserveEditorRevision: true },
       );
       const result = await submission.control({
         ...request,
         draftRevision: Number(persisted?.revision ?? model.draft.revision ?? 0),
-        editorRevision: model.draft.editorRevision,
+        editorRevision: effectiveModel.draft.editorRevision,
       });
       accepted = idsOf(result);
       if (!accepted.length) throw new Error('发送队列未返回命令编号');
@@ -127,18 +133,21 @@ function commandOwner(config, model) {
     if (!text) throw new TypeError('Steer 内容不能为空');
     if (typeof submission.control !== 'function') throw new TypeError('Agent 控制 owner 未连接');
     if (typeof submission.updateDraft !== 'function') throw new TypeError('草稿 owner 未连接');
+    const effectiveModel = input.draft
+      ? { ...model, draft: normalizeComposerDraft({ ...model.draft, ...input.draft }) }
+      : model;
     const persisted = await submission.updateDraft(
       model.channelId,
-      model.draft,
+      effectiveModel.draft,
       { preserveEditorRevision: true },
     );
     return submission.control({
-      ...createControlRequest(model, TYPES.agentSteer, {
+      ...createControlRequest(effectiveModel, TYPES.agentSteer, {
         text,
         ...(input.expectedTurnId ? { expected_turn_id: input.expectedTurnId } : {}),
       }, input.actorId || model.controls.actorId),
       draftRevision: Number(persisted?.revision ?? model.draft.revision ?? 0),
-      editorRevision: model.draft.editorRevision,
+      editorRevision: effectiveModel.draft.editorRevision,
     });
   };
 
@@ -169,7 +178,7 @@ function commandOwner(config, model) {
       return changeDraft({ replyTarget: null });
     },
     send(options = {}) {
-      const key = `${model.channelId}:${model.draft.editorRevision}`;
+      const key = `${model.channelId}:${options.draft?.editorRevision ?? model.draft.editorRevision}`;
       const existing = config.sendIntentRef.current.get(key);
       if (existing) return existing;
       const operation = performSend(options).finally(() => {
@@ -179,9 +188,9 @@ function commandOwner(config, model) {
       return operation;
     },
     executeCommand(options = {}) {
-      const parsed = parseComposerCommand(model.draft.text);
+      const parsed = parseComposerCommand(options.draft?.text ?? model.draft.text);
       if (!parsed || parsed.kind !== 'command') throw new TypeError('当前草稿不是可执行命令');
-      const key = `${model.channelId}:${model.draft.editorRevision}`;
+      const key = `${model.channelId}:${options.draft?.editorRevision ?? model.draft.editorRevision}`;
       const existing = config.sendIntentRef.current.get(key);
       if (existing) return existing;
       const operation = performSlashCommand(parsed, options).finally(() => {
@@ -193,7 +202,7 @@ function commandOwner(config, model) {
     steer(value = {}) {
       const input = typeof value === 'string' ? { text: value } : value;
       if (String(input.text || '').trim()) {
-        const key = `steer:${model.channelId}:${model.draft.editorRevision}`;
+        const key = `steer:${model.channelId}:${input.draft?.editorRevision ?? model.draft.editorRevision}`;
         const existing = config.sendIntentRef.current.get(key);
         if (existing) return existing;
         const operation = performTextSteer(input).finally(() => {

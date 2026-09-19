@@ -3,11 +3,19 @@ import { SYSTEM_ACTOR_ID, TYPES } from '../../protocol/vocab.js';
 const SENDABLE_KINDS = new Set(['agent', 'human']);
 const RETRYABLE_STATES = new Set(['rejected', 'uncertain']);
 export const COMPOSER_SLASH_COMMANDS = Object.freeze([
-  Object.freeze({ command: 'compact', type: TYPES.agentCompact, label: '压缩上下文', description: '保留当前对话，压缩较早的上下文', usage: '/compact' }),
-  Object.freeze({ command: 'new', type: TYPES.agentNew, label: '新建对话', description: '保留当前 Agent，换成一段全新会话', usage: '/new' }),
+  Object.freeze({ command: 'compact', type: TYPES.agentCompact, scope: 'agent', label: '压缩上下文', description: '保留当前对话，压缩较早的上下文', usage: '/compact', minArgs: 0, maxArgs: 0 }),
+  Object.freeze({ command: 'new', type: TYPES.agentNew, scope: 'agent', label: '新建对话', description: '保留当前 Agent，换成一段全新会话', usage: '/new', minArgs: 0, maxArgs: 0 }),
   // Restart belongs to the channel system actor: a wedged Agent must not be
   // asked to restart itself. The selected Agent is carried in payload.member.
-  Object.freeze({ command: 'restart', type: TYPES.member.restart, scope: 'system', label: '重启 Agent', description: '给卡住的 Agent 换一届任期；账本与文件不动', usage: '/restart' }),
+  Object.freeze({ command: 'restart', type: TYPES.member.restart, scope: 'system-target', label: '重启 Agent', description: '给卡住的 Agent 换一届任期；账本与文件不动', usage: '/restart', minArgs: 0, maxArgs: 0 }),
+  Object.freeze({ command: 'model', type: TYPES.agentSelect, scope: 'agent', menu: false, label: '切换模型', description: '设置目标 Agent 的模型与推理强度', usage: '/model [model] [effort]', minArgs: 0, maxArgs: 2 }),
+  Object.freeze({ command: 'fork', type: TYPES.agentFork, scope: 'agent', menu: false, label: '分叉对话', description: '从当前上下文分叉', usage: '/fork', minArgs: 0, maxArgs: 0 }),
+  Object.freeze({ command: 'context', type: TYPES.agentContext, scope: 'agent', menu: false, label: '查看上下文', description: '请求目标 Agent 的上下文状态', usage: '/context', minArgs: 0, maxArgs: 0 }),
+  Object.freeze({ command: 'status', type: TYPES.describe, scope: 'agent', menu: false, label: '查看状态', description: '读取目标 Agent 的当前状态', usage: '/status', minArgs: 0, maxArgs: 0 }),
+  Object.freeze({ command: 'introduce', type: TYPES.member.create, scope: 'system', menu: false, label: '创建成员', description: '按声明在当前频道创建成员', usage: '/introduce <decl_id>', minArgs: 1, maxArgs: 1 }),
+  Object.freeze({ command: 'admit', type: TYPES.member.admit, scope: 'system', menu: false, label: '准入用户', description: '将 principal 准入当前频道', usage: '/admit <principal>', minArgs: 1, maxArgs: 1 }),
+  Object.freeze({ command: 'members', type: TYPES.member.list, scope: 'system', menu: false, label: '成员列表', description: '查看当前频道成员', usage: '/members', minArgs: 0, maxArgs: 0 }),
+  Object.freeze({ command: 'channels', type: TYPES.channel.list, scope: 'system', menu: false, label: '频道列表', description: '查看子频道', usage: '/channels [parent_id]', minArgs: 0, maxArgs: 1 }),
 ]);
 const SLASH_COMMAND_BY_NAME = new Map(COMPOSER_SLASH_COMMANDS.map((row) => [row.command, row]));
 
@@ -37,10 +45,15 @@ export function parseComposerCommand(value) {
   if (!definition) {
     throw commandError(`未知命令 ${verb || '/'}；普通正文以 / 开头时请写成 /${source}`, 'composer_command_unknown');
   }
-  if (args.length) {
+  if (args.length < definition.minArgs || args.length > definition.maxArgs) {
     throw commandError(`用法：${definition.usage}`, 'composer_command_usage');
   }
-  return Object.freeze({ kind: 'command', ...definition, payload: Object.freeze({}) });
+  let payload = {};
+  if (command === 'model') payload = { ...(args[0] ? { model: args[0] } : {}), ...(args[1] ? { effort: args[1] } : {}) };
+  else if (command === 'introduce') payload = { decl_id: args[0] };
+  else if (command === 'admit') payload = { principal: args[0] };
+  else if (command === 'channels' && args[0]) payload = { parent_id: args[0] };
+  return Object.freeze({ kind: 'command', ...definition, payload: Object.freeze(payload) });
 }
 
 function uniqueRows(rows, keyOf) {
@@ -194,9 +207,10 @@ function controlAvailability(capability, type, targetAgent, permissions) {
 }
 
 function commandAvailability(definition, capability, targetAgent, permissions) {
-  if (!targetAgent) return Object.freeze({ state: 'no-target', enabled: false, reason: '请先选择目标 Agent' });
   if (!permissions.canTransmit) return Object.freeze({ state: 'offline', enabled: false, reason: '连接可用后才能发送命令' });
   if (definition.scope === 'system') return Object.freeze({ state: 'supported', enabled: true, reason: '' });
+  if (!targetAgent) return Object.freeze({ state: 'no-target', enabled: false, reason: '请先选择目标 Agent' });
+  if (definition.scope === 'system-target') return Object.freeze({ state: 'supported', enabled: true, reason: '' });
   return controlAvailability(capability, definition.type, targetAgent, permissions);
 }
 
@@ -204,7 +218,7 @@ function slashCommandMenu(value, controls) {
   const match = /^\/([^\s/]*)$/u.exec(text(value));
   if (!match) return null;
   const query = match[1].toLocaleLowerCase();
-  const matching = COMPOSER_SLASH_COMMANDS.filter((row) => (
+  const matching = COMPOSER_SLASH_COMMANDS.filter((row) => row.menu !== false && (
     `${row.command} ${row.label}`.toLocaleLowerCase().includes(query)
   ));
   const rows = matching.filter((row) => controls[row.command]?.enabled).map((row) => Object.freeze({
@@ -243,7 +257,6 @@ export function buildComposerModel({
     text: editText ?? editSession.text ?? '',
     attachments: editSession.attachments || [],
   }) : baseDraft;
-  const delivery = resolveComposerDelivery({ draft: normalizedDraft, roster, agentSelection });
   const permissions = composerPermissions(access);
   const channelPending = pendingForChannel(pending, activeChannelId);
   const failures = channelPending.filter((row) => RETRYABLE_STATES.has(row?.state));
@@ -253,7 +266,18 @@ export function buildComposerModel({
   const activeMention = mentionQuery(normalizedDraft.text, mentionCandidates);
   const agents = (roster || []).filter((actor) => actor?.kind === 'agent');
   const selectedID = selectedAgentID(agentSelection);
-  const selectedAgent = agents.find((actor) => actor.id === selectedID) || null;
+  // The old Composer's last fallback was the channel's sole Agent. Keeping it
+  // here avoids a target-selection cycle: the probe owner only learns the
+  // Composer target after this projection commits.
+  const selectedAgent = agents.find((actor) => actor.id === selectedID)
+    || (agents.length === 1 ? agents[0] : null);
+  const delivery = resolveComposerDelivery({
+    draft: normalizedDraft,
+    roster,
+    agentSelection: selectedAgent
+      ? { ...agentSelection, selectedAgentId: selectedAgent.id }
+      : agentSelection,
+  });
   const deliveryAgents = delivery.rows.filter((actor) => actor.kind === 'agent');
   const targetAgent = deliveryAgents.length === 1 ? deliveryAgents[0] : delivery.rows.length ? null : selectedAgent;
   const parameterView = agentSelection?.view?.actorId && agentSelection.view.actorId !== targetAgent?.id
@@ -356,14 +380,16 @@ export function createComposerCommandRequest(model, parsed = parseComposerComman
   if (!availability?.enabled) {
     throw commandError(availability?.reason || `命令 /${parsed.command} 当前不可用`, `composer_command_${availability?.state || 'unavailable'}`);
   }
-  if (parsed.scope === 'system') {
+  if (parsed.scope === 'system' || parsed.scope === 'system-target') {
     return Object.freeze({
       channelId: model.channelId,
       text: '',
       msgType: parsed.type,
       audience: [SYSTEM_ACTOR_ID],
       targetLabel: SYSTEM_ACTOR_ID,
-      payload: Object.freeze({ member: model.targetAgent.id }),
+      payload: parsed.scope === 'system-target'
+        ? Object.freeze({ ...parsed.payload, member: model.targetAgent.id })
+        : parsed.payload,
     });
   }
   return createControlRequest(model, parsed.type, parsed.payload, model.targetAgent.id);
