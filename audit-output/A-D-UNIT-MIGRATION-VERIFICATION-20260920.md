@@ -4,14 +4,21 @@ Scope is the top-level `tests/` A–D partition from baseline `fae8b70`: 42
 suites and 365 declarations. The complete case ledger remains
 [`RESTORE-CASES-A-D-20260919.md`](./RESTORE-CASES-A-D-20260919.md), with one
 row per baseline declaration and the current result, public owner, invariant,
-and disposition. After the P0 public-owner batch, accepted case totals are
-**246 PASS / 12 REGRESSION / 107 BLOCKED**.
+and disposition. After the P0 batch and the first P1 composed-interaction
+fixture batch, accepted case totals are **246 PASS / 14 REGRESSION / 105
+BLOCKED**.
 
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
 AD-316 remains an explicit blocked red reproduction: the current
 `SpaceDevices` owner submits a device command but does not request an
 authoritative refresh after terminal.
+
+The first P1 composed-interaction batch adds public-owner red reproductions for
+AD-014 and AD-017 through `WaitingLayer`: processing exposes an edit affordance
+before the target's queued+resumed fact, and an overlaid edit hold loses the
+underlying interrupt pause after release/expiry. Both remain red product-gap
+assertions; no feed runtime or product code was changed.
 
 ## Public-boundary migration completed in this pass
 
@@ -51,6 +58,7 @@ The focused slices were run with Vitest against current public owners:
 | P0 public-owner fixture slices | 9 passed across Agent/Identity/Describe; AD-316 remains red | nine P0 rows now have one-to-one fixtures; the device refresh gap remains explicit |
 | `tests/channel-access.test.js` | 6 passed, 1 red | AD-143 only: current public owner exposes actor/lobby rows instead of hiding them |
 | `tests/agent-activity.test.js` | 4 passed, 1 red | AD-011 only: boot-reset history closure drops the settled projection |
+| `tests/agent-control.test.jsx -t '\[AD-(014|017)\]'` | 2 red | AD-014/017: public WaitingLayer composed fixtures reproduce the edit-admission and interrupt-overlay gaps |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-018, AD-021, AD-022, AD-031, AD-032, AD-038, AD-041, AD-062, AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
 
 The red assertions are intentionally not weakened, skipped, or deleted. The
