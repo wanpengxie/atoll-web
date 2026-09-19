@@ -124,6 +124,7 @@ describe('notification confirmation contract', () => {
     feed.enqueue({ ...relatedRequest(channelId, 'approval-2', selfId), seq: 2 });
     const confirmation = confirmationFor(channelId, firstStatus, 1, { cause: 'tail-backlog' });
     expect(feed.acknowledgeNotifications(confirmation)).toBe(1);
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(1);
     expect(feed.markRead(channelId, { ...confirmation, physicalSeq: 1 })).toBe(1);
     expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 1, total: 1 });
     expect(feed.acknowledgeNotifications(confirmation)).toBe(1);

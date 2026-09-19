@@ -853,6 +853,10 @@ export function createChannelFeedRuntime(options = {}) {
         serverBoot: world,
         channelId,
       }),
+      // Read-only rail handoff for the existing Workspace consumer. The
+      // durable value remains owned by this runtime; callers must not inspect
+      // cursor storage or derive it from physical read state.
+      notificationHighWater: cursors.notificationHighWater(channelId),
       oldestSeq: replica.visibleOldest(channelId),
       loaded: replica.visibleNewest(channelId) > 0,
       localReplicaReady,
