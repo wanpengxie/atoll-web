@@ -2,7 +2,7 @@ import { argsOf } from '../protocol/envelope.js';
 import { registryCommand } from './channel-governance.js';
 import { isSystemDeclaration } from './management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
-import { terminalResultPayload, terminalResultState } from './fold.js';
+import { terminalResultPayload, terminalResultState } from './terminal-result.js';
 
 export const SPACE_TYPES = Object.freeze({
   actorRegister: TYPES.actorTemplate.create,

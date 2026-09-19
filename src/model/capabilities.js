@@ -1,6 +1,6 @@
 import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
-import { terminalResultPayload, terminalResultState } from './fold.js';
+import { terminalResultPayload, terminalResultState } from './terminal-result.js';
 
 // agent 基座直接受理的控制词（drivers/agents/base/base.go）。它们不是“一件正在
 // 进行的工作”，所以工作项索引把它们排除在外。

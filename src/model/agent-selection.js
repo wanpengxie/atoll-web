@@ -1,6 +1,6 @@
 import { argsOf, FINAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
-import { terminalResultEnvelope } from './fold.js';
+import { terminalResultEnvelope } from './terminal-result.js';
 
 // 协议正形：
 // - actor.describe 只声明 agent.options / agent.select 两个稳定 word；

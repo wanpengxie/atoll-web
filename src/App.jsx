@@ -18,7 +18,8 @@ import {
 } from './model/channel-file-transfer.js';
 import { availableDefaultStorageDeviceId } from './model/channel-files.js';
 import { canViewChannelContent, canWriteChannel, CHANNEL_ACCESS, createChannelAccessTracker, isMemberAccess } from './model/channel-access.js';
-import { createChannelState, reconcileApprovals, terminalResultPayload, terminalResultState } from './model/fold.js';
+import { createChannelState, reconcileApprovals } from './model/fold.js';
+import { terminalResultPayload, terminalResultState } from './model/terminal-result.js';
 import { createRoster } from './model/roster.js';
 import { readFileTicket } from './model/resources.js';
 import { safeChannelDeviceRows, safeDaemonRows } from './model/space-administration.js';

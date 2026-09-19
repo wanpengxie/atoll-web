@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { apply, createChannelState, requestClosure, terminalResultPayload, terminalResultState, terminalRetainedValue } from '../src/model/fold.js';
+import { apply, createChannelState, requestClosure } from '../src/model/fold.js';
+import { terminalResultPayload, terminalResultState, terminalRetainedValue } from '../src/model/terminal-result.js';
 import { estimateRowBytes, MOBILE_WINDOW, trimChannelState } from '../src/model/memory-window.js';
 import { notificationDisposition } from '../src/model/notification-policy.js';
 import { relatedEnvelopeIds, relatedEnvelopeIdsIncremental } from '../src/model/timeline-scope.js';

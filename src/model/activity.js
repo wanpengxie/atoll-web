@@ -1,7 +1,7 @@
 import { argsOf } from '../protocol/envelope.js';
 import { systemEventPresentation } from './system-event-presentation.js';
 import { turnStatusLabel } from './turn-presentation.js';
-import { terminalResultPayload } from './fold.js';
+import { terminalResultPayload } from './terminal-result.js';
 
 const READABLE_ACCESS = new Set([
   'member_active',

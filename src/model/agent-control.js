@@ -1,7 +1,7 @@
 import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 import { taskLocation } from './task-controls.js';
-import { terminalResultEnvelope, terminalResultPayload, terminalResultState, terminalRetainedValue } from './fold.js';
+import { terminalResultEnvelope, terminalResultPayload, terminalResultState, terminalRetainedValue } from './terminal-result.js';
 
 // 会以"一条消息"身份出现在时间线/等待区的词。replace 在列：协议 §4.6 里 replace
 // 请求受理成功后**自身就是新行**（admitBufferedAt 以原下标入队、继承 Resumed），

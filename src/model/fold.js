@@ -1,6 +1,7 @@
 import { argsOf, correlationOf, FINAL, hasCanonicalBody, PROVISIONAL } from '../protocol/envelope.js';
 import { isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
 import { createLiveArrivalState } from './live-arrivals.js';
+import { terminalRetainedFields } from './terminal-result.js';
 
 // subjectgate 只让这两个词走 resolve 帧（platform/internal/humancell）。
 const RESOLVABLE = new Set([TYPES.humanAsk, TYPES.humanApprove]);
@@ -202,32 +203,6 @@ function compactTerminalClosure(envelope) {
   };
 }
 
-const TERMINAL_RETAINED_FIELDS = Object.freeze([
-  'merged_into',
-  'replaced_by',
-  'preempted_by',
-]);
-
-function terminalRetainedFields(payload = {}) {
-  const nested = payload?.value && typeof payload.value === 'object' && !Array.isArray(payload.value)
-    ? payload.value
-    : {};
-  const retained = {};
-  for (const key of TERMINAL_RETAINED_FIELDS) {
-    const value = payload?.[key] ?? nested[key];
-    if (value !== undefined && value !== null && value !== '') retained[key] = value;
-  }
-  return retained;
-}
-
-// This is the only read boundary for compact-retained relationship fields.
-// Full protocol rows may carry them at payload.value; compactTerminalClosure
-// normalizes them to payload top-level before discarding the rest of value.
-export function terminalRetainedValue(turn, key) {
-  if (!TERMINAL_RETAINED_FIELDS.includes(key)) return undefined;
-  return terminalRetainedFields(argsOf(turn?.terminal))[key];
-}
-
 export function retainTerminalClosure(state, seq, envelope) {
   const parentId = envelope?.parent_id || '';
   if (!parentId || !FINAL.has(argsOf(envelope)?.status)) return;
@@ -270,39 +245,6 @@ export function requestClosure(state, requestId) {
 
 export function isRequestClosed(state, requestId) {
   return requestClosure(state, requestId) !== null;
-}
-
-// Lifecycle consumers may read status/id/seq and the fields deliberately
-// retained by compactTerminalClosure. Every result/body consumer uses this
-// boundary: a compact closure intentionally forgot the business payload, so
-// missing fields mean stable unavailability, never a default success/failure.
-export function terminalResultEnvelope(turn) {
-  return turn?.terminal && turn.terminalClosureOnly !== true ? turn.terminal : null;
-}
-
-export function terminalResultPayload(turn) {
-  const terminal = terminalResultEnvelope(turn);
-  return terminal ? argsOf(terminal) : null;
-}
-
-export const TERMINAL_RESULT_UNAVAILABLE = '终态详情不可用，请刷新或重新进入频道';
-
-// Compact closure is a stable lifecycle proof, not a background-loading
-// state. Existing history entry points may later install the exact full row,
-// but Fold does not manufacture an unbounded hydration obligation for it.
-export function terminalResultState(turn) {
-  if (!turn?.terminal) return Object.freeze({ phase: 'waiting', error: '' });
-  if (turn.terminalClosureOnly === true) {
-    return Object.freeze({ phase: 'unavailable', error: TERMINAL_RESULT_UNAVAILABLE });
-  }
-  return Object.freeze({ phase: 'available', error: '' });
-}
-
-// Rendering is one consumer of the same full-result boundary. Keep the old
-// name as a semantic alias so Presentation does not invent another meaning of
-// "full terminal".
-export function terminalContentEnvelope(turn) {
-  return terminalResultEnvelope(turn);
 }
 
 function findTurn(state, envelope) {

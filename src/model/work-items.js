@@ -2,7 +2,7 @@ import { argsOf } from '../protocol/envelope.js';
 import { isAgentControl, supportsType } from './capabilities.js';
 import { TYPES, isSystemWord } from '../protocol/vocab.js';
 import { actorNameMap } from './actor-display.js';
-import { terminalResultPayload, terminalResultState } from './fold.js';
+import { terminalResultPayload, terminalResultState } from './terminal-result.js';
 
 export const WORK_ITEM_KINDS = ['task', 'approval', 'agent_run', 'recovery', 'automation'];
 export const ACTIVE_WORK_ITEM_STATES = new Set(['active', 'waiting', 'blocked', 'uncertain']);

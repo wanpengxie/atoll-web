@@ -39,7 +39,7 @@ import {
   terminalResultPayload,
   terminalResultState,
   terminalRetainedValue,
-} from '../model/fold.js';
+} from '../model/terminal-result.js';
 import { selectLocalWaitingTurns, selectWaitingPresentation } from '../model/waiting-presentation.js';
 import { diagnostic } from '../model/diagnostics.js';
 

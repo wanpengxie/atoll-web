@@ -1,5 +1,5 @@
 import { argsOf } from '../protocol/envelope.js';
-import { terminalResultPayload } from './fold.js';
+import { terminalResultPayload } from './terminal-result.js';
 import { TYPES } from '../protocol/vocab.js';
 
 // 一条消息此刻可被哪些控制词操作，唯一权威是受理方（agent 基座的处理循环）——

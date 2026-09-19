@@ -5,7 +5,7 @@ import { messagePresentation } from '../../model/message-presentation.js';
 import { turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
 import { executionProcessObservations } from '../../model/turn-process.js';
 import { argsOf } from '../../protocol/envelope.js';
-import { terminalContentEnvelope, terminalResultState } from '../../model/fold.js';
+import { terminalContentEnvelope, terminalResultState } from '../../model/terminal-result.js';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 import { StructuredResult } from '../StructuredResult.jsx';
 

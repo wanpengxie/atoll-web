@@ -1,7 +1,7 @@
 import { argsOf } from '../protocol/envelope.js';
 import { isSystemDeclaration, SYSTEM_ACTOR } from './management-actors.js';
 import { TYPES } from '../protocol/vocab.js';
-import { terminalResultPayload, terminalResultState } from './fold.js';
+import { terminalResultPayload, terminalResultState } from './terminal-result.js';
 
 export const GOVERNANCE_TYPES = Object.freeze({
   create: TYPES.channel.create,
