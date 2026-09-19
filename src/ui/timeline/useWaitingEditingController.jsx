@@ -465,6 +465,11 @@ export function WaitingLayer({
     setCollapsed(false);
   }, [state.channelId]);
   if (!turns.length && !handoffs.length) return null;
+  // A false control-tail authority means these queued rows are cache-only.
+  // Do not resurrect their actions or waiting chrome until the committed tail
+  // is current again; null/unknown authority still renders its safe read-only
+  // verification state below.
+  if (targetAuthority?.current === false) return null;
   const presented = [
     ...turns.map((turn, order) => ({ turn, order, exiting: false })),
     ...handoffs.map((entry) => ({ turn: entry.turn, order: entry.order, exiting: true })),
@@ -670,6 +675,25 @@ export function useWaitingEditingController({
     editingRef.current = admitted;
     setEditing((current) => current?.sessionId === session.sessionId ? admitted : current);
   }, [controlVersion, editing?.holdId, editing?.location, editing?.phase, editing?.sessionId, state]);
+  useEffect(() => {
+    const session = editingRef.current;
+    if (!session?.holdId) return;
+    const target = timelineTurn(state, session.targetId);
+    const terminal = argsOf(target?.terminal);
+    const cancelled = target?.terminalClosureOnly !== true
+      && terminal?.status === 'failed'
+      && (terminal.error_code === 'cancelled' || terminal.cancelled === true);
+    if (!cancelled) return;
+    // Cancellation is an authoritative target terminal: close the Composer
+    // session first, then release only this session's exact hold. The release
+    // owner remains the callback captured when the hold was admitted.
+    editingRef.current = null;
+    setEditing((current) => current?.sessionId === session.sessionId ? null : current);
+    setEditNotice('已退出编辑');
+    void release(session, target).catch((error) => {
+      setEditNotice(`已退出编辑：${error?.message || String(error)}`);
+    });
+  }, [controlVersion, editing?.holdId, editing?.sessionId, state]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
   useEffect(() => {
     if (typeof onRequestCapability !== 'function') throw new TypeError('Waiting 能力 owner 未连接');

@@ -85,7 +85,7 @@ describe('编辑锁生命周期（useWaitingEditingController 直接 renderHook�
     expect(result.current.editNotice).toContain('稍后重试');
   });
 
-  it('【缺陷】ends editing and conditionally releases its hold when the target is cancelled——新 hook 不监视目标终态，编辑会话不会自动退出', async () => {
+  it('[AD-031] ends editing and conditionally releases its hold when the target is cancelled', async () => {
     const queuedTurn = turn({ requestId: 'queued', actorId: 'agent', type: 'agent.ask', requestSeq: 1, provisional: [queuedFrame('queued')] });
     let state = stateOf([queuedTurn]);
     const onComposerEditChange = vi.fn();
@@ -101,9 +101,13 @@ describe('编辑锁生命周期（useWaitingEditingController 直接 renderHook�
     const cancelledTurn = turn({ requestId: 'queued', actorId: 'agent', type: 'agent.ask', requestSeq: 1, terminal: failedTerminal({ requestId: 'queued', type: 'agent.ask', extra: { error_code: 'cancelled' } }) });
     state = stateOf([cancelledTurn]);
     rerender({ state, pending: [], capabilityIndex: CAP, onRequestCapability: vi.fn(), onTaskControl, onComposerEditChange });
-    // 期望（旧行为）：编辑会话自动结束，onComposerEditChange(null)，并带提示"已退出编辑"，
-    // 且尝试释放 hold；实际：hook 完全不监视目标终态变化，编辑会话原样保留。
+    // 公开 Waiting/edit owner 应关闭 Composer，提示用户已退出，并以原 hold
+    // owner 发 exact-hold unhold；取消终态不能留下悬挂编辑会话。
     expect(result.current.presentationEditing).toBeNull();
+    expect(result.current.editNotice).toContain('已退出编辑');
+    expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'agent.unhold', payload: { expected_hold_id: 'hold-edit' },
+    }));
   });
 
   it('【缺陷】ends editing without releasing a newer interrupt that superseded its hold——同上，新 hook 也不监视 interrupt supersede', async () => {
@@ -207,14 +211,15 @@ function baseWaitProps(overrides = {}) {
 }
 
 describe('等待区准入/分组显示（WaitingLayer，与 tests/agent-control.test.jsx 同一 owner）', () => {
-  it('【缺陷】does not resurrect cached queued controls before the backend tail is current——WaitingLayer 只按 targetAuthority.current 降级控制，不再整体隐藏等待区', () => {
+  it('[AD-022] does not resurrect cached queued controls before the backend tail is current', () => {
     const cachedQueued = turn({ requestId: 'cached-queued', actorId: 'agent', type: 'agent.ask', requestSeq: 1, provisional: [queuedFrame('cached-queued')] });
     const state = stateOf([cachedQueued]);
-    // controlCurrent=false 时旧行为整个等待区都不画；新 WorkspaceApp 把它并进
-    // waitingRosterAuthority.current（= rosterCurrent && controlCurrent）统一交给
-    // targetAuthority，WaitingLayer 只要 turns 非空就画区域，只是控制降级。
-    render(<WaitingLayer {...baseWaitProps({ turns: [cachedQueued], state, targetAuthority: { current: false, actorIDs: new Set(['agent']) } })} />);
+    // 用户能力：控制尾部未 current 时不能看到缓存 queued 的取消/编辑入口。
+    // authority 恢复后再由同一公开 WaitingLayer owner 呈现事实和控制。
+    const view = render(<WaitingLayer {...baseWaitProps({ turns: [cachedQueued], state, targetAuthority: { current: false, actorIDs: new Set(['agent']) } })} />);
     expect(document.querySelector('.agent-wait-layer')).toBeNull();
+    view.rerender(<WaitingLayer {...baseWaitProps({ turns: [cachedQueued], state, targetAuthority: { current: true, actorIDs: new Set(['agent']) } })} />);
+    expect(document.querySelector('.agent-wait-layer')).toBeTruthy();
   });
 
   it('keeps queued facts visible while exact roster authority gates receiver controls', () => {

@@ -6,7 +6,7 @@ suites and 365 declarations. The complete case ledger remains
 row per baseline declaration and the current result, public owner, invariant,
 and disposition. After the P0 batch and the first P1 composed-interaction
 fixture batch plus the follow-up Waiting-owner regression packet, accepted case
-totals are **250 PASS / 10 REGRESSION / 105 BLOCKED**.
+totals are **252 PASS / 8 REGRESSION / 105 BLOCKED**.
 
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
@@ -25,6 +25,10 @@ unhold closures no longer clear a hold without authoritative release facts, and
 the held target's second core `processing` transition after matching
 `queued+resumed` clears the hold without mistaking unrelated `tool.started`
 business progress for queue advancement.
+
+The same-owner follow-up closes AD-022 and AD-031: cache-only queued controls
+stay hidden until the control tail is current, and a cancelled edit target
+closes its Composer session with an exact-hold release.
 
 ## Public-boundary migration completed in this pass
 
@@ -66,7 +70,8 @@ The focused slices were run with Vitest against current public owners:
 | `tests/agent-activity.test.js` | 4 passed, 1 red | AD-011 only: boot-reset history closure drops the settled projection |
 | `tests/agent-control.test.jsx -t '\[AD-(014|017)\]'` | 2 passed | AD-014/017: public Waiting composition now gates edit admission and restores interrupt overlay state |
 | `tests/agent-control.test.jsx tests/task-controls-restore.test.jsx` | 21 passed | AD-018/021 now pass through the Waiting owner; AD-020's unrelated business-progress guard remains green |
-| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-022, AD-031, AD-032, AD-038, AD-041, AD-062, AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
+| `tests/agent-information-architecture.test.jsx -t '\[AD-(022|031)\]'` | 2 passed | AD-022 authority gate and AD-031 cancelled-target cleanup pass through the Waiting owner |
+| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-032, AD-038, AD-041, AD-062, AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
 
 The red assertions are intentionally not weakened, skipped, or deleted. The
 unrelated `tests/channel-replica-cache-redaction.test.js` red result belongs to
