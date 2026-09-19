@@ -1,7 +1,7 @@
 import React from 'react';
 import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from './files/FilesFeature.jsx';
-import { ChannelAdministrationPanel, SpaceAdministrationPanel } from './governance/GovernanceFeature.jsx';
+import { ChannelAdministrationPanel, ChannelAutomationPanel, SpaceAdministrationPanel } from './governance/GovernanceFeature.jsx';
 import { ActorDetailPanel, RosterFeature } from './roster/RosterFeature.jsx';
 import { SearchFeature } from './search/SearchFeature.jsx';
 import { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
@@ -13,6 +13,7 @@ export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   actor: 'actor',
   artifact: 'artifact',
   task: 'task',
+  automation: 'automation',
   channelAdministration: 'channel-administration',
   spaceAdministration: 'space-administration',
 });
@@ -40,12 +41,13 @@ export function WorkspaceFeatures({
   </>;
 }
 
-export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, onClose }) {
+export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, onClose }) {
   const kind = typeof panel === 'string' ? panel : panel?.kind || panel?.value || '';
   if (kind === WORKSPACE_FEATURE_PANEL.roster) return <RosterFeature port={roster} onClose={onClose} />;
   if (kind === WORKSPACE_FEATURE_PANEL.actor) return <ActorDetailPanel port={roster} onClose={onClose} />;
   if (kind === WORKSPACE_FEATURE_PANEL.artifact) return <ArtifactPreviewPanel port={files} onClose={onClose} />;
   if (kind === WORKSPACE_FEATURE_PANEL.task) return <TaskDetailPanel port={tasks} onClose={onClose} />;
+  if (kind === WORKSPACE_FEATURE_PANEL.automation) return <ChannelAutomationPanel channel={channel} port={automation} onClose={onClose} />;
   if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) return <ChannelAdministrationPanel channel={channel} port={governance.channel || governance} onClose={onClose} />;
   if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) return <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
   return null;

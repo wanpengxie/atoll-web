@@ -112,6 +112,7 @@ export function WorkspaceLayout({
         <div className="channel-header-actions">
           <span className="seq-label">SEQ {Number(conversation?.state?.lastSeq || 0)}</span>
           {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`header-action terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} disabled={!channel} onClick={navigation.openTerminal}>终端</button>}
+          {navigation.openAutomation && <button type="button" className="header-action" disabled={!channel} onClick={navigation.openAutomation}>定时动作</button>}
           {navigation.openRoster && <button type="button" className="header-action" disabled={!channel} onClick={navigation.openRoster}>成员</button>}
           {navigation.openChannelAdministration && <button type="button" className="header-action" disabled={!channel} onClick={navigation.openChannelAdministration}>频道治理</button>}
         </div>
