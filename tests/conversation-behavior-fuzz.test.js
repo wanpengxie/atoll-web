@@ -26,6 +26,12 @@ const entry = (seq) => ({
   envelope: { id: `m-${seq}`, seq, ts: seq * 1000, sender: { id: 'agent' }, payload: { text: `message ${seq}` } },
 });
 
+function commitProjection(owner, entries, options) {
+  const candidate = owner.evaluate(entries, options);
+  expect(owner.commitCandidate(candidate)).toBe(true);
+  return candidate.snapshot;
+}
+
 describe('conversation UX state-machine fuzz', () => {
   it('keeps data/layout events powerless over reading intent and keeps semantic rows unique', () => {
     fc.assert(fc.property(fc.array(eventArb, { minLength: 1, maxLength: 240 }), (events) => {
@@ -35,7 +41,9 @@ describe('conversation UX state-machine fuzz', () => {
       let entries = Array.from({ length: 20 }, (_, index) => entry(index + 1));
       let sourceRevision = 1;
       const presentation = createConversationPresentation();
-      let snapshot = presentation.project(entries, { nextViewID: 'c0:all', epoch: 'p:w', sourceRevision });
+      let snapshot = commitProjection(presentation, entries, {
+        nextViewID: 'c0:all', epoch: 'p:w', sourceRevision,
+      });
 
       for (const event of events) {
         const beforeMode = reading.mode;
@@ -44,13 +52,17 @@ describe('conversation UX state-machine fuzz', () => {
           const older = Array.from({ length: event.count }, () => entry(--low));
           entries = [...older.reverse(), ...entries];
           sourceRevision += 1;
-          snapshot = presentation.project(entries, { nextViewID: 'c0:all', epoch: 'p:w', sourceRevision });
+          snapshot = commitProjection(presentation, entries, {
+            nextViewID: 'c0:all', epoch: 'p:w', sourceRevision,
+          });
           expect(reading.mode).toBe(beforeMode);
           expect(reading.inputEpoch).toBe(beforeInput);
         } else if (event.type === 'append') {
           entries = [...entries, ...Array.from({ length: event.count }, () => entry(++high))];
           sourceRevision += 1;
-          snapshot = presentation.project(entries, { nextViewID: 'c0:all', epoch: 'p:w', sourceRevision });
+          snapshot = commitProjection(presentation, entries, {
+            nextViewID: 'c0:all', epoch: 'p:w', sourceRevision,
+          });
           expect(reading.mode).toBe(beforeMode);
           expect(reading.inputEpoch).toBe(beforeInput);
         } else if (event.type === 'layout-tail') {

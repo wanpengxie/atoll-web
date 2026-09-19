@@ -11,7 +11,7 @@ import { useColdEntryDiagnostics } from '../src/ui/timeline/useColdEntryDiagnost
 
 function spec({
   channelId = 'a', activationID = 'activation:a',
-  replicaRevision = 0, replicaRows = 0, candidate = null, inflight = null,
+  replicaRevision = 0, replicaRows = 0, historyStatus = {},
 } = {}) {
   return {
     channelId,
@@ -30,17 +30,11 @@ function spec({
       getSession: () => ({ activationID, inputEpoch: 0, mode: 'following' }),
     },
     history: {
-      debugSnapshot: () => ({
-        feed: { localReplicaReady: true, localReplicaErrorCode: '', granted: true },
-        replica: { revision: replicaRevision, rows: replicaRows },
-        scheduler: {
-          version: 1,
-          channel: { channelId, hasOlder: false, completedPages: 0, blockedBy: 'authoritative-eof' },
-          candidate,
-          inflight,
-          global: { focus: channelId, occupants: [], otherChannels: [] },
-        },
-      }),
+      channelId, attached: true, hasOlder: false, localReplicaReady: true,
+      presentationRevision: replicaRevision,
+      loaded: replicaRows > 0,
+      historyDemand: { revision: 0, phase: 'idle', error: '' },
+      ...historyStatus,
     },
   };
 }
@@ -84,18 +78,20 @@ it('uses the committed activation for provider/deadline reads and logs every ent
 
 it('associates dispatch and Replica completion without calling presentation success early', () => {
   const hook = renderHook(({ value }) => useColdEntryDiagnostics(value), {
-    initialProps: { value: spec({
-      candidate: { source: 'network', purpose: 'initial-tail', rangeKind: 'initial', beforeSeq: 101 },
-    }) },
+    initialProps: { value: spec() },
   });
   hook.rerender({ value: spec({
-    inflight: {
-      channelId: 'a', source: 'network', purpose: 'initial-tail', rangeKind: 'initial',
-      beforeSeq: 101, phase: 'queued',
+    historyStatus: {
+      loading: true, foregroundLoading: true,
+      historyDemand: { revision: 1, phase: 'pending', error: '' },
     },
   }) });
   act(() => vi.advanceTimersByTime(300));
-  hook.rerender({ value: spec({ replicaRevision: 1, replicaRows: 8 }) });
+  hook.rerender({ value: spec({
+    replicaRevision: 1,
+    replicaRows: 8,
+    historyStatus: { completedPages: 1 },
+  }) });
   act(() => vi.advanceTimersByTime(300));
 
   const triggers = diagnosticsSnapshot()

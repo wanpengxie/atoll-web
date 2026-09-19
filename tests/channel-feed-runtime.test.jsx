@@ -38,20 +38,24 @@ describe('ChannelFeedRuntime ownership', () => {
 
   it('survives a StrictMode effect probe and terminally releases its owned data plane', async () => {
     const runtime = createChannelFeedRuntime(runtimeOptions());
-    const cursors = runtime.getSnapshot().cursorsRef.current;
-    cursors.selectReadAuthority({ principalId: 'root', serverBoot: 'boot-a' });
-    expect(cursors.isReadAuthorityReady()).toBe(true);
 
     const releaseProbe = runtime.mount();
     releaseProbe();
     const releaseCommitted = runtime.mount();
     await Promise.resolve();
-    expect(() => runtime.getSnapshot().clear()).not.toThrow();
+    expect(runtime.getSnapshot().enqueue({
+      channel_id: 'c0', seq: 1, source: 'live',
+      envelope: {
+        id: 'm-1', kind: 'event', type: 'message', ts: '2026-09-19T00:00:00Z',
+        sender: { id: 'agent:codex:1', kind: 'agent' }, audience: [],
+        payload: { text: 'owned row' },
+      },
+    })).toBe(true);
+    expect(runtime.getSnapshot().stateEntries()).toHaveLength(1);
 
     releaseCommitted();
     await Promise.resolve();
-    expect(cursors.isReadAuthorityReady()).toBe(false);
-    expect(runtime.getSnapshot().statesRef.current.size).toBe(0);
+    expect(runtime.getSnapshot().stateEntries()).toHaveLength(0);
     expect(() => runtime.mount()).toThrow('ChannelFeedRuntime has been destroyed');
   });
 });
