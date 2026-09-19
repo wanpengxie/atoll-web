@@ -26,7 +26,7 @@ async function selector(page) {
   const trigger = page.locator('.model-selector-trigger').filter({ hasText: 'steward' });
   await expect(trigger).toBeVisible();
   if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click();
-  await expect(page.getByRole('dialog', { name: /steward Agent 状态/ })).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByRole('menu', { name: '模型设置' })).toBeVisible({ timeout: 8_000 });
   return trigger;
 }
 
@@ -54,7 +54,7 @@ for (const height of [500, 320, 200]) {
     await login(page);
     await page.setViewportSize({ width: 390, height });
     const trigger = await selector(page);
-    const panel = page.getByRole('dialog', { name: /steward Agent 状态/ });
+    const panel = page.getByRole('menu', { name: '模型设置' });
     const panelBounds = await panel.evaluate((node) => {
       const rect = node.getBoundingClientRect();
       const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);

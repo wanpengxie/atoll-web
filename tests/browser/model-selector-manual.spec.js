@@ -49,10 +49,11 @@ test('one real click reads the Agent capability and opens the model menu', async
 
   await trigger.click();
   await expect(trigger).toHaveAttribute('aria-expanded', 'true');
-  // The current owner exposes the actor capability surface as a dialog.  Keep
-  // the baseline's menu-item assertion so a missing selectable model remains a
-  // visible product regression rather than a stale role/label failure.
-  const panel = page.getByRole('dialog', { name: /steward Agent 状态/ });
+  // agent.options materializes the selectable capability as the production
+  // model-settings menu.  Keep the baseline's menu-item assertion so a
+  // missing selectable model remains a visible product regression rather than
+  // a stale role/label failure.
+  const panel = page.getByRole('menu', { name: '模型设置' });
   await expect(panel).toBeVisible({ timeout: 8_000 });
   const modelItem = panel.getByRole('menuitem', { name: '模型' });
   await testInfo.attach('model-selector-manual-production.json', {
@@ -77,7 +78,7 @@ test('reopening the production model panel keeps its options available during re
   const trigger = await chooseSteward(page);
 
   await trigger.click();
-  const panel = page.getByRole('dialog', { name: /steward Agent 状态/ });
+  const panel = page.getByRole('menu', { name: '模型设置' });
   await expect(panel).toBeVisible({ timeout: 8_000 });
   await testInfo.attach('model-selector-manual-reopen.json', {
     body: JSON.stringify({
