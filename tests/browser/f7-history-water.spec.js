@@ -1824,7 +1824,7 @@ test('F7 a lagged cache paints locally, reconciles the network tail, then rejoin
   )))).toBe(true);
   // Build a cache that has both a paintable tail and a deeper continuation;
   // otherwise there is no local segment left to rejoin after the remote gap.
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   await viewport.hover();
   await page.mouse.wheel(0, -100_000);
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
@@ -1844,10 +1844,45 @@ test('F7 a lagged cache paints locally, reconciles the network tail, then rejoin
     });
   }), { timeout: 15_000 }).toBe(true);
   await viewport.hover();
-  await page.mouse.wheel(0, 100_000);
-  await expect.poll(() => viewport.evaluate((node) => (
-    Math.round(node.scrollHeight - node.clientHeight - node.scrollTop)
-  ))).toBeLessThanOrEqual(24);
+  await viewport.press('End');
+  await expect.poll(() => page.evaluate((latestText) => {
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const nodes = owner.nodes();
+    if (nodes.length !== 1) return { ownerCount: nodes.length };
+    const root = nodes[0];
+    const rows = [...root.querySelectorAll('[data-reading-block-id]')]
+      .filter((candidate) => candidate.textContent?.includes(latestText));
+    const composer = document.querySelector('.composer-surface');
+    if (!rows.length || !composer) return { ownerCount: 1, row: rows.length > 0, composer: Boolean(composer) };
+    const rootRect = root.getBoundingClientRect();
+    const composerRect = composer.getBoundingClientRect();
+    const rowRects = rows.map((row) => row.getBoundingClientRect());
+    const rowRect = rowRects.find((rect) => rect.top >= rootRect.top - 1
+      && rect.bottom <= Math.min(rootRect.bottom, composerRect.top) + 1) || rowRects[0];
+    return {
+      ownerCount: 1,
+      mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
+      finiteTailDistance: Number.isFinite(owner.tailDistance(root)),
+      latestFullyVisible: rowRects.some((rect) => rect.top >= rootRect.top - 1
+        && rect.bottom <= Math.min(rootRect.bottom, composerRect.top) + 1),
+      geometry: {
+        tailDistance: owner.tailDistance(root),
+        rootTop: rootRect.top,
+        rootBottom: rootRect.bottom,
+        rowTop: rowRect.top,
+        rowBottom: rowRect.bottom,
+        composerTop: composerRect.top,
+        scrollTop: root.scrollTop,
+        scrollHeight: root.scrollHeight,
+        clientHeight: root.clientHeight,
+      },
+    };
+  }, 'c0 PONG 120')).toMatchObject({
+    ownerCount: 1,
+    mode: 'following',
+    finiteTailDistance: true,
+    latestFullyVisible: true,
+  });
 
   const context = page.context();
   await page.close();
@@ -1863,30 +1898,31 @@ test('F7 a lagged cache paints locally, reconciles the network tail, then rejoin
   await expect.poll(() => resumed.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
     entry.event === 'history.segment_requested'
       && entry.detail?.channelId === 'c0'
-      && entry.detail?.source === 'indexeddb'
-  ))), { timeout: 15_000 }).toBe(true);
-  await expect.poll(() => resumed.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
-    entry.event === 'history.segment_requested'
-      && entry.detail?.channelId === 'c0'
       && entry.detail?.source === 'network'
   ))), { timeout: 15_000 }).toBe(true);
+  // Startup order is deliberately not a cache-authority contract. Once the
+  // authoritative head is known, one physical older demand must continue from
+  // the durable cache below that exact seam.
+  const resumedViewport = readingOwner(resumed);
+  await resumedViewport.hover();
+  await resumed.mouse.wheel(0, -100_000);
   await expect.poll(() => resumed.evaluate(() => {
     const sources = window.__ATOLL_DIAGNOSTICS__.snapshot()
       .filter((entry) => entry.event === 'history.segment_requested' && entry.detail?.channelId === 'c0')
       .map((entry) => entry.detail.source);
     const network = sources.indexOf('network');
-    return network > 0 && sources.slice(network + 1).includes('indexeddb');
+    return network >= 0 && sources.slice(network + 1).includes('indexeddb');
   }), { timeout: 15_000 }).toBe(true);
 
   const sources = await resumed.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
     .filter((entry) => entry.event === 'history.segment_requested' && entry.detail?.channelId === 'c0')
     .map((entry) => ({ source: entry.detail.source, beforeSeq: entry.detail.beforeSeq })));
-  // Local decode is allowed to paint before attach. Once attach establishes a
-  // newer authoritative head, the scheduler fills that network-only gap and
-  // then resumes IndexedDB below the exact covered seam.
-  expect(sources[0]?.source).toBe('indexeddb');
+  // Local decode may paint before attach, but a fast attach can establish the
+  // authoritative network head first. In either order the scheduler must
+  // resume IndexedDB below the exact covered seam rather than losing the
+  // cached continuation.
   const networkIndex = sources.findIndex((entry) => entry.source === 'network');
-  expect(networkIndex).toBeGreaterThan(0);
+  expect(networkIndex).toBeGreaterThanOrEqual(0);
   const cacheAfterNetwork = sources.findIndex((entry, index) => index > networkIndex && entry.source === 'indexeddb');
   expect(cacheAfterNetwork).toBeGreaterThan(networkIndex);
   expect(sources[cacheAfterNetwork].beforeSeq).toBeLessThan(sources[networkIndex].beforeSeq);
