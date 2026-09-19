@@ -80,6 +80,14 @@ function pendingError(row, fallbackCode) {
   };
 }
 
+function operationError(error, fallbackCode, fallbackDetail) {
+  const value = error && typeof error === 'object' ? error : {};
+  return {
+    code: String(value.code || fallbackCode),
+    detail: String(value.detail || value.message || fallbackDetail),
+  };
+}
+
 function probeFact(turns, pendingRows, requestId, expectedType) {
   const turn = turns.get(requestId);
   const submission = pendingRows.get(requestId);
@@ -279,11 +287,15 @@ export function useAgentProbes({
   // the request inside this owner: callers name the actor, while lifecycle,
   // one-minute rate limiting and ledger correlation remain centralized here.
   const requestCapability = useCallback((actorId, channelId = activeChannelRef.current) => {
-    if (wireState !== 'open' || !actorId || !channelId) return false;
+    const refused = (code, detail) => ({ requested: false, requestId: '', error: { code, detail } });
+    if (wireState !== 'open') return refused('probe_offline', '连接尚未就绪，无法读取能力');
+    if (!actorId || !channelId) return refused('probe_target_missing', '能力读取缺少目标 Actor');
     const channelAccess = accessRef.current?.state?.(channelId);
-    if (channelAccess?.relationship !== 'member' || channelAccess?.unavailable) return false;
+    if (channelAccess?.relationship !== 'member' || channelAccess?.unavailable) {
+      return refused('probe_access_denied', '当前无权读取该 Actor 的能力');
+    }
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId && row.kind === 'agent');
-    if (!actor) return false;
+    if (!actor) return refused('probe_actor_unavailable', '目标 Agent 当前不在名册中');
     const state = stateFor(channelId);
     const capability = capabilityIndex(state, liveRequestIds, pending).get(actorId);
     const probeKey = `${channelId}:${actorId}`;
@@ -292,9 +304,24 @@ export function useAgentProbes({
       (item) => item.messageId === describeProbe.requestId && item.state === 'rejected',
     ));
     observeAgentProbe(lifecycleRef.current, probeKey, capability, describeRejected);
-    if (capability?.describe || capability?.loading) return false;
-    void describeActor(actor, channelId).catch(() => {});
-    return true;
+    if (capability?.loading) return refused('probe_in_flight', '能力读取正在进行中');
+
+    // A known Describe means this call came from the explicit refresh surface:
+    // retire only the current attempt, retain its live request as visible
+    // evidence, and let the cross-generation one-minute gate decide whether a
+    // new request may start. Never force or clear the rate-limit timestamp.
+    if (capability?.describe) releaseAgentProbe(lifecycleRef.current, probeKey);
+    return describeActor(actor, channelId).then((requestId) => {
+      if (requestId) return { requested: true, requestId, error: null };
+      const current = lifecycleRef.current.entries.get(probeKey);
+      return current
+        ? refused('probe_in_flight', '能力读取正在进行中')
+        : refused('probe_rate_limited', '能力刷新每分钟最多一次，请稍后再试');
+    }, (error) => ({
+      requested: false,
+      requestId: '',
+      error: operationError(error, 'probe_submit_failed', '能力读取请求发送失败'),
+    }));
   }, [accessRef, activeChannelRef, describeActor, liveRequestIds, pending, rosters, stateFor, wireState]);
 
   useEffect(() => {

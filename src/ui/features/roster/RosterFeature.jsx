@@ -37,24 +37,35 @@ export function ActorDetailPanel({ port = {}, onClose }) {
   const [error, setError] = useState('');
   if (!actor) return null;
   const capabilities = port.actorDetail?.capabilities || actor.capabilities || [];
-  const invoke = () => {
+  const describe = async () => {
     setError('');
     try {
-      const payload = JSON.parse(argumentsText || '{}');
-      port.commands?.invoke?.({ actor, type: selectedCapability, payload });
+      if (typeof port.commands?.describe !== 'function') throw new Error('能力读取当前不可用');
+      const result = await port.commands.describe(actor);
+      if (result?.error) throw Object.assign(new Error(result.error.detail), { code: result.error.code });
     } catch (failure) {
       setError(failure?.message || String(failure));
     }
   };
-  return <SidePanel className="actor-details" ariaLabel="Actor 详情" eyebrow={actor.kind || 'ACTOR'} title={actorDisplayName(actor)} onClose={onClose} headerActions={<button type="button" className="text-button" disabled={port.detailBusy} onClick={() => port.commands?.describe?.(actor)}>{port.detailBusy ? '读取中…' : '刷新能力'}</button>}>
+  const invoke = async () => {
+    setError('');
+    try {
+      const payload = JSON.parse(argumentsText || '{}');
+      if (typeof port.commands?.invoke !== 'function') throw new Error('能力调用当前不可用');
+      await port.commands.invoke({ actor, type: selectedCapability, payload });
+    } catch (failure) {
+      setError(failure?.message || String(failure));
+    }
+  };
+  return <SidePanel className="actor-details" ariaLabel="Actor 详情" eyebrow={actor.kind || 'ACTOR'} title={actorDisplayName(actor)} onClose={onClose} headerActions={<button type="button" className="text-button" disabled={port.detailBusy} onClick={describe}>{port.detailBusy ? '读取中…' : '刷新能力'}</button>}>
     <dl className="work-item-metadata"><dt>Actor ID</dt><dd>{actor.id}</dd><dt>类型</dt><dd>{actor.kind || '未知'}</dd><dt>声明</dt><dd>{actor.decl_id || actor.declarationId || '未声明'}</dd><dt>绑定</dt><dd>{actor.bound === true ? '已绑定' : actor.bound === false ? '未绑定' : '未知'}</dd></dl>
     {port.detailError && <p className="governance-error" role="alert">{port.detailError}</p>}
+    {error && <p className="governance-error" role="alert">{error}</p>}
     <section className="panel-card governance-form"><header className="panel-card-header"><h3>调用能力</h3></header>
       {!capabilities.length && <p className="governance-empty">该 Actor 没有公布可调用能力。</p>}
       {capabilities.length > 0 && <>
         <label>能力<select value={selectedCapability} onChange={(event) => setSelectedCapability(event.target.value)}><option value="">选择能力</option>{capabilities.map((capability) => { const type = typeof capability === 'string' ? capability : capability.type; return <option value={type} key={type}>{typeof capability === 'string' ? capability : capability.label || type}</option>; })}</select></label>
         <label>参数 JSON<textarea rows="8" value={argumentsText} onChange={(event) => setArgumentsText(event.target.value)} /></label>
-        {error && <p className="governance-error" role="alert">{error}</p>}
         <button type="button" className="primary-button" disabled={port.disabled || !selectedCapability} onClick={invoke}>提交调用</button>
       </>}
     </section>
