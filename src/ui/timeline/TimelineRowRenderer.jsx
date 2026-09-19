@@ -101,7 +101,7 @@ function MessageActions({ envelope, turn = null, onReply, onCreateTask, onOpen }
   return <div className={`message-actions${feedback ? ' has-feedback' : ''}`} aria-label="条目操作">
     {copy && <button type="button" onClick={copy}>{copyState === 'copied' ? '✓ 已复制' : '复制'}</button>}
     {onReply && <button type="button" onClick={() => onReply({ id: envelope.id, sender: envelope.sender, text: body })}>↩ 回复</button>}
-    {onCreateTask && <button type="button" onClick={() => onCreateTask(envelope)}>创建任务</button>}
+    {onCreateTask && <button type="button" onClick={() => turn ? onCreateTask(envelope, turn) : onCreateTask(envelope)}>创建任务</button>}
     {onOpen && turn && <button type="button" onClick={() => onOpen(turn)}>查看过程</button>}
     <span className="message-copy-feedback" role="status">{feedback}</span>
   </div>;
@@ -247,7 +247,7 @@ function ConversationAnswerSlot({ text, terminalPayload = null, contentKey }) {
   return <StructuredResult payload={terminalPayload} contentKey={contentKey} />;
 }
 
-function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onCreateTask, onOpen }) {
+function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen }) {
   const request = turn.request; const terminal = terminalContentEnvelope(turn);
   const liveEnvelope = terminal || turn.provisional?.at(-1)?.envelope || null;
   const agentId = terminal?.sender?.id || liveEnvelope?.sender?.id || request.audience?.[0] || '';
@@ -258,7 +258,7 @@ function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onCrea
   const content = visible.map(({ seq, envelope, process }) => { const slot = envelope.id || `${turn.requestId}:${seq}`; return <div key={slot} className="agent-progress-text" data-seq={seq}><ConversationAnswerSlot text={process.text} contentKey={`answer:${turn.requestId}:${slot}:body`} /></div>; });
   if (terminal) content.push(echo ? <div key={echo.envelope.id || `${turn.requestId}:${echo.seq}`} className="agent-final-text" data-seq={echo.seq} data-answer-slot={turn.requestId}><ConversationAnswerSlot text={echo.process.text} terminalPayload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:${echo.envelope.id || echo.seq}:body`} /></div> : <div key={terminal.id || `${turn.requestId}:terminal`} className="agent-final-text" data-answer-slot={turn.requestId}><StructuredResult payload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:terminal:body`} /></div>);
   const answerEnvelope = terminal || liveEnvelope || { id: `${turn.requestId}:answer`, sender: { id: agentId, kind: 'agent' }, payload: { body: { text: '' } } };
-  return <ReplyableMessageFrame envelope={answerEnvelope} turn={turn} onReply={terminal ? onReply : null} onCreateTask={terminal ? onCreateTask : null} onOpen={onOpen}
+  return <ReplyableMessageFrame envelope={answerEnvelope} turn={turn} onReply={terminal ? onReply : null} onOpen={onOpen}
     className={`agent-turn-bubble ${turn.terminal ? 'settled' : 'processing'}`} contentClassName="response-body"
     identity={<span className="actor-icon kind-agent">{String(nameOf(agentId, names) || 'A').slice(0, 1).toUpperCase()}</span>}
   >
@@ -297,7 +297,7 @@ function TurnCard({ turn, names, selfId, fold, approvalState, editing, onResolve
     </ReplyableMessageFrame>
     {pending && !local && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons">{request.type === TYPES.agentAsk && onEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, actorId)}>编辑</button>}{request.type === TYPES.agentAsk && onControl && <button type="button" onClick={() => onControl(turn, actorId, TYPES.agentInterrupt, {})}>停止</button>}</div></div></ContentFrame>}
     {local && onCancel && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons"><button type="button" onClick={() => onCancel(turn.requestId)}>取消</button></div></div></ContentFrame>}
-    <AgentAnswer turn={turn} names={names} fold={fold} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpen} />
+    <AgentAnswer turn={turn} names={names} fold={fold} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpen} />
     <ThreadCalls root={turn} thread={turn.thread} names={names} />
   </section>;
 }
