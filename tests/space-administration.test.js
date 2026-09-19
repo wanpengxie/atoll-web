@@ -91,8 +91,10 @@ describe('space directory projection (public useWireConnection port)', () => {
 
     const devices = harness.result.current.accessRef.current.directory().devices;
     expect(devices[0]).toMatchObject({ id: 'd1', name: 'Mac', status: 'present', online: true });
-    // This is intentionally a product regression until the public projection
-    // strips non-display declaration fields at loadSpaceDirectory.
+    // The public directory is a display projection, not a pass-through of the
+    // daemon declaration.  Keep both a field-level and serialized guard so a
+    // future owner change cannot reintroduce the credential-shaped field.
+    expect(devices[0]).not.toHaveProperty('key');
     expect(JSON.stringify(devices)).not.toContain('secret');
     harness.unmount();
   });
