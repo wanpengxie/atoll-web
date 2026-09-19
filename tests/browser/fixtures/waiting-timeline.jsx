@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { apply, createChannelState } from '../../../src/model/fold.js';
+import { normalizeDescribe } from '../../../src/model/capabilities.js';
 import { Timeline } from '../../../src/ui/Timeline.jsx';
 import '../../../src/styles.css';
 
@@ -9,7 +10,20 @@ document.body.style.cssText = 'margin:0;font:14px/1.5 sans-serif';
 document.getElementById('root').style.cssText = 'width:900px;height:640px;max-width:100vw';
 
 const root = createRoot(document.getElementById('root'));
-let current = { fact: 'terminal', rosterRevision: 1, lines: 1, network: 'open' };
+let current = { fact: 'terminal', rosterRevision: 1, lines: 1, network: 'open', authority: false, capabilityKnown: true };
+const taskControlCalls = [];
+const capabilityRequests = [];
+const capabilityIndex = new Map([['agent', { describe: normalizeDescribe({
+  class: 'agent',
+  words: {
+    'agent.ask': {},
+    'agent.steer': {},
+    'agent.interrupt': {},
+    'agent.hold': {},
+    'agent.replace': { input_schema: { type: 'object', properties: { expected_hold_id: { type: 'string' } } } },
+    'agent.unhold': { input_schema: { type: 'object', properties: { expected_hold_id: { type: 'string' } } } },
+  },
+}) }]]);
 
 function envelope(id, kind, payload, parentId = '') {
   return {
@@ -81,7 +95,11 @@ function paint() {
     selfId="me"
     pending={[]}
     approvalStates={{}}
+    capabilityIndex={current.capabilityKnown ? capabilityIndex : new Map()}
+    onRequestCapability={(actorId, channelId) => { capabilityRequests.push({ actorId, channelId }); }}
     access="member_active"
+    waitingRosterAuthority={current.authority ? { current: true, actorIDs: new Set(['agent']) } : null}
+    onTaskControl={(call) => { taskControlCalls.push(call); }}
     surfaceVisible
   />));
 }
@@ -114,5 +132,14 @@ window.waitingTimeline = {
       frames.push(this.geometry());
     }
     return frames;
+  },
+  taskControlCalls() {
+    return structuredClone(taskControlCalls);
+  },
+  clearTaskControlCalls() {
+    taskControlCalls.length = 0;
+  },
+  capabilityRequests() {
+    return structuredClone(capabilityRequests);
   },
 };

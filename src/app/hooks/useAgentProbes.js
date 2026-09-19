@@ -116,6 +116,29 @@ export function useAgentProbes({
     }
   }, [activeChannelId, handleSend]);
 
+  // Presentation may discover a control whose safety contract depends on a
+  // live Describe before that actor has ever been selected in Composer. Keep
+  // the request inside this owner: callers name the actor, while lifecycle,
+  // one-minute rate limiting and ledger correlation remain centralized here.
+  const requestCapability = useCallback((actorId, channelId = activeChannelRef.current) => {
+    if (wireState !== 'open' || !actorId || !channelId) return false;
+    const channelAccess = accessRef.current?.state?.(channelId);
+    if (channelAccess?.relationship !== 'member' || channelAccess?.unavailable) return false;
+    const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId && row.kind === 'agent');
+    if (!actor) return false;
+    const state = channelStatesRef.current.get(channelId);
+    const capability = capabilityIndexFromState(state, liveRequestIds).get(actorId);
+    const probeKey = `${channelId}:${actorId}`;
+    const describeProbe = lifecycleRef.current.entries.get(probeKey);
+    const describeRejected = Boolean(describeProbe?.requestId && pending.some(
+      (item) => item.messageId === describeProbe.requestId && item.state === 'rejected',
+    ));
+    observeAgentProbe(lifecycleRef.current, probeKey, capability, describeRejected);
+    if (capability?.describe || capability?.loading) return false;
+    void describeActor(actor, channelId).catch(() => {});
+    return true;
+  }, [accessRef, activeChannelRef, channelStatesRef, describeActor, liveRequestIds, pending, rosters, wireState]);
+
   useEffect(() => {
     if (wireState !== 'open') return;
     const { channelId, actorId } = composerAgent;
@@ -212,6 +235,7 @@ export function useAgentProbes({
     optionsProbedRef,
     pickAgent,
     probeRequestKey,
+    requestCapability,
     reset,
     selectorOpened,
     targetChanged,

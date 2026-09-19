@@ -137,6 +137,23 @@ describe('agent control v7 information architecture', () => {
     expect(() => exactHoldPayload({ target: 'queued' }, '')).toThrow('exact hold owner');
   });
 
+  it('requests live capability for compact edit controls instead of calling unknown unsupported', async () => {
+    const state = createChannelState('c0');
+    add(state, 1, request('queued', 'capability is not loaded yet'));
+    add(state, 2, response('queued-q', 'queued', {
+      status: 'queued',
+      controls: [{ word: 'agent.replace' }, { word: 'agent.steer' }],
+    }));
+    const onRequestCapability = vi.fn();
+
+    render(<Timeline state={state} roster={roster} selfId="me" pending={[]} approvalStates={{}} access="member_active" capabilityIndex={new Map()} onRequestCapability={onRequestCapability} />);
+
+    expect(screen.queryByText('Agent 版本不支持安全编辑')).toBeNull();
+    expect(screen.getByText('正在确认 Agent 编辑能力')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
+    await waitFor(() => expect(onRequestCapability).toHaveBeenCalledWith('agent', 'c0'));
+  });
+
   it('semantic history keeps a completed request visible without progress frames', () => {
     const state = createChannelState('c0');
     add(state, 1, request('historical', '历史中的完整问句'));

@@ -180,3 +180,35 @@ test('production Timeline keeps queued to running to terminal outside the fixed 
     }
   }
 });
+
+test('production Timeline exposes compact actor controls with request-scoped commands', async ({ page }) => {
+  await page.goto('/tests/browser/fixtures/waiting-timeline.html');
+  await page.waitForFunction(() => window.waitingTimeline?.geometry().composer?.height > 0);
+
+  await page.evaluate(() => window.waitingTimeline.transition({ fact: 'queued', authority: true, capabilityKnown: false }, 2));
+  const waiting = page.getByRole('region', { name: '等待区' });
+  await expect(waiting.getByRole('button', { name: '插入', exact: true })).toBeVisible();
+  await expect(waiting.getByText('正在确认 Agent 编辑能力', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.waitingTimeline.capabilityRequests())).toContainEqual({
+    actorId: 'agent',
+    channelId: 'fixture',
+  });
+
+  await page.evaluate(() => window.waitingTimeline.transition({ capabilityKnown: true }, 2));
+  await expect(waiting.getByRole('button', { name: '编辑' })).toBeVisible();
+
+  await page.evaluate(() => window.waitingTimeline.transition({ fact: 'running', authority: true }, 2));
+
+  const controls = page.getByRole('region', { name: '任务控制' });
+  await expect(controls.getByRole('button', { name: '编辑' })).toBeVisible();
+  await expect(controls.getByRole('button', { name: '停止', exact: true })).toBeVisible();
+
+  await controls.getByRole('button', { name: '停止', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.waitingTimeline.taskControlCalls())).toEqual([
+    expect.objectContaining({
+      actorId: 'agent',
+      type: 'agent.interrupt',
+      payload: {},
+    }),
+  ]);
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { controlPayload, taskControlContext } from './task-controls.js';
+import { controlPayload, extraControls, taskControlContext } from './task-controls.js';
 
 describe('work-addressed task controls', () => {
   it('uses the actor-authored work target instead of degrading interrupt to Agent-wide', () => {
@@ -15,12 +15,38 @@ describe('work-addressed task controls', () => {
     expect(context.canStop).toBe(true);
     expect(context.workId).toBe('w-1');
     expect(context.workState).toBe('');
-    expect(controlPayload(context, 'agent.interrupt')).toEqual({ work_id: 'w-1' });
+    expect(controlPayload(context, 'agent.interrupt', {})).toEqual({ work_id: 'w-1' });
   });
 
-  it('rejects a control entry with no actor-authored payload', () => {
-    const context = { controls: [{ word: 'agent.dismiss' }] };
-    expect(controlPayload(context, 'agent.dismiss')).toBeNull();
+  it('uses the schema-specific caller fallback for compact production controls', () => {
+    const context = {
+      requestId: 'request-1',
+      turnId: 'turn-7',
+      controls: [{ word: 'agent.steer' }, { word: 'agent.interrupt' }],
+    };
+    expect(controlPayload(context, 'agent.steer', { target: 'request-1' })).toEqual({ target: 'request-1' });
+    expect(controlPayload(context, 'agent.interrupt', {})).toEqual({});
+  });
+
+  it('lets actor payload refine the caller-owned fallback', () => {
+    const context = {
+      requestId: 'request-1',
+      turnId: 'turn-7',
+      controls: [{ word: 'agent.interrupt', payload: { work_id: 'w-1', expected_turn_id: 'turn-9' } }],
+    };
+    expect(controlPayload(context, 'agent.interrupt', {})).toEqual({
+      expected_turn_id: 'turn-9',
+      work_id: 'w-1',
+    });
+  });
+
+  it('does not expose a payload-less unknown control or guess its schema', () => {
+    const context = {
+      actionable: true,
+      controls: [{ word: 'agent.interrupt' }, { word: 'agent.future' }],
+    };
+    expect(controlPayload(context, 'agent.future')).toEqual({});
+    expect(extraControls(context)).toEqual([]);
   });
 
   it('keeps terminal work identity visible after controls disappear', () => {

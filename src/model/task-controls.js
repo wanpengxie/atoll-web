@@ -29,14 +29,11 @@ export function taskLocation(turn) {
 
 function controlEntries(frame) {
   if (!Array.isArray(frame?.controls)) return [];
-  return frame.controls.filter((entry) => (
-    entry
-    && typeof entry.word === 'string'
-    && entry.word
-    && entry.payload
-    && typeof entry.payload === 'object'
-    && !Array.isArray(entry.payload)
-  ));
+  // `controls` is the actor's availability declaration. The production
+  // protocol intentionally permits the compact `{ word }` form; command
+  // identity comes from the request/turn that owns this status frame, not
+  // from a second copy embedded in every declaration.
+  return frame.controls.filter((entry) => entry && typeof entry.word === 'string' && entry.word);
 }
 
 // 核心词有前端专属交互（replace→编辑流程、steer→插入、interrupt→停止）。
@@ -46,22 +43,34 @@ const CORE_CONTROL_WORDS = Object.freeze([TYPES.agentReplace, TYPES.agentInterru
 
 export function extraControls(context) {
   if (!context?.actionable) return [];
-  return context.controls.filter((entry) => !CORE_CONTROL_WORDS.includes(entry.word));
+  // Core controls have caller-owned argument contracts below. An unknown
+  // word is only safe to expose when the actor supplied its complete payload;
+  // the frontend must not invent arguments for an unknown command.
+  return context.controls.filter((entry) => (
+    !CORE_CONTROL_WORDS.includes(entry.word)
+    && entry.payload
+    && typeof entry.payload === 'object'
+    && !Array.isArray(entry.payload)
+  ));
 }
 
 export function controlLabel(entry) {
   return entry.label || entry.word.split('.').pop();
 }
 
-// Work-aware controls carry their stable target in the actor-authored entry.
-// Missing payload means the control is unavailable; the frontend never
-// reconstructs an older command shape from the current view.
-export function controlPayload(context, word) {
+// Each UI action owns the fallback required by that command's schema:
+// interrupt={}, one-item steer={target}, bulk steer={all:true}, and generic
+// controls have no guessed fallback. Actor-authored fields refine that known
+// call-site contract. In particular we never stamp request/turn fields onto
+// every control word; those fields are not legal for every command.
+export function controlPayload(context, word, fallback = {}) {
   const entry = context?.controls?.find((candidate) => candidate.word === word);
+  if (!entry) return null;
   const declared = entry?.payload;
+  const callerPayload = fallback && typeof fallback === 'object' && !Array.isArray(fallback) ? fallback : {};
   return declared && typeof declared === 'object' && !Array.isArray(declared)
-    ? { ...declared }
-    : null;
+    ? { ...callerPayload, ...declared }
+    : { ...callerPayload };
 }
 
 export function taskTargetCurrentness(turn, authority = null) {

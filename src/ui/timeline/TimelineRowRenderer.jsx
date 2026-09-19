@@ -22,7 +22,7 @@ import { FoldableBody } from './FoldableBody.jsx';
 import { ContentFrame, MessageFrame } from './InformationFlow.jsx';
 import { useMessageLayoutState } from './MessageLayoutState.jsx';
 import { ProgressTrail } from './ProgressTrail.jsx';
-import { supportsEditLeaseCAS } from './useWaitingEditingController.jsx';
+import { editLeaseCapabilityState } from './useWaitingEditingController.jsx';
 export const SHOW_CHANNEL_NARRATION = false;
 export const EMPTY_CAPABILITY_INDEX = new Map();
 export const EMPTY_CONTROL_STATES = {};
@@ -148,9 +148,10 @@ function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) 
       {context.workId && <div className="task-work-identity"><code>{context.workId}</code><span>{[context.workState, context.workStage, context.executionState].filter(Boolean).join(' · ')}</span></div>}
       <div className="task-control-buttons">
         {context.editUnavailable && <span className="task-control-unavailable">Agent 版本不支持安全编辑</span>}
+        {context.editPending && <span className="task-control-unavailable">正在确认 Agent 编辑能力</span>}
         {context.canEdit && <button type="button" onClick={onEdit} disabled={editActive}>编辑</button>}
-        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, controlPayload(context, TYPES.agentInterrupt))}>停止</button>}
-        {extras.map((entry) => <button key={entry.word} type="button" onClick={() => onControl(entry.word, controlPayload(context, entry.word))}>{controlLabel(entry)}</button>)}
+        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, controlPayload(context, TYPES.agentInterrupt, {}))}>停止</button>}
+        {extras.map((entry) => <button key={entry.word} type="button" onClick={() => onControl(entry.word, controlPayload(context, entry.word, { target: context.requestId }))}>{controlLabel(entry)}</button>)}
       </div>
     </section>
   );
@@ -452,8 +453,13 @@ export function AgentConversationTurn({ turn, thread = [], leadTurns = [], merge
   const requestText = requestView.text;
   const requestFoldId = `${turn.requestId}:request`;
   const baseControlContext = taskControlContext(turn, { selfId, access, targetAuthority });
-  const editLeaseCAS = supportsEditLeaseCAS(capability);
-  const controlContext = { ...baseControlContext, canEdit: baseControlContext.canEdit && editLeaseCAS, editUnavailable: baseControlContext.canEdit && !editLeaseCAS };
+  const editCapability = editLeaseCapabilityState(capability);
+  const controlContext = {
+    ...baseControlContext,
+    canEdit: baseControlContext.canEdit && editCapability === 'supported',
+    editPending: baseControlContext.canEdit && editCapability === 'unknown',
+    editUnavailable: baseControlContext.canEdit && editCapability === 'unsupported',
+  };
   const lead = leadTurns.map((item) => messagePresentation(item.request).text);
   const processingTitle = [...lead, requestText].join(' ＋ ');
   const suppressAgentBubble = Boolean(turn.local || mergedInto(turn) || preemptedBy(turn));
@@ -475,8 +481,13 @@ export function TurnCard({ turn, thread = [], roster, names, selfId, access, tar
   const requestView = messagePresentation(request);
   const self = request.sender?.id === selfId;
   const baseControlContext = taskControlContext(turn, { selfId, access, targetAuthority });
-  const editLeaseCAS = supportsEditLeaseCAS(capability);
-  const controlContext = { ...baseControlContext, canEdit: baseControlContext.canEdit && editLeaseCAS, editUnavailable: baseControlContext.canEdit && !editLeaseCAS };
+  const editCapability = editLeaseCapabilityState(capability);
+  const controlContext = {
+    ...baseControlContext,
+    canEdit: baseControlContext.canEdit && editCapability === 'supported',
+    editPending: baseControlContext.canEdit && editCapability === 'unknown',
+    editUnavailable: baseControlContext.canEdit && editCapability === 'unsupported',
+  };
   const replyTarget = replyTargetOf(request, { roster, selfId });
   const requestFoldId = `${turn.requestId}:request`;
   const responseFoldId = `${turn.requestId}:response`;

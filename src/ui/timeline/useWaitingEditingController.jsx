@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { messagePresentation } from '../../model/message-presentation.js';
-import { controlLabel, extraControls, taskControlContext } from '../../model/task-controls.js';
+import { controlLabel, controlPayload, extraControls, taskControlContext } from '../../model/task-controls.js';
 import { agentFrozenStates, agentMessageStage, editAdmission, editableText, lockFromContext, mergedInto, preemptedBy } from '../../model/agent-control.js';
 import { diagnostic } from '../../model/diagnostics.js';
 import { terminalResultPayload, terminalResultState, terminalRetainedValue } from '../../model/terminal-result.js';
@@ -24,6 +24,10 @@ export function supportsLeaseCAS(capability, type) {
 export function supportsEditLeaseCAS(capability) {
   return supportsLeaseCAS(capability, TYPES.agentReplace)
     && supportsLeaseCAS(capability, TYPES.agentUnhold);
+}
+export function editLeaseCapabilityState(capability) {
+  if (!capability?.describe) return 'unknown';
+  return supportsEditLeaseCAS(capability) ? 'supported' : 'unsupported';
 }
 function nameOf(id, names) {
   return actorNameFromMap(id, names);
@@ -189,8 +193,9 @@ export function WaitingLayer({ turns, handoffs = [], state, names, selfId, acces
       {!collapsed && <header className="agent-wait-header" aria-label="等待区操作">
         {!handoffOnly && <div>
           {renderedGroups.map((group) => {
+            const firstContext = taskControlContext(group.turns[0], { selfId, access, targetAuthority });
             const canInsertAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access, targetAuthority }).canInsert);
-            return canInsertAll && <button type="button" className="agent-wait-insert-all" key={`insert-${group.actorId}`} onClick={() => onControl(group.turns[0], group.actorId, TYPES.agentSteer, { all: true })}>{soleGroup ? '全部插入' : `插入 ${nameOf(group.actorId, names)} 全部`}</button>;
+            return canInsertAll && <button type="button" className="agent-wait-insert-all" key={`insert-${group.actorId}`} onClick={() => onControl(group.turns[0], group.actorId, TYPES.agentSteer, controlPayload(firstContext, TYPES.agentSteer, { all: true }))}>{soleGroup ? '全部插入' : `插入 ${nameOf(group.actorId, names)} 全部`}</button>;
           })}
           {renderedGroups.map((group) => {
             const capability = capabilityIndex.get(group.actorId);
@@ -234,11 +239,12 @@ export function WaitingLayer({ turns, handoffs = [], state, names, selfId, acces
                   {context.steering && <span className="agent-wait-paused">正在并入…</span>}
                   {context.targetCurrentness === 'unknown' && <span className="agent-wait-paused">正在核验收件人</span>}
                   {context.targetCurrentness === 'departed' && <span className="agent-wait-paused">收件人已离席，等待账本关闭</span>}
-                  {context.canEdit && !supportsEditLeaseCAS(capability) && <span className="agent-wait-paused">Agent 版本不支持安全编辑</span>}
-                  {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
-                  {context.canEdit && supportsEditLeaseCAS(capability) && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
+                  {context.canEdit && editLeaseCapabilityState(capability) === 'unknown' && <span className="agent-wait-paused">正在确认 Agent 编辑能力</span>}
+                  {context.canEdit && editLeaseCapabilityState(capability) === 'unsupported' && <span className="agent-wait-paused">Agent 版本不支持安全编辑</span>}
+                  {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, controlPayload(context, TYPES.agentSteer, { target: turn.requestId }))}>插入</button>}
+                  {context.canEdit && editLeaseCapabilityState(capability) === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
                   {context.canCancel && <button type="button" title={context.cancelsAsDismiss ? '这条不是你发的，将请对方放弃它' : '撤回你自己发出的这条请求'} onClick={() => onCancel?.(state.channelId, turn.requestId, context.cancelsAsDismiss)}>取消</button>}
-                  {extraControls(context).map((entry) => <button key={entry.word} type="button" onClick={() => onControl(turn, group.actorId, entry.word, { target: turn.requestId })}>{controlLabel(entry)}</button>)}
+                  {extraControls(context).map((entry) => <button key={entry.word} type="button" onClick={() => onControl(turn, group.actorId, entry.word, controlPayload(context, entry.word, { target: turn.requestId }))}>{controlLabel(entry)}</button>)}
                 </div>
               </>}
           </li>;
@@ -537,7 +543,12 @@ export function useWaitingEditingController({
   async function startEditing(turn, actorId) {
     if (editing) return;
     setEditNotice('');
-    if (!supportsEditLeaseCAS(capabilityIndex.get(actorId))) {
+    const editCapability = editLeaseCapabilityState(capabilityIndex.get(actorId));
+    if (editCapability === 'unknown') {
+      setEditNotice('正在确认 Agent 编辑能力，请稍候');
+      return;
+    }
+    if (editCapability === 'unsupported') {
       setEditNotice('当前 Agent 不支持安全编辑，请刷新能力或升级 Agent');
       return;
     }

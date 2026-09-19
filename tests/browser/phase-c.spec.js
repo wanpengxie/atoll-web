@@ -338,13 +338,9 @@ test('C-BR-10/13 刷新重放后处理气泡与控制资格只保留一份', asy
   await expect(turn.locator('.agent-turn-bubble')).toHaveCount(1);
   await expect(turn.locator('.agent-turn-bubble').getByRole('button', { name: '继续' })).toHaveCount(0);
   await expect(turn.getByRole('button', { name: '停止', exact: true })).toBeVisible();
-  await expect(turn.getByText('Agent 版本不支持安全编辑', { exact: true })).toBeVisible();
-  await expect(turn.getByRole('button', { name: '编辑' })).toHaveCount(0);
-
-  // 当前连接尚无 Describe 时不能把历史能力当真。真人打开目标 Actor 是显式
-  // 取数动作；canonical live probe 落账后，原 processing turn 才恢复安全编辑。
-  const details = await openSteward(page);
-  await expect(details.getByText(/^\d+ 项能力$/)).toBeVisible();
-  await page.getByRole('button', { name: '关闭上下文' }).click();
+  // 当前连接尚无 Describe 时不能把历史能力当真，也不能把 unknown 误报为
+  // unsupported。可编辑控制本身形成一次有界的按需取数义务；能力落账后同一
+  // turn 恢复编辑，不要求用户绕去打开成员面板。
+  await expect(turn.getByText('Agent 版本不支持安全编辑', { exact: true })).toHaveCount(0);
   await expect(turn.getByRole('button', { name: '编辑' })).toBeVisible();
 });
