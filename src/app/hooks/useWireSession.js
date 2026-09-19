@@ -78,10 +78,12 @@ function accessMode(state, connected) {
   if (state.existence === 'retired') return 'retired';
   if (state.relationship === 'denied') return 'access_denied';
   if (state.relationship === 'member') {
-    if (state.unavailable || state.runtime === 'closed') return 'member_unavailable';
+    if (state.unavailable || (state.profile && state.runtime !== 'open')) return 'member_unavailable';
     return 'member_active';
   }
-  if (state.relationship === 'observer') return connected && state.runtime === 'open' ? 'observer_active' : 'observer_stale';
+  if (state.relationship === 'observer') return connected && state.freshness === 'fresh' && state.runtime === 'open'
+    ? 'observer_active'
+    : 'observer_stale';
   return state.relationship === 'discoverable' ? 'discoverable' : 'loading';
 }
 
@@ -128,28 +130,54 @@ function createSessionAccess({ principalId }) {
           next.existence = profile.status === 'retired' ? 'retired' : 'present';
           next.runtime = profile.open === false ? 'closed' : profile.open === true ? 'open' : 'unknown';
           next.unavailable = profile.open === true ? false : next.unavailable;
-          if (profile.id === 'c0' && profile.owner_principal === principalId) next.relationship = 'member';
+          if (profile.id === 'c0' && profile.owner_principal === principalId) {
+            next.relationship = 'member';
+            next.freshness = connected ? 'fresh' : 'stale';
+            next.unavailable = false;
+          }
           else if (next.relationship === 'unknown') next.relationship = 'discoverable';
         });
       }
-      if (complete) for (const state of states.values()) if (state.profile && !seen.has(state.channelId)) changeAuthority(state, (next) => { next.existence = 'retired'; });
+      if (complete) for (const state of states.values()) if (state.profile && !seen.has(state.channelId)) changeAuthority(state, (next) => {
+        next.existence = 'retired';
+        next.runtime = 'closed';
+        next.freshness = 'fresh';
+        next.unavailable = false;
+      });
     },
     directoryObserved(directory) { spaceDirectory = directory; },
     membershipsObserved(rows, { complete = true } = {}) {
       const active = new Set();
       for (const row of rows || []) {
         if (!row?.channel_id) continue;
-        active.add(row.channel_id);
         const state = ensure(row.channel_id);
-        changeAuthority(state, (next) => {
-          next.relationship = row.status === 'active' ? 'member' : row.status === 'revoked' ? 'denied' : next.relationship;
-          next.selfActorId = row.actor_id || next.selfActorId;
-          next.freshness = 'fresh';
-        });
+        if (row.status === 'active') {
+          active.add(row.channel_id);
+          changeAuthority(state, (next) => {
+            if (next.existence !== 'retired') next.existence = 'present';
+            next.relationship = 'member';
+            next.freshness = connected ? 'fresh' : 'stale';
+            next.unavailable = false;
+            if (row.actor_id) next.selfActorId = row.actor_id;
+          });
+        } else if (row.status === 'revoked'
+          && !(state.channelId === 'c0' && state.profile?.owner_principal === principalId)) {
+          changeAuthority(state, (next) => {
+            next.relationship = 'denied';
+            next.freshness = 'fresh';
+            next.selfActorId = '';
+            next.unavailable = false;
+          });
+        }
       }
       if (complete) for (const state of states.values()) {
         if (state.relationship === 'member' && !active.has(state.channelId) && !(state.channelId === 'c0' && state.profile?.owner_principal === principalId)) {
-          changeAuthority(state, (next) => { next.relationship = 'discoverable'; next.selfActorId = ''; });
+          changeAuthority(state, (next) => {
+            next.relationship = 'denied';
+            next.freshness = 'fresh';
+            next.selfActorId = '';
+            next.unavailable = false;
+          });
         }
       }
     },
@@ -158,16 +186,22 @@ function createSessionAccess({ principalId }) {
       const before = `${state.existence}:${state.relationship}:${state.unavailable}`;
       if (state.existence !== 'retired') state.existence = 'present';
       if (state.relationship !== 'member') state.relationship = 'observer';
-      state.runtime = 'open'; state.unavailable = false; state.freshness = 'fresh';
+      state.unavailable = false; state.freshness = 'fresh';
       return before !== `${state.existence}:${state.relationship}:${state.unavailable}`;
     },
-    forbidden(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.relationship = 'denied'; next.selfActorId = ''; next.unavailable = false; }); },
-    unavailable(channelId) { const state = ensure(channelId); state.unavailable = true; },
-    retire(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.existence = 'retired'; next.runtime = 'closed'; }); },
-    wire(status) { connected = status === 'attached'; },
+    forbidden(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.relationship = 'denied'; next.freshness = 'fresh'; next.selfActorId = ''; next.unavailable = false; }); },
+    unavailable(channelId) { const state = ensure(channelId); state.unavailable = true; state.freshness = connected ? 'fresh' : 'stale'; },
+    retire(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.existence = 'retired'; next.runtime = 'closed'; next.freshness = 'fresh'; next.unavailable = false; }); },
+    wire(status) {
+      connected = status === 'attached';
+      for (const state of states.values()) {
+        if (state.relationship === 'member') state.freshness = connected ? 'fresh' : 'stale';
+        else if (state.relationship === 'observer' && !connected) state.freshness = 'stale';
+      }
+    },
     clearSelf(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.selfActorId = ''; }); },
     reset() {
-      states.clear(); authorityEpoch += 1;
+      states.clear(); connected = false; authorityEpoch += 1;
       spaceDirectory = Object.freeze({
         principals: Object.freeze([]), declarations: Object.freeze([]), devices: Object.freeze([]),
         support: Object.freeze({ principals: false, declarations: false, devices: false }),
