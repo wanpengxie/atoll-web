@@ -730,6 +730,16 @@ export function VendorListExecutor({
     positionRestoreRef.current = null;
   }, []);
 
+  // Following has no usable viewport until its first semantic presentation
+  // arrives. Do not publish an empty list as the active handoff: callers can
+  // otherwise observe and interact with a real scroll root before the delayed
+  // history supply has produced any readable rows. Browsing keeps its restore
+  // status, and authoritative empty channels still use the explicit empty
+  // region below once initialization has settled.
+  if (reading.initializing && reading.session.mode === READING_MODE.following && !snapshot.rows.length) {
+    return null;
+  }
+
   if (reading.restorePending && !snapshot.rows.length) {
     return <div className="timeline-message-list timeline-reading-restore" role="status">正在恢复上次阅读位置…</div>;
   }

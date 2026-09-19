@@ -67,3 +67,16 @@ it('publishes visibility through the reading owner and keeps restore state in th
   />);
   expect(owner.onSurfaceVisibilityChange).toHaveBeenLastCalledWith(false);
 });
+
+it('does not expose a following viewport before its first readable presentation', () => {
+  const owner = reading('following', { initializing: true });
+  const view = render(<ReadingContainerHandoff
+    reading={owner}
+    surfaceVisible
+    snapshot={{ rows: [] }}
+    renderRow={() => null}
+  />);
+
+  expect(view.container.querySelectorAll('.timeline-reading-layer.is-active')).toHaveLength(1);
+  expect(view.container.querySelectorAll('.timeline-message-list')).toHaveLength(0);
+});
