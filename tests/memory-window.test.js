@@ -94,10 +94,120 @@ describe('current bounded Replica ownership (baseline memory-window UX)', () => 
     commit(store, row(2, { id: 'progress', kind: 'response', type: 'agent.ask', sender: AGENT, audience: [SELF], parentId: 'open-request' }));
     const turn = store.state(CHANNEL).timeline[0]?.turn;
     expect(turn).toMatchObject({ requestId: 'open-request', terminal: null, status: 'pending' });
-    expect(store.trim(CHANNEL, 1)).toBe(1);
-    expect(store.state(CHANNEL).timeline).toEqual([]);
-    // A bounded Replica deliberately fails closed after its request is evicted;
-    // history/cache must re-admit the request before Presentation can show it.
+    expect(store.trim(CHANNEL, 1)).toBe(0);
+    expect([...store.state(CHANNEL).rows.keys()]).toEqual([1, 2]);
+    expect(store.state(CHANNEL).timeline[0]?.turn).toMatchObject({
+      requestId: 'open-request', terminal: null, status: 'pending',
+    });
+    // An open turn may temporarily exceed the configured row limit: deleting
+    // either canonical row would make its visible lifecycle incoherent.
+  });
+
+  it('retains an older incomplete turn across trim pressure', () => {
+    const store = createChannelReplicaStore();
+    commit(store, request(1, 'old-open-request'));
+    commit(store, row(2, {
+      id: 'old-open-progress',
+      kind: 'response',
+      type: 'agent.ask',
+      sender: AGENT,
+      audience: [SELF],
+      parentId: 'old-open-request',
+      text: 'still working',
+    }));
+    for (let seq = 3; seq <= 12; seq += 1) commit(store, row(seq, { id: `new-event-${seq}` }));
+
+    expect(store.trim(CHANNEL, 4)).toBe(0);
+    const state = store.state(CHANNEL);
+    const open = state.timeline.find((entry) => entry.turn?.requestId === 'old-open-request')?.turn;
+    // An incomplete turn is user-visible work in progress. Trimming may evict
+    // unrelated closed rows, but it must keep the request and its provisional
+    // evidence coherent even when that turn is older than the trim frontier.
+    expect(state.rows.has(1)).toBe(true);
+    expect(state.rows.has(2)).toBe(true);
+    expect(state.rows.size).toBe(12);
+    expect(open).toMatchObject({ requestId: 'old-open-request', terminal: null, status: 'pending' });
+  });
+
+  it('evicts rows before the open floor while retaining the complete open tail', () => {
+    const store = createChannelReplicaStore();
+    for (let seq = 1; seq <= 4; seq += 1) commit(store, row(seq));
+    commit(store, request(5, 'floor-open-request'));
+    commit(store, row(6, {
+      id: 'floor-open-progress', kind: 'response', type: 'agent.ask', sender: AGENT,
+      audience: [SELF], parentId: 'floor-open-request', text: 'still working',
+    }));
+    for (let seq = 7; seq <= 12; seq += 1) commit(store, row(seq, { id: `tail-${seq}` }));
+
+    expect(store.trim(CHANNEL, 4)).toBe(4);
+    const state = store.state(CHANNEL);
+    expect([...state.rows.keys()]).toEqual([5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(state.timeline.find((entry) => entry.turn?.requestId === 'floor-open-request')?.turn)
+      .toMatchObject({ requestId: 'floor-open-request', terminal: null, status: 'pending' });
+
+    commit(store, response(13, 'floor-open-final', 'floor-open-request', 'done'));
+    expect(state.timeline.find((entry) => entry.turn?.requestId === 'floor-open-request')?.turn)
+      .toMatchObject({ requestId: 'floor-open-request', status: 'completed' });
+  });
+
+  it('pins an open child together with its terminal ancestor', () => {
+    const store = createChannelReplicaStore();
+    commit(store, request(1, 'root-request'));
+    commit(store, row(2, {
+      id: 'child-request', kind: 'request', type: 'tool.exec', sender: AGENT,
+      audience: [SELF], parentId: 'root-request', text: 'tool call',
+    }));
+    commit(store, response(3, 'root-final', 'root-request', 'root done'));
+    commit(store, row(4, {
+      id: 'child-progress', kind: 'response', type: 'tool.exec', sender: AGENT,
+      audience: [SELF], parentId: 'child-request', text: 'still working',
+    }));
+    for (let seq = 5; seq <= 8; seq += 1) commit(store, row(seq, { id: `tail-${seq}` }));
+
+    expect(store.trim(CHANNEL, 4)).toBe(0);
+    const state = store.state(CHANNEL);
+    const root = state.timeline.find((entry) => entry.turn?.requestId === 'root-request');
+    expect([...state.rows.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(root?.turn).toMatchObject({ requestId: 'root-request', status: 'completed' });
+    expect(root?.thread.find((entry) => entry.turn?.requestId === 'child-request')?.turn)
+      .toMatchObject({ requestId: 'child-request', terminal: null, status: 'pending' });
+  });
+
+  it('drops a retained response when trimming evicts its request parent', () => {
+    const store = createChannelReplicaStore();
+    commit(store, request(1, 'closed-request'));
+    commit(store, response(2, 'closed-final', 'closed-request', 'done'));
+    for (let seq = 3; seq <= 6; seq += 1) commit(store, row(seq, { id: `tail-${seq}` }));
+    commit(store, row(7, {
+      id: 'orphan-progress', kind: 'response', type: 'agent.ask', sender: AGENT,
+      audience: [SELF], parentId: 'closed-request', text: 'stale progress',
+    }));
+    commit(store, row(8, { id: 'tail-8' }));
+
+    expect(store.trim(CHANNEL, 4)).toBe(5);
+    const state = store.state(CHANNEL);
+    expect([...state.rows.keys()]).toEqual([5, 6, 8]);
+    expect(state.rows.has(7)).toBe(false);
+    expect(state._envelopesById.has('orphan-progress')).toBe(false);
+    expect(state.timeline.some((entry) => entry.turn?.requestId === 'closed-request')).toBe(false);
+  });
+
+  it('does not publish or acknowledge a live arrival while trimming rows', () => {
+    const store = createChannelReplicaStore();
+    const state = store.ensure(CHANNEL).state;
+    state.arrivalReceipts.attachTimelineConsumer(Symbol('trim-test'));
+    const liveRequest = row(1, {
+      id: 'live-approval', kind: 'request', type: 'human.approve', sender: AGENT, audience: [SELF],
+    });
+    commit(store, { ...liveRequest, source: 'live' });
+    commit(store, { ...response(2, 'live-final', 'live-approval', 'approved'), source: 'live' });
+    for (let seq = 3; seq <= 8; seq += 1) commit(store, row(seq, { id: `tail-${seq}` }));
+    const before = state.arrivalReceipts.timeline();
+
+    expect(store.trim(CHANNEL, 4)).toBeGreaterThan(0);
+    expect(state.arrivalReceipts.timeline()).toEqual(before);
+    expect(state._liveArrivalRevision).toBe(before.revision);
+    expect(state._liveArrivalAckRevision).toBe(before.acknowledgedRevision);
   });
 
   it('rejects duplicate sequence and duplicate envelope writes without corrupting the ledger', () => {

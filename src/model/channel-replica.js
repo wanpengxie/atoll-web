@@ -102,6 +102,66 @@ function reconcileTimelineEntry(previous, next) {
   return previous;
 }
 
+function requestParentID(request) {
+  const parentID = String(request?.parent_id || request?.correlation_id || '');
+  return parentID && parentID !== String(request?.id || '') ? parentID : '';
+}
+
+// Trimming is allowed to move the materialized window, but it must not cut a
+// still-running turn in half. This is deliberately derived from the current
+// timeline rather than stored as another lifecycle: an open child also pins
+// every request ancestor so the surviving child cannot become a rootless
+// projection after the next rebuild.
+function openTurnFloor(state) {
+  const requests = new Map();
+  const requestSeqs = new Map();
+  for (const [seq, envelope] of state.rows) {
+    if (envelope?.kind !== 'request' || !envelope.id) continue;
+    const id = String(envelope.id);
+    requests.set(id, envelope);
+    requestSeqs.set(id, seq);
+  }
+
+  let floor = Number.POSITIVE_INFINITY;
+  const visit = (entry) => {
+    if (entry?.kind !== 'turn' || !entry.turn) return;
+    if (!entry.turn.terminal) {
+      let requestID = String(entry.turn.requestId || '');
+      const visited = new Set();
+      while (requestID && !visited.has(requestID)) {
+        visited.add(requestID);
+        const requestSeq = requestSeqs.get(requestID);
+        if (Number.isSafeInteger(requestSeq)) floor = Math.min(floor, requestSeq);
+        const parentID = requestParentID(requests.get(requestID));
+        if (!parentID || !requests.has(parentID)) break;
+        requestID = parentID;
+      }
+    }
+    for (const child of entry.thread || []) visit(child);
+  };
+  for (const entry of state.timeline || []) visit(entry);
+  return floor;
+}
+
+// A response without its request is not a second turn/lifecycle. Once a trim
+// pass has decided which rows remain, drop such progress/final rows in the same
+// mutation so rebuildState cannot retain raw orphan evidence that is invisible
+// to the timeline. Out-of-order history can re-admit the canonical request and
+// response later through the normal commit path.
+function removeOrphanResponses(state) {
+  const requestIDs = new Set();
+  for (const envelope of state.rows.values()) {
+    if (envelope?.kind === 'request' && envelope.id) requestIDs.add(String(envelope.id));
+  }
+  const orphanSeqs = [];
+  for (const [seq, envelope] of state.rows) {
+    if (envelope?.kind !== 'response' || !envelope.parent_id) continue;
+    if (!requestIDs.has(String(envelope.parent_id))) orphanSeqs.push(seq);
+  }
+  for (const seq of orphanSeqs) state.rows.delete(seq);
+  return orphanSeqs.length;
+}
+
 // Replica is the only mutable materialized ledger. Every source commits here;
 // the fold is recomputed from that canonical row set so out-of-order cache,
 // history and live delivery cannot create competing folds. Reconciliation
@@ -455,15 +515,24 @@ export function createChannelReplicaStore() {
     const record = records.get(channelId);
     const limit = numeric(maximumRows);
     if (!record || !limit || record.state.rows.size <= limit) return 0;
-    const remove = [...record.state.rows.keys()].sort((a, b) => a - b).slice(0, record.state.rows.size - limit);
+    const seqs = [...record.state.rows.keys()].sort((a, b) => a - b);
+    const ordinaryCut = seqs[record.state.rows.size - limit];
+    const floor = openTurnFloor(record.state);
+    const cut = Number.isFinite(floor) && floor > 0
+      ? Math.min(ordinaryCut, floor)
+      : ordinaryCut;
+    const remove = seqs.filter((seq) => seq < cut);
     for (const seq of remove) record.state.rows.delete(seq);
+    const orphanCount = removeOrphanResponses(record.state);
+    const removed = remove.length + orphanCount;
+    if (!removed) return 0;
     rebuildState(record.state);
     record.materializedCoverage = [...record.state.rows.keys()].sort((a, b) => a - b)
       .reduce((all, seq) => mergeReplicaCoverage(all, { lowSeq: seq, highSeq: seq }), []);
     record.revision += 1;
     record.state._timelineRevision += 1;
     record.state._timelineProjectionVersion += 1;
-    return remove.length;
+    return removed;
   }
 
   function reset() { states = new Map(); records.clear(); }
