@@ -11,6 +11,7 @@ import { createHistoryPresentationAdmission } from './history-presentation-admis
 import { createHistoryBoundedExecutor } from './history-bounded-executor.js';
 import { createHistorySourceAdapters } from './history-source-adapters.js';
 import { isRailNotifiableDisposition, notificationDisposition } from './notification-policy.js';
+import { registerRailDiagnosticProvider } from './diagnostics.js';
 
 export const HISTORY_PAGE_SIZE = 128;
 export const HISTORY_BATCH_BYTES = 1024 * 1024;
@@ -333,6 +334,7 @@ export function createChannelFeedRuntime(options = {}) {
   let timerAcknowledgedRevision = 0;
   let timerOverflow = null;
   let notificationAuthorityRevision = 0;
+  let releaseRailDiagnostic = null;
 
   const cacheError = (error) => {
     if (error?.code !== 'cache_owner_changed') callback('onError', error);
@@ -636,6 +638,68 @@ export function createChannelFeedRuntime(options = {}) {
     }
     const unread = unreadRoots.size;
     return Object.freeze({ related: unread, total: unread });
+  }
+
+  // Diagnostics is an observation port for the existing rail, not another
+  // notification owner. Keep the provider beside Feed's canonical cursor and
+  // Replica state so the public snapshot cannot silently fall back to the
+  // empty provider when the old hook composition is absent.
+  function railDiagnosticSnapshot(requestedChannelId = '') {
+    const channelIDs = new Set([
+      ...replica.states().keys(),
+      ...histories.keys(),
+    ]);
+    const channels = [];
+    for (const channelId of channelIDs) {
+      if (requestedChannelId && channelId !== requestedChannelId) continue;
+      const state = replica.state(channelId);
+      const selfID = rosterRef.current?.self?.(channelId) || '';
+      const notificationHighWater = cursors.notificationHighWater(channelId);
+      const counts = unreadFor(channelId, selfID);
+      const status = histories.get(channelId);
+      const following = followingObservations.get(channelId);
+      const seenRoots = new Set();
+      const rows = [];
+      for (const [seq, envelope] of state?.rows || []) {
+        if (rows.length >= 200) break;
+        const rootID = notificationRootID(state, envelope);
+        let ackReason = '';
+        if (seq <= notificationHighWater) ackReason = 'high_water';
+        else if (samePerson(envelope?.sender?.id, selfID)) ackReason = 'self';
+        else {
+          const disposition = notificationDisposition(state, envelope, selfID);
+          if (!isRailNotifiableDisposition(disposition)) ackReason = disposition;
+          else if (!notificationRelatesTo(state, envelope, selfID)) ackReason = 'outside_scope';
+          else if (following?.authority?.principalId === principal
+            && following.authority.serverBoot === world
+            && following.owner?.generation === status?.generation
+            && seq <= following.headSeq) ackReason = 'following_presented';
+          else if (!rootID) ackReason = 'missing_root';
+          else if (seenRoots.has(rootID)) ackReason = 'duplicate_root';
+          else {
+            seenRoots.add(rootID);
+            ackReason = 'counted_related';
+          }
+        }
+        rows.push({
+          id: rootID || envelope?.id || '',
+          type: envelope?.type || '',
+          kind: envelope?.kind || '',
+          status: String(argsOf(envelope)?.status || ''),
+          seq,
+          ackReason,
+        });
+      }
+      channels.push(Object.freeze({
+        channelId,
+        authorityReady: cursors.isReadAuthorityReady(),
+        readSeq: cursors.read(channelId),
+        notificationHighWater,
+        counts: { related: counts.related, total: counts.total },
+        rows: Object.freeze(rows),
+      }));
+    }
+    return Object.freeze({ version: 1, channels: Object.freeze(channels) });
   }
 
   function batchFor(channelId, request = {}) {
@@ -1262,6 +1326,8 @@ export function createChannelFeedRuntime(options = {}) {
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    releaseRailDiagnostic?.();
+    releaseRailDiagnostic = null;
     for (const batch of networkBatches.values()) void adapters.cancel(batch, 'feed runtime destroyed');
     networkBatches.clear(); executor.clear('feed runtime destroyed');
     activityEntries.clear(); timerEvents.splice(0);
@@ -1293,6 +1359,8 @@ export function createChannelFeedRuntime(options = {}) {
       if (destroyed) throw new Error('ChannelFeedRuntime has been destroyed');
       if (mounted) return () => {};
       mounted = true;
+      releaseRailDiagnostic?.();
+      releaseRailDiagnostic = registerRailDiagnosticProvider(railDiagnosticSnapshot);
       const current = ++mountGeneration;
       return () => {
         if (!mounted || current !== mountGeneration) return;
