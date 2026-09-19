@@ -5,8 +5,8 @@ This is a follow-up to
 [`A-D-UNIT-MIGRATION-VERIFICATION-20260920.md`](./A-D-UNIT-MIGRATION-VERIFICATION-20260920.md).
 At creation, the packet classified 116 rows as `BLOCKED`. The P0 public-owner
 fixture batch has since recovered nine rows (AD-057/058, AD-125–127, and
-AD-138–141); the first P1 composed-interaction fixture batch now has public
-owner red reproductions for AD-014 and AD-017, so 105 rows remain blocked.
+AD-138–141); the first P1 composed-interaction fixture batch has now fixed the
+public-owner fixes for AD-014 and AD-017, so 105 rows remain blocked.
 AD-316 remains an explicit blocked reproduction because the current
 `SpaceDevices` owner submits but does not refresh its authoritative projection.
 No row is obsolete, deleted, or skipped.
@@ -94,9 +94,9 @@ The classification is an evidence triage, not a verdict on product scope:
 | Category | Count | Rule |
 |---|---:|---|
 | 缺 owner (`OWNER_MISSING`) | 11 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. |
-| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 89 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Nine P0 rows are PASS and two P1 rows now have public red fixtures. |
+| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 89 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Nine P0 rows and two P1 rows now have public PASS fixtures. |
 | 真实能力缺口 (`CAPABILITY_GAP`) | 5 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. |
-| **Total** | **105** | Nine P0 rows moved to PASS and two P1 rows moved to REGRESSION after focused public-owner verification. |
+| **Total** | **105** | Nine P0 rows moved to PASS and two P1 rows moved from REGRESSION to PASS after focused public-owner verification. |
 
 ### `OWNER_MISSING` — 11 rows
 
@@ -122,7 +122,7 @@ auditable:
 
 | Baseline source | Count | Rows |
 |---|---:|---|
-| `agent-control.test.js` | 0 | `AD-014`, `AD-017` now have public Waiting-composition red fixtures (`tests/agent-control.test.jsx:110,171`) and are ledger REGRESSION |
+| `agent-control.test.js` | 0 | `AD-014`, `AD-017` now have green public Waiting-composition fixtures (`tests/agent-control.test.jsx:110,171`) and are ledger PASS |
 | `agent-information-architecture.test.jsx` | 4 | `AD-027`, `AD-034`, `AD-037`, `AD-039` |
 | `agent-selection.test.js` | 0 | `AD-057`, `AD-058` recovered in `tests/agent-selection.test.js:150,163` |
 | `app-agent-probe-lifecycle.test.jsx` | 1 | `AD-074` |
@@ -134,11 +134,11 @@ auditable:
 | `cursors.test.js` | 27 | `AD-277`–`AD-278`, `AD-282`–`AD-304`, `AD-306`–`AD-307` |
 | `devices-panel.test.jsx` | 1 | `AD-316` |
 | `dynamic-f3.test.jsx` | 16 | `AD-327`–`AD-329`, `AD-331`, `AD-333`–`AD-338`, `AD-340`–`AD-343`, `AD-350`–`AD-351` |
-| **Total** | **89** | Nine P0 fixture rows now PASS; AD-014/017 now have public red reproductions; AD-316 remains blocked with a public red reproduction. |
+| **Total** | **89** | Nine P0 fixture rows and AD-014/017 now PASS; AD-316 remains blocked with a public red reproduction. |
 
 The remaining categories above retain their ledger `BLOCKED` status. AD-014 and
 AD-017 no longer count as fixture-missing: their public-owner fixtures are
-faithful but red and are recorded as `REGRESSION` product-gap packets. A future
+faithful and now PASS after the minimal Waiting-owner lifecycle fix. A future
 migration may add a public owner or a faithful fixture for the remaining rows
 and then re-run the original capability/invariant; it must not infer
 obsolescence from the current absence of evidence.

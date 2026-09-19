@@ -152,6 +152,23 @@ function holdDeadline(turn) {
   return requestTimestamp(turn?.request) + duration;
 }
 
+function resumedQueuedForHold(turn, holdId) {
+  const expected = String(holdId || '');
+  if (!expected) return false;
+  return [...(turn?.provisional || [])]
+    .sort((left, right) => Number(right.seq || 0) - Number(left.seq || 0))
+    .some((item) => {
+      const body = argsOf(item.envelope);
+      return body?.status === 'queued'
+        && body.resumed === true
+        && String(body.held_by || '') === expected;
+    });
+}
+
+function holdAdmissionReady(turn, holdId, location) {
+  return location !== 'processing' || resumedQueuedForHold(turn, holdId);
+}
+
 // Waiting no longer receives a second frozen-state store. Rebuild the visual
 // pause fact from this channel replica's own control turns and progress seqs.
 function heldActors(state, now = Date.now()) {
@@ -162,13 +179,13 @@ function heldActors(state, now = Date.now()) {
     if (!id) continue;
     const type = turn.request?.type;
     if (terminalCompleted(turn) && type === TYPES.agentHold) {
-      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'hold', turn });
+      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'freeze', source: 'hold', turn });
       holdOwners.set(turn.requestId, id);
     } else if (terminalCompleted(turn) && type === TYPES.agentUnhold
       && argsOf(turn.terminal)?.released !== false) {
       operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'release' });
     } else if (terminalCompleted(turn) && type === TYPES.agentInterrupt) {
-      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'release' });
+      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'freeze', source: 'interrupt', turn });
     }
     if (!AGENT_CONTENT_TYPES.has(type)) continue;
     const enteredBuffer = (turn.provisional || []).some((item) => {
@@ -178,7 +195,7 @@ function heldActors(state, now = Date.now()) {
     const capacityFailure = argsOf(turn.terminal)?.status === 'failed'
       && argsOf(turn.terminal)?.error_code === 'base_capacity';
     if (type !== TYPES.agentReplace && (enteredBuffer || capacityFailure)) {
-      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'release' });
+      operations.push({ actorId: id, seq: Number(turn.requestSeq || 0), kind: 'new-content' });
     }
     for (const item of turn.provisional || []) {
       const body = argsOf(item.envelope);
@@ -200,19 +217,41 @@ function heldActors(state, now = Date.now()) {
     }
   }
   operations.sort((left, right) => left.seq - right.seq);
-  const held = new Map();
+  const frozen = new Map();
   for (const operation of operations) {
-    if (operation.kind === 'hold') held.set(operation.actorId, {
-      holdId: operation.turn.requestId,
-      until: holdDeadline(operation.turn),
-    });
-    else if (operation.kind !== 'expire'
-      || held.get(operation.actorId)?.holdId === operation.holdId) held.delete(operation.actorId);
+    const current = frozen.get(operation.actorId);
+    if (operation.kind === 'freeze') {
+      const restore = operation.source === 'hold'
+        ? (current?.source === 'interrupt' ? current : current?.restore || null)
+        : null;
+      frozen.set(operation.actorId, {
+        holdId: operation.turn.requestId,
+        until: operation.source === 'interrupt' ? Number.POSITIVE_INFINITY : holdDeadline(operation.turn),
+        source: operation.source,
+        restore,
+        seq: operation.seq,
+      });
+    } else if (operation.kind === 'release') {
+      if (current?.source === 'hold') {
+        if (current.restore) frozen.set(operation.actorId, current.restore);
+        else frozen.delete(operation.actorId);
+      }
+    } else if (operation.kind === 'advanced' || operation.kind === 'new-content') {
+      if (current && operation.seq > current.seq) frozen.delete(operation.actorId);
+    } else if (operation.kind === 'expire'
+      && current?.source === 'hold'
+      && current.holdId === operation.holdId) {
+      if (current.restore) frozen.set(operation.actorId, current.restore);
+      else frozen.delete(operation.actorId);
+    }
   }
-  for (const [id, hold] of held) {
-    if (!(Number(now) < hold.until)) held.delete(id);
+  for (const [id, hold] of frozen) {
+    if (!(Number(now) < hold.until)) {
+      if (hold.source === 'hold' && hold.restore) frozen.set(id, hold.restore);
+      else frozen.delete(id);
+    }
   }
-  return held;
+  return frozen;
 }
 
 function latestStage(turn) {
@@ -605,6 +644,15 @@ export function useWaitingEditingController({
     setEditing(null);
     void release(editing).catch(() => {});
   }, [editing?.channelId, state.channelId]);
+  useEffect(() => {
+    const session = editingRef.current;
+    if (!session || session.phase !== 'waiting_for_resume' || !session.holdId) return;
+    const target = timelineTurn(state, session.targetId);
+    if (!holdAdmissionReady(target, session.holdId, session.location)) return;
+    const admitted = { ...session, location: 'queued', phase: 'editing' };
+    editingRef.current = admitted;
+    setEditing((current) => current?.sessionId === session.sessionId ? admitted : current);
+  }, [controlVersion, editing?.holdId, editing?.location, editing?.phase, editing?.sessionId, state]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
   useEffect(() => {
     if (typeof onRequestCapability !== 'function') throw new TypeError('Waiting 能力 owner 未连接');
@@ -686,7 +734,12 @@ export function useWaitingEditingController({
         payload: { target: turn.requestId },
       });
       if (!holdId) throw new Error('无法锁定这条任务');
-      const locked = { ...draft, holdId, phase: 'editing' };
+      const target = timelineTurn(state, draft.targetId) || turn;
+      const locked = {
+        ...draft,
+        holdId,
+        phase: holdAdmissionReady(target, holdId, draft.location) ? 'editing' : 'waiting_for_resume',
+      };
       if (releasePendingRef.current.has(draft.sessionId)
         || editingRef.current?.sessionId !== draft.sessionId) {
         await release(locked, turn);
@@ -773,7 +826,7 @@ export function useWaitingEditingController({
     if (!turn || turn.terminal || latestStage(turn) === 'timeline') setResumePin('');
   }, [controlVersion, resumePin, state]);
   useLayoutEffect(() => {
-    onComposerEditChange(editing?.holdId
+    onComposerEditChange(editing?.holdId && editing.phase !== 'waiting_for_resume'
       ? { session: editing, onSave: verifyAndSave, onAbandon: abandonEditing }
       : null);
   }, [editing?.targetId, editing?.phase, editing?.error, onComposerEditChange]);

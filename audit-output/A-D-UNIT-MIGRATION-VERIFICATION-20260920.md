@@ -5,7 +5,7 @@ suites and 365 declarations. The complete case ledger remains
 [`RESTORE-CASES-A-D-20260919.md`](./RESTORE-CASES-A-D-20260919.md), with one
 row per baseline declaration and the current result, public owner, invariant,
 and disposition. After the P0 batch and the first P1 composed-interaction
-fixture batch, accepted case totals are **246 PASS / 14 REGRESSION / 105
+fixture batch, accepted case totals are **248 PASS / 12 REGRESSION / 105
 BLOCKED**.
 
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
@@ -14,12 +14,11 @@ AD-316 remains an explicit blocked red reproduction: the current
 `SpaceDevices` owner submits a device command but does not request an
 authoritative refresh after terminal.
 
-The first P1 composed-interaction batch adds public-owner red reproductions for
-AD-014 and AD-017 through the Waiting composition: the timeline edit action
-hands processing work to the Composer before the target's queued+resumed fact,
-and an overlaid edit hold loses the underlying interrupt pause after
-release/expiry. Both remain red product-gap assertions; no feed runtime or
-product code was changed.
+The first P1 composed-interaction batch now passes AD-014 and AD-017 through
+the Waiting composition: the timeline edit action stays out of the Composer
+until the target's matching queued+resumed fact, and an overlaid edit hold
+restores the underlying interrupt pause after release/expiry. No feed runtime
+or product code outside the Waiting/edit owner was changed.
 
 ## Public-boundary migration completed in this pass
 
@@ -59,7 +58,7 @@ The focused slices were run with Vitest against current public owners:
 | P0 public-owner fixture slices | 9 passed across Agent/Identity/Describe; AD-316 remains red | nine P0 rows now have one-to-one fixtures; the device refresh gap remains explicit |
 | `tests/channel-access.test.js` | 6 passed, 1 red | AD-143 only: current public owner exposes actor/lobby rows instead of hiding them |
 | `tests/agent-activity.test.js` | 4 passed, 1 red | AD-011 only: boot-reset history closure drops the settled projection |
-| `tests/agent-control.test.jsx -t '\[AD-(014|017)\]'` | 2 red | AD-014/017: public WaitingLayer composed fixtures reproduce the edit-admission and interrupt-overlay gaps |
+| `tests/agent-control.test.jsx -t '\[AD-(014|017)\]'` | 2 passed | AD-014/017: public Waiting composition now gates edit admission and restores interrupt overlay state |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-018, AD-021, AD-022, AD-031, AD-032, AD-038, AD-041, AD-062, AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
 
 The red assertions are intentionally not weakened, skipped, or deleted. The
@@ -69,9 +68,9 @@ the deleted `feed-cache.test.js` successor (data-plane/F scope), not to the
 
 ## Boundary proof
 
-- Changed files are confined to `tests/` A–D unit tests and this A–D audit
-  report (plus the existing case ledger owner/evidence wording).
-- No `src/`, `vendor/`, package manifest, lockfile, or private production export
-  changed.
+- Changed files are confined to `tests/` A–D unit tests, A–D audit reports, and
+  the existing Waiting/edit owner `src/ui/timeline/useWaitingEditingController.jsx`.
+- No Workspace, Reading, Outbox, Feed runtime, vendor, package manifest,
+  lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
   product-gap packets until a product owner supplies a current public owner.

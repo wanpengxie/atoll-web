@@ -6,8 +6,8 @@
 //   - agentFrozenState → 模块私有的 heldActors(state, now)（未导出，只能通过渲染
 //     WaitingLayer 观察其 DOM 效应："已暂停"文案）
 //   - editAdmission/lockFromContext（"信一次实时快照，逐帧重新判定锁是否还有效"）
-//     整个模型已经不存在：新架构改成"拿到 hold 就信，显式 release 才放"的一次性信任
-//     模型，没有逐帧重新校验锁合法性的live re-derivation
+//     整个模型已经不存在：现 owner 在 processing 目标上先等 matching queued+resumed
+//     admission，再交接 Composer；拿到 edit hold 后仍由显式 release 收回。
 // 判定逐条记在 audit-output/RESTORE-MATRIX.md。
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -146,6 +146,26 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
         payload: { body: { status: 'queued', resumed: true, held_by: 'hold-work', controls: [{ word: 'agent.replace' }] } },
       },
     };
+    const staleResumeFrame = {
+      ...resumedFrame,
+      envelope: {
+        ...resumedFrame.envelope,
+        payload: { body: { ...resumedFrame.envelope.payload.body, held_by: 'other-hold' } },
+      },
+    };
+    const staleResumedTarget = turn({
+      requestId: 'work', actorId: 'agent', type: 'agent.ask', requestSeq: 1,
+      provisional: [processingFrame, staleResumeFrame],
+    });
+    const staleState = { channelId: 'c0', rows: new Map(), timeline: timeline([staleResumedTarget]) };
+    view.rerender(<PublicEditingHarness
+      state={staleState}
+      turn={staleResumedTarget}
+      onTaskControl={onTaskControl}
+      onComposerEditChange={onComposerEditChange}
+    />);
+    const editingAfterStaleResume = onComposerEditChange.mock.lastCall?.[0] || null;
+
     const resumedTarget = turn({
       requestId: 'work', actorId: 'agent', type: 'agent.ask', requestSeq: 1,
       provisional: [processingFrame, resumedFrame],
@@ -163,9 +183,10 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
     // 没有等 queued+resumed 事实；这是首个产品分歧，保留红断言而不绕过 owner。
     expect({
       beforeResume: Boolean(editingBeforeResume?.session),
+      afterStaleResume: Boolean(editingAfterStaleResume?.session),
       afterResume: Boolean(editingAfterResume?.session),
       holdTarget: onTaskControl.mock.calls.find(([value]) => value.type === 'agent.hold')?.[0]?.turn?.requestId,
-    }).toEqual({ beforeResume: false, afterResume: true, holdTarget: 'work' });
+    }).toEqual({ beforeResume: false, afterStaleResume: false, afterResume: true, holdTarget: 'work' });
   });
 
   it('[AD-017] restores the interrupt pause after an overlaid edit hold is released or expires', () => {
@@ -201,10 +222,29 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
     const expiredState = { channelId: 'c0', rows: new Map(), timeline: timeline([stop, expiredHold, expiredQueued]) };
     render(<WaitingLayer {...baseProps({ turns: [expiredQueued], state: expiredState })} />);
     const pauseAfterExpiry = Boolean(pausedFor('agent'));
+    cleanup();
 
-    // 当前 heldActors 只保留最新 hold，unhold/时间到期后会丢弃 stop 的基础事实；
-    // 两个期望都保留为红项，等待产品 owner 修复状态转移。
-    expect({ pauseAfterRelease, pauseAfterExpiry }).toEqual({ pauseAfterRelease: true, pauseAfterExpiry: true });
+    const plainHold = turn({
+      requestId: 'plain-hold', actorId: 'agent', type: 'agent.hold', requestSeq: 1,
+      terminal: completedTerminal({ requestId: 'plain-hold', type: 'agent.hold' }),
+    });
+    const plainRelease = turn({
+      requestId: 'plain-release', actorId: 'agent', type: 'agent.unhold', requestSeq: 2,
+      extra: { expected_hold_id: 'plain-hold' },
+      terminal: completedTerminal({ requestId: 'plain-release', type: 'agent.unhold', extra: { released: true, hold_id: 'plain-hold' } }),
+    });
+    const plainQueued = turn({ requestId: 'plain-work', actorId: 'agent', type: 'agent.ask', requestSeq: 3 });
+    const plainState = { channelId: 'c0', rows: new Map(), timeline: timeline([plainHold, plainRelease, plainQueued]) };
+    render(<WaitingLayer {...baseProps({ turns: [plainQueued], state: plainState })} />);
+    const pauseWithoutInterrupt = Boolean(pausedFor('agent'));
+
+    // 公开 owner 应保留 interrupt 作为 hold overlay 的 restore point；没有
+    // interrupt 时则正常回到无暂停。三个断言固定这条最小状态转移。
+    expect({ pauseAfterRelease, pauseAfterExpiry, pauseWithoutInterrupt }).toEqual({
+      pauseAfterRelease: true,
+      pauseAfterExpiry: true,
+      pauseWithoutInterrupt: false,
+    });
   });
 
   it('32 derives freeze from wall clock expiry and queue advancement', () => {
