@@ -33,6 +33,10 @@ function validateCachePage(batch, result, rows) {
 // Source adapters own I/O shape and validation only. They never inspect or
 // mutate channel lifecycle state and cannot choose the next obligation.
 export function createHistorySourceAdapters({ requestPage, cancelPage, readCache, registerNetwork }) {
+  const requiredPorts = { requestPage, cancelPage, readCache, registerNetwork };
+  for (const [name, port] of Object.entries(requiredPorts)) {
+    if (typeof port !== 'function') throw new TypeError(`history source adapters require ${name}`);
+  }
   const operations = new WeakMap();
   const terminal = new Set(['completed', 'failed', 'cancelled']);
 

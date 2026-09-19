@@ -73,7 +73,6 @@ function createState(id, previous = {}) {
     // without corrupting the deep-history frontier above.
     tailRefreshBeforeSeq: 0,
     tailRefreshFloorSeq: 0,
-    cacheBypassBeforeSeq: 0,
     localMeta: null,
     // In-memory scan evidence is independent from rendered rows. Visible seq
     // gaps are legal after visibility filtering; only these validated ranges
@@ -122,14 +121,14 @@ function visibleForegroundOwners(state) {
 
 export function createHistoryScheduler({
   requestPage,
-  cancelPage = () => Promise.resolve(),
-  readCache = async () => ({ rows: [], exhausted: true, nextBeforeSeq: 0, bytes: 0 }),
+  cancelPage,
+  readCache,
   revealRows,
-  hasVisibleRow = () => false,
-  hasPresentedRows = () => true,
-  visibleOldestSeq = () => 0,
-  visibleNewestSeq = () => 0,
-  persistRows = () => Promise.resolve(),
+  hasVisibleRow,
+  hasMaterializedRows,
+  visibleOldestSeq,
+  visibleNewestSeq,
+  persistRows,
   onChange = () => {},
   onError = () => {},
   flushRealtime = () => {},
@@ -145,6 +144,20 @@ export function createHistoryScheduler({
   maxBackgroundInflight = HISTORY_MAX_BACKGROUND_INFLIGHT,
   batchTimeoutMs = HISTORY_BATCH_TIMEOUT_MS,
 } = {}) {
+  const requiredPorts = {
+    requestPage,
+    cancelPage,
+    readCache,
+    revealRows,
+    hasVisibleRow,
+    hasMaterializedRows,
+    visibleOldestSeq,
+    visibleNewestSeq,
+    persistRows,
+  };
+  for (const [name, port] of Object.entries(requiredPorts)) {
+    if (typeof port !== 'function') throw new TypeError(`history scheduler requires ${name}`);
+  }
   const executor = createHistoryBoundedExecutor({
     concurrency: HISTORY_MAX_INFLIGHT,
     timeoutMs: batchTimeoutMs,
@@ -177,12 +190,7 @@ export function createHistoryScheduler({
   // Only the pull lane waits for local metadata selection. Transport attach
   // and live delivery remain independent, but history must not choose the
   // network merely because IndexedDB has not answered yet.
-  let localMetaReady = true;
-  // Transport attach must never wait for IndexedDB, so the focused channel
-  // can use the network immediately. While a complete cache selection is
-  // still pending, however, speculative work for channels off screen would
-  // occupy the same per-channel lane and prevent a later local-first focus.
-  let localSelectionPending = false;
+  let localMetaReady = false;
   const transportStats = {
     indexeddb: { durationMs: 80, rowsPerMs: 1.6, bytesPerMs: 16 * 1024, averageRowBytes: 2 * 1024, rowLimit: HISTORY_PAGE_SIZE },
     network: { durationMs: 400, rowsPerMs: 0.32, bytesPerMs: 4 * 1024, averageRowBytes: 2 * 1024, rowLimit: HISTORY_PAGE_SIZE },
@@ -342,7 +350,7 @@ export function createHistoryScheduler({
   function candidateInput() {
     return {
       states: [...channels.values()], focus, generation, replicaEpoch, localMetaEpoch,
-      localMetaReady, localSelectionPending, inflightByChannel,
+      localMetaReady, inflightByChannel,
       now: now(),
       globalReservoirBytes, reservedInflightBytes, dispatchSerial, dispatchWheelIndex,
       maxBackgroundInflight, transportStats,
@@ -582,20 +590,17 @@ export function createHistoryScheduler({
     if (!state) return;
     const rows = (result.rows || []).sort((left, right) => left.seq - right.seq);
     if (batch.source === 'indexeddb') {
-      // Metadata can become stale after FIFO/quota eviction. A miss does not
-      // advance truth; it only bypasses this cache claim at the same frontier.
+      // A complete cache snapshot is a source contract. Missing claimed data
+      // invalidates that contract; only a later authoritative snapshot may
+      // select a different source for this frontier.
       if (result.cacheMiss) {
-        state.cacheBypassBeforeSeq = batch.beforeSeq;
-		// A stale IndexedDB frontier may sit below the authoritative remote
-		// head. Falling through to network at that same deep cursor would skip
-		// the remote-only tail forever; reuse the existing freshness lane first.
-		if (batch.purpose === 'initial-tail') requireRemoteTail(state);
-        if (!state.attachedGeneration && batch.rangeKind === 'backfill') state.hasOlder = false;
-        diagnostic('warn', 'history.cache_claim_missed', {
+        const error = Object.assign(new Error('本地缓存覆盖声明与内容不一致'), {
+          code: 'history_cache_contract_mismatch',
+        });
+        diagnostic('error', 'history.cache_claim_missed', {
           channelId: state.id, beforeSeq: batch.beforeSeq, generation,
         });
-        settleForeground(state, { kind: 'exhausted', localOnly: true });
-        return;
+        throw error;
       }
       sources.validate(batch, result, rows);
     } else {
@@ -618,12 +623,10 @@ export function createHistoryScheduler({
     const acceptedRows = installStagedRows(state, stagedPage);
     if (batch.source === 'indexeddb') {
       if (batch.rangeKind === 'backfill') state.beforeSeq = Number(result.nextBeforeSeq);
-      state.cacheBypassBeforeSeq = 0;
-	  if (!state.attachedGeneration && result.exhausted && batch.rangeKind === 'backfill') state.hasOlder = false;
+		  if (!state.attachedGeneration && result.exhausted && batch.rangeKind === 'backfill') state.hasOlder = false;
     } else {
       state.headSeq = Math.max(state.headSeq, numeric(result.head_seq));
 	  if (batch.rangeKind === 'backfill') state.beforeSeq = Number(result.next_before_seq);
-	  state.cacheBypassBeforeSeq = 0;
 	  // Cursor zero is the ledger origin and therefore authoritative exhaustion,
 	  // even if an older server/mocked projector conservatively reports
 	  // has_older=true because only hidden housekeeping remains.
@@ -693,13 +696,13 @@ export function createHistoryScheduler({
         materializesCurrentTail: true,
         byteLimit: batch.byteLimit,
       });
-	  state.tailVisible = hasPresentedRows(state.id);
+		  state.tailVisible = hasMaterializedRows(state.id);
     } else if (!state.tailVisible && visibleIntent) {
       initialReleased = release(state, HISTORY_REVEAL_SIZE, { initial: true, byteLimit: batch.byteLimit });
-      state.tailVisible = hasPresentedRows(state.id);
+      state.tailVisible = hasMaterializedRows(state.id);
       if (!state.tailVisible && state.reservoir.size > 0) {
         initialReleased += release(state, state.reservoir.size, { initial: true, byteLimit: batch.byteLimit });
-        state.tailVisible = hasPresentedRows(state.id);
+        state.tailVisible = hasMaterializedRows(state.id);
       }
     }
 	if (batch.source === 'network' && batch.rangeKind === 'backfill' && batch.purpose === 'initial-tail') {
@@ -807,27 +810,11 @@ export function createHistoryScheduler({
 		  stateLease: batch.stateLease,
 		  generation: batch.generation,
 		};
-		const canFallbackToNetwork = batch.source === 'indexeddb'
-		  && generation > 0
-		  && state.attachedGeneration === generation;
-		if (canFallbackToNetwork) {
-		  state.cacheBypassBeforeSeq = batch.beforeSeq;
-		}
-		cancelBatch(batch, sourceError?.message || 'history source failed');
-		if (canFallbackToNetwork) {
-		  diagnostic('warn', 'history.source_fallback', {
-		    channelId: batch.channelId,
-		    from: 'indexeddb',
-		    to: 'network',
-		    beforeSeq: batch.beforeSeq,
-		    detail: sourceError?.message || '',
-		  });
-		} else {
-		  // A source failure is a typed terminal for this exact authority/frontier,
-		  // not EOF and not an automatic retry loop. Explicit Retry clears the
-		  // block once; source-authority replacement makes the fence inapplicable.
-		  retry(state, sourceError, { automatic: false });
-		}
+			cancelBatch(batch, sourceError?.message || 'history source failed');
+			// A selected source failure is terminal for this exact authority/frontier.
+			// It never rewrites source authority or silently retries through another
+			// provider. Only an explicit owner replacement may select a new source.
+			retry(state, sourceError, { automatic: false });
 		return;
 	  }
     }).finally(() => {
@@ -971,8 +958,7 @@ export function createHistoryScheduler({
 	  state.remoteEligible = true;
       state.headSeq = numeric(entry.head_seq);
 	  state.beforeSeq = canKeepLocalFrontier ? previous.beforeSeq : state.headSeq + 1;
-      state.cacheBypassBeforeSeq = 0;
-	  state.localMeta = meta;
+		  state.localMeta = meta;
 	  state.localCoverage = mergedCoverage(meta?.coverage || []);
 	  state.verifiedCoverage = previousGeneration === nextGeneration
 		&& previous?.attachedGeneration === nextGeneration
@@ -1340,12 +1326,12 @@ export function createHistoryScheduler({
       // suppresses the initial history page forever and opens an empty channel.
       if (!state.tailVisible && state.headSeq > 0
         && hasVisibleRow(state.id, state.headSeq)
-        && hasPresentedRows(state.id)) {
+        && hasMaterializedRows(state.id)) {
         state.tailVisible = true;
       }
       if (!state.tailVisible && state.reservoir.size > 0) {
         const released = release(state, HISTORY_PAGE_SIZE, { initial: true, byteLimit: HISTORY_REVEAL_BYTES });
-        if (released > 0 && hasPresentedRows(state.id)) state.tailVisible = true;
+        if (released > 0 && hasMaterializedRows(state.id)) state.tailVisible = true;
       }
       persistPriority();
     }
@@ -1432,11 +1418,9 @@ export function createHistoryScheduler({
     publishChange = true,
     localReady,
     replace = false,
-    selectionPending,
   } = {}) {
     const activatingLocalMeta = localReady === true && !localMetaReady;
     if (typeof localReady === 'boolean') localMetaReady = localReady;
-    if (typeof selectionPending === 'boolean') localSelectionPending = selectionPending;
     if (replace) {
       localMetaEpoch += 1;
       for (const batch of inflightByChannel.values()) {
@@ -1449,7 +1433,6 @@ export function createHistoryScheduler({
           && (!remoteAdmissionEstablished || admittedChannelIds.has(id))) continue;
         state.localMeta = null;
         state.localCoverage = [];
-        state.cacheBypassBeforeSeq = 0;
         const remoteAttached = Boolean(generation && state.attachedGeneration === generation);
         if (!remoteAttached) {
           state.headSeq = 0;
@@ -1479,25 +1462,17 @@ export function createHistoryScheduler({
 	    && state.headSeq > 0
 	    && state.completedPages === 0
 	    && !state.tailVisible
-	    && !hasPresentedRows(id)
+		    && !hasMaterializedRows(id)
 	    && cachedHead >= state.headSeq
 	    && tailWindowCovered(value, state.headSeq));
-	  if (coldLocalTail) {
-	    // Attach may have opened the remote fallback while the complete cache
-	    // snapshot was still selecting. Once the exact authoritative tail is
-	    // proven durable, make that local frontier the cold-start source and
-	    // retire only the redundant, not-yet-presented initial-tail request.
+		  if (coldLocalTail) {
+		    // Complete cache selection establishes the cold-start frontier before
+		    // scheduling begins. No provisional remote source is opened meanwhile.
 	    state.beforeSeq = cachedHead + 1;
 	    state.hasRows = cachedHead > 0 || state.hasRows;
 	    state.hasOlder = state.hasRows;
 	    state.tailRefreshBeforeSeq = 0;
 	    state.tailRefreshFloorSeq = 0;
-	    const batch = inflightByChannel.get(id);
-	    if (batch?.source === 'network'
-	      && batch.purpose === 'initial-tail'
-	      && batch.beforeSeq === state.headSeq + 1) {
-	      cancelBatch(batch, 'durable local tail replaced cold remote fallback');
-	    }
 	  }
 	  if (activatingLocalMeta && state.attachedGeneration && !state.tailVisible && state.completedPages === 0 && cachedHead > 0) {
 		// Local-first startup begins at the newest durable local interval. Once
@@ -1515,7 +1490,6 @@ export function createHistoryScheduler({
 	  if (state.attachedGeneration && state.tailVisible && tailWindowCovered(value, state.headSeq)) {
 		state.controlCurrent = true;
 	  }
-      state.cacheBypassBeforeSeq = 0;
       state.activity = Math.max(state.activity, numeric(value?.lastActivity));
 	  if (!state.attachedGeneration && !state.tailVisible && hasLocalKnowledge(value)) {
 		state.headSeq = localHead(value);
@@ -1711,7 +1685,6 @@ export function createHistoryScheduler({
         focus,
         generation,
         localMetaReady,
-        selectionPending: localSelectionPending,
         inflightCount: inflightByChannel.size,
         executorRunning: numeric(executor.snapshot().running),
         executorQueued: numeric(executor.snapshot().queued),

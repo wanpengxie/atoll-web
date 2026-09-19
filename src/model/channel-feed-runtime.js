@@ -22,7 +22,7 @@ import {
   readingTrace,
   registerRailDiagnosticProvider,
 } from './diagnostics.js';
-import { projectTimeline } from './timeline-projection.js';
+import { selectTimelineItems } from './timeline-projection.js';
 import { turnStartObservation } from './turn-process.js';
 import { createChannelReplicaStore } from './channel-replica.js';
 import { cacheWorldMismatch, createPersistenceEpochFence, createSyncObligationCoordinator } from './sync-session.js';
@@ -120,7 +120,6 @@ export function createChannelFeedRuntime(options) {
     const state = replicaRef.current.state(channelId);
     const revision = replicaRef.current.revision(channelId);
     const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
-    const acknowledged = cursorsRef.current.acknowledgedReadIdentities(channelId);
     const cached = unreadCacheRef.current.get(channelId);
     let counts = cached?.revision === revision
       && cached?.notificationHighWater === notificationHighWater
@@ -128,10 +127,7 @@ export function createChannelFeedRuntime(options) {
       ? cached.counts
       : null;
     if (!counts) {
-      counts = unreadCounts(state, notificationHighWater, selfId, {
-        incremental: true,
-        acknowledged,
-      });
+      counts = unreadCounts(state, notificationHighWater, selfId, { incremental: true });
       unreadCacheRef.current.set(channelId, {
         revision,
         notificationHighWater,
@@ -146,10 +142,7 @@ export function createChannelFeedRuntime(options) {
         readingTrace('notification.rail-classification', () => ({
           channelId,
           notificationHighWater,
-          ...unreadCountDiagnostics(state, notificationHighWater, selfId, {
-            incremental: true,
-            acknowledged,
-          }),
+          ...unreadCountDiagnostics(state, notificationHighWater, selfId, { incremental: true }),
         }));
       }
     }
@@ -182,10 +175,7 @@ export function createChannelFeedRuntime(options) {
           state,
           notificationHighWater,
           rosterRef.current?.self(channelId) || '',
-          {
-            incremental: true,
-            acknowledged: cursorsRef.current.acknowledgedReadIdentities(channelId),
-          },
+          { incremental: true },
         ),
       }));
     }
@@ -194,7 +184,6 @@ export function createChannelFeedRuntime(options) {
 
   const applyRows = ((rows, {
     publish = true,
-    persist = true,
     source = 'replay',
     materializesCurrentTail = source === 'live',
     acceptedRows = null,
@@ -274,10 +263,6 @@ export function createChannelFeedRuntime(options) {
       onSubmissionFeed(facts.landedMessageIds, facts.closedRequestIds, token);
     }
     if (accessChanged) onAccessChanged();
-    if (persist) cacheEpochFenceRef.current.run(() => cacheRef.current.saveRows(rows)).catch((error) => {
-      diagnostic('error', 'feed.cache_save_failed', { channels: [...dirtyChannels], error });
-      onError(error);
-    });
     if (publish) {
       setIndexVersion((value) => value + 1 + Number(rosterChanged));
       if (dirtyChannels.has(activeChannelRef.current)) setVersion((value) => value + 1 + Number(rosterChanged));
@@ -394,7 +379,7 @@ export function createChannelFeedRuntime(options) {
             });
             continue;
           }
-          applyRows(result.rows, { publish: false, persist: false, source: 'replay' });
+          applyRows(result.rows, { publish: false, source: 'replay' });
           unreadCacheRef.current.delete(channelId);
           if (cachedNewest >= target) channels.delete(channelId);
           else channels.set(channelId, { phase: 'unknown', target });
@@ -432,16 +417,14 @@ export function createChannelFeedRuntime(options) {
 	  readCache: (channelId, beforeSeq, limit, byteLimit) => cacheRef.current.readBefore(channelId, beforeSeq, limit, byteLimit),
       persistRows: (rows, options) => cacheEpochFenceRef.current.run(() => cacheRef.current.saveRows(rows, options)),
       hasVisibleRow: (channelId, seq) => replicaRef.current.hasRow(channelId, seq),
-	  hasPresentedRows: (channelId) => projectTimeline(
-		replicaRef.current.state(channelId) || createChannelState(channelId),
-	  ).items.length > 0,
+	  hasMaterializedRows: (channelId) => replicaRef.current.visibleNewest(channelId) > 0,
 	  visibleOldestSeq: (channelId) => replicaRef.current.visibleOldest(channelId),
 	  visibleNewestSeq: (channelId) => replicaRef.current.visibleNewest(channelId),
 	  revealRows: (channelId, entries, { materializesCurrentTail = false } = {}) => {
 		liveBatchRef.current?.flushNow();
 		return applyRowsRef.current?.(
 		  entries.map(([seq, envelope]) => ({ channel_id: channelId, seq, envelope })),
-		  { persist: false, source: 'replay', materializesCurrentTail },
+			  { source: 'replay', materializesCurrentTail },
 		);
 	  },
       onChange: () => setVersion((value) => value + 1),
@@ -500,7 +483,7 @@ export function createChannelFeedRuntime(options) {
     const acceptedRows = [];
     applyRowsRef.current?.(
       rows,
-      { source: 'live', persist: false, acceptedRows },
+      { source: 'live', acceptedRows },
     );
     for (const row of acceptedRows) {
       const state = statesRef.current.get(row.channel_id);
@@ -632,7 +615,7 @@ export function createChannelFeedRuntime(options) {
       schedulerRef.current.resetReplica();
       cursorsRef.current.reconcile({});
       cursorsRef.current.resetReads();
-      setLocalReplicaReady(true);
+      setLocalReplicaReady(false);
     }
     const localMeta = replicaChanged ? new Map() : cacheMetaRef.current;
     const grantedChannelIds = new Set();
@@ -662,16 +645,14 @@ export function createChannelFeedRuntime(options) {
     });
     schedulerRef.current.setLocalMeta(localMeta, {
       publishChange: false,
-      localReady: true,
+      localReady: localReplicaReady,
       replace: true,
-      selectionPending: localMeta.size === 0,
     });
     beginNotificationHydration(
       localMeta,
       localReplicaSerialRef.current,
       detail.focus || activeChannelRef.current || '',
     );
-    setLocalReplicaReady(true);
     syncCoordinatorRef.current.admission(grantedChannelIds, { generation });
     const activeChannelId = activeChannelRef.current;
     const activeChannelGranted = grantedChannelIds.has(activeChannelId);
@@ -705,7 +686,6 @@ export function createChannelFeedRuntime(options) {
         publishChange: false,
         localReady: true,
         replace: true,
-        selectionPending: false,
       });
       beginNotificationHydration(
         meta,
@@ -723,13 +703,12 @@ export function createChannelFeedRuntime(options) {
         resumeReadyRef.current = false;
         schedulerRef.current.setLocalMeta(new Map(), {
           publishChange: false,
-          localReady: true,
+          localReady: false,
           replace: true,
-          selectionPending: false,
         });
         diagnostic('error', 'feed.cache_boot_check_failed', { generation, error });
         onError(error);
-        setLocalReplicaReady(true);
+        setLocalReplicaReady(false);
         setLocalReplicaError(error?.message || '本地缓存初始化失败');
         setLocalReplicaErrorCode(String(error?.code || 'cache_boot_failed'));
       }
@@ -868,7 +847,7 @@ export function createChannelFeedRuntime(options) {
 		  settleAdmission(step.kind === 'failed' ? 'error' : step.kind);
 		  return step;
 		}
-		const projection = projectTimeline(statesRef.current.get(channelId) || createChannelState(channelId), viewSpec);
+		const projection = selectTimelineItems(statesRef.current.get(channelId) || createChannelState(channelId), viewSpec);
 		const admissionState = revealToken ? admission.observe(channelId, projection.items, {
 		  operationID: revealToken.operationID,
 		  viewID: revealToken.viewID,
@@ -956,25 +935,11 @@ export function createChannelFeedRuntime(options) {
     if (!channelId) return 0;
     if (!cursorsRef.current.isReadAuthorityReady()) return false;
     const state = statesRef.current.get(channelId);
-    const before = cursorsRef.current.read(channelId);
-    const exactChanged = cursorsRef.current.acknowledgeReadIdentities(
-      channelId,
-      acknowledgement.identities,
-    );
     const seq = Number(acknowledgement.physicalSeq || 0);
     if (seq > 0 && trimIfMobile(state)) replicaRef.current.afterTrim(channelId);
-    const next = seq > 0 ? cursorsRef.current.markRead(channelId, seq) : before;
+    const next = seq > 0 ? cursorsRef.current.markRead(channelId, seq) : 0;
     if (seq > 0) schedulerRef.current.markRead(channelId);
-    if (exactChanged) {
-      // Exact identities participate in the rail projection but are not part
-      // of its revision/high-water cache signature. Publish their mutation
-      // explicitly so an active, non-tail acknowledgement cannot leave the
-      // previously cached badge visible until some unrelated feed update.
-      unreadCacheRef.current.delete(channelId);
-      unreadDiagnosticSignatureRef.current.delete(channelId);
-      setIndexVersion((value) => value + 1);
-    }
-    return seq > 0 ? next : (exactChanged || (acknowledgement.identities?.length || 0) > 0);
+    return seq > 0 ? next : false;
   });
   const acknowledgeNotifications = ((channelId, confirmation = {}) => {
     if (!channelId || !cursorsRef.current.isReadAuthorityReady()) return false;
@@ -1049,7 +1014,6 @@ export function createChannelFeedRuntime(options) {
 	schedulerRef.current.setLocalMeta(new Map(), {
 	  publishChange: false,
 	  localReady: false,
-	  selectionPending: true,
 	});
     attachMetaSerialRef.current += 1;
     resumeReadyRef.current = false;
@@ -1064,7 +1028,6 @@ export function createChannelFeedRuntime(options) {
 	    publishChange: false,
 	    localReady: true,
 	    replace: true,
-	    selectionPending: false,
 	  });
       setLocalReplicaReady(true);
       return { resume: {} };
@@ -1088,7 +1051,7 @@ export function createChannelFeedRuntime(options) {
     schedulerRef.current.setPriorityScope(principalId);
     const admissionEpochAtSelection = dataAdmissionEpochRef.current;
     const ownerReady = cacheEpochFenceRef.current.select(() => cacheRef.current.ensureOwner(principalId));
-    cacheOwnerReadyRef.current = ownerReady.then(() => undefined, () => undefined);
+    cacheOwnerReadyRef.current = ownerReady;
     let selectionTimer = null;
     try {
       const { changed, boot, meta } = await Promise.race([
@@ -1113,7 +1076,7 @@ export function createChannelFeedRuntime(options) {
       const remoteBoot = remoteBootRef.current;
       if (cacheWorldMismatch(remoteBoot, cacheBootRef.current, meta)) {
         cacheMetaRef.current = new Map();
-        setLocalReplicaReady(true);
+        setLocalReplicaReady(false);
         return { resume: {} };
       }
       const readAuthority = cursorsRef.current.selectReadAuthority({
@@ -1140,7 +1103,6 @@ export function createChannelFeedRuntime(options) {
         publishChange: false,
         localReady: true,
         replace: true,
-        selectionPending: false,
       });
 
       const focusedMeta = meta.get(focus);
@@ -1166,11 +1128,10 @@ export function createChannelFeedRuntime(options) {
       diagnostic('error', 'feed.restore_failed', { error });
 	  schedulerRef.current.setLocalMeta(new Map(), {
 	    publishChange: false,
-	    localReady: true,
+	    localReady: false,
 	    replace: true,
-	    selectionPending: false,
-      });
-      setLocalReplicaReady(true);
+	  });
+	  setLocalReplicaReady(false);
       setLocalReplicaError(error?.message || '本地缓存初始化失败');
       setLocalReplicaErrorCode(String(error?.code || 'cache_selection_failed'));
       return { resume: {} };

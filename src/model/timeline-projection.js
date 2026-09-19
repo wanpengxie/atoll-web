@@ -50,17 +50,13 @@ function timelineEntryVisible(entry, editingTargetId, editingReplacementId) {
 // This is the only semantic visibility projection for Timeline. Rendering and
 // history completion both consume this exact result; ledger-row counts never
 // participate in the answer to "did the user get an older visible item?".
-export function projectTimeline(state, {
+function projectTimelineBase(state, {
   scope = TIMELINE_SCOPE.mine,
   selfId = '',
   actorFilter = new Set(),
   editingTargetId = '',
   editingReplacementId = '',
   showNarration = false,
-  presentation = null,
-  presentationAdmission = null,
-  presentationKey = '',
-  dataEpoch = '',
   localEchoes = [],
   // 「我的往来」用增量索引算(见 timeline-scope.js)。输出相同,代价从"每帧走一遍
   // 整本账"降到"每帧只判新来的那几行"。
@@ -148,39 +144,66 @@ export function projectTimeline(state, {
     if (actorFilterApplies && actorFilter?.size && !entryMatchesActors(entry, actorFilter)) return [];
     return [entry];
   });
-  const rawItems = echoes.length ? [...base.items, ...echoes] : base.items;
-  const admissionMeta = {
-    viewID: presentationKey,
-    epoch: dataEpoch,
-    sourceRevision: Number(state._timelineRevision ?? state.lastSeq ?? 0),
-  };
-  const items = presentationAdmission?.admit
-    ? presentationAdmission.admit(state.channelId, rawItems, admissionMeta)
-    : rawItems;
-  const admissionSourceFence = presentationAdmission?.sourceFence?.(state.channelId);
-  const projectedSourceRevision = admissionSourceFence == null
-    ? Number(state._timelineRevision ?? state.lastSeq ?? 0)
-    : admissionSourceFence;
-  const presentationSnapshot = presentation?.project
-    ? presentation.project(items, {
-      epoch: dataEpoch,
-      nextViewID: presentationKey,
-      sourceRevision: projectedSourceRevision,
-      sourceChangeBase: Number(state._timelineChangeBase || 0),
-      sourceChanges: (state._timelineChangeLog || [])
-        .filter((change) => Number(change.revision || 0) <= projectedSourceRevision),
-    })
-    : null;
-
+  const items = echoes.length ? [...base.items, ...echoes] : base.items;
   return {
     items,
-    presentation: presentationSnapshot,
-    presentationRows: presentationSnapshot?.rows || [],
     allEntries: base.allEntries,
     scoped: base.scoped,
     filtered: base.filtered,
     localEchoes: echoes,
     actorFilterApplies,
+    firstVisibleSeq: items[0]?.seq || 0,
+    lastVisibleSeq: items.at(-1)?.seq || 0,
+  };
+}
+
+// Supply-side visibility checks consume the semantic selection, never a
+// partially presented render result. This path has no Admission or
+// Presentation authority and therefore cannot publish rows.
+export function selectTimelineItems(state, options = {}) {
+  return projectTimelineBase(state, options);
+}
+
+// Render projection is hard-bound to the two publication owners. Missing
+// ports are a wiring error; raw semantic rows may never become a UI fallback.
+export function projectTimeline(state, options = {}) {
+  const { presentation, presentationAdmission, presentationKey = '', dataEpoch = '' } = options;
+  if (typeof presentationAdmission?.admit !== 'function'
+    || typeof presentationAdmission?.sourceFence !== 'function') {
+    throw new TypeError('timeline projection requires HistoryPresentationAdmission');
+  }
+  if (typeof presentation?.project !== 'function') {
+    throw new TypeError('timeline projection requires ConversationPresentation');
+  }
+  const semantic = projectTimelineBase(state, options);
+  const admissionMeta = {
+    viewID: presentationKey,
+    epoch: dataEpoch,
+    sourceRevision: Number(state._timelineRevision ?? state.lastSeq ?? 0),
+  };
+  const items = presentationAdmission.admit(state.channelId, semantic.items, admissionMeta);
+  if (!Array.isArray(items)) throw new TypeError('HistoryPresentationAdmission must return items');
+  const admissionSourceFence = presentationAdmission.sourceFence(state.channelId);
+  const projectedSourceRevision = admissionSourceFence == null
+    ? Number(state._timelineRevision ?? state.lastSeq ?? 0)
+    : admissionSourceFence;
+  const presentationSnapshot = presentation.project(items, {
+    epoch: dataEpoch,
+    nextViewID: presentationKey,
+    sourceRevision: projectedSourceRevision,
+    sourceChangeBase: Number(state._timelineChangeBase || 0),
+    sourceChanges: (state._timelineChangeLog || [])
+      .filter((change) => Number(change.revision || 0) <= projectedSourceRevision),
+  });
+  if (!presentationSnapshot || !Array.isArray(presentationSnapshot.rows)) {
+    throw new TypeError('ConversationPresentation must return a snapshot');
+  }
+
+  return {
+    ...semantic,
+    items,
+    presentation: presentationSnapshot,
+    presentationRows: presentationSnapshot.rows,
     firstVisibleSeq: items[0]?.seq || 0,
     lastVisibleSeq: items.at(-1)?.seq || 0,
   };

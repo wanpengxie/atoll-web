@@ -74,7 +74,7 @@ function visibleGapBefore(state, visibleOldestByChannel) {
 }
 export function historySourceFor(state, beforeSeq = state?.beforeSeq) {
   const local = state?.localMeta;
-  if (!local || state.cacheBypassBeforeSeq === beforeSeq) return 'network';
+  if (!local) return 'network';
   const frontier = beforeSeq - 1;
   return frontier > 0 && historyCoverageContains(local, frontier) ? 'indexeddb' : 'network';
 }
@@ -149,16 +149,12 @@ function compareCandidates(left, right) {
     || left.channelId.localeCompare(right.channelId);
 }
 function evaluateCandidate(state, tier, input) {
-  const { focus, generation, replicaEpoch, localMetaEpoch, localMetaReady, localSelectionPending,
+  const { focus, generation, replicaEpoch, localMetaEpoch, localMetaReady,
     inflightByChannel, now, globalReservoirBytes, reservedInflightBytes, dispatchSerial,
     transportStats, visibleOldestByChannel, visibleNewestByChannel, config } = input;
   const blocked = (blockedBy) => ({ candidate: null, blockedBy });
   if (!state) return blocked('channel-unknown');
   if (!localMetaReady) return blocked('local-meta-pending');
-  if (localSelectionPending && state?.id !== focus
-    && state?.foregroundOwners.size === 0
-    && state?.foregroundWaiters.length === 0
-    && state?.currentWaiters.size === 0) return blocked('cache-selection-priority');
   const remoteAttached = Boolean(generation && state?.attachedGeneration === generation);
   const localAttached = Boolean(!remoteAttached
     && state?.remoteEligible !== false

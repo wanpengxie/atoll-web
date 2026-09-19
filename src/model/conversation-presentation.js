@@ -537,13 +537,7 @@ export function createConversationPresentation() {
     return true;
   }
 
-  function project(entries = [], options = {}) {
-    const candidate = evaluate(entries, options);
-    commitCandidate(candidate);
-    return candidate.snapshot;
-  }
-
-  return Object.freeze({ evaluate, commitCandidate, project, current: () => owner.snapshot });
+  return Object.freeze({ evaluate, commitCandidate, current: () => owner.snapshot });
 }
 
 function authorizedLatestID(snapshot, authority) {
@@ -645,28 +639,6 @@ export function createConversationRoleFinalizer() {
   });
 }
 
-// Stateless helper kept for model callers that need only exact token
-// validation. Production Timeline uses createConversationRoleFinalizer so role
-// commits carry a monotonic revision and an exact updated-row set.
-export function finalizeConversationPresentation(snapshot, authority = null) {
-  const latestID = authorizedLatestID(snapshot, authority);
-  if (!latestID) return snapshot;
-  return withLatestRole(snapshot, latestID, latestID ? 1 : 0, latestID ? [latestID] : []);
-}
-
 export function presentationEntryId(entryOrRow) {
   return entryOrRow?.id || identityOf(entryOrRow);
-}
-
-export function presentationGeometryKey(rows = [], localLayoutKey = '') {
-  let hash = 2166136261;
-  const feed = (token) => {
-    for (let index = 0; index < token.length; index += 1) {
-      hash ^= token.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
-    }
-  };
-  for (const row of rows) feed(`${row.id}\u001f${row.contentRevision}\u001f${row.layoutClass}\u001e`);
-  feed(`\u001d${localLayoutKey}`);
-  return `${rows.length}:${(hash >>> 0).toString(36)}`;
 }

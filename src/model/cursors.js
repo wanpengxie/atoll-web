@@ -7,7 +7,6 @@ const CURSOR_PREFIX = 'atoll.cursor.v3.';
 // "root timeline entries after the last tail the user actually saw". Reusing
 // v3 would turn an old, cache-relative number into a false unread boundary.
 const READ_PREFIX = 'atoll.read.v4.';
-const EXACT_READ_PREFIX = 'atoll.read-identities.v1.';
 const NOTIFICATION_PREFIX = 'atoll.notification-high-water.v1.';
 const READ_AUTHORITY_KEY = 'atoll.read-authority.v1';
 const READ_AUTHORITY_SCHEMA = 1;
@@ -45,24 +44,6 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
       if (key) result.push(key);
     }
     return result;
-  }
-
-  function exactReadMap(channelId) {
-    if (!readAuthorityReady) return new Map();
-    try {
-      const parsed = JSON.parse(get(`${EXACT_READ_PREFIX}${channelId}`) || '[]');
-      return new Map((Array.isArray(parsed) ? parsed : []).filter((entry) => (
-        Array.isArray(entry) && entry[0] && safeNumber(entry[1]) > 0
-      )).map(([messageID, seq]) => [String(messageID), safeNumber(seq)]));
-    } catch {
-      return new Map();
-    }
-  }
-
-  function writeExactReadMap(channelId, values) {
-    const key = `${EXACT_READ_PREFIX}${channelId}`;
-    if (values.size > 0) set(key, JSON.stringify([...values]));
-    else remove(key);
   }
 
   function notificationState(channelId) {
@@ -109,9 +90,7 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
         && stored.serverBoot === target.serverBoot;
       if (!reused) {
         for (const key of keys()) {
-          if (key.startsWith(READ_PREFIX)
-            || key.startsWith(EXACT_READ_PREFIX)
-            || key.startsWith(NOTIFICATION_PREFIX)) remove(key);
+          if (key.startsWith(READ_PREFIX) || key.startsWith(NOTIFICATION_PREFIX)) remove(key);
         }
         set(READ_AUTHORITY_KEY, JSON.stringify(target));
       }
@@ -180,22 +159,13 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
       const stored = Number(raw);
       const storedValid = raw != null && Number.isSafeInteger(stored) && stored >= 0;
       if (!storedValid || stored > head) set(key, head);
-      const readSeq = this.read(channelId);
-      const exact = exactReadMap(channelId);
-      for (const [messageID, high] of exact) {
-        if (high <= readSeq || high > head) exact.delete(messageID);
-      }
-      writeExactReadMap(channelId, exact);
-      return readSeq;
+      return this.read(channelId);
     },
     markRead(channelId, seq) {
       if (!readAuthorityReady) return 0;
       const current = this.read(channelId);
       const next = Math.max(current, safeNumber(seq));
       set(`${READ_PREFIX}${channelId}`, next);
-      const exact = exactReadMap(channelId);
-      for (const [messageID, high] of exact) if (high <= next) exact.delete(messageID);
-      writeExactReadMap(channelId, exact);
       return next;
     },
     notificationHighWater(channelId) {
@@ -219,49 +189,16 @@ export function createCursors(storage = globalThis.localStorage, { requireReadAu
       writeNotificationState(channelId, { highWater: next });
       return next;
     },
-    acknowledgeReadIdentities(channelId, identities = []) {
-      if (!readAuthorityReady) return false;
-      const exact = exactReadMap(channelId);
-      let changed = false;
-      for (const identity of identities) {
-        const messageID = String(identity?.messageID || '');
-        const seqHigh = safeNumber(identity?.seqHigh);
-        if (!messageID || !seqHigh || seqHigh <= this.read(channelId)) continue;
-        if ((exact.get(messageID) || 0) >= seqHigh) continue;
-        exact.set(messageID, seqHigh);
-        changed = true;
-      }
-      if (changed) writeExactReadMap(channelId, exact);
-      return changed;
-    },
-    acknowledgedReadIdentities(channelId) {
-      if (!readAuthorityReady) return new Map();
-      return new Map(exactReadMap(channelId));
-    },
     resetReads() {
       for (const key of keys()) {
         // Notification acknowledgement belongs to the selected principal/boot
         // authority, not to the disposable Replica/cache. Authority selection
         // clears it on a genuine world change; a same-world force reset must
         // not resurrect badges the user already dismissed at the tail.
-        if (key.startsWith(READ_PREFIX) || key.startsWith(EXACT_READ_PREFIX)) remove(key);
+        if (key.startsWith(READ_PREFIX)) remove(key);
       }
     },
   };
-}
-
-// Channel badges are notifications, not a ledger row counter. One request may
-// produce many queued/processing/deferred response frames while an agent works;
-// those frames update the existing turn and must not look like new messages.
-// Keep only requests that already have a conversation row, protocol-final
-// responses with actual readable content whose canonical turn remains visible.
-// Standalone public events can become viewport dynamics, but remain too noisy
-// for channel badges under the established rail contract.
-// Processing remains a lifecycle update even when Presentation installs the
-// row. A positive classification prevents namespaced progress, missing/future
-// statuses, timer transport, and internal tool turns from becoming badges.
-function isNotifiable(channelState, envelope, selfId = '') {
-  return isRailNotifiableDisposition(notificationDisposition(channelState, envelope, selfId));
 }
 
 function visitUnreadRows(channelState, readSeq, visit) {
@@ -284,27 +221,6 @@ function visitUnreadRows(channelState, readSeq, visit) {
   }
 }
 
-function acknowledgedAt(acknowledged, messageID, seq) {
-  if (!messageID || !(acknowledged instanceof Map)) return false;
-  const rowSeq = safeNumber(seq);
-  return rowSeq > 0 && safeNumber(acknowledged.get(messageID)) >= rowSeq;
-}
-
-export function unreadCount(channelState, readSeq, selfId, { acknowledged = new Map() } = {}) {
-  if (!channelState?.rows) return 0;
-  let count = 0;
-  visitUnreadRows(channelState, readSeq, (seq, envelope) => {
-    if (envelope?.visibility === 'system') return;
-    if (isSelfActor(envelope?.sender?.id, selfId)) return;
-    if (!isNotifiable(channelState, envelope, selfId)) return;
-    if (acknowledgedAt(acknowledged, envelope?.id, seq)
-      || acknowledgedAt(acknowledged, envelope?.parent_id, seq)
-      || acknowledgedAt(acknowledged, envelope?.correlation_id, seq)) return;
-    count += 1;
-  });
-  return count;
-}
-
 // The channel rail carries two different signals:
 //   related — messages in the same conversation scope as the "@我" timeline
 //   total   — every new conversational request/settled response not authored
@@ -319,7 +235,6 @@ export function unreadCount(channelState, readSeq, selfId, { acknowledged = new 
 // 遍"——频道多、账本长的时候,它比时间线投影还贵。
 function projectUnreadCounts(channelState, readSeq, selfId, {
   incremental = false,
-  acknowledged = new Map(),
   diagnostics = false,
   diagnosticLimit = 200,
 } = {}) {
@@ -379,11 +294,6 @@ function projectUnreadCounts(channelState, readSeq, selfId, {
     const root = rootId(envelope);
     if (!root) {
       recordDiagnostic(seq, envelope, '', 'missing_root');
-      return;
-    }
-    if (acknowledgedAt(acknowledged, root, seq)
-      || acknowledgedAt(acknowledged, envelope?.id, seq)) {
-      recordDiagnostic(seq, envelope, root, 'exact_visible_ack');
       return;
     }
     if (totalRoots.has(root)) {

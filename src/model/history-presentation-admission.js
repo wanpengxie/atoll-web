@@ -225,18 +225,13 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
     const state = channels.get(channelId);
     if (!state) return Object.freeze({ items, receipt: null });
     if (String(meta.viewID || '') !== state.viewID || String(meta.epoch || '') !== state.epoch) {
-      // Projection runs during React render. A stale token must fail open, but
-      // publishing its reset here would synchronously update App while
-      // Timeline is rendering. The committed layout effect calls
-      // reconcileCurrent to retire it after this render succeeds.
-      return Object.freeze({ items, receipt: null });
+      // A stale view may never bypass Admission and publish raw rows. Preserve
+      // only identities already admitted by this authority; reconcileCurrent
+      // retires the obsolete transaction after the render commits.
+      return Object.freeze({ items: lastAdmitted(state, items), receipt: null });
     }
     if (state.phase === 'committed-awaiting-layout') return evaluateCommitted(state, items);
     return evaluatePending(state, items);
-  }
-
-  function admit(channelId, items, meta = {}) {
-    return evaluate(channelId, items, meta).items;
   }
 
   function commitCandidate(channelId, candidate) {
@@ -385,17 +380,6 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
       : null;
   }
 
-  function bindPresentation(channelId, presentationRevision) {
-    const state = channels.get(channelId);
-    if (!state?.committed || state.phase !== 'committed-awaiting-layout') return null;
-    if (state.committed.candidatePresentationRevision) return state.committed;
-    state.committed = frozenToken(state.committed, {
-      candidatePresentationRevision: Number(presentationRevision || 0),
-    });
-    advanceAuthority(state);
-    return state.committed;
-  }
-
   // Grant publication before ConversationPresentation commits it. The grant
   // binds the exact Admission candidate, token and authority revision; it does
   // not mutate either owner. Timeline may publish only a granted candidate.
@@ -514,8 +498,8 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
   }
 
   return Object.freeze({
-    begin, observe, evaluate, admit, commitCandidate, settle, cancel, advanceInputEpoch,
-    prepareCommit, sourceFence, bindPresentation, validatePresentation,
+    begin, observe, evaluate, commitCandidate, settle, cancel, advanceInputEpoch,
+    prepareCommit, sourceFence, validatePresentation,
     rejectPresentation, commitPresentationGrant, acknowledge,
     snapshot, reset, reconcileCurrent,
   });
