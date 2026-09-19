@@ -24,7 +24,11 @@ import {
   contentAnchorCommand,
   createReadingSession,
   observeReading,
+  acceptPositionRowLease,
+  consumePositionRowLease,
   persistentReadingSession,
+  positionRowLeaseCommand,
+  revokePositionRowLease,
   READING_MODE,
   requestLatest,
   takeReadingControl,
@@ -354,10 +358,49 @@ function useProjectionReadingOwner({
     return Object.freeze({
       activationID: owner.activationID,
       inputEpoch: owner.session.inputEpoch,
+      intentRevision: owner.session.intentRevision,
       viewID: owner.viewKey,
       epoch: `${owner.channelID}:${Number(owner.historyStatus.generation || 0)}`,
     });
   }, []);
+  const historyPositionLeaseCommand = useCallback(() => {
+    const current = controller.getSnapshot().session;
+    const command = positionRowLeaseCommand(current);
+    if (!command) return null;
+    const currentEpoch = `${channelID}:${Number(historyStatusRef.current.generation || 0)}`;
+    // A lease is valid only for the exact committed Presentation that granted
+    // it. A source/view/generation/revision replacement is a terminal fence,
+    // not a reason to replay the old row command against the new list.
+    if (command.viewID !== viewKey
+      || command.epoch !== currentEpoch
+      || Number(command.presentationRevision) !== Number(snapshotRef.current.revision || 0)) {
+      controller.update((active) => revokePositionRowLease(active, command));
+      return null;
+    }
+    return command;
+  }, [channelID, controller, viewKey]);
+  const acceptHistoryPositionLease = useCallback((lease) => {
+    const current = controller.getSnapshot().session;
+    const currentEpoch = `${channelID}:${Number(historyStatusRef.current.generation || 0)}`;
+    if (!lease || lease.viewID !== viewKey || lease.epoch !== currentEpoch) return false;
+    const after = controller.update((active) => acceptPositionRowLease(active, lease));
+    if (after !== current) return true;
+    const existing = positionRowLeaseCommand(after);
+    return Boolean(existing
+      && existing.operationID === lease.operationID
+      && Number(existing.presentationRevision) === Number(lease.presentationRevision)
+      && existing.messageID === lease.messageID);
+  }, [channelID, controller, viewKey]);
+  const consumeHistoryPositionLease = useCallback((command) => {
+    const before = controller.getSnapshot().session;
+    const after = controller.update((active) => consumePositionRowLease(active, command));
+    return after !== before;
+  }, [controller]);
+  const revokeHistoryPositionLease = useCallback((command = null) => {
+    const before = controller.getSnapshot().session;
+    const after = controller.update((active) => revokePositionRowLease(active, command));
+    return after !== before;
+  }, [controller]);
   const tailCaughtUp = useMemo(() => {
     const evidence = observationRef.current;
     const scope = historyViewSpec?.scope || '';
@@ -461,6 +504,10 @@ function useProjectionReadingOwner({
     historyBoundary,
     historyReveal: historyStatus.historyReveal || null,
     currentAdmissionAuthority,
+    historyPositionLeaseCommand,
+    acceptHistoryPositionLease,
+    consumeHistoryPositionLease,
+    revokeHistoryPositionLease,
     acknowledgeHistoryReveal(commitID) { return historyStatus.presentationAdmission?.acknowledge?.(channelID, commitID) === true; },
     requestHistory,
     retryHistoryDemand: historyConsumer.retry,
@@ -568,7 +615,9 @@ function useProjectionReadingOwner({
   }), [
     arrivals?.events?.length, authoritativeEmpty, availability, availabilityError, beginNavigation,
     bottomReady, cancelNavigation, captureBottomIntent, captureContentAnchorForReading, channelID, controller,
-    consumeContentAnchorCommand, currentAdmissionAuthority, getContentAnchorCommand,
+    acceptHistoryPositionLease, consumeContentAnchorCommand, consumeHistoryPositionLease,
+    currentAdmissionAuthority, getContentAnchorCommand, historyPositionLeaseCommand,
+    revokeHistoryPositionLease,
     history, historyBoundary, historyConsumer, historyStatus,
     presentationAuthority, presentationInitializing, requestBottom, requestHistory,
     restorePending, session, syncObservationCurrent, syncStatus.error, tailCaughtUp,
@@ -675,6 +724,26 @@ export function useConversationProjection({
       }
       presentationGrant = validation.grant;
     }
+    const commitToken = presentationGrant?.commitToken;
+    const viewportOffset = Number(commitToken?.viewportOffset);
+    const positionLease = presentationGrant && Number.isFinite(viewportOffset) && commitToken?.messageID
+      ? Object.freeze({
+        type: 'position-row',
+        activationID: commitToken.activationID,
+        inputEpoch: commitToken.inputEpoch,
+        intentRevision: commitToken.intentRevision,
+        operationID: commitToken.operationID,
+        viewID: commitToken.viewID,
+        epoch: commitToken.epoch,
+        presentationRevision: presentationGrant.presentationRevision,
+        messageID: commitToken.messageID,
+        viewportOffset,
+      }) : null;
+    if (positionLease && viewport.acceptHistoryPositionLease?.(positionLease) !== true) {
+      admission.rejectPresentation?.(state.channelId, commitToken);
+      setCommitVersion((value) => value + 1);
+      return;
+    }
     let presentationCommitted = true;
     if (projection.presentationCandidate) {
       presentationCommitted = presentationRef.current.commitCandidate(projection.presentationCandidate);
@@ -682,9 +751,13 @@ export function useConversationProjection({
         setCommitVersion((value) => value + 1);
       }
     }
-    if (!presentationCommitted || !projection.admissionCandidate) return;
+    if (!presentationCommitted || !projection.admissionCandidate) {
+      if (positionLease) viewport.revokeHistoryPositionLease?.(positionLease);
+      return;
+    }
     if (presentationGrant) {
       if (admission.commitPresentationGrant?.(state.channelId, presentationGrant) !== true) {
+        if (positionLease) viewport.revokeHistoryPositionLease?.(positionLease);
         setCommitVersion((value) => value + 1);
         return;
       }
@@ -693,8 +766,13 @@ export function useConversationProjection({
         operationID: presentationGrant.commitToken.operationID,
         activationID: presentationGrant.commitToken.activationID,
         inputEpoch: presentationGrant.commitToken.inputEpoch,
+        intentRevision: presentationGrant.commitToken.intentRevision,
         presentationRevision: presentationGrant.presentationRevision,
         stagedIDs: presentationGrant.commitToken.stagedIDs || [],
+        positionLease: positionLease ? {
+          messageID: positionLease.messageID,
+          viewportOffset: positionLease.viewportOffset,
+        } : null,
       });
       return;
     }
@@ -713,9 +791,12 @@ export function useConversationProjection({
     projection.presentation,
     projection.presentationCandidate,
     state.channelId,
+    viewport.acceptHistoryPositionLease,
     viewport.activationID,
     viewport.currentAdmissionAuthority,
+    viewport.revokeHistoryPositionLease,
     viewport.session.inputEpoch,
+    viewport.session.intentRevision,
   ]);
   useLayoutEffect(() => {
     history.status?.presentationAdmission?.reconcileCurrent?.(state.channelId, {

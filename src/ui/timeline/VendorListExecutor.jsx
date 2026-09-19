@@ -130,6 +130,41 @@ function contentAnchorIdentity(command) {
   ].join('\u001f');
 }
 
+function positionRowIdentity(command) {
+  if (!command) return '';
+  return [
+    command.type,
+    command.activationID,
+    Number(command.inputEpoch),
+    Number(command.intentRevision),
+    command.operationID,
+    command.viewID,
+    command.epoch,
+    Number(command.presentationRevision),
+    command.messageID,
+    Number(command.viewportOffset),
+  ].join('\u001f');
+}
+
+function samePositionRowCommand(left, right) {
+  return Boolean(left && right)
+    && positionRowIdentity(left) === positionRowIdentity(right);
+}
+
+// Capture the baseline row geometry before native input moves the scroller.
+// This is read-only evidence; the typed DOM executor remains the only writer.
+function firstRowViewportAnchor(root, rows = []) {
+  const first = rows[0];
+  if (!root || !first?.id) return null;
+  const rootRect = root.getBoundingClientRect?.();
+  const row = [...(root.querySelectorAll?.('[data-presentation-row-id]') || [])]
+    .find((node) => node.dataset?.presentationRowId === String(first.id));
+  const rowRect = row?.getBoundingClientRect?.();
+  const viewportOffset = rootRect && rowRect ? Number(rowRect.top) - Number(rootRect.top) : Number.NaN;
+  if (!Number.isFinite(viewportOffset)) return null;
+  return Object.freeze({ messageID: String(first.id), viewportOffset });
+}
+
 /**
  * The sole vendor-list adapter. It owns refs, native input attribution and
  * typed DOM command execution; ReadingSession remains the only semantic
@@ -163,6 +198,11 @@ export function VendorListExecutor({
   const positionRestoreRef = useRef(null);
   const lastScrollTopRef = useRef(0);
   const consumedCommandRef = useRef('');
+  // A history lease is terminal after its actual-paint fence succeeds or
+  // fails. Keep that outcome for the current input epoch so the ordinary
+  // bookmark path cannot replay a second position-row command in the same
+  // transaction.
+  const settledPositionLeaseRef = useRef(null);
   const touchRef = useRef(null);
   const readingController = useBrowsingReadingController({ reading, snapshot });
   const { navigationPolicy, reportDomEvidence } = readingController;
@@ -224,6 +264,7 @@ export function VendorListExecutor({
         direction: transaction.direction,
         gestureID: transaction.id,
         geometryRevision: geometryRevisionRef.current,
+        historyAnchor: transaction.direction === 'older' ? transaction.startedBookmark : null,
       });
       return result?.inputGeneration || 0;
     },
@@ -432,6 +473,10 @@ export function VendorListExecutor({
       key,
       activationID: String(command.activationID || ''),
       inputEpoch: Number(command.inputEpoch),
+      intentRevision: Number(command.intentRevision),
+      operationID: String(command.operationID || ''),
+      viewID: String(command.viewID || ''),
+      epoch: String(command.epoch || ''),
       presentationRevision: Number(command.presentationRevision || 0),
       messageID: String(command.messageID || ''),
       viewportOffset: Number.isFinite(Number(command.viewportOffset))
@@ -461,6 +506,19 @@ export function VendorListExecutor({
         || session.mode !== READING_MODE.browsing
         || Number(currentSnapshot.revision || 0) !== token.presentationRevision
         || currentInput?.active) return null;
+      if (token.operationID) {
+        const currentLease = owner.historyPositionLeaseCommand?.();
+        if (!samePositionRowCommand(currentLease, command)) {
+          settledPositionLeaseRef.current = {
+            activationID: token.activationID,
+            inputEpoch: token.inputEpoch,
+            operationID: token.operationID,
+            succeeded: false,
+          };
+          owner.revokeHistoryPositionLease?.(command);
+          return null;
+        }
+      }
       const root = rootRef.current;
       return root ? { owner, session, root, snapshot: currentSnapshot } : null;
     };
@@ -471,6 +529,16 @@ export function VendorListExecutor({
       // its captured offset. Do not publish a `settled` observation for a
       // failed restore; the next activation/presentation revision may issue a
       // fresh typed command instead.
+      if (current && command.operationID) {
+        settledPositionLeaseRef.current = {
+          activationID: current.session.activationID,
+          inputEpoch: current.session.inputEpoch,
+          operationID: command.operationID,
+          succeeded,
+        };
+        if (succeeded) current.owner.consumeHistoryPositionLease?.(command);
+        else current.owner.revokeHistoryPositionLease?.(command);
+      }
       if (succeeded && current) scheduleObserve('layout', true);
     };
     const queue = () => {
@@ -591,7 +659,12 @@ export function VendorListExecutor({
       // already been committed, keep that semantic state instead of repeatedly
       // demoting/re-promoting it for every wheel tick at the clamp.
       if (direction === 'newer' && atTail && current.mode === READING_MODE.following) return;
-      coordinator.recordInput({ ...host, source: 'wheel', direction });
+      coordinator.recordInput({
+        ...host,
+        source: 'wheel',
+        direction,
+        bookmark: direction === 'older' ? firstRowViewportAnchor(root, snapshotRef.current.rows) : null,
+      });
       const input = navigationPolicy.currentInput();
       // A wheel at an already-clamped tail emits no scroll event. Publish the
       // same physical-tail evidence here so the input cannot transiently demote
@@ -601,14 +674,26 @@ export function VendorListExecutor({
     const keydown = (event) => {
       const direction = directionFromKey(event.key);
       if (!direction) return;
-      coordinator.recordInput({ ...host, source: 'key', sourceID: event.key, direction });
+      coordinator.recordInput({
+        ...host,
+        source: 'key',
+        sourceID: event.key,
+        direction,
+        bookmark: direction === 'older' ? firstRowViewportAnchor(root, snapshotRef.current.rows) : null,
+      });
       coordinator.endContact({ ...host, source: 'key', sourceID: event.key });
     };
     const touchstart = (event) => {
       const touch = event.touches?.[0];
       if (!touch) return;
       touchRef.current = { id: touch.identifier, y: touch.clientY };
-      coordinator.beginPotential({ ...host, source: 'touch', sourceID: touch.identifier, direction: 'browse' });
+      coordinator.beginPotential({
+        ...host,
+        source: 'touch',
+        sourceID: touch.identifier,
+        direction: 'browse',
+        bookmark: firstRowViewportAnchor(root, snapshotRef.current.rows),
+      });
     };
     const touchmove = (event) => {
       const current = touchRef.current;
@@ -687,7 +772,49 @@ export function VendorListExecutor({
       enforceFollowingTail('layout');
       return;
     }
-    if (current.mode !== READING_MODE.browsing || !current.bookmark) return;
+    if (current.mode !== READING_MODE.browsing) return;
+    // An accepted history prepend carries one exact row-local geometry lease.
+    // It has priority over the ordinary semantic bookmark and is consumed
+    // only by the actual painted offset fence in restoreReadingPosition.
+    const pendingPositionLease = current.positionRowLease;
+    const positionLease = reading.historyPositionLeaseCommand?.();
+    if (!positionLease && pendingPositionLease) {
+      settledPositionLeaseRef.current = {
+        activationID: current.activationID,
+        inputEpoch: current.inputEpoch,
+        operationID: pendingPositionLease.operationID,
+        succeeded: false,
+      };
+      return;
+    }
+    if (positionLease) {
+      if (navigationPolicy.currentInput().active) return;
+      const resolvedLease = snapshot.rows.findIndex((row) => row.id === positionLease.messageID);
+      if (resolvedLease < 0) {
+        settledPositionLeaseRef.current = {
+          activationID: current.activationID,
+          inputEpoch: current.inputEpoch,
+          operationID: positionLease.operationID,
+          succeeded: false,
+        };
+        reading.revokeHistoryPositionLease?.(positionLease);
+        return;
+      }
+      const key = `lease:${positionRowIdentity(positionLease)}`;
+      if (consumedCommandRef.current === key) return;
+      const command = Object.freeze({ ...positionLease, index: resolvedLease });
+      if (restoreReadingPosition(command, key)) {
+        consumedCommandRef.current = key;
+        scheduleObserve('layout');
+      }
+      return;
+    }
+    const settledPosition = settledPositionLeaseRef.current;
+    if (settledPosition
+      && settledPosition.activationID === current.activationID
+      && Number(settledPosition.inputEpoch) === Number(current.inputEpoch)) return;
+    if (settledPosition) settledPositionLeaseRef.current = null;
+    if (!current.bookmark) return;
     // Native navigation owns the viewport for the lifetime of its input
     // transaction. The bookmark recorded from that same motion is evidence,
     // not a request to replay a position command back into the list.
