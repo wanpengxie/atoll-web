@@ -236,4 +236,34 @@ describe('Composer slash 入口', () => {
       payload: { text: '换个方向', expected_turn_id: 'turn-1' },
     });
   });
+
+  it('TC-0651：纯附件草稿也生成可发送正文与稳定附件 payload', () => {
+    const attachment = {
+      resource_id: 'file:report-1',
+      name: '研究报告.pdf',
+      media_type: 'application/pdf',
+      size: 4096,
+    };
+    const model = buildComposerModel({
+      activeChannelId: 'dev',
+      draft: { text: '', recipients: [CODEX], attachments: [attachment] },
+      roster: ROSTER,
+      access: 'member_active',
+    });
+
+    expect(model.canSubmit).toBe(true);
+    expect(createMessageRequest(model, { revision: 11 })).toEqual({
+      channelId: 'dev',
+      draftRevision: 11,
+      editorRevision: 0,
+      batch: [{
+        channelId: 'dev',
+        text: '发送 1 个附件',
+        msgType: 'agent.ask',
+        audience: [CODEX.id],
+        targetLabel: CODEX.name,
+        payload: { text: '发送 1 个附件', attachments: [attachment] },
+      }],
+    });
+  });
 });
