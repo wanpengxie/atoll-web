@@ -212,3 +212,21 @@ ATOLL_TEST_WEB_PORT=15320 ATOLL_TEST_MOCK_PORT=18920 npx playwright test \
 | F7 | cold/browse/return cursor=844，replica head=848，目标 `c0-history-request-112` 存在于 replica | return 后 owner 仍 browsing/gap=0，但目标 row 不在 visible IDs；cached refresh 进入 following 且 snapshot 时 visible=0 | **presentation** |
 
 因此新协议提交没有改变本组公开状态转移；N2 的瞬时 badge、H1–H4 的 frozen cursor/replica 与 rail 缺口、F7 的 presentation visibility 均保持原产品交接。证据目录为 `test-results-notification-owner-oracle-post-6060588-20260920/`。
+
+## `77760c8` frozen owner receipts + 当前 HEAD 复验
+
+在 `77760c8`（`fix(notification): require frozen owner receipts`）及其当前产品 HEAD（含 `07ed014 fix(notification): fence tail owner teardown`，审计 HEAD 为 `a1a72f4`）上，沿用未修改的 `34d6f0c` oracle 逐条运行 N2/N4/H1–H4/F7。运行期间曾有一次并发编辑造成 `useConversationProjection` 的 `controller is not defined`，该轮只作为竞态噪声丢弃；稳定源码逐条复验目录为 `test-results-notification-owner-oracle-post-77760c8-stable-{N2,N4,H1,H2,H3,H4,F7}-20260920/`。
+
+稳定结果：**7/7 oracle 观测完成**。frozen owner receipts 对首分歧的影响如下：
+
+| case | 本轮链状态 | 首个稳定分歧 / 与前轮相比 |
+|---|---|---|
+| N2 | following arrival 45 帧全为 `gap=0`，related/total/pending/jump 全 0；cursor=34、replica head=34 | **瞬时 rail badge 已关闭**（此前 `1→4`）；公开 `rail.snapshot` 仍 `channels=[]`，但最终 DOM rail 为 0，因此 oracle 不再报 transient 分歧。 |
+| N4 | filtered-tail cursor c0=57、replica head=57，unrelated 与 approval rows 已在，owner `gap=0` | **rail**：仍无 `authorityReady`（`channels=[]`），scope 外 unread 无公开 raw rail 证据。 |
+| H1 | future-ack cursor c0.project=28、replica head=28，两个 future approval visible，owner `gap=0` | **rail**：公开 channel/high-water 仍缺失/0；冻结 receipt 已推进 cursor，但未建立 rail projection。 |
+| H2 | second hydration cursor=27、replica head=27，rows/meta 已恢复但 visible=0 | **rail**：reload 后公开 rail 仍 `channels=[]`/high-water=0。 |
+| H3 | filtered-tail cursor c0.project=25、replica head=27，visible 仍为旧 history rows，DOM related=2 | **cursor/highwater（首分歧前移）**：冻结 receipt 拒绝未获完整 owner 边界的 filtered ack；前轮先落在 rail 缺失。 |
+| H4 | following-after-arrival cursor=26、replica head=26，新 approval 在 visible owner，`gap=0` | **rail**：presentation 已到位但公开 high-water=0，receipt→rail 发布仍缺口。 |
+| F7 | return 后仍 browsing、`gap=3866`，replica head=844；目标 `c0-history-request-112` 不在 return visible IDs（102–105） | **presentation**：已有 replica row 仍未恢复到原 browsing visible position；cached refresh snapshot visible=0。 |
+
+结论：`77760c8` 确实关闭 N2 的 following transient badge，并让 H3 的首断点更早暴露为 frozen cursor 边界；N4/H1/H2/H4 的 rail authority/high-water 投影、F7 的 browsing presentation 仍未解决。N2 的用户可见 badge 已稳定为 0，但公开 rail diagnostics provider 仍未建立，不能将其误记为完整 rail 合同通过。

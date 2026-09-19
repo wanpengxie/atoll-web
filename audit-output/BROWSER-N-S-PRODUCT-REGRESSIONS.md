@@ -84,6 +84,20 @@ ATOLL_TEST_WEB_PORT=15320 ATOLL_TEST_MOCK_PORT=18920 npx playwright test \
 
 该轮未修改产品、fixture、断言或 skip；证据位于 `test-results-notification-owner-oracle-post-6060588-20260920/`。
 
+## `77760c8` frozen owner receipts 后复验
+
+在 `77760c8` 及当前 HEAD（另含 `07ed014` teardown fence）用未修改的 `34d6f0c` oracle 逐条重跑 7 条。一次并发源码编辑造成的 `controller is not defined` 仅作为竞态噪声丢弃；稳定逐条运行均完成，证据在 `test-results-notification-owner-oracle-post-77760c8-stable-{N2,N4,H1,H2,H3,H4,F7}-20260920/`。
+
+- **N2：receipt 修复有效。** 45 个 following、`gap=0` 帧全部保持 badge/jump=0，之前 related `1→4` 的瞬时 rail 分歧关闭；cursor=34、replica head=34。公开 `rail.snapshot` 仍为空，故只关闭用户可见瞬时分歧，不能宣称 rail authority 已完整。
+- **N4：仍 rail。** filtered tail c0 cursor=57、replica head=57，unrelated/approval row 已落地，但 `channels=[]`/无 `authorityReady`。
+- **H1：仍 rail。** future ack c0.project cursor=28、replica head=28，owner visible/gap=0；公开 high-water 仍 0。
+- **H2：仍 rail。** second hydration cursor/replica=27，公开 rail channel/high-water 仍缺失。
+- **H3：首断点前移到 cursor/highwater。** filtered tail cursor 仍 25、replica head=27、DOM related=2；冻结 receipt 拒绝未满足完整 owner 边界的 ack。前轮首断点是 rail provider 缺失。
+- **H4：仍 rail。** new approval 已进入 visible owner（cursor/replica=26，gap=0），但公开 high-water=0。
+- **F7：仍 presentation。** replica 已有 head=844，回返仍 browsing/gap=3866，目标 row 112 未恢复到 visible（当前可见 102–105）。
+
+因此 frozen owner receipts 的实质收益是 N2 瞬时 badge 消失及 H3 更早暴露 cursor boundary；N4/H1/H2/H4 的公开 rail 投影和 F7 的 presentation admission 仍需各自公开 owner 处理。全程未改产品、fixture、断言或 skip。
+
 ## R1（历史记录，已由 `cbd8591` 关闭）：频道切换时 history owner 尚未连接
 
 这条历史分歧不再是当前复验结果：`cbd8591` 后频道切换可以继续进入真实页面；最终轮未记录该错误。以下步骤和栈保留作修复前 provenance，不应作为当前 RED 计数。
