@@ -43,6 +43,43 @@ owner）为 PASS。历史 reveal 的空帧和 history admission/underfill 的失
 诊断事件替代用户可见结果；模型 selector 的失败先附带真实 dialog 几何，再在缺少
 可选模型项处失败。
 
+## 当前 HEAD 重验（`2b6f0b4`）
+
+在 `2b6f0b4` 当前工作树上重新执行同一组 Chromium cases；本轮没有修改产品代码，
+也没有因为旧分支已经有报告就复用旧结果：
+
+```text
+ATOLL_TEST_MOCK_PORT=19877 ATOLL_TEST_WEB_PORT=15177 npx playwright test \
+  tests/browser/history-presentation-admission-prototype.spec.js \
+  tests/browser/history-reveal-prototype.spec.js \
+  tests/browser/history-start-boundary.spec.js \
+  tests/browser/history-underfill-lifecycle.spec.js \
+  tests/browser/horizontal-table-scroll.spec.js \
+  tests/browser/input-resize-observer-loop.spec.js \
+  tests/browser/jump-latest-ownership.spec.js \
+  tests/browser/layout-responsive.spec.js \
+  tests/browser/legend-production-admission.spec.js \
+  tests/browser/live-tail-entry.spec.js \
+  tests/browser/member-filter-timeline.spec.js \
+  tests/browser/mobile-ux-isolation.spec.js \
+  tests/browser/model-selector-manual.spec.js \
+  tests/browser/model-selector-portal.spec.js --reporter=line \
+  --output=test-results-gm-head-20260920
+```
+
+HEAD 重验仍为 **32 tests，21 passed，11 failed（3.3m）**，失败身份没有漂移：
+
+| 分区 | 红测 | 首个失败公共结果 | 唯一 owner |
+|---|---|---|---|
+| history admission/reveal | 1–3 | prepend 后 visible row 仍为 4；出现 `visibleRows=0` 空帧；trusted wheel 后 mode 仍 `following` | `useProjectionReadingOwner`（`useConversationProjection.js`） |
+| underfill | 8 | settle 后 `c0 history 1` 不在当前 presentation rows | `useHistoryConsumer`（`useHistoryConsumer.js`） |
+| jump/live browsing | 13、23 | jump button 不可见；browsing arrival row count=0、jump=false | `useProjectionReadingOwner` 的 reading-session/live-arrival 边界 |
+| ModelSelector | 28–32 | dialog 几何/hit 通过，缺 `menuitem 模型` | `Composer` 的 `ModelSelector`（`Composer.jsx`） |
+
+同轮通过的 activation replacement、same-turn terminal、start boundary、layout、mobile、
+member filter 和 RO cases 不计入回归包。证据目录是
+`test-results-gm-head-20260920/`；没有 skip、删除或断言放宽。
+
 ## Case ledger
 
 `owner` 是当前生产 owner；`result` 是上述 Chromium 全组轮的逐 case 裁决。每行保留
@@ -86,54 +123,92 @@ baseline 用户动作、能力/不变量和真实当前边界。`REGRESSION` 表
 
 ## Product-regression packets
 
-### History admission / underfill / jump / live browsing (cases 1, 2, 3, 8, 13, 23)
+### A. History admission / reveal（3 个回归：cases 1–3）
 
-- Minimal reproduction: use the documented mock scenarios (`deep-history-delayed`,
-  `mixed-height-history`, `long-running-history` as applicable), login through `/`, select the
-  real actor/filter, and wheel the actual `.timeline-message-list`; for cases 13/23 publish a
-  documented pulse/live row before the user gesture.
-- Baseline capability: one canonical reading surface admits/prepends history or live rows,
-  preserves the visible anchor and layout, changes `following/browsing` only on the user's
-  trusted gesture, and acknowledges a mounted tail only after it is visible. No duplicate
-  history replay, empty paint, or implementation-only writer is part of the user contract.
-- Current behavior: history admission leaves the visible list at its baseline count; underfill
-  omits `history 1`; reveal/wheel can paint an empty frame or remain `following`; jump/live
-  browsing does not expose the expected jump/row. The current evidence captures visible rows,
-  semantic presentation IDs, root geometry, mode, and writer samples before diagnostics.
-- First public owner boundary: `WorkspaceApp` → feed runtime/history consumer →
-  `ConversationSurface` → `VendorListExecutor`/canonical reading owner. No compatibility
-  surface or source patch was added by this migration.
-- Stale-fixture exclusion: selectors are current production heading/list/row contracts and
-  current `data-presentation-row-id`; old private reveal tokens, old DOM node identity and
-  old `data-request-id` are not gates.
+**唯一 owner：** `useProjectionReadingOwner`（`src/ui/timeline/useConversationProjection.js`）。
+它发布每个 channel/view 的唯一 reading session，并把 `useHistoryConsumer`、历史状态和
+active `ReadingContainerHandoff` 绑定在同一 activation；`VendorListExecutor` 只是该 owner
+的 DOM witness，不是第二个 history/reveal owner。
 
-### Channel activation / inactive feed handoff (case 5; case 23 is gated earlier by live arrival)
+最小复现分别如下，均从真实 `/` 登录并使用唯一
+`.timeline-reading-layer.is-active .timeline-message-list`：
 
-- Minimal reproduction: login through `/`, wheel or start live activity in `c0`, click the real
-  `c0.project` channel item, then return to `c0`.
-- Baseline capability: target heading/list mounts, old reveal/live rows do not replay into the
-  target, and each channel restores only its own presentation rows.
-- Current behavior: the final G–M run now passes the activation replacement case: destination
-  heading/list and the c0 return are mounted without old-row replay. The separate live-tail case
-  is red earlier, at its browsing-arrival row/jump contract, so it does not claim an inactive
-  channel handoff failure in this freeze.
-- First public owner boundary: `WorkspaceApp` channel handoff → `createChannelFeedRuntime` /
-  `useWireSession` disconnect/connect ordering → `ConversationSurface` history owner.
+1. **Admission prepend（case 1）**：reset `deep-history-delayed` seed `0x924111`；通过
+   `/mock/control/action` 对 c0 注入 4 次 `dense_progress`（每次 count=70，target=Claude，
+   最后一批 target_count=4）；登录后点真实 Claude filter；在 list 上连续 8 次
+   `page.mouse.wheel(0, -360)`，每次间隔 55ms，再等待 2s。baseline rows=4；当前首个失败是
+   `evidence.listCount=4` 而非 `>4`。`activeLists=1` 与 anchor witness 仍在断言后面，故
+   这不是旧 selector 或隐藏诊断 timeout。
+2. **Reveal no-blank（case 2）**：reset `deep-history-delayed` seed `0x924121`；登录；对
+   真实 list 做 6 次 `wheel(0, -420)`，每次 90ms，再等待 900ms。当前首个失败是 6 个
+   sampled frames 中至少一帧 `visibleRows=0`；active layer/list 数量合同保留为 1。
+3. **Trusted takeover（case 3）**：reset 同场景 seed `0x924122`；登录后先
+   `wheel(0, -2000)`，等待 100ms，再 `wheel(0, 520)`，等待 900ms；同时只在
+   `Element.prototype.scrollTo/scrollBy` 记录公共 writer。当前首个失败是 `mode=following`
+   而非 `browsing`；evidence 同时记录到 3 次 `scrollTo`，但未用 writer 数量替代 mode
+   合同。
 
-### Model capability and portal (cases 28–32)
+共同基线能力是：单一 history/reveal surface 必须 prepend 可见内容、保持 anchor/布局、
+在真实 trusted wheel 后交给 browsing owner，不得空白或由旧 reveal writer 抢回。当前首个
+公开边界在 `useProjectionReadingOwner` 的 admission/session 发布处；旧 dual-list fixture、
+私有 reveal token、`data-request-id` 和 offscreen DOM identity 都不作为 gate。
 
-- Minimal reproduction: reset documented `actor-capability`, login through `/`, choose steward,
-  click the current `.model-selector-trigger`, then inspect the real `FloatingPortal` at 500/320/
-  200px viewport heights.
-- Baseline capability: after one capability read, the panel stays open and exposes model and
-  option menuitems outside the composer scrollport; pointer/keyboard hit ownership and trigger
-  focus must survive selection and refresh.
-- Current behavior: current `Composer.jsx` exposes a correctly positioned `role=dialog` named
-  `steward Agent 状态`; it reports the current model as readonly and has no `menuitem 模型`.
-  Geometry and hit evidence pass at all three heights, so the missing selectable capability is
-  the first failing public boundary. This is not repaired by changing a role selector.
-- First public owner boundary: `Composer` `ModelSelector` → `useComposerCommands.openAgentSelector`
-  → current actor capability/probe projection. No product source was changed here.
+### B. History underfill（1 个回归：case 8）
+
+**唯一 owner：** `useHistoryConsumer`（`src/ui/timeline/useHistoryConsumer.js`）的
+underfill demand owner；`VendorListExecutor` 仅提供当前可见 row evidence，不能另发 history
+请求。
+
+最小复现：reset `deep-history` seed `0x924803`；真实登录并等待
+`c0 history 120: ask steward for PONG`；对真实 list 连续 12 次
+`page.mouse.wheel(0, -1800)`，每次 45ms，再等待 1s；确认 pending/status 都消失后读取
+`[data-presentation-row-id]`。baseline 要求 `c0 history 1: ask steward for PONG` 可见、
+唯一 demand owner idle、至少一次 settle；当前首个失败为 `historyOneVisible=false`。
+这条回归不依赖 scheduler 私有事件，也不把 status 压掉当作成功；first public owner 是
+underfill → history supply 的 `useHistoryConsumer` demand/recheck 边界。
+
+### C. Jump / live browsing（2 个回归：cases 13、23）
+
+**唯一 owner：** `useProjectionReadingOwner`（`src/ui/timeline/useConversationProjection.js`）
+的 reading-session/live-arrival 边界；`VendorListExecutor` 只能执行该 owner 授权的单一 DOM
+command，不得成为第二个 jump/live 状态源。
+
+最小复现分别如下：
+
+1. **Jump latest（case 13）**：reset `deep-history` seed `1797`；真实登录、确保
+   `history 120` 可见；在 list 上 `wheel(0, -2000)` 并等待物理 gap>24；安装当前 root
+   `scrollTo` probe；发送 `/mock/control/action` `pulse`。当前首个失败是
+   `.timeline-jump-latest` `jumpVisible=false`。本轮 evidence 仍看到 browsing gap=2121，
+   且 probe 记录一次 app writer（scrollTop 1862），所以失败定位是 unseen/jump presentation
+   未发布，而不是 selector 找不到旧按钮。
+2. **Browsing live arrival（case 23）**：reset `long-running-history` seed `0x1e0919`；真实
+   登录；在 list 上 `wheel(0, -1500)` 并确认 mode=browsing；通过
+   `/mock/control/action` `q_tail_append` 发布 ask=`browsing arrival`；等待 1s。当前首个失败
+   是该 request 的 `[data-presentation-row-id]` count=0 且 jump=false；测试因此停在
+   browsing-arrival 最小边界，不声称后续 inactive-channel handoff 已失败。
+
+共同基线能力是 browsing 用户收到新内容时，live row 必须进入当前 presentation、jump
+ affordance 必须由同一 reading session 发布；点击后才可回到 following/ack。当前首个公开
+ owner 是 `useProjectionReadingOwner` 的 `arrivals.acknowledge`、`unseenNotice`、
+ `requestLatest` 边界；没有通过额外 scroll writer、滚底动作或另建列表来假绿。
+
+### D. ModelSelector capability / portal（5 个回归：cases 28–32）
+
+**唯一 owner：** `src/ui/composer/Composer.jsx` 的 `ModelSelector`（含其
+`FloatingPortal`）；probe projection 是输入，不另设测试侧 capability owner。
+
+最小复现：reset `actor-capability`（manual 用 seeds `0x931901/0x931902`，portal 用
+`0x9310+height`）；真实登录、点击 `选择 Agent → steward`；点击真实
+`.model-selector-trigger`。manual 两例直接检查 dialog 与 refresh/reopen；portal 三例把
+viewport 设为 500/320/200px 后检查 dialog bounds、center hit 和 composer scrollport
+隔离。当前首个失败统一是 dialog 内没有 `role=menuitem` name=`模型`；三种高度的 panel
+top/bottom/ownsHit 先通过，因此不是 portal 裁切/geometry 或旧 `role=menu` selector。
+
+共同基线能力是一次 capability read 后面板保持可操作，模型/option menuitem、键鼠 hit
+ownership、refresh/reopen focus contract 均存在。当前 `Composer` 公开的是
+`role=dialog aria-label="steward Agent 状态"`，model 以 readonly 形式显示且
+`view.configurable=false`；缺少 selectable model 是第一公共 owner 分歧。测试保留缺失
+option 的红断言，未把 dialog 改称旧 menu，也未通过高度分支跳过 option/focus 合同。
 
 ## Boundary audit
 
