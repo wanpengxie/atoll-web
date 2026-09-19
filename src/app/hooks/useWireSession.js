@@ -404,6 +404,10 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   if (initialRef.current === null) initialRef.current = readInitialRoute();
   const [profiles, setProfiles] = useState(new Map());
   const [revision, setRevision] = useState(0);
+  // Terminal session identity and screen replay belong to the PTY owner. This
+  // is only the per-channel navigation fact of whether that existing session
+  // is expanded in the workspace.
+  const [terminalChannels, setTerminalChannels] = useState(() => new Set());
   // The URL is only a request. A freshly authenticated principal has no
   // active channel until its own directory/access owner validates that id.
   const [activeChannelId, setActiveChannelId] = useState('');
@@ -462,9 +466,24 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     setActiveViewState(view);
     writeRoute(activeChannelRef.current, view);
   }, []);
+  const setTerminalVisible = useCallback((nextValue) => {
+    const channelId = activeChannelRef.current;
+    if (!channelId) return false;
+    setTerminalChannels((current) => {
+      const visible = current.has(channelId);
+      const next = typeof nextValue === 'function' ? Boolean(nextValue(visible)) : Boolean(nextValue);
+      if (visible === next) return current;
+      const channels = new Set(current);
+      if (next) channels.add(channelId);
+      else channels.delete(channelId);
+      return channels;
+    });
+    return true;
+  }, []);
   const bump = useCallback(() => setRevision((value) => value + 1), []);
   const clear = useCallback(() => {
     setProfiles(new Map());
+    setTerminalChannels(new Set());
     commitActiveChannel('');
     setRevision((value) => value + 1);
   }, [commitActiveChannel]);
@@ -479,10 +498,12 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     clear,
     revision,
     select,
+    setTerminalVisible,
     selfFor: (channelId) => rosterRef.current?.self?.(channelId) || '',
     setActiveChannelId: commitActiveChannel,
     setActiveView,
     setChannels: setProfiles,
+    terminalVisible: terminalChannels.has(activeChannelId),
   };
 }
 

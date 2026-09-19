@@ -109,14 +109,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const [channelNotice, setChannelNotice] = useState('');
   const [serverWorld, setServerWorld] = useState(readServerWorld);
   const [panel, setPanel] = useState('');
-  const [terminalVisible, setTerminalVisible] = useState(false);
   const [composerEditPort, setComposerEditPort] = useState(null);
   const showError = useCallback((error) => setTopError(errorText(error)), []);
   const wire = useWireSessionPort();
   const navigation = useChannelNavigation({
     accessRef: wire.accessRef,
     rosterRef: wire.rosterRef,
-    onSelect: () => { setPanel(''); setTerminalVisible(false); },
+    onSelect: () => { setPanel(''); },
     onNotice: setChannelNotice,
   });
   const ownerToken = useMemo(() => Object.freeze({ principalId }), [principalId]);
@@ -453,7 +452,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     capabilityIndex: capabilities,
     agentActivity: feed.agentActivityFor(navigation.activeChannelId),
     access,
-    surfaceVisible: navigation.activeView === 'conversation' || terminalVisible,
+    surfaceVisible: navigation.activeView === 'conversation' || navigation.terminalVisible,
     composer: <Composer model={composer.model} commands={composer.commands} />,
     onTailCaughtUp: (receipt) => {
       feed.markRead(navigation.activeChannelId, receipt);
@@ -790,20 +789,20 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     setPanel('');
   };
   const featureElement = <WorkspaceFeatures
-    activeView={terminalVisible ? 'conversation' : navigation.activeView}
+    activeView={navigation.terminalVisible ? 'conversation' : navigation.activeView}
     channel={navigation.activeChannel}
     contentVisible={Boolean(navigation.activeChannel)}
     files={filesPort}
     tasks={tasksPort}
     terminal={{
       mounted: true,
-      visible: terminalVisible,
+      visible: navigation.terminalVisible,
       channelId: navigation.activeChannelId,
       devices: attachments.devices.filter((device) => device.online !== false),
       deviceId: attachments.deviceId,
       canWrite: access?.relationship === 'member',
       commands: {
-        close: () => setTerminalVisible(false),
+        close: () => navigation.setTerminalVisible(false),
         connect: (options) => ptyClient().attach(options.channelId, options),
         selectDevice: attachments.selectDevice,
       },
@@ -838,14 +837,14 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       channels: navigation.channels,
       activeChannelId: navigation.activeChannelId,
       activeView: navigation.activeView,
-      terminalVisible,
+      terminalVisible: navigation.terminalVisible,
       channel: navigation.activeChannel,
       unread: Object.fromEntries(navigation.channels.map((channel) => [channel.id, feed.unreadFor(channel.id, navigation.selfFor(channel.id))])),
       agentActivity: feed.agentActivity,
       acknowledgeAgentActivity: feed.acknowledgeAgentActivity,
       select: navigation.select,
       setActiveView: navigation.setActiveView,
-      openTerminal: () => { setPanel(''); setTerminalVisible((value) => !value); },
+      openTerminal: () => { setPanel(''); navigation.setTerminalVisible((value) => !value); },
       openAutomation: () => setPanel('automation'),
       openRoster: () => setPanel('roster'),
       openSearch: () => setPanel('search'),
