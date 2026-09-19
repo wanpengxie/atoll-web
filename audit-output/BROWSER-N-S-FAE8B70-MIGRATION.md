@@ -366,3 +366,40 @@ oracle 采集 **1 passed**（采集绿色不等于原合同绿色），但 `firs
 canonical lifecycle final 仍是模型上的 `final`（可进 rail），独立 `human.note` readable event 仍是 `event`（只进 viewport，不进 rail）。实际 fixture final 的 audience 是 `project-agent`，multi-channel root actor 是 `root-project`；runtime 先过当前 actor relation 再应用 rail predicate，因此 root `.unread-total=0` 不能在这组 audience 下单独证明产品 badge 回归。该条保持 **fixture/合同语义待决**，不向 notification 产品 owner 交接；只有合同明确 channel-wide audience 语义，或 fixture 改为 root audience 后仍无 badge，才重新开放产品分歧。
 
 本轮最终分层：**Presentation** = F7 row 112 回返不可见；**Reading** = readable_event DOM 已见但无 observation（且候选 settle/authority 未闭合）；**fixture** = final root badge audience 不相容。三者不互相代偿，证据目录为 `test-results-browser-ns-round10-reading-15580-20260920/` 与 `test-results-browser-ns-round10-f7-15581-20260920/`。
+
+## 第十一轮只读复验：Reading observation 与 F7 row112 独立完成门（产品基线 `418c31e`，2026-09-20）
+
+Reading owner 的 `418c31e fix(reading): retain fold anchors through list reflow` 已进入当前 HEAD 祖先。本轮只读重跑，没有修改产品、fixture、断言或 skip；final root badge 继续沿用前轮已核定的 fixture audience 语义。
+
+### readable_event observation：完成门仍未通过
+
+```text
+ATOLL_TEST_WEB_PORT=15680 ATOLL_TEST_MOCK_PORT=19990 npx playwright test tests/browser/notification-policy.spec.js --grep="tool, timer, and public-event" --workers=1 --reporter=line --output=test-results-browser-ns-round11-readable-15680-20260920
+# 1 failed: notification-policy.spec.js:243
+```
+
+独立 readable row 的 lifecycle 与 `toBeVisible()` 仍先通过，失败仍是唯一 Reading owner 的 `reading.observation.visibleRowIDs` 没有包含 `c0.project-notification-readable-event`。因此 readable_event 的独立完成门仍 **RED**，首断点保持 **DOM/Presentation → Reading observation handoff**；不能用 F7 的 Presentation 变绿替代这条 Reading 证据。
+
+### F7 row112 Presentation：独立完成门已通过
+
+```text
+ATOLL_TEST_WEB_PORT=15681 ATOLL_TEST_MOCK_PORT=19991 npx playwright test tests/browser/notification-owner-oracle.spec.js --grep="F7 input" --workers=1 --reporter=line --output=test-results-browser-ns-round11-f7-15681-20260920
+# 1 passed (11.6s)
+```
+
+本次 `34d6f0c` oracle 的 `firstDivergence.stage=none-observed`。在 `return-after-switch`，cursor `readSeq/highWater=844`、replica `head=848` 且含 row112；唯一 browsing owner 的 visible IDs 为 `111/112/113/114`，row112 的物理边界约为 `top=102,bottom=320,visible=true`。因此 **F7 row112 的 Presentation/virtualized admission 完成门已闭合**。该 oracle 的 `reading.enabled=false`，所以只证明 row112 用户可见 Presentation，不宣称 Reading observation 或完整 session 合同已闭合。
+
+严格的文档 session 合同仍需单独保留：
+
+```text
+ATOLL_TEST_WEB_PORT=15682 ATOLL_TEST_MOCK_PORT=19992 npx playwright test tests/browser/reading-position-session.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round11-reading-position-15682-20260920
+# 1 failed: line 145 page.waitForFunction timeout (60s)
+```
+
+这条使用 `seed=29601` 的旧 bookmark/doc-session 往返场景，不能反向否定 row112 oracle 已通过；但它说明更宽的 “beforeSwitch firstVisible id 同位恢复” 合同仍 RED，继续交 Reading session/admission owner。两条门分别记录，不能以 row112 单次可见冒充完整 F7 session 通过。
+
+### final root badge：仍为 fixture/合同语义待决
+
+canonical final 与 standalone readable event 的 rail/viewport disposition 未改变；实际 final audience 仍是 `project-agent`，root actor 仍是 `root-project`。因此 `.unread-total=0` 继续按 fixture audience 与 line 154 预期不相容裁决，不登记 notification 产品 badge 回归。
+
+本轮分层：**Reading** = readable_event observation 完成门 RED；**Presentation** = F7 row112 独立可见门 GREEN，但完整 doc-session 合同仍 RED；**fixture** = final root badge 待合同 audience 决策。证据目录：`test-results-browser-ns-round11-readable-15680-20260920/`、`test-results-browser-ns-round11-f7-15681-20260920/`、`test-results-browser-ns-round11-reading-position-15682-20260920/`。

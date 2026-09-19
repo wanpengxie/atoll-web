@@ -287,6 +287,26 @@ F7 timing probe 中 browsing 前 `c0-history-request-112/113/114` 均真实可�
 
 本轮交接摘要：**Reading**（readable_event observation 缺口）与 **Presentation**（F7 row 112 回返不可见）分别交各自公开 owner；**fixture**（final root audience）暂不交产品。空 diagnostics 不作为用户 rail 错误证据。
 
+## 第十一轮只读复验：Reading observation 与 F7 row112 独立完成门（产品基线 `418c31e`，2026-09-20）
+
+Reading owner 的 `418c31e fix(reading): retain fold anchors through list reflow` 已进入当前 HEAD 祖先。本轮没有修改产品、fixture、断言或 skip；final root badge 继续沿用 fixture audience 裁决。
+
+### readable_event：Reading 完成门仍 RED
+
+浏览器重跑 `notification-policy.spec.js --grep="tool, timer, and public-event"` 为 **1 failed**，line 243 仍没有 `reading.observation.visibleRowIDs` 包含 `c0.project-notification-readable-event`。row 的独立 lifecycle 与 DOM `toBeVisible()` 先通过，故不是 Presentation 未挂载或 rail 数字问题；公开 owner 仍是 **DOM/Presentation → Reading observation handoff**。证据：`test-results-browser-ns-round11-readable-15680-20260920/`。
+
+### F7 row112：Presentation 独立完成门 GREEN，但完整 session 门仍 RED
+
+`34d6f0c` notification owner oracle F7 **1 passed (11.6s)**，且 `firstDivergence.stage=none-observed`。`return-after-switch` 时 cursor `readSeq/highWater=844`、replica `head=848` 已含 row112，唯一 browsing owner visible IDs 为 111/112/113/114，row112 `top=102,bottom=320,visible=true`。这证明 **F7 row112 的 Presentation/virtualized admission 独立完成门已闭合**；本 oracle `reading.enabled=false`，不替代 Reading observation 合同。证据：`test-results-browser-ns-round11-f7-15681-20260920/`。
+
+严格 `reading-position-session.spec.js` 同 HEAD 仍 **1 failed**，在 line 145 等待 `beforeSwitch.firstVisible.id` 回返 60s 超时（`seed=29601` 的 doc-session bookmark 场景）。它是更宽的 Reading session/admission 合同，不能否定 row112 oracle 的 Presentation GREEN，但也不能把一次 row112 可见宣称成完整 F7 session GREEN。证据：`test-results-browser-ns-round11-reading-position-15682-20260920/`。
+
+### final root badge：继续 fixture/合同待决
+
+canonical final 与 standalone readable event 的 rail/viewport disposition 未改变；final audience `project-agent` 仍不等于 fixture root actor `root-project`。所以 `.unread-total=0` 继续只说明 fixture audience 与 line 154 预期不相容，不登记 notification 产品 badge 回归，也不向产品 owner 派发。
+
+本轮交接：**Reading** readable_event observation 仍红；**Presentation** F7 row112 独立用户可见门已绿、宽 doc-session 门仍红；**fixture** final root badge 暂不交产品。空 diagnostics 不作为 rail 错误证据。
+
 ## 结论
 
 以上当前 R2–R8 覆盖最终 10 个 RED case 的真实分歧；历史 R1 disconnect 已关闭，Composer/Tiptap guard 的 uncaught 也未在最终轮复现。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。
