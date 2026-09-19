@@ -191,6 +191,29 @@ selector；没有增加 test-only API，也没有把 selector 或几何阈值改
 - Evidence/status: keep red without fixture/skip/threshold changes and hand to Presentation
   current-entry owner, no current-tree count.
 
+## Shell-reset follow-up (non-counted diagnostic)
+
+在 `431a287` 的 shell/feed persistence reset 之后，曾以 product HEAD
+`6c880aa`（后续只推进了 test/audit commits，至 `6060588`，未再改变 product
+source）定向跑 8 个历史红测：`4 passed / 4 failed`。通过的是 #14、#18、#19、#27，
+说明先前的 Workspace/Feed handoff、inactive notification entry、跨频道 activity
+timer 与 terminal handoff 已越过原首断点；这轮不替换冻结 `7ba308c` 的 `23/8`
+aggregate。
+
+- #1 的目标 `main h1=c0.project`、active list 和 rail 已出现，原 handoff 首断点已
+  越过；失败落在旧 debug logging 对缺失 `.unread-related` 调用 `textContent()`，
+  不是产品行为断言。`tests/browser/A-debug.spec.js` 只把这项诊断读取改成不等待
+  缺失节点的 `allTextContents()`，不改变任何 product assertion。
+- #29/#30 仍是物理折叠红测：mid `845.72px`、near-top `674.72px`，均
+  `allowed=0`，`vanished=false`；等待 Reading fold owner 提交后再复验。
+- #31 的最小 owner 包：reset `deep-history` seed `20260918` → 六个真实长回合
+  `H-ROLE-1`…`H-ROLE-6` → 用当前 list reveal latest row → 在任何 pulse/role
+  transition 前断言 latest fold toggle `aria-expanded=true`。当前首断点是该值为
+  `false`，同时 history attached、`presentationRevision=86`、`bottomReady=true`、
+  `mode=following`、latest mounted；因此首个公开 owner 是
+  `conversation-presentation` current-entry authority → `TimelineRowRenderer`/
+  `FoldableBody`，尚未进入 Reading anchor 或 role-transition 几何判定。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
