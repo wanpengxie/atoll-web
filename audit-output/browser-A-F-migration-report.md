@@ -378,6 +378,35 @@ transition、anchor sampling 或任何 collapse geometry。故当前公开首 ow
 anchor 回归。等待该 owner 的新产品提交后，必须在独立 clean snapshot 重跑 #29/#30/#31，
 并再次记录 actual paint、mounted IDs 与 latest-role 首帧。
 
+### 第十三轮：`668bd55` clean Chromium #31 latest-role authority（只读）
+
+共享 HEAD 已前进到 `668bd55`（含 `d490445`）；为避免共享脏树归因，本轮在独立
+clean worktree `/tmp/af-clean-668bd55` 上用真实 Chromium 重跑 #31 的完整用户路径：
+六个长回合 → latest authority 初始展开 → 上滑到 `H-ROLE-2` browsing 锚点 → 两次
+真实 pulse → 向下滚回 `H-ROLE-6` 使最终 fold 发生实际 DOM paint。诊断只在 `/tmp`
+复制了读取辅助，未改仓库 spec、selector、断言、阈值或产品代码；报告 JSON 保存在
+`/tmp/role-transition-diagnostic-668bd55.json`。结果为 `1 passed (16.4s)`，pageerror
+与 request failure 均为 0。
+
+| 阶段 | row / authority evidence | actual paint / mounted evidence |
+| --- | --- | --- |
+| 初始 latest | row `b08181e7-b9e1-4a53-b1ef-9e78c60ff04c`；seq `888..894`；content `894:88`；render `894:88\u00011\u00010\u0001\u0001\u0001\u00015`（latest bit=1） | `H-ROLE-6` fold `aria-expanded=true`；在 following tail 真实渲染，row 的展开正文部分跨过视口但 fold paint 位于视口内 |
+| pulse 锚点 before/after | anchor `H-ROLE-2` row `c93d6cd0-73ae-49ce-a3b3-e246287900b2`；top `271.38 → 271.38`；scrollTop `4728 → 4728`；scrollHeight `9663 → 9738` | `allowedDrift=0`、`anchorDrift=0`、`worstDrift=0`、`maxFrameStep=0`、`vanished=false`、`unmountedFrames=0`（102 rAF frames）；pulse 期间 latest row不在 mounted 集合，未把 offscreen locator 当成 paint |
+| final latest paint | 同一 row `b08181e7-b9e1-4a53-b1ef-9e78c60ff04c`；seq/content 不变 `888..894` / `894:88`；render `894:88\u00010\u00010\u0001\u0001\u0001\u00015`（latest bit=0） | 向下真实滚轮 5 步后 row top `344.19`，fold `aria-expanded=true → false`；最终 mounted IDs 含 `e5fe4f33-11ab-4940-a11f-03472c1a3b22`、`2341f4b8-5944-49ea-a2d7-3942df21901b`、`b08181e7-b9e1-4a53-b1ef-9e78c60ff04c`、`c0-live-20260918-1` |
+
+该轮证明 current-entry authority 在当前 clean HEAD 可继续交给
+`latestRowID → TimelineRowRenderer → FoldableBody`，并在真实回到 latest row 时产生
+正确的 `true → false` actual paint；Reading 锚点 pulse 期间没有漂移或卸载帧。故将
+**产品体验等价**记录为 PASS on clean `668bd55`，但不改写冻结 `7ba308c` 的 `23/8`
+aggregate。
+
+注意：原始冻结 spec 的 `revealRow()` 仍只向上滚轮；在脉冲后它从历史锚点寻找位于
+下方的 `H-ROLE-6`，会在 line 326 locator timeout。这是测试 helper 的方向/virtualized
+materialization 首断点，不是把 selector 换掉或放宽断言；本轮诊断使用双向真实滚轮只
+为了把同一语义 row 带回可见 paint 面，并保留原始 `aria-expanded=false` 与几何断言。
+若要把冻结 spec 本身变绿，应由测试 owner 单独提交等价的双向 reader reveal 修复，
+本分区不改断言。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
