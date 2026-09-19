@@ -77,9 +77,35 @@ function buildTurn(request, requestSeq, responses) {
   };
 }
 
+function reconcileTurn(previous, next) {
+  if (!previous) return next;
+  Object.assign(previous, next);
+  return previous;
+}
+
+function reconcileTimelineEntry(previous, next) {
+  if (!previous || previous.kind !== next.kind) return next;
+  if (next.kind !== 'turn') {
+    if (previous.envelope?.id !== next.envelope?.id) return next;
+    Object.assign(previous, next);
+    return previous;
+  }
+  if (previous.turn?.requestId !== next.turn?.requestId) return next;
+  previous.seq = next.seq;
+  previous.turn = reconcileTurn(previous.turn, next.turn);
+  const children = new Map((previous.thread || []).map((entry) => [entry.turn?.requestId, entry]));
+  const reconciled = next.thread.map((entry) => (
+    reconcileTimelineEntry(children.get(entry.turn?.requestId), entry)
+  ));
+  if (!Array.isArray(previous.thread)) previous.thread = [];
+  previous.thread.splice(0, previous.thread.length, ...reconciled);
+  return previous;
+}
+
 // Replica is the only mutable materialized ledger. Every source commits here;
-// the timeline is rebuilt from that canonical row set so out-of-order cache,
-// history and live delivery cannot create competing folds.
+// the fold is recomputed from that canonical row set so out-of-order cache,
+// history and live delivery cannot create competing folds. Reconciliation
+// keeps surviving turn identities stable for Presentation's content path.
 function rebuildState(state) {
   const orderedRows = [...state.rows.entries()].sort((left, right) => left[0] - right[0]);
   const requests = new Map();
@@ -119,11 +145,18 @@ function rebuildState(state) {
       turn: buildTurn(request, requestSeqs.get(id), responses.get(id)),
     });
   }
-  for (const root of roots.values()) {
-    root.thread.sort((left, right) => left.seq - right.seq);
-    root.turn.lastSeq = Math.max(root.turn.lastSeq, ...root.thread.map((entry) => entry.turn.lastSeq));
-  }
-  state.timeline = [...roots.values(), ...standalone].sort((left, right) => left.seq - right.seq);
+  for (const root of roots.values()) root.thread.sort((left, right) => left.seq - right.seq);
+  const previous = new Map((state.timeline || []).map((entry) => [
+    entry.kind === 'turn' ? entry.turn?.requestId : entry.envelope?.id,
+    entry,
+  ]));
+  const nextTimeline = [...roots.values(), ...standalone]
+    .sort((left, right) => left.seq - right.seq)
+    .map((entry) => reconcileTimelineEntry(
+      previous.get(entry.kind === 'turn' ? entry.turn?.requestId : entry.envelope?.id),
+      entry,
+    ));
+  state.timeline.splice(0, state.timeline.length, ...nextTimeline);
   state.lastSeq = orderedRows.at(-1)?.[0] || 0;
 }
 

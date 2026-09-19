@@ -306,18 +306,23 @@ function evaluatePresentation(owner, entries = [], {
   let snapshot = owner.snapshot;
   const incrementalChanges = sourceChanges.filter((change) => Number(change.revision) > sourceRevision);
   const revisionAdvanced = Number(nextSourceRevision) > sourceRevision;
+  const sameEntryOrder = entries === entriesReference || (
+    entries.length === snapshot.orderedIDs.length
+    && entries.every((entry, index) => identityOf(entry) === snapshot.orderedIDs[index])
+  );
   const canIncrement = !viewChanged
     && snapshot.epoch === epoch
-    && entries === entriesReference
+    && sameEntryOrder
     && sourceRevision >= Number(sourceChangeBase || 0)
     && (!revisionAdvanced || incrementalChanges.length > 0)
     && incrementalChanges.every((change) => change.kind === 'content');
-  // The exact committed entries array already has an owner-private identity
-  // index. Reuse it for the hot content-only path instead of rebuilding an
-  // all-roots Map for one nested progress subject. A structural/rebased input
-  // is about to pay the existing full rebuild below; bound its potentially
-  // many subject lookups to one additional scan with an evaluate-local index.
-  // This fallback is neither retained nor published as snapshot state.
+  // A content-only source revision preserves semantic order even when the
+  // selection layer returns a fresh array wrapper. Reuse the committed
+  // owner-private identity index instead of rebuilding an all-roots Map for
+  // one nested progress subject. A structural/rebased input is about to pay
+  // the existing full rebuild below; bound its potentially many subject
+  // lookups to one additional scan with an evaluate-local index. This fallback
+  // is neither retained nor published as snapshot state.
   let rebuildSourceEntriesByID = null;
   const sourceEntry = canIncrement
     ? (id) => entriesByID.get(id)
