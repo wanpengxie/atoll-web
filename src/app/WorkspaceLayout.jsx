@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 
-const VIEW_LABELS = Object.freeze({ conversation: '动态', files: '文件', tasks: '任务' });
+const VIEW_LABELS = Object.freeze({ conversation: '动态', tasks: '任务' });
 const VIEW_ENTRIES = Object.freeze(Object.entries(VIEW_LABELS));
 
 function connectionLabel(state) {
@@ -56,7 +56,6 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef }) {
         key={channel.id}
         aria-current={channel.id === navigation.activeChannelId ? 'page' : undefined}
         onClick={() => {
-          for (const [agentId] of settled) navigation.acknowledgeAgentActivity?.(channel.id, agentId);
           navigation.select(channel.id);
           onClose?.('heading');
         }}
@@ -73,7 +72,7 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef }) {
         <span className="channel-trailing">
           {label && <span className={`channel-access-label label-${channel.access}`}>{label}</span>}
           {unread.related > 0 && <span className="unread-badge unread-related" aria-label={`${unread.related} 条与我相关的未读消息`} title="与我相关的未读消息">{unread.related > 99 ? '99+' : unread.related}</span>}
-          {unread.pending && <span className="unread-total unread-pending" aria-label="正在恢复未读状态" title="正在恢复未读状态">…</span>}
+          {(unread.pending || unread.unknown) && <span className="unread-total unread-pending" aria-label={unread.unknown ? '未读状态待同步' : '正在恢复未读状态'} title={unread.unknown ? '未读状态待同步' : '正在恢复未读状态'}>{unread.unknown ? '?' : '…'}</span>}
         </span>
       </button>;
     })}
@@ -90,6 +89,7 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef }) {
         <button type="button" onClick={() => { onClose?.('none'); navigation.openSearch(); }} aria-label="全局搜索"><span aria-hidden="true">⌕</span> 搜索</button>
       </div>
       <p className="rail-caption">我的频道 <span>{memberChannels.length}</span></p>
+      {navigation.openChannelAdministration && <button type="button" className="rail-create-button" onClick={() => { onClose?.('none'); navigation.openChannelAdministration(); }} aria-label="新建频道" title="在当前频道下新建子频道"><span aria-hidden="true">＋</span> 新建频道</button>}
       {renderRows(memberChannels, '还没有加入频道')}
       <p className="rail-caption space-caption">空间 <span>{otherChannels.length}</span></p>
       {renderRows(otherChannels, '没有可发现频道')}
@@ -115,11 +115,15 @@ export function WorkspaceLayout({
 }) {
   const topology = useSurfaceTopology();
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
+  const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   const mobileChannelToggleRef = useRef(null);
   const mobileRailCloseRef = useRef(null);
   const channelHeadingRef = useRef(null);
+  const channelMenuRef = useRef(null);
+  const channelMenuButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
   const channel = navigation.channel;
+  const filesOpen = navigation.activeView === 'files';
   const closeMobileChannels = (focus = 'toggle') => {
     setMobileChannelsOpen(false);
     if (focus === 'none') return;
@@ -139,6 +143,80 @@ export function WorkspaceLayout({
       document.removeEventListener('keydown', escape);
     };
   }, [mobileChannelsOpen]);
+  useEffect(() => {
+    if (!channelMenuOpen) return undefined;
+    const closeOutside = (event) => {
+      if (!channelMenuRef.current?.contains(event.target)) setChannelMenuOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      setChannelMenuOpen(false);
+      channelMenuButtonRef.current?.focus({ preventScroll: true });
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [channelMenuOpen]);
+  const toggleFiles = () => {
+    if (!channel) return;
+    navigation.setActiveView(filesOpen ? 'conversation' : 'files');
+  };
+  const toggleTerminal = () => {
+    if (!channel) return;
+    navigation.openTerminal?.();
+  };
+  useEffect(() => {
+    if (!navigation.openTerminal) return undefined;
+    const toggleByKey = (event) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.key !== 'F12' || !channel) return;
+      event.preventDefault();
+      navigation.openTerminal();
+    };
+    document.addEventListener('keydown', toggleByKey, true);
+    return () => document.removeEventListener('keydown', toggleByKey, true);
+  }, [channel, navigation.openTerminal]);
+  useEffect(() => {
+    const switchChannel = (event) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"], [aria-modal="true"]')) return;
+      if (event.target?.closest?.('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="menu"], [role="listbox"]')) return;
+      const channels = navigation.channels.filter((row) => String(row.access || '').startsWith('member_'));
+      if (!channels.length) return;
+      const direct = /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : -1;
+      const direction = event.key.toLowerCase() === 'n' ? 1 : event.key.toLowerCase() === 'p' ? -1 : 0;
+      if (direct < 0 && !direction) return;
+      const current = channels.findIndex((row) => row.id === navigation.activeChannelId);
+      const target = direct >= 0
+        ? channels[direct]
+        : channels[(current < 0 ? (direction > 0 ? 0 : channels.length - 1) : current + direction + channels.length) % channels.length];
+      if (!target || target.id === navigation.activeChannelId) return;
+      event.preventDefault();
+      navigation.select(target.id);
+      globalThis.requestAnimationFrame(() => channelHeadingRef.current?.focus({ preventScroll: true }));
+    };
+    document.addEventListener('keydown', switchChannel);
+    return () => document.removeEventListener('keydown', switchChannel);
+  }, [navigation.activeChannelId, navigation.channels, navigation.select]);
+  const runChannelMenuAction = (command) => {
+    setChannelMenuOpen(false);
+    command?.();
+  };
+  const moveChannelMenu = (event) => {
+    const items = [...(channelMenuRef.current?.querySelectorAll('[role="menuitem"]') || [])]
+      .filter((item) => item.offsetParent !== null && !item.disabled);
+    if (!items.length || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = items.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0
+      : event.key === 'End' ? items.length - 1
+        : event.key === 'ArrowDown' ? (current + 1 + items.length) % items.length
+          : (current - 1 + items.length) % items.length;
+    items[next].focus();
+  };
   const moveViewTab = (event, index) => {
     let nextIndex = index;
     if (event.key === 'ArrowRight') nextIndex = (index + 1) % VIEW_ENTRIES.length;
@@ -164,10 +242,16 @@ export function WorkspaceLayout({
         </div>
         <div className="channel-header-actions">
           <span className="seq-label">SEQ {Number(conversation?.state?.lastSeq || 0)}</span>
-          {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`header-action terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} disabled={!channel} onClick={navigation.openTerminal}>终端</button>}
-          {navigation.openAutomation && <button type="button" className="header-action" disabled={!channel} onClick={navigation.openAutomation}>定时动作</button>}
           {navigation.openRoster && <button type="button" className="header-action" disabled={!channel} onClick={navigation.openRoster}>成员</button>}
-          {navigation.openChannelAdministration && <button type="button" className="header-action" disabled={!channel} onClick={navigation.openChannelAdministration}>频道治理</button>}
+          <div className="channel-menu" ref={channelMenuRef}>
+            <button ref={channelMenuButtonRef} type="button" className="header-action" disabled={!channel} aria-label="频道操作" aria-haspopup="menu" aria-expanded={channelMenuOpen} onClick={() => setChannelMenuOpen((value) => !value)}>•••</button>
+            {channelMenuOpen && <div className="channel-menu-popover" role="menu" aria-label="频道操作菜单" onKeyDown={moveChannelMenu}>
+              {navigation.openChannelAdministration && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelAdministration)}>频道详情</button>}
+              {navigation.openAutomation && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openAutomation)}>定时动作</button>}
+              <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleFiles)}>{filesOpen ? '关闭文件' : '打开文件'}</button>
+              {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}
+            </div>}
+          </div>
         </div>
       </header>
       <nav className="channel-view-tabs" role="tablist" aria-label="频道主视图">
@@ -175,21 +259,26 @@ export function WorkspaceLayout({
           ref={(node) => { viewTabRefs.current[index] = node; }}
           type="button"
           role="tab"
-          aria-selected={navigation.activeView === view}
-          tabIndex={navigation.activeView === view ? 0 : -1}
-          className={navigation.activeView === view ? 'active' : ''}
+          aria-selected={view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view}
+          tabIndex={(view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view) ? 0 : -1}
+          className={(view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view) ? 'active' : ''}
           key={view}
           onKeyDown={(event) => moveViewTab(event, index)}
-          onClick={() => navigation.setActiveView(view)}
+          onClick={() => navigation.setActiveView(view === 'conversation' && filesOpen ? 'files' : view)}
         >{label}</button>)}
       </nav>
+      <div className="workspace-quick-actions">
+        <button id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} disabled={!channel} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
+        {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} aria-pressed={navigation.terminalVisible} disabled={!channel} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端</button>}
+      </div>
       <div className="status-stack">
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}
         {notices.channel && <div className="channel-notice" role="status"><span>{notices.channel}</span><button type="button" onClick={notices.dismissChannel} aria-label="关闭频道提示">×</button></div>}
       </div>
       {navigation.terminalVisible
         ? <div className="dynamic-workspace terminal-split-open"><div className="dynamic-message-pane">{conversation?.element}</div>{features}</div>
-        : navigation.activeView === 'conversation' ? conversation?.element : features}
+        : navigation.activeView === 'tasks' ? features
+          : <div className={`dynamic-workspace${filesOpen ? ' files-split-open' : ''}`}><div className="dynamic-message-pane">{conversation?.element}</div>{filesOpen && features}</div>}
     </main>
     {rightPanel}
     {overlays}
