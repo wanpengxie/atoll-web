@@ -470,9 +470,19 @@ export function useReadingSession({
     || Number(syncStatus.fulfilledRevision || 0) >= latestRequiredRevision;
   const currentPresentationKnown = Number(historyStatus.presentationRevision || 0) > 0
     && Number(snapshot.sourceRevision || 0) >= Number(historyStatus.presentationRevision || 0);
-  const bottomReady = currentTailKnown
+  // A managed history source must prove that its current head and matching
+  // Presentation revision are installed before Reading may issue a tail
+  // command. An unmanaged source has no scheduler/currentness obligation to
+  // wait for: its supplied snapshot is the complete authority for this
+  // activation. Treating that source as permanently stale made a following
+  // remount depend on Virtuoso's one-shot initial estimate; if the data was
+  // revised while the list materialized, the sole Reading issuer rejected the
+  // committed height and left the viewport at the first row.
+  const bottomReady = !hasManagedHistoryLifecycle || (
+    currentTailKnown
     && latestObligationFulfilled
-    && currentPresentationKnown;
+    && currentPresentationKnown
+  );
   const knownHead = Math.max(
     Number(historyStatus.headSeq || 0),
     Number(syncStatus.targetHead || 0),

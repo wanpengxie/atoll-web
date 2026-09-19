@@ -1782,6 +1782,38 @@ it('detached cache 错误保留已读 rows，并提供独立 typed Retry 状态'
   expect(retryLocalReplica).toHaveBeenCalledTimes(1);
 });
 
+it('treats an unmanaged snapshot as the complete tail authority', async () => {
+  let port;
+  const request = vi.fn();
+  const snapshot = {
+    revision: 1,
+    sourceRevision: 1,
+    rows: [{ id: 'standalone-tail', seqLow: 1, seqHigh: 1 }],
+    entities: new Map([['standalone-tail', {}]]),
+  };
+  const viewSessions = {
+    readView: () => ({ mode: 'following', revision: 0 }),
+    activate: vi.fn(), save: vi.fn(() => true), deactivate: vi.fn(),
+  };
+  function Harness() {
+    const reading = useReadingSession({
+      channelID: 'standalone',
+      viewKey: 'standalone',
+      snapshot,
+      history: { status: { hasOlder: false }, request },
+      viewSessions,
+      surfaceVisible: true,
+    });
+    useLayoutEffect(() => { port = reading; }, [reading]);
+    return null;
+  }
+  render(<Harness />);
+  await waitFor(() => expect(port?.activationID).toBeTruthy());
+  expect(port.bottomReady).toBe(true);
+  expect(port.getSession().mode).toBe('following');
+  expect(request).not.toHaveBeenCalled();
+});
+
 it('fresh following 立即显示缓存Projection，但在Replica修订消费前不授权尾随', async () => {
   let port;
   const request = vi.fn();

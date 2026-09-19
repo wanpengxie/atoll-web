@@ -12,10 +12,12 @@ export const invalidateFollowingSend = (transactionRef, current) => {
 };
 
 export function resetFollowingScroll(control, reading, current) {
+  const authorized = current.mode === READING_MODE.following
+    && reading.initializing !== true && reading.bottomReady !== false;
   control.followAuthorization.current = {
     activationID: reading.activationID,
-    authorized: current.mode === READING_MODE.following
-      && reading.initializing !== true && reading.bottomReady !== false,
+    inputEpoch: current.inputEpoch,
+    authorized,
   };
   for (const ref of [control.followRevision, control.viewport, control.layoutHeight,
     control.role, control.intentGeometry, control.sendTransaction, control.sendOwnedRevision,
@@ -236,11 +238,23 @@ export function decideFollowingScroll({
   }
   const height = control.layoutHeight.current;
   const validHeight = validFor(height, current, binding) && current.mode === READING_MODE.following;
+  const followAuthorization = control.followAuthorization.current;
+  const activationFollow = Boolean(
+    followAuthorization?.authorized === true
+    && followAuthorization.activationID === current.activationID
+    && followAuthorization.inputEpoch === current.inputEpoch
+    && current.mode === READING_MODE.following
+  );
   const intentOwnsRevision = ownsRevision && owned?.snapshotRevision === binding.snapshotRevision;
   const ordinaryRevision = validRevision && (!intentOwnsRevision || revision.independent === true);
   const authorization = targetCommitted
     ? { kind: 'send-ready', tokenID: `intent:${intent.id}`, label: 'intent' }
-    : ordinaryRevision ? { kind: 'presentation', tokenID: revision.tokenID, label: 'presentation-revision' }
+    : !validIntent && activationFollow ? {
+      kind: 'activation',
+      tokenID: `activation:${current.activationID}:${current.inputEpoch}`,
+      label: 'following-activation',
+    }
+      : ordinaryRevision ? { kind: 'presentation', tokenID: revision.tokenID, label: 'presentation-revision' }
       : validRole ? { kind: 'role', tokenID: role.tokenID, label: 'presentation-role' }
         : validViewport ? { kind: 'viewport', tokenID: viewport.tokenID
           || `viewport:${current.activationID}:${current.inputEpoch}:${viewport.geometryRevision}`,
@@ -268,6 +282,13 @@ export function decideFollowingScroll({
   if (!binding.rows.length) return reject('no-rows');
   if (geometry.offsetHeight <= 0 || geometry.clientHeight <= 0 || geometry.scrollHeight <= 0) {
     return reject('zero-geometry');
+  }
+  if (authorization.kind === 'activation'
+    && geometry.scrollHeight <= geometry.clientHeight + 1
+    && geometry.completeRange !== true) {
+    return reject('activation-layout-pending', {
+      snapshotRevision: Number(binding.snapshotRevision || 0),
+    });
   }
 
   const baselineHeight = control.intentGeometry.current
@@ -321,6 +342,23 @@ export function decideFollowingScroll({
       }
       owner.consumeBottomIntent(intent);
       control.intentGeometry.current = null;
+    } else if (authorization.kind === 'activation') {
+      // Following is a durable authorization for the activation, not a
+      // one-shot command. Virtualized geometry can grow through several
+      // commits after the first non-placeholder height; consuming authority on
+      // that first write leaves the viewport at an intermediate maximum. The
+      // authorization ends only when Reading changes mode or activation.
+      // Lower-priority tokens for this commit are nevertheless covered by the
+      // same canonical tail decision and must not accumulate.
+      if (validRevision && control.followRevision.current === revision) {
+        control.followRevision.current = null;
+      }
+      if (validHeight && control.layoutHeight.current === height) {
+        control.layoutHeight.current = null;
+      }
+      if (validItemLayout) control.itemLayout.current = null;
+      if (validViewport && control.viewport.current === viewport) control.viewport.current = null;
+      if (validRole && control.role.current === role) control.role.current = null;
     } else if (authorization.kind === 'presentation') {
       if (control.followRevision.current === revision) control.followRevision.current = null;
       if (validItemLayout) control.itemLayout.current = null;

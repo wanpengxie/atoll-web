@@ -414,6 +414,7 @@ function MessageListBody({
   const geometryRevisionRef = useRef(0);
   const followAuthorizationRef = useRef({
     activationID: reading.activationID,
+    inputEpoch: reading.session.inputEpoch,
     authorized: reading.session.mode === READING_MODE.following
       && reading.initializing !== true
       && reading.bottomReady !== false,
@@ -569,12 +570,24 @@ function MessageListBody({
 
   const issueBottomIfCurrent = useCallback((source = 'layout') => {
     const root = scrollerRef.current;
+    const binding = activationOwnerRef.current;
+    const ack = materializationAckRef.current;
+    const firstIndex = Number(binding?.snapshot?.firstItemIndex
+      ?? snapshotRef.current?.firstItemIndex ?? 0);
+    const rowCount = Number(binding?.rows?.length || 0);
     const geometry = Object.freeze({
       canScroll: typeof root?.scrollTo === 'function',
       scrollTop: Number(root?.scrollTop || 0),
       scrollHeight: Number(root?.scrollHeight || 0),
       clientHeight: Number(root?.clientHeight || 0),
       offsetHeight: Number(root?.offsetHeight || 0),
+      completeRange: Boolean(
+        rowCount > 0
+        && ack?.activationID === binding?.activationID
+        && Number(ack?.presentationRevision) === Number(binding?.snapshotRevision || 0)
+        && Number(ack?.startIndex) <= firstIndex
+        && Number(ack?.endIndex) >= firstIndex + rowCount - 1
+      ),
     });
     const decision = decideFollowingScroll({
       source,
@@ -1363,6 +1376,7 @@ function MessageListBody({
     if (previous?.activationID !== reading.activationID) {
       followAuthorizationRef.current = {
         activationID: reading.activationID,
+        inputEpoch: reading.session.inputEpoch,
         authorized: followAuthorized,
       };
       return;
@@ -1370,6 +1384,7 @@ function MessageListBody({
     if (previous.authorized === followAuthorized) return;
     followAuthorizationRef.current = {
       activationID: reading.activationID,
+      inputEpoch: reading.session.inputEpoch,
       authorized: followAuthorized,
     };
     traceReadingAdapter('follow-authorization', {
