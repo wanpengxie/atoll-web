@@ -628,3 +628,38 @@ ATOLL_TEST_WEB_PORT=16305 ATOLL_TEST_MOCK_PORT=20605 npx playwright test tests/b
 ```
 
 follow evidence 为 high-water `25→28`、arrival seq=`28` 且 `ackReason=high_water`；DOM `related/total/pending/jump=0/0/false/0`；trace 包含两次 `reading.observation`，均 `atTail/surfaceVisible=true` 且包含 arrival row。故本条用户行为、Presentation→Reading observation→Feed acknowledgement 链均 GREEN；第十八轮的 Reading 产品回归交接撤销，旧事件名归 **过时 diagnostic oracle**。未改产品、fixture、vendor、package 或 skip。
+
+## 第二十轮：response-first terminal → late parent → tail receipt → reload（当前 HEAD `4d87546`，2026-09-20）
+
+本轮不使用旧 `reading.*` 事件名，也不修改产品、fixture、断言、vendor、package 或 skip。用现有 mock 控制面先写入带未来 parent ID 的 terminal，再用浏览器内第二条真实 v5 `/ws` `submit` 写入同一 parent：terminal 的 audience 为当前项目 human actor `root-project`，late parent 为 `root-project → project-agent`，因此两条输入的 principal/audience 语义是显式的，不是 Feed 猜测关联。
+
+独立 Chromium probe（临时 observation-only spec 已删除，JSON 证据保留）：
+
+```text
+ATOLL_TEST_WEB_PORT=16427 ATOLL_TEST_MOCK_PORT=20727 npx playwright test tests/browser/ztmp-ns-round20-response-first-current.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round20-response-first-current-16427-20260920
+# 1 passed (10.6s)
+```
+
+证据：`test-results-browser-ns-round20-response-first-current-16427-20260920/**/round20-current-response-first.json`。
+
+| 阶段 | 精确 DOM / Presentation | cursor / rail / seq | typed Reading observation |
+|---|---|---|---|
+| baseline | `following`, `gap=0`, `visibleIDs=[history-request-3,approval-1,summary]`；DOM `related/total/pending/jump=0/0/false/0` | `readSeq=25, highWater=25`，`authorityReady=true`，counts `0/0` | `sequence=2`，`inputEpoch=0`，`atTail=true`，`surfaceVisible=true` |
+| terminal-first，tail receipt 尝试后 | 仍 `following/gap=0`，DOM `0/0/false/0`；terminal 不进入 mounted Presentation | terminal seq `28`，high-water 仍 `25`；rail row `ackReason=notification_context_unknown`，counts `0/0` | 仍为 tail observation，visible IDs 只有旧三行；没有 terminal 的伪造 visible receipt |
+| 离开 tail，parent 尚未到 | `browsing`, `gap=660`，visible IDs 为旧 history 三行；DOM `0/0/false/0` | cursor/high-water 仍 `25/25`，seq `28` 仍 `notification_context_unknown` | `inputEpoch=1`，`source=user`，`settled=true`，`atTail=false`，`surfaceVisible=true` |
+| late parent 到达且仍 browsing | `browsing`, `gap=660→928`；左侧频道 `related=1,total=0,pending=false,jump=0`（`.unread-total` 只表示 pending/unknown；用户个人 badge 是 `.unread-related`） | parent seq `29`，mock 自动 lifecycle seq `30..35`；rail counts `related/total=1/1`；seq28 转 `counted_related`，seq29 `self`，30..34 `not_final`，35 `terminal_conflict` | `inputEpoch=1`，`atTail=false`，`surfaceVisible=true`；无把未显示 terminal 当作 tail ack 的 observation |
+| 回 tail，parent closed boundary ack | `following`, `gap=0`，visible IDs 含 `round20-current-response-first-parent`；DOM `0/0/false/0` | high-water `25→35`，rail counts `0/0`，seq `28..35` 全 `high_water` | `sequence=14/15` 为 `source=user`、`inputEpoch=2`、`atTail=true`、`surfaceVisible=true`，`visibleRowIDs` 含 exact parent root；`sequence=16` layout follow-up 同样含该 root |
+| reload | `following`, `gap=0`，parent root 仍 visible；DOM `0/0/false/0` | cursor `read=25, highWater=35`，rail authority ready，所有 28..35 rows 仍 `high_water` | reload 会重置本地 trace，这是 trace 生命周期事实；不影响 durable cursor/DOM |
+
+这条链证明 `2cae19c` 的 `closedNotificationBoundary` 语义：terminal-first 到达时，tail observation 不能越过缺失的 exact parent（high-water 留在 25）；parent 到达且读者在 browsing 时，确实产生一个用户可见 related badge（1）；回 tail 后 typed observation/receipt 才把已闭合边界推进到 35；reload 后不复活。seq35 的 `terminal_conflict` 是通用 mock 在 parent submit 后自动补出的第二 terminal，产品 Presentation 仍选择首个 response-first body，且不产生额外用户 badge；不交产品 owner。
+
+同 HEAD 正式四条 high-water：
+
+```text
+ATOLL_TEST_WEB_PORT=16428 ATOLL_TEST_MOCK_PORT=20728 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round20-highwater-current-16428-20260920
+# 3 passed, 1 failed（仅 hydration raw-row 读取门）
+```
+
+hydration 单红仍为 line 160 的 `latestAddedApprovalSeq(afterHydratedAcknowledgement)`，即在第一次 project click 后立即读取 `rail.rows` 时拿不到 injected approval row；不是 high-water 丢失。当前 HEAD 的同语义 observation-only probe 在相同 `seed=0x4e_06` 中记录：两条 approval seq `26/27`，reload 前后 high-water `25`，project click 后立即和 500ms 后均为 high-water `27`、DOM `0/0/false/0`、rows `ackReason=high_water`，二次 reload 仍 high-water `27`、DOM `0/0/false/0`。证据 `test-results-browser-ns-round20-hydration-16426-20260920/**/round20-hydration-probe.json`。故该单红归 **过时/竞态 raw diagnostics test contract**（公开用户链已绿），不交 notification owner，不用删除断言或放宽行为门伪绿。
+
+本轮结论：response-first 高水位 fence、late-parent rail 提醒、typed tail receipt、reload persistence 均 GREEN；剩余正式套件单红只在立即 raw-row 读取时序，属于测试观测门，不是产品回归。
