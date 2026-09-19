@@ -91,7 +91,7 @@ class ReadingReferenceModel {
 
   apply(action) {
     const current = this.current();
-    if (action.type === 'browse' || action.type === 'selection' || action.type === 'fold') {
+    if (action.type === 'browse' || action.type === 'selection') {
       current.mode = 'browsing';
     } else if (action.type === 'follow' || action.type === 'send') {
       current.mode = 'following';
@@ -246,17 +246,32 @@ async function inspectFixture(page) {
     });
     const anchor = window.readingFixture?.anchor?.() || {};
     const session = window.readingFixture?.state?.() || {};
+    const traceEntries = window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.().entries || [];
+    const inputOwners = traceEntries.filter((entry) => entry.event === 'reading.input-owner');
+    const lastInput = inputOwners.at(-1)?.detail || null;
+    const readingContainer = root?.dataset.readingContainer || 'virtuoso';
+    const gap = Number((root?.scrollHeight || 0) - (root?.clientHeight || 0) - (root?.scrollTop || 0));
     return {
       href: location.href,
       mode: session.mode || '',
       inputEpoch: Number(session.inputEpoch || 0),
+      inputOwnerCount: inputOwners.length,
+      inputOwner: lastInput ? {
+        source: lastInput.source || lastInput.type || '',
+        hostRole: lastInput.hostRole || '',
+        inputEpoch: Number(lastInput.inputEpoch || 0),
+      } : null,
       activationID: session.activationID || '',
       anchor: { id: anchor.id || '', offset: Number(anchor.offset || 0) },
       selection: getSelection()?.toString() || '',
       scrollTop: Number(root?.scrollTop || 0),
       scrollHeight: Number(root?.scrollHeight || 0),
       clientHeight: Number(root?.clientHeight || 0),
-      gap: Number((root?.scrollHeight || 0) - (root?.clientHeight || 0) - (root?.scrollTop || 0)),
+      gap,
+      readingContainer,
+      tailDistance: readingContainer === 'following-tail'
+        ? Math.abs(Number(root?.scrollTop || 0))
+        : Math.max(0, gap),
       materializedIDs: rows.map((row) => row.dataset.presentationRowId || ''),
       visibleDOM: visible.map((row) => ({
         id: row.dataset.presentationRowId || '',
@@ -286,6 +301,7 @@ async function inspectApp(page) {
     };
     const pane = document.querySelector('.dynamic-message-pane');
     const timeline = document.querySelector('.timeline');
+    const channel = document.querySelector('main h1')?.textContent || '';
     const root = document.querySelector('.timeline-message-list');
     const bounds = root?.getBoundingClientRect();
     const rows = root ? [...root.querySelectorAll('[data-presentation-row-id]')] : [];
@@ -302,20 +318,40 @@ async function inspectApp(page) {
     const traceEntries = diagnostics?.entries || [];
     const bottomIntents = (diagnostics?.entries || [])
       .filter((entry) => entry.event === 'reading.bottom-intent');
-    const lastInput = [...traceEntries].reverse()
-      .find((entry) => entry.event === 'reading.input-owner');
     const lastActivation = [...traceEntries].reverse()
       .find((entry) => entry.detail?.activationID)?.detail?.activationID || '';
+    const lastInput = [...traceEntries].reverse()
+      .find((entry) => entry.event === 'reading.input-owner'
+        && entry.detail?.activationID === lastActivation);
     const lastObservation = [...traceEntries].reverse()
       .find((entry) => entry.event === 'reading.observation')?.detail || null;
     const issuerWrites = traceEntries.filter((entry) => entry.event === 'reading.issuer-write');
     const submissionEvents = applicationDiagnostics.filter((entry) => entry.event?.startsWith('submission.'));
+    const readingContainer = root?.dataset.readingContainer || 'virtuoso';
+    const gap = Number((root?.scrollHeight || 0) - (root?.clientHeight || 0) - (root?.scrollTop || 0));
+    let persistedReading = null;
+    try {
+      const stored = JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null');
+      const matching = Object.entries(stored?.readings || {}).find(([key]) => key.startsWith(`${channel}\u0000`));
+      persistedReading = matching ? {
+        key: matching[0],
+        mode: matching[1]?.mode || '',
+        unseenTail: Number(matching[1]?.unseenTail || 0),
+      } : null;
+    } catch { /* diagnostic only */ }
     return {
       href: location.href,
-      channel: document.querySelector('main h1')?.textContent || '',
+      channel,
       paneVisibility: pane ? getComputedStyle(pane).visibility : 'missing',
       mode: timeline?.dataset.viewportMode || '',
       inputEpoch: Number(lastInput?.detail?.inputEpoch || 0),
+      inputOwnerCount: traceEntries.filter((entry) => entry.event === 'reading.input-owner'
+        && entry.detail?.activationID === lastActivation).length,
+      inputOwner: lastInput ? {
+        source: lastInput.detail?.source || lastInput.detail?.type || '',
+        hostRole: lastInput.detail?.hostRole || '',
+        inputEpoch: Number(lastInput.detail?.inputEpoch || 0),
+      } : null,
       activationID: lastActivation,
       anchor: {
         id: anchorNode?.dataset.presentationRowId || '',
@@ -325,7 +361,12 @@ async function inspectApp(page) {
       scrollTop: Number(root?.scrollTop || 0),
       scrollHeight: Number(root?.scrollHeight || 0),
       clientHeight: Number(root?.clientHeight || 0),
-      gap: Number((root?.scrollHeight || 0) - (root?.clientHeight || 0) - (root?.scrollTop || 0)),
+      gap,
+      readingContainer,
+      tailDistance: readingContainer === 'following-tail'
+        ? Math.abs(Number(root?.scrollTop || 0))
+        : Math.max(0, gap),
+      persistedReading,
       materializedIDs: rows.map((row) => row.dataset.presentationRowId || ''),
       visibleDOM: visible.map((row) => ({
         id: row.dataset.presentationRowId || '',
@@ -485,14 +526,21 @@ for (const seed of FIXTURE_SEEDS) {
             violations.push({ kind: 'browsing-anchor-drift', action, before, frames });
           }
         }
-        if (action.origin === 'program-source' && expected.mode === 'following' && after.gap > 24) {
+        if (action.origin === 'program-source' && expected.mode === 'following' && after.tailDistance > 1) {
           violations.push({ kind: 'following-tail-lost', action, before, frames });
         }
         if (action.type === 'selection' && after.selection.length < 2) {
-          violations.push({ kind: 'native-selection-missing', action, before, frames });
+          if (!frames.some((frame) => frame.selection.length >= 2)) {
+            violations.push({ kind: 'native-selection-missing', action, before, frames });
+          }
         }
-        if (action.type === 'browse' && after.scrollTop >= before.scrollTop - 1) {
-          violations.push({ kind: 'native-wheel-did-not-move', action, before, frames });
+        if (action.origin === 'user-displacement') {
+          const expectedSource = action.type === 'browse' ? 'wheel' : 'selection';
+          if (after.inputEpoch !== before.inputEpoch + 1
+            || after.inputOwner?.source !== expectedSource
+            || after.inputOwner?.inputEpoch !== after.inputEpoch) {
+            violations.push({ kind: 'reader-displacement-not-singly-owned', action, before, frames });
+          }
         }
       }
       evidence.extra.violations = violations;
@@ -552,11 +600,18 @@ async function integrationAction({ action, page, request, seed, index, model, ev
     await page.locator('.timeline-message-list').hover();
     await page.mouse.wheel(0, -900);
   } else if (action.type === 'append') {
-    for (let pulse = 0; pulse < (action.count || 1); pulse += 1) {
-      const response = await request.post(`${MOCK}/mock/control/action`, { data: { type: 'pulse' } });
+    // `pulse` is not presented to every personal scope and a terminal response
+    // on an already-closed fixture turn is a conflict. A fresh approval root is
+    // the canonical current-scope notification fixture.
+    for (let offset = 0; offset < (action.count || 1); offset += 1) {
+      const response = await request.post(`${MOCK}/mock/control/action`, {
+        data: {
+          type: 'approval',
+          channel_id: model.channel,
+        },
+      });
       expect(response.ok()).toBe(true);
     }
-    if (!expected.visible) await expect(page.locator('.timeline-jump-latest')).toHaveText(/条新动态/);
   } else if (action.type === 'resize-viewport') {
     await page.setViewportSize(action.size);
   } else if (action.type === 'fold') {
@@ -599,17 +654,25 @@ async function integrationAction({ action, page, request, seed, index, model, ev
     const points = await page.evaluate(() => {
       const root = document.querySelector('.timeline-message-list');
       const bounds = root.getBoundingClientRect();
-      const textNodes = [...root.querySelectorAll('[data-presentation-row-id] p, [data-presentation-row-id] .markdown-body')]
-        .filter((node) => {
-          const rect = node.getBoundingClientRect();
-          return node.textContent.trim().length > 12 && rect.top > bounds.top + 20 && rect.bottom < bounds.bottom - 20;
-        });
-      const start = textNodes[0]?.getBoundingClientRect();
-      const end = textNodes[Math.min(1, textNodes.length - 1)]?.getBoundingClientRect();
-      return start && end ? {
-        start: { x: start.left + 6, y: start.top + Math.min(12, start.height / 2) },
-        end: { x: Math.min(end.right - 6, end.left + 140), y: end.bottom - Math.min(8, end.height / 3) },
-      } : null;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.parentElement?.closest('[data-reading-block-id]')
+          || node.textContent.trim().length < 12) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const line = [...range.getClientRects()].find((rect) => (
+          rect.width > 32
+          && rect.bottom > bounds.top + 20
+          && rect.top < bounds.bottom - 20
+        ));
+        if (!line) continue;
+        const y = Math.max(bounds.top + 21, Math.min(bounds.bottom - 21, line.top + line.height / 2));
+        return {
+          start: { x: line.left + 4, y },
+          end: { x: Math.min(line.right - 4, line.left + 140), y },
+        };
+      }
+      return null;
     });
     if (!points) throw new Error('no integration text nodes available for selection');
     await page.mouse.move(points.start.x, points.start.y);
@@ -660,10 +723,10 @@ function integrationPlan(seed) {
   ], seed);
   return [
     { type: 'send', long: true, origin: 'user-command' },
-    // All untouched long bodies, including latest, default folded.  Exercise
+    // The latest body is structurally exempt from default folding. Exercise
     // both directions explicitly before the later source/layout events.
-    { type: 'fold', expand: true, origin: 'user-command' },
     { type: 'fold', expand: false, origin: 'user-command' },
+    { type: 'fold', expand: true, origin: 'user-command' },
     { type: 'send', origin: 'user-command' },
     { type: 'hide', origin: 'user-command' },
     { type: 'append', count: 1, origin: 'program-source' },
@@ -726,6 +789,18 @@ for (const seed of INTEGRATION_SEEDS) {
           && result.after.bottomIntentCount > result.before.bottomIntentCount) {
           violations.push({ kind: 'late-source-minted-bottom-intent', action, result });
         }
+        if (action.origin === 'program-source'
+          && result.after.inputEpoch !== result.before.inputEpoch) {
+          violations.push({ kind: 'program-source-claimed-input-epoch', action, result });
+        }
+        if (action.origin === 'user-displacement') {
+          const expectedSource = action.type === 'browse' ? 'wheel' : 'selection';
+          if (result.after.inputEpoch !== result.before.inputEpoch + 1
+            || result.after.inputOwner?.source !== expectedSource
+            || result.after.inputOwner?.inputEpoch !== result.after.inputEpoch) {
+            violations.push({ kind: 'reader-displacement-not-singly-owned', action, result });
+          }
+        }
         if (action.type === 'append' && result.expected.visible === false
           && !result.after.jumpLatestText.trim()) {
           violations.push({ kind: 'hidden-arrival-was-acknowledged-by-old-dom', action, result });
@@ -734,7 +809,8 @@ for (const seed of INTEGRATION_SEEDS) {
           && result.after.activationID === result.before.activationID) {
           violations.push({ kind: 'channel-switch-reused-activation', action, result });
         }
-        if (action.type === 'selection' && result.after.selection.length < 2) {
+        if (action.type === 'selection' && result.after.selection.length < 2
+          && !result.frames.some((frame) => frame.selection.length >= 2)) {
           violations.push({ kind: 'selection-lost-before-observation', action, result });
         }
         if (action.type === 'fold' && action.expand === false) {

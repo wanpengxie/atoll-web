@@ -1,7 +1,7 @@
 import React, { useLayoutEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
-import { MessageList } from '../../../src/ui/timeline/LegendMessageList.jsx';
+import { ReadingContainerHandoff } from '../../../src/ui/timeline/ReadingContainerHandoff.jsx';
 import { useReadingSession } from '../../../src/ui/timeline/useReadingSession.js';
 import { createViewSessionStore } from '../../../src/model/view-session.js';
 import '../../../src/styles/timeline.css';
@@ -42,24 +42,31 @@ function Fixture() {
     channelID: 'fixture', viewKey: 'fixture', snapshot: current, history, viewSessions: store,
   });
   useLayoutEffect(() => { reading = owner; });
-  return <MessageList
-    snapshot={current}
-    reading={owner}
-    renderRow={(row) => <div className="timeline-virtual-item">
-      <strong>{row.id}</strong>
-      {Array.from({ length: row.prefixBlocks }, (_, index) => (
-        <p key={`prefix-${index}`} data-reading-block-id={`p:${index + 1}`} style={{ margin: '3px 0' }}>
-          {`新插入前文 ${row.id} ${index}`}
-        </p>
-      ))}
-      {Array.from({ length: row.lines }, (_, index) => (
-        <p key={`body-${index}`} data-reading-block-id={`p:${row.prefixBlocks + index + 1}`} style={{ margin: '3px 0' }}>
-          {`${row.id} 原正文段落 ${index} ${('异构长文本 Natural wrapped message content. ').repeat(1 + index % 8)}`}
-        </p>
-      ))}
-      {row.extraHeight > 0 && <div data-fixture-growth style={{ height: row.extraHeight }} />}
-    </div>}
-  />;
+  return <div
+    className="timeline timeline-virtualized"
+    data-viewport-mode={owner.session.mode}
+    style={{ flex: '1 1 auto' }}
+  >
+    <ReadingContainerHandoff
+      snapshot={current}
+      reading={owner}
+      surfaceVisible
+      renderRow={(row) => <div className="timeline-virtual-item">
+        <strong>{row.id}</strong>
+        {Array.from({ length: row.prefixBlocks }, (_, index) => (
+          <p key={`prefix-${index}`} data-reading-block-id={`p:${index + 1}`} style={{ margin: '3px 0' }}>
+            {`新插入前文 ${row.id} ${index}`}
+          </p>
+        ))}
+        {Array.from({ length: row.lines }, (_, index) => (
+          <p key={`body-${index}`} data-reading-block-id={`p:${row.prefixBlocks + index + 1}`} style={{ margin: '3px 0' }}>
+            {`${row.id} 原正文段落 ${index} ${('异构长文本 Natural wrapped message content. ').repeat(1 + index % 8)}`}
+          </p>
+        ))}
+        {row.extraHeight > 0 && <div data-fixture-growth style={{ height: row.extraHeight }} />}
+      </div>}
+    />
+  </div>;
 }
 
 const paint = () => flushSync(() => root.render(<Fixture />));
