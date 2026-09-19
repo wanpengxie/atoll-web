@@ -1,4 +1,4 @@
-import { argsOf } from '../protocol/envelope.js';
+import { argsOf, correlationOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
 function finiteSeq(value) {
@@ -559,6 +559,7 @@ const HIDDEN_CONVERSATION_TYPES = new Set([
   TYPES.describe,
 ]);
 const WAITING_TURN_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+const SELF_OPERATION_TYPES = new Set(['terminal.command', 'terminal.session']);
 
 function latestTurnStatus(turn) {
   return [...(turn?.provisional || [])]
@@ -587,7 +588,7 @@ function entryEnvelopes(entry) {
 
 function humanPrincipal(actorID) {
   const parts = String(actorID || '').split(String(actorID || '').includes('::') ? '::' : ':');
-  return parts[0] === 'human' && parts.length >= 3 ? parts[1] : '';
+  return parts[0] === 'human' && parts.length >= 3 && parts[1] && parts[2] ? parts[1] : '';
 }
 
 function samePerson(left, right) {
@@ -597,12 +598,62 @@ function samePerson(left, right) {
   return Boolean(principal && principal === humanPrincipal(right));
 }
 
-function entryInvolves(entry, actorID) {
-  if (!actorID) return true;
-  return entryEnvelopes(entry).some((envelope) => (
-    samePerson(envelope?.sender?.id, actorID)
-    || envelope?.audience?.some((audience) => samePerson(audience, actorID))
+function selfOperation(envelope) {
+  return SELF_OPERATION_TYPES.has(envelope?.type);
+}
+
+function directlyMine(envelope, selfID) {
+  return Boolean(selfID && envelope && (
+    samePerson(envelope.sender?.id, selfID)
+    || (Array.isArray(envelope.audience)
+      && envelope.audience.some((audience) => samePerson(audience, selfID)))
   ));
+}
+
+// A scheduler fire is the sole agent-authored/self-addressed fact that seeds a
+// person-visible conversation without a human envelope. Keep the accepted
+// shape closed so ordinary agent self-traffic cannot enter the mine scope.
+function canonicalAgentTimerFire(envelope) {
+  const sender = envelope?.sender;
+  return envelope?.kind === 'event'
+    && typeof envelope.id === 'string'
+    && envelope.id.startsWith('timer:')
+    && !envelope.parent_id
+    && envelope.correlation_id === envelope.id
+    && sender?.kind === 'agent'
+    && Boolean(sender.id)
+    && Array.isArray(envelope.audience)
+    && envelope.audience.length === 1
+    && envelope.audience[0] === sender.id;
+}
+
+// Mine is a relation over the canonical ledger, not a sender/audience test on
+// one materialized entry. A direct human fact (or canonical timer fire) seeds
+// the conversation; one parent/correlation pass admits its related facts.
+function relatedConversationEnvelopeIDs(state, selfID) {
+  const rows = [...(state?.rows?.values?.() || [])];
+  const seedIDs = new Set();
+  const correlations = new Set();
+  for (const envelope of rows) {
+    if (selfOperation(envelope)
+      || (!directlyMine(envelope, selfID) && !canonicalAgentTimerFire(envelope))) continue;
+    if (envelope.id) seedIDs.add(envelope.id);
+    const correlation = correlationOf(envelope);
+    if (correlation) correlations.add(correlation);
+  }
+  const related = new Set(seedIDs);
+  for (const envelope of rows) {
+    if (!envelope?.id || related.has(envelope.id) || selfOperation(envelope)) continue;
+    if ((envelope.parent_id && seedIDs.has(envelope.parent_id))
+      || correlations.has(correlationOf(envelope))) related.add(envelope.id);
+  }
+  return related;
+}
+
+function entryMatchesConversation(entry, related) {
+  const envelopes = entryEnvelopes(entry);
+  return envelopes.some((envelope) => !selfOperation(envelope))
+    && envelopes.some((envelope) => envelope?.id && related.has(envelope.id));
 }
 
 function entryMatchesActors(entry, actors) {
@@ -621,7 +672,7 @@ function visibleEntry(entry, scope, editingTargetID, editingReplacementID) {
   const envelope = envelopeOf(entry);
   if (!envelope || (entry.kind === 'standalone' && envelope.type === 'terminal.session')) return false;
   if (entry.kind !== 'turn') return scope === CONVERSATION_SCOPE.all
-    || (!uiType(envelope.type) && !String(envelope.type || '').startsWith('terminal.'));
+    || !uiType(envelope.type);
   if (editingReplacementID && entry.turn?.requestId === editingReplacementID) return false;
   // Waiting is the sole projection for accepted-but-not-processing Agent work.
   // Editing may remove a row from Waiting, but must not duplicate it here.
@@ -688,6 +739,9 @@ export function selectTimelineItems(state, {
   showNarration = false,
   localEchoes = [],
 } = {}) {
+  const related = scope === CONVERSATION_SCOPE.mine && selfId
+    ? relatedConversationEnvelopeIDs(state, selfId)
+    : null;
   const allEntries = [];
   const scoped = [];
   const filtered = [];
@@ -695,7 +749,7 @@ export function selectTimelineItems(state, {
     if (!visibleEntry(rawEntry, scope, editingTargetId, editingReplacementId)) continue;
     allEntries.push(rawEntry);
     const entry = withoutUiChildren(rawEntry, scope);
-    if (scope === CONVERSATION_SCOPE.mine && !entryInvolves(entry, selfId)) continue;
+    if (related && !entryMatchesConversation(entry, related)) continue;
     scoped.push(entry);
     if (scope === CONVERSATION_SCOPE.mine && actorFilter?.size && !entryMatchesActors(entry, actorFilter)) continue;
     filtered.push(entry);
