@@ -75,6 +75,7 @@ export function useComposerSubmissionRuntime({
   const transmittingRef = useRef(new Set());
   const acceptingRef = useRef(new Map());
   const landedRef = useRef(new Set());
+  const persistedDraftRevisionRef = useRef(new Map());
   const authorityRef = useRef(null);
   const pendingRef = useRef([]);
   const draftsRef = useRef(new Map());
@@ -164,6 +165,7 @@ export function useComposerSubmissionRuntime({
     attemptEpochRef.current += 1;
     transmittingRef.current.clear();
     acceptingRef.current.clear();
+    persistedDraftRevisionRef.current.clear();
     setAcceptingChannels(new Set());
     setApprovalStates({});
     setControlStates({});
@@ -180,6 +182,9 @@ export function useComposerSubmissionRuntime({
       ]);
       if (!alive || generation !== hydrationRef.current || authorityRef.current?.principalId !== principalId) return;
       const restored = submissionRows.map(restoredSubmission).filter(Boolean);
+      persistedDraftRevisionRef.current = new Map(draftRows
+        .filter((row) => row?.channelId)
+        .map((row) => [row.channelId, Number(row.revision || 0)]));
       publishPending(restored);
       publishDrafts(new Map(draftRows.filter((row) => row?.channelId).map((row) => [row.channelId, row])));
       if (authorityRef.current?.wireState === 'open' && wireRef?.current) {
@@ -204,13 +209,16 @@ export function useComposerSubmissionRuntime({
       : emptyDraft();
   }, []);
 
-  const updateDraft = useCallback((channelId, nextDraft) => {
+  const updateDraft = useCallback((channelId, nextDraft, { preserveEditorRevision = false } = {}) => {
     const owner = captureOwner(channelId);
     authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
     const previous = draftsRef.current.get(channelId);
     const requestedRevision = Number(nextDraft?.editorRevision);
-    const editorRevision = Number.isFinite(requestedRevision)
-      ? Math.max(Number(previous?.editorRevision || 0), requestedRevision)
+    const previousEditorRevision = Number(previous?.editorRevision || 0);
+    const editorRevision = preserveEditorRevision && Number.isFinite(requestedRevision)
+      ? Math.max(previousEditorRevision, requestedRevision)
+      : Number.isFinite(requestedRevision)
+        ? Math.max(previousEditorRevision + 1, requestedRevision)
       : Number(previous?.editorRevision || 0) + 1;
     const optimistic = {
       ...previous,
@@ -222,7 +230,7 @@ export function useComposerSubmissionRuntime({
     publishDrafts((current) => new Map(current).set(channelId, optimistic));
     return fenceRef.current.run(async () => {
       authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
-      const expectedRevision = Number(previous?.revision || 0);
+      const expectedRevision = Number(persistedDraftRevisionRef.current.get(channelId) || 0);
       let result = await outboxRef.current.writeDraft(
         owner.principalId,
         channelId,
@@ -238,6 +246,7 @@ export function useComposerSubmissionRuntime({
       }
       authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
       if (result.conflict || !result.record) throw new Error('草稿版本冲突，请重试');
+      persistedDraftRevisionRef.current.set(channelId, Number(result.record.revision || 0));
       const current = draftsRef.current.get(channelId);
       if (Number(current?.editorRevision || 0) <= editorRevision) {
         publishDrafts((rows) => new Map(rows).set(channelId, result.record));
@@ -270,6 +279,7 @@ export function useComposerSubmissionRuntime({
         throw error;
       }
       authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
+      persistedDraftRevisionRef.current.set(channelId, Number(result.record.revision || 0));
       publishDrafts((rows) => new Map(rows).set(channelId, result.record));
       return result.record;
     });
@@ -386,7 +396,10 @@ export function useComposerSubmissionRuntime({
       }));
       if (!result.accepted) throw new Error('草稿在发送前已被其他页面修改，请确认内容后重试');
       submissions = result.submissions || submissions;
-      if (result.record) publishDrafts((rows) => new Map(rows).set(channelId, result.record));
+      if (result.record) {
+        persistedDraftRevisionRef.current.set(channelId, Number(result.record.revision || 0));
+        publishDrafts((rows) => new Map(rows).set(channelId, result.record));
+      }
     } else {
       submissions = await fenceRef.current.run(() => outboxRef.current.putMany(
         owners[0].principalId,
@@ -527,6 +540,7 @@ export function useComposerSubmissionRuntime({
     transmittingRef.current.clear();
     acceptingRef.current.clear();
     landedRef.current.clear();
+    persistedDraftRevisionRef.current.clear();
     setAcceptingChannels(new Set());
     const worldError = serializedError(Object.assign(new Error('服务端数据世界已更换，请确认后重新发送'), { code: 'world_changed' }));
     const rejected = pendingRef.current.map((row) => ['rejected'].includes(row.state)
@@ -544,7 +558,9 @@ export function useComposerSubmissionRuntime({
     publishDrafts(cleanedDrafts);
     for (const [channelId, record] of cleanedDrafts) {
       if (!record?.draft) continue;
-      void outboxRef.current.writeDraft(principal, channelId, record.draft, Number(record.revision || 0)).catch(onError);
+      void outboxRef.current.writeDraft(principal, channelId, record.draft, Number(record.revision || 0)).then((result) => {
+        if (result?.record) persistedDraftRevisionRef.current.set(channelId, Number(result.record.revision || 0));
+      }).catch(onError);
     }
     setApprovalStates({});
     setControlStates({});

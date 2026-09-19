@@ -75,7 +75,7 @@ function commandOwner(config, model) {
     let accepted = [];
     try {
       const persisted = typeof submission.updateDraft === 'function'
-        ? await submission.updateDraft(model.channelId, model.draft)
+        ? await submission.updateDraft(model.channelId, model.draft, { preserveEditorRevision: true })
         : null;
       const result = await submission.send(createMessageRequest(model, persisted));
       accepted = idsOf(result);
