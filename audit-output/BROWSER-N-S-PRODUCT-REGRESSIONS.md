@@ -2,7 +2,38 @@
 
 本文件只交接可复现的产品分歧；没有修改 `src/`、没有加兼容 owner，也没有通过放宽 case 隐藏失败。所有入口均由真实浏览器从 `/` 登录后进入当前 workspace。
 
-## R1：频道切换时 history owner 尚未连接
+## 2026-09-20 当前复验交接
+
+最终冻结轮使用 `cbd8591` disconnect 修复及当前 Composer owner 的 Tiptap 生命周期 guard 候选，命令如下：
+
+```text
+ATOLL_TEST_WEB_PORT=15260 ATOLL_TEST_MOCK_PORT=18900 npx playwright test \
+  tests/browser/N-im-read-fallback.spec.js \
+  tests/browser/notification-high-water.spec.js \
+  tests/browser/notification-policy.spec.js \
+  tests/browser/offline-composer-recovery.spec.js \
+  tests/browser/performance-budget.spec.js \
+  tests/browser/reading-position-session.spec.js \
+  --reporter=line --output=test-results-browser-n-s-post-composer-guard-20260920
+```
+
+**15 tests：5 passed / 10 failed（3.3m）**。最终轮没有 `feed.disconnectHistory owner 尚未连接`，也没有 Tiptap `editor.view.dom`/`schema=null` uncaught；N2 专门复验已从频道切换继续执行至真实通知断言。证据目录保留 trace、screenshots、JSON attachments；没有跳过、删除或弱化 case。
+
+当前需要产品 owner 处理的公开边界：
+
+| 分歧 | 影响 case | 当前证据与首个公开 owner |
+|---|---|---|
+| following tail receipt 短暂显示 related unread | N1、N2 | 唯一 owner 的 `gap=0`，但 20/6 条 arrival 期间 badge 仍为 1–5；`ConversationSurface → ReadingContainerHandoff → VendorListExecutor` 与 notification receipt 时序。 |
+| actor-filter rail authority 未建立 | N4 | raw rail `channels=[]`/`authorityReady=false`，outside filter unread 不保留；feed runtime rail snapshot 与 actor-filter projection。 |
+| high-water snapshot、hydration、following advancement 不兑现 | notification-high-water 1–4 | 切换可完成但公开 rail channel snapshot 缺失、reload 后 2 条 unread 不恢复、following high-water 不推进；channel-replica hydration → feed runtime cursor/high-water → rail projection。 |
+| readable root 的 rail/observation 不完整 | notification-policy 1–2 | final root 未出现 unread；readable-event row 已物化但没有 `reading.observation.visibleRowIDs`；notification policy 与 ConversationSurface presentation admission。 |
+| document-session browsing row 未恢复 | reading-position-session | c0→project→c0 不再崩溃，但原 browsing row 60s 内未回到唯一 owner 可见区域；reading-session startup/admission owner。 |
+
+Composer/Tiptap 说明：旧 disconnect 修复后的 N2 曾在 `Composer.jsx` passive effect 访问未挂载/已销毁 EditorView，导致 root 清空；当前 owner guard 候选后该 uncaught 不再出现。该 guard 属产品 owner 工作树，不是本测试包的改动；N2 当前 RED 已回到 notification receipt 合同，不能归因于 fixture。
+
+## R1（历史记录，已由 `cbd8591` 关闭）：频道切换时 history owner 尚未连接
+
+这条历史分歧不再是当前复验结果：`cbd8591` 后频道切换可以继续进入真实页面；最终轮未记录该错误。以下步骤和栈保留作修复前 provenance，不应作为当前 RED 计数。
 
 - 影响 case：N2、notification-high-water 1/3/4、notification-policy 1、reading-position-session（共 6 个 RED case 的共同截断点）。
 - 最小复现：
@@ -18,6 +49,8 @@
 - 交接：由产品 owner 决定 disconnect/connect 的生命周期顺序；本分区不改 `WorkspaceApp` 或 wire session。
 
 ## R2：Following append 后唯一 reading owner 离开物理尾部
+
+当前复验更新：该条的旧 off-tail 现象没有再出现；最终 N1 为 **47/47 `gap<=2`、0 off-tail**，但 arrival 期间仍出现 related badge 1–5，故合同仍 RED。现首个分歧边界从几何 owner 下移到 following presentation receipt/high-water 清零时序。证据：`test-results-browser-n-s-post-composer-guard-20260920/N-im-read-fallback-N1-有积压跳到最新即同时清零，且停在底部连续到达-20-条时两处计数恒为-0/N1-following-tail.json`。
 
 - 影响 case：N1。
 - 最小复现：
@@ -63,6 +96,8 @@
 
 ## R5：readable event 没有物化为当前 presentation row
 
+当前复验更新：`data-presentation-row-id="c0.project-notification-readable-event"` 已在真实 DOM 物化；RED 现在发生在下一条合同——唯一 reading owner 的 `reading.observation.visibleRowIDs` 没有包含该 row。首个 owner 仍是 ConversationSurface/presentation admission 与 reading observation handoff，不是旧 selector。
+
 - 影响 case：notification-policy 2。
 - 最小复现：
 
@@ -75,6 +110,27 @@
 - 证据：在切换崩溃前的 lifecycle assertions 已通过；失败定位在当前 row materialization，不是旧 `[data-entry-id]`。
 - 交接：由 presentation admission owner 决定 readable event 的公开 row 形状和可见性；本分区不把 mock payload 直接注入 DOM。
 
+## R6：高水位公开投影与 hydration 未兑现
+
+- 影响 case：`notification-high-water.spec.js` 四条。
+- 当前复验：切换后 workspace 可继续渲染，但 case 1/3 的 `rail.snapshot(...).channels[0]` 缺失；case 2 reload 后预期 `2` 条未读没有恢复；case 4 的 following arrival 后 `notificationHighWater` 在 10s 内没有推进。失败发生在真实 `atoll-channel-replica-v1`/rail diagnostics 合同，不是旧 store、旧 selector 或 Composer 截断。
+- 首个公开 owner 边界：channel-replica rows/meta hydration → feed runtime notification cursor/high-water → rail projection；过滤 tail 的 boundary 也必须经该 owner 发布。
+- 交接：由 replica/runtime notification owner 修复 hydration 顺序、公开 channel snapshot 和 presented-tail receipt 的推进；本分区不恢复 `atoll-feed-v8` 或增加测试 fallback。
+
+## R7：lifecycle final readable root 未进入 rail
+
+- 影响 case：`notification-policy.spec.js` 的 `rail follows presented lifecycle roots...`。
+- 当前复验：processing/tool/control 等 quiet 断言与真实 channel switch 均通过；发送 lifecycle `final` 后 `.unread-total` 没有达到预期 `1`，所以最终 readable root 没有成为未读 rail 项。
+- 首个公开 owner 边界：notification policy 对 final root 的分类与 channel-feed rail projection；不是 Composer 或 fixture。
+- 交接：由 notification policy/rail owner 保持 exact readable identity，并让未展示的 final root 进入可持久化 unread projection。
+
+## R8：document-session browsing row 往返未恢复
+
+- 影响 case：`reading-position-session.spec.js`。
+- 当前复验：cold start/cached latest assertions 先通过，c0→c0.project→c0 的 heading 也通过；回返后原 `beforeSwitch.firstVisible.id` 在 60s 内没有重新出现在唯一 reading owner 的可见区域，测试超时。
+- 首个公开 owner 边界：reading-session startup/admission 与 canonical reading owner 的 virtualized row admission；不是旧 `LegendMessageList` 或旧 DB 名。
+- 交接：由 reading-session/admission owner 修复文档 session 内 browsing anchor 的跨频道回返恢复；不改测试成滚底或删除 anchor assertion。
+
 ## 结论
 
-以上 R1–R5 覆盖 10 个 RED case 的真实分歧。R1 是共同生命周期截断点；R2–R5 是可独立定位的 reading/notification/persistence 分歧。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。
+以上当前 R2–R8 覆盖最终 10 个 RED case 的真实分歧；历史 R1 disconnect 已关闭，Composer/Tiptap guard 的 uncaught 也未在最终轮复现。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。
