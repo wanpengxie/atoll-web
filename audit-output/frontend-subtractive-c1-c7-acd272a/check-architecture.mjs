@@ -162,6 +162,13 @@ const sources = new Map(production.map((filename) => [relative(filename), fs.rea
 const modulesExporting = (pattern) => [...sources.entries()]
   .filter(([, source]) => pattern.test(source))
   .map(([filename]) => filename);
+const modulesInvoking = (constructorName) => {
+  const callPattern = new RegExp(`\\b${constructorName}\\s*\\(`);
+  const declarationPattern = new RegExp(`\\bfunction\\s+${constructorName}\\s*\\(`, 'g');
+  return [...sources.entries()]
+    .filter(([, source]) => callPattern.test(source.replace(declarationPattern, '')))
+    .map(([filename]) => filename);
+};
 const historyCandidateReducers = modulesExporting(/export\s+function\s+reduceHistoryCandidates\s*\(/);
 const historyBoundedExecutors = modulesExporting(/export\s+function\s+createHistoryBoundedExecutor\s*\(/);
 const historySourceAdapters = modulesExporting(/export\s+function\s+createHistorySourceAdapters\s*\(/);
@@ -183,16 +190,31 @@ const retiredInputResizePattern = /atoll:input-resize-prepared|data-input-resize
 const retiredInputResizeModules = [...sources.entries()]
   .filter(([, source]) => retiredInputResizePattern.test(source))
   .map(([filename]) => filename);
+const c1LifecycleCapabilities = {
+  wireSession: modulesInvoking('createWire'),
+  rosterIdentity: modulesExporting(/export\s+function\s+useChannelRoster\s*\(/),
+  rosterBootstrap: modulesInvoking('createRoster'),
+  attachmentTransactions: modulesExporting(/export\s+function\s+useAttachmentTransactions\s*\(/),
+  agentProbeLifecycle: modulesInvoking('createAgentProbeLifecycle'),
+};
+const hasSoleOwner = (capability, expectedOwner) => capability.length === 1
+  && capability[0] === expectedOwner;
 const structuralChecks = [
   {
     id: 'C1',
     description: 'App is composition, not domain lifecycle owner',
     violations: [
-      ['direct Wire construction', /createWire\s*\(/],
-      ['direct roster construction', /createRoster\s*\(/],
-      ['attachment transaction state', /attachment(UploadQueues|ActiveUploads|DraftEpochs|WorldRevision)Ref/],
-      ['agent probe lifecycle state', /(describeProbes|contextProbed|optionsProbed|manualProbe)Ref/],
-    ].filter(([, pattern]) => pattern.test(sources.get('src/App.jsx'))).map(([name]) => name),
+      ['Wire/session constructor capability is not uniquely owned by useWireSession',
+        !hasSoleOwner(c1LifecycleCapabilities.wireSession, 'src/app/hooks/useWireSession.js')],
+      ['roster/identity capability is not uniquely owned by useChannelRoster',
+        !hasSoleOwner(c1LifecycleCapabilities.rosterIdentity, 'src/app/hooks/useChannelRoster.js')],
+      ['roster bootstrap constructor capability is not uniquely owned by useWireSession',
+        !hasSoleOwner(c1LifecycleCapabilities.rosterBootstrap, 'src/app/hooks/useWireSession.js')],
+      ['attachment transaction capability is not uniquely owned by useAttachmentTransactions',
+        !hasSoleOwner(c1LifecycleCapabilities.attachmentTransactions, 'src/app/hooks/useAttachmentTransactions.js')],
+      ['agent probe lifecycle constructor capability is not uniquely owned by useAgentProbes',
+        !hasSoleOwner(c1LifecycleCapabilities.agentProbeLifecycle, 'src/app/hooks/useAgentProbes.js')],
+    ].filter(([, failed]) => failed).map(([name]) => name),
   },
   {
     id: 'C2',
@@ -307,6 +329,7 @@ const result = {
     timelineScrollWriters,
     retiredInputResizeModules,
   },
+  c1LifecycleCapabilities,
   core,
   c1ToC7: structuralChecks,
 };
