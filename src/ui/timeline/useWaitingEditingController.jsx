@@ -84,6 +84,8 @@ function waitingControlContext(turn, { selfId, access, targetAuthority }) {
   const location = String(frame?.status || '');
   const controls = open ? controlEntries(frame) : [];
   const words = new Set(controls.map((entry) => entry.word));
+  const dismissPayload = controlPayload({ controls }, TYPES.agentDismiss);
+  const steerPayload = controlPayload({ controls }, TYPES.agentSteer);
   const currentness = targetCurrentness(turn, targetAuthority);
   const callerCancelEligible = open && writable && owned && location === 'queued';
   const targetControlsEligible = open && writable && currentness === 'current';
@@ -93,26 +95,32 @@ function waitingControlContext(turn, { selfId, access, targetAuthority }) {
     targetControlsEligible,
     steering: Boolean(frame?.steering),
     canCancel: callerCancelEligible
-      || (targetControlsEligible && location === 'queued' && words.has(TYPES.agentDismiss)),
-    cancelsAsDismiss: !callerCancelEligible && targetControlsEligible && !owned,
-    canInsert: targetControlsEligible && words.has(TYPES.agentSteer),
+      || (targetControlsEligible && location === 'queued' && words.has(TYPES.agentDismiss)
+        && Boolean(dismissPayload)),
+    cancelsAsDismiss: !callerCancelEligible && targetControlsEligible && !owned
+      && Boolean(dismissPayload),
+    canInsert: targetControlsEligible && words.has(TYPES.agentSteer) && Boolean(steerPayload),
     canEdit: targetControlsEligible && words.has(TYPES.agentReplace),
   };
 }
 
 function extraControls(context) {
   if (!context?.targetControlsEligible) return [];
-  return context.controls.filter((entry) => !CORE_CONTROL_WORDS.has(entry.word));
+  return context.controls.filter((entry) => !CORE_CONTROL_WORDS.has(entry.word)
+    && Boolean(controlPayload(context, entry)));
 }
 
 function controlLabel(entry) {
   return entry.label || entry.word.split('.').pop();
 }
 
-function controlPayload(context, entry, fallback) {
-  return entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
-    ? { ...fallback, ...entry.payload }
-    : fallback;
+function controlPayload(context, entryOrWord) {
+  const entry = typeof entryOrWord === 'string'
+    ? context?.controls?.find((candidate) => candidate.word === entryOrWord)
+    : entryOrWord;
+  return entry?.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
+    ? { ...entry.payload }
+    : null;
 }
 
 function allTimelineTurns(state) {
@@ -422,7 +430,9 @@ export function WaitingLayer({
 
   async function cancelTurn(turn, group, context) {
     if (context.cancelsAsDismiss) {
-      return onControl(turn, group.actorId, TYPES.agentDismiss, { target: turn.requestId });
+      const payload = controlPayload(context, TYPES.agentDismiss);
+      if (!payload) return undefined;
+      return onControl(turn, group.actorId, TYPES.agentDismiss, payload);
     }
     return onCancel(state.channelId, turn.requestId, false);
   }
@@ -533,12 +543,20 @@ export function WaitingLayer({
                     {context.steering && <span className="agent-wait-paused">正在并入…</span>}
                     {!turn.local && context.targetCurrentness === 'unknown' && <span className="agent-wait-paused">正在核验收件人</span>}
                     {!turn.local && context.targetCurrentness === 'departed' && <span className="agent-wait-paused">收件人已离席，等待账本关闭</span>}
-                    {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
+                    {context.canInsert && <button type="button" onClick={() => {
+                      const payload = controlPayload(context, TYPES.agentSteer);
+                      if (payload) onControl(turn, group.actorId, TYPES.agentSteer, payload);
+                    }}>插入</button>}
                     {context.canEdit && capabilityState === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
                     {context.canEdit && capabilityState === 'unknown' && <span className="agent-wait-paused">正在确认编辑能力</span>}
                     {context.canEdit && ['unsupported', 'unavailable'].includes(capabilityState) && <span className="agent-wait-paused">Agent 不支持安全编辑</span>}
                     {context.canCancel && <button type="button" title={context.cancelsAsDismiss ? '这条不是你发的，将请对方放弃它' : '撤回你自己发出的这条请求'} onClick={() => cancelTurn(turn, group, context)}>取消</button>}
-                    {extraControls(context).map((entry) => <button key={entry.word} type="button" onClick={() => onControl(turn, group.actorId, entry.word, controlPayload(context, entry, { target: turn.requestId }))}>{controlLabel(entry)}</button>)}
+                    {extraControls(context).map((entry) => {
+                      const payload = controlPayload(context, entry);
+                      return <button key={entry.word} type="button" onClick={() => {
+                        if (payload) onControl(turn, group.actorId, entry.word, payload);
+                      }}>{controlLabel(entry)}</button>;
+                    })}
                   </div>
                 </>}
           </li>;
