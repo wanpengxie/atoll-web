@@ -38,6 +38,11 @@ async function chooseSteward(page) {
   await page.getByRole('menu', { name: '选择目标 Agent' }).getByRole('menuitem', { name: 'steward' }).click();
 }
 
+const ACTIVE_TIMELINE_LIST = [
+  '.timeline-reading-layer.is-outgoing .timeline-message-list',
+  '.timeline-reading-layer.is-active .timeline-message-list',
+].join(', ');
+
 async function captureVisibleAnchor(page) {
   return page.locator('.timeline-message-list').evaluate((node) => {
     const top = node.getBoundingClientRect().top;
@@ -218,21 +223,26 @@ test('F6-PERF-05/F7 deep history keeps background reservoir silent, starts at ta
   expect(reset.ok()).toBe(true);
   await login(page);
 
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = page.locator(ACTIVE_TIMELINE_LIST);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  // The final 24px is the bottom zone so subpixel layout changes cannot
-  // incorrectly disable realtime follow.
-  await expect.poll(() => viewport.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBeLessThanOrEqual(24);
+  // Following owns the structural tail: column-reverse makes zero the bottom
+  // origin, independently of the list's total height.
+  await expect(viewport).toHaveAttribute('data-reading-container', 'following-tail');
+  await expect.poll(() => viewport.evaluate((node) => Math.abs(Number(node.scrollTop || 0)))).toBeLessThanOrEqual(1);
   const samples = await page.evaluate(async () => {
-    const node = document.querySelector('.timeline-message-list');
     const values = [];
     for (let index = 0; index < 6; index += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
-      values.push(Math.round(node.scrollHeight - node.clientHeight - node.scrollTop));
+      const node = document.querySelector('.timeline-reading-layer.is-outgoing .timeline-message-list')
+        || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list');
+      values.push({
+        container: node?.dataset.readingContainer || (node ? 'virtuoso' : 'none'),
+        tailOrigin: Math.abs(Number(node?.scrollTop || 0)),
+      });
     }
     return values;
   });
-  expect(samples.every((distance) => Math.abs(distance) <= 24), JSON.stringify(samples)).toBe(true);
+  expect(samples.every((sample) => sample.container === 'following-tail' && sample.tailOrigin <= 1), JSON.stringify(samples)).toBe(true);
 
   // No button and no network wait: real scroll events claim the already-prefetched
   // reservoir in small anchored batches until the oldest turn becomes visible.
@@ -247,10 +257,16 @@ test('F6-PERF-05/F7 deep history keeps background reservoir silent, starts at ta
   )));
   expect(invalidTopDispatches).toEqual([]);
 
-  await request.post('/mock/control/action', { data: { type: 'pulse' } });
+  // Use a canonical, presentable root arrival. `mock.channel.pulse` is an
+  // intentionally unknown event and the current projection correctly keeps it
+  // out of both the list and unseen count.
+  const arrival = await request.post('/mock/control/action', {
+    data: { type: 'approval', channel_id: 'c0' },
+  });
+  expect(arrival.ok()).toBe(true);
   await expect(page.getByRole('button', { name: /条新动态/ })).toBeVisible();
   await page.getByRole('button', { name: /条新动态/ }).click();
-  await expect(page.getByText(/c0 动态 #1/)).toBeVisible();
+  await expect(page.getByText('Approve live mock action', { exact: true })).toBeVisible();
 
   const cachedRows = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
@@ -273,7 +289,7 @@ test('F7 real upward runway demand releases bounded raw history into the product
   expect(reset.ok()).toBe(true);
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = page.locator(ACTIVE_TIMELINE_LIST);
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
   await page.evaluate(() => {
     window.__ATOLL_DIAGNOSTICS__.clear();
@@ -297,11 +313,19 @@ test('F7 real upward runway demand releases bounded raw history into the product
     };
   });
   await page.evaluate(() => {
-    const node = document.querySelector('.timeline-message-list');
     window.__ATOLL_RUNWAY_FRAMES__ = [];
     window.__ATOLL_RUNWAY_RUNNING__ = true;
     const sample = () => {
       if (!window.__ATOLL_RUNWAY_RUNNING__) return;
+      // Following remains the visible owner while the incoming virtualizer is
+      // prepared. After the atomic reveal, the active layer becomes the owner.
+      // Re-resolve that owner every frame instead of retaining detached DOM.
+      const node = document.querySelector('.timeline-reading-layer.is-outgoing .timeline-message-list')
+        || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list');
+      if (!node) {
+        requestAnimationFrame(sample);
+        return;
+      }
       const viewportRect = node.getBoundingClientRect();
       const visible = [...node.querySelectorAll('[data-presentation-row-id]')].flatMap((row) => {
         const rect = row.getBoundingClientRect();
@@ -311,6 +335,7 @@ test('F7 real upward runway demand releases bounded raw history into the product
       });
       window.__ATOLL_RUNWAY_FRAMES__.push({
         at: performance.now(),
+        container: node.dataset.readingContainer || 'virtuoso',
         scrollTop: node.scrollTop,
         scrollHeight: node.scrollHeight,
         visible,
@@ -433,16 +458,21 @@ test('F7 production runway folds one oversized raw record and keeps compositor c
   expect(reset.ok()).toBe(true);
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = page.locator(ACTIVE_TIMELINE_LIST);
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
   await page.evaluate(() => {
     window.__ATOLL_DIAGNOSTICS__.clear();
     window.__ATOLL_DIAGNOSTICS__.reading.enable({ case: 'production-history-extreme-turn', seed: 1731 });
     window.__ATOLL_EXTREME_FRAMES__ = [];
     window.__ATOLL_EXTREME_RUNNING__ = true;
-    const node = document.querySelector('.timeline-message-list');
     const sample = () => {
       if (!window.__ATOLL_EXTREME_RUNNING__) return;
+      const node = document.querySelector('.timeline-reading-layer.is-outgoing .timeline-message-list')
+        || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list');
+      if (!node) {
+        requestAnimationFrame(sample);
+        return;
+      }
       const viewportRect = node.getBoundingClientRect();
       const visible = [...node.querySelectorAll('[data-presentation-row-id]')].flatMap((row) => {
         const rect = row.getBoundingClientRect();
@@ -452,6 +482,7 @@ test('F7 production runway folds one oversized raw record and keeps compositor c
       });
       window.__ATOLL_EXTREME_FRAMES__.push({
         at: performance.now(),
+        container: node.dataset.readingContainer || 'virtuoso',
         scrollTop: node.scrollTop,
         scrollHeight: node.scrollHeight,
         visible,
