@@ -484,3 +484,44 @@ ATOLL_TEST_WEB_PORT=15982 ATOLL_TEST_MOCK_PORT=20282 npx playwright test tests/b
 ```
 
 post 运行同时保留 timer control quiet、readable terminal rail=`1` 与 terminal Presentation row 可见；没有改断言、产品、skip 或让 Feed 猜测 actor 关系。归类：**fixture 修复完成；notification 产品 owner 不新增回归**。
+
+## 第十五轮：N–S 剩余红项的真实 Chromium 复验与分层（产品入口 `e0142f7`，2026-09-20）
+
+本轮遵守执行合同：不改 `src/`、vendor、package，不删 skip；只对 fixture/selector 与产品回归分别取证。`timer_result` fixture 修复与 F7 独立门已按前轮结论处理，本轮先重跑 N1–N4，再选剩余 `notification-policy` lifecycle final 红项核定首个 owner。
+
+### N1–N4：N4 的红只落在 diagnostics，不是用户 rail
+
+```text
+ATOLL_TEST_WEB_PORT=16001 ATOLL_TEST_MOCK_PORT=20301 npx playwright test tests/browser/N-im-read-fallback.spec.js --grep="N1 有积压" --workers=1 --reporter=line --output=test-results-browser-ns-round15-n1-16001-20260920
+# 1 passed
+
+ATOLL_TEST_WEB_PORT=16002 ATOLL_TEST_MOCK_PORT=20302 npx playwright test tests/browser/N-im-read-fallback.spec.js --grep="N2 别的频道" --workers=1 --reporter=line --output=test-results-browser-ns-round15-n2-16002-20260920
+# 1 passed
+
+ATOLL_TEST_WEB_PORT=16003 ATOLL_TEST_MOCK_PORT=20303 npx playwright test tests/browser/N-im-read-fallback.spec.js --grep="N3 页面不可见" --workers=1 --reporter=line --output=test-results-browser-ns-round15-n3-16003-20260920
+# 1 passed
+
+ATOLL_TEST_WEB_PORT=16004 ATOLL_TEST_MOCK_PORT=20304 npx playwright test tests/browser/N-im-read-fallback.spec.js --grep="N4 成员过滤" --workers=1 --reporter=line --output=test-results-browser-ns-round15-n4-16004-20260920
+# 1 failed at line 400: raw rail authorityReady=false / outsideFilterPreserved=false
+```
+
+N4 的 observation-only `34d6f0c` oracle（`test-results-browser-ns-round15-oracle-n4-16014-20260920/`）把链路固定为：输入全部落入 Replica（`headSeq=65`，含 `c0-unrelated-…` 与 6 个 approval），notification cursor/high-water 已写到 `65`，唯一 filtered Presentation owner `gap=0` 且 approval rows 真实可见；左侧 `.unread-related/.unread-total/.unread-pending` 与 jump 均为 `0/0/false/0`。唯一分歧是 `window.__ATOLL_DIAGNOSTICS__.rail.snapshot('c0')` 返回 `channels=[]`，即当前树未发布 diagnostics provider。按本轮合同，空 diagnostics 只能定位，不能冒充用户可见 rail 错；N4 保留为测试/observability contract RED，不向产品 owner 派发，也不放宽 N4 行为断言。
+
+### lifecycle final：fixture audience + 过时 selector，而非产品回归
+
+当前 `notification-policy.spec.js` 的第一条合同在 fixture 原状下于 line 154 期待 `.unread-total=1`（证据 `test-results-browser-ns-round15-policy-final-16016-20260920/`）。逐帧核对发现两处测试侧不一致：
+
+1. `notification_lifecycle` 的 canonical request/processing/progress 是 agent-owned ledger；可读 terminal final 必须显式面向当前 human actor。fixture membership 给 `c0.project` 的 actor 是 `root-project`，因此 final audience 从 `[project-agent]` 修为 `[selfActorId]`；Feed 不猜测 agent→human 关系。
+2. 当前公开 Channel rail 只渲染个人 unread `.unread-related`；`.unread-total` 仅表示 pending/unknown（见 `WorkspaceLayout.jsx`），不承载数字。line 154/166 的 `.unread-total` 是迁移后遗留 selector，不是产品缺失 badge。
+
+修复仅限测试侧：`mock/server.mjs` 将 `phase === 'final'` 的 audience 指向 `selfActorId`，保留 queued/processing/progress 的 agent audience；`notification-policy.spec.js` 的 final/reload 断言改读 `.unread-related`，没有弱化 capability 或删除 persistence/visibility 断言。真实浏览器验证：
+
+```text
+ATOLL_TEST_WEB_PORT=16020 ATOLL_TEST_MOCK_PORT=20320 npx playwright test tests/browser/notification-policy.spec.js --grep="rail follows presented lifecycle" --workers=1 --reporter=line --output=test-results-browser-ns-round15-policy-final-selector-post-16020-20260920
+# 1 passed (13.9s)
+
+ATOLL_TEST_WEB_PORT=16015 ATOLL_TEST_MOCK_PORT=20315 npx playwright test tests/browser/notification-policy.spec.js --grep="tool, timer, and public-event" --workers=1 --reporter=line --output=test-results-browser-ns-round15-policy-16015-20260920
+# 1 passed
+```
+
+fixture-only probe `test-results-browser-ns-round15-final-probe-full-16019-20260920/` 记录 final envelope `audience=[root-project]`、DOM `related=1,total=∅`；该 probe 文件已删除，结果只作为证据。由此本轮没有新增已确认 notification 产品红：N1–N3、lifecycle final、timer/readable-event 用户路径均绿；N4 仍只是空 diagnostics provider 的测试可观测性缺口。未修改产品 owner，也未使用 skip/隐藏 UI 取得绿色。

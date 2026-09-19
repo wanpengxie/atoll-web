@@ -346,3 +346,13 @@ final root badge 仍为 fixture/合同语义待决：`audience=["project-agent"]
 ## 结论
 
 以上当前 R2–R8 覆盖最终 10 个 RED case 的真实分歧；历史 R1 disconnect 已关闭，Composer/Tiptap guard 的 uncaught 也未在最终轮复现。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。
+
+## 第十五轮：没有新增已确认产品红（N4 diagnostics 与 lifecycle final 分别剥离）
+
+本轮在当前入口 `e0142f7` 以真实 Chromium 重跑 N1–N4 及 notification policy：N1/N2/N3 各 **1 passed**（证据目录 `test-results-browser-ns-round15-n1-16001-20260920/`、`...n2-16002...`、`...n3-16003...`）；N4 原合同仍在 raw diagnostics line 400 RED，但不是用户 rail RED。
+
+N4 的最小 oracle `test-results-browser-ns-round15-oracle-n4-16014-20260920/` 记录：live input → cursor/high-water `65` → Replica `headSeq=65`（unrelated 与 6 个 approval 均在）→ filtered Presentation owner `gap=0`、approval rows visible → 左侧频道数字及 jump `0/0/false/0`。首个失败仅是 `rail.snapshot('c0')={channels:[]}`，当前产品树没有 diagnostics provider；按合同这只能是 observability/test contract 缺口，不能作为产品 badge 错误交 notification owner。
+
+本轮另核生命周期 final 红：原 line 154 使用不存在的数字 `.unread-total`，而当前 `WorkspaceLayout` 只将 `.unread-total` 用于 pending/unknown，个人数字由 `.unread-related` 承载；同时 fixture final audience 原为 agent-self，和 `c0.project` 的当前 human actor `root-project` 不相容。测试侧最小修复为 final audience=`[selfActorId]`，断言 154/166 改读 `.unread-related`；queued/processing/progress 与 rail quiet 断言保持不变。pre 证据为 `test-results-browser-ns-round15-policy-final-16016-20260920/`，post `test-results-browser-ns-round15-policy-final-selector-post-16020-20260920/` **1 passed (13.9s)**；独立 timer/readable_event 合同同轮 **1 passed**（`test-results-browser-ns-round15-policy-16015-20260920/`）。
+
+因此本轮不新增产品回归包：N4 归空 diagnostics provider 的测试可观测性问题；lifecycle final 归 fixture audience + 迁移遗留 selector；timer_result 已由第十四轮 fixture 修复闭合，F7 维持已闭独立门。没有改产品、vendor、package、skip，也没有通过隐藏 UI 或放宽行为断言取得绿色。

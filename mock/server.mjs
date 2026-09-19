@@ -2266,7 +2266,12 @@ export function createMockServer({
                 ...(status === 'completed' ? { text: 'background agent task completed' } : { controls: [] }),
                 ...(phase === 'progress' ? { process: { kind: 'stage', label: 'later progress' } } : {}),
               },
-              parentId: requestId, correlationId: requestId, audience: [agentId],
+              parentId: requestId, correlationId: requestId,
+              // The terminal body is the user-facing result of the agent
+              // turn. Keep the request/processing ledger agent-scoped, but
+              // address the readable final to the active human actor so the
+              // notification relation is explicit in the fixture.
+              audience: phase === 'final' ? [selfActorId] : [agentId],
             }))];
           } else if (phase === 'nested_tool') {
             rows = [append(channelId, envelope({

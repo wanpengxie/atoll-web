@@ -151,7 +151,9 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   await lifecycle(request, 'progress');
   await expect(other).toHaveCount(0);
   await lifecycle(request, 'final');
-  await expect(other).toHaveText('1');
+  // The current rail exposes one personal unread badge; the retired total
+  // badge is reserved for pending/unknown state and never carries counts.
+  await expect(related).toHaveText('1');
   // The live feed's checkpoint and row are persisted behind an async storage
   // fence. Reload only after that durable boundary can represent the case.
   await page.waitForTimeout(500);
@@ -163,7 +165,7 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   const reloadPath = testInfo.outputPath('notification-reload-evidence.json');
   await writeFile(reloadPath, `${JSON.stringify({ beforeReload, afterReload }, null, 2)}\n`, 'utf8');
   await testInfo.attach('notification-reload-evidence.json', { path: reloadPath, contentType: 'application/json' });
-  await expect(other).toHaveText('1');
+  await expect(related).toHaveText('1');
 
   await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-policy-restored' }));
   await project.click();
