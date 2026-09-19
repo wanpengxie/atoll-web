@@ -400,6 +400,27 @@ mapped to baseline case SZ-026. Outbox evidence is deliberately handoff-only
 to `composer_owner`, so this ledger does not create a second product packet or
 duplicate its assertions.
 
+### Independent review of `8fb0ae8` stop-control boundaries
+
+The public renderer gate is green for the affordance itself: `canInterrupt`
+requires a writable member, a current roster/history authority containing the
+single request audience, a latest queued/processing frame that advertises
+`agent.interrupt`, and rejects terminal or local-echo turns. The focused owner
+suite passed these cases.
+
+The command owner is not equivalent to that renderer gate. `WorkspaceApp`
+passes `submission.control` directly to the conversation port, while the
+submission runtime exposes `control` as the generic `send` function. The
+timeline callback supplies `{ type, actorId, turn, payload }`, but `send`
+constructs the wire frame from `row.msgType`; this path therefore drops the
+stop word instead of proving an `agent.interrupt` command. Independently, the
+Composer interrupt command checks channel `canTransmit` and the static target
+capability only; it does not re-check current processing state, current roster
+authority, or terminal/local status. Thus the commit closes button visibility,
+but a direct command call can bypass the stop semantic gate (and the timeline
+button path has a `{type}`/`{msgType}` adapter mismatch). This is a command-owner
+product handoff, not a renderer regression; no source change was made here.
+
 | Packet | Scope (mutually exclusive) | Minimal repro/evidence | First public owner | Disposition |
 |---|---|---|---|---|
 | R-SZ-001 | Daemon directory projection never exposes declaration secrets. | `tests/space-administration.test.js`: public `accessRef.directory` receives `key: secret`. | `useWireConnection` accessRef.directory + governance ports | RED; baseline SZ-018 |
@@ -407,6 +428,8 @@ duplicate its assertions.
 | R-SZ-002B | StructuredResult presents `actor.describe` with the actor capability title `codex 的能力`. | `tests/structured-result-restore.test.jsx`: completed `actor.describe` result shows `codex 的能力`, not generic `结构化结果`. | `useTimelineRowRenderer` → public `TimelineRowRenderer` structured-result branch | GREEN; baseline SZ-025 branch fixed and direct owner-tested |
 | R-SZ-002C | StructuredResult maps `type_unsupported` to the user-facing failure wording `接收方不支持这个操作`. | `tests/structured-result-restore.test.jsx`: failed result with `error_code: type_unsupported` shows that label while retaining detail/redaction behavior. | `useTimelineRowRenderer` → public `TimelineRowRenderer` failure branch | GREEN; baseline SZ-026 fixed and direct owner-tested |
 | R-SZ-005 | A processing turn shows 停止 only when the current public authority is writable and advertises `agent.interrupt`. | `tests/task-controls-restore.test.jsx`: no stop for missing control, stale access, or departed target; stop appears and dispatches only for current writable authority. This is an extra candidate and does not reopen the 9 GREEN S11 baseline cases. | `useTimelineRowRenderer` → public `TimelineRowRenderer` turn-controls branch | GREEN; extra owner suite passed |
+| R-SZ-005B | The stop command owner must preserve the renderer's `agent.interrupt` type and re-authorize writable/current-capability/processing/non-local facts at dispatch time. | `TimelineRowRenderer` emits `{ type: 'agent.interrupt' }`, while `WorkspaceApp → submission.control → send` reads only `msgType`; `useComposerCommands.interrupt` checks only `canTransmit` plus static capability. A direct owner call can therefore bypass the renderer gate, and the timeline click can lose its command word. | `WorkspaceApp` conversation command port → `useComposerSubmissionRuntime` command owner | RED / HANDOFF; `8fb0ae8` only closes affordance visibility |
+| R-SZ-006 | Terminal input typed before the shared stream is ready is buffered and delivered exactly once after ready; switching views must not silently drop the input. | Baseline `tests/terminal-view.test.jsx`, SZ-078: `连接 ready 前的输入不会静默丢失`. Successor should mount public `TerminalFeature` with the `terminal-session` port, submit before ready, then assert one post-ready input delivery. | `TerminalFeature` + `terminal-session` | OPEN; successor regression packet for baseline SZ-078 |
 | R-SZ-X01 | A committed pointer channel selection transfers focus to its heading without scrolling. | `tests/workspace-layout-channel-focus.test.jsx`: click c1, rerender, then heading is not focused. | `WorkspaceLayout` channel navigation/focus path | EXTRA RED; hand to owner |
 | H-SZ-OUTBOX | Outbox reconnect hot-loop and feed-before-hydration resurrection are handoff-only; no duplicate product packet here. | Existing `tests/submission-outbox.test.jsx` repros: uncertain id sends 3 instead of 2; feed-before-hydration row remains after rerender. | `composer_owner`: `useComposerSubmissionRuntime` + `outbox-store` | HANDOFF ONLY; composer_owner owns triage/fix |
 
