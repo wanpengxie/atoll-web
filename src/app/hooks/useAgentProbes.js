@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { argsOf } from '../../protocol/envelope.js';
-import { capabilityIndexFromState } from '../../model/capabilities.js';
-import { latestInteractedAgentId } from '../../model/agent-selection.js';
+import { terminalResultPayload, terminalResultState } from '../../model/terminal-result.js';
 import {
   acceptAgentProbe,
   advanceAgentProbeGeneration,
@@ -15,6 +14,80 @@ import {
   reserveProbeSlot,
 } from '../../model/agent-probe-lifecycle.js';
 import { TYPES } from '../../protocol/vocab.js';
+
+function parseDocument(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
+}
+
+function describeOf(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const source = payload.value && typeof payload.value === 'object' ? payload.value : payload;
+  if (!source.words || typeof source.words !== 'object') return null;
+  return {
+    className: String(source.class || ''),
+    interfaces: Array.isArray(source.interfaces) ? source.interfaces : [],
+    capabilities: source.capabilities && typeof source.capabilities === 'object' ? source.capabilities : {},
+    types: new Map(Object.entries(source.words).map(([type, raw]) => [type, {
+      type,
+      description: String(raw?.description || ''),
+      inputSchema: parseDocument(raw?.input_schema),
+      outputSchema: parseDocument(raw?.output_schema),
+      raw: raw || {},
+    }])),
+    raw: source,
+  };
+}
+
+function capabilityIndex(state, liveRequestIds) {
+  const result = new Map();
+  if (!state?.turns?.get) return result;
+  const turns = [...liveRequestIds].map((requestId) => state.turns.get(requestId)).filter(Boolean)
+    .sort((left, right) => Number(left.requestSeq || 0) - Number(right.requestSeq || 0));
+  for (const turn of turns) {
+    if (turn.request?.type !== TYPES.describe) continue;
+    const actorId = turn.request?.audience?.[0];
+    if (!actorId) continue;
+    const entry = result.get(actorId) || { actorId, describe: null, loading: false, error: null, requestId: '', seq: 0 };
+    entry.requestId = turn.requestId;
+    entry.seq = Number(turn.lastSeq || 0);
+    entry.loading = !turn.terminal;
+    if (turn.terminal) {
+      const terminal = terminalResultPayload(turn);
+      const outcome = terminalResultState(turn);
+      if (terminal?.status === 'completed') {
+        const describe = describeOf(terminal);
+        if (describe) {
+          entry.describe = entry.describe
+            ? { ...describe, types: new Map([...entry.describe.types, ...describe.types]) }
+            : describe;
+          entry.error = null;
+        } else entry.error = { code: 'invalid_describe', detail: 'Actor 返回的能力结构无法识别' };
+      } else entry.error = { code: terminal?.error_code || 'describe_failed', detail: outcome.error || terminal?.detail || '' };
+      entry.loading = false;
+    }
+    result.set(actorId, entry);
+  }
+  return result;
+}
+
+function latestAgentInteraction(state, selfId, agentIds) {
+  if (!state?.rows?.values || !selfId) return '';
+  let latest = '';
+  let latestSeq = -1;
+  for (const row of state.rows.values()) {
+    if (row?.kind !== 'request' || row.type !== TYPES.agentAsk || row.sender?.id !== selfId) continue;
+    const audience = Array.isArray(row.audience) ? row.audience : [];
+    if (audience.length !== 1 || !agentIds.has(audience[0])) continue;
+    const seq = Number(row.seq || 0);
+    if (seq >= latestSeq) { latest = audience[0]; latestSeq = seq; }
+  }
+  return latest;
+}
 
 export function useAgentProbes({
   activeChannelId,
@@ -69,7 +142,7 @@ export function useAgentProbes({
       .filter((row) => row.kind === 'agent')
       .map((row) => row.id));
     const selfActorId = rosterRef.current?.self(channelId) || '';
-    if (latestInteractedAgentId(state, selfActorId, agents) === manual) {
+    if (latestAgentInteraction(state, selfActorId, agents) === manual) {
       manualAgentsRef.current.delete(channelId);
       setVersion((current) => current + 1);
     }
@@ -127,7 +200,7 @@ export function useAgentProbes({
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId && row.kind === 'agent');
     if (!actor) return false;
     const state = stateFor(channelId);
-    const capability = capabilityIndexFromState(state, liveRequestIds).get(actorId);
+    const capability = capabilityIndex(state, liveRequestIds).get(actorId);
     const probeKey = `${channelId}:${actorId}`;
     const describeProbe = lifecycleRef.current.entries.get(probeKey);
     const describeRejected = Boolean(describeProbe?.requestId && pending.some(
@@ -148,7 +221,7 @@ export function useAgentProbes({
     const actor = (rosters.get(channelId) || []).find((row) => row.id === actorId);
     if (!actor) return;
     const state = stateFor(channelId);
-    const capability = capabilityIndexFromState(state, liveRequestIds).get(actorId);
+    const capability = capabilityIndex(state, liveRequestIds).get(actorId);
     const probeKey = `${channelId}:${actorId}`;
     const describeProbe = lifecycleRef.current.entries.get(probeKey);
     const describeRejected = Boolean(describeProbe?.requestId && pending.some(
@@ -230,7 +303,10 @@ export function useAgentProbes({
     };
   }, []);
 
+  const capabilitiesFor = useCallback((channelId) => capabilityIndex(stateFor(channelId), liveRequestIds), [liveRequestIds, stateFor, version]);
+
   return {
+    capabilitiesFor,
     composerAgent,
     describeActor,
     liveRequestIds,

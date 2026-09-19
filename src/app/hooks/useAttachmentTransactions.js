@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { availableDefaultStorageDeviceId } from '../../model/channel-files.js';
-import { availableUploadName, uploadChannelFile } from '../../model/channel-file-transfer.js';
 import { diagnostic } from '../../model/diagnostics.js';
+import { normalizeFeatureDirectory } from '../../model/feature-files.js';
 import {
   assessRequestOwner,
   captureRequestOwner,
@@ -13,6 +12,119 @@ import { newId } from '../../util/id.js';
 
 const WORLD_FIELD = '_atoll_world_epoch';
 
+function errorText(error) {
+  return error?.detail || error?.message || String(error);
+}
+
+function availableDefaultStorageDeviceId(channel, devices) {
+  const configured = devices.find((row) => row?.defaultStorage === true)?.id
+    || channel?.default_storage_device_id
+    || 'local-device';
+  return devices.some((row) => row?.id === configured) ? configured : '';
+}
+
+function projectChannelDevices(observation) {
+  return (observation?.items || []).flatMap((item) => {
+    const declared = item?.declared || {};
+    const id = declared.device_id || item?.key;
+    if (!id) return [];
+    const measures = Object.fromEntries((item?.actual?.measures || []).map((row) => [row.name, row.unknown ? undefined : row.value]));
+    return [{
+      id,
+      name: declared.name || declared.device_id || item.key,
+      defaultStorage: declared.default_storage === true,
+      online: measures.online,
+    }];
+  });
+}
+
+function resourcePrefix(channel, device, directory = '') {
+  const channelName = String(channel?.qualified_name || channel?.name || channel?.id || '').replace(/^\/+|\/+$/g, '');
+  const deviceName = String(device?.name || '').replace(/^\/+|\/+$/g, '');
+  const path = normalizeFeatureDirectory(directory).split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  if (!channelName || !deviceName) throw new TypeError('文件挂载上下文不完整');
+  return `daemon://${deviceName}/${channelName}/${path ? `${path}/` : ''}`;
+}
+
+function projectResourceEntries(items, prefix) {
+  return (items || []).flatMap((item) => {
+    const resourceId = String(item?.id || item?.resource_id || item?.address || '');
+    if (!resourceId.startsWith(prefix)) return [];
+    const relative = resourceId.slice(prefix.length);
+    if (!relative || relative.includes('/')) return [];
+    let name = relative;
+    try { name = decodeURIComponent(relative); } catch { /* keep the readable resource segment */ }
+    const nodeType = String(item?.meta?.node_type || 'regular');
+    const kind = nodeType === 'directory' ? 'directory' : 'file';
+    return [{
+      key: `${kind}:${resourceId}`,
+      kind,
+      name,
+      resourceId,
+      ...(kind === 'directory' ? { directory: `${name}/` } : {}),
+      ...(item?.meta?.media_type ? { mediaType: String(item.meta.media_type) } : {}),
+      ...(Number.isFinite(Number(item?.meta?.size)) ? { size: Number(item.meta.size) } : {}),
+      ...(item?.meta?.modified_at || item?.meta?.mtime || item?.updated_at
+        ? { modifiedAt: item.meta?.modified_at || item.meta?.mtime || item.updated_at }
+        : {}),
+    }];
+  });
+}
+
+function downloadURL(channelId, ticket) {
+  return `/files?channel_id=${encodeURIComponent(channelId)}&t=${encodeURIComponent(ticket)}`;
+}
+
+function safeUploadName(name) {
+  return String(name || 'upload').replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+/, '') || 'upload';
+}
+
+function availableUploadName(name, occupiedNames) {
+  const original = safeUploadName(name);
+  const occupied = new Set([...occupiedNames].map((value) => safeUploadName(value).toLocaleLowerCase()));
+  if (!occupied.has(original.toLocaleLowerCase())) return original;
+  const dot = original.lastIndexOf('.');
+  const stem = dot > 0 ? original.slice(0, dot) : original;
+  const extension = dot > 0 ? original.slice(dot) : '';
+  let index = 2;
+  while (occupied.has(`${stem}-${index}${extension}`.toLocaleLowerCase())) index += 1;
+  return `${stem}-${index}${extension}`;
+}
+
+function channelFileAddress(channel, deviceName, uploadName, directory = '') {
+  const channelName = String(channel?.qualified_name || channel?.name || channel?.id || '').replace(/^\/+|\/+$/g, '');
+  const device = String(deviceName || '').replace(/^\/+|\/+$/g, '');
+  if (!channelName || !device || !uploadName) throw new TypeError('上传上下文不完整');
+  const path = normalizeFeatureDirectory(directory).split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  return `daemon://${device}/${channelName}/${path ? `${path}/` : ''}${encodeURIComponent(uploadName)}`;
+}
+
+async function uploadChannelFile({ file, channel, deviceName, uploadName, directory, onResource, signal, authorize }) {
+  authorize?.('acquire');
+  const storedName = safeUploadName(uploadName || file?.name);
+  const address = channelFileAddress(channel, deviceName, storedName, directory);
+  const ticket = await onResource({ channel_id: channel.id, op: 'create', address, with_content: true });
+  if (!ticket?.ticket) throw new TypeError('服务端没有返回上传凭据');
+  authorize?.('persist');
+  authorize?.('submit');
+  const response = await fetch(`/files?channel_id=${encodeURIComponent(channel.id)}&t=${encodeURIComponent(ticket.ticket)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    body: file,
+    signal,
+  });
+  if (!response.ok) throw new TypeError(`上传失败 (${response.status})`);
+  const attachment = {
+    resource_id: String(ticket.resource_id || address),
+    address,
+    name: uploadName || file.name,
+    media_type: file.type || 'application/octet-stream',
+    size: Number(file.size || 0),
+  };
+  try { authorize?.('settle'); } catch (error) { error.completedAttachment = attachment; throw error; }
+  return attachment;
+}
+
 export function useAttachmentTransactions({
   activeChannel,
   activeChannelId,
@@ -20,6 +132,7 @@ export function useAttachmentTransactions({
   accessRef,
   channelDevices,
   deviceActionsRef,
+  obsRef,
   directoryVersion,
   draftFor,
   drafts,
@@ -35,6 +148,13 @@ export function useAttachmentTransactions({
   wireState,
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [devices, setDevices] = useState(channelDevices || []);
+  const [directory, setDirectory] = useState('');
+  const [deviceId, setDeviceId] = useState('');
+  const [entries, setEntries] = useState([]);
+  const [filesBusy, setFilesBusy] = useState(false);
+  const [filesError, setFilesError] = useState('');
+  const [selectedArtifact, setSelectedArtifact] = useState(null);
   const worldRevisionRef = useRef(0);
   const uploadQueuesRef = useRef(new Map());
   const activeUploadsRef = useRef(new Map());
@@ -174,6 +294,118 @@ export function useAttachmentTransactions({
     }
   }, [accessRef, assessFileOperation, committedOwnerRef, drafts, sendResource, serverWorldCommittedRef, wireRef]);
 
+  const refreshDevices = useCallback(async (channelId = activeChannelRef.current) => {
+    if (!channelId || !obsRef?.current) return [];
+    try {
+      const rows = projectChannelDevices(await obsRef.current.channelDevices(channelId));
+      if (activeChannelRef.current === channelId) {
+        setDevices(rows);
+        setDeviceId((current) => rows.some((row) => row.id === current)
+          ? current
+          : availableDefaultStorageDeviceId(activeChannel, rows));
+      }
+      return rows;
+    } catch (error) {
+      if (activeChannelRef.current === channelId && error?.status !== 401) setFilesError(errorText(error));
+      return [];
+    }
+  }, [activeChannel, activeChannelRef, obsRef]);
+
+  useLayoutEffect(() => {
+    deviceActionsRef.current.refresh = refreshDevices;
+    return () => {
+      if (deviceActionsRef.current.refresh === refreshDevices) deviceActionsRef.current.refresh = async () => [];
+    };
+  }, [deviceActionsRef, refreshDevices]);
+
+  const refreshDirectory = useCallback(async ({
+    channelId = activeChannelRef.current,
+    targetDirectory = directory,
+    targetDeviceId = deviceId,
+  } = {}) => {
+    if (!channelId) return [];
+    const channel = channelId === activeChannel?.id ? activeChannel : null;
+    const device = devices.find((row) => row.id === targetDeviceId);
+    if (!channel || !device) {
+      setEntries([]);
+      return [];
+    }
+    const normalized = normalizeFeatureDirectory(targetDirectory);
+    setFilesBusy(true);
+    setFilesError('');
+    try {
+      const prefix = resourcePrefix(channel, device, normalized);
+      const receipt = await runFileOperation({ channelId, access: 'read' }, (operation) => operation.resource({
+        channel_id: channelId,
+        op: 'list',
+        query: { prefix, limit: 200 },
+      }));
+      const rows = projectResourceEntries(receipt?.items, prefix);
+      if (activeChannelRef.current === channelId) {
+        setDirectory(normalized);
+        setDeviceId(targetDeviceId);
+        setEntries(rows);
+      }
+      return rows;
+    } catch (error) {
+      if (activeChannelRef.current === channelId) setFilesError(errorText(error));
+      return [];
+    } finally {
+      if (activeChannelRef.current === channelId) setFilesBusy(false);
+    }
+  }, [activeChannel, activeChannelRef, deviceId, devices, directory, runFileOperation]);
+
+  useEffect(() => {
+    setDevices(channelDevices || []);
+    setDirectory('');
+    setEntries([]);
+    setSelectedArtifact(null);
+    setFilesError('');
+    if (!activeChannelId || wireState !== 'open') return;
+    void refreshDevices(activeChannelId);
+  }, [activeChannelId, channelDevices, refreshDevices, wireState]);
+
+  useEffect(() => {
+    if (!activeChannelId || !deviceId || wireState !== 'open') return;
+    void refreshDirectory({ channelId: activeChannelId, targetDirectory: directory, targetDeviceId: deviceId });
+  }, [activeChannelId, deviceId, directory, refreshDirectory, wireState]);
+
+  const navigateFiles = useCallback((value) => setDirectory(normalizeFeatureDirectory(value)), []);
+  const selectDevice = useCallback((value) => {
+    setDeviceId(String(value || ''));
+    setDirectory('');
+  }, []);
+  const createDirectory = useCallback(async ({ name, directory: requestedDirectory = directory, deviceId: requestedDeviceId = deviceId }) => {
+    const channel = activeChannel;
+    const device = devices.find((row) => row.id === requestedDeviceId);
+    const safeName = safeUploadName(name);
+    if (!channel?.id || !device || safeName !== String(name || '').trim()) throw new TypeError('文件夹名称无效');
+    const address = `${resourcePrefix(channel, device, requestedDirectory)}${encodeURIComponent(safeName)}`;
+    await runFileOperation({ channelId: channel.id, access: 'write' }, (operation) => operation.resource({ channel_id: channel.id, op: 'create', address, node_type: 'directory' }));
+    return refreshDirectory({ channelId: channel.id, targetDirectory: requestedDirectory, targetDeviceId: requestedDeviceId });
+  }, [activeChannel, deviceId, devices, directory, refreshDirectory, runFileOperation]);
+  const removeFile = useCallback(async (entry) => {
+    if (!activeChannelId || !entry?.resourceId) return;
+    await runFileOperation({ channelId: activeChannelId, access: 'write' }, (operation) => operation.resource({ channel_id: activeChannelId, op: 'delete', resource_id: entry.resourceId }));
+    await refreshDirectory();
+  }, [activeChannelId, refreshDirectory, runFileOperation]);
+  const downloadFile = useCallback(async (entry) => {
+    if (!activeChannelId || !entry?.resourceId) return;
+    const blob = await runFileOperation({ channelId: activeChannelId, access: 'read' }, async (operation) => {
+      const receipt = await operation.resource({ channel_id: activeChannelId, op: 'read', resource_id: entry.resourceId, with_content: true });
+      if (!receipt?.ticket) throw new TypeError('服务端没有返回下载凭据');
+      const response = await operation.fetch(downloadURL(activeChannelId, receipt.ticket), { credentials: 'include' });
+      if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
+      return response.blob();
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = entry.name || 'download';
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, [activeChannelId, runFileOperation]);
+
   useEffect(() => {
     for (const [key, active] of activeUploadsRef.current) {
       const assessment = assessRequestOwner(active.owner, ownerFacts(active.owner), REQUEST_PHASE.submit, { requireDraft: true });
@@ -245,7 +477,7 @@ export function useAttachmentTransactions({
     });
   }, [activeChannelRef, drafts, onOpenDynamic, persistDraftAttachments, runFileOperation, stripWorld]);
 
-  const upload = useCallback(async (files) => {
+  const upload = useCallback(async (files, { directory: uploadDirectory = '', deviceId: uploadDeviceId = '' } = {}) => {
     const channel = activeChannel;
     if (!channel?.id) throw new TypeError('请先选择频道');
     const committed = committedOwnerRef.current;
@@ -281,7 +513,7 @@ export function useAttachmentTransactions({
       });
       if (!acquire.started || !acquire.current) throw requestAccessError(acquire.invalidation);
       const devices = acquire.value || [];
-      const daemonId = availableDefaultStorageDeviceId(channel, devices);
+      const daemonId = uploadDeviceId || availableDefaultStorageDeviceId(channel, devices);
       const daemon = devices.find((row) => row.id === daemonId);
       if (!daemon) throw new TypeError('频道没有可用的默认文件存储设备');
       if (daemon.online === false) throw new TypeError(`频道默认文件存储设备 ${daemon.name || daemon.id} 当前离线`);
@@ -306,6 +538,7 @@ export function useAttachmentTransactions({
                 channel,
                 deviceName: daemon.name,
                 uploadName,
+                directory: uploadDirectory,
                 onResource: sendResource,
                 signal: controller.signal,
                 authorize: (phase) => {
@@ -386,10 +619,24 @@ export function useAttachmentTransactions({
     clear,
     composerAttachments,
     composerDraft,
+    createDirectory,
+    deviceId,
+    devices,
+    directory,
+    downloadFile,
+    entries,
+    filesBusy,
+    filesError,
     mutate,
+    navigateFiles,
     pickerOpen,
+    refreshDirectory,
+    removeFile,
     reset,
     runFileOperation,
+    selectDevice,
+    selectedArtifact,
+    setSelectedArtifact,
     setPickerOpen,
     tagForCurrentWorld,
     upload,

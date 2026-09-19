@@ -1,16 +1,246 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createChannelAccessTracker } from '../../model/channel-access.js';
-import { rememberChannelNames } from '../../model/channel-name-cache.js';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { describeClient } from '../../model/client-label.js';
 import { isMobileProfile } from '../../model/device-profile.js';
 import { diagnostic } from '../../model/diagnostics.js';
-import { ensureServerBoot, readServerBoot } from '../../model/server-boot.js';
-import { readWorkspaceBootstrap, writeWorkspaceBootstrap } from '../../model/workspace-bootstrap-cache.js';
+import {
+  forgetCachedPrincipal,
+  readCachedPrincipal,
+  readWorkspaceBootstrap,
+  rememberCachedPrincipal,
+  writeWorkspaceBootstrap,
+} from '../../model/workspace-bootstrap-cache.js';
+import { actorDisplayName } from '../../model/actor-display.js';
+import { createIdentityClient } from '../../net/identity.js';
 import { createObsClient } from '../../net/obs.js';
 import { foregroundWake } from '../../net/wake.js';
 import { createWire } from '../../net/wire.js';
-import { createRoster } from '../../model/roster.js';
+import { argsOf } from '../../protocol/envelope.js';
+import { TYPES } from '../../protocol/vocab.js';
 import { newId } from '../../util/id.js';
+
+const SERVER_WORLD_KEY = 'atoll.server.boot.v2';
+const CHANNEL_NAME_KEY = 'atoll.channel.names.v1';
+const WORLD_PREFIXES = [
+  'atoll.workspace.bootstrap.v2.',
+  'atoll.history.priority.v1.',
+  'atoll.cursor.v3.',
+  'atoll.read.v4.',
+  'atoll.timers.',
+  'atoll.web.file-reading-history.v1.',
+  'atoll.terminal.session.',
+];
+
+function storagePort() {
+  try { return globalThis.localStorage || null; } catch { return null; }
+}
+
+export function readServerWorld() {
+  return String(storagePort()?.getItem?.(SERVER_WORLD_KEY) || '');
+}
+
+function commitServerWorld(world) {
+  if (!world) throw new TypeError('服务端 attach 缺少必需的 world 标识');
+  const storage = storagePort();
+  if (!storage) return true;
+  const previous = storage.getItem(SERVER_WORLD_KEY);
+  if (!previous || previous === world) {
+    storage.setItem(SERVER_WORLD_KEY, world);
+    return true;
+  }
+  const stale = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key === CHANNEL_NAME_KEY || WORLD_PREFIXES.some((prefix) => key?.startsWith(prefix))) stale.push(key);
+  }
+  for (const key of stale) storage.removeItem(key);
+  storage.setItem(SERVER_WORLD_KEY, world);
+  return false;
+}
+
+function rememberChannelLabels(profiles) {
+  const storage = storagePort();
+  if (!storage) return;
+  let labels = {};
+  try { labels = JSON.parse(storage.getItem(CHANNEL_NAME_KEY) || '{}') || {}; } catch { labels = {}; }
+  for (const profile of profiles || []) {
+    const label = profile?.qualified_name || profile?.name;
+    if (profile?.id && label && label !== profile.id) labels[profile.id] = label;
+  }
+  try { storage.setItem(CHANNEL_NAME_KEY, JSON.stringify(Object.fromEntries(Object.entries(labels).slice(-256)))); } catch { /* cosmetic cache */ }
+}
+
+function cachedChannelLabel(channelId) {
+  try { return JSON.parse(storagePort()?.getItem(CHANNEL_NAME_KEY) || '{}')?.[channelId] || ''; } catch { return ''; }
+}
+
+function accessMode(state, connected) {
+  if (!state || state.existence === 'unknown') return 'loading';
+  if (state.existence === 'retired') return 'retired';
+  if (state.relationship === 'denied') return 'access_denied';
+  if (state.relationship === 'member') {
+    if (state.unavailable || state.runtime === 'closed') return 'member_unavailable';
+    return 'member_active';
+  }
+  if (state.relationship === 'observer') return connected && state.runtime === 'open' ? 'observer_active' : 'observer_stale';
+  return state.relationship === 'discoverable' ? 'discoverable' : 'loading';
+}
+
+function createSessionAccess({ principalId }) {
+  const states = new Map();
+  let connected = false;
+  let authorityEpoch = 0;
+  const ensure = (channelId, profile = null) => {
+    if (!states.has(channelId)) states.set(channelId, {
+      channelId,
+      profile,
+      existence: profile ? 'present' : 'unknown',
+      runtime: profile?.open === false ? 'closed' : profile?.open === true ? 'open' : 'unknown',
+      relationship: 'unknown',
+      freshness: 'initial',
+      unavailable: false,
+      selfActorId: '',
+      authorityEpoch: ++authorityEpoch,
+    });
+    const state = states.get(channelId);
+    if (profile) state.profile = profile;
+    return state;
+  };
+  const changeAuthority = (state, mutate) => {
+    const before = `${state.existence}:${state.relationship}:${state.selfActorId}`;
+    mutate(state);
+    if (before !== `${state.existence}:${state.relationship}:${state.selfActorId}`) state.authorityEpoch = ++authorityEpoch;
+  };
+  return {
+    channelsObserved(profiles, { complete = true } = {}) {
+      const seen = new Set();
+      for (const profile of profiles || []) {
+        if (!profile?.id || (profile.systemReserved && profile.id !== 'c0')) continue;
+        seen.add(profile.id);
+        const state = ensure(profile.id, profile);
+        changeAuthority(state, (next) => {
+          next.profile = profile;
+          next.existence = profile.status === 'retired' ? 'retired' : 'present';
+          next.runtime = profile.open === false ? 'closed' : profile.open === true ? 'open' : 'unknown';
+          next.unavailable = profile.open === true ? false : next.unavailable;
+          if (profile.id === 'c0' && profile.owner_principal === principalId) next.relationship = 'member';
+          else if (next.relationship === 'unknown') next.relationship = 'discoverable';
+        });
+      }
+      if (complete) for (const state of states.values()) if (state.profile && !seen.has(state.channelId)) changeAuthority(state, (next) => { next.existence = 'retired'; });
+    },
+    membershipsObserved(rows, { complete = true } = {}) {
+      const active = new Set();
+      for (const row of rows || []) {
+        if (!row?.channel_id) continue;
+        active.add(row.channel_id);
+        const state = ensure(row.channel_id);
+        changeAuthority(state, (next) => {
+          next.relationship = row.status === 'active' ? 'member' : row.status === 'revoked' ? 'denied' : next.relationship;
+          next.selfActorId = row.actor_id || next.selfActorId;
+          next.freshness = 'fresh';
+        });
+      }
+      if (complete) for (const state of states.values()) {
+        if (state.relationship === 'member' && !active.has(state.channelId) && !(state.channelId === 'c0' && state.profile?.owner_principal === principalId)) {
+          changeAuthority(state, (next) => { next.relationship = 'discoverable'; next.selfActorId = ''; });
+        }
+      }
+    },
+    live(channelId) {
+      const state = ensure(channelId);
+      const before = `${state.existence}:${state.relationship}:${state.unavailable}`;
+      if (state.existence !== 'retired') state.existence = 'present';
+      if (state.relationship !== 'member') state.relationship = 'observer';
+      state.runtime = 'open'; state.unavailable = false; state.freshness = 'fresh';
+      return before !== `${state.existence}:${state.relationship}:${state.unavailable}`;
+    },
+    forbidden(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.relationship = 'denied'; next.selfActorId = ''; next.unavailable = false; }); },
+    unavailable(channelId) { const state = ensure(channelId); state.unavailable = true; },
+    retire(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.existence = 'retired'; next.runtime = 'closed'; }); },
+    wire(status) { connected = status === 'attached'; },
+    clearSelf(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.selfActorId = ''; }); },
+    reset() { states.clear(); authorityEpoch += 1; },
+    state(channelId) { return states.get(channelId) || null; },
+    rows({ includeRetired = false } = {}) {
+      return [...states.values()].filter((state) => includeRetired || state.existence !== 'retired').map((state) => {
+        const profile = state.profile || { id: state.channelId, name: cachedChannelLabel(state.channelId) || state.channelId };
+        return { ...profile, id: state.channelId, access: accessMode(state, connected), accessState: { ...state, mode: accessMode(state, connected) }, selfActorId: state.selfActorId };
+      });
+    },
+    snapshot() {
+      return {
+        channels: [...states.values()].map((state) => ({ ...state, mode: accessMode(state, connected) })),
+      };
+    },
+  };
+}
+
+function projectActor(item) {
+  const declared = item?.declared || {};
+  const id = declared.id || item?.key || '';
+  const measure = (name) => item?.actual?.measures?.find((row) => row.name === name);
+  const bound = measure('bound');
+  const device = measure('device_online');
+  return {
+    id,
+    kind: declared.kind || '',
+    name: actorDisplayName({ id, name: declared.name }),
+    decl_id: declared.decl_id || '',
+    description: declared.description || '',
+    principal: declared.principal || '',
+    bound: bound?.unknown ? null : Boolean(bound?.value),
+    deviceOnline: device?.unknown ? null : Boolean(device?.value),
+  };
+}
+
+function createSessionRoster({ obs, principalId }) {
+  const cache = new Map();
+  const authorities = new Map();
+  const selves = new Map();
+  const submissions = new Map();
+  const refreshTimers = new Map();
+  const refresh = async (channelId) => {
+    const observation = await obs.channelActors(channelId);
+    const rows = (observation.items || []).map(projectActor).filter((row) => row.id);
+    cache.set(channelId, rows);
+    authorities.set(channelId, { principalId, channelId, complete: observation.complete !== false });
+    const self = rows.find((row) => row.kind === 'human' && row.principal === principalId)?.id;
+    if (self) selves.set(channelId, self);
+    return rows;
+  };
+  return {
+    refresh,
+    ensure: (channelId) => cache.has(channelId) ? Promise.resolve(cache.get(channelId)) : refresh(channelId),
+    seed(rowsByChannel = {}) { for (const [channelId, rows] of Object.entries(rowsByChannel)) if (Array.isArray(rows)) cache.set(channelId, rows); },
+    get: (channelId) => cache.get(channelId) || [],
+    authority: (channelId) => authorities.get(channelId) || null,
+    self(channelId) { return cache.get(channelId)?.find((row) => row.kind === 'human' && row.principal === principalId)?.id || selves.get(channelId) || ''; },
+    candidates(channelId) { const selfId = this.self(channelId); return (cache.get(channelId) || []).filter((row) => row.id !== selfId); },
+    noteSelf(channelId, actorId) { if (!channelId || !actorId || selves.get(channelId) === actorId) return ''; selves.set(channelId, actorId); return actorId; },
+    clearSelf: (channelId) => selves.delete(channelId),
+    recordSubmission(channelId, messageId) { if (channelId && messageId) submissions.set(messageId, channelId); },
+    ownsSubmission: (channelId, messageId) => submissions.get(messageId) === channelId,
+    forgetSubmission(channelId, messageId) { if (submissions.get(messageId) !== channelId) return false; submissions.delete(messageId); return true; },
+    observeFeed(channelId, envelope) {
+      if (submissions.get(envelope?.id) !== channelId || envelope?.sender?.kind !== 'human' || !envelope.sender.id) return '';
+      selves.set(channelId, envelope.sender.id); submissions.delete(envelope.id); return envelope.sender.id;
+    },
+    handleEnvelope(channelId, envelope, onRefresh) {
+      const invalidating = [TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)
+        || (envelope?.kind === 'response'
+          && [TYPES.member.create, TYPES.member.admit, TYPES.member.remove, TYPES.member.restart].includes(envelope.type)
+          && argsOf(envelope)?.status === 'completed');
+      if (!invalidating) return;
+      if (refreshTimers.has(channelId)) clearTimeout(refreshTimers.get(channelId));
+      refreshTimers.set(channelId, setTimeout(() => {
+        refreshTimers.delete(channelId);
+        void refresh(channelId).then((rows) => onRefresh?.(rows), (error) => onRefresh?.(null, error));
+      }, 300));
+    },
+    reset() { for (const timer of refreshTimers.values()) clearTimeout(timer); refreshTimers.clear(); cache.clear(); authorities.clear(); selves.clear(); submissions.clear(); },
+    close() { for (const timer of refreshTimers.values()) clearTimeout(timer); refreshTimers.clear(); },
+  };
+}
 
 async function loadChannelTree(obs) {
   const found = new Map();
@@ -44,6 +274,158 @@ async function loadChannelTree(obs) {
     level = next;
   }
   return { channels: found, complete };
+}
+
+function readInitialRoute() {
+  const match = String(globalThis.location?.hash || '').match(/^#\/channels\/([^/]+)\/([^?]+)/);
+  if (!match) return { channelId: '', view: 'conversation' };
+  let channelId = '';
+  let rawView = '';
+  try { channelId = decodeURIComponent(match[1]); rawView = decodeURIComponent(match[2]); } catch { return { channelId: '', view: 'conversation' }; }
+  return { channelId, view: ['conversation', 'files', 'tasks'].includes(rawView) ? rawView : 'conversation' };
+}
+
+function writeRoute(channelId, view, replace = false) {
+  if (!channelId || !globalThis.history) return;
+  globalThis.history[replace ? 'replaceState' : 'pushState'](
+    globalThis.history.state,
+    '',
+    `#/channels/${encodeURIComponent(channelId)}/${encodeURIComponent(view)}`,
+  );
+}
+
+// Authentication is part of the wire session lifetime. Keeping it here makes
+// logout/401 a principal boundary for every owner mounted by WorkspaceApp.
+export function useIdentitySession({ onError = () => {} } = {}) {
+  const cachedRef = useRef(readCachedPrincipal());
+  const [booting, setBooting] = useState(!cachedRef.current);
+  const [principal, setPrincipal] = useState(cachedRef.current);
+  const identityRef = useRef(null);
+  if (identityRef.current === null) identityRef.current = createIdentityClient();
+
+  useEffect(() => {
+    let current = true;
+    void identityRef.current.session().then((session) => {
+      if (!current) return;
+      const value = cachedRef.current?.id === session.id
+        ? cachedRef.current
+        : { id: session.id, display_name: session.display_name || '' };
+      rememberCachedPrincipal(value);
+      setPrincipal(value);
+    }).catch((error) => {
+      if (!current) return;
+      if (error?.status === 401) {
+        forgetCachedPrincipal();
+        setPrincipal(null);
+      } else onError(error);
+    }).finally(() => { if (current) setBooting(false); });
+    return () => { current = false; };
+  }, [onError]);
+
+  const accept = useCallback((value) => {
+    const next = { id: value.id, display_name: value.display_name || '' };
+    rememberCachedPrincipal(next);
+    setPrincipal(next);
+    setBooting(false);
+  }, []);
+  const expire = useCallback(() => {
+    forgetCachedPrincipal();
+    setPrincipal(null);
+    setBooting(false);
+  }, []);
+  const logout = useCallback(async () => {
+    try { await identityRef.current.logout(); } catch { /* local boundary still wins */ }
+    expire();
+  }, [expire]);
+
+  return { accept, booting, expire, identity: identityRef.current, logout, principal };
+}
+
+// Channel selection and URL projection are one navigation owner. The access
+// tracker remains the authority; this hook only chooses which authoritative
+// row the shell is presenting.
+export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}, onNotice = () => {} }) {
+  const initialRef = useRef(null);
+  if (initialRef.current === null) initialRef.current = readInitialRoute();
+  const [profiles, setProfiles] = useState(new Map());
+  const [revision, setRevision] = useState(0);
+  const [activeChannelId, setActiveChannelId] = useState(initialRef.current.channelId);
+  const [activeView, setActiveViewState] = useState(initialRef.current.view);
+  const activeChannelRef = useRef(activeChannelId);
+  useLayoutEffect(() => { activeChannelRef.current = activeChannelId; }, [activeChannelId]);
+  const commitActiveChannel = useCallback((channelId) => {
+    activeChannelRef.current = channelId;
+    setActiveChannelId(channelId);
+  }, []);
+  const channels = useMemo(() => {
+    const authoritative = accessRef.current?.rows?.() || [];
+    const rows = authoritative.length ? authoritative : [...profiles.values()];
+    return [...rows].sort((left, right) => {
+      if (left.id === 'c0') return -1;
+      if (right.id === 'c0') return 1;
+      return String(left.qualified_name || left.name || left.id).localeCompare(String(right.qualified_name || right.name || right.id));
+    });
+  }, [accessRef, profiles, revision]);
+
+  useEffect(() => {
+    if (!channels.length) return;
+    if (!activeChannelId || !channels.some((row) => row.id === activeChannelId)) {
+      if (activeChannelId && accessRef.current?.state?.(activeChannelId)?.existence === 'retired') onNotice(`${activeChannelId} 已退役，已切换到其他可用频道。`);
+      const next = channels.find((row) => row.access === 'member_active') || channels[0];
+      commitActiveChannel(next.id);
+      writeRoute(next.id, activeView, true);
+    }
+  }, [accessRef, activeChannelId, activeView, channels, commitActiveChannel, onNotice]);
+
+  useEffect(() => {
+    const receiveRoute = () => {
+      const route = readInitialRoute();
+      if (route.channelId && channels.some((row) => row.id === route.channelId)) {
+        commitActiveChannel(route.channelId);
+        setActiveViewState(route.view);
+      }
+    };
+    globalThis.addEventListener?.('hashchange', receiveRoute);
+    globalThis.addEventListener?.('popstate', receiveRoute);
+    return () => {
+      globalThis.removeEventListener?.('hashchange', receiveRoute);
+      globalThis.removeEventListener?.('popstate', receiveRoute);
+    };
+  }, [channels, commitActiveChannel]);
+
+  const select = useCallback((channelId) => {
+    if (!channelId || channelId === activeChannelRef.current) return;
+    commitActiveChannel(channelId);
+    onSelect(channelId);
+    writeRoute(channelId, activeView);
+  }, [activeView, commitActiveChannel, onSelect]);
+  const setActiveView = useCallback((view) => {
+    if (!['conversation', 'files', 'tasks'].includes(view)) return;
+    setActiveViewState(view);
+    writeRoute(activeChannelRef.current, view);
+  }, []);
+  const bump = useCallback(() => setRevision((value) => value + 1), []);
+  const clear = useCallback(() => {
+    setProfiles(new Map());
+    commitActiveChannel('');
+    setRevision((value) => value + 1);
+  }, [commitActiveChannel]);
+
+  return {
+    activeChannel: channels.find((row) => row.id === activeChannelId) || null,
+    activeChannelId,
+    activeChannelRef,
+    activeView,
+    bump,
+    channels,
+    clear,
+    revision,
+    select,
+    selfFor: (channelId) => rosterRef.current?.self?.(channelId) || '',
+    setActiveChannelId: commitActiveChannel,
+    setActiveView,
+    setChannels: setProfiles,
+  };
 }
 
 export function useWireSessionPort() {
@@ -123,8 +505,8 @@ export function useWireConnection({
     if (!principalId) return undefined;
     setTopError('');
     const obs = createObsClient({ onUnauthorized: expireSession });
-    const roster = createRoster({ obs, me: principalId });
-    const access = createChannelAccessTracker({ principalId });
+    const roster = createSessionRoster({ obs, principalId });
+    const access = createSessionAccess({ principalId });
     obsRef.current = obs;
     rosterRef.current = roster;
     accessRef.current = access;
@@ -170,7 +552,7 @@ export function useWireConnection({
       refreshInFlight = loadChannelTree(obs).then((result) => {
         if (!alive || versionBlocked) return;
         const profiles = [...result.channels.values()];
-        rememberChannelNames(profiles);
+        rememberChannelLabels(profiles);
         access.channelsObserved(profiles, { complete: result.complete });
         writeWorkspaceBootstrap(principalId, access.snapshot());
         setChannels((current) => result.complete ? result.channels : new Map([...current, ...result.channels]));
@@ -201,8 +583,8 @@ export function useWireConnection({
       since: resumeLocalReplica,
       focus: () => activeChannelRef.current,
       onAttach: (detail) => {
-        const sameServerWorld = ensureServerBoot(detail?.boot);
-        onServerWorld(String(detail?.boot || readServerBoot()));
+        const sameServerWorld = commitServerWorld(detail?.boot);
+        onServerWorld(String(detail?.boot || readServerWorld()));
         if (!sameServerWorld) {
           access.reset();
           roster.reset();
