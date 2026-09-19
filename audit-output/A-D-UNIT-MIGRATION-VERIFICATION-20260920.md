@@ -5,9 +5,9 @@ suites and 365 declarations. The complete case ledger remains
 [`RESTORE-CASES-A-D-20260919.md`](./RESTORE-CASES-A-D-20260919.md), with one
 row per baseline declaration and the current result, public owner, invariant,
 and disposition. After the P0 batch and the first P1 composed-interaction
-fixture batch plus the follow-up Waiting-owner regression packet and the
-AD-103 Workspace owner fix, accepted case totals are **257 PASS / 3 REGRESSION /
-105 BLOCKED**.
+fixture batch plus the follow-up Waiting-owner regression packet, the AD-103
+Workspace owner fix, and the AD-123 artifact owner fix, accepted case totals
+are **258 PASS / 2 REGRESSION / 105 BLOCKED**.
 
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
@@ -48,6 +48,12 @@ its target and origin, then the committed `activeChannelId` handoff focuses the
 target heading with `preventScroll`; a superseded request cannot focus a later
 channel. The public fixture uses `WorkspaceLayout`/`WorkspaceRail` and does not
 focus until the target identity is committed.
+
+The next artifact owner fix closes AD-123: the `ChannelReplica` public
+Presentation feeds `feature-search` explicit attachment facts, preserving the
+same-channel relation key for `version_of` and merging repeated references by
+resource ID. Missing relations remain absent, and filenames never create a
+link. The fixture stays on the public projected artifact rows.
 
 ## Public-boundary migration completed in this pass
 
@@ -94,7 +100,8 @@ The focused slices were run with Vitest against current public owners:
 | `tests/agent-information-architecture.test.jsx -t '\[AD-041\]'` | 1 passed | AD-041 interrupted terminal presents the stopped/resumable Agent bubble and stays out of ordinary failure/hold presentation |
 | `tests/agent-selection.test.js -t '\[AD-062\]'` | 1 passed | AD-062 later same-Agent usage refreshes the live context projection and sparse terminal data does not clear it |
 | `tests/workspace-layout-channel-focus.test.jsx -t '\[AD-103\]'` | 1 passed | AD-103 focuses only the committed target heading and preserves the no-scroll handoff through the public Workspace owner |
-| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-011, AD-123, AD-143 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
+| `tests/artifacts.test.jsx -t '\[AD-123\]'` | 1 passed | AD-123 preserves explicit same-channel version relation and repeated resource references through ChannelReplica + feature-search |
+| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-011 and AD-143 remain explicit product-gap reproductions; no AD-123 `it.fails` case remains |
 
 The red assertions are intentionally not weakened, skipped, or deleted. The
 unrelated `tests/channel-replica-cache-redaction.test.js` red result belongs to

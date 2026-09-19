@@ -19,8 +19,9 @@ AD-062 is now closed by the current public parameter projection owner; this
 also does not change the 105 BLOCKED count.
 AD-103 is now closed by the existing `WorkspaceLayout` navigation owner; this
 also does not change the 105 BLOCKED count. AD-011 and AD-143 remain the two
-unresolved product regressions in the focused packet; AD-123 is handled by the
-separate artifact owner packet in this pass.
+unresolved product regressions in the focused packet. AD-123 is now closed by
+the existing `feature-search` artifact projection owner; this also does not
+change the 105 BLOCKED count.
 No row is obsolete, deleted, or skipped.
 
 ## Minimal regression packets

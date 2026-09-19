@@ -187,11 +187,13 @@ function attachmentFact(value) {
   if (!value || typeof value !== 'object') return null;
   const resourceId = string(value.resource_id || value.resourceId);
   if (!resourceId) return null;
+  const versionOf = string(value.version_of || value.versionOf);
   return Object.freeze({
     resourceId,
     name: string(value.name) || resourceId,
     mediaType: string(value.media_type || value.mediaType) || 'application/octet-stream',
     kind: string(value.artifact_kind || value.kind),
+    ...(versionOf ? { versionOf } : {}),
   });
 }
 
@@ -234,6 +236,7 @@ function addArtifactReference(artifacts, fact, entry, channel, rowID, envelope) 
   const entrySource = entryLocation(entry, channel.id, rowID);
   if (!entrySource) return;
   const key = `search:${channel.id}:artifact:${fact.resourceId}`;
+  const versionKey = fact.versionOf ? `search:${channel.id}:artifact:${fact.versionOf}` : undefined;
   const reference = Object.freeze({
     ...entrySource,
     envelopeId: string(envelope?.id) || entrySource.envelopeId,
@@ -245,6 +248,7 @@ function addArtifactReference(artifacts, fact, entry, channel, rowID, envelope) 
     existing.updatedAt = Math.max(existing.updatedAt, timestamp(envelope?.ts, entry?.seq));
     if (existing.title === existing.resourceId && fact.name) existing.title = fact.name;
     if (existing.subtitle === 'application/octet-stream' && fact.mediaType) existing.subtitle = fact.mediaType;
+    if (!existing.versionOf && versionKey) existing.versionOf = versionKey;
     return;
   }
   artifacts.set(key, {
@@ -259,6 +263,7 @@ function addArtifactReference(artifacts, fact, entry, channel, rowID, envelope) 
     updatedAt: timestamp(envelope?.ts, entry?.seq),
     channelId: channel.id,
     channelName: channelName(channel),
+    ...(versionKey ? { versionOf: versionKey } : {}),
     source: Object.freeze({
       kind: 'file-reference',
       channelId: channel.id,
