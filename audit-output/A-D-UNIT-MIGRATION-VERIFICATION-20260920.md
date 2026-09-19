@@ -5,8 +5,9 @@ suites and 365 declarations. The complete case ledger remains
 [`RESTORE-CASES-A-D-20260919.md`](./RESTORE-CASES-A-D-20260919.md), with one
 row per baseline declaration and the current result, public owner, invariant,
 and disposition. After the P0 batch and the first P1 composed-interaction
-fixture batch plus the follow-up Waiting-owner regression packet, accepted case
-totals are **256 PASS / 4 REGRESSION / 105 BLOCKED**.
+fixture batch plus the follow-up Waiting-owner regression packet and the
+AD-103 Workspace owner fix, accepted case totals are **257 PASS / 3 REGRESSION /
+105 BLOCKED**.
 
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
@@ -41,6 +42,12 @@ does not render as an ordinary failure or Waiting hold pause.
 The next public parameter-owner fix closes AD-062: after the live context
 probe, later same-Agent ask terminals refresh the usage projection while a
 sparse terminal leaves the last complete reading intact.
+
+The next Workspace owner fix closes AD-103: a user channel selection records
+its target and origin, then the committed `activeChannelId` handoff focuses the
+target heading with `preventScroll`; a superseded request cannot focus a later
+channel. The public fixture uses `WorkspaceLayout`/`WorkspaceRail` and does not
+focus until the target identity is committed.
 
 ## Public-boundary migration completed in this pass
 
@@ -86,7 +93,8 @@ The focused slices were run with Vitest against current public owners:
 | `tests/agent-information-architecture.test.jsx -t '\[AD-(032|038)\]'` | 2 passed | AD-032 interrupt supersession and AD-038 latest committed save owner pass through the Waiting hook |
 | `tests/agent-information-architecture.test.jsx -t '\[AD-041\]'` | 1 passed | AD-041 interrupted terminal presents the stopped/resumable Agent bubble and stays out of ordinary failure/hold presentation |
 | `tests/agent-selection.test.js -t '\[AD-062\]'` | 1 passed | AD-062 later same-Agent usage refreshes the live context projection and sparse terminal data does not clear it |
-| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-103, AD-123 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
+| `tests/workspace-layout-channel-focus.test.jsx -t '\[AD-103\]'` | 1 passed | AD-103 focuses only the committed target heading and preserves the no-scroll handoff through the public Workspace owner |
+| A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; registered regression cases red | AD-011, AD-123, AD-143 remain explicit product-gap reproductions; `it.fails` cases remain expected failures |
 
 The red assertions are intentionally not weakened, skipped, or deleted. The
 unrelated `tests/channel-replica-cache-redaction.test.js` red result belongs to
@@ -96,8 +104,9 @@ the deleted `feed-cache.test.js` successor (data-plane/F scope), not to the
 ## Boundary proof
 
 - Changed files are confined to `tests/` A–D unit tests, A–D audit reports, and
-  the existing Waiting/timeline presentation owner `src/ui/timeline/TimelineRowRenderer.jsx`.
-- No Workspace, Reading, Outbox, Feed runtime, vendor, package manifest,
+  the existing Waiting/timeline presentation owner plus the existing
+  `WorkspaceLayout` navigation owner.
+- No Reading, Outbox, Feed runtime, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
   product-gap packets until a product owner supplies a current public owner.

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 
 const VIEW_LABELS = Object.freeze({ conversation: '动态', tasks: '任务' });
@@ -31,7 +31,7 @@ function accessLabel(access) {
   })[access] || '';
 }
 
-function WorkspaceRail({ session, navigation, onClose, closeButtonRef }) {
+function WorkspaceRail({ session, navigation, onClose, closeButtonRef, onSelect }) {
   const memberChannels = navigation.channels.filter((channel) => String(channel.access || '').startsWith('member_'));
   const otherChannels = navigation.channels.filter((channel) => !String(channel.access || '').startsWith('member_'));
   const activeCount = Object.values(navigation.agentActivity?.byChannel || {})
@@ -56,8 +56,8 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef }) {
         key={channel.id}
         aria-current={channel.id === navigation.activeChannelId ? 'page' : undefined}
         onClick={() => {
-          navigation.select(channel.id);
-          onClose?.('heading');
+          onSelect?.(channel.id);
+          onClose?.('none');
         }}
       >
         <span className="channel-glyph">#</span>
@@ -87,6 +87,7 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef }) {
     <nav aria-label="频道">
       <div className="rail-global-actions" aria-label="全局工具">
         <button type="button" onClick={() => { onClose?.('none'); navigation.openSearch(); }} aria-label="全局搜索"><span aria-hidden="true">⌕</span> 搜索</button>
+        {navigation.openActivity && <button type="button" onClick={() => { onClose?.('none'); navigation.openActivity(); }} aria-label="打开活动中心" title="活动中心"><span aria-hidden="true">◷</span> 活动</button>}
       </div>
       <p className="rail-caption">我的频道 <span>{memberChannels.length}</span></p>
       {navigation.openChannelAdministration && <button type="button" className="rail-create-button" onClick={() => { onClose?.('none'); navigation.openChannelAdministration(); }} aria-label="新建频道" title="在当前频道下新建子频道"><span aria-hidden="true">＋</span> 新建频道</button>}
@@ -122,8 +123,34 @@ export function WorkspaceLayout({
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
   const viewTabRefs = useRef([]);
+  const pendingChannelSelectionRef = useRef(null);
   const channel = navigation.channel;
   const filesOpen = navigation.activeView === 'files';
+  const selectChannel = useCallback((channelId) => {
+    if (!channelId || channelId === navigation.activeChannelId) return;
+    pendingChannelSelectionRef.current = {
+      target: channelId,
+      origin: navigation.activeChannelId,
+      focusOrigin: document.activeElement,
+    };
+    navigation.select(channelId);
+  }, [navigation.activeChannelId, navigation.select]);
+  useLayoutEffect(() => {
+    const pending = pendingChannelSelectionRef.current;
+    if (!pending) return;
+    const activeChannelId = navigation.activeChannelId;
+    if (activeChannelId === pending.target) {
+      const activeElement = document.activeElement;
+      if (!activeElement || activeElement === document.body || activeElement === pending.focusOrigin) {
+        channelHeadingRef.current?.focus({ preventScroll: true });
+      }
+      pendingChannelSelectionRef.current = null;
+      return;
+    }
+    // A different committed identity means another navigation owner superseded
+    // this request. Do not let the stale selection focus the later channel.
+    if (activeChannelId !== pending.origin) pendingChannelSelectionRef.current = null;
+  }, [navigation.activeChannelId]);
   const closeMobileChannels = (focus = 'toggle') => {
     setMobileChannelsOpen(false);
     if (focus === 'none') return;
@@ -195,12 +222,11 @@ export function WorkspaceLayout({
         : channels[(current < 0 ? (direction > 0 ? 0 : channels.length - 1) : current + direction + channels.length) % channels.length];
       if (!target || target.id === navigation.activeChannelId) return;
       event.preventDefault();
-      navigation.select(target.id);
-      globalThis.requestAnimationFrame(() => channelHeadingRef.current?.focus({ preventScroll: true }));
+      selectChannel(target.id);
     };
     document.addEventListener('keydown', switchChannel);
     return () => document.removeEventListener('keydown', switchChannel);
-  }, [navigation.activeChannelId, navigation.channels, navigation.select]);
+  }, [navigation.activeChannelId, navigation.channels, selectChannel]);
   const runChannelMenuAction = (command) => {
     setChannelMenuOpen(false);
     command?.();
@@ -233,7 +259,7 @@ export function WorkspaceLayout({
     className={['shell', mobileChannelsOpen && 'mobile-channels-open', rightPanel && 'has-context'].filter(Boolean).join(' ')}
     data-workspace-view={navigation.activeView}
   >
-    <WorkspaceRail session={session} navigation={navigation} onClose={mobileChannelsOpen ? closeMobileChannels : null} closeButtonRef={mobileRailCloseRef} />
+    <WorkspaceRail session={session} navigation={navigation} onSelect={selectChannel} onClose={mobileChannelsOpen ? closeMobileChannels : null} closeButtonRef={mobileRailCloseRef} />
     <main className="workspace">
       <header className="channel-header">
         <div className="channel-identity">
