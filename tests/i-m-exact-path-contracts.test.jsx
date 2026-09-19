@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
-// Round-12 exact-path recovery for the five I-M baseline files that the
+// Round-12–14 exact-path recovery for the five I-M baseline files that the
 // global static ledger still reports as `absent target path`. These tests are
 // deliberately public-owner contracts: no deleted adapter, private helper, or
 // production state map is imported.
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   createChannelReplicaStore,
 } from '../src/model/channel-replica.js';
 import {
+  CONVERSATION_SCOPE,
   createConversationPresentation,
+  selectTimelineItems,
 } from '../src/model/conversation-presentation.js';
+import { isStandardActorIdentity } from '../src/model/actor-visibility.js';
 import {
   bindLatestIntentTargets,
   consumeLatestIntent,
@@ -25,6 +28,7 @@ import {
 } from '../src/model/reading-session.js';
 import {
   SYSTEM_ACTOR_ID,
+  SYSTEM_DECL_IDS,
   TYPES,
 } from '../src/protocol/vocab.js';
 import { createReadingNavigationCoordinator } from '../src/ui/timeline/reading-navigation-coordinator.js';
@@ -93,6 +97,18 @@ function note(seq) {
   return envelope(seq, { id: `note-${seq}` });
 }
 
+function progress(seq, requestId, text = 'still working') {
+  return envelope(seq, {
+    id: `${requestId}-progress-${seq}`,
+    kind: 'response',
+    type: 'agent.ask',
+    sender: AGENT,
+    audience: [SELF],
+    parentId: requestId,
+    body: { status: 'processing', text },
+  });
+}
+
 function completedTurn({ requestId, actorId, type, value }) {
   return {
     kind: 'turn',
@@ -128,6 +144,24 @@ function currentAgentSelection(actorId = 'steward') {
     state: optionsState(actorId),
     actorId,
     requestKeys: { options: 'options' },
+  });
+  const agent = { id: actorId, kind: 'agent', name: actorId === 'steward' ? 'Steward' : 'Other' };
+  return { target: { kind: 'single', agent }, view };
+}
+
+function currentAgentSelectionWithUsage(actorId = 'steward') {
+  const { view } = projectAgentParameters({
+    state: {
+      timeline: [
+        ...optionsState(actorId).timeline,
+        completedTurn({
+          requestId: 'context', actorId, type: 'agent.context',
+          value: { model: 'gpt-5.6-sol', effort: 'medium', context_tokens: 42_000, context_window: 200_000 },
+        }),
+      ],
+    },
+    actorId,
+    requestKeys: { options: 'options', context: 'context' },
   });
   const agent = { id: actorId, kind: 'agent', name: actorId === 'steward' ? 'Steward' : 'Other' };
   return { target: { kind: 'single', agent }, view };
@@ -554,5 +588,332 @@ describe('I-M exact-path public-owner recovery (round 13)', () => {
     vi.advanceTimersByTime(200);
 
     expect(events).toEqual(['native-scrollend']);
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 14)', () => {
+  it('memory-window TC-0936: trim removes only the oldest materialized rows and rebuilds public coverage', () => {
+    const store = createChannelReplicaStore();
+    for (let seq = 1; seq <= 8; seq += 1) {
+      expect(store.commit(note(seq), SELF).accepted).toBe(true);
+    }
+
+    expect(store.trim(CHANNEL, 4)).toBe(4);
+    const state = store.state(CHANNEL);
+    expect([...state.rows.keys()]).toEqual([5, 6, 7, 8]);
+    expect(state.timeline.map((entry) => entry.envelope.id)).toEqual([
+      'note-5', 'note-6', 'note-7', 'note-8',
+    ]);
+    expect(store.record(CHANNEL).materializedCoverage).toEqual([{ lowSeq: 5, highSeq: 8 }]);
+  });
+
+  it('memory-window TC-0937: a trim at or below the row limit is a no-op', () => {
+    const store = createChannelReplicaStore();
+    for (let seq = 1; seq <= 4; seq += 1) store.commit(note(seq), SELF);
+
+    expect(store.trim(CHANNEL, 8)).toBe(0);
+    expect(store.trim(CHANNEL, 4)).toBe(0);
+    expect([...store.state(CHANNEL).rows.keys()]).toEqual([1, 2, 3, 4]);
+  });
+
+  it('memory-window TC-0940: response-first closure chooses the earliest terminal by sequence', () => {
+    const store = createChannelReplicaStore();
+    store.commit(terminal(3, 'out-of-order'), SELF);
+    store.commit(terminal(2, 'out-of-order', 'completed', 'earlier'), SELF);
+    for (let seq = 4; seq <= 8; seq += 1) store.commit(note(seq), SELF);
+
+    expect(store.trim(CHANNEL, 4)).toBeGreaterThan(0);
+    store.commit(request(1, 'out-of-order'), SELF);
+    const turn = store.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === 'out-of-order')?.turn;
+
+    expect(turn).toMatchObject({
+      requestId: 'out-of-order', status: 'completed', terminalSeq: 2, terminalClosureOnly: true,
+    });
+    expect(turn.terminal.id).toBe('out-of-order-terminal-2');
+  });
+
+  it('memory-window TC-0941: a retained matched closure keeps a stale queued row completed', () => {
+    const store = createChannelReplicaStore();
+    store.commit(request(1, 'closed-request'), SELF);
+    store.commit(progress(2, 'closed-request'), SELF);
+    store.commit(terminal(3, 'closed-request'), SELF);
+    for (let seq = 4; seq <= 8; seq += 1) store.commit(note(seq), SELF);
+
+    expect(store.trim(CHANNEL, 4)).toBeGreaterThan(0);
+    store.commit(request(1, 'closed-request'), SELF);
+    store.commit(progress(2, 'closed-request', 'stale queued work'), SELF);
+    const turn = store.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === 'closed-request')?.turn;
+
+    expect(turn).toMatchObject({
+      requestId: 'closed-request', status: 'completed', terminalClosureOnly: true,
+    });
+    expect(turn.provisional.map((item) => item.envelope.id)).toContain('closed-request-progress-2');
+  });
+
+  it('memory-window TC-0946: unmatched provisional progress is evicted without creating a turn', () => {
+    const store = createChannelReplicaStore();
+    store.commit(progress(1, 'missing-request'), SELF);
+    for (let seq = 2; seq <= 8; seq += 1) store.commit(note(seq), SELF);
+
+    expect(store.trim(CHANNEL, 4)).toBeGreaterThan(0);
+    expect(store.state(CHANNEL).rows.has(1)).toBe(false);
+    expect(store.state(CHANNEL).timeline.some((entry) => entry.turn?.requestId === 'missing-request')).toBe(false);
+  });
+
+  it('memory-window TC-0947: a closed turn outside the window leaves no conversation row', () => {
+    const store = createChannelReplicaStore();
+    store.commit(request(1, 'old-request'), SELF);
+    store.commit(terminal(2, 'old-request'), SELF);
+    for (let seq = 3; seq <= 8; seq += 1) store.commit(note(seq), SELF);
+
+    expect(store.trim(CHANNEL, 4)).toBeGreaterThan(0);
+    const state = store.state(CHANNEL);
+    expect(state.timeline.some((entry) => entry.turn?.requestId === 'old-request')).toBe(false);
+    expect(selectTimelineItems(state, {
+      scope: CONVERSATION_SCOPE.mine, selfId: SELF,
+    }).items.some((entry) => entry.turn?.requestId === 'old-request')).toBe(false);
+  });
+
+  it('memory-window TC-0948: mine projection contains only the surviving public turns after trim', () => {
+    const store = createChannelReplicaStore();
+    store.commit(request(1, 'old-request'), SELF);
+    store.commit(terminal(2, 'old-request'), SELF);
+    store.commit(note(3), SELF);
+    store.commit(note(4), SELF);
+    store.commit(request(5, 'new-request'), SELF);
+    store.commit(terminal(6, 'new-request'), SELF);
+    store.commit(note(7), SELF);
+    store.commit(note(8), SELF);
+
+    store.trim(CHANNEL, 4);
+    const state = store.state(CHANNEL);
+    const mine = selectTimelineItems(state, {
+      scope: CONVERSATION_SCOPE.mine, selfId: SELF,
+    });
+
+    expect(mine.items.map((entry) => entry.turn?.requestId).filter(Boolean)).toEqual(['new-request']);
+    expect(mine.items.some((entry) => entry.turn?.requestId === 'old-request')).toBe(false);
+  });
+
+  it('memory-window TC-0949: backfilled rows re-enter the public mine projection', () => {
+    const store = createChannelReplicaStore();
+    for (let index = 0; index < 6; index += 1) {
+      const requestID = `q-${index}`;
+      store.commit(request(index * 2 + 1, requestID), SELF);
+      store.commit(terminal(index * 2 + 2, requestID), SELF);
+    }
+
+    store.trim(CHANNEL, 8);
+    const before = selectTimelineItems(store.state(CHANNEL), {
+      scope: CONVERSATION_SCOPE.mine, selfId: SELF,
+    });
+    expect(before.items.some((entry) => entry.turn?.requestId === 'q-0')).toBe(false);
+
+    store.commit(request(1, 'q-0'), SELF);
+    store.commit(terminal(2, 'q-0'), SELF);
+    const after = selectTimelineItems(store.state(CHANNEL), {
+      scope: CONVERSATION_SCOPE.mine, selfId: SELF,
+    });
+    expect(after.items.some((entry) => entry.turn?.requestId === 'q-0')).toBe(true);
+  });
+
+  it('management-actors TC-0924: genesis system declarations remain standard identities', () => {
+    expect(SYSTEM_DECL_IDS).toEqual(['registrar', 'svcactor']);
+    expect(isStandardActorIdentity({ id: 'registrar' })).toBe(true);
+    expect(isStandardActorIdentity({ id: 'svcactor' })).toBe(true);
+  });
+
+  it('message-presentation TC-1031: the canonical body wrapper is read without surfacing context metadata', () => {
+    const row = messageRow(TYPES.member.create, { decl_id: 'reviewer' });
+    row.body.envelope.payload = {
+      _context: { caller: { channel: CHANNEL, actor: SELF } },
+      body: { decl_id: 'reviewer' },
+    };
+    render(<MessageHarness row={row} />);
+
+    expect(screen.getByText('添加参与者：reviewer')).toBeTruthy();
+    expect(screen.queryByText('human:root:1')).toBeNull();
+  });
+
+  it('model-selector TC-1060: canonical context truth overrides the available model catalog', () => {
+    const selection = currentAgentSelectionWithUsage();
+    expect(selection.view.models.map((model) => model.id)).toEqual(['gpt-5.6-sol', 'gpt-5.4']);
+    expect(selection.view.current).toEqual({ model: 'gpt-5.6-sol', effort: 'medium' });
+  });
+
+  it('model-selector TC-1062: the public projection accepts a capability oneOf catalog', () => {
+    const capability = {
+      describe: {
+        types: new Map([[TYPES.agentSelect, {
+          inputSchema: {
+            oneOf: [
+              { properties: {
+                model: { const: 'gpt-5.6-sol', title: '5.6 Sol' },
+                effort: { const: 'medium', title: '中等' },
+              } },
+              { properties: {
+                model: { const: 'gpt-5.4', title: '5.4' },
+                effort: { const: 'light', title: '轻量' },
+              } },
+            ],
+          },
+        }]]),
+      },
+    };
+    const { view } = projectAgentParameters({
+      state: { timeline: [] }, actorId: 'steward', requestKeys: {}, capability,
+    });
+
+    expect(view.selections.map((row) => `${row.model}:${row.effort}`)).toEqual([
+      'gpt-5.6-sol:medium', 'gpt-5.4:light',
+    ]);
+  });
+
+  it('model-selector TC-1063: changing model chooses its first legal effort when the old effort is absent', () => {
+    const commands = { openAgentSelector: vi.fn(), setModelParameters: vi.fn() };
+    const selection = currentAgentSelectionWithUsage();
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [selection.target.agent],
+      access: 'member_active',
+      agentSelection: selection,
+    });
+    render(<Composer model={model} commands={commands} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Steward，模型 5.6 Sol/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^模型/ }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '5.4' }));
+
+    expect(commands.setModelParameters).toHaveBeenCalledWith({
+      actorId: 'steward', model: 'gpt-5.4', effort: 'light',
+    });
+  });
+
+  it('model-selector TC-1064: the public menu exposes only model and effort levels', () => {
+    const selection = currentAgentSelectionWithUsage();
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [selection.target.agent],
+      access: 'member_active',
+      agentSelection: selection,
+    });
+    render(<Composer model={model} commands={{ openAgentSelector: vi.fn() }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Steward，模型 5.6 Sol/ }));
+    expect(screen.getByRole('menuitem', { name: /^模型/ })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: /^推理强度/ })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Provider' })).toBeNull();
+  });
+
+  it('model-selector TC-1065: pending model changes show the target and disable the selector entry', () => {
+    const selection = {
+      ...currentAgentSelectionWithUsage(),
+      pending: {
+        actorId: 'steward', state: 'pending',
+        value: { model: 'gpt-5.4', effort: 'light' },
+      },
+    };
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [selection.target.agent],
+      access: 'member_active',
+      agentSelection: selection,
+    });
+    render(<Composer model={model} commands={{ openAgentSelector: vi.fn() }} />);
+
+    const trigger = screen.getByRole('button', { name: /Steward，模型 5.4，推理强度 轻量，切换中/ });
+    expect(trigger.disabled).toBe(true);
+    expect(screen.getByText('切换中')).toBeTruthy();
+  });
+
+  it('model-selector TC-1066: current context usage is visible in the trigger and expanded panel', () => {
+    const selection = currentAgentSelectionWithUsage();
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [selection.target.agent],
+      access: 'member_active',
+      agentSelection: selection,
+    });
+    render(<Composer model={model} commands={{ openAgentSelector: vi.fn() }} />);
+
+    expect(screen.getByText('21%')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Steward，模型 5.6 Sol/ }));
+    expect(screen.getByLabelText('上下文用量 21%')).toBeTruthy();
+    expect(screen.getByText('42K / 200K')).toBeTruthy();
+  });
+
+  it('model-selector TC-1067: multiple recipients expose a count without a single-agent settings entry', () => {
+    const other = { id: 'other', kind: 'agent', name: 'Other' };
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [
+        { ...currentAgentSelection().target.agent }, other,
+      ] },
+      roster: [currentAgentSelection().target.agent, other],
+      access: 'member_active',
+    });
+    render(<Composer model={model} commands={{}} />);
+
+    expect(screen.getByLabelText('2 个目标')).toBeTruthy();
+    expect(document.querySelector('.model-selector button')).toBeNull();
+  });
+
+  it('model-selector TC-1068: no-target delivery offers an explicit public Agent picker', () => {
+    const other = { id: 'other', kind: 'agent', name: 'Other' };
+    const commands = { selectAgent: vi.fn() };
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [currentAgentSelection().target.agent, other],
+      access: 'member_active',
+    });
+    render(<Composer model={model} commands={commands} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '选择 Agent' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Other' }));
+    expect(commands.selectAgent).toHaveBeenCalledWith('other');
+  });
+
+  it('model-selector TC-1069: a cold selector requests options first and opens when the same target becomes ready', () => {
+    const commands = { openAgentSelector: vi.fn(), changeDraft: vi.fn() };
+    const agent = currentAgentSelection().target.agent;
+    const build = (agentSelection) => buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [agent],
+      access: 'member_active',
+      agentSelection,
+    });
+    const { rerender } = render(<Composer model={build({ target: { kind: 'single', agent }, view: null })} commands={commands} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Steward，点击读取可用模型' }));
+    expect(commands.openAgentSelector).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('menu')).toBeNull();
+
+    rerender(<Composer model={build(currentAgentSelection())} commands={commands} />);
+    expect(screen.getByRole('menu')).toBeTruthy();
+  });
+
+  it('model-selector TC-1072: options arriving without a user open action do not open the menu', () => {
+    const commands = { openAgentSelector: vi.fn() };
+    const agent = currentAgentSelection().target.agent;
+    const build = (agentSelection) => buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [agent],
+      access: 'member_active',
+      agentSelection,
+    });
+    const { rerender } = render(<Composer model={build({ target: { kind: 'single', agent }, view: null })} commands={commands} />);
+    rerender(<Composer model={build(currentAgentSelection())} commands={commands} />);
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(commands.openAgentSelector).not.toHaveBeenCalled();
   });
 });

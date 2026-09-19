@@ -454,6 +454,49 @@ vitest run tests/i-m-exact-path-contracts.test.jsx` → **24/24 GREEN** (8 prior
 bridge cases + 16 new cases). These supplemental cases do not inflate the
 159-case baseline count.
 
+## Round 14 exact-path recovery: mixed memory, identity, presentation, and model batch
+
+The static ledger still marks the selected declarations from the absent
+`fae8b70` paths as `absent target path`: eight `memory-window` cases, one
+`management-actors` case, one `message-presentation` case, and ten
+`model-selector` cases. This round adds **20 independent `it` contracts** to
+the exact-path bridge. Each row below has its own user-observable invariant,
+current public owner, and assertion; no two ledger cases are compressed into a
+single pass/fail claim.
+
+| static case | current public owner | executable contract and evidence |
+|---|---|---|
+| TC-0936 materialized-row trim and coverage rebuild | `createChannelReplicaStore().trim` / public `record().materializedCoverage` | Eight rows → trim to four → only seq 5–8 and one public coverage interval remain. `tests/i-m-exact-path-contracts.test.jsx:595-608` — **PASS** |
+| TC-0937 low-water no-op | `createChannelReplicaStore().trim` | A limit at or above the current row count removes nothing and preserves seq 1–4. `tests/i-m-exact-path-contracts.test.jsx:610-617` — **PASS** |
+| TC-0940 earliest response-first terminal | Replica public `commit` / `trim` / `state().timeline` | Terminals at seq 3 then 2 are reconciled after the request arrives; seq 2 is the canonical terminal. `tests/i-m-exact-path-contracts.test.jsx:619-634` — **PASS** |
+| TC-0941 retained matched closure blocks stale queued work | Replica public `commit` / `trim` / `state().timeline` | A trimmed completed turn remains completed while a stale request/progress pair is re-admitted as provisional. `tests/i-m-exact-path-contracts.test.jsx:636-653` — **PASS** |
+| TC-0946 unmatched provisional eviction | Replica public `commit` / `trim` / `state().rows` / `state().timeline` | Progress without a request is removed by the window and creates no turn. `tests/i-m-exact-path-contracts.test.jsx:655-663` — **PASS** |
+| TC-0947 closed turn outside window | Replica public `commit` / `trim` / mine projection | A fully old request/terminal pair has no timeline or mine-projection row after trim. `tests/i-m-exact-path-contracts.test.jsx:665-677` — **PASS** |
+| TC-0948 surviving mine projection | Replica public `commit` / `trim` + `selectTimelineItems` | After trim, the projection contains the surviving `new-request` only and excludes `old-request`. `tests/i-m-exact-path-contracts.test.jsx:679-698` — **PASS** |
+| TC-0949 historical backfill in mine projection | Replica public `commit` + `selectTimelineItems` | A trimmed `q-0` is absent, then the same public request/terminal rows are backfilled and `q-0` reappears. `tests/i-m-exact-path-contracts.test.jsx:700-720` — **PASS** |
+| TC-0924 genesis system declarations | `SYSTEM_DECL_IDS` + `isStandardActorIdentity` | Both canonical genesis declarations (`registrar`, `svcactor`) are recognized as standard identities. `tests/i-m-exact-path-contracts.test.jsx:722-726` — **PASS** |
+| TC-1031 canonical body wrapper without context leakage | `MessageHarness` / current timeline message presentation | A canonical member-create body renders its public label while `_context.caller` is not rendered. `tests/i-m-exact-path-contracts.test.jsx:728-738` — **PASS** |
+| TC-1060 context truth over catalog | `projectAgentParameters` | Completed canonical context selects `gpt-5.6-sol/medium` while the available model list remains independently projected. `tests/i-m-exact-path-contracts.test.jsx:740-744` — **PASS** |
+| TC-1062 public capability oneOf projection | `projectAgentParameters` public capability projection | The current owner accepts the documented `describe.types` capability shape and exposes both legal model/effort pairs. `tests/i-m-exact-path-contracts.test.jsx:746-772` — **PASS** |
+| TC-1063 model change selects first legal effort | Composer-embedded public model selector | Choosing `gpt-5.4` from a `medium` current selection submits its first legal `light` effort. `tests/i-m-exact-path-contracts.test.jsx:774-793` — **PASS** |
+| TC-1064 two-level public menu | Composer-embedded public model selector | The expanded menu exposes model and reasoning-strength entries, with no provider menu entry. `tests/i-m-exact-path-contracts.test.jsx:795-810` — **PASS** |
+| TC-1065 pending target and lock | Composer-embedded public model selector | A pending `gpt-5.4/light` target is shown with “切换中” and disables the trigger. `tests/i-m-exact-path-contracts.test.jsx:812-832` — **PASS** |
+| TC-1066 context usage trigger/panel | `projectAgentParameters` + Composer selector | Canonical 42K/200K context is shown as 21% in the trigger and expanded usage panel. `tests/i-m-exact-path-contracts.test.jsx:834-849` — **PASS** |
+| TC-1067 multi-recipient count | Composer public recipient projection | Two recipients produce the public “2 个目标” label and no single-agent model button. `tests/i-m-exact-path-contracts.test.jsx:851-865` — **PASS** |
+| TC-1068 no-target Agent picker | Composer public target picker | With no target criterion, choosing `Other` invokes the public `selectAgent('other')` command. `tests/i-m-exact-path-contracts.test.jsx:867-881` — **PASS** |
+| TC-1069 cold selector fetch/open continuity | Composer `openAgentSelector` + same-target rerender | A cold click requests options without opening; readiness for the same target then opens the menu. `tests/i-m-exact-path-contracts.test.jsx:883-901` — **PASS** |
+| TC-1072 passive options arrival | Composer selector open-state owner | Options arriving without a user open action do not open the menu or issue a fetch command. `tests/i-m-exact-path-contracts.test.jsx:903-918` — **PASS** |
+
+The exact-path command is `npx vitest run
+tests/i-m-exact-path-contracts.test.jsx` → **44/44 GREEN** (8 prior bridge
+cases + 16 Round 13 lifecycle cases + 20 Round 14 cases). The new tests use
+only public owners and observable state/DOM; they do not inspect private
+Replica maps or export a deleted adapter. TC-1028 and TC-1029 from the same
+message-presentation source path were intentionally not relabeled green: the
+existing strict successor still records their product red behavior (system
+label fallback and sensitive unknown-payload redaction), so those two cases
+remain a product-owner handoff rather than being weakened here.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -473,6 +516,11 @@ bridge cases + 16 new cases). These supplemental cases do not inflate the
 - Round 13 adds 16 independent exact-path public-owner cases from the absent
   `message-list-lifecycle` path; the bridge command is 24/24 green and the
   baseline count remains 159.
+- Round 14 adds 20 independent exact-path public-owner cases across the
+  absent `memory-window`, `management-actors`, `message-presentation`, and
+  `model-selector` paths; the bridge command is 44/44 green and the baseline
+  count remains 159. TC-1028/1029 remain strict product-red handoffs and are
+  not counted as recovered.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
