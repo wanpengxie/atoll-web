@@ -85,6 +85,7 @@ export function useHistoryConsumer({
   const deferredRecheckRef = useRef(null);
   const failedAnticipatoryRef = useRef(null);
   const terminalRef = useRef(null);
+  const topContinuationRef = useRef(null);
   const epochRef = useRef(0);
   const sourceKey = historySourceKey(historyStatus);
   const supplyKey = historySupplyKey(historyStatus);
@@ -104,6 +105,10 @@ export function useHistoryConsumer({
     deferredAdmissionRef.current = null;
     deferredRecheckRef.current?.resolve?.({ kind: 'cancelled', reason: 'underfill-owner-replaced' });
     deferredRecheckRef.current = null;
+    if (topContinuationRef.current?.timer) {
+      globalThis.clearTimeout?.(topContinuationRef.current.timer);
+    }
+    topContinuationRef.current = null;
     failedAnticipatoryRef.current = null;
     terminalRef.current = null;
     return () => {
@@ -116,6 +121,10 @@ export function useHistoryConsumer({
         deferredRecheckRef.current.resolve({ kind: 'cancelled', reason: 'underfill-owner-unmounted' });
         deferredRecheckRef.current = null;
       }
+      if (topContinuationRef.current?.controller === controller) {
+        globalThis.clearTimeout?.(topContinuationRef.current.timer);
+        topContinuationRef.current = null;
+      }
       if (failedAnticipatoryRef.current?.controller === controller) failedAnticipatoryRef.current = null;
     };
   }, [controller]);
@@ -124,9 +133,9 @@ export function useHistoryConsumer({
     const {
       revealRows, revealBytes, demandUnits = 1,
       intent = HISTORY_INTENT.scrollHistory, targetSeq = 0,
-      requiredVisibleCoverage = null, consumer = '',
+      requiredVisibleCoverage = null, consumer = '', continuation = false,
     } = options;
-    if (committedOwnerRef.current !== commitOwnerCandidate) {
+    if (!continuation && committedOwnerRef.current !== commitOwnerCandidate) {
       return Promise.resolve({ kind: 'stale-owner', deduplicated: true });
     }
     const requestOwner = committedOwnerRef.current;
@@ -322,6 +331,62 @@ export function useHistoryConsumer({
         channelId: channelID, epoch, viewKey, reason,
         anchorSeq: Number(first?.seqLow || 0), result: result?.kind || 'failed',
       });
+      // A top request is issued at the physical boundary, before the prepend
+      // can move that boundary away from scrollTop=0.  The old history
+      // scheduler kept this one boundary obligation alive until the next
+      // committed page had either reached EOF or exposed a fresh DOM boundary.
+      // The feed runtime now settles one page at a time, so retain that
+      // obligation in this owner and schedule its successor after React has
+      // published the new supply.  Same-direction older input may renew the
+      // admission token; a newer-direction intent cancels the continuation.
+      const settledSession = current ? currentOwner.controller.getSnapshot().session : null;
+      const frontierSeq = Number(currentStatus.oldestSeq
+        || currentOwner.snapshot?.rows?.[0]?.seqLow || 0);
+      const continueTop = current && reason === 'top' && result?.kind === 'satisfied'
+        && currentStatus.hasOlder === true && frontierSeq > 1
+        && Number(settledSession?.inputEpoch || activeSession.inputEpoch) > 0
+        && settledSession?.tailEvidence?.direction !== 'newer';
+      if (continueTop) {
+        const continuation = {
+          controller, activationID: controller.activationID, channelID, viewKey,
+          inputEpoch: Number(settledSession?.inputEpoch || activeSession.inputEpoch), reason, urgency, options,
+          timer: null,
+        };
+        topContinuationRef.current?.timer
+          && globalThis.clearTimeout?.(topContinuationRef.current.timer);
+        topContinuationRef.current = continuation;
+        continuation.timer = globalThis.setTimeout?.(() => {
+          if (topContinuationRef.current !== continuation) return;
+          topContinuationRef.current = null;
+          const owner = committedOwnerRef.current;
+          const ownerSession = owner?.controller?.getSnapshot?.().session;
+          const ownerStatus = owner?.historyStatus || {};
+          const ownerFrontier = Number(ownerStatus.oldestSeq || owner?.snapshot?.rows?.[0]?.seqLow || 0);
+          const ownerDirection = ownerSession?.tailEvidence?.direction
+            || (ownerSession?.mode === 'browsing' && Number(ownerSession?.inputEpoch || 0) > 0
+              ? 'older' : '');
+          if (owner?.controller !== controller || owner.channelID !== channelID
+            || owner.viewKey !== viewKey || ownerDirection !== 'older'
+            || ownerStatus.hasOlder !== true || ownerFrontier <= 1) return;
+          const admission = ownerStatus.presentationAdmission;
+          const admissionState = admission?.snapshot?.(channelID);
+          const admissionToken = admissionState?.token || admissionState?.committed;
+          const ownerInputEpoch = Number(ownerSession?.inputEpoch || 0);
+          if (admissionToken && ownerInputEpoch > Number(admissionToken.inputEpoch || 0)) {
+            admission?.advanceInputEpoch?.(channelID, {
+              operationID: admissionToken.operationID,
+              activationID: controller.activationID,
+              direction: 'older',
+              inputEpoch: ownerInputEpoch,
+              currentInputEpoch: ownerInputEpoch,
+            });
+          }
+          void request(continuation.reason, continuation.urgency, {
+            ...continuation.options,
+            continuation: true,
+          });
+        }, 100);
+      }
       return current && consumer === HISTORY_CONSUMER.viewportUnderfill && result?.kind === 'satisfied'
         ? { kind: 'consumer-recheck', reason: 'acquisition-satisfied' } : result;
     }, (error) => {

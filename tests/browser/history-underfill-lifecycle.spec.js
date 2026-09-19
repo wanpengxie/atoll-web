@@ -32,9 +32,20 @@ test('history underfill keeps one demand owner and settles from progress', async
 
   const evidence = await page.evaluate(() => {
     const entries = window.__ATOLL_DIAGNOSTICS__.snapshot();
+    const viewportNode = document.querySelector('.timeline-message-list');
     return {
       historyOneVisible: [...document.querySelectorAll('[data-presentation-row-id]')]
         .some((node) => node.textContent?.includes('c0 history 1: ask steward for PONG')),
+      firstPresentationRows: [...document.querySelectorAll('[data-presentation-row-id]')]
+        .slice(0, 5).map((node) => ({
+          id: node.getAttribute('data-presentation-row-id') || '',
+          seqLow: Number(node.querySelector('[data-seq-low]')?.getAttribute('data-seq-low') || 0),
+        })),
+      viewport: viewportNode ? {
+        scrollTop: Number(viewportNode.scrollTop || 0),
+        scrollHeight: Number(viewportNode.scrollHeight || 0),
+        clientHeight: Number(viewportNode.clientHeight || 0),
+      } : null,
       statuses: [...document.querySelectorAll('.timeline-history-status')].map((node) => node.textContent || ''),
       demand: document.querySelector('.timeline-history-demand')?.dataset.phase || 'idle',
       starts: entries.filter((entry) => entry.event === 'history.intent_started').length,
