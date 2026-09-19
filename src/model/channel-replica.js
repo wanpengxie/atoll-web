@@ -1,7 +1,11 @@
 import { argsOf, FINAL } from '../protocol/envelope.js';
+import { isNarrationEnvelope } from '../protocol/vocab.js';
+import { isViewportNotifiableDisposition, notificationDisposition } from './notification-policy.js';
 
 const CACHE_DATABASE = 'atoll-channel-replica-v1';
 const CACHE_VERSION = 1;
+const LIVE_ARRIVAL_LIMIT = 1_024;
+const LIVE_PRESENTATION_ARRIVAL_LIMIT = 1_024;
 const memoryCache = new Map();
 
 function numeric(value) {
@@ -122,11 +126,141 @@ function rebuildState(state) {
   state.lastSeq = orderedRows.at(-1)?.[0] || 0;
 }
 
+function humanPrincipal(id) {
+  const [kind, principal] = String(id || '').split(':');
+  return kind === 'human' ? principal : '';
+}
+
+function isSelfActor(actorId, selfId) {
+  if (!actorId || !selfId) return false;
+  if (actorId === selfId) return true;
+  const principal = humanPrincipal(selfId);
+  return Boolean(principal && principal === humanPrincipal(actorId));
+}
+
+function entryEnvelopes(entry) {
+  if (entry?.kind !== 'turn') return [entry?.envelope].filter(Boolean);
+  const envelopes = [entry.turn?.request, entry.turn?.terminal];
+  for (const provisional of entry.turn?.provisional || []) envelopes.push(provisional?.envelope);
+  for (const child of entry.thread || []) envelopes.push(...entryEnvelopes(child));
+  return envelopes.filter(Boolean);
+}
+
+function entryContainsEnvelope(entry, envelopeID) {
+  return Boolean(envelopeID && entryEnvelopes(entry).some((envelope) => envelope?.id === envelopeID));
+}
+
+function entryInvolves(entry, selfId) {
+  return entryEnvelopes(entry).some((envelope) => (
+    isSelfActor(envelope?.sender?.id, selfId)
+    || envelope?.audience?.some((audience) => isSelfActor(audience, selfId))
+  ));
+}
+
+function rootTimelineEntry(state, envelope) {
+  return (state?.timeline || []).find((entry) => entryContainsEnvelope(entry, envelope?.id));
+}
+
+function rootTurnID(envelope, entry) {
+  if (entry?.kind === 'turn') return entry.turn.requestId;
+  if (envelope?.kind === 'request') return envelope.id || '';
+  return envelope?.correlation_id || envelope?.parent_id || envelope?.id || entry?.envelope?.id || '';
+}
+
+function recordLiveTimelineArrival(state, envelope, seq, selfId) {
+  if (!selfId || isSelfActor(envelope?.sender?.id, selfId)) return;
+  const disposition = notificationDisposition(state, envelope, selfId);
+  const entry = rootTimelineEntry(state, envelope);
+  let rowID = '';
+  let key = '';
+  if (disposition === 'request' || disposition === 'final') {
+    key = rootTurnID(envelope, entry);
+    rowID = entry?.kind === 'turn' ? key : envelope.id || key;
+  } else if (disposition === 'event') {
+    rowID = envelope.id || '';
+    key = rowID;
+  }
+  if (!isViewportNotifiableDisposition(disposition) || !rowID || !entryInvolves(entry, selfId)) return;
+
+  const previousRevision = state._liveArrivalRevision;
+  const hadUndisposedArrival = state._liveArrivalAckRevision < previousRevision;
+  const event = Object.freeze({
+    revision: previousRevision + 1,
+    key: String(key || rowID),
+    rowID: String(rowID),
+    seq,
+  });
+  state._liveArrivalRevision = event.revision;
+  state._liveArrivalLog.push(event);
+  if (state._liveArrivalLog.length > LIVE_ARRIVAL_LIMIT) {
+    const removed = state._liveArrivalLog.splice(0, state._liveArrivalLog.length - LIVE_ARRIVAL_LIMIT);
+    for (const item of removed) {
+      if (item.revision <= state._liveArrivalAckRevision) continue;
+      const previous = state._liveArrivalOverflow.get(item.key);
+      const rowIDs = new Set(previous?.rowIDs || [previous?.rowID].filter(Boolean));
+      rowIDs.add(item.rowID);
+      state._liveArrivalOverflow.set(item.key, Object.freeze({
+        ...item,
+        revision: Math.max(item.revision, Number(previous?.revision || 0)),
+        seq: Math.max(item.seq, Number(previous?.seq || 0)),
+        rowIDs: Object.freeze([...rowIDs]),
+      }));
+    }
+  }
+  if (!state._liveArrivalConsumerTokens.size && !hadUndisposedArrival) {
+    state._liveArrivalAckRevision = event.revision;
+    state._liveArrivalLog = [];
+    state._liveArrivalOverflow.clear();
+  }
+}
+
+function livePresentationRowIDs(state, envelope, seq, entry) {
+  const ids = new Set();
+  if (isNarrationEnvelope(envelope)) {
+    const narrationSeq = Number(state.narration?.[0]?.seq || seq || 0);
+    if (narrationSeq > 0) ids.add(`narration:${narrationSeq}`);
+  }
+  if (envelope.kind === 'request' || envelope.kind === 'response') {
+    const rootID = rootTurnID(envelope, entry);
+    if (rootID) ids.add(String(rootID));
+  }
+  if (envelope.id) ids.add(String(envelope.id));
+  return Object.freeze([...ids]);
+}
+
+function recordLivePresentationArrival(state, envelope, seq) {
+  if (!state._livePresentationArrivalConsumerTokens.size) return;
+  const rowIDs = livePresentationRowIDs(state, envelope, seq, rootTimelineEntry(state, envelope));
+  if (!rowIDs.length) return;
+  const event = Object.freeze({
+    revision: state._livePresentationArrivalRevision + 1,
+    rowIDs,
+    seq,
+    sourceRevision: state._timelineRevision,
+  });
+  state._livePresentationArrivalRevision = event.revision;
+  state._livePresentationArrivalLog.push(event);
+  if (state._livePresentationArrivalLog.length > LIVE_PRESENTATION_ARRIVAL_LIMIT) {
+    const removed = state._livePresentationArrivalLog.splice(
+      0,
+      state._livePresentationArrivalLog.length - LIVE_PRESENTATION_ARRIVAL_LIMIT,
+    );
+    state._livePresentationArrivalAckRevision = Math.max(
+      state._livePresentationArrivalAckRevision,
+      Number(removed.at(-1)?.revision || 0),
+    );
+  }
+}
+
 function createState(channelId) {
   return {
     channelId, rows: new Map(), timeline: [], narration: [], lastSeq: 0,
     _envelopesById: new Map(), _timelineRevision: 0, _timelineProjectionVersion: 0,
     _timelineChangeBase: 0, _timelineChangeLog: [],
+    _liveArrivalRevision: 0, _liveArrivalAckRevision: 0,
+    _liveArrivalLog: [], _liveArrivalConsumerTokens: new Set(), _liveArrivalOverflow: new Map(),
+    _livePresentationArrivalRevision: 0, _livePresentationArrivalAckRevision: 0,
+    _livePresentationArrivalLog: [], _livePresentationArrivalConsumerTokens: new Set(),
   };
 }
 
@@ -144,7 +278,7 @@ export function createChannelReplicaStore() {
     return record;
   }
 
-  function commit(row, _selfId = '', transform = (value) => value) {
+  function commit(row, selfId = '', transform = (value) => value, { source = row?.source || '' } = {}) {
     const prepared = transform(row);
     const channelId = prepared?.channel_id;
     const seq = numeric(prepared?.seq);
@@ -174,6 +308,10 @@ export function createChannelReplicaStore() {
     if (record.state._timelineChangeLog.length > 256) {
       const removed = record.state._timelineChangeLog.splice(0, record.state._timelineChangeLog.length - 256);
       record.state._timelineChangeBase = removed.at(-1)?.revision || record.state._timelineChangeBase;
+    }
+    if (source === 'live') {
+      recordLiveTimelineArrival(record.state, envelope, seq, selfId);
+      recordLivePresentationArrival(record.state, envelope, seq);
     }
     return { accepted: true, record, row: prepared };
   }

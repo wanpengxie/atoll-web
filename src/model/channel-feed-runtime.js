@@ -4,7 +4,6 @@ import { argsOf, FINAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 import { createHistoryPresentationAdmission } from './history-presentation-admission.js';
 import { createHistoryBoundedExecutor } from './history-bounded-executor.js';
-import { historyNumeric, historySourceFor } from './history-candidate-reducer.js';
 import { createHistorySourceAdapters } from './history-source-adapters.js';
 
 export const HISTORY_PAGE_SIZE = 128;
@@ -18,6 +17,18 @@ const ACTIVITY_TYPES = new Set([
 ]);
 const AGENT_ACTIVITY_LIMIT = 512;
 const TIMER_FIRING_LIMIT = 256;
+
+function historyNumeric(value) {
+  const result = Number(value);
+  return Number.isSafeInteger(result) && result >= 0 ? result : 0;
+}
+
+function historySourceFor(localMeta, beforeSeq) {
+  const frontier = historyNumeric(beforeSeq) - 1;
+  return frontier > 0 && localMeta?.coverage?.some((range) => (
+    historyNumeric(range?.lowSeq) <= frontier && historyNumeric(range?.highSeq) >= frontier
+  )) ? 'indexeddb' : 'network';
+}
 
 function eventTimestamp(envelope, fallback = Date.now()) {
   const value = new Date(envelope?.ts).getTime();
@@ -296,7 +307,7 @@ export function createChannelFeedRuntime(options = {}) {
     let accessChanged = false;
     for (const row of rows || []) {
       const selfID = rosterRef.current?.self?.(row?.channel_id) || '';
-      const result = replica.commit(row, selfID);
+      const result = replica.commit(row, selfID, (value) => value, { source });
       if (!result.accepted) continue;
       accepted.push(result.row);
       discoveredChannels.add(row.channel_id);
@@ -358,7 +369,7 @@ export function createChannelFeedRuntime(options = {}) {
     const localMeta = cache.metaSnapshot().get(channelId);
     return {
       id: `${generation}:${channelId}:${status.completedPages + 1}`,
-      source: historySourceFor({ localMeta, beforeSeq }, beforeSeq),
+      source: historySourceFor(localMeta, beforeSeq),
       channelId,
       beforeSeq,
       limit: Math.max(1, historyNumeric(request.limit || request.revealRows) || HISTORY_PAGE_SIZE),
