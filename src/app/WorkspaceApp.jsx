@@ -169,6 +169,12 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           ? command(...args)
           : Promise.reject(unavailableError('submission.send'));
       },
+      control: (...args) => {
+        const command = submissionPortRef.current?.control;
+        return typeof command === 'function'
+          ? command(...args)
+          : Promise.reject(unavailableError('submission.control'));
+      },
       resetWorld: (...args) => {
         const command = submissionPortRef.current?.resetWorld;
         if (typeof command !== 'function') throw unavailableError('submission.resetWorld');
@@ -277,6 +283,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     stateFor: feed.stateFor,
     feedVersion: feed.version,
     handleSend: submissionProxy.send,
+    handleControl: submissionProxy.control,
     pending: submissionPortRef.current?.pending,
     rosterRef: wire.rosterRef,
     rosters: roster.rosters,
