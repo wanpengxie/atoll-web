@@ -281,7 +281,7 @@ export function useSubmissions({ principalId, serverWorld = '', activeChannelId,
     if (!principalId) return;
     const restore = hydratePrincipal();
     void restore.catch(onError);
-  }, [hydratePrincipal, onError, principalId, publishTransaction, serverWorld]);
+  }, [hydratePrincipal, onError, principalId, publishTransaction]);
 
   useEffect(() => {
     const lifecycle = ++lifecycleRef.current;
