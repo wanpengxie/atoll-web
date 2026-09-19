@@ -1,0 +1,363 @@
+// @vitest-environment jsdom
+// This is a public Workspace composition harness.  The transport/session and
+// visual shell are boundaries, but Feed, Roster, AgentProbes, and Composer
+// submission owners below are the production implementations.
+import 'fake-indexeddb/auto';
+import React from 'react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TYPES } from '../src/protocol/vocab.js';
+import { TasksFeature } from '../src/ui/features/tasks/TasksFeature.jsx';
+
+const mocks = vi.hoisted(() => {
+  const channelId = 'c0';
+  const principalId = `workspace-real-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const humanId = 'human:root:1';
+  const agentId = 'agent:worker:1';
+  const noOp = vi.fn(() => undefined);
+  const transportSubmissions = [];
+  const deferredReceipts = new Map();
+  const submit = vi.fn((frame) => {
+    transportSubmissions.push(frame);
+    if (frame.msg_type === TYPES.agentOptions) {
+      return new Promise((resolve) => deferredReceipts.set(frame.id, resolve));
+    }
+    return Promise.resolve({ message_id: frame.id });
+  });
+  const obs = {
+    channelActors: vi.fn(async () => ({
+      complete: true,
+      items: [
+        {
+          declared: { id: humanId, kind: 'human', name: 'Root', principal: principalId },
+          actual: { measures: [{ name: 'bound', value: true }, { name: 'device_online', value: true }] },
+        },
+        {
+          declared: { id: agentId, kind: 'agent', name: 'worker', principal: '' },
+          actual: { measures: [{ name: 'bound', value: false }, { name: 'device_online', value: false }] },
+        },
+      ],
+    })),
+  };
+  const access = {
+    state: vi.fn(() => ({
+      authorityEpoch: 1,
+      relationship: 'member',
+      existence: 'present',
+      runtime: 'open',
+      unavailable: false,
+    })),
+    live: vi.fn(() => false),
+    directory: vi.fn(() => ({ principals: [], declarations: [], devices: [], support: {} })),
+  };
+  const wire = {
+    state: 'open',
+    wireRef: { current: { submit, resolve: vi.fn(), cancel: vi.fn() } },
+    rosterRef: { current: null },
+    obsRef: { current: obs },
+    accessRef: { current: access },
+    incompatible: false,
+    incompatibleEpochRef: { current: 0 },
+    incompatibleRef: { current: false },
+  };
+  const navigation = {
+    activeChannelId: channelId,
+    activeChannelRef: { current: channelId },
+    activeChannel: { id: channelId, name: channelId, access: 'member_active' },
+    channels: [{ id: channelId, name: channelId, access: 'member_active' }],
+    activeView: 'conversation',
+    terminalVisible: false,
+    revision: 0,
+    bump: vi.fn(),
+    selfFor: vi.fn(() => humanId),
+    select: vi.fn(),
+    setActiveView: vi.fn(),
+    setActiveChannelId: vi.fn(),
+    setChannels: vi.fn(),
+    setTerminalVisible: vi.fn(),
+  };
+  const identity = {
+    booting: false,
+    principal: { id: principalId, kind: 'human', name: 'Root' },
+    identity: {},
+    accept: vi.fn(),
+    expire: vi.fn(),
+    logout: vi.fn(),
+  };
+  const attachments = {
+    devices: [], deviceId: '', directory: null, entries: [], selectedKey: '', selectedArtifact: null,
+    artifactPreview: null, filesBusy: false, filesUploading: false, filesError: '', recentFiles: [],
+    filesNext: null, filesScrollTop: 0, canGoBack: false, composerAttachments: [],
+    attach: noOp, clear: noOp, downloadFile: vi.fn(() => Promise.resolve()), mutate: noOp,
+    refreshDirectory: vi.fn(() => Promise.resolve()), previewArtifact: vi.fn(() => Promise.resolve()),
+    reset: noOp, setSelectedArtifact: noOp, uploadComposerAttachments: vi.fn(() => Promise.resolve()),
+    uploadChannelFiles: vi.fn(() => Promise.resolve()), backArtifactPreview: noOp,
+    createDirectory: vi.fn(() => Promise.resolve()), navigateFiles: noOp, loadMoreDirectory: noOp,
+    rememberFilesScroll: noOp, removeFile: vi.fn(() => Promise.resolve()), selectDevice: noOp,
+  };
+  return {
+    channelId,
+    principalId,
+    humanId,
+    agentId,
+    submit,
+    transportSubmissions,
+    deferredReceipts,
+    obs,
+    access,
+    wire,
+    navigation,
+    identity,
+    attachments,
+    feedRuntime: null,
+    rosterResult: null,
+    probeProps: null,
+    probeResult: null,
+    composerResult: null,
+    layoutProps: null,
+  };
+});
+
+vi.mock('../src/app/WorkspaceLayout.jsx', () => ({
+  WorkspaceLayout: (props) => {
+    mocks.layoutProps = props;
+    return null;
+  },
+}));
+vi.mock('../src/app/hooks/useWireSession.js', () => ({
+  useIdentitySession: vi.fn(() => mocks.identity),
+  useWireSessionPort: vi.fn(() => mocks.wire),
+  useChannelNavigation: vi.fn(() => mocks.navigation),
+  useWireConnection: vi.fn(),
+  readServerWorld: vi.fn(() => 'world-real'),
+}));
+vi.mock('../src/app/hooks/useAttachmentTransactions.js', () => ({
+  useAttachmentTransactions: vi.fn(() => mocks.attachments),
+}));
+vi.mock('../src/model/channel-feed-runtime.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createChannelFeedRuntime: vi.fn((options) => {
+      const runtime = actual.createChannelFeedRuntime(options);
+      mocks.feedRuntime = runtime;
+      return runtime;
+    }),
+  };
+});
+vi.mock('../src/app/hooks/useChannelRoster.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    useChannelRoster: (props) => {
+      const result = actual.useChannelRoster(props);
+      mocks.rosterResult = result;
+      return result;
+    },
+  };
+});
+vi.mock('../src/app/hooks/useAgentProbes.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    useAgentProbes: (props) => {
+      mocks.probeProps = props;
+      const result = actual.useAgentProbes(props);
+      mocks.probeResult = result;
+      return result;
+    },
+  };
+});
+vi.mock('../src/ui/composer/index.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    useComposerCommands: (config) => {
+      const result = actual.useComposerCommands(config);
+      mocks.composerResult = result;
+      return result;
+    },
+    Composer: () => null,
+  };
+});
+vi.mock('../src/model/view-session.js', () => ({ createViewSessionStore: vi.fn(() => ({})) }));
+vi.mock('../src/net/pty.js', () => ({ ptyClient: vi.fn(() => ({ attach: vi.fn() })) }));
+vi.mock('../src/ui/Auth.jsx', () => ({ Auth: () => null }));
+vi.mock('../src/ui/VersionIncompatible.jsx', () => ({ VersionIncompatible: () => null }));
+vi.mock('../src/ui/conversation/ConversationSurface.jsx', () => ({ ConversationSurface: () => null }));
+vi.mock('../src/ui/features/tasks/TasksFeature.jsx', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, TaskCreationDialog: () => null };
+});
+vi.mock('../src/ui/features/index.js', () => ({
+  WorkspaceFeatures: () => null,
+  WorkspaceFeatureOverlays: () => null,
+  WorkspaceRightPanel: () => null,
+}));
+
+const { WorkspaceApp } = await import('../src/app/WorkspaceApp.jsx');
+
+function requestEnvelope(id, type = TYPES.agentAsk, audience = [mocks.agentId], sender = mocks.humanId) {
+  return {
+    id,
+    channel_id: mocks.channelId,
+    kind: 'request',
+    type,
+    sender: { id: sender, kind: sender === mocks.humanId ? 'human' : 'agent' },
+    audience,
+    visibility: 'public',
+    payload: { body: { text: type === TYPES.agentAsk ? '继续工作' : '' } },
+  };
+}
+
+function responseEnvelope(id, parentId, type, body) {
+  return {
+    id,
+    channel_id: mocks.channelId,
+    kind: 'response',
+    type,
+    parent_id: parentId,
+    sender: { id: mocks.agentId, kind: 'agent' },
+    audience: [mocks.humanId],
+    visibility: 'public',
+    payload: { body },
+  };
+}
+
+function enqueue(seq, envelope, source = 'live') {
+  return mocks.feedRuntime.getSnapshot().enqueue({
+    channel_id: mocks.channelId,
+    seq,
+    generation: 1,
+    source,
+    envelope,
+  });
+}
+
+async function makeCurrentFeed() {
+  await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+    { channel_id: mocks.channelId, head_seq: 2, has_rows: true },
+  ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+  enqueue(1, requestEnvelope('waiting-1'));
+  enqueue(2, responseEnvelope('waiting-progress', 'waiting-1', TYPES.agentAsk, {
+    status: 'processing',
+    controls: [{ word: TYPES.agentSteer }, { word: TYPES.agentInterrupt }],
+  }));
+  await waitFor(() => expect(mocks.rosterResult).toBeTruthy());
+  await act(async () => {
+    await mocks.rosterResult.refresh(mocks.channelId, true);
+  });
+  await waitFor(() => expect(mocks.layoutProps?.conversation?.waitingRosterAuthority).toMatchObject({
+    rosterCurrent: true,
+    controlCurrent: true,
+    current: true,
+  }));
+}
+
+afterEach(async () => {
+  cleanup();
+  mocks.feedRuntime?.destroy?.();
+  mocks.feedRuntime = null;
+  mocks.rosterResult = null;
+  mocks.probeProps = null;
+  mocks.probeResult = null;
+  mocks.composerResult = null;
+  mocks.layoutProps = null;
+  mocks.transportSubmissions.length = 0;
+  mocks.deferredReceipts.clear();
+  vi.clearAllMocks();
+});
+
+describe('真实 Workspace owner composition', () => {
+  it('marks a probe control landed from Feed before its transport receipt, and keeps Waiting/Probe gates authoritative', async () => {
+    render(<WorkspaceApp />);
+    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+    await makeCurrentFeed();
+
+    const currentAuthority = mocks.layoutProps.conversation.waitingRosterAuthority;
+    const waiting = mocks.layoutProps.features.props.tasks.waiting[0];
+    expect(waiting.targetAuthority).toBe(currentAuthority);
+    expect(currentAuthority).toMatchObject({ rosterCurrent: true, controlCurrent: true, current: true });
+
+    const user = userEvent.setup();
+    const currentTasks = render(<TasksFeature port={mocks.layoutProps.features.props.tasks} />);
+    await user.click(screen.getByRole('tab', { name: /等待区/ }));
+    expect(screen.getByRole('button', { name: '插入指令' }).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: '停止' }).disabled).toBe(false);
+    currentTasks.unmount();
+
+    // A new uncovered head revokes only Workspace's composed authority. The
+    // same feature owner keeps the waiting fact readable but removes actions.
+    await act(async () => {
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+        { channel_id: mocks.channelId, head_seq: 5, has_rows: true },
+      ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+    });
+    await waitFor(() => expect(mocks.layoutProps.conversation.waitingRosterAuthority).toMatchObject({
+      rosterCurrent: true,
+      controlCurrent: false,
+      current: false,
+    }));
+    const staleTasks = render(<TasksFeature port={mocks.layoutProps.features.props.tasks} />);
+    await user.click(screen.getByRole('tab', { name: /等待区/ }));
+    expect(screen.queryByRole('button', { name: '插入指令' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '停止' })).toBeNull();
+    staleTasks.unmount();
+
+    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => frame.msg_type === TYPES.describe)).toBe(true));
+    const describeFrame = mocks.transportSubmissions.find((frame) => frame.msg_type === TYPES.describe);
+    await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+      { channel_id: mocks.channelId, head_seq: 4, has_rows: true },
+    ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+    enqueue(3, requestEnvelope(describeFrame.id, TYPES.describe));
+    enqueue(4, responseEnvelope(`${describeFrame.id}-done`, describeFrame.id, TYPES.describe, {
+      status: 'completed',
+      class: 'codex',
+      interfaces: ['actor', 'agent'],
+      capabilities: { steer: true },
+      words: {
+        [TYPES.agentOptions]: {},
+        [TYPES.agentContext]: {},
+      },
+    }));
+
+    await waitFor(() => expect(mocks.probeResult?.capabilitiesFor(mocks.channelId).get(mocks.agentId)?.describe).toBeTruthy());
+    act(() => {
+      mocks.probeResult.pickAgent(mocks.agentId);
+      mocks.probeResult.targetChanged(mocks.agentId);
+    });
+    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => frame.msg_type === TYPES.agentOptions)).toBe(true));
+
+    const optionsFrame = mocks.transportSubmissions.find((frame) => frame.msg_type === TYPES.agentOptions);
+    const submission = mocks.composerResult.submission;
+    expect(submission.submissionCorrelationPort.owns({
+      channelId: mocks.channelId,
+      messageId: optionsFrame.id,
+    })).toBe(true);
+
+    // This canonical live row enters the real Feed runtime while the
+    // transport receipt is still unresolved. Feed must mark the Composer
+    // correlation identity landed before receipt settlement can continue.
+    expect(enqueue(5, requestEnvelope(optionsFrame.id, TYPES.agentOptions))).toBeTruthy();
+    expect(submission.submissionCorrelationPort.landed).toContainEqual({
+      channelId: mocks.channelId,
+      messageId: optionsFrame.id,
+    });
+    expect(submission.submissionCorrelationPort.pending).not.toContainEqual({
+      channelId: mocks.channelId,
+      messageId: optionsFrame.id,
+    });
+    expect(mocks.deferredReceipts.has(optionsFrame.id)).toBe(true);
+
+    await act(async () => {
+      mocks.deferredReceipts.get(optionsFrame.id)({ message_id: optionsFrame.id });
+    });
+    await waitFor(() => expect(submission.submissionCorrelationPort.owns({
+      channelId: mocks.channelId,
+      messageId: optionsFrame.id,
+    })).toBe(true));
+    expect(mocks.transportSubmissions.filter((frame) => frame.id === optionsFrame.id)).toHaveLength(1);
+    expect(mocks.probeProps.handleControl).toBeTypeOf('function');
+  });
+});
