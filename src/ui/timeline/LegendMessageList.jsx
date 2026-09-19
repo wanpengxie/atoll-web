@@ -22,6 +22,7 @@ import {
   useReadingNavigationOwner,
 } from './ReadingNavigationOwner.jsx';
 import { useBrowsingReadingController } from './useBrowsingReadingController.js';
+import { executeReadingDOMCommand } from './reading-dom-command-executor.js';
 import {
   commitFollowingPresentation,
   decideFollowingScroll,
@@ -62,8 +63,7 @@ const CommitAwareList = forwardRef(function CommitAwareList({ children, context,
   useLayoutEffect(() => {
     context?.onListCommit?.();
   });
-  const className = [props.className, 'timeline-input-resize-content'].filter(Boolean).join(' ');
-  return <div {...props} className={className} ref={ref}>{children}</div>;
+  return <div {...props} ref={ref}>{children}</div>;
 });
 
 function WaitingObstructionFooter() {
@@ -74,31 +74,6 @@ const VIRTUOSO_COMPONENTS = Object.freeze({
   List: CommitAwareList,
   Footer: WaitingObstructionFooter,
 });
-
-function executeReadingCommand(command, { virtuoso, root }) {
-  if (command.type === 'position-row') {
-    if (typeof virtuoso?.scrollToIndex !== 'function') return false;
-    virtuoso.scrollToIndex({
-      index: command.index,
-      align: 'start',
-      ...(Number.isFinite(command.viewportOffset)
-        ? { offset: -command.viewportOffset }
-        : {}),
-    });
-    return true;
-  }
-  if (command.type === 'scroll-tail') {
-    if (typeof root?.scrollTo !== 'function') return false;
-    root.dispatchEvent(new CustomEvent('atoll:timeline-bottom-write', { bubbles: true }));
-    root.scrollTo({ top: root.scrollHeight, behavior: 'auto' });
-    return true;
-  }
-  if (command.type === 'claim-focus') {
-    root?.focus?.({ preventScroll: true });
-    return true;
-  }
-  return false;
-}
 
 class RowErrorBoundary extends Component {
   constructor(props) {
@@ -570,7 +545,7 @@ function MessageListBody({
       if (pending.navigationTarget === true) scheduleRevealReceiptRef.current?.('restore-complete');
       return true;
     }
-    const executed = executeReadingCommand(Object.freeze({
+    const executed = executeReadingDOMCommand(Object.freeze({
       type: 'position-row',
       index: targetIndex,
       viewportOffset: desiredOffset,
@@ -611,7 +586,7 @@ function MessageListBody({
     });
     if (!decision) return false;
     if (decision.command) {
-      executeReadingCommand(decision.command, { virtuoso: virtuosoRef.current, root });
+      executeReadingDOMCommand(decision.command, { virtuoso: virtuosoRef.current, root });
     }
     if (decision.observe) scheduleObserveRef.current?.('layout');
     return true;
@@ -1015,27 +990,6 @@ function MessageListBody({
 
   useLayoutEffect(() => {
     const root = scrollerRef.current;
-    if (!root || root !== scrollerNode) return undefined;
-    const onInputResizePrepared = () => {
-      const owner = readingRef.current;
-      const current = owner.getSession?.() || owner.session;
-      if (current.mode !== READING_MODE.following) return;
-      geometryRevisionRef.current += 1;
-      viewportAuthorizationRef.current = {
-        activationID: current.activationID,
-        inputEpoch: current.inputEpoch,
-        geometryRevision: geometryRevisionRef.current,
-        tokenID: `input-resize:${current.activationID}:${current.inputEpoch}:${geometryRevisionRef.current}`,
-      };
-      scheduleObserve('layout');
-      issueBottomIfCurrent('viewport-layout');
-    };
-    root.addEventListener('atoll:input-resize-prepared', onInputResizePrepared);
-    return () => root.removeEventListener('atoll:input-resize-prepared', onInputResizePrepared);
-  }, [issueBottomIfCurrent, scheduleObserve, scrollerNode]);
-
-  useLayoutEffect(() => {
-    const root = scrollerRef.current;
     if (!root || typeof ResizeObserver !== 'function') return undefined;
     const observer = new ResizeObserver(() => {
       traceReadingAdapter('scroller-resize', () => ({
@@ -1049,11 +1003,8 @@ function MessageListBody({
       viewportSizeRef.current = nextSize;
       const owner = readingRef.current;
       const current = owner.getSession?.() || owner.session;
-      const inputResizeOwned = root.closest('.conversation-surface')
-        ?.hasAttribute('data-input-resize-transition') === true;
       if (previousSize && previousSize !== nextSize
-        && current.mode === READING_MODE.following
-        && !inputResizeOwned) {
+        && current.mode === READING_MODE.following) {
         viewportAuthorizationRef.current = {
           activationID: current.activationID,
           inputEpoch: current.inputEpoch,
@@ -1062,7 +1013,7 @@ function MessageListBody({
       }
       scheduleObserve('layout');
       scheduleCoverageCheck();
-      if (!inputResizeOwned) issueBottomIfCurrent('viewport-layout');
+      issueBottomIfCurrent('viewport-layout');
     });
     observer.observe(root);
     return () => observer.disconnect();
@@ -1126,7 +1077,7 @@ function MessageListBody({
     const root = scrollerRef.current;
     if (!root || handoffPending || !focusOnMount || focusClaimedRef.current) return;
     focusClaimedRef.current = true;
-    executeReadingCommand(Object.freeze({ type: 'claim-focus' }), {
+    executeReadingDOMCommand(Object.freeze({ type: 'claim-focus' }), {
       virtuoso: virtuosoRef.current,
       root,
     });

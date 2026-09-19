@@ -166,6 +166,23 @@ const historyCandidateReducers = modulesExporting(/export\s+function\s+reduceHis
 const historyBoundedExecutors = modulesExporting(/export\s+function\s+createHistoryBoundedExecutor\s*\(/);
 const historySourceAdapters = modulesExporting(/export\s+function\s+createHistorySourceAdapters\s*\(/);
 const soleSource = (filenames) => filenames.length === 1 ? sources.get(filenames[0]) : '';
+const legendModule = 'src/ui/timeline/LegendMessageList.jsx';
+const legendSource = sources.get(legendModule);
+const legendDependencies = new Set((edges.get(path.resolve(legendModule)) || []).map(relative));
+const readingNavigationOwners = modulesExporting(/export\s+function\s+ReadingNavigationOwner\s*\(/);
+const browsingInputControllers = modulesExporting(/export\s+function\s+useBrowsingReadingController\s*\(/);
+const readingDOMCommandExecutors = modulesExporting(/export\s+function\s+executeReadingDOMCommand\s*\(/);
+const inputTransactionWriters = [...sources.entries()]
+  .filter(([, source]) => /\.(?:beginNavigation|updateNavigation|finishNavigation|cancelNavigation)(?:\?\.)?\s*\(/.test(source))
+  .map(([filename]) => filename);
+const directScrollWritePattern = /\.scrollTo(?:Index)?\s*\(|\.scrollBy\s*\(|\.scrollTop\s*=(?!=)/;
+const timelineScrollWriters = [...sources.entries()]
+  .filter(([filename, source]) => filename.startsWith('src/ui/timeline/') && directScrollWritePattern.test(source))
+  .map(([filename]) => filename);
+const retiredInputResizePattern = /atoll:input-resize-prepared|data-input-resize-(?:transition|growth)|timeline-input-resize-content/;
+const retiredInputResizeModules = [...sources.entries()]
+  .filter(([, source]) => retiredInputResizePattern.test(source))
+  .map(([filename]) => filename);
 const structuralChecks = [
   {
     id: 'C1',
@@ -199,13 +216,28 @@ const structuralChecks = [
   },
   {
     id: 'C4',
-    description: 'Legend adapter executes typed commands and emits evidence only',
+    description: 'Legend adapter delegates typed DOM commands and emits evidence only',
     violations: [
-      ['decides history demand', /requestTopDemand|coverageDemandKeyRef|historyRunwayMinimumPx/],
-      ['owns input transaction', /inputRef|addEventListener\(['"](?:scroll|scrollend)/],
-      ['retains retired input-resize protocol', /atoll:input-resize-prepared/],
-      ['writes scroll position directly', /\.scrollTo\s*\(|\.scrollBy\s*\(/],
-    ].filter(([, pattern]) => pattern.test(sources.get('src/ui/timeline/LegendMessageList.jsx'))).map(([name]) => name),
+      ['decides history demand', /requestTopDemand|coverageDemandKeyRef|historyRunwayMinimumPx/.test(legendSource)],
+      ['physical navigation owner capability is not uniquely owned', readingNavigationOwners.length !== 1],
+      ['input transaction writes escape physical navigation owner', inputTransactionWriters.length !== 1
+        || inputTransactionWriters[0] !== readingNavigationOwners[0]],
+      ['browsing input controller capability is not uniquely owned', browsingInputControllers.length !== 1],
+      ['Legend does not consume physical navigation owner', readingNavigationOwners.length !== 1
+        || !legendDependencies.has(readingNavigationOwners[0])],
+      ['Legend does not consume browsing input controller', browsingInputControllers.length !== 1
+        || !legendDependencies.has(browsingInputControllers[0])],
+      ['Legend retains input transaction state', /\b(?:input|transaction)OwnerRef\b|\binputRef\b/.test(legendSource)],
+      ['retains retired input-resize protocol', retiredInputResizeModules.length > 0],
+      ['DOM command executor capability is not uniquely owned', readingDOMCommandExecutors.length !== 1],
+      ['Legend does not consume DOM command executor', readingDOMCommandExecutors.length !== 1
+        || !legendDependencies.has(readingDOMCommandExecutors[0])],
+      ['timeline scroll writes escape DOM command executor', timelineScrollWriters.length !== 1
+        || timelineScrollWriters[0] !== readingDOMCommandExecutors[0]],
+      ['DOM command executor lacks typed row/tail commands', readingDOMCommandExecutors.length !== 1
+        || !/command\.type\s*===\s*['"]position-row['"]/.test(soleSource(readingDOMCommandExecutors))
+        || !/command\.type\s*===\s*['"]scroll-tail['"]/.test(soleSource(readingDOMCommandExecutors))],
+    ].filter(([, failed]) => failed === true).map(([name]) => name),
   },
   {
     id: 'C5',
@@ -266,6 +298,14 @@ const result = {
     candidateReducer: historyCandidateReducers,
     boundedExecutor: historyBoundedExecutors,
     sourceAdapters: historySourceAdapters,
+  },
+  readingListCapabilities: {
+    physicalNavigationOwner: readingNavigationOwners,
+    inputTransactionWriters,
+    browsingInputController: browsingInputControllers,
+    domCommandExecutor: readingDOMCommandExecutors,
+    timelineScrollWriters,
+    retiredInputResizeModules,
   },
   core,
   c1ToC7: structuralChecks,

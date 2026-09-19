@@ -168,20 +168,31 @@ second reading store.
 
 ## C4 — List adapter
 
-Current failure evidence: Legend executes DOM commands but also decides runway,
-underfill and top history demand, owns input transactions and following
-authorizations, writes scroll position, and still listens for
-`atoll:input-resize-prepared`.
+Resolved evidence: `ReadingNavigationOwner` is the unique physical input
+transaction capability and `useBrowsingReadingController` owns browsing input
+attribution/history policy. Legend's native `scroll` and `scrollend` listeners
+only sample DOM geometry and publish evidence; listener presence is therefore
+not transaction ownership. The checker verifies the exported owners, Legend's
+dependency edges, and that every begin/update/finish/cancel write belongs to the
+physical owner.
 
-Pass only when it accepts typed Reading commands and emits typed evidence. It
-may own DOM refs and perform the one commanded scroll, but it cannot decide when
-history is needed, when the user intent changes, or which mode wins. All vendor
-geometry workaround code must be in the pinned vendor patch, not duplicated in
-the adapter.
+The old input-resize custom event/attribute protocol had no production sender
+and was a real residual, so its listener, transition suppression, and marker
+class were deleted. The ordinary `ResizeObserver` path now handles the same
+viewport change without a parallel lifecycle.
 
-Static threshold: C4 violations empty. Human proof must map every remaining
-`scrollTo/scrollBy` to one command type and show one cancellation owner for
-wheel, touch, pointer, key, scrollbar, selection, focus and programmatic input.
+DOM mutation is a separate, explicit capability:
+`executeReadingDOMCommand` is the unique executor for `position-row` and
+`scroll-tail`. Legend delegates typed commands to it and does not write scroll
+position itself. The checker discovers that exported capability and enumerates
+actual timeline scroll writers, failing if the writer set is anything other
+than the unique executor. This permits the one legitimate DOM command executor
+without exempting a filename or a spelling at the call site.
+
+Static threshold: C4 violations empty; exactly one production module exports
+each navigation-owner, browsing-controller, and DOM-executor capability; all
+input transaction writes and timeline scroll writes resolve to their respective
+unique owner; no production module retains the retired input-resize protocol.
 
 ## C5 — History scheduler internals
 
