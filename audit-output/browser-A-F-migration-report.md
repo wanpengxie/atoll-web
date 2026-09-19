@@ -513,6 +513,22 @@ selector、折叠断言或几何阈值。
 continuity 与 user override 均通过；不向 Workspace/Feed 或 Reading owner 派发产品
 缺口，也不改写冻结 `7ba308c` 的 `23/8` 历史 aggregate。
 
+### 第十九轮：#28 F8-003 刷新后终端 shell/screen 恢复（clean `9a8c987`）
+
+旧 `fae8b70` 用户合同为：打开真实 terminal、输入 marker、刷新整页；重新连接后
+如 terminal view 尚未挂载则通过现有“终端”入口打开，随后必须看到同一 shell 的
+`KEEP_RELOAD` screen。该路径不依赖 Reading、notification 或 search owner，也不
+使用 debug-only UI。
+
+在 clean snapshot `9a8c987` 用真实 Chromium 跑
+`tests/browser/f8-terminal-session.spec.js --grep 'F8-003'`：`1 passed (6.7s)`。
+刷新后 connection state 回到 OPEN，terminal view 恢复，`KEEP_RELOAD` marker
+实际重新 paint。合同指定 `--disable-webgl`，因此 WebGL→DOM fallback warning 是
+预期路径提示，不是产品错误或 console error 断点。
+
+结论：#28 当前 clean HEAD 用户体验等价 **PASS**，无首个公开 owner 缺口；不改写
+冻结 `7ba308c` 的 `23/8` 历史 aggregate。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
