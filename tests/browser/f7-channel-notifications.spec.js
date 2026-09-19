@@ -68,51 +68,89 @@ test('F7 channel notifications baseline history, count roots, and acknowledge on
 
   await channel.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
-  // `mine` is a filtered semantic view: entering may acknowledge a root that
-  // is physically visible at the restored boundary, but must retain every root
-  // still above the viewport. Exact font metrics decide whether one is already
-  // exposed here.
-  await expect.poll(async () => (
-    await related.count() ? Number(await related.textContent()) : 0
-  )).toBeGreaterThan(0);
-  const remainingOnEntry = Number(await related.textContent());
-  expect(remainingOnEntry).toBeLessThanOrEqual(2);
+  // Entering while physically at the tail acknowledges the frozen channel
+  // notification boundary, even in the semantic `mine` view. This advances
+  // the one persisted notification high-water; it does not claim a physical
+  // read cursor for rows excluded by the filter.
+  await expect(related).toHaveCount(0);
+  const tailBoundary = await page.evaluate(() => (
+    window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0]
+      ?.notificationHighWater || 0
+  ));
+  expect(tailBoundary).toBeGreaterThan(0);
 
-  const viewport = page.locator('.timeline-message-list');
+  // Put one canonical root close to the live tail, then pad below it. The
+  // processing frame is quiet, but it gives the active browser a stable root
+  // whose later final revision can be tested independently of tail clearing.
+  const activeRootResponse = await request.post('/mock/control/action', {
+    data: { type: 'dense_progress', channel_id: 'c0.project', count: 1 },
+  });
+  expect(activeRootResponse.ok()).toBe(true);
+  const activeRoot = (await activeRootResponse.json()).request_id;
+  expect(activeRoot).toBeTruthy();
+  const activePadding = await request.post('/mock/control/action', {
+    data: { type: 'notification_lifecycle', channel_id: 'c0.project', phase: 'tail', count: 8 },
+  });
+  expect(activePadding.ok()).toBe(true);
+  await expect(related).toHaveCount(0);
+  const activeBoundary = await page.evaluate(() => (
+    window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0]
+      ?.notificationHighWater || 0
+  ));
+  expect(activeBoundary).toBe(tailBoundary);
+
+  const viewport = page.locator('.timeline-reading-layer.is-active .timeline-message-list');
   // Use a physical gesture: the timeline intentionally distinguishes user
   // scrolling from the virtualizer's own anchor compensation.
   await viewport.hover();
-  await page.mouse.wheel(0, -100_000);
+  await page.mouse.wheel(0, -900);
   await expect.poll(() => viewport.evaluate((node) => (
     node.scrollHeight - node.clientHeight - node.scrollTop
-  ))).toBeGreaterThan(24);
-  // The first viewport can expose one or both roots depending on exact font
-  // metrics. Every root actually seen must clear; if one sits under the
-  // floating controls, reveal that exact still-unread identity next.
-  expect(await related.count()).toBeLessThanOrEqual(1);
-  if (await related.count()) {
-    const unreadID = await page.evaluate(() => (
-      window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0]?.rows
-        ?.find((row) => row.ackReason === 'counted_related')?.id || ''
-    ));
-    expect(unreadID).toBeTruthy();
-    await page.locator(`[data-entry-id="${unreadID}"]`).evaluate((node) => node.scrollIntoView({ block: 'center' }));
-    await expect(related).toHaveCount(0);
-  }
-  await terminal(3);
-  // Root 3 is already exposed in this viewport. Its later final revision is
-  // real answer content, but it is acknowledged immediately by that exact
-  // visible root+seq evidence rather than flashing a badge.
+  ))).toBeGreaterThan(200);
+  // Scope to the committed reading layer: a transition may briefly retain an
+  // inert measurement copy of the same keyed row.
+  const activeRootEntry = viewport.locator(`[data-entry-id="${activeRoot}"]`);
+  await expect(activeRootEntry).toBeVisible();
+  const activeTerminal = await request.post('/mock/control/action', {
+    data: {
+      type: 'push_terminal', channel_id: 'c0.project', request_id: activeRoot,
+      payload: { text: 'active exact answer' },
+    },
+  });
+  expect(activeTerminal.ok()).toBe(true);
+  await expect(related).toHaveText('1');
+  // The revision can displace a partially visible card under the floating
+  // composer. Reveal that exact unread identity after the arrival; only its
+  // root+seq is acknowledged, without advancing the channel-wide boundary
+  // while the user is browsing history.
+  await activeRootEntry.evaluate((node) => node.scrollIntoView({ block: 'center' }));
+  await expect.poll(async () => {
+    const [row, list] = await Promise.all([activeRootEntry.boundingBox(), viewport.boundingBox()]);
+    if (!row || !list) return false;
+    const rowCenter = row.y + row.height / 2;
+    const listCenter = list.y + list.height / 2;
+    return Math.abs(rowCenter - listCenter) <= 100;
+  }).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    const channelSnapshot = window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0];
+    return {
+      highWater: channelSnapshot?.notificationHighWater || 0,
+      activeRoot: channelSnapshot?.rows?.find((row) => row.id.includes('-dense-request-'))?.ackReason || '',
+    };
+  })).toEqual({ highWater: activeBoundary, activeRoot: 'exact_visible_ack' });
   await expect(related).toHaveCount(0);
 
   await page.mouse.wheel(0, 100_000);
   await expect.poll(() => viewport.evaluate((node) => (
     node.scrollHeight - node.clientHeight - node.scrollTop
   ))).toBeLessThanOrEqual(24);
-  // Reaching the physical bottom does not itself grant a filtered view
-  // authority over other identities. The now-visible root is nevertheless
-  // acknowledged exactly even if the reader has not reclaimed following.
+  // Reaching the physical bottom reclaims following and advances the frozen
+  // channel notification boundary through the now-presented terminal frame.
   await expect(related).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (
+    window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project')?.channels?.[0]
+      ?.notificationHighWater || 0
+  ))).toBeGreaterThan(activeBoundary);
 });
 
 test('F7 inactive-channel business and core progress never create rail or new-dynamic counts', async ({ page, request }) => {

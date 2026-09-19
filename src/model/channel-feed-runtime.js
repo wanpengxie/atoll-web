@@ -120,6 +120,7 @@ export function createChannelFeedRuntime(options) {
     const state = replicaRef.current.state(channelId);
     const revision = replicaRef.current.revision(channelId);
     const notificationHighWater = cursorsRef.current.notificationHighWater(channelId);
+    const acknowledged = cursorsRef.current.acknowledgedReadIdentities(channelId);
     const cached = unreadCacheRef.current.get(channelId);
     let counts = cached?.revision === revision
       && cached?.notificationHighWater === notificationHighWater
@@ -127,7 +128,10 @@ export function createChannelFeedRuntime(options) {
       ? cached.counts
       : null;
     if (!counts) {
-      counts = unreadCounts(state, notificationHighWater, selfId, { incremental: true });
+      counts = unreadCounts(state, notificationHighWater, selfId, {
+        incremental: true,
+        acknowledged,
+      });
       unreadCacheRef.current.set(channelId, {
         revision,
         notificationHighWater,
@@ -142,7 +146,10 @@ export function createChannelFeedRuntime(options) {
         readingTrace('notification.rail-classification', () => ({
           channelId,
           notificationHighWater,
-          ...unreadCountDiagnostics(state, notificationHighWater, selfId, { incremental: true }),
+          ...unreadCountDiagnostics(state, notificationHighWater, selfId, {
+            incremental: true,
+            acknowledged,
+          }),
         }));
       }
     }
@@ -175,7 +182,10 @@ export function createChannelFeedRuntime(options) {
           state,
           notificationHighWater,
           rosterRef.current?.self(channelId) || '',
-          { incremental: true },
+          {
+            incremental: true,
+            acknowledged: cursorsRef.current.acknowledgedReadIdentities(channelId),
+          },
         ),
       }));
     }
@@ -955,6 +965,15 @@ export function createChannelFeedRuntime(options) {
     if (seq > 0 && trimIfMobile(state)) replicaRef.current.afterTrim(channelId);
     const next = seq > 0 ? cursorsRef.current.markRead(channelId, seq) : before;
     if (seq > 0) schedulerRef.current.markRead(channelId);
+    if (exactChanged) {
+      // Exact identities participate in the rail projection but are not part
+      // of its revision/high-water cache signature. Publish their mutation
+      // explicitly so an active, non-tail acknowledgement cannot leave the
+      // previously cached badge visible until some unrelated feed update.
+      unreadCacheRef.current.delete(channelId);
+      unreadDiagnosticSignatureRef.current.delete(channelId);
+      setIndexVersion((value) => value + 1);
+    }
     return seq > 0 ? next : (exactChanged || (acknowledgement.identities?.length || 0) > 0);
   });
   const acknowledgeNotifications = ((channelId, confirmation = {}) => {

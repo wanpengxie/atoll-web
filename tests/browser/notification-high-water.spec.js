@@ -5,6 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 const SOURCE_PATHS = [
   'src/App.jsx',
   'src/app/hooks/useChannelFeed.js',
+  'src/model/channel-feed-runtime.js',
   'src/model/cursors.js',
   'src/model/history-demand.js',
   'src/ui/timeline/useReadingSession.js',
@@ -66,12 +67,14 @@ test('tail acknowledgement survives channel switches and reload while a future r
 
   // Bind the browser run to the served implementation, not merely the files
   // fingerprinted by the Node-side evidence attachment.
-  const [servedFeed, servedApp] = await Promise.all([
+  const [servedFeed, servedRuntime, servedApp] = await Promise.all([
     request.get('/src/app/hooks/useChannelFeed.js').then((response) => response.text()),
+    request.get('/src/model/channel-feed-runtime.js').then((response) => response.text()),
     request.get('/src/App.jsx').then((response) => response.text()),
   ]);
-  expect(servedFeed).toContain('notificationHighWater');
-  expect(servedFeed).toContain('acknowledgeNotifications');
+  expect(servedFeed).toContain('createChannelFeedRuntime');
+  expect(servedRuntime).toContain('notificationHighWater');
+  expect(servedRuntime).toContain('acknowledgeNotifications');
   expect(servedApp).not.toContain('projectChannelUnread');
 
   await login(page);

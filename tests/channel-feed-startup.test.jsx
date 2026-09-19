@@ -49,6 +49,69 @@ afterEach(() => {
 });
 
 describe('channel feed startup lanes', () => {
+  it('publishes an exact visible identity acknowledgement to the cached rail projection', async () => {
+    const meta = new Map();
+    doubles.cache = {
+      ensureOwner: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      ensureBoot: vi.fn(async () => ({ changed: false, boot: 'boot-a', meta })),
+      readBefore: vi.fn(async () => ({ rows: [], exhausted: true, bytes: 0 })),
+      readNotificationContext: vi.fn(async () => ({ complete: true, cancelled: false, rows: [] })),
+      saveRows: vi.fn(async () => {}), saveCoverage: vi.fn(async () => {}),
+      metaSnapshot: vi.fn(() => meta), clear: vi.fn(async () => {}),
+    };
+    const props = feedProps();
+    props.rosterRef.current = {
+      self: () => 'human:root:1', observeFeed: () => '', handleEnvelope: () => {},
+    };
+    const hook = renderHook(() => useChannelFeed(props));
+
+    await act(async () => {
+      await hook.result.current.prepareLocalReplica('root', { focus: 'c0' });
+      await hook.result.current.setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, focus: 'c0', boot: 'boot-a' });
+    });
+    act(() => {
+      hook.result.current.enqueue({
+        source: 'live', generation: 1, channel_id: 'c0', seq: 1,
+        envelope: {
+          id: 'visible-root', kind: 'request', type: 'agent.ask', visibility: 'public',
+          sender: { id: 'human:root:1', kind: 'human' }, audience: ['agent:worker:1'],
+          payload: { text: 'question' },
+        },
+      });
+      hook.result.current.enqueue({
+        source: 'live', generation: 1, channel_id: 'c0', seq: 2,
+        envelope: {
+          id: 'visible-final', parent_id: 'visible-root', correlation_id: 'visible-root',
+          kind: 'response', type: 'agent.ask', visibility: 'public',
+          sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'],
+          payload: { status: 'completed', text: 'answer' },
+        },
+      });
+    });
+    await waitFor(() => expect(hook.result.current.unreadFor('c0')).toMatchObject({
+      related: 0, total: 1,
+    }));
+    // Prime the runtime's memoized rail projection before mutating only the
+    // exact identity map.
+    expect(hook.result.current.unreadFor('c0')).toMatchObject({ related: 0, total: 1 });
+
+    act(() => {
+      expect(hook.result.current.markRead('c0', {
+        physicalSeq: 0,
+        identities: [{ messageID: 'visible-root', seqHigh: 2 }],
+      })).toBe(true);
+    });
+    await waitFor(() => expect(hook.result.current.unreadFor('c0')).toMatchObject({
+      related: 0, total: 0,
+    }));
+    expect(hook.result.current.cursorsRef.current.notificationHighWater('c0')).toBe(0);
+    expect(hook.result.current.cursorsRef.current.acknowledgedReadIdentities('c0'))
+      .toEqual(new Map([['visible-root', 2]]));
+    hook.unmount();
+  });
+
   it('keeps an inactive rail unknown until cached unread context and its parent are folded', async () => {
     let resolveContext;
     const context = new Promise((resolve) => { resolveContext = resolve; });
