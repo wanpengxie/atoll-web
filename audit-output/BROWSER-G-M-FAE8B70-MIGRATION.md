@@ -116,6 +116,66 @@ ATOLL_TEST_MOCK_PORT=19882 ATOLL_TEST_WEB_PORT=15182 npx playwright test \
 admission/reveal、underfill、jump/live browsing 的严格 oracle 仍按上节 11 个全组回归保留；
 待 Reading/notification 提交后再重跑相关 packet。
 
+## 当前 source snapshot 重验（`538f50f` + `77760c8`，有效产品树 `07ed014`）
+
+共享工作树当时有并行 timeline 未提交改动；为避免把未提交的运行时异常当成产品回归，使用
+干净 detached snapshot `07ed014`（其后仅有 audit-only commits；Composer 文件相对
+`538f50f` 无产品差异）重验。只记录每例第一个公开失败，不改变任何测试断言。
+
+### ModelSelector 五例：首断点前移
+
+命令：
+
+```text
+ATOLL_TEST_MOCK_PORT=19884 ATOLL_TEST_WEB_PORT=15184 npx playwright test \
+  tests/browser/model-selector-manual.spec.js \
+  tests/browser/model-selector-portal.spec.js \
+  --reporter=line --output=test-results-gm-model-head-07ed014-20260920
+```
+
+结果为 **5 tests，0 passed，5 failed，0 blocked**。与前轮统一落在缺失
+`menuitem 模型` 不同，本轮首断点更早，均仍处于 capability view 尚未就绪的 refresh path：
+
+| case | 首个公共失败 | 当前可见 witness |
+|---:|---|---|
+| 28 | click 前 `aria-expanded="false"` 缺失 | trigger 为 `class=is-refresh`，accessible name=`steward，点击读取可用模型` |
+| 29 | click 后 `dialog[aria-label="steward Agent 状态"]` 不可见 | 同一 refresh trigger；未到 option/refresh 合同 |
+| 30–32 | portal selector helper 中 dialog 不可见 | 500/320/200 三种高度均在 dialog 前失败，未到 geometry/option 合同 |
+
+因此本轮不能把旧的 `menuitem 模型` 能力投影缺口判为已修复或已复现：真实首断点已回到
+capability read 前的 trigger ARIA/open-state；后续 option 断言没有被跳过。此前已验证的
+loaded-view ARIA/portal 证据仍保留在上一节，当前 snapshot 的 first-public boundary 交给
+Composer ModelSelector 的 refresh/capability projection owner。
+
+### History / jump 最小严格组：首断点不变
+
+命令（仅选 admission、reveal、underfill、jump 和 browsing-arrival 六个严格 oracle）：
+
+```text
+ATOLL_TEST_MOCK_PORT=19885 ATOLL_TEST_WEB_PORT=15185 npx playwright test \
+  tests/browser/history-presentation-admission-prototype.spec.js \
+  tests/browser/history-reveal-prototype.spec.js \
+  tests/browser/history-underfill-lifecycle.spec.js \
+  tests/browser/jump-latest-ownership.spec.js \
+  tests/browser/live-tail-entry.spec.js \
+  --grep='one older gesture|history reveal keeps|trusted wheel takes|history underfill|browsing reader jump-latest|browsing and inactive-channel arrivals' \
+  --reporter=line --output=test-results-gm-history-jump-head-07ed014-20260920
+```
+
+结果为 **6 tests，0 passed，6 failed，0 blocked**；首断点与此前 packet 一致：
+
+| case | 首个公共失败 | 保留的严格 witness |
+|---:|---|---|
+| 1 | `listCount=4`，不是 `>4` | sparse history prepend 未进入同一 presentation |
+| 2 | sampled frame `visibleRows=0` | active layer/list 仍要求唯一，空帧不被诊断事件替代 |
+| 3 | trusted wheel 后 `mode=following` | browsing takeover oracle 仍红，不改成 writer-only 通过 |
+| 8 | `historyOneVisible=false` | settle 后仍缺 `c0 history 1` |
+| 13 | `jumpVisible=false` | 物理 gap=2121 仍在，未将缺 jump 改成滚底或等待通过 |
+| 23 | `browsingRowCount=0` | arrival 未进入 browsing presentation，未继续伪造 inactive handoff 成功 |
+
+证据分别在 `test-results-gm-model-head-07ed014-20260920/` 与
+`test-results-gm-history-jump-head-07ed014-20260920/`；无 skip、删除或 oracle 放宽。
+
 ## Case ledger
 
 `owner` 是当前生产 owner；`result` 是上述 Chromium 全组轮的逐 case 裁决。每行保留
