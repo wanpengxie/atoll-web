@@ -124,6 +124,30 @@ describe('channel-replica compact terminal closure (successor of waiting-termina
     expect(replica.state(CHANNEL)._unmatchedTerminalClosures.has('response-first-terminal')).toBe(false);
   });
 
+  it('an earlier response-first terminal supersedes a newer retained parent proof', () => {
+    const replica = createChannelReplicaStore();
+    const later = terminal(5, 'history-order');
+    later.envelope.id = 'later-terminal';
+    replica.commit(later);
+    for (let seq = 6; seq <= 10; seq += 1) replica.commit(note(seq));
+    replica.trim(CHANNEL, 4);
+    expect(replica.state(CHANNEL)._unmatchedTerminalClosures.get('history-order')?.seq).toBe(5);
+
+    // The older page arrives after trim but before the request page. The
+    // parent-keyed closure must move to the earliest ledger terminal before a
+    // later trim could discard the raw earlier row.
+    const earlier = terminal(2, 'history-order', 'failed');
+    earlier.envelope.id = 'earlier-terminal';
+    replica.commit(earlier);
+    expect(replica.state(CHANNEL)._unmatchedTerminalClosures.get('history-order')?.seq).toBe(2);
+    replica.commit(request(1, 'history-order'));
+    const turn = replica.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === 'history-order')?.turn;
+    expect(turn).toMatchObject({ terminalSeq: 2, status: 'failed', terminalClosureOnly: false });
+    expect(turn.terminal.id).toBe('earlier-terminal');
+    expect(replica.state(CHANNEL)._unmatchedTerminalClosures.has('history-order')).toBe(false);
+  });
+
   it('超过 512 条时仍保留每个 request id 的精确终态证明（重装 request+queued 后仍闭合）', () => {
     // The compact closure is per exact request id. Re-admitting only the old
     // request and queued row must not reopen Waiting when the full terminal

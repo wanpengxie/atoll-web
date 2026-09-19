@@ -332,8 +332,31 @@ function rebuildState(state) {
   // terminal with its compact parent. No closure can create a turn without a
   // real terminal row or an exact request re-admission.
   const closureResponses = new Map();
-  for (const [requestID, closure] of state._unmatchedTerminalClosures || []) {
+  for (const [requestID, retained] of state._unmatchedTerminalClosures || []) {
     const rawResponses = responses.get(requestID) || [];
+    // A history page can deliver an older terminal after a newer suffix has
+    // already established the closure. Reconcile the retained proof to the
+    // earliest raw FINAL immediately, so a later trim cannot discard that
+    // earlier fact and resurrect the newer outcome.
+    const earlier = rawResponses
+      .filter((item) => FINAL.has(argsOf(item.envelope)?.status)
+        && Number(item.seq) < Number(retained.seq))
+      .sort((left, right) => left.seq - right.seq)[0];
+    let closure = retained;
+    if (earlier) {
+      closure = {
+        ...retained,
+        seq: earlier.seq,
+        envelope: compactTerminalClosure(earlier.envelope),
+        request: requests.get(requestID)
+          ? compactClosureRequest(requests.get(requestID))
+          : retained.request,
+        requestSeq: requests.get(requestID)
+          ? numeric(requestSeqs.get(requestID))
+          : retained.requestSeq,
+      };
+      state._unmatchedTerminalClosures.set(requestID, closure);
+    }
     const exactTerminal = rawResponses.some((item) => terminalClosureMatchesRow(closure, item));
     if (exactTerminal && requests.has(requestID)) {
       state._unmatchedTerminalClosures.delete(requestID);
