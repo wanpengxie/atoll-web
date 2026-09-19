@@ -609,3 +609,22 @@ ATOLL_TEST_WEB_PORT=16302 ATOLL_TEST_MOCK_PORT=20602 npx playwright test tests/b
 N4 的 c0 cursor/high-water=`25/61`、Replica head=`61`、filtered Presentation gap=`0`、DOM=`0/0/false/0`，rail `present=true/authorityReady=true`；H4 的 c0.project high-water=`25→28`、Replica=`27→28`、新 row 已进入 visible owner、DOM=`0/0/false/0`，rail 同样 `authorityReady=true`。这证明 `e644e9e` 已闭合第十七轮 rail authority 首断点；剩余 follow trace 是 Reading handoff/receipt 合同，不是 actor.describe、fixture、selector 或 notification rail。
 
 本轮逐 case disposition：四条 high-water 的 persistence/filtered 旧字面值归 **过时实现 oracle → 测试合同已按物理 seq 修订**；hydration **GREEN**；continuous-follow **Reading 产品回归 RED**，最小交接为 mounted tail observation/receipt owner，保持行为门不变。
+
+## 第十九轮：continuous-follow 旧 trace 名称属于已删除 owner，现行 typed observation 已证明 ack
+
+第十八轮留下的唯一红只检查 `reading.installed-tail-ack` / `reading.arrival-resolution`。本轮对照 FAE-era `useReadingSession` 与当前 owner：旧名称确实存在于旧 `src/ui/timeline/useReadingSession.js`（`3dd456b`），但该 owner 随 `bfbf557` 被删除；当前生产链由 `useConversationProjection` → `ReadingContainerHandoff` → `VendorListExecutor` 发布 `reading.observation`，并由 `WorkspaceApp.onTailCaughtUp` 把同一 typed tail receipt 交给 Feed。当前产品源码已不存在旧两个事件名，因此不是 Reading 未履行 obligation。
+
+当前 test 的 replacement 保留完整义务，而非删除 trace 门：
+
+1. 从 rail 找到本次连续到达的 exact `human.approve` row（seq 高于 before high-water）；要求其 `ackReason=high_water`，证明 Feed 已接受冻结 receipt。
+2. 要求现行 `reading.observation` 的 typed detail 同时为 `atTail=true`、`surfaceVisible=true`，并包含该 exact arrival row 的 `visibleRowIDs`。
+3. 继续保留 rail `authorityReady`、counts=0、DOM badge/jump=0 与 high-water advancement。
+
+真实 Chromium：
+
+```text
+ATOLL_TEST_WEB_PORT=16305 ATOLL_TEST_MOCK_PORT=20605 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round19-highwater-16305-20260920
+# 4 passed (21.1s)
+```
+
+follow evidence 为 high-water `25→28`、arrival seq=`28` 且 `ackReason=high_water`；DOM `related/total/pending/jump=0/0/false/0`；trace 包含两次 `reading.observation`，均 `atTail/surfaceVisible=true` 且包含 arrival row。故本条用户行为、Presentation→Reading observation→Feed acknowledgement 链均 GREEN；第十八轮的 Reading 产品回归交接撤销，旧事件名归 **过时 diagnostic oracle**。未改产品、fixture、vendor、package 或 skip。

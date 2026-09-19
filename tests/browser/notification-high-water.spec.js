@@ -214,10 +214,26 @@ test('a continuously followed related arrival advances only after the mounted ta
   }).toBeGreaterThan(beforeBoundary);
   await expect(project.locator('.unread-related')).toHaveCount(0);
   const after = await railEvidence(page, 'c0.project');
-  expect(after.rail?.channels?.[0]).toMatchObject({ counts: { related: 0, total: 0 } });
+  const afterChannel = channelSnapshot(after);
+  expect(afterChannel).toMatchObject({
+    authorityReady: true,
+    counts: { related: 0, total: 0 },
+  });
+  const arrivalRow = afterChannel?.rows?.find((row) => (
+    row.type === 'human.approve' && Number(row.seq) > beforeBoundary
+  ));
+  expect(arrivalRow, 'rail evidence must retain the continuously-followed approval').toBeTruthy();
+  expect(arrivalRow.ackReason).toBe('high_water');
+  // The current Reading owner publishes a typed DOM observation rather than
+  // the retired useReadingSession diagnostic names. Require the observation to
+  // contain this exact arrived row at a visible, mounted tail; the rail
+  // high-water/ackReason above proves the same frozen receipt was accepted by
+  // Feed. This preserves the obligation without asserting a deleted trace.
   expect(after.reading?.entries?.some((entry) => (
-    entry.event === 'reading.installed-tail-ack'
-      || entry.event === 'reading.arrival-resolution'
+    entry.event === 'reading.observation'
+      && entry.detail?.atTail === true
+      && entry.detail?.surfaceVisible === true
+      && entry.detail?.visibleRowIDs?.includes(arrivalRow.id)
   ))).toBe(true);
   await attachEvidence(testInfo, 'notification-presented-follow.json', { before, after });
 });

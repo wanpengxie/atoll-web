@@ -432,3 +432,20 @@ ATOLL_TEST_WEB_PORT=16302 ATOLL_TEST_MOCK_PORT=20602 npx playwright test tests/b
 ```
 
 N4 为 cursor/high-water=`25/61`、Replica head=`61`、filtered Presentation gap=0、DOM=`0/0/false/0`、rail `authorityReady=true`；H4 为 high-water=`25→28`、Replica=`27→28`、arrival visible、DOM=`0/0/false/0`、rail `authorityReady=true`。因此不新增 notification rail 产品回归，也不再把 actor.describe 的物理 seq 误报成产品问题。唯一新增公开交接包是连续 follow 的 Reading trace：保留真实 DOM/rail 通过证据，交现有 Reading owner 补齐其 observation/receipt 完成门；不得通过删除 trace 断言、空 diagnostics 或放宽用户状态门收绿。证据目录：`test-results-browser-ns-round18-observe-16303-20260920/`、`test-results-browser-ns-round18-highwater-contract-16304-20260920/`、`test-results-browser-ns-round18-owner-16302-20260920/`。
+
+## 第十九轮更正：continuous-follow 旧 Reading trace 名称是过时 diagnostic oracle，不是产品红
+
+第十八轮唯一 RED 的 `reading.installed-tail-ack` / `reading.arrival-resolution` 名称来自已删除的 legacy `useReadingSession` owner（旧提交 `3dd456b`）；当前产品由 `useConversationProjection`/`VendorListExecutor` 发布 typed `reading.observation`，再通过 `WorkspaceApp.onTailCaughtUp` 将冻结 tail receipt 交给 Feed。故不能把“旧事件名缺失”直接交 Reading owner。
+
+测试已改为验证现行 obligation 的三层事实：
+
+- exact continuous arrival row 的 rail `ackReason=high_water`；
+- 现行 `reading.observation` detail 的 `atTail=true`、`surfaceVisible=true`、`visibleRowIDs` 包含该 row；
+- high-water advancement、DOM badge/jump/counts 和 `authorityReady` 保持原门。
+
+```text
+ATOLL_TEST_WEB_PORT=16305 ATOLL_TEST_MOCK_PORT=20605 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round19-highwater-16305-20260920
+# 4 passed (21.1s)
+```
+
+当前 evidence：high-water `25→28`，arrival seq=`28`、`ackReason=high_water`；两次 observation 均在 tail 且包含 arrival row；DOM `related/total/pending/jump=0/0/false/0`。因此用户可见行为与 Presentation→Reading observation→Feed acknowledgement 链均已闭合；第十八轮的 Reading 产品交接撤销，旧事件名归测试诊断合同过时。未改产品、fixture、vendor、package 或 skip。
