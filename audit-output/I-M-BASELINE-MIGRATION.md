@@ -491,11 +491,21 @@ The exact-path command is `npx vitest run
 tests/i-m-exact-path-contracts.test.jsx` → **44/44 GREEN** (8 prior bridge
 cases + 16 Round 13 lifecycle cases + 20 Round 14 cases). The new tests use
 only public owners and observable state/DOM; they do not inspect private
-Replica maps or export a deleted adapter. TC-1028 and TC-1029 from the same
-message-presentation source path were intentionally not relabeled green: the
-existing strict successor still records their product red behavior (system
-label fallback and sensitive unknown-payload redaction), so those two cases
-remain a product-owner handoff rather than being weakened here.
+Replica maps or export a deleted adapter. The Round 14 snapshot retained
+TC-1028/1029 as an owner handoff; Round 15 below revalidates TC-1028 and
+records the minimal same-owner repair for TC-1029 without changing tests.
+
+## Round 15 TC-1028/1029 owner revalidation and minimal repair
+
+These two cases are reader-facing presentation abilities, not transport
+compatibility promises:
+
+| case | precise user ability | unique current owner | minimal public repro → result |
+|---|---|---|---|
+| TC-1028 | A reader sees typed system operations in product language and never the raw wire word; `system.channel.create` is “创建子频道：operation-room” and `system.member.admit` is “邀请成员加入：alice”. | `useTimelineRowRenderer` → `Narration`/`EnvelopeBody` → `textOf` → `systemOperationText` in `src/ui/timeline/TimelineRowRenderer.jsx:46-156`; there is no second presentation owner. | Canonical `{ type: 'system.channel.create', visibility: 'system', payload: { body: { name: 'operation-room', recipe: { declarations: [] } } } }` through the public narration row → **PASS**. The same owner maps `system.member.admit` at lines 53/100. Existing owner change `fbbbb26` is the minimal fix; no new compatibility path was added. |
+| TC-1029 | A reader may inspect an unknown/vendor structured result, but sensitive fields such as `token` must be hidden and the renderer must not leak raw JSON secrets. | The same `TimelineRowRenderer.textOf` result/output fallback; terminal `StructuredResult` already owns the redaction helper used by this renderer. | Public standalone `vendor.custom` response with canonical body `{ status: 'completed', result: { nested: { value: 1 }, token: 'super-secret-value' } }` (strict repro `src/ui/timeline/message-body-presentation.test.jsx:90-98`) previously leaked the token; **FIXED** by reusing `redactSensitive` before JSON serialization and returning generic `结构化结果` on serialization failure at `src/ui/timeline/TimelineRowRenderer.jsx:153-156`. |
+
+Targeted evidence: `npx vitest run src/ui/timeline/message-body-presentation.test.jsx -t 'protocol payloads|unknown payload|sensitive' tests/message-presentation.test.js` → **2 files, 3 passed, 6 skipped**; the current public-owner `tests/message-presentation.test.js` is **4/4 GREEN**. The full strict successor is **4/5** because its separate TC-1031 flat-payload compatibility assertion remains red by deliberate protocol-cutover decision; it is not a TC-1028/1029 failure and was not altered. No test was edited, skipped, or weakened.
 
 ## Final disposition and verification
 
@@ -519,8 +529,9 @@ remain a product-owner handoff rather than being weakened here.
 - Round 14 adds 20 independent exact-path public-owner cases across the
   absent `memory-window`, `management-actors`, `message-presentation`, and
   `model-selector` paths; the bridge command is 44/44 green and the baseline
-  count remains 159. TC-1028/1029 remain strict product-red handoffs and are
-  not counted as recovered.
+  count remains 159. Round 15 revalidated TC-1028 and minimally repaired
+  TC-1029 in its existing owner; TC-1031 remains the separate flat-payload
+  cutover handoff.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

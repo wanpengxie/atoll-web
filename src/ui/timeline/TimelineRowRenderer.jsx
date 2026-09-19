@@ -153,7 +153,7 @@ function textOf(envelope) {
   const result = body.result ?? body.output;
   if (result == null) return '';
   if (typeof result === 'string') return result;
-  try { return `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``; } catch { return String(result); }
+  try { return `\`\`\`json\n${JSON.stringify(redactSensitive(result), null, 2)}\n\`\`\``; } catch { return '结构化结果'; }
 }
 
 function nameOf(id, names) { return actorNameFromMap(id, names); }
