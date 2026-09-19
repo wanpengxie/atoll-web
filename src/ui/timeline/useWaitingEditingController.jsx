@@ -4,7 +4,7 @@ import { messagePresentation } from '../../model/message-presentation.js';
 import { controlLabel, extraControls, taskControlContext } from '../../model/task-controls.js';
 import { agentFrozenStates, agentMessageStage, editAdmission, editableText, lockFromContext, mergedInto, preemptedBy } from '../../model/agent-control.js';
 import { diagnostic } from '../../model/diagnostics.js';
-import { terminalResultPayload, terminalResultState, terminalRetainedValue } from '../../model/fold.js';
+import { terminalResultPayload, terminalResultState, terminalRetainedValue } from '../../model/terminal-result.js';
 import { selectLocalWaitingTurns, selectWaitingPresentation } from '../../model/waiting-presentation.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';

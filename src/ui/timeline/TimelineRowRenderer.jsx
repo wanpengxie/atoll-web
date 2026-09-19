@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { formatArtifactSize } from '../../model/artifacts.js';
 import { resolveFormSpec } from '../../model/dynamic-form.js';
-import { terminalContentEnvelope, terminalResultPayload, terminalResultState } from '../../model/fold.js';
+import { terminalContentEnvelope, terminalResultPayload, terminalResultState } from '../../model/terminal-result.js';
 import { LIST_WINDOW_SIZE } from '../../model/list-window.js';
 import { messagePresentation } from '../../model/message-presentation.js';
 import { replyTargetOf } from '../../model/reply-target.js';
