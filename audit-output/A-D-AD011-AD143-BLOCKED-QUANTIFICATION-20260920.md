@@ -22,8 +22,10 @@ also does not change the 105 BLOCKED count. AD-123 is now closed by the
 existing `feature-search` artifact projection owner; this also does not change
 the 105 BLOCKED count. The final owner verification closes AD-011 via `e09169e`
 and AD-143 via `6c880aa`; both are public-contract checks only and leave the
-105 BLOCKED rows unchanged.
-No row is obsolete, deleted, or skipped.
+105 BLOCKED rows unchanged. Round 15 then added public evidence for 20 rows:
+six terminal contracts moved to PASS, while 14 Activity, terminal, and
+node-update owner gaps remain explicitly BLOCKED. The current ledger total is
+therefore **99 BLOCKED**; no row is obsolete, deleted, or skipped.
 
 ## Minimal regression packets
 
@@ -99,16 +101,16 @@ verification is **2 files passed; 13 tests passed; 0 assertions red**, with
 focused `[AD-011]` and `[AD-143]` runs both green. No test-only branch, skip,
 weakened expectation, or product change was introduced by this packet.
 
-## Quantification of all 116 BLOCKED rows
+## Quantification of the original 116 BLOCKED rows and current 99 remainder
 
 The classification is an evidence triage, not a verdict on product scope:
 
 | Category | Count | Rule |
 |---|---:|---|
 | 缺 owner (`OWNER_MISSING`) | 11 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. |
-| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 89 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Nine P0 rows and two P1 rows now have public PASS fixtures. |
+| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 83 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Nine P0 rows, two P1 rows, and six round-15 terminal rows now have public PASS fixtures. |
 | 真实能力缺口 (`CAPABILITY_GAP`) | 5 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. |
-| **Total** | **105** | Nine P0 rows moved to PASS and two P1 rows moved from REGRESSION to PASS after focused public-owner verification. |
+| **Total** | **99** | Nine P0 rows moved to PASS, two P1 rows moved from REGRESSION to PASS, and six round-15 terminal rows moved from BLOCKED to PASS after focused public-owner verification. |
 
 ### `OWNER_MISSING` — 11 rows
 
@@ -125,7 +127,7 @@ The classification is an evidence triage, not a verdict on product scope:
 | `activity.test.js` | 3 | `AD-002`–`AD-004`; cross-channel Operation index/Center is absent. Search, task, and artifact owners are not an equivalent operation index. |
 | `channel-list.test.jsx` | 2 | `AD-202`–`AD-203`; current `VersionIncompatible` is a protocol terminal, not a node-version/update capability, and no node-update port/UI is mounted. |
 
-### `FIXTURE_MISSING` — 89 rows
+### `FIXTURE_MISSING` — 83 rows
 
 These rows have a named current owner and an evidence successor, but the
 successor is not yet a one-to-one public fixture for the baseline scenario.
@@ -138,7 +140,7 @@ auditable:
 | `agent-information-architecture.test.jsx` | 4 | `AD-027`, `AD-034`, `AD-037`, `AD-039` |
 | `agent-selection.test.js` | 0 | `AD-057`, `AD-058` recovered in `tests/agent-selection.test.js:150,163` |
 | `app-agent-probe-lifecycle.test.jsx` | 1 | `AD-074` |
-| `app-shell-terminal-split.test.jsx` | 15 | `AD-093`–`AD-102`, `AD-104`–`AD-108` |
+| `app-shell-terminal-split.test.jsx` | 9 | `AD-093`, `AD-096`–`AD-099`, `AD-101`, `AD-105`–`AD-106`, `AD-108`; AD-094/095/100/102/104/107 now have green public fixtures in `tests/blocked-round15-terminal-owner.test.jsx` |
 | `atoll-session.test.jsx` | 0 | `AD-125`–`AD-127` recovered in `tests/atoll-session.test.jsx:26,43,60` |
 | `capabilities.test.js` | 0 | `AD-138`–`AD-141` recovered in `tests/agent-describe-capability-index.test.jsx:49,83,124,145` |
 | `channel-feed-startup.test.jsx` | 18 | `AD-156`–`AD-161`, `AD-163`, `AD-165`–`AD-173`, `AD-178`, `AD-182` |
@@ -146,7 +148,7 @@ auditable:
 | `cursors.test.js` | 27 | `AD-277`–`AD-278`, `AD-282`–`AD-304`, `AD-306`–`AD-307` |
 | `devices-panel.test.jsx` | 1 | `AD-316` |
 | `dynamic-f3.test.jsx` | 16 | `AD-327`–`AD-329`, `AD-331`, `AD-333`–`AD-338`, `AD-340`–`AD-343`, `AD-350`–`AD-351` |
-| **Total** | **89** | Nine P0 fixture rows and AD-014/017 now PASS; AD-316 remains blocked with a public red reproduction. |
+| **Total** | **83** | Nine P0 rows, AD-014/017, and six round-15 terminal rows now PASS; AD-316 and the remaining terminal rows remain blocked with public reproductions. |
 
 The remaining categories above retain their ledger `BLOCKED` status. AD-014 and
 AD-017 no longer count as fixture-missing: their public-owner fixtures are
@@ -162,4 +164,5 @@ modify Workspace, Reading, Outbox, Feed runtime, session-access product code,
 vendor, package or lock files, export private production helpers, or
 delete/skip baseline declarations. The existing owner commits `e09169e` and
 `6c880aa` supply the two product closures; this packet only verifies their
-public contracts.
+public contracts. Round 15 adds the three `blocked-round15-*` public evidence
+tests and leaves the 14 unresolved cases explicitly BLOCKED.
