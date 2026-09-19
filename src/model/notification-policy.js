@@ -57,15 +57,15 @@ export function notificationDisposition(channelState, envelope, selfId = '') {
   }
 
   const semanticRequest = envelope?.kind === KIND.request ? envelope : directTurn?.request;
-  // A terminal tool frame can arrive before its request/parent closure. Its
-  // shape alone is not enough to prove that it is nested lifecycle, nor that
-  // it is an independent readable answer. Keep the qualification unresolved
-  // until Replica materializes the parent context; callers must not flash a
-  // normal final notification in the meantime.
-  if (envelope?.kind === KIND.response
-    && envelope.parent_id
-    && isToolProtocolType(semanticType)
-    && !directTurn) return 'notification_context_unknown';
+  // Any response carrying a parent id can arrive before Replica materializes
+  // that exact parent context. Its shape alone is not enough to prove that it
+  // is nested lifecycle, nor that it is an independent readable answer. Keep
+  // the qualification unresolved until the parent closure is present; this
+  // prevents a response-first terminal from flashing a normal final rail
+  // notification before its root identity can be established.
+  if (envelope?.kind === KIND.response && envelope.parent_id && !directTurn) {
+    return 'notification_context_unknown';
+  }
   if (isToolProtocolType(semanticType) && semanticRequest?.parent_id) return 'nested_tool_lifecycle';
 
   if (envelope?.kind === 'event') {

@@ -200,6 +200,39 @@ describe('notification confirmation contract', () => {
 });
 
 describe('notification presentation facts', () => {
+  it('holds a response-first terminal out of the rail until its exact parent arrives', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    const terminal = {
+      id: 'response-first-final',
+      parent_id: 'response-first-request',
+      kind: 'response',
+      type: 'agent.ask',
+      sender: { kind: 'agent', id: 'agent:reviewer:1' },
+      audience: [selfId],
+      payload: { body: { status: 'completed', text: 'late parent result' } },
+    };
+    expect(feed.enqueue({ channel_id: channelId, seq: 1, source: 'live', envelope: terminal })).toBe(true);
+    // Until Replica materializes the exact parent context, a terminal-first
+    // response is unresolved lifecycle provenance, not a user notification.
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+
+    expect(feed.enqueue({
+      channel_id: channelId,
+      seq: 2,
+      source: 'live',
+      envelope: {
+        id: 'response-first-request',
+        kind: 'request',
+        type: 'agent.ask',
+        sender: { kind: 'human', id: selfId },
+        audience: ['agent:reviewer:1'],
+        payload: { body: { text: 'late parent request' } },
+      },
+    })).toBe(true);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+  });
+
   it('keeps a readable live event in the replica and presentation row path', () => {
     const replica = createChannelReplicaStore();
     const channelId = 'c0.project';
