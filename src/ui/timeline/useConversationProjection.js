@@ -734,7 +734,7 @@ export function useConversationProjection({
       boundary: 0,
       cause: '',
     }));
-  }, [state.channelId, controller.activationID, messageListKey]);
+  }, [state.channelId, viewport.activationID, messageListKey]);
   const latestRowID = viewport.presentationAuthority?.candidateID || '';
   useColdEntryDiagnostics({
     channelId: state.channelId,
