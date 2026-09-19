@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildComposerModel,
+  createControlRequest,
   createMessageRequest,
   parseComposerCommand,
   resolveComposerAgentSelection,
@@ -202,5 +203,37 @@ describe('Composer slash 入口', () => {
 
     expect(model.commandMenu.rows.map((row) => row.command)).toEqual(['compact', 'restart']);
     expect(model.controls.commands.new).toMatchObject({ state: 'unsupported', enabled: false });
+  });
+
+  it('TC-0658：steer 控制只发布标准文本/CAS 字段到当前 Agent', () => {
+    const model = buildComposerModel({
+      activeChannelId: 'dev',
+      draft: { text: '改方向', recipients: [] },
+      roster: ROSTER,
+      access: 'member_active',
+      agentSelection: selected(CODEX),
+      capabilityIndex: new Map([[CODEX.id, {
+        actorId: CODEX.id,
+        describe: { types: new Set(['agent.steer']) },
+      }]]),
+    });
+
+    expect(model.controls.steer).toMatchObject({ state: 'supported', enabled: true });
+    expect(createControlRequest(model, 'agent.steer', { text: '换个方向' }, CODEX.id)).toEqual({
+      channelId: 'dev',
+      text: '',
+      msgType: 'agent.steer',
+      audience: [CODEX.id],
+      targetLabel: CODEX.name,
+      payload: { text: '换个方向' },
+    });
+    expect(createControlRequest(model, 'agent.steer', { text: '换个方向', expected_turn_id: 'turn-1' }, CODEX.id)).toEqual({
+      channelId: 'dev',
+      text: '',
+      msgType: 'agent.steer',
+      audience: [CODEX.id],
+      targetLabel: CODEX.name,
+      payload: { text: '换个方向', expected_turn_id: 'turn-1' },
+    });
   });
 });
