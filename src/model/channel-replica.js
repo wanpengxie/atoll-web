@@ -729,20 +729,26 @@ export function createChannelReplicaStore() {
     record.revision += 1;
     record.headSeq = Math.max(record.headSeq, seq);
     record.materializedCoverage = mergeReplicaCoverage(record.materializedCoverage, { lowSeq: seq, highSeq: seq });
-    record.state._timelineRevision += 1;
-    record.state._timelineProjectionVersion += 1;
-    const requests = new Map([...record.state._envelopesById.values()]
-      .filter((value) => value.kind === 'request').map((value) => [value.id, value]));
-    const rootID = rootRequestId(envelope, requests) || envelope.id || '';
-    record.state._timelineChangeLog.push({
-      revision: record.state._timelineRevision,
-      kind: envelope.kind === 'response' ? 'content' : 'structure',
-      id: rootID,
-      subjectID: envelope.parent_id || envelope.id || '',
-    });
-    if (record.state._timelineChangeLog.length > 256) {
-      const removed = record.state._timelineChangeLog.splice(0, record.state._timelineChangeLog.length - 256);
-      record.state._timelineChangeBase = removed.at(-1)?.revision || record.state._timelineChangeBase;
+    // Durable ingress and canonical projection have different clocks. A
+    // historical flat payload is retained in rows for transport/cache
+    // evidence, but rebuildState deliberately exposes no business entry for
+    // it. Do not invalidate projection consumers for a row they cannot see.
+    if (hasProjectionBody(envelope)) {
+      record.state._timelineRevision += 1;
+      record.state._timelineProjectionVersion += 1;
+      const requests = new Map([...record.state._envelopesById.values()]
+        .filter((value) => value.kind === 'request').map((value) => [value.id, value]));
+      const rootID = rootRequestId(envelope, requests) || envelope.id || '';
+      record.state._timelineChangeLog.push({
+        revision: record.state._timelineRevision,
+        kind: envelope.kind === 'response' ? 'content' : 'structure',
+        id: rootID,
+        subjectID: envelope.parent_id || envelope.id || '',
+      });
+      if (record.state._timelineChangeLog.length > 256) {
+        const removed = record.state._timelineChangeLog.splice(0, record.state._timelineChangeLog.length - 256);
+        record.state._timelineChangeBase = removed.at(-1)?.revision || record.state._timelineChangeBase;
+      }
     }
     if (source === 'live') {
       recordLiveTimelineArrival(record.state, envelope, seq, selfId);
@@ -770,6 +776,7 @@ export function createChannelReplicaStore() {
       ? Math.min(ordinaryCut, floor)
       : ordinaryCut;
     const remove = seqs.filter((seq) => seq < cut);
+    const projectionChanged = remove.some((seq) => hasProjectionBody(record.state.rows.get(seq)));
     retainTrimmedTerminalClosures(record.state, cut);
     for (const seq of remove) record.state.rows.delete(seq);
     // Keep a response whose parent is outside this materialized window in the
@@ -783,8 +790,10 @@ export function createChannelReplicaStore() {
     record.materializedCoverage = [...record.state.rows.keys()].sort((a, b) => a - b)
       .reduce((all, seq) => mergeReplicaCoverage(all, { lowSeq: seq, highSeq: seq }), []);
     record.revision += 1;
-    record.state._timelineRevision += 1;
-    record.state._timelineProjectionVersion += 1;
+    if (projectionChanged) {
+      record.state._timelineRevision += 1;
+      record.state._timelineProjectionVersion += 1;
+    }
     return removed;
   }
 

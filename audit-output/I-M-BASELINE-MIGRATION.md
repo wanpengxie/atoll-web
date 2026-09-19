@@ -532,6 +532,33 @@ an obsolete compatibility oracle; it remains untouched and is not used to
 weaken this contract. No compatibility parser, second ledger, or private
 production map was introduced.
 
+## Round 17 projection-version efficiency oracle
+
+The deleted fold store's separate `_timelineControlVersion` versus
+`_timelineProjectionVersion` distinction is an implementation fingerprint, not
+a current user promise: a unique canonical processing frame changes visible
+content and must advance the current Presentation snapshot. The user-facing
+invariant is narrower: duplicate delivery and rows that canonical normalization
+deliberately ignores must not invalidate the canonical projection clock.
+
+| user invariant | unique public owner | strict evidence |
+|---|---|---|
+| An accepted flat row may advance durable Replica ingress, but it must not advance the public canonical `historyFor(channel).presentationRevision`, `_timelineRevision`, or projection invalidator; a repeated seq remains a no-op. | `ChannelFeedRuntime` → `ChannelReplica.commit` and `historyFor().presentationRevision` | `src/model/channel-replica-projection-version.test.js:64-88` — one flat row increases durable `revisionFor` only; public presentation revision and canonical clock stay stable, and the repeated seq does not increase either. |
+| A unique visible canonical content fact still advances Presentation. | `createConversationPresentation` + Replica canonical source revision | `src/model/channel-replica-projection-version.test.js:90-105` — canonical processing response advances the source clock and Presentation snapshot revision by one. |
+| Trimming only ignored flat transport rows does not invalidate projection. | Replica `trim` | `src/model/channel-replica-projection-version.test.js:107-118` — durable trim revision advances while canonical clocks remain zero. |
+
+The minimal owner fix is in `src/model/channel-replica.js:732-752` and
+`src/model/channel-replica.js:778-796`: durable row/trim revision remains
+separate, while timeline source revision, change log, and projection
+invalidator advance only when `hasProjectionBody` says the row can participate
+in canonical projection. No `_timelineControlVersion` compatibility field was
+restored and no notification/cache owner was touched. Focused evidence:
+`npx vitest run src/model/channel-replica-projection-version.test.js` → **3/3
+GREEN**; the I–M broad owner set is **112/112 GREEN**. The separate legacy
+`channel-feed-runtime-unread` successor still has its documented two red flat
+payload/old weak-total assertions; those are stale compatibility semantics and
+were not changed to re-enable flat notification behavior.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -557,7 +584,9 @@ production map was introduced.
   count remains 159. Round 15 revalidated TC-1028 and minimally repaired
   TC-1029 in its existing owner. Round 16 adds the strict TC-1031
   canonical-boundary contract; exact bridge is 45/45 and the stale
-  compatibility oracle remains deliberately unmodified.
+  compatibility oracle remains deliberately unmodified. Round 17 reclassified
+  the deleted fold revision split as an implementation fingerprint, then
+  fixed the real no-op invalidation at the current Replica boundary.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
