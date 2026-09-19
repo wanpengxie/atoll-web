@@ -1,4 +1,9 @@
-import { createChannelReplicaCache, createChannelReplicaStore, replicaResumeSnapshot } from './channel-replica.js';
+import {
+  createChannelReplicaCache,
+  createChannelReplicaStore,
+  mergeReplicaCoverage,
+  replicaResumeSnapshot,
+} from './channel-replica.js';
 import { selectTimelineItems } from './conversation-presentation.js';
 import { argsOf, FINAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
@@ -233,11 +238,49 @@ function createCursorOwner(storage = globalThis.localStorage) {
 function historyInitial(channelId) {
   return {
     channelId, generation: 0, attached: false, headSeq: 0, beforeSeq: 0,
-    messageCurrent: false, notificationAuthorityRevision: 0,
+    messageCurrent: false, controlCurrent: false,
+    controlCoverage: [], controlTailCoverage: false, controlParentClosure: false,
+    notificationAuthorityRevision: 0,
     hasOlder: false, loading: false, foregroundLoading: false, backgroundLoading: false,
     error: '', errorCode: '', completedPages: 0, coverage: [], lastSource: '', buffered: 0,
     historyDemand: Object.freeze({ revision: 0, phase: 'idle', error: '' }),
   };
+}
+
+function controlTailRange(status) {
+  const target = historyNumeric(status?.headSeq);
+  if (!target) return null;
+  return (status?.controlCoverage || []).find((range) => (
+    historyNumeric(range?.lowSeq) <= target
+    && historyNumeric(range?.highSeq) >= target
+  )) || null;
+}
+
+// A control tail is not complete merely because the newest sequence is
+// present. Every lifecycle row in the admitted tail must have its exact
+// parent in Replica's envelope index; otherwise a terminal/progress frame can
+// still be reclassified when the parent arrives and resurrect a queued
+// control. Compact terminal closures are represented in that same index by
+// ChannelReplica, so this remains a read-only join rather than a second fold.
+function controlParentClosure(state, tail) {
+  if (!state || !tail || !(state.rows instanceof Map)) return true;
+  const envelopes = state._envelopesById;
+  if (!(envelopes instanceof Map)) return false;
+  for (const [seq, envelope] of state.rows) {
+    if (seq < tail.lowSeq || seq > tail.highSeq) continue;
+    const parentID = String(envelope?.parent_id || '');
+    if (parentID && !envelopes.has(parentID)) return false;
+  }
+  const visit = (entry) => {
+    if (entry?.kind !== 'turn' || !entry.turn) return true;
+    if (!entry.turn.terminal) {
+      const requestSeq = historyNumeric(entry.turn.requestSeq || entry.seq);
+      if (requestSeq && (requestSeq < tail.lowSeq || requestSeq > tail.highSeq)) return false;
+    }
+    return (entry.thread || []).every(visit);
+  };
+  if (!(state.timeline || []).every(visit)) return false;
+  return true;
 }
 
 // One lifetime owner for source admission, canonical commit, cache and
@@ -417,9 +460,14 @@ export function createChannelFeedRuntime(options = {}) {
     if (code === 'forbidden') {
       grants.delete(channelId);
       const status = histories.get(channelId);
-      if (status?.generation === requestGeneration && (status.attached || status.messageCurrent)) {
+      if (status?.generation === requestGeneration
+        && (status.attached || status.messageCurrent || status.controlCurrent)) {
         status.attached = false;
         status.messageCurrent = false;
+        status.controlCurrent = false;
+        status.controlCoverage = [];
+        status.controlTailCoverage = false;
+        status.controlParentClosure = false;
         status.notificationAuthorityRevision = ++notificationAuthorityRevision;
         followingObservations.delete(channelId);
         feedChanged = true;
@@ -435,6 +483,24 @@ export function createChannelFeedRuntime(options = {}) {
   function historyState(channelId) {
     if (!histories.has(channelId)) histories.set(channelId, historyInitial(channelId));
     return histories.get(channelId);
+  }
+
+  function refreshControlCurrent(channelId, status = historyState(channelId)) {
+    const target = historyNumeric(status.headSeq);
+    const attached = status.attached === true
+      && status.generation > 0
+      && status.generation === generation
+      && localReplicaReady !== false;
+    const tail = attached && target > 0 ? controlTailRange(status) : null;
+    const tailCovered = target === 0 ? attached : Boolean(tail);
+    const parentClosed = target === 0
+      ? true
+      : Boolean(tail && controlParentClosure(replica.state(channelId), tail));
+    const next = Boolean(attached && tailCovered && parentClosed);
+    status.controlTailCoverage = tailCovered;
+    status.controlParentClosure = parentClosed;
+    status.controlCurrent = next;
+    return next;
   }
 
   function publish({ index = false } = {}) {
@@ -463,6 +529,12 @@ export function createChannelFeedRuntime(options = {}) {
       accepted.push(result.row);
       discoveredChannels.add(row.channel_id);
       const status = histories.get(row.channel_id);
+      if (source !== 'cache' && status?.attached && status.generation === generation
+        && historyNumeric(row.seq) > 0) {
+        status.controlCoverage = mergeReplicaCoverage(status.controlCoverage, {
+          lowSeq: historyNumeric(row.seq), highSeq: historyNumeric(row.seq),
+        });
+      }
       if (source === 'live' && status?.attached && status.generation === generation) {
         const nextHead = Math.max(status.headSeq, historyNumeric(row.seq));
         const wasCurrent = status.messageCurrent === true;
@@ -516,6 +588,10 @@ export function createChannelFeedRuntime(options = {}) {
       }
       observeAgentActivity(result.row, source);
       observeTimerFiring(result.row, source);
+    }
+    for (const channelId of discoveredChannels) {
+      const status = histories.get(channelId);
+      if (status) refreshControlCurrent(channelId, status);
     }
     if (accepted.length) {
       callback('onChannelsDiscovered', discoveredChannels);
@@ -577,6 +653,7 @@ export function createChannelFeedRuntime(options = {}) {
       limit: Math.max(1, historyNumeric(request.limit || request.revealRows) || HISTORY_PAGE_SIZE),
       byteLimit: Math.max(1, historyNumeric(request.byteLimit || request.revealBytes) || HISTORY_BATCH_BYTES),
       generation,
+      attachEpoch,
       purpose: request.intent === 'scroll-history' ? 'user-demand' : 'initial-tail',
       priority: request.urgency === 'anticipatory' ? 'background' : 'foreground',
       intent: request.intent || 'scroll-history',
@@ -634,8 +711,11 @@ export function createChannelFeedRuntime(options = {}) {
       batch = { ...batch, id: `${batch.id}:network`, source: 'network' };
       outcome = await executeBatch(batch, request.signal);
     }
+    if (batch.generation !== generation || batch.attachEpoch !== attachEpoch
+      || status.generation !== generation || !status.attached) {
+      return { kind: 'cancelled', reason: 'stale-generation' };
+    }
     if (outcome.kind === 'page') {
-      if (batch.generation !== generation || !status.attached) return { kind: 'cancelled', reason: 'stale-generation' };
       const accepted = applyRows(outcome.rows, {
         source: batch.source === 'network' ? 'history' : 'cache', persist: false, publishChange: false,
       });
@@ -646,6 +726,14 @@ export function createChannelFeedRuntime(options = {}) {
       status.beforeSeq = historyNumeric(result.next_before_seq ?? result.nextBeforeSeq ?? batch.beforeSeq);
       status.hasOlder = result.has_older ?? !result.exhausted ?? false;
       status.coverage = replica.record(channelId)?.materializedCoverage || [];
+      const scanLow = historyNumeric(result.scan_low_seq ?? result.scanLowSeq);
+      const scanHigh = historyNumeric(result.scan_high_seq ?? result.scanHighSeq);
+      if (scanLow && scanHigh >= scanLow) {
+        status.controlCoverage = mergeReplicaCoverage(status.controlCoverage, {
+          lowSeq: scanLow, highSeq: scanHigh,
+        });
+      }
+      refreshControlCurrent(channelId, status);
       const projection = selectTimelineItems(replica.state(channelId), request.viewSpec || {});
       const observed = revealToken ? admission.observe(channelId, projection.items, {
         operationID: revealToken.operationID,
@@ -688,7 +776,7 @@ export function createChannelFeedRuntime(options = {}) {
 
   function pageEnd(payload = {}) {
     const batch = networkBatches.get(payload.ref);
-    if (!batch) return false;
+    if (!batch || batch.attachEpoch !== attachEpoch) return false;
     if (payload.error_code && projectAccessFailure(batch.channelId, {
       code: payload.error_code,
       message: payload.error_detail || payload.error_code,
@@ -726,6 +814,7 @@ export function createChannelFeedRuntime(options = {}) {
     if (!principal) {
       cursors.clearReadAuthority();
       localReplicaReady = true;
+      for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
       publish();
       return { resume: {} };
     }
@@ -742,6 +831,7 @@ export function createChannelFeedRuntime(options = {}) {
         applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
       }
       localReplicaReady = true;
+      for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
       publish({ index: true });
       return { resume: replicaResumeSnapshot(selected.meta) };
     } catch (error) {
@@ -759,6 +849,8 @@ export function createChannelFeedRuntime(options = {}) {
     if (!nextGeneration || nextGeneration < generation || incompatible) return { stale: true, meta: cache.metaSnapshot() };
     generation = nextGeneration;
     const epoch = ++attachEpoch;
+    for (const batch of networkBatches.values()) void adapters.cancel(batch, 'history attach recalibrated');
+    networkBatches.clear();
     const nextWorld = String(detail.boot || world);
     const worldChanged = Boolean(world) && nextWorld !== world;
     world = nextWorld;
@@ -771,6 +863,26 @@ export function createChannelFeedRuntime(options = {}) {
       timerAcknowledgedRevision = timerRevision;
       timerOverflow = null;
       activityRevision += 1;
+    }
+    const nextChannelIDs = new Set(entries.map((entry) => String(entry?.channel_id || '')).filter(Boolean));
+    for (const [channelId, status] of histories) {
+      if (nextChannelIDs.has(channelId)) {
+        // A grant is a new control-context admission even when the wire
+        // generation number is reused. Do not let the old tail claim survive
+        // while cache selection or the new tail proof is pending.
+        status.controlCurrent = false;
+        status.controlCoverage = [];
+        status.controlTailCoverage = false;
+        status.controlParentClosure = false;
+        continue;
+      }
+      status.attached = false;
+      status.messageCurrent = false;
+      status.controlCurrent = false;
+      status.controlCoverage = [];
+      status.controlTailCoverage = false;
+      status.controlParentClosure = false;
+      status.notificationAuthorityRevision = ++notificationAuthorityRevision;
     }
     let selectedMeta = cache.metaSnapshot();
     if (principal && world) {
@@ -785,13 +897,6 @@ export function createChannelFeedRuntime(options = {}) {
       selectedMeta = selected.meta;
     }
     if (principal && world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
-    const nextChannelIDs = new Set(entries.map((entry) => String(entry?.channel_id || '')).filter(Boolean));
-    for (const [channelId, status] of histories) {
-      if (nextChannelIDs.has(channelId) || (!status.attached && !status.messageCurrent)) continue;
-      status.attached = false;
-      status.messageCurrent = false;
-      status.notificationAuthorityRevision = ++notificationAuthorityRevision;
-    }
     grants.clear();
     for (const entry of entries) {
       const channelId = String(entry?.channel_id || '');
@@ -802,9 +907,17 @@ export function createChannelFeedRuntime(options = {}) {
       const headSeq = Math.max(status.headSeq, grantedHeadSeq, replica.visibleNewest(channelId));
       const authorityChanged = status.generation !== generation
         || status.attached !== true
-        || status.messageCurrent !== true;
+        || status.messageCurrent !== true
+        || status.controlCurrent !== true;
       Object.assign(status, {
         generation, attached: true, messageCurrent: true, headSeq,
+        controlCurrent: false,
+        // Durable cache rows are readable but do not prove that current
+        // queued controls have no later terminal. Only this attach's network
+        // scan, live rows, or live checkpoint may establish control coverage.
+        controlCoverage: [],
+        controlTailCoverage: false,
+        controlParentClosure: false,
         beforeSeq: replica.visibleOldest(channelId) || headSeq + 1,
         hasOlder: headSeq > 0,
         notificationAuthorityRevision: authorityChanged
@@ -851,6 +964,7 @@ export function createChannelFeedRuntime(options = {}) {
     activityConnected = true;
     if (connectionChanged) activityRevision += 1;
     localReplicaReady = true;
+    for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
     publish({ index: true });
     return { changed: true, meta: selectedMeta };
   }
@@ -860,6 +974,14 @@ export function createChannelFeedRuntime(options = {}) {
     const low = historyNumeric(payload.scan_low_seq);
     const high = historyNumeric(payload.scanned_seq);
     if (!payload.channel_id || !low || high < low) return false;
+    const status = histories.get(payload.channel_id);
+    if (status?.attached && status.generation === generation) {
+      status.controlCoverage = mergeReplicaCoverage(status.controlCoverage, {
+        lowSeq: low, highSeq: high,
+      });
+      refreshControlCurrent(payload.channel_id, status);
+      publish();
+    }
     void cache.saveCoverage(payload.channel_id, low, high).catch(cacheError);
     return true;
   }
@@ -870,6 +992,7 @@ export function createChannelFeedRuntime(options = {}) {
     const syncRevision = status.notificationAuthorityRevision;
     return Object.freeze({
       ...status,
+      controlCoverage: Object.freeze((status.controlCoverage || []).map((range) => ({ ...range }))),
       authority: Object.freeze({
         principalId: principal,
         serverBoot: world,
@@ -931,9 +1054,14 @@ export function createChannelFeedRuntime(options = {}) {
   function disconnectHistory(requestGeneration = generation) {
     if (requestGeneration && requestGeneration !== generation) return false;
     for (const status of histories.values()) {
-      if (status.attached || status.messageCurrent) {
-        status.attached = false;
-        status.messageCurrent = false;
+      const wasActive = status.attached || status.messageCurrent || status.controlCurrent;
+      status.attached = false;
+      status.messageCurrent = false;
+      status.controlCurrent = false;
+      status.controlCoverage = [];
+      status.controlTailCoverage = false;
+      status.controlParentClosure = false;
+      if (wasActive) {
         status.notificationAuthorityRevision = ++notificationAuthorityRevision;
       }
     }

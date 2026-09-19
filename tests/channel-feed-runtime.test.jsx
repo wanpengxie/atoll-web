@@ -62,6 +62,111 @@ describe('ChannelFeedRuntime ownership', () => {
     runtime.destroy();
   });
 
+  it('exposes controlCurrent only after current tail coverage and exact parent closure', async () => {
+    const options = runtimeOptions();
+    const ownerToken = Object.freeze({ principalId: 'root' });
+    const runtime = createChannelFeedRuntime(options);
+    runtime.bind({ ...options, ownerToken });
+
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 2, has_rows: true },
+    ], { generation: 1, boot: 'boot-a' });
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      attached: true, generation: 1, controlCurrent: false,
+      controlTailCoverage: false,
+    });
+
+    const request = {
+      id: 'queued-request', kind: 'request', type: TYPES.agentAsk,
+      sender: { id: 'human:root:1', kind: 'human' }, audience: ['agent:worker:1'],
+      payload: { body: { text: 'queued work' } },
+    };
+    const queued = {
+      id: 'queued-status', parent_id: request.id, kind: 'response', type: TYPES.agentAsk,
+      sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'],
+      payload: { body: { status: 'queued', controls: [] } },
+    };
+    expect(runtime.getSnapshot().enqueue({ channel_id: 'c0', seq: 1, generation: 1, envelope: request })).toBe(true);
+    expect(runtime.getSnapshot().historyFor('c0').controlCurrent).toBe(false);
+    expect(runtime.getSnapshot().enqueue({ channel_id: 'c0', seq: 2, generation: 1, envelope: queued })).toBe(true);
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      controlCurrent: true, controlTailCoverage: true, controlParentClosure: true,
+      controlCoverage: [{ lowSeq: 1, highSeq: 2 }],
+    });
+
+    // A reused generation is still a new attach/control admission. The old
+    // tail proof cannot silently re-authorize cached queued controls.
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 2, has_rows: true },
+      { channel_id: 'c1', head_seq: 2, has_rows: true },
+    ], { generation: 1, boot: 'boot-a' });
+    expect(runtime.getSnapshot().historyFor('c0').controlCurrent).toBe(false);
+
+    // A current-generation checkpoint proves the tail without requiring a
+    // row-by-row read; a terminal/progress frame whose parent is not present
+    // remains unknown until the exact parent arrives.
+    const orphanTerminal = {
+      id: 'orphan-terminal', parent_id: 'missing-parent', kind: 'response', type: TYPES.agentAsk,
+      sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'],
+      payload: { body: { status: 'completed', text: 'done' } },
+    };
+    expect(runtime.getSnapshot().enqueue({ channel_id: 'c1', seq: 2, generation: 1, envelope: orphanTerminal })).toBe(true);
+    expect(runtime.getSnapshot().historyFor('c1').controlCurrent).toBe(false);
+    expect(runtime.getSnapshot().liveCheckpoint({
+      generation: 1, channel_id: 'c1', scan_low_seq: 1, scanned_seq: 2,
+    })).toBe(true);
+    expect(runtime.getSnapshot().historyFor('c1')).toMatchObject({
+      controlTailCoverage: true, controlParentClosure: false, controlCurrent: false,
+    });
+    expect(runtime.getSnapshot().enqueue({
+      channel_id: 'c1', seq: 1, generation: 1,
+      envelope: { ...request, id: 'missing-parent' },
+    })).toBe(true);
+    expect(runtime.getSnapshot().historyFor('c1')).toMatchObject({
+      controlCurrent: true, controlParentClosure: true,
+    });
+    runtime.destroy();
+  });
+
+  it('clears controlCurrent on disconnect, regrant and forbidden history failure', async () => {
+    const wireRef = { current: {
+      historyBefore: vi.fn(() => {
+        const accepted = Promise.resolve({ accepted: true, generation: 2, channel_id: 'c0' });
+        accepted.ref = 'history-forbidden';
+        return accepted;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const options = { ...runtimeOptions(), wireRef };
+    const runtime = createChannelFeedRuntime(options);
+    runtime.mount();
+    await runtime.getSnapshot().setHistoryGrants([{ channel_id: 'c0', head_seq: 0 }], {
+      generation: 1, boot: 'boot-a', focus: 'c0',
+    });
+    expect(runtime.getSnapshot().historyFor('c0').controlCurrent).toBe(true);
+
+    expect(runtime.getSnapshot().disconnectHistory(1)).toBe(true);
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      attached: false, controlCurrent: false, controlCoverage: [],
+    });
+
+    await runtime.getSnapshot().setHistoryGrants([{ channel_id: 'c0', head_seq: 1 }], {
+      generation: 2, boot: 'boot-b', focus: 'c0',
+    });
+    expect(runtime.getSnapshot().historyFor('c0').controlCurrent).toBe(false);
+    const pending = runtime.getSnapshot().loadHistory('c0');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runtime.getSnapshot().pageEnd({
+      ref: 'history-forbidden', channel_id: 'c0', generation: 2,
+      error_code: 'forbidden', error_detail: 'forbidden',
+    })).toBe(true);
+    await pending;
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      attached: false, controlCurrent: false, controlCoverage: [],
+    });
+    runtime.destroy();
+  });
+
   it('keeps owner-scoped command identities stable across store publications', () => {
     const options = runtimeOptions();
     const ownerToken = Object.freeze({ principalId: 'root' });
