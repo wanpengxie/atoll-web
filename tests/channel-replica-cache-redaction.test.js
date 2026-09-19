@@ -127,4 +127,76 @@ describe('Replica 缓存持久化前应隐藏设备密钥/凭据（恢复自 tes
     expect(migrated).toContain('已隐藏');
     await cache.destroy();
   });
+
+  it('QuotaExceededError 回收旧半窗后重试同一 rows store，顺序重载不丢新行', async () => {
+    await clearCache();
+    const cache = createChannelReplicaCache({ indexedDB });
+    await cache.ensureOwner('root', { world: 'boot-a' });
+    const envelope = (seq) => ({
+      id: `quota-row-${seq}`, kind: 'event', type: 'human.note',
+      sender: { kind: 'human', id: 'human:root:1' }, visibility: 'public',
+      payload: { body: { text: `message ${seq}`, token: `secret-${seq}` } },
+    });
+    await cache.saveRows(Array.from({ length: 8 }, (_, index) => ({
+      channel_id: 'c0', seq: index + 1, envelope: envelope(index + 1),
+    })));
+
+    const originalPut = IDBObjectStore.prototype.put;
+    let quotaFailed = false;
+    let thrown = null;
+    IDBObjectStore.prototype.put = function put(value, ...args) {
+      if (!quotaFailed && this.name === 'rows' && value?.seq === 9) {
+        quotaFailed = true;
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      return originalPut.call(this, value, ...args);
+    };
+    try {
+      await cache.saveRows([{ channel_id: 'c0', seq: 9, envelope: envelope(9) }]);
+    } catch (error) {
+      thrown = error;
+    } finally {
+      IDBObjectStore.prototype.put = originalPut;
+    }
+
+    // Deliberately arrive out of order after recovery. The canonical rows
+    // store, not insertion order or a second cache, owns the restored order.
+    await cache.saveRows([15, 10, 12, 11, 14, 13].map((seq) => ({
+      channel_id: 'c0', seq, envelope: envelope(seq),
+    })), { coverage: { channelId: 'c0', lowSeq: 1, highSeq: 15 } });
+    await cache.destroy();
+
+    const restored = createChannelReplicaCache({ indexedDB });
+    await restored.ensureOwner('root', { world: 'boot-a' });
+    const page = await restored.readBefore('c0', Number.MAX_SAFE_INTEGER, 200, 4 * 1024 * 1024);
+    expect(quotaFailed).toBe(true);
+    expect(thrown).toBeNull();
+    expect(page.rows.map((row) => row.seq)).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(page.rows.at(-1)?.envelope?.payload?.body).toMatchObject({
+      text: 'message 15', token: '已隐藏',
+    });
+    expect(restored.metaSnapshot().get('c0')).toMatchObject({
+      oldestSeq: 8, newestSeq: 15, rowCount: 8,
+    });
+    await restored.destroy();
+  });
+
+  it('写入事务失败时不提前发布 Meta 或留下半条 row', async () => {
+    await clearCache();
+    const cache = createChannelReplicaCache({ indexedDB });
+    await cache.ensureOwner('root', { world: 'boot-a' });
+    const originalPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function put(value, ...args) {
+      if (this.name === 'rows' && value?.seq === 1) throw new Error('injected row failure');
+      return originalPut.call(this, value, ...args);
+    };
+    try {
+      await expect(cache.saveRows([sensitiveRow(1)])).rejects.toThrow('injected row failure');
+    } finally {
+      IDBObjectStore.prototype.put = originalPut;
+    }
+    expect(cache.metaSnapshot().has('c0')).toBe(false);
+    expect((await cache.readBefore('c0', 2, 10, 10_000)).rows).toEqual([]);
+    await cache.destroy();
+  });
 });

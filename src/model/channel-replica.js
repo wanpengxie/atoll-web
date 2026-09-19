@@ -8,6 +8,10 @@ const CACHE_VERSION = 1;
 const LIVE_ARRIVAL_LIMIT = 1_024;
 const LIVE_PRESENTATION_ARRIVAL_LIMIT = 1_024;
 const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
+// A quota retry keeps a small usable suffix even when the cache has no
+// caller-provided per-channel bound. This is only activated for a channel
+// that has actually hit quota; ordinary writes keep their current retention.
+const QUOTA_MIN_RETAINED_ROWS = 8;
 const memoryCache = new Map();
 
 function numeric(value) {
@@ -842,22 +846,149 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
   let ownerEpoch = 0;
   let dbPromise = openCache(indexedDB);
   let meta = new Map();
+  const quotaBounds = new Map();
   const memoryForOwner = () => {
     if (!memoryCache.has(owner)) memoryCache.set(owner, { rows: new Map(), meta: new Map() });
     return memoryCache.get(owner);
   };
+
+  const ownerChanged = () => Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+  const assertOwner = (operationOwner, epoch) => {
+    if (epoch !== ownerEpoch || operationOwner !== owner) throw ownerChanged();
+  };
+  const copyMeta = (value = {}) => ({
+    ...value,
+    coverage: mergeReplicaCoverage(value.coverage || []),
+  });
+  const metadataForEntries = (entries, base = {}) => {
+    const seqs = entries.map((entry) => numeric(entry?.seq)).filter(Boolean);
+    return {
+      ...copyMeta(base),
+      headSeq: Math.max(numeric(base.headSeq), ...seqs),
+      oldestSeq: seqs.length ? Math.min(...seqs) : 0,
+      newestSeq: seqs.length ? Math.max(...seqs) : 0,
+      rowCount: seqs.length,
+    };
+  };
+
+  async function ownedRows(db, operationOwner, epoch) {
+    assertOwner(operationOwner, epoch);
+    if (!db) {
+      const memory = memoryForOwner();
+      return [...memory.rows.values()]
+        .filter((row) => row?.channel_id)
+        .map((row) => ({ owner: operationOwner, channelId: row.channel_id, seq: numeric(row.seq), row }));
+    }
+    const records = await requestResult(db.transaction('rows', 'readonly').objectStore('rows').getAll());
+    assertOwner(operationOwner, epoch);
+    return records.filter((entry) => entry.owner === operationOwner);
+  }
+
+  async function transactionDone(transaction) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        callback(value);
+      };
+      transaction.oncomplete = () => finish(resolve);
+      transaction.onabort = () => finish(reject, transaction.error || new Error('replica cache transaction aborted'));
+      transaction.onerror = () => {
+        // IndexedDB aborts the transaction after the error event. Keep the
+        // rejection on onabort so a synchronous request exception and a
+        // request-level error share one settlement path.
+      };
+    });
+  }
+
+  async function persistBatch(db, operationOwner, epoch, rows, touched) {
+    assertOwner(operationOwner, epoch);
+    if (!db) {
+      const memory = memoryForOwner();
+      for (const row of rows) memory.rows.set(`${row.channel_id}\u0000${row.seq}`, structuredClone(row));
+      for (const [channelId, value] of touched) meta.set(channelId, copyMeta(value));
+      memory.meta = new Map([...meta].map(([channelId, value]) => [channelId, copyMeta(value)]));
+      return;
+    }
+    const transaction = db.transaction(['rows', 'meta'], 'readwrite');
+    const completion = transactionDone(transaction);
+    try {
+      for (const row of rows) {
+        transaction.objectStore('rows').put({
+          owner: operationOwner,
+          channelId: row.channel_id,
+          seq: numeric(row.seq),
+          row,
+        });
+      }
+      for (const [channelId, value] of touched) {
+        transaction.objectStore('meta').put({
+          owner: operationOwner,
+          channelId,
+          value: structuredClone(copyMeta(value)),
+        });
+      }
+    } catch (error) {
+      try { transaction.abort(); } catch { /* already inactive */ }
+      try { await completion; } catch { /* preserve original request error */ }
+      throw error;
+    }
+    await completion;
+    assertOwner(operationOwner, epoch);
+    for (const [channelId, value] of touched) meta.set(channelId, copyMeta(value));
+  }
+
+  async function trimChannelRows(channelId, keep, db, operationOwner, epoch) {
+    const records = (await ownedRows(db, operationOwner, epoch))
+      .filter((entry) => entry.channelId === channelId)
+      .sort((left, right) => numeric(left.seq) - numeric(right.seq));
+    const retained = Math.max(0, numeric(keep));
+    const remove = records.slice(0, Math.max(0, records.length - retained));
+    if (!remove.length) return 0;
+    const survivorRecords = records.slice(remove.length);
+    const value = metadataForEntries(survivorRecords, meta.get(channelId));
+    assertOwner(operationOwner, epoch);
+    if (!db) {
+      const memory = memoryForOwner();
+      for (const entry of remove) memory.rows.delete(`${channelId}\u0000${numeric(entry.seq)}`);
+      meta.set(channelId, copyMeta(value));
+      memory.meta = new Map([...meta].map(([id, item]) => [id, copyMeta(item)]));
+      return remove.length;
+    }
+    const transaction = db.transaction(['rows', 'meta'], 'readwrite');
+    const completion = transactionDone(transaction);
+    try {
+      const rowsStore = transaction.objectStore('rows');
+      for (const entry of remove) rowsStore.delete([operationOwner, channelId, numeric(entry.seq)]);
+      transaction.objectStore('meta').put({
+        owner: operationOwner,
+        channelId,
+        value: structuredClone(copyMeta(value)),
+      });
+    } catch (error) {
+      try { transaction.abort(); } catch { /* already inactive */ }
+      try { await completion; } catch { /* preserve original request error */ }
+      throw error;
+    }
+    await completion;
+    assertOwner(operationOwner, epoch);
+    meta.set(channelId, copyMeta(value));
+    return remove.length;
+  }
 
   async function ensureOwner(principalId, { world = '' } = {}) {
     const selectedOwner = `${String(principalId || '')}\u0000${String(world || '')}`;
     const epoch = ++ownerEpoch;
     owner = selectedOwner;
     meta = new Map();
+    quotaBounds.clear();
     const db = await dbPromise;
-    if (epoch !== ownerEpoch || selectedOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+    assertOwner(selectedOwner, epoch);
     if (!db) meta = new Map(memoryForOwner().meta);
     else {
       const entries = await requestResult(db.transaction('meta', 'readonly').objectStore('meta').getAll());
-      if (epoch !== ownerEpoch || selectedOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+      assertOwner(selectedOwner, epoch);
       for (const entry of entries) if (entry.owner === selectedOwner) meta.set(entry.channelId, entry.value);
     }
     return { changed: false, boot: world, meta: new Map(meta) };
@@ -868,44 +999,68 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     const epoch = ownerEpoch;
     const accepted = (rows || []).filter((row) => row?.channel_id && numeric(row?.seq));
     const persistedRows = accepted.map((row) => redactReplicaSecrets(row));
-    const touched = new Map();
-    for (const row of accepted) {
-      const channelId = row.channel_id;
-      const seq = numeric(row.seq);
-      const known = meta.get(channelId) || {};
-      const current = touched.get(channelId) || { ...known, coverage: [...(known.coverage || [])] };
-      current.headSeq = Math.max(numeric(current.headSeq), seq);
-      current.newestSeq = Math.max(numeric(current.newestSeq), seq);
-      current.oldestSeq = current.oldestSeq ? Math.min(numeric(current.oldestSeq), seq) : seq;
-      current.rowCount = numeric(current.rowCount) + 1;
-      current.coverage = mergeReplicaCoverage(current.coverage, { lowSeq: seq, highSeq: seq });
-      touched.set(channelId, current);
-    }
-    if (coverage?.channelId) {
-      const known = meta.get(coverage.channelId) || {};
-      const current = touched.get(coverage.channelId) || { ...known, coverage: [...(known.coverage || [])] };
-      current.coverage = mergeReplicaCoverage(current.coverage, coverage);
-      touched.set(coverage.channelId, current);
-    }
-    if (!accepted.length && !touched.size) return 0;
-    for (const [channelId, value] of touched) meta.set(channelId, value);
     const db = await dbPromise;
-    if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
-    if (!db) {
-      const memory = memoryForOwner();
-      for (const row of persistedRows) memory.rows.set(`${row.channel_id}\u0000${row.seq}`, structuredClone(row));
-      memory.meta = new Map(meta);
-      return accepted.length;
+    assertOwner(operationOwner, epoch);
+    const touchedChannels = new Set(accepted.map((row) => row.channel_id));
+    if (coverage?.channelId) touchedChannels.add(coverage.channelId);
+    if (!accepted.length && !touchedChannels.size) return 0;
+
+    const buildTouched = () => {
+      const touched = new Map();
+      for (const row of accepted) {
+        const channelId = row.channel_id;
+        const seq = numeric(row.seq);
+        const known = touched.get(channelId) || copyMeta(meta.get(channelId));
+        const current = {
+          ...known,
+          headSeq: Math.max(numeric(known.headSeq), seq),
+          newestSeq: Math.max(numeric(known.newestSeq), seq),
+          oldestSeq: numeric(known.oldestSeq) ? Math.min(numeric(known.oldestSeq), seq) : seq,
+          rowCount: numeric(known.rowCount) + 1,
+          coverage: mergeReplicaCoverage(known.coverage, { lowSeq: seq, highSeq: seq }),
+        };
+        touched.set(channelId, current);
+      }
+      if (coverage?.channelId) {
+        const known = touched.get(coverage.channelId) || copyMeta(meta.get(coverage.channelId));
+        touched.set(coverage.channelId, {
+          ...known,
+          coverage: mergeReplicaCoverage(known.coverage, coverage),
+        });
+      }
+      return touched;
+    };
+
+    const persist = () => persistBatch(db, operationOwner, epoch, persistedRows, buildTouched());
+    try {
+      await persist();
+    } catch (error) {
+      if (error?.name !== 'QuotaExceededError') throw error;
+
+      // The failed transaction is rolled back before any eviction. Trim the
+      // oldest half of each affected channel, then retry the exact redacted
+      // rows. A channel that has recovered from quota keeps a small tail so
+      // subsequent appends do not immediately recreate the same pressure.
+      const bounds = new Map();
+      for (const channelId of touchedChannels) {
+        const records = (await ownedRows(db, operationOwner, epoch))
+          .filter((entry) => entry.channelId === channelId);
+        const count = records.length;
+        if (!count) throw error;
+        bounds.set(channelId, Math.max(QUOTA_MIN_RETAINED_ROWS, count));
+        await trimChannelRows(channelId, Math.floor(count / 2), db, operationOwner, epoch);
+      }
+      for (const [channelId, limit] of bounds) quotaBounds.set(channelId, limit);
+      await persist();
     }
-    const transaction = db.transaction(['rows', 'meta'], 'readwrite');
-    for (const row of persistedRows) {
-      transaction.objectStore('rows').put({ owner: operationOwner, channelId: row.channel_id, seq: numeric(row.seq), row });
+
+    // Keep the retry's durable metadata and row order in sync with the
+    // actual rows store. This is a second transaction only after the append
+    // has committed; a failed append never publishes a speculative Meta map.
+    for (const [channelId, limit] of quotaBounds) {
+      if (!touchedChannels.has(channelId)) continue;
+      await trimChannelRows(channelId, limit, db, operationOwner, epoch);
     }
-    for (const [channelId, value] of touched) transaction.objectStore('meta').put({ owner: operationOwner, channelId, value });
-    await new Promise((resolve, reject) => {
-      transaction.oncomplete = resolve;
-      transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error('replica cache commit failed'));
-    });
     return accepted.length;
   }
 
@@ -978,6 +1133,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     const db = await dbPromise;
     if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
     meta = new Map();
+    quotaBounds.clear();
     memoryCache.delete(owner);
     if (!db) return;
     const keysByStore = new Map();
