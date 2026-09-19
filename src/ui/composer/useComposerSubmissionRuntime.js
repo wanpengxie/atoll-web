@@ -8,6 +8,7 @@ import {
 } from '../../model/request-owner.js';
 import { createPersistenceEpochFence } from '../../model/sync-session.js';
 import { newId } from '../../util/id.js';
+import { createSubmissionCorrelationPort } from './submission-correlation-port.js';
 
 const ACTIVE_STATES = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain', 'rejected']);
 const RETRY_STATES = new Set(['uncertain', 'rejected']);
@@ -59,7 +60,6 @@ export function useComposerSubmissionRuntime({
   wireState = 'closed',
   wireRef,
   accessRef,
-  rosterRef,
   producerOwnerToken = 0,
   generationFor = ZERO_GENERATION,
   serverWorld = '',
@@ -83,6 +83,11 @@ export function useComposerSubmissionRuntime({
   const retryPrincipalRef = useRef(principalId);
   const acceptingRef = useRef(new Map());
   const landedRef = useRef(new Set());
+  const submissionCorrelationPortRef = useRef(null);
+  if (!submissionCorrelationPortRef.current) {
+    submissionCorrelationPortRef.current = createSubmissionCorrelationPort();
+  }
+  const correlationPrincipalRef = useRef(principalId);
   const persistedDraftRevisionRef = useRef(new Map());
   const authorityRef = useRef(null);
   const pendingRef = useRef([]);
@@ -175,6 +180,11 @@ export function useComposerSubmissionRuntime({
     transmittingRef.current.clear();
     acceptingRef.current.clear();
     persistedDraftRevisionRef.current.clear();
+    if (correlationPrincipalRef.current !== principalId) {
+      correlationPrincipalRef.current = principalId;
+      landedRef.current.clear();
+      submissionCorrelationPortRef.current.reset();
+    }
     if (retryPrincipalRef.current !== principalId) {
       automaticReconnectRetryRef.current.clear();
       retryPrincipalRef.current = principalId;
@@ -183,6 +193,7 @@ export function useComposerSubmissionRuntime({
     setApprovalStates({});
     setControlStates({});
     if (!principalId) {
+      submissionCorrelationPortRef.current.reset();
       publishPending([]);
       publishDrafts(new Map());
       return undefined;
@@ -203,6 +214,14 @@ export function useComposerSubmissionRuntime({
       if (!alive || !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)
         || generation !== hydrationRef.current || authorityRef.current?.principalId !== principalId) return;
       const restoredRows = submissionRows.map(restoredSubmission).filter(Boolean);
+      for (const row of restoredRows) {
+        const identity = { channelId: row.channelId, messageId: row.messageId };
+        if (landedRef.current.has(row.messageId)) {
+          submissionCorrelationPortRef.current.markLanded(identity);
+        } else if (row.state !== 'rejected') {
+          submissionCorrelationPortRef.current.record(identity);
+        }
+      }
       const landed = restoredRows.filter((row) => landedRef.current.has(row.messageId));
       if (landed.length) {
         await Promise.all(landed.map((row) => outboxRef.current.remove(principalId, row.messageId)
@@ -360,7 +379,6 @@ export function useComposerSubmissionRuntime({
       if (!isLive()) return false;
       if (!transmitting) return false;
       publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? transmitting : row));
-      rosterRef?.current?.recordSubmission?.(submission.channelId, submission.messageId);
       const receipt = await owner.transport.submit(transmitting.frame);
       if (!isLive()) return false;
       authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
@@ -376,6 +394,10 @@ export function useComposerSubmissionRuntime({
         });
       if (!isLive()) return false;
       if (landedRef.current.has(submission.messageId)) {
+        submissionCorrelationPortRef.current.markLanded({
+          channelId: submission.channelId,
+          messageId: submission.messageId,
+        });
         await outboxRef.current.remove(owner.principalId, submission.messageId);
         publishPending((rows) => rows.filter((row) => row.messageId !== submission.messageId));
       } else if (accepted) {
@@ -402,7 +424,12 @@ export function useComposerSubmissionRuntime({
       if (!isLive()) return false;
       if (failed) publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? failed : row));
       if (state === 'uncertain') onNotice('发送结果待确认，正在通过重连账本核对。');
-      if (state === 'rejected') rosterRef?.current?.forgetSubmission?.(submission.channelId, submission.messageId);
+      if (state === 'rejected') {
+        submissionCorrelationPortRef.current.forget({
+          channelId: submission.channelId,
+          messageId: submission.messageId,
+        });
+      }
       onAccessChanged();
       return false;
     } finally {
@@ -415,7 +442,7 @@ export function useComposerSubmissionRuntime({
         }
       }
     }
-  }, [authorize, captureOwner, currentFacts, onAccessChanged, onError, onFeedChanged, onNotice, publishPending, rosterRef]);
+  }, [authorize, captureOwner, currentFacts, onAccessChanged, onError, onFeedChanged, onNotice, publishPending]);
   transmitRef.current = transmit;
 
   const sendOnce = useCallback(async (request = {}) => {
@@ -480,6 +507,14 @@ export function useComposerSubmissionRuntime({
     }
     const ids = new Set(submissions.map((row) => row.messageId));
     ids.forEach((id) => automaticReconnectRetryRef.current.delete(id));
+    for (const row of submissions) {
+      const identity = { channelId: row.channelId, messageId: row.messageId };
+      if (landedRef.current.has(row.messageId)) {
+        submissionCorrelationPortRef.current.markLanded(identity);
+      } else if (row.state !== 'rejected') {
+        submissionCorrelationPortRef.current.record(identity);
+      }
+    }
     const outstanding = submissions.filter((row) => !landedRef.current.has(row.messageId));
     const alreadyLanded = submissions.filter((row) => landedRef.current.has(row.messageId));
     publishPending((rows) => [...rows.filter((row) => !ids.has(row.messageId)), ...outstanding]);
@@ -526,6 +561,10 @@ export function useComposerSubmissionRuntime({
       [...RETRY_STATES], { state: 'queued', error: null },
       { authorize: () => assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.persist, { requireTransport: false }).current });
     if (!queued) return false;
+    submissionCorrelationPortRef.current.record({
+      channelId: queued.channelId,
+      messageId: queued.messageId,
+    });
     publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? queued : row));
     if (authorityRef.current?.wireState === 'open') return transmitRef.current(queued);
     return true;
@@ -554,7 +593,10 @@ export function useComposerSubmissionRuntime({
       const removed = pendingRef.current.filter((row) => landed.has(row.messageId));
       publishPending((rows) => rows.filter((row) => !landed.has(row.messageId)));
       for (const row of removed) {
-        rosterRef?.current?.forgetSubmission?.(row.channelId, row.messageId);
+        submissionCorrelationPortRef.current.markLanded({
+          channelId: row.channelId,
+          messageId: row.messageId,
+        });
         void outboxRef.current.remove(authorityRef.current?.principalId || principalId, row.messageId).catch(onError);
       }
     }
@@ -562,7 +604,7 @@ export function useComposerSubmissionRuntime({
       setControlStates((current) => Object.fromEntries(Object.entries(current).filter(([, state]) => !closed.has(state?.requestId))));
     }
     return true;
-  }, [onError, principalId, publishPending, rosterRef]);
+  }, [onError, principalId, publishPending]);
 
   const ownedWireCommand = useCallback(async (kind, channelId, reqId, decision, payload) => {
     const owner = captureOwner(channelId);
@@ -620,6 +662,7 @@ export function useComposerSubmissionRuntime({
     transmittingRef.current.clear();
     acceptingRef.current.clear();
     landedRef.current.clear();
+    submissionCorrelationPortRef.current.reset();
     persistedDraftRevisionRef.current.clear();
     setAcceptingChannels(new Set());
     const worldError = serializedError(Object.assign(new Error('服务端数据世界已更换，请确认后重新发送'), { code: 'world_changed' }));
@@ -646,8 +689,10 @@ export function useComposerSubmissionRuntime({
     setControlStates({});
   }, [onError, principalId, publishDrafts, publishPending]);
 
+  const submissionCorrelationPort = submissionCorrelationPortRef.current;
   return useMemo(() => Object.freeze({
     pending,
+    submissionCorrelationPort,
     drafts,
     draftFor,
     updateDraft,
@@ -663,5 +708,5 @@ export function useComposerSubmissionRuntime({
     resetWorld,
     clear,
     accepting: acceptingChannels.has(activeChannelId),
-  }), [activeChannelId, acceptingChannels, approvalStates, cancel, clear, controlStates, draftFor, drafts, pending, persistDraftAttachments, reconcileFeed, resetWorld, resolve, retry, send, updateDraft]);
+  }), [activeChannelId, acceptingChannels, approvalStates, cancel, clear, controlStates, draftFor, drafts, pending, persistDraftAttachments, reconcileFeed, resetWorld, resolve, retry, send, submissionCorrelationPort, updateDraft]);
 }

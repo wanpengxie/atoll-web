@@ -81,6 +81,32 @@ describe('current submission owner: outbox-store + composer runtime', () => {
     harness.store.close();
   });
 
+  it('exposes Composer-owned correlation state without delegating identity ownership to roster', async () => {
+    const harness = runtimeHarness();
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(harness));
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+    const port = result.current.submissionCorrelationPort;
+
+    await act(async () => {
+      await result.current.send({ messageId: 'correlation-1', text: 'offline', msgType: 'agent.ask', audience: ['agent:worker:1'] });
+    });
+    expect(result.current.submissionCorrelationPort).toBe(port);
+    expect(port.pending).toEqual([{ channelId: 'c0', messageId: 'correlation-1' }]);
+    expect(harness.rosterRef.current.recordSubmission).not.toHaveBeenCalled();
+
+    expect(result.current.reconcileFeed(new Set(['correlation-1']), new Set(), harness.producerOwnerToken)).toBe(true);
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+    expect(port.pending).toEqual([]);
+    expect(port.landed).toEqual([{ channelId: 'c0', messageId: 'correlation-1' }]);
+    expect(port.owns({ channelId: 'c0', messageId: 'correlation-1' })).toBe(true);
+    expect(harness.rosterRef.current.forgetSubmission).not.toHaveBeenCalled();
+
+    expect(port.forget({ channelId: 'c0', messageId: 'correlation-1' })).toBe(true);
+    expect(port.owns({ channelId: 'c0', messageId: 'correlation-1' })).toBe(false);
+    unmount();
+    harness.store.close();
+  });
+
   it('reads transport authority at execution time and keeps a disconnected send durable', async () => {
     const submit = vi.fn().mockResolvedValue({ message_id: 'm2' });
     const harness = runtimeHarness({ wireState: 'open', submit });
