@@ -6,22 +6,36 @@ function entryEnvelope(entry) {
   return entry?.envelope || null;
 }
 
+function envelopeText(envelope) {
+  const body = argsOf(envelope);
+  return String(body.text || body.title || body.description || body.detail || body.message || '').trim();
+}
+
+function entryText(entry) {
+  if (entry?.kind !== 'turn') return envelopeText(entry?.envelope);
+  const turn = entry.turn || {};
+  return [
+    turn.request,
+    ...(turn.provisional || []).map((row) => row?.envelope),
+    turn.terminal,
+  ].map(envelopeText).filter(Boolean).join('\n');
+}
+
 function entrySearchRow(entry, channel) {
   const envelope = entryEnvelope(entry);
   if (!envelope?.id) return null;
-  const body = argsOf(envelope);
-  const text = String(body.text || body.title || body.description || body.detail || '').trim();
+  const text = entryText(entry);
   return Object.freeze({
-    key: `entry:${channel.id}:${envelope.id}`,
+    key: `message:${channel.id}:${envelope.id}`,
     id: envelope.id,
-    kind: 'entry',
-    objectType: entry.kind === 'turn' ? 'turn' : 'entry',
-    title: text || envelope.type || envelope.id,
+    kind: 'message',
+    objectType: 'message',
+    title: envelopeText(envelope) || envelope.type || envelope.id,
     text,
     subtitle: envelope.type || '',
     channelId: channel.id,
     channelName: channel.qualified_name || channel.name || channel.id,
-    source: Object.freeze({ kind: 'conversation', channelId: channel.id, entryId: envelope.id }),
+    source: Object.freeze({ kind: 'message', channelId: channel.id, messageId: envelope.id }),
   });
 }
 
@@ -32,12 +46,69 @@ function visitEntries(entries, visit) {
   }
 }
 
-// Pure query index over the currently installed, accessible Replica
-// presentations. It never opens history, reads cache, or retains a second
-// search corpus.
-export function selectFeatureSearchIndex({ states = [], channels = [], rosters = new Map() } = {}) {
+function channelCanExposeContent(channel) {
+  if (!channel?.access) return Boolean(channel?.id);
+  return String(channel.access).startsWith('member_') || String(channel.access).startsWith('observer_');
+}
+
+function ownedRows(input) {
+  if (input instanceof Map) {
+    return [...input].flatMap(([channelId, value]) => Array.isArray(value)
+      ? value.map((row) => ({ row, channelId }))
+      : [{ row: value, channelId: value?.channelId || '' }]);
+  }
+  return [...(input || [])].map((row) => ({ row, channelId: row?.channelId || '' }));
+}
+
+function taskSearchRow(item, fallbackChannelId, channelById) {
+  const channelId = String(item?.channelId || fallbackChannelId || '');
+  const channel = channelById.get(channelId);
+  const id = String(item?.key || item?.id || '');
+  if (!id || !channelCanExposeContent(channel)) return null;
+  return Object.freeze({
+    key: `task:${channelId}:${id}`,
+    id,
+    kind: 'task',
+    objectType: 'task',
+    title: String(item.title || item.text || '未命名任务'),
+    text: [item.description, item.waitingFor].filter(Boolean).join('\n'),
+    subtitle: String(item.state || ''),
+    channelId,
+    channelName: channel.qualified_name || channel.name || channelId,
+    source: Object.freeze({ kind: 'task', channelId, taskId: id }),
+  });
+}
+
+function fileSearchRow(entry, fallbackChannelId, channelById) {
+  const channelId = String(entry?.channelId || fallbackChannelId || '');
+  const channel = channelById.get(channelId);
+  const id = String(entry?.resourceId || entry?.path || entry?.key || '');
+  if (entry?.kind !== 'file' || !id || !channelCanExposeContent(channel)) return null;
+  return Object.freeze({
+    key: `file:${channelId}:${id}`,
+    id,
+    kind: 'file',
+    objectType: 'file',
+    title: String(entry.name || id),
+    subtitle: String(entry.mediaType || ''),
+    channelId,
+    channelName: channel.qualified_name || channel.name || channelId,
+    source: Object.freeze({ kind: 'file', channelId, fileId: id }),
+  });
+}
+
+// Pure query index over owner-provided snapshots. Optional task and file rows
+// are indexed only when their owners supply them; this selector never fetches,
+// caches, or reconstructs either corpus from conversation data.
+export function selectFeatureSearchIndex({
+  states = [],
+  channels = [],
+  rosters = new Map(),
+  tasks = [],
+  files = [],
+} = {}) {
   const channelById = new Map((channels || []).map((channel) => [channel.id, channel]));
-  const rows = (channels || []).map((channel) => Object.freeze({
+  const rows = (channels || []).filter(channelCanExposeContent).map((channel) => Object.freeze({
     key: `channel:${channel.id}`,
     id: channel.id,
     kind: 'channel',
@@ -50,13 +121,17 @@ export function selectFeatureSearchIndex({ states = [], channels = [], rosters =
   }));
   for (const [channelId, state] of states || []) {
     const channel = channelById.get(channelId);
-    if (!channel || ['access_denied', 'retired'].includes(channel.access)) continue;
+    if (!channelCanExposeContent(channel)) continue;
     const projection = selectTimelineItems(state, { scope: 'all' });
     visitEntries(projection.items, (entry) => {
       const row = entrySearchRow(entry, channel);
       if (row) rows.push(row);
     });
-    for (const actor of rosters.get(channelId) || []) {
+  }
+  for (const [channelId, actors] of rosters || []) {
+    const channel = channelById.get(channelId);
+    if (!channelCanExposeContent(channel)) continue;
+    for (const actor of actors || []) {
       if (!actor?.id) continue;
       rows.push(Object.freeze({
         key: `actor:${channelId}:${actor.id}`,
@@ -68,11 +143,20 @@ export function selectFeatureSearchIndex({ states = [], channels = [], rosters =
         actorId: actor.id,
         channelId,
         channelName: channel.qualified_name || channel.name || channelId,
-        source: Object.freeze({ kind: 'actor', channelId, actor }),
+        source: Object.freeze({ kind: 'actor', channelId, actorId: actor.id }),
       }));
     }
   }
-  return Object.freeze(rows);
+  for (const { row, channelId } of ownedRows(tasks)) {
+    const task = taskSearchRow(row, channelId, channelById);
+    if (task) rows.push(task);
+  }
+  for (const { row, channelId } of ownedRows(files)) {
+    const file = fileSearchRow(row, channelId, channelById);
+    if (file) rows.push(file);
+  }
+  const unique = new Map(rows.map((row) => [row.key, row]));
+  return Object.freeze([...unique.values()]);
 }
 
 function searchableText(row) {
