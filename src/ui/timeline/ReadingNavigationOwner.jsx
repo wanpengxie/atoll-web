@@ -34,7 +34,10 @@ function navigationKey(event) {
   if (['ArrowUp', 'PageUp'].includes(event.key) || (event.key === ' ' && event.shiftKey)) {
     return { direction: 'older', sourceID: event.code || event.key };
   }
-  if (['ArrowDown', 'PageDown', 'End'].includes(event.key) || event.key === ' ') {
+  if (event.key === 'End') {
+    return { direction: 'newer', sourceID: event.code || event.key, absoluteBoundary: 'bottom' };
+  }
+  if (['ArrowDown', 'PageDown'].includes(event.key) || event.key === ' ') {
     return { direction: 'newer', sourceID: event.code || event.key };
   }
   return null;
@@ -435,6 +438,17 @@ export function ReadingNavigationOwner({
       const key = navigationKey(event);
       const host = key && hostForVisibleRole();
       if (!host?.node) return;
+      if (key.absoluteBoundary === 'bottom') {
+        // End is an explicit semantic request for the current latest content,
+        // not merely a large relative browser scroll. Native End can stop at
+        // a virtualizer estimate (and cannot prove the fixed Composer
+        // obstruction), leaving Reading in browsing even though the user asked
+        // to follow. Route it through the one application intent; the active
+        // renderer then proves/commits its own physical tail before consume.
+        event.preventDefault();
+        committedRef.current.reading.jumpToLatest?.();
+        return;
+      }
       recordInput(host, { source: 'key', ...key });
     };
     const onKeyUp = (event) => {

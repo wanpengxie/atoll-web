@@ -29,6 +29,20 @@ function reading(mode = 'browsing') {
     updateNavigation: vi.fn(() => true),
     finishNavigation: vi.fn(() => true),
     cancelNavigation: vi.fn(() => true),
+    jumpToLatest: vi.fn(() => {
+      session = {
+        ...session,
+        mode: 'following',
+        bookmark: null,
+        bottomIntent: {
+          id: `latest:${session.inputEpoch}`,
+          inputEpoch: session.inputEpoch,
+          targetMessageIDs: [],
+        },
+      };
+      port.session = session;
+      return true;
+    }),
     consumeBottomIntent: vi.fn((intent) => {
       if (session.bottomIntent?.id !== intent?.id
         || session.bottomIntent.inputEpoch !== session.inputEpoch) return false;
@@ -222,6 +236,25 @@ it('keeps following input potential until native displacement supplies its bookm
     transactionID: firstTarget.transactionID,
     targetRevision: firstTarget.targetRevision,
     phase: 'settled',
+  });
+});
+
+it('routes End through one explicit latest intent instead of a relative browsing transaction', () => {
+  const port = reading('browsing');
+  const view = render(<Subject port={port} role="browsing" />);
+  const host = view.getByTestId('browsing');
+  const event = new KeyboardEvent('keydown', {
+    key: 'End', code: 'End', bubbles: true, cancelable: true,
+  });
+
+  act(() => host.dispatchEvent(event));
+
+  expect(event.defaultPrevented).toBe(true);
+  expect(port.jumpToLatest).toHaveBeenCalledTimes(1);
+  expect(port.beginNavigation).not.toHaveBeenCalled();
+  expect(port.getSession()).toMatchObject({
+    mode: 'following',
+    bottomIntent: { id: 'latest:4', inputEpoch: 4 },
   });
 });
 
