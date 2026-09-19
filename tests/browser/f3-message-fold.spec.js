@@ -10,13 +10,18 @@ async function login(page) {
 }
 
 async function chooseSteward(page) {
+  const steward = page.locator('.model-selector-trigger').filter({ hasText: 'steward' });
+  if (await steward.isVisible().catch(() => false)) return;
+
   // Delivery is owned by the composer's public model-selector menu. The old
   // labelled <select> belonged to the retired recipient compatibility path.
   const choose = page.getByRole('button', { name: '选择 Agent' });
-  await expect(choose).toBeVisible();
-  await choose.click();
-  await page.getByRole('menu', { name: '选择目标 Agent' })
-    .getByRole('menuitem', { name: 'steward' }).click();
+  if (await choose.isVisible().catch(() => false)) {
+    await choose.click();
+    await page.getByRole('menu', { name: '选择目标 Agent' })
+      .getByRole('menuitem', { name: 'steward' }).click();
+  }
+  await expect(steward).toBeVisible();
 }
 
 async function sendToSteward(page, text) {
@@ -37,6 +42,10 @@ test('用户展开长消息后，切频道返回与后续消息都保留选择',
     marker,
     ...Array.from({ length: 44 }, (_, index) => `显式选择第 ${index + 1} 行`),
   ].join('\n'));
+  // The latest entry is intentionally expanded by the fae authority rule. Add
+  // a real follow-up so the marker becomes historical before testing the
+  // user's explicit expansion override across the channel handoff.
+  await sendToSteward(page, '先把上一条变成历史，再由用户展开它。');
 
   const activeLayer = page.locator('.timeline-reading-layer.is-active');
   const article = activeLayer.getByRole('article').filter({ hasText: marker }).last();

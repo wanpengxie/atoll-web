@@ -494,6 +494,25 @@ WebSocket ≤1 与 pageerror/console error=0 均通过。合同故意使用
 terminal session 或 PTY owner 首断点；不改写冻结 `7ba308c` 的 `23/8` 历史
 aggregate，也没有测试或产品变更。
 
+### 第十八轮续：#14 F3 显式展开跨频道 handoff（clean `f16626d`）
+
+旧 `fae8b70` 的用户语义要求：当前 latest 长文首次进入时按 authority 规则展开；
+成为历史后默认折叠；用户的显式展开 override 在切频道返回及后续 append 后仍保留。
+当前迁移 spec 的首个停止点是测试 helper 仍强制寻找已不再出现的“选择 Agent”按钮；
+同时它在 latest entry 还未转为历史时就要求“展开全文”，与 fae authority 语义相反。
+
+本轮只做测试侧最小对齐：`chooseSteward()` 先接受 composer 已显示 steward，
+没有默认目标时才打开现有公开菜单；发送长文后补一条真实短消息，使 marker 按旧
+authority 规则成为历史，再执行同一个 `展开全文` / `收起` 用户动作。未改产品、
+selector、折叠断言或几何阈值。
+
+在 clean snapshot `f16626d` 以真实 Chromium 重跑
+`tests/browser/f3-message-fold.spec.js --grep '用户展开长消息'`：`1 passed (8.7s)`。
+切换到 `c0.project`、返回 `c0` 后，marker 的显式 `收起[aria-expanded=true]`
+仍存在；再发送后续消息，仍为 `true`。因此 handoff surface、Presentation fold
+continuity 与 user override 均通过；不向 Workspace/Feed 或 Reading owner 派发产品
+缺口，也不改写冻结 `7ba308c` 的 `23/8` 历史 aggregate。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
