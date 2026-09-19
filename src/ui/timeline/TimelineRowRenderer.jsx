@@ -281,6 +281,30 @@ function failureTitle(payload) {
   return FAILURE_LABELS[code] || FAILURE_LABELS[payload.reason] || '请求失败';
 }
 
+function controlsAllowed(access) {
+  return access === 'member_active' || access === 'member'
+    || (access?.relationship === 'member' && access?.unavailable !== true);
+}
+
+function latestControlFrame(turn) {
+  return [...(turn?.provisional || [])]
+    .sort((left, right) => Number(right.seq || 0) - Number(left.seq || 0))
+    .map((item) => argsOf(item.envelope))
+    .find((body) => body?.status === 'queued' || body?.status === 'processing') || null;
+}
+
+function targetIsCurrent(turn, authority) {
+  const actorId = turn?.request?.audience?.length === 1 ? turn.request.audience[0] : '';
+  return Boolean(actorId && authority?.current === true
+    && authority.actorIDs instanceof Set && authority.actorIDs.has(actorId));
+}
+
+function canInterrupt(turn, { access, targetAuthority }) {
+  if (!turn?.request || turn.terminal || turn.local || !controlsAllowed(access)) return false;
+  if (turn.request.type !== TYPES.agentAsk || !targetIsCurrent(turn, targetAuthority)) return false;
+  return latestControlFrame(turn)?.controls?.some((entry) => entry?.word === TYPES.agentInterrupt) === true;
+}
+
 function StructuredResult({ requestType = '', payload = {}, contentKey }) {
   const safe = redactSensitive(payload);
   const business = Object.fromEntries(Object.entries(safe).filter(([key]) => !RESULT_META.has(key)));
@@ -413,7 +437,7 @@ function ThreadCalls({ root, thread, names }) {
   return <ContentFrame contained><button type="button" className={`turn-thread-toggle${failed ? ' has-failure' : ''}`} aria-expanded={open} onClick={() => setOpen((value) => !value)}><span className={running ? 'pulse' : 'pulse done'} /><span>{items.length} 次关联调用</span><small>{running ? `${running} 处理中` : failed ? `${failed} 失败` : '已完成'}</small><span aria-hidden="true">{open ? '⌃' : '⌄'}</span></button>{open && <ol className="turn-thread-list">{items.map((item) => <ThreadCall key={item.turn.requestId} item={item} names={names} />)}</ol>}</ContentFrame>;
 }
 
-function TurnCard({ turn, names, selfId, fold, approvalState, editing, onResolve, onCancel, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask, onOpen }) {
+function TurnCard({ turn, names, selfId, access, targetAuthority, fold, approvalState, editing, onResolve, onCancel, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask, onOpen }) {
   const request = turn.request; const actorId = request.audience?.[0] || '';
   if ([TYPES.humanAsk, TYPES.humanApprove].includes(request.type) && request.audience?.includes(selfId)) return <ContentFrame><ApprovalCard turn={turn} names={names} state={approvalState} onResolve={onResolve} /></ContentFrame>;
   const pending = !turn.terminal; const local = request.local_submission_state;
@@ -423,7 +447,7 @@ function TurnCard({ turn, names, selfId, fold, approvalState, editing, onResolve
       <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(request.ts)}</time>{recipients && <span className="recipient-label">发送给 {recipients}</span>}{local && <small>{local}</small>}</header>
       <div className="request-text"><EnvelopeBody envelope={request} fold={fold} onDownload={onDownload} onPreview={onPreview} contentKeyPrefix="request" /></div>{editing?.targetId === turn.requestId && <small className="message-editing-state">正在输入框中编辑</small>}
     </ReplyableMessageFrame>
-    {pending && !local && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons">{request.type === TYPES.agentAsk && onEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, actorId)}>编辑</button>}{request.type === TYPES.agentAsk && onControl && <button type="button" onClick={() => onControl(turn, actorId, TYPES.agentInterrupt, {})}>停止</button>}</div></div></ContentFrame>}
+    {pending && !local && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons">{request.type === TYPES.agentAsk && onEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, actorId)}>编辑</button>}{canInterrupt(turn, { access, targetAuthority }) && onControl && <button type="button" onClick={() => onControl(turn, actorId, TYPES.agentInterrupt, {})}>停止</button>}</div></div></ContentFrame>}
     {local && onCancel && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons"><button type="button" onClick={() => onCancel(turn.requestId)}>取消</button></div></div></ContentFrame>}
     <AgentAnswer turn={turn} names={names} fold={fold} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpen} />
     <ThreadCalls root={turn} thread={turn.thread} names={names} />
@@ -438,7 +462,7 @@ function Standalone({ envelope, names, selfId, continuation, fold, onDownload, o
 }
 function Narration({ rows, names }) { return <div className="timeline-narration">{(rows || []).map(({ seq, envelope }) => <p key={envelope.id || seq}><strong>{nameOf(envelope.sender?.id, names)}</strong> {textOf(envelope) || envelope.type}</p>)}</div>; }
 
-export function useTimelineRowRenderer({ state, names, selfId, presentationEditing, browsingExpandedSlots, effectiveFoldOverrides, approvalStates, latestRowID = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, startEditing, toggleFold }) {
+export function useTimelineRowRenderer({ state, names, selfId, access = '', targetAuthority = null, presentationEditing, browsingExpandedSlots, effectiveFoldOverrides, approvalStates, latestRowID = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, startEditing, toggleFold }) {
   const currentActions = { state, onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, startEditing };
   const actionsRef = useRef(currentActions);
   actionsRef.current = currentActions;
@@ -455,7 +479,7 @@ export function useTimelineRowRenderer({ state, names, selfId, presentationEditi
     const rowFold = { ...fold, latest: row.id === latestRowID, automaticExpanded: browsingExpandedSlots.has(row.visualSlotID || row.id) };
     let content = null;
     if (entry?.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
-    else if (entry?.kind === 'turn') content = <TurnCard turn={{ ...entry.turn, thread: entry.thread || [] }} names={names} selfId={selfId} fold={rowFold} approvalState={approvalStates?.[entry.turn.request.id]} editing={presentationEditing}
+    else if (entry?.kind === 'turn') content = <TurnCard turn={{ ...entry.turn, thread: entry.thread || [] }} names={names} selfId={selfId} access={access} targetAuthority={targetAuthority} fold={rowFold} approvalState={approvalStates?.[entry.turn.request.id]} editing={presentationEditing}
       onResolve={port?.onResolve ? (requestID, decision, payload) => port.onResolve(state.channelId, requestID, decision, payload) : undefined}
       onCancel={port?.onCancel ? (requestID) => port.onCancel(state.channelId, requestID) : undefined}
       onControl={port?.onTaskControl ? (turn, actorId, type, payload) => port.onTaskControl({ channelId: state.channelId, turn, actorId, type, payload }) : undefined}
@@ -470,6 +494,6 @@ export function useTimelineRowRenderer({ state, names, selfId, presentationEditi
       onReply={port?.onReply} onCreateTask={port?.onCreateTask}
     />;
     return <div data-message-id={row.id} data-seq-low={row.seqLow} data-seq-high={row.seqHigh}>{content || <ContentFrame><p>无法显示此条目</p></ContentFrame>}{row.boundaryAfterTimestamp > 0 && <div className="day-separator"><span>{new Date(row.boundaryAfterTimestamp).toLocaleDateString('zh-CN')}</span></div>}</div>;
-  }, [approvalStates, browsingExpandedSlots, fold, latestRowID, names, presentationEditing, selfId, state]);
+  }, [access, approvalStates, browsingExpandedSlots, fold, latestRowID, names, presentationEditing, selfId, state, targetAuthority]);
   return { rowRenderRevision, renderRow };
 }

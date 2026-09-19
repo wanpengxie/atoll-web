@@ -159,6 +159,8 @@ export function ConversationSurface({
     state,
     names,
     selfId,
+    access,
+    targetAuthority: waitingRosterAuthority,
     presentationEditing,
     browsingExpandedSlots,
     effectiveFoldOverrides: foldOverrides,

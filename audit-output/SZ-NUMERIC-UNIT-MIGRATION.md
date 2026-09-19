@@ -5,9 +5,9 @@ Scope: top-level tests whose basename begins with a digit or S–Z; it.each rows
 ## Scope and result
 
 - Baseline: 331 executable cases in 39 suites.
-- Focused pre-fix candidates: 30 files / 143 cases → 135 passed, 8 failed, plus one Outbox teardown DatabaseClosedError. Post-fix direct owner checks: 12/12 StructuredResult/message-presentation tests passed.
+- Focused pre-fix candidates: 30 files / 143 cases → 135 passed, 8 failed, plus one Outbox teardown DatabaseClosedError. Post-fix direct owner checks: 12/12 StructuredResult/message-presentation tests and 13/13 processing-control tests passed.
 - Disposition: 117 GREEN, 3 RED, 1 PARTIAL, 187 OPEN, 20 GAP, 3 BLOCKED. Action rows: 214 (OPEN + GAP + PARTIAL + RED + BLOCKED pending ruling).
-- Remaining product regressions without source changes: daemon secret projection; processing stop-control permission; and the separately listed WorkspaceLayout pointer-focus packet. R-SZ-002A/B/C are resolved in the public renderer and Outbox races remain handoff-only to `composer_owner`, with no duplicate packet here.
+- Remaining product regressions without source changes: daemon secret projection and the separately listed WorkspaceLayout pointer-focus packet. R-SZ-002A/B/C and R-SZ-005 are resolved in the public renderer and Outbox races remain handoff-only to `composer_owner`, with no duplicate packet here.
 
 ## Suite contracts
 
@@ -406,7 +406,7 @@ duplicate its assertions.
 | R-SZ-002A | StructuredResult uses the protocol request type as the title for `system.channel.list`. | `tests/structured-result-restore.test.jsx`: completed `system.channel.list` result shows `system.channel.list`, not generic `结构化结果`. | `useTimelineRowRenderer` → public `TimelineRowRenderer` structured-result branch | GREEN; baseline SZ-025 branch fixed and direct owner-tested |
 | R-SZ-002B | StructuredResult presents `actor.describe` with the actor capability title `codex 的能力`. | `tests/structured-result-restore.test.jsx`: completed `actor.describe` result shows `codex 的能力`, not generic `结构化结果`. | `useTimelineRowRenderer` → public `TimelineRowRenderer` structured-result branch | GREEN; baseline SZ-025 branch fixed and direct owner-tested |
 | R-SZ-002C | StructuredResult maps `type_unsupported` to the user-facing failure wording `接收方不支持这个操作`. | `tests/structured-result-restore.test.jsx`: failed result with `error_code: type_unsupported` shows that label while retaining detail/redaction behavior. | `useTimelineRowRenderer` → public `TimelineRowRenderer` failure branch | GREEN; baseline SZ-026 fixed and direct owner-tested |
-| R-SZ-005 | A processing turn shows 停止 only when the current public authority advertises `agent.interrupt`. | `tests/task-controls-restore.test.jsx`: processing turn without `agent.interrupt` still renders 停止. This is an extra candidate and does not reopen the 9 GREEN S11 baseline cases. | `useTimelineRowRenderer` → public `TimelineRowRenderer` turn-controls branch | EXTRA RED; hand to owner |
+| R-SZ-005 | A processing turn shows 停止 only when the current public authority is writable and advertises `agent.interrupt`. | `tests/task-controls-restore.test.jsx`: no stop for missing control, stale access, or departed target; stop appears and dispatches only for current writable authority. This is an extra candidate and does not reopen the 9 GREEN S11 baseline cases. | `useTimelineRowRenderer` → public `TimelineRowRenderer` turn-controls branch | GREEN; extra owner suite passed |
 | R-SZ-X01 | A committed pointer channel selection transfers focus to its heading without scrolling. | `tests/workspace-layout-channel-focus.test.jsx`: click c1, rerender, then heading is not focused. | `WorkspaceLayout` channel navigation/focus path | EXTRA RED; hand to owner |
 | H-SZ-OUTBOX | Outbox reconnect hot-loop and feed-before-hydration resurrection are handoff-only; no duplicate product packet here. | Existing `tests/submission-outbox.test.jsx` repros: uncertain id sends 3 instead of 2; feed-before-hydration row remains after rerender. | `composer_owner`: `useComposerSubmissionRuntime` + `outbox-store` | HANDOFF ONLY; composer_owner owns triage/fix |
 

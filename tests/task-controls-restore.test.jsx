@@ -172,32 +172,54 @@ describe('等待区控制按钮可用性（新结构 WaitingLayer）', () => {
   });
 });
 
-describe('【缺陷探测】processing 态的"停止"按钮是否仍要求可写频道 + 账本宣告 agent.interrupt', () => {
-  it('旧模型 canStop 要求 writable+advertised；新结构 TurnCard 的“停止”按钮不做任何检查即可点击', () => {
-    const turn = {
-      requestId: 'p1',
-      request: { id: 'p1', type: 'agent.ask', sender: { kind: 'human', id: 'me' }, audience: ['agent'], ts: 100, payload: { body: { text: 'hi' } } },
-      terminal: null,
-      local: false,
-      thread: [],
-      // 受理方账本上最新一帧根本没有宣告 agent.interrupt（等价于旧测试 “draws nothing when the
-      // account advertises no controls” 的 processing 分支：controls 缺失）。
-      provisional: [{ seq: 1, envelope: { payload: { body: { status: 'processing', turn_id: 'turn-7' } } } }],
-    };
-    const row = { id: 'p1', contentRevision: 0, visualSlotID: 'p1', body: { kind: 'turn', turn, thread: [] } };
-    function Harness2() {
-      const { renderRow } = useTimelineRowRenderer({
-        state: { channelId: 'c1', narration: [] }, names: new Map(), selfId: 'me',
-        presentationEditing: null, browsingExpandedSlots: new Set(), effectiveFoldOverrides: new Map(),
-        approvalStates: {}, onTaskControl: () => {}, startEditing: () => {},
-      });
-      return renderRow(row);
-    }
-    const view = render(<Harness2 />);
+function processingRow(controls) {
+  const body = { status: 'processing', turn_id: 'turn-7' };
+  if (controls !== undefined) body.controls = controls;
+  const turn = {
+    requestId: 'p1',
+    request: { id: 'p1', type: 'agent.ask', sender: { kind: 'human', id: 'me' }, audience: ['agent'], ts: 100, payload: { body: { text: 'hi' } } },
+    terminal: null,
+    local: false,
+    thread: [],
+    provisional: [{ seq: 1, envelope: { payload: { body } } }],
+  };
+  return { id: 'p1', contentRevision: 0, visualSlotID: 'p1', body: { kind: 'turn', turn, thread: [] } };
+}
+
+function ProcessingHarness({ row, access = 'member_active', targetAuthority = CURRENT_AUTHORITY, onTaskControl = vi.fn() }) {
+  const { renderRow } = useTimelineRowRenderer({
+    state: { channelId: 'c1', narration: [] }, names: new Map(), selfId: 'me', access, targetAuthority,
+    presentationEditing: null, browsingExpandedSlots: new Set(), effectiveFoldOverrides: new Map(),
+    approvalStates: {}, onTaskControl, startEditing: () => {},
+  });
+  return renderRow(row);
+}
+
+describe('processing 态的"停止"按钮权限与 capability 门', () => {
+  it('processing 帧未宣告 agent.interrupt 时不显示停止', () => {
+    const view = render(<ProcessingHarness row={processingRow()} />);
+    expect([...view.container.querySelectorAll('button')].find((b) => b.textContent === '停止')).toBeFalsy();
+  });
+
+  it('仅当前可写成员且最新 processing 帧宣告 agent.interrupt 时显示并发送停止', () => {
+    const onTaskControl = vi.fn();
+    const row = processingRow([{ word: 'agent.interrupt' }]);
+    const view = render(<ProcessingHarness row={row} onTaskControl={onTaskControl} />);
     const stopButton = [...view.container.querySelectorAll('button')].find((b) => b.textContent === '停止');
-    // 旧断言（task-controls.test.js "draws nothing when the account advertises no controls"）：
-    // 受理方账本没有宣告 agent.interrupt 时 canStop 必须为 false，不应出现"停止"按钮。
-    // 保留这条原始断言——不放宽——让它在新结构上如实红/绿。
-    expect(stopButton).toBeFalsy();
+    expect(stopButton).toBeTruthy();
+    fireEvent.click(stopButton);
+    expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({
+      channelId: 'c1', actorId: 'agent', type: 'agent.interrupt', payload: {},
+    }));
+  });
+
+  it('权限或 target authority 失效时不显示停止，即使账本宣告 agent.interrupt', () => {
+    const row = processingRow([{ word: 'agent.interrupt' }]);
+    const staleAccess = render(<ProcessingHarness row={row} access="member_stale" />);
+    expect([...staleAccess.container.querySelectorAll('button')].find((b) => b.textContent === '停止')).toBeFalsy();
+    staleAccess.unmount();
+
+    const departed = render(<ProcessingHarness row={row} targetAuthority={{ current: true, actorIDs: new Set(['agent:worker:old']) }} />);
+    expect([...departed.container.querySelectorAll('button')].find((b) => b.textContent === '停止')).toBeFalsy();
   });
 });
