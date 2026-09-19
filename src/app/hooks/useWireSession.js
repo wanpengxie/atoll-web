@@ -87,6 +87,15 @@ function accessMode(state, connected) {
   return state.relationship === 'discoverable' ? 'discoverable' : 'loading';
 }
 
+function isHiddenChannel(profile) {
+  const id = String(profile?.id || '');
+  if (id === 'c0') return false;
+  return id === 'c0.lobby'
+    || profile?.name === 'lobby'
+    || profile?.systemReserved === true
+    || profile?.type === 'actor';
+}
+
 function createSessionAccess({ principalId }) {
   const states = new Map();
   let spaceDirectory = Object.freeze({
@@ -122,7 +131,8 @@ function createSessionAccess({ principalId }) {
     channelsObserved(profiles, { complete = true } = {}) {
       const seen = new Set();
       for (const profile of profiles || []) {
-        if (!profile?.id || (profile.systemReserved && profile.id !== 'c0')) continue;
+        if (!profile?.id) continue;
+        if (isHiddenChannel(profile)) continue;
         seen.add(profile.id);
         const state = ensure(profile.id, profile);
         changeAuthority(state, (next) => {
@@ -210,10 +220,13 @@ function createSessionAccess({ principalId }) {
     state(channelId) { return states.get(channelId) || null; },
     directory() { return spaceDirectory; },
     rows({ includeRetired = false } = {}) {
-      return [...states.values()].filter((state) => includeRetired || state.existence !== 'retired').map((state) => {
-        const profile = state.profile || { id: state.channelId, name: cachedChannelLabel(state.channelId) || state.channelId };
-        return { ...profile, id: state.channelId, access: accessMode(state, connected), accessState: { ...state, mode: accessMode(state, connected) }, selfActorId: state.selfActorId };
-      });
+      return [...states.values()]
+        .filter((state) => !isHiddenChannel(state.profile || { id: state.channelId }))
+        .filter((state) => includeRetired || state.existence !== 'retired')
+        .map((state) => {
+          const profile = state.profile || { id: state.channelId, name: cachedChannelLabel(state.channelId) || state.channelId };
+          return { ...profile, id: state.channelId, access: accessMode(state, connected), accessState: { ...state, mode: accessMode(state, connected) }, selfActorId: state.selfActorId };
+        });
     },
     snapshot() {
       return {
@@ -226,12 +239,19 @@ function createSessionAccess({ principalId }) {
 function projectDirectoryRows(observation, { withOnline = false } = {}) {
   return Object.freeze((observation?.items || []).flatMap((item) => {
     const declared = item?.declared || {};
-    if (!declared.id || (declared.status && declared.status !== 'present')) return [];
+    const id = declared.id || item?.key;
+    if (!id || (declared.status && declared.status !== 'present')) return [];
     if (!withOnline) return [Object.freeze({ ...declared })];
-    const online = item?.actual?.measures?.find((measure) => measure.name === 'online');
+    const measures = Object.fromEntries((item?.actual?.measures || []).map((measure) => [
+      measure.name,
+      measure.unknown ? undefined : measure.value,
+    ]));
     return [Object.freeze({
-      ...declared,
-      online: online?.unknown ? null : Boolean(online?.value),
+      id,
+      name: declared.name || id,
+      status: declared.status || 'present',
+      description: declared.description || '',
+      online: measures.online ?? measures.device_online,
     })];
   }));
 }
