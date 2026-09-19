@@ -18,6 +18,7 @@ const ACTIVITY_TYPES = new Set([
 ]);
 const AGENT_ACTIVITY_LIMIT = 512;
 const TIMER_FIRING_LIMIT = 256;
+const ACCESS_UNAVAILABLE_CODES = new Set(['unavailable', 'channel_unavailable']);
 
 function historyNumeric(value) {
   const result = Number(value);
@@ -338,6 +339,30 @@ export function createChannelFeedRuntime(options = {}) {
     registerNetwork(batch) { if (batch.ref) networkBatches.set(batch.ref, batch); },
   });
 
+  // Access failures belong to the attach generation that sent the request. A
+  // late result must never revoke or degrade a replacement generation.
+  function projectAccessFailure(channelId, error, requestGeneration) {
+    const code = String(error?.code || error || '');
+    if (!channelId || !requestGeneration || requestGeneration !== generation
+      || (code !== 'forbidden' && !ACCESS_UNAVAILABLE_CODES.has(code))) return false;
+    let feedChanged = false;
+    if (code === 'forbidden') {
+      grants.delete(channelId);
+      const status = histories.get(channelId);
+      if (status?.generation === requestGeneration && (status.attached || status.messageCurrent)) {
+        status.attached = false;
+        status.messageCurrent = false;
+        status.notificationAuthorityRevision = ++notificationAuthorityRevision;
+        feedChanged = true;
+      }
+      accessRef.current?.forbidden?.(channelId);
+      rosterRef.current?.clearSelf?.(channelId);
+    } else accessRef.current?.unavailable?.(channelId, code);
+    if (feedChanged) publish();
+    callback('onAccessChanged');
+    return true;
+  }
+
   function historyState(channelId) {
     if (!histories.has(channelId)) histories.set(channelId, historyInitial(channelId));
     return histories.get(channelId);
@@ -533,7 +558,9 @@ export function createChannelFeedRuntime(options = {}) {
       status.error = outcome.error?.message || '历史加载失败';
       status.errorCode = String(outcome.error?.code || 'history_failed');
       status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'error', error: status.error });
-      callback('onError', outcome.error);
+      const accessProjected = Boolean(batch.accessFailureCode)
+        || projectAccessFailure(channelId, outcome.error, batch.generation);
+      if (!accessProjected) callback('onError', outcome.error);
     } else status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
     publish();
     return outcome;
@@ -553,7 +580,26 @@ export function createChannelFeedRuntime(options = {}) {
 
   function pageEnd(payload = {}) {
     const batch = networkBatches.get(payload.ref);
-    return batch ? adapters.finish(batch, payload) : false;
+    if (!batch) return false;
+    if (payload.error_code && projectAccessFailure(batch.channelId, {
+      code: payload.error_code,
+      message: payload.error_detail || payload.error_code,
+    }, batch.generation)) batch.accessFailureCode = String(payload.error_code);
+    return adapters.finish(batch, payload);
+  }
+
+  async function refreshChannel(channelId) {
+    const requestGeneration = generation;
+    const wire = wireRef.current;
+    if (!channelId || !requestGeneration || incompatible || !wire?.channelMeta) return false;
+    try {
+      const result = await wire.channelMeta(channelId, requestGeneration);
+      return requestGeneration === generation && Boolean(result);
+    } catch (error) {
+      if (requestGeneration !== generation) return false;
+      if (projectAccessFailure(channelId, error, requestGeneration)) return false;
+      throw error;
+    }
   }
 
   async function prepareLocalReplica(nextPrincipal, { focus = activeChannelRef.current || '' } = {}) {
@@ -831,7 +877,7 @@ export function createChannelFeedRuntime(options = {}) {
       revisionFor: (channelId) => replica.revision(channelId),
       historyFor, unreadFor, generationFor: () => generation,
       focusHistory: (channelId) => { activeChannelRef.current = channelId; publish(); },
-      refreshChannel: async (channelId) => Boolean(await wireRef.current?.channelMeta?.(channelId)),
+      refreshChannel,
       reconcileIdentity: (channelId) => { if (!replica.state(channelId)) return false; publish(); return true; },
       loadHistory, markRead, acknowledgeNotifications,
       agentActivityFor: (channelId) => agentActivity.byChannel[channelId]
