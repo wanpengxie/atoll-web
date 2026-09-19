@@ -7,6 +7,7 @@ import { SelectMenu } from '../../primitives/SelectMenu.jsx';
 
 const THEME_KEY = 'atoll.terminal.theme';
 const encoder = new TextEncoder();
+const MAX_PENDING_INPUT = 64 << 10;
 
 function cssVar(name, fallback) {
   if (typeof window === 'undefined') return fallback;
@@ -151,7 +152,7 @@ export function TerminalFeature({ channelId, port = {}, visible = true, onClose 
   useEffect(() => {
     if (!hostRef.current || !channelId || !deviceId || typeof commandsRef.current.connect !== 'function') return undefined;
     const host = hostRef.current;
-    const connection = { disposed: false, handle: null };
+    const connection = { disposed: false, handle: null, pendingInput: [], pendingBytes: 0 };
     setStatus('connecting');
     setDetail('');
     setRenderer('');
@@ -224,8 +225,31 @@ export function TerminalFeature({ channelId, port = {}, visible = true, onClose 
     host.addEventListener('mousedown', beginSelect);
     document.addEventListener('mouseup', endSelect);
 
+    const flushPendingInput = () => {
+      if (!canWriteRef.current || !connection.handle?.write) {
+        // Permission can be revoked while an asynchronous terminal-session
+        // connection is still being installed. Never replay those bytes into
+        // a newly writable session after the authorization fact changed.
+        connection.pendingInput = [];
+        connection.pendingBytes = 0;
+        return;
+      }
+      const pending = connection.pendingInput;
+      connection.pendingInput = [];
+      connection.pendingBytes = 0;
+      for (const bytes of pending) connection.handle.write(bytes);
+    };
     const input = terminal.onData((data) => {
-      if (canWriteRef.current) connection.handle?.write?.(encoder.encode(data));
+      if (!canWriteRef.current) return;
+      const bytes = encoder.encode(data);
+      if (!connection.handle?.write) {
+        if (connection.pendingBytes + bytes.byteLength <= MAX_PENDING_INPUT) {
+          connection.pendingInput.push(bytes);
+          connection.pendingBytes += bytes.byteLength;
+        }
+        return;
+      }
+      connection.handle.write(bytes);
     });
 
     const installHandle = (handle) => {
@@ -236,6 +260,7 @@ export function TerminalFeature({ channelId, port = {}, visible = true, onClose 
       connection.handle = handle || null;
       handleRef.current = connection.handle;
       fitAndResize();
+      flushPendingInput();
     };
     const failConnection = (error) => {
       if (!connection.disposed) {
