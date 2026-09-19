@@ -486,6 +486,39 @@ ownership、refresh/reopen focus contract 均存在。当前 `Composer` 公开�
 `view.configurable=false`；缺少 selectable model 是第一公共 owner 分歧。测试保留缺失
 option 的红断言，未把 dialog 改称旧 menu，也未通过高度分支跳过 option/focus 合同。
 
+### E. Round 16 case 1 admission prepend revalidation（`a73394b`）
+
+本轮只复验 case 1；没有触碰 case 2/3/13/23、Vendor 或 `useHistoryConsumer`。当前
+clean HEAD 的真实 Chromium repeat3 命令为：
+
+```text
+ATOLL_TEST_MOCK_PORT=20001 ATOLL_TEST_WEB_PORT=15301 npx playwright test \
+  tests/browser/history-presentation-admission-prototype.spec.js \
+  --grep='one older gesture' --repeat-each=3 --reporter=line \
+  --output=/tmp/gm16-case1-clean-r4
+```
+
+结果为 **3/3 REGRESSION**，三次首断点都在公开门
+`evidence.listCount > baseline.rowIDs.length`：baseline=4、paint 后仍为 4；因此当前
+产品路径没有把一次 older gesture 变成可见 prepend。
+
+为区分 Reading/Projection admission 与 paint/anchor owner，曾做过一次未保留的最小
+owner-only 实验（仅 `useBrowsingReadingController.js` 与
+`useConversationProjection.js`，随后已完全撤回，未形成产品提交）。该实验的真实 JSON
+证据为 `/tmp/gm16-case1-evidence-r3.json`：
+
+- `history.admission_commit_check.accepted=true`、`history.admission_commit` 真实发生，
+  staged IDs 为 `...-142`、`...-213`，之后又发生 `...-71` 的 admission；
+- browser DOM 从 4 行 paint 到 7 行，所有采样帧 `visibleRows=3`，active list 仍为 1；
+- 但同一物理顶部接触期间反复启动/取消 top intent，baseline anchor offset `-394`
+  漂到 `-33.4375`，故 exact anchor/布局门仍为 **RED**。
+
+裁决：Reading/Projection 的 admission handoff 已有真实 paint 证据，但没有在允许的
+owner 范围内闭合 anchor 保持与单一 top transaction；实验代码已撤回，当前仍保留
+case 1 红测。剩余首断点交 presentation/DOM anchor owner（本轮禁止修改的
+`VendorListExecutor` 边界）复现处理，不以 scheduler 事件或额外 prepend 代替用户可见
+几何合同。
+
 ## Boundary audit
 
 - This partition edits only the G–M `tests/browser` specs and this `audit-output` report. No
