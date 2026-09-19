@@ -252,6 +252,39 @@ candidate 传成 `latestRowID`，`TimelineRowRenderer/FoldableBody` 未获得 la
 豁免，pulse/anchor geometry 尚未执行。首个公开 owner 交
 `reading_tail_owner`（`conversation-presentation current-entry authority`）。
 
+### 第九轮前置：其余五个历史红项复现矩阵（只读，HEAD `12e5e90`）
+
+旧 `fae8b70` 用户体验动作与当前公开入口逐项对照如下。当前 HEAD 使用真实
+Chromium 精确跑了 5 个 case，结果为 `5 passed (28.7s)`；因此“current 首 DOM
+断点”均为**无**，表中同时保留旧复核时的首个公开 DOM 断点，避免把已经越过的
+Workspace/Feed handoff 误报为仍在回归。
+
+| case | 旧 `fae` 用户体验与历史首 DOM 断点 | 当前 HEAD 首 DOM gate / 结果 |
+| --- | --- | --- |
+| #1 | 登录 → 点 `c0.project` → 观察尾部、3 次 live 到达和 rail。历史首断点是点击后 `main h1=c0.project` 消失，早于 live 注入；浏览器记录 `feed.disconnectHistory owner 尚未连接`。 | `main h1=c0.project`、`.timeline-message-list` 与 tail 均出现；3 次到达完成，debug 输出 `related=0,total=0,jump=0`，无首断点。 |
+| #14 | steward 发送长文 → 用户展开 → 切 `c0.project` → 返回 `c0` → append；显式展开选择应保留。历史首断点是目标 `main h1`/active list 在 handoff 后为空，未到 fold-return。 | model-selector 选择 steward、marker toggle `false→true`；目标与返回 `main h1`、active list 全部挂载；append 后 marker 仍 `aria-expanded=true`，无首断点。 |
+| #18 | inactive `c0.project` 注入 provisional/dense progress；rail 与 new-dynamic count 必须为 0；再进入目标频道。历史 `unread-related`/`unread-total` 断言先通过，随后点击后 `main h1` 消失。 | 注入后及进入后两计数均 0、无“条新动态”按钮，`main h1=c0.project` 出现，无首断点。 |
+| #19 | c0 启动长任务 → 切 project → 返回 c0 → 完成；源频道 Agent timer 应跨频道保持并在完成后清除。历史 timer 初始为 1，切 project 后 home timer 变 0，未到 return/complete。 | 启动时 timer=1，project 活跃时 home timer 仍=1，返回并 advance×3 后 timer=0，无首断点。 |
+| #27 | c0 打开真实终端写 `MARK_ZERO` → project 写 `MARK_ONE` → 往返 3 次；各 screen 保持且同时 PTY WS≤1。历史首断点是 project handoff 后 `main h1`/screen 为空，早于 `MARK_ONE` 与 WS 断言。 | c0/project heading、terminal host、两 marker 均按序出现；3 轮往返 marker 保持，WS peak/live 约束和 page error 均通过，无首断点。 |
+
+当前五项精确复跑命令（Reading owner 提交后可直接复用，端口可替换）：
+
+```text
+ATOLL_TEST_MOCK_PORT=19870 ATOLL_TEST_WEB_PORT=15170 npx playwright test \
+  tests/browser/A-debug.spec.js tests/browser/f3-message-fold.spec.js \
+  tests/browser/f7-channel-notifications.spec.js tests/browser/f8-terminal-session.spec.js \
+  --grep '(debug badge|用户展开长消息|F7 inactive-channel|F7 channel rail exposes|F8-001)' \
+  --output=/tmp/af-rest-after-reading --reporter=line
+```
+
+Reading 提交后与本矩阵并行复跑折叠 3 项：
+
+```text
+ATOLL_TEST_MOCK_PORT=19872 ATOLL_TEST_WEB_PORT=15172 npx playwright test \
+  tests/browser/fold-collapse-anchor.spec.js --grep '收起：|角色转移导致' \
+  --output=/tmp/af-fold-after-reading --reporter=line
+```
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
