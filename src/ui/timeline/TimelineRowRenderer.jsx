@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { terminalContentEnvelope, terminalResultState } from '../../model/terminal-result.js';
 import { argsOf } from '../../protocol/envelope.js';
@@ -313,11 +313,14 @@ function Narration({ rows, names }) { return <div className="timeline-narration"
 export function useTimelineRowRenderer({ state, names, selfId, presentationEditing, browsingExpandedSlots, effectiveFoldOverrides, approvalStates, latestRowID = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, startEditing, toggleFold }) {
   const currentActions = { state, onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, startEditing };
   const actionsRef = useRef(currentActions);
-  useLayoutEffect(() => { actionsRef.current = currentActions; });
+  actionsRef.current = currentActions;
+  const messageActionRevision = (typeof onReply === 'function' ? 1 : 0)
+    | (typeof onCreateTask === 'function' ? 2 : 0)
+    | (typeof onOpenTurn === 'function' ? 4 : 0);
   const rowRenderRevision = useCallback((_index, row) => {
     const foldID = row.body?.kind === 'turn' ? `${row.body.turn.requestId}:body` : `${row.body?.envelope?.id || row.id}:body`;
-    return [row.contentRevision, row.id === latestRowID ? 1 : 0, browsingExpandedSlots.has(row.visualSlotID || row.id) ? 1 : 0, effectiveFoldOverrides.get(foldID), presentationEditing?.targetId === row.id ? presentationEditing.phase : '', approvalStates?.[row.id] || ''].join('\u0001');
-  }, [approvalStates, browsingExpandedSlots, effectiveFoldOverrides, latestRowID, presentationEditing]);
+    return [row.contentRevision, row.id === latestRowID ? 1 : 0, browsingExpandedSlots.has(row.visualSlotID || row.id) ? 1 : 0, effectiveFoldOverrides.get(foldID), presentationEditing?.targetId === row.id ? presentationEditing.phase : '', approvalStates?.[row.id] || '', messageActionRevision].join('\u0001');
+  }, [approvalStates, browsingExpandedSlots, effectiveFoldOverrides, latestRowID, messageActionRevision, presentationEditing]);
   const fold = useMemo(() => ({ latest: false, automaticExpanded: false, overrides: effectiveFoldOverrides, onToggle: toggleFold }), [effectiveFoldOverrides, toggleFold]);
   const renderRow = useCallback((row) => {
     const entry = row.body; const port = actionsRef.current;
