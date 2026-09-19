@@ -176,6 +176,29 @@ ATOLL_TEST_MOCK_PORT=19885 ATOLL_TEST_WEB_PORT=15185 npx playwright test \
 证据分别在 `test-results-gm-model-head-07ed014-20260920/` 与
 `test-results-gm-history-jump-head-07ed014-20260920/`；无 skip、删除或 oracle 放宽。
 
+## 当前 HEAD / 共享工作树排因复核（`2265cfa` → `cfc26a7`）
+
+为排除“脏树”或 mock/web 端口未连接导致的 dialog 缺失，先固定干净 snapshot `2265cfa`
+（当前后续 `cfc26a7` 在 Composer、ModelSelector 与本组 browser spec 上无差异），确认
+`15187/19887` 启动前均未连接，再由 Playwright 自己启动两端后复验。干净树结果仍为
+**5 tests，0 passed，5 failed，0 blocked**：case 28 首断点为 trigger 缺
+`aria-expanded="false"`（仍是 `class=is-refresh` / `steward，点击读取可用模型`），case
+29–32 首断点为 click 后 dialog 不可见。证据在
+`test-results-gm-model-head-2265cfa-20260920/`；因此 dialog 缺失不是端口未接或共享脏树
+造成，仍是当前 refresh/capability projection 公共边界，未到 `menuitem 模型`。
+
+随后在共享工作树当前 `cfc26a7` 用全新 `15188/19888` 对照，五例首断点与干净树完全一致。
+共享树的未提交 `src/ui/timeline/useConversationProjection.js` 另在 portal 500px case
+出现 React Hook 顺序 / invalid-hook-call console error；该并行脏改动不纳入 ModelSelector
+产品裁决，也没有用它掩盖干净树已复现的首断点。对照证据在
+`test-results-gm-model-shared-cfc26a7-20260920/`。
+
+history/jump 六例在同一干净当前源 `2265cfa`、新端口 `15189/19889` 重跑，仍为
+**6 tests，0 passed，6 failed，0 blocked**；首断点严格保持 case 1 `listCount=4`、case 2
+`visibleRows=0` 空帧、case 3 wheel 后 `following`、case 8 `historyOneVisible=false`、
+case 13 `jumpVisible=false`（gap=2121）、case 23 `browsingRowCount=0`。未修改或弱化
+history/jump oracle；证据在 `test-results-gm-history-jump-head-2265cfa-20260920/`。
+
 ## Case ledger
 
 `owner` 是当前生产 owner；`result` 是上述 Chromium 全组轮的逐 case 裁决。每行保留
