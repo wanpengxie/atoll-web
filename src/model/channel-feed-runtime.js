@@ -771,7 +771,10 @@ export function createChannelFeedRuntime(options = {}) {
       || confirmation.authorityRevision !== status.notificationAuthorityRevision
       || confirmation.cause !== 'presented-follow'
       || boundary !== status.headSeq) return false;
-    return cursors.acknowledgeNotifications(channelId, boundary);
+    const previous = cursors.notificationHighWater(channelId);
+    const acknowledged = cursors.acknowledgeNotifications(channelId, boundary);
+    if (acknowledged > previous) publish();
+    return acknowledged;
   }
   function acknowledgeAgentActivity(channelId, agentId) {
     let changed = false;
