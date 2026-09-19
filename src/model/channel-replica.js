@@ -292,7 +292,7 @@ function retainTrimmedTerminalClosures(state, cut) {
   const requestRows = new Map();
   const orderedRows = [...state.rows.entries()].sort((left, right) => left[0] - right[0]);
   for (const [seq, envelope] of orderedRows) {
-    if (envelope?.kind === 'request' && envelope.id) {
+    if (hasProjectionBody(envelope) && envelope?.kind === 'request' && envelope.id) {
       requestRows.set(envelope.id, { seq, envelope });
     }
   }
@@ -346,10 +346,10 @@ function rebuildState(state) {
   state.narration = [];
   for (const [seq, envelope] of orderedRows) {
     if (!envelope) continue;
-    if (envelope.id) state._envelopesById.set(envelope.id, envelope);
     // Historical flat payloads remain durable transport rows, but never
     // become lifecycle, narration, or standalone business entries.
     if (!hasProjectionBody(envelope)) continue;
+    if (envelope.id) state._envelopesById.set(envelope.id, envelope);
     if (envelope.visibility === 'system') { state.narration.push({ seq, envelope }); continue; }
     if (envelope.kind === 'request' && envelope.id) {
       requests.set(envelope.id, envelope);

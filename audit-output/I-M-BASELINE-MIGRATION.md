@@ -559,6 +559,29 @@ GREEN**; the I–M broad owner set is **112/112 GREEN**. The separate legacy
 payload/old weak-total assertions; those are stale compatibility semantics and
 were not changed to re-enable flat notification behavior.
 
+## Round 18 flat-ingress identity boundary
+
+The flat-payload cutover has one more identity boundary at the Replica: a
+historical row may remain in `state.rows` so transport/audit coverage is not
+lost, but it cannot become a lifecycle identity or terminal-closure input.
+This is still an ignore-at-normalization contract; no legacy parser or second
+store was restored.
+
+| user invariant | unique public owner | strict evidence |
+|---|---|---|
+| A flat request/response/response-first/system row stays durable for audit but does not populate `_envelopesById`, timeline/narration, or terminal-closure state, including after trim. | `createChannelReplicaStore().commit` → Replica `rebuildState` and trim closure capture | `src/model/channel-replica-flat-ingress.test.jsx:58-105` — all four rows remain in `state.rows`, all four IDs stay out of the identity map, projections remain empty, and `_unmatchedTerminalClosures` remains empty through trim. The owner gates closure request provenance at `src/model/channel-replica.js:299` and identity indexing at `:355-356`. |
+| A flat event cannot suppress its matching local echo, and a flat request cannot suppress the corresponding Waiting submission. | `selectTimelineItems` local-echo join + `useWaitingEditingController` Waiting de-duplication | `src/model/channel-replica-flat-ingress.test.jsx:107-132` — the public projection retains the local event echo and Waiting retains `flat-request` as queued. |
+
+The focused command is `npx vitest run
+src/model/channel-replica-flat-ingress.test.jsx src/model/channel-replica-terminal-closure.test.jsx
+src/model/channel-replica-thread-structure.test.jsx src/model/channel-replica-turn-integrity.test.js
+src/model/channel-replica-projection-version.test.js src/ui/timeline/waiting-presentation.test.jsx
+tests/memory-window.test.js tests/i-m-exact-path-contracts.test.jsx` → **8 files,
+88/88 GREEN**. The only source owner touched in this round is
+`src/model/channel-replica.js`; notification policy/cache files are unchanged.
+The separate feed-runtime `controlParentClosure` path remains outside this
+Replica-only change and is not relabeled as fixed by this evidence.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
