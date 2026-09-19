@@ -336,6 +336,48 @@ revision 的 fold 位为 `false`；row 为 `data-presentation-state=handoff-ente
 含 line-300 failure）；即时 Reading commit `418c31e` 的独立复验保留在
 `/tmp/af-fold-clean-418c31e`，结论相同。
 
+### 第十一轮：#31 current-entry authority → latestRowID → FoldableBody 时序（只读）
+
+本轮只读核对源码与 `/tmp/af-fold-clean-dfea6d2` 的 clean Chromium trace；当前
+`HEAD=f6b6c24` 相对 `418c31e` 没有新的 Reading/Presentation source commit，故不
+重新计数，也不把共享脏树归因到产品。#31 的首断点链如下（源码行号以本轮
+snapshot 为准）：
+
+1. `projectTimeline()` 先把六条真实长回合交给
+   `createConversationPresentation.evaluate()`（`src/model/conversation-presentation.js:489-495`）；
+   `currentEntryRow` 是倒序最后一个 `currentEntryEligible` row。clean DOM 的
+   `H-ROLE-6` row `ca7285ff-2123-438d-b7bb-5b52474ab604` 已有
+   `data-seq-high=890`、`data-content-revision=890:84`，因此 candidate 的
+   `seqHigh=890`。
+2. 同一 render 中 `useProjectionReadingOwner()` 调
+   `currentEntryAuthority()`（`src/ui/timeline/useConversationProjection.js:51-66,193-247`）。
+   该 durable candidate 必须同时通过 `bottomReady` 与
+   `rangeCovers(historyStatus.coverage, candidate.seqHigh, historyStatus.headSeq)`。
+   trace 的历史 page 只覆盖 `715..844`；随后 live `H-ROLE-1..6` 使
+   `headSeq=890`，但 `applyRows(source='live')` 只推进 `status.headSeq`，未把
+   `status.coverage` 这个已发布数组更新到 live `890`。因此本次
+   `rangeCovers(715..844, 890, 890)=false`，authority 返回 `null`；这不是
+   Reading anchor 几何或 selector 问题。
+3. `useConversationProjection()` 只从该 authority 产生
+   `latestRowID = viewport.presentationAuthority?.candidateID || ''`
+   （`src/ui/timeline/useConversationProjection.js:776`）。因 authority 为 null，
+   `latestRowID=''`。`ConversationSurface` 将其交给 row renderer；clean DOM 的
+   `data-render-revision="890:84\u00010\u00010..."` 首个 latest bit 为 `0`。
+4. `useTimelineRowRenderer()` 只在 `row.id === latestRowID` 时设置
+   `rowFold.latest=true`（`src/ui/timeline/TimelineRowRenderer.jsx:472-480`），
+   所以本 row 的 `FoldableBody` 收到 `exempt=false`。其纯内容折叠函数
+   `folded = canFold && (expanded === false || (expanded !== true && !exempt))`
+   （`src/ui/timeline/FoldableBody.jsx:80-84`）立即给长正文默认折叠，paint 为
+   `aria-expanded=false`。
+
+这条链在测试 line 300 的 baseline gate 即结束：尚未执行上滑、pulse、role
+transition、anchor sampling 或任何 collapse geometry。故当前公开首 owner 是
+`reading_tail_owner` 下的 `conversation-presentation current-entry authority`
+（覆盖状态/候选资格→`latestRowID` 的交接），下游 `TimelineRowRenderer/FoldableBody`
+只是按收到的空 authority 正确渲染；不能将该首断点记作 #29/#30 的 Reading fold
+anchor 回归。等待该 owner 的新产品提交后，必须在独立 clean snapshot 重跑 #29/#30/#31，
+并再次记录 actual paint、mounted IDs 与 latest-role 首帧。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
