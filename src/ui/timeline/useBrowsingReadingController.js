@@ -37,21 +37,21 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
 
   const requestHistory = useCallback((evidence, reason) => {
     const owner = readingRef.current;
-    const current = owner.getSession?.() || owner.session;
+    const current = owner.getSession();
     if (handoffPendingRef.current || evidence.activationID !== current.activationID) return;
     const first = snapshotRef.current.rows[0];
     const key = `${current.activationID}:${current.inputEpoch}:${first?.id || ''}:${first?.seqLow || 0}`;
     if (frontierDemandKeyRef.current === key) return;
     frontierDemandKeyRef.current = key;
     const detail = { demandUnits: evidence.demandUnits };
-    if (reason === 'runway') (owner.onNearTop || owner.onAtTop)?.(detail);
-    else owner.onAtTop?.(detail);
+    if (reason === 'runway') owner.onNearTop(detail);
+    else owner.onAtTop(detail);
   }, []);
 
   const reportDomEvidence = useCallback((evidence) => {
     const owner = readingRef.current;
     const data = snapshotRef.current;
-    const current = owner.getSession?.() || owner.session;
+    const current = owner.getSession();
     if (!evidence || evidence.activationID !== current.activationID) return;
 
     if (evidence.type === 'reading-observation') {
@@ -116,7 +116,7 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
       bottomReady: owner.bottomReady === true,
       hasOlder: true,
     });
-    const pending = (owner.onUnderfill || owner.onAtTop)?.({ demandUnits: evidence.demandUnits });
+    const pending = owner.onUnderfill({ demandUnits: evidence.demandUnits });
     void consumeHistoryConsumerResult(pending, () => {
       if (coverageDemandKeyRef.current === key) coverageDemandKeyRef.current = '';
       evidence.onWake?.();

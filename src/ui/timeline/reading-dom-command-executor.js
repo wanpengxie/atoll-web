@@ -14,7 +14,6 @@ export function executeReadingDOMCommand(command, { virtuoso, root }) {
   }
   if (command.type === 'scroll-tail') {
     if (typeof root?.scrollTo !== 'function') return false;
-    root.dispatchEvent(new CustomEvent('atoll:timeline-bottom-write', { bubbles: true }));
     root.scrollTo({ top: command.reverse === true ? 0 : root.scrollHeight, behavior: 'auto' });
     return true;
   }

@@ -13,22 +13,12 @@ import React, {
 } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { isReadingTraceEnabled, readingTrace } from '../../model/diagnostics.js';
-import { READING_MODE } from '../../model/reading-session.js';
+import { READING_MODE, resolveReadingBookmark } from '../../model/reading-session.js';
 import { HistoryStartBoundary } from './HistoryStartBoundary.jsx';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
-import {
-  ReadingNavigationOwner,
-  useReadingNavigationHost,
-  useReadingNavigationOwner,
-} from './ReadingNavigationOwner.jsx';
+import { useReadingNavigationHost } from './ReadingNavigationOwner.jsx';
 import { useBrowsingReadingController } from './useBrowsingReadingController.js';
 import { executeReadingDOMCommand } from './reading-dom-command-executor.js';
-import {
-  commitFollowingPresentation,
-  decideFollowingScroll,
-  invalidateFollowingSend,
-  resetFollowingScroll,
-} from './following-scroll-controller.js';
 
 function traceReadingAdapter(stage, detail = {}) {
   const sink = globalThis.__ATOLL_READING_TRACE__;
@@ -323,38 +313,6 @@ const MessageRow = memo(function MessageRow({ row, revision, renderRow, presenta
   && left.presentationState === right.presentationState
   && left.preserveReplacementGeometry === right.preserveReplacementGeometry);
 
-function initialLocation(rows, session) {
-  if (session.mode === 'following' || !session.bookmark) return { atEnd: true };
-  const bookmark = session.bookmark;
-  let index = rows.findIndex((row) => row.id === bookmark.messageID);
-  const exactTargetSurvives = index >= 0;
-  if (index < 0 && bookmark.successorID) index = rows.findIndex((row) => row.id === bookmark.successorID);
-  if (index < 0 && bookmark.predecessorID) index = rows.findIndex((row) => row.id === bookmark.predecessorID);
-  if (index < 0 && bookmark.seq) {
-    let distance = Number.POSITIVE_INFINITY;
-    rows.forEach((row, candidate) => {
-      const nextDistance = Math.abs(Number(row.seqLow || 0) - bookmark.seq);
-      if (nextDistance < distance) {
-        distance = nextDistance;
-        index = candidate;
-      }
-    });
-  }
-  if (index < 0) index = 0;
-  const rowOffset = Number(bookmark.rowViewportOffset);
-  return {
-    index,
-    viewPosition: 0,
-    // A row-local offset only describes the row it was measured from. If that
-    // row was deleted, reusing (for example) a long-message -600px offset on
-    // its successor can skip the fallback entirely. Deleted anchors therefore
-    // resume at the explicit visible start of the selected semantic neighbour.
-    // Virtuoso's offset is added to the scroll target. A row whose top was
-    // 24px above the viewport therefore restores with +24, not -24.
-    ...(exactTargetSurvives && Number.isFinite(rowOffset) ? { viewOffset: -rowOffset } : {}),
-  };
-}
-
 function sameNavigationTarget(left, right) {
   return Boolean(
     left
@@ -377,7 +335,6 @@ function MessageListBody({
   rowPresentationState,
   renderRow,
   surfaceVisible = false,
-  bottomIntentPresentation = null,
   handoffPending = false,
   navigationTarget = null,
   focusOnMount = false,
@@ -395,10 +352,8 @@ function MessageListBody({
   const [formalRangeRevision, setFormalRangeRevision] = useState(0);
   const readingRef = useRef(reading);
   const snapshotRef = useRef(snapshot);
-  const bottomIntentPresentationRef = useRef(bottomIntentPresentation);
   const surfaceVisibleRef = useRef(surfaceVisible === true);
   const activationOwnerRef = useRef(null);
-  const initialLocationRef = useRef({ activationID: '', value: null });
   const delayedRestoreRef = useRef(null);
   const handoffPendingRef = useRef(handoffPending === true);
   const handoffTargetRef = useRef(null);
@@ -412,45 +367,14 @@ function MessageListBody({
   const coverageFrameRef = useRef(0);
   const pendingObservationRef = useRef(null);
   const geometryRevisionRef = useRef(0);
-  const followAuthorizationRef = useRef({
-    activationID: reading.activationID,
-    inputEpoch: reading.session.inputEpoch,
-    authorized: reading.session.mode === READING_MODE.following
-      && reading.initializing !== true
-      && reading.bottomReady !== false,
-  });
-  const followRevisionAuthorizationRef = useRef(null);
-  const viewportAuthorizationRef = useRef(null);
-  const layoutHeightAuthorizationRef = useRef(null);
-  const roleAuthorizationRef = useRef(null);
-  const lastListHeightRef = useRef(0);
-  const viewportSizeRef = useRef(null);
-  const intentGeometryRef = useRef(null);
-  const sendScrollTransactionRef = useRef(null);
-  const sendOwnedRevisionRef = useRef(null);
-  const itemLayoutAckRef = useRef(null);
   const scheduleObserveRef = useRef(null);
   const listCommitMicrotaskRef = useRef(0);
-  const itemLayoutIssueMicrotaskRef = useRef(0);
-  const followingControl = useMemo(() => Object.freeze({
-    followAuthorization: followAuthorizationRef,
-    followRevision: followRevisionAuthorizationRef,
-    viewport: viewportAuthorizationRef,
-    layoutHeight: layoutHeightAuthorizationRef,
-    role: roleAuthorizationRef,
-    lastListHeight: lastListHeightRef,
-    viewportSize: viewportSizeRef,
-    intentGeometry: intentGeometryRef,
-    sendTransaction: sendScrollTransactionRef,
-    sendOwnedRevision: sendOwnedRevisionRef,
-    itemLayout: itemLayoutAckRef,
-  }), []);
 
   const positionDelayedBookmark = useCallback((source) => {
     const pending = delayedRestoreRef.current;
     if (!pending) return false;
     const owner = readingRef.current;
-    const current = owner.getSession?.() || owner.session;
+    const current = owner.getSession();
     const data = snapshotRef.current;
     const ack = materializationAckRef.current;
     const handoffTarget = pending.navigationTarget === true ? handoffTargetRef.current : null;
@@ -472,10 +396,21 @@ function MessageListBody({
         ack?.activationID !== current.activationID
         || ack?.presentationRevision !== Number(data.revision || 0)
       ))) return false;
-    const targetIndex = data.rows.findIndex((row) => row.id === pending.targetID);
-    if (targetIndex < 0) return false;
+    let targetIndex = data.rows.findIndex((row) => row.id === pending.targetID);
+    let targetID = pending.targetID;
+    let desiredOffset = Number.isFinite(pending.rowViewportOffset)
+      ? Number(pending.rowViewportOffset)
+      : null;
+    if (targetIndex < 0) {
+      if (pending.navigationTarget === true) return false;
+      const resolved = resolveReadingBookmark(data.rows, current.bookmark);
+      if (!resolved) return false;
+      targetIndex = resolved.index;
+      targetID = resolved.messageID;
+      desiredOffset = resolved.rowViewportOffset;
+    }
     const root = scrollerRef.current;
-    const targetNode = presentationRowNode(root, pending.targetID);
+    const targetNode = presentationRowNode(root, targetID);
     const targetMaterialized = Boolean(
       targetNode
       && (committedList || (
@@ -486,9 +421,6 @@ function MessageListBody({
     const actualOffset = targetMaterialized
       ? Number(targetNode.getBoundingClientRect().top || 0)
         - Number(root?.getBoundingClientRect?.().top || 0)
-      : null;
-    const desiredOffset = Number.isFinite(pending.rowViewportOffset)
-      ? Number(pending.rowViewportOffset)
       : null;
     if (pending.navigationTarget === true && pending.phase !== 'issued') {
       const formalState = formalRangeStatesRef.current.get(formalRangeOwner) || null;
@@ -548,12 +480,14 @@ function MessageListBody({
     }
     const executed = executeReadingDOMCommand(Object.freeze({
       type: 'position-row',
-      index: targetIndex,
+      index: Number(data.firstItemIndex || 0) + targetIndex,
       viewportOffset: desiredOffset,
     }), { virtuoso: virtuosoRef.current, root });
     if (!executed) return false;
     delayedRestoreRef.current = {
       ...pending,
+      targetID,
+      rowViewportOffset: desiredOffset,
       phase: 'issued',
       issuedRevision: Number(data.revision || 0),
     };
@@ -561,49 +495,12 @@ function MessageListBody({
       activationID: current.activationID,
       inputEpoch: current.inputEpoch,
       snapshotRevision: Number(data.revision || 0),
-      targetID: pending.targetID,
-      index: targetIndex,
+      targetID,
+      index: Number(data.firstItemIndex || 0) + targetIndex,
       source,
     });
     return true;
   }, []);
-
-  const issueBottomIfCurrent = useCallback((source = 'layout') => {
-    const root = scrollerRef.current;
-    const binding = activationOwnerRef.current;
-    const ack = materializationAckRef.current;
-    const firstIndex = Number(binding?.snapshot?.firstItemIndex
-      ?? snapshotRef.current?.firstItemIndex ?? 0);
-    const rowCount = Number(binding?.rows?.length || 0);
-    const geometry = Object.freeze({
-      canScroll: typeof root?.scrollTo === 'function',
-      scrollTop: Number(root?.scrollTop || 0),
-      scrollHeight: Number(root?.scrollHeight || 0),
-      clientHeight: Number(root?.clientHeight || 0),
-      offsetHeight: Number(root?.offsetHeight || 0),
-      completeRange: Boolean(
-        rowCount > 0
-        && ack?.activationID === binding?.activationID
-        && Number(ack?.presentationRevision) === Number(binding?.snapshotRevision || 0)
-        && Number(ack?.startIndex) <= firstIndex
-        && Number(ack?.endIndex) >= firstIndex + rowCount - 1
-      ),
-    });
-    const decision = decideFollowingScroll({
-      source,
-      binding: activationOwnerRef.current,
-      presentation: bottomIntentPresentationRef.current,
-      geometry,
-      control: followingControl,
-      trace: (stage, detail) => traceReadingAdapter(stage, detail),
-    });
-    if (!decision) return false;
-    if (decision.command) {
-      executeReadingDOMCommand(decision.command, { virtuoso: virtuosoRef.current, root });
-    }
-    if (decision.observe) scheduleObserveRef.current?.('layout');
-    return true;
-  }, [followingControl]);
 
   // Publish lifecycle ownership only after React commits this render. A
   // suspended or otherwise abandoned render must not replace the old
@@ -613,14 +510,13 @@ function MessageListBody({
   useLayoutEffect(() => {
     readingRef.current = reading;
     snapshotRef.current = snapshot;
-    bottomIntentPresentationRef.current = bottomIntentPresentation;
     surfaceVisibleRef.current = surfaceVisible === true;
-    const current = reading.getSession?.() || reading.session;
+    const current = reading.getSession();
     if (activationOwnerRef.current?.activationID !== reading.activationID) {
       const bookmark = current.bookmark?.messageID ? current.bookmark : null;
-      // A mode handoff mounts a fresh Virtuoso under the same semantic
-      // activation. It needs the committed bookmark restore protocol too;
-      // initialTopMostItemIndex is only an estimate until the row materializes.
+      // Browsing restoration is issued only through the typed DOM command once
+      // this exact row has materialized. Virtuoso mount estimates are not a
+      // second positioning authority.
       delayedRestoreRef.current = bookmark
         ? {
           activationID: reading.activationID,
@@ -633,7 +529,6 @@ function MessageListBody({
           issuedRevision: 0,
         }
         : null;
-      resetFollowingScroll(followingControl, reading, current);
       activationOwnerRef.current = {
         activationID: reading.activationID,
         reading,
@@ -645,12 +540,6 @@ function MessageListBody({
       };
       positionDelayedBookmark('activation-materialized');
     } else {
-      const issueRole = commitFollowingPresentation({
-        control: followingControl,
-        current,
-        previous: activationOwnerRef.current,
-        snapshot,
-      });
       // Same-activation data commits keep the object captured by the lifecycle
       // cleanup but advance it to that activation's latest committed owner/data.
       activationOwnerRef.current.reading = reading;
@@ -660,7 +549,6 @@ function MessageListBody({
       activationOwnerRef.current.roleRevision = Number(snapshot.roleRevision || 0);
       activationOwnerRef.current.inputEpoch = current.inputEpoch;
       positionDelayedBookmark('target-materialized');
-      if (issueRole) issueBottomIfCurrent('role-commit');
     }
     traceReadingAdapter('owner-commit', () => ({
       activationID: reading.activationID,
@@ -676,26 +564,17 @@ function MessageListBody({
       removedIDs: snapshot.changes?.removed || [],
       bottomIntentID: current.bottomIntent?.id || '',
       bottomIntentTargets: current.bottomIntent?.targetMessageIDs || [],
-      sendOwnedRevision: sendOwnedRevisionRef.current
-        ? {
-          intentID: sendOwnedRevisionRef.current.intentID,
-          snapshotRevision: sendOwnedRevisionRef.current.snapshotRevision,
-          roleRevision: sendOwnedRevisionRef.current.roleRevision,
-          baselineObserved: sendOwnedRevisionRef.current.baselineObserved === true,
-          independentOrdinary: sendOwnedRevisionRef.current.independentOrdinary === true,
-        }
-        : null,
       config: READING_TRACE_CONFIG,
       scrollTop: Number(scrollerRef.current?.scrollTop || 0),
       scrollHeight: Number(scrollerRef.current?.scrollHeight || 0),
       clientHeight: Number(scrollerRef.current?.clientHeight || 0),
     }));
-  }, [bottomIntentPresentation, followingControl, issueBottomIfCurrent, reading,
-    reading.activationID, snapshot, snapshot.rows, surfaceVisible]);
+  }, [reading, reading.activationID, snapshot, snapshot.rows, surfaceVisible,
+    positionDelayedBookmark]);
 
   useLayoutEffect(() => {
     handoffPendingRef.current = handoffPending === true;
-    const current = readingRef.current.getSession?.() || readingRef.current.session;
+    const current = readingRef.current.getSession();
     const validTarget = Boolean(
       handoffPending
       && navigationTarget?.bookmark?.messageID
@@ -753,7 +632,7 @@ function MessageListBody({
 
   const observe = useCallback((evidence, observedRoot = scrollerRef.current) => {
     const owner = readingRef.current;
-    const session = owner.getSession?.() || owner.session;
+    const session = owner.getSession();
     const bookmark = visibleBookmark(observedRoot, snapshotRef.current.rows, {
       // Causal authority and sampling phase are independent. A gesture can
       // keep its current `user` authority while scrollend asks for the one
@@ -795,7 +674,7 @@ function MessageListBody({
 
   const scheduleObserve = useCallback((source = 'layout') => {
     const owner = readingRef.current;
-    const session = owner.getSession?.() || owner.session;
+    const session = owner.getSession();
     const input = navigationPolicy.currentInput();
     // Preserve the evidence at the event boundary. The latest event in a frame
     // wins, so a later layout invalidation cannot inherit an earlier scroll's
@@ -835,7 +714,7 @@ function MessageListBody({
       const root = scrollerRef.current;
       const rows = snapshotRef.current.rows;
       const owner = readingRef.current;
-      const session = owner.getSession?.() || owner.session;
+      const session = owner.getSession();
       if (!root || !rows.length || root.clientHeight <= 0) return;
       const materialized = [...root.querySelectorAll('[data-presentation-row-id]')];
       reportDomEvidence(Object.freeze({
@@ -857,7 +736,7 @@ function MessageListBody({
     const root = scrollerRef.current;
     const owner = readingRef.current;
     if (!root || !owner) return;
-    const current = owner.getSession?.() || owner.session;
+    const current = owner.getSession();
     const input = navigationPolicy.currentInput();
     reportDomEvidence(Object.freeze({
       type: 'scroll-position',
@@ -896,14 +775,7 @@ function MessageListBody({
     canFollowTail: true,
     canRequestHistory: true,
     onNavigationUpdate(transaction, reason) {
-      const owner = readingRef.current;
-      const current = owner.getSession?.() || owner.session;
-      if (reason === 'begin') {
-        invalidateFollowingSend(sendScrollTransactionRef, current);
-        sendOwnedRevisionRef.current = null;
-        roleAuthorizationRef.current = null;
-        delayedRestoreRef.current = null;
-      }
+      if (reason === 'begin') delayedRestoreRef.current = null;
       navigationPolicy.onNavigationUpdate(transaction, reason);
       const root = scrollerRef.current;
       reportDomEvidence(Object.freeze({
@@ -940,7 +812,7 @@ function MessageListBody({
       previousTop = nextTop;
       const owner = readingRef.current;
       const input = navigationPolicy.currentInput();
-      const current = owner.getSession?.() || owner.session;
+      const current = owner.getSession();
       traceReadingAdapter('scroll-observed', () => ({
         activationID: current.activationID,
         inputEpoch: current.inputEpoch,
@@ -987,8 +859,7 @@ function MessageListBody({
     geometryRevisionRef.current += 1;
     scheduleObserve('layout');
     scheduleCoverageCheck();
-    issueBottomIfCurrent('snapshot-commit');
-  }, [issueBottomIfCurrent, scheduleCoverageCheck, scheduleObserve, scrollerNode, snapshot.revision]);
+  }, [scheduleCoverageCheck, scheduleObserve, scrollerNode, snapshot.revision]);
 
   useLayoutEffect(() => {
     const root = scrollerRef.current;
@@ -1000,40 +871,17 @@ function MessageListBody({
         clientHeight: Number(root.clientHeight || 0),
       }));
       geometryRevisionRef.current += 1;
-      const nextSize = `${Number(root.clientWidth || 0)}:${Number(root.clientHeight || 0)}`;
-      const previousSize = viewportSizeRef.current;
-      viewportSizeRef.current = nextSize;
-      const owner = readingRef.current;
-      const current = owner.getSession?.() || owner.session;
-      if (previousSize && previousSize !== nextSize
-        && current.mode === READING_MODE.following) {
-        viewportAuthorizationRef.current = {
-          activationID: current.activationID,
-          inputEpoch: current.inputEpoch,
-          geometryRevision: geometryRevisionRef.current,
-        };
-      }
       scheduleObserve('layout');
       scheduleCoverageCheck();
-      issueBottomIfCurrent('viewport-layout');
     });
     observer.observe(root);
     return () => observer.disconnect();
-  }, [issueBottomIfCurrent, scheduleCoverageCheck, scheduleObserve, scrollerNode]);
-
-  useLayoutEffect(() => {
-    const intent = reading.session.bottomIntent;
-    const explicitLatest = String(intent?.id || '').startsWith('latest:');
-    if ((!intent.id && !sendOwnedRevisionRef.current)
-      || !snapshot.rows.length || (reading.bottomReady === false && !explicitLatest)) return;
-    issueBottomIfCurrent('explicit-bottom');
-  }, [bottomIntentPresentation, issueBottomIfCurrent, reading.bottomReady, reading.session.bottomIntent, snapshot.revision, snapshot.rows.length]);
+  }, [scheduleCoverageCheck, scheduleObserve, scrollerNode]);
 
   useLayoutEffect(() => () => {
     if (observationFrameRef.current) cancelAnimationFrame(observationFrameRef.current);
     if (coverageFrameRef.current) cancelAnimationFrame(coverageFrameRef.current);
     listCommitMicrotaskRef.current += 1;
-    itemLayoutIssueMicrotaskRef.current += 1;
   }, []);
 
   useLayoutEffect(() => {
@@ -1049,7 +897,7 @@ function MessageListBody({
       // subtree/geometry, so connectivity is not an ownership predicate.
       if (!node || !binding) return;
       const owner = binding.reading;
-      const session = owner.getSession?.() || owner.session;
+      const session = owner.getSession();
       reportDomEvidence(Object.freeze({
         type: 'reading-observation',
         bookmark: visibleBookmark(node, binding.rows, {
@@ -1100,7 +948,7 @@ function MessageListBody({
       };
       if (!targetAuthority || targetAuthority.phase !== 'settled') return reject('input-active');
       const owner = readingRef.current;
-      const current = owner?.getSession?.() || owner?.session;
+      const current = owner?.getSession();
       if (targetAuthority.activationID !== current?.activationID
         || Number(targetAuthority.inputGeneration) !== Number(current?.inputEpoch)) {
         return reject('owner-mismatch', { inputEpoch: current?.inputEpoch || 0 });
@@ -1329,7 +1177,7 @@ function MessageListBody({
   const acknowledgeCommittedRange = useCallback(() => {
     const root = scrollerRef.current;
     const owner = readingRef.current;
-    const current = owner?.getSession?.() || owner?.session;
+    const current = owner?.getSession();
     const data = snapshotRef.current;
     if (!root || !current || !data.rows.length) return null;
     const indexByID = new Map(data.rows.map((row, index) => [String(row.id), index]));
@@ -1361,109 +1209,18 @@ function MessageListBody({
       scheduleObserve('layout');
       positionDelayedBookmark('list-commit');
       scheduleNavigationRevealReceipt('list-commit');
-      issueBottomIfCurrent('list-commit');
     });
-  }, [acknowledgeCommittedRange, issueBottomIfCurrent, positionDelayedBookmark,
+  }, [acknowledgeCommittedRange, positionDelayedBookmark,
     scheduleNavigationRevealReceipt, scheduleObserve]);
   const listContext = useMemo(() => ({
     onListCommit,
   }), [onListCommit]);
-  const followAuthorized = reading.session.mode === READING_MODE.following
-    && reading.initializing !== true
-    && reading.bottomReady !== false;
-  useLayoutEffect(() => {
-    const previous = followAuthorizationRef.current;
-    if (previous?.activationID !== reading.activationID) {
-      followAuthorizationRef.current = {
-        activationID: reading.activationID,
-        inputEpoch: reading.session.inputEpoch,
-        authorized: followAuthorized,
-      };
-      return;
-    }
-    if (previous.authorized === followAuthorized) return;
-    followAuthorizationRef.current = {
-      activationID: reading.activationID,
-      inputEpoch: reading.session.inputEpoch,
-      authorized: followAuthorized,
-    };
-    traceReadingAdapter('follow-authorization', {
-      activationID: reading.activationID,
-      inputEpoch: reading.session.inputEpoch,
-      authorized: followAuthorized,
-      bottomIntentID: reading.session.bottomIntent?.id || '',
-    });
-    if (!followAuthorized) return;
-    const root = scrollerRef.current;
-    const current = reading.getSession?.() || reading.session;
-    if (!root || current.activationID !== reading.activationID
-      || current.mode !== READING_MODE.following) return;
-    const existing = layoutHeightAuthorizationRef.current;
-    const exactExisting = existing
-      && existing.activationID === current.activationID
-      && existing.inputEpoch === current.inputEpoch
-      && existing.snapshotRevision === Number(snapshot.revision || 0)
-      && existing.roleRevision === Number(snapshot.roleRevision || 0);
-    const pendingSend = current.bottomIntent?.inputEpoch === current.inputEpoch
-      && String(current.bottomIntent?.id || '').startsWith('composer:send-start:');
-    // Tail readiness is a committed presentation boundary. It may arrive
-    // after explicit latest has already reached the then-current DOM tail and
-    // after an earlier height token was rejected as not ready. Publish one
-    // ordinary obligation for the current physical extent; a stronger exact
-    // token remains intact. Browsing never enters this branch.
-    // Send-start itself changes browsing to following before its durable
-    // targets exist. That mode transition is not new geometry evidence.
-    // Keep real height/viewport obligations intact and let the issuer join
-    // the send's committed destination independently.
-    if (!pendingSend
-      && (!exactExisting || Number(existing.height || 0) <= Number(root.scrollHeight || 0))) {
-      layoutHeightAuthorizationRef.current = {
-        activationID: current.activationID,
-        inputEpoch: current.inputEpoch,
-        snapshotRevision: Number(snapshot.revision || 0),
-        roleRevision: Number(snapshot.roleRevision || 0),
-        height: Number(root.scrollHeight || 0),
-        tokenID: `height:follow-ready:${current.activationID}:${current.inputEpoch}:${snapshot.revision}:${snapshot.roleRevision || 0}`,
-      };
-    }
-    issueBottomIfCurrent('follow-ready');
-  }, [followAuthorized, issueBottomIfCurrent, reading, reading.activationID, reading.session.bottomIntent?.id,
-    reading.session.inputEpoch, snapshot.revision, snapshot.roleRevision]);
-  const committedInitialLocation = initialLocationRef.current;
-  const initial = committedInitialLocation.activationID === reading.activationID
-    && committedInitialLocation.value
-    ? committedInitialLocation.value
-    : initialLocation(snapshot.rows, reading.session);
-  useLayoutEffect(() => {
-    if (!snapshot.rows.length
-      || initialLocationRef.current.activationID === reading.activationID) return;
-    // `initialTopMostItemIndex` is a one-shot mount input, but its value must
-    // belong to the render React actually committed. Mutating this ref during
-    // render lets a suspended/abandoned activation lend its bookmark to a
-    // later render with the same activation id. Freeze the rendered candidate
-    // only at the layout-commit boundary; until then every candidate derives
-    // its own value from its own rows/session.
-    initialLocationRef.current = {
-      activationID: reading.activationID,
-      value: initial,
-    };
-  }, [initial, reading.activationID, snapshot.rows.length]);
   if (reading.restorePending && !snapshot.rows.length) {
     return <div className="timeline-message-list timeline-reading-restore" role="status">正在恢复上次阅读位置…</div>;
   }
   if (!snapshot.rows.length) {
     return <div className="timeline-message-list" data-empty="true" role="region" aria-label="频道动态" />;
   }
-  const initialTopMostItemIndex = initial.atEnd === true
-    ? { index: 'LAST', align: 'end' }
-    : {
-      // initialTopMostItemIndex is data-relative even when firstItemIndex uses
-      // Virtuoso's separate absolute coordinate for prepend continuity.
-      index: Number(initial.index || 0),
-      align: 'start',
-      ...(Number.isFinite(initial.viewOffset) ? { offset: initial.viewOffset } : {}),
-    };
-
   const formalRangeState = formalRangeStatesRef.current.get(formalRangeOwner) || null;
   const formalRangePending = surfaceVisible === true
     && formalRangeState?.phase === 'pending'
@@ -1495,7 +1252,6 @@ function MessageListBody({
     computeItemMeasurementKey={itemMeasurementKey}
     formalRangeStateChange={onFormalRangeStateChange}
     itemContent={itemContent}
-    initialTopMostItemIndex={handoffPending && navigationTarget ? undefined : initialTopMostItemIndex}
     followOutput={false}
     defaultItemHeight={132}
     increaseViewportBy={900}
@@ -1542,139 +1298,18 @@ function MessageListBody({
     }}
     totalListHeightChanged={(height) => {
       const committedHeight = Number(height || 0);
-      const previousHeight = lastListHeightRef.current;
-      const ackTuple = {
-        activationID: reading.activationID,
-        inputEpoch: reading.session.inputEpoch,
-        snapshotRevision: Number(snapshot.revision || 0),
-        roleRevision: Number(snapshot.roleRevision || 0),
-      };
-      const previousAck = itemLayoutAckRef.current;
-      const sameAckTuple = previousAck
-        && previousAck.activationID === ackTuple.activationID
-        && previousAck.inputEpoch === ackTuple.inputEpoch
-        && previousAck.snapshotRevision === ackTuple.snapshotRevision
-        && previousAck.roleRevision === ackTuple.roleRevision;
-      itemLayoutAckRef.current = {
-        ...ackTuple,
-        firstHeight: sameAckTuple
-          ? Number(previousAck.firstHeight ?? previousAck.height ?? committedHeight)
-          : committedHeight,
-        height: committedHeight,
-        ackSeq: sameAckTuple ? Number(previousAck.ackSeq || 1) + 1 : 1,
-        rowIDs: Object.freeze(snapshot.rows.map((row) => row.id)),
-      };
       traceReadingAdapter('list-height', () => ({
         height: committedHeight,
         scrollTop: Number(scrollerRef.current?.scrollTop || 0),
         scrollHeight: Number(scrollerRef.current?.scrollHeight || 0),
         clientHeight: Number(scrollerRef.current?.clientHeight || 0),
       }));
-      const current = reading.getSession?.() || reading.session;
-      const roleAuthorization = roleAuthorizationRef.current;
-      const ownsRoleCommit = Boolean(
-        roleAuthorization
-        && roleAuthorization.activationID === current.activationID
-        && roleAuthorization.inputEpoch === current.inputEpoch
-        && roleAuthorization.snapshotRevision === Number(snapshot.revision || 0)
-        && roleAuthorization.roleRevision === Number(snapshot.roleRevision || 0)
-      );
-      const firstRoleAck = ownsRoleCommit
-        && roleAuthorization.ready !== true;
-      const currentIntent = current.bottomIntent?.id
-        && current.bottomIntent.inputEpoch === current.inputEpoch
-        ? current.bottomIntent
-        : null;
-      if (firstRoleAck) {
-        // `blocked` records that an intent existed when the role commit was
-        // published; it is not a permanent veto. Explicit latest can consume
-        // that intent before the public height acknowledgement arrives. In
-        // that ordering the still-following reader owns the committed role
-        // height normally. A currently-live send/latest intent remains the
-        // sole authority and the role token stays suppressed.
-        roleAuthorizationRef.current = currentIntent
-          ? null
-          : {
-            ...roleAuthorization,
-            ready: true,
-            blocked: false,
-            height: committedHeight,
-          };
-      }
-      const owned = sendOwnedRevisionRef.current;
-      const ownsThisCommit = Boolean(
-        owned
-        && owned.activationID === current.activationID
-        && owned.inputEpoch === current.inputEpoch
-        && owned.snapshotRevision === Number(snapshot.revision || 0)
-        && owned.roleRevision === Number(snapshot.roleRevision || 0)
-        && current.bottomIntent?.id === owned.intentID,
-      );
-      const firstOwnedBaseline = ownsThisCommit
-        && owned.baselineObserved !== true;
-      if (firstOwnedBaseline) {
-        // Observation identity is independent of the numeric height. The
-        // target commit may legitimately report the same extent as the prior
-        // commit (for example timeline -> Waiting replacement).
-        sendOwnedRevisionRef.current = {
-          ...owned,
-          baselineObserved: true,
-          baselineHeight: committedHeight,
-        };
-      }
-      if (committedHeight !== previousHeight) {
-        lastListHeightRef.current = committedHeight;
-        if (firstRoleAck || (firstOwnedBaseline && owned.independentOrdinary !== true)) {
-          // The exact target delta's first public height completes only the
-          // send join. A later different height in the same revision is a new
-          // committed layout obligation and is allowed to follow normally.
-          layoutHeightAuthorizationRef.current = null;
-        } else {
-          // A changed public list extent is an ordinary physical-tail
-          // obligation while this activation is following. The Waiting
-          // reserve itself is fixed from initial mount and therefore never
-          // enters this path as a presentation state change.
-          layoutHeightAuthorizationRef.current = current.mode === READING_MODE.following
-            ? {
-              activationID: current.activationID,
-              inputEpoch: current.inputEpoch,
-              snapshotRevision: Number(snapshot.revision || 0),
-              roleRevision: Number(snapshot.roleRevision || 0),
-              height: committedHeight,
-              tokenID: `height:${current.activationID}:${current.inputEpoch}:${snapshot.revision}:${committedHeight}`,
-            }
-            : null;
-        }
-      }
       geometryRevisionRef.current += 1;
       scheduleObserve('layout');
       scheduleCoverageCheck();
-      issueBottomIfCurrent('item-layout');
-      // Virtuoso publishes the committed list height from its layout callback
-      // before the browser necessarily exposes that same Footer/list extent
-      // through root.scrollHeight. Keep the exact existing authorization and
-      // retry it once at the microtask commit boundary; the issuer re-reads
-      // activation/input/mode and remains the sole geometry writer. A newer
-      // height callback or unmount invalidates this attempt, and there is no
-      // timer/rAF correction loop.
-      const issueGeneration = ++itemLayoutIssueMicrotaskRef.current;
-      queueMicrotask(() => {
-        if (itemLayoutIssueMicrotaskRef.current !== issueGeneration) return;
-        issueBottomIfCurrent('item-layout-commit');
-      });
     }}
     />
   </>;
-}
-
-function StandaloneMessageList(props) {
-  const stackRef = useRef(null);
-  return <ReadingNavigationOwner
-    activationID={props.reading.activationID}
-    reading={props.reading}
-    stackRef={stackRef}
-    visibleRole="browsing"
-  ><div ref={stackRef} className="timeline-reading-stack"><ControlledMessageList {...props} /></div></ReadingNavigationOwner>;
 }
 
 function ControlledMessageList(props) {
@@ -1687,6 +1322,5 @@ function ControlledMessageList(props) {
 }
 
 export function MessageList(props) {
-  const navigationOwner = useReadingNavigationOwner();
-  return navigationOwner ? <ControlledMessageList {...props} /> : <StandaloneMessageList {...props} />;
+  return <ControlledMessageList {...props} />;
 }

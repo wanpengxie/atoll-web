@@ -36,12 +36,18 @@ import { useNotificationConfirmation } from './useNotificationConfirmation.js';
 const HISTORY_RUNWAY_REVEAL_RECORDS = 8;
 const HISTORY_RUNWAY_REVEAL_BYTES = 256 * 1024;
 const PENDING_ARRIVAL_LIMIT = 1_024;
-const EMPTY_REQUEST = () => Promise.resolve({ kind: 'exhausted' });
 const IDLE_HISTORY_DEMAND = Object.freeze({ revision: 0, phase: 'idle', error: '' });
 
 function createController({ channelID, viewKey, viewSessions }) {
+  if (!viewSessions
+    || typeof viewSessions.readView !== 'function'
+    || typeof viewSessions.save !== 'function'
+    || typeof viewSessions.activate !== 'function'
+    || typeof viewSessions.deactivate !== 'function') {
+    throw new TypeError('reading session requires a view-session store');
+  }
   const activationID = newId();
-  const saved = viewSessions?.readView(channelID, viewKey) || { mode: READING_MODE.following };
+  const saved = viewSessions.readView(channelID, viewKey);
   let session = createReadingSession({ key: `${channelID}:${viewKey}`, activationID, saved });
   const unseenRecords = new Map(
     (saved.unseenRecords || [])
@@ -85,7 +91,7 @@ function createController({ channelID, viewKey, viewSessions }) {
   }
 
   function persist(previousRevision) {
-    viewSessions?.save(channelID, viewKey, activationID, previousRevision, {
+    viewSessions.save(channelID, viewKey, activationID, previousRevision, {
       ...persistentReadingSession(session),
       unseenTail: unseenRecords.size,
       unseenKeys: [...unseenRecords.keys()],
@@ -96,7 +102,7 @@ function createController({ channelID, viewKey, viewSessions }) {
   function start() {
     if (started) return;
     started = true;
-    viewSessions?.activate(channelID, viewKey, activationID);
+    viewSessions.activate(channelID, viewKey, activationID);
   }
 
   function normalizeRecords(records) {
@@ -362,11 +368,11 @@ function createController({ channelID, viewKey, viewSessions }) {
     },
     close() {
       listeners.clear();
-      if (started) viewSessions?.deactivate(channelID, viewKey, activationID);
+      if (started) viewSessions.deactivate(channelID, viewKey, activationID);
       started = false;
     },
     suspend() {
-      if (started) viewSessions?.deactivate(channelID, viewKey, activationID);
+      if (started) viewSessions.deactivate(channelID, viewKey, activationID);
       started = false;
     },
   };
@@ -383,7 +389,10 @@ export function useReadingSession({
   surfaceVisible = false,
 }) {
   const historyStatus = history.status || history || {};
-  const requestPort = history.request || history.open || history.loadOlder || EMPTY_REQUEST;
+  const requestPort = history.request;
+  if (typeof requestPort !== 'function') {
+    throw new TypeError('reading session requires history.request');
+  }
   const controller = useMemo(
     () => createController({ channelID, viewKey, viewSessions }),
     [channelID, viewKey, viewSessions],
@@ -394,7 +403,7 @@ export function useReadingSession({
     && Object.prototype.hasOwnProperty.call(historyStatus, 'messageCurrent')
     && Object.prototype.hasOwnProperty.call(historyStatus, 'headSeq');
   const [latestRequiredRevision, setLatestRequiredRevision] = useState(0);
-  const markReadPort = history.markRead || history.onReadLatest;
+  const markReadPort = history.markRead;
   const markNotificationsReadPort = history.markNotificationsRead;
   // This object is a render candidate until the insertion effect publishes it.
   // Refs are shared by React's current/work-in-progress fibers, so assigning

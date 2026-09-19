@@ -28,6 +28,40 @@ function normalizedBookmark(value) {
   });
 }
 
+// Resolve a saved semantic position against the one committed Presentation.
+// Exact identity wins; a deleted identity resumes at its recorded successor,
+// predecessor, nearest sequence, and finally the first surviving row. Only an
+// exact identity may reuse the saved row-local offset.
+export function resolveReadingBookmark(rows = [], bookmark = null) {
+  if (!bookmark?.messageID || rows.length === 0) return null;
+  let index = rows.findIndex((row) => row.id === bookmark.messageID);
+  const exact = index >= 0;
+  if (index < 0 && bookmark.successorID) {
+    index = rows.findIndex((row) => row.id === bookmark.successorID);
+  }
+  if (index < 0 && bookmark.predecessorID) {
+    index = rows.findIndex((row) => row.id === bookmark.predecessorID);
+  }
+  if (index < 0 && bookmark.seq) {
+    let distance = Number.POSITIVE_INFINITY;
+    rows.forEach((row, candidate) => {
+      const nextDistance = Math.abs(Number(row.seqLow || 0) - Number(bookmark.seq));
+      if (nextDistance < distance) {
+        distance = nextDistance;
+        index = candidate;
+      }
+    });
+  }
+  if (index < 0) index = 0;
+  const rowViewportOffset = Number(bookmark.rowViewportOffset);
+  return Object.freeze({
+    index,
+    messageID: rows[index].id,
+    rowViewportOffset: exact && Number.isFinite(rowViewportOffset) ? rowViewportOffset : null,
+    exact,
+  });
+}
+
 function idleBottomIntent() {
   return Object.freeze({
     id: '',

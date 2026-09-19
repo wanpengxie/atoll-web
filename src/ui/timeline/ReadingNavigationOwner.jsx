@@ -164,7 +164,7 @@ export function ReadingNavigationOwner({
         const owner = committed.reading;
         const host = hostsRef.current.get(transaction.hostRole);
         if (!host || host.token !== transaction.hostToken) return 0;
-        const before = owner.getSession?.() || owner.session;
+        const before = owner.getSession();
         transactionOwnerRef.current = {
           id: transaction.id,
           owner,
@@ -226,7 +226,7 @@ export function ReadingNavigationOwner({
   useLayoutEffect(() => {
     const previous = committedRef.current;
     const active = coordinatorRef.current.getSnapshot().transaction;
-    const nextSession = reading.getSession?.() || reading.session;
+    const nextSession = reading.getSession();
     if (active?.inputGeneration
       && active.activationID === activationID
       && Number(active.inputGeneration) !== Number(nextSession.inputEpoch)) {
@@ -260,7 +260,7 @@ export function ReadingNavigationOwner({
     const committed = committedRef.current;
     const host = hostsRef.current.get(role);
     const owner = committed.reading;
-    let session = owner.getSession?.() || owner.session;
+    let session = owner.getSession();
     const intent = session.bottomIntent;
     const receipt = host?.bottomIntentReceipt?.(intent) || null;
     if (!host?.node
@@ -276,7 +276,7 @@ export function ReadingNavigationOwner({
     // this exact intent ineligible before any write can occur.
     if (coordinatorRef.current.getSnapshot().transaction) {
       coordinatorRef.current.cancel('application-control');
-      session = owner.getSession?.() || owner.session;
+      session = owner.getSession();
       if (session.bottomIntent?.id !== expectedIntentID
         || session.bottomIntent.inputEpoch !== session.inputEpoch) return false;
     }
@@ -311,7 +311,7 @@ export function ReadingNavigationOwner({
     }), { root: host.node });
     if (!executed || host.atTail?.() !== true) return false;
 
-    const current = owner.getSession?.() || owner.session;
+    const current = owner.getSession();
     if (current.bottomIntent?.id !== expectedIntentID
       || current.bottomIntent.inputEpoch !== current.inputEpoch) return false;
     if (typeof owner.consumeBottomIntent !== 'function') return false;
@@ -361,11 +361,10 @@ export function ReadingNavigationOwner({
       };
     };
     const shouldDeferFollowing = (host) => host.role === 'following'
-      && (committedRef.current.reading.getSession?.()
-        || committedRef.current.reading.session).mode === READING_MODE.following;
+      && committedRef.current.reading.getSession().mode === READING_MODE.following;
     const recordInput = (host, detail) => {
       const owner = committedRef.current.reading;
-      const session = owner.getSession?.() || owner.session;
+      const session = owner.getSession();
       if (detail.direction === 'newer' && session.mode === READING_MODE.following
         && host.atTail?.() === true) return null;
       // Relative following input becomes authoritative only after the browser
@@ -602,13 +601,10 @@ export function ReadingNavigationOwner({
 
 export function useReadingNavigationHost(role, adapter, node) {
   const owner = useContext(ReadingNavigationContext);
+  if (!owner) throw new Error('reading navigation host requires ReadingNavigationOwner');
   useLayoutEffect(() => {
-    if (!owner || !node) return undefined;
+    if (!node) return undefined;
     return owner.registerHost(role, { ...adapter, node });
   }, [adapter, node, owner, role]);
   return owner;
-}
-
-export function useReadingNavigationOwner() {
-  return useContext(ReadingNavigationContext);
 }

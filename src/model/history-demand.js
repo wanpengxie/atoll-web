@@ -88,12 +88,11 @@ export function notificationReadSeq({ channelId = '', status = {}, authority = {
   const boundary = safePositive(receipt.boundary);
   const head = safePositive(status.headSeq);
   if (!boundary || boundary > head) return 0;
-  if (receipt.cause === 'presented-follow') {
-    if (status.messageCurrent !== true
-      || safePositive(receipt.installedHighSeq) < boundary
-      || Number(receipt.sourceRevision || 0) <= 0
-      || Number(receipt.sourceRevision || 0) > Number(status.presentationRevision || 0)) return 0;
-  } else if (receipt.cause !== 'tail-backlog') return 0;
+  if (receipt.cause !== 'presented-follow'
+    || status.messageCurrent !== true
+    || safePositive(receipt.installedHighSeq) < boundary
+    || Number(receipt.sourceRevision || 0) <= 0
+    || Number(receipt.sourceRevision || 0) > Number(status.presentationRevision || 0)) return 0;
   return boundary;
 }
 
@@ -126,7 +125,8 @@ const EMPTY_STATUS = Object.freeze({
 // visual side describes why a range matters; the scheduler still owns source,
 // page size, concurrency, P0/P1/P2 and cancellation of physical batches.
 export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open, refreshLatest, retryLocalReplica, markRead, markNotificationsRead, debugSnapshot } = {}) {
-  const request = (demand = {}) => open?.({
+  if (typeof open !== 'function') throw new TypeError('history demand port requires open');
+  const request = (demand = {}) => open({
     intent: demand.intent || HISTORY_INTENT.scrollHistory,
     urgency: demand.urgency || HISTORY_URGENCY.interactive,
     ...demand,
@@ -136,7 +136,6 @@ export function createHistoryDemandPort({ channelId, status = EMPTY_STATUS, open
     channelId: channelId || '',
     status: currentStatus,
     request,
-    open: request,
     refreshLatest: () => refreshLatest?.(),
     retryLocalReplica: () => retryLocalReplica?.(),
     debugSnapshot: () => debugSnapshot?.() || null,

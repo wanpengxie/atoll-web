@@ -12,8 +12,6 @@ import {
   historySupplyKey,
 } from './history-consumer-obligation.js';
 
-const RESTORE_INITIALIZATION_BUDGET_MS = 500;
-
 export function useReadingInitialization({
   controller,
   session,
@@ -32,14 +30,14 @@ export function useReadingInitialization({
   );
   const [state, setState] = useState(() => ({ controller, value: needed }));
   const initializing = state.controller === controller ? state.value : needed;
-  const deadlineRef = useRef({ controller: null, deadline: 0 });
-
   useEffect(() => {
     if (!initializing) return undefined;
     const bookmark = controller.getSnapshot().session.bookmark;
     const following = controller.getSnapshot().session.mode === 'following';
     if ((following && (snapshot.rows.length > 0 || authoritativeEmpty || semanticExhausted))
-      || (!following && (!bookmark || snapshot.rows.some((row) => row.id === bookmark.messageID)))) {
+      || (!following && (!bookmark
+        || snapshot.rows.some((row) => row.id === bookmark.messageID)
+        || semanticExhausted))) {
       diagnostic('debug', 'reading.initialization_ready', {
         channelId: channelID, viewKey, mode: following ? 'following' : 'browsing',
         sourceRevision: Number(snapshot.sourceRevision || 0),
@@ -47,24 +45,9 @@ export function useReadingInitialization({
         rowCount: snapshot.rows.length,
       });
       setState({ controller, value: false });
-      return undefined;
+      return;
     }
-    let active = true;
-    if (deadlineRef.current.controller !== controller) {
-      deadlineRef.current = { controller, deadline: Date.now() + RESTORE_INITIALIZATION_BUDGET_MS };
-    }
-    const timer = setTimeout(() => {
-      if (!active) return;
-      diagnostic('warn', 'reading.initialization_degraded', {
-        channelId: channelID, viewKey, mode: following ? 'following' : 'browsing',
-        headSeq: Number(historyStatus.headSeq || 0),
-        sourceRevision: Number(snapshot.sourceRevision || 0),
-        presentationRevision: Number(historyStatus.presentationRevision || 0),
-        visibleHighSeq: snapshot.rows.reduce((high, row) => Math.max(high, Number(row.seqHigh || 0)), 0),
-      });
-      setState({ controller, value: false });
-    }, Math.max(0, deadlineRef.current.deadline - Date.now()));
-    return () => { active = false; clearTimeout(timer); };
+    return undefined;
   }, [authoritativeEmpty, channelID, controller, historyStatus, initializing, semanticExhausted, snapshot, viewKey]);
 
   return Object.freeze({

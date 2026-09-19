@@ -196,7 +196,7 @@ export function FollowingTailList({
     const committed = committedRef.current;
     const owner = committed.reading;
     if (!committed.active || !root || !owner) return;
-    const current = owner.getSession?.() || owner.session;
+    const current = owner.getSession();
     const data = committed.snapshot;
     const visible = committed.surfaceVisible && isReadingSurfaceVisible(root);
     owner.onReadingObservation?.({
@@ -303,7 +303,7 @@ export function FollowingTailList({
         void owner.onAtTop?.({ demandUnits: completeViewportUnits(root) });
       }
       if (isReadingTraceEnabled()) {
-        const committed = owner.getSession?.() || owner.session;
+        const committed = owner.getSession();
         readingTrace('reading.following-handoff', {
           activationID: transaction.activationID,
           inputEpoch: transaction.inputGeneration,
@@ -400,7 +400,7 @@ export function FollowingTailList({
   // freezing a stale pixel target or starting another queue item.
   useLayoutEffect(() => {
     const root = rootRef.current;
-    const current = reading.getSession?.() || reading.session;
+    const current = reading.getSession();
     const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
     const presentationRevision = Number(snapshot.revision || 0);
     const ownerKey = `${reading.activationID}\u001f${snapshot.epoch || ''}\u001f${snapshot.viewID || ''}`;
@@ -551,7 +551,7 @@ export function FollowingTailList({
   const bottomIntentID = reading.session.bottomIntent?.id || '';
   useLayoutEffect(() => {
     if (!active || !bottomIntentID || !snapshot.rows.length || !navigationOwner) return;
-    const current = reading.getSession?.() || reading.session;
+    const current = reading.getSession();
     if (current.bottomIntent?.id !== bottomIntentID
       || current.bottomIntent.inputEpoch !== current.inputEpoch
       || consumedIntentRef.current === bottomIntentID) return;
