@@ -117,6 +117,31 @@ describe('connection-scoped Agent activity（ChannelFeedRuntime）', () => {
     runtime.destroy();
   });
 
+  it('同 boot 重连保留 exact live work，允许 history terminal settle，不允许 history-only revive', async () => {
+    const { runtime, owner } = setup();
+    await runtime.getSnapshot().setHistoryGrants([{ channel_id: 'c0', head_seq: 1 }], {
+      generation: 1, boot: 'boot-a', focus: 'c0',
+    });
+    owner().enqueue(processingRow({ seq: 1, generation: 1, ts: 1_000 }));
+    runtime.getSnapshot().disconnectHistory(1);
+    await runtime.getSnapshot().setHistoryGrants([{ channel_id: 'c0', head_seq: 2 }], {
+      generation: 2, boot: 'boot-a', focus: 'c0',
+    });
+    expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
+
+    owner().enqueue(terminalRow({ seq: 2, generation: 2, status: 'failed', ts: 2_000, source: 'history' }));
+    expect(runtime.getSnapshot().agentActivity.byChannel.c0.agents['agent:codex:1'])
+      .toEqual({ active: 0, settled: 1, state: 'settled' });
+
+    await runtime.getSnapshot().setHistoryGrants([{ channel_id: 'c0', head_seq: 3 }], {
+      generation: 3, boot: 'boot-b', focus: 'c0',
+    });
+    expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
+    owner().enqueue(processingRow({ seq: 3, generation: 3, ts: 3_000, source: 'history' }));
+    expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
+    runtime.destroy();
+  });
+
   it('忽略连接管理类信封（非 ACTIVITY_TYPES）', async () => {
     const { runtime, owner } = setup();
     await runtime.getSnapshot().setHistoryGrants([], { generation: 1, boot: 'boot-a' });

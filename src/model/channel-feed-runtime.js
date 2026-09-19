@@ -954,13 +954,19 @@ export function createChannelFeedRuntime(options = {}) {
       if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
       applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
     }
-    let retiredActivity = false;
-    for (const [key, entry] of activityEntries) {
+    let activityGenerationChanged = false;
+    for (const entry of activityEntries.values()) {
       if (entry.state !== 'active' || entry.generation === generation) continue;
-      activityEntries.delete(key);
-      retiredActivity = true;
+      // A same-boot reconnect hides the old live entry while disconnected,
+      // but history is still allowed to settle that exact retained work. The
+      // generation on the entry remains the admission fence: a new live
+      // progress row replaces it, while a history terminal may only close
+      // the matching channel/request key. A channel grant is not required to
+      // retain the close proof; the connection owner may receive a terminal
+      // while its replacement grant is still being assembled.
+      activityGenerationChanged = true;
     }
-    const connectionChanged = !activityConnected || retiredActivity;
+    const connectionChanged = !activityConnected || activityGenerationChanged;
     activityConnected = true;
     if (connectionChanged) activityRevision += 1;
     localReplicaReady = true;
