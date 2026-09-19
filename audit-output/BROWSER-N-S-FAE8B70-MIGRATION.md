@@ -188,3 +188,27 @@ ATOLL_TEST_WEB_PORT=15310 ATOLL_TEST_MOCK_PORT=18910 npx playwright test \
 | F7 | **presentation** | return-after-switch 时目标 `c0-history-request-112` 已在 replica（head=848、80 cached rows），但不在唯一 reading owner 的 visible IDs；公开 owner：reading-session/admission → virtualized presentation。 |
 
 证据目录：`test-results-notification-owner-oracle-pre-20260920/`，每条附件为 `notification-owner-oracle-{N2,N4,H1,H2,H3,H4,F7}.json`，含 input、cursor、replica、presentation、rail、reading 全量摘要及 `firstDivergence`。因此当前 0/7 的产品分歧可在同一 HEAD 直接重跑，并与下一次 notification owner 提交逐条对比。
+
+## 2026-09-20 notification owner 新协议后同 HEAD 复验
+
+在共享 HEAD `6060588`（包含 oracle 提交 `34d6f0c`；本次检查未发现 notification 产品文件相对前轮新增变更）立即重跑：
+
+```text
+ATOLL_TEST_WEB_PORT=15320 ATOLL_TEST_MOCK_PORT=18920 npx playwright test \
+  tests/browser/notification-owner-oracle.spec.js \
+  --reporter=line --output=test-results-notification-owner-oracle-post-6060588-20260920
+```
+
+结果仍为 **7/7 oracle tests passed；产品合同 0/7 通过**。与 pre oracle 相比首分歧没有移动：
+
+| case | frozen boundary / replica | presentation / rail 观察 | 首个分歧 |
+|---|---|---|---|
+| N2 | following arrival 后 cursor high-water=36，replica head=36 | 唯一 owner `gap=0/mode=following`；42 帧中 related 在 52ms=`1`、149ms=`3`、224ms=`2`，随后归零；公开 rail channel 仍缺失 | **rail** |
+| N4 | filtered tail cursor c0=63，replica head=63，`-unrelated-` 与 approval rows 均在 | owner `gap=0`；公开 rail `channels=[]`、无 `authorityReady`，无法证明 scope 外 unread | **rail** |
+| H1 | input→ack→reload→future ack 的 c0.project cursor 为 25→29→29→30；replica head=32 | ack/reload/future 的 owner 均可见尾部（gap=0），但公开 rail high-water=0/无 channel；预期 public boundary 27→28 未投影 | **rail** |
+| H2 | hydrate→ack→second hydrate 的 c0.project cursor 为 25→29→29；rows/meta head=29 | 二次 hydrate 后公开 rail 仍 `channels=[]`/high-water=0；未建立可核对的 frozen rail boundary | **rail** |
+| H3 | filtered tail cursor c0.project=29，replica head=29 | filtered owner `gap=0`、可见行已挂载；公开 rail high-water=0，离开后仍无 channel snapshot | **rail** |
+| H4 | following before/after cursor c0.project=25→28，replica head=28 | arrival 后 owner `gap=0`、3 个 visible rows；公开 rail high-water 仍为 0，presented-follow 未发布 | **rail** |
+| F7 | cold/browse/return cursor=844，replica head=848，目标 `c0-history-request-112` 存在于 replica | return 后 owner 仍 browsing/gap=0，但目标 row 不在 visible IDs；cached refresh 进入 following 且 snapshot 时 visible=0 | **presentation** |
+
+因此新协议提交没有改变本组公开状态转移；N2 的瞬时 badge、H1–H4 的 frozen cursor/replica 与 rail 缺口、F7 的 presentation visibility 均保持原产品交接。证据目录为 `test-results-notification-owner-oracle-post-6060588-20260920/`。

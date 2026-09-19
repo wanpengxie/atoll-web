@@ -70,6 +70,20 @@ ATOLL_TEST_WEB_PORT=15310 ATOLL_TEST_MOCK_PORT=18910 npx playwright test \
 
 这组 oracle 的绿色仅表示证据采集成功，不能替代原有 0/7 合同断言。产品交接保持：N2/N4/H1–H4 由 notification rail/high-water authority owner 处理；F7 由 reading-session/presentation admission owner 处理。证据保存在 `test-results-notification-owner-oracle-pre-20260920/`。
 
+## 新协议后立即复验（HEAD `6060588`）
+
+沿用 `34d6f0c` oracle，在共享 HEAD `6060588` 立即重跑 7 条：
+
+```text
+ATOLL_TEST_WEB_PORT=15320 ATOLL_TEST_MOCK_PORT=18920 npx playwright test \
+  tests/browser/notification-owner-oracle.spec.js \
+  --reporter=line --output=test-results-notification-owner-oracle-post-6060588-20260920
+```
+
+观测器 **7/7 完成**，但产品合同仍 **0/7**。N2 的 following tail 在 `gap=0` 时仍出现 related `1/3/2` 的瞬时帧；N4 的 cursor/replica 已到 c0=63/head=63，但公开 rail 无 authority；H1/H2/H3/H4 的 cursor 与 replica 已推进或恢复（分别为 30/29/29/28，replica head 32/29/29/28），公开 rail high-water 仍为 0 或 channel 缺失；F7 的 `c0-history-request-112` 已在 replica head=848，但回返后的唯一 owner visible IDs 仍不包含该 row。首个分歧保持 **N2/N4/H1–H4=rail，F7=presentation**，没有被新协议推迟或转移。
+
+该轮未修改产品、fixture、断言或 skip；证据位于 `test-results-notification-owner-oracle-post-6060588-20260920/`。
+
 ## R1（历史记录，已由 `cbd8591` 关闭）：频道切换时 history owner 尚未连接
 
 这条历史分歧不再是当前复验结果：`cbd8591` 后频道切换可以继续进入真实页面；最终轮未记录该错误。以下步骤和栈保留作修复前 provenance，不应作为当前 RED 计数。
