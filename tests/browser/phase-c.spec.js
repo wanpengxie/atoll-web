@@ -43,7 +43,7 @@ async function switchScenario(page, request, scenario, seed = 101) {
   await expect(page.locator('main h1')).toHaveText('c0');
 }
 
-async function openSteward(page) {
+async function openStewardPanel(page) {
   const host = page.locator('.context-host');
   let restoredContext = false;
   try {
@@ -58,6 +58,19 @@ async function openSteward(page) {
   }
   const details = page.getByRole('region', { name: 'Actor 详情 steward' });
   await expect(details).toBeVisible();
+  return details;
+}
+
+async function readStewardCapabilities(details) {
+  const read = details.getByRole('button', { name: '读取能力' });
+  if (await read.isVisible().catch(() => false)) await read.click();
+  await expect(details.getByText(/^\d+ 项能力$/)).toBeVisible();
+}
+
+async function openSteward(page) {
+  const details = await openStewardPanel(page);
+  // Clicking the roster row is itself the explicit human action that authorizes
+  // the live Describe. Do not race that in-flight probe with a second click.
   await expect(details.getByText(/^\d+ 项能力$/)).toBeVisible();
   return details;
 }
@@ -110,8 +123,12 @@ test('C-BR-01/02 Actor Describe 从账本加载并展示能力元数据', async 
 
   await page.reload();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
-  const restored = await openSteward(page);
-  await expect(restored.getByText(/^\d+ 项能力$/)).toBeVisible();
+  const restored = await openStewardPanel(page);
+  // Describe 是当前连接的活能力，不从历史账本恢复。刷新后先明确显示未知，
+  // 再由真人点击重新读取；禁止把 route restoration 变回自动探测入口。
+  await expect(restored.getByText('能力未知', { exact: true })).toBeVisible();
+  await expect(restored.getByRole('button', { name: '读取能力' })).toBeVisible();
+  await readStewardCapabilities(restored);
 });
 
 test('C-BR-02/03/04 Schema 表单跨 OBS 刷新保留输入并原样调用', async ({ page, request }) => {
@@ -321,5 +338,13 @@ test('C-BR-10/13 刷新重放后处理气泡与控制资格只保留一份', asy
   await expect(turn.locator('.agent-turn-bubble')).toHaveCount(1);
   await expect(turn.locator('.agent-turn-bubble').getByRole('button', { name: '继续' })).toHaveCount(0);
   await expect(turn.getByRole('button', { name: '停止', exact: true })).toBeVisible();
+  await expect(turn.getByText('Agent 版本不支持安全编辑', { exact: true })).toBeVisible();
+  await expect(turn.getByRole('button', { name: '编辑' })).toHaveCount(0);
+
+  // 当前连接尚无 Describe 时不能把历史能力当真。真人打开目标 Actor 是显式
+  // 取数动作；canonical live probe 落账后，原 processing turn 才恢复安全编辑。
+  const details = await openSteward(page);
+  await expect(details.getByText(/^\d+ 项能力$/)).toBeVisible();
+  await page.getByRole('button', { name: '关闭上下文' }).click();
   await expect(turn.getByRole('button', { name: '编辑' })).toBeVisible();
 });
