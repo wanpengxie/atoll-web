@@ -21,6 +21,47 @@ function runtimeOptions() {
 }
 
 describe('ChannelFeedRuntime ownership', () => {
+  it('uses the Composer correlation port for owned landed identities and no retired roster callback', () => {
+    const options = runtimeOptions();
+    const ownerToken = Object.freeze({ principalId: 'root' });
+    const observeFeed = vi.fn();
+    const handleEnvelope = vi.fn();
+    const onRoster = vi.fn();
+    const submissionCorrelationPort = {
+      owns: vi.fn(({ channelId, messageId }) => channelId === 'c0' && messageId === 'local-request'),
+      markLanded: vi.fn(() => true),
+    };
+    options.rosterRef.current = { self: () => '', observeFeed, handleEnvelope };
+    options.onRoster = onRoster;
+    options.submissionCorrelationPort = submissionCorrelationPort;
+    const runtime = createChannelFeedRuntime({ ...options, ownerToken });
+    runtime.bind({ ...options, ownerToken, submissionCorrelationPort });
+    runtime.mount();
+
+    const envelope = {
+      id: 'local-request',
+      kind: 'request',
+      type: TYPES.agentAsk,
+      sender: { id: 'human:root:1', kind: 'human' },
+      audience: ['agent:worker:1'],
+      payload: { body: { text: 'work' } },
+    };
+    expect(runtime.getOwnerSnapshot(ownerToken).enqueue({
+      channel_id: 'c0', seq: 1, source: 'live', envelope,
+    })).toBe(true);
+
+    expect(observeFeed).not.toHaveBeenCalled();
+    expect(onRoster).not.toHaveBeenCalled();
+    expect(handleEnvelope).toHaveBeenCalledWith('c0', envelope);
+    expect(submissionCorrelationPort.owns).toHaveBeenCalledWith({
+      channelId: 'c0', messageId: 'local-request',
+    });
+    expect(submissionCorrelationPort.markLanded).toHaveBeenCalledWith({
+      channelId: 'c0', messageId: 'local-request',
+    });
+    runtime.destroy();
+  });
+
   it('keeps owner-scoped command identities stable across store publications', () => {
     const options = runtimeOptions();
     const ownerToken = Object.freeze({ principalId: 'root' });

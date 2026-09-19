@@ -105,6 +105,20 @@ function notificationRootID(state, envelope) {
   return envelope?.parent_id || envelope?.id || '';
 }
 
+// Feed consumes the Composer-owned correlation port as a narrow, typed seam:
+// it may ask whether an exact channel/message identity is owned, then mark
+// that same identity landed after Replica accepts the canonical feed fact.
+// Feed never records or forgets identities on its own and never recreates the
+// retired Roster submission map.
+function markOwnedSubmissionLanded(port, channelId, messageId) {
+  if (!port || typeof port.owns !== 'function' || typeof port.markLanded !== 'function'
+    || typeof channelId !== 'string' || !channelId
+    || typeof messageId !== 'string' || !messageId) return false;
+  const identity = { channelId, messageId };
+  if (!port.owns(identity)) return false;
+  return port.markLanded(identity) === true;
+}
+
 function eventTimestamp(envelope, fallback = Date.now()) {
   const value = new Date(envelope?.ts).getTime();
   return Number.isFinite(value) ? value : fallback;
@@ -438,6 +452,7 @@ export function createChannelFeedRuntime(options = {}) {
     const accepted = [];
     const landedMessageIDs = new Set();
     const closedRequestIDs = new Set();
+    const landedSubmissionIdentities = new Map();
     const discoveredChannels = new Set();
     let accessChanged = false;
     let directoryInvalidatedEnvelope = null;
@@ -472,24 +487,28 @@ export function createChannelFeedRuntime(options = {}) {
           }));
         }
       }
-      rosterRef.current?.observeFeed?.(row.channel_id, row.envelope);
       if (source === 'live') {
         accessChanged = Boolean(accessRef.current?.live?.(row.channel_id)) || accessChanged;
-        rosterRef.current?.handleEnvelope?.(row.channel_id, row.envelope, (rosterRows, error) => {
-          if (rosterRows) callback('onRoster', row.channel_id, rosterRows, producerToken);
-          if (error) callback('onError', error);
-        });
+        rosterRef.current?.handleEnvelope?.(row.channel_id, row.envelope);
         if (!directoryInvalidatedEnvelope && invalidatesChannelDirectory(row.envelope)) {
           directoryInvalidatedEnvelope = row.envelope;
         }
       }
       if (row.envelope?.id) {
         landedMessageIDs.add(row.envelope.id);
+        landedSubmissionIdentities.set(
+          `${row.channel_id}\u0000${row.envelope.id}`,
+          { channelId: row.channel_id, messageId: row.envelope.id },
+        );
       }
       if (row.envelope?.kind === 'response'
         && FINAL.has(argsOf(row.envelope)?.status)
         && row.envelope?.parent_id) {
         landedMessageIDs.add(row.envelope.parent_id);
+        landedSubmissionIdentities.set(
+          `${row.channel_id}\u0000${row.envelope.parent_id}`,
+          { channelId: row.channel_id, messageId: row.envelope.parent_id },
+        );
         closedRequestIDs.add(row.envelope.parent_id);
         const request = result.record.state._envelopesById.get(row.envelope.parent_id);
         const closedTarget = String(argsOf(request)?.target || argsOf(row.envelope)?.target || '');
@@ -501,6 +520,9 @@ export function createChannelFeedRuntime(options = {}) {
     if (accepted.length) {
       callback('onChannelsDiscovered', discoveredChannels);
       if (producerToken === ownerToken) {
+        for (const identity of landedSubmissionIdentities.values()) {
+          markOwnedSubmissionLanded(bindings.submissionCorrelationPort, identity.channelId, identity.messageId);
+        }
         callback('onSubmissionFeed', landedMessageIDs, closedRequestIDs, producerToken);
       }
       if (accessChanged) callback('onAccessChanged');
