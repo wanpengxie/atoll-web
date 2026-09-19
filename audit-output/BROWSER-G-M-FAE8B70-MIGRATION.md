@@ -637,6 +637,98 @@ global DOM re-query, or private scheduler settle event substitutes for the typed
 visible offset. This gives the Reading owner a direct implementation target without changing
 VendorListExecutor, useHistoryConsumer, or the other five red cases.
 
+### H. Round 20 case 3 trusted-wheel takeover: fae8b70 → current first-owner packet (read-only)
+
+本轮只诊断 case 3，没有修改 Reading、Vendor、Projection 或 browser spec。旧 fixture 在
+独立 worktree `/tmp/atoll-web-fae8b70.nLclnl`，其 source fingerprint 为
+`9123b013b560fadc2943631b74591e56c98e609c734ba565ecbf4a2f224348a6`；current 复验在共享
+HEAD `e7be9ac`（相关产品/spec 相对上一轮 `74efa9b` 无差异）完成。旧 fixture 的动作是
+历史 reveal 进行中发送一个 trusted `wheel(0, 220)`；当前真实 App 的迁移动作是先
+`wheel(0, -2000)` 进入 browsing，再 `wheel(0, 520)` 反向接管，故两者保留的是同一
+“trusted input must take viewport ownership”合同，而不是同一像素轨迹。
+
+证据命令与结果：
+
+```text
+# fae8b70 fixture, three independent repeats
+ATOLL_TEST_MOCK_PORT=20031 ATOLL_TEST_WEB_PORT=15331 npx playwright test \
+  tests/browser/history-reveal-prototype.spec.js \
+  --grep='trusted wheel takes over an active reveal' --repeat-each=3 --reporter=line \
+  --output=/tmp/gm20-fae-case3-repeat3
+# 3 passed
+
+# current e7be9ac, three independent repeats
+ATOLL_TEST_MOCK_PORT=20044 ATOLL_TEST_WEB_PORT=15344 npx playwright test \
+  tests/browser/history-reveal-prototype.spec.js \
+  --grep='trusted wheel takes over history work' --repeat-each=3 --reporter=line \
+  --output=/tmp/gm20-current-e7be9ac-case3-repeat3
+# 3 failed; first public assertion: history-reveal-prototype.spec.js:104 writes === []
+```
+
+#### First owner is different
+
+| 版本 | trusted wheel 后首先接管意图的 owner | 证据 / writer 边界 |
+|---|---|---|
+| `fae8b70` | fixture 的 `HistoryRevealTransition.cancelForInput()`；`Fixture` 在 scroll root 的 capture-phase wheel listener 中同步调用它（旧 fixture `history-reveal-prototype.jsx:90–102, 208–212`） | active reveal 立即从 `revealing` 进入 instant `settling → revealing → commit`；fixture 不调用 scroll writer，native wheel 自己把 `scrollTop` 变为 220 |
+| current `e7be9ac` | 真实 Vendor root 的 trusted wheel 先进入 `createReadingNavigationCoordinator`，再由 `VendorListExecutor.onBegin` 调 `reading.beginNavigation` → `useProjectionReadingOwner.beginNavigation` → `takeReadingControl`；ReadingSession 把 session 置为 `browsing` 并递增 `inputEpoch`（`VendorListExecutor.jsx:220–251, 594–600`; `useConversationProjection.js:315–318`; `reading-session.js:142–156`） | Reading mode 已是 `browsing`，但 DOM writer/restore 事务没有与这次 wheel 同步撤权；公开 `Element.prototype` probe 仍看到 app `scrollTo`。唯一语义 owner 是 Reading/Projection reading-intent handoff，Vendor 是 DOM witness/executor，不另立 history owner |
+
+旧 owner 是“reveal transition 自己立即取消并提交”；current owner 是“ReadingSession 只记录 browsing intent，之后由 Vendor layout/restore effect 决定 geometry command”。当前 ReadingSession 注释也明确写出 native input “does not mirror or cancel the list component's internal work”（`reading-session.js:139–141`），这正是两种实现的首个 owner 交接差异：旧 fixture 的 input owner 与 reveal owner 同步，current 的 semantic owner 与 geometry command owner 没有同一条撤权 fence。
+
+#### Current Chromium DOM facts and visible consequence
+
+current 的稳定单次 JSON attachment 是 `/tmp/gm20-current-e7be9ac-case3-json` 对应的
+`history-reveal-wheel-takeover.json`；repeat3 在 `/tmp/gm20-current-e7be9ac-case3-repeat3`
+均首断在 writer assertion（`mode` 没有再回退为 `following`）。单次 evidence：
+
+```text
+beforeTakeover: activeLayers=1, activeLists=1, connected=true,
+  rowCount=15, visibleRows=3, scrollTop=1963, scrollHeight=4353,
+  clientHeight=387, mode=browsing
+evidence: mode=browsing, demand=idle, list.connected=true,
+  list.scrollTop=2483,
+  writes=[scrollTo({behavior:auto, top:1963})]
+```
+
+另两次 repeat 的 writer 列表为一条同样的 `top=1963`，以及一条
+`top=3964` 后一条 `top=1963`；三次均 `3 failed`。因此用户可见后果不是 list 断开、空
+surface 或 mode 回到 following，而是用户的 reverse native wheel 已把 viewport 推到
+`2483`，同时应用仍在同一 takeover 窗口执行旧 geometry compensation（`scrollTo` 的
+`top=1963`；偶发先执行 following-tail 的 `top=3964`），违反“trusted wheel 后不得有
+app scroll writer 抢回 viewport”的公开门。旧 fixture 三次均无 writer，wheel 后
+`scrollTop=220`，reveal 在 instant frame 后 committed，8 条 history units 全部可见，
+blank paint/empty range 均为空。
+
+#### First actionable owner and minimum contract
+
+这不是 history transport 是否收到 demand 的首断：current evidence 的 `demand=idle`、
+single connected list、mode=`browsing` 都已成立；也不能把 Vendor 当作第二个 semantic
+owner。首个 actionable owner 是 Reading/Projection 对 native wheel 的 handoff：它必须在
+同一 trusted input epoch 让所有 application-owned geometry work 失效，并只允许本次
+物理 wheel 改变 scroll position。当前相关的两个执行入口是
+`VendorListExecutor.enforceFollowingTail()` 的 `scroll-tail`（`VendorListExecutor.jsx:258–275`）
+与 browsing quiet 后的 `restoreReadingPosition()` / `position-row`（同文件
+`426–556, 668–714`）；其 exact command 只能作为 Reading owner 授权的 witness，不能在
+reverse/exit/new generation 后继续落地。
+
+交给 Reading owner 的最小复现/合同：
+
+1. 在 first trusted wheel 的 `takeReadingControl` 同步撤销该 activation/view 的旧
+   `scroll-tail`、`position-row`、RAF/retry token；不能等 quiet deadline 后才判断。
+2. 每个 command/RAF 必须以 `activationID + inputEpoch + intentRevision + view/generation`
+   及当前 mode/direction 做 exact fence；direction 从 older 反转 newer、退出 browsing、
+   activation/view 替换或 presentation revision 变化，立即 cancel/latest，不能继续旧
+   top/row request。
+3. native wheel 是唯一位置改变者；允许 Reading mode 保持 `browsing`，但此 case 的
+   pass 门必须是同一 connected list、可见 rows、`Element.prototype.scrollTo/scrollBy`
+   均为空，且最终 scrollTop 反映物理 wheel（current 轨迹为 2483），而不是以一次
+   mode 变化或 scheduler idle 代替。
+4. 若之后确实抵达 older physical boundary，history demand 可以由新的 typed boundary
+   evidence 重新授权；不能用旧 reveal/旧 geometry writer 的迟到回调续写。
+
+故 case 3 保留 **3/3 REGRESSION**，首断点已从此前的 mode mismatch 收敛到真实
+`scrollTo` writer；无需为此继续扩展 top continuation，也不触碰 case 1/Reading lease，
+等待 Reading owner 提交后再做 case 1 repeat3 actual-paint 验收。
+
 ## Boundary audit
 
 - This partition edits only the G–M `tests/browser` specs and this `audit-output` report. No
