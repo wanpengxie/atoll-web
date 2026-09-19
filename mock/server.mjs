@@ -29,7 +29,7 @@ const REVIEWER_ACTOR_ID = 'reviewer';
 const SYSTEM_ACTOR_ID = 'system';
 // agent 基座的控制词闭集（drivers/agents/base/base.go）。agent.ask 不在其中——
 // 它是“交办一件活”，不是控制。
-const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'agent.unhold', 'agent.replace', 'agent.queue', 'agent.compact', 'agent.new', 'agent.select', 'agent.context', 'agent.fork'];
+const AGENT_CONTROL_WORDS = ['agent.steer', 'agent.interrupt', 'agent.hold', 'agent.unhold', 'agent.replace', 'agent.queue', 'agent.compact', 'agent.new', 'agent.select', 'agent.options', 'agent.context', 'agent.fork'];
 
 // progress 契约：凡带 status（queued/processing）的进度帧必带 controls——受理方在
 // 这条消息自己的账上宣告"此刻可以对它用哪些控制词"。全量快照，后帧覆盖前帧；
@@ -228,6 +228,7 @@ function mockDescribe(actorId, { taskCapability = false } = {}) {
       'agent.compact': { description: '压缩上下文' },
       'agent.new': { description: '新建对话' },
       'agent.select': { description: '切换模型与算力', input_schema: selectInputSchema(actorId) },
+      'agent.options': { description: '读取模型与推理强度选项' },
       'agent.context': { description: '查看上下文用量' },
       'agent.fork': { description: '分叉出新 Agent' },
     },
@@ -349,7 +350,7 @@ function seededHistory(channelId, behavior = {}) {
 const TERMINAL_STATUSES = new Set(['completed', 'failed']);
 const HOUSEKEEPING_WORDS = new Set([
   'actor.describe',
-  'agent.context', 'agent.hold', 'agent.unhold', 'agent.interrupt',
+  'agent.options', 'agent.context', 'agent.hold', 'agent.unhold', 'agent.interrupt',
   'agent.fork', 'agent.select', 'agent.new', 'agent.steer', 'agent.compact',
 ]);
 const isHousekeepingWord = (word = '') => HOUSEKEEPING_WORDS.has(word) || word.startsWith('system.');
@@ -490,6 +491,26 @@ export function createMockServer({
     if (sticky) return sticky;
     const { model, effort } = selectionCatalog(actorId)[0];
     return { model, effort };
+  };
+  const optionsOf = (channelId, actorId) => {
+    const models = [];
+    const byModel = new Map();
+    for (const row of selectionCatalog(actorId)) {
+      let model = byModel.get(row.model);
+      if (!model) {
+        model = { value: row.model, label: row.model_label || row.model, efforts: [] };
+        byModel.set(row.model, model);
+        models.push(model);
+      }
+      model.efforts.push({ value: row.effort, label: row.effort_label || row.effort });
+    }
+    return {
+      provider: actorId === 'claude' ? 'claude' : 'codex',
+      source: 'native',
+      generated_at: new Date(domain.now()).toISOString(),
+      models,
+      current: agentOptions(channelId, actorId),
+    };
   };
   const usageOf = (channelId, actorId) => ({ context_tokens: 42_000, context_window: MOCK_CONTEXT_WINDOW, ...agentOptions(channelId, actorId) });
   // select 旁路独占槽（协议 §8）：0 或 1 个占位，忙时挂起，当前 turn 终态后、
@@ -1376,6 +1397,13 @@ export function createMockServer({
         if (!text.trim()) { fail('empty_input', 'queue requires text input'); return; }
         later(20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-queued`, kind: 'response', type: payload.msg_type, payload: { status: 'queued', controls: QUEUED_CONTROLS } })));
         later(80, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', value: { queued: true, text } } })));
+        return;
+      }
+      if (payload.msg_type === 'agent.options') {
+        // Values are the live incarnation snapshot, not a second catalog in the
+        // client. Keep this terminal in the same direct payload shape as the
+        // real agent.options response consumed by agent-parameters.js.
+        later(15, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', ...optionsOf(channelId, respondingAgent.id) } })));
         return;
       }
       if (payload.msg_type === 'agent.context') {
