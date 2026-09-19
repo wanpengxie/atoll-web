@@ -476,6 +476,24 @@ debug UI，也不向 Workspace/Feed owner 派发一个不存在的 badge 产品�
 冻结 `7ba308c` 的 `23/8` 历史 aggregate；本轮仅记录 #1 在 clean `8feb531` 的
 诊断通过与用户通知对照证据。
 
+### 第十八轮：#27 F8 两频道终端 session 的 clean Chromium 复验（`e644e9e`）
+
+按旧 `fae8b70` 的真实用户动作直接执行：登录 → 在 `c0` 打开终端并输入
+`MARK_ZERO` → 切到 `c0.project` 打开终端并输入 `MARK_ONE` → 往返切换三轮，
+每次都从当前可见 terminal view 读取对应 screen。没有使用 force click、sleep
+替代入口或任何诊断 UI。
+
+在 clean snapshot `e644e9e` 用真实 Chromium 跑原合同
+`tests/browser/f8-terminal-session.spec.js --grep F8-001`：`1 passed (8.0s)`。
+三个往返中的两个 marker 均在各自可见 screen 中恢复；原 spec 的 peak/live PTY
+WebSocket ≤1 与 pageerror/console error=0 均通过。合同故意使用
+`--disable-webgl`，因此 xterm 的 WebGL→DOM fallback warning 是预期渲染路径提示，
+不是 page/console error 失败。
+
+结论：#27 当前 clean HEAD 的用户体验等价 **PASS**，未发现 Workspace handoff、
+terminal session 或 PTY owner 首断点；不改写冻结 `7ba308c` 的 `23/8` 历史
+aggregate，也没有测试或产品变更。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
