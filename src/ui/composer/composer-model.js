@@ -145,6 +145,22 @@ function mentionQuery(value, candidates) {
   return Object.freeze({ query: match[1], start: at, end: value.length, rows: Object.freeze(rows.slice(0, 8)) });
 }
 
+function controlAvailability(capability, type, targetAgent, permissions) {
+  if (!targetAgent) return Object.freeze({ state: 'no-target', enabled: false, reason: '请先选择目标 Agent' });
+  if (!permissions.canTransmit) return Object.freeze({ state: 'offline', enabled: false, reason: '连接可用后才能发送控制命令' });
+  if (!capability?.describe) {
+    return Object.freeze({
+      state: capability?.error ? 'unavailable' : 'unknown',
+      enabled: false,
+      reason: capability?.error ? 'Agent 能力读取失败' : '正在确认 Agent 能力',
+    });
+  }
+  if (!capability.describe.types?.has?.(type)) {
+    return Object.freeze({ state: 'unsupported', enabled: false, reason: `Agent 不支持 ${type}` });
+  }
+  return Object.freeze({ state: 'supported', enabled: true, reason: '' });
+}
+
 export function buildComposerModel({
   activeChannelId = '',
   draft,
@@ -153,6 +169,7 @@ export function buildComposerModel({
   selfId = '',
   access,
   agentSelection = null,
+  capabilityIndex = new Map(),
   attachments,
   edit = null,
   editText,
@@ -188,6 +205,12 @@ export function buildComposerModel({
     ? null
     : agentSelection?.pending || null;
   const editOwner = edit || normalizedDraft.edit || null;
+  const targetCapability = targetAgent ? capabilityIndex.get(targetAgent.id) : null;
+  const controls = Object.freeze({
+    actorId: targetAgent?.id || '',
+    steer: controlAvailability(targetCapability, TYPES.agentSteer, targetAgent, permissions),
+    interrupt: controlAvailability(targetCapability, TYPES.agentInterrupt, targetAgent, permissions),
+  });
   const hasBody = Boolean(normalizedDraft.text.trim() || normalizedDraft.attachments.length);
   const canSubmit = editOwner
     ? Boolean(normalizedDraft.text.trim() && permissions.canTransmit && (!editSession?.phase || editSession.phase === 'editing'))
@@ -207,6 +230,7 @@ export function buildComposerModel({
     agentSelection,
     parameters: parameterView,
     parameterPending,
+    controls,
     pending: Object.freeze(channelPending),
     failures: Object.freeze(failures),
     failure: failures.at(-1) || null,
@@ -214,7 +238,9 @@ export function buildComposerModel({
     editSession,
     permissions,
     canSubmit,
-    busy: Boolean(accepting),
+    busy: Boolean(accepting || (editSession?.phase
+      && editSession.phase !== 'editing'
+      && !editSession.error)),
   });
 }
 

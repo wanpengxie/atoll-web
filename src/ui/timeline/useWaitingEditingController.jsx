@@ -6,6 +6,7 @@ import { newId } from '../../util/id.js';
 
 const WAITING_HANDOFF_DURATION_MS = 180;
 const AGENT_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+const WAITING_SUBMISSION_STATES = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain']);
 
 function exactHoldPayload(payload, holdId) {
   if (typeof holdId !== 'string' || !holdId) throw new Error('编辑控制缺少 exact hold owner');
@@ -16,13 +17,18 @@ function supportsLeaseCAS(capability, type) {
   return Boolean(capability?.describe?.types?.get(type)?.inputSchema?.properties?.expected_hold_id);
 }
 
+function capabilityWordState(capability, type) {
+  if (!capability?.describe) return capability?.error ? 'unavailable' : 'unknown';
+  return capability.describe.types?.has?.(type) ? 'supported' : 'unsupported';
+}
+
 function supportsEditLeaseCAS(capability) {
   return supportsLeaseCAS(capability, TYPES.agentReplace)
     && supportsLeaseCAS(capability, TYPES.agentUnhold);
 }
 
 function editLeaseCapabilityState(capability) {
-  if (!capability?.describe) return 'unknown';
+  if (!capability?.describe) return capability?.error ? 'unavailable' : 'unknown';
   return supportsEditLeaseCAS(capability) ? 'supported' : 'unsupported';
 }
 
@@ -58,13 +64,62 @@ function timelineTurn(state, requestId) {
 
 function queuedTurnsOf(state, editingTargetId) {
   const turns = [];
-  for (const entry of state?.timeline || []) {
-    if (entry?.kind !== 'turn') continue;
-    const turn = entry.turn;
-    if (turn.requestId === editingTargetId || latestStage(turn) !== 'queued') continue;
-    turns.push(turn);
+  const visit = (entry) => {
+    if (entry?.kind === 'turn') {
+      const turn = entry.turn;
+      if (turn.requestId !== editingTargetId && latestStage(turn) === 'queued') turns.push(turn);
+    }
+    for (const child of entry?.thread || []) visit(child);
+  };
+  for (const entry of state?.timeline || []) visit(entry);
+  return turns;
+}
+
+function isWaitingSubmission(row, channelId) {
+  return Boolean(row?.messageId
+    && (!row.channelId || row.channelId === channelId)
+    && WAITING_SUBMISSION_STATES.has(row.state)
+    && AGENT_MESSAGE_TYPES.has(row.frame?.msg_type));
+}
+
+function pendingWaitingTurns(state, pending, editingTargetId) {
+  const turns = [];
+  for (const row of pending || []) {
+    if (!isWaitingSubmission(row, state?.channelId)
+      || row.messageId === editingTargetId
+      || state?._envelopesById?.has?.(row.messageId)) continue;
+    const frame = row.frame || {};
+    const body = Object.prototype.hasOwnProperty.call(frame.payload || {}, 'body')
+      ? frame.payload
+      : { body: frame.payload || { text: row.text || '' } };
+    const request = {
+      id: row.messageId,
+      type: frame.msg_type,
+      kind: frame.kind || 'request',
+      payload: body,
+      audience: frame.audience || [],
+      parent_id: frame.parent_id || '',
+      visibility: frame.visibility || 'public',
+      ts: row.createdAt || Date.now(),
+      sender: { id: '', kind: 'human' },
+      local_submission_state: row.state,
+    };
+    turns.push({
+      requestId: request.id,
+      request,
+      requestSeq: 0,
+      lastSeq: 0,
+      provisional: [],
+      terminal: null,
+      terminalSeq: 0,
+      status: 'local',
+      local: true,
+      waitingPresentation: row.state === 'transmitting'
+        ? 'transmitting'
+        : ['accepted', 'uncertain'].includes(row.state) ? 'confirming' : 'stored-local',
+    });
   }
-  return turns.sort((left, right) => Number(left.requestSeq || 0) - Number(right.requestSeq || 0));
+  return turns;
 }
 
 export function useWaitingHandoff(channelId, queuedTurns, presentationRows) {
@@ -145,10 +200,12 @@ export function WaitingLayer({
     }
     index.get(id).items.push(item);
   }
-  const controlsAllowed = access === 'member_active';
-  const targetCurrent = (id) => targetAuthority?.current !== true
+  const controlsAllowed = access === 'member_active' || access === 'member'
+    || (access?.relationship === 'member' && access?.unavailable !== true);
+  const targetCurrentness = (id) => targetAuthority?.current !== true
     || !(targetAuthority.actorIDs instanceof Set)
-    || targetAuthority.actorIDs.has(id);
+    ? 'unknown'
+    : targetAuthority.actorIDs.has(id) ? 'current' : 'departed';
   return <div className={`agent-wait-dock${collapsed ? ' is-collapsed' : ''}`}>
     <section className={`agent-wait-layer${collapsed ? ' is-collapsed' : ''}`} aria-label="等待区">
       <header className="agent-wait-header">
@@ -158,8 +215,16 @@ export function WaitingLayer({
       {!collapsed && groups.map((group) => <section className="agent-wait-group" key={group.actorId || 'unknown'} data-agent-id={group.actorId}>
         {groups.length > 1 && <header><strong>{actorNameFromMap(group.actorId, names)}</strong></header>}
         <ol>{group.items.map(({ turn, exiting }) => {
-          const capabilityState = editLeaseCapabilityState(capabilityIndex.get(group.actorId));
-          const canControl = !exiting && controlsAllowed && targetCurrent(group.actorId);
+          const capability = capabilityIndex.get(group.actorId);
+          const capabilityState = editLeaseCapabilityState(capability);
+          const steerState = capabilityWordState(capability, TYPES.agentSteer);
+          const currentness = targetCurrentness(group.actorId);
+          const localStateLabel = turn.waitingPresentation === 'stored-local'
+            ? '已保存在本机'
+            : turn.waitingPresentation === 'transmitting'
+              ? '正在发送'
+              : turn.waitingPresentation === 'confirming' ? '等待账本确认' : '';
+          const canControl = !exiting && !turn.local && controlsAllowed && currentness === 'current';
           return <li
             key={turn.requestId}
             className={`agent-wait-item${editing?.targetId === turn.requestId ? ' is-editing' : ''}${exiting ? ' is-handoff-exiting' : ''}`}
@@ -168,11 +233,16 @@ export function WaitingLayer({
           >
             <div className="agent-wait-summary"><span className="agent-wait-position" aria-hidden="true">↳</span><strong>{messageText(turn)}</strong></div>
             {!exiting && <div className="agent-wait-actions">
-              {!targetCurrent(group.actorId) && <span className="agent-wait-paused">收件人已离席</span>}
-              {canControl && <button type="button" onClick={() => onControl?.(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入</button>}
-              {canControl && capabilityState === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit?.(turn, group.actorId)}>编辑</button>}
+              {localStateLabel && <span className="agent-wait-local-state">{localStateLabel}</span>}
+              {!turn.local && currentness === 'unknown' && <span className="agent-wait-paused">正在核验收件人</span>}
+              {!turn.local && currentness === 'departed' && <span className="agent-wait-paused">收件人已离席</span>}
+              {canControl && steerState === 'supported' && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, { target: turn.requestId })}>插入到此处</button>}
+              {canControl && steerState === 'unknown' && <span className="agent-wait-paused">正在确认插入能力</span>}
+              {canControl && ['unsupported', 'unavailable'].includes(steerState) && <span className="agent-wait-paused">Agent 不支持插入</span>}
+              {canControl && capabilityState === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
               {canControl && capabilityState === 'unknown' && <span className="agent-wait-paused">正在确认编辑能力</span>}
-              {canControl && <button type="button" onClick={() => onCancel?.(state.channelId, turn.requestId, turn.request?.sender?.id !== selfId)}>取消</button>}
+              {canControl && ['unsupported', 'unavailable'].includes(capabilityState) && <span className="agent-wait-paused">Agent 不支持安全编辑</span>}
+              {canControl && <button type="button" onClick={() => onCancel(state.channelId, turn.requestId, turn.request?.sender?.id !== selfId)}>取消</button>}
             </div>}
           </li>;
         })}</ol>
@@ -191,20 +261,36 @@ export function useWaitingEditingController({
 }) {
   const [editing, setEditing] = useState(null);
   const editingRef = useRef(null);
+  const sessionOwnersRef = useRef(new Map());
+  const releasePendingRef = useRef(new Set());
+  const releaseAcceptedRef = useRef(new Set());
+  const releaseInFlightRef = useRef(new Map());
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
-  const editingTargetId = editing?.targetId || resumePin;
+  const editingTargetId = editing?.targetId || '';
+  const editingReplacementId = editing?.replacementId || resumePin;
+  const waitingEditingTargetId = editing?.holdId ? editing.targetId : '';
   const controlVersion = Number(state?._timelineControlVersion || state?._timelineRevision || 0);
-  const queuedTurns = useMemo(
-    () => queuedTurnsOf(state, editingTargetId),
-    [controlVersion, editingTargetId, state],
+  const queuedTurns = useMemo(() => [
+    ...queuedTurnsOf(state, waitingEditingTargetId),
+    ...pendingWaitingTurns(state, pending, waitingEditingTargetId),
+  ].sort((left, right) => Number(left.requestSeq || left.request?.ts || 0)
+    - Number(right.requestSeq || right.request?.ts || 0)), [controlVersion, pending, state, waitingEditingTargetId]);
+  const timelineLocalEchoes = useMemo(
+    () => (pending || []).filter((row) => !isWaitingSubmission(row, state?.channelId)),
+    [pending, state?.channelId],
   );
-  const timelineLocalEchoes = useMemo(() => pending || [], [pending]);
 
   useLayoutEffect(() => { editingRef.current = editing; }, [editing]);
+  useLayoutEffect(() => {
+    if (!editing || editing.channelId === state.channelId) return;
+    editingRef.current = null;
+    setEditing(null);
+    void release(editing).catch(() => {});
+  }, [editing?.channelId, state.channelId]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
   useEffect(() => {
-    if (!onRequestCapability) return;
+    if (typeof onRequestCapability !== 'function') throw new TypeError('Waiting 能力 owner 未连接');
     for (const turn of queuedTurns) {
       const id = actorID(turn);
       if (id && editLeaseCapabilityState(capabilityIndex.get(id)) === 'unknown') {
@@ -213,17 +299,39 @@ export function useWaitingEditingController({
     }
   }, [capabilityIndex, onRequestCapability, queuedTurns, state.channelId]);
 
-  async function release(session) {
-    if (!session?.holdId) return false;
-    await onTaskControl?.({
+  function release(session, targetTurn = null) {
+    if (!session) return Promise.resolve(false);
+    if (releaseAcceptedRef.current.has(session.sessionId)) return Promise.resolve(true);
+    const active = releaseInFlightRef.current.get(session.sessionId);
+    if (active) return active;
+    if (!session.holdId) {
+      releasePendingRef.current.add(session.sessionId);
+      return Promise.resolve(false);
+    }
+    const owner = sessionOwnersRef.current.get(session.sessionId);
+    if (!owner || typeof owner.onTaskControl !== 'function') {
+      return Promise.reject(new Error('编辑锁释放 owner 已失效'));
+    }
+    releasePendingRef.current.delete(session.sessionId);
+    const operation = Promise.resolve(owner.onTaskControl({
       channelId: session.channelId,
-      turn: timelineTurn(state, session.targetId),
+      turn: timelineTurn(owner.state, session.targetId) || targetTurn,
       actorId: session.actorId,
       type: TYPES.agentUnhold,
       messageId: session.releaseMessageId,
       payload: exactHoldPayload({}, session.holdId),
+    })).then((releaseId) => {
+      if (!releaseId) throw new Error('解除编辑锁请求未进入发送队列');
+      releaseAcceptedRef.current.add(session.sessionId);
+      sessionOwnersRef.current.delete(session.sessionId);
+      return true;
+    }).finally(() => {
+      if (releaseInFlightRef.current.get(session.sessionId) === operation) {
+        releaseInFlightRef.current.delete(session.sessionId);
+      }
     });
-    return true;
+    releaseInFlightRef.current.set(session.sessionId, operation);
+    return operation;
   }
 
   async function startEditing(turn, id) {
@@ -247,9 +355,13 @@ export function useWaitingEditingController({
       phase: 'requesting_lock',
       error: '',
     };
+    const owner = { state, onTaskControl };
+    sessionOwnersRef.current.set(draft.sessionId, owner);
+    editingRef.current = draft;
     setEditing(draft);
     try {
-      const holdId = await onTaskControl?.({
+      if (typeof owner.onTaskControl !== 'function') throw new Error('编辑控制 owner 未连接');
+      const holdId = await owner.onTaskControl({
         channelId: state.channelId,
         turn,
         actorId: id,
@@ -257,13 +369,20 @@ export function useWaitingEditingController({
         payload: { target: turn.requestId },
       });
       if (!holdId) throw new Error('无法锁定这条任务');
-      setEditing((current) => current?.sessionId === draft.sessionId
-        ? { ...current, holdId, phase: 'editing' }
-        : current);
+      const locked = { ...draft, holdId, phase: 'editing' };
+      if (releasePendingRef.current.has(draft.sessionId)
+        || editingRef.current?.sessionId !== draft.sessionId) {
+        await release(locked, turn);
+        return;
+      }
+      editingRef.current = locked;
+      setEditing((current) => current?.sessionId === draft.sessionId ? locked : current);
     } catch (error) {
-      setEditing((current) => current?.sessionId === draft.sessionId
-        ? { ...current, phase: 'editing', error: error?.message || String(error) }
-        : current);
+      sessionOwnersRef.current.delete(draft.sessionId);
+      if (editingRef.current?.sessionId !== draft.sessionId) return;
+      editingRef.current = null;
+      setEditing((current) => current?.sessionId === draft.sessionId ? null : current);
+      setEditNotice(error?.message || String(error));
     }
   }
 
@@ -271,13 +390,15 @@ export function useWaitingEditingController({
     const session = editingRef.current;
     if (!session || session.phase !== 'editing' || !session.holdId) return false;
     const text = typeof nextText === 'string' ? nextText : session.text;
-    setEditing((current) => current?.sessionId === session.sessionId
-      ? { ...current, text, phase: 'saving', error: '' }
-      : current);
+    const saving = { ...session, text, phase: 'saving', error: '' };
+    editingRef.current = saving;
+    setEditing((current) => current?.sessionId === session.sessionId ? saving : current);
     try {
-      const replacementId = await onTaskControl?.({
+      const owner = sessionOwnersRef.current.get(session.sessionId);
+      if (typeof owner?.onTaskControl !== 'function') throw new Error('编辑控制 owner 已失效');
+      const replacementId = await owner.onTaskControl({
         channelId: session.channelId,
-        turn: timelineTurn(state, session.targetId),
+        turn: timelineTurn(owner.state, session.targetId),
         actorId: session.actorId,
         type: TYPES.agentReplace,
         payload: exactHoldPayload({
@@ -287,14 +408,25 @@ export function useWaitingEditingController({
           ...(session.attachments.length ? { attachments: session.attachments } : {}),
         }, session.holdId),
       });
-      await release(session);
-      setResumePin(String(replacementId || ''));
-      setEditing(null);
+      if (!replacementId) throw new Error('修改请求未进入发送队列');
+      const releasing = { ...saving, replacementId: String(replacementId), phase: 'releasing' };
+      editingRef.current = releasing;
+      setEditing((current) => current?.sessionId === session.sessionId ? releasing : current);
+      await release(releasing);
+      setResumePin(releasing.replacementId);
+      editingRef.current = null;
+      setEditing((current) => current?.sessionId === session.sessionId ? null : current);
       return true;
     } catch (error) {
-      setEditing((current) => current?.sessionId === session.sessionId
-        ? { ...current, phase: 'editing', error: error?.message || String(error) }
-        : current);
+      const current = editingRef.current;
+      if (current?.sessionId !== session.sessionId) return false;
+      const failed = {
+        ...current,
+        phase: current.replacementId ? 'releasing' : 'editing',
+        error: error?.message || String(error),
+      };
+      editingRef.current = failed;
+      setEditing((value) => value?.sessionId === session.sessionId ? failed : value);
       return false;
     }
   }
@@ -302,9 +434,20 @@ export function useWaitingEditingController({
   async function abandonEditing() {
     const session = editingRef.current;
     if (!session) return;
-    setEditing(null);
-    try { await release(session); }
-    catch (error) { setEditNotice(error?.message || String(error)); }
+    const releasing = { ...session, phase: 'releasing', error: '' };
+    editingRef.current = releasing;
+    setEditing((current) => current?.sessionId === session.sessionId ? releasing : current);
+    try {
+      const released = await release(releasing);
+      if (!released) return;
+      if (releasing.replacementId) setResumePin(releasing.replacementId);
+      editingRef.current = null;
+      setEditing((current) => current?.sessionId === session.sessionId ? null : current);
+    } catch (error) {
+      const failed = { ...releasing, error: error?.message || String(error) };
+      editingRef.current = failed;
+      setEditing((current) => current?.sessionId === session.sessionId ? failed : current);
+    }
   }
 
   useEffect(() => {
@@ -313,18 +456,20 @@ export function useWaitingEditingController({
     if (!turn || turn.terminal || latestStage(turn) === 'timeline') setResumePin('');
   }, [controlVersion, resumePin, state]);
   useLayoutEffect(() => {
-    onComposerEditChange?.(editing
+    onComposerEditChange(editing?.holdId
       ? { session: editing, onSave: verifyAndSave, onAbandon: abandonEditing }
       : null);
   }, [editing?.targetId, editing?.phase, editing?.error, onComposerEditChange]);
   useEffect(() => () => {
     const session = editingRef.current;
-    if (session?.holdId) void release(session);
-    onComposerEditChange?.(null);
+    editingRef.current = null;
+    if (session) void release(session).catch(() => {});
+    onComposerEditChange(null);
   }, [onComposerEditChange, state.channelId]);
 
   return {
     editingTargetId,
+    editingReplacementId,
     presentationEditing: editing,
     timelineLocalEchoes,
     queuedTurns,

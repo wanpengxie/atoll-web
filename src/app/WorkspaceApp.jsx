@@ -21,7 +21,6 @@ import { createChannelFeedRuntime } from '../model/channel-feed-runtime.js';
 import { createViewSessionStore } from '../model/view-session.js';
 import { readServerWorld } from './hooks/useWireSession.js';
 import { ptyClient } from '../net/pty.js';
-import { diagnostic } from '../model/diagnostics.js';
 import { selectFeatureTaskFacts } from '../model/feature-tasks.js';
 import { selectFeatureSearchIndex } from '../model/feature-search.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
@@ -102,6 +101,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const [serverWorld, setServerWorld] = useState(readServerWorld);
   const [panel, setPanel] = useState('');
   const [terminalVisible, setTerminalVisible] = useState(false);
+  const [composerEditPort, setComposerEditPort] = useState(null);
   const showError = useCallback((error) => setTopError(errorText(error)), []);
   const wire = useWireSessionPort();
   const navigation = useChannelNavigation({
@@ -114,18 +114,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const rosterSinkRef = useRef(null);
   const submissionSinkRef = useRef(null);
   const accessActionsRef = useRef({});
-  const deviceActionsRef = useRef({ refresh: () => Promise.reject(unavailableError('resources.devices')) });
   const probePortRef = useRef(null);
   const attachmentPortRef = useRef(null);
   const submissionPortRef = useRef(null);
-  const unavailableReportsRef = useRef(new Set());
-  const reportUnavailable = useCallback((portName) => {
-    if (unavailableReportsRef.current.has(portName)) return false;
-    unavailableReportsRef.current.add(portName);
-    diagnostic('warn', 'workspace.owner_unavailable', { port: portName, principalId });
-    return false;
-  }, [principalId]);
-  const unavailableSessionObserver = useCallback(() => reportUnavailable('session.observer'), [reportUnavailable]);
 
   const submissionProxy = useMemo(() => Object.freeze({
     send: (...args) => {
@@ -235,6 +226,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     rosters: roster.rosters,
     wireState: wire.state,
   });
+  const capabilities = probes.capabilitiesFor(navigation.activeChannelId);
   const composer = useComposerCommands({
     activeChannelId: navigation.activeChannelId,
     principalId,
@@ -253,7 +245,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     selfId,
     access: access ? { ...access, transportOpen: wire.state === 'open' } : access,
     agentSelection: { selectedAgentId: probes.composerAgent?.actorId || '' },
+    capabilityIndex: capabilities,
+    onRequestCapability: probes.requestCapability,
+    edit: composerEditPort,
     channelState: feed.stateFor(navigation.activeChannelId),
+    probes,
     probesRef: probePortRef,
     attachmentRef: attachmentPortRef,
   });
@@ -278,7 +274,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     activeChannelId: navigation.activeChannelId,
     activeChannelRef: navigation.activeChannelRef,
     accessRef: wire.accessRef,
-    deviceActionsRef,
     directoryVersion: navigation.revision,
     draftFor: submission.draftFor,
     drafts: submission.drafts,
@@ -347,7 +342,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     finishHistoryPage: feedCommands.pageEnd,
     finishLiveCheckpoint: feedCommands.liveCheckpoint,
     onServerWorld: setServerWorld,
-    onSession: unavailableSessionObserver,
     onWorldChanged: resetWorldOwners,
     port: wire,
     prepareLocalReplica: feedCommands.prepareLocalReplica,
@@ -407,7 +401,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     refreshLatest: () => feedCommands.refreshChannel(navigation.activeChannelId),
     debugSnapshot: () => feed.coldEntryDiagnosticsFor(navigation.activeChannelId),
   } : null;
-  const capabilities = probes.capabilitiesFor(navigation.activeChannelId);
   const searchIndex = useMemo(() => selectFeatureSearchIndex({
     states: feed.stateEntries(),
     channels: navigation.channels,
@@ -447,10 +440,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     selfId,
     pending: submission.pending,
     approvalStates: submission.approvalStates || {},
-    controlStates: submission.controlStates || {},
     capabilityIndex: capabilities,
     agentActivity: feed.agentActivityFor(navigation.activeChannelId),
-    access: navigation.activeChannel?.access || 'loading',
+    access,
     surfaceVisible: navigation.activeView === 'conversation' || terminalVisible,
     composer: <Composer model={composer.model} commands={composer.commands} />,
     onTailCaughtUp: (receipt) => {
@@ -463,6 +455,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     onDownloadResource: downloadResource,
     onPreviewResource: previewResource,
     onRequestCapability: probes.requestCapability,
+    onComposerEditChange: setComposerEditPort,
     onAcknowledgeAgentActivity: (agentId) => feed.acknowledgeAgentActivity(navigation.activeChannelId, agentId),
   };
   conversationPort.element = state && history

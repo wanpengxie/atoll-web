@@ -28,7 +28,7 @@ const SHOW_CHANNEL_NARRATION = false;
 export function ConversationSurface({
   state,
   history = {},
-  composer = null,
+  composer,
   viewSessions,
   roster = [],
   waitingRosterAuthority = null,
@@ -54,6 +54,11 @@ export function ConversationSurface({
   onFocusAgentChange,
   className = '',
 }) {
+  if (composer == null) throw new TypeError('ConversationSurface 缺少 Composer slot');
+  if (typeof onComposerEditChange !== 'function') throw new TypeError('ConversationSurface 缺少编辑交接 port');
+  if (typeof onTaskControl !== 'function') throw new TypeError('ConversationSurface 缺少 Agent 控制 port');
+  if (typeof onRequestCapability !== 'function') throw new TypeError('ConversationSurface 缺少能力查询 port');
+  if (typeof onCancel !== 'function') throw new TypeError('ConversationSurface 缺少取消命令 port');
   const {
     scope,
     actorFilter,
@@ -71,6 +76,7 @@ export function ConversationSurface({
     : scope;
   const {
     editingTargetId,
+    editingReplacementId,
     presentationEditing,
     timelineLocalEchoes,
     queuedTurns,
@@ -90,10 +96,10 @@ export function ConversationSurface({
     selfId,
     actorFilter,
     editingTargetId,
-    editingReplacementId: presentationEditing?.replacementId || '',
+    editingReplacementId,
     showNarration: SHOW_CHANNEL_NARRATION,
     incremental: true,
-  }), [actorFilter, editingTargetId, presentationEditing?.replacementId, projectionScope, selfId]);
+  }), [actorFilter, editingReplacementId, editingTargetId, projectionScope, selfId]);
   const messageListKey = `${state.channelId}:${scope}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
   const {
     projection,
@@ -281,7 +287,7 @@ export function ConversationSurface({
                   capabilityIndex={capabilityIndex}
                   editing={presentationEditing}
                   onCancel={onCancel}
-                  onControl={(turn, actorId, type, payload) => onTaskControl?.({ channelId: state.channelId, turn, actorId, type, payload })}
+                  onControl={(turn, actorId, type, payload) => onTaskControl({ channelId: state.channelId, turn, actorId, type, payload })}
                   onEdit={startEditing}
                 />
               </div>

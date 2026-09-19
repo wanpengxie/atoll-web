@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { TYPES } from '../../protocol/vocab.js';
 import { createComposerCommandPort } from './command-port.js';
 import { projectAgentParameters } from './agent-parameters.js';
@@ -87,6 +87,29 @@ function commandOwner(config, model) {
       throw error;
     }
   };
+  const performTextSteer = async (input) => {
+    requireChannel();
+    if (model.controls.steer.state !== 'supported') {
+      throw new TypeError(model.controls.steer.reason || '目标 Agent 不支持文本插入');
+    }
+    const text = String(input.text || '').trim();
+    if (!text) throw new TypeError('Steer 内容不能为空');
+    if (typeof submission.control !== 'function') throw new TypeError('Agent 控制 owner 未连接');
+    if (typeof submission.updateDraft !== 'function') throw new TypeError('草稿 owner 未连接');
+    const persisted = await submission.updateDraft(
+      model.channelId,
+      model.draft,
+      { preserveEditorRevision: true },
+    );
+    return submission.control({
+      ...createControlRequest(model, TYPES.agentSteer, {
+        text,
+        ...(input.expectedTurnId ? { expected_turn_id: input.expectedTurnId } : {}),
+      }, input.actorId || model.controls.actorId),
+      draftRevision: Number(persisted?.revision ?? model.draft.revision ?? 0),
+      editorRevision: model.draft.editorRevision,
+    });
+  };
 
   return Object.freeze({
     changeDraft,
@@ -126,15 +149,22 @@ function commandOwner(config, model) {
     },
     steer(value = {}) {
       const input = typeof value === 'string' ? { text: value } : value;
-      let payload;
-      if (input.all === true) payload = { all: true };
-      else if (input.target) payload = { target: input.target };
-      else if (String(input.text || '').trim()) payload = {
-        text: String(input.text),
-        ...(input.expectedTurnId ? { expected_turn_id: input.expectedTurnId } : {}),
-      };
-      else throw new TypeError('Steer 内容或目标不能为空');
-      return control(TYPES.agentSteer, payload, input.actorId || model.editSession?.actorId);
+      if (String(input.text || '').trim()) {
+        const key = `steer:${model.channelId}:${model.draft.editorRevision}`;
+        const existing = config.sendIntentRef.current.get(key);
+        if (existing) return existing;
+        const operation = performTextSteer(input).finally(() => {
+          if (config.sendIntentRef.current.get(key) === operation) config.sendIntentRef.current.delete(key);
+        });
+        config.sendIntentRef.current.set(key, operation);
+        return operation;
+      }
+      if (model.controls.steer.state !== 'supported') {
+        throw new TypeError(model.controls.steer.reason || '目标 Agent 不支持插入');
+      }
+      if (input.all === true) return control(TYPES.agentSteer, { all: true }, input.actorId || model.controls.actorId);
+      if (input.target) return control(TYPES.agentSteer, { target: input.target }, input.actorId || model.controls.actorId);
+      throw new TypeError('Steer 内容或目标不能为空');
     },
     replace(value = {}) {
       const input = typeof value === 'string' ? { newText: value } : value;
@@ -160,7 +190,9 @@ function commandOwner(config, model) {
       return control(TYPES.agentReplace, editCASPayload(input.edit || model.editSession || model.edit, input.newText ?? model.draft.text), input.actorId);
     },
     cancelEdit() {
-      return model.edit?.onAbandon?.() ?? model.edit?.abandon?.() ?? null;
+      const abandon = model.edit?.onAbandon || model.edit?.abandon;
+      if (typeof abandon !== 'function') throw new TypeError('编辑释放命令未连接');
+      return abandon();
     },
     attach(resource) {
       requireDraftEdit();
@@ -192,12 +224,17 @@ function commandOwner(config, model) {
       const actor = model.agents.find((row) => row.id === actorId);
       if (!actor) throw new TypeError('目标 Agent 已不在频道');
       const owner = probes();
-      owner.pickAgent?.(actorId);
-      owner.targetChanged?.(actorId);
+      if (typeof owner.pickAgent !== 'function' || typeof owner.targetChanged !== 'function') {
+        throw new TypeError('Agent 选择 owner 未连接');
+      }
+      owner.pickAgent(actorId);
+      owner.targetChanged(actorId);
       return actor;
     },
     openAgentSelector() {
-      return probes().selectorOpened?.();
+      const owner = probes();
+      if (typeof owner.selectorOpened !== 'function') throw new TypeError('Agent 能力 owner 未连接');
+      return owner.selectorOpened();
     },
     setModelParameters(value = {}) {
       const actorId = value.actorId || model.targetAgent?.id || model.parameters?.actorId;
@@ -217,12 +254,13 @@ function commandOwner(config, model) {
 export function useComposerCommands(config = {}) {
   const {
     activeChannelId = '', roster, selfId, access,
-    agentSelection, attachments, edit,
+    agentSelection, capabilityIndex, attachments, edit,
   } = config;
   const submission = useComposerSubmissionRuntime(config);
   const draft = submission.draftFor(activeChannelId);
   const pending = submission.pending;
-  const editSession = edit?.session || edit || null;
+  const activeEdit = (edit?.session || edit)?.channelId === activeChannelId ? edit : null;
+  const editSession = activeEdit?.session || activeEdit || null;
   const editSessionKey = editSession?.sessionId || editSession?.targetId || '';
   const [editBuffer, setEditBuffer] = useState({ key: '', text: '' });
   const sendIntentRef = useRef(new Map());
@@ -239,7 +277,9 @@ export function useComposerCommands(config = {}) {
   const parameterProjection = projectAgentParameters({
     state: config.channelState,
     actorId: selectedAgentId,
-    requestKeys: probeOwner?.requestKeys?.(activeChannelId, selectedAgentId),
+    requestKeys: typeof probeOwner?.requestKeys === 'function'
+      ? probeOwner.requestKeys(activeChannelId, selectedAgentId)
+      : undefined,
   });
   const effectiveAgentSelection = {
     ...agentSelection,
@@ -254,11 +294,20 @@ export function useComposerCommands(config = {}) {
     selfId,
     access,
     agentSelection: effectiveAgentSelection,
+    capabilityIndex,
     attachments,
-    edit,
+    edit: activeEdit,
     editText,
     accepting: submission.accepting,
-  }), [activeChannelId, access, attachments, draft, edit, editText, effectiveAgentSelection, pending, roster, selfId, submission.accepting]);
+  }), [activeChannelId, access, activeEdit, attachments, capabilityIndex, draft, editText, effectiveAgentSelection, pending, roster, selfId, submission.accepting]);
+
+  useEffect(() => {
+    if (model.controls.steer.state !== 'unknown' || !model.controls.actorId) return;
+    if (typeof config.onRequestCapability !== 'function') {
+      throw new TypeError('Composer 能力 owner 未连接');
+    }
+    config.onRequestCapability(model.controls.actorId, model.channelId);
+  }, [config.onRequestCapability, model.channelId, model.controls.actorId, model.controls.steer.state]);
 
   // A different channel is a different command authority. The old painted
   // editor keeps its port while a replacement render suspends, and that port
@@ -280,7 +329,8 @@ export function useComposerCommands(config = {}) {
   }, [owner, port]);
   useLayoutEffect(() => {
     const probes = config.probesRef?.current || config.probes;
-    probes?.targetChanged?.(model.targetAgent?.id || '');
+    if (typeof probes?.targetChanged !== 'function') throw new TypeError('Composer Agent owner 未连接');
+    probes.targetChanged(model.targetAgent?.id || '');
   }, [config.probes, config.probesRef, model.targetAgent?.id]);
 
   return useMemo(() => Object.freeze({

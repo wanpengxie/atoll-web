@@ -553,6 +553,20 @@ const HIDDEN_CONVERSATION_TYPES = new Set([
   TYPES.agentFork,
   TYPES.describe,
 ]);
+const WAITING_TURN_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+
+function latestTurnStatus(turn) {
+  return [...(turn?.provisional || [])]
+    .sort((left, right) => Number(left.seq || 0) - Number(right.seq || 0))
+    .map((item) => String(argsOf(item?.envelope)?.status || ''))
+    .filter(Boolean)
+    .at(-1) || '';
+}
+
+function waitingOnlyTurn(turn) {
+  return Boolean(turn && !turn.terminal && WAITING_TURN_TYPES.has(turn.request?.type)
+    && latestTurnStatus(turn) !== 'processing');
+}
 
 function envelopeOf(entry) {
   return entry?.kind === 'turn' ? entry.turn?.request : entry?.envelope;
@@ -604,6 +618,9 @@ function visibleEntry(entry, scope, editingTargetID, editingReplacementID) {
   if (entry.kind !== 'turn') return scope === CONVERSATION_SCOPE.all
     || (!uiType(envelope.type) && !String(envelope.type || '').startsWith('terminal.'));
   if (editingReplacementID && entry.turn?.requestId === editingReplacementID) return false;
+  // Waiting is the sole projection for accepted-but-not-processing Agent work.
+  // Editing may remove a row from Waiting, but must not duplicate it here.
+  if (waitingOnlyTurn(entry.turn)) return false;
   if (entry.turn?.requestId === editingTargetID) return true;
   if (scope === CONVERSATION_SCOPE.mine
     && (uiType(envelope.type) || HIDDEN_CONVERSATION_TYPES.has(envelope.type))) return false;
@@ -629,12 +646,15 @@ function localEchoEntries(localEchoes, selfID, landed) {
     if (!submission?.messageId || landed.has(submission.messageId)) return [];
     const frame = submission.frame || {};
     if (!frame.msg_type || uiType(frame.msg_type) || HIDDEN_CONVERSATION_TYPES.has(frame.msg_type)
+      || WAITING_TURN_TYPES.has(frame.msg_type)
       || frame.msg_type === TYPES.agentSelect || frame.msg_type === TYPES.agentNew) return [];
     const envelope = {
       id: submission.messageId,
       type: frame.msg_type,
       kind: frame.kind || 'request',
-      payload: frame.payload || { body: { text: submission.text || '' } },
+      payload: Object.prototype.hasOwnProperty.call(frame.payload || {}, 'body')
+        ? frame.payload
+        : { body: frame.payload || { text: submission.text || '' } },
       audience: frame.audience || [],
       parent_id: frame.parent_id || '',
       visibility: frame.visibility || 'public',

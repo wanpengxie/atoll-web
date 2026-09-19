@@ -6,7 +6,7 @@ function actorName(actor) {
 }
 
 function invoke(operation, ...args) {
-  void operation?.(...args).catch?.(() => {});
+  void Promise.resolve(operation(...args)).catch(() => {});
 }
 
 function parameterChoices(parameters) {
@@ -122,7 +122,17 @@ export const Composer = memo(function Composer({ model, commands, className = ''
             {!currentChoice && <option value="">选择模型</option>}
             {choices.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}
           </select>}
-          {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" onClick={() => invoke(commands.cancelEdit)}>×</button>}
+          {!editMode && <button
+            type="button"
+            className="composer-steer-button"
+            disabled={!model.controls.steer.enabled || !model.draft.text.trim() || model.busy}
+            title={model.controls.steer.reason || '把文本插入目标 Agent 的当前任务'}
+            onClick={() => invoke(commands.steer, {
+              text: model.draft.text,
+              actorId: model.controls.actorId,
+            })}
+          >插入</button>}
+          {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" disabled={model.busy} onClick={() => invoke(commands.cancelEdit)}>×</button>}
           <button type="submit" className="send-button" disabled={!model.canSubmit || model.busy} aria-label={editMode ? '提交编辑' : '发送'}>{model.busy ? '…' : '↑'}</button>
         </div>
       </div>
@@ -137,6 +147,8 @@ export const Composer = memo(function Composer({ model, commands, className = ''
           ? <p className="composer-disabled-reason">{model.permissions.reason}</p>
           : !model.permissions.canTransmit
             ? <p className="composer-status state-offline" role="status">离线编辑；发送会先保存到本机。</p>
+            : !editMode && model.controls.actorId && model.controls.steer.state !== 'supported'
+              ? <p className="composer-status" role="status">{model.controls.steer.reason}</p>
             : null}
     </div>
   </section>;
