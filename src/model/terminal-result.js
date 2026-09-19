@@ -7,12 +7,9 @@ const TERMINAL_RETAINED_FIELDS = Object.freeze([
 ]);
 
 export function terminalRetainedFields(payload = {}) {
-  const nested = payload?.value && typeof payload.value === 'object' && !Array.isArray(payload.value)
-    ? payload.value
-    : {};
   const retained = {};
   for (const key of TERMINAL_RETAINED_FIELDS) {
-    const value = payload?.[key] ?? nested[key];
+    const value = payload?.[key];
     if (value !== undefined && value !== null && value !== '') retained[key] = value;
   }
   return retained;

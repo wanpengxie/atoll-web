@@ -1,16 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { actorNameMap } from '../model/actor-display.js';
 import { attachmentFromFileReference } from '../model/file-references.js';
 import { agentMessageStage, isAgentMessageTurn } from '../model/agent-control.js';
 import { TIMELINE_SCOPE, TIMELINE_SCOPE_LABELS } from '../model/timeline-scope.js';
-import { taskControlContext } from '../model/task-controls.js';
 import { MessageLayoutProvider } from './timeline/MessageLayoutState.jsx';
 import { ReadingContainerHandoff } from './timeline/ReadingContainerHandoff.jsx';
 import { useConversationProjection } from './timeline/useConversationProjection.js';
 import { useTimelinePreferences } from './timeline/useTimelinePreferences.js';
 import {
   WaitingLayer,
-  editLeaseCapabilityState,
   useWaitingEditingController,
   useWaitingHandoff,
 } from './timeline/useWaitingEditingController.jsx';
@@ -35,16 +33,12 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     removeActorFilter,
     toggleFold,
   } = useTimelinePreferences({ channelId: state.channelId, viewSessions });
-  const [knownSelfId, setKnownSelfId] = useState(() => selfId || '');
 	const openFileReference = useCallback((reference) => {
 	  onPreviewResource?.(state.channelId, attachmentFromFileReference(reference));
 	}, [onPreviewResource, state.channelId]);
   const names = useMemo(() => actorNameMap(roster), [roster]);
-  useEffect(() => {
-    if (selfId) setKnownSelfId(selfId);
-  }, [selfId]);
-  const projectionSelfId = selfId || knownSelfId;
-  const identityPending = !projectionSelfId;
+  const projectionSelfId = selfId || '';
+  const identityPending = !selfId;
   const projectionScope = identityPending && scope === TIMELINE_SCOPE.mine
     ? TIMELINE_SCOPE.all
     : scope;
@@ -66,12 +60,12 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     state,
     history,
     pending,
-    projectionSelfId,
     selfId,
     access,
     waitingRosterAuthority,
     capabilityIndex,
     roster,
+    onRequestCapability,
     onTaskControl,
     onComposerEditChange,
   });
@@ -104,18 +98,6 @@ export function Timeline({ state, history = {}, composer = null, viewSessions, r
     onTailCaughtUp,
   });
   const filterableAgents = useMemo(() => (roster || []).filter((row) => row.kind === 'agent'), [roster]);
-  useEffect(() => {
-    if (!onRequestCapability) return;
-    const actors = new Set();
-    for (const turn of state.turns.values()) {
-      if (turn.terminal) continue;
-      const context = taskControlContext(turn, { selfId, access, targetAuthority: waitingRosterAuthority });
-      if (context.canEdit && editLeaseCapabilityState(capabilityIndex.get(context.actorId)) === 'unknown') {
-        actors.add(context.actorId);
-      }
-    }
-    for (const actorId of actors) onRequestCapability(actorId, state.channelId);
-  }, [access, capabilityIndex, onRequestCapability, selfId, state, state.lastSeq, waitingRosterAuthority]);
   const currentFilterActorIDs = useMemo(() => new Set(filterableAgents.map((row) => row.id)), [filterableAgents]);
   const staleActorFilters = useMemo(
     () => [...actorFilter].filter((actorID) => !currentFilterActorIDs.has(actorID)).sort(),

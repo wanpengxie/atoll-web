@@ -1,6 +1,7 @@
 import { argsOf, correlationOf, FINAL, hasCanonicalBody, PROVISIONAL } from '../protocol/envelope.js';
 import { isNarrationEnvelope, TYPES } from '../protocol/vocab.js';
 import { createLiveArrivalState } from './live-arrivals.js';
+import { taskControlFrame, taskControlFrameFromEnvelope, taskControlRevision } from './task-controls.js';
 import { terminalRetainedFields } from './terminal-result.js';
 
 // subjectgate 只让这两个词走 resolve 帧（platform/internal/humancell）。
@@ -111,7 +112,6 @@ function newTurn(request, seq) {
     text: '',
     lastSeq: seq,
     anomalies: [],
-    _controlSignature: '',
     _projectionParticipants: new Set([
       request?.sender?.id,
       ...(Array.isArray(request?.audience) ? request.audience : []),
@@ -119,32 +119,11 @@ function newTurn(request, seq) {
   };
 }
 
-// Timeline 的控制投影只依赖 status 帧里的这一小组事实。正文 delta 可以很大、
-// 很频繁，却不会改变按钮、等待区位置或 work 状态；把整帧当缓存键等于重新引入
-// 每个 token 都全量扫描 turns 的问题。
-function responseControlSignature(envelope) {
-  const payload = argsOf(envelope);
-  if (payload?.status !== 'queued' && payload?.status !== 'processing') return '';
-  return JSON.stringify({
-    status: payload.status,
-    controls: Array.isArray(payload.controls) ? payload.controls : [],
-    turn_id: payload.turn_id || '',
-    resumed: payload.resumed === true,
-    steering: payload.steering === true,
-    work_id: payload.work_id || '',
-    work_state: payload.work_state || payload.state || '',
-    stage: payload.stage || '',
-    execution_state: payload.execution_state || '',
-  });
-}
-
 function responseChangesControl(turn, envelope) {
   if (FINAL.has(argsOf(envelope)?.status)) return true;
-  const signature = responseControlSignature(envelope);
-  if (!signature) return false;
-  const changed = signature !== turn._controlSignature;
-  turn._controlSignature = signature;
-  return changed;
+  const incoming = taskControlFrameFromEnvelope(envelope);
+  if (!incoming) return false;
+  return taskControlRevision(incoming) !== taskControlRevision(taskControlFrame(turn));
 }
 
 function responseChangesProjection(turn, envelope) {

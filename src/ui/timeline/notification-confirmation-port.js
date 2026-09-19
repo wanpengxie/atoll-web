@@ -1,9 +1,7 @@
-export function createNotificationConfirmation(authorityRevision = 0, generation = 0, observationRevision = 0) {
+export function createNotificationConfirmation(authorityRevision = 0, generation = 0) {
   return {
     authorityRevision: Number(authorityRevision || 0),
     generation: Number(generation || 0),
-    needsBacklog: true,
-    requiredObservationRevision: Number(observationRevision || 0) + 1,
     confirmedBoundary: 0,
     queuedPresented: null,
     pending: null,
@@ -11,22 +9,16 @@ export function createNotificationConfirmation(authorityRevision = 0, generation
 }
 
 export function reconcileNotificationConfirmation(state, {
-  authorityRevision, generation, observationRevision, controllerChanged,
-  previousMode, currentMode, activationID,
+  authorityRevision, generation, controllerChanged, previousMode, currentMode, activationID,
 }) {
   let next = state;
   if (state.authorityRevision !== Number(authorityRevision || 0)
     || state.generation !== Number(generation || 0)) {
-    next = createNotificationConfirmation(authorityRevision, generation, observationRevision);
+    next = createNotificationConfirmation(authorityRevision, generation);
   } else next = { ...state };
-  if (controllerChanged) {
-    next.needsBacklog = true;
-    next.requiredObservationRevision = Number(observationRevision || 0) + 1;
+  if (controllerChanged || (previousMode === 'following' && currentMode !== 'following')) {
     next.queuedPresented = null;
     next.pending = null;
-  } else if (previousMode === 'following' && currentMode !== 'following') {
-    next.needsBacklog = true;
-    next.requiredObservationRevision = Number(observationRevision || 0) + 1;
   }
   if (next.pending && (next.pending.activationID !== activationID || next.pending.generation !== Number(generation || 0))) next.pending = null;
   if (next.queuedPresented && (next.queuedPresented.activationID !== activationID || next.queuedPresented.generation !== Number(generation || 0))) next.queuedPresented = null;
@@ -49,19 +41,12 @@ export function queuePresentedConfirmation(state, context, presentedBoundary) {
 
 export function nextNotificationConfirmation(state, context) {
   if (state.pending) return { state, event: state.pending };
-  if (state.needsBacklog
-    && Number(context.evidence.observationRevision || 0) >= state.requiredObservationRevision
-    && context.attached === true && Number(context.evidence.generation || 0) > 0) {
-    const event = confirmationEvent(context, 'tail-backlog', Math.max(0, Number(context.evidence.headSeq || 0)));
-    return { state: { ...state, needsBacklog: false }, event };
-  }
   return state.queuedPresented?.boundary > state.confirmedBoundary
     ? { state, event: state.queuedPresented } : { state, event: null };
 }
 
 export function settleNotificationConfirmation(state, event, accepted) {
   if (!event) return state;
-  if (event.boundary <= 0 && event.cause === 'tail-backlog') return { ...state, pending: null };
   if (accepted !== true) return { ...state, pending: event };
   const confirmedBoundary = Math.max(state.confirmedBoundary, event.boundary);
   return {

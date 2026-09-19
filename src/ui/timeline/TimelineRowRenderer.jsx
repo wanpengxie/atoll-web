@@ -8,7 +8,7 @@ import { messagePresentation } from '../../model/message-presentation.js';
 import { replyTargetOf } from '../../model/reply-target.js';
 import { selectSystemNote } from '../../model/agent-selection.js';
 import { systemEventPresentation } from '../../model/system-event-presentation.js';
-import { controlLabel, controlPayload, extraControls, taskControlContext } from '../../model/task-controls.js';
+import { taskControlContext, taskControlPayload } from '../../model/task-controls.js';
 import { isAgentMessageTurn, mergedInto, preemptedBy } from '../../model/agent-control.js';
 import { latestHumanProgress, turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
 import { conversationTextObservations, finalEchoObservation, processCount, turnStartObservation, withoutFinalEcho } from '../../model/turn-process.js';
@@ -141,8 +141,7 @@ export function ApprovalCard({ turn, state, onResolve, names }) {
   );
 }
 function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) {
-  const extras = extraControls(context);
-  if (!context.workId && !context.canEdit && !context.editUnavailable && !context.canStop && !extras.length) return null;
+  if (!context.workId && !context.canEdit && !context.editUnavailable && !context.editPending && !context.canStop) return null;
   return (
     <section className="task-controls" aria-label="任务控制">
       {context.workId && <div className="task-work-identity"><code>{context.workId}</code><span>{[context.workState, context.workStage, context.executionState].filter(Boolean).join(' · ')}</span></div>}
@@ -150,8 +149,7 @@ function ActiveTaskControls({ context, editActive = false, onControl, onEdit }) 
         {context.editUnavailable && <span className="task-control-unavailable">Agent 版本不支持安全编辑</span>}
         {context.editPending && <span className="task-control-unavailable">正在确认 Agent 编辑能力</span>}
         {context.canEdit && <button type="button" onClick={onEdit} disabled={editActive}>编辑</button>}
-        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, controlPayload(context, TYPES.agentInterrupt, {}))}>停止</button>}
-        {extras.map((entry) => <button key={entry.word} type="button" onClick={() => onControl(entry.word, controlPayload(context, entry.word, { target: context.requestId }))}>{controlLabel(entry)}</button>)}
+        {context.canStop && <button type="button" onClick={() => onControl(TYPES.agentInterrupt, taskControlPayload(context, TYPES.agentInterrupt))}>停止</button>}
       </div>
     </section>
   );
@@ -389,7 +387,7 @@ function AgentBubble({ turn, title, mergedCount = 0, frozen = null, names, roste
     <div className="agent-thread-content" aria-hidden={!compactExpanded} inert={!compactExpanded ? true : undefined}>{content}</div>
   </article>;
   const replyTarget = terminal && argsOf(terminal)?.status === 'completed'
-    ? replyTargetOf(terminal, { roster, selfId, fallbackSenderId: request.audience?.[0], fallbackSenderKind: 'agent' })
+    ? replyTargetOf(terminal, { roster, selfId })
     : null;
   return <ReplyableMessageFrame replyTarget={replyTarget} copyText={terminal ? messagePresentation(terminal).text : ''} onReply={onReply} onCreateTask={onCreateTask} className={className} contentClassName="response-body" identity={identity}>{heading}{content}</ReplyableMessageFrame>;
 }
@@ -506,7 +504,7 @@ export function TurnCard({ turn, thread = [], roster, names, selfId, access, tar
           <small>{turnProcessSummary(turn)}</small>
           <span aria-hidden="true">查看过程 ›</span>
         </button></ContentFrame>}
-      {detailsOpen && <ContentFrame contained><TurnInlineDetail turn={turn} roster={roster} selfId={selfId} access={access} capability={capability} controlState={controlState} onCancel={onCancel} onControl={onControl} onDownload={onDownload} onCreateTask={onCreateTask} onClose={onCloseDetail} /></ContentFrame>}
+      {detailsOpen && <ContentFrame contained><TurnInlineDetail turn={turn} roster={roster} selfId={selfId} access={access} targetAuthority={targetAuthority} capability={capability} controlState={controlState} onCancel={onCancel} onControl={onControl} onDownload={onDownload} onCreateTask={onCreateTask} onClose={onCloseDetail} /></ContentFrame>}
       {!turn.local && !turn.terminal && !detailsOpen && <ContentFrame contained><ActiveTaskControls context={controlContext} editActive={editActive} onControl={onControl} onEdit={onEdit} /></ContentFrame>}
       {editSession && <ContentFrame contained><p className="message-editing-state">正在输入框中编辑</p></ContentFrame>}
       {terminal && (

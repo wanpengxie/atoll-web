@@ -1,11 +1,11 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { messagePresentation } from '../../model/message-presentation.js';
-import { controlLabel, controlPayload, extraControls, taskControlContext } from '../../model/task-controls.js';
+import { taskControlContext, taskControlPayload } from '../../model/task-controls.js';
 import { agentFrozenStates, agentMessageStage, editAdmission, editableText, lockFromContext, mergedInto, preemptedBy } from '../../model/agent-control.js';
 import { diagnostic } from '../../model/diagnostics.js';
 import { terminalResultPayload, terminalResultState, terminalRetainedValue } from '../../model/terminal-result.js';
-import { selectLocalWaitingTurns, selectWaitingPresentation } from '../../model/waiting-presentation.js';
+import { selectWaitingPresentation } from '../../model/waiting-presentation.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';
 import { newId } from '../../util/id.js';
@@ -195,7 +195,7 @@ export function WaitingLayer({ turns, handoffs = [], state, names, selfId, acces
           {renderedGroups.map((group) => {
             const firstContext = taskControlContext(group.turns[0], { selfId, access, targetAuthority });
             const canInsertAll = group.turns.some((turn) => taskControlContext(turn, { selfId, access, targetAuthority }).canInsert);
-            return canInsertAll && <button type="button" className="agent-wait-insert-all" key={`insert-${group.actorId}`} onClick={() => onControl(group.turns[0], group.actorId, TYPES.agentSteer, controlPayload(firstContext, TYPES.agentSteer, { all: true }))}>{soleGroup ? '全部插入' : `插入 ${nameOf(group.actorId, names)} 全部`}</button>;
+            return canInsertAll && <button type="button" className="agent-wait-insert-all" key={`insert-${group.actorId}`} onClick={() => onControl(group.turns[0], group.actorId, TYPES.agentSteer, taskControlPayload(firstContext, TYPES.agentSteer, 'all'))}>{soleGroup ? '全部插入' : `插入 ${nameOf(group.actorId, names)} 全部`}</button>;
           })}
           {renderedGroups.map((group) => {
             const capability = capabilityIndex.get(group.actorId);
@@ -241,10 +241,9 @@ export function WaitingLayer({ turns, handoffs = [], state, names, selfId, acces
                   {context.targetCurrentness === 'departed' && <span className="agent-wait-paused">收件人已离席，等待账本关闭</span>}
                   {context.canEdit && editLeaseCapabilityState(capability) === 'unknown' && <span className="agent-wait-paused">正在确认 Agent 编辑能力</span>}
                   {context.canEdit && editLeaseCapabilityState(capability) === 'unsupported' && <span className="agent-wait-paused">Agent 版本不支持安全编辑</span>}
-                  {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, controlPayload(context, TYPES.agentSteer, { target: turn.requestId }))}>插入</button>}
+                  {context.canInsert && <button type="button" onClick={() => onControl(turn, group.actorId, TYPES.agentSteer, taskControlPayload(context, TYPES.agentSteer))}>插入</button>}
                   {context.canEdit && editLeaseCapabilityState(capability) === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
                   {context.canCancel && <button type="button" title={context.cancelsAsDismiss ? '这条不是你发的，将请对方放弃它' : '撤回你自己发出的这条请求'} onClick={() => onCancel?.(state.channelId, turn.requestId, context.cancelsAsDismiss)}>取消</button>}
-                  {extraControls(context).map((entry) => <button key={entry.word} type="button" onClick={() => onControl(turn, group.actorId, entry.word, controlPayload(context, entry.word, { target: turn.requestId }))}>{controlLabel(entry)}</button>)}
                 </div>
               </>}
           </li>;
@@ -259,12 +258,12 @@ export function useWaitingEditingController({
   state,
   history,
   pending,
-  projectionSelfId,
   selfId,
   access,
   waitingRosterAuthority,
   capabilityIndex,
   roster,
+  onRequestCapability,
   onTaskControl,
   onComposerEditChange,
 }) {
@@ -279,15 +278,10 @@ export function useWaitingEditingController({
   const [editNotice, setEditNotice] = useState('');
   const [resumePin, setResumePin] = useState('');
   const [presentationNow, setPresentationNow] = useState(() => Date.now());
-	const waitingContinuityRef = useRef({ channelId: '', ids: new Set() });
 	const previousAccess = useRef(access);
-  const controlVersion = state._timelineControlVersion ?? state.lastSeq;
+  const controlVersion = Number(state._timelineControlVersion || 0);
   const declaredReplacementId = editing
-    ? String(
-      argsOf(state.turns.get(editing.targetId)?.terminal)?.replaced_by
-      ?? argsOf(state.turns.get(editing.targetId)?.terminal)?.value?.replaced_by
-      ?? '',
-    )
+    ? String(terminalRetainedValue(state.turns.get(editing.targetId), 'replaced_by') || '')
     : '';
   const declaredReplacement = declaredReplacementId
     ? state.turns.get(declaredReplacementId)
@@ -301,18 +295,7 @@ export function useWaitingEditingController({
   const editingTargetId = presentationEditing?.location === 'processing'
     ? presentationEditing.targetId
     : presentationResumePin;
-  const localWaitingTurns = useMemo(
-    () => selectLocalWaitingTurns(pending || [], projectionSelfId),
-    [pending, projectionSelfId],
-  );
-  const localWaitingIDs = useMemo(
-    () => new Set(localWaitingTurns.map((turn) => turn.requestId)),
-    [localWaitingTurns],
-  );
-  const timelineLocalEchoes = useMemo(
-    () => (pending || []).filter((submission) => !localWaitingIDs.has(submission.messageId)),
-    [localWaitingIDs, pending],
-  );
+  const timelineLocalEchoes = useMemo(() => pending || [], [pending]);
   const timelineControl = useMemo(() => {
     const actorIds = new Set();
     const preempted = new Map();
@@ -333,24 +316,27 @@ export function useWaitingEditingController({
     return { actorIds, preempted, merged, hasFreezeOperations };
   }, [state, controlVersion]);
   const schedulerStatus = history.status || null;
-  const controlCurrent = schedulerStatus ? schedulerStatus.controlCurrent === true : true;
-  const continuityIDs = waitingContinuityRef.current.channelId === state.channelId
-    ? waitingContinuityRef.current.ids
-    : new Set();
+  const controlCurrent = schedulerStatus?.controlCurrent === true;
   const queuedTurns = useMemo(() => selectWaitingPresentation(state, {
     controlCurrent,
     editingTargetId,
-    localTurns: localWaitingTurns,
-    continuityIDs,
-  }), [continuityIDs, controlCurrent, controlVersion, editingTargetId, localWaitingTurns, state]);
-  useLayoutEffect(() => {
-    const next = new Set(localWaitingIDs);
-    for (const requestId of continuityIDs) {
-      const turn = state.turns.get(requestId);
-      if (turn && !turn.terminal && agentMessageStage(turn) === '') next.add(requestId);
+  }), [controlCurrent, controlVersion, editingTargetId, state]);
+  useEffect(() => {
+    if (!onRequestCapability) return;
+    const actors = new Set();
+    for (const turn of state.turns.values()) {
+      if (turn.terminal) continue;
+      const context = taskControlContext(turn, {
+        selfId,
+        access,
+        targetAuthority: waitingRosterAuthority,
+      });
+      if (context.canEdit && editLeaseCapabilityState(capabilityIndex.get(context.actorId)) === 'unknown') {
+        actors.add(context.actorId);
+      }
     }
-    waitingContinuityRef.current = { channelId: state.channelId, ids: next };
-  }, [continuityIDs, controlVersion, localWaitingIDs, state]);
+    for (const actorId of actors) onRequestCapability(actorId, state.channelId);
+  }, [access, capabilityIndex, controlVersion, onRequestCapability, selfId, state, waitingRosterAuthority]);
   const frozenByActor = useMemo(
     () => timelineControl.hasFreezeOperations
       ? agentFrozenStates(state, timelineControl.actorIds, presentationNow)

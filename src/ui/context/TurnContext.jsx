@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { actorNameFromMap, actorNameMap } from '../../model/actor-display.js';
-import { controlPayload, taskControlContext } from '../../model/task-controls.js';
+import { taskControlContext, taskControlPayload } from '../../model/task-controls.js';
 import { messagePresentation } from '../../model/message-presentation.js';
 import { turnProcessSummary, turnStatusLabel } from '../../model/turn-presentation.js';
 import { executionProcessObservations } from '../../model/turn-process.js';
@@ -46,7 +46,7 @@ function ContextControls({ context, state = {}, onCancel, onControl }) {
     <h3>控制</h3>
     <div>
       {context.canCancel && <button type="button" disabled={busy} onClick={onCancel}>{state.status === 'sending' ? '正在取消…' : '取消任务'}</button>}
-      {context.canStop && <button type="button" disabled={busy} onClick={() => onControl('agent.interrupt', controlPayload(context, 'agent.interrupt', {}))}>停止</button>}
+      {context.canStop && <button type="button" disabled={busy} onClick={() => onControl('agent.interrupt', taskControlPayload(context, 'agent.interrupt'))}>停止</button>}
     </div>
     {state.status === 'accepted' && <p>控制请求已受理，最终状态仍以频道账本为准。</p>}
     {state.status === 'uncertain' && <p className="uncertain">结果待确认；重连后会按账本事实恢复。</p>}
@@ -54,12 +54,12 @@ function ContextControls({ context, state = {}, onCancel, onControl }) {
   </section>;
 }
 
-function TurnDetailBody({ turn, roster = [], selfId, access, controlState, onCancel, onControl, onDownload, onSource, onCreateTask, showSource = true, showRequest = true }) {
+function TurnDetailBody({ turn, roster = [], selfId, access, targetAuthority, controlState, onCancel, onControl, onDownload, onSource, onCreateTask, showSource = true, showRequest = true }) {
   const names = useMemo(() => actorNameMap(roster), [roster]);
   if (!turn) return null;
   const request = turn.request;
   const terminal = terminalContentEnvelope(turn);
-  const context = taskControlContext(turn, { selfId, access });
+  const context = taskControlContext(turn, { selfId, access, targetAuthority });
   const process = executionProcessObservations(turn);
   const business = (turn.provisional || []).filter((item) => !argsOf(item.envelope)?.process);
   return <>

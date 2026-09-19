@@ -62,12 +62,10 @@ export function useNotificationConfirmation({
       confirmation = next.state;
       confirmationRef.current = confirmation;
       if (!next.event) return delivered;
-      const accepted = next.event.boundary <= 0 && next.event.cause === 'tail-backlog'
-        ? true
-        : owner.markNotificationsRead?.(next.event, Object.freeze({
-          viewKey: next.event.viewKey,
-          activationID: next.event.activationID,
-        }));
+      const accepted = owner.markNotificationsRead?.(next.event, Object.freeze({
+        viewKey: next.event.viewKey,
+        activationID: next.event.activationID,
+      }));
       const confirmed = accepted !== false && accepted != null;
       confirmation = settleNotificationConfirmation(confirmation, next.event, confirmed);
       confirmationRef.current = confirmation;

@@ -538,18 +538,16 @@ export const Composer = React.memo(function Composer({ channelId, roster, selfId
   // 芯片按当前名册重解：名字随成员改名走，这个 id 不在名册里了就标 missing
   // ——恒不静默把一个收件人丢掉再退回默认目标。
   const mentions = useMemo(() => resolveRecipients(recipients, roster), [recipients, roster]);
-  // 参数面板目标（判据链 §2.1）：mention 环与 App 共用同一个函数；无 @ 落到 App
-  // 算的默认环（筛选 > 手选 > 最近交互 > 唯一 agent）。原则：右下角显示谁，
-  // 没 @ 过人时回车就发给谁。
+  // Mention is the only Composer-owned target override. With no mention,
+  // consume the selection owner's declared default; do not re-derive one from
+  // the roster here.
   const fallbackAgent = useMemo(() => roster.find((row) => row.id === agentSelection?.fallbackAgentId && row.kind === 'agent') || null, [agentSelection?.fallbackAgentId, roster]);
   const parameterTarget = useMemo(() => {
     const mentioned = mentionRing(mentions.filter((row) => !row.missing));
     if (mentioned) return mentioned;
     if (fallbackAgent) return { kind: 'single', agent: fallbackAgent };
-    const agents = roster.filter((row) => row.kind === 'agent');
-    if (agents.length === 1) return { kind: 'single', agent: agents[0] };
     return { kind: 'none' };
-  }, [mentions, fallbackAgent, roster]);
+  }, [mentions, fallbackAgent]);
   const parameterAgent = parameterTarget.kind === 'single' ? parameterTarget.agent : null;
   const currentReplyRecipient = useMemo(() => replyRecipient(replyTarget, roster), [replyTarget?.senderId, roster]);
   const effectiveParameterAgent = currentReplyRecipient?.kind === 'agent' ? currentReplyRecipient : replyTarget ? null : parameterAgent;

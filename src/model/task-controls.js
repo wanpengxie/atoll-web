@@ -9,7 +9,7 @@ import { TYPES } from '../protocol/vocab.js';
 
 // 契约：凡带 status（queued/processing）的进度帧必带 controls；终态帧恒不带。
 // 位置与可用控制取同一帧，天然同步。
-function latestStatusFrame(turn) {
+export function taskControlFrame(turn) {
   return [...(turn?.provisional || [])]
     .reverse()
     .map((item) => argsOf(item.envelope))
@@ -24,7 +24,7 @@ function processingTurnId(turn) {
 }
 
 export function taskLocation(turn) {
-  return latestStatusFrame(turn)?.status || '';
+  return taskControlFrame(turn)?.status || '';
 }
 
 function controlEntries(frame) {
@@ -33,44 +33,43 @@ function controlEntries(frame) {
   // protocol intentionally permits the compact `{ word }` form; command
   // identity comes from the request/turn that owns this status frame, not
   // from a second copy embedded in every declaration.
-  return frame.controls.filter((entry) => entry && typeof entry.word === 'string' && entry.word);
-}
-
-// 核心词有前端专属交互（replace→编辑流程、steer→插入、interrupt→停止）。
-// 白名单外的词走通用路径：label 兜底文案、点击即发词带 target——
-// 将来任何 actor 新报的控制词零前端改动即可用。
-const CORE_CONTROL_WORDS = Object.freeze([TYPES.agentReplace, TYPES.agentInterrupt, TYPES.agentSteer, TYPES.agentDismiss]);
-
-export function extraControls(context) {
-  if (!context?.actionable) return [];
-  // Core controls have caller-owned argument contracts below. An unknown
-  // word is only safe to expose when the actor supplied its complete payload;
-  // the frontend must not invent arguments for an unknown command.
-  return context.controls.filter((entry) => (
-    !CORE_CONTROL_WORDS.includes(entry.word)
-    && entry.payload
-    && typeof entry.payload === 'object'
-    && !Array.isArray(entry.payload)
+  return frame.controls.flatMap((entry) => (
+    entry && typeof entry.word === 'string' && entry.word
+      ? [Object.freeze({ word: entry.word })]
+      : []
   ));
 }
 
-export function controlLabel(entry) {
-  return entry.label || entry.word.split('.').pop();
+export function taskControlFrameFromEnvelope(envelope) {
+  const payload = argsOf(envelope);
+  return payload?.status === 'queued' || payload?.status === 'processing' ? payload : null;
 }
 
-// Each UI action owns the fallback required by that command's schema:
-// interrupt={}, one-item steer={target}, bulk steer={all:true}, and generic
-// controls have no guessed fallback. Actor-authored fields refine that known
-// call-site contract. In particular we never stamp request/turn fields onto
-// every control word; those fields are not legal for every command.
-export function controlPayload(context, word, fallback = {}) {
-  const entry = context?.controls?.find((candidate) => candidate.word === word);
-  if (!entry) return null;
-  const declared = entry?.payload;
-  const callerPayload = fallback && typeof fallback === 'object' && !Array.isArray(fallback) ? fallback : {};
-  return declared && typeof declared === 'object' && !Array.isArray(declared)
-    ? { ...callerPayload, ...declared }
-    : { ...callerPayload };
+export function taskControlRevision(frame) {
+  if (!frame) return '';
+  return JSON.stringify({
+    status: frame.status,
+    controls: [...new Set(controlEntries(frame).map((entry) => entry.word))].sort(),
+    turnId: frame.turn_id || '',
+    resumed: frame.resumed === true,
+    steering: frame.steering === true,
+    workId: frame.work_id || '',
+    workState: frame.work_state || frame.state || '',
+    workStage: frame.stage || '',
+    executionState: frame.execution_state || '',
+  });
+}
+
+// The status frame declares availability only. Payload authorship belongs to
+// this typed boundary; actor-declared payloads and caller-shaped fallbacks are
+// deliberately not accepted or merged.
+export function taskControlPayload(context, word, intent = 'single') {
+  if (!context?.actionable || !context.controls.some((entry) => entry.word === word)) return null;
+  if (word === TYPES.agentInterrupt) return {};
+  if (word === TYPES.agentSteer) {
+    return intent === 'all' ? { all: true } : { target: context.requestId };
+  }
+  return null;
 }
 
 export function taskTargetCurrentness(turn, authority = null) {
@@ -112,7 +111,7 @@ export function taskControlContext(turn, {
   // 里而碰不到任何按钮。
   const owned = Boolean(selfId && request?.sender?.id === selfId);
   const writable = access === 'member_active';
-  const frame = latestStatusFrame(turn);
+  const frame = taskControlFrame(turn);
   const terminal = terminalResultPayload(turn);
   const workFrame = frame?.work_id ? frame : (terminal?.work_id ? terminal : null);
   const location = frame?.status || '';

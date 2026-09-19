@@ -33,7 +33,6 @@ export function useTimelinePreferences({ channelId, viewSessions }) {
       scope,
       actorFilter: [...actorFilter],
       foldOverrides: [...foldOverrides],
-      foldDefaults: [],
     });
   }, [actorFilter, channelId, foldOverrides, scope, viewSessions, writePreferences]);
 

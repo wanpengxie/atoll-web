@@ -10,7 +10,6 @@ export function createLiveArrivalState() {
     _liveArrivalRevision: 0,
     _liveArrivalAckRevision: 0,
     _liveArrivalLog: [],
-    _liveArrivalConsumers: 0,
     _liveArrivalConsumerTokens: new Set(),
     _liveArrivalOverflow: new Map(),
     _livePresentationArrivalRevision: 0,
@@ -87,7 +86,7 @@ export function recordLiveTimelineArrival(state, envelope, seq, selfId = '') {
       }));
     }
   }
-  if (Number(state._liveArrivalConsumers || 0) === 0 && !hadUndisposedArrival) {
+  if (!state._liveArrivalConsumerTokens?.size && !hadUndisposedArrival) {
     acknowledgeLiveTimelineArrivals(state, revision);
   }
   return event;
@@ -124,13 +123,11 @@ export function registerLiveTimelineArrivalConsumer(state, consumerToken = Symbo
     : new Set();
   state._liveArrivalConsumerTokens = consumers;
   consumers.add(consumerToken);
-  state._liveArrivalConsumers = consumers.size;
   let active = true;
   return () => {
     if (!active) return;
     active = false;
     consumers.delete(consumerToken);
-    state._liveArrivalConsumers = consumers.size;
   };
 }
 
