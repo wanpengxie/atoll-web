@@ -14,15 +14,24 @@ Disposition codes:
   current-owner test; this partition does not duplicate a second owner.
 - **ORACLE/current** — the old assertion only inspected a deleted
   implementation detail; the row names the replacement behavioral assertion.
-- **GAP-01** — a reproducible current-owner user-visible regression. This is a
-  report only; no product code was changed here.
+- **GAP-01 (resolved/current)** — the former renderer semantic-label
+  observation. The current public owner now renders the canonical operation
+  label/detail; the historical packet below is retained as provenance only.
+- **GAP-02 (resolved/current)** — the former `ChannelReplica` trim/closure
+  observation. The current owner now preserves the open floor and exact
+  terminal closure; the historical packet below is not a current red.
+- **GAP-03 (resolved/current)** — the former Composer cold-selector
+  accessible-name observation. The current public trigger now exposes the
+  truthful `，模型未知` label; its prior red packet is retained as provenance.
 
-Focused evidence in this partition is 100 passing tests: live 5, management 4,
-markdown 11, memory 11, Mermaid 6, layout 4, lifecycle 12, message
-presentation 3, time 4, mock 23, and model selection 17. The difference from
-the baseline is accounted for case by case below. No product source, vendor,
-package manifest/lockfile, old store, compatibility API, or second owner was
-changed.
+Focused I-M evidence is 106/106 passing: live 5, management 4, markdown 11,
+memory 16, Mermaid 6, layout 4, lifecycle 12, message presentation 4, time
+4, mock 23, and model selection 17. The eleven implementation-oracle rows
+(memory 21–27 and 29, message 115, model 143 and 146) are each mapped to a
+current public owner and executable replacement below. The difference from the
+baseline is accounted for case by case. No product source, vendor, package
+manifest/lockfile, old store, compatibility API, or second owner was changed
+in this audit pass.
 
 ## 1. `live-checkpoint-ordering.test.js` (2/2, PASS/current)
 
@@ -70,27 +79,28 @@ All cases exercise the current exported `MarkdownContent` and
 | 17 | `正文前插和流式续写不改名仍存活的语义块` — stable semantic block IDs survive prefix insertion and streaming growth. | `MarkdownContent` reading block IDs; rerender and compare IDs. **PASS/current**, retained. |
 | 18 | `流式尾块更新时保留已完成块的真实DOM和原生选择` — completed DOM/selection survives tail streaming. | Same block identity/selection path; rerender tail and assert node and selection survive. **PASS/current**, retained. |
 
-## 5. `memory-window.test.js` (baseline 18; current 11, PASS/current plus ORACLE/current)
+## 5. `memory-window.test.js` (baseline 18; current 16, PASS/current plus ORACLE/current)
 
 The former fold/memory store was removed. The migration tests the current
 bounded `ChannelReplica`, cache, coverage, and detached `ConversationPresentation`
-owners. Compact-closure internals that only existed on the old store are marked
-as implementation oracles; their user-facing safety is represented by the
-current fail-closed/re-admit behavior rather than by reviving that store.
+owners. Rows 21–27 and 29 retain **ORACLE/current** because their old
+assertions named the deleted fold/closure implementation; each now has a
+current public behavior assertion, including the post-trim open floor and
+exact terminal closure tests. No deleted map or private export was restored.
 
 | # | Baseline case; capability and invariant | Current public owner; setup → observable; disposition/evidence |
 |---|---|---|
 | 19 | `超过水位才动手,一次砍到八成,并且留下的是最近的` — bounded memory trims old rows and rebuilds indexes. | `createChannelReplicaStore().trim`; commit eight rows, trim to four, assert newest rows, timeline, envelope index, and coverage. **PASS/current**, migrated. |
 | 20 | `低水位只决定一次保留多少,不会让每条新消息都触发裁剪` — below limit is a no-op. | Replica trim at/above limit; assert no second removal. **PASS/current**, migrated. |
-| 21 | `还没闭合的 turn 整段留住` — old store kept a partial turn coherent. | Current Replica intentionally fails closed when the request row is evicted; it does not render an incomplete turn from orphaned progress. **ORACLE/current**, migrated as an explicit fail-closed assertion (not old retention). |
-| 22 | `保留先到 terminal 的 compact closure，窗口裁剪后旧 queued 不能复活` — compact terminal evidence prevented stale queued resurrection. | Old private closure map has no current public owner; current bounded Replica requires history/cache re-admission before the turn is visible. **ORACLE/current**, no old closure/store restored. |
-| 23 | `多个乱序 unmatched terminal 由 earliest seq 吸收` — unmatched terminal ordering was deterministic. | Same removed closure map; current public invariant is canonical envelope ordering/re-admission, covered by out-of-order nested Replica rebuild. **ORACLE/current**, evidence in migrated nested rebuild case. |
-| 24 | `已匹配 terminal 被裁剪后仍以 compact closure 阻止旧 queued 复活` — stale queued must not reopen a closed turn after trim. | Current Replica evicts the entire unavailable root and presents no orphan queued row; history is the recovery boundary. **ORACLE/current**, no private closure API. |
-| 25 | `nested steer 关系在 compact owner 归一后仍可驱动 merge/preempt` — nested request relations retain terminal facts. | Current Replica’s public nested request/response rebuild asserts one root/thread and terminal body after out-of-order delivery. **ORACLE/current**, protocol-specific old compact helpers are not current owner. |
-| 26 | `compact closure 只接受同一 ledger terminal 的 full envelope 升级` — a different terminal cannot overwrite canonical identity. | Current Replica rejects duplicate envelope/sequence writes; canonical envelope identity is the public boundary. **ORACLE/current**, duplicate rejection is asserted. |
-| 27 | `compact closure 已吸收后仍由更早 ledger terminal 取得 canonical 位置` — canonical sequence wins over arrival order. | Current Replica orders materialized rows by sequence and rebuilds nested turns; old closure internals are not retained. **ORACLE/current**. |
+| 21 | `还没闭合的 turn 整段留住` — an older open turn remains coherent, including its request and provisional evidence, when newer rows pressure the trim frontier. | `createChannelReplicaStore().trim` now clamps to `openTurnFloor`; seq 1/2 remain a pending turn under seq 3–12 pressure. **ORACLE/current**, executable evidence `tests/memory-window.test.js:106-130` and `src/model/channel-replica-terminal-closure.test.jsx:179-189`. |
+| 22 | `保留先到 terminal 的 compact closure，窗口裁剪后旧 queued 不能复活` — compact terminal evidence prevented stale queued resurrection. | `ChannelReplica` closure + `useWaitingEditingController`; the trimmed completed turn suppresses a stale local echo. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:52-71`. |
+| 23 | `多个乱序 unmatched terminal 由 earliest seq 吸收` — unmatched terminal ordering was deterministic. | Parent-keyed closure reconciliation chooses the earlier response-first terminal before re-admission. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:127-149`; no guessed request or second store. |
+| 24 | `已匹配 terminal 被裁剪后仍以 compact closure 阻止旧 queued 复活` — stale queued must not reopen a closed turn after trim. | `ChannelReplica.trim` retains exact terminal provenance and projects terminal state while the request is absent. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:73-87,89-125`. |
+| 25 | `nested steer 关系在 compact owner 归一后仍可驱动 merge/preempt` — nested request relations retain terminal facts. | `compactTerminalClosure` retains the documented `merged_into`/`preempted_by`/`replaced_by` fields and the public turn upgrades on exact full-row return. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:191-211`. |
+| 26 | `compact closure 只接受同一 ledger terminal 的 full envelope 升级` — a different terminal cannot overwrite canonical identity. | Closure reconciliation keeps a later conflicting full terminal from replacing the earlier fact, while an exact same terminal upgrades the row. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:108-124`. |
+| 27 | `compact closure 已吸收后仍由更早 ledger terminal 取得 canonical 位置` — the first ledger terminal remains canonical regardless of later arrival. | Current `buildTurn()` sorts by ledger sequence and takes the first FINAL; direct public Replica evidence is `src/model/channel-replica-turn-integrity.test.js:97-106`. **ORACLE/current**, passing. |
 | 28 | `terminal closure retention is isolated by channel state even for the same request id` — channel isolation prevents cross-channel closure leakage. | Replica state/cache is keyed by channel; same request ID in two channels yields two independent timelines. **PASS/current**, migrated. |
-| 29 | `unmatched process/provisional 正文仍随窗口淘汰，不生成 closure` — provisional data cannot become a false terminal. | Current Replica evicts orphaned progress and does not synthesize a closure; the migrated incomplete-turn case asserts this. **ORACLE/current**. |
+| 29 | `unmatched process/provisional 正文仍随窗口淘汰，不生成 closure` — provisional data cannot become a false terminal. | `trim` evicts an unmatched provisional response without retaining terminal proof; a later exact request may be pending, but no terminal/closure is fabricated. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:213-223`. |
 | 30 | `闭合且整段在窗口外的 turn 连同它的相关索引一起摘掉` — trim removes closed turn rows and indexes atomically. | Replica trim + timeline/envelope index assertions. **PASS/current**, migrated. |
 | 31 | `裁剪之后「我的往来」索引仍与全量版相等` — mine scope has no evicted index ghosts. | `selectTimelineItems` over trimmed Replica; only retained conversation appears. **PASS/current**, migrated. |
 | 32 | `历史回读之后,索引把补回来的行也算进「我的往来」` — re-admitted history restores scope membership. | Replica commit followed by current conversation selection; canonical rows are re-indexed. **COVERED/current**, evidence in `tests/channel-replica.test.js` and migrated scope case. |
@@ -196,42 +206,57 @@ current public evidence already present in `reading-*`, `history-*`,
 | 110 | `coalesces a scroll-induced list commit without a microtask retry loop` — scroll commits are bounded/coalesced. | Navigation coordinator + Vendor observation. **COVERED/current**, `tests/reading-navigation-coordinator.test.js`. |
 | 111 | `an abandoned same-activation render cannot replace the committed lifecycle bookmark rows` — abandoned React render cannot mutate committed rows. | `ConversationPresentation.evaluate/commitCandidate` and React Suspense guard. **PASS/current**, `tests/conversation-presentation-react.test.jsx`. |
 
-## 9. `message-presentation.test.js` (baseline 4; current 3)
+## 9. `message-presentation.test.js` (baseline 4; current 4, PASS/current)
 
 The old pure `messagePresentation` adapter no longer exists. Current message
 rendering is owned by `useTimelineRowRenderer` and canonical `argsOf` body
-decoding. The three replacement tests render that public path. One baseline
-user capability remains a real product regression and is handed off below as
-GAP-01; no private label mapper was exported or recreated.
+decoding. Four replacement tests render that public path, including the
+closed system-operation label/detail table. No private label mapper was
+exported or recreated.
 
 | # | Baseline case; capability and invariant | Current public owner; setup → observable; disposition/evidence |
 |---|---|---|
-| 112 | `renders protocol payloads as product language instead of JSON` — governance operations should be understandable and must not expose raw protocol objects. | `useTimelineRowRenderer`/`EnvelopeBody` currently renders canonical text/attachments but has no protocol-operation label/detail map: a `system.member.create` body `{decl_id:'demo:agent'}` renders no human label/detail. **GAP-01**, minimal reproduction and first owner boundary are recorded below; no product edit here. |
+| 112 | `renders protocol payloads as product language instead of JSON` — governance operations should be understandable and must not expose raw protocol objects. | `useTimelineRowRenderer`/`EnvelopeBody` uses the current closed system-operation presentation map; canonical `system.member.create` `{decl_id:'demo:agent'}` renders `添加参与者：demo:agent`. **PASS/current**, executable evidence `tests/message-presentation.test.js:100-107`. |
 | 113 | `never serializes unknown payload objects or leaks sensitive hints` — unknown structured payloads must not stringify or expose tokens. | Current renderer with canonical unsupported body → no JSON and no token; terminal `StructuredResult` recursively redacts sensitive fields. **PASS/current**, migrated in `tests/message-presentation.test.js`. |
-| 114 | `conversation words always prefer the real message body over protocol labels` — body text/content blocks win over protocol labels; empty body has a product-language fallback. | Canonical `body.text` is rendered by `EnvelopeBody`; the old flat payload and fallback label are not current transport contracts. Body precedence is **PASS/current**; missing operation fallback is the same **GAP-01** boundary, while flat-payload inspection is **ORACLE/current**. |
+| 114 | `conversation words always prefer the real message body over protocol labels` — body text/content blocks win over protocol labels; empty body has a product-language fallback. | Canonical `body.text` wins, while an empty canonical body uses the current system-operation label/detail path. **PASS/current**; flat-payload inspection remains outside the canonical transport contract. |
 | 115 | `reads a request through its body wrapper, and older rows without one` — canonical `{payload:{body}}` requests and terminal text are readable. | `argsOf` + `useTimelineRowRenderer` reads request/terminal canonical bodies; flat historical payload is explicitly unsupported development data. **PASS/current** for canonical rows (message presentation current test) and **ORACLE/current** for the deleted flat compatibility branch. |
 
-### GAP-01 product-regression packet
+### GAP-01 historical packet (resolved by current owner)
 
-- **Minimal reproduction:** render a current standalone row through
-  `useTimelineRowRenderer` with an envelope of type `system.member.create` and
-  canonical payload `{ body: { decl_id: 'demo:agent' } }`. The row has no text
-  or detail; the baseline capability expected `添加参与者` plus `demo:agent`.
-- **Baseline/current:** fae8b70’s `message-presentation` returned the product
-  label/detail; current UI leaves the operation visually blank (while still
-  correctly avoiding JSON leakage).
-- **First owner boundary:** `src/ui/timeline/TimelineRowRenderer.jsx` →
-  `textOf`/`EnvelopeBody` only decode body text/content and do not map
-  protocol operation types to product language. `argsOf` is correctly
-  canonical; the missing behavior is the renderer’s public semantic branch,
-  not a stale fixture.
-- **Affected capability/invariant:** governance/system events must be
-  understandable in the conversation; preserving security means adding a
-  closed, non-serializing semantic presentation at the current renderer owner,
-  not reviving the deleted adapter.
-- **Evidence:** `tests/message-presentation.test.js` passes canonical body and
-  sensitive-redaction checks; the reproduction above is the first divergence.
-  Product work is intentionally stopped pending an explicitly assigned owner.
+- **Original repro:** render a standalone `system.member.create` row through
+  `useTimelineRowRenderer` with `{ body: { decl_id: 'demo:agent' } }`; the
+  required product text is `添加参与者：demo:agent`.
+- **Resolution evidence:** current `TimelineRowRenderer` owns a closed,
+  non-serializing operation-label/detail table (commit `fbbbb26`), and
+  `tests/message-presentation.test.js:100-107` passes the exact canonical
+  repro. This packet is retained to show why row 112 is no longer an open gap;
+  no compatibility adapter was restored in this audit.
+
+### GAP-02 historical packet (resolved by current Replica owner)
+
+- **Original contract:** an older open request/provisional pair stays coherent
+  across bounded trim pressure; a completed turn does not return as Waiting;
+  response-first terminal facts reconcile by exact parent/sequence; and the
+  documented nested terminal control fields survive compacting.
+- **Former failure shape:** before `fb09a6d`, `5f903ee`, `98a170f`, and
+  `0781ba8`, `ChannelReplica.trim` discarded the open floor and terminal proof.
+  The smallest repro was request/progress at seq 1/2 plus unrelated seq 3–12,
+  then `trim('c0', 4)`; the old result dropped the pending turn. The related
+  response-first and first-terminal repros are preserved in the successor
+  tests, not deleted.
+- **Current public owner and evidence:** `openTurnFloor`, `trim`,
+  `retainTrimmedTerminalClosures`, and `buildTurn` in
+  `src/model/channel-replica.js` now satisfy the public behavior. The current
+  executable evidence is `tests/memory-window.test.js:106-130`,
+  `src/model/channel-replica-terminal-closure.test.jsx:52-189,191-223`, and
+  `src/model/channel-replica-turn-integrity.test.js:97-106`; the focused I-M
+  run is green. This packet is retained as the old red-to-current-owner
+  bridge and is not counted as a current product gap.
+- **Safety boundary:** only the canonical `rows` map stores full envelopes;
+  compact closure records carry lifecycle facts needed for exact re-admission.
+  No unmatched/provisional response creates a closure, no second full-result
+  store was introduced, and notification/arrival contracts were not changed
+  in this audit.
 
 ## 10. `message-time.test.js` (4/4, PASS/current)
 
@@ -315,25 +340,70 @@ replace old Describe `oneOf`; no compatibility parser was added.
 | 151 | `多 @ 显示 N 个目标且无设置入口` — multi-target compose has no ambiguous single-agent settings. | Composer recipient projection; two recipients → count/no selector. **PASS/current**, migrated. |
 | 152 | `无判据且多 agent 时提供手选入口` — no target criterion offers explicit agent choice. | Composer agent target menu; choose Claude → `selectAgent`. **PASS/current**, migrated. |
 | 153 | `值域未就绪时显示角色名+刷新入口；点击先取数，数据一到自动展开` — manual refresh is the sole fetch trigger and opens when data arrives. | Composer selector `openAgentSelector`; null view → click, ready view → menu. **PASS/current**, migrated. |
-| 154 | `值域暂时缺席再回到同一目标：面板保持打开` — transient refresh gap is not a target change. | Composer selector same actor with null→ready view; menu remains open. **PASS/current**, migrated. |
-| 155 | `真的换了目标才收起` — changing actor closes the panel. | Composer target identity change; menu disappears. **PASS/current**, migrated. |
+| 154 | `值域暂时缺席再回到同一目标：面板保持打开` — transient refresh gap is not a target change. | Composer selector same actor with null→ready view; current trigger exposes the truthful `Steward，模型未知` name and the menu remains open. **PASS/current**, migrated. |
+| 155 | `真的换了目标才收起` — changing actor closes the panel. | Composer target identity change; the strict cold-state trigger resolves and the menu closes only after the actor changes. **PASS/current**, migrated. |
 | 156 | `没点过就拿到值域时不自作主张展开` — data arrival alone must not open UI. | Composer null→ready without click; no menu/open command. **PASS/current**, migrated. |
-| 157 | `current 为 null 时 pill 只显示角色名，菜单仍可设置（选 model 落首组合）` — cold selector remains operable without fake current value. | Composer with options and no context; choose model → first legal effort command. **PASS/current**, migrated. |
+| 157 | `current 为 null 时 pill 只显示角色名，菜单仍可设置（选 model 落首组合）` — cold selector remains operable without fake current value. | Composer with options and no context; the truthful `Steward，模型未知` trigger opens the menu and selecting a model submits the first legal combination. **PASS/current**, migrated. |
 | 158 | `无 selections 但 context 有 model 时显示只读状态，不伪造配置项` — context-only model is readable but not configurable. | Composer options absent/context present; read-only dialog/no menu items. **PASS/current**, migrated. |
 | 159 | `展开时显示 provider 私有的客户端升级信号` — provider client update signal is visible in expanded selector. | Composer selector client metadata; expanded panel displays current/latest/update. **PASS/current**, migrated. |
+
+### GAP-03 historical packet (resolved by current Composer owner)
+
+- **Original repro:** render a canonical `projectAgentParameters` cold view
+  for Steward with `current === null`, then query the public trigger by
+  `Steward，模型未知`. The old implementation exposed only `Steward`, causing
+  the refresh-gap, target-change, and first-legal-combination cases to fail.
+- **Resolution evidence:** the current `Composer` `ModelSelector` owns the
+  truthful `aria-label` branch at `src/ui/composer/Composer.jsx:177`, and
+  `tests/model-selector.test.jsx:193-244` now passes all three strict cases.
+  Commit `8e3b69f` restored the current public capability projection without a
+  fake selection or compatibility adapter. This packet is retained as the
+  red-to-current-owner bridge and is not a current product gap.
+
+## Round 11 I–M oracle/red reconciliation
+
+The requested slice is the eleven **ORACLE/current** rows below. Their old
+assertions are implementation-specific, but each has a current public owner,
+an executable contract, and a passing replacement; no row is being silently
+removed or force-green via a private production function.
+
+| baseline row | current public owner | executable contract | result |
+|---|---|---|---|
+| 21 | `ChannelReplica.trim` / open-turn floor | old request + provisional rows remain a pending turn under trim pressure | `tests/memory-window.test.js:106-130` — PASS |
+| 22 | Replica closure + Waiting projection | stale local echo cannot resurrect a trimmed completed turn | `src/model/channel-replica-terminal-closure.test.jsx:52-71` — PASS |
+| 23 | Replica parent-keyed closure reconciliation | earlier response-first terminal remains canonical after late pages | `src/model/channel-replica-terminal-closure.test.jsx:127-149` — PASS |
+| 24 | Replica trim/rebuild terminal proof | request-absent terminal and exact closure upgrade remain visible | `src/model/channel-replica-terminal-closure.test.jsx:73-125` — PASS |
+| 25 | Replica compact terminal fields | documented merge/preempt/replacement facts survive exact full-row re-admission | `src/model/channel-replica-terminal-closure.test.jsx:191-211` — PASS |
+| 26 | Replica closure identity reconciliation | a conflicting terminal cannot replace the first; the exact row upgrades | `src/model/channel-replica-terminal-closure.test.jsx:108-124` — PASS |
+| 27 | Replica `buildTurn` ledger ordering | first FINAL by sequence remains authoritative | `src/model/channel-replica-turn-integrity.test.js:97-106` — PASS |
+| 29 | Replica provisional trim boundary | unmatched provisional data yields no terminal/closure; exact request may be pending | `src/model/channel-replica-terminal-closure.test.jsx:213-223` — PASS |
+| 115 | `argsOf` + timeline renderer | canonical `{payload:{body}}` renders; unsupported flat history is not revived | `tests/message-presentation.test.js:72-98` — PASS canonical / ORACLE flat |
+| 143 | `projectAgentParameters` + Composer selector | canonical `agent.options` projects legal model/effort domains without Describe `oneOf` | `tests/model-selector.test.jsx:60-145` — PASS replacement |
+| 146 | `projectAgentParameters` canonical matcher | closed sender/audience/type/parent matching remains bounded to current protocol | `tests/model-selector.test.jsx:40-60` — PASS replacement |
+
+The focused I–M command is green at **17 files / 106 tests / 106 passed**.
+The prior three product packets (GAP-01 renderer, GAP-02 Replica trim, and
+GAP-03 Composer cold selector) are historical red-to-owner bridges, not open
+red cases in this run. The separately added Replica root-stability and
+projection-version probes are outside this I–M focused ledger; their findings
+remain handoffs to their owning partition rather than being relabeled here.
 
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
   declarations plus both expanded `takeover` variants.
-- Current-owner focused run: 17 files, 100 tests passed. The run includes the
-  four recreated owner suites (`management-actors`, `memory-window`,
-  `message-list-lifecycle`, `message-presentation`) and the current
-  `model-selector` suite; existing current-owner suites were left intact.
-- `GAP-01` is the only product regression found in this partition. It is a
-  renderer semantic-label gap, not an import/fixture failure. Product editing
-  stopped at the first public owner boundary; root must explicitly assign an
-  owner before any product change.
+- Current-owner focused run: 17 files, 106 tests total, all 106 passing. The
+  run includes the four recreated owner suites (`management-actors`,
+  `memory-window`, `message-list-lifecycle`, `message-presentation`) and the
+  current `model-selector` suite; existing current-owner suites were left
+  intact. The former GAP-01/02/03 packets are all resolved by their existing
+  public owners and are not counted as current red cases.
+- The eleven ORACLE/current rows are not silently dropped: memory 21–27 and
+  29, message 115, and model 143/146 each name the current owner, executable
+  replacement assertion, and the reason the deleted implementation detail is
+  not revived. Any unrelated red successor (for example Replica root
+  stability or projection-version efficiency tests) remains outside this I–M
+  focused accounting and is not relabeled as green here.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

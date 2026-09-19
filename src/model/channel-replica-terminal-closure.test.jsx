@@ -187,4 +187,50 @@ describe('channel-replica compact terminal closure (successor of waiting-termina
     const state = replica.state(CHANNEL);
     expect(state.timeline.some((entry) => entry.turn?.requestId === 'open-work')).toBe(true);
   });
+
+  it('retains nested terminal control facts in the compact closure', () => {
+    const replica = createChannelReplicaStore();
+    replica.commit(request(1, 'nested-terminal'));
+    const completed = terminal(2, 'nested-terminal');
+    completed.envelope.payload.body.value = {
+      merged_into: 'turn-7',
+      preempted_by: 'replacement-8',
+      replaced_by: 'turn-9',
+    };
+    replica.commit(completed);
+    for (let seq = 3; seq <= 10; seq += 1) replica.commit(note(seq));
+
+    expect(replica.trim(CHANNEL, 4)).toBeGreaterThan(0);
+    // Re-admit the exact request and full terminal through the public rows
+    // path. If compacting dropped any control fact, the exact-row upgrade
+    // would leave the turn with the compact (incomplete) terminal instead of
+    // the full envelope.
+    replica.commit(request(1, 'nested-terminal'));
+    replica.commit(completed);
+    const turn = replica.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === 'nested-terminal')?.turn;
+    expect(turn).toMatchObject({ terminalClosureOnly: false, status: 'completed' });
+    expect(turn.terminal.payload.body).toMatchObject({
+      value: {
+        merged_into: 'turn-7',
+        preempted_by: 'replacement-8',
+        replaced_by: 'turn-9',
+      },
+    });
+  });
+
+  it('does not retain a provisional response as a terminal closure after trim', () => {
+    const replica = createChannelReplicaStore();
+    const provisional = queued(2, 'future-provisional');
+    replica.commit(provisional);
+    for (let seq = 3; seq <= 10; seq += 1) replica.commit(note(seq));
+
+    expect(replica.trim(CHANNEL, 4)).toBeGreaterThan(0);
+    // A later exact request may legitimately become a new pending turn, but
+    // the trimmed provisional response must not become terminal evidence.
+    replica.commit(request(1, 'future-provisional'));
+    const turn = replica.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === 'future-provisional')?.turn;
+    expect(turn).toMatchObject({ status: 'pending', terminal: null, provisional: [] });
+  });
 });

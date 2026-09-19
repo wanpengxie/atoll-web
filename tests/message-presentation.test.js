@@ -19,11 +19,11 @@ function Harness({ row }) {
   return renderRow(row);
 }
 
-function standalone(id, body) {
+function standalone(id, body, type = 'agent.ask') {
   const envelope = {
     id,
     kind: 'request',
-    type: 'agent.ask',
+    type,
     sender: { id: 'human:root:1', kind: 'human' },
     audience: ['agent:worker:1'],
     ts: 100,
@@ -95,5 +95,14 @@ describe('current timeline message presentation', () => {
     expect(screen.queryByText('secret')).toBeNull();
     expect(screen.queryByText('hidden')).toBeNull();
     expect(screen.getAllByText('已隐藏').length).toBeGreaterThan(0);
+  });
+
+  it('renders the protocol label and declaration for system.member.create', () => {
+    // Current-owner contract: the canonical body shape is rendered through
+    // the public timeline presentation path, including its operation label.
+    render(React.createElement(Harness, {
+      row: standalone('message-member-create', { decl_id: 'demo:agent' }, 'system.member.create'),
+    }));
+    expect(screen.getByText('添加参与者：demo:agent')).toBeTruthy();
   });
 });
