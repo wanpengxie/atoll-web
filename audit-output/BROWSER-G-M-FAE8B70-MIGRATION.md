@@ -82,6 +82,40 @@ HEAD 重验仍为 **32 tests，21 passed，11 failed（3.3m）**，失败身份�
 member filter 和 RO cases 不计入回归包。证据目录是
 `test-results-gm-head-20260920-r3/`；没有 skip、删除或断言放宽。
 
+## ModelSelector 独立复验（`538f50f` 等价 Composer 状态）
+
+为把 ARIA 修复与能力投影缺口拆开，单独重跑 ModelSelector 五例。当前工作树相对
+`538f50f` 在 `src/ui/composer/Composer.jsx` 与 `src/ui/composer/composer-model.js`
+无差异；因此没有 checkout/覆盖并行分区的工作树，只对该产品实现状态做 Chromium 复验。
+执行命令：
+
+```text
+ATOLL_TEST_MOCK_PORT=19882 ATOLL_TEST_WEB_PORT=15182 npx playwright test \
+  tests/browser/model-selector-manual.spec.js \
+  tests/browser/model-selector-portal.spec.js \
+  --reporter=line --output=test-results-gm-model-538f50f-20260920
+```
+
+结果为 **5 tests，0 passed，5 failed**；五例的首个公共失败均为
+`dialog[aria-label="steward Agent 状态"]` 内缺少 `role=menuitem`、name=`模型`，没有把
+该缺口改写成等待或跳过。
+
+这轮同时给出了明确的已修边界：
+
+- trigger 的 accessible name 已包含 `steward，模型 gpt-5.6-sol，推理强度 medium`，且
+  真实按钮为 `[expanded]`；
+- `role=dialog`、`aria-label="steward Agent 状态"` 已可见；500/320/200px 三种 portal
+  高度的 panel bounds 与中心 hit 在缺失 option 断言前均通过；
+- dialog 中能看到 `模型` 与 `gpt-5.6-sol` 的只读摘要，但不存在可操作的模型
+  `menuitem`，所以后续 option、键鼠命中与 focus-restore 合同仍无法执行。
+
+因此 `538f50f` 的 trigger ARIA/portal 几何修复判为 **已验证**；剩余五例是
+`Composer` ModelSelector 的 actor capability → selectable model option **能力投影缺口**，
+不是 ARIA role/name 或 portal 裁切误报。唯一 owner 仍为 Composer ModelSelector；不改产品、
+不放宽测试。证据在 `test-results-gm-model-538f50f-20260920/`。history
+admission/reveal、underfill、jump/live browsing 的严格 oracle 仍按上节 11 个全组回归保留；
+待 Reading/notification 提交后再重跑相关 packet。
+
 ## Case ledger
 
 `owner` 是当前生产 owner；`result` 是上述 Chromium 全组轮的逐 case 裁决。每行保留
