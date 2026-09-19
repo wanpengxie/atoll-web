@@ -333,6 +333,29 @@ case 2 的严格复核：`/tmp/gm-history-reveal-repeat-a1ee6c9-20260920/`。较
 首断点；以上 clean/重复结果才是本轮产品回归裁决。Reading owner 后续提交后仍按这六行
 各自的可见完成门原样重跑，不放宽 oracle、不删 skip。
 
+## 第十轮：Reading 候选后的六门复验（`c6f9ea8`）
+
+本轮锁定当前提交 `c6f9ea8` 的 clean detached Chromium，并另外只读运行共享树中未提交
+的 `src/ui/timeline/VendorListExecutor.jsx` anchor-retention 候选。当前 branch 没有新的
+Reading owner 提交；候选不当作产品提交或绿色证据。六门的独立完成门沿用上一节逐行定义，
+没有合并成一个 history/jump PASS。
+
+| case | 独立完成门 / 本轮首断点 | clean `c6f9ea8` | shared dirty 候选 |
+|---:|---|---|---|
+| 1 | active list=1、row count 必须超过 baseline=4、anchor connected/offset 稳定、每帧有可见行 | **RED**：仍 `listCount=4`，首断点为无 prepend | **RED**：同首断点 |
+| 2 | 每个 frame 都唯一 active layer/list 且 `visibleRows>0`；最终仍有可见行 | **RED（repeat 3 中 1 pass/2 fail）**：失败样本前两帧 `rowCount=0/visibleRows=0`、mode=`following`；不满足 repeat3，不能记 PASS | **RED（repeat 3/3 fail）**：同空白 sampled-frame 首断点；期间仅有 mock `wire.drop` transport 日志 |
+| 3 | trusted wheel 后 mode=`browsing` 且无 `scrollTo/scrollBy` writer | **RED**：mode=`following`，仍有 app scroll writer | **RED**：同首断点 |
+| 8 | `c0 history 1` 可见、demand=`idle`、pending=0、至少一次 settle | **RED**：`historyOneVisible=false`；其余 scheduler settle 门不能替代可见 row | **RED**：同首断点 |
+| 13 | jump affordance 可见；click 恰一次 owner write，物理回 tail/following、gap≤1、jump 清空 | **RED**：`jumpVisible=false`，browsing gap 仍 2121；未进入 click 后门 | **RED**：同首断点 |
+| 23 | browsing arrival 先成为恰一个普通 presentation row，再分别验证 jump/tail 与 inactive handoff | **RED**：arrival row count=0（jump 可见但 gap 仍 1740、mode=`browsing`），停在第一公共门 | **RED**：同首断点 |
+
+裁决：clean **0/6 passed、6 regressions、0 blocked**；共享候选同样 **0/6**，case 2
+独立 repeat 为 **0/3**。候选没有改变任何六门首断点，不能提前交 Reading owner 绿色验收。
+证据目录：`/tmp/gm-head-c6f9ea8-20260920/test-results-gm-history-jump-head-c6f9ea8-20260920/`、
+`/tmp/gm-history-reveal-repeat-c6f9ea8-20260920/`、
+`/tmp/gm-history-jump-shared-dirty-c6-20260920/`、
+`/tmp/gm-history-reveal-repeat-shared-dirty-c6-20260920/`。
+
 ## Case ledger
 
 `owner` 是当前生产 owner；`result` 是上述 Chromium 全组轮的逐 case 裁决。每行保留
