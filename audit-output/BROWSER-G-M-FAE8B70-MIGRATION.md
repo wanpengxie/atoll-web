@@ -519,6 +519,43 @@ case 1 红测。剩余首断点交 presentation/DOM anchor owner（本轮禁止�
 `VendorListExecutor` 边界）复现处理，不以 scheduler 事件或额外 prepend 代替用户可见
 几何合同。
 
+### F. Round 17 case 2 cold-load / reveal oracle revalidation（`fae8b70` fixture）
+
+本轮只比较 case 2 的旧 fixture 与当前真实 App，未修改产品，也未把冷加载空面误记为
+reveal PASS。旧基线在独立 worktree `/tmp/atoll-fae-r17` 运行：
+
+```text
+ATOLL_TEST_MOCK_PORT=20011 ATOLL_TEST_WEB_PORT=15311 npx playwright test \
+  tests/browser/history-reveal-prototype.spec.js \
+  --grep='normal-flow history reveal prototype' --reporter=line \
+  --output=/tmp/gm17-fae-normal
+```
+
+旧 fixture 为 **PASS**；其首个 captured frame（约 406ms）已经有
+`renderedCurrent=9`、`firstCurrentKey=current-0`、`visibleRows` 对应的 current row，且
+完整轨迹 `blankPaints=[]`、`emptyRanges=[]`。该 fixture 的 `openFixture` 也明确等待
+`[data-current-row]` 后才开始 reveal，因此旧基线不是“登录后前 90ms 同样空”。
+
+当前真实入口在 clean AppShell 上 repeat3：
+
+```text
+ATOLL_TEST_MOCK_PORT=20015 ATOLL_TEST_WEB_PORT=15315 npx playwright test \
+  tests/browser/history-reveal-prototype.spec.js \
+  --grep='history reveal keeps one spatial owner' --repeat-each=3 --reporter=line \
+  --output=/tmp/gm17-current-case2-repeat3
+```
+
+结果为 **3/3 REGRESSION**。同一真实 DOM evidence（JSON：
+`/tmp/gm17-current-case2-evidence.json`）的六个 wheel samples 为：前两帧
+`rowCount=0, visibleRows=0`，随后为 `9/2`、`10/2`、`16/3`、`16/3`；最终为单一 active
+layer/list、`rowCount=16, visibleRows=3`。独立冷加载 probe 还确认登录后 750ms 采样期内
+仍可得到 `rowCount=0, visibleRows=0`，首个 wheel 后约 90ms 才出现 `rowCount=9,
+visibleRows=2`。
+
+裁决：fae8b70 旧基线不空，故不把 oracle 改成“先等 readable row 再测 reveal”，也不删
+当前真正的 reveal 无空帧断言。当前首断点是产品真实冷加载/首帧 materialization 与旧
+fixture 的可读初始面差异；case 2 红测继续交 reading/presentation owner。
+
 ## Boundary audit
 
 - This partition edits only the G–M `tests/browser` specs and this `audit-output` report. No
