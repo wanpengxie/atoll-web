@@ -130,7 +130,6 @@ export function useAttachmentTransactions({
   activeChannelId,
   activeChannelRef,
   accessRef,
-  deviceActionsRef,
   obsRef,
   directoryVersion,
   draftFor,
@@ -342,13 +341,6 @@ export function useAttachmentTransactions({
       finishRequest(deviceRequestRef, request);
     }
   }, [activeChannel, activeChannelRef, beginRequest, finishRequest, obsRef]);
-
-  useLayoutEffect(() => {
-    deviceActionsRef.current.refresh = refreshDevices;
-    return () => {
-      if (deviceActionsRef.current.refresh === refreshDevices) deviceActionsRef.current.refresh = async () => [];
-    };
-  }, [deviceActionsRef, refreshDevices]);
 
   const refreshDirectory = useCallback(async ({
     channelId = activeChannelRef.current,
