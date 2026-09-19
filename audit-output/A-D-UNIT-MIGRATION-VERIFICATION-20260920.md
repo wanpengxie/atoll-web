@@ -15,10 +15,11 @@ AD-316 remains an explicit blocked red reproduction: the current
 authoritative refresh after terminal.
 
 The first P1 composed-interaction batch adds public-owner red reproductions for
-AD-014 and AD-017 through `WaitingLayer`: processing exposes an edit affordance
-before the target's queued+resumed fact, and an overlaid edit hold loses the
-underlying interrupt pause after release/expiry. Both remain red product-gap
-assertions; no feed runtime or product code was changed.
+AD-014 and AD-017 through the Waiting composition: the timeline edit action
+hands processing work to the Composer before the target's queued+resumed fact,
+and an overlaid edit hold loses the underlying interrupt pause after
+release/expiry. Both remain red product-gap assertions; no feed runtime or
+product code was changed.
 
 ## Public-boundary migration completed in this pass
 

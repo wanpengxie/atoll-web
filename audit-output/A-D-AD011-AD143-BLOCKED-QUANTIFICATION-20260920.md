@@ -122,7 +122,7 @@ auditable:
 
 | Baseline source | Count | Rows |
 |---|---:|---|
-| `agent-control.test.js` | 0 | `AD-014`, `AD-017` now have public WaitingLayer red fixtures (`tests/agent-control.test.jsx:57,102`) and are ledger REGRESSION |
+| `agent-control.test.js` | 0 | `AD-014`, `AD-017` now have public Waiting-composition red fixtures (`tests/agent-control.test.jsx:110,171`) and are ledger REGRESSION |
 | `agent-information-architecture.test.jsx` | 4 | `AD-027`, `AD-034`, `AD-037`, `AD-039` |
 | `agent-selection.test.js` | 0 | `AD-057`, `AD-058` recovered in `tests/agent-selection.test.js:150,163` |
 | `app-agent-probe-lifecycle.test.jsx` | 1 | `AD-074` |

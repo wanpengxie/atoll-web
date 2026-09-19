@@ -123,7 +123,7 @@ faithful public fixture, without claiming any row is obsolete.
 - **P0 remaining (1):** `AD-316`; the current `SpaceDevices` owner submits the
   command but does not call an authoritative refresh after terminal.
 - **P1 recovered as public red fixtures (2):** `AD-014`, `AD-017`, both in
-  `tests/agent-control.test.jsx:57,102`; they are ledger `REGRESSION` product-gap
+  `tests/agent-control.test.jsx:110,171`; they are ledger `REGRESSION` product-gap
   packets, not remaining `FIXTURE_MISSING` rows.
 - **P1 remaining (28):** `AD-027`, `AD-034`, `AD-037`, `AD-039`;
   `AD-074`; `AD-191`–`AD-197`; `AD-327`–`AD-329`, `AD-331`, `AD-333`–`AD-338`,

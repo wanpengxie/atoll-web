@@ -10,9 +10,10 @@
 //     模型，没有逐帧重新校验锁合法性的live re-derivation
 // 判定逐条记在 audit-output/RESTORE-MATRIX.md。
 import React from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WaitingLayer } from '../src/ui/timeline/useWaitingEditingController.jsx';
+import { WaitingLayer, useWaitingEditingController } from '../src/ui/timeline/useWaitingEditingController.jsx';
+import { useTimelineRowRenderer } from '../src/ui/timeline/TimelineRowRenderer.jsx';
 
 afterEach(cleanup);
 
@@ -53,11 +54,64 @@ const EDIT_CAPABILITY = new Map([['agent', {
   ]) },
 }]]);
 
+function PublicEditingHarness({ state, turn: target, onTaskControl, onComposerEditChange }) {
+  const {
+    presentationEditing,
+    queuedTurns,
+    startEditing,
+  } = useWaitingEditingController({
+    state,
+    pending: [],
+    capabilityIndex: EDIT_CAPABILITY,
+    onRequestCapability: vi.fn(),
+    onTaskControl,
+    onComposerEditChange,
+  });
+  const { renderRow } = useTimelineRowRenderer({
+    state: { ...state, narration: state.narration || [] },
+    names: new Map([['agent', 'Agent'], ['me', '我']]),
+    selfId: 'me',
+    access: 'member_active',
+    targetAuthority: { current: true, actorIDs: new Set(['agent']) },
+    presentationEditing,
+    browsingExpandedSlots: new Set(),
+    effectiveFoldOverrides: new Map(),
+    approvalStates: {},
+    onTaskControl,
+    startEditing,
+  });
+  const row = {
+    id: target.requestId,
+    seqLow: target.requestSeq,
+    seqHigh: target.requestSeq,
+    contentRevision: 1,
+    visualSlotID: target.requestId,
+    body: { kind: 'turn', turn: target, thread: [] },
+  };
+  return <>
+    {renderRow(row)}
+    <WaitingLayer
+      turns={queuedTurns}
+      state={state}
+      names={new Map([['agent', 'Agent']])}
+      selfId="me"
+      access="member_active"
+      targetAuthority={{ current: true, actorIDs: new Set(['agent']) }}
+      capabilityIndex={EDIT_CAPABILITY}
+      editing={presentationEditing}
+      onCancel={vi.fn()}
+      onControl={({ requestId }) => onTaskControl({ channelId: state.channelId, turn: { requestId }, actorId: 'agent', type: 'agent.hold', payload: {} })}
+      onEdit={startEditing}
+    />
+  </>;
+}
+
 describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承接旧 agentFrozenState）', () => {
-  it('[AD-014] waits for the processing target own queued-resumed fact before opening edit', () => {
+  it('[AD-014] waits for the processing target own queued-resumed fact before opening edit', async () => {
     // 用户能力：用户只能编辑仍处于等待队列、且已被 hold 接纳为 resumed 的请求。
-    // 不变量：processing 期间不提前露出编辑入口；queued+resumed 到账后才由当前
-    // 公开 WaitingLayer owner 把编辑动作交给上层 onEdit。
+    // 不变量：processing 期间不应完成编辑会话；queued+resumed 到账后才由当前
+    // 公开组合 owner（TimelineRowRenderer → useWaitingEditingController →
+    // WaitingLayer/Composer port）交接编辑。
     const processingFrame = {
       seq: 2,
       envelope: {
@@ -69,12 +123,21 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
       requestId: 'work', actorId: 'agent', type: 'agent.ask', requestSeq: 1,
       provisional: [processingFrame],
     });
-    const onEdit = vi.fn();
+    const onTaskControl = vi.fn(async ({ type }) => type === 'agent.hold' ? 'hold-work' : `${type}-id`);
+    const onComposerEditChange = vi.fn();
     const stateBefore = { channelId: 'c0', rows: new Map(), timeline: timeline([processingTarget]) };
-    const view = render(<WaitingLayer {...baseProps({
-      turns: [processingTarget], state: stateBefore, capabilityIndex: EDIT_CAPABILITY, onEdit,
-    })} />);
-    const earlyEdit = screen.queryByRole('button', { name: '编辑' });
+    const view = render(<PublicEditingHarness
+      state={stateBefore}
+      turn={processingTarget}
+      onTaskControl={onTaskControl}
+      onComposerEditChange={onComposerEditChange}
+    />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const editingBeforeResume = onComposerEditChange.mock.calls.find(([value]) => value?.session)?.[0] || null;
 
     const resumedFrame = {
       seq: 5,
@@ -88,15 +151,21 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
       provisional: [processingFrame, resumedFrame],
     });
     const stateAfter = { channelId: 'c0', rows: new Map(), timeline: timeline([resumedTarget]) };
-    view.rerender(<WaitingLayer {...baseProps({
-      turns: [resumedTarget], state: stateAfter, capabilityIndex: EDIT_CAPABILITY, onEdit,
-    })} />);
-    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    view.rerender(<PublicEditingHarness
+      state={stateAfter}
+      turn={resumedTarget}
+      onTaskControl={onTaskControl}
+      onComposerEditChange={onComposerEditChange}
+    />);
+    const editingAfterResume = onComposerEditChange.mock.lastCall?.[0] || null;
 
-    // 当前公开 owner 仍按 controls 直接显示 processing 编辑入口；保留这个红项，
-    // 让产品缺口可由用户路径复现，不在测试中绕过 owner 或修产品。
-    expect(earlyEdit).toBeNull();
-    expect(onEdit).toHaveBeenCalledWith(resumedTarget, 'agent');
+    // 当前公开 owner 在 processing 编辑点击后立即发 hold 并交接 Composer，
+    // 没有等 queued+resumed 事实；这是首个产品分歧，保留红断言而不绕过 owner。
+    expect({
+      beforeResume: Boolean(editingBeforeResume?.session),
+      afterResume: Boolean(editingAfterResume?.session),
+      holdTarget: onTaskControl.mock.calls.find(([value]) => value.type === 'agent.hold')?.[0]?.turn?.requestId,
+    }).toEqual({ beforeResume: false, afterResume: true, holdTarget: 'work' });
   });
 
   it('[AD-017] restores the interrupt pause after an overlaid edit hold is released or expires', () => {
