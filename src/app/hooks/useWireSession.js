@@ -349,9 +349,8 @@ function writeRoute(channelId, view, replace = false) {
 // Authentication is part of the wire session lifetime. Keeping it here makes
 // logout/401 a principal boundary for every owner mounted by WorkspaceApp.
 export function useIdentitySession({ onError = () => {} } = {}) {
-  const cachedRef = useRef(readCachedPrincipal());
-  const [booting, setBooting] = useState(!cachedRef.current);
-  const [principal, setPrincipal] = useState(cachedRef.current);
+  const [booting, setBooting] = useState(true);
+  const [principal, setPrincipal] = useState(null);
   const identityRef = useRef(null);
   if (identityRef.current === null) identityRef.current = createIdentityClient();
 
@@ -359,8 +358,12 @@ export function useIdentitySession({ onError = () => {} } = {}) {
     let current = true;
     void identityRef.current.session().then((session) => {
       if (!current) return;
-      const value = cachedRef.current?.id === session.id
-        ? cachedRef.current
+      // Cached identity is display metadata only. Never publish a principal
+      // (and therefore mount its workspace owners) before the server session
+      // has authenticated that same principal.
+      const cached = readCachedPrincipal();
+      const value = cached?.id === session.id
+        ? cached
         : { id: session.id, display_name: session.display_name || '' };
       rememberCachedPrincipal(value);
       setPrincipal(value);
@@ -528,7 +531,6 @@ export function useWireConnection({
   finishHistoryPage,
   finishLiveCheckpoint,
   onServerWorld,
-  onSession,
   onWorldChanged,
   port,
   prepareLocalReplica,
@@ -687,7 +689,6 @@ export function useWireConnection({
           setState('incompatible');
           setIncompatible((current) => current || detail || {});
         } else if (state === 'attached') {
-          onSession({ id: detail?.session || '', label: detail?.session_label || '' });
           agentActivityRef.current.attach(detail);
           access.wire('attached', newId());
           if (Array.isArray(detail?.memberships)) {
@@ -745,7 +746,7 @@ export function useWireConnection({
       accessRef.current = null;
       wireRef.current = null;
     };
-  }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, cancelFeedTask, clearRoster, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onSession, onWorldChanged, prepareLocalReplica, principalId, reconcileIdentity, resetSubmissionWorld, resumeLocalReplica, rosterRef, seedRoster, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
+  }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, cancelFeedTask, clearRoster, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onWorldChanged, prepareLocalReplica, principalId, reconcileIdentity, resetSubmissionWorld, resumeLocalReplica, rosterRef, seedRoster, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
 
   return accessRefreshActionsRef;
 }
