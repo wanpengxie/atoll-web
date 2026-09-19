@@ -33,7 +33,11 @@ AD-098, AD-154, and AD-191 moved to PASS; the subsequent shell owner
 navigation evidence packet; its one green assertion is the same newly closed
 AD-101 owner and the other 19 remain explicit expected-fail evidence. The
 current ledger total is therefore **77 BLOCKED** (**288 PASS / 0 REGRESSION /
-77 BLOCKED**); no row is obsolete, deleted, or skipped.
+77 BLOCKED**); no row is obsolete, deleted, or skipped. Round 20 adds the
+next 20 previously-uncovered rows through public Waiting and Feed owners;
+AD-163, AD-168, AD-169, AD-171, AD-172, and AD-173 move to PASS. The current
+ledger is **71 BLOCKED** (**294 PASS / 0 REGRESSION / 71 BLOCKED**), with no
+row judged obsolete, deleted, or skipped.
 
 ## Minimal regression packets
 
@@ -109,33 +113,35 @@ verification is **2 files passed; 13 tests passed; 0 assertions red**, with
 focused `[AD-011]` and `[AD-143]` runs both green. No test-only branch, skip,
 weakened expectation, or product change was introduced by this packet.
 
-## Quantification of the original 116 BLOCKED rows and current 77 remainder
+## Quantification of the original 116 BLOCKED rows and current 71 remainder
 
 The classification is an evidence triage, not a verdict on product scope:
 
 | Category | Count | Rule |
 |---|---:|---|
-| 缺 owner (`OWNER_MISSING`) | 10 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. |
-| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 62 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Nine P0 rows, two P1 rows, six round-15 terminal rows, 17 round-16 rows, and five round-18 rows now have public PASS fixtures. |
-| 真实能力缺口 (`CAPABILITY_GAP`) | 5 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. |
-| **Total** | **77** | Nine P0 rows, two P1 rows, six round-15 terminal rows, 17 round-16 public-owner rows, and five round-18 public-owner rows now PASS; the remaining rows retain explicit blocked evidence. |
+| 缺 owner (`OWNER_MISSING`) | 12 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. Round 20 adds AD-165/166 for channel-entry/reconnect freshness interests. |
+| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 49 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Six Round 20 rows now have public PASS fixtures and five startup rows remain fixture/owner proof gaps. |
+| 真实能力缺口 (`CAPABILITY_GAP`) | 10 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. Round 20 adds AD-157/158/167/170/182. |
+| **Total** | **71** | The remaining rows retain explicit blocked evidence; no row is obsolete, deleted, or skipped. |
 
-### `OWNER_MISSING` — 10 rows
+### `OWNER_MISSING` — 12 rows
 
 | Baseline source | Rows | Evidence boundary |
 |---|---:|---|
 | `channel-create-modal.test.jsx` | 6 | `AD-149`–`AD-153`, `AD-155`; `GovernanceFeature` has an adjacent create panel but no independent owner for the baseline four-step modal contract. AD-154 now has a green public draft/failure/retry fixture. |
 | `control-actions.test.js` | 2 | `AD-256`–`AD-257`; no principal-scoped durable control-recovery owner. |
 | `dynamic-form.test.js` | 2 | `AD-363`–`AD-364`; no public JSON-Schema/control-form owner for typed control payloads. |
+| `channel-feed-startup.test.jsx` | 2 | `AD-165`–`AD-166`; no public channel-entry/reconnect/foreground freshness-interest owner. |
 
-### `CAPABILITY_GAP` — 5 rows
+### `CAPABILITY_GAP` — 10 rows
 
 | Baseline source | Rows | Evidence boundary |
 |---|---:|---|
 | `activity.test.js` | 3 | `AD-002`–`AD-004`; cross-channel Operation index/Center is absent. Search, task, and artifact owners are not an equivalent operation index. |
 | `channel-list.test.jsx` | 2 | `AD-202`–`AD-203`; current `VersionIncompatible` is a protocol terminal, not a node-version/update capability, and no node-update port/UI is mounted. |
+| `channel-feed-startup.test.jsx` | 5 | `AD-157`, `AD-158`, `AD-167`, `AD-170`, `AD-182`; the current public Feed/Replica boundary shows the stale/revoked cache or trim behavior directly diverges from the baseline capability. |
 
-### `FIXTURE_MISSING` — 63 rows
+### `FIXTURE_MISSING` — 49 rows
 
 These rows have a named current owner and an evidence successor, but the
 successor is not yet a one-to-one public fixture for the baseline scenario.
@@ -151,12 +157,12 @@ auditable:
 | `app-shell-terminal-split.test.jsx` | 6 | `AD-093`, `AD-097`, `AD-099`, `AD-105`–`AD-106`, `AD-108`; AD-096/098/101 now have green public fixtures in `tests/blocked-round18-public-owner.test.jsx`, alongside AD-094/095/100/102/104/107 in `tests/blocked-round15-terminal-owner.test.jsx` |
 | `atoll-session.test.jsx` | 0 | `AD-125`–`AD-127` recovered in `tests/atoll-session.test.jsx:26,43,60` |
 | `capabilities.test.js` | 0 | `AD-138`–`AD-141` recovered in `tests/agent-describe-capability-index.test.jsx:49,83,124,145` |
-| `channel-feed-startup.test.jsx` | 18 | `AD-156`–`AD-161`, `AD-163`, `AD-165`–`AD-173`, `AD-178`, `AD-182` |
+| `channel-feed-startup.test.jsx` | 5 | `AD-156`, `AD-159`–`AD-161`, `AD-178`; the Round 20 public boundary remains unable to supply the exact cached-context/Meta/body/arrival proof. |
 | `channel-governance.test.js` | 6 | `AD-192`–`AD-197`; AD-191 now has a green public governance filter fixture in `tests/blocked-round18-public-owner.test.jsx` |
 | `cursors.test.js` | 27 | `AD-277`–`AD-278`, `AD-282`–`AD-304`, `AD-306`–`AD-307` |
 | `devices-panel.test.jsx` | 1 | `AD-316` |
 | `dynamic-f3.test.jsx` | 2 | `AD-331`, `AD-334`; AD-327–329/333/335–338/340–343/350–351 now have green public presentation/Composer fixtures in `tests/blocked-round16-public-owner.test.jsx` |
-| **Total** | **62** | Nine P0 rows, AD-014/017, six round-15 terminal rows, 17 round-16 public-owner rows, and five round-18 public-owner rows now PASS; AD-316 and the remaining terminal/governance rows remain blocked with public reproductions. |
+| **Total** | **49** | Six Round 20 Feed rows moved to PASS; the remaining rows retain explicit blocked evidence. |
 
 The remaining categories above retain their ledger `BLOCKED` status. AD-014 and
 AD-017 no longer count as fixture-missing: their public-owner fixtures are
@@ -221,6 +227,36 @@ AD-101 is the sole green assertion through the already landed mobile-surface
 owner. The other 19 rows remain BLOCKED at their current public boundaries;
 the ledger is **288 PASS / 0 REGRESSION / 77 BLOCKED**. Activity/Operation
 AD-002–004 remain unchanged and no product owner was invented for them.
+
+## Round 20 evidence packet
+
+Round 20 selected the next 20 previously-uncovered rows through public
+Waiting and ChannelFeedRuntime owners:
+AD-027, AD-037, AD-156–AD-161, AD-163, AD-165–AD-173, AD-178, and AD-182.
+The focused command was:
+
+```text
+npx vitest run tests/blocked-round20-public-owner.test.jsx --reporter=dot
+
+Test Files  1 passed (1)
+Tests       6 passed | 14 expected fail (20)
+```
+
+Green rows are AD-163, AD-168, AD-169, AD-171, AD-172, and AD-173. The
+expected-fail rows remain BLOCKED and are split in the current quantification
+as follows:
+
+- `OWNER_MISSING`: AD-165/166 have no public channel-entry/reconnect/
+  foreground freshness-interest owner.
+- `CAPABILITY_GAP`: AD-157/158/167/170/182 reproduce stale/revoked cache or
+  missing trim/compact-closure behavior at the current Feed/Replica boundary.
+- `FIXTURE_MISSING`: AD-027/037/156/159/160/161/178 retain the named public
+  owner but lack a one-to-one public proof for the baseline context/Reading/
+  Meta/body contract.
+
+The ledger is now **294 PASS / 0 REGRESSION / 71 BLOCKED**. No expected-fail
+case was promoted, deleted, skipped, or judged obsolete; product gaps were
+returned as minimal reproductions without a cross-owner edit.
 
 ## Boundary audit
 

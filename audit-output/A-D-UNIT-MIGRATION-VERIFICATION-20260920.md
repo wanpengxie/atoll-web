@@ -25,6 +25,13 @@ mobile message-surface fact. The other 15 rows remain explicit expected-fail
 evidence for missing dialog/convergence/rollback owners. The current ledger is
 therefore **288 PASS / 0 REGRESSION / 77 BLOCKED**.
 
+Round 20 adds the next 20 previously-uncovered blocked rows through the public
+Waiting and ChannelFeedRuntime boundaries. AD-163, AD-168, AD-169, AD-171,
+AD-172, and AD-173 now have green public evidence; AD-027, AD-037,
+AD-156–AD-161, AD-165–AD-167, AD-170, AD-178, and AD-182 remain explicit
+expected-fail evidence. The current ledger is **294 PASS / 0 REGRESSION /
+71 BLOCKED**.
+
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
 AD-316 remains an explicit blocked red reproduction: the current
@@ -160,6 +167,34 @@ after this packet is **288 PASS / 0 REGRESSION / 77 BLOCKED**.
 No source, package, lockfile, flat/cache, Reading, Composer, or private export
 was changed by this round.
 
+## Round 20 blocked-evidence recovery
+
+Round 20 selected the next 20 previously-uncovered rows: AD-027, AD-037,
+AD-156–AD-161, AD-163, AD-165–AD-173, AD-178, and AD-182. The independent
+public-owner fixture is
+[`tests/blocked-round20-public-owner.test.jsx`](../tests/blocked-round20-public-owner.test.jsx).
+It drives Waiting through `useWaitingEditingController`/`WaitingLayer` and
+startup through `ChannelFeedRuntime`/`ChannelReplica`; it does not import a
+retired fold/store or export a private helper.
+
+Focused result:
+
+```text
+npx vitest run tests/blocked-round20-public-owner.test.jsx --reporter=dot
+
+Test Files  1 passed (1)
+Tests       6 passed | 14 expected fail (20)
+```
+
+AD-163, AD-168, AD-169, AD-171, AD-172, and AD-173 are promoted to PASS in
+the ledger. AD-027, AD-037, AD-156–AD-161, AD-165–AD-167, AD-170, AD-178,
+and AD-182 remain BLOCKED. Expected-fail assertions are unresolved evidence,
+not completion, deletion, skip, or an obsolete-case decision. Product gaps
+are handed back at the first public boundary; no Feed, Reading, Workspace,
+vendor, package, lockfile, or product source was changed in this packet.
+
+The ledger after Round 20 is **294 PASS / 0 REGRESSION / 71 BLOCKED**.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -211,6 +246,8 @@ The focused slices were run with Vitest against current public owners:
 | `tests/blocked-round16-public-owner.test.jsx tests/blocked-round15-activity-owner.test.js` | 18 passed, 3 expected fail, 21 total | 17 new public-owner rows pass; AD-002–004 remain explicit Operation-index owner gaps |
 | `tests/blocked-round18-public-owner.test.jsx` | 5 passed, 15 expected fail, 20 total | AD-096/098/101/154/191 pass through current public shell/governance owners; the other 15 remain explicit target/create/convergence owner gaps |
 | `tests/blocked-round19-public-owner.test.jsx` | 1 passed, 19 expected fail, 20 total | AD-101 re-verifies the mobile message-surface owner; the remaining navigation/create/convergence/control rows remain explicit gaps |
+| `tests/blocked-round20-public-owner.test.jsx` | 6 passed, 14 expected fail, 20 total | AD-163/168/169/171/172/173 pass through public Feed/Replica owners; the remaining Waiting/startup rows retain fixture, owner, or capability-gap evidence |
+| Round 15–20 blocked packets combined | 42 passed, 59 expected fail, 101 total | seven packet files remain green as suites; expected-fail rows are unresolved evidence and are not counted as completion |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; no registered regression case red | AD-011 and AD-143 are closed through their existing public owners; no AD-123 `it.fails` case remains |
 
 Historical red assertions were not weakened, skipped, or deleted; their public
@@ -240,6 +277,11 @@ scope), not to the 42-suite A–D baseline ledger.
   A–D evidence/ledger reports. It does not touch Search, Reading, cache,
   Activity/Operation, product code, vendor, package, lockfile, or private
   exports. The 19 expected-fail assertions remain BLOCKED.
+- Round 20 changes only `tests/blocked-round20-public-owner.test.jsx` and
+  A–D evidence/ledger reports. It exercises public Waiting and Feed/Replica
+  boundaries without modifying Feed, Reading, Workspace, vendor, package,
+  lockfile, or private exports; the 14 expected-fail assertions remain
+  BLOCKED and the six green rows are recorded individually.
 - No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
