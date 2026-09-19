@@ -912,8 +912,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     space: {
       disabled: true,
       unsupported: '当前 wire/session 没有空间治理结果投影；此版本仅展示 OBS 目录，不会伪造成功。',
-      actorTemplates: directory.declarations,
-      channelTemplates: EMPTY_ARRAY,
       devices: directory.devices.map((device) => ({
         ...device,
         attached: attachments.devices.some((row) => row.id === device.id),
