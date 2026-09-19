@@ -7,6 +7,11 @@ import {
   requestAccessError,
 } from '../../model/request-owner.js';
 import { createPersistenceEpochFence } from '../../model/sync-session.js';
+import {
+  assertControlAccess,
+  createControlCommand,
+  isAgentControlType,
+} from '../../model/control-command.js';
 import { newId } from '../../util/id.js';
 import { createSubmissionCorrelationPort } from './submission-correlation-port.js';
 
@@ -84,6 +89,7 @@ export function useComposerSubmissionRuntime({
   const acceptingRef = useRef(new Map());
   const landedRef = useRef(new Set());
   const submissionCorrelationPortRef = useRef(null);
+  const ownedControlRequestsRef = useRef(new WeakSet());
   if (!submissionCorrelationPortRef.current) {
     submissionCorrelationPortRef.current = createSubmissionCorrelationPort();
   }
@@ -142,6 +148,7 @@ export function useComposerSubmissionRuntime({
         relationship: String(observedAccess?.relationship || ''),
         existence: String(observedAccess?.existence || ''),
         runtime: String(observedAccess?.runtime || ''),
+        freshness: String(observedAccess?.freshness || ''),
         unavailable: observedAccess?.unavailable === true,
       },
       transport: wireRef?.current || null,
@@ -447,11 +454,22 @@ export function useComposerSubmissionRuntime({
 
   const sendOnce = useCallback(async (request = {}) => {
     const requests = request.batch?.length ? request.batch : [request];
+    const agentControls = requests.filter((row) => isAgentControlType(row?.msgType || row?.type));
+    if (agentControls.some((row) => !ownedControlRequestsRef.current.has(row))) {
+      const error = new TypeError('Agent 控制命令必须经过 control owner');
+      error.code = 'control_owner_required';
+      throw error;
+    }
     const channelId = request.channelId || requests[0]?.channelId || activeChannelId;
     if (!channelId) throw new TypeError('请先选择频道');
     const channels = new Set(requests.map((row) => row.channelId || channelId));
     const owners = [...channels].map((id) => captureOwner(id));
-    for (const owner of owners) authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
+    for (const owner of owners) {
+      authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
+      for (const command of agentControls.filter((row) => (row.channelId || channelId) === owner.channelId)) {
+        assertControlAccess(command, currentFacts(owner));
+      }
+    }
     const timestamp = Date.now();
     let submissions = requests.map((row) => {
       const id = row.messageId || newId();
@@ -526,7 +544,7 @@ export function useComposerSubmissionRuntime({
     }
     const values = submissions.map((row) => row.messageId);
     return request.batch?.length ? values : values[0];
-  }, [activeChannelId, authorize, captureOwner, onError, publishDrafts, publishPending, wireRef]);
+  }, [activeChannelId, authorize, captureOwner, currentFacts, onError, publishDrafts, publishPending, wireRef]);
 
   const send = useCallback((request = {}) => {
     if (request.draftRevision == null) return sendOnce(request);
@@ -548,6 +566,15 @@ export function useComposerSubmissionRuntime({
     acceptingRef.current.set(key, operation);
     return operation;
   }, [activeChannelId, sendOnce]);
+
+  // All control callers converge here.  The canonical request is retained in
+  // a private WeakSet so a copied request cannot re-enter through `send` and
+  // bypass control-specific authorization.
+  const control = useCallback((request = {}) => {
+    const command = createControlCommand(request);
+    if (isAgentControlType(command.msgType)) ownedControlRequestsRef.current.add(command);
+    return send(command);
+  }, [send]);
 
   const retry = useCallback(async (value) => {
     const submission = typeof value === 'string'
@@ -700,7 +727,7 @@ export function useComposerSubmissionRuntime({
     approvalStates,
     controlStates,
     send,
-    control: send,
+    control,
     retry,
     resolve,
     cancel,
@@ -708,5 +735,5 @@ export function useComposerSubmissionRuntime({
     resetWorld,
     clear,
     accepting: acceptingChannels.has(activeChannelId),
-  }), [activeChannelId, acceptingChannels, approvalStates, cancel, clear, controlStates, draftFor, drafts, pending, persistDraftAttachments, reconcileFeed, resetWorld, resolve, retry, send, submissionCorrelationPort, updateDraft]);
+  }), [activeChannelId, acceptingChannels, approvalStates, cancel, clear, control, controlStates, draftFor, drafts, pending, persistDraftAttachments, reconcileFeed, resetWorld, resolve, retry, send, submissionCorrelationPort, updateDraft]);
 }

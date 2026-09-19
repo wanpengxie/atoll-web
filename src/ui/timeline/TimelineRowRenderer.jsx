@@ -482,7 +482,14 @@ export function useTimelineRowRenderer({ state, names, selfId, access = '', targ
     else if (entry?.kind === 'turn') content = <TurnCard turn={{ ...entry.turn, thread: entry.thread || [] }} names={names} selfId={selfId} access={access} targetAuthority={targetAuthority} fold={rowFold} approvalState={approvalStates?.[entry.turn.request.id]} editing={presentationEditing}
       onResolve={port?.onResolve ? (requestID, decision, payload) => port.onResolve(state.channelId, requestID, decision, payload) : undefined}
       onCancel={port?.onCancel ? (requestID) => port.onCancel(state.channelId, requestID) : undefined}
-      onControl={port?.onTaskControl ? (turn, actorId, type, payload) => port.onTaskControl({ channelId: state.channelId, turn, actorId, type, payload }) : undefined}
+      onControl={port?.onTaskControl ? (turn, actorId, type, payload) => port.onTaskControl({
+        channelId: state.channelId,
+        turn,
+        actorId,
+        type,
+        payload,
+        controlContext: { source: 'timeline', turn, targetAuthority },
+      }) : undefined}
       onEdit={port?.startEditing}
       onDownload={port?.onDownloadResource ? (attachment) => port.onDownloadResource(state.channelId, attachment) : undefined}
       onPreview={port?.onPreviewResource ? (attachment) => port.onPreviewResource(state.channelId, attachment) : undefined}

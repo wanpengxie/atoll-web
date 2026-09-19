@@ -63,11 +63,12 @@ function commandOwner(config, model) {
     }
     return persist(next);
   };
-  const control = (type, payload, actorId = '') => {
+  const control = (type, payload, actorId = '', controlContext = null) => {
     requireChannel();
     if (!model.permissions.canTransmit) throw new TypeError('连接可用后才能发送 Agent 控制命令');
     if (typeof submission.control !== 'function') throw new TypeError('Agent 控制 owner 未连接');
-    return submission.control(createControlRequest(model, type, payload, actorId));
+    const request = createControlRequest(model, type, payload, actorId);
+    return submission.control(controlContext ? { ...request, controlContext } : request);
   };
   const performSend = async ({ readingIntent = null, draft: draftSnapshot = null } = {}) => {
     requireChannel();
@@ -225,7 +226,11 @@ function commandOwner(config, model) {
     },
     interrupt(value = {}) {
       const input = typeof value === 'string' ? { actorId: value } : value;
-      return control(TYPES.agentInterrupt, {}, input.actorId || model.editSession?.actorId);
+      const actorId = input.actorId || model.editSession?.actorId;
+      const controlContext = input.controlContext || (input.turn || input.targetAuthority
+        ? { source: 'composer', turn: input.turn, targetAuthority: input.targetAuthority }
+        : null);
+      return control(TYPES.agentInterrupt, {}, actorId, controlContext);
     },
     retry(value = model.failure) {
       if (typeof submission.retry !== 'function') throw new TypeError('重试 owner 未连接');

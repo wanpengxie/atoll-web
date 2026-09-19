@@ -1,5 +1,6 @@
 import { argsOf } from '../protocol/envelope.js';
 import { TYPES, isSystemWord } from '../protocol/vocab.js';
+import { createControlCommand } from './control-command.js';
 import { terminalResultPayload, terminalResultState } from './terminal-result.js';
 
 const ACTIVE_STATES = new Set(['active', 'waiting', 'blocked', 'uncertain', 'queued', 'running', 'held']);
@@ -79,14 +80,22 @@ export function createFeatureWaitingControlSubmission({ item, type, intent = 'si
   else if (type === FEATURE_WAITING_CONTROL.steer) {
     payload = intent === 'all' ? { all: true } : { target: requestId };
   } else throw new TypeError('该控制词尚无可靠的请求构造器');
-  return Object.freeze({
+  const request = {
     channelId,
     text: '',
     msgType: type,
     audience: Object.freeze([actorId]),
     targetLabel: String(targetLabel || actorId),
     payload: Object.freeze(payload),
-  });
+  };
+  if (type === FEATURE_WAITING_CONTROL.interrupt) {
+    request.controlContext = {
+      source: 'feature',
+      turn: item.turn,
+      ...(item.targetAuthority ? { targetAuthority: item.targetAuthority } : {}),
+    };
+  }
+  return createControlCommand(request);
 }
 
 function timelineTurns(timeline = []) {

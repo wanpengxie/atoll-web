@@ -73,6 +73,20 @@ describe('任务区从 ChannelReplica 投影等待控制', () => {
       audience: [AGENT_ID],
       targetLabel: AGENT_ID,
       payload: {},
+      controlContext: {
+        source: 'feature',
+        targetAuthority: null,
+        turn: {
+          requestId: 'request-1',
+          requestType: 'agent.ask',
+          audience: [AGENT_ID],
+          terminal: false,
+          local: false,
+          status: 'processing',
+          controls: ['agent.steer', 'agent.interrupt'],
+          actorId: AGENT_ID,
+        },
+      },
     });
   });
 

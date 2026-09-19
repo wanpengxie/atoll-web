@@ -210,6 +210,7 @@ describe('processing 态的"停止"按钮权限与 capability 门', () => {
     fireEvent.click(stopButton);
     expect(onTaskControl).toHaveBeenCalledWith(expect.objectContaining({
       channelId: 'c1', actorId: 'agent', type: 'agent.interrupt', payload: {},
+      controlContext: expect.objectContaining({ source: 'timeline', targetAuthority: CURRENT_AUTHORITY }),
     }));
   });
 
