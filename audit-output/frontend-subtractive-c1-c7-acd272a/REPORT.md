@@ -1,6 +1,11 @@
-# C1–C7 subtractive acceptance baseline
+# C1–C7 subtractive acceptance report
 
-Baseline: `acd272a9b44542771da9ed0307d1bdacae38a7f6`
+Original baseline: `acd272a9b44542771da9ed0307d1bdacae38a7f6`.
+
+Current source inventory: `c3952b56196f30782eda25811e22a9c012c77bae`.
+C4's retired input-resize protocol is deleted at `37618af`; canonical envelope
+fixtures are current at `c3952b5`. No test result substitutes for the owner
+boundary review below.
 
 Source contract: `docs/FRONTEND-SUBTRACTIVE-AUDIT.md`.
 
@@ -8,21 +13,78 @@ This is an acceptance checker, not a refactor prescription. Moving code into
 new files does not pass a gate if the old owner, storage key, lifecycle, or
 write path remains reachable.
 
-## Run
+## Run the current review
 
 From the repository root:
 
 ```sh
-test "$(git rev-parse HEAD)" = acd272a9b44542771da9ed0307d1bdacae38a7f6
 node audit-output/frontend-subtractive-c1-c7-acd272a/check-architecture.mjs \
   > audit-output/frontend-subtractive-c1-c7-acd272a/result.json
 ```
 
-The first command pins this baseline. After merge, omit the first command and
-record the tested commit beside `result.json`. The checker exits non-zero until
-all static hard gates pass. A zero exit is necessary, not sufficient: the
-owner ledger and lifecycle checks below are mandatory because regex/import
-checks cannot prove that two mutable stores are merely cache and projection.
+Record `git rev-parse HEAD` beside the JSON. The checker is a deny-list and
+graph inventory. A zero exit is necessary, not sufficient: it cannot prove
+that two mutable objects are merely authority and projection. Conversely, a
+regex hit on the one commanded DOM executor is not proof of a second semantic
+scroll owner. The owner ledger and lifecycle checks below decide that boundary.
+
+## Current source result at `c3952b5`
+
+- Production reachability: **PASS**, 187/187 modules reachable.
+- Dependency cycles: **PASS**, no strongly connected component larger than one.
+- Compatibility deny-list: **PASS**, no B1–B8/B11 hits; B9 canonical-body and
+  B10 exact-schema fail-closed assertions both pass.
+- Product source: 35,170 lines. Against local `master`, 66 files changed,
+  `+7,319 / -7,861`, net `-542` lines.
+- New production owner/port modules: 24 files / 6,287 lines. Entire deleted
+  production modules: 2 files / 240 lines; most deletion occurred inside
+  surviving former monoliths.
+- Tests: 79 changed files, `+902 / -4,246`.
+- Vendor final shape: one package, one reproducible patch, `LICENSE`, `README`.
+
+Current core shape:
+
+| Module | Lines | Direct production imports | Hooks/refs/state calls |
+|---|---:|---:|---:|
+| `history-scheduler.js` | 1,832 | 4 | 0 React hooks |
+| `LegendMessageList.jsx` | 1,688 | 8 | 79 |
+| `App.jsx` | 1,355 | 46 | 94 |
+| `useReadingSession.js` | 1,281 | 10 | 36 |
+| `channel-feed-runtime.js` | 1,266 | — | non-React runtime |
+| `Composer.jsx` | 1,167 | — | UI owner |
+| `useSubmissions.js` | 973 | 7 | 50 |
+| `TimelineRowRenderer.jsx` | 763 | — | row presentation |
+
+The eight largest modules contain 10,325 lines, 29.4% of production code
+(baseline: 14,558 lines / 41%). These numbers describe review surface only;
+they do not prove ownership.
+
+## C1–C7 current status and invariants
+
+| Gate | Status | Authoritative mutable object | Only writers / accepted edge | Required invariant |
+|---|---|---|---|---|
+| C1 App composition | **implemented** | Wire/session port; roster owner; attachment transaction owner; agent-probe lifecycle; feed runtime; submission owner | Each named hook/runtime writes its own lifecycle; App only commits/replaces ports and shell state | A late result is accepted only by the owner that issued it. App cannot repair domain state. |
+| C2 Timeline composition | **implemented** | Conversation Presentation; Waiting/edit transaction; arrival receipt owner; timeline preference owner | `useConversationProjection`, `useWaitingEditingController`, `useLiveArrivalReceipts`, `useTimelinePreferences`; Timeline passes snapshots/commands | Projection, editing, receipts and preferences never write one another's mutable facts. |
+| C3 ReadingSession | **implemented** | One activation-scoped ReadingSession plus `view-session` durability | ReadingSession reduces typed facts; history, confirmation and DOM-evidence ports issue receipts only | Ports cannot persist mode/bookmarks or create another reading session. |
+| C4 list adapter | **implemented** | `ReadingNavigationOwner` owns physical input; semantic controllers choose commands; `executeReadingDOMCommand` owns DOM mutation | Navigation owner writes input transactions; browsing/following controllers choose; executor alone writes scroll position | One activation/input epoch cancels all input classes; typed command enters one executor; no custom event grants authority. |
+| C5 scheduler | **implemented** | `history-scheduler` channel-obligation state | Pure candidate reducer selects; bounded executor only runs; source adapters only perform/validate I/O | Executor and adapters cannot select or advance lifecycle state. |
+| C6 feed ingress | **implemented** | One `ChannelFeedRuntime` and Replica commit boundary | `applyRows` is the row transaction writer; React hook binds/subscribes/disposes | Consumers observe only a committed runtime snapshot/event, never a half-folded batch. |
+| C7 submissions | **implemented** | IndexedDB outbox plus one in-memory transaction/lease projection | Outbox store writes durability; `publishTransaction` writes pending+draft projection | Every async continuation rechecks principal, world, access, attempt and transport epochs before publication. |
+
+Two current checker reports need semantic interpretation instead of regex-driven
+code changes:
+
+- C1 reports `agent probe lifecycle state` because App receives
+  `contextProbedRef`/`optionsProbedRef` as opaque command inputs from
+  `useAgentProbes`. App no longer constructs or mutates the lifecycle. Renaming
+  those port fields would make the regex green without changing authority.
+- C4's capability checker now discovers the physical navigation owner,
+  browsing controller and DOM-command executor by exports and dependency edges.
+  It enumerates the writer set instead of treating every native listener or
+  delegated command call as a second authority. C4 violations are empty and no
+  retired input-resize module remains.
+
+## Historical baseline result at `acd272a`
 
 ## Hard thresholds
 

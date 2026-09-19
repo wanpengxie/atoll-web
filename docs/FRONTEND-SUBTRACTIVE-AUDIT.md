@@ -1,30 +1,43 @@
 # Frontend subtractive audit
 
-Status: first complete static pass on `refactor/conversation-frontend-r3` at
-`c896b52`. This document audits production ownership and compatibility debt;
-passing tests are evidence, not a reason to retain a second authority.
+Status: subtractive implementation review on
+`refactor/frontend-subtractive-cleanup` at `c3952b5`. This document records
+production ownership and compatibility boundaries. Tests detect regressions;
+they do not establish that an owner model is correct.
 
 Execution status on `refactor/frontend-subtractive-cleanup`:
 
 - A1–A2 deleted.
 - B1–B11 removed from the current runtime. Flat ledger rows remain inert for
   continuity; they do not enter business projection.
-- C8 complete: `fold.js` is the ledger fold; live-arrival provenance now has a
-  dedicated owner in `live-arrivals.js`, with no compatibility re-export.
-- C2 notification receipt extraction complete: Timeline now consumes the
-  dedicated `useLiveArrivalReceipts` adapter and no longer owns consumer
-  registration, visibility disposal, or arrival acknowledgement effects.
-- C3 complete: ReadingSession remains the sole semantic/persistent owner while
-  history obligations, notification confirmation, and DOM evidence are pure
-  value ports with explicit inputs and receipts.
-- C4 complete: `LegendMessageList` is the sole virtual-list DOM adapter and
-  scroll writer. Browsing/history policy and following authorization consume
-  typed evidence above it and can return only typed commands.
-- E partially complete: tracked browser prototypes and diagnostic-only specs
-  are deleted; the vendor directory now keeps one final package and one
-  reproducible source patch instead of intermediate generations.
-- C1, C5–C7, and E remain the active subtractive work. They require owner movement
-  and deletion, not compatibility wrappers.
+- C1 implemented: App composes Wire/session, roster, attachment transaction,
+  probe, feed and submission owners. One static gate still reports the names of
+  probe registries returned by `useAgentProbes`; those registries are no longer
+  constructed or mutated by App, so this is a checker classification issue,
+  not permission to put probe state back in App.
+- C2 implemented: projection/commit, Waiting/editing, notification receipts,
+  preferences and row rendering have named owners. Timeline composes their
+  snapshots and commands.
+- C3 implemented: ReadingSession is the only semantic reading owner. History
+  obligations, notification confirmation and DOM evidence are separate ports;
+  none persists a second reading record.
+- C4 implemented: `ReadingNavigationOwner` is the only physical input
+  transaction owner, browsing/following controllers choose typed commands, and
+  `executeReadingDOMCommand` is the only timeline scroll writer. The retired
+  input-resize event/attribute/class protocol has been deleted.
+- C5 implemented: the scheduler remains the lifecycle owner while a pure
+  candidate reducer, policy-free bounded executor and I/O-only source adapters
+  provide its three internal capabilities.
+- C6 implemented: `useChannelFeed` only binds React to one
+  `ChannelFeedRuntime`; cache, cursors, Replica, scheduler, hydration and row
+  commit live for the runtime lifetime and publish one committed snapshot.
+- C7 implemented: pending submissions and drafts publish through one
+  transaction projection; IndexedDB outbox remains the sole durable owner.
+- C8 remains complete: `fold.js` is the ledger fold; terminal parsing and
+  live-arrival provenance have dedicated acyclic owners.
+- E implemented for tracked merge artifacts: diagnosis prototypes were
+  removed, tests were reduced to current contracts, and vendor keeps one
+  package, one reproducible patch and its license/build metadata.
 
 ## Acceptance rule
 
@@ -36,33 +49,37 @@ strategies when they operate under the same current-version owner.
 
 ## Measured shape
 
-- Production JS/JSX: 35,527 lines.
-- Eight largest stateful/core modules: 14,558 lines (41% of production JS/JSX).
-- Compared with local `master`: product source `+18,788 / -2,516` across 94
-  files.
-- New production files: 26 files / 9,405 lines.
-- Entire old modules removed: 5 files / 936 lines.
-- Static import reachability from `src/main.jsx`: 162 of 164 production modules.
+- Production JS/JSX/TS/TSX/MJS: 35,170 lines.
+- Eight largest stateful/core modules: 10,325 lines (29.4% of production code).
+- Compared with local `master`: product source `+7,319 / -7,861` across 66
+  files, net `-542` lines.
+- New production files: 24 files / 6,287 lines. They are named owner/port
+  modules, not compatibility facades.
+- Entire old production modules removed: 2 files / 240 lines; the larger
+  deletion is code removed from surviving former monoliths.
+- Static import reachability from `src/main.jsx`: 187 of 187 production modules;
+  dependency cycles: 0.
 
-The branch therefore contains a real new architecture, but it has not completed
-the corresponding subtractive pass.
+The branch is now subtractive in product source. C1–C8 owner movements and
+compatibility removal are represented in the current production graph; final
+tests remain regression evidence, not the mechanism proof.
 
-## A. Delete directly
+## A. Delete directly — complete
 
-These files are unreachable from the production entry graph. Tests importing
-them do not make them production dependencies.
+These files were unreachable from the production entry graph. Tests importing
+them did not make them production dependencies.
 
 1. `src/model/fold-admission.js`
 2. `src/ui/primitives/FormField.jsx`
 
-Required action: delete the files and either delete their isolated tests or move
-the still-valid assertions to the canonical owner.
+They and their isolated compatibility tests are deleted; still-valid assertions
+live at the canonical owners.
 
-## B. Remove version-compatibility paths
+## B. Removed version-compatibility paths
 
-These paths deliberately keep two representations or two protocol generations
-alive. They violate the current product decision that an incompatible runtime
-must stop and request a refresh.
+The original audit found the following duplicate representations/protocol
+generations. They are retained here as the deny-list rationale; none remains a
+reachable current-runtime compatibility path.
 
 ### B1. Notification acknowledgement migration bridge
 
@@ -191,86 +208,104 @@ caller; only its isolated compatibility test kept it alive. It is deleted.
 Control feedback is now session-local UI state and the ledger terminal remains
 the durable fact.
 
-## C. Consolidate ownership before deleting code
+## C. Consolidated ownership
 
-These are not all duplicate truths today, but their boundaries are too large or
-too implicit to prove that reliably.
+The original monolith boundaries are now replaced by the named owners and
+invariants below.
 
-### C1. `App.jsx` (2,219 lines, 63 hooks/refs)
+### C1. `App.jsx` — implemented (1,355 lines)
 
-Currently combines wire lifecycle, identity/world, roster, directory,
-attachments, submissions, notifications, search/activity projections, timers,
-files, UI routing, and modal state.
+App now composes `useWireSessionPort`/`useWireConnection`,
+`useChannelRoster`, `useAttachmentTransactions`, `useAgentProbes`,
+`useChannelFeed` and `useSubmissions`. Each domain owner contains its own
+cancellation and epoch fencing; App keeps route, shell, modal and committed-port
+wiring. App may retain refs that connect committed ports, but it must not mutate
+the domain owner's registries or reconstruct its lifecycle.
 
-Target: App composes committed ports only. Move each lifecycle into one domain
-controller and expose an immutable snapshot plus commands. App must not contain
-domain migrations or late-callback fencing for every subsystem.
+Invariant: a late callback is accepted only by the domain owner that issued it.
+App can dispose or replace an owner; it cannot repair a stale result.
 
-### C2. `Timeline.jsx` (2,080 lines, 39 hooks/refs)
+### C2. `Timeline.jsx` — implemented (375 lines)
 
-Currently combines projection, Admission commit, Waiting, editing leases,
-notification acknowledgement, folding, message rendering, activity hints, and
-row-revision optimization.
-
-Target: split into:
+Timeline now joins:
 
 - conversation projection/commit owner;
 - waiting/editing controller;
 - notification receipt adapter;
-- stateless row renderer.
+- stateless row renderer;
+- one preference owner for scope, actor filters, fold choices and layout.
 
-Timeline becomes composition and must not implement protocol compatibility.
+Invariant: projection rows, editing transactions, notification receipts and
+preferences each have one mutable owner. Timeline only passes their immutable
+snapshots and commands; it does not construct protocol frames or persist them.
 
-### C3. `useReadingSession.js` (2,425 lines, 25 hooks/refs)
+### C3. `useReadingSession.js` — implemented (1,281 lines)
 
-Currently owns activation, mode, bookmarks, notification receipts, cold-entry
-readability, history-demand retries, Admission joins, DOM evidence, and
-persistence.
-
-Target: keep ReadingSession as the semantic reading owner, but extract three
-pure ports with explicit inputs/outputs:
+ReadingSession remains the semantic reading owner. Three lifecycle ports have
+explicit inputs and receipts:
 
 - history consumer obligation;
 - notification confirmation;
 - DOM evidence adapter.
 
-No extracted module may create another persisted reading state.
+Invariant: only ReadingSession changes mode, activation and persistent reading
+state. The ports may request history, confirm a presented boundary or observe
+DOM facts, but cannot write `view-session` or create another reading session.
 
-### C4. `LegendMessageList.jsx` — complete
+### C4. List DOM boundary — implemented
 
-The adapter now measures the DOM, reports typed evidence, and owns the only
-`scrollTo`/`scrollToIndex` executor. `useBrowsingReadingController` owns input
-attribution and history-demand policy; `following-scroll-controller` consumes
-committed evidence and returns a typed tail command without DOM access.
+`ReadingNavigationOwner` owns the native input transaction. Browsing/following
+controllers choose typed commands from committed evidence, and
+`executeReadingDOMCommand` is the only timeline scroll writer. The list adapter
+measures DOM geometry and delegates accepted commands; it does not choose mode
+or mutate scroll position itself. The retired input-resize custom
+event/attribute/class protocol is absent.
 
-### C5. `history-scheduler.js` (2,274 lines, 22 exports)
+Invariant: one semantic controller chooses mode and command; one
+activation/input epoch cancels wheel, touch, pointer, key, scrollbar,
+selection, focus and programmatic input; one DOM executor performs the accepted
+command. Native scroll listeners publish evidence only and no global custom
+event can grant or restore authority.
 
-Currently combines global scheduling, per-channel state, source selection,
-cache/network execution, reservations, retry, cancellation, diagnostics, and
-public snapshots.
+### C5. History scheduler — implemented
 
-Target: one scheduler owner remains, but split its implementation into a pure
-candidate reducer, bounded executor, and source adapters. Only the reducer may
-decide which obligation runs; adapters cannot advance lifecycle state.
+`history-scheduler.js` remains the only obligation lifecycle owner. Candidate
+selection is in the pure `history-candidate-reducer`, physical concurrency is
+in `history-bounded-executor`, and cache/network shape plus validation is in
+`history-source-adapters`.
 
-### C6. `useChannelFeed.js` (1,357 lines, 36 hooks/refs)
+Invariant: only the scheduler/reducer pair selects and advances an obligation.
+The executor knows neither channel nor source policy. Source adapters return a
+validated result and cannot mutate scheduler state or choose the next job.
 
-Currently bridges Wire, scheduler, cache, Fold, notifications, access, roster,
-timers, submissions, and diagnostics.
+### C6. Feed ingress — implemented
 
-Target: it becomes one feed ingress coordinator. Remove notification migration
-logic and move domain callbacks behind a single committed ingress port.
+`useChannelFeed.js` is a 28-line React binding over
+`createChannelFeedRuntime`. The runtime constructs cache, cursors, Replica,
+scheduler, Presentation admission and notification hydration once, folds an
+accepted row batch, then publishes one immutable owner snapshot.
 
-### C7. `useSubmissions.js` (994 lines, 26 hooks/refs)
+Invariant: one `applyRows` transaction changes the Replica. Consumers observe
+only a committed runtime snapshot/event; none is called halfway through row
+folding. Runtime disposal cancels effects and closes its owned resources.
 
-Target: IndexedDB outbox + one in-memory lease projection. Remove localStorage
-migration and keep authorization/transport continuations inside a single
-submission transaction owner.
+### C7. Submission transaction — implemented (973 lines)
 
-### C8. `fold.js` (923 lines)
+IndexedDB outbox is the sole durable submission/draft owner. Pending and draft
+React state share `publishTransaction`; restore, clear, send, retry and receipt
+reconciliation cannot publish one side from a stale snapshot of the other.
 
-Target: remain the canonical ledger fold only. Presentation fallbacks,
-notification policy, and UI loading decisions must not enter this module.
+Invariant: every continuation rechecks principal, world, channel access,
+attempt and transport epochs before transaction publication. React is a
+projection of durable state and the active lease, never a second writable
+truth.
+
+### C8. Ledger fold — implemented
+
+`fold.js` remains the canonical ledger fold. Terminal interpretation lives in
+`terminal-result.js`; live-arrival provenance lives in `live-arrivals.js`.
+Neither owner re-exports through Fold, and the production import graph is
+acyclic.
 
 ## D. Keep: failure strategies, not compatibility
 
@@ -287,40 +322,25 @@ shape:
 The removal pass must not confuse availability strategy with old data-model
 compatibility.
 
-## E. Branch-size cleanup
+## E. Branch-size cleanup — implemented for tracked merge content
 
-The branch also contains large non-product additions. They do not create runtime
-authority, but they obscure review and should be curated before merge:
+Current diff against local `master`:
 
-- tests: 187 changed files, `+40,159 / -1,332`;
-- docs: 33 changed files, `+8,062 / -3`;
-- vendor patches: 12 files, `+5,661`.
+- tests: 79 changed files, `+902 / -4,246`;
+- docs: 2 changed files, `+158 / -120`, including this final audit update;
+- vendor: 11 changed paths, `+1,446 / -1,575`, ending with exactly one package,
+  one reproducible patch, `LICENSE`, and `README`.
 
-Actions:
+Contract/regression tests remain. Tracked one-off browser investigations and
+prototype fixtures were removed. Untracked local evidence directories are not
+part of the product merge and are not completion evidence.
 
-1. Keep contract/regression tests that protect a current invariant.
-2. Delete one-off diagnosis tests and prototypes after extracting the invariant.
-3. Keep exactly one reproducible vendor patch plus license/build metadata;
-   remove superseded patch generations.
-4. Archive historical ledgers outside the product merge if they are not needed
-   to build or operate the application.
+## F. Removal result
 
-## F. Ordered removal plan
-
-1. Delete the two unreachable modules.
-2. Remove browser-local compatibility bridges (notifications, submissions,
-   feed-cache, view-session) behind an explicit local-schema reset boundary.
-3. Remove protocol compatibility (agent options, task controls, edit lease,
-   attachment world); unsupported capability becomes unavailable, never guessed.
-4. Decide and execute the server-side ledger migration boundary for flat
-   payloads.
-5. Shrink App/Timeline by moving existing canonical owners, without introducing
-   alternate stores or adapters.
-6. Split Reading/List/Scheduler implementations while preserving exactly one
-   owner per fact.
-7. Remove superseded tests, prototypes, docs, and vendor patch generations.
-8. Recompute branch diff. The result must show meaningful deletion in product
-   source, not only more wrapper modules.
+Steps 1–3 and 5–8 are represented in the current source. Step 4 is deliberately
+fail-closed instead of a migration: historical flat payloads remain inert
+ledger bytes and never enter business projection. C4's retired input-resize
+protocol is deleted and its physical command boundary is explicit.
 
 ## Completion proof
 
