@@ -3,6 +3,7 @@ import {
   buildComposerModel,
   createMessageRequest,
   parseComposerCommand,
+  resolveComposerAgentSelection,
   resolveComposerDelivery,
 } from '../ui/composer/composer-model.js';
 
@@ -14,6 +15,44 @@ const ROSTER = [HUMAN, CLAUDE, CODEX];
 function selected(actor) {
   return { target: { kind: 'single', agent: actor } };
 }
+
+describe('Composer Agent selection owner', () => {
+  it('enforces manual > latest self ask > sole Agent > none', () => {
+    expect(resolveComposerAgentSelection({
+      roster: ROSTER,
+      manualAgentId: CODEX.id,
+      recentAgentId: CLAUDE.id,
+    })).toMatchObject({ actorId: CODEX.id, agent: CODEX, source: 'manual' });
+
+    expect(resolveComposerAgentSelection({
+      roster: ROSTER,
+      recentAgentId: CLAUDE.id,
+    })).toMatchObject({ actorId: CLAUDE.id, agent: CLAUDE, source: 'recent' });
+
+    expect(resolveComposerAgentSelection({
+      roster: [HUMAN, CLAUDE],
+      recentAgentId: 'agent:gone:1',
+    })).toMatchObject({ actorId: CLAUDE.id, agent: CLAUDE, source: 'only' });
+
+    expect(resolveComposerAgentSelection({
+      roster: ROSTER,
+      manualAgentId: 'agent:gone:1',
+      recentAgentId: 'agent:also-gone:1',
+    })).toEqual({ actorId: '', agent: null, source: '' });
+  });
+
+  it('invalidates a stale selected id before applying the sole-Agent fallback', () => {
+    const model = buildComposerModel({
+      activeChannelId: 'dev',
+      draft: { recipients: [] },
+      roster: [HUMAN, CLAUDE],
+      access: 'member_active',
+      agentSelection: { selectedAgentId: CODEX.id },
+    });
+    expect(model.targetAgent).toMatchObject({ id: CLAUDE.id });
+    expect(model.delivery).toMatchObject({ sourceKey: 'only', sourceLabel: '默认 · 频道唯一 Agent' });
+  });
+});
 
 describe('Composer 当前收件人合同', () => {
   it('把收件人名单和判据来源分开，避免横幅 title 重复名字', () => {

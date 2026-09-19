@@ -6,9 +6,9 @@
 // 新结构里这些职责拆到两处：
 //   - "@ 优先于手选/唯一 agent" 的收件人判据链 → src/ui/composer/composer-model.js
 //     的 resolveComposerDelivery + buildComposerModel
-//   - 手选/最近交互的默认目标状态 → src/app/hooks/useAgentProbes.js 的 composerAgent
-//     （由 pickAgent/targetChanged 驱动；latestAgentInteraction 是内部私有函数，
-//     只用于"手选追平最近交互后自动清除覆盖"的自愈，不导出）
+//   - 手选/最近交互/频道唯一 Agent 的默认目标状态 → Composer selection owner
+//     （src/ui/composer/composer-model.js）；useAgentProbes 只提供当前账本的
+//     latest self-authored agent.ask 事实，并由 pickAgent/targetChanged 维护手选事实。
 //   - agent.options / agent.context 协议投影 → src/ui/composer/agent-parameters.js
 // 判定逐条记在 audit-output/RESTORE-MATRIX.md。
 import { renderHook, act } from '@testing-library/react';

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { argsOf } from '../../protocol/envelope.js';
 import { terminalResultPayload, terminalResultState } from '../../model/terminal-result.js';
+import { resolveComposerAgentSelection } from '../../ui/composer/composer-model.js';
 import {
   acceptAgentProbe,
   advanceAgentProbeGeneration,
@@ -182,22 +183,19 @@ function latestAgentInteraction(state, selfId, agentIds) {
   return latest;
 }
 
-// Composer's default target is a projection of the same public ledger that
-// owns probe capability facts. Manual selection remains a small override map;
-// when it has no valid actor, resolve the old contract from the latest
-// self-authored agent.ask, then the sole Agent fallback.
+// The probe owner supplies public-ledger evidence; the Composer selection
+// owner applies the shared manual > recent > sole > none priority.
 function defaultComposerAgentId({ channelId, stateFor, rosters, rosterRef, manualAgentsRef }) {
   if (!channelId) return '';
-  const agents = (rosters.get(channelId) || []).filter((row) => row.kind === 'agent');
-  const agentIds = new Set(agents.map((row) => row.id));
+  const roster = rosters.get(channelId) || [];
+  const agentIds = new Set(roster.filter((row) => row.kind === 'agent').map((row) => row.id));
   const manual = manualAgentsRef.current.get(channelId);
-  if (manual && agentIds.has(manual)) return manual;
   const recent = latestAgentInteraction(
     stateFor(channelId),
     rosterRef.current?.self(channelId) || '',
     agentIds,
   );
-  return recent || (agents.length === 1 ? agents[0].id : '');
+  return resolveComposerAgentSelection({ roster, manualAgentId: manual, recentAgentId: recent }).actorId;
 }
 
 export function useAgentProbes({

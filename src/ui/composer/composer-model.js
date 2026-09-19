@@ -133,6 +133,36 @@ function selectedAgentID(agentSelection) {
     || text(agentSelection?.view?.actorId);
 }
 
+// The Composer has one target-selection contract.  `manualAgentId` and
+// `recentAgentId` are the two facts the probe owner can observe; the optional
+// selected id is the already-materialized projection supplied by the shell.
+// Keeping the order here means the hook cannot drift from the pure Composer
+// projection when a roster changes or a channel is replaced.
+export function resolveComposerAgentSelection({
+  roster = [],
+  manualAgentId = '',
+  recentAgentId = '',
+  selectedAgentId = '',
+  selectedSource = '',
+} = {}) {
+  const agents = (roster || []).filter((actor) => actor?.kind === 'agent' && actor.id);
+  const byId = new Map(agents.map((actor) => [actor.id, actor]));
+  const manual = byId.get(text(manualAgentId));
+  if (manual) return Object.freeze({ actorId: manual.id, agent: manual, source: 'manual' });
+  const recent = byId.get(text(recentAgentId));
+  if (recent) return Object.freeze({ actorId: recent.id, agent: recent, source: 'recent' });
+  const selected = byId.get(text(selectedAgentId));
+  if (selected) {
+    return Object.freeze({
+      actorId: selected.id,
+      agent: selected,
+      source: text(selectedSource) || (agents.length === 1 ? 'only' : 'selected'),
+    });
+  }
+  if (agents.length === 1) return Object.freeze({ actorId: agents[0].id, agent: agents[0], source: 'only' });
+  return Object.freeze({ actorId: '', agent: null, source: '' });
+}
+
 export function resolveComposerDelivery({ draft, roster, agentSelection }) {
   const normalized = normalizeComposerDraft(draft);
   const rosterByID = new Map((roster || []).map((actor) => [actor.id, actor]));
@@ -293,11 +323,12 @@ export function buildComposerModel({
   const activeMention = mentionQuery(normalizedDraft.text, mentionCandidates);
   const agents = (roster || []).filter((actor) => actor?.kind === 'agent');
   const selectedID = selectedAgentID(agentSelection);
-  // The old Composer's last fallback was the channel's sole Agent. Keeping it
-  // here avoids a target-selection cycle: the probe owner only learns the
-  // Composer target after this projection commits.
-  const selectedAgent = agents.find((actor) => actor.id === selectedID)
-    || (agents.length === 1 ? agents[0] : null);
+  const selection = resolveComposerAgentSelection({
+    roster,
+    selectedAgentId: selectedID,
+    selectedSource: selectedAgentSource(agentSelection, false),
+  });
+  const selectedAgent = selection.agent;
   const delivery = resolveComposerDelivery({
     draft: normalizedDraft,
     roster,
@@ -305,7 +336,7 @@ export function buildComposerModel({
       ? {
         ...agentSelection,
         selectedAgentId: selectedAgent.id,
-        ...(selectedID ? {} : { fallbackSource: selectedAgentSource(agentSelection, true) }),
+        ...(selection.source === 'only' ? { fallbackSource: 'only' } : {}),
       }
       : agentSelection,
   });
