@@ -11,6 +11,11 @@ plus the AD-011 and AD-143 owner closures are **260 PASS / 0 REGRESSION /
 105 BLOCKED**. Round 15 then recovered six independently verifiable terminal
 contracts, leaving **266 PASS / 0 REGRESSION / 99 BLOCKED**.
 
+Round 16 recovered 17 additional blocked IDs through current public Waiting,
+probe, presentation, and Composer owners, leaving **283 PASS / 0 REGRESSION /
+82 BLOCKED**. AD-002–004 were rechecked at the existing Activity/Operation
+boundary and remain explicit product-gap evidence.
+
 The P0 batch recovered AD-057/058, AD-125–127, and AD-138–141 through
 `useAgentProbes`, `useIdentitySession`, and the public Describe projection.
 AD-316 remains an explicit blocked red reproduction: the current
@@ -82,6 +87,29 @@ AD-107. The other 14 cases remain explicit `BLOCKED` packets with preserved
 AD-108, and AD-202–203. These are not judged obsolete, deleted, skipped, or
 merged; the red results are returned to their first public owner boundaries.
 
+## Round 16 blocked-evidence recovery
+
+Round 16 selected exactly 20 rows from the 99-row blocked remainder: the
+existing AD-002–004 Activity/Operation reproductions were re-run at the public
+`feature-search` boundary, and 17 non-shell/node/restart rows were exercised
+through current public owners. The Activity rows remain explicit product-gap
+packets because `selectFeatureSearchIndex` still emits no Operation row; no
+task/artifact owner was substituted for that capability.
+
+The new public-owner fixture is
+`tests/blocked-round16-public-owner.test.jsx`. It closes AD-034 and AD-039
+through `useWaitingEditingController`, AD-074 through `useAgentProbes`,
+AD-327–329/333/335–338/340–343 through `TimelineRowRenderer` and
+`ChannelReplica`/`ConversationPresentation`, and AD-350–351 through the public
+Composer model/rendering owner. AD-327 is one baseline `it.each` declaration
+with two green variants, so the focused command reports 18 green executions for
+17 promoted IDs. The combined result is **2 files passed; 18 passed, 3
+expected-fail (21)**. The three expected-fail Activity assertions are evidence
+only; they do not count as recovered cases.
+
+The ledger after this round is **283 PASS / 0 REGRESSION / 82 BLOCKED**. No
+baseline declaration was deleted, skipped, or marked obsolete.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -130,6 +158,7 @@ The focused slices were run with Vitest against current public owners:
 | `tests/workspace-layout-channel-focus.test.jsx -t '\[AD-103\]'` | 1 passed | AD-103 focuses only the committed target heading and preserves the no-scroll handoff through the public Workspace owner |
 | `tests/artifacts.test.jsx -t '\[AD-123\]'` | 1 passed | AD-123 preserves explicit same-channel version relation and repeated resource references through ChannelReplica + feature-search |
 | `tests/blocked-round15-activity-owner.test.js tests/blocked-round15-node-update.test.jsx tests/blocked-round15-terminal-owner.test.jsx` | 6 passed, 14 expected fail, 20 total | AD-094/095/100/102/104/107 pass through public Workspace owners; AD-002–004, AD-093, AD-096–099, AD-101, AD-105–106, AD-108, and AD-202–203 retain explicit public owner-gap reproductions |
+| `tests/blocked-round16-public-owner.test.jsx tests/blocked-round15-activity-owner.test.js` | 18 passed, 3 expected fail, 21 total | 17 new public-owner rows pass; AD-002–004 remain explicit Operation-index owner gaps |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; no registered regression case red | AD-011 and AD-143 are closed through their existing public owners; no AD-123 `it.fails` case remains |
 
 Historical red assertions were not weakened, skipped, or deleted; their public
@@ -145,6 +174,10 @@ scope), not to the 42-suite A–D baseline ledger.
 - Round 15 changes only the three `blocked-round15-*` tests and the evidence
   reports/ledger. It does not touch Feed runtime, node-update product code, or
   terminal/navigation product code; the 14 unresolved cases remain BLOCKED.
+- Round 16 changes only `tests/blocked-round16-public-owner.test.jsx` and
+  A–D evidence/ledger reports. It does not touch Feed runtime, terminal/node/
+  restart product files, or any package boundary; the three Activity cases
+  remain BLOCKED.
 - No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
