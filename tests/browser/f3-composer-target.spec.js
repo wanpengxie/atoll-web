@@ -62,17 +62,24 @@ test('F3-CT-02 过滤条收窄到一个 agent 时，默认收件人跟着它走'
   await expect(banner(page)).not.toHaveAttribute('title', /跟随筛选/);
 });
 
-test('F3-CT-03 编辑框里的 @ 压过筛选', async ({ page, request }) => {
+test('F3-CT-03 通过 @ 快捷入口显式选中的收件人压过筛选', async ({ page, request }) => {
   await reset(request); await login(page);
   const chips = page.getByRole('group', { name: '按成员过滤' }).getByRole('button');
   await chips.nth(1).click();
   await expect(banner(page)).toHaveAttribute('title', /跟随筛选/);
 
-  await page.getByLabel('消息').click();
+  const editor = page.getByLabel('消息');
+  await editor.click();
   await page.keyboard.type('@');
+  // "@" 未完成选择前只是正文字符，恒不会靠扫描正文改写收件人。
+  await expect(editor).toHaveText('@');
+  await expect(banner(page)).toHaveAttribute('title', /跟随筛选/);
+
+  // 只有点中编辑器外的候选项，才会把选择写入独立收件人字段。
   const option = page.getByRole('listbox').getByRole('option').first();
   const mentioned = (await option.locator('strong').innerText()).trim();
   await option.click();
+  await expect(editor).toHaveText('');
   await expect(banner(page)).toHaveText(`@${mentioned}`);
   await expect(banner(page)).toHaveAttribute('title', /由 @ 指定/);
   // 名字仍恒只有一个：@ 生效后横幅换的是名字，恒不多长出一格。
