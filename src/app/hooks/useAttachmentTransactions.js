@@ -11,6 +11,43 @@ import {
 import { newId } from '../../util/id.js';
 
 const WORLD_FIELD = '_atoll_world_epoch';
+const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
+
+const TEXT_EXTENSIONS = new Set([
+  'c', 'cc', 'conf', 'cpp', 'css', 'csv', 'go', 'h', 'hpp', 'html', 'ini', 'java',
+  'js', 'json', 'jsx', 'log', 'mjs', 'py', 'rb', 'rs', 'sh', 'sql', 'toml', 'ts',
+  'tsx', 'txt', 'xml', 'yaml', 'yml',
+]);
+
+function previewDescriptor(entry) {
+  const mediaType = String(entry?.mediaType || entry?.media_type || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+  const extension = String(entry?.name || '').split('.').pop()?.toLowerCase() || '';
+  if (mediaType.startsWith('image/')) return { kind: 'image', mediaType };
+  if (mediaType.startsWith('video/')) return { kind: 'video', mediaType };
+  if (mediaType.startsWith('audio/')) return { kind: 'audio', mediaType };
+  if (mediaType === 'application/pdf' || extension === 'pdf') return { kind: 'pdf', mediaType };
+  if (['text/markdown', 'text/x-markdown'].includes(mediaType) || ['md', 'markdown', 'mdown'].includes(extension)) {
+    return { kind: 'markdown', mediaType };
+  }
+  if (
+    mediaType.startsWith('text/')
+    || ['application/json', 'application/ld+json', 'application/xml', 'application/yaml'].includes(mediaType)
+    || mediaType.endsWith('+json')
+    || mediaType.endsWith('+xml')
+    || TEXT_EXTENSIONS.has(extension)
+  ) return { kind: 'text', mediaType };
+  return { kind: 'unsupported', mediaType };
+}
+
+async function sniffText(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  if (bytes.includes(0)) return null;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
 
 function errorText(error) {
   return error?.detail || error?.message || String(error);
@@ -151,13 +188,16 @@ export function useAttachmentTransactions({
   const [entries, setEntries] = useState([]);
   const [filesBusy, setFilesBusy] = useState(false);
   const [filesError, setFilesError] = useState('');
-  const [selectedArtifact, setSelectedArtifact] = useState(null);
+  const [selectedArtifact, setSelectedArtifactState] = useState(null);
+  const [artifactPreview, setArtifactPreview] = useState({ status: 'idle' });
   const worldRevisionRef = useRef(0);
   const uploadQueuesRef = useRef(new Map());
   const activeUploadsRef = useRef(new Map());
   const activeFileOperationsRef = useRef(new Map());
   const deviceRequestRef = useRef({ generation: 0, request: null });
   const directoryRequestRef = useRef({ generation: 0, request: null });
+  const previewRequestRef = useRef({ generation: 0, request: null });
+  const previewObjectURLRef = useRef('');
   const committedOwnerRef = useRef(null);
   const serverWorldCommittedRef = useRef(serverWorld);
   const wireStateCommittedRef = useRef(wireState);
@@ -214,6 +254,21 @@ export function useAttachmentTransactions({
     current.request?.controller.abort();
     requestRef.current = { generation: current.generation + 1, request: null };
   }, []);
+
+  const publishArtifactPreview = useCallback((preview) => {
+    const nextURL = preview?.url || '';
+    if (previewObjectURLRef.current && previewObjectURLRef.current !== nextURL) {
+      URL.revokeObjectURL(previewObjectURLRef.current);
+    }
+    previewObjectURLRef.current = nextURL;
+    setArtifactPreview(preview || { status: 'idle' });
+  }, []);
+
+  const selectArtifact = useCallback((entry) => {
+    abortRequest(previewRequestRef);
+    setSelectedArtifactState(entry || null);
+    publishArtifactPreview({ status: 'idle' });
+  }, [abortRequest, publishArtifactPreview]);
 
   const ownerFacts = useCallback((owner) => {
     const committed = committedOwnerRef.current;
@@ -392,16 +447,18 @@ export function useAttachmentTransactions({
   useEffect(() => {
     abortRequest(deviceRequestRef);
     abortRequest(directoryRequestRef);
+    abortRequest(previewRequestRef);
     setDevices([]);
     setDeviceId('');
     setDirectory('');
     setEntries([]);
     setFilesBusy(false);
-    setSelectedArtifact(null);
+    setSelectedArtifactState(null);
+    publishArtifactPreview({ status: 'idle' });
     setFilesError('');
     if (!activeChannelId || wireState !== 'open') return;
     void refreshDevices(activeChannelId);
-  }, [abortRequest, activeChannelId, refreshDevices, serverWorld, wireState]);
+  }, [abortRequest, activeChannelId, publishArtifactPreview, refreshDevices, serverWorld, wireState]);
 
   useEffect(() => {
     if (!activeChannelId || !deviceId || wireState !== 'open') return;
@@ -443,6 +500,85 @@ export function useAttachmentTransactions({
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }, [activeChannelId, runFileOperation]);
+
+  const previewArtifact = useCallback(async (entry, requestedChannelId = activeChannelRef.current) => {
+    const channelId = String(requestedChannelId || '');
+    const resourceId = String(entry?.resourceId || entry?.resource_id || '');
+    const descriptor = previewDescriptor(entry);
+    const request = beginRequest(previewRequestRef, channelId);
+    setSelectedArtifactState(entry || null);
+    publishArtifactPreview(entry ? { ...descriptor, status: 'loading' } : { status: 'idle' });
+    if (!entry || !channelId || !resourceId) {
+      if (previewRequestRef.current.request === request) {
+        publishArtifactPreview({ status: 'error', error: '文件资源标识为空' });
+      }
+      finishRequest(previewRequestRef, request);
+      return null;
+    }
+    if (['markdown', 'text', 'unsupported'].includes(descriptor.kind) && Number(entry.size || 0) > MAX_TEXT_PREVIEW_BYTES) {
+      if (previewRequestRef.current.request === request) {
+        publishArtifactPreview({
+          ...descriptor,
+          status: 'unsupported',
+          reason: descriptor.kind === 'unsupported'
+            ? `不支持预览 ${descriptor.mediaType || '未知媒体类型'} 文件`
+            : '文本文件超过 2 MiB 站内预览上限',
+        });
+      }
+      finishRequest(previewRequestRef, request);
+      return null;
+    }
+    try {
+      const preview = await runFileOperation({ channelId, access: 'read', signal: request.controller.signal }, async (operation) => {
+        const receipt = await operation.resource({ channel_id: channelId, op: 'read', resource_id: resourceId, with_content: true });
+        if (!receipt?.ticket) throw new TypeError('服务端没有返回预览凭据');
+        const response = await operation.fetch(downloadURL(channelId, receipt.ticket), { credentials: 'include' });
+        if (!response.ok) throw new TypeError(`预览读取失败 (${response.status})`);
+        const blob = await response.blob();
+        const responseMediaType = response.headers?.get?.('content-type')?.split(';')[0]?.trim() || '';
+        const responseDescriptor = responseMediaType
+          ? previewDescriptor({ ...entry, mediaType: responseMediaType })
+          : descriptor;
+        const resolved = descriptor.kind === 'unsupported' ? responseDescriptor : descriptor;
+        if (resolved.kind === 'unsupported') {
+          if (blob.size > MAX_TEXT_PREVIEW_BYTES) return {
+            ...resolved,
+            status: 'unsupported',
+            reason: `不支持预览 ${resolved.mediaType || '未知媒体类型'} 文件`,
+          };
+          const text = await sniffText(blob);
+          return text === null
+            ? { ...resolved, status: 'unsupported', reason: `不支持预览 ${resolved.mediaType || '未知媒体类型'} 文件` }
+            : { ...resolved, kind: 'text', status: 'ready', text };
+        }
+        if (['markdown', 'text'].includes(resolved.kind)) {
+          if (blob.size > MAX_TEXT_PREVIEW_BYTES) return {
+            ...resolved,
+            status: 'unsupported',
+            reason: '文本文件超过 2 MiB 站内预览上限',
+          };
+          return { ...resolved, status: 'ready', text: await blob.text() };
+        }
+        const previewBlob = resolved.kind === 'pdf' && blob.type !== 'application/pdf'
+          ? new Blob([blob], { type: 'application/pdf' })
+          : blob;
+        return { ...resolved, status: 'ready', url: URL.createObjectURL(previewBlob) };
+      });
+      if (previewRequestRef.current.request !== request || request.controller.signal.aborted) {
+        if (preview?.url) URL.revokeObjectURL(preview.url);
+        return null;
+      }
+      publishArtifactPreview(preview);
+      return preview;
+    } catch (error) {
+      if (previewRequestRef.current.request === request && !request.controller.signal.aborted) {
+        publishArtifactPreview({ ...descriptor, status: 'error', error: errorText(error) });
+      }
+      return null;
+    } finally {
+      finishRequest(previewRequestRef, request);
+    }
+  }, [activeChannelRef, beginRequest, finishRequest, publishArtifactPreview, runFileOperation]);
 
   useEffect(() => {
     for (const [key, active] of activeUploadsRef.current) {
@@ -655,6 +791,7 @@ export function useAttachmentTransactions({
     worldRevisionRef.current += 1;
     abortRequest(deviceRequestRef);
     abortRequest(directoryRequestRef);
+    abortRequest(previewRequestRef);
     abortUploads();
     abortFileOperations();
     uploadQueuesRef.current.clear();
@@ -664,19 +801,24 @@ export function useAttachmentTransactions({
     setEntries([]);
     setFilesBusy(false);
     setFilesError('');
-    setSelectedArtifact(null);
-  }, [abortFileOperations, abortRequest, abortUploads]);
+    setSelectedArtifactState(null);
+    publishArtifactPreview({ status: 'idle' });
+  }, [abortFileOperations, abortRequest, abortUploads, publishArtifactPreview]);
 
   useEffect(() => () => {
     abortRequest(deviceRequestRef);
     abortRequest(directoryRequestRef);
+    abortRequest(previewRequestRef);
     abortUploads();
     abortFileOperations();
     uploadQueuesRef.current.clear();
+    if (previewObjectURLRef.current) URL.revokeObjectURL(previewObjectURLRef.current);
+    previewObjectURLRef.current = '';
   }, [abortFileOperations, abortRequest, abortUploads]);
 
   return {
     attach,
+    artifactPreview,
     clear,
     composerAttachments,
     createDirectory,
@@ -689,12 +831,13 @@ export function useAttachmentTransactions({
     filesError,
     mutate,
     navigateFiles,
+    previewArtifact,
     refreshDirectory,
     removeFile,
     reset,
     selectDevice,
     selectedArtifact,
-    setSelectedArtifact,
+    setSelectedArtifact: selectArtifact,
     uploadChannelFiles,
     uploadComposerAttachments,
   };

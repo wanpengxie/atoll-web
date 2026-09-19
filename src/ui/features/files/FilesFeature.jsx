@@ -56,7 +56,7 @@ function FileRows({ entries, selectedKey, disabled, attachDisabled, commands }) 
       aria-selected={selectedKey === entry.key}
       key={entry.key || entry.resourceId || entry.path || entry.name}
       onDoubleClick={() => activate(entry)}
-      onClick={() => commands.select?.(entry)}
+      onClick={() => (entry.kind === 'file' ? commands.preview?.(entry) : commands.select?.(entry))}
       onKeyDown={(event) => { if (event.key === 'Enter') activate(entry); }}
     >
       <span className="finder-name-cell" role="cell"><span className={`file-kind-icon${entry.kind === 'directory' ? ' folder-icon' : ''}`} aria-hidden="true">{entry.kind === 'directory' ? '▰' : '▤'}</span><strong>{entry.name}</strong></span>
