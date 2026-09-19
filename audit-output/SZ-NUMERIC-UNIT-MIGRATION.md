@@ -25,7 +25,7 @@ Scope: top-level tests whose basename begins with a digit or S–Z; it.each rows
 | S10 | tests/system-events.test.js | 3 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | current public owner boundary for system-events; successor still required | 0 GREEN / 0 RED / 3 OPEN / 0 GAP / 0 BLOCKED |
 | S11 | tests/task-controls.test.js | 9 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | WaitingLayer public component | 9 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
 | S12 | tests/tasks-f4.test.jsx | 4 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | TasksFeature public port | 4 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
-| S13 | tests/terminal-view.test.jsx | 14 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | TerminalFeature + terminal-session | 2 GREEN / 0 RED / 12 OPEN / 0 GAP / 0 BLOCKED |
+| S13 | tests/terminal-view.test.jsx | 14 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | TerminalFeature + terminal-session | 14 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
 | S14 | tests/test-integrity-contract.test.js | 6 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | runner/test setup contract | 6 GREEN / 0 RED / 0 OPEN / 0 GAP / 0 BLOCKED |
 | S15 | tests/timeline-agent-activity.test.jsx | 2 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | current public owner boundary for timeline-agent-activity; successor still required | 1 GREEN / 0 RED / 1 OPEN / 0 GAP / 0 BLOCKED |
 | S16 | tests/timeline-channel-switch.test.jsx | 12 | preserve every baseline user-visible capability/invariant named by its exact titles; implementation details are not an owner | current public owner boundary for timeline-channel-switch; successor still required | 0 GREEN / 0 RED / 12 OPEN / 0 GAP / 0 BLOCKED |
@@ -133,20 +133,20 @@ GREEN=current public-owner proof; RED=product regression; PARTIAL=related path o
 | SZ-072 | tests/tasks-f4.test.jsx — 按语义分组并打开工作项 | S12 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
 | SZ-073 | tests/tasks-f4.test.jsx — 任务 Modal 保留来源并只提交所选真实 provider | S12 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
 | SZ-074 | tests/tasks-f4.test.jsx — 自动动作详情明确本设备范围并提供取消 | S12 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
-| SZ-075 | tests/terminal-view.test.jsx — 挂载不抛错，并在共享连接上按频道开一条流 | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-076 | tests/terminal-view.test.jsx — 多块终端共用一条 WebSocket | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-077 | tests/terminal-view.test.jsx — 旧连接关闭握手完成前不创建下一条连接 | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
+| SZ-075 | tests/terminal-view.test.jsx — 挂载不抛错，并在共享连接上按频道开一条流 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` mounts the public TerminalFeature and proves one channel stream on the shared PTY owner |
+| SZ-076 | tests/terminal-view.test.jsx — 多块终端共用一条 WebSocket | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` mounts two channel terminals and proves two streams share one WebSocket |
+| SZ-077 | tests/terminal-view.test.jsx — 旧连接关闭握手完成前不创建下一条连接 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` holds the old close handshake and proves replacement waits for its close event |
 | SZ-078 | tests/terminal-view.test.jsx — 连接 ready 前的输入不会静默丢失 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves TerminalFeature buffers pre-handle input and the shared PTY sends it exactly once after `ready` |
 | SZ-079 | tests/terminal-view.test.jsx — 隐藏时恒不断开连接——切页签不是断线 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves hiding the view preserves the one terminal and shared socket without sending `detach` or `close` |
-| SZ-080 | tests/terminal-view.test.jsx — canWrite 变化恒不重建连接——权限抖动不该丢掉正在跑的 shell | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-081 | tests/terminal-view.test.jsx — 卸载走 detach 恒不走 close——切走频道恒不杀 shell | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-082 | tests/terminal-view.test.jsx — 拿到 ready 后把 session 记下来，重新挂载时带上它 | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-083 | tests/terminal-view.test.jsx — 提供配色切换 | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-084 | tests/terminal-view.test.jsx — 死掉的 session 被拒 → 丢掉它重开，恒不无限重试同一个死 id | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-085 | tests/terminal-view.test.jsx — 全新会话也连不上时恒不空转，给出可重试的终止态 | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-086 | tests/terminal-view.test.jsx — shell 退出时只结束这一条流，恒不关整条连接 | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-087 | tests/terminal-view.test.jsx — 卸载后到达的 WebGL 续体恒不再往死掉的终端上装载 | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
-| SZ-088 | tests/terminal-view.test.jsx — 活着的终端照常装上 WebGL | S13 | **OPEN** — retained; build public-owner successor or hand off regression |
+| SZ-080 | tests/terminal-view.test.jsx — canWrite 变化恒不重建连接——权限抖动不该丢掉正在跑的 shell | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` rerenders canWrite false/true without detach or stream rebuild and gates input accordingly |
+| SZ-081 | tests/terminal-view.test.jsx — 卸载走 detach 恒不走 close——切走频道恒不杀 shell | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves unmount emits detach while leaving the shared socket and shell open |
+| SZ-082 | tests/terminal-view.test.jsx — 拿到 ready 后把 session 记下来，重新挂载时带上它 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves ready session persistence and remount reuse on the same shared socket |
+| SZ-083 | tests/terminal-view.test.jsx — 提供配色切换 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves dark/light theme switching updates the live terminal without rebuilding its stream |
+| SZ-084 | tests/terminal-view.test.jsx — 死掉的 session 被拒 → 丢掉它重开，恒不无限重试同一个死 id | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves a rejected remembered session is cleared, retried once without its id, and not retried forever |
+| SZ-085 | tests/terminal-view.test.jsx — 全新会话也连不上时恒不空转，给出可重试的终止态 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves a fresh-session rejection reaches ended state with one explicit retry and no spin |
+| SZ-086 | tests/terminal-view.test.jsx — shell 退出时只结束这一条流，恒不关整条连接 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves one stream exit leaves the sibling stream and shared WebSocket usable |
+| SZ-087 | tests/terminal-view.test.jsx — 卸载后到达的 WebGL 续体恒不再往死掉的终端上装载 | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves an unmounted terminal never receives the asynchronous WebGL addon |
+| SZ-088 | tests/terminal-view.test.jsx — 活着的终端照常装上 WebGL | S13 | **GREEN** — successor `tests/terminal-feature.test.jsx` proves the live terminal receives the WebGL addon |
 | SZ-089 | tests/test-integrity-contract.test.js — shared setup does not mock a virtualizer or synthesize timeline geometry | S14 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
 | SZ-090 | tests/test-integrity-contract.test.js — the unused Legend list dependency stays removed | S14 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
 | SZ-091 | tests/test-integrity-contract.test.js — semantic list helper renders every supplied row | S14 | **GREEN** — current public-owner candidate passed in focused run or linked migration report |
