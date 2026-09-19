@@ -1,9 +1,15 @@
 import { expect, test } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
+import {
+  installReadingOwnerHelper,
+  readingOwner,
+  tailDistance,
+} from './reading-owner.js';
 
 const browserFailures = new WeakMap();
 
 test.beforeEach(async ({ page }) => {
+  await installReadingOwnerHelper(page);
   const failures = [];
   browserFailures.set(page, failures);
   page.on('pageerror', (error) => failures.push(`pageerror: ${error.message}`));
@@ -37,11 +43,6 @@ async function chooseSteward(page) {
   await choose.click();
   await page.getByRole('menu', { name: '选择目标 Agent' }).getByRole('menuitem', { name: 'steward' }).click();
 }
-
-const ACTIVE_TIMELINE_LIST = [
-  '.timeline-reading-layer.is-outgoing .timeline-message-list',
-  '.timeline-reading-layer.is-active .timeline-message-list',
-].join(', ');
 
 async function captureVisibleAnchor(page) {
   return page.locator('.timeline-message-list').evaluate((node) => {
@@ -97,7 +98,8 @@ async function startProductionSendProbe(page) {
   await page.evaluate(() => {
     const frames = [];
     const writes = [];
-    const root = document.querySelector('.timeline-message-list');
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const root = owner.current();
     const originalScrollTo = root.scrollTo;
     root.scrollTo = function (...args) {
       const entries = window.__ATOLL_DIAGNOSTICS__.reading.snapshot().entries;
@@ -118,7 +120,7 @@ async function startProductionSendProbe(page) {
       };
       const result = originalScrollTo.apply(this, args);
       writes.push({ ...before, afterScrollTop: this.scrollTop,
-        afterGap: this.scrollHeight - this.clientHeight - this.scrollTop });
+        afterGap: owner.tailDistance(this) });
       return result;
     };
     let running = true;
@@ -140,7 +142,7 @@ async function startProductionSendProbe(page) {
     };
     const sample = (at) => {
       if (!running) return;
-      const viewport = document.querySelector('.timeline-message-list');
+      const viewport = owner.current();
       const reading = window.__ATOLL_DIAGNOSTICS__.reading.snapshot();
       const application = window.__ATOLL_DIAGNOSTICS__.snapshot();
       const readingEvents = reading.entries.filter((entry) => [
@@ -161,7 +163,7 @@ async function startProductionSendProbe(page) {
         scrollTop: Number(viewport?.scrollTop || 0),
         scrollHeight: Number(viewport?.scrollHeight || 0),
         clientHeight: Number(viewport?.clientHeight || 0),
-        gap: Number((viewport?.scrollHeight || 0) - (viewport?.clientHeight || 0) - (viewport?.scrollTop || 0)),
+        gap: owner.tailDistance(viewport),
       };
       frames.push({
         frame: frames.length,
@@ -223,21 +225,20 @@ test('F6-PERF-05/F7 deep history keeps background reservoir silent, starts at ta
   expect(reset.ok()).toBe(true);
   await login(page);
 
-  const viewport = page.locator(ACTIVE_TIMELINE_LIST);
+  const viewport = readingOwner(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
   // Following owns the structural tail: column-reverse makes zero the bottom
   // origin, independently of the list's total height.
   await expect(viewport).toHaveAttribute('data-reading-container', 'following-tail');
-  await expect.poll(() => viewport.evaluate((node) => Math.abs(Number(node.scrollTop || 0)))).toBeLessThanOrEqual(1);
+  await expect.poll(() => viewport.evaluate(tailDistance)).toBeLessThanOrEqual(1);
   const samples = await page.evaluate(async () => {
     const values = [];
     for (let index = 0; index < 6; index += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
-      const node = document.querySelector('.timeline-reading-layer.is-outgoing .timeline-message-list')
-        || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list');
+      const node = window.__ATOLL_TEST_READING_OWNER__.current();
       values.push({
         container: node?.dataset.readingContainer || (node ? 'virtuoso' : 'none'),
-        tailOrigin: Math.abs(Number(node?.scrollTop || 0)),
+        tailOrigin: window.__ATOLL_TEST_READING_OWNER__.tailDistance(node),
       });
     }
     return values;
@@ -289,7 +290,7 @@ test('F7 real upward runway demand releases bounded raw history into the product
   expect(reset.ok()).toBe(true);
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  const viewport = page.locator(ACTIVE_TIMELINE_LIST);
+  const viewport = readingOwner(page);
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
   await page.evaluate(() => {
     window.__ATOLL_DIAGNOSTICS__.clear();
@@ -320,8 +321,7 @@ test('F7 real upward runway demand releases bounded raw history into the product
       // Following remains the visible owner while the incoming virtualizer is
       // prepared. After the atomic reveal, the active layer becomes the owner.
       // Re-resolve that owner every frame instead of retaining detached DOM.
-      const node = document.querySelector('.timeline-reading-layer.is-outgoing .timeline-message-list')
-        || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list');
+      const node = window.__ATOLL_TEST_READING_OWNER__.current();
       if (!node) {
         requestAnimationFrame(sample);
         return;
@@ -458,7 +458,7 @@ test('F7 production runway folds one oversized raw record and keeps compositor c
   expect(reset.ok()).toBe(true);
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  const viewport = page.locator(ACTIVE_TIMELINE_LIST);
+  const viewport = readingOwner(page);
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
   await page.evaluate(() => {
     window.__ATOLL_DIAGNOSTICS__.clear();
@@ -467,8 +467,7 @@ test('F7 production runway folds one oversized raw record and keeps compositor c
     window.__ATOLL_EXTREME_RUNNING__ = true;
     const sample = () => {
       if (!window.__ATOLL_EXTREME_RUNNING__) return;
-      const node = document.querySelector('.timeline-reading-layer.is-outgoing .timeline-message-list')
-        || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list');
+      const node = window.__ATOLL_TEST_READING_OWNER__.current();
       if (!node) {
         requestAnimationFrame(sample);
         return;
@@ -636,7 +635,7 @@ test('F7 browsing send is one explicit bottom intent and later user input defeat
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'long-running-history', seed: 0x92_09_23 } });
   expect(reset.ok()).toBe(true);
   await login(page);
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
 
   // Occupy the canonical agent so the target send has a durable queued
@@ -654,7 +653,7 @@ test('F7 browsing send is one explicit bottom intent and later user input defeat
   await viewport.hover();
   await page.mouse.wheel(0, -3_000);
   await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
-  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
+  await expect.poll(() => viewport.evaluate(tailDistance)).toBeGreaterThan(24);
 
   await chooseSteward(page);
   const text = 'browse send returns to latest once';
@@ -714,7 +713,7 @@ test('F7 browsing send is one explicit bottom intent and later user input defeat
   await testInfo.attach('browsing-send-production-evidence.json', { path: artifactPath, contentType: 'application/json' });
 
   await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
-  expect(await viewport.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBeGreaterThan(24);
+  expect(await viewport.evaluate(tailDistance)).toBeGreaterThan(24);
   const bottomIntents = productionEvidence.reading.entries.filter((entry) => entry.event === 'reading.bottom-intent');
   const issuerWrites = productionEvidence.reading.entries.filter((entry) => entry.event === 'reading.issuer-write');
   const trustedWheels = productionEvidence.reading.entries.filter((entry) => (
@@ -791,19 +790,21 @@ test('F7 browsing send is one explicit bottom intent and later user input defeat
     }
   }
 
-  const before = await viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop);
-  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
-  expect(pulse.ok()).toBe(true);
+  const before = await viewport.evaluate(tailDistance);
+  const arrival = await request.post('/mock/control/action', {
+    data: { type: 'approval', channel_id: 'c0' },
+  });
+  expect(arrival.ok()).toBe(true);
   await expect(page.getByRole('button', { name: /条新动态/ })).toBeVisible();
   await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
-  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThanOrEqual(Math.min(before, 25));
+  await expect.poll(() => viewport.evaluate(tailDistance)).toBeGreaterThanOrEqual(Math.min(before, 25));
 });
 
 test('F7 history and progress publication do not manufacture new-dynamic notifications', async ({ page, request }) => {
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1718 } });
   expect(reset.ok()).toBe(true);
   await login(page);
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
 
   await viewport.hover();
@@ -821,8 +822,10 @@ test('F7 history and progress publication do not manufacture new-dynamic notific
   await page.waitForTimeout(250);
   await expect(page.getByRole('button', { name: /条新动态/ })).toHaveCount(0);
 
-  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
-  expect(pulse.ok()).toBe(true);
+  const arrival = await request.post('/mock/control/action', {
+    data: { type: 'approval', channel_id: 'c0' },
+  });
+  expect(arrival.ok()).toBe(true);
   await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
 });
 
@@ -832,15 +835,15 @@ test('F7 continuous upward scrolling does not fight history prepend anchoring', 
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
 
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   // The virtualizer is the sole geometry owner. Native overflow anchoring
   // would add a second prepend correction on top of keyed anchor retention.
   await expect(viewport).toHaveCSS('overflow-anchor', 'none');
   const samplesPromise = page.evaluate(async () => {
-    const node = document.querySelector('.timeline-message-list');
     const samples = [];
     for (let frame = 0; frame < 180; frame += 1) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
+      const node = window.__ATOLL_TEST_READING_OWNER__.current();
       const viewportRect = node.getBoundingClientRect();
       const positions = {};
       for (const entry of node.querySelectorAll('.timeline-entry')) {
@@ -907,12 +910,13 @@ test('F7 one boundary demand keeps one status DOM across filtered physical histo
 
   await login(page);
   await expect(page.getByText('visible tail 20', { exact: true })).toBeVisible({ timeout: 15_000 });
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
   await page.evaluate(() => {
     window.__ATOLL_DIAGNOSTICS__.clear();
     const timeline = document.querySelector('.timeline');
-    const list = document.querySelector('.timeline-message-list');
+    const owner = window.__ATOLL_TEST_READING_OWNER__;
+    const list = owner.current();
     const ids = new WeakMap();
     let nextID = 0;
     let frame = 0;
@@ -921,7 +925,7 @@ test('F7 one boundary demand keeps one status DOM across filtered physical histo
       statusIDs: [], revisions: [], samples: [],
     };
     const sample = () => {
-      const currentList = document.querySelector('.timeline-message-list');
+      const currentList = owner.current();
       const status = document.querySelector('.timeline-history-demand');
       if (status && !ids.has(status)) ids.set(status, `status-${++nextID}`);
       const statusID = status ? ids.get(status) : '';
@@ -934,7 +938,8 @@ test('F7 one boundary demand keeps one status DOM across filtered physical histo
         phase: status?.dataset.phase || '',
         revision,
         animationName: status ? getComputedStyle(status, '::before').animationName : '',
-        sameList: currentList === list,
+        ownerCount: owner.nodes().length,
+        container: currentList.dataset.readingContainer || 'virtuoso',
         listWidth: currentList?.getBoundingClientRect().width || 0,
         listHeight: currentList?.getBoundingClientRect().height || 0,
         presentationRows: currentList?.querySelectorAll('[data-presentation-row-id]').length || 0,
@@ -1023,7 +1028,7 @@ test('F7 one boundary demand keeps one status DOM across filtered physical histo
   expect(pendingSamples.length).toBeGreaterThan(1);
   expect(pendingSamples.every((sample) => sample.phase === 'pending')).toBe(true);
   expect(pendingSamples.every((sample) => sample.animationName === 'history-status-spin')).toBe(true);
-  expect(evidence.samples.every((sample) => sample.sameList)).toBe(true);
+  expect(evidence.samples.every((sample) => sample.ownerCount === 1)).toBe(true);
   expect(pendingSamples.every((sample) => sample.presentationRows > 0)).toBe(true);
   expect(Math.max(...evidence.samples.map((sample) => Math.abs(sample.listWidth - evidence.baseline.width)))).toBeLessThanOrEqual(1);
   expect(Math.max(...evidence.samples.map((sample) => Math.abs(sample.listHeight - evidence.baseline.height)))).toBeLessThanOrEqual(1);
@@ -1249,7 +1254,7 @@ test('F7 oldest-history boundary stays inert under repeated upward input', async
   expect(reset.ok()).toBe(true);
   await login(page);
 
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
   for (let step = 0; step < 30; step += 1) {
     await viewport.hover();
@@ -1262,7 +1267,7 @@ test('F7 oldest-history boundary stays inert under repeated upward input', async
   await expect.poll(() => viewport.evaluate((node) => Math.round(node.scrollTop))).toBe(0);
 
   const before = await page.evaluate(() => {
-    const node = document.querySelector('.timeline-message-list');
+    const node = window.__ATOLL_TEST_READING_OWNER__.current();
     const first = node.querySelector('[data-presentation-row-id]');
     return {
       top: node.scrollTop,
@@ -1274,7 +1279,7 @@ test('F7 oldest-history boundary stays inert under repeated upward input', async
   for (let step = 0; step < 12; step += 1) await page.mouse.wheel(0, -720);
   await page.waitForTimeout(200);
   const after = await page.evaluate(() => {
-    const node = document.querySelector('.timeline-message-list');
+    const node = window.__ATOLL_TEST_READING_OWNER__.current();
     const first = node.querySelector('[data-presentation-row-id]');
     return {
       top: node.scrollTop,
@@ -1575,7 +1580,8 @@ for (const seed of [1722, 1723, 1724]) {
       window.__ATOLL_ACCESS_INITIAL_TRACE__ = [];
       const started = performance.now();
       const sample = () => {
-        const viewport = document.querySelector('.timeline-message-list');
+        const owner = window.__ATOLL_TEST_READING_OWNER__;
+        const viewport = owner.current();
         const rows = [...(viewport?.querySelectorAll('[data-presentation-row-id]') || [])];
         window.__ATOLL_ACCESS_INITIAL_TRACE__.push({
           at: Math.round(performance.now() - started),
@@ -1586,7 +1592,7 @@ for (const seed of [1722, 1723, 1724]) {
           first: rows[0]?.dataset.presentationRowId || '',
           last: rows.at(-1)?.dataset.presentationRowId || '',
           mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
-          gap: viewport ? Math.round(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop) : null,
+          gap: owner.tailDistance(viewport),
         });
         if (performance.now() - started < 4_000) window.__ATOLL_ACCESS_INITIAL_RAF__ = requestAnimationFrame(sample);
       };
@@ -1598,8 +1604,8 @@ for (const seed of [1722, 1723, 1724]) {
     let failure = null;
     try {
       await expect(page.getByText('c0.project history 119: ask project-agent for PONG', { exact: true })).toBeVisible({ timeout: 12_000 });
-      const viewport = page.locator('.timeline-message-list');
-      await expect.poll(() => viewport.evaluate((node) => Math.round(node.scrollHeight - node.clientHeight - node.scrollTop))).toBeLessThanOrEqual(24);
+      const viewport = readingOwner(page);
+      await expect.poll(() => viewport.evaluate(tailDistance)).toBeLessThanOrEqual(24);
     } catch (error) {
       failure = error;
     } finally {
@@ -1632,18 +1638,21 @@ test('F7 mobile keeps realtime delivery while the reader is browsing history', a
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
 
-  const viewport = page.locator('.timeline-message-list');
+  const viewport = readingOwner(page);
   for (let index = 0; index < 5; index += 1) {
     await viewport.hover();
     await page.mouse.wheel(0, -100_000);
     await page.waitForTimeout(40);
   }
-  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
-  await request.post('/mock/control/action', { data: { type: 'pulse' } });
+  await expect.poll(() => viewport.evaluate(tailDistance)).toBeGreaterThan(24);
+  const arrival = await request.post('/mock/control/action', {
+    data: { type: 'approval', channel_id: 'c0' },
+  });
+  expect(arrival.ok()).toBe(true);
   const jump = page.getByRole('button', { name: /条新动态/ });
   await expect(jump).toBeVisible();
   await jump.click();
-  await expect(page.getByText(/c0 动态 #1/)).toBeVisible();
+  await expect(page.getByText('Approve live mock action', { exact: true })).toBeVisible();
 });
 
 test('F6-PERF-03/F7 100k ledger keeps bounded production DOM and reveals older rows on upward demand', async ({ page, request }) => {
