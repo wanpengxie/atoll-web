@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
+import { installReadingOwnerHelper } from './reading-owner.js';
 
 // Agent Q. Frame-by-frame acceptance of the ruling "following = plain DOM tail
 // window + flex-direction: column-reverse".
@@ -95,8 +96,9 @@ async function armFrames(page) {
     const frames = [];
     let stopped = false;
     const read = () => {
-      const root = document.querySelector('.timeline-message-list');
-      if (!root) return { container: 'none' };
+      const owners = window.__ATOLL_TEST_READING_OWNER__.nodes();
+      const root = owners.length === 1 ? owners[0] : null;
+      if (!root) return { container: 'none', ownerCount: owners.length };
       const container = root.dataset.readingContainer || 'virtuoso';
       const rootRect = root.getBoundingClientRect();
       const scrollTop = Number(root.scrollTop || 0);
@@ -106,6 +108,7 @@ async function armFrames(page) {
       const rowNodes = root.querySelectorAll('[data-presentation-row-id]');
       const lastRow = rowNodes[rowNodes.length - 1] || null;
       return {
+        ownerCount: owners.length,
         container,
         scrollTop: Number(scrollTop.toFixed(2)),
         scrollHeight: Number(scrollHeight.toFixed(2)),
@@ -179,6 +182,7 @@ function liveText(index) {
 test.describe('Q following tail: structural bottom', () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1120, height: 620 });
+    await installReadingOwnerHelper(page);
   });
 
   test('every following frame is at the tail and no app write touches the scroller', async ({ page, request }, testInfo) => {
@@ -199,7 +203,8 @@ test.describe('Q following tail: structural bottom', () => {
       marks.push({ name, frame: await page.evaluate(() => window.__qFrames.peek()) });
     };
 
-    // (a) typing grows the input stack, which shrinks the reading viewport.
+    // (a) typing grows the fixed Composer overlay. The reading viewport must
+    // stay fixed; only the overlay is allowed to change height.
     await mark('a-typing');
     const composer = page.getByTestId('composer-input');
     await composer.click();
@@ -280,6 +285,7 @@ test.describe('Q following tail: structural bottom', () => {
     const writes = await page.evaluate(() => window.__qWrites.all());
 
     const following = frames.filter((entry) => entry.container === 'following-tail');
+    const invalidOwners = frames.filter((entry) => entry.ownerCount !== 1);
     const bad = following.filter((entry) => Math.abs(entry.scrollGap) > 0.5
       || (entry.visualGap != null && Math.abs(entry.visualGap) > 0.5));
     const listWrites = writes.filter((entry) => entry.inList || entry.isList);
@@ -291,6 +297,7 @@ test.describe('Q following tail: structural bottom', () => {
       const bucket = perPhase[entry.phase] || (perPhase[entry.phase] = {
         frames: 0, minHeight: Infinity, maxHeight: -Infinity, minClient: Infinity, maxClient: -Infinity,
         minRows: Infinity, maxRows: -Infinity, maxScrollGap: 0, maxVisualGap: 0,
+        minInput: Infinity, maxInput: -Infinity,
         minWaiting: Infinity, maxWaiting: -Infinity, minTailToBottom: Infinity, maxTailToBottom: -Infinity,
       });
       bucket.frames += 1;
@@ -302,6 +309,8 @@ test.describe('Q following tail: structural bottom', () => {
       bucket.maxRows = Math.max(bucket.maxRows, entry.rows);
       bucket.maxScrollGap = Math.max(bucket.maxScrollGap, Math.abs(entry.scrollGap));
       bucket.maxVisualGap = Math.max(bucket.maxVisualGap, Math.abs(entry.visualGap ?? 0));
+      bucket.minInput = Math.min(bucket.minInput, entry.inputHeight);
+      bucket.maxInput = Math.max(bucket.maxInput, entry.inputHeight);
       bucket.minWaiting = Math.min(bucket.minWaiting, entry.waiting);
       bucket.maxWaiting = Math.max(bucket.maxWaiting, entry.waiting);
       if (entry.lastRowToBottom != null) {
@@ -314,6 +323,7 @@ test.describe('Q following tail: structural bottom', () => {
       bucket.clientSpan = Number((bucket.maxClient - bucket.minClient).toFixed(1));
       bucket.rowSpan = bucket.maxRows - bucket.minRows;
       bucket.waitingSpan = bucket.maxWaiting - bucket.minWaiting;
+      bucket.inputSpan = Number((bucket.maxInput - bucket.minInput).toFixed(1));
     }
 
     const report = {
@@ -323,6 +333,7 @@ test.describe('Q following tail: structural bottom', () => {
       perPhase,
       offendingFrames: bad.slice(0, 40),
       offendingCount: bad.length,
+      invalidOwners: invalidOwners.slice(0, 40),
       listWrites: listWrites.map((entry) => ({ kind: entry.kind, phase: entry.phase, node: entry.node, detail: entry.detail, stack: entry.stack })),
       otherWrites: writes.filter((entry) => !entry.inList && !entry.isList)
         .map((entry) => ({ kind: entry.kind, phase: entry.phase, node: entry.node })),
@@ -330,12 +341,21 @@ test.describe('Q following tail: structural bottom', () => {
     await dump('following-frames.json', report);
     await testInfo.attach('following-frames.json', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
 
-    const summary = JSON.stringify({ perPhase, offendingCount: bad.length, first: bad.slice(0, 6), listWrites: report.listWrites }, null, 2);
+    const summary = JSON.stringify({
+      perPhase,
+      offendingCount: bad.length,
+      first: bad.slice(0, 6),
+      invalidOwners: report.invalidOwners,
+      listWrites: report.listWrites,
+    }, null, 2);
     expect(following.length, summary).toBeGreaterThan(600);
+    expect(invalidOwners.length, summary).toBe(0);
     expect(bad.length, summary).toBe(0);
     expect(listWrites.length, summary).toBe(0);
-    // The cases have to be real: heights and viewport must actually have moved.
-    expect(perPhase['a-typing']?.clientSpan || 0, summary).toBeGreaterThan(20);
+    // The cases have to be real. Composer growth is an overlay-only change:
+    // its own height changes while the reading viewport remains fixed.
+    expect(perPhase['a-typing']?.inputSpan || 0, summary).toBeGreaterThan(20);
+    expect(perPhase['a-typing']?.clientSpan ?? -1, summary).toBe(0);
     expect(perPhase['c-live-append']?.heightSpan || 0, summary).toBeGreaterThan(200);
     expect(perPhase['d-tail-stream']?.heightSpan || 0, summary).toBeGreaterThan(20);
     expect(perPhase['f-late-media']?.heightSpan || 0, summary).toBeGreaterThan(20);
@@ -359,18 +379,14 @@ async function armSwitchSampler(page) {
     let stopped = false;
     const tick = () => {
       if (stopped) return;
-      const active = document.querySelector('.timeline-reading-layer.is-incoming.is-active');
-      const root = active?.querySelector('[data-presentation-row-id]')
-        ? active.querySelector('.timeline-message-list')
-        : document.querySelector('.timeline-reading-layer.is-outgoing .timeline-message-list')
-          || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list');
+      const owners = window.__ATOLL_TEST_READING_OWNER__.nodes();
+      const root = owners.length === 1 ? owners[0] : null;
       if (root) {
         const rootRect = root.getBoundingClientRect();
         const offsets = {};
         for (const node of root.querySelectorAll('[data-presentation-row-id]')) {
           offsets[node.dataset.presentationRowId] = Number((node.getBoundingClientRect().top - rootRect.top).toFixed(2));
         }
-        const scrollTop = Number(root.scrollTop || 0);
         const container = root.dataset.readingContainer || 'virtuoso';
         frames.push({
           frame: frames.length,
@@ -378,13 +394,20 @@ async function armSwitchSampler(page) {
           phase: window.__qPhase || '',
           container,
           mode: root.closest('.timeline')?.dataset.viewportMode || '',
-          scrollGap: container === 'following-tail'
-            ? Number((-scrollTop).toFixed(2))
-            : Number((Number(root.scrollHeight || 0) - Number(root.clientHeight || 0) - scrollTop).toFixed(2)),
+          ownerCount: owners.length,
+          scrollGap: Number(window.__ATOLL_TEST_READING_OWNER__.tailDistance(root).toFixed(2)),
           rowCount: Object.keys(offsets).length,
           offsets,
         });
-      } else frames.push({ frame: frames.length, at: Number(performance.now().toFixed(1)), phase: window.__qPhase || '', container: 'none', rowCount: 0, offsets: {} });
+      } else frames.push({
+        frame: frames.length,
+        at: Number(performance.now().toFixed(1)),
+        phase: window.__qPhase || '',
+        container: 'none',
+        ownerCount: owners.length,
+        rowCount: 0,
+        offsets: {},
+      });
       if (frames.length < 40_000) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
@@ -435,6 +458,7 @@ function analyseSwitches(frames) {
 test.describe('Q following tail: mode switching', () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1120, height: 620 });
+    await installReadingOwnerHelper(page);
   });
 
   test('following -> browsing -> following ten times keeps the anchor and paints no empty frame', async ({ page, request }, testInfo) => {
