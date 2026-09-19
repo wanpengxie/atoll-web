@@ -436,6 +436,33 @@ deliberately excluded from the commit-boundary result; once their product
 commit lands, rerun the unchanged UX-A08 and case38 commands above with fresh
 isolated ports. Their hard RED contracts remain in force.
 
+## Follow-up: current Reading candidate recheck at `2265cfa`
+
+Notification work has since advanced through `2265cfa` (with the Reading
+candidate still uncommitted in the shared worktree). I ran the unchanged hard
+pair against that candidate with ports `15287/19846`:
+
+```text
+ATOLL_TEST_WEB_PORT=15287 ATOLL_TEST_MOCK_PORT=19846 npx playwright test \
+  tests/browser/ux-unseen-persistence.spec.js \
+  tests/browser/waiting-production-contract.spec.js \
+  --grep "reload normalizes durable unseen|wheel-takeover-after-send" \
+  --reporter=line --output=test-results-browser-tz-reading-candidate-20260920
+```
+
+Result: **2 RED, unchanged** — A08 line 91 still sees a visible approval/jump
+followed by `unseenRecords=[]`; case38 line 298 still sees
+`after.list.gap=0` where browsing requires `>1`. The target specs remain byte
+unchanged from `61c8758` (`git diff 61c8758 HEAD -- <two target specs>` is
+empty); no candidate fallback or assertion edit was made.
+
+The current HEAD and candidate source both use `viewport.activationID` in the
+outer teardown dependency; neither source contains the historical
+`[state.channelId, controller.activationID, messageListKey]` expression. The
+candidate pair produced no `ReferenceError: controller is not defined` output.
+The Reading candidate is still uncommitted, so this result is a pre-commit
+probe; rerun the exact pair once its product commit is published.
+
 ## Current files changed in this partition
 
 - `tests/browser/ui-visual.spec.js` (current public governance/files selectors;
