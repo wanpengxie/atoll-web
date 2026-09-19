@@ -430,6 +430,23 @@ Composer direct calls without that context fail closed. Direct owner and
 renderer-path tests now pass. The original finding remains recorded above as
 the pre-fix evidence boundary.
 
+### Ninth-round read-only recheck of `4b7e5e3`
+
+Non-`interrupt` `agent.*` words (`steer`, `replace`, `compact`, `hold`, and
+`dismiss`) normalize through the same owner without requiring an interrupt
+turn context; they remain persistable while transport is closed and are still
+fenced by member access, world/attempt owner, and transport generation at the
+request-owner phases. `src/model/request-owner.js` and the current submission
+owner suites passed the access/world/attempt checks.
+
+The Waiting feature path has a separate boundary: when `item.targetAuthority`
+is absent, `createFeatureWaitingControlSubmission` labels the source as
+`feature`, and `assertInterruptContext` currently permits that source exception.
+The Waiting capability stays visible, but the interrupt command is accepted
+instead of failing closed on missing authority. This is an explicit follow-up
+control-owner finding; no Workspace/control source was changed in this
+read-only review.
+
 | Packet | Scope (mutually exclusive) | Minimal repro/evidence | First public owner | Disposition |
 |---|---|---|---|---|
 | R-SZ-001 | Daemon directory projection never exposes declaration secrets. | `tests/space-administration.test.js`: public `accessRef.directory` receives `key: secret`. | `useWireConnection` accessRef.directory + governance ports | RED; baseline SZ-018 |
