@@ -96,11 +96,19 @@ test('audit: distributed sparse matches expose each presentation commit and view
   for (let step = 0; step < 50; step += 1) {
     await page.mouse.wheel(0, -320);
     await page.waitForTimeout(90);
-    const count = await list.locator('[data-presentation-row-id]').count();
-    if (count >= 6) break;
   }
-  await expect.poll(() => list.locator('[data-presentation-row-id]').count(), { timeout: 45_000 })
-    .toBeGreaterThanOrEqual(5);
+  // Supply may remain in the structural Following owner until its rows exceed
+  // the viewport.  Wait for committed semantic growth, not a forced handoff
+  // to Virtuoso or a fixed number of simultaneously mounted row elements.
+  await expect.poll(() => page.evaluate(() => {
+    let count = 0;
+    let previous = 0;
+    for (const frame of window.__SPARSE_PAINT_AUDIT__.frames) {
+      if (frame.targetCount > previous) count += 1;
+      previous = frame.targetCount;
+    }
+    return count;
+  }), { timeout: 45_000 }).toBeGreaterThanOrEqual(3);
   await page.waitForTimeout(300);
 
   const evidence = await page.evaluate(() => {
@@ -189,6 +197,7 @@ test('audit: distributed sparse matches expose each presentation commit and view
   await testInfo.attach('sparse-filter-paint-audit.json', { path, contentType: 'application/json' });
 
   expect(transitions.length).toBeGreaterThanOrEqual(3);
-  expect(uniquePrependCommits.length).toBeGreaterThanOrEqual(3);
+  expect(artifact.intentSettles.filter((entry) => entry.event === 'history.intent_satisfied').length)
+    .toBeGreaterThanOrEqual(2);
   expect(artifact.projectionChecks.length).toBeGreaterThanOrEqual(transitions.length);
 });

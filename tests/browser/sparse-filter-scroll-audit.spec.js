@@ -25,7 +25,7 @@ async function login(page) {
   await expect(page.locator('.timeline-message-list')).toBeVisible();
 }
 
-test('audit: sparse Claude filter preserves rows and exposes the missing authoritative EOF feedback', async ({ page, request }, testInfo) => {
+test('audit: sparse Claude filter preserves rows and commits a durable authoritative EOF boundary', async ({ page, request }, testInfo) => {
   test.setTimeout(90_000);
   const reset = await request.post('/mock/control/reset', {
     data: { scenario: 'deep-history-delayed', seed: 0x92_30_01 },
@@ -65,7 +65,7 @@ test('audit: sparse Claude filter preserves rows and exposes the missing authori
       const status = document.querySelector('.timeline-history-demand');
       if (status && !statusIDs.has(status)) statusIDs.set(status, `status-${++nextStatusID}`);
       const rows = [...document.querySelectorAll('[data-presentation-row-id]')];
-      const feedback = [...document.querySelectorAll('.timeline-history-status, .empty-ledger')]
+      const feedback = [...document.querySelectorAll('.timeline-history-status, .timeline-history-boundary, .empty-ledger')]
         .map((node) => node.textContent?.trim() || '').filter(Boolean);
       state.frames.push({
         elapsedMs: performance.now() - state.startedAt,
@@ -84,17 +84,17 @@ test('audit: sparse Claude filter preserves rows and exposes the missing authori
     requestAnimationFrame(sample);
   });
 
-  let statusSeen = false;
   await list.hover();
   for (let step = 0; step < 12; step += 1) {
     await page.mouse.wheel(0, -360);
     await page.waitForTimeout(18);
-    statusSeen = await page.locator('.timeline-history-demand[data-phase="pending"]').isVisible().catch(() => false);
-    if (statusSeen) break;
   }
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
     .some((entry) => entry.event === 'history.intent_exhausted')), { timeout: 60_000 }).toBe(true);
-  await expect(page.locator('.timeline-history-demand[data-phase="exhausted"]'))
+  // Pending acquisition belongs to the transient demand affordance.  Once
+  // authoritative EOF is committed, the durable boundary belongs to the
+  // reading container and scrolls with the content.
+  await expect(page.locator('.timeline-history-boundary[data-phase="exhausted"]'))
     .toContainText('没有更早的符合筛选的往来');
 
   const promotionCountBeforeRepeat = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
@@ -110,7 +110,7 @@ test('audit: sparse Claude filter preserves rows and exposes the missing authori
     state.active = false;
     const diagnostics = window.__ATOLL_DIAGNOSTICS__.snapshot()
       .filter((entry) => entry.event.startsWith('history.'));
-    const finalFeedback = [...document.querySelectorAll('.timeline-history-status, .empty-ledger')]
+    const finalFeedback = [...document.querySelectorAll('.timeline-history-status, .timeline-history-boundary, .empty-ledger')]
       .map((node) => node.textContent?.trim() || '').filter(Boolean);
     return {
       frames: state.frames,
@@ -127,7 +127,7 @@ test('audit: sparse Claude filter preserves rows and exposes the missing authori
   const artifact = {
     capturedAt: new Date().toISOString(),
     sourceDigest: await sourceDigest(),
-    statusSeen,
+    transientDemandVisible: evidence.frames.some((frame) => frame.statusPhase === 'pending'),
     promotionCountBeforeRepeat,
     promotionCountAfterRepeat: promotions.length,
     batchCount: batches.length,
@@ -158,12 +158,15 @@ test('audit: sparse Claude filter preserves rows and exposes the missing authori
   await writeFile(path, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
   await testInfo.attach('sparse-filter-scroll-audit.json', { path, contentType: 'application/json' });
 
-  expect(statusSeen).toBe(true);
+  // Sparse semantic scanning is an anticipatory supply obligation.  It keeps
+  // the already-readable rows installed and does not impersonate an explicit
+  // foreground user wait.
+  expect(artifact.transientDemandVisible).toBe(false);
   expect(batches.length).toBeGreaterThanOrEqual(2);
-  expect(pending.length).toBeGreaterThan(1);
-  expect(artifact.pendingStatusIDs).toHaveLength(1);
-  expect(promotions).toHaveLength(1);
-  expect(artifact.minimumRowsDuringPending).toBeGreaterThan(0);
+  expect(pending).toHaveLength(0);
+  expect(artifact.pendingStatusIDs).toHaveLength(0);
+  expect(promotions).toHaveLength(0);
+  expect(Math.min(...evidence.frames.map((frame) => frame.rowIDs.length))).toBeGreaterThan(0);
   expect(artifact.finalClaudeRows).toBeGreaterThan(0);
   expect(promotions.length).toBe(promotionCountBeforeRepeat);
   expect(visibleEOF).toBe(true);
