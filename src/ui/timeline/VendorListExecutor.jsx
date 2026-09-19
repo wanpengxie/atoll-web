@@ -129,8 +129,10 @@ export function VendorListExecutor({
   const virtuosoRef = useRef(null);
   const rootRef = useRef(null);
   const [rootNode, setRootNode] = useState(null);
+  const [anchorRetentionExtent, setAnchorRetentionExtent] = useState(0);
   const geometryRevisionRef = useRef(0);
   const observationFrameRef = useRef(0);
+  const contentAnchorFrameRef = useRef(0);
   const lastScrollTopRef = useRef(0);
   const consumedCommandRef = useRef('');
   const touchRef = useRef(null);
@@ -241,14 +243,70 @@ export function VendorListExecutor({
     const root = rootRef.current;
     const owner = readingRef.current;
     const command = owner.contentAnchorCommand?.();
-    if (!root || !command) return false;
-    const executed = executeReadingDOMCommand(command, {
-      virtuoso: virtuosoRef.current, root,
-    });
-    if (!executed) return false;
-    owner.consumeContentAnchor?.(command);
-    scheduleObserve(source, true);
-    return true;
+    if (!root || !command) {
+      if (command) owner.consumeContentAnchor?.(command);
+      return false;
+    }
+    if (command.expectedExpanded != null) {
+      const extentDelta = Math.abs(Number(root.scrollHeight) - Number(command.beforeScrollHeight));
+      setAnchorRetentionExtent((current) => Math.max(current, 2200, extentDelta + 1200));
+    }
+    const execute = () => {
+      const currentRoot = rootRef.current;
+      const currentOwner = readingRef.current;
+      const currentCommand = currentOwner.contentAnchorCommand?.();
+      if (!currentCommand) return false;
+      if (!currentRoot) {
+        currentOwner.consumeContentAnchor?.(currentCommand);
+        return false;
+      }
+      if (!Number.isFinite(Number(currentRoot.scrollHeight))
+        || Math.abs(Number(currentRoot.scrollHeight) - Number(currentCommand.beforeScrollHeight)) <= 0.5) {
+        return false;
+      }
+      const anchor = [...currentRoot.querySelectorAll('[data-fold-id]')]
+        .find((node) => node.getAttribute('data-fold-id') === String(currentCommand.anchorID));
+      if (!anchor || (currentCommand.expectedExpanded != null
+        && anchor.getAttribute('aria-expanded') !== String(Boolean(currentCommand.expectedExpanded)))) {
+        currentOwner.consumeContentAnchor?.(currentCommand);
+        setAnchorRetentionExtent(0);
+        return false;
+      }
+      const executed = executeReadingDOMCommand(currentCommand, {
+        virtuoso: virtuosoRef.current, root: currentRoot,
+      });
+      // A changed extent with a missing/stale anchor is a terminal command
+      // failure; never let it survive into an unrelated geometry transaction.
+      currentOwner.consumeContentAnchor?.(currentCommand);
+      if (!(executed && currentCommand.expectedExpanded === true)) setAnchorRetentionExtent(0);
+      if (executed) scheduleObserve(source, true);
+      return executed;
+    };
+    // Collapse must be corrected in the same pre-paint transaction. If the
+    // measured extent has not landed yet, retry once on the next frame; the
+    // unchanged-height guard above keeps that pending command alive without
+    // consuming it as a failed execution.
+    if (command.expectedExpanded === false) {
+      const executed = execute();
+      if (!executed && readingRef.current.contentAnchorCommand?.()) {
+        contentAnchorFrameRef.current = globalThis.requestAnimationFrame?.(() => {
+          contentAnchorFrameRef.current = 0;
+          execute();
+        }) || 0;
+      }
+      return executed;
+    }
+    if (contentAnchorFrameRef.current) return false;
+    // Expansion increases the item above the fold control. Let the vendor
+    // commit that measured extent while the temporary retention window keeps
+    // the large item mounted, then issue the same typed scroll command.
+    contentAnchorFrameRef.current = globalThis.requestAnimationFrame?.(() => {
+      contentAnchorFrameRef.current = globalThis.requestAnimationFrame?.(() => {
+        contentAnchorFrameRef.current = 0;
+        execute();
+      }) || 0;
+    }) || 0;
+    return false;
   }, [scheduleObserve]);
 
   useLayoutEffect(() => {
@@ -405,6 +463,7 @@ export function VendorListExecutor({
 
   useEffect(() => () => {
     if (observationFrameRef.current) globalThis.cancelAnimationFrame?.(observationFrameRef.current);
+    if (contentAnchorFrameRef.current) globalThis.cancelAnimationFrame?.(contentAnchorFrameRef.current);
   }, []);
 
   if (reading.restorePending && !snapshot.rows.length) {
@@ -436,7 +495,7 @@ export function VendorListExecutor({
     />}
     followOutput={false}
     defaultItemHeight={132}
-    increaseViewportBy={900}
+    increaseViewportBy={anchorRetentionExtent || 900}
     overscan={900}
     scrollerRef={bindScroller}
     components={VIRTUOSO_COMPONENTS}
