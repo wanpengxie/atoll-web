@@ -11,6 +11,9 @@ async function login(page) {
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.locator('.timeline')).toBeVisible();
+  await expect(page.locator('.top-error')).toHaveCount(0);
 }
 
 async function disconnect(context, page, request) {
@@ -26,6 +29,12 @@ async function disconnect(context, page, request) {
   await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
 }
 
+async function chooseSteward(page) {
+  const editor = page.getByRole('textbox', { name: '消息', exact: true });
+  await editor.fill('@st');
+  await page.getByRole('option', { name: /steward/ }).click();
+}
+
 test('offline draft restores after reload and sends exactly once when reconnected', async ({ context, page, request }) => {
   await reset(request);
   await login(page);
@@ -34,7 +43,7 @@ test('offline draft restores after reload and sends exactly once when reconnecte
   // Establish the "known member" premise while the canonical roster is
   // online. The durable recipient snapshot may then be edited and restored
   // offline without asking an unavailable directory to discover a new actor.
-  await page.getByLabel('添加 @ 收件人').selectOption('steward');
+  await chooseSteward(page);
   await expect(page.getByRole('status', { name: '收件人' })).toContainText('@steward');
 
   await disconnect(context, page, request);
@@ -43,16 +52,17 @@ test('offline draft restores after reload and sends exactly once when reconnecte
   await expect(page.getByLabel('上传本机文件到频道')).toBeDisabled();
 
   await editor.pressSequentially('离线草稿跨刷新恢复');
-  await expect(editor).toHaveValue('离线草稿跨刷新恢复');
+  await expect(editor).toContainText('离线草稿跨刷新恢复');
+  await expect(editor).toBeFocused();
 
   await context.setOffline(false);
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
-  await expect(page.getByRole('textbox', { name: '消息' })).toHaveValue('离线草稿跨刷新恢复');
+  await expect(page.getByRole('textbox', { name: '消息' })).toContainText('离线草稿跨刷新恢复');
   await expect(page.getByRole('status', { name: '收件人' })).toContainText('@steward');
 
   await page.getByRole('button', { name: '发送' }).click();
-  await expect(page.getByRole('textbox', { name: '消息' })).toHaveValue('');
+  await expect(page.getByRole('textbox', { name: '消息' })).toHaveText('', { exact: true });
   const sent = page.locator('[data-presentation-row-id]').filter({ hasText: '离线草稿跨刷新恢复' });
   await expect(sent).toHaveCount(1);
   await expect(sent).toBeVisible();

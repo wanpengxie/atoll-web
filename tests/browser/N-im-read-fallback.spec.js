@@ -1,45 +1,26 @@
 import { expect, test } from '@playwright/test';
-import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
+import { READING_OWNER_SELECTOR } from './reading-owner.js';
 
 // IM 读侧兜底的生产路径证据（监理 2026-09-18 14:58 补充裁定）。
 // 用户只有三种状态：(1) 在底部且页面可见 —— 新到达即读，恒不产生未读计数；
 // (2) 不在底部 / 在别的频道 / 页面不可见 —— 到达计入未读；(3) 回到底部 ——
 // 该范围已装入的积压一次清。
-// 本 spec 走真实 Chromium 的 App→Timeline→MessageList，不碰任何夹具。
+// 本 spec 走真实 Chromium 的 main→WorkspaceApp→ConversationSurface→VendorListExecutor，不碰任何夹具。
 
-const SOURCE_PATHS = [
-  'src/App.jsx',
-  'src/app/AppShell.jsx',
-  'src/app/hooks/useChannelFeed.js',
-  'src/model/cursors.js',
-  'src/model/history-demand.js',
-  'src/model/notification-policy.js',
-  'src/ui/ChannelList.jsx',
-  'src/ui/Timeline.jsx',
-  'src/ui/timeline/useReadingSession.js',
-];
-
-const ACTIVE_READING_SELECTOR = [
-  '.timeline-reading-layer.is-incoming .timeline-message-list',
-  '.timeline-reading-layer.is-active .timeline-message-list',
-].join(', ');
+// ConversationSurface now publishes one canonical reading owner through the
+// ReadingContainerHandoff. Keep browser evidence on that owner instead of
+// reaching into the retired dual-layer handoff shape.
+const ACTIVE_READING_SELECTOR = READING_OWNER_SELECTOR;
 
 function readingViewport(page) {
   return page.locator(ACTIVE_READING_SELECTOR);
-}
-
-async function fingerprint() {
-  const hash = createHash('sha256');
-  for (const path of SOURCE_PATHS) hash.update(path).update('\0').update(await readFile(path));
-  return hash.digest('hex');
 }
 
 async function attachJSON(testInfo, name, payload) {
   const path = testInfo.outputPath(name);
   await writeFile(path, `${JSON.stringify({
     capturedAt: new Date().toISOString(),
-    sourceDigest: await fingerprint(),
     ...payload,
   }, null, 2)}\n`, 'utf8');
   await testInfo.attach(name, { path, contentType: 'application/json' });
@@ -56,7 +37,11 @@ async function login(page) {
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.locator('.timeline')).toBeVisible();
+  await expect(readingViewport(page)).toHaveCount(1);
   await expect(readingViewport(page)).toBeVisible();
+  await expect(page.locator('.top-error')).toHaveCount(0);
 }
 
 // 一条真实到达：steward 向我发起一条新的 human.approve 请求。它是一条全新的
@@ -93,8 +78,7 @@ async function readCounts(page, channelName) {
       pending: Boolean(item?.querySelector('.unread-pending')),
       jump: Number(String(document.querySelector('.timeline-jump-latest')?.textContent || '').replace(/[^0-9]/g, '')) || 0,
       gap: (() => {
-        const node = document.querySelector('.timeline-reading-layer.is-incoming .timeline-message-list')
-          || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list')
+        const node = document.querySelector('.timeline-reading-stack > .timeline-reading-layer.is-active > .timeline-message-list')
           || document.querySelector('.timeline-message-list');
         if (!node) return null;
         return node.dataset.readingContainer === 'following-tail'
@@ -115,8 +99,7 @@ async function startCapture(page, channelName) {
       const items = [...document.querySelectorAll('.channel-item')];
       const item = items.find((node) => node.querySelector('.channel-name')?.textContent?.trim() === name);
       const digits = (node) => Number(String(node?.textContent || '').replace(/[^0-9]/g, '')) || 0;
-      const viewport = document.querySelector('.timeline-reading-layer.is-incoming .timeline-message-list')
-        || document.querySelector('.timeline-reading-layer.is-active .timeline-message-list')
+        const viewport = document.querySelector('.timeline-reading-stack > .timeline-reading-layer.is-active > .timeline-message-list')
         || document.querySelector('.timeline-message-list');
       state.frames.push({
         elapsedMs: Math.round(performance.now() - state.startedAt),
@@ -169,10 +152,24 @@ test('N1 有积压跳到最新即同时清零，且停在底部连续到达 20 �
   // 先把频道撑到可滚动，否则"离开底部"这个状态在这条夹具里根本不存在。
   await fillTail(request, 'c0', 24);
   await reachBottom(page);
+  const viewport = readingViewport(page);
+  const mountedRows = await viewport.evaluate((node) => {
+    const rows = [...node.querySelectorAll('[data-presentation-row-id]')];
+    return {
+      ids: rows.map((row) => row.dataset.presentationRowId),
+      tops: rows.map((row) => row.getBoundingClientRect().top),
+      width: node.getBoundingClientRect().width,
+      height: node.getBoundingClientRect().height,
+    };
+  });
+  expect(mountedRows.ids.length).toBeGreaterThan(0);
+  expect(new Set(mountedRows.ids).size).toBe(mountedRows.ids.length);
+  expect(mountedRows.tops).toEqual([...mountedRows.tops].sort((left, right) => left - right));
+  expect(mountedRows.width).toBeGreaterThan(0);
+  expect(mountedRows.height).toBeGreaterThan(0);
 
   const home = railSelector(page, 'c0');
   const jump = page.locator('.timeline-jump-latest');
-  const viewport = readingViewport(page);
 
   // (2) 不在底部：物理手势离开尾部，随后的到达必须计入未读。滚动幅度刻意只
   // 离开底部一屏左右，顶部那几个 root turn 仍在视窗外，所以它们的新终态是
@@ -231,6 +228,7 @@ test('N1 有积压跳到最新即同时清零，且停在底部连续到达 20 �
   const afterLeaving = await readCounts(page, 'c0');
 
   await attachJSON(testInfo, 'N1-following-tail.json', {
+    mountedRows,
     backlog,
     lastNoticeFrame,
     lastJumpFrame,
@@ -321,8 +319,8 @@ test('N3 页面不可见时到达计入未读，恢复可见并在底部后清�
   // headless Chromium 恒把每个标签页报成 visible（另开标签置前、CDP
   // setWebLifecycleState 都不改 document.visibilityState，已实测），所以这里
   // 直接改写页面读到的那一个事实并派发真正的 visibilitychange 事件：应用读的
-  // 就是 document.visibilityState，其余链路（App→Timeline→MessageList、
-  // WebSocket 到达、回执）都还是真实生产路径。
+  // 就是 document.visibilityState，其余链路（WorkspaceApp→ConversationSurface→
+  // VendorListExecutor、WebSocket 到达、回执）都还是真实生产路径。
   await page.evaluate(() => {
     let value = 'hidden';
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => value });

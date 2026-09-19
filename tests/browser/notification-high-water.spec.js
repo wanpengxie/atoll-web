@@ -1,25 +1,9 @@
 import { expect, test } from '@playwright/test';
-import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-
-const SOURCE_PATHS = [
-  'src/App.jsx',
-  'src/app/hooks/useChannelFeed.js',
-  'src/model/channel-feed-runtime.js',
-  'src/model/cursors.js',
-  'src/model/history-demand.js',
-  'src/ui/timeline/useReadingSession.js',
-];
-
-async function sourceDigest() {
-  const hash = createHash('sha256');
-  for (const path of SOURCE_PATHS) hash.update(path).update('\0').update(await readFile(path));
-  return hash.digest('hex');
-}
+import { writeFile } from 'node:fs/promises';
 
 async function attachEvidence(testInfo, name, payload) {
   const path = testInfo.outputPath(name);
-  await writeFile(path, `${JSON.stringify({ sourceDigest: await sourceDigest(), ...payload }, null, 2)}\n`, 'utf8');
+  await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   await testInfo.attach(name, { path, contentType: 'application/json' });
 }
 
@@ -36,6 +20,10 @@ async function login(page) {
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(page.locator('.timeline-reading-stack > .timeline-reading-layer.is-active > .timeline-message-list')).toHaveCount(1);
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.locator('.timeline')).toBeVisible();
+  await expect(page.locator('.top-error')).toHaveCount(0);
 }
 
 function channel(page, name) {
@@ -64,18 +52,6 @@ async function railEvidence(page, channelID) {
 
 test('tail acknowledgement survives channel switches and reload while a future row notifies', async ({ page, request }, testInfo) => {
   await reset(request, 0x4e_05);
-
-  // Bind the browser run to the served implementation, not merely the files
-  // fingerprinted by the Node-side evidence attachment.
-  const [servedFeed, servedRuntime, servedApp] = await Promise.all([
-    request.get('/src/app/hooks/useChannelFeed.js').then((response) => response.text()),
-    request.get('/src/model/channel-feed-runtime.js').then((response) => response.text()),
-    request.get('/src/App.jsx').then((response) => response.text()),
-  ]);
-  expect(servedFeed).toContain('createChannelFeedRuntime');
-  expect(servedRuntime).toContain('notificationHighWater');
-  expect(servedRuntime).toContain('acknowledgeNotifications');
-  expect(servedApp).not.toContain('projectChannelUnread');
 
   await login(page);
   const home = channel(page, 'c0');

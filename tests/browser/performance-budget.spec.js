@@ -12,10 +12,19 @@ async function login(page, path = '/') {
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(page.getByRole('region', { name: '频道动态' })).toBeVisible();
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.locator('.timeline-reading-stack > .timeline-reading-layer.is-active > .timeline-message-list')).toHaveCount(1);
+  await expect(page.locator('.top-error')).toHaveCount(0);
 }
 
 async function renderedRows(page) {
   return page.locator('[data-presentation-row-id]').count();
+}
+
+async function chooseSteward(page) {
+  await page.getByRole('button', { name: '选择 Agent' }).click();
+  await page.getByRole('menu', { name: '选择目标 Agent' })
+    .getByRole('menuitem', { name: 'steward' }).click();
 }
 
 test('huge ledger paints the latest message before and after reload with a bounded rendered window', async ({ page, request }) => {
@@ -43,18 +52,23 @@ test('a full waiting queue remains visible and operable', async ({ page, request
   await login(page);
 
   const editor = page.getByRole('textbox', { name: '消息' });
-  await page.getByLabel('目标 Agent').selectOption('steward');
+  await chooseSteward(page);
   await editor.fill('performance active task');
+  await expect(editor).toBeFocused();
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.locator('[data-presentation-row-id]').filter({ hasText: 'performance active task' })).toBeVisible();
 
   for (let index = 1; index <= 8; index += 1) {
     await editor.fill(`performance queued task ${index}`);
+    await expect(editor).toBeFocused();
     await page.getByRole('button', { name: '发送', exact: true }).click();
   }
 
   const waiting = page.getByRole('region', { name: '等待区' });
   await expect(waiting.locator('.agent-wait-item')).toHaveCount(8);
+  await expect.poll(async () => waiting.locator('.agent-wait-item').evaluateAll((nodes) => (
+    nodes.map((node, index) => node.textContent?.includes(`performance queued task ${index + 1}`) === true)
+  ))).toEqual(Array.from({ length: 8 }, () => true));
   await waiting.getByRole('button', { name: '收起' }).click();
   await expect(waiting).toContainText('8 条等待消息');
   await waiting.getByRole('button', { name: '展开' }).click();

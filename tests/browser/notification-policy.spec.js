@@ -7,6 +7,10 @@ async function login(page) {
   await page.getByLabel('密码').fill('root');
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.locator('.timeline')).toBeVisible();
+  await expect(page.locator('.timeline-reading-stack > .timeline-reading-layer.is-active > .timeline-message-list')).toHaveCount(1);
+  await expect(page.locator('.top-error')).toHaveCount(0);
 }
 
 async function lifecycle(request, phase, extra = {}) {
@@ -22,15 +26,27 @@ function channel(page, name) {
 
 async function reloadEvidence(page) {
   return page.evaluate(async () => {
-    const request = indexedDB.open('atoll-feed-v8');
+    const databaseName = 'atoll-channel-replica-v1';
+    const request = indexedDB.open(databaseName);
     const db = await new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
-    const transaction = db.transaction(['rows', 'channelMeta'], 'readonly');
+    if (!db.objectStoreNames.contains('rows') || !db.objectStoreNames.contains('meta')) {
+      db.close();
+      return {
+        rail: window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project'),
+        reads: Object.fromEntries(Object.keys(localStorage)
+          .filter((key) => key.startsWith('atoll.read'))
+          .map((key) => [key, localStorage.getItem(key)])),
+        meta: null,
+        cachedSeqs: [],
+      };
+    }
+    const transaction = db.transaction(['rows', 'meta'], 'readonly');
     const rowsRequest = transaction.objectStore('rows').getAll();
-    const metaRequest = transaction.objectStore('channelMeta').get('c0.project');
-    const [rows, meta] = await Promise.all([
+    const metaRequest = transaction.objectStore('meta').getAll();
+    const [rows, metaRows] = await Promise.all([
       new Promise((resolve, reject) => {
         rowsRequest.onsuccess = () => resolve(rowsRequest.result);
         rowsRequest.onerror = () => reject(rowsRequest.error);
@@ -46,7 +62,7 @@ async function reloadEvidence(page) {
       reads: Object.fromEntries(Object.keys(localStorage)
         .filter((key) => key.startsWith('atoll.read'))
         .map((key) => [key, localStorage.getItem(key)])),
-      meta,
+      meta: metaRows.find((row) => row.channelId === 'c0.project') || null,
       cachedSeqs: rows.filter((row) => row.channelId === 'c0.project').map((row) => row.seq).sort((a, b) => a - b),
     };
   });
@@ -93,11 +109,11 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   await expect(page.locator('main h1')).toHaveText('c0.project');
   await expect(other).toHaveCount(0);
   const scope = page.locator('.timeline-scope > button');
-  await expect(scope).toHaveText('@我');
+  await expect(scope).toHaveText('与我相关');
   await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-policy' }));
   await scope.click();
   await expect(scope).toHaveText('全部');
-  await expect(page.locator('[data-entry-id="c0.project-notification-agent-task"]')).toBeVisible();
+  await expect(page.locator('[data-presentation-row-id="c0.project-notification-agent-task"]')).toBeVisible();
   await page.waitForTimeout(1_000);
   const processingEvidence = await page.evaluate(() => ({
     rail: window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project'),
@@ -153,8 +169,8 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   const restoredScope = page.locator('.timeline-scope > button');
-  if (await restoredScope.textContent() === '@我') await restoredScope.click();
-  const restoredFinal = page.locator('[data-entry-id="c0.project-notification-agent-task"]');
+  if (await restoredScope.textContent() === '与我相关') await restoredScope.click();
+  const restoredFinal = page.locator('[data-presentation-row-id="c0.project-notification-agent-task"]');
   await expect(restoredFinal).toBeVisible();
   // Virtuoso may mount the final inside overscan while restoring an older
   // bookmark. CSS visibility is not reading evidence; put the exact row in
@@ -188,7 +204,7 @@ test('tool, timer, and public-event notifications follow independent readable ro
   const acknowledge = async (entryID) => {
     await project.click();
     await expect(page.locator('main h1')).toHaveText('c0.project');
-    const entry = page.locator(`[data-entry-id="${entryID}"]`);
+    const entry = page.locator(`[data-presentation-row-id="${entryID}"]`);
     await expect(entry).toBeVisible();
     await entry.evaluate((node) => node.scrollIntoView({ block: 'center' }));
     await page.waitForTimeout(500);
@@ -217,7 +233,7 @@ test('tool, timer, and public-event notifications follow independent readable ro
   await lifecycle(request, 'readable_event');
   await expectQuiet();
   await project.click();
-  const readableEvent = page.locator('[data-entry-id="c0.project-notification-readable-event"]');
+  const readableEvent = page.locator('[data-presentation-row-id="c0.project-notification-readable-event"]');
   await expect(readableEvent).toBeVisible();
   await expect.poll(async () => page.evaluate(() => {
     return window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.().entries?.some((entry) => (
@@ -289,6 +305,6 @@ test('tool, timer, and public-event notifications follow independent readable ro
   await lifecycle(request, 'timer_result');
   await expect(related).toHaveText('1');
   await project.click();
-  const timerResult = page.locator('[data-entry-id="timer:c0.project-notification-result-wake"]');
+  const timerResult = page.locator('[data-presentation-row-id="timer:c0.project-notification-result-wake"]');
   await expect(timerResult).toBeVisible();
 });

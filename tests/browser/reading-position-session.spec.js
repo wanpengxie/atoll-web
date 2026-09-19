@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import {
   installReadingOwnerHelper,
   readingOwner,
@@ -18,12 +17,13 @@ async function reset(request, seed) {
 
 async function cachedRows(page, channelID) {
   return page.evaluate(async (id) => {
+    const databaseName = 'atoll-channel-replica-v1';
     if (indexedDB.databases) {
       const databases = await indexedDB.databases();
-      if (!databases.some((entry) => entry.name === 'atoll-feed-v8')) return 0;
+      if (!databases.some((entry) => entry.name === databaseName)) return 0;
     }
     const database = await new Promise((resolve, reject) => {
-      const open = indexedDB.open('atoll-feed-v8');
+      const open = indexedDB.open(databaseName);
       open.onsuccess = () => resolve(open.result);
       open.onerror = () => reject(open.error);
     });
@@ -33,17 +33,15 @@ async function cachedRows(page, channelID) {
     }
     return new Promise((resolve, reject) => {
       const transaction = database.transaction('rows', 'readonly');
-      const count = transaction.objectStore('rows').count(IDBKeyRange.bound(
-        [id, 0], [id, Number.MAX_SAFE_INTEGER],
-      ));
-      count.onsuccess = () => {
-        const result = count.result;
+      const rows = transaction.objectStore('rows').getAll();
+      rows.onsuccess = () => {
+        const result = rows.result.filter((row) => row.channelId === id).length;
         database.close();
         resolve(result);
       };
-      count.onerror = () => {
+      rows.onerror = () => {
         database.close();
-        reject(count.error);
+        reject(rows.error);
       };
     });
   }, channelID);
@@ -55,6 +53,9 @@ async function login(page) {
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.locator('.timeline')).toBeVisible();
+  await expect(page.locator('.timeline-reading-stack > .timeline-reading-layer.is-active > .timeline-message-list')).toHaveCount(1);
+  await expect(page.locator('.top-error')).toHaveCount(0);
 }
 
 async function viewportState(page) {
@@ -95,18 +96,6 @@ async function waitAtTail(page) {
       && viewport
       && owner.tailDistance(viewport) <= 24;
   });
-}
-
-async function fingerprint() {
-  const paths = [
-    'src/model/view-session.js',
-    'src/ui/timeline/useReadingSession.js',
-    'src/ui/timeline/LegendMessageList.jsx',
-    'src/app/AppShell.jsx',
-  ];
-  const hash = createHash('sha256');
-  for (const path of paths) hash.update(path).update('\0').update(await readFile(path));
-  return { paths, digest: hash.digest('hex') };
 }
 
 test('F7 reading position is document-session memory: cold and cached page starts use latest', async ({ page, request }, testInfo) => {
@@ -193,7 +182,6 @@ test('F7 reading position is document-session memory: cold and cached page start
   expect(cachedRefresh.storage.preferences.c0.scope).toBe('mine');
 
   const result = {
-    source: await fingerprint(),
     uncachedStart,
     beforeSwitch,
     afterSwitch,
