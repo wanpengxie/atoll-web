@@ -4,6 +4,22 @@ import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import { cacheWorldMismatch, createPersistenceEpochFence, createSyncObligationCoordinator } from '../src/model/sync-session.js';
 
 describe('sync data model properties', () => {
+  it('does not publish when the observable obligation state is unchanged', async () => {
+    const onChange = vi.fn();
+    const coordinator = createSyncObligationCoordinator({
+      probe: vi.fn(async (channelID) => ({ channel_id: channelID, head_seq: 0, local_head_seq: 0 })),
+      catchup: vi.fn(async () => {}),
+      onChange,
+    });
+
+    await coordinator.interest('c0');
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    coordinator.connection(false);
+    coordinator.connection(false);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
   it('fuzzes arbitrary live/history arrival order without duplicating Replica facts', () => {
     fc.assert(fc.property(
       fc.array(fc.integer({ min: 1, max: 500 }), { maxLength: 300 }),

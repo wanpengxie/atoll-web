@@ -47,6 +47,7 @@ export function createChannelFeedRuntime(options) {
     'onTimerFired', 'onSubmissionFeed', 'onAccessChanged', 'onAgentActivity',
   ].map(port);
   const subscribers = new Set();
+  const ownerCommandCache = new Map();
   const effects = [];
   const cell = (current) => ({ current });
   const registerEffect = (setup) => effects.push(setup);
@@ -1216,6 +1217,7 @@ export function createChannelFeedRuntime(options) {
     unreadCacheRef.current.clear();
     unreadDiagnosticSignatureRef.current.clear();
     subscribers.clear();
+    ownerCommandCache.clear();
   }
 
   return Object.freeze({
@@ -1228,12 +1230,19 @@ export function createChannelFeedRuntime(options) {
       return publicSnapshot;
     },
     getOwnerSnapshot(producerOwnerToken, snapshot = publicSnapshot) {
+      let ownerCommands = ownerCommandCache.get(producerOwnerToken);
+      if (!ownerCommands) {
+        ownerCommands = Object.freeze({
+          enqueue: (payloadOrChannel, seq, envelope, detail) => (
+            enqueue(payloadOrChannel, seq, envelope, detail, producerOwnerToken)
+          ),
+          liveCheckpoint: (payload) => liveCheckpoint(payload, producerOwnerToken),
+        });
+        ownerCommandCache.set(producerOwnerToken, ownerCommands);
+      }
       return Object.freeze({
         ...snapshot,
-        enqueue: (payloadOrChannel, seq, envelope, detail) => (
-          enqueue(payloadOrChannel, seq, envelope, detail, producerOwnerToken)
-        ),
-        liveCheckpoint: (payload) => liveCheckpoint(payload, producerOwnerToken),
+        ...ownerCommands,
       });
     },
     bind(nextBindings) {

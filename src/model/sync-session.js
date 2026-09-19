@@ -76,6 +76,37 @@ export function createSyncObligationCoordinator({
   let admittedChannels = null;
   let destroyed = false;
 
+  const snapshotOf = (state) => Object.freeze({
+    interestRevision: state.interestRevision,
+    probedRevision: state.probedRevision,
+    fulfilledRevision: state.fulfilledRevision,
+    targetHead: state.targetHead,
+    requiredRanges: Object.freeze(state.requiredRanges.map((range) => Object.freeze({ ...range }))),
+    attempt: state.attempt,
+    retryAt: state.retryAt,
+    error: state.error,
+    running: Boolean(state.running),
+    admitted: state.admitted,
+  });
+
+  const sameSnapshot = (left, right) => Boolean(left && right
+    && left.interestRevision === right.interestRevision
+    && left.probedRevision === right.probedRevision
+    && left.fulfilledRevision === right.fulfilledRevision
+    && left.targetHead === right.targetHead
+    && left.attempt === right.attempt
+    && left.retryAt === right.retryAt
+    && left.error === right.error
+    && left.running === right.running
+    && left.admitted === right.admitted
+    && left.requiredRanges.length === right.requiredRanges.length
+    && left.requiredRanges.every((range, index) => {
+      const other = right.requiredRanges[index];
+      return range.lowSeq === other.lowSeq
+        && range.highSeq === other.highSeq
+        && range.purpose === other.purpose;
+    }));
+
   const stateFor = (channelID) => {
     let state = channels.get(channelID);
     if (!state) {
@@ -94,24 +125,20 @@ export function createSyncObligationCoordinator({
         admitted: admittedChannels === null ? null : admittedChannels.has(channelID),
         admissionEpoch: 0,
         activeAbort: null,
+        publishedSnapshot: null,
       };
       channels.set(channelID, state);
     }
     return state;
   };
 
-  const publish = (state) => onChange(state.channelID, Object.freeze({
-    interestRevision: state.interestRevision,
-    probedRevision: state.probedRevision,
-    fulfilledRevision: state.fulfilledRevision,
-    targetHead: state.targetHead,
-    requiredRanges: Object.freeze(state.requiredRanges.map((range) => Object.freeze({ ...range }))),
-    attempt: state.attempt,
-    retryAt: state.retryAt,
-    error: state.error,
-    running: Boolean(state.running),
-    admitted: state.admitted,
-  }));
+  const publish = (state) => {
+    const snapshot = snapshotOf(state);
+    if (sameSnapshot(state.publishedSnapshot, snapshot)) return false;
+    state.publishedSnapshot = snapshot;
+    onChange(state.channelID, snapshot);
+    return true;
+  };
 
   function clearRetry(state) {
     if (state.timer != null) clearTimeoutImpl(state.timer);
@@ -284,18 +311,7 @@ export function createSyncObligationCoordinator({
     snapshot(channelID) {
       const state = channels.get(channelID);
       if (!state) return Object.freeze({ interestRevision: 0, probedRevision: 0, fulfilledRevision: 0, targetHead: 0, requiredRanges: Object.freeze([]), attempt: 0, retryAt: 0, error: '', running: false, admitted: admittedChannels === null ? null : admittedChannels.has(channelID) });
-      return Object.freeze({
-        interestRevision: state.interestRevision,
-        probedRevision: state.probedRevision,
-        fulfilledRevision: state.fulfilledRevision,
-        targetHead: state.targetHead,
-        requiredRanges: Object.freeze(state.requiredRanges.map((range) => Object.freeze({ ...range }))),
-        attempt: state.attempt,
-        retryAt: state.retryAt,
-        error: state.error,
-        running: Boolean(state.running),
-        admitted: state.admitted,
-      });
+      return snapshotOf(state);
     },
     destroy() {
       destroyed = true;

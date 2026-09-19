@@ -20,6 +20,22 @@ function runtimeOptions() {
 }
 
 describe('ChannelFeedRuntime ownership', () => {
+  it('keeps owner-scoped command identities stable across store publications', () => {
+    const options = runtimeOptions();
+    const ownerToken = Object.freeze({ principalId: 'root' });
+    const runtime = createChannelFeedRuntime(options);
+    runtime.bind({ ...options, ownerToken });
+
+    const first = runtime.getOwnerSnapshot(ownerToken);
+    first.bump();
+    const second = runtime.getOwnerSnapshot(ownerToken);
+
+    expect(second).not.toBe(first);
+    expect(second.version).toBeGreaterThan(first.version);
+    expect(second.enqueue).toBe(first.enqueue);
+    expect(second.liveCheckpoint).toBe(first.liveCheckpoint);
+  });
+
   it('survives a StrictMode effect probe and terminally releases its owned data plane', async () => {
     const runtime = createChannelFeedRuntime(runtimeOptions());
     const cursors = runtime.getSnapshot().cursorsRef.current;
