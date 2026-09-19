@@ -557,6 +557,20 @@ clean snapshot `7765f9c` 真实 Chromium 执行
 #18 当前 clean HEAD 用户体验等价 **PASS**，未发现 notification policy 或 Workspace
 handoff 首断点；不改写冻结 `7ba308c` 的 `23/8` 历史 aggregate。
 
+### 第十九轮终：#19 F7 live Agent timer 跨频道 continuity（clean `309325a`）
+
+按旧 `fae8b70` 的真实用户动作：在 `c0` 启动长任务，确认源频道 Agent timer，
+切到 `c0.project` 后源频道 timer 仍可见，返回源频道并推进三次计算，timer 必须
+清零。该合同只验证 activity live-entry projection，不依赖 Reading、notification
+unread、search 或 debug-only UI。
+
+clean snapshot `309325a` 真实 Chromium 执行
+`tests/browser/f7-channel-notifications.spec.js --grep 'channel rail exposes live Agent timers across channels'`：
+`1 passed (9.3s)`。启动时 home `.channel-agent-timer=1`，切换到 project 后仍为
+1，返回并 `advance×3` 后为 0。结论：#19 当前 clean HEAD 用户体验等价 **PASS**，
+没有 Feed activity/WorkspaceRail 首断点；不改写冻结 `7ba308c` 的 `23/8` 历史
+aggregate。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
