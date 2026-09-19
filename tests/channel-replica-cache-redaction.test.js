@@ -349,6 +349,46 @@ describe('Replica 缓存持久化前应隐藏设备密钥/凭据（恢复自 tes
     await cache.destroy();
   });
 
+  it('does not call a partial tail exhausted, and older refill keeps the existing newer tail', async () => {
+    await clearCache();
+    for (let seq = 8; seq <= 14; seq += 1) {
+      await rawDbPut('atoll-channel-replica-v1', {
+        owner: 'root\u0000boot-a', channelId: 'c0', seq, row: sensitiveRow(seq),
+      });
+    }
+    await rawDbMetaPut('atoll-channel-replica-v1', {
+      owner: 'root\u0000boot-a', channelId: 'c0',
+      // The broad legacy coverage is deliberately stale; startup must derive
+      // the physical interval before answering the cache read.
+      value: { headSeq: 14, oldestSeq: 8, newestSeq: 14, rowCount: 7, quotaTailRows: 8, coverage: [{ lowSeq: 1, highSeq: 14 }] },
+    });
+
+    const cache = createChannelReplicaCache({ indexedDB });
+    await cache.ensureOwner('root', { world: 'boot-a' });
+    const partial = await cache.readBefore('c0', 9, 20, 100_000);
+    expect(partial.rows.map((row) => row.seq)).toEqual([8]);
+    expect(partial.exhausted).toBe(false);
+    expect(cache.metaSnapshot().get('c0').coverage).toEqual([{ lowSeq: 8, highSeq: 14 }]);
+
+    // A network page older than the current tail must not evict 8..14 merely
+    // because physicalWindow used to protect every incoming row.
+    await cache.saveRows(Array.from({ length: 7 }, (_, index) => sensitiveRow(index + 1)), {
+      coverage: { channelId: 'c0', lowSeq: 1, highSeq: 7 },
+    });
+    const stored = (await rawDbRows('atoll-channel-replica-v1'))
+      .filter((entry) => entry.owner === 'root\u0000boot-a' && entry.channelId === 'c0')
+      .sort((left, right) => left.seq - right.seq);
+    expect(stored.map((entry) => entry.seq)).toEqual([7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(cache.metaSnapshot().get('c0')).toMatchObject({
+      oldestSeq: 7, newestSeq: 14, rowCount: 8,
+      coverage: [{ lowSeq: 7, highSeq: 14 }],
+    });
+    const afterRefill = await cache.readBefore('c0', 9, 20, 100_000);
+    expect(afterRefill.rows.map((row) => row.seq)).toEqual([7, 8]);
+    expect(afterRefill.exhausted).toBe(false);
+    await cache.destroy();
+  });
+
   it('publishes clear only after its durable transaction succeeds', async () => {
     await clearCache();
     const cache = createChannelReplicaCache({ indexedDB });

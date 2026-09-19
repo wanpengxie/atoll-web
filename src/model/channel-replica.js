@@ -922,21 +922,19 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     return [...bySeq.values()].sort((left, right) => left.seq - right.seq);
   }
 
-  // Keep every incoming row. When a quota recovery or an already bounded
-  // channel needs a smaller window, evict old physical rows first; otherwise
-  // the API could report a successful write for a row that was never stored.
+  // A bounded cache is a newest-tail window. Older network refill rows are
+  // allowed to be dropped when the tail is already full; protecting every
+  // incoming row would evict the existing newer tail (for example 8..14 for
+  // an older 1..7 refill). The network page is still applied to Replica by
+  // Feed, while durable rows/meta remain one bounded physical window.
   function physicalWindow(existing, incoming, limit, operationOwner, channelId, recovering = false) {
-    const incomingSeqs = new Set(incoming.map((row) => numeric(row?.seq)).filter((seq) => seq > 0));
     const retainedExisting = recovering
       ? existing.slice(-Math.floor(existing.length / 2))
       : existing;
     const merged = mergePhysicalRecords(retainedExisting, incoming, operationOwner, channelId);
     const maximum = numeric(limit);
     if (!maximum || merged.length <= maximum) return merged;
-    const removable = merged.filter((entry) => !incomingSeqs.has(entry.seq));
-    const removeCount = Math.min(merged.length - maximum, removable.length);
-    const remove = new Set(removable.slice(0, removeCount).map((entry) => entry.seq));
-    return merged.filter((entry) => !remove.has(entry.seq));
+    return merged.slice(-maximum);
   }
 
   async function ownedRows(db, operationOwner, epoch) {
@@ -1305,13 +1303,18 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     const db = await dbPromise;
     if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
     let available;
+    let physicalOldestSeq = 0;
     if (!db) {
       const memory = memoryForOwner();
       available = [];
       for (const [key, cachedRow] of memory.rows) {
         const { row, changed } = sanitizedCacheRow(cachedRow);
         if (changed) memory.rows.set(key, row);
-        if (row.channel_id === channelId && numeric(row.seq) < before) available.push(row);
+        if (row.channel_id === channelId) {
+          const seq = numeric(row.seq);
+          physicalOldestSeq = physicalOldestSeq ? Math.min(physicalOldestSeq, seq) : seq;
+          if (seq < before) available.push(row);
+        }
       }
       available.sort((left, right) => numeric(right.seq) - numeric(left.seq));
     } else {
@@ -1321,6 +1324,11 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       for (const entry of ownedRecords) {
         const { row, changed } = sanitizedCacheRow(entry.row);
         sanitizedRecords.push({ entry, row, changed });
+      }
+      for (const { entry } of sanitizedRecords) {
+        if (entry.channelId !== channelId) continue;
+        const seq = numeric(entry.seq);
+        physicalOldestSeq = physicalOldestSeq ? Math.min(physicalOldestSeq, seq) : seq;
       }
       const legacyRows = sanitizedRecords.filter(({ changed }) => changed);
       if (legacyRows.length) {
@@ -1356,10 +1364,18 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       bytes += size;
     }
     selected.sort((left, right) => numeric(left.seq) - numeric(right.seq));
+    // A short page is not proof of remote EOF when the local physical window
+    // starts above sequence 1. In particular, beforeSeq=9 with only row 8
+    // available must continue to network refill instead of publishing
+    // exhausted=true. Only a physical lower boundary at sequence 1 can close
+    // the local source; byte/row truncation still keeps it open.
+    const exhausted = available.length <= selected.length
+      && physicalOldestSeq > 0
+      && physicalOldestSeq <= 1;
     return {
       rows: selected,
       nextBeforeSeq: selected.length ? numeric(selected[0].seq) : before,
-      exhausted: available.length <= selected.length,
+      exhausted,
       bytes,
     };
   }

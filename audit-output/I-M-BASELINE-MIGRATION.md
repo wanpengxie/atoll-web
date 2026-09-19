@@ -616,10 +616,11 @@ publishes its in-memory reset only after the durable transaction commits.
 | Startup reconciles stale Meta/physical rows, removes metadata-only channels, and does not materialize a seq gap. | `createChannelReplicaCache.ensureOwner` → Replica cache rows/meta | `tests/channel-replica-cache-redaction.test.js` startup reconciliation case; `tests/memory-window.test.js` additive TC-0951 bridge re-selects the owner and observes physical-only coverage `{1,1},{3,3}`. |
 | A quota-window survivor that was written in an old unredacted shape is redacted again at the rebuild boundary. | `replaceChannelRows` → shared `redactSensitive` | `tests/channel-replica-cache-redaction.test.js` quota survivor case inspects raw IndexedDB rows after bounded save and finds no old key/token. |
 | Concurrent bounded saves retain both ordered new rows; failed clear leaves durable rows and published Meta intact. | Replica cache serialized `saveRows`/`clear` owner queue | `tests/channel-replica-cache-redaction.test.js` concurrent save and injected clear-transaction failure cases. |
+| A partial physical tail does not certify source exhaustion; an older network refill keeps the newer bounded tail and reports physical coverage only. | `readBefore` + bounded `physicalWindow` | `tests/channel-replica-cache-redaction.test.js` seeds rows 8–14, reads `beforeSeq=9` with `exhausted=false`, refills 1–7, and verifies rows 7–14 plus coverage 7–14. |
 
 The focused Replica/cache command is `npx vitest run
 tests/channel-replica-cache-redaction.test.js tests/memory-window.test.js` → **2
-files, 27/27 GREEN**. The additive memory case is mapped to static ledger
+files, 28/28 GREEN**. The additive memory case is mapped to static ledger
 `TC-0951` only as a new public-owner bridge; it does not increase the 159-case
 I–M baseline count or duplicate the existing merge-coverage assertion. The
 historical FEED-CACHE wording in the E–H and global ledgers now points to this
