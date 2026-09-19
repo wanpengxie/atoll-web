@@ -144,7 +144,7 @@ function ModelSelector({ model, commands }) {
   }
 
   const name = actorName(target.agent);
-  if (!view) return <div className="model-selector"><button type="button" className="model-selector-trigger is-refresh" aria-label={`${name}，点击读取可用模型`} title="读取可用模型与上下文" onClick={() => { awaitingViewRef.current = true; commands.openAgentSelector(); }}><Zap size={14} aria-hidden="true" /><strong className="model-selector-actor">{name}</strong><RefreshCw size={12} className="model-selector-refresh" aria-hidden="true" /></button></div>;
+  if (!view) return <div className="model-selector"><button type="button" className="model-selector-trigger is-refresh" aria-haspopup="dialog" aria-expanded={false} aria-label={`${name}，点击读取可用模型`} title="读取可用模型与上下文" onClick={() => { awaitingViewRef.current = true; commands.openAgentSelector(); }}><Zap size={14} aria-hidden="true" /><strong className="model-selector-actor">{name}</strong><RefreshCw size={12} className="model-selector-refresh" aria-hidden="true" /></button></div>;
 
   const displayed = pending?.value || view.current;
   const busy = Boolean(pending && pending.state !== 'error');
@@ -159,8 +159,16 @@ function ModelSelector({ model, commands }) {
   const modelRows = view.models?.length ? view.models : [...new Map((view.selections || []).map((row) => [row.model, { id: row.model, label: row.modelLabel || row.model }])).values()];
   const rows = section === 'model' ? modelRows : effortRows;
   const configurable = view.configurable !== false && Boolean(view.selections?.length);
+  const describePanel = view.source === 'describe';
+  const panelRole = configurable && !describePanel ? 'menu' : 'dialog';
+  const panelLabel = panelRole === 'menu' ? '模型设置' : `${name} Agent 状态`;
   const choose = (kind, id) => {
-    if (busy || id === displayed?.[kind]) return;
+    if (busy) return;
+    if (id === displayed?.[kind]) {
+      setOpen(false); setSection('');
+      requestAnimationFrame(() => triggerRef.current?.focus());
+      return;
+    }
     const next = kind === 'model' ? (view.selections || []).find((row) => row.model === id && row.effort === displayed?.effort) || (view.selections || []).find((row) => row.model === id) : { model: displayed.model, effort: id };
     if (!next) return;
     setOpen(false); setSection('');
@@ -169,7 +177,7 @@ function ModelSelector({ model, commands }) {
   };
 
   return <div className="model-selector" ref={rootRef}><button ref={triggerRef} type="button" className="model-selector-trigger" disabled={busy} aria-label={`${name}${modelLabel ? `，模型 ${modelLabel}` : '，模型未知'}${effortLabel ? `，推理强度 ${effortLabel}` : ''}${busy ? '，切换中' : ''}`} aria-haspopup={configurable ? 'menu' : 'dialog'} aria-expanded={open} onClick={() => { const next = !open; setOpen(next); setSection(''); if (next) commands.openAgentSelector(); }}><Zap size={14} aria-hidden="true" /><strong className="model-selector-actor">{name}</strong>{modelLabel && <><span className="model-selector-divider" aria-hidden="true" /><span className="model-selector-current"><strong>{modelLabel}</strong>{effortLabel && <span>{effortLabel}</span>}</span></>}<ContextUsage usage={view.usage} compact />{busy ? <span className="model-selector-pending">切换中</span> : <ChevronDown size={15} aria-hidden="true" />}</button>
-    {open && <FloatingPortal anchorRef={triggerRef} className={`model-selector-popover${section ? ' has-section' : ''}`}><div data-model-selector-portal="true" className="model-selector-menu" role={configurable ? 'menu' : 'dialog'} aria-label={configurable ? '模型设置' : `${name} Agent 状态`}><div className="model-selector-agent-context"><span>当前 Agent</span><strong>{name}</strong></div>{configurable && ['model', ...(hasEffort ? ['effort'] : [])].map((kind) => <button type="button" role="menuitem" key={kind} className={section === kind ? 'active' : ''} onClick={() => setSection(kind)}><span>{SECTION_LABEL[kind]}</span><span className="model-selector-menu-value">{kind === 'model' ? modelLabel : effortLabel || '—'}</span><ChevronRight size={16} aria-hidden="true" /></button>)}{!configurable && modelLabel && <div className="model-selector-readonly"><span>模型</span><strong>{modelLabel}</strong></div>}<ClientStatus client={view.client} /><ContextUsage usage={view.usage} /></div>{section && <div data-model-selector-portal="true" className="model-selector-options" role="menu" aria-label={SECTION_LABEL[section]}><div className="model-selector-options-title"><button type="button" onClick={() => setSection('')} aria-label="返回模型设置"><ArrowLeft size={16} /></button><span>{SECTION_LABEL[section]}</span></div>{rows.map((row) => <button type="button" role="menuitemradio" aria-checked={displayed?.[section] === row.id} key={row.id} onClick={() => choose(section, row.id)}><span><strong>{row.label}</strong>{row.description && <small>{row.description}</small>}</span>{displayed?.[section] === row.id && <Check size={17} />}</button>)}</div>}</FloatingPortal>}
+    {open && <FloatingPortal anchorRef={triggerRef} className={`model-selector-popover${section ? ' has-section' : ''}`}><div data-model-selector-portal="true" className="model-selector-menu" role={panelRole} aria-label={panelLabel}><div className="model-selector-agent-context"><span>当前 Agent</span><strong>{name}</strong></div>{configurable && ['model', ...(hasEffort ? ['effort'] : [])].map((kind) => <button type="button" role="menuitem" key={kind} className={section === kind ? 'active' : ''} onClick={() => setSection(kind)}><span>{SECTION_LABEL[kind]}</span><span className="model-selector-menu-value">{kind === 'model' ? modelLabel : effortLabel || '—'}</span><ChevronRight size={16} aria-hidden="true" /></button>)}{!configurable && modelLabel && <div className="model-selector-readonly"><span>模型</span><strong>{modelLabel}</strong></div>}<ClientStatus client={view.client} /><ContextUsage usage={view.usage} /></div>{section && <div data-model-selector-portal="true" className="model-selector-options" role="menu" aria-label={SECTION_LABEL[section]}><div className="model-selector-options-title"><button type="button" onClick={() => setSection('')} aria-label="返回模型设置"><ArrowLeft size={16} /></button><span>{SECTION_LABEL[section]}</span></div>{rows.map((row) => <button type="button" role="menuitemradio" aria-checked={displayed?.[section] === row.id} key={row.id} onClick={() => choose(section, row.id)}><span><strong>{row.label}</strong>{row.description && <small>{row.description}</small>}</span>{displayed?.[section] === row.id && <Check size={17} />}</button>)}</div>}</FloatingPortal>}
   </div>;
 }
 

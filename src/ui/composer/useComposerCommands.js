@@ -329,6 +329,7 @@ export function useComposerCommands(config = {}) {
   const parameterProjection = projectAgentParameters({
     state: config.channelState,
     actorId: selectedAgentId,
+    capability: capabilityIndex?.get?.(selectedAgentId),
     requestKeys: typeof probeOwner?.requestKeys === 'function'
       ? probeOwner.requestKeys(activeChannelId, selectedAgentId)
       : undefined,

@@ -83,6 +83,35 @@ function optionView(value) {
   };
 }
 
+// Older (and still valid) agents publish their selectable combinations on the
+// live actor.describe schema instead of answering agent.options.  Keep this a
+// projection of the current capability entry, not a second catalog: the
+// schema's oneOf branches are the provider's authoritative legal pairs.
+function describeOptionView(capability) {
+  const word = capability?.describe?.types?.get?.(TYPES.agentSelect);
+  const branches = Array.isArray(word?.inputSchema?.oneOf) ? word.inputSchema.oneOf : [];
+  const selections = branches.map((branch) => {
+    const model = branch?.properties?.model;
+    const effort = branch?.properties?.effort;
+    const modelID = typeof model?.const === 'string' ? model.const.trim() : '';
+    const effortID = typeof effort?.const === 'string' ? effort.const.trim() : '';
+    if (!modelID || !effortID) return null;
+    return {
+      model: modelID,
+      effort: effortID,
+      modelLabel: String(model.title || modelID),
+      effortLabel: String(effort.title || effortID),
+    };
+  }).filter(Boolean);
+  if (!selections.length) return null;
+  const models = [...new Map(selections.map((row) => [row.model, {
+    id: row.model,
+    label: row.modelLabel,
+    description: '',
+  }])).values()];
+  return { models, selections, current: null, client: null, source: 'describe' };
+}
+
 function usageView(value) {
   if (!value || typeof value !== 'object') return null;
   const usage = value.usage && typeof value.usage === 'object' ? value.usage : value;
@@ -121,13 +150,13 @@ function pendingView(turns, actorId, keys) {
 
 // A current-only projection over probe-owned request ids. It never scans old
 // requests as a fallback: no live request id means no parameter truth.
-export function projectAgentParameters({ state, actorId, requestKeys }) {
+export function projectAgentParameters({ state, actorId, requestKeys, capability }) {
   if (!actorId || !state) return Object.freeze({ view: null, pending: null });
   const keys = requestKeys || {};
   const turns = timelineTurnIndex(state, [...ids(keys.options), ...ids(keys.context)]);
   const optionsResult = firstCompleted(turns, actorId, keys.options, TYPES.agentOptions);
   const contextResult = firstCompleted(turns, actorId, keys.context, TYPES.agentContext);
-  const options = optionView(optionsResult?.value);
+  const options = optionView(optionsResult?.value) || describeOptionView(capability);
   const usage = usageView(contextResult?.value);
   const current = usage?.model ? { model: usage.model, effort: usage.effort } : options?.current || null;
   const view = options || usage ? Object.freeze({
