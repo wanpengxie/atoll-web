@@ -19,6 +19,7 @@ import { useAgentProbes } from './hooks/useAgentProbes.js';
 import { useAttachmentTransactions } from './hooks/useAttachmentTransactions.js';
 import { createChannelFeedRuntime } from '../model/channel-feed-runtime.js';
 import { createViewSessionStore } from '../model/view-session.js';
+import { HISTORY_INTENT } from '../model/history-demand.js';
 import { readServerWorld } from './hooks/useWireSession.js';
 import { ptyClient } from '../net/pty.js';
 import {
@@ -273,6 +274,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     prepareLocalReplica: (...args) => callFeed('prepareLocalReplica', args),
     reconcileIdentity: (...args) => callFeed('reconcileIdentity', args),
     refreshChannel: (...args) => callFeed('refreshChannel', args),
+    requestBackgroundInterest: (...args) => callFeed('requestBackgroundInterest', args),
     resetPersistent: (...args) => callFeed('resetPersistent', args),
     resumeLocalReplica: (...args) => callFeed('resumeLocalReplica', args),
     setHistoryGrants: (...args) => callFeed('setHistoryGrants', args),
@@ -737,10 +739,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     () => navigation.channels.filter((channel) => canViewChannelContent(channel.access)),
     [navigation.channels],
   );
+  const searchableChannelIds = useMemo(
+    () => searchableChannels.map((channel) => channel.id),
+    [searchableChannels],
+  );
+  const searchableChannelKey = searchableChannelIds.join('\u0000');
   const searchableStates = useMemo(() => {
-    const readableChannelIds = new Set(searchableChannels.map((channel) => channel.id));
+    const readableChannelIds = new Set(searchableChannelIds);
     return feed.stateEntries().filter(([channelId]) => readableChannelIds.has(channelId));
-  }, [feed, searchableChannels]);
+  }, [feed, searchableChannelIds]);
   const searchableRosters = useMemo(() => new Map(
     searchableChannels
       .filter((channel) => isMemberAccess(channel.access))
@@ -983,14 +990,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const searchOpen = panelKind === 'search';
   useEffect(() => {
     if (!searchOpen || wire.state !== 'open') return;
-    for (const channel of searchableChannels) {
-      if (channel.id === navigation.activeChannelId) continue;
-      void feedCommands.loadHistory(channel.id, {
-        intent: 'search-index',
-        urgency: 'anticipatory',
-      }).catch(showError);
-    }
-  }, [feedCommands, navigation.activeChannelId, searchOpen, searchableChannels, showError, wire.state]);
+    const interests = searchableChannelKey.split('\u0000')
+      .filter((channelId) => channelId !== navigation.activeChannelId)
+      .map((channelId) => feedCommands.requestBackgroundInterest(channelId, {
+        intent: HISTORY_INTENT.searchContext,
+      }));
+    return () => interests.forEach((interest) => interest?.release?.());
+  }, [feedCommands, navigation.activeChannelId, searchOpen, searchableChannelKey, wire.state]);
   const openSearchResult = (source) => {
     if (!source?.channelId) return;
     const sourceChannel = navigation.channels.find((row) => row.id === source.channelId);

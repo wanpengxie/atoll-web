@@ -1106,3 +1106,40 @@ npx vitest run tests/workspace-real-runtime-composition.test.jsx \
 本轮没有 `--update-snapshots`、没有放宽阈值/mask，也没有把 ignored Linux
 截图作为仓库交付。该视觉差异仍归现行 44px target 与旧 fae 36px target 的
 合同版本差异，不是本轮 search owner 修复引入的回归。
+
+## 第二十轮：Search interest 收回 Feed owner（架构纠正）
+
+`65da0ef` 的首版修复把 `WorkspaceApp` 的 search effect 直接当成第二个
+`loadHistory` 需求 owner；搜索 dialog 关闭或 wire 断开时，这个未挂载到
+Reading 的 pending demand 可能继续留在 Feed 状态。该实现已按架构复核
+REJECT，未保留。
+
+本轮将取消与生命周期收回现有 Feed owner：
+
+- Feed 新增受限的 typed background-interest lease，只接受现有
+  `HISTORY_INTENT.searchContext`；Feed 内部拥有 operation、`AbortController`
+  和 coalescing registry。
+- Search 只调用 `feedCommands.requestBackgroundInterest(channelId, { intent:
+  HISTORY_INTENT.searchContext })` 并在 effect cleanup `release()`；不创建
+  demand/store，不直接调用 `loadHistory`，不读取私有副本。
+- Feed 在 lease 归零、disconnect、clear 或 destroy 时取消底层 history
+  operation；取消/旧 generation 返回也会清理自己拥有的 pending demand，避免
+  unattached 状态悬挂。
+- effect 以 readable channel ID key 稳定 lease，Feed 回填触发的导航 revision
+  不会反复创建同一搜索 interest；`c0.public` 仍不会获得 interest。
+
+新增真实 Chromium 黑盒合同（`deep-history-delayed`，600×720）验证：
+
+```text
+history_before: channel_id=c0.project, purpose=initial-tail, priority=background
+close global search
+history_cancel: channel_id=c0.project, target_ref=<same history_before ref>
+c0.public history_before: absent
+result: 1 passed (4.6s)
+```
+
+UI-VIS-11 的 c0/c0.project、access filter、点击导航合同继续通过；截图仍
+只在旧像素 oracle 处 RED（旧 fae/local baseline `600×297`，当前 Chromium
+`600×301`，`7868 pixels / 0.05`）。本轮未调阈值、未更新 ignored snapshot。
+Feed/runtime、composition、Search projection、management、accessibility
+定向合计 **5 files / 20 passed**。

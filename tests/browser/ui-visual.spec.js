@@ -212,6 +212,57 @@ test('UI-VIS-11 600px 全局搜索视觉基线', async ({ page, request }) => {
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('c0.project');
 });
 
+test('UI-VIS-11 搜索后台兴趣由 Feed 持有并可在关闭时取消', async ({ page, request }) => {
+  await page.setViewportSize({ width: 600, height: 720 });
+  await page.addInitScript(() => {
+    window.__ATOLL_SEARCH_HISTORY_FRAMES = [];
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = function WrappedWebSocket(...args) {
+      const socket = new NativeWebSocket(...args);
+      const send = socket.send.bind(socket);
+      socket.send = (data) => {
+        if (typeof data === 'string') {
+          try {
+            const frame = JSON.parse(data);
+            if (frame?.frame_type === 'history_before' || frame?.frame_type === 'history_cancel') {
+              window.__ATOLL_SEARCH_HISTORY_FRAMES.push(frame);
+            }
+          } catch { /* wire frames outside this probe are irrelevant */ }
+        }
+        return send(data);
+      };
+      return socket;
+    };
+    window.WebSocket.prototype = NativeWebSocket.prototype;
+    for (const key of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) {
+      Object.defineProperty(window.WebSocket, key, { value: NativeWebSocket[key] });
+    }
+  });
+  await reset(request, 'deep-history-delayed', 920);
+  await login(page);
+  await page.getByRole('button', { name: '打开频道列表' }).click();
+  await page.getByRole('button', { name: '全局搜索' }).click();
+  const search = page.getByRole('dialog', { name: '全局搜索' });
+  await expect.poll(() => page.evaluate(() => window.__ATOLL_SEARCH_HISTORY_FRAMES.some((frame) => (
+    frame.frame_type === 'history_before'
+      && frame.payload?.channel_id === 'c0.project'
+      && frame.payload?.priority === 'background'
+  ))), { timeout: 10_000 }).toBe(true);
+  const before = await page.evaluate(() => window.__ATOLL_SEARCH_HISTORY_FRAMES.find((frame) => (
+    frame.frame_type === 'history_before' && frame.payload?.channel_id === 'c0.project'
+  )));
+  expect(before.payload.purpose).toBe('initial-tail');
+  expect(await page.evaluate(() => window.__ATOLL_SEARCH_HISTORY_FRAMES.some((frame) => (
+    frame.frame_type === 'history_before' && frame.payload?.channel_id === 'c0.public'
+  )))).toBe(false);
+  await search.getByRole('button', { name: '关闭全局搜索' }).click();
+  await expect(search).toHaveCount(0);
+  await expect.poll(() => page.evaluate((targetRef) => window.__ATOLL_SEARCH_HISTORY_FRAMES.some((frame) => (
+    frame.frame_type === 'history_cancel' && frame.payload?.channel_id === 'c0.project'
+      && frame.payload?.target_ref === targetRef
+  )), before.ref), { timeout: 10_000 }).toBe(true);
+});
+
 test('UI-VIS-12 频道挂载文件主页面视觉基线', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'resource-workflow', 911);

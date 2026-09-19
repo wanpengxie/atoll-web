@@ -10,6 +10,7 @@ import { TYPES } from '../protocol/vocab.js';
 import { createHistoryPresentationAdmission } from './history-presentation-admission.js';
 import { createHistoryBoundedExecutor } from './history-bounded-executor.js';
 import { createHistorySourceAdapters } from './history-source-adapters.js';
+import { HISTORY_INTENT, HISTORY_URGENCY } from './history-demand.js';
 import { isRailNotifiableDisposition, notificationDisposition } from './notification-policy.js';
 import { registerRailDiagnosticProvider } from './diagnostics.js';
 
@@ -17,6 +18,8 @@ export const HISTORY_PAGE_SIZE = 128;
 export const HISTORY_BATCH_BYTES = 1024 * 1024;
 export const HISTORY_BATCH_TIMEOUT_MS = 30_000;
 export const HISTORY_RESERVOIR_SIZE = 5_000;
+
+const BACKGROUND_INTEREST_TYPES = new Set([HISTORY_INTENT.searchContext]);
 
 const ACTIVITY_TYPES = new Set([
   TYPES.agentAsk, TYPES.agentQueue, TYPES.agentCompact,
@@ -324,6 +327,10 @@ export function createChannelFeedRuntime(options = {}) {
   const grants = new Map();
   const subscribers = new Set();
   const ownerCommands = new Map();
+  // Background interests are owned by Feed, not by a consumer's component
+  // lifecycle. A consumer receives only a typed lease and can release it;
+  // Feed owns the AbortController and the history operation itself.
+  const backgroundInterests = new Map();
   const executor = createHistoryBoundedExecutor({ concurrency: 2, timeoutMs: HISTORY_BATCH_TIMEOUT_MS });
   const networkBatches = new Map();
   const activityEntries = new Map();
@@ -785,6 +792,12 @@ export function createChannelFeedRuntime(options = {}) {
     if (incompatible) return { kind: 'cancelled', reason: 'version-incompatible' };
     const status = historyState(channelId);
     const demandRevision = status.historyDemand.revision + 1;
+    const clearOwnedDemand = () => {
+      if (status.historyDemand.revision !== demandRevision) return false;
+      status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
+      Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
+      return true;
+    };
     Object.assign(status, {
       loading: true,
       foregroundLoading: request.urgency !== 'anticipatory',
@@ -805,6 +818,8 @@ export function createChannelFeedRuntime(options = {}) {
     }
     if (batch.generation !== generation || batch.attachEpoch !== attachEpoch
       || status.generation !== generation || !status.attached) {
+      if (revealToken) admission.cancel(channelId, revealToken.operationID);
+      if (clearOwnedDemand()) publish();
       return { kind: 'cancelled', reason: 'stale-generation' };
     }
     if (outcome.kind === 'page') {
@@ -852,6 +867,61 @@ export function createChannelFeedRuntime(options = {}) {
     } else status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
     publish();
     return outcome;
+  }
+
+  // Search and other non-reading consumers may need a cold channel's rows,
+  // but they must not become a second history-demand owner. Feed owns this
+  // small typed-interest registry and the cancellable physical operation;
+  // callers only receive a lease. Keeping the operation here also means a
+  // closed dialog can retire a pending background demand without leaving a
+  // history status stuck in `pending`.
+  function requestBackgroundInterest(channelId, request = {}) {
+    const id = String(channelId || '');
+    const intent = String(request.intent || '');
+    if (incompatible || !id || !BACKGROUND_INTEREST_TYPES.has(intent)) {
+      return Object.freeze({ accepted: false, channelId: id, intent, release: () => false });
+    }
+    const key = `${intent}\u0000${id}`;
+    let record = backgroundInterests.get(key);
+    if (!record || record.cancelled) {
+      const abortController = new AbortController();
+      record = {
+        key,
+        channelId: id,
+        intent,
+        abortController,
+        leases: 0,
+        cancelled: false,
+        settled: false,
+      };
+      backgroundInterests.set(key, record);
+      record.promise = Promise.resolve(loadHistory(id, {
+        intent,
+        urgency: HISTORY_URGENCY.anticipatory,
+        signal: abortController.signal,
+      })).catch(() => ({ kind: 'failed' })).finally(() => {
+        record.settled = true;
+        if (backgroundInterests.get(key) === record) backgroundInterests.delete(key);
+      });
+    }
+    record.leases += 1;
+    let released = false;
+    return Object.freeze({
+      accepted: true,
+      channelId: id,
+      intent,
+      release() {
+        if (released) return false;
+        released = true;
+        record.leases = Math.max(0, record.leases - 1);
+        if (record.leases === 0 && !record.settled) {
+          record.cancelled = true;
+          record.abortController.abort('background interest released');
+          if (backgroundInterests.get(key) === record) backgroundInterests.delete(key);
+        }
+        return true;
+      },
+    });
   }
 
   function enqueue(payloadOrChannel, seq, envelope, detail, producerToken = ownerToken) {
@@ -1119,9 +1189,18 @@ export function createChannelFeedRuntime(options = {}) {
     });
   }
 
+  function cancelBackgroundInterests(reason = 'background interests retired') {
+    for (const record of backgroundInterests.values()) {
+      record.cancelled = true;
+      record.abortController.abort(reason);
+    }
+    backgroundInterests.clear();
+  }
+
   function clear() {
     principalEpoch += 1;
     attachEpoch += 1;
+    cancelBackgroundInterests('replica cleared');
     executor.clear('replica cleared');
     for (const batch of networkBatches.values()) void adapters.cancel(batch, 'replica cleared');
     networkBatches.clear();
@@ -1151,6 +1230,7 @@ export function createChannelFeedRuntime(options = {}) {
   }
   function disconnectHistory(requestGeneration = generation) {
     if (requestGeneration && requestGeneration !== generation) return false;
+    cancelBackgroundInterests('history disconnected');
     for (const status of histories.values()) {
       const wasActive = status.attached || status.messageCurrent || status.controlCurrent;
       status.attached = false;
@@ -1159,6 +1239,16 @@ export function createChannelFeedRuntime(options = {}) {
       status.controlCoverage = [];
       status.controlTailCoverage = false;
       status.controlParentClosure = false;
+      status.loading = false;
+      status.foregroundLoading = false;
+      status.backgroundLoading = false;
+      if (status.historyDemand.phase === 'pending') {
+        status.historyDemand = Object.freeze({
+          revision: status.historyDemand.revision,
+          phase: 'idle',
+          error: '',
+        });
+      }
       if (wasActive) {
         status.notificationAuthorityRevision = ++notificationAuthorityRevision;
       }
@@ -1344,7 +1434,7 @@ export function createChannelFeedRuntime(options = {}) {
       focusHistory: (channelId) => { activeChannelRef.current = channelId; publish(); },
       refreshChannel,
       reconcileIdentity: (channelId) => { if (!replica.state(channelId)) return false; publish(); return true; },
-      loadHistory, markRead, acknowledgeNotifications,
+      loadHistory, requestBackgroundInterest, markRead, acknowledgeNotifications,
       agentActivityFor: (channelId) => agentActivity.byChannel[channelId]
         || Object.freeze({ active: Object.freeze([]), agents: Object.freeze({}) }),
       acknowledgeAgentActivity,
@@ -1362,6 +1452,7 @@ export function createChannelFeedRuntime(options = {}) {
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    cancelBackgroundInterests('feed runtime destroyed');
     releaseRailDiagnostic?.();
     releaseRailDiagnostic = null;
     for (const batch of networkBatches.values()) void adapters.cancel(batch, 'feed runtime destroyed');
