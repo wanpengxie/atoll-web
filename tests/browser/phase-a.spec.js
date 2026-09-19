@@ -52,7 +52,10 @@ test('A-BR-04/05/06/07 多频道隔离、消息终态、审批与系统 Actor �
   const message = `阶段A浏览器自动化-${Date.now()}`;
   await page.getByLabel('消息').fill(message);
   await page.getByRole('button', { name: /发送/ }).click();
-  await expect(page.getByText(message, { exact: true })).toBeVisible();
+  // The same body can also appear in the channel-activity summary. This
+  // contract is about the canonical conversation row, not notification
+  // projection multiplicity, so bind it to the timeline owner.
+  await expect(page.getByLabel('频道动态').getByText(message, { exact: true })).toBeVisible();
   await expect(page.getByText('PONG', { exact: true }).last()).toBeVisible();
 
   const approval = page.locator('.approval-card').first();

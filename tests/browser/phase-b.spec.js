@@ -79,10 +79,17 @@ test('B-BR-02 断线时进入 stale、保留账本并在重连后恢复', async 
   await action(request, { type: 'drop' });
   await expect(page.getByText('RECONNECTING', { exact: true })).toBeVisible();
   await expect(page.getByText(/c0 history 1/)).toBeVisible();
-  await expect(page.getByLabel('消息')).toBeDisabled();
+  // A confirmed member owns the local draft even while transport is down.
+  // Reconnecting revokes transmission, not editing or durable outbox
+  // admission; live-only attachment entry is the transport-gated seam.
+  await expect(page.getByLabel('消息')).toHaveAttribute('contenteditable', 'true');
+  await expect(page.getByText(/离线编辑；发送会先保存到本机/)).toBeVisible();
+  await expect(page.getByLabel('上传本机文件到频道')).toBeDisabled();
+  await expect(page.getByRole('button', { name: '从频道文件选择' })).toBeDisabled();
   await context.setOffline(false);
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByLabel('消息')).toBeEnabled();
+  await expect(page.getByLabel('消息')).toHaveAttribute('contenteditable', 'true');
+  await expect(page.getByText(/离线编辑；发送会先保存到本机/)).toHaveCount(0);
 });
 
 test('B-BR-02b 慢 OBS 不阻塞缓存首屏，档案补全不重建消息连接', async ({ page, request }) => {
@@ -150,10 +157,16 @@ test('B-BR-03 unavailable、partial OBS、权限撤销和退役分别收敛', as
   await action(request, { type: 'set_channel_open', channel_id: 'c0.project', open: false });
   await expect(page.getByText('暂不可用', { exact: true })).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText(/频道暂不可用，历史记录仍可查看/)).toBeVisible();
-  await expect(page.getByLabel('消息')).toBeDisabled();
+  // Runtime availability is orthogonal to the already-confirmed member's
+  // local draft authority. Keep the editor/outbox seam, but withhold every
+  // live-only action until the channel is open again.
+  await expect(page.getByLabel('消息')).toHaveAttribute('contenteditable', 'true');
+  await expect(page.getByText(/离线编辑；发送会先保存到本机/)).toBeVisible();
+  await expect(page.getByLabel('上传本机文件到频道')).toBeDisabled();
+  await expect(page.getByRole('button', { name: '从频道文件选择' })).toBeDisabled();
 
   await action(request, { type: 'set_channel_open', channel_id: 'c0.project', open: true });
-  await expect(page.getByLabel('消息')).toBeEnabled({ timeout: 5_000 });
+  await expect(page.getByText(/离线编辑；发送会先保存到本机/)).toHaveCount(0, { timeout: 5_000 });
   await action(request, { type: 'set_obs_complete', complete: false });
   await action(request, { type: 'retire_channel', channel_id: 'c0.project' });
   await page.waitForTimeout(1_700);
