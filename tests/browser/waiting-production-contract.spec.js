@@ -39,18 +39,49 @@ async function send(page, text) {
   await page.getByRole('button', { name: '发送', exact: true }).click();
 }
 
-async function waitForCanonicalMessage(page, text) {
-  const rows = page.locator('.timeline-message-list [data-presentation-row-id]').filter({ hasText: text });
+async function presentationRowIDs(page) {
+  return page.locator('.timeline-message-list [data-presentation-row-id]').evaluateAll(
+    (nodes) => nodes.map((node) => node.dataset.presentationRowId).filter(Boolean),
+  );
+}
+
+async function waitForNewMessageIdentity(page, text, beforeRowIDs) {
+  const rows = page.locator('.timeline-message-list [data-presentation-row-id]');
+  let identity = '';
   await expect.poll(async () => {
-    if (await rows.count() !== 1) return false;
-    const cards = rows.locator('.turn-card[data-request-id]');
-    if (await cards.count() !== 1) return false;
+    identity = await rows.evaluateAll((nodes, { needle, existing }) => {
+      const known = new Set(existing);
+      const candidates = nodes.filter((node) => {
+        const rowID = node.dataset.presentationRowId || '';
+        return rowID && !known.has(rowID) && node.textContent?.includes(needle);
+      });
+      if (candidates.length !== 1) return '';
+      const row = candidates[0];
+      const rowID = row.dataset.presentationRowId || '';
+      const cards = [...row.querySelectorAll('.turn-card[data-request-id]')];
+      if (cards.length !== 1) return '';
+      const requestID = cards[0].getAttribute('data-request-id') || '';
+      return rowID && requestID ? `${rowID}\u0000${requestID}` : '';
+    }, { needle: text, existing: beforeRowIDs });
+    return identity;
+  }, { timeout: 15_000 }).not.toBe('');
+  const [rowID, requestID] = identity.split('\u0000');
+  return { rowID, requestID };
+}
+
+async function waitForCanonicalMessage(page, identity) {
+  const rows = page.locator('.timeline-message-list [data-presentation-row-id]');
+  await expect.poll(async () => rows.evaluateAll((nodes, target) => {
+    const matches = nodes.filter((node) => node.dataset.presentationRowId === target.rowID);
+    if (matches.length !== 1) return false;
+    const cards = [...matches[0].querySelectorAll('.turn-card[data-request-id]')];
+    if (cards.length !== 1 || cards[0].getAttribute('data-request-id') !== target.requestID) return false;
     // Pending/outbox local echoes expose their state in the request header.
     // A canonical feed row keeps the same public row identity but has no local
     // submission-state marker. This waits for feed materialization instead of
     // treating the optimistic text echo as durable acceptance.
-    return await cards.locator('header > small:not(.ai-label)').count() === 0;
-  }, { timeout: 15_000 }).toBe(true);
+    return !cards[0].querySelector('header > small:not(.ai-label)');
+  }, identity), { timeout: 15_000 }).toBe(true);
 }
 
 async function waitForRunning(page, text) {
@@ -303,10 +334,11 @@ async function runSendTrajectory({ page, request, testInfo, mode }) {
   }
   const before = await geometry(page);
   if (mode === 'existing-waiting') await establishQueued(page, 'send-existing-owner', 'send-existing-target');
-  await send(page, mode === 'multiline' ? 'send line one\nsend line two\nsend line three' : `send ${mode}`);
   const messageText = mode === 'multiline' ? 'send line one' : `send ${mode}`;
-  await expect(page.getByText(messageText, { exact: false })).toBeVisible();
-  await waitForCanonicalMessage(page, messageText);
+  const beforeRowIDs = await presentationRowIDs(page);
+  await send(page, mode === 'multiline' ? 'send line one\nsend line two\nsend line three' : `send ${mode}`);
+  const identity = await waitForNewMessageIdentity(page, messageText, beforeRowIDs);
+  await waitForCanonicalMessage(page, identity);
   const after = await geometry(page);
   await attach(testInfo, `waiting-send-${mode}.json`, { before, after });
   expectStable(before, after, ['reading']);

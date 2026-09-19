@@ -544,9 +544,12 @@ send oracle. The case38 trajectory now keeps its hard browsing geometry and
 adds a public rendered-boundary wait in
 `tests/browser/waiting-production-contract.spec.js`:
 
-- it still waits for the sent text to become visible;
-- it then requires exactly one matching public presentation row and one
-  `.turn-card[data-request-id]`;
+- it records every existing public presentation-row ID immediately before the
+  send;
+- after send, it requires exactly one *new* row containing the submitted text,
+  captures that row's `data-presentation-row-id` and its nested
+  `.turn-card[data-request-id]`, and reuses those fixed identities; there is
+  no broad text-visibility short circuit that can match a control and a row;
 - it rejects a row while the rendered request header still exposes the local
   submission-state marker (`queued`/`transmitting`/`accepted`), and proceeds
   only after the canonical feed row has replaced the local echo;
@@ -674,6 +677,76 @@ still retained as obsolete and was not deleted or weakened.
 No product source, target spec, or contract was changed in this round; only
 this audit entry records the pending Reading owner handoff and the current
 case38 PASS.
+
+## Follow-up: tenth-round same-message identity proof at `5596bc8`
+
+The case38 durable wait is now bound to the message created by this send, not
+to whichever row happens to contain the same text later:
+
+- `presentationRowIDs(page)` snapshots all existing public
+  `.timeline-message-list [data-presentation-row-id]` values immediately
+  before `send()`;
+- `waitForNewMessageIdentity()` rejects every pre-send ID, requires exactly
+  one new row containing the submitted text, and captures its public row ID
+  plus exactly one nested `.turn-card[data-request-id]` request ID;
+- `waitForCanonicalMessage()` then queries only that fixed row/request pair
+  and waits until its non-AI request-header submission marker is absent. A
+  duplicate same-text row, changed row ID, changed request ID, or missing
+  card keeps the gate closed;
+- the previous broad `getByText(...).toBeVisible()` short circuit was removed.
+  It could match both the rendered row and the processing control under a
+  real send race and was never the durability oracle.
+
+The current test contract was run three times on independent fresh servers:
+
+```text
+ATOLL_TEST_WEB_PORT=15214 ATOLL_TEST_MOCK_PORT=18874 npx playwright test \
+  tests/browser/waiting-production-contract.spec.js \
+  -g "wheel-takeover-after-send" --reporter=line
+  1 passed (6.9s)
+
+ATOLL_TEST_WEB_PORT=15215 ATOLL_TEST_MOCK_PORT=18875 npx playwright test \
+  tests/browser/waiting-production-contract.spec.js \
+  -g "wheel-takeover-after-send" --reporter=line
+  1 passed (5.8s)
+
+ATOLL_TEST_WEB_PORT=15216 ATOLL_TEST_MOCK_PORT=18876 npx playwright test \
+  tests/browser/waiting-production-contract.spec.js \
+  -g "wheel-takeover-after-send" --reporter=line
+  1 passed (5.9s)
+```
+
+An extra parallel pass also completed, but its Web runtime printed the
+pre-existing `rows.find is not a function` console exception; it is not used
+as one of the three clean repetitions above. No product assertion was
+silenced or changed.
+
+After the shared HEAD advanced again, a current single-server recheck also
+passed without that console output:
+
+```text
+ATOLL_TEST_WEB_PORT=15218 ATOLL_TEST_MOCK_PORT=18878 npx playwright test \
+  tests/browser/waiting-production-contract.spec.js \
+  -g "wheel-takeover-after-send" --reporter=line
+  1 passed (5.9s)
+```
+
+The obsolete E-send conflict remains a separate witness and was not deleted
+or weakened. On the same current HEAD:
+
+```text
+ATOLL_TEST_WEB_PORT=15217 ATOLL_TEST_MOCK_PORT=18877 npx playwright test \
+  tests/browser/e-send-scroll-writers.spec.js \
+  -g "browsing send hands off" --reporter=line
+  1 failed: frame 74 remained mode=browsing, gap=1225;
+  expected mode=following and gap <= 24
+```
+
+This is ACCEPT for the case38 same-message canonical-materialization test
+contract: the proof is public, fixed-identity, and repeatable. The E result
+remains RED evidence of its conflicting takeover contract, not a reason to
+relax case38 or alter product code.
+
 ## 第十轮只读：A08 durable-unseen gate remains pending Reading owner
 
 At the current branch tip `94ca90c`, no commit after `5aef9f4` touches the
