@@ -173,23 +173,27 @@ describe('current bounded Replica ownership (baseline memory-window UX)', () => 
       .toMatchObject({ requestId: 'child-request', terminal: null, status: 'pending' });
   });
 
-  it('drops a retained response when trimming evicts its request parent', () => {
+  it('retains a response-first row across trim until its exact request arrives', () => {
     const store = createChannelReplicaStore();
-    commit(store, request(1, 'closed-request'));
-    commit(store, response(2, 'closed-final', 'closed-request', 'done'));
-    for (let seq = 3; seq <= 6; seq += 1) commit(store, row(seq, { id: `tail-${seq}` }));
-    commit(store, row(7, {
-      id: 'orphan-progress', kind: 'response', type: 'agent.ask', sender: AGENT,
-      audience: [SELF], parentId: 'closed-request', text: 'stale progress',
+    for (let seq = 1; seq <= 4; seq += 1) commit(store, row(seq));
+    commit(store, row(5, {
+      id: 'response-first-progress', kind: 'response', type: 'agent.ask', sender: AGENT,
+      audience: [SELF], parentId: 'future-request', text: 'arrived before request',
     }));
-    commit(store, row(8, { id: 'tail-8' }));
+    for (let seq = 6; seq <= 8; seq += 1) commit(store, row(seq, { id: `tail-${seq}` }));
 
-    expect(store.trim(CHANNEL, 4)).toBe(5);
+    expect(store.trim(CHANNEL, 4)).toBe(4);
     const state = store.state(CHANNEL);
-    expect([...state.rows.keys()]).toEqual([5, 6, 8]);
-    expect(state.rows.has(7)).toBe(false);
-    expect(state._envelopesById.has('orphan-progress')).toBe(false);
-    expect(state.timeline.some((entry) => entry.turn?.requestId === 'closed-request')).toBe(false);
+    expect([...state.rows.keys()]).toEqual([5, 6, 7, 8]);
+    expect(state.rows.has(5)).toBe(true);
+    expect(state.timeline.some((entry) => entry.turn?.requestId === 'future-request')).toBe(false);
+
+    // The parent can arrive in a later ingress batch, with an older sequence;
+    // the raw response in the canonical rows map must then merge normally.
+    commit(store, request(2, 'future-request'));
+    const turn = state.timeline.find((entry) => entry.turn?.requestId === 'future-request')?.turn;
+    expect(turn).toMatchObject({ requestId: 'future-request', terminal: null, status: 'pending' });
+    expect(turn.provisional.map((item) => item.envelope.id)).toEqual(['response-first-progress']);
   });
 
   it('does not publish or acknowledge a live arrival while trimming rows', () => {

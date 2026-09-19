@@ -143,25 +143,6 @@ function openTurnFloor(state) {
   return floor;
 }
 
-// A response without its request is not a second turn/lifecycle. Once a trim
-// pass has decided which rows remain, drop such progress/final rows in the same
-// mutation so rebuildState cannot retain raw orphan evidence that is invisible
-// to the timeline. Out-of-order history can re-admit the canonical request and
-// response later through the normal commit path.
-function removeOrphanResponses(state) {
-  const requestIDs = new Set();
-  for (const envelope of state.rows.values()) {
-    if (envelope?.kind === 'request' && envelope.id) requestIDs.add(String(envelope.id));
-  }
-  const orphanSeqs = [];
-  for (const [seq, envelope] of state.rows) {
-    if (envelope?.kind !== 'response' || !envelope.parent_id) continue;
-    if (!requestIDs.has(String(envelope.parent_id))) orphanSeqs.push(seq);
-  }
-  for (const seq of orphanSeqs) state.rows.delete(seq);
-  return orphanSeqs.length;
-}
-
 // Replica is the only mutable materialized ledger. Every source commits here;
 // the fold is recomputed from that canonical row set so out-of-order cache,
 // history and live delivery cannot create competing folds. Reconciliation
@@ -523,8 +504,11 @@ export function createChannelReplicaStore() {
       : ordinaryCut;
     const remove = seqs.filter((seq) => seq < cut);
     for (const seq of remove) record.state.rows.delete(seq);
-    const orphanCount = removeOrphanResponses(record.state);
-    const removed = remove.length + orphanCount;
+    // Keep a response whose parent is outside this materialized window in the
+    // canonical rows map. A later request may legally arrive first/after a
+    // separate history batch; rebuildState will merge that raw response once
+    // its exact parent_id is present. The rows map is the only such buffer.
+    const removed = remove.length;
     if (!removed) return 0;
     rebuildState(record.state);
     record.materializedCoverage = [...record.state.rows.keys()].sort((a, b) => a - b)
