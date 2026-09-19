@@ -217,6 +217,38 @@ export function VendorListExecutor({
     coordinator.replaceActivation(reading.activationID);
   }, [coordinator, reading.activationID]);
 
+  const enforceFollowingTail = useCallback((source = 'layout') => {
+    const root = rootRef.current;
+    const current = readingRef.current.getSession();
+    if (!root
+      || current.mode !== READING_MODE.following
+      || navigationPolicy.currentInput().active
+      || root.scrollHeight - root.clientHeight - root.scrollTop <= 24) return false;
+    const executed = executeReadingDOMCommand(
+      Object.freeze({ type: 'scroll-tail' }),
+      { virtuoso: virtuosoRef.current, root },
+    );
+    if (executed) scheduleObserve(source, true);
+    return executed;
+  }, [navigationPolicy, scheduleObserve]);
+
+  useLayoutEffect(() => {
+    if (!rootNode || typeof globalThis.MutationObserver !== 'function') return undefined;
+    // Virtuoso commits its measured spacer in a DOM mutation before paint.
+    // Consume the already-owned following intent at that boundary, rather
+    // than waiting for the vendor's next-frame followOutput callback.
+    const observer = new globalThis.MutationObserver(() => {
+      enforceFollowingTail('layout');
+    });
+    observer.observe(rootNode, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+    return () => observer.disconnect();
+  }, [enforceFollowingTail, rootNode]);
+
   useEffect(() => {
     const root = rootNode;
     if (!root) return undefined;
@@ -309,20 +341,30 @@ export function VendorListExecutor({
       }
       return;
     }
+    if (current.mode === READING_MODE.following) {
+      enforceFollowingTail('layout');
+      return;
+    }
     if (current.mode !== READING_MODE.browsing || !current.bookmark) return;
+    // Native navigation owns the viewport for the lifetime of its input
+    // transaction. The bookmark recorded from that same motion is evidence,
+    // not a request to replay a position command back into the list.
+    if (navigationPolicy.currentInput().active) return;
     const resolved = resolveReadingBookmark(snapshot.rows, current.bookmark);
     if (!resolved) return;
     const key = `row:${current.activationID}:${current.inputEpoch}:${snapshot.revision}:${resolved.messageID}`;
     if (consumedCommandRef.current === key) return;
     if (executeReadingDOMCommand(Object.freeze({
       type: 'position-row',
-      index: Number(snapshot.firstItemIndex || 1) + resolved.index,
+      // Virtuoso's imperative location is data-local even when firstItemIndex
+      // gives rendered rows a large logical origin for prepend stability.
+      index: resolved.index,
       viewportOffset: resolved.rowViewportOffset,
     }), { virtuoso: virtuosoRef.current, root })) {
       consumedCommandRef.current = key;
       scheduleObserve('layout', true);
     }
-  }, [reading, scheduleObserve, snapshot]);
+  }, [enforceFollowingTail, navigationPolicy, reading, scheduleObserve, snapshot]);
 
   useLayoutEffect(() => {
     if (focusOnMount && rootNode) executeReadingDOMCommand({ type: 'claim-focus' }, { root: rootNode });
@@ -349,9 +391,9 @@ export function VendorListExecutor({
     tabIndex={0}
     data={snapshot.rows}
     firstItemIndex={Number(snapshot.firstItemIndex || 1)}
-    initialTopMostItemIndex={Number(snapshot.firstItemIndex || 1) + (reading.session.mode === READING_MODE.following
+    initialTopMostItemIndex={reading.session.mode === READING_MODE.following
       ? Math.max(0, snapshot.rows.length - 1)
-      : resolveReadingBookmark(snapshot.rows, reading.session.bookmark)?.index || 0)}
+      : resolveReadingBookmark(snapshot.rows, reading.session.bookmark)?.index || 0}
     computeItemKey={(_index, row) => row.id}
     itemContent={(index, row) => <MessageRow
       row={row}
@@ -359,7 +401,7 @@ export function VendorListExecutor({
       renderRow={renderRow}
       presentationState={rowPresentationState?.(row) || ''}
     />}
-    followOutput={reading.session.mode === READING_MODE.following ? 'auto' : false}
+    followOutput={false}
     defaultItemHeight={132}
     increaseViewportBy={900}
     overscan={900}
@@ -390,6 +432,7 @@ export function VendorListExecutor({
     }}
     totalListHeightChanged={() => {
       geometryRevisionRef.current += 1;
+      enforceFollowingTail('layout');
       scheduleObserve('layout');
     }}
     atBottomStateChange={() => scheduleObserve('layout')}
