@@ -258,19 +258,20 @@ export function useComposerSubmissionRuntime({
 
   useEffect(() => {
     // React.StrictMode probes effects with a setup -> cleanup -> setup cycle
-    // while retaining the mounted hook state.  Defer terminal teardown until
-    // the current task ends so that the probe's second setup can cancel it;
-    // a real unmount has no later setup and therefore still closes the store.
+    // while retaining the mounted hook state.  The logical fence is
+    // synchronous: an in-flight receipt must fail closed as soon as this
+    // owner is really gone.  Only the physical IndexedDB close is deferred so
+    // the probe's second setup can cancel it.
     const effectToken = ++lifecycleEffectTokenRef.current;
     lifecycleRef.current.active = true;
     return () => {
+      lifecycleRef.current.active = false;
+      lifecycleRef.current.generation += 1;
+      hydrationRef.current += 1;
+      attemptEpochRef.current += 1;
+      automaticReconnectRetryRef.current.clear();
       queueMicrotask(() => {
         if (lifecycleEffectTokenRef.current !== effectToken) return;
-        lifecycleRef.current.active = false;
-        lifecycleRef.current.generation += 1;
-        hydrationRef.current += 1;
-        attemptEpochRef.current += 1;
-        automaticReconnectRetryRef.current.clear();
         outboxRef.current?.close();
       });
     };

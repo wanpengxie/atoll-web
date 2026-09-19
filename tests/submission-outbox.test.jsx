@@ -71,6 +71,53 @@ describe('提交生命周期竞态（useComposerSubmissionRuntime，与 tests/su
     config.store.close();
   });
 
+  it('fences an accepted-patch already in flight when the runtime really unmounts', async () => {
+    let resolveReceipt;
+    const receipt = new Promise((resolve) => { resolveReceipt = resolve; });
+    const submit = vi.fn(() => receipt);
+    const config = harness({ wireState: 'open', submit });
+    let acceptedPatchStarted = false;
+    let finishAcceptedPatch;
+    let acceptedWrite = false;
+    const store = config.store;
+    const gatedStore = {
+      ...store,
+      patch(...args) {
+        if (args[3]?.state !== 'accepted') return store.patch(...args);
+        acceptedPatchStarted = true;
+        const authorize = args[4]?.authorize;
+        return new Promise((resolve, reject) => {
+          finishAcceptedPatch = () => {
+            if (authorize && authorize() !== true) {
+              reject(new Error('lifecycle fence')); return;
+            }
+            acceptedWrite = true;
+            resolve({ state: 'accepted', messageId: args[1] });
+          };
+        });
+      },
+    };
+    config.outboxFactory = () => gatedStore;
+    const { result, unmount } = renderHook((props) => useComposerSubmissionRuntime(props), { initialProps: config });
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    let sendPromise;
+    act(() => { sendPromise = result.current.send({ messageId: 'm-unmount-flight', text: 'in flight', msgType: 'agent.ask', audience: ['agent:a'] }); });
+    await waitFor(() => expect(result.current.pending[0]?.state).toBe('transmitting'));
+    resolveReceipt({ message_id: 'm-unmount-flight' });
+    await waitFor(() => expect(acceptedPatchStarted).toBe(true));
+
+    // The accepted patch has already entered its persistence step. A real
+    // unmount must fence its authorize callback before it can commit; the
+    // physical close is deliberately allowed to remain deferred for the
+    // StrictMode probe contract.
+    unmount();
+    finishAcceptedPatch();
+    await act(async () => { await sendPromise; });
+    expect(acceptedWrite).toBe(false);
+    store.close();
+  });
+
   it('does not downgrade an in-flight submission when access changes before its accepted receipt', async () => {
     let resolveReceipt;
     const receipt = new Promise((resolve) => { resolveReceipt = resolve; });
