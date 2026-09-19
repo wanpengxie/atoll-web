@@ -109,10 +109,6 @@
 .conversation-reading-slot > .timeline, .conversation-reading-slot > .channel-private-empty { width: 100%; height: 100%; min-height: 0; }
 .conversation-bottom-stack { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; display: flex; min-width: 0; max-height: min(var(--conversation-input-max-height), 100%); flex-direction: column; pointer-events: none; }
 .conversation-input-slot { min-width: 0; min-height: 0; flex: 0 1 auto; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; pointer-events: none; }
-/* Mention/command choices are overlays above the composer, not scrollable input
-   content. Let the slot expose them while they are open; the bottom stack's
-   z-index then keeps the painted option and its pointer target above Reading. */
-.conversation-input-slot:has(.mention-menu, .command-menu) { overflow: visible; }
 .conversation-floating-slot { position: absolute; z-index: 2; right: 0; bottom: 100%; left: 0; min-width: 0; pointer-events: none; }
 .dynamic-workspace > .terminal-view { grid-row: 1; }
 .dynamic-workspace.terminal-split-open > .terminal-view { grid-column: 2; border-left: 1px solid var(--terminal-line); }
