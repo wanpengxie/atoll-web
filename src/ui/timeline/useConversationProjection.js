@@ -50,8 +50,18 @@ function rangeCovers(ranges = [], low, high) {
 
 function currentEntryAuthority({ snapshot, historyStatus, bottomReady, availability, authoritativeEmpty }) {
   const candidate = snapshot?.currentEntryCandidate;
+  // A live row is already materialized in the same current presentation that
+  // published the authoritative head. The replica coverage array is updated
+  // by the history-page path and may lag that live commit by one publication;
+  // requiring it here would hide the actual current entry until another page
+  // happens to refresh coverage.
+  const candidateAtCurrentHead = candidate && candidate.local !== true
+    && Number(candidate.seqHigh || 0) > 0
+    && Number(candidate.seqHigh || 0) === Number(historyStatus?.headSeq || 0)
+    && historyStatus?.messageCurrent === true;
   const durableCovered = candidate && candidate.local !== true
-    && rangeCovers(historyStatus?.coverage, candidate.seqHigh, historyStatus?.headSeq);
+    && (candidateAtCurrentHead
+      || rangeCovers(historyStatus?.coverage, candidate.seqHigh, historyStatus?.headSeq));
   const localCovered = candidate?.local === true && (authoritativeEmpty
     || (bottomReady && rangeCovers(historyStatus?.coverage, historyStatus?.headSeq, historyStatus?.headSeq)));
   if (availability !== 'readable' || !candidate || !((bottomReady && durableCovered) || localCovered)) return null;
