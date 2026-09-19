@@ -597,6 +597,45 @@ pageerror 与 network error 均为空。结论：#31 在最新 clean HEAD 达到
 的测试 helper 对齐，不是 selector 替换或几何断言放宽；本轮只补证据，不改写冻结
 `7ba308c` 的 `23/8` 历史 aggregate。
 
+### 第二十一轮：#12 browsing send → following handoff（clean `a3963f6`）
+
+本轮在最新 clean snapshot `a3963f6` 复验 A–F 中除已指定不重复的 #31/#18/#19 外其余
+28 条真实 Chromium 合约：`27 passed, 1 failed`；唯一失败是
+`tests/browser/e-send-scroll-writers.spec.js:274` 的 #12
+`browsing send hands off to the following owner with recorded writes`。#1/#14/#27
+以及 #29/#30 在同一 clean snapshot 均通过，本轮不将它们误记为 RED。
+
+独立最小复现使用真实用户路径（`long-running-history`, seed `0xe0_09_19`）：登录
+`c0` → 选择 steward → 对 `.timeline-message-list` 真实向上滚轮 `-900` 进入
+`data-viewport-mode="browsing"` → 在 composer 输入并点击发送
+`E-20260918 browsing send probe` → 等待 1200ms。聚焦命令为：
+
+```text
+ATOLL_E_OUT=/tmp/af-e12-a3963f6-out2 ATOLL_TEST_MOCK_PORT=20107 ATOLL_TEST_WEB_PORT=15507 \
+  playwright test tests/browser/e-send-scroll-writers.spec.js \
+  --grep 'browsing send hands off' --trace=on --reporter=line
+```
+
+聚焦重跑稳定 `1 failed`（frame 69）。发送前实际 geometry 为
+`scrollTop=3964, scrollHeight=4351, clientHeight=387, overflow=3964`；开始采样时
+已在 browsing `scrollTop=3064, gap=901, rowCount=11`。发送后新消息确实进入并
+paint：`rowCount=12`、`scrollHeight=4676`；但 70 个采样帧均保持
+`mode=browsing`，最终 `scrollTop=3064`、`gap=1225`，没有 displacement，
+`timelineWrites=[]`、`reading.bottom-intent=0`、`reading.issuer-write=0`、
+`reading.issuer-reject=0`。因此首断言在 line 324 即失败：期望 `following`，实际
+仍为 `browsing`；后续 tail gap/writer 断言尚未被执行。这个证据同时排除了发送未
+接受、selector 未命中或新 row 未物化等测试侧假象。
+
+Baseline 用户合同保护的是：读者主动离开尾部后发送自己的消息，发送完成应把阅读
+owner handoff 到 following、让新消息与列表一起落到物理尾部，并且每个可见位移都有
+当前 owner 的写入记录。当前首个公开边界是 `ConversationSurface` 提供的
+`readingIntent.composerSendStarted()`：它在 `token.mode !== following` 时直接返回
+`null`，于是 composer 提交虽成功，Reading session 没有 bottom intent、following
+转移或 writer。首个 owner 是 `ConversationSurface` → Reading/Timeline reading
+owner（`READ`），不是 Composer submission、notification 或 Workspace handoff；
+该边界与当前实现显式保留 browsing anchor 的策略冲突，应交由 Reading owner 做产品
+裁决/修复。本分区不改产品、不改断言、不改 `23/8` 冻结 aggregate。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
