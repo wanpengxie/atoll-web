@@ -61,6 +61,28 @@ const ACCESS_NOTICE = Object.freeze({
   loading: '正在确认频道访问状态。',
 });
 
+const ACTIVITY_KIND_LABELS = Object.freeze({
+  approval: '审批',
+  agent_run: 'Agent 回合',
+  task: '任务',
+  recovery: '恢复事项',
+  automation: '自动动作',
+  operation: '操作',
+});
+
+const ACTIVITY_STATE_LABELS = Object.freeze({
+  active: '进行中',
+  waiting: '待处理',
+  blocked: '已阻塞',
+  uncertain: '待确认',
+  failed: '失败',
+  expired: '已过期',
+  completed: '已完成',
+  cancelled: '已取消',
+  queued: '排队中',
+  running: '运行中',
+});
+
 function canViewChannelContent(access) {
   return CONTENT_ACCESS.has(access);
 }
@@ -993,6 +1015,75 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     navigation.setActiveView('conversation');
     setPanel('');
   };
+  const openActivitySource = useCallback((source) => {
+    if (!source?.channelId) return;
+    const sourceChannel = navigation.channels.find((row) => row.id === source.channelId);
+    if (!sourceChannel || !canViewChannelContent(sourceChannel.access)) {
+      setChannelNotice('来源频道当前不可访问，未打开缓存内容。');
+      setPanel('');
+      return;
+    }
+    navigation.select(source.channelId);
+    navigation.setActiveView(source.view === 'tasks' ? 'tasks' : 'conversation');
+    setPanel('');
+  }, [navigation.channels, navigation.select, navigation.setActiveView]);
+  const activityPort = useMemo(() => {
+    const visibleChannels = navigation.channels.filter((channel) => canViewChannelContent(channel.access));
+    const channelById = new Map(visibleChannels.map((channel) => [channel.id, channel]));
+    const activities = [];
+    for (const channel of visibleChannels) {
+      const facts = selectFeatureTaskFacts({
+        state: feed.stateFor(channel.id),
+        channelId: channel.id,
+        selfId: navigation.selfFor(channel.id),
+        now: Date.now(),
+      });
+      for (const fact of facts) {
+        activities.push({
+          ...fact,
+          key: `activity:${fact.key}`,
+          kindLabel: ACTIVITY_KIND_LABELS[fact.kind] || fact.kind || '动态',
+          channelName: channel.qualified_name || channel.name || channel.id,
+          detail: ACTIVITY_STATE_LABELS[fact.state] || fact.state || '有更新',
+        });
+      }
+    }
+    const operations = [];
+    for (const [channelId, snapshot] of Object.entries(feed.agentActivity?.byChannel || {})) {
+      const channel = channelById.get(channelId);
+      if (!channel) continue;
+      for (const entry of snapshot.active || []) {
+        operations.push({
+          key: `operation:${channelId}:${entry.requestId}`,
+          kind: 'operation',
+          kindLabel: ACTIVITY_KIND_LABELS.operation,
+          title: `${entry.agentId || 'Agent'} 正在运行`,
+          state: 'active',
+          channelId,
+          channelName: channel.qualified_name || channel.name || channel.id,
+          detail: entry.type || '实时操作快照',
+          updatedAt: entry.updatedAt,
+          source: {
+            channelId,
+            view: 'dynamic',
+            objectType: 'turn',
+            objectId: entry.requestId,
+            requestId: entry.requestId,
+          },
+        });
+      }
+    }
+    const byLatest = (left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0)
+      || String(left.key).localeCompare(String(right.key));
+    activities.sort(byLatest);
+    operations.sort(byLatest);
+    return Object.freeze({
+      activities: Object.freeze(activities),
+      operations: Object.freeze(operations),
+      operationsUnavailable: feed.agentActivity?.connected !== true,
+      commands: Object.freeze({ open: openActivitySource }),
+    });
+  }, [feed.agentActivity, feed.version, navigation.channels, navigation.selfFor, openActivitySource]);
   const featureElement = <WorkspaceFeatures
     activeView={navigation.terminalVisible ? 'conversation' : navigation.activeView}
     channel={navigation.activeChannel}
@@ -1030,6 +1121,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     roster={rosterPort}
     governance={governancePort}
     automation={automationPort}
+    activity={activityPort}
     onClose={() => setPanel('')}
   /> : null;
   const overlays = <>
@@ -1085,6 +1177,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       openAutomation: contentVisible ? () => setPanel('automation') : undefined,
       openRoster: memberVisible ? () => setPanel('roster') : undefined,
       openSearch: () => setPanel('search'),
+      openActivity: () => setPanel('activity'),
       openChannelAdministration: memberVisible ? () => setPanel('channel-administration') : undefined,
       openSpaceAdministration: () => setPanel('space-administration'),
     }}

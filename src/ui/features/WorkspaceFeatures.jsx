@@ -7,6 +7,7 @@ import { SearchFeature } from './search/SearchFeature.jsx';
 import { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
 import { TasksFeature } from './tasks/TasksFeature.jsx';
 import { TerminalFeature } from './terminal/TerminalFeature.jsx';
+import { SidePanel } from '../primitives/SidePanel.jsx';
 
 export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   roster: 'roster',
@@ -16,10 +17,56 @@ export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   automation: 'automation',
   channelAdministration: 'channel-administration',
   spaceAdministration: 'space-administration',
+  activity: 'activity',
 });
+
+const ACTIVITY_TABS = Object.freeze([
+  { id: 'activity', label: '活动' },
+  { id: 'operations', label: '操作' },
+]);
 
 function InaccessibleFeature({ label }) {
   return <section className="workspace-view channel-private-empty" role="region" aria-label={label}><strong>{label}不可访问</strong><p>恢复频道访问后才能查看。</p></section>;
+}
+
+function ActivityRows({ rows = [], empty, unavailable = '', onOpen }) {
+  if (unavailable) {
+    return <div className="activity-list">
+      <div className="activity-empty"><strong>{unavailable}</strong><p>当前后端没有可验证的操作事实；这里不会伪造历史记录。</p></div>
+    </div>;
+  }
+  return <div className="activity-list">
+    {rows.map((item) => <button
+      type="button"
+      className={`activity-row state-${item.state || 'info'}`}
+      key={item.key}
+      onClick={() => onOpen?.(item.source)}
+    >
+      <span className="activity-kind">{item.kindLabel || item.kind || '动态'}</span>
+      <span className="activity-copy"><strong>{item.title}</strong><small>{item.channelName || item.channelId}{item.detail ? ` · ${item.detail}` : ''}</small></span>
+      <span className="activity-open">返回来源 ›</span>
+    </button>)}
+    {!rows.length && <div className="activity-empty"><strong>{empty}</strong><p>这里只展示当前账户可见频道中的真实事实。</p></div>}
+  </div>;
+}
+
+function ActivityFeature({ port = {}, onClose }) {
+  const [tab, setTab] = useState('activity');
+  const operationsUnavailable = tab === 'operations' && port.operationsUnavailable;
+  const rows = tab === 'activity' ? port.activities || [] : port.operations || [];
+  const empty = tab === 'activity' ? '没有需要关注的活动' : '没有进行中的操作';
+  return <SidePanel
+    className="activity-center"
+    ariaLabel="全局活动"
+    eyebrow="GLOBAL"
+    title="活动中心"
+    tabs={ACTIVITY_TABS}
+    activeTab={tab}
+    onTabChange={setTab}
+    onClose={onClose}
+  >
+    <ActivityRows rows={rows} empty={empty} unavailable={operationsUnavailable ? '当前没有可用的进行中操作快照' : ''} onOpen={port.commands?.open} />
+  </SidePanel>;
 }
 
 // Product surfaces consume only domain projections and command callbacks.
@@ -87,7 +134,7 @@ function ContextHost({ type, focusKey, onClose, children }) {
   </div>;
 }
 
-export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, onClose }) {
+export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, onClose }) {
   const kind = typeof panel === 'string' ? panel : panel?.kind || panel?.value || '';
   let content = null;
   let dismiss = onClose;
@@ -112,6 +159,7 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   else if (kind === WORKSPACE_FEATURE_PANEL.automation) content = <ChannelAutomationPanel channel={channel} port={automation} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) content = <ChannelAdministrationPanel channel={channel} port={governance.channel || governance} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) content = <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.activity) content = <ActivityFeature port={activity} onClose={onClose} />;
   if (!content) return null;
   return <ContextHost key={focusKey} type={kind === WORKSPACE_FEATURE_PANEL.artifact ? 'artifact' : kind} focusKey={focusKey} onClose={dismiss}>{content}</ContextHost>;
 }
