@@ -903,17 +903,6 @@ function MessageListBody({
         clientHeight: Number(root?.clientHeight || 0),
         demandUnits: completeViewportUnits(root),
       }));
-      traceReadingAdapter('input-owner', () => ({
-        activationID: transaction.activationID,
-        inputEpoch: transaction.inputGeneration,
-        source: transaction.source,
-        direction: transaction.direction,
-        gestureID: transaction.id,
-        reason,
-        scrollTop: Number(root?.scrollTop || 0),
-        scrollHeight: Number(root?.scrollHeight || 0),
-        clientHeight: Number(root?.clientHeight || 0),
-      }));
     },
     onNavigationEnd: finishNavigationObservation,
     onNavigationCancel() {

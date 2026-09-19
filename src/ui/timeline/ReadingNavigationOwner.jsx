@@ -48,6 +48,32 @@ function nestedScrollOwner(target, root, delta) {
   return null;
 }
 
+function traceInputOwner(transaction, host, reason) {
+  const node = host?.node;
+  const detail = {
+    activationID: transaction.activationID,
+    inputEpoch: transaction.inputGeneration,
+    source: transaction.source,
+    // Keep the historic diagnostic field while making `source` canonical.
+    type: transaction.source,
+    direction: transaction.direction,
+    gestureID: transaction.id,
+    reason,
+    hostRole: transaction.hostRole,
+    scrollTop: Number(node?.scrollTop || 0),
+    scrollHeight: Number(node?.scrollHeight || 0),
+    clientHeight: Number(node?.clientHeight || 0),
+  };
+  readingTrace('reading.input-owner', detail);
+  const sink = globalThis.__ATOLL_READING_TRACE__;
+  if (typeof sink !== 'function') return;
+  try {
+    sink({ stage: 'input-owner', at: globalThis.performance?.now?.() || Date.now(), ...detail });
+  } catch {
+    readingTrace('reading.test-sink-error', { stage: 'input-owner' });
+  }
+}
+
 // Stable owner of one physical navigation transaction. Renderers register
 // geometry readers and observation sinks; they do not mint ReadingSession
 // input epochs. Quiet deadlines end input attribution only. Paint admission
@@ -149,6 +175,7 @@ export function ReadingNavigationOwner({
         const captured = transactionOwnerRef.current;
         if (!captured || captured.id !== transaction.id) return;
         const { owner, host } = captured;
+        if (reason === 'begin') traceInputOwner(transaction, host, reason);
         if (reason !== 'begin') {
           owner.updateNavigation?.({
             inputGeneration: transaction.inputGeneration,

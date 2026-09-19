@@ -93,7 +93,7 @@ test('Presentation authority rejects intermediate batches and blesses only the c
   expect(byPhase['filter-settled'].filter((row) => row.folded === 0).map((row) => row.text.includes('LATEST-DEEP-MATCH'))).toEqual([true]);
 });
 
-test('cache-first latest role commit follows the public height acknowledgement', async ({ page }, testInfo) => {
+test('cache-first latest role commit remains at the structural following tail', async ({ page }, testInfo) => {
   await page.goto('/tests/browser/fixtures/fold-authority.html');
   await page.waitForFunction(() => Boolean(window.foldAuthority));
   await page.evaluate(() => {
@@ -118,9 +118,11 @@ test('cache-first latest role commit follows the public height acknowledgement',
   const evidencePath = testInfo.outputPath('fold-role-height-ack.json');
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
   await testInfo.attach('fold-role-height-ack.json', { path: evidencePath, contentType: 'application/json' });
-  expect(evidence.scrollHeight - evidence.clientHeight - evidence.scrollTop).toBeLessThanOrEqual(1);
-  expect(evidence.trace.entries.filter((entry) => entry.event === 'reading.issuer-write'
-    && entry.detail?.authorityLabel === 'presentation-role').length).toBe(1);
+  // FollowingTailList owns the tail structurally: column-reverse makes zero
+  // the tail origin regardless of the committed row height. Role publication
+  // must therefore require no geometry command at all.
+  expect(Math.abs(evidence.scrollTop)).toBeLessThanOrEqual(1);
+  expect(evidence.trace.entries.filter((entry) => entry.event === 'reading.issuer-write')).toHaveLength(0);
 });
 
 test('wheel takeover invalidates a pending latest-role height transaction', async ({ page }, testInfo) => {
@@ -129,10 +131,15 @@ test('wheel takeover invalidates a pending latest-role height transaction', asyn
   await page.evaluate(() => {
     window.__ATOLL_DIAGNOSTICS__.reading.enable({ case: 'fold-role-wheel' });
     window.foldAuthority.cacheFirst();
-    window.foldAuthority.authorizeCache({ wheel: true });
+    window.foldAuthority.authorizeCache();
   });
   await expect(page.locator('[data-presentation-row-id]').filter({ hasText: 'CACHE-FIRST-LATEST' })
     .locator('.message-fold-toggle')).toHaveAttribute('aria-expanded', 'true');
+  const scroller = page.locator('[data-reading-container="following-tail"]');
+  await expect(scroller).toHaveAttribute('data-reading-container', 'following-tail');
+  await scroller.hover();
+  await page.mouse.wheel(0, -120);
+  await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
   await page.waitForTimeout(120);
   const evidence = await page.evaluate(() => ({
     mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
@@ -143,6 +150,8 @@ test('wheel takeover invalidates a pending latest-role height transaction', asyn
   await testInfo.attach('fold-role-wheel.json', { path: evidencePath, contentType: 'application/json' });
   const input = evidence.trace.entries.find((entry) => entry.event === 'reading.input-owner');
   expect(input).toBeTruthy();
+  expect(input.detail).toMatchObject({ source: 'wheel', type: 'wheel', hostRole: 'following' });
+  expect(input.detail.scrollTop).toBeLessThanOrEqual(-3);
   expect(evidence.mode).toBe('browsing');
   expect(evidence.trace.entries.filter((entry) => entry.sequence > input.sequence
     && entry.event === 'reading.issuer-write')).toHaveLength(0);

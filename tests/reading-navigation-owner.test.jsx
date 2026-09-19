@@ -11,6 +11,7 @@ import {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  delete globalThis.__ATOLL_READING_TRACE__;
 });
 
 function reading(mode = 'browsing') {
@@ -90,16 +91,23 @@ function touchContacts(type, { touches = [], changedTouches = [] } = {}) {
 
 it('routes an ordinary browsing touch sequence through one stable input generation', () => {
   vi.useFakeTimers();
+  const trace = vi.fn();
+  globalThis.__ATOLL_READING_TRACE__ = trace;
   const port = reading('browsing');
   const view = render(<Subject port={port} role="browsing" />);
   const host = view.getByTestId('browsing');
 
   act(() => host.dispatchEvent(touch('touchstart', { y: 120 })));
+  expect(trace).not.toHaveBeenCalledWith(expect.objectContaining({ stage: 'input-owner' }));
   act(() => host.dispatchEvent(touch('touchmove', { y: 160 })));
   act(() => host.dispatchEvent(touch('touchmove', { y: 200 })));
   expect(port.beginNavigation).toHaveBeenCalledTimes(1);
   expect(port.getSession().inputEpoch).toBe(5);
   expect(port.updateNavigation).toHaveBeenCalled();
+  expect(trace.mock.calls.map(([entry]) => entry).filter((entry) => entry.stage === 'input-owner'))
+    .toEqual([expect.objectContaining({
+      source: 'touch', type: 'touch', hostRole: 'browsing', reason: 'begin', inputEpoch: 5,
+    })]);
 
   act(() => host.dispatchEvent(touch('touchend', { active: false })));
   act(() => vi.advanceTimersByTime(100));
@@ -125,6 +133,8 @@ it('settles presentation on potential contact but defers bookmark capture until 
 
 it('keeps following input potential until native displacement supplies its bookmark', () => {
   vi.useFakeTimers();
+  const trace = vi.fn();
+  globalThis.__ATOLL_READING_TRACE__ = trace;
   const port = reading('following');
   const target = vi.fn();
   const view = render(<Subject port={port} role="following" onFollowingNavigationTarget={target} />);
@@ -133,6 +143,7 @@ it('keeps following input potential until native displacement supplies its bookm
 
   act(() => host.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -80 })));
   expect(port.beginNavigation).not.toHaveBeenCalled();
+  expect(trace).not.toHaveBeenCalledWith(expect.objectContaining({ stage: 'input-owner' }));
   host.scrollTop = -24;
   act(() => host.dispatchEvent(new Event('scroll')));
 
@@ -147,12 +158,19 @@ it('keeps following input potential until native displacement supplies its bookm
   }));
   expect(port.beginNavigation).toHaveBeenCalledTimes(1);
   expect(port.getSession()).toMatchObject({ mode: 'browsing', inputEpoch: 5 });
+  expect(trace.mock.calls.map(([entry]) => entry).filter((entry) => entry.stage === 'input-owner'))
+    .toEqual([expect.objectContaining({
+      source: 'wheel', type: 'wheel', hostRole: 'following', reason: 'begin',
+      inputEpoch: 5, scrollTop: -24,
+    })]);
   const firstTarget = target.mock.calls.at(-1)[0];
 
   host.scrollTop = -48;
   act(() => host.dispatchEvent(new Event('scroll')));
   expect(port.beginNavigation).toHaveBeenCalledTimes(1);
   expect(port.updateNavigation).toHaveBeenCalled();
+  expect(trace.mock.calls.map(([entry]) => entry).filter((entry) => entry.stage === 'input-owner'))
+    .toHaveLength(1);
   expect(target.mock.calls.at(-1)[0]).toMatchObject({
     transactionID: firstTarget.transactionID,
     targetRevision: firstTarget.targetRevision,
