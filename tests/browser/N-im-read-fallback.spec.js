@@ -424,4 +424,17 @@ test('N4 成员过滤视图真实到底时本 scope 计数为 0，频道级确�
   expect(afterLeaving.jump).toBe(0);
   expect(afterLeaving.related).toBe(0);
   expect(afterLeaving.other).toBe(0);
+
+  // The public high-water contract still requires the current rail owner to
+  // publish a ready channel projection. This is distinct from the retired
+  // per-filter `outsideFilterPreserved` implementation oracle above: the
+  // channel-level confirmation behavior is already covered by the DOM checks,
+  // while this gate keeps a missing rail authority from looking green.
+  await expect.poll(() => page.evaluate(() => {
+    const channels = window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0')?.channels || [];
+    return {
+      channelPresent: channels.length > 0,
+      authorityReady: channels[0]?.authorityReady === true,
+    };
+  }), { timeout: 15_000 }).toEqual({ channelPresent: true, authorityReady: true });
 });

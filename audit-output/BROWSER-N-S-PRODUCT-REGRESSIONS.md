@@ -371,3 +371,33 @@ ATOLL_TEST_WEB_PORT=16104 ATOLL_TEST_MOCK_PORT=20404 npx playwright test tests/b
 ```
 
 本轮无新增产品回归；未修改产品、vendor、package 或 skip，未以隐藏 UI、等待或放宽行为断言换绿。
+
+## 第十七轮：N4/H4 与四条 high-water 首断点均为 notification rail authority（HEAD `8feb531`，2026-09-20）
+
+本轮纠正第16轮“空 diagnostics 仅是过时 raw”的结论。当前冻结 `notification-high-water.spec.js` 四条均真实 Chromium **failed**，共同失败在 `rail.snapshot(...).channels[0]` 缺失；其用户可见 DOM 前置门均通过。该 suite 的 rail snapshot 不只是临时调试：它核对 cursor/high-water 的持久边界、Replica head 与 presented-follow 的顺序，是当前 notification owner 的 public handoff。
+
+证据与状态：
+
+- persistence：DOM project `2→0→0(reload)→1(future)→0`；采集到 project notification high-water `27→29→29→30`，Replica meta head `29→29→30→32`；每阶段 rail `channels=[]`。
+- hydration：DOM `2→0→0`；high-water `25→27→27`，Replica head `27→29→29`；rail `channels=[]`。
+- filtered：filtered tail 与离开后 DOM `related/total/pending/jump=0/0/false/0`；high-water `29→29`、Replica head `29→29`；rail `channels=[]`。
+- presented-follow：DOM before/after `0/0/false/0`；high-water `25→28`、Replica head `27→28`；新 approval 已进入 Presentation/DOM，但 rail `channels=[]`。
+
+正式命令及结果：
+
+```text
+ATOLL_TEST_WEB_PORT=16201 ATOLL_TEST_MOCK_PORT=20501 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round17-highwater-16201-20260920
+# 4 failed（四条均在 rail.channels[0] undefined；DOM 断言先通过）
+
+ATOLL_TEST_WEB_PORT=16202 ATOLL_TEST_MOCK_PORT=20502 npx playwright test tests/browser/notification-owner-oracle.spec.js --grep="N4 filtered|H4 following" --workers=1 --reporter=line --output=test-results-browser-ns-round17-owner-16202-20260920
+# 2 passed（observation-only；firstDivergence 仍分别为 rail）
+```
+
+owner oracle 的首断点包：
+
+| case | cursor / Replica | Presentation + DOM | rail |
+|---|---|---|---|
+| N4 filtered-tail | c0 `readSeq=25, high-water=61`；Replica `headSeq=61`, 44 rows | following, gap0，approval rows 30/31 visible；DOM `0/0/false/0` | `present=false, authorityReady=false, channels=[]` |
+| H4 following-after-arrival | c0.project `readSeq=25, high-water=28`；Replica `headSeq=28`, arrival row present | following, gap0，新 approval visible，Reading visible IDs 含新 row；DOM `0/0/false/0` | `present=false, authorityReady=false, channels=[]`，reason `rail high-water 0 < expected 1` |
+
+这不是 fixture、selector、Replica、cursor、Presentation 或 Reading 回归：所有前置链均已落地且用户 rail 数字正确；当前真实产品缺口是 `channel-feed-runtime` 未向 `__ATOLL_DIAGNOSTICS__.rail` 注册当前 channel authority/high-water projection。最小回归包交 **notification_owner**：在既有 runtime owner 内恢复只读、同源的 rail projection（不得新增第二状态源），然后重跑四条 high-water 与 N4/H4。N4 spec 已恢复 authority 门，未恢复与 scalar high-water 冲突的逐 filter `outsideFilterPreserved` 断言；本轮不改产品代码。

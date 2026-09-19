@@ -542,3 +542,30 @@ ATOLL_TEST_WEB_PORT=16104 ATOLL_TEST_MOCK_PORT=20404 npx playwright test tests/b
 ```
 
 证据 `test-results-browser-ns-round16-n4-16104-20260920/`：42 帧，`settledAtTail={mode:following,gap:0,related:0,other:0,pending:false,jump:0}`，filter 外到达期间无 tail notice；离开后仍 `related=0,other=0,pending=false,jump=0`。附件中的 `rail={version:1,channels:[]}` 仅保留为诊断事实，不再冒充用户 rail 错。仅修改本 spec 与两份审计报告；未改 `src/`、vendor、package、fixture，未删 skip。
+
+## 第十七轮：四条 high-water 与 N4/H4 均把首断点钉在 rail authority（HEAD `8feb531`，2026-09-20）
+
+本轮重跑了当前冻结的 `notification-high-water.spec.js` 四条，以及 observation-only owner oracle 的 N4/H4。结果不能沿用第16轮“空 diagnostics 仅是过时 raw”的结论：四条 high-water 都直接把 rail snapshot 当作当前 public handoff，四条均在 `rail.channels[0]` 缺失处失败；DOM 行为先于该断言均已通过。临时只读采集随后删除，证据保留在 `test-results-browser-ns-round17-highwater-observation-16203-20260920/`。
+
+| case | 用户可见 DOM（采集阶段） | cursor / notification high-water；Replica meta head | rail diagnostics |
+|---|---|---|---|
+| persistence | project `2→0→0(reload)→1(future)→0`；following、gap≤1、pending/jump=0 | project `27` after ack；reload `29`、future unread `29`、future ack `30`；Replica meta head `29→29→30→32`（额外 control rows 不计 rail） | 每阶段 `{version:1,channels:[]}`，无 channel/authority |
+| hydration | hydrated unread `2`，ack 后 `0`，二次 reload `0`；following/gap0 | project `25→27→27`；Replica meta head `27→29→29` | 同上 |
+| filtered | filtered tail / 离开后 related,total,pending,jump 全 `0/0/false/0` | project `29→29`；Replica meta head `29→29` | 同上 |
+| presented-follow | before/after DOM `0/0/false/0`，following、gap0 | project `25→28`；Replica meta head `27→28` | 同上 |
+
+四条正式合同命令：
+
+```text
+ATOLL_TEST_WEB_PORT=16201 ATOLL_TEST_MOCK_PORT=20501 npx playwright test tests/browser/notification-high-water.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round17-highwater-16201-20260920
+# 4 failed：四条均为 rail.channels[0] undefined；DOM 断言先通过
+```
+
+N4/H4 owner oracle 在同一 HEAD **2 passed（oracle 本身只采集）**，但 `firstDivergence` 均为 rail：
+
+- **N4 filtered-tail**：c0 cursor/readSeq=`25`、notification high-water=`61`，Replica `headSeq=61`（44 rows，包含 unrelated 与 approvals），filtered Presentation `mode=following/gap=0`、approval 30/31 可见，DOM `related/total/pending/jump=0/0/false/0`；rail `present=false, authorityReady=false, channels=[]`。
+- **H4 following-after-arrival**：c0.project cursor/readSeq=`25`、notification high-water=`28`，Replica `headSeq=28`（arrival row 已在），Presentation `mode=following/gap=0`、新 approval 可见，Reading visible IDs 含新 row，DOM `0/0/false/0`；rail 仍 `present=false, authorityReady=false, channels=[]`，首断点 reason=`rail high-water 0 < expected 1`。
+
+因此第16轮结论在当前冻结 high-water 合同下被修正：filter 外逐条 retention 仍不是本轮要求，但**rail channel authority/high-water projection 是真实 notification owner 合同**，不是可删除的测试细节。首个公开 owner 边界为 `channel-feed-runtime` → `registerRailDiagnosticProvider` 当前未接入；其前置 cursor、Replica、Presentation、DOM/Reading 均已有证据。该回归交 `notification_owner`，不归 fixture/selector，不改产品实现。
+
+为避免测试被“删 raw”假绿，N4 已恢复仅要求 `channelPresent=true && authorityReady=true` 的 authority 门，保留 DOM 与 scalar high-water 语义，不恢复过时的 `outsideFilterPreserved` 逐 filter 断言。当前 N4 复验故意 **1 failed**，证据 `test-results-browser-ns-round17-n4-16204-20260920/`：44 帧、DOM `0/0/false/0`、Replica/confirmation 链已完成，末尾 authority 轮询仍 `{channelPresent:false,authorityReady:false}`。
