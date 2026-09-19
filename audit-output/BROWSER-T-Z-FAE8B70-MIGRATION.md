@@ -848,3 +848,53 @@ ATOLL_TEST_WEB_PORT=15424 ATOLL_TEST_MOCK_PORT=19866 npx playwright test \
 Result: **1 passed (5.9s)**. No product gap remains at the A08 live → storage
 → reload → exact ack chain on this candidate; no Vendor/Projection/history
 change was needed.
+
+## 第十四轮：UI-VIS-01 `30 != 32` 对齐 fae8b70（只读）
+
+本轮先在独立 worktree 直接运行 `fae8b70` 的同一条迁移测试，再用当前
+共享 worktree 的真实 Chromium probe 复核相邻 viewport。旧基线本身也得到
+30px，因此没有证据表明当前 owner 相对 `fae8b70` 发生了 2px 回归：
+
+```text
+# isolated fae8b70 worktree
+ATOLL_TEST_WEB_PORT=15450 ATOLL_TEST_MOCK_PORT=19890 \
+  npx playwright test tests/browser/ui-visual.spec.js \
+  -g 'UI-VIS-01' --reporter=line
+  1 failed: expected gap 32, received gap 30
+```
+
+当前 1280×720 的 public DOM 几何为：`reading.bottom=588`、
+`stack.top=618`、`stack.height=input.height=102`、`gap=30`。首个结构原因
+不是某个 viewport 像素差，而是两个 owner 语义的组合：
+
+| owner result | value |
+|---|---:|
+| `--conversation-composer-base-height` | `100px` |
+| `--conversation-reading-gap` | `32px` |
+| fixed `--conversation-bottom-reserve` | `132px` |
+| natural input stack (`composer-surface` + wrap padding + state rail) | `102px` |
+| observed physical gap | `132 - 102 = 30px` |
+
+逐文件对照 `fae8b70` 与当前 owner 没有发现 wrapper/token 差异：两边的
+`ConversationSurface` 都是 `reading-slot → bottom-stack → floating-slot +
+input-slot`；两边 shell CSS 都是 `absolute` reading reserve
+`calc(100px + 32px)`；两边 Composer 状态 rail 都是固定 `18px`，wrap 底部
+padding 都是 `8px`。因此把 rail 改成 16px、把 base/reserve 加 2px，或把
+测试改为 30px 都会分别削弱既有语义、追截图或放宽硬合同，不是本轮允许的
+最小结构修复。
+
+当前 shared worktree 的真实 Chromium probe（未改 spec、CSS 或阈值）记录：
+
+| viewport | base token | reading bottom | stack top/height | physical gap |
+|---:|---:|---:|---:|---:|
+| 1280×720 | 100 | 588 | 618 / 102 | 30 |
+| 1120×760 | 100 | 628 | 658 / 102 | 30 |
+| 850×720 | 120 | 568 | 618 / 102 | 50 |
+| 800×600 | 120 | 448 | 498 / 102 | 50 |
+
+结论：UI-VIS-01 的 32px 断言与 `fae8b70` 的真实现状不一致，归类为
+**迁移 oracle/spec 与旧 owner 基线的合同冲突**，不是当前 owner 相对旧
+体验的布局回归；本轮不改产品、不改测试、不改截图阈值。若产品 owner 仍
+要把“自然 input stack + 32px”作为新合同，后续应由 Surface owner 设计一
+个经过布局/增长/compact 语义评审的结构性方案（而非 2px CSS 微调），并
+单独重签 UI-VIS-01 与 UI-VIS-13。
