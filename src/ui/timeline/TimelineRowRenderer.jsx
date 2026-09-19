@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { terminalContentEnvelope, terminalResultState } from '../../model/terminal-result.js';
 import { argsOf } from '../../protocol/envelope.js';
-import { DECISIONS, TYPES } from '../../protocol/vocab.js';
+import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 import { FoldableBody } from './FoldableBody.jsx';
@@ -33,10 +33,113 @@ function textContent(payload) {
   return '';
 }
 
+// System operations are typed protocol facts, not conversational prose. Keep
+// their product wording at the existing timeline presentation boundary: known
+// words use a closed label table and only their documented identifier field;
+// an unknown system word gets a generic safe label. Never stringify an
+// operation body to invent a label or expose a wire type to the reader.
+const SYSTEM_OPERATION_LABELS = Object.freeze({
+  [TYPES.member.create]: '添加参与者',
+  [TYPES.member.admit]: '邀请成员加入',
+  [TYPES.member.list]: '查看频道成员',
+  [TYPES.member.get]: '查看成员状态',
+  [TYPES.member.remove]: '移除参与者',
+  [TYPES.member.restart]: '重启参与者',
+  [TYPES.member.restartAll]: '重启频道内全部成员',
+  [TYPES.log.recent]: '读取最近账本',
+  [TYPES.log.query]: '查询动态',
+  [TYPES.channel.create]: '创建子频道',
+  [TYPES.channel.get]: '查看频道信息',
+  [TYPES.channel.list]: '列出频道',
+  [TYPES.channel.set]: '更新频道配置',
+  [TYPES.channel.remove]: '退役频道',
+  [TYPES.channelDevice.list]: '查看频道设备',
+  [TYPES.channelTemplate.create]: '创建频道模板',
+  [TYPES.channelTemplate.get]: '查看频道模板',
+  [TYPES.channelTemplate.list]: '查看频道模板',
+  [TYPES.channelTemplate.set]: '更新频道模板',
+  [TYPES.channelTemplate.remove]: '退役频道模板',
+  [TYPES.actorTemplate.create]: '创建参与者模板',
+  [TYPES.actorTemplate.get]: '查看参与者模板',
+  [TYPES.actorTemplate.list]: '查看参与者模板',
+  [TYPES.actorTemplate.set]: '更新参与者模板',
+  [TYPES.actorTemplate.remove]: '退役参与者模板',
+  [TYPES.actorOverlay.set]: '设置 Actor 频道配置',
+  [TYPES.actorOverlay.clear]: '清除 Actor 频道配置',
+  [TYPES.principal.create]: '创建账户',
+  [TYPES.principal.login]: '登录',
+  [TYPES.principal.remove]: '停用账户',
+  [TYPES.principal.get]: '查看账户',
+  [TYPES.principal.list]: '查看账户列表',
+  [TYPES.credential.set]: '重设凭据',
+  [TYPES.device.create]: '创建设备凭据',
+  [TYPES.device.attach]: '挂载设备到频道',
+  [TYPES.device.detach]: '从频道卸载设备',
+  [TYPES.device.list]: '查看设备',
+  [TYPES.device.remove]: '退役设备',
+  [TYPES.narration.memberCreated]: '成员已加入',
+  [TYPES.narration.memberDeleted]: '成员已移除',
+  [TYPES.narration.channelInbound]: '频道收到新动态',
+});
+
+// These are the typed identifier fields accepted by the current protocol
+// owners. Values are displayed only when the operation's own contract names
+// that field; arbitrary payload keys are deliberately ignored.
+const SYSTEM_OPERATION_DETAIL_KEYS = Object.freeze({
+  [TYPES.member.create]: 'decl_id',
+  [TYPES.member.admit]: 'principal',
+  [TYPES.member.get]: 'member',
+  [TYPES.member.remove]: 'member',
+  [TYPES.member.restart]: 'member',
+  [TYPES.channel.create]: 'name',
+  [TYPES.channel.get]: 'channel_id',
+  [TYPES.channel.list]: 'parent_id',
+  [TYPES.channel.set]: 'channel_id',
+  [TYPES.channel.remove]: 'channel_id',
+  [TYPES.actorTemplate.create]: 'id',
+  [TYPES.actorTemplate.get]: 'id',
+  [TYPES.actorTemplate.set]: 'id',
+  [TYPES.actorTemplate.remove]: 'id',
+  [TYPES.channelTemplate.create]: 'id',
+  [TYPES.channelTemplate.get]: 'id',
+  [TYPES.channelTemplate.set]: 'id',
+  [TYPES.channelTemplate.remove]: 'id',
+  [TYPES.actorOverlay.set]: 'decl_id',
+  [TYPES.actorOverlay.clear]: 'decl_id',
+  [TYPES.principal.get]: 'principal',
+  [TYPES.principal.remove]: 'principal',
+  [TYPES.device.remove]: 'device_id',
+  [TYPES.device.create]: 'name',
+  [TYPES.device.attach]: 'device_id',
+  [TYPES.device.detach]: 'device_id',
+});
+
+function systemOperationStatus(body) {
+  if (body?.status === 'failed') return '失败';
+  if (body?.status === 'completed') return '已完成';
+  if (body?.status === 'processing') return '处理中';
+  if (body?.status === 'queued') return '排队中';
+  return '';
+}
+
+function systemOperationText(envelope, body) {
+  const type = String(envelope?.type || '');
+  if (!isSystemWord(type)) return '';
+  const label = SYSTEM_OPERATION_LABELS[type] || '系统操作';
+  const detailKey = SYSTEM_OPERATION_DETAIL_KEYS[type];
+  const detail = detailKey && (typeof body?.[detailKey] === 'string' || typeof body?.[detailKey] === 'number')
+    ? String(body[detailKey]).trim()
+    : '';
+  const status = systemOperationStatus(body);
+  return `${label}${status ? `（${status}）` : ''}${detail ? `：${detail}` : ''}`;
+}
+
 function textOf(envelope) {
   const body = argsOf(envelope);
   const text = textContent(body);
   if (text) return text;
+  const systemText = systemOperationText(envelope, body);
+  if (systemText) return systemText;
   const result = body.result ?? body.output;
   if (result == null) return '';
   if (typeof result === 'string') return result;
