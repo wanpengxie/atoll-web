@@ -431,3 +431,28 @@ ATOLL_TEST_WEB_PORT=15781 ATOLL_TEST_MOCK_PORT=20081 npx playwright test tests/b
 两次浏览器运行的 Playwright 输出、error-context 与 trace 均没有 `Should have a queue`、Hook-order、pageerror 或 uncaught runtime error；可见失败均是合同 assertion。final root badge 继续按 `audience=["project-agent"]` 与 fixture root `root-project` 不相容裁为 fixture/合同语义待决，不登记产品 rail 回归。
 
 本轮分层：**Reading observation** = GREEN；**Reading session** = F7 first-visible identity 仍 RED；**Presentation F7 row112** = 前轮独立门 GREEN，不重复改判；**fixture** = final root badge 待 audience 合同决策。证据目录：`test-results-browser-ns-round12-readable-15780-20260920/`、`test-results-browser-ns-round12-reading-position-15781-20260920/`。
+
+## 第十三轮只读：F7 Reading session identity drift 首断点（产品基线 `d6dcc43`，2026-09-20）
+
+本轮只针对完整 `reading-position-session.spec.js` 的 `112 → 111` 漂移做 observation-only probe；没有重跑已闭合的 `readable_event`，没有触碰 `timer_result` rail，也没有修改产品、fixture、断言或 skip。临时 probe 已在取证后删除，证据保留在 `test-results-browser-ns-round13-f7-probe-15881-20260920/` 的 `round13-f7-session-evidence.json`。
+
+```text
+ATOLL_TEST_WEB_PORT=15881 ATOLL_TEST_MOCK_PORT=20181 npx playwright test tests/browser/ztmp-round13-f7-session.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round13-f7-probe-15881-20260920
+# 1 passed (9.4s), observation-only probe; temporary test removed after capture
+```
+
+按 session 链逐项裁决：
+
+| 链段 | before switch | return c0 | 裁决 |
+| --- | --- | --- | --- |
+| activation | `8deb9df8-43df-404f-bfb1-bebfea80ded5` | `54746dca-0c44-47e7-bbff-7a7a2bdd3020` | A→B→A 新 activation 是预期生命周期，不是首断点 |
+| inputEpoch | `1`（user observation） | `0`（新 activation 的 layout observations） | epoch 没有沿旧 activation 错配，非首断点 |
+| anchor / viewport | row112 `top=-64.5,bottom=153.6875` | row111 `bottom=0.9375`，row112 `top=0.9375` | **首个可观察分歧**：row112 identity 仍在，但精确 row-local offset 未保持，first-visible 变 112→111，0/100/250/500/1000ms 均稳定 |
+| visibleRows | `[112,113,114]` | Reading trace 最终仍为 `[112,113,114]`；DOM 为 `[111,112,113,114]` | admission / painted visible IDs 已到位，不是 receipt 缺失 |
+| history / presentation receipt | head `848`、presentation revision `80`；回返 rows `39`、source revision `80` | 同一稳定数据，未出现 c0 history demand | replica、cursor、presentation receipt 无分歧 |
+
+回返时 mode 仍为 `browsing`，owner `scrollTop=6139`、`scrollHeight=8495`、`clientHeight=487`；page errors 为空，console 只有启动期两个 `401 Unauthorized`，没有 Hook/order、`Should have a queue` 或 uncaught runtime error。`localStorage` 中 `view-session` 的 `mode=following/bookmark=null` 是持久化边界的既定 scrub，live reading map 仍保留 browsing session，不能把它当成 receipt 回归。
+
+因此首断点属于现有 **Reading session / `VendorListExecutor` typed position restore** owner：row identity、activation、epoch、visible admission 与数据 receipt 都已连贯，只有旧 bookmark 的 `rowViewportOffset`（before 为 `-64.5`）在新 activation 的 position-row restore 后没有保持，最终把 row111 的底边留在 viewport 内约 `0.9375px`。最小机制建议已交 `reading_tail_owner`：在 activation return 记录 captured bookmark offset 与实际 applied offset，核对 `position-row` → Virtuoso 的 offset 符号/语义，并排除 `initialTopMostItemIndex` mount 或后续 layout 对精确 offset 的覆盖；补充 owner-level offset telemetry，不放宽 first-visible assertion。
+
+本轮结论：F7 row112 Presentation 独立门仍 GREEN；完整 Reading session 仍 RED，公开 owner 为 `reading_tail_owner`。不登记 notification/rail 产品问题，也不把空 diagnostics 当成产品证据。

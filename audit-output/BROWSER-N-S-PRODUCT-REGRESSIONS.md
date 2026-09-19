@@ -323,6 +323,18 @@ canonical final 与 standalone readable event 的 rail/viewport disposition 未�
 
 final root badge 仍为 fixture/合同语义待决：`audience=["project-agent"]` 与 fixture root `root-project` 不相容，`.unread-total=0` 不登记产品回归。当前交接为：**Reading observation GREEN；Reading session F7 identity RED；Presentation row112 GREEN；fixture badge 待合同决策**。
 
+## 第十三轮只读：F7 Reading session identity drift 首断点（产品基线 `d6dcc43`，2026-09-20）
+
+本轮只读复现完整 F7 session 的 `112 → 111` 漂移，未重跑已闭合的 readable_event，未触碰 timer_result rail，也未修改产品、fixture、断言或 skip。临时 observation probe 已删除；证据目录为 `test-results-browser-ns-round13-f7-probe-15881-20260920/`。
+
+`before-switch` 的 active reading 为 activation `8deb9df8-43df-404f-bfb1-bebfea80ded5`、`inputEpoch=1`，row112 的 viewport rect 为 `top=-64.5,bottom=153.6875`，visible IDs 为 `[112,113,114]`。A→B→A 后 activation 合理切换为 `54746dca-0c44-47e7-bbff-7a7a2bdd3020`，新 activation 的 layout observations 使用 `inputEpoch=0`；head `848`、presentation/source revision `80` 和 history rows 均稳定，最终 Reading trace 仍含 `[112,113,114]`。这些链段没有首个分歧。
+
+首个用户可见分歧在精确 anchor geometry：回返 c0 的 DOM `scrollTop=6139` 时，row111 `bottom=0.9375`、row112 `top=0.9375`，所以 first-visible 从 row112 变成 row111；0/100/250/500/1000ms 都相同。row112 仍在 DOM/Reading visible set，故不是 replica、receipt、row admission 或 Presentation 缺失，而是 Reading session 的 `rowViewportOffset` restore 未保持。公开 owner：**reading_tail_owner（Reading session / VendorListExecutor typed position restore）**。
+
+最小机制建议：owner 在 activation return 同时记录 captured bookmark offset 与实际 applied offset，核对 `position-row` 到 Virtuoso 的 offset 符号/语义，并检查 `initialTopMostItemIndex` 或后续 layout 是否覆盖精确 offset；增加该 owner 的 offset telemetry，不放宽 first-visible 合同。activation replacement 和 epoch reset 是正常生命周期，不应改成跨 activation 复用；localStorage `following/bookmark=null` 是既定持久化 scrub，不是本轮产品回归。
+
+本轮无 pageerror、Hook/order、`Should have a queue` 或 uncaught runtime error；console 仅有启动期 401。F7 row112 Presentation 独立门维持 GREEN，完整 Reading session 继续 RED；不新增 notification/rail 产品回归。
+
 ## 结论
 
 以上当前 R2–R8 覆盖最终 10 个 RED case 的真实分歧；历史 R1 disconnect 已关闭，Composer/Tiptap guard 的 uncaught 也未在最终轮复现。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。
