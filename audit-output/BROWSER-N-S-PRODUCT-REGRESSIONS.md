@@ -307,6 +307,22 @@ canonical final 与 standalone readable event 的 rail/viewport disposition 未�
 
 本轮交接：**Reading** readable_event observation 仍红；**Presentation** F7 row112 独立用户可见门已绿、宽 doc-session 门仍红；**fixture** final root badge 暂不交产品。空 diagnostics 不作为 rail 错误证据。
 
+## 第十二轮只读复验：四文件 Reading 提交后的 observation 与完整 F7（产品基线 `d6dcc43`，2026-09-20）
+
+`d6dcc43 fix(reading): publish painted visible row IDs` 已提交四个 Reading 文件：`VendorListExecutor.jsx`、`reading-geometry.js`、`useBrowsingReadingController.js`、`useConversationProjection.js`。本轮未修改产品、fixture、断言或 skip；共享树另有未提交 `useHistoryConsumer.js`/`history-underfill-lifecycle.spec.js` 旁支。
+
+### readable_event observation：GREEN；后续 timer rail 失败另案处理
+
+浏览器合同整体仍 **1 failed**，但失败已移动到 line 306 的 `timer_result` `.unread-related=1`，不再是 readable_event line 243。附件证明 `c0.project-notification-readable-event` row 真实 `checkVisibility=true`、hit-test 命中，且 `reading.observation.visibleRowIDs` 已包含该 row。因此 readable_event 的独立公开完成门已 **GREEN**；line306 是后续 notification rail 分歧，不得倒推为 Reading observation 失败。证据：`test-results-browser-ns-round12-readable-15780-20260920/`。
+
+### 完整 F7 reading-position：仍 RED，为一行 identity drift
+
+完整 `reading-position-session.spec.js` 仍 **1 failed**，但 line145 的 viewport 等待已通过；line152 现在是 `beforeSwitch.firstVisible=c0-history-request-112`、`afterSwitch.firstVisible=c0-history-request-111`。这表示 row 已回返可见域，未保持 document-session 的 first-visible identity/offset；公开 owner 是 Reading session/admission 的 anchor restore，不是已验收的 F7 row112 Presentation 门。证据：`test-results-browser-ns-round12-reading-position-15781-20260920/`。
+
+本轮未观察到 `Should have a queue`、Hook-order、pageerror 或 uncaught runtime error；失败均为显式合同 assertion。F7 row112 Presentation 维持第十一轮 GREEN，不重复改判。
+
+final root badge 仍为 fixture/合同语义待决：`audience=["project-agent"]` 与 fixture root `root-project` 不相容，`.unread-total=0` 不登记产品回归。当前交接为：**Reading observation GREEN；Reading session F7 identity RED；Presentation row112 GREEN；fixture badge 待合同决策**。
+
 ## 结论
 
 以上当前 R2–R8 覆盖最终 10 个 RED case 的真实分歧；历史 R1 disconnect 已关闭，Composer/Tiptap guard 的 uncaught 也未在最终轮复现。5 个 PASS case（N3、offline、performance 三条）已在同一真实入口通过，未以 mock success 替代用户行为。

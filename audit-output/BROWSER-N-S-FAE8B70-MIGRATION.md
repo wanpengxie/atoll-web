@@ -403,3 +403,31 @@ ATOLL_TEST_WEB_PORT=15682 ATOLL_TEST_MOCK_PORT=19992 npx playwright test tests/b
 canonical final 与 standalone readable event 的 rail/viewport disposition 未改变；实际 final audience 仍是 `project-agent`，root actor 仍是 `root-project`。因此 `.unread-total=0` 继续按 fixture audience 与 line 154 预期不相容裁决，不登记 notification 产品 badge 回归。
 
 本轮分层：**Reading** = readable_event observation 完成门 RED；**Presentation** = F7 row112 独立可见门 GREEN，但完整 doc-session 合同仍 RED；**fixture** = final root badge 待合同 audience 决策。证据目录：`test-results-browser-ns-round11-readable-15680-20260920/`、`test-results-browser-ns-round11-f7-15681-20260920/`、`test-results-browser-ns-round11-reading-position-15682-20260920/`。
+
+## 第十二轮只读复验：四文件 Reading 提交后的 observation 与完整 F7（产品基线 `d6dcc43`，2026-09-20）
+
+`d6dcc43 fix(reading): publish painted visible row IDs` 已提交四个 Reading 文件：`VendorListExecutor.jsx`、`reading-geometry.js`、`useBrowsingReadingController.js`、`useConversationProjection.js`。本轮没有修改产品、fixture、断言或 skip；共享树另有未提交 `useHistoryConsumer.js`/`history-underfill-lifecycle.spec.js` 旁支，未纳入本轮变更。未重复改判已 GREEN 的 F7 row112 Presentation oracle。
+
+### readable_event observation：独立完成门 GREEN，整条 spec 的后续 rail 仍另红
+
+```text
+ATOLL_TEST_WEB_PORT=15780 ATOLL_TEST_MOCK_PORT=20080 npx playwright test tests/browser/notification-policy.spec.js --grep="tool, timer, and public-event" --workers=1 --reporter=line --output=test-results-browser-ns-round12-readable-15780-20260920
+# 1 failed later at notification-policy.spec.js:306 (timer_result unread-related)
+```
+
+本次已越过 readable_event 自身的 line 243 完成门。附件 `notification-readable-event-visibility.json` 记录目标 row `c0.project-notification-readable-event` 的物理 rect `top=464.84,bottom=539.94`、`checkVisibility=true`，三处 hit-test 均由该 row 拥有；末段 `reading.observation` 的 `visibleRowIDs` 明确包含该目标。因此 **DOM/Presentation → Reading observation 完成门已 GREEN**。整条 spec 后续在独立 `timer_result` 期待 `.unread-related=1` 处失败，不得倒推为 readable_event observation 回归；该后续 rail 分歧单独交 notification owner。
+
+### 完整 F7 reading-position：仍 RED，但已从等待超时收窄为一行 anchor drift
+
+```text
+ATOLL_TEST_WEB_PORT=15781 ATOLL_TEST_MOCK_PORT=20081 npx playwright test tests/browser/reading-position-session.spec.js --workers=1 --reporter=line --output=test-results-browser-ns-round12-reading-position-15781-20260920
+# 1 failed at reading-position-session.spec.js:152
+```
+
+本次 line 145 的“目标未回到 viewport”等待已通过，失败收窄为 `beforeSwitch.firstVisible.id = c0-history-request-112`、`afterSwitch.firstVisible.id = c0-history-request-111`。也就是说目标链已回返到可见域，但 document-session 的 first-visible identity/offset 尚未保持；这是完整 Reading session/admission 的一行 anchor drift，不反向否定第十一轮已闭合的 F7 row112 Presentation 独立门。证据：`test-results-browser-ns-round12-reading-position-15781-20260920/`。
+
+### Hook/order 与 fixture 隔离
+
+两次浏览器运行的 Playwright 输出、error-context 与 trace 均没有 `Should have a queue`、Hook-order、pageerror 或 uncaught runtime error；可见失败均是合同 assertion。final root badge 继续按 `audience=["project-agent"]` 与 fixture root `root-project` 不相容裁为 fixture/合同语义待决，不登记产品 rail 回归。
+
+本轮分层：**Reading observation** = GREEN；**Reading session** = F7 first-visible identity 仍 RED；**Presentation F7 row112** = 前轮独立门 GREEN，不重复改判；**fixture** = final root badge 待 audience 合同决策。证据目录：`test-results-browser-ns-round12-readable-15780-20260920/`、`test-results-browser-ns-round12-reading-position-15781-20260920/`。
