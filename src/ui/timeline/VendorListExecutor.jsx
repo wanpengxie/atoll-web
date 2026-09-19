@@ -176,6 +176,7 @@ export function VendorListExecutor({
     const data = snapshotRef.current;
     if (!root || !surfaceVisible) return;
     const visibleRows = visibleRowEvidence(root, data.rows);
+    const visibleRowIDs = Object.freeze(visibleRows.map((row) => row.messageID));
     const atTail = root.scrollHeight - root.clientHeight - root.scrollTop <= 24;
     reportDomEvidence(Object.freeze({
       type: 'reading-observation',
@@ -185,6 +186,7 @@ export function VendorListExecutor({
       surfaceVisible: isReadingSurfaceVisible(root),
       installedHighSeq: installedHighSeq(root, data.rows),
       visibleRows,
+      visibleRowIDs,
       source,
       settled,
       inputEpoch: owner.getSession().inputEpoch,
@@ -414,6 +416,11 @@ export function VendorListExecutor({
     const observer = new globalThis.MutationObserver(() => {
       restoreContentAnchor('layout');
       enforceFollowingTail('layout');
+      // A row can be committed by Virtuoso after its range/height callback;
+      // sample the actual painted DOM on the next frame so Reading receives
+      // the exact visible-row IDs, including a live row newer than the
+      // snapshot ref captured by the callback.
+      scheduleObserve('layout');
     });
     observer.observe(rootNode, {
       subtree: true,
@@ -422,7 +429,7 @@ export function VendorListExecutor({
       attributeFilter: ['style', 'class', 'aria-expanded'],
     });
     return () => observer.disconnect();
-  }, [enforceFollowingTail, restoreContentAnchor, rootNode]);
+  }, [enforceFollowingTail, restoreContentAnchor, rootNode, scheduleObserve]);
 
   useEffect(() => {
     const root = rootNode;

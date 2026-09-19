@@ -13,7 +13,7 @@ import {
   createConversationPresentation,
   projectTimeline,
 } from '../../model/conversation-presentation.js';
-import { diagnostic } from '../../model/diagnostics.js';
+import { diagnostic, readingTrace } from '../../model/diagnostics.js';
 import { HISTORY_URGENCY } from '../../model/history-demand.js';
 import {
   bindLatestIntentTargets,
@@ -479,6 +479,21 @@ function useProjectionReadingOwner({
       if (observation.activationID && observation.activationID !== controller.activationID) {
         return controller.getSnapshot().session;
       }
+      // Preserve the exact DOM hit-test handoff for the opt-in Reading trace.
+      // The session remains the semantic owner; this is evidence only, so a
+      // visible row cannot by itself mint following authority or a scroll.
+      readingTrace('reading.observation', {
+        activationID: controller.activationID,
+        inputEpoch: Number(observation.inputEpoch || controller.getSnapshot().session.inputEpoch),
+        source: String(observation.source || ''),
+        settled: observation.settled === true,
+        atTail: observation.atTail === true,
+        surfaceVisible: observation.surfaceVisible === true,
+        visibleRowIDs: [...new Set((observation.visibleRowIDs || (observation.visibleRows || [])
+          .map((row) => typeof row === 'string' ? row : row?.messageID))
+          .map((id) => String(id || ''))
+          .filter(Boolean))],
+      });
       if (observation.surfaceVisible !== true) {
         const cleared = Object.freeze({
           ...observationRef.current,

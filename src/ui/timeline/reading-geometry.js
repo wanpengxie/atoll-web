@@ -60,8 +60,12 @@ export function visibleRowEvidence(root, rows) {
   const visible = [];
   for (const node of root.querySelectorAll('[data-presentation-row-id]')) {
     const messageID = String(node.dataset.presentationRowId || '');
+    if (!messageID) continue;
     const row = rowByID.get(messageID);
-    if (!row) continue;
+    // The DOM is the committed paint boundary. A live presentation row can
+    // land one frame after the snapshot ref used by the scheduled observer;
+    // keep its exact ID in the evidence instead of dropping it as "unknown".
+    // Sequence evidence remains zero until the next snapshot joins it.
     const style = globalThis.getComputedStyle?.(node);
     const hiddenAncestor = node.closest?.('[hidden], [inert], [aria-hidden="true"]');
     const painted = !hiddenAncestor
@@ -86,7 +90,7 @@ export function visibleRowEvidence(root, rows) {
       return Boolean(hit && (hit === node || node.contains(hit)));
     }));
     if (!ownsVisiblePoint) continue;
-    visible.push(Object.freeze({ messageID, seqHigh: Number(row.seqHigh || 0) }));
+    visible.push(Object.freeze({ messageID, seqHigh: Number(row?.seqHigh || 0) }));
   }
   return Object.freeze(visible);
 }

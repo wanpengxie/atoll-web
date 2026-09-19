@@ -67,6 +67,7 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
         surfaceVisible: evidence.surfaceVisible,
         installedHighSeq: evidence.installedHighSeq,
         visibleRows: evidence.visibleRows,
+        visibleRowIDs: evidence.visibleRowIDs,
         source: evidence.source,
         settled: evidence.settled === true,
         inputEpoch: evidence.inputEpoch,
