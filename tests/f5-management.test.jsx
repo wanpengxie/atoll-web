@@ -116,4 +116,37 @@ describe('F5 成员与全局表面', () => {
       source: { channelId: 'c0.project', view: 'artifacts', objectType: 'artifact', objectId: 'artifact-1' },
     });
   });
+
+  it('全局搜索恢复 WorkItem 的 Tasks 视图与 focus SourceRef', async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    render(<SearchFeature port={{
+      index: [{
+        key: 'work-item-1',
+        kind: 'work_item',
+        objectType: 'work_item',
+        title: '审核频道权限',
+        channelId: 'c0.project',
+        source: {
+          channelId: 'c0.project',
+          view: 'tasks',
+          objectType: 'work_item',
+          objectId: 'work-item-1',
+          focus: { type: 'work_item', key: 'work-item-1' },
+        },
+      }],
+      commands: { open: onOpen, close: vi.fn() },
+    }} />);
+    await user.type(screen.getByLabelText('搜索频道、消息、文件、任务或成员'), '审核');
+    await user.click(screen.getByRole('button', { name: /审核频道权限/ }));
+    expect(onOpen).toHaveBeenCalledWith({
+      source: {
+        channelId: 'c0.project',
+        view: 'tasks',
+        objectType: 'work_item',
+        objectId: 'work-item-1',
+        focus: { type: 'work_item', key: 'work-item-1' },
+      },
+    });
+  });
 });
