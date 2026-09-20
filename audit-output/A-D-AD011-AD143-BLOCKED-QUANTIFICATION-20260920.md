@@ -47,6 +47,12 @@ The ledger is now **61 BLOCKED** (**304 PASS / 0 REGRESSION / 61 BLOCKED**).
 The ten red assertions remain BLOCKED and are not expected-fail completion
 signals.
 
+Round 22 re-runs the ten red priority/cursor gaps with narrower ordinary-red
+public-owner evidence and promotes AD-295–AD-304 through the current
+Feed/Replica/diagnostic owners. The ledger is now **51 BLOCKED** (**314 PASS /
+0 REGRESSION / 51 BLOCKED**); no expected-fail result is counted as
+completion.
+
 ## Minimal regression packets
 
 ### AD-011 — Activity retained-work settlement after reconnect
@@ -121,16 +127,16 @@ verification is **2 files passed; 13 tests passed; 0 assertions red**, with
 focused `[AD-011]` and `[AD-143]` runs both green. No test-only branch, skip,
 weakened expectation, or product change was introduced by this packet.
 
-## Quantification of the original 116 BLOCKED rows and current 71 remainder
+## Quantification of the original 116 BLOCKED rows and current 51 remainder
 
 The classification is an evidence triage, not a verdict on product scope:
 
 | Category | Count | Rule |
 |---|---:|---|
 | 缺 owner (`OWNER_MISSING`) | 12 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. Round 20 adds AD-165/166 for channel-entry/reconnect freshness interests. |
-| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 34 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Round 21 promotes ten cursor fixtures; twelve cursor rows remain fixture-only. |
+| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 24 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Round 22 promotes AD-295–AD-304; two cursor rows remain fixture-only. |
 | 真实能力缺口 (`CAPABILITY_GAP`) | 15 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. Round 20 adds AD-157/158/167/170/182; Round 21 adds AD-284/288/289/291/292. |
-| **Total** | **61** | The remaining rows retain explicit blocked evidence; no row is obsolete, deleted, or skipped. |
+| **Total** | **51** | The remaining rows retain explicit blocked evidence; no row is obsolete, deleted, or skipped. |
 
 ### `OWNER_MISSING` — 12 rows
 
@@ -150,7 +156,7 @@ The classification is an evidence triage, not a verdict on product scope:
 | `channel-feed-startup.test.jsx` | 5 | `AD-157`, `AD-158`, `AD-167`, `AD-170`, `AD-182`; the current public Feed/Replica boundary shows the stale/revoked cache or trim behavior directly diverges from the baseline capability. |
 | `cursors.test.js` | 5 | `AD-284`, `AD-288`, `AD-289`, `AD-291`, `AD-292`; ordinary public Feed regressions show sparse identity acknowledgement, authority/head clamping, weak all-message count, and agent self-audience terminal content are not equivalent. |
 
-### `FIXTURE_MISSING` — 34 rows
+### `FIXTURE_MISSING` — 24 rows
 
 These rows have a named current owner and an evidence successor, but the
 successor is not yet a one-to-one public fixture for the baseline scenario.
@@ -168,10 +174,10 @@ auditable:
 | `capabilities.test.js` | 0 | `AD-138`–`AD-141` recovered in `tests/agent-describe-capability-index.test.jsx:49,83,124,145` |
 | `channel-feed-startup.test.jsx` | 5 | `AD-156`, `AD-159`–`AD-161`, `AD-178`; the Round 20 public boundary remains unable to supply the exact cached-context/Meta/body/arrival proof. |
 | `channel-governance.test.js` | 6 | `AD-192`–`AD-197`; AD-191 now has a green public governance filter fixture in `tests/blocked-round18-public-owner.test.jsx` |
-| `cursors.test.js` | 12 | `AD-295`–`AD-304`, `AD-306`–`AD-307`; Round 21 promotes AD-277/278/282/283/285/286/287/290/293/294 and reclassifies AD-284/288/289/291/292 as capability gaps |
+| `cursors.test.js` | 2 | `AD-306`–`AD-307`; Round 22 promotes AD-295–AD-304; Round 21 promoted AD-277/278/282/283/285/286/287/290/293/294 and reclassified AD-284/288/289/291/292 as capability gaps |
 | `devices-panel.test.jsx` | 1 | `AD-316` |
 | `dynamic-f3.test.jsx` | 2 | `AD-331`, `AD-334`; AD-327–329/333/335–338/340–343/350–351 now have green public presentation/Composer fixtures in `tests/blocked-round16-public-owner.test.jsx` |
-| **Total** | **34** | Round 21 moves ten cursor rows to PASS and five cursor rows to CAPABILITY_GAP; the remaining rows retain explicit blocked evidence. |
+| **Total** | **24** | Round 22 moves ten cursor rows to PASS; the remaining rows retain explicit blocked evidence. |
 
 The remaining categories above retain their ledger `BLOCKED` status. AD-014 and
 AD-017 no longer count as fixture-missing: their public-owner fixtures are
@@ -287,6 +293,26 @@ priority Feed gaps and AD-284/288/289/291/292. They are reproducible
 capability gaps, not obsolete cases or migration completion. The ledger is
 **304 PASS / 0 REGRESSION / 61 BLOCKED**.
 
+## Round 22 evidence packet
+
+Round 22 re-runs the ten ordinary red priority/cursor rows AD-157/158/167/170/182
+and AD-284/288/289/291/292 at their first public Feed/Replica owners. It also
+gives one-to-one public fixtures to the next cursor rows AD-295–AD-304.
+
+```text
+npx vitest run tests/blocked-round22-public-owner.test.jsx --reporter=verbose
+
+Test Files 1 failed (1)
+Tests      10 failed | 10 passed (20)
+```
+
+The ten priority rows remain ordinary red BLOCKED evidence; they are not
+expected-fail completion signals. AD-295–AD-304 pass through the public
+Feed/Replica/diagnostic owners and are promoted to PASS. The ledger is now
+**314 PASS / 0 REGRESSION / 51 BLOCKED**. The remaining quantification is
+OWNER_MISSING 12, FIXTURE_MISSING 24, and CAPABILITY_GAP 15; no row is
+obsolete, deleted, skipped, or judged complete from a red result.
+
 ## Boundary audit
 
 This packet changes A–D unit tests and audit-output reports only. It does not
@@ -304,4 +330,8 @@ explicit BLOCKED evidence. Round 19 adds
 `tests/blocked-round19-public-owner.test.jsx` with one green AD-101 recheck and
 19 expected-fail governance/navigation/control assertions. No flat/cache,
 Reading, Composer, Feed runtime, terminal product, vendor, package, lockfile,
-or private production export changed.
+or private production export changed. Round 22 adds
+`tests/blocked-round22-public-owner.test.jsx` and the corresponding A–D audit
+reports only; its ten red cases remain BLOCKED and its ten green cursor cases
+are recorded individually. No product source, private export, package, or
+lockfile changed.
