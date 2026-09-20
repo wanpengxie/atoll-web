@@ -24,6 +24,7 @@ function observationFor(viewport, overrides = {}) {
   const status = viewport.status || {};
   const session = viewport.getSession();
   const base = {
+    type: 'reading-authority',
     activationID: viewport.activationID,
     inputEpoch: Number(session.inputEpoch),
     source: 'layout',
@@ -221,8 +222,9 @@ describe('S-Z canonical Presentation authority receipt', () => {
       expect(result.current.viewport.getSession().inputEpoch).toBe(2);
       act(() => {
         result.current.viewport.onSurfaceVisibilityChange(true);
-        result.current.viewport.onReadingObservation(observationFor(result.current.viewport, {
+        result.current.viewport.onReadingSample(observationFor(result.current.viewport, {
           settled: false,
+          type: 'reading-sample',
         }));
       });
       expect(result.current.viewport.getSession().inputEpoch).toBe(2);

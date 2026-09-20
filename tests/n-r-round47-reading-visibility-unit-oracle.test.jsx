@@ -106,7 +106,7 @@ function observationTuple(overrides = {}) {
     ...overrides.observationIdentity,
   };
   return {
-    type: 'reading-observation',
+    type: 'reading-authority',
     activationID,
     inputEpoch: 0,
     source: 'layout',

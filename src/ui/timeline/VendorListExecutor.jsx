@@ -438,7 +438,7 @@ export function VendorListExecutor({
       && (!requiresTail || (atTail && tailVisible)),
     );
     const accepted = reportDomEvidence(Object.freeze({
-      type: 'reading-observation',
+      type: settledReceipt ? 'reading-authority' : 'reading-sample',
       activationID: owner.activationID,
       bookmark: suppressBookmark ? null : topVisibleBookmark(root, data.rows),
       atTail,

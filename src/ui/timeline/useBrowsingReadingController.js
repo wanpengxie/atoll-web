@@ -73,7 +73,7 @@ export function useBrowsingReadingController({
     const current = owner.getSession();
     if (!evidence || evidence.activationID !== current.activationID) return;
 
-    if (evidence.type === 'reading-observation') {
+    if (evidence.type === 'reading-authority') {
       const status = owner.status || {};
       const presentationRevision = Number(evidence.presentationRevision);
       const domPresentationRevision = Number(evidence.domPresentationRevision);
@@ -113,7 +113,7 @@ export function useBrowsingReadingController({
         && evidence.rootNode === rootNode;
       const evidenceComplete = typeof evidence.surfaceVisible === 'boolean'
         && typeof evidence.atTail === 'boolean'
-        && typeof evidence.settled === 'boolean'
+        && evidence.settled === true
         && typeof evidence.tailID === 'string'
         && Number.isSafeInteger(Number(evidence.rootIdentity))
         && Number.isSafeInteger(Number(evidence.installedHighSeq))
@@ -145,6 +145,7 @@ export function useBrowsingReadingController({
       // positive evidence after a visibility/root/activation boundary.
       if (!evidenceCurrent || (evidence.settled === true && !settled)) return false;
       const accepted = owner.onReadingObservation?.({
+        type: 'reading-authority',
         bookmark: evidence.bookmark,
         atTail: evidence.atTail,
         surfaceVisible: evidence.surfaceVisible,
@@ -167,6 +168,92 @@ export function useBrowsingReadingController({
       // rejection (including a same-stack epoch/root replacement) must be
       // visible to the Vendor so its pending paint request is retried or
       // retired; it must never be treated as an accepted DOM receipt.
+      return accepted !== false;
+    }
+
+    if (evidence.type === 'reading-sample') {
+      const status = owner.status || {};
+      const presentationRevision = Number(evidence.presentationRevision);
+      const domPresentationRevision = Number(evidence.domPresentationRevision);
+      const currentPresentationRevision = Number(data.revision || 0);
+      const inputEpoch = Number(evidence.inputEpoch);
+      const visibleRowIDs = [...new Set((Array.isArray(evidence.visibleRowIDs)
+        ? evidence.visibleRowIDs
+        : [])
+        .map((id) => String(id || ''))
+        .filter(Boolean))];
+      const currentRowIDs = new Set((data.rows || []).map((row) => String(row?.id || '')));
+      const hitTestRows = new Set((Array.isArray(evidence.visibleRows)
+        ? evidence.visibleRows
+        : [])
+        .map((row) => String(row?.messageID || row?.id || ''))
+        .filter(Boolean));
+      const identity = evidence.observationIdentity;
+      const identityComplete = Boolean(identity)
+        && typeof identity.activationID === 'string'
+        && Number.isSafeInteger(Number(identity.inputEpoch))
+        && Number.isSafeInteger(Number(identity.intentRevision))
+        && Number.isSafeInteger(Number(identity.presentationRevision))
+        && Number.isSafeInteger(Number(identity.generation))
+        && Number.isSafeInteger(Number(identity.authorityRevision))
+        && typeof identity.tailID === 'string'
+        && Number.isSafeInteger(Number(identity.rootIdentity));
+      const currentTailID = String(data.rows?.at(-1)?.id || '');
+      const identityCurrent = identityComplete
+        && String(identity.activationID) === String(current.activationID)
+        && Number(identity.inputEpoch) === Number(current.inputEpoch)
+        && Number(identity.intentRevision) === Number(current.intentRevision)
+        && Number(identity.presentationRevision) === currentPresentationRevision
+        && Number(identity.generation) === Number(status.generation || 0)
+        && Number(identity.authorityRevision) === Number(status.notificationAuthorityRevision || 0)
+        && String(identity.tailID) === currentTailID
+        && Number(identity.rootIdentity) === Number(rootIdentity)
+        && Number(rootIdentity) > 0
+        && rootMountedRef?.current !== false
+        && Number(evidence.rootIdentity) === Number(identity.rootIdentity)
+        && String(evidence.tailID) === currentTailID
+        && evidence.rootNode === rootNode;
+      const sampleCurrent = typeof evidence.activationID === 'string'
+        && evidence.activationID === current.activationID
+        && evidence.settled === false
+        && typeof evidence.surfaceVisible === 'boolean'
+        && typeof evidence.atTail === 'boolean'
+        && typeof evidence.tailID === 'string'
+        && evidence.rootNode != null
+        && Number.isSafeInteger(inputEpoch)
+        && inputEpoch === Number(current.inputEpoch)
+        && Number.isSafeInteger(Number(evidence.rootIdentity))
+        && Number.isSafeInteger(Number(evidence.installedHighSeq))
+        && Number.isFinite(presentationRevision)
+        && presentationRevision === currentPresentationRevision
+        && Number.isFinite(domPresentationRevision)
+        && domPresentationRevision === currentPresentationRevision
+        && Array.isArray(evidence.visibleRows)
+        && evidence.visibleRows.length > 0
+        && visibleRowIDs.length > 0
+        && visibleRowIDs.every((id) => currentRowIDs.has(id) && hitTestRows.has(id))
+        && identityCurrent;
+      if (!sampleCurrent) return false;
+      const accepted = owner.onReadingSample?.({
+        type: 'reading-sample',
+        bookmark: evidence.bookmark,
+        atTail: evidence.atTail,
+        surfaceVisible: evidence.surfaceVisible,
+        installedHighSeq: evidence.installedHighSeq,
+        visibleRows: evidence.visibleRows,
+        visibleRowIDs,
+        source: evidence.source,
+        settled: false,
+        inputEpoch,
+        presentationRevision,
+        domPresentationRevision,
+        observationIdentity: identity,
+        rootIdentity: evidence.rootIdentity,
+        rootNode: evidence.rootNode,
+        tailID: evidence.tailID,
+        geometryRevision: evidence.geometryRevision,
+        activationID: evidence.activationID,
+      });
       return accepted !== false;
     }
 

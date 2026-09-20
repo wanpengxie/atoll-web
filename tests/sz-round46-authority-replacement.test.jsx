@@ -25,6 +25,7 @@ function observationFor(viewport, overrides = {}) {
   const session = viewport.getSession();
   const presentationRevision = Number(overrides.presentationRevision || 1);
   const base = {
+    type: 'reading-authority',
     activationID: viewport.activationID,
     inputEpoch: Number(session.inputEpoch),
     source: 'layout',

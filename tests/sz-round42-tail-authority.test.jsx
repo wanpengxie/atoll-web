@@ -24,6 +24,7 @@ function observationFor(viewport, overrides = {}) {
   const status = viewport.status || {};
   const session = viewport.getSession();
   const base = {
+    type: 'reading-authority',
     activationID: viewport.activationID,
     inputEpoch: Number(session.inputEpoch),
     source: 'layout',

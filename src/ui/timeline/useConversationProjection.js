@@ -744,6 +744,7 @@ function useProjectionReadingOwner({
     finishNavigation(input = {}) { return Number(input.inputGeneration) === controller.getSnapshot().session.inputEpoch; },
     cancelNavigation,
     onReadingObservation(observation = {}) {
+      if (observation.type !== 'reading-authority' || observation.settled !== true) return false;
       const current = controller.getSnapshot().session;
       const committedSnapshot = snapshotRef.current;
       const committedHistory = historyStatusRef.current;
@@ -752,8 +753,9 @@ function useProjectionReadingOwner({
       const currentPresentationRevision = Number(committedSnapshot.revision || 0);
       const observedPresentationRevision = Number(observation.presentationRevision);
       const observedDomPresentationRevision = Number(observation.domPresentationRevision);
-      const visibleRowIDs = Object.freeze([...new Set((observation.visibleRowIDs || (observation.visibleRows || [])
-        .map((row) => typeof row === 'string' ? row : row?.messageID))
+      const visibleRowIDs = Object.freeze([...new Set((Array.isArray(observation.visibleRowIDs)
+        ? observation.visibleRowIDs
+        : [])
         .map((id) => String(id || ''))
         .filter(Boolean))]);
       const identity = observation.observationIdentity || null;
@@ -787,10 +789,12 @@ function useProjectionReadingOwner({
         || (Number.isSafeInteger(highSeq) && highSeq > 0
           && (Number(committedHistory.headSeq || 0) <= 0
             || highSeq <= Number(committedHistory.headSeq || 0)));
-      const hitTestRows = new Set((observation.visibleRows || [])
+      const hitTestRows = new Set((Array.isArray(observation.visibleRows)
+        ? observation.visibleRows
+        : [])
         .map((row) => typeof row === 'string' ? row : row?.messageID || row?.id)
         .map((id) => String(id || ''))
-        .filter(Boolean) || []);
+        .filter(Boolean));
       const evidenceComplete = typeof observation.surfaceVisible === 'boolean'
         && typeof observation.atTail === 'boolean'
         && typeof observation.settled === 'boolean'
@@ -813,7 +817,8 @@ function useProjectionReadingOwner({
           && observation.surfaceVisible === true
           && tailFence
           && highSeqFence);
-      if ((observation.activationID && observation.activationID !== controller.activationID)
+      if (typeof observation.activationID !== 'string'
+        || observation.activationID !== controller.activationID
         || !evidenceCurrent
         || !settledCurrent) return false;
       // Preserve the exact DOM hit-test handoff for the opt-in Reading trace.
@@ -821,20 +826,18 @@ function useProjectionReadingOwner({
       // visible row cannot by itself mint following authority or a scroll.
       readingTrace('reading.observation', {
         activationID: controller.activationID,
-        inputEpoch: hasInputEpoch ? inputEpoch : Number(current.inputEpoch),
+        inputEpoch,
         source: String(observation.source || ''),
         settled: observation.settled === true,
         atTail: observation.atTail === true,
         surfaceVisible: observation.surfaceVisible === true,
-        presentationRevision: Number.isFinite(observedPresentationRevision)
-          ? observedPresentationRevision : currentPresentationRevision,
-        domPresentationRevision: Number.isFinite(observedDomPresentationRevision)
-          ? observedDomPresentationRevision : currentPresentationRevision,
+        presentationRevision: observedPresentationRevision,
+        domPresentationRevision: observedDomPresentationRevision,
         rootIdentity: Number(observation.rootIdentity),
-        tailID: String(observation.tailID || currentTailID),
+        tailID: String(observation.tailID),
         installedHighSeq: Number(observation.installedHighSeq),
         authorityVerified: true,
-        observationIdentity: observation.observationIdentity || null,
+        observationIdentity: observation.observationIdentity,
         visibleRowIDs,
       });
       if (observation.surfaceVisible !== true
@@ -874,43 +877,58 @@ function useProjectionReadingOwner({
       if (!controller.isStarted()) return false;
       const committed = controller.update((active) => observeReading(active, {
         ...observation,
-        activationID: controller.activationID,
-        inputEpoch: hasInputEpoch ? inputEpoch : active.inputEpoch,
+        activationID: observation.activationID,
+        inputEpoch,
       }));
       const committedSession = controller.getSnapshot().session;
-      const expectedInputEpoch = hasInputEpoch ? inputEpoch : Number(current.inputEpoch);
       if (!committed
         || committedSession.activationID !== controller.activationID
-        || Number(committedSession.inputEpoch) !== expectedInputEpoch) return false;
+        || Number(committedSession.inputEpoch) !== inputEpoch) return false;
       const nextEvidence = Object.freeze({
         activationID: controller.activationID,
-        inputEpoch: hasInputEpoch ? inputEpoch : Number(current.inputEpoch),
-        rootIdentity: Number(observation.rootIdentity || identity?.rootIdentity || 0),
+        inputEpoch,
+        rootIdentity: Number(observation.rootIdentity),
         rootNode: observation.rootNode,
         atTail: observation.atTail === true,
         settled: observation.settled === true,
         surfaceVisible: true,
-        installedHighSeq: Number(observation.installedHighSeq || 0),
+        installedHighSeq: Number(observation.installedHighSeq),
         generation: Number(committedHistory.generation || 0),
         headSeq: Number(committedHistory.headSeq || 0),
         presentationRevision: Number(committedHistory.presentationRevision || 0),
-        domPresentationRevision: Number.isFinite(observedDomPresentationRevision)
-          ? observedDomPresentationRevision : currentPresentationRevision,
-        observationPresentationRevision: Number.isFinite(observedPresentationRevision)
-          ? observedPresentationRevision : currentPresentationRevision,
+        domPresentationRevision: observedDomPresentationRevision,
+        observationPresentationRevision: observedPresentationRevision,
         observationIdentity: identity,
         visibleRowIDs,
-        tailID: String(observation.tailID || identity?.tailID || currentTailID),
+        tailID: String(observation.tailID),
         authorityVerified: true,
         sourceRevision: Number(committedSnapshot.sourceRevision || 0),
         authorityRevision: Number(committedHistory.notificationAuthorityRevision || 0),
-        geometryRevision: Number(observation.geometryRevision || current.geometryRevision || 0),
+        geometryRevision: Number(observation.geometryRevision),
       });
       if (!sameTailEvidence(nextEvidence, observationRef.current)) {
         observationRef.current = nextEvidence;
         setObservationRevision((value) => value + 1);
       }
       return true;
+    },
+    onReadingSample(observation = {}) {
+      if (observation.type !== 'reading-sample'
+        || typeof observation.activationID !== 'string'
+        || observation.activationID !== controller.activationID) return false;
+      const inputEpoch = Number(observation.inputEpoch);
+      if (!Number.isSafeInteger(inputEpoch)
+        || inputEpoch !== Number(controller.getSnapshot().session.inputEpoch)
+        || !controller.isStarted()) return false;
+      const committed = controller.update((active) => observeReading(active, {
+        ...observation,
+        activationID: observation.activationID,
+        inputEpoch,
+      }));
+      const committedSession = controller.getSnapshot().session;
+      return Boolean(committed)
+        && committedSession.activationID === controller.activationID
+        && Number(committedSession.inputEpoch) === inputEpoch;
     },
     onPresentationMaterialized(observation = {}) {
       return observation.activationID === controller.activationID
