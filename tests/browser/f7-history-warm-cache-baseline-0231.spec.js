@@ -58,8 +58,19 @@ test('FAE-1644 F7 bounded warm cache survives reload and satisfies one physical 
     warmRows = await cachedRows(page, 'c0');
     expect(warmRows).toBeLessThan(1_000);
     startupDiagnostics = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot());
-    startupOutstanding = startupDiagnostics.filter((entry) => entry.event === 'history.segment_requested').length
-      - startupDiagnostics.filter((entry) => entry.event === 'history.batch_complete').length;
+    // The current public physical-page receipt is wire.page_end and its Feed
+    // owner publishes history.batch_complete for the same ref. The removed
+    // history.segment_requested scheduler event was an old implementation
+    // oracle and is not emitted by the current public owner.
+    const pageEndRefs = startupDiagnostics
+      .filter((entry) => entry.event === 'wire.page_end' && entry.detail?.channelId === 'c0')
+      .map((entry) => String(entry.detail?.ref || ''))
+      .filter(Boolean);
+    const completedRefs = startupDiagnostics
+      .filter((entry) => entry.event === 'history.batch_complete' && entry.detail?.channelId === 'c0')
+      .map((entry) => String(entry.detail?.ref || ''))
+      .filter(Boolean);
+    startupOutstanding = pageEndRefs.filter((ref) => !completedRefs.includes(ref)).length;
     expect(startupOutstanding).toBe(0);
   } finally {
     warmRows ??= await cachedRows(page, 'c0').catch(() => null);
