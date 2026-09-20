@@ -1476,3 +1476,86 @@ Waiting item 可见，直到后续 `advance×3` 才等待 Waiting 消失，并�
 本轮只编辑 T–Z Waiting spec 与本报告；没有改 `src/`、vendor、package、截图阈值，
 也没有删除/skip case。工作树已有的
 `tests/browser/notification-high-water.spec.js` 脏修改属于他人，未触碰。
+
+## 第二十五轮：`following-existing-waiting` 首断点与 case38/passive append 隔离
+
+本轮只读重放了 Waiting 全量剩余的 `following-existing-waiting`，并分别抽查了
+case38 的本人显式发送与 E 的 passive append。没有改产品、fixture、spec 或放宽
+canonical-row 合同。
+
+### `following-existing-waiting` 的首断点是 replacement oracle，不是发送丢失
+
+按当前生产路径先提交 `send-existing-owner`，等它进入 processing，再提交
+`send-existing-target`，最后提交正文为 `send existing-waiting` 的第三条本人请求。
+第三次发送前，公开 DOM 中有 owner 的 processing row，Waiting 中有 target：
+
+```text
+owner row requestId = bc08a9f5-0632-42af-9e86-362387b5b364
+existing Waiting requestId = 1a736a7e-9b18-4b2f-ab6f-38b96f0b2a38
+mode = following, editor = empty
+```
+
+第三次发送后的公开结果是：
+
+```text
+timeline rows containing "send existing-waiting" = 0
+Waiting items =
+  1a736a7e-9b18-4b2f-ab6f-38b96f0b2a38  ↳send-existing-target插入编辑取消
+ 0ede0563-b86b-4c8b-8d45-fc9b5b51b119  ↳send existing-waiting插入编辑取消
+mode = following, editor = empty
+```
+
+也就是说，请求已被公开 materialize 为第二个 Waiting item；owner 仍 processing、请求
+仍 queued 时它按当前 Waiting 合同不会先成为 timeline canonical row。故
+`tests/browser/waiting-production-contract.spec.js:341` 的
+`waitForNewMessageIdentity()` 是首个失败点，随后
+`waitForCanonicalMessage()` 尚未有机会运行。这不是 transport、fixture 入队或
+产品发送丢失。`fae8b70` 旧轨迹在
+`fae8b70:tests/browser/waiting-send-transaction.spec.js:563-568,607-610`
+只等待现有 Waiting item 出现，直到后续 `advance×3` 才等待其消失；没有在仍排队的
+阶段要求第三条请求先占据 timeline row。因此本 RED 应归为迁移时序/oracle 错误，
+未来若修正必须以精确 Waiting request identity 和 queue advancement 为合同，不能用
+宽泛文本、skip 或吞掉 canonical gate。
+
+### case38 的显式本人发送与 passive append 不冲突
+
+case38 当前合同重跑通过：
+
+```text
+ATOLL_TEST_WEB_PORT=15588 ATOLL_TEST_MOCK_PORT=19988 \
+  npx playwright test tests/browser/waiting-production-contract.spec.js \
+  --grep 'wheel-takeover-after-send' --workers=1 --reporter=line \
+  --output=test-results-tz-r25-case38
+1 passed (6.9s)
+```
+
+它覆盖的是 Composer 的**本人显式发送**：发送开始安装 tail intent，公开 mode 变为
+`following` 并回到物理尾部。该路径不会把仍在 browsing 的 passive arrival 当作本人
+发送，也不会改变 passive append 的 jump 合同。
+
+反向抽查 E passive append 时，真实 POST `q_tail_append` 返回 200，canonical request
+与 completed response 都进入 feed（mock feed count `c0: 848 → 850`）；浏览器仍公开
+`mode=browsing`，`scrollTop=2464` 不变，`scrollHeight=4353 → 4589`，gap
+`1502 → 1738`，并显示 `↓ 1 条新动态`。但该 append 的 target row 不在公开
+`.timeline-message-list`（`targetRows=[]`），对应 browser case 仍在 row locator
+超时：
+
+```text
+ATOLL_TEST_WEB_PORT=15589 ATOLL_TEST_MOCK_PORT=19989 \
+  npx playwright test tests/browser/e-send-scroll-writers.spec.js \
+  --grep 'browsing passive append' --workers=1 --reporter=line
+1 failed: c0-q-append-14682400-1 row count 0 (line 417)
+```
+
+这条 RED 的首个公开分叉在 Feed 已接收、browsing/jump 已正确保持之后的
+row projection/materialization；不是 case38 的 tail-intent 或 Waiting 合同，也不是
+fixture 未提交（fixture 使用 `body.text` canonical envelope，request/response 均已入
+feed）。归属 Feed/Replica/Projection owner 做产品链路修复；本轮不改测试使其变绿。
+
+### 本轮归属结论
+
+| 路径 | 结果 | 首断点/归属 |
+|---|---|---|
+| `following-existing-waiting` | **13 pass / 1 red 中的唯一 RED** | 迁移 oracle 在 queued Waiting 阶段错误要求 canonical row；不改产品、不放宽合同 |
+| Waiting case38 显式本人发送 | **PASS** | Composer → Reading tail intent；与 passive arrival 独立 |
+| E passive append | **真实 transport/feed PASS，公开 row RED** | Feed/Replica/Projection materialization 产品缺口；不归因 case38，不改 fixture/断言 |
