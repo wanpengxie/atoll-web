@@ -1872,3 +1872,78 @@ ATOLL_TEST_WEB_PORT=15628 ATOLL_TEST_MOCK_PORT=19928 \
 
 因此 d965 当前 strict/jump 结论为：passive jump gate **PASS 5/5**；Reading
 首可见 anchor **RED 5/5（112→111）**，严格断言保持不动，产品缺口交 Reading owner。
+
+## 第三十一轮：四张视觉红图逐一差异与 UI-VIS-03 首 owner
+
+本轮只读检查沿用 `test-results-tz-r30-next5-visual` 的实际截图与 Linux baseline，
+四组图片尺寸均为 **360×715**；没有更新 snapshot、调 `maxDiffPixels` 或修改
+截图阈值。Playwright 报告的像素差是稳定视觉 oracle 的差异计数，不是环境启动失败。
+
+### UI-VIS-02 概览：旧只读详情卡片 → 当前治理资料/创建表单
+
+| 维度 | baseline → 当前 actual |
+|---|---|
+| 像素 | `channel-overview.png`：**23,436 px / 0.10**；panel 尺寸相同，但从 y≈110 开始的卡片内容大面积重排。 |
+| 布局 | 旧 panel 标题为 `频道详情`，tab 为 `成员 / 信息 / 危险操作`，选中“信息”；当前为 `频道治理`，tab 为 `概览 / 成员 / 危险操作`，选中“概览”。旧内容约一张根频道卡 + 一张子频道卡后留白；当前变成“频道资料”卡、“创建子频道”卡，并在底部继续出现“子频道”卡，纵向内容明显变长。 |
+| 控件/语义 | 旧 root 卡展示 ID、父级、Owner、状态及“读取完整详情到副本”，子频道为只读行；当前提供可编辑 `频道 ID`/`说明`、“保存频道资料”，以及名称/用途/`频道模板`/“创建子频道”表单。当前是公开治理 successor 的真实能力差异，不用 CSS 或截图调整伪合旧图。 |
+
+### UI-VIS-02 成员：成员列表/控件顺序与能力集合改变
+
+| 维度 | baseline → 当前 actual |
+|---|---|
+| 像素 | `channel-members.png`：**27,183 px / 0.11**。 |
+| 布局 | 旧 panel 先显示“当前成员与 Actor”卡，再显示“添加参与者”；当前先显示“添加参与者”，后显示“频道成员”。旧成员卡和添加卡各自较紧凑；当前每个成员采用分隔的纵向 row，成员卡延伸到约 y≈614，内容高度与顺序都改变。标题/tab 同样从 `频道详情 + 成员/信息/危险操作` 变为 `频道治理 + 概览/成员/危险操作`。 |
+| 控件/语义 | 旧行带 `已绑定/在线` 等状态及“查看/重启/移除”内联控件，并有 foundation Actor 说明；当前行只公开“详情/移除”，新增参与者表单的说明和选择器独立位于顶部。error context 确认三个实际 row 均只有这组当前控件，不是截图裁剪遗漏。 |
+
+### UI-VIS-02 危险操作：主体几何接近，标题/tab/文案仍不相同
+
+| 维度 | baseline → 当前 actual |
+|---|---|
+| 像素 | `channel-danger.png`：**1,024 px / 0.01**，是四张中最小的差异。 |
+| 布局 | “退役频道”卡仍在同一顶部区域（约 y≈110–196），卡片高度/留白基本保持；主要差异集中在 header、tab underline 和文字像素，不存在需要通过压缩高度掩盖的布局跳变。 |
+| 控件/语义 | 旧标题为 `CHANNEL CONTEXT / 频道详情`，tab 含 `信息`；当前为 `CHANNEL CONTROL / 频道治理`，tab 使用 `概览`。根频道保护提示仍存在，但当前文案去掉了旧 baseline 中显式的 `c0` 作用域表述。危险操作没有凭空新增按钮，保留当前真实保护态。 |
+
+### UI-VIS-04 空间管理：不可用态替代旧的完整 Actor 模板表单
+
+| 维度 | baseline → 当前 actual |
+|---|---|
+| 像素 | `space-administration.png`：**12,139 px / 0.05**。 |
+| 布局 | tabs/header 仍是 `SPACE CONTROL / 空间管理` 与 `Actor 模板、频道模板、频道配置、设备`；旧首卡“已登记声明”约 y≈110–196，随后直接进入完整编辑表单。当前在 y≈110–155 插入红色 unsupported status，首卡下移且变为“已登记项目”，第二卡仅保留 JSON editor，整体垂直内容短于旧表单。 |
+| 控件/语义 | 旧首卡有“从 Registrar 读取”，编辑器有声明 ID、名称、class、说明、可见性、Config JSON；当前首卡显示“尚未读取模板”且没有读取按钮，编辑器只显示 JSON，`保存/退役/重新读取` 均 disabled。`WorkspaceApp` 的公开 `space` port 明确 `disabled: true` 并给出“没有空间治理结果投影；不伪造成功”状态（`src/app/WorkspaceApp.jsx:1077-1088`），因此这是当前能力边界/视觉合同差异，不是 fixture 可补的历史数据。 |
+
+### UI-VIS-03 “新建频道”真实用户流程 repeat3
+
+```text
+ATOLL_TEST_WEB_PORT=15629 ATOLL_TEST_MOCK_PORT=19929 \
+  npx playwright test tests/browser/ui-visual.spec.js \
+  --grep 'UI-VIS-03 新建频道独立任务视觉基线' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r31-uivis03-repeat3
+3 failed (all at ui-visual.spec.js:84)
+```
+
+三次真实流程均为：登录 → 点击公开按钮 `新建频道` → `频道治理` panel 成功出现
+→ 当前 tab 仍为 `成员` → DOM 只有“添加参与者/频道成员”，没有
+`heading=创建子频道`，因此在 line 84 的 heading gate 首断；不是 reset、登录或
+Chromium 启动阻塞。
+
+首个 owner 边界是一个公开 intent 丢失链：
+
+1. `WorkspaceLayout.jsx:93` 的“新建频道”按钮只调用无参数的
+   `navigation.openChannelAdministration()`；
+2. `WorkspaceApp.jsx:1334` 将该 callback 降为 `setPanel('channel-administration')`，
+   没有携带“create child/overview”目标；
+3. `GovernanceFeature.jsx:129` 的 `ChannelAdministrationPanel` 默认
+   `useState('members')`，于是入口稳定落在成员 tab，无法到达同组件已存在的
+   `ChannelOverview`/“创建子频道”表单。
+
+这是真实公开入口到 canonical governance tab 的产品 owner 缺口；不把成员 tab
+当作等价 successor，不在 T–Z spec 里改成点击“概览”，也不伪造 heading。
+
+### passive append 合同保持不变
+
+本轮没有改变 passive append 合同：append 浏览态只要求 anchor/scrollTop 保持、
+new-activity notice、`mode=browsing` 和无 writer；不要求 overscan 外尾 row mount。
+用户点击 jump 后仍以 exact request row 的 `painted=true` 与
+`intersectsViewport=true` 验收。d965 当前 HEAD 的 repeat5 证据仍为 **5 passed**，
+见上一轮 `test-results-tz-r30-passive-jump-repeat5`；本轮未改 spec/product。
