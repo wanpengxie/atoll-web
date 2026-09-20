@@ -111,9 +111,12 @@ test('TC-0195 F5-005 全局搜索恢复频道、视图和 focus，权限撤销�
   await expect(page).toHaveURL(/channels\/c0\.project\/tasks\?focus=work_item/);
 
   await request.post(`${MOCK}/mock/control/action`, { data: { type: 'revoke_membership', channel_id: 'c0.project' } });
-  await expect(page.getByText(/频道访问权限已被撤销/)).toBeVisible();
+  // The public revocation notice is the live status surface. The same product
+  // wording is intentionally repeated in the content placeholder and composer
+  // explanation, so a page-wide text selector is ambiguous.
+  await expect(page.getByRole('status')).toContainText('你的频道访问权限已被撤销，缓存内容已隐藏。重新获得访问权限后才能查看。');
   await expect(page.getByRole('complementary', { name: '工作项详情' })).toHaveCount(0);
-  await expect(page.getByRole('tabpanel', { name: '任务' })).toContainText('任务不可访问');
+  await expect(page.getByRole('region', { name: '任务' })).toContainText('任务不可访问');
   await page.getByRole('button', { name: '全局搜索' }).click();
   search = page.getByRole('dialog', { name: '全局搜索' });
   await search.getByLabel('搜索频道、消息、文件、任务或成员').fill('c0.project history 1');

@@ -363,15 +363,18 @@ keyed by the returned request id. `accepted`, `ledger`, `observable`,
 same-name directory child or command receipt cannot declare ready. Entry uses
 the optional Shell `commands.enterChannel` port and stays disabled with a
 contract message when that port is absent; the feature does not write
-`globalThis.location.hash`. The mounted Workspace port currently supplies
-neither `creation` facts nor `enterChannel`, so AD-153's four-step ready/enter
-capability remains **BLOCKED**, not promoted by this candidate.
+`globalThis.location.hash`. At the Round 35 frozen head the mounted Workspace
+port supplied neither fact, so AD-153 remained **BLOCKED** at that time. Round
+37 independently verifies the current public owner and records the later
+typed Shell projection as PASS; the historical Round 35 evidence is retained
+as the original first-owner handoff.
 
-The ledger is now **325 PASS / 0 REGRESSION / 40 BLOCKED**. AD-150–153 and
-AD-155 remain individually unresolved Governance contracts; no ordinary-red
-duplicate was added for them. Focused Governance feature verification is
-**1 file passed; 3 tests passed** (`tests/workspace-governance-features.test.jsx`),
-and the production build passes.
+The Round 35 ledger was **325 PASS / 0 REGRESSION / 40 BLOCKED**. After the
+unique AD-153 public-owner migration in Round 37, the ledger is **326 PASS / 0
+REGRESSION / 39 BLOCKED**. AD-150–152 and AD-155 remain individually
+unresolved Governance contracts; no ordinary-red duplicate was added for
+them. Focused AD-153 verification is **1 file passed; 2 tests passed**
+(`tests/channel-create-modal.test.jsx`), and browser TC-0192 is **1 passed**.
 
 ## Public-boundary migration completed in this pass
 
