@@ -1851,3 +1851,24 @@ surface 后失败；没有 selector skip、截图阈值放宽或产品修改：
 `GovernanceFeature` 的 `ChannelOverview`。其余四条均是已到达正确公开 panel 后的
 截图差异。下一步 owner 分别是治理入口/ChannelOverview 与各自 shell/panel 视觉
 owner；T–Z 不跨 owner 修改。
+
+### d965 passive append / jump gate 补验
+
+为覆盖本轮 “strict firstVisible/jump gates” 的第二半，当前 d965 HEAD 又以真实
+Chromium repeat5 重跑 E passive append。五次均通过：浏览态 append 前后
+`scrollTop=2464` 不变、`mode=browsing`、无 displacement/timeline writer，尾部
+request `c0-q-append-14682400-1` 没有被 overscan 外挂载要求短路；点击用户 jump
+后，spec 用 exact `data-presentation-row-id=request_id` locator，并以
+`painted=true`、`intersectsViewport=true` 验收该 row。
+
+```text
+ATOLL_TEST_WEB_PORT=15628 ATOLL_TEST_MOCK_PORT=19928 \
+  ATOLL_E_OUT=/tmp/tz-r30-passive-jump-repeat5 \
+  npx playwright test tests/browser/e-send-scroll-writers.spec.js \
+  --grep 'browsing passive append' --workers=1 --repeat-each=5 \
+  --reporter=line --output=test-results-tz-r30-passive-jump-repeat5
+5 passed (30.2s)
+```
+
+因此 d965 当前 strict/jump 结论为：passive jump gate **PASS 5/5**；Reading
+首可见 anchor **RED 5/5（112→111）**，严格断言保持不动，产品缺口交 Reading owner。
