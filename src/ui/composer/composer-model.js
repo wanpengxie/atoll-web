@@ -33,6 +33,22 @@ function isRecord(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function isPlainObject(value) {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+const SCHEMA_TYPES = new Set(['object', 'array', 'string', 'integer', 'number', 'boolean', 'null']);
+// This is deliberately a small allowlist for the command port, not a general
+// JSON Schema interpreter. Unknown keywords and untyped branches fail closed.
+const SCHEMA_KEYS = new Set([
+  'type', 'oneOf', 'anyOf', 'allOf', 'enum', 'const',
+  'properties', 'required', 'additionalProperties', 'items',
+  'minLength', 'maxLength', 'minimum', 'maximum',
+  'title', 'description',
+]);
+
 function allowedKindsOf(word) {
   if (!word || typeof word !== 'object') return undefined;
   if (Object.prototype.hasOwnProperty.call(word, 'allowedKinds')) return word.allowedKinds;
@@ -53,7 +69,8 @@ function requestAllowed(word) {
 }
 
 function inputSchemaOf(word) {
-  return isRecord(word?.inputSchema) ? word.inputSchema : null;
+  const schema = word?.inputSchema;
+  return validateSchemaDefinition(schema, 'inputSchema', { root: true }) ? null : schema;
 }
 
 function dynamicCommandName(type) {
@@ -95,6 +112,113 @@ function schemaError(detail) {
   return { code: 'composer_command_payload_invalid', detail };
 }
 
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isJSONValue(value, seen = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.every((entry) => isJSONValue(entry, seen));
+  if (!isPlainObject(value)) return false;
+  return Object.values(value).every((entry) => isJSONValue(entry, seen));
+}
+
+function validateSchemaDefinition(schema, path = 'inputSchema', { root = false, seen = new Set() } = {}) {
+  if (!isPlainObject(schema)) return schemaError(`${path} 必须是 plain object`);
+  if (seen.has(schema)) return schemaError(`${path} 不能包含循环 schema`);
+  const nestedSeen = new Set(seen);
+  nestedSeen.add(schema);
+  const unknownKey = Object.keys(schema).find((key) => !SCHEMA_KEYS.has(key));
+  if (unknownKey) return schemaError(`${path}.${unknownKey} 不是支持的 schema 字段`);
+
+  const type = schema.type;
+  if (typeof type !== 'string' || !SCHEMA_TYPES.has(type)) {
+    return schemaError(`${path}.type 必须是受支持的 primitive/object/array 类型`);
+  }
+  if (root && type !== 'object') return schemaError(`${path}.type 必须为 object`);
+
+  for (const combinator of ['oneOf', 'anyOf', 'allOf']) {
+    if (!hasOwn(schema, combinator)) continue;
+    const branches = schema[combinator];
+    if (!Array.isArray(branches) || !branches.length) return schemaError(`${path}.${combinator} 必须是非空 schema 数组`);
+    for (let index = 0; index < branches.length; index += 1) {
+      const failure = validateSchemaDefinition(branches[index], `${path}.${combinator}[${index}]`, { seen: nestedSeen });
+      if (failure) return failure;
+    }
+  }
+  if (hasOwn(schema, 'enum')) {
+    if (!Array.isArray(schema.enum) || !schema.enum.length || !schema.enum.every((entry) => isJSONValue(entry))) {
+      return schemaError(`${path}.enum 必须是非空 JSON 值数组`);
+    }
+  }
+  if (hasOwn(schema, 'const') && !isJSONValue(schema.const)) return schemaError(`${path}.const 必须是 JSON 值`);
+  for (const key of ['title', 'description']) {
+    if (hasOwn(schema, key) && typeof schema[key] !== 'string') return schemaError(`${path}.${key} 必须是字符串`);
+  }
+  if (type === 'object') {
+    if (hasOwn(schema, 'required')) {
+      if (!Array.isArray(schema.required)) return schemaError(`${path}.required 必须是字符串数组`);
+      const required = new Set();
+      for (const key of schema.required) {
+        if (typeof key !== 'string' || required.has(key)) return schemaError(`${path}.required 必须是无重复字符串数组`);
+        required.add(key);
+      }
+    }
+    if (hasOwn(schema, 'properties')) {
+      if (!isPlainObject(schema.properties)) return schemaError(`${path}.properties 必须是 plain object`);
+      for (const [key, child] of Object.entries(schema.properties)) {
+        const failure = validateSchemaDefinition(child, `${path}.properties.${key}`, { seen: nestedSeen });
+        if (failure) return failure;
+      }
+    }
+    if (hasOwn(schema, 'additionalProperties') && schema.additionalProperties !== false) {
+      return schemaError(`${path}.additionalProperties 仅支持 false`);
+    }
+  } else {
+    if (hasOwn(schema, 'properties') || hasOwn(schema, 'required') || hasOwn(schema, 'additionalProperties')) {
+      return schemaError(`${path} 的 object 字段与 type 不匹配`);
+    }
+  }
+
+  if (type === 'array') {
+    if (!hasOwn(schema, 'items')) return schemaError(`${path}.items 必须声明受支持的子 schema`);
+    const failure = validateSchemaDefinition(schema.items, `${path}.items`, { seen: nestedSeen });
+    if (failure) return failure;
+  } else if (hasOwn(schema, 'items')) {
+    return schemaError(`${path}.items 仅支持 array schema`);
+  }
+
+  if (type === 'string') {
+    if (hasOwn(schema, 'minLength') && (!Number.isSafeInteger(schema.minLength) || schema.minLength < 0)) {
+      return schemaError(`${path}.minLength 必须是非负整数`);
+    }
+    if (hasOwn(schema, 'maxLength') && (!Number.isSafeInteger(schema.maxLength) || schema.maxLength < 0)) {
+      return schemaError(`${path}.maxLength 必须是非负整数`);
+    }
+    if (schema.minLength > schema.maxLength) return schemaError(`${path}.minLength 不能大于 maxLength`);
+  } else if (hasOwn(schema, 'minLength') || hasOwn(schema, 'maxLength')) {
+    return schemaError(`${path}.minLength/maxLength 仅支持 string schema`);
+  }
+
+  if (type === 'number' || type === 'integer') {
+    if (hasOwn(schema, 'minimum') && (typeof schema.minimum !== 'number' || !Number.isFinite(schema.minimum))) {
+      return schemaError(`${path}.minimum 必须是有限数字`);
+    }
+    if (hasOwn(schema, 'maximum') && (typeof schema.maximum !== 'number' || !Number.isFinite(schema.maximum))) {
+      return schemaError(`${path}.maximum 必须是有限数字`);
+    }
+    if (schema.minimum > schema.maximum) return schemaError(`${path}.minimum 不能大于 maximum`);
+  } else if (hasOwn(schema, 'minimum') || hasOwn(schema, 'maximum')) {
+    return schemaError(`${path}.minimum/maximum 仅支持 number/integer schema`);
+  }
+
+  return null;
+}
+
 function sameJSON(left, right) {
   if (Object.is(left, right)) return true;
   if (!isRecord(left) && !Array.isArray(left)) return false;
@@ -102,7 +226,7 @@ function sameJSON(left, right) {
 }
 
 function validateSchemaValue(value, schema, path = 'payload') {
-  if (!isRecord(schema)) return schemaError(`${path} 缺少有效 inputSchema`);
+  if (!isPlainObject(schema)) return schemaError(`${path} 缺少有效 inputSchema`);
   if (Array.isArray(schema.oneOf) && !schema.oneOf.some((branch) => !validateSchemaValue(value, branch, path))) {
     return schemaError(`${path} 不匹配 inputSchema.oneOf`);
   }
@@ -124,7 +248,7 @@ function validateSchemaValue(value, schema, path = 'payload') {
 
   const type = typeof schema.type === 'string' ? schema.type : '';
   if (type === 'object') {
-    if (!isRecord(value)) return schemaError(`${path} 必须是对象`);
+    if (!isPlainObject(value)) return schemaError(`${path} 必须是对象`);
     if (Array.isArray(schema.required)) {
       for (const key of schema.required) {
         if (typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(value, key)) {
@@ -135,7 +259,7 @@ function validateSchemaValue(value, schema, path = 'payload') {
       return schemaError(`${path}.required 不是有效字段列表`);
     }
     const properties = schema.properties === undefined ? {} : schema.properties;
-    if (!isRecord(properties)) return schemaError(`${path}.properties 不是有效对象`);
+    if (!isPlainObject(properties)) return schemaError(`${path}.properties 不是有效对象`);
     for (const [key, childSchema] of Object.entries(properties)) {
       if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
       const failure = validateSchemaValue(value[key], childSchema, `${path}.${key}`);
@@ -179,8 +303,10 @@ function validateSchemaValue(value, schema, path = 'payload') {
 }
 
 function validateCommandPayload(definition, payload) {
-  if (!definition?.dynamic || !isRecord(definition.inputSchema)) return null;
-  if (!isRecord(payload)) return schemaError('命令 payload 必须是对象');
+  if (!definition?.dynamic) return null;
+  const schemaFailure = validateSchemaDefinition(definition.inputSchema, 'inputSchema', { root: true });
+  if (schemaFailure) return schemaFailure;
+  if (!isPlainObject(payload)) return schemaError('命令 payload 必须是对象');
   return validateSchemaValue(payload, definition.inputSchema);
 }
 
@@ -211,6 +337,8 @@ export function parseComposerCommand(value, definitions = COMPOSER_SLASH_COMMAND
     throw commandError(`未知命令 ${verb || '/'}；普通正文以 / 开头时请写成 /${source}`, 'composer_command_unknown');
   }
   if (definition.dynamic) {
+    const schemaFailure = validateSchemaDefinition(definition.inputSchema, 'inputSchema', { root: true });
+    if (schemaFailure) throw commandError(schemaFailure.detail, schemaFailure.code);
     const payloadText = source.slice(verb.length).trim();
     let payload = {};
     if (payloadText) {
@@ -220,7 +348,7 @@ export function parseComposerCommand(value, definitions = COMPOSER_SLASH_COMMAND
         throw commandError(`命令 /${command} 的 payload 必须是 JSON 对象`, 'composer_command_payload_invalid');
       }
     }
-    if (!isRecord(payload)) throw commandError(`命令 /${command} 的 payload 必须是 JSON 对象`, 'composer_command_payload_invalid');
+    if (!isPlainObject(payload)) throw commandError(`命令 /${command} 的 payload 必须是 JSON 对象`, 'composer_command_payload_invalid');
     return Object.freeze({ kind: 'command', ...definition, payload: Object.freeze(payload) });
   }
   if (args.length < definition.minArgs || args.length > definition.maxArgs) {

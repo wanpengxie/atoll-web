@@ -230,6 +230,69 @@ describe('current Composer command owner', () => {
     );
   });
 
+  it('does not register malformed dynamic schemas or treat missing type as any', () => {
+    const cases = [
+      ['replace', { properties: { expected_hold_id: { type: 'string' } } }, { expected_hold_id: 7 }],
+      ['scalar', { type: 'string' }, { value: 'ok' }],
+      ['bad-properties', { type: 'object', properties: [] }, {}],
+      ['bad-required', { type: 'object', required: 'value', properties: { value: { type: 'number' } } }, {}],
+      ['bad-child', { type: 'object', properties: { value: {} } }, { value: 'ok' }],
+      ['unsupported-keyword', { type: 'object', properties: { value: { type: 'string', pattern: '^ok$' } } }, { value: 'ok' }],
+      ['open-additional-properties', { type: 'object', additionalProperties: true }, {}],
+      ['non-plain-schema', new Map([['type', 'object']]), {}],
+    ];
+    for (const [command, inputSchema, payload] of cases) {
+      const capabilityIndex = new Map([[AGENT.id, { describe: { types: new Map([[`agent.${command}`, { inputSchema }]]) } }]]);
+      const current = model(`/${command} ${JSON.stringify(payload)}`, { capabilityIndex });
+      expect(current.commandDefinitions.some((row) => row.command === command), command).toBe(false);
+      expect(current.commandMenu).toBeNull();
+      expect(() => createComposerCommandRequest(current)).toThrowError(
+        expect.objectContaining({ code: 'composer_command_unknown' }),
+      );
+    }
+  });
+
+  it('enforces nested object types, required fields, and closed extra-field contracts', () => {
+    const inputSchema = {
+      type: 'object',
+      required: ['options'],
+      additionalProperties: false,
+      properties: {
+        options: {
+          type: 'object',
+          required: ['count'],
+          additionalProperties: false,
+          properties: {
+            count: { type: 'integer' },
+            label: { type: 'string' },
+          },
+        },
+        tags: { type: 'array', items: { type: 'string' } },
+      },
+    };
+    const capabilityIndex = new Map([[AGENT.id, {
+      describe: { types: new Map([['agent.nested-control', { inputSchema }]]) },
+    }]]);
+    const valid = model('/nested-control {"options":{"count":3,"label":"ok"},"tags":["a"]}', { capabilityIndex });
+    expect(createComposerCommandRequest(valid)).toMatchObject({
+      msgType: 'agent.nested-control',
+      payload: { options: { count: 3, label: 'ok' }, tags: ['a'] },
+    });
+
+    const invalidPayloads = [
+      '/nested-control {"options":{}}',
+      '/nested-control {"options":{"count":"3"}}',
+      '/nested-control {"options":{"count":3,"extra":true}}',
+      '/nested-control {"options":{"count":3},"extra":true}',
+      '/nested-control {"options":{"count":3},"tags":[3]}',
+    ];
+    for (const text of invalidPayloads) {
+      expect(() => createComposerCommandRequest(model(text, { capabilityIndex }))).toThrowError(
+        expect.objectContaining({ code: 'composer_command_payload_invalid' }),
+      );
+    }
+  });
+
   it('rejects command transport while reply or attachment ownership is active', () => {
     expect(() => createComposerCommandRequest(model('/restart', {
       draft: { text: '/restart', replyTarget: { sourceId: 'm1', senderId: AGENT.id } },
