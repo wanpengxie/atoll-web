@@ -1035,6 +1035,36 @@ Targeted Round-36 evidence:
 * Whole-file exact run: `npx vitest run tests/i-m-exact-path-contracts.test.jsx` → **130/135 GREEN**. The five reds are the pre-existing shared `message-presentation` canonical-body case plus the four strict Round-36 product regressions above; `165a876` makes TC-0988/0993 green.
 * The current-owner rerun remains the existing 17-file suite; the pre-existing shared TimelineRowRenderer canonical-body red is outside this I-M round. This round changes no product, compatibility, private API, vendor/package/lockfile, or notification file; the separate `165a876` product change was not edited or staged here.
 
+## Round 37 exact-path recovery: send-join baseline and Waiting growth contracts
+
+Round 37 re-ran the four prior strict candidates against the current public
+owner after the separate Reading-owner work in `165a876` and the current
+physical-tail no-op worktree patch. TC-0995 and TC-1004 are now green; the
+same strict contracts for TC-1010 and TC-1011 remain red. The next ten unique
+ledger declarations are TC-1012–1016 and TC-1018–1022; TC-1017 remains the
+earlier public `bindLatestIntentTargets` bridge and is not duplicated.
+
+| baseline case | user capability and invariant | current public owner | fae8b70 old operation | current executable evidence and result |
+|---|---|---|---|---|
+| TC-1012 | An equal-height target ack establishes a baseline; a later same-revision resize, not the equal-height ack, authorizes ordinary following. | `VendorListExecutor` typed send intent + physical root height | `MessageList` recorded the equal target baseline and withheld the first same-height callback | tests/i-m-exact-path-contracts.test.jsx:3306-3348 — **RED**: current owner writes `{top:1000}` as soon as the target row appears. Regression package; no product change. |
+| TC-1013 | The first child-first target ack is a baseline; a later ack may follow ordinarily without consuming the send join. | `VendorListExecutor` `issueBottomIntent` / `consumeBottomIntent` | `MessageList` paired child-first/latest acks and did not consume the pending intent at the baseline | tests/i-m-exact-path-contracts.test.jsx:3350-3387 — **RED**: current owner writes the correct 1200 tail but consumes the intent on the first target row. Regression package; no product change. |
+| TC-1014 | Revoking a send cannot replace a later same-revision height token or retroactively authorize its earlier callback. | `VendorListExecutor` intent fence + `totalListHeightChanged` | `MessageList` retained the later height token, then released it only after the public send revocation | tests/i-m-exact-path-contracts.test.jsx:3389-3437 — **RED**: current owner writes `{top:1132}` before revocation. Regression package; no product change. |
+| TC-1015 | Revoking an owned send baseline releases ordinary following exactly once. | `VendorListExecutor` current session intent and following writer | `MessageList` withheld the send-owned baseline, then followed the released root | tests/i-m-exact-path-contracts.test.jsx:3439-3485 — **RED**: current owner writes `{top:1132}` before the revocation boundary. Regression package; no product change. |
+| TC-1016 | A mixed parent-first send-target commit preserves the ordinary tail obligation without consuming the target join. | `VendorListExecutor` mixed Presentation + typed send intent | `MessageList` treated the unrelated parent-tail obligation separately from the pending target | tests/i-m-exact-path-contracts.test.jsx:3487-3533 — **RED**: current owner writes the 1100 tail but consumes the send intent. Regression package; no product change. |
+| TC-1018 | An unrelated committed tail can follow while a newer send target remains pending; the newer intent must remain unconsumed. | `VendorListExecutor` following writer + send target fence | `MessageList` allowed the unrelated Waiting tail to follow while retaining the newer target join | tests/i-m-exact-path-contracts.test.jsx:3535-3582 — **RED**: current owner emits no ordinary `{top:1132}` write while any composer target is pending. Regression package; no product change. |
+| TC-1019 | Moving a send target from timeline into Waiting cannot bypass destination readiness or consume the join. | `VendorListExecutor` typed target-row presence and intent consumer | `MessageList` withheld the write until the destination-ready Waiting presentation commit | tests/i-m-exact-path-contracts.test.jsx:3584-3633 — **RED**: current owner writes `{top:1000}` when the queued target row first appears, before destination readiness. Regression package; no product change. |
+| TC-1020 | After one committed Waiting-to-timeline send join, later same-id stream growth remains ordinary following. | `VendorListExecutor` consumed public intent + following physical-root writer | `MessageList` consumed the ready Waiting join once, then followed the next target and later stream sizes | tests/i-m-exact-path-contracts.test.jsx:3635-3699 — three ordered tail writes (initial join, next target, stream growth); **PASS** |
+| TC-1021 | Child-first and repeated committed heights continue following while Waiting moves into timeline. | `VendorListExecutor` typed intent consumer + `totalListHeightChanged` | `MessageList` handled child-first, repeated, and later revised heights as one following owner | tests/i-m-exact-path-contracts.test.jsx:3701-3773 — five ordered tail writes; **PASS** |
+| TC-1022 | Waiting-to-timeline growth stops after native user input takes ownership of the viewport. | `VendorListExecutor` Reading mode/input epoch + physical height callback | `MessageList` accepted the initial send join, then ignored later growth after `onUserControl` | tests/i-m-exact-path-contracts.test.jsx:3775-3830 — one initial write, no later write after browsing takeover; **PASS** |
+
+Targeted Round-37 evidence:
+
+* Prior strict candidates: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-0995|TC-1004|TC-1010|TC-1011' --retry=2` → **2/4 GREEN** (TC-0995/1004); TC-1010/1011 failed on all three attempts with the early `{top:1000}` write.
+* New green command: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1020|TC-1021|TC-1022'` → **3/3 GREEN**.
+* New strict regression command: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1012|TC-1013|TC-1014|TC-1015|TC-1016|TC-1018|TC-1019' --retry=2` → **7/7 expected product regressions**, each stable across three attempts.
+* Whole-file exact run: `npx vitest run tests/i-m-exact-path-contracts.test.jsx` → **135/145 GREEN**. The ten reds are the shared Timeline canonical-body case, TC-1010/1011, and the seven Round-37 packages above. The 17-file current-owner rerun remains 110/110 GREEN.
+* The four prior cases and these ten use only public `VendorListExecutor`/Reading inputs; no old `bottomIntentPresentation`, private helper, second owner, compatibility parser, vendor/package/lockfile, or product file was changed by this round. The separate physical-tail owner patch was left untouched.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -1110,6 +1140,11 @@ Targeted Round-36 evidence:
   2/2 GREEN against the current owner worktree (the product fix is not in
   this commit). The exact bridge therefore has six additional passing cases
   without inflating the 159-case baseline.
+- Round 37 adds ten independent send-join/Waiting-growth contracts
+  (TC-1012–1016 and TC-1018–1022). Three are GREEN; the other seven remain
+  strict product regression packages. The prior strict candidates now stand at
+  TC-0995/1004 GREEN and TC-1010/1011 RED under the current owner. The exact
+  bridge adds three passing cases without inflating the 159-case baseline.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

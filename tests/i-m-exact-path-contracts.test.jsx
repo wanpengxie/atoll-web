@@ -3302,4 +3302,530 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
     expect(reading.consumeBottomIntent).toHaveBeenCalledWith(intent);
   });
+
+  it('message-list-lifecycle TC-1012: an equal-height target baseline precedes a later same-revision resize', () => {
+    const intent = {
+      id: 'composer:send-start:round37-equal-baseline',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-target'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const first = round33Row('round37-first', 1);
+    const target = { ...round33Row('round37-target', 2), body: { local: false } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_100, scrollTop: 400 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_100, behavior: 'auto' });
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+  });
+
+  it('message-list-lifecycle TC-1013: the first child-first target ack is the baseline and a later ack is ordinary layout', () => {
+    const intent = {
+      id: 'composer:send-start:round37-child-first',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-child-target'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const first = round33Row('round37-child-first', 1);
+    const target = { ...round33Row('round37-child-target', 2), body: { local: false } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_200,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(1_200);
+  });
+
+  it('message-list-lifecycle TC-1014: revoking a send does not overwrite a later same-revision height token', () => {
+    const intent = {
+      id: 'composer:send-start:round37-revoke-after-media',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-revoke-target'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const first = round33Row('round37-revoke-first', 1);
+    const target = { ...round33Row('round37-revoke-target', 2), body: { local: false } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_132,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+
+    reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: 0 } };
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+  });
+
+  it('message-list-lifecycle TC-1015: revoking an owned send baseline releases ordinary following', () => {
+    const intent = {
+      id: 'composer:send-start:round37-revoked',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-revoked-target'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const first = round33Row('round37-revoked-first', 1);
+    const target = { ...round33Row('round37-revoked-target', 2), body: { local: false } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_132,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+
+    reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: 0 } };
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />
+    );
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_132, behavior: 'auto' });
+    expect(scroller.scrollTop).toBe(1_132);
+  });
+
+  it('message-list-lifecycle TC-1016: a mixed send-target commit preserves the parent-first ordinary tail obligation', () => {
+    const intent = {
+      id: 'composer:send-start:round37-mixed-tail',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-mixed-target'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const previousTail = round33Row('round37-unrelated-tail', 1);
+    const target = { ...round33Row('round37-mixed-target', 2), body: { local: false } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([previousTail], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_100,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={{
+          ...round33Snapshot([target], { revision: 2 }),
+          changes: {
+            kind: 'mixed',
+            inserted: ['round37-mixed-target'],
+            updated: [],
+            removed: ['round37-unrelated-tail'],
+          },
+        }}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_100, behavior: 'auto' });
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(1_100);
+  });
+
+  it('message-list-lifecycle TC-1018: an unrelated committed tail may follow while a newer send target remains pending', () => {
+    const intent = {
+      id: 'composer:send-start:round37-pending-b',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-target-b'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const first = round33Row('round37-pending-first', 1);
+    const unrelated = round33Row('round37-waiting-a', 2);
+    const target = { ...round33Row('round37-target-b', 3), localState: 'queued', body: { local: true } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, unrelated], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_132, scrollTop: 400 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_132, behavior: 'auto' });
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, unrelated, target], { revision: 3 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+  });
+
+  it('message-list-lifecycle TC-1019: removing a send target into Waiting cannot bypass destination readiness', () => {
+    const intent = {
+      id: 'composer:send-start:round37-timeline-to-waiting',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-removable-target'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const first = round33Row('round37-waiting-first', 1);
+    const target = { ...round33Row('round37-removable-target', 2), localState: 'queued', body: { local: true } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={{
+          ...round33Snapshot([first], { revision: 3 }),
+          changes: { kind: 'mixed', inserted: [], updated: [], removed: ['round37-removable-target'] },
+        }}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_000, scrollTop: 200 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+  });
+
+  it('message-list-lifecycle TC-1020: committed Waiting-to-timeline growth continues ordinary following after one send join', () => {
+    const intent = {
+      id: 'composer:send-start:round37-waiting',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-queued-request'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    reading.consumeBottomIntent = vi.fn((value) => {
+      if (reading.session.bottomIntent === value) {
+        reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: reading.session.inputEpoch } };
+      }
+      return true;
+    });
+    const first = round33Row('round37-waiting-root', 1);
+    const queued = { ...round33Row('round37-queued-request', 2), localState: 'queued', body: { local: true } };
+    const humanNext = { ...round33Row('round37-human-next', 3), body: { local: false } };
+    const running = { ...round33Row('round37-running', 4), body: { local: false } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, queued], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.consumeBottomIntent).toHaveBeenCalledWith(intent);
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_100, scrollTop: 400 });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, queued, humanNext], { revision: 3 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(2);
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 500 });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, queued, humanNext, running], { revision: 4 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(3);
+  });
+
+  it('message-list-lifecycle TC-1021: child-first and repeated committed heights follow while Waiting enters timeline', async () => {
+    const intent = {
+      id: 'composer:send-start:round37-child-first-waiting',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-child-waiting'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    reading.consumeBottomIntent = vi.fn((value) => {
+      if (reading.session.bottomIntent === value) {
+        reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: reading.session.inputEpoch } };
+      }
+      return true;
+    });
+    const first = round33Row('round37-child-root', 1);
+    const queued = { ...round33Row('round37-child-waiting', 2), localState: 'queued', body: { local: true } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, queued], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 400 });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, queued], { revision: 3 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(2);
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_240, scrollTop: 580 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(3);
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_280, scrollTop: 640 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(4);
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_312, scrollTop: 680 });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={{
+          ...round33Snapshot([first, { ...queued, contentRevision: 2 }], { revision: 4 }),
+          changes: { kind: 'revise', inserted: [], updated: ['round37-child-waiting'], removed: [] },
+        }}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(5);
+  });
+
+  it('message-list-lifecycle TC-1022: Waiting-to-timeline growth stops after user input takes ownership', () => {
+    const intent = {
+      id: 'composer:send-start:round37-waiting-takeover',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-takeover-target'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    reading.consumeBottomIntent = vi.fn((value) => {
+      if (reading.session.bottomIntent === value) {
+        reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: reading.session.inputEpoch } };
+      }
+      return true;
+    });
+    reading.onUserControl = vi.fn(() => {
+      reading.session = { ...reading.session, mode: READING_MODE.browsing, inputEpoch: 1 };
+    });
+    const first = round33Row('round37-takeover-first', 1);
+    const target = { ...round33Row('round37-takeover-target', 2), localState: 'queued', body: { local: true } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    reading.onUserControl();
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 400 });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 3 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
+    expect(scroller.scrollTop).toBe(400);
+  });
 });
