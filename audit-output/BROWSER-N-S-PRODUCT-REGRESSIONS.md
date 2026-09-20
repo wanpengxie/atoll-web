@@ -528,3 +528,20 @@ ATOLL_TEST_WEB_PORT=16440 ATOLL_TEST_MOCK_PORT=20740 npx playwright test tests/b
 GREEN 样本的同轮 Feed/rail 证据为：authorityReady=true、readSeq=25、首轮 high-water=27、二次 reload 后=29、approval seq26/27 均 high_water、counts related/total=0/0；typed observation 的 activation 与 visible IDs 为当前 `c0.project-approval-*`，不是旧 c0 activation。
 
 RED 样本不是 notification rail 丢数据：失败前 DOM 已有两个 `c0.project-approval-*`，rail 也已 authorityReady/high-water= true/27、counts=0/0；但当前 project activation 的所有 settled observations 仍 `visibleRowIDs=[]`，没有可等待的非空 hit-tested receipt。旧 c0 activation 的 settled event 被合同过滤。故当前 owner handoff 是 **Reading Presentation→DOM hit-test→typed settled fence**；`fa1cf86` 的 snapshot-row fence仍可能早于实际 visible-row sampler。保留正式 strict gate，不恢复 line160 raw 早读、不用固定 sleep/probe、不把 rail/Feed 误报为产品红。
+
+## 第二十五轮复验：`2392732` 后 cold hydration 用户链 GREEN
+
+Reading/Vendor owner 的 `2392732` 已将 settled receipt 收紧为当前 identity + DOM presentation revision + 非空当前 hit-tested rows，并在 following 模式要求当前 tail row 与物理 tail 同时成立。该提交后 Vendor 文件无未提交改动；本轮只读真实 Chromium，未改产品、fixture、断言、vendor、package 或 skip。
+
+正式命令：
+
+```text
+ATOLL_TEST_WEB_PORT=16443 ATOLL_TEST_MOCK_PORT=20743 npx playwright test tests/browser/notification-high-water.spec.js --grep='cached hydration' --workers=1 --repeat-each=10 --reporter=line --output=test-results-browser-ns-round25-hydration-contract-repeat10-16443-20260920
+# 10 passed (1.3m), HEAD=2392732
+```
+
+十次全部满足当前 `c0.project` activation、`settled=true`、`atTail=true`、`surfaceVisible=true`、非空 hit-tested `visibleRowIDs`；首轮与二次 reload 的 IDs 均为 `c0.project-approval-19974-1/2`。逐条 evidence 检查没有任何 `settled=true` 且空 IDs 的记录（总数 0），因此不是“仅 OR settled”假绿，也没有用旧 c0 activation 的 IDs 通过。
+
+同一 typed receipt 后的公开 rail/feed 结果在十次中完全一致：`authorityReady=true`, `readSeq=25`, 首轮 high-water=`27`、二次 hydration=`29`，approval seq26/27 均 `ackReason=high_water`，related/total=`0/0`。DOM 两次均 `following`、jump 为空、badge 不复活。此前第24轮首断点（Presentation rows 已在 DOM、Reading settled 却空 IDs）由 `2392732` 闭合；本轮无 notification/Reading 产品回归，N-S hydration 门 **GREEN**。
+
+证据：`test-results-browser-ns-round25-hydration-contract-repeat10-16443-20260920/**/notification-high-water-hydration.json`。

@@ -723,3 +723,18 @@ ATOLL_TEST_WEB_PORT=16440 ATOLL_TEST_MOCK_PORT=20740 npx playwright test tests/b
 两次失败的 pre-settle 证据（`...repeat1/...pre-settle-contract.json`、`...repeat4/...pre-settle-contract.json`）显示：heading 与 DOM Presentation 已为 `c0.project`，DOM 已有 `c0.project-approval-19974-1/2`，rail 已 authority/high-water=`true/27`、counts=`0/0`；但该 project activation 后续所有 `settled=true` observation 的 `visibleRowIDs=[]`，10 秒内没有非空 `c0.project-*` hit-tested receipt。旧 c0 activation 的 settled `c0-*` IDs 被严格过滤，不能冒充 project hydration 完成。
 
 因此 `fa1cf86` 关闭了“完全没有 settled 信号”的缺口，但仍未满足本轮完整合同：它以 snapshot rows/revision 触发 settled，不能保证同一 activation 的 DOM hit-test rows 已被 Reading 采样；失败归 **Reading owner 的 Presentation→Reading paint fence**。Feed/notification rail 在同一时点已有 authority/high-water/ack 证据，不交 notification owner。保留严格测试等待门，不降级为旧 raw line160、固定 sleep、空 diagnostics 或旧 activation。
+
+## 第二十五轮：`2392732` settled paint fence clean hydration repeat10
+
+Vendor/Reading owner 提交 `2392732`（`fix(reading): fence settled observation paint receipts`）后，在该 clean 产品 HEAD 上重跑正式 cached-hydration 合同；本轮没有修改产品、fixture、断言、vendor、package 或 skip。该提交将 settled receipt 绑定到当前 activation/inputEpoch/intent/presentation/tail identity，并要求 DOM presentation revision 与 snapshot 对齐、至少一个当前 snapshot row 命中 hit-tested `visibleRowIDs`；following/cold receipt 还要求当前 tail row 命中且物理滚动位于 tail。请求不满足时发布 `settled=false` 并重试，不把空 ID 的 settled 帧 OR 进合同。
+
+```text
+ATOLL_TEST_WEB_PORT=16443 ATOLL_TEST_MOCK_PORT=20743 npx playwright test tests/browser/notification-high-water.spec.js --grep='cached hydration' --workers=1 --repeat-each=10 --reporter=line --output=test-results-browser-ns-round25-hydration-contract-repeat10-16443-20260920
+# 10 passed (1.3m), HEAD=2392732
+```
+
+十次真实 Chromium 的每次第一次及第二次 hydration 均通过严格 typed gate：当前 activation 的 `reading.observation` 为 `settled=true`, `atTail=true`, `surfaceVisible=true`，并带非空 hit-tested IDs `c0.project-approval-19974-1/2`；两次 hydration 的 `presentationRevision` 与 `domPresentationRevision` 相等（每条均为当前 snapshot revision）。逐 evidence 检查两次 hydration 的所有公开 entries：`settled=true && visibleRowIDs=[]` 为 **0**，当前 project activation 的该分支同样为 **0**；此前允许旧 `c0-*` activation 冒充的路径没有被接受。
+
+每次 typed receipt 后读取的同一时点 Feed/rail 快照均为 `authorityReady=true`, `readSeq=25`，首轮 `notificationHighWater=27`、二次 reload 后 `=29`，`counts.related/total=0/0`；approval seq26/27 的 `ackReason` 均为 `high_water`。公开 Presentation/DOM 在两次 hydration 均 `mode=following`, `jump=''`，左侧 badge 未复活。故本轮闭合的是第24轮 Reading Presentation→DOM hit-test→typed settled 首断点；notification rail/feed receipt 与用户可见链同步 GREEN，不新增产品回归。
+
+证据目录：`test-results-browser-ns-round25-hydration-contract-repeat10-16443-20260920/**/notification-high-water-hydration.json`。
