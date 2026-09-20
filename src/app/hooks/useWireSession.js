@@ -663,6 +663,7 @@ export function useWireConnection({
   prepareLocalReplica,
   principalId,
   reconcileIdentity,
+  refreshHistoryChannel,
   resetSubmissionWorld,
   resumeLocalReplica,
   setActiveChannelId,
@@ -780,19 +781,29 @@ export function useWireConnection({
           setChannels(new Map());
           bumpAccess();
           const worldReset = onWorldChanged();
-          const applyHistoryGrants = () => setHistoryGrants(detail?.history_meta || [], {
-            ...detail,
-            focus: activeChannelRef.current,
-            forceReset: true,
-          });
+          const applyHistoryGrants = () => {
+            const focus = String(activeChannelRef.current || '');
+            return Promise.resolve(setHistoryGrants(detail?.history_meta || [], {
+              ...detail,
+              focus,
+              forceReset: true,
+            })).then((result) => {
+              if (!focus || typeof refreshHistoryChannel !== 'function') return result;
+              return Promise.resolve(refreshHistoryChannel(focus)).then(() => result);
+            });
+          };
           return worldReset && typeof worldReset.then === 'function'
             ? Promise.resolve(worldReset).then(applyHistoryGrants)
             : applyHistoryGrants();
         }
-        return setHistoryGrants(detail?.history_meta || [], {
+        const focus = String(activeChannelRef.current || '');
+        return Promise.resolve(setHistoryGrants(detail?.history_meta || [], {
           ...detail,
-          focus: activeChannelRef.current,
+          focus,
           forceReset: !sameServerWorld,
+        })).then((result) => {
+          if (!focus || typeof refreshHistoryChannel !== 'function') return result;
+          return Promise.resolve(refreshHistoryChannel(focus)).then(() => result);
         });
       },
       onFeed: enqueueFeed,
@@ -886,7 +897,7 @@ export function useWireConnection({
       if (accessRef.current === access) accessRef.current = null;
       if (wireRef.current === ownedWire) wireRef.current = null;
     };
-  }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, cancelFeedTask, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onWorldChanged, prepareLocalReplica, principalId, reconcileIdentity, resetSubmissionWorld, resumeLocalReplica, rosterRef, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
+  }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, cancelFeedTask, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onWorldChanged, prepareLocalReplica, principalId, reconcileIdentity, refreshHistoryChannel, resetSubmissionWorld, resumeLocalReplica, rosterRef, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
 
   return accessRefreshActionsRef;
 }

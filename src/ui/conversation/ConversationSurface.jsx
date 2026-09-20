@@ -325,7 +325,7 @@ export function ConversationSurface({
                   {emptyFeedbackKind && emptyFeedbackKind !== 'channel' && !emptyFeedbackSettled && <div
                     className="empty-ledger"
                     data-scope-state="partial"
-                  ><span>@</span><h2>正在查找符合筛选的往来…</h2><p>会继续读取更早内容，找到后自动显示。</p></div>}
+                  ><span>@</span><h2>当前已加载的动态里没有符合筛选的往来</h2><p>会继续读取更早内容，找到后自动显示。</p></div>}
                   {emptyFeedbackKind === 'channel' && !emptyFeedbackSettled && <div className="timeline-history-status" role="status">正在准备频道内容…</div>}
                   {viewport.availability === 'error' && <div className="timeline-history-status timeline-history-demand" role="alert">
                     <span>{viewport.availabilityError || '确认频道内容失败'}</span>

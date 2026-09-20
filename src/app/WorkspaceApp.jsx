@@ -929,6 +929,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     onWorldChanged: resetWorldOwners,
     port: wire,
     prepareLocalReplica: feedCommands.prepareLocalReplica,
+    refreshHistoryChannel: feedCommands.refreshChannel,
     principalId,
     reconcileIdentity: feedCommands.reconcileIdentity,
     resetSubmissionWorld: submissionProxy.resetWorld,

@@ -14,7 +14,14 @@ afterEach(() => {
   globalThis.localStorage?.clear();
 });
 
-function connectionHarness({ onWorldChanged, setHistoryGrants, cancelFeedTask = vi.fn() }) {
+function connectionHarness({
+  activeChannelId = '',
+  historyMeta = [],
+  onWorldChanged,
+  refreshHistoryChannel = vi.fn().mockResolvedValue(true),
+  setHistoryGrants,
+  cancelFeedTask = vi.fn(),
+}) {
   const obs = {
     spaceChannels: vi.fn(async () => ({ complete: true, items: [] })),
     spacePrincipals: vi.fn(async () => ({ complete: true, items: [] })),
@@ -30,7 +37,7 @@ function connectionHarness({ onWorldChanged, setHistoryGrants, cancelFeedTask = 
       generation: 1,
       memberships: [],
       memberships_complete: true,
-      history_meta: [],
+      history_meta: historyMeta,
     };
     queueMicrotask(() => {
       void options.onAttach(detail);
@@ -40,7 +47,7 @@ function connectionHarness({ onWorldChanged, setHistoryGrants, cancelFeedTask = 
   });
 
   const stable = {
-    activeChannelRef: { current: '' },
+    activeChannelRef: { current: activeChannelId },
     accessActionsRef: { current: {} },
     agentActivityRef: { current: { attach: vi.fn(), disconnect: vi.fn() } },
     bumpAccess: vi.fn(),
@@ -57,6 +64,7 @@ function connectionHarness({ onWorldChanged, setHistoryGrants, cancelFeedTask = 
     prepareLocalReplica: vi.fn().mockResolvedValue(undefined),
     principalId: 'root',
     reconcileIdentity: vi.fn(),
+    refreshHistoryChannel,
     resetSubmissionWorld: vi.fn(),
     resumeLocalReplica: vi.fn(() => ({})),
     seedRoster: vi.fn(),
@@ -100,5 +108,37 @@ describe('server-world reset seam', () => {
     expect(localStorage.getItem('atoll.server.boot.v2')).toBe('world-b');
     harness.unmount();
     expect(harness.cancelFeedTask).toHaveBeenCalledWith(createWire.mock.results[0].value, 1);
+  });
+
+  it('refreshes the focused channel only after the attach grant is installed', async () => {
+    const events = [];
+    let releaseGrant;
+    const setHistoryGrants = vi.fn(() => {
+      events.push('grant-start');
+      return new Promise((resolve) => {
+        releaseGrant = () => {
+          events.push('grant-done');
+          resolve({ changed: true });
+        };
+      });
+    });
+    const refreshHistoryChannel = vi.fn(() => {
+      events.push('channel-meta');
+      return Promise.resolve(true);
+    });
+    const harness = connectionHarness({
+      activeChannelId: 'c0.project',
+      historyMeta: [{ channel_id: 'c0.project', head_seq: 1, has_rows: true }],
+      onWorldChanged: vi.fn(),
+      refreshHistoryChannel,
+      setHistoryGrants,
+    });
+
+    await waitFor(() => expect(setHistoryGrants).toHaveBeenCalledTimes(1));
+    expect(refreshHistoryChannel).not.toHaveBeenCalled();
+    releaseGrant();
+    await waitFor(() => expect(refreshHistoryChannel).toHaveBeenCalledWith('c0.project'));
+    expect(events).toEqual(['grant-start', 'grant-done', 'channel-meta']);
+    harness.unmount();
   });
 });
