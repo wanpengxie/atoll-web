@@ -54,6 +54,9 @@ export function useChannelRoster({
       selves: new Map(),
       refreshGenerations: new Map(),
       refreshTimers: new Map(),
+      attachAuthority: null,
+      attachEpoch: 0,
+      retiredChannels: new Set(),
     };
   }
   const committedOwnerRef = useRef(null);
@@ -107,17 +110,56 @@ export function useChannelRoster({
     generationFor,
   }), [generationFor, ownerToken, principalId]);
 
+  // Same-world reconnects can reuse the server boot while replacing the
+  // membership snapshot.  Keep an opaque attach token in this owner so an
+  // old Workspace effect or OBS result cannot write after close/reconnect.
+  const authorityCurrent = useCallback((channelId, expectedAuthority) => {
+    const store = storeRef.current;
+    const current = store.attachAuthority;
+    if (!current || !expectedAuthority || current !== expectedAuthority) return false;
+    if (store.retiredChannels.has(channelId)) return false;
+    const currentGeneration = Number(generationFor?.(channelId) || 0);
+    return current.generation > 0 && current.generation === currentGeneration
+      && (current.channels == null || current.channels.has(channelId));
+  }, [generationFor]);
+
+  const attach = useCallback((generation, memberships) => {
+    if (committedOwnerRef.current !== owner) return null;
+    const nextGeneration = Number(generation);
+    if (!Number.isSafeInteger(nextGeneration) || nextGeneration <= 0) return null;
+    const channels = Array.isArray(memberships)
+      ? new Set(memberships.map((entry) => String(entry?.channel_id || '')).filter(Boolean))
+      : null;
+    const store = storeRef.current;
+    fenceAllRefreshes();
+    clearTimers();
+    store.attachEpoch += 1;
+    store.attachAuthority = Object.freeze({
+      token: Object.freeze({}),
+      epoch: store.attachEpoch,
+      generation: nextGeneration,
+      channels,
+    });
+    store.retiredChannels.clear();
+    store.authorities.clear();
+    store.selves.clear();
+    publish();
+    return store.attachAuthority;
+  }, [clearTimers, fenceAllRefreshes, owner, publish]);
+
   const loadRows = useCallback(async (channelId, {
     force = true,
     expectedEpoch,
     expectedRefreshGeneration,
     expectedOwner,
+    expectedAuthority,
   } = {}) => {
     const store = storeRef.current;
     if (expectedRefreshGeneration !== undefined
       && refreshGenerationFor(channelId) !== expectedRefreshGeneration) return null;
     const currentOwner = committedOwnerRef.current;
     if (!currentOwner || (expectedOwner && currentOwner !== expectedOwner)) return null;
+    if (!authorityCurrent(channelId, expectedAuthority)) return null;
     const cached = store.cache.get(channelId);
     if (!force && cached
       && cached.owner === currentOwner
@@ -131,7 +173,8 @@ export function useChannelRoster({
       || (expectedEpoch !== undefined && expectedEpoch !== versionIncompatibleEpochRef.current)
       || (expectedRefreshGeneration !== undefined
         && refreshGenerationFor(channelId) !== expectedRefreshGeneration)
-      || (expectedOwner && committedOwnerRef.current !== expectedOwner)) return null;
+      || (expectedOwner && committedOwnerRef.current !== expectedOwner)
+      || !authorityCurrent(channelId, expectedAuthority)) return null;
     const rows = rosterRows(observation);
     const committedOwner = committedOwnerRef.current;
     const generation = Number(committedOwner?.generationFor?.(channelId) || 0);
@@ -148,13 +191,14 @@ export function useChannelRoster({
     if (self) store.selves.set(channelId, self);
     publish();
     return rows;
-  }, [obsRef, principalId, publish, refreshGenerationFor, versionIncompatibleEpochRef, versionIncompatibleRef]);
+  }, [authorityCurrent, obsRef, principalId, publish, refreshGenerationFor, versionIncompatibleEpochRef, versionIncompatibleRef]);
 
   const refresh = useCallback(async (channelId, force = false) => {
     if (versionIncompatibleRef.current || !channelId) return [];
     const expectedEpoch = versionIncompatibleEpochRef.current;
     const expectedOwner = owner;
-    if (!expectedOwner) return [];
+    const expectedAuthority = storeRef.current.attachAuthority;
+    if (!expectedOwner || !authorityCurrent(channelId, expectedAuthority)) return [];
     const expectedRefreshGeneration = bumpRefreshGeneration(channelId);
     if (mountedRef.current) setBusy(true);
     try {
@@ -163,8 +207,10 @@ export function useChannelRoster({
         expectedEpoch,
         expectedOwner,
         expectedRefreshGeneration,
+        expectedAuthority,
       });
       if (rows === null) return [];
+      if (!authorityCurrent(channelId, expectedAuthority)) return [];
       const selfId = storeRef.current.selves.get(channelId) || '';
       if (selfId) reconcileIdentity(channelId, selfId);
       return rows || [];
@@ -182,23 +228,27 @@ export function useChannelRoster({
         && expectedRefreshGeneration === refreshGenerationFor(channelId)
         && committedOwnerRef.current === expectedOwner) setBusy(false);
     }
-  }, [bumpRefreshGeneration, loadRows, onError, owner, reconcileIdentity, refreshGenerationFor, versionIncompatibleEpochRef, versionIncompatibleRef]);
+  }, [authorityCurrent, bumpRefreshGeneration, loadRows, onError, owner, reconcileIdentity, refreshGenerationFor, versionIncompatibleEpochRef, versionIncompatibleRef]);
 
   const ensure = useCallback((channelId) => {
+    const expectedAuthority = storeRef.current.attachAuthority;
+    if (!authorityCurrent(channelId, expectedAuthority)) return Promise.resolve(null);
     const expectedRefreshGeneration = bumpRefreshGeneration(channelId);
     return loadRows(channelId, {
       force: false,
       expectedOwner: owner,
       expectedEpoch: versionIncompatibleEpochRef.current,
       expectedRefreshGeneration,
+      expectedAuthority,
     });
-  }, [bumpRefreshGeneration, loadRows, owner, versionIncompatibleEpochRef]);
+  }, [authorityCurrent, bumpRefreshGeneration, loadRows, owner, versionIncompatibleEpochRef]);
 
   const seed = useCallback((rowsByChannel = {}) => {
     if (committedOwnerRef.current !== owner) return;
     const store = storeRef.current;
     for (const [channelId, rows] of Object.entries(rowsByChannel || {})) {
-      if (Array.isArray(rows)) store.cache.set(channelId, cacheEntry(rows, owner, channelId));
+      if (!Array.isArray(rows)) continue;
+      store.cache.set(channelId, cacheEntry(rows, owner, channelId));
     }
     publish();
   }, [owner, publish]);
@@ -210,6 +260,8 @@ export function useChannelRoster({
     store.cache.clear();
     store.authorities.clear();
     store.selves.clear();
+    store.attachAuthority = null;
+    store.retiredChannels.clear();
     fenceAllRefreshes();
     setBusy(false);
     publish();
@@ -229,6 +281,7 @@ export function useChannelRoster({
       || store.authorities.has(channelId)
       || store.selves.has(channelId);
     bumpRefreshGeneration(channelId);
+    store.retiredChannels.add(channelId);
     store.cache.set(channelId, cacheEntry([], owner, channelId));
     store.authorities.delete(channelId);
     store.selves.delete(channelId);
@@ -237,26 +290,23 @@ export function useChannelRoster({
 
   const authority = useCallback((channelId) => storeRef.current.authorities.get(channelId) || null, []);
   const get = useCallback((channelId) => storeRef.current.cache.get(channelId)?.rows || [], []);
-  const self = useCallback((channelId) => {
-    const rows = storeRef.current.cache.get(channelId)?.rows || [];
-    return rows.find((row) => row.kind === 'human' && row.principal === principalId)?.id
-      || storeRef.current.selves.get(channelId)
-      || '';
-  }, [principalId]);
+  const self = useCallback((channelId) => storeRef.current.selves.get(channelId) || '', []);
   const candidates = useCallback((channelId) => {
     const selfId = self(channelId);
     return get(channelId).filter((row) => row.id !== selfId);
   }, [get, self]);
-  const noteSelf = useCallback((channelId, actorId) => {
-    if (committedOwnerRef.current !== owner) return '';
+  const noteSelf = useCallback((channelId, actorId, expectedAuthority) => {
+    if (committedOwnerRef.current !== owner
+      || !authorityCurrent(channelId, expectedAuthority)) return '';
     if (!channelId || !actorId || storeRef.current.selves.get(channelId) === actorId) return '';
     storeRef.current.selves.set(channelId, actorId);
     return actorId;
-  }, [owner]);
-  const clearSelf = useCallback((channelId) => {
-    if (committedOwnerRef.current !== owner) return;
+  }, [authorityCurrent, owner]);
+  const clearSelf = useCallback((channelId, expectedAuthority) => {
+    if (committedOwnerRef.current !== owner
+      || !authorityCurrent(channelId, expectedAuthority)) return;
     storeRef.current.selves.delete(channelId);
-  }, [owner]);
+  }, [authorityCurrent, owner]);
   const handleEnvelope = useCallback((channelId, envelope) => {
     if (committedOwnerRef.current !== owner) return;
     const invalidating = [TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)
@@ -268,6 +318,8 @@ export function useChannelRoster({
     if (timers.has(channelId)) clearTimeout(timers.get(channelId));
     const expectedOwner = owner;
     const expectedEpoch = versionIncompatibleEpochRef.current;
+    const expectedAuthority = storeRef.current.attachAuthority;
+    if (!authorityCurrent(channelId, expectedAuthority)) return;
     const expectedRefreshGeneration = bumpRefreshGeneration(channelId);
     timers.set(channelId, setTimeout(() => {
       timers.delete(channelId);
@@ -276,6 +328,7 @@ export function useChannelRoster({
         expectedOwner,
         expectedEpoch,
         expectedRefreshGeneration,
+        expectedAuthority,
       }).catch((error) => {
         if (!versionIncompatibleRef.current
           && expectedEpoch === versionIncompatibleEpochRef.current
@@ -284,7 +337,7 @@ export function useChannelRoster({
           && error?.status !== 401) onError(error);
       });
     }, 300));
-  }, [bumpRefreshGeneration, loadRows, onError, owner, refreshGenerationFor, versionIncompatibleEpochRef, versionIncompatibleRef]);
+  }, [authorityCurrent, bumpRefreshGeneration, loadRows, onError, owner, refreshGenerationFor, versionIncompatibleEpochRef, versionIncompatibleRef]);
   const reset = useCallback(() => {
     if (committedOwnerRef.current !== owner) return;
     const store = storeRef.current;
@@ -292,18 +345,30 @@ export function useChannelRoster({
     store.cache.clear();
     store.authorities.clear();
     store.selves.clear();
+    store.attachAuthority = null;
+    store.retiredChannels.clear();
     fenceAllRefreshes();
     setBusy(false);
     publish();
   }, [clearTimers, fenceAllRefreshes, owner, publish]);
   const close = useCallback(() => {
     if (committedOwnerRef.current !== owner) return;
+    const store = storeRef.current;
     fenceAllRefreshes();
     clearTimers();
-  }, [clearTimers, fenceAllRefreshes, owner]);
+    store.attachEpoch += 1;
+    store.attachAuthority = null;
+    store.retiredChannels.clear();
+    const hadAuthority = store.authorities.size > 0;
+    const hadSelf = store.selves.size > 0;
+    store.authorities.clear();
+    store.selves.clear();
+    if (hadAuthority || hadSelf) publish();
+  }, [clearTimers, fenceAllRefreshes, owner, publish]);
 
   const port = useMemo(() => Object.freeze({
     authority,
+    attach,
     candidates,
     clear,
     clearChannel,
@@ -317,7 +382,7 @@ export function useChannelRoster({
     reset,
     seed,
     self,
-  }), [authority, candidates, clear, clearChannel, clearSelf, close, ensure, get, handleEnvelope, noteSelf, refresh, reset, seed, self]);
+  }), [attach, authority, candidates, clear, clearChannel, clearSelf, close, ensure, get, handleEnvelope, noteSelf, refresh, reset, seed, self]);
 
   useLayoutEffect(() => {
     mountedRef.current = true;
@@ -326,10 +391,18 @@ export function useChannelRoster({
     return () => {
       mountedRef.current = false;
       clearTimers();
-      if (committedOwnerRef.current === owner) committedOwnerRef.current = null;
+      if (committedOwnerRef.current === owner) {
+        const store = storeRef.current;
+        fenceAllRefreshes();
+        store.attachAuthority = null;
+        store.retiredChannels.clear();
+        store.authorities.clear();
+        store.selves.clear();
+        committedOwnerRef.current = null;
+      }
       if (rosterRef.current === port) rosterRef.current = null;
     };
-  }, [clearTimers, owner, port, rosterRef]);
+  }, [clearTimers, fenceAllRefreshes, owner, port, rosterRef]);
 
   return {
     authorities: snapshot.authorities,

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useWireConnection, useWireSessionPort } from '../src/app/hooks/useWireSession.js';
 import { createObsClient } from '../src/net/obs.js';
@@ -21,6 +21,7 @@ function connectionHarness({
   refreshHistoryChannel = vi.fn().mockResolvedValue(true),
   setHistoryGrants,
   cancelFeedTask = vi.fn(),
+  roster = null,
 }) {
   const obs = {
     spaceChannels: vi.fn(async () => ({ complete: true, items: [] })),
@@ -76,6 +77,7 @@ function connectionHarness({
   };
   const { result, unmount } = renderHook(() => {
     const port = useWireSessionPort();
+    if (roster) port.rosterRef.current = roster;
     useWireConnection({ ...stable, port });
     return port;
   });
@@ -139,6 +141,39 @@ describe('server-world reset seam', () => {
     releaseGrant();
     await waitFor(() => expect(refreshHistoryChannel).toHaveBeenCalledWith('c0.project'));
     expect(events).toEqual(['grant-start', 'grant-done', 'channel-meta']);
+    harness.unmount();
+  });
+
+  it('closes roster authority on transport loss and restores it only after a new attach', async () => {
+    const roster = {
+      attach: vi.fn((generation) => ({ generation, token: {} })),
+      close: vi.fn(),
+      noteSelf: vi.fn((channelId, actorId, token) => token ? actorId : ''),
+      clearSelf: vi.fn(),
+      reset: vi.fn(),
+    };
+    const harness = connectionHarness({
+      onWorldChanged: vi.fn(),
+      roster,
+      setHistoryGrants: vi.fn().mockResolvedValue({ changed: true }),
+    });
+
+    await waitFor(() => expect(harness.result.current.state).toBe('open'));
+    const wireOptions = createWire.mock.calls[0][0];
+    roster.close.mockClear();
+    roster.attach.mockClear();
+    act(() => wireOptions.onState('reconnecting', { generation: 1 }));
+    expect(roster.close).toHaveBeenCalledTimes(1);
+
+    const next = {
+      boot: 'world-b', session: 'session-c', generation: 2,
+      memberships: [{ channel_id: 'c0', actor_id: 'human:root:new', status: 'active' }],
+      memberships_complete: true, history_meta: [],
+    };
+    await act(async () => { await wireOptions.onAttach(next); });
+    act(() => wireOptions.onState('attached', next));
+    expect(roster.attach).toHaveBeenCalledWith(2, next.memberships);
+    expect(roster.noteSelf).toHaveBeenCalledWith('c0', 'human:root:new', expect.anything());
     harness.unmount();
   });
 });

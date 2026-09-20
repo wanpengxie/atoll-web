@@ -47,10 +47,11 @@ function setup({ ownerToken = 'attach-1', generation = 4, roster = {} } = {}) {
   const onError = vi.fn();
   const reconcileIdentity = vi.fn();
   const generationRef = { current: generation };
+  const generationFor = () => generationRef.current;
   const versionIncompatibleEpochRef = { current: 0 };
   const versionIncompatibleRef = { current: false };
   const hook = renderHook(({ token }) => useChannelRoster({
-    generationFor: () => generationRef.current,
+    generationFor,
     obsRef,
     onError,
     ownerToken: token,
@@ -60,8 +61,10 @@ function setup({ ownerToken = 'attach-1', generation = 4, roster = {} } = {}) {
     versionIncompatibleEpochRef,
     versionIncompatibleRef,
   }), { initialProps: { token: ownerToken } });
+  let attachAuthority;
+  act(() => { attachAuthority = hook.result.current && rosterRef.current.attach(generation); });
   if (Object.keys(roster).length) act(() => hook.result.current.seed(roster));
-  return { ...hook, generationRef, obsRef, onError, rosterRef, reconcileIdentity };
+  return { ...hook, attachAuthority, generationRef, obsRef, onError, rosterRef, reconcileIdentity };
 }
 
 describe('public channel roster owner', () => {
@@ -69,7 +72,7 @@ describe('public channel roster owner', () => {
     const { result, rosterRef } = setup({ roster: { c0: actors } });
     expect(result.current.rosters.get('c0')).toEqual(actors);
     expect(result.current.authorities.has('c0')).toBe(false);
-    expect(rosterRef.current.self('c0')).toBe('human:root');
+    expect(rosterRef.current.self('c0')).toBe('');
   });
 
   it('marks a complete refresh authoritative for the current principal and channel', async () => {
@@ -160,6 +163,7 @@ describe('public channel roster owner', () => {
     ];
     obsRef.current.channelActors.mockResolvedValueOnce(observation(replacement));
     rerender({ token: 'attach-2' });
+    act(() => rosterRef.current.attach(4));
 
     await expect(oldPort.ensure('c0')).resolves.toBeNull();
     let refreshed;
@@ -180,6 +184,8 @@ describe('public channel roster owner', () => {
     ];
     obsRef.current.channelActors.mockResolvedValueOnce(observation(replacement));
     generationRef.current = 5;
+    act(() => rosterRef.current.close());
+    act(() => rosterRef.current.attach(5));
 
     let refreshed;
     await act(async () => { refreshed = await rosterRef.current.ensure('c0'); });
@@ -277,5 +283,31 @@ describe('public channel roster owner', () => {
     rejectObservation(new Error('late OBS failure'));
     await act(async () => { await pending; });
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('keeps self hidden through reconnect and admits only the new attach token', async () => {
+    let resolveObservation;
+    const { result, attachAuthority, generationRef, obsRef, rosterRef } = setup();
+    act(() => { rosterRef.current.noteSelf('c0', 'human:root:old', attachAuthority); });
+    obsRef.current.channelActors.mockReturnValueOnce(new Promise((resolve) => {
+      resolveObservation = resolve;
+    }));
+    let pending;
+    act(() => { pending = rosterRef.current.refresh('c0', true); });
+
+    generationRef.current = 5;
+    act(() => rosterRef.current.close());
+    expect(rosterRef.current.self('c0')).toBe('');
+    expect(result.current.authorities.has('c0')).toBe(false);
+
+    resolveObservation(observation(actors));
+    await act(async () => { await pending; });
+    expect(rosterRef.current.self('c0')).toBe('');
+    expect(result.current.authorities.has('c0')).toBe(false);
+
+    let nextAuthority;
+    act(() => { nextAuthority = rosterRef.current.attach(5, [{ channel_id: 'c0' }]); });
+    expect(rosterRef.current.noteSelf('c0', 'human:root:new', nextAuthority)).toBe('human:root:new');
+    expect(rosterRef.current.self('c0')).toBe('human:root:new');
   });
 });

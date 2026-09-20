@@ -25,24 +25,27 @@ function rosterHook() {
     versionIncompatibleEpochRef,
     versionIncompatibleRef,
   }));
-  return { ...hook, obsRef, rosterRef };
+  let attachAuthority;
+  act(() => { attachAuthority = rosterRef.current.attach(1); });
+  return { ...hook, attachAuthority, obsRef, rosterRef };
 }
 
 describe('canonical channel roster port', () => {
   it('seeds rows and exposes the same facts through the stable port', () => {
-    const { result, rosterRef } = rosterHook();
+    const { result, attachAuthority, rosterRef } = rosterHook();
     const port = rosterRef.current;
     const rows = [{ id: 'human:root:1', kind: 'human', principal: 'root' }];
     act(() => result.current.seed({ c0: rows }));
     expect(rosterRef.current).toBe(port);
     expect(result.current.rosters.get('c0')).toEqual(rows);
     expect(rosterRef.current.get('c0')).toBe(rows);
-    act(() => rosterRef.current.noteSelf('c0', rows[0].id));
+    expect(rosterRef.current.self('c0')).toBe('');
+    act(() => rosterRef.current.noteSelf('c0', rows[0].id, attachAuthority));
     expect(rosterRef.current.self('c0')).toBe(rows[0].id);
   });
 
   it('does not create a second semantic projection for a duplicate attach roster', () => {
-    const { result, rosterRef } = rosterHook();
+    const { result, attachAuthority, rosterRef } = rosterHook();
     const rows = [{ id: 'human:root:1', kind: 'human', principal: 'root' }];
     act(() => result.current.seed({ c0: rows }));
     const firstProjection = result.current.rosters.get('c0');
@@ -64,11 +67,11 @@ describe('canonical channel roster port', () => {
   });
 
   it('clears the canonical facts when the channel is no longer current', () => {
-    const { result, rosterRef } = rosterHook();
+    const { result, attachAuthority, rosterRef } = rosterHook();
     const rows = [{ id: 'human:root:1', kind: 'human', principal: 'root' }];
     act(() => {
       result.current.seed({ c0: rows });
-      rosterRef.current.noteSelf('c0', rows[0].id);
+      rosterRef.current.noteSelf('c0', rows[0].id, attachAuthority);
       result.current.clearChannel('c0');
     });
     expect(result.current.rosters.get('c0')).toEqual([]);

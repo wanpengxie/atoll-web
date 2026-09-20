@@ -782,6 +782,7 @@ export function useWireConnection({
     let attachedOnce = false;
     let wire = null;
     let attachedGeneration = 0;
+    let rosterAuthority = null;
     let versionBlocked = false;
     const scheduleAccessRefresh = () => {
       if (!alive || versionBlocked || refreshTimer != null) return;
@@ -836,11 +837,16 @@ export function useWireConnection({
         attachedGeneration = Number.isSafeInteger(nextGeneration) && nextGeneration > 0
           ? nextGeneration
           : 0;
+        // Membership is not current until this attach receipt. Fence cached
+        // self/OBS work first, then issue one opaque authority token that
+        // every current attach callback must carry back to the roster owner.
+        roster?.close();
         const sameServerWorld = commitServerWorld(detail?.boot);
         onServerWorld(String(detail?.boot || readServerWorld()));
         if (!sameServerWorld) {
           access.reset();
           roster?.reset();
+          rosterAuthority = roster?.attach?.(nextGeneration, detail?.memberships) || null;
           resetSubmissionWorld();
           setChannels(new Map());
           bumpAccess();
@@ -860,6 +866,7 @@ export function useWireConnection({
             ? Promise.resolve(worldReset).then(applyHistoryGrants)
             : applyHistoryGrants();
         }
+        rosterAuthority = roster?.attach?.(nextGeneration, detail?.memberships) || null;
         const focus = String(activeChannelRef.current || '');
         return Promise.resolve(setHistoryGrants(detail?.history_meta || [], {
           ...detail,
@@ -896,11 +903,15 @@ export function useWireConnection({
           accessRefreshActionsRef.current = {};
           agentActivityRef.current.disconnect();
           roster?.close();
+          rosterAuthority = null;
           access.wire('disconnected');
           stopIncompatibleFeed(detail?.generation);
           setState('incompatible');
           setIncompatible((current) => current || detail || {});
         } else if (state === 'attached') {
+          if (!rosterAuthority || rosterAuthority.generation !== Number(detail?.generation)) {
+            rosterAuthority = roster?.attach?.(detail?.generation, detail?.memberships) || null;
+          }
           agentActivityRef.current.attach(detail);
           access.wire('attached', newId());
           if (Array.isArray(detail?.memberships)) {
@@ -913,11 +924,13 @@ export function useWireConnection({
             access.membershipsObserved(rows, { complete: detail.memberships_complete === true, supported: true });
             writeWorkspaceBootstrap(principalId, access.snapshot());
             for (const entry of rows) {
-              if (!roster?.noteSelf(entry.channel_id, entry.actor_id)) continue;
+              if (!roster?.noteSelf(entry.channel_id, entry.actor_id, rosterAuthority)) continue;
               reconcileIdentity(entry.channel_id, entry.actor_id);
             }
             for (const channelId of memberedBefore) {
-              if (access.state(channelId)?.relationship !== 'member') roster?.clearSelf(channelId);
+              if (access.state(channelId)?.relationship !== 'member') {
+                roster?.clearSelf(channelId, rosterAuthority);
+              }
             }
           }
           setState('open');
@@ -925,16 +938,26 @@ export function useWireConnection({
           attachedOnce = true;
         } else if (state === 'disconnected') {
           agentActivityRef.current.disconnect();
+          roster?.close();
+          rosterAuthority = null;
           disconnectHistory(detail?.generation);
         } else if (state === 'reconnecting') {
           agentActivityRef.current.disconnect();
+          roster?.close();
+          rosterAuthority = null;
           access.wire('disconnected');
           setState('reconnecting');
         } else if (state === 'closed') {
           agentActivityRef.current.disconnect();
+          roster?.close();
+          rosterAuthority = null;
           access.wire('disconnected');
           setState('closed');
         } else if (state === 'open') {
+          // OPEN precedes the next attach receipt. It is not an authority
+          // seam, so retained self must remain hidden until attach restores it.
+          roster?.close();
+          rosterAuthority = null;
           setState((current) => current === 'open' ? current : 'connecting');
         }
         bumpAccess();
@@ -956,6 +979,7 @@ export function useWireConnection({
       if (accessRefreshActionsRef.current === accessRefreshActions) accessRefreshActionsRef.current = {};
       ownedWire?.close();
       roster?.close();
+      rosterAuthority = null;
       cancelFeedTask(ownedWire, ownedGeneration);
       if (obsRef.current === obs) obsRef.current = null;
       if (accessRef.current === access) accessRef.current = null;
