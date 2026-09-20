@@ -1746,3 +1746,39 @@ touched.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
+
+## Round 51 exact d9050df adjudication: remaining static candidates
+
+The exact clean review at `d9050dfbacf918fb08e08045aaffc9a8406beb1d`
+reconciles the six static candidates that were intentionally left outside the
+previous exact bridge.  Each row below is kept as an independent ledger item;
+none is silently deleted, skipped, or converted into a weaker assertion.  A
+candidate is bridged only when its invariant is user-observable through one
+current public owner.  The focused owner run was:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'canonical body text wins|baseline 159|TC-0983|TC-0978|TC-0979|TC-0950' --retry=1`
+→ **6 passed, 158 skipped**; and
+`npx vitest run tests/memory-window.test.js tests/message-presentation.test.js
+tests/model-selector.test.jsx tests/device-profile.test.js
+tests/history-presentation-admission.test.js
+tests/reading-container-handoff.test.jsx tests/message-list-lifecycle.test.jsx
+--retry=1`
+→ **7 files, 81/81 GREEN** (the six-owner command before the lifecycle
+successor rerun was 69/69, and `message-list-lifecycle` was 12/12).
+
+| baseline | user capability and invariant | old operation | current public owner / observable | d9050df disposition |
+|---|---|---|---|---|
+| TC-0952, `memory-window.test.js:338` | A bounded cache page never exceeds the caller's byte budget; the exact byte-accounting formula is not a reader-visible promise. | Direct `estimateRowBytes` export and its top-level-string/whole-serialization expectation. | `createChannelReplicaCache.readBefore` returns the bounded page and `bytes`; the independent public successor is exact TC-0950 (`tests/i-m-exact-path-contracts.test.jsx:4302-4320`) and the owner suite's byte-budget case (`tests/memory-window.test.js`). | **ORACLE / no new exact case.** “Top-level only” is an implementation fingerprint, so asserting it would require a private helper or a particular algorithm. The public upper-bound contract is already covered and GREEN; no product red. |
+| TC-0953, `memory-window.test.js:343` | If the product promises mobile retention, one public owner must expose the mobile retention policy and keep it bounded. | Deleted `MOBILE_WINDOW === { maxRows: 500, maxBytes: 8MB }` constant. | `device-profile` currently chooses `mobile`/`desktop`; no current public cache owner publishes the old 500-row/8MB default. `createChannelReplicaCache` accepts caller bounds instead. | **STALE policy / owner gap, no test added.** The literal defaults have no current user capability or unique owner to exercise. Restoring the constant would revive deleted compatibility rather than recover behavior; no product red is claimed. |
+| TC-0982, `message-list-lifecycle.test.jsx:582` | A history reveal must not become active until the exact target is materialized, geometry-settled, and painted; a stale activation must never receive the reveal. | `MessageList` `navigationTarget` + formal-range callback + `onNavigationRevealReceipt` and old initial-location path. | Current owners are `VendorListExecutor`'s typed position-row/paint evidence and `ReadingContainerHandoff`'s one active layer. Exact target resolution is covered by TC-0978/0979; inert-to-active handoff by TC-0983; admission/viewport fencing is covered in `tests/history-presentation-admission.test.js`. | **CURRENT successor evidence / no duplicate exact bridge.** The deleted callback/paint fixture has no current public entry point as one operation; manufacturing one would assert the removed callback shape. Existing black-box owner contracts remain strict and GREEN. |
+| TC-0990, `message-list-lifecycle.test.jsx:935` | Scrolling remains responsive: hot layout observation does not perform text-point DOM walks; one semantic text sample may occur after native scroll end. | Spies on `document.caretRangeFromPoint` and `document.createTreeWalker` from the deleted list adapter. | `VendorListExecutor` and `reading-navigation-coordinator` own scroll/scrollend attribution; the public successor is the bounded native-scroll transaction (exact TC-1026), not the choice of DOM text APIs. | **IMPLEMENTATION ORACLE / no exact case.** Call-counts for text-point APIs are not a user capability and have no stable public owner contract. No private DOM timing oracle was restored; no product red is claimed. |
+| TC-1030, `message-presentation.test.js:15` | Canonical user message text wins over a known protocol label; the reader must see the body, not an operation label. | Deleted `messagePresentation` adapter returned `{ text, detail }`. | `useTimelineRowRenderer` → `TimelineRowRenderer` canonical body boundary. Exact public successor at `tests/i-m-exact-path-contracts.test.jsx:632-638` renders `用户正文` and rejects `添加参与者：demo:agent`. | **PASS/current, already bridged.** The targeted exact run passed; adding another test would duplicate the existing strict black-box contract. |
+| TC-1075, `model-selector.test.jsx:193` | Opening the Composer model panel shows the provider client version and available upgrade target from the current selector view. | Deleted standalone selector/agent-selection adapter. | Composer-embedded public `ModelSelector`; existing owner assertion `tests/model-selector.test.jsx:193-199` and exact baseline-159 bridge at `tests/i-m-exact-path-contracts.test.jsx:1306-1332`. | **PASS/current, already covered.** The targeted exact/owner runs passed; this is the same user capability as baseline 159 and must not be double-counted. |
+
+This review therefore adds no test declarations: the two byte/device rows are
+implementation-only or ownerless under the current architecture, the two
+Reading rows have strict current successor evidence but no single public
+operation equivalent to the retired fixture, and the final two rows are
+already exact/owner-covered. No source, vendor/package/lockfile,
+notification/arrival owner, private export, compatibility parser, test skip,
+or production file changed in Round 51.
