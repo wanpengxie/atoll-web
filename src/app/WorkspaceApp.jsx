@@ -1248,13 +1248,17 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   }, [navigation.activeChannelId]);
   const openTurnDetail = useCallback((turn) => {
     const requestId = String(turn?.requestId || turn?.request?.id || '');
-    const item = taskItems.find((row) => row.kind === 'agent_run' && row.requestId === requestId);
-    if (!item) {
-      setChannelNotice('该回合已不在当前任务事实中。');
+    const channelId = navigation.activeChannelId;
+    const currentTurn = timelineTurnForRequest(feed.stateFor(channelId), requestId);
+    if (!currentTurn) {
+      setChannelNotice('该回合已不在当前动态事实中。');
       return null;
     }
-    return openTaskItem(item);
-  }, [openTaskItem, taskItems]);
+    navigation.setActiveView('conversation');
+    if (typeof navigation.setFocus === 'function') navigation.setFocus({ type: 'turn', key: requestId });
+    setPanel({ kind: 'turn', channelId, requestId });
+    return currentTurn;
+  }, [feed, navigation.activeChannelId, navigation.setActiveView, navigation.setFocus]);
   const conversationPort = {
     state: contentVisible ? state : null,
     history: contentVisible ? history : null,

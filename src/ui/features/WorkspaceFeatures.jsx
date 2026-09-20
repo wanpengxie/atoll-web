@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Clock3, FileText } from 'lucide-react';
 import { attachmentFromFileReference } from '../../model/file-references.js';
+import { turnProcessAuditFacts } from '../../model/terminal-result.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
@@ -35,9 +36,15 @@ function InaccessibleFeature({ label }) {
   return <section className="workspace-view channel-private-empty" role="region" aria-label={label}><strong>{label}不可访问</strong><p>恢复频道访问后才能查看。</p></section>;
 }
 
+function processFactLabel(fact) {
+  const kind = fact.kind === 'tool' ? '工具过程' : fact.kind === 'stage' ? '阶段过程' : fact.kind === 'turn' ? '回合过程' : '运行过程';
+  return fact.phase ? `${kind} · ${fact.phase}` : kind;
+}
+
 function TurnDetailPanel({ turn, onClose }) {
   const request = argsOf(turn?.request);
   const terminal = argsOf(turn?.terminal);
+  const processFacts = turnProcessAuditFacts(turn);
   const value = terminal.value && typeof terminal.value === 'object' && !Array.isArray(terminal.value)
     ? terminal.value
     : terminal;
@@ -46,7 +53,8 @@ function TurnDetailPanel({ turn, onClose }) {
     <header className="turn-detail-header"><button type="button" onClick={onClose}>← 返回动态</button><div><p className="eyebrow">WORK TURN</p><h2>回合详情</h2></div></header>
     <div className="turn-detail-scroll"><div className="turn-detail-content">
       <h3>{title}</h3>
-      <dl><dt>请求编号</dt><dd>{turn?.requestId || turn?.request?.id || '—'}</dd><dt>类型</dt><dd>{turn?.request?.type || '—'}</dd><dt>状态</dt><dd>{terminal.status || turn?.status || '进行中'}</dd></dl>
+      <dl><dt>请求编号</dt><dd>{turn?.requestId || turn?.request?.id || '—'}</dd><dt>类型</dt><dd>{turn?.request?.type || '—'}</dd><dt>状态</dt><dd>{terminal.status || turn?.status || '进行中'}</dd>{turn?.requestSeq != null && <><dt>账本序号</dt><dd>{turn.requestSeq}</dd></>}{turn?.terminal?.id && <><dt>终态编号</dt><dd>{turn.terminal.id}</dd></>}</dl>
+      {processFacts.length > 0 && <section className="turn-detail-process" aria-label="执行过程"><h3>执行过程</h3><ol>{processFacts.map((fact) => <li key={`${fact.seq}:${fact.identifiers.map((item) => item.value).join('|')}`}><strong>{processFactLabel(fact)}</strong><small>账本序号 {fact.seq}</small>{fact.identifiers.length > 0 && <dl>{fact.identifiers.map((item) => <div key={`${item.label}:${item.value}`}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>}</li>)}</ol></section>}
       {value.channel_id && <p>目标频道：{value.channel_id}</p>}
       {terminal.detail && <p>{terminal.detail}</p>}
     </div></div>

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { isStandardActorIdentity } from '../../model/actor-visibility.js';
-import { redactSensitive, terminalContentEnvelope, terminalResultState } from '../../model/terminal-result.js';
+import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
 import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
@@ -549,20 +549,16 @@ function ApprovalCard({ turn, names, state, onResolve }) {
   </article>;
 }
 
-function processObservations(turn) {
-  return (turn?.provisional || []).map((item) => ({ seq: Number(item.seq), envelope: item.envelope, process: argsOf(item.envelope).process }))
-    .filter((item) => Number.isFinite(item.seq) && item.process && typeof item.process === 'object').sort((a, b) => a.seq - b.seq);
-}
 function hasProcessSummary(turn) {
-  return processObservations(turn).some(({ process }) => process.kind === 'tool'
+  return turnProcessObservations(turn).some(({ process }) => process.kind === 'tool'
     || (process.kind === 'stage' && process.stage !== 'text'));
 }
 function conversationObservations(turn) {
-  return processObservations(turn).filter(({ process }) => process.kind === 'stage' && process.stage === 'text' && typeof process.text === 'string' && process.text.trim());
+  return turnProcessObservations(turn).filter(({ process }) => process.kind === 'stage' && process.stage === 'text' && typeof process.text === 'string' && process.text.trim());
 }
 function progressRows(turn) {
   const rows = []; const tools = new Map();
-  for (const { process, seq, envelope } of processObservations(turn)) {
+  for (const { process, seq, envelope } of turnProcessObservations(turn)) {
     if (process.kind === 'stage' && process.stage !== 'text') { rows.push({ key: `stage:${seq}`, seq, line: process.text || (process.stage === 'thinking' ? '思考中…' : process.stage || '处理中'), ts: envelope.ts }); continue; }
     if (process.kind !== 'tool') continue;
     const key = process.tool_call_id || String(seq);

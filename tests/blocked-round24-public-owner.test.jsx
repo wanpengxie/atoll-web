@@ -9,6 +9,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
 import { ChannelAdministrationPanel, SpaceAdministrationPanel } from '../src/ui/features/governance/GovernanceFeature.jsx';
+import { WorkspaceRightPanel } from '../src/ui/features/WorkspaceFeatures.jsx';
 import { WorkspaceLayout } from '../src/app/WorkspaceLayout.jsx';
 import { useComposerSubmissionRuntime } from '../src/ui/composer/index.js';
 import { buildComposerModel, createComposerCommandRequest } from '../src/ui/composer/composer-model.js';
@@ -641,9 +642,10 @@ describe('A-D round 24 public-owner evidence', () => {
 
   it('[AD-334] exposes audit identifiers in turn detail without serializing the payload JSON', () => {
     // 用户能力：打开 Turn detail 时可看审计标识，但不把 payload JSON 原样倾倒给用户。
-    // 不变量：detail 必须由当前 process owner 提供可审计字段，不能靠隐藏 JSON 猜测。
-    // 公开 owner：useTimelineRowRenderer/onOpenTurn。
-    const onOpenTurn = vi.fn();
+    // 不变量：detail 必须由当前 process projection owner 提供可审计字段，不能靠隐藏 JSON 猜测。
+    // 公开 owner：useTimelineRowRenderer/onOpenTurn → WorkspaceRightPanel TurnDetailPanel。
+    let openedTurn = null;
+    const onOpenTurn = vi.fn((value) => { openedTurn = value; });
     const process = processFrame('audit-process', 2, {
       kind: 'tool', phase: 'started', tool_call_id: 'audit-call-1', tool: 'lookup',
       audit_id: 'audit-202', payload: { secret: 'must-not-render' },
@@ -652,8 +654,20 @@ describe('A-D round 24 public-owner evidence', () => {
     const answer = view.container.querySelector('.agent-turn-bubble');
     fireEvent.click(within(answer).getByRole('button', { name: '查看过程' }));
     expect(onOpenTurn).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'work' }));
-    expect(view.container.textContent).toContain('audit-202');
-    expect(view.container.textContent).not.toContain('must-not-render');
+    expect(openedTurn).toBeTruthy();
+    view.unmount();
+    render(<WorkspaceRightPanel
+      panel="turn"
+      channel={{ id: 'c0' }}
+      turn={openedTurn}
+      onClose={vi.fn()}
+    />);
+    const detail = screen.getByRole('region', { name: '回合详情' });
+    expect(detail.textContent).toContain('audit-202');
+    expect(detail.textContent).toContain('audit-call-1');
+    expect(detail.textContent).not.toContain('must-not-render');
+    expect(detail.textContent).not.toContain('"payload"');
+    expect(detail.querySelector('pre')).toBeNull();
   });
 
   it('[AD-363] builds and validates declared JSON-Schema fields with typed values', () => {
