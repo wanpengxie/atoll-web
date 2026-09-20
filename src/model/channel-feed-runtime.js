@@ -647,18 +647,33 @@ export function createChannelFeedRuntime(options = {}) {
       });
   };
 
-  // Access failures belong to the attach generation that sent the request. A
-  // late result must never revoke or degrade a replacement generation.
-  function projectAccessFailure(channelId, error, requestGeneration) {
+  // Access failures belong to the complete physical authority tuple that sent
+  // the request. Generation alone is insufficient because a same-generation
+  // principal/world/attach replacement must not be revoked by a late result.
+  function authorityTupleCurrent(channelId, authority) {
+    const status = histories.get(channelId);
+    return Boolean(authority
+      && !destroyed
+      && !incompatible
+      && principalEpoch === authority.principalEpoch
+      && worldEpoch === authority.worldEpoch
+      && generation === authority.generation
+      && attachEpoch === authority.attachEpoch
+      && status?.attached === true
+      && status.messageCurrent === true
+      && status.generation === authority.generation);
+  }
+
+  function projectAccessFailure(channelId, error, authority) {
     if (destroyed) return false;
     const code = String(error?.code || error || '');
-    if (!channelId || !requestGeneration || requestGeneration !== generation
+    if (!channelId || !authorityTupleCurrent(channelId, authority)
       || (code !== 'forbidden' && !ACCESS_UNAVAILABLE_CODES.has(code))) return false;
     let feedChanged = false;
     if (code === 'forbidden') {
       grants.delete(channelId);
       const status = histories.get(channelId);
-      if (status?.generation === requestGeneration
+      if (status?.generation === authority.generation
         && (status.attached || status.messageCurrent || status.controlCurrent)) {
         status.attached = false;
         status.messageCurrent = false;
@@ -1030,19 +1045,12 @@ export function createChannelFeedRuntime(options = {}) {
 
   function physicalAuthorityCurrent(operation) {
     const authority = operation?.authority;
-    const status = authority ? histories.get(authority.channelId) : null;
     return Boolean(authority
       && !destroyed
       && !incompatible
       && !operation.retired
       && !operation.abortController.signal.aborted
-      && principalEpoch === authority.principalEpoch
-      && worldEpoch === authority.worldEpoch
-      && generation === authority.generation
-      && attachEpoch === authority.attachEpoch
-      && status?.attached === true
-      && status.messageCurrent === true
-      && status.generation === authority.generation);
+      && authorityTupleCurrent(operation.channelId, authority));
   }
 
   function physicalOperationKey(channelId, request = {}) {
@@ -1533,7 +1541,7 @@ export function createChannelFeedRuntime(options = {}) {
     let publishNeeded = false;
     if (outcome.kind === 'failed') {
       const accessProjected = Boolean(operation.accessFailureCode)
-        || projectAccessFailure(operation.channelId, outcome.error, operation.authority.generation);
+        || projectAccessFailure(operation.channelId, outcome.error, operation.authority);
       if (!accessProjected) callback('onError', outcome.error);
     }
     for (const waiter of [...operation.waiters]) settleWaiterFromPhysical(waiter, outcome);
@@ -1745,7 +1753,7 @@ export function createChannelFeedRuntime(options = {}) {
     if (payload.error_code && projectAccessFailure(batch.channelId, {
       code: payload.error_code,
       message: payload.error_detail || payload.error_code,
-    }, batch.authority?.generation)) {
+    }, batch.authority)) {
       networkBatchAccessFailures.set(String(payload.ref), String(payload.error_code));
     }
     return adapters.finish(batch, payload);
@@ -1754,6 +1762,7 @@ export function createChannelFeedRuntime(options = {}) {
   async function refreshChannel(channelId) {
     if (destroyed) return false;
     const requestGeneration = generation;
+    const requestAuthority = Object.freeze({ principalEpoch, worldEpoch, generation: requestGeneration, attachEpoch });
     const wire = wireRef.current;
     const isAdmitted = () => {
       if (destroyed) return false;
@@ -1761,10 +1770,9 @@ export function createChannelFeedRuntime(options = {}) {
       return Boolean(
         channelId
         && requestGeneration
-        && requestGeneration === generation
         && grants.has(channelId)
-        && status?.attached === true
-        && status.generation === requestGeneration,
+        && status?.generation === requestGeneration
+        && authorityTupleCurrent(channelId, requestAuthority),
       );
     };
     if (incompatible || !wire?.channelMeta || !isAdmitted()) return false;
@@ -1773,7 +1781,7 @@ export function createChannelFeedRuntime(options = {}) {
       return isAdmitted() && Boolean(result);
     } catch (error) {
       if (!isAdmitted()) return false;
-      if (projectAccessFailure(channelId, error, requestGeneration)) return false;
+      if (projectAccessFailure(channelId, error, requestAuthority)) return false;
       throw error;
     }
   }

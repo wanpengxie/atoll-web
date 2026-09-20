@@ -397,4 +397,25 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     runtime.destroy();
   });
 
+  it('ignores a late forbidden probe from a replaced physical authority', async () => {
+    const { wireRef, runtime, snapshot } = await attachedRuntime();
+    let rejectProbe;
+    wireRef.current.channelMeta = vi.fn(() => new Promise((_, reject) => {
+      rejectProbe = reject;
+    }));
+    const pending = snapshot.refreshChannel('c0');
+    await vi.waitFor(() => expect(wireRef.current.channelMeta).toHaveBeenCalledOnce());
+
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 2, has_rows: true },
+    ], { generation: 1, boot: 'physical-operation-boot', focus: 'c0' });
+    rejectProbe(Object.assign(new Error('old forbidden'), { code: 'forbidden' }));
+
+    await expect(pending).resolves.toBe(false);
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      attached: true, messageCurrent: true, generation: 1,
+    });
+    runtime.destroy();
+  });
+
 });
