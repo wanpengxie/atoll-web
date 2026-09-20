@@ -10,19 +10,21 @@ import {
 } from '../src/model/reading-session.js';
 import { VendorListExecutor } from '../src/ui/timeline/VendorListExecutor.jsx';
 
-const harness = vi.hoisted(() => ({ props: null }));
+const harness = vi.hoisted(() => ({ props: null, scrollToIndex: null }));
 const defaultElementFromPoint = document.elementFromPoint;
 
 vi.mock('react-virtuoso', async () => {
   const ReactModule = await import('react');
   const Virtuoso = ReactModule.forwardRef(function ObservationVirtuoso(props, ref) {
     const nodeRef = ReactModule.useRef(null);
-    ReactModule.useImperativeHandle(ref, () => ({ scrollToIndex: vi.fn() }), []);
+    const scrollToIndex = ReactModule.useMemo(() => vi.fn(), []);
+    ReactModule.useImperativeHandle(ref, () => ({ scrollToIndex }), [scrollToIndex]);
     ReactModule.useLayoutEffect(() => {
       harness.props = props;
+      harness.scrollToIndex = scrollToIndex;
       props.scrollerRef?.(nodeRef.current);
       return () => props.scrollerRef?.(null);
-    }, [props]);
+    }, [props, scrollToIndex]);
     const List = props.components?.List || 'div';
     return (
       <div
@@ -49,6 +51,7 @@ afterEach(() => {
   cleanup();
   document.elementFromPoint = defaultElementFromPoint;
   harness.props = null;
+  harness.scrollToIndex = null;
 });
 
 function row(id = 'tail') {
@@ -71,11 +74,11 @@ function snapshot() {
   };
 }
 
-function readingOwner() {
+function readingOwner(saved = {}) {
   let session = createReadingSession({
     key: 'channel:view',
     activationID: 'activation:current',
-    saved: { mode: READING_MODE.browsing },
+    saved: { mode: READING_MODE.browsing, ...saved },
   });
   const observations = [];
   const owner = {
@@ -180,6 +183,35 @@ function pointer(type, properties) {
   return event;
 }
 
+async function renderSavedBookmark(bookmark) {
+  const owner = readingOwner({ bookmark });
+  render(
+    <VendorListExecutor
+      snapshot={snapshot()}
+      reading={owner}
+      surfaceVisible
+      renderRow={(value) => <article data-reading-block-id={`block:${value.id}`}>{value.id}</article>}
+    />,
+  );
+  const scroller = screen.getByRole('region', { name: '频道动态' });
+  setScrollerGeometry(scroller);
+  const rowNode = scroller.querySelector('[data-presentation-row-id]');
+  const block = scroller.querySelector('[data-reading-block-id]');
+  rowNode.getBoundingClientRect = () => ({
+    top: -24, bottom: 108, left: 0, right: 800, width: 800, height: 132,
+  });
+  block.getBoundingClientRect = () => ({
+    top: -16, bottom: 16, left: 8, right: 400, width: 392, height: 32,
+  });
+  await act(async () => {
+    await nextFrame();
+  });
+  return {
+    initialIndex: harness.props?.initialTopMostItemIndex,
+    scrollCommands: harness.scrollToIndex?.mock.calls.map(([command]) => ({ ...command })) || [],
+  };
+}
+
 describe('reading observation settlement authority (VendorListExecutor)', () => {
   it('keeps current downward user authority when scrollend adds the settled sampling phase', async () => {
     const owner = readingOwner();
@@ -199,9 +231,35 @@ describe('reading observation settlement authority (VendorListExecutor)', () => 
       source: 'user',
       settled: true,
       atTail: true,
-      bookmark: { messageID: 'tail', blockID: 'block:tail' },
+      bookmark: { messageID: 'tail' },
     });
     expect(owner.getSession().mode).toBe(READING_MODE.following);
+  });
+
+  it('restores the same user-visible row through the public owner with or without legacy block metadata', async () => {
+    const withoutBlock = await renderSavedBookmark({
+      messageID: 'tail',
+      rowViewportOffset: -24,
+    });
+    cleanup();
+    document.elementFromPoint = defaultElementFromPoint;
+    harness.props = null;
+    harness.scrollToIndex = null;
+
+    const withLegacyBlock = await renderSavedBookmark({
+      messageID: 'tail',
+      rowViewportOffset: -24,
+      blockID: 'block:tail',
+    });
+
+    expect(withLegacyBlock.initialIndex).toBe(withoutBlock.initialIndex);
+    expect(withLegacyBlock.initialIndex).toBe(0);
+    expect(withLegacyBlock.scrollCommands).toEqual(withoutBlock.scrollCommands);
+    expect(withLegacyBlock.scrollCommands.at(0)).toMatchObject({
+      index: 0,
+      align: 'start',
+      offset: 24,
+    });
   });
 
   it('does not let selection autoscroll acquire following authority at the tail', async () => {
