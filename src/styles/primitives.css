@@ -65,13 +65,13 @@
 .kind-switch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .kind-switch button { padding: 6px; border: 1px solid var(--line-subtle); border-radius: 6px; background: var(--surface-control); color: var(--text-muted); cursor: pointer; font: 9px var(--mono); }
 .kind-switch button.active { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
-.managed-actor { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 5px; padding: 8px 0; border-top: 1px solid var(--line-subtle); }
+.managed-actor { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto auto; align-items: center; gap: 5px; padding: 8px 0; border-top: 1px solid var(--line-subtle); }
 .managed-actor > div { min-width: 0; display: grid; gap: 2px; }
 .managed-actor strong, .managed-actor small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .managed-actor strong { font-size: 10px; }
 .managed-actor strong em { margin-left: 5px; color: var(--accent); font: 700 8px var(--mono); font-style: normal; }
 .managed-actor small { color: var(--text-dim); font: 8px var(--mono); }
-.managed-actor button { padding: 4px 5px; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; }
+.managed-actor button { padding: 4px 5px; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 9px; white-space: nowrap; }
 .managed-actor button:disabled { opacity: .3; cursor: not-allowed; }
 .actor-runtime { font: 8px var(--mono); white-space: nowrap; }
 .actor-runtime.online { color: var(--online); }
