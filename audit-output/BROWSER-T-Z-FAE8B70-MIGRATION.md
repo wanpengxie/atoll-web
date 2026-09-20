@@ -2995,6 +2995,117 @@ npx playwright test tests/browser/ui-visual.spec.js \
 - VIS09：**用户合同 repeat3 PASS**。
 - 本轮共享脏文件（含 Governance sort candidate）均未纳入提交。
 
+## 第四十七轮：VIS08 popover 覆盖、旧行为与焦点合同裁决
+
+本轮只读对齐 `fae8b70` 的真实实现、旧 600×720 基线和当前 Chromium 几何；未修改
+产品、CSS、snapshot 或测试断言。当前工作树另有他人修改的
+`tests/blocked-round26-public-owner.test.jsx`，不属于本轮。
+
+### 旧 fae8b70 与当前实现不是 placement 算法回归
+
+`fae8b70:src/ui/primitives/SelectMenu.jsx` 与当前
+`src/ui/primitives/SelectMenu.jsx` 的 SHA-256 均为
+`423859f2388a7a2c68f5bdb1281a9e4733d89aed5a20adc534df1f69b5b66f23`，源码逐字一致。
+两版均在 `useLayoutEffect` 中以 `.side-panel-scroll` 为边界，计算 `below`/`above`，只在
+`below < wanted && above > below` 时翻到 `placement-top`；两版的
+`.select-menu[data-open] { z-index: 30 }`、不透明 `background: var(--raised)`、滚动
+`max-height` 和 `box-shadow` CSS 也相同。故当前上翻不是 SelectMenu 迁移后新增的
+算法差异。
+
+旧成员入口是 `fae8b70:src/ui/channel/ChannelMembersPanel.jsx`，同样把该通用
+SelectMenu 放在“当前成员与 Actor”卡之后的“添加参与者”卡中。旧 snapshot
+`channel-members-select-600-linux.png` 在相同 600×720 viewport 中向下展开；它说明当时
+卡片高度给出了足够的下方空间，但没有建立“popover 永不覆盖前一张卡”的独立用户合同。
+当前 `ChannelMembers` 的成员行/公开禁用控制和卡片内容由
+`src/ui/features/governance/GovernanceFeature.jsx:143-227` 组合，改变了 trigger 的垂直
+位置与可用空间；这才是本次 placement 分支的布局输入。
+
+### 当前真实 Chromium 几何（HEAD 97ba8dc）
+
+命令：
+
+```text
+CHOKIDAR_USEPOLLING=true ATOLL_TEST_WEB_PORT=15708 ATOLL_TEST_MOCK_PORT=20008 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r47-vis08 \
+npx playwright test tests/browser/ui-visual.spec.js \
+  --grep='UI-VIS-08 600px 候选 popover fit 与排序分离' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r47-vis08-repeat3
+```
+
+结果：**3 passed (13.7s)**，三次 DOM 几何完全相同：
+
+```text
+viewport 600×720
+listbox  (24,371)–(577,551), placement-top, 553×180
+trigger  (24,555)–(577,591), 553×36
+roster   (11,115)–(590,436)
+add-card (11,446)–(590,647)
+document scrollWidth=600
+overlapsRoster=true, overlapsAdd=true
+```
+
+这里有三个必须分开的事实：
+
+1. `listbox.bottom=551 < trigger.top=555`，菜单没有遮挡自己的 trigger；left/right/top/bottom
+   均在 viewport 内，且文档没有横向溢出。`placement-top` 是当前卡片高度下的合法边界
+   选择，并非把菜单强制塞出抽屉。
+2. listbox 自身是 `var(--raised)` 不透明 raised surface、带边框/阴影且有 `overflow-y:auto`；
+   它覆盖 roster 底部和添加卡说明，是前景 popover 的正常层叠结果。仅以
+   `overlapsRoster`/`overlapsAdd` 为红测会把“背景被前景控件暂时覆盖”误判为产品回归。
+3. 旧视觉 snapshot 与当前 successor 仍为独立视觉差异：Round46 的旧图 gate 在 repeat3
+   仍为 3/3 RED（31,139 px、ratio 0.08）。该 RED 证明像素/卡片布局不同，不证明
+   popover 违反了用户可操作性合同；没有更新 snapshot，也没有用 overlap 结果掩盖候选
+   排序合同。
+
+### 旧/当前焦点与可操作 oracle
+
+两版 SelectMenu 的公开交互同样可由源码逐条证明：
+
+- 打开时 trigger 保持 `role=combobox`、`aria-expanded=true`、`aria-controls=listbox-id`；
+  active option 通过 `aria-activedescendant` 暴露，Arrow/Home/End 只移动可选项，不依赖
+  popup 是否向上。
+- Escape 在打开状态阻止默认行为并关闭；Tab 关闭后让浏览器执行正常焦点前进；点击
+  popup 外部关闭。
+- 选择 option 先调用 `onChange(value)`，再关闭并显式
+  `triggerRef.current?.focus()`。因此选择后焦点必须回到同一 trigger，而不是落在被覆盖
+  的 roster 文本或页面 body。
+
+当前 popover fit run 已重复证明真实 listbox 出现、`Escape` 后 listbox 消失 3/3；下一次
+若需要扩大行为证据，最小黑盒 oracle 应在同一真实 fixture 上追加：
+`ArrowDown → Enter` 选中一个候选、断言 candidate status/trigger `aria-expanded=false`
+及 `document.activeElement === trigger`，再以 outside pointer/Tab 各验证关闭。这些是
+焦点/可用性合同，不应转化为 screenshot 阈值。
+
+### “合法覆盖”与“不可接受遮挡”的边界
+
+本次证据的裁决是：**当前覆盖属于合法 popover overlay successor，暂不构成产品 RED**。
+覆盖本身只有在以下任一严格条件成立时才是不可接受遮挡：
+
+- popup 或 active/可选 option 被 side-panel/viewport 裁切，或产生横向溢出；
+- popup 覆盖 trigger，导致用户无法看到/再次打开控件，或打开状态没有
+  `aria-expanded`/active descendant；
+- raised surface 不是不透明前景，背景文字与 option 混色而无法识别；
+- Escape/outside/Tab 无法关闭，或选中后焦点没有回到 trigger，导致键盘用户失去操作
+  位置；
+- popup 内候选无法滚动到、点击或键盘确认，导致候选发现/提交路径被遮挡。
+
+当前几何只观测到背景卡片 overlap，尚未观测到上述任一失败。因此不能将“旧图向下、
+新图向上”直接升级为产品缺口。若产品另有更强的“菜单打开时 roster 保护说明和添加
+表单说明必须持续可读”要求，应先把它写成 Governance 的公开布局合同：由治理布局
+owner 预留空间或滚动，再由通用 SelectMenu 实现该约束；不能在测试中断言所有背景卡片
+都不相交，也不能直接调 CSS 数值追旧图。
+
+### 唯一 layout owner 与验收 oracle
+
+| 边界 | 唯一 owner | 本轮验收 |
+| --- | --- | --- |
+| trigger 垂直位置、成员/添加卡高度、若要保留上下文所需的滚动/空间 | `GovernanceFeature.ChannelMembers`（`src/ui/features/governance/GovernanceFeature.jsx:143-227`）及其既有 `.panel-card`/`.managed-actor` 布局 | 在 600×720 与相邻窄 viewport 真实打开，不以菜单覆盖普通背景为失败；若产品声明上下文不可遮挡，必须由此 owner 先提供空间合同 |
+| 通用 placement/layer/focus 机制 | `src/ui/primitives/SelectMenu.jsx:30-124` 与 `src/styles/primitives.css:29-38` | boundary 内、无横溢、trigger 不相交、option 可滚动/可选、Escape/outside/Tab 关闭、选择后焦点回 trigger |
+| 候选发现/权限/顺序 | Governance canonical directory projection + `ChannelMembers` composition | 保持 exact order 与标准 Actor 过滤；不得把 popover overlay RED 当排序修复 |
+
+本轮不交付产品改动；`test-results-tz-r47-vis08-repeat3/` 保留为当前真实浏览器复现包。
+
 ### Round46 post-run source-state correction
 
 测试完成后 Governance owner 已独立提交 `3d3edb5 fix(governance): sort participant candidates by display name`，
