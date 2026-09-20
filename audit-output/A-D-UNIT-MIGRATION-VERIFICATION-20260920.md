@@ -344,6 +344,35 @@ BLOCKED** with OWNER_MISSING 10, FIXTURE_MISSING 0, and CAPABILITY_GAP 31.
 Governance is deferred pending the new owner candidate; no product source or
 baseline declaration changed.
 
+## Round 35 Governance owner candidate and next unique baseline
+
+Round 35 migrates the previously blocked AD-149 declaration to the current
+public entry `WorkspaceRightPanel` → `GovernanceFeature.ChannelCreateModal`.
+The case still protects the user's ability to open a real create dialog, focus
+the name field, and submit a channel-create command; the test no longer
+asserts the deleted `src/ui/ChannelCreateModal.jsx` implementation. Its
+focused result is **1 file passed; 1 test passed**:
+
+```text
+npx vitest run tests/channel-create-modal.test.jsx --reporter=dot
+```
+
+The same owner candidate now consumes an explicit `port.creation` projection
+keyed by the returned request id. `accepted`, `ledger`, `observable`,
+`membership`, and `serving` are all false unless supplied as typed facts; a
+same-name directory child or command receipt cannot declare ready. Entry uses
+the optional Shell `commands.enterChannel` port and stays disabled with a
+contract message when that port is absent; the feature does not write
+`globalThis.location.hash`. The mounted Workspace port currently supplies
+neither `creation` facts nor `enterChannel`, so AD-153's four-step ready/enter
+capability remains **BLOCKED**, not promoted by this candidate.
+
+The ledger is now **325 PASS / 0 REGRESSION / 40 BLOCKED**. AD-150–153 and
+AD-155 remain individually unresolved Governance contracts; no ordinary-red
+duplicate was added for them. Focused Governance feature verification is
+**1 file passed; 3 tests passed** (`tests/workspace-governance-features.test.jsx`),
+and the production build passes.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -507,6 +536,13 @@ scope), not to the 42-suite A–D baseline ledger.
   with no status change. Governance is deferred pending the new owner
   candidate. No product source, private export, compatibility API, or baseline
   declaration changed.
+- Round 35 migrates only AD-149 through the current public
+  `WorkspaceRightPanel` → `GovernanceFeature.ChannelCreateModal` entry and
+  hardens that owner to consume typed `port.creation` facts. A missing Shell
+  `commands.enterChannel` port remains an explicit AD-153 contract gap; no
+  Workspace/Shell owner was changed. The focused AD-149 test is green, the
+  ledger is **325 PASS / 0 REGRESSION / 40 BLOCKED**, and no duplicate red
+  declaration was added for AD-150–153/155.
 - No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
