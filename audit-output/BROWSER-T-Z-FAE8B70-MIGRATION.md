@@ -1256,3 +1256,74 @@ coalesce/release、unattached pending settle 均 **PASS**；UI-VIS-11 screenshot
 为已证明的旧视觉合同差异 **RED/不计产品回归**；permission revoke 的 detached
 wire cancel rejection 是独立 **产品缺口（待 Feed/adapter owner 修复）**，不是
 测试迁移错误或环境阻塞。当前工作树其它 dirty 文件均属他人，本轮只改本审计报告。
+
+## 第二十二轮：断线窗口 Search lease 取消归 Feed owner（真实 Chromium）
+
+本轮修复上一轮定位的 Feed cancellation 缺口。首断点仍是
+`channel-feed-runtime` 的物理批次取消：`history-source-adapters.cancel()` 已将本地
+operation 标为 `cancelled`，但 `wire.cancelHistory()` 在 socket 已 detached 时返回
+`WireError(code=unavailable|closed)`；原先所有 Feed `void adapters.cancel(...)` 路径都丢弃
+该 rejected Promise，导致 `window.unhandled_rejection`。这不是 Search 的错误处理责任。
+
+Feed 现有 owner 边界新增窄分类与批次去重：
+
+- detached `unavailable` / `closed` 只在 cancellation 回执边界作为同一
+  `cancelled` 结果消费；不会伪造 page、不会把 history demand 变为 error。
+- 同一物理 batch 的 abort、disconnect、attach recalibration、clear/destroy 只发一次
+  cancel，避免 cleanup 竞态重复发送 `history_cancel`。
+- 其它 attached-wire/server cancellation error 不吞掉：由 Feed 现有 `onError` callback
+  暴露，且 cancellation 自身仍返回已取消结果。Search 与 `WorkspaceApp` 未增加 catch
+  补丁或第二 demand/store owner。
+
+### 单元 owner 合同
+
+新增 `channel-feed-runtime` owner probe：fake wire 的 detached cancel rejection 不调用
+`onError`，对应 `historyDemand` 从 pending 回到
+`{ phase: "idle", error: "" }`、`loading=false`；将同一 probe 改为
+`code=forbidden` 后必须调用 `onError`，仍不把本地 cancellation 隐藏成 pending/error。
+
+### 真实 Chromium open → disconnect → close → reconnect
+
+`deep-history-delayed` seed `926`、`600×720` 下打开全局 Search，真实 wire 记录了
+`c0.project` 的 background `history_before`（保留固定 ref），然后 POST mock `drop`，
+等待 `.connection-state.state-reconnecting`，在 detached/reconnect 窗口关闭 Search，
+再等待 `wire.attached` generation `>=2`。结果：
+
+```text
+project background history_before: 1（真实 socket frame）
+wire.closed + wire.reconnect_scheduled: observed
+wire.attached generation>=2: observed
+window.unhandled_rejection: []
+project history_before after reconnect: no duplicate request
+```
+
+没有用编辑器文本匹配代替 transport evidence；首个 request 的 channel、priority 和
+真实 frame 均由 page-side WebSocket probe 固定。既有 close lease contract 也回归通过：
+`deep-history-delayed` seed `920` 仍发送与首 request ref 对应的 `history_cancel`。
+
+### 定向结果与归类
+
+```text
+npx vitest run tests/channel-feed-runtime.test.jsx --reporter=dot
+1 file / 13 passed
+
+npx vitest run tests/channel-feed-runtime.test.jsx \
+  tests/workspace-real-runtime-composition.test.jsx tests/feature-search.test.js \
+  --reporter=dot
+3 files / 18 passed
+
+ATOLL_TEST_WEB_PORT=15527 ATOLL_TEST_MOCK_PORT=19957 \
+  npx playwright test tests/browser/ui-visual.spec.js \
+  -g '断线窗口释放 Search lease' --workers=1 --reporter=line
+1 passed (5.8s)
+
+ATOLL_TEST_WEB_PORT=15528 ATOLL_TEST_MOCK_PORT=19958 \
+  npx playwright test tests/browser/ui-visual.spec.js \
+  -g '搜索后台兴趣由 Feed' --workers=1 --reporter=line
+1 passed (5.1s)
+```
+
+最终归类：detached cancellation、non-detached error propagation、Feed coalescing/release、
+open→disconnect→close→reconnect 黑盒均 **PASS**；UI-VIS-11 的旧 `600×297` vs 当前
+`600×301` screenshot 合同仍是前轮已证明的视觉版本差异，不在本轮改阈值；其余工作树
+dirty 文件归属他人，本轮只保留 T-Z browser spec、Feed owner、测试 owner probe 与本报告。

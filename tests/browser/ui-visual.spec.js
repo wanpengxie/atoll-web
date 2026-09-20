@@ -263,6 +263,83 @@ test('UI-VIS-11 搜索后台兴趣由 Feed 持有并可在关闭时取消', asyn
   )), before.ref), { timeout: 10_000 }).toBe(true);
 });
 
+test('UI-VIS-11 断线窗口释放 Search lease 不产生未处理拒绝', async ({ page, request }) => {
+  await page.setViewportSize({ width: 600, height: 720 });
+  await page.addInitScript(() => {
+    window.__ATOLL_SEARCH_DISCONNECT_FRAMES = [];
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = function WrappedWebSocket(...args) {
+      const socket = new NativeWebSocket(...args);
+      const send = socket.send.bind(socket);
+      socket.send = (data) => {
+        if (typeof data === 'string') {
+          try {
+            const frame = JSON.parse(data);
+            if (frame?.frame_type === 'history_before' || frame?.frame_type === 'history_cancel') {
+              window.__ATOLL_SEARCH_DISCONNECT_FRAMES.push(frame);
+            }
+          } catch { /* non-protocol frames are outside this probe */ }
+        }
+        return send(data);
+      };
+      return socket;
+    };
+    window.WebSocket.prototype = NativeWebSocket.prototype;
+    for (const key of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) {
+      Object.defineProperty(window.WebSocket, key, { value: NativeWebSocket[key] });
+    }
+  });
+  await reset(request, 'deep-history-delayed', 926);
+  await login(page);
+  await page.getByRole('button', { name: '打开频道列表' }).click();
+  await page.getByRole('button', { name: '全局搜索' }).click();
+  const search = page.getByRole('dialog', { name: '全局搜索' });
+  await expect.poll(() => page.evaluate(() => Boolean(window.__ATOLL_SEARCH_DISCONNECT_FRAMES.find((frame) => (
+    frame.frame_type === 'history_before'
+      && frame.payload?.channel_id === 'c0.project'
+      && frame.payload?.priority === 'background'
+  )))), { timeout: 10_000 }).toBe(true);
+  const before = await page.evaluate(() => window.__ATOLL_SEARCH_DISCONNECT_FRAMES.find((frame) => (
+    frame.frame_type === 'history_before'
+      && frame.payload?.channel_id === 'c0.project'
+      && frame.payload?.priority === 'background'
+  )));
+
+  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.clear?.());
+  const dropped = await request.post(`${MOCK}/mock/control/action`, { data: { type: 'drop' } });
+  expect(dropped.ok()).toBe(true);
+  await expect(page.locator('.connection-state')).toHaveClass(/state-reconnecting/, { timeout: 10_000 });
+  // The Search dialog stays mounted while its Feed-owned lease is released by
+  // the wire-state effect. Close it during this detached/reconnect window so
+  // both cleanup paths exercise the same physical cancellation owner.
+  await search.getByRole('button', { name: '关闭全局搜索' }).click();
+  await expect(search).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.snapshot?.().some((entry) => (
+    entry.event === 'wire.attached' && Number(entry.detail?.generation) >= 2
+  ))), { timeout: 15_000 }).toBe(true);
+  await page.waitForTimeout(250);
+
+  const evidence = await page.evaluate((targetRef) => {
+    const diagnostics = window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [];
+    return {
+      targetRef,
+      frames: window.__ATOLL_SEARCH_DISCONNECT_FRAMES,
+      lifecycle: diagnostics.filter((entry) => ['wire.closed', 'wire.reconnect_scheduled', 'wire.attached', 'window.unhandled_rejection'].includes(entry.event)),
+      unhandled: diagnostics.filter((entry) => entry.event === 'window.unhandled_rejection'),
+    };
+  }, before.ref);
+  expect(evidence.lifecycle.some((entry) => entry.event === 'wire.closed')).toBe(true);
+  expect(evidence.lifecycle.some((entry) => entry.event === 'wire.attached' && Number(entry.detail?.generation) >= 2)).toBe(true);
+  expect(evidence.unhandled).toEqual([]);
+  expect(evidence.frames.filter((frame) => frame.frame_type === 'history_before'
+    && frame.payload?.channel_id === 'c0.project')).toHaveLength(1);
+  // A detached wire has no opportunity to transmit a cancel frame. The
+  // operation is nevertheless settled locally; the unit owner contract above
+  // checks historyDemand -> idle, while this browser oracle proves the real
+  // reconnect window emitted no unhandled rejection.
+  expect(evidence.targetRef).toBeTruthy();
+});
+
 test('UI-VIS-12 频道挂载文件主页面视觉基线', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'resource-workflow', 911);

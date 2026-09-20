@@ -495,6 +495,29 @@ export function createChannelFeedRuntime(options = {}) {
     registerNetwork(batch) { if (batch.ref) networkBatches.set(batch.ref, batch); },
   });
 
+  // Cancellation is a Feed-owned lifecycle edge. Once the local operation is
+  // cancelled, a transport that has already detached cannot receive the
+  // best-effort remote cancel; that is the same cancellation outcome, not a
+  // new history failure. Keep the classification narrow so a server-side or
+  // protocol error on an attached wire is still reported to the Feed owner.
+  const detachedCancellationCodes = new Set(['unavailable', 'closed']);
+  const cancelledBatches = new WeakSet();
+  const isDetachedCancellation = (error) => detachedCancellationCodes.has(String(error?.code || ''));
+  const cancelOwnedBatch = (batch, reason) => {
+    if (cancelledBatches.has(batch)) return Promise.resolve({ kind: 'cancelled', duplicate: true });
+    cancelledBatches.add(batch);
+    return Promise.resolve()
+      .then(() => adapters.cancel(batch, reason))
+      .catch((error) => {
+        if (isDetachedCancellation(error)) return { kind: 'cancelled', detached: true };
+        // The local operation is already cancelled, but an attached-wire
+        // failure must remain observable instead of being silently swallowed
+        // by a void cancellation call.
+        callback('onError', error);
+        return { kind: 'failed', error };
+      });
+  };
+
   // Access failures belong to the attach generation that sent the request. A
   // late result must never revoke or degrade a replacement generation.
   function projectAccessFailure(channelId, error, requestGeneration) {
@@ -787,7 +810,7 @@ export function createChannelFeedRuntime(options = {}) {
   async function executeBatch(batch, signal) {
     if (signal?.aborted) return { kind: 'cancelled' };
     adapters.prepare(batch);
-    const abort = () => { void adapters.cancel(batch, 'history operation aborted'); };
+    const abort = () => { void cancelOwnedBatch(batch, 'history operation aborted'); };
     signal?.addEventListener('abort', abort, { once: true });
     try {
       const result = await executor.run(() => adapters.execute(batch), { id: batch.id });
@@ -1086,7 +1109,7 @@ export function createChannelFeedRuntime(options = {}) {
     if (!nextGeneration || nextGeneration < generation || incompatible) return { stale: true, meta: cache.metaSnapshot() };
     generation = nextGeneration;
     const epoch = ++attachEpoch;
-    for (const batch of networkBatches.values()) void adapters.cancel(batch, 'history attach recalibrated');
+    for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history attach recalibrated');
     networkBatches.clear();
     const nextWorld = String(detail.boot || world);
     const worldChanged = Boolean(world) && nextWorld !== world;
@@ -1277,7 +1300,7 @@ export function createChannelFeedRuntime(options = {}) {
     attachEpoch += 1;
     cancelBackgroundInterests('replica cleared');
     executor.clear('replica cleared');
-    for (const batch of networkBatches.values()) void adapters.cancel(batch, 'replica cleared');
+    for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'replica cleared');
     networkBatches.clear();
     for (const channelId of histories.keys()) admission.reset(channelId);
     histories.clear(); grants.clear();
@@ -1332,7 +1355,7 @@ export function createChannelFeedRuntime(options = {}) {
     attachEpoch += 1;
     if (activityConnected) { activityConnected = false; activityRevision += 1; }
     generation = 0;
-    for (const batch of networkBatches.values()) void adapters.cancel(batch, 'history disconnected');
+    for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history disconnected');
     networkBatches.clear(); publish(); return true;
   }
   function stopIncompatible(requestGeneration = generation) {
@@ -1530,7 +1553,7 @@ export function createChannelFeedRuntime(options = {}) {
     cancelBackgroundInterests('feed runtime destroyed');
     releaseRailDiagnostic?.();
     releaseRailDiagnostic = null;
-    for (const batch of networkBatches.values()) void adapters.cancel(batch, 'feed runtime destroyed');
+    for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'feed runtime destroyed');
     networkBatches.clear(); executor.clear('feed runtime destroyed');
     activityEntries.clear(); timerEvents.splice(0);
     replica.destroy(); cursors.destroy(); void cache.destroy();

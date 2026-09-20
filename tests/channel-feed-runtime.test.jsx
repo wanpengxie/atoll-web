@@ -186,6 +186,60 @@ describe('ChannelFeedRuntime ownership', () => {
     runtime.destroy();
   });
 
+  it('settles detached background cancellation without hiding attached-wire errors', async () => {
+    let requestNumber = 0;
+    let cancelError = Object.assign(new Error('wire is not attached'), { code: 'unavailable' });
+    const onError = vi.fn();
+    const wireRef = { current: {
+      historyBefore: vi.fn(() => {
+        requestNumber += 1;
+        const accepted = Promise.resolve({ accepted: true, generation: 1, channel_id: 'c0.project' });
+        accepted.ref = `search-interest-${requestNumber}`;
+        return accepted;
+      }),
+      cancelHistory: vi.fn(() => Promise.reject(cancelError)),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef, onError });
+    runtime.mount();
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 0 },
+      { channel_id: 'c0.project', head_seq: 1 },
+    ], { generation: 1, boot: 'background-cancel' });
+
+    const detached = runtime.getSnapshot().requestBackgroundInterest('c0.project', {
+      intent: 'search-context',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(wireRef.current.historyBefore).toHaveBeenCalledTimes(1);
+    detached.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(wireRef.current.cancelHistory).toHaveBeenCalledWith(
+      'c0.project', 'search-interest-1', 1,
+    );
+    expect(onError).not.toHaveBeenCalled();
+    expect(runtime.getSnapshot().historyFor('c0.project')).toMatchObject({
+      loading: false,
+      historyDemand: { phase: 'idle', error: '' },
+    });
+
+    cancelError = Object.assign(new Error('server refused cancellation'), { code: 'forbidden' });
+    const attachedWireFailure = runtime.getSnapshot().requestBackgroundInterest('c0.project', {
+      intent: 'search-context',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(wireRef.current.historyBefore).toHaveBeenCalledTimes(2);
+    attachedWireFailure.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onError).toHaveBeenCalledWith(cancelError);
+    expect(runtime.getSnapshot().historyFor('c0.project')).toMatchObject({
+      loading: false,
+      historyDemand: { phase: 'idle', error: '' },
+    });
+    runtime.destroy();
+  });
+
   it('keeps cache-only queued controls readable but not current', async () => {
     const principal = `feed-cache-${Date.now()}-${Math.random()}`;
     const boot = `feed-cache-boot-${Date.now()}-${Math.random()}`;
