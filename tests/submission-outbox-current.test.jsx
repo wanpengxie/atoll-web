@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import 'fake-indexeddb/auto';
-import { act, renderHook, waitFor } from '@testing-library/react';
+import React, { Suspense, startTransition, useLayoutEffect } from 'react';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useComposerSubmissionRuntime } from '../src/ui/composer/useComposerSubmissionRuntime.js';
 import { createOutboxStore } from '../src/model/outbox-store.js';
@@ -63,6 +64,55 @@ afterEach(() => {
 });
 
 describe('current submission owner: outbox-store + composer runtime', () => {
+  it('does not publish transport authority from a suspended Composer candidate render', async () => {
+    const submit = vi.fn().mockResolvedValue({ message_id: 'candidate-world-message' });
+    const harness = runtimeHarness({ wireState: 'open', submit });
+    let committedApi;
+    let release;
+    const suspended = new Promise((resolve) => { release = resolve; });
+
+    function Subject({ wireState, block }) {
+      const api = useComposerSubmissionRuntime({ ...harness, wireState });
+      useLayoutEffect(() => { committedApi = api; });
+      if (block) throw suspended;
+      return <p>{wireState}</p>;
+    }
+
+    const view = render(
+      <Suspense fallback={<p>candidate fallback</p>}>
+        <Subject wireState="open" block={false} />
+      </Suspense>,
+    );
+    await waitFor(() => expect(committedApi?.pending).toEqual([]));
+    const stableCommittedSend = committedApi.send;
+
+    await act(async () => {
+      startTransition(() => view.rerender(
+        <Suspense fallback={<p>candidate fallback</p>}>
+          <Subject wireState="reconnecting" block />
+        </Suspense>,
+      ));
+    });
+    expect(document.body.textContent).toContain('open');
+    expect(await harness.store.restore(harness.principalId)).toEqual([]);
+
+    await act(async () => {
+      await stableCommittedSend({
+        messageId: 'candidate-world-message',
+        text: 'use committed open authority',
+        msgType: 'agent.ask',
+        audience: ['agent:worker:1'],
+      });
+    });
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(committedApi.pending[0]).toMatchObject({
+      messageId: 'candidate-world-message', state: 'accepted',
+    }));
+    view.unmount();
+    release();
+    harness.store.close();
+  });
+
   it('persists a stable queued message id and removes it only after a landed feed fact', async () => {
     const harness = runtimeHarness();
     const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(harness));
