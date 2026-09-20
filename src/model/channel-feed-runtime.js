@@ -393,6 +393,7 @@ export function createChannelFeedRuntime(options = {}) {
   let mounted = false;
   let mountGeneration = 0;
   let destroyed = false;
+  let lifecycleEpoch = 0;
   let snapshot;
   let activityConnected = false;
   let activityRevision = 0;
@@ -1204,9 +1205,12 @@ export function createChannelFeedRuntime(options = {}) {
     }
   }
 
-  async function setHistoryGrants(entries = [], detail = {}) {
+  async function setHistoryGrants(entries = [], detail = {}, requestEpoch = lifecycleEpoch) {
     const nextGeneration = historyNumeric(detail.generation);
-    if (!nextGeneration || nextGeneration < generation || incompatible) return { stale: true, meta: cache.metaSnapshot() };
+    if (destroyed || requestEpoch !== lifecycleEpoch
+      || !nextGeneration || nextGeneration < generation || incompatible) {
+      return { stale: true, meta: cache.metaSnapshot() };
+    }
     generation = nextGeneration;
     const epoch = ++attachEpoch;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history attach recalibrated');
@@ -1216,6 +1220,7 @@ export function createChannelFeedRuntime(options = {}) {
     world = nextWorld;
     if (worldChanged) {
       for (const channelId of histories.keys()) admission.reset(channelId);
+      clearDeferredHistoryRequests();
       histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
       followingObservations.clear();
       activityEntries.clear();
@@ -1409,6 +1414,7 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   function clear() {
+    lifecycleEpoch += 1;
     principalEpoch += 1;
     attachEpoch += 1;
     cancelBackgroundInterests('replica cleared');
@@ -1443,6 +1449,7 @@ export function createChannelFeedRuntime(options = {}) {
   function disconnectHistory(requestGeneration = generation) {
     if (requestGeneration && requestGeneration !== generation) return false;
     cancelBackgroundInterests('history disconnected');
+    clearDeferredHistoryRequests();
     for (const status of histories.values()) {
       const wasActive = status.attached || status.messageCurrent || status.controlCurrent;
       status.attached = false;
@@ -1633,11 +1640,14 @@ export function createChannelFeedRuntime(options = {}) {
   function buildSnapshot() {
     const agentActivity = agentActivitySnapshot();
     const timerFirings = timerFiringSnapshot();
+    const snapshotEpoch = lifecycleEpoch;
     return Object.freeze({
       version, indexVersion, localReplicaReady, localReplicaError, localReplicaErrorCode,
       agentActivity, timerFirings, agentActivityPort, notificationAuthorityPort,
       bump: () => publish({ index: true }),
-      enqueue, pageEnd, liveCheckpoint, setHistoryGrants, prepareLocalReplica, resumeLocalReplica,
+      enqueue, pageEnd, liveCheckpoint,
+      setHistoryGrants: (entries, detail) => setHistoryGrants(entries, detail, snapshotEpoch),
+      prepareLocalReplica, resumeLocalReplica,
       disconnectHistory, stopIncompatible, cancel: disconnectHistory, clear, resetPersistent,
       stateFor: (channelId) => replica.state(channelId),
       stateEntries: () => Object.freeze([...replica.states().entries()]),
@@ -1664,13 +1674,16 @@ export function createChannelFeedRuntime(options = {}) {
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    lifecycleEpoch += 1;
     cancelBackgroundInterests('feed runtime destroyed');
     releaseRailDiagnostic?.();
     releaseRailDiagnostic = null;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'feed runtime destroyed');
     networkBatches.clear(); executor.clear('feed runtime destroyed');
     clearDeferredHistoryRequests();
-    activityEntries.clear(); timerEvents.splice(0);
+    for (const channelId of histories.keys()) admission.reset(channelId);
+    histories.clear(); grants.clear();
+    activityEntries.clear(); followingObservations.clear(); timerEvents.splice(0);
     replica.destroy(); cursors.destroy(); void cache.destroy();
     subscribers.clear(); ownerCommands.clear();
   }

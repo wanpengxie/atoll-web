@@ -137,6 +137,8 @@ describe('ChannelFeedRuntime ownership', () => {
     runtime.mount();
     const snapshot = runtime.getSnapshot();
 
+    await expect(snapshot.loadHistory('c1', { intent: 'initial-view' }))
+      .resolves.toMatchObject({ kind: 'waiting', reason: 'history-grant-pending' });
     await snapshot.setHistoryGrants([
       { channel_id: 'c0', head_seq: 844, has_rows: true },
     ], { generation: 1, boot: 'disconnect-regrant-boot', focus: 'c0' });
@@ -160,6 +162,9 @@ describe('ChannelFeedRuntime ownership', () => {
     expect(snapshot.historyFor('c0')).toMatchObject({
       attached: true, generation: 2, loading: false,
       historyDemand: { phase: 'idle' },
+    });
+    expect(snapshot.historyFor('c1')).toMatchObject({
+      attached: false, loading: false, historyDemand: { phase: 'idle' },
     });
 
     const replacementDemand = snapshot.loadHistory('c0', {
@@ -219,6 +224,39 @@ describe('ChannelFeedRuntime ownership', () => {
       historyDemand: { phase: 'idle' },
     });
     expect(snapshot.stateFor('c0')?.rows.has(844)).not.toBe(true);
+    runtime.destroy();
+  });
+
+  it('retires deferred history demand when the attach world changes', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+        const ref = `world-deferred-history-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+
+    await expect(snapshot.loadHistory('c1', { intent: 'initial-view' }))
+      .resolves.toMatchObject({ kind: 'waiting', reason: 'history-grant-pending' });
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 10, has_rows: true },
+    ], { generation: 1, boot: 'world-a', focus: 'c0' });
+    expect(requests).toHaveLength(0);
+
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 11, has_rows: true },
+    ], { generation: 2, boot: 'world-b', focus: 'c0' });
+    expect(requests).toHaveLength(0);
+    expect(snapshot.historyFor('c1')).toMatchObject({
+      attached: false, loading: false, historyDemand: { phase: 'idle' },
+    });
     runtime.destroy();
   });
 
