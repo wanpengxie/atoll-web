@@ -157,6 +157,40 @@ describe('Composer 渲染隔离（F6-PERF-06，轻量版：不拉起 5000 行 Ti
   });
 });
 
+describe('AD-346 slash command selection contract', () => {
+  it('selects a backend-declared /new command on the first Enter and sends only on the second', async () => {
+    const user = userEvent.setup();
+    const capabilityIndex = new Map([[CLAUDE.id, {
+      describe: { types: new Map([['agent.new', { inputSchema: { type: 'object' } }]]) },
+    }]]);
+    const config = commandsHarness({ capabilityIndex });
+    let latest;
+
+    function Harness() {
+      latest = useComposerCommands(config);
+      return <Composer model={latest.model} commands={latest.commands} />;
+    }
+
+    render(<Harness />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '/n');
+    expect(await screen.findByRole('option', { name: /\/new/ })).toBeTruthy();
+
+    await user.keyboard('{Enter}');
+    await vi.waitFor(() => expect(input.textContent).toBe('/new '));
+    expect(latest.submission.pending).toEqual([]);
+
+    await user.keyboard('{Enter}');
+    await vi.waitFor(() => expect(latest.submission.pending).toEqual([
+      expect.objectContaining({
+        frame: expect.objectContaining({
+          msg_type: 'agent.new', payload: {}, audience: [CLAUDE.id],
+        }),
+      }),
+    ]));
+  });
+});
+
 describe('上传未完成时不能提交纯文本快照（呼应旧 F6 附件同批断言）', () => {
   it('does not send a text-only snapshot while a selected attachment is still uploading', async () => {
     const user = userEvent.setup();
