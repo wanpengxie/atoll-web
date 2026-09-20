@@ -12,7 +12,7 @@ import { createHistoryBoundedExecutor } from './history-bounded-executor.js';
 import { createHistorySourceAdapters } from './history-source-adapters.js';
 import { HISTORY_INTENT, HISTORY_URGENCY } from './history-demand.js';
 import { isRailNotifiableDisposition, notificationDisposition } from './notification-policy.js';
-import { registerRailDiagnosticProvider } from './diagnostics.js';
+import { diagnostic, registerRailDiagnosticProvider } from './diagnostics.js';
 
 export const HISTORY_PAGE_SIZE = 128;
 export const HISTORY_BATCH_BYTES = 1024 * 1024;
@@ -61,6 +61,49 @@ function invalidatesChannelDirectory(envelope) {
 function historyNumeric(value) {
   const result = Number(value);
   return Number.isSafeInteger(result) && result >= 0 ? result : 0;
+}
+
+function historyRangeNumber(value, fallback = 0) {
+  const result = Number(value);
+  return Number.isSafeInteger(result) && result >= 0 ? result : fallback;
+}
+
+function historyBatchCompletionDetail(batch, result, rows, status, acceptedRows, focus = '') {
+  const requestedBeforeSeq = historyRangeNumber(batch?.beforeSeq);
+  const nextBeforeSeq = historyRangeNumber(
+    result?.next_before_seq ?? result?.nextBeforeSeq,
+    requestedBeforeSeq,
+  );
+  const scanHighSeq = historyRangeNumber(
+    result?.scan_high_seq ?? result?.scanHighSeq,
+    Math.max(0, requestedBeforeSeq - 1),
+  );
+  const scanLowSeq = historyRangeNumber(
+    result?.scan_low_seq ?? result?.scanLowSeq,
+    rows?.length
+      ? Math.min(...rows.map((row) => historyRangeNumber(row?.seq, nextBeforeSeq)))
+      : nextBeforeSeq,
+  );
+  return {
+    channelId: batch?.channelId || '',
+    focus: String(focus || ''),
+    visibleIntent: batch?.priority === 'foreground',
+    source: batch?.source || '',
+    purpose: batch?.purpose || '',
+    priority: batch?.priority || '',
+    generation: historyNumeric(batch?.generation),
+    attachEpoch: historyNumeric(batch?.attachEpoch),
+    ref: String(batch?.ref || batch?.id || ''),
+    rows: Array.isArray(rows) ? rows.length : 0,
+    acceptedRows: historyNumeric(acceptedRows),
+    hasOlder: Boolean(result?.has_older ?? result?.hasOlder ?? !result?.exhausted),
+    beforeSeq: historyNumeric(status?.beforeSeq),
+    requestedBeforeSeq,
+    rangeKind: batch?.rangeKind || 'backfill',
+    nextBeforeSeq,
+    scanLowSeq,
+    scanHighSeq,
+  };
 }
 
 function notificationInputEpoch(value) {
@@ -988,7 +1031,24 @@ export function createChannelFeedRuntime(options = {}) {
     const staleBatch = () => destroyed || batch.generation !== generation
       || batch.attachEpoch !== attachEpoch
       || status.generation !== generation
-      || !status.attached;
+      || !status.attached
+      || status.messageCurrent !== true;
+    const publishBatchComplete = (completedBatch, result, rows, acceptedRows) => {
+      // The physical source has completed, but its public identity belongs to
+      // this attach only after the same generation/attachment/current fence
+      // used by the canonical commit has held. Reading consumers observe this
+      // event; they never publish a second completion for the same page.
+      if (staleBatch()) return false;
+      diagnostic('info', 'history.batch_complete', historyBatchCompletionDetail(
+        completedBatch,
+        result,
+        rows,
+        status,
+        acceptedRows,
+        activeChannelRef.current,
+      ));
+      return true;
+    };
 
     // A non-empty cache page can still be only the retained physical tail.
     // Merge/publish that page immediately, then keep walking the cache while
@@ -1018,6 +1078,7 @@ export function createChannelFeedRuntime(options = {}) {
         if (clearOwnedDemand()) publish();
         return { kind: 'cancelled', reason: 'stale-generation' };
       }
+      publishBatchComplete(batch, outcome.result, outcome.rows, cachedAccepted.length);
       const nextBefore = status.beforeSeq;
       const nextSource = historySourceFor(cache.metaSnapshot().get(channelId), nextBefore);
       cacheContinuation += 1;
@@ -1058,6 +1119,7 @@ export function createChannelFeedRuntime(options = {}) {
         });
       }
       refreshControlCurrent(channelId, status);
+      publishBatchComplete(batch, result, outcome.rows, accepted.length);
       const projection = selectTimelineItems(replica.state(channelId), request.viewSpec || {});
       const observed = revealToken ? admission.observe(channelId, projection.items, {
         operationID: revealToken.operationID,
