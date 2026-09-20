@@ -393,6 +393,21 @@ current-owner product gap, not a selector or fixture issue. The ledger is
 therefore **325 PASS / 1 REGRESSION / 39 BLOCKED**; AD-154 is not counted as
 PASS and no expected-fail result is used.
 
+## Round 39 — exact clean HEAD AD-154 re-verification
+
+The exact clean candidate is `15e4470`. The focused Governance owner contract
+for AD-154 now passes **3/3** (`tests/blocked-round35-governance-public-owner.test.jsx`):
+submit rejection remains observable and retryable, a matching failed ledger
+terminal renders `创建失败`, preserves the draft, exposes `重新创建`, and does
+not expose entry; the adjacent same-name and typed Shell contracts remain
+green. The AD-153 focused unit slice is also **2/2 passed**.
+
+The Round 38 regression packet is closed by the already-landed Governance
+owner fix `34f286b`; this round changed no product code. AD-154 returns to PASS,
+so the current ledger is **326 PASS / 0 REGRESSION / 39 BLOCKED**. No capability
+was declared obsolete, no expected-fail was counted, and no baseline was
+deleted or skipped.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
