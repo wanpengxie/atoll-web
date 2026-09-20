@@ -643,6 +643,32 @@ row 8 remains visible while `historyDemand.phase=error` and the request is not
 misclassified as local exhaustion. No Replica or notification owner was
 changed in this round.
 
+## Round 23 Replica sparse-coverage audit
+
+`50918ae` contains the Feed continuation hunks and their two required public
+Feed tests, but it is not an exclusive Feed commit: the shared pre-staged
+index also included unrelated E–H governance ledger and governance-preview
+edits (`audit-output/E-H-BASELINE-CURRENT-OWNER-CASE-LEDGER.md` and
+`audit-output/E-H-R22-GOVERNANCE-AND-EXTENSIONLESS-PREVIEW.md`). The Feed
+source/test hunks themselves do not touch Replica or notification owners; the
+commit therefore passes the owner-surface audit but fails the exclusive-commit
+integrity check and must not be cited as a Feed-only changeset.
+
+The public Replica counterexample exposed a separate real red: physical rows
+`[1, 3]`, coverage `{1,1},{3,3}`, and `readBefore('c0', 4, ...)` previously
+returned `exhausted=true` solely because the physical lower bound was `seq1`.
+The minimal Replica-owner correction requires the physical prefix below the
+requested cursor to be contiguous before publishing exhaustion; row 2 remains
+unknown in the sparse case, so the result is `rows=[1,3], exhausted=false`.
+The existing partial-tail contract (`rows=[8]`, `beforeSeq=9`,
+`exhausted=false`) remains unchanged.
+
+Evidence: `tests/channel-replica-cache-redaction.test.js` → **12/12 GREEN**;
+`tests/memory-window.test.js` → **17/17 GREEN**;
+`tests/channel-feed-runtime.test.jsx` → **13/13 GREEN**. The Replica change is
+limited to `readBefore` and its public cache test; no notification, arrival,
+vendor, package, or lockfile owner changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

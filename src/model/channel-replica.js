@@ -1367,11 +1367,27 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     // A short page is not proof of remote EOF when the local physical window
     // starts above sequence 1. In particular, beforeSeq=9 with only row 8
     // available must continue to network refill instead of publishing
-    // exhausted=true. Only a physical lower boundary at sequence 1 can close
-    // the local source; byte/row truncation still keeps it open.
+    // exhausted=true. A physical lower boundary at sequence 1 closes the
+    // local source only when every requested sequence below the cursor is
+    // represented; a sparse [1, 3] window still has an unknown row 2.
+    const localFrontier = before > 0 ? before - 1 : 0;
+    let contiguousPrefix = localFrontier === 0;
+    if (!contiguousPrefix && available.length) {
+      let expected = 1;
+      contiguousPrefix = true;
+      for (let index = available.length - 1; index >= 0; index -= 1) {
+        if (numeric(available[index]?.seq) !== expected) {
+          contiguousPrefix = false;
+          break;
+        }
+        expected += 1;
+      }
+      contiguousPrefix = contiguousPrefix && expected === localFrontier + 1;
+    }
     const exhausted = available.length <= selected.length
       && physicalOldestSeq > 0
-      && physicalOldestSeq <= 1;
+      && physicalOldestSeq <= 1
+      && contiguousPrefix;
     return {
       rows: selected,
       nextBeforeSeq: selected.length ? numeric(selected[0].seq) : before,

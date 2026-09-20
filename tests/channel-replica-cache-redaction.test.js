@@ -389,6 +389,25 @@ describe('Replica 缓存持久化前应隐藏设备密钥/凭据（恢复自 tes
     await cache.destroy();
   });
 
+  it('does not report exhausted for a sparse physical range that starts at seq1', async () => {
+    const cache = createChannelReplicaCache({ indexedDB: null });
+    const owner = `sparse-gap-${Date.now()}-${Math.random()}`;
+    await cache.ensureOwner(owner, { world: 'sparse-gap' });
+    await cache.clear();
+    await cache.saveRows([sensitiveRow(1), sensitiveRow(3)]);
+
+    expect(cache.metaSnapshot().get('c0').coverage).toEqual([
+      { lowSeq: 1, highSeq: 1 },
+      { lowSeq: 3, highSeq: 3 },
+    ]);
+    const page = await cache.readBefore('c0', 4, 20, 100_000);
+    expect(page.rows.map((row) => row.seq)).toEqual([1, 3]);
+    // Row 2 is absent from the physical source. A lower bound of seq1 alone
+    // cannot prove remote EOF while the materialized coverage has a gap.
+    expect(page.exhausted).toBe(false);
+    await cache.destroy();
+  });
+
   it('publishes clear only after its durable transaction succeeds', async () => {
     await clearCache();
     const cache = createChannelReplicaCache({ indexedDB });
