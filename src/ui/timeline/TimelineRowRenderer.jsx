@@ -234,10 +234,12 @@ function textOf(envelope, names) {
   const system = systemEventPresentation(envelope, names);
   if (system?.handled) return system.text;
   const body = argsOf(envelope);
-  const systemText = systemOperationText(envelope, body);
-  if (systemText) return systemText;
   const text = textContent(body);
   if (text) return text;
+  // A typed operation label is only a fallback: when the canonical body
+  // carries prose, the reader must see that user-authored content verbatim.
+  const systemText = systemOperationText(envelope, body);
+  if (systemText) return systemText;
   const result = body.result ?? body.output;
   if (result == null) return '';
   if (typeof result === 'string') return result;
