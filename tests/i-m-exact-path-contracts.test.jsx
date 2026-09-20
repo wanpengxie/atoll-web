@@ -81,22 +81,49 @@ const mermaidMock = vi.hoisted(() => ({
   render: vi.fn(),
 }));
 
-const vendorHarness = vi.hoisted(() => ({ props: null }));
+const vendorHarness = vi.hoisted(() => ({
+  props: null,
+  root: null,
+  scrollTo: null,
+  scrollToIndex: null,
+  rootMetrics: null,
+}));
 
 vi.mock('react-virtuoso', async () => {
   const ReactModule = await import('react');
   const Virtuoso = ReactModule.forwardRef(function ExactContractVirtuoso(props, ref) {
     const nodeRef = ReactModule.useRef(null);
-    ReactModule.useImperativeHandle(ref, () => ({ scrollToIndex: vi.fn() }), []);
+    const scrollToIndex = ReactModule.useMemo(() => vi.fn(), []);
     ReactModule.useLayoutEffect(() => {
+      const sameRoot = vendorHarness.root === nodeRef.current && vendorHarness.scrollTo;
       vendorHarness.props = props;
+      vendorHarness.root = nodeRef.current;
+      vendorHarness.scrollToIndex = scrollToIndex;
+      if (!sameRoot) vendorHarness.scrollTo = vi.fn((options) => {
+        if (nodeRef.current && options && typeof options === 'object') {
+          nodeRef.current.scrollTop = Number(options.top || 0);
+        }
+      });
+      nodeRef.current.scrollTo = vendorHarness.scrollTo;
+      if (vendorHarness.rootMetrics) {
+        Object.defineProperties(nodeRef.current, {
+          clientHeight: { configurable: true, value: vendorHarness.rootMetrics.clientHeight },
+          scrollHeight: { configurable: true, value: vendorHarness.rootMetrics.scrollHeight },
+          scrollTop: {
+            configurable: true,
+            writable: true,
+            value: vendorHarness.rootMetrics.scrollTop,
+          },
+        });
+      }
       props.scrollerRef?.(nodeRef.current);
       props.rangeChanged?.({
         startIndex: props.firstItemIndex,
         endIndex: props.firstItemIndex + props.data.length - 1,
       });
       return () => props.scrollerRef?.(null);
-    }, [props]);
+    }, [props, scrollToIndex]);
+    ReactModule.useImperativeHandle(ref, () => ({ scrollToIndex }), [scrollToIndex]);
     const List = props.components?.List || 'div';
     const Header = props.components?.Header || (() => null);
     return (
@@ -214,6 +241,10 @@ afterEach(async () => {
   mermaidMock.initialize.mockReset();
   mermaidMock.render.mockReset();
   vendorHarness.props = null;
+  vendorHarness.root = null;
+  vendorHarness.scrollTo = null;
+  vendorHarness.scrollToIndex = null;
+  vendorHarness.rootMetrics = null;
   for (const wire of mockWires) wire.close();
   mockWires.clear();
   await Promise.all([...mockServers].map(closeMockServer));
@@ -471,6 +502,27 @@ function round34Reading({
   owner.initializing = initializing;
   owner.restorePending = restorePending;
   return owner;
+}
+
+function setRound35Geometry(node, {
+  clientHeight = 600,
+  scrollHeight = 1_000,
+  scrollTop = 400,
+} = {}) {
+  Object.defineProperties(node, {
+    clientHeight: { configurable: true, value: clientHeight },
+    scrollHeight: { configurable: true, value: scrollHeight },
+    scrollTop: { configurable: true, writable: true, value: scrollTop },
+  });
+  node.getBoundingClientRect = () => ({
+    top: 0,
+    bottom: clientHeight,
+    left: 0,
+    right: 800,
+    width: 800,
+    height: clientHeight,
+  });
+  return node;
 }
 
 function liveCheckpointOptions() {
@@ -2565,5 +2617,325 @@ describe('I-M exact-path public-owner recovery (round 34 lifecycle and viewport 
     expect(view.container.querySelector('.timeline-reading-stack').getAttribute('data-reading-activation'))
       .toBe('activation:revealed');
     expect(document.activeElement).toBe(view.getByRole('region', { name: '频道动态' }));
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 35 reading-adapter contracts)', () => {
+  it('message-list-lifecycle TC-0984: an underfilled committed range returns a typed acquisition wake to the current owner', async () => {
+    const pending = Promise.resolve({ kind: 'consumer-recheck', reason: 'supply-progressed' });
+    const reading = round34Reading({ mode: READING_MODE.browsing });
+    reading.status = {
+      attached: true,
+      generation: 7,
+      messageCurrent: true,
+      headSeq: 0,
+      hasOlder: true,
+      completedPages: 2,
+      revealVersion: 1,
+    };
+    reading.bottomReady = true;
+    reading.onUnderfill = vi.fn(() => pending);
+    vendorHarness.rootMetrics = { clientHeight: 600, scrollHeight: 500, scrollTop: 0 };
+    render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([
+          round33Row('underfill-first', 1),
+          round33Row('underfill-second', 2),
+        ], { firstItemIndex: 0 })}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 500,
+      scrollTop: 0,
+    });
+    act(() => vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 1 }));
+
+    await waitFor(() => expect(reading.onUnderfill).toHaveBeenCalled());
+    expect(reading.onUnderfill.mock.calls[0][0]).toMatchObject({ demandUnits: expect.any(Number) });
+    await act(async () => {
+      await pending;
+      await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
+    });
+    expect(scroller.getBoundingClientRect().height).toBe(600);
+    expect(reading.onReadingObservation).toHaveBeenCalled();
+  });
+
+  it('message-list-lifecycle TC-0985: the following owner, not vendor followOutput, performs one bottom write', () => {
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = {
+      ...reading.session,
+      bottomIntent: { id: 'bottom:round35', inputEpoch: 0 },
+    };
+    vendorHarness.rootMetrics = { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 };
+    render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('following-first', 1)], { firstItemIndex: 0 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(vendorHarness.props.followOutput).toBe(false);
+    expect(reading.consumeBottomIntent).toHaveBeenCalledWith(reading.session.bottomIntent);
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+  });
+
+  it('message-list-lifecycle TC-0986: a role-only public height commit lets following tail exactly once', () => {
+    const reading = round34Reading({ mode: READING_MODE.following });
+    const first = round33Row('role-height-row', 1);
+    const view = render(
+      <VendorListExecutor
+        snapshot={{ ...round33Snapshot([first]), roleRevision: 0, roleChanges: { updated: [] } }}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = vendorHarness.root;
+    view.rerender(
+      <VendorListExecutor
+        snapshot={{ ...round33Snapshot([{ ...first }]), revision: 8, roleRevision: 1, roleChanges: { updated: [first.id] } }}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+  });
+
+  it('message-list-lifecycle TC-0987: native older input cancels a child-first role height before it can follow', () => {
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.beginNavigation = vi.fn(() => {
+      reading.session = { ...reading.session, mode: READING_MODE.browsing, inputEpoch: 1 };
+      return { inputGeneration: 1 };
+    });
+    render(
+      <VendorListExecutor
+        snapshot={{ ...round33Snapshot([round33Row('child-first-role', 1)]), roleRevision: 0, roleChanges: { updated: [] } }}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_200,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    act(() => fireEvent.wheel(scroller, { deltaY: -80 }));
+    act(() => vendorHarness.props.totalListHeightChanged());
+
+    expect(reading.beginNavigation).toHaveBeenCalled();
+    expect(reading.session.mode).toBe(READING_MODE.browsing);
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('message-list-lifecycle TC-0988: a role-only height commit cannot bypass an active send bottom join', () => {
+    const intent = {
+      id: 'composer:send-start:role-blocked-round35',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['send-target-round35'],
+    };
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.session = { ...reading.session, bottomIntent: intent };
+    render(
+      <VendorListExecutor
+        snapshot={{ ...round33Snapshot([round33Row('send-role-row', 1)]), roleRevision: 0, roleChanges: { updated: [] } }}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    setRound35Geometry(vendorHarness.root, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
+    vendorHarness.scrollTo.mockClear();
+
+    act(() => vendorHarness.props.totalListHeightChanged());
+
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+  });
+
+  it('message-list-lifecycle TC-0989: an optional diagnostic sink cannot take down the sole bottom writer', () => {
+    const previousTrace = globalThis.__ATOLL_READING_TRACE__;
+    globalThis.__ATOLL_READING_TRACE__ = () => { throw new Error('diagnostic sink failed'); };
+    try {
+      const reading = round34Reading({ mode: READING_MODE.following });
+      render(
+        <VendorListExecutor
+          snapshot={round33Snapshot([round33Row('trace-safe-tail', 1)])}
+          reading={reading}
+          renderRow={(row) => <article>{row.id}</article>}
+        />,
+      );
+      setRound35Geometry(vendorHarness.root, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
+      vendorHarness.scrollTo.mockClear();
+
+      act(() => vendorHarness.props.totalListHeightChanged());
+
+      expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    } finally {
+      if (previousTrace) globalThis.__ATOLL_READING_TRACE__ = previousTrace;
+      else delete globalThis.__ATOLL_READING_TRACE__;
+    }
+  });
+
+  it('message-list-lifecycle TC-0991: the public Waiting reserve excludes rows behind its readable bottom', async () => {
+    const observations = [];
+    const reading = round34Reading({ mode: READING_MODE.browsing });
+    reading.onReadingObservation = vi.fn((observation) => observations.push(observation));
+    render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('covered-by-waiting', 1)], { firstItemIndex: 0 })}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 600,
+      scrollTop: 0,
+    });
+    scroller.style.setProperty('--conversation-waiting-reserve', '100px');
+    const rowNode = scroller.querySelector('[data-presentation-row-id]');
+    rowNode.getBoundingClientRect = () => ({
+      top: 520, bottom: 590, left: 0, right: 800, width: 800, height: 70,
+    });
+    const previousElementFromPoint = document.elementFromPoint;
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => rowNode),
+    });
+    try {
+      const Footer = vendorHarness.props.components.Footer;
+      const footer = render(<Footer />);
+      expect(footer.container.querySelector('.timeline-waiting-obstruction')).toBeTruthy();
+      observations.length = 0;
+      await act(async () => {
+        vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 0 });
+        await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
+      });
+      expect(observations.at(-1)?.visibleRows).toEqual([]);
+    } finally {
+      Object.defineProperty(document, 'elementFromPoint', {
+        configurable: true,
+        value: previousElementFromPoint,
+      });
+    }
+  });
+
+  it('message-list-lifecycle TC-0992: a promoted short-list row is resampled from the committed List without trusting its wrapper', async () => {
+    const observations = [];
+    const reading = round34Reading({ mode: READING_MODE.browsing });
+    reading.onReadingObservation = vi.fn((observation) => observations.push(observation));
+    render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('short-promoted-row', 1)], { firstItemIndex: 0 })}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 600,
+      scrollTop: 0,
+    });
+    const rowNode = scroller.querySelector('[data-presentation-row-id]');
+    rowNode.getBoundingClientRect = () => ({
+      top: 0, bottom: 132, left: 0, right: 800, width: 800, height: 132,
+    });
+    const viewport = scroller.firstElementChild;
+    viewport.setAttribute('data-viewport-type', 'element');
+    const previousElementFromPoint = document.elementFromPoint;
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => viewport),
+    });
+    try {
+      observations.length = 0;
+      await act(async () => {
+        vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 0 });
+        await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
+      });
+      expect(observations.at(-1)?.visibleRows).toEqual([]);
+
+      Object.defineProperty(document, 'elementFromPoint', {
+        configurable: true,
+        value: vi.fn(() => rowNode),
+      });
+      await act(async () => {
+        vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 0 });
+        await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
+      });
+      expect(observations.at(-1)?.visibleRows).toEqual([
+        { messageID: 'short-promoted-row', seqHigh: 1 },
+      ]);
+    } finally {
+      Object.defineProperty(document, 'elementFromPoint', {
+        configurable: true,
+        value: previousElementFromPoint,
+      });
+    }
+  });
+
+  it('message-list-lifecycle TC-0993: a late root geometry publication gets one committed-height recheck', async () => {
+    const reading = round34Reading({ mode: READING_MODE.following });
+    render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('late-height-tail', 1)])}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = vendorHarness.root;
+    vendorHarness.scrollTo.mockClear();
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_031, scrollTop: 400 });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_031, behavior: 'auto' });
+  });
+
+  it('message-list-lifecycle TC-0994: real upward input near the revealed edge starts one bounded runway demand', () => {
+    const reading = round34Reading({ mode: READING_MODE.browsing });
+    reading.beginNavigation = vi.fn(() => {
+      reading.session = { ...reading.session, inputEpoch: 1 };
+      return { inputGeneration: 1 };
+    });
+    reading.onNearTop = vi.fn();
+    render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('runway-first', 1), round33Row('runway-second', 2)])}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 500,
+    });
+
+    scroller.scrollTop = 500;
+    act(() => fireEvent.scroll(scroller));
+    act(() => fireEvent.wheel(scroller, { deltaY: -120 }));
+    scroller.scrollTop = 350;
+    act(() => fireEvent.scroll(scroller));
+
+    expect(reading.onNearTop).toHaveBeenCalledTimes(1);
+    expect(reading.onNearTop).toHaveBeenCalledWith({ demandUnits: expect.any(Number) });
   });
 });

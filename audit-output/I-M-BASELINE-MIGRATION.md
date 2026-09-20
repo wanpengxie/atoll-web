@@ -973,6 +973,37 @@ of the ten Round-34 cases fails. The baseline remains 159. No product file,
 compatibility parser, old store, private helper, vendor/package/lockfile, or
 second source of truth was changed.
 
+## Round 35 exact-path recovery: reading-adapter and viewport-demand contracts
+
+This round covers the next executable public-owner contracts after TC-0983. It
+uses the current `VendorListExecutor`, `useBrowsingReadingController`, typed
+DOM command boundary, and read-only geometry evidence. TC-0990 is deliberately
+not duplicated here: its old text-point caret/tree-walker trace is an
+implementation-specific oracle with no current public owner. TC-0988 and
+TC-0993 remain strict red regression packages rather than being weakened.
+
+| baseline case | user capability and invariant | current public owner | fae8b70 old operation | current executable evidence and result |
+|---|---|---|---|---|
+| TC-0984 | An underfilled committed range returns one typed acquisition wake to the active history consumer for remeasurement. | VendorListExecutor `rangeChanged` → `useBrowsingReadingController` viewport coverage → `reading.onUnderfill` | The old List passed a pending underfill promise through the public owner and re-ran the demand only after the consumer returned `consumer-recheck`. | tests/i-m-exact-path-contracts.test.jsx:2630-2671 — current owner receives demand units, resolves the typed recheck, and publishes an observation; **PASS** |
+| TC-0985 | Built-in vendor following is disabled; the committed following owner is the sole bottom writer and consumes one explicit bottom intent. | VendorListExecutor `followOutput={false}` + typed `scroll-tail` command | The old list asserted `followOutput=false` and let the committed owner issue exactly one synchronous `scrollTo({top: scrollHeight})`. | tests/i-m-exact-path-contracts.test.jsx:2673-2691 — `followOutput` is false, the intent is consumed, and the public root receives `{top:1200, behavior:'auto'}`; **PASS** |
+| TC-0986 | A role-only public height commit joins the current Presentation before following once, without a second writer. | VendorListExecutor `totalListHeightChanged` + `enforceFollowingTail` | The old role revision changed height without changing row identity, then the committed height callback issued one tail write. | tests/i-m-exact-path-contracts.test.jsx:2693-2717 — role revision 0→1 makes no speculative write; the public height callback emits one tail write; **PASS** |
+| TC-0987 | Native older input wins over a child-first role-height commit and cancels following. | VendorListExecutor navigation coordinator + current Reading mode/input epoch | The old list committed one child-first height, then a real wheel takeover changed the owner to browsing and suppressed the later height write. | tests/i-m-exact-path-contracts.test.jsx:2719-2745 — wheel advances the input epoch/mode, and the following writer stays silent on the subsequent height callback; **PASS** |
+| TC-0988 | An active send join must not be bypassed by a role-only height commit; neither a tail write nor bottom-intent consumption is allowed. | VendorListExecutor `totalListHeightChanged`/following writer (current owner) | The old list recognized `afterPresentationRevision`/target IDs and withheld the role-only write while the send bottom join was active. | tests/i-m-exact-path-contracts.test.jsx:2747-2770 — **RED**: current owner writes `{top:1200, behavior:'auto'}` despite the active send intent; strict expected no write/no consume. Product regression package; no product change made. |
+| TC-0989 | An optional diagnostic sink cannot take down the sole bottom writer. | VendorListExecutor typed DOM writer; diagnostics are non-authoritative | The old test deliberately threw from `__ATOLL_READING_TRACE__` and required the normal bottom write to survive. | tests/i-m-exact-path-contracts.test.jsx:2772-2794 — throwing optional sink does not prevent the typed `{top:1200}` write; **PASS** |
+| TC-0991 | The fixed Waiting reserve is materialized and rows below its readable bottom are excluded from visible evidence. | VendorListExecutor `WaitingObstructionFooter` + `reading-geometry.visibleRowEvidence` | The old footer supplied `.timeline-waiting-obstruction`; a row at 520–590px in a 600px viewport with 100px reserve was not readable. | tests/i-m-exact-path-contracts.test.jsx:2796-2839 — footer exists and the row behind the reserve yields `visibleRows=[]`; **PASS** |
+| TC-0992 | A promoted short-list row is resampled from the committed List after its wrapper becomes the hit-test target; the wrapper itself is not accepted as a message. | VendorListExecutor `rangeChanged` + read-only `visibleRowEvidence` hit testing | The old List first observed no row when the viewport wrapper owned the point, then accepted the row after the List commit exposed the row hit. | tests/i-m-exact-path-contracts.test.jsx:2841-2894 — wrapper hit gives no row; the next public range sample gives the exact row/seq evidence; **PASS** |
+| TC-0993 | A late root geometry publication after one committed height callback must receive one microtask recheck and one tail write. | VendorListExecutor `totalListHeightChanged` (current owner) | The old list deferred one height check until root geometry became non-zero, then issued exactly one tail write. | tests/i-m-exact-path-contracts.test.jsx:2896-2915 — **RED**: current owner emits zero writes after the late geometry/microtask sequence; strict expected one `{top:1031}` write. Product regression package; no product change made. |
+| TC-0994 | Only real upward input near the physical revealed edge starts one bounded runway demand; passive layout does not. | VendorListExecutor native wheel/scroll attribution + `useBrowsingReadingController.requestHistory` | The old list rejected passive/range callbacks and called `onNearTop({demandUnits})` once after the real upward gesture crossed the runway. | tests/i-m-exact-path-contracts.test.jsx:2917-2946 — seeded physical scroll, upward wheel, and runway crossing produce one bounded demand; **PASS** |
+
+Targeted green evidence: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t
+'TC-0984|TC-0985|TC-0986|TC-0987|TC-0989|TC-0991|TC-0992|TC-0994'`
+→ **8/8 GREEN**. Strict red evidence:
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-0988|TC-0993'`
+→ **2/2 expected product regressions** with the exact failures recorded above.
+The 17-file current-owner rerun remains **110/110 GREEN**. No product,
+compatibility, old-store, private API, vendor/package/lockfile, notification,
+or second owner was changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -1036,6 +1067,11 @@ second source of truth was changed.
   whole-file exact rerun is 114/115 only because the shared-worktree
   TimelineRowRenderer canonical-event change currently breaks the unrelated
   message-presentation body-text case; no Round-34 case is red.
+- Round 35 adds ten independent reading-adapter/viewport contracts
+  (TC-0984–0989 and TC-0991–0994); eight strict public-owner cases are GREEN
+  and TC-0988/0993 are recorded as product regression packages. The current
+  owner rerun remains 17 files, 110/110 GREEN; TC-0990 is intentionally not
+  duplicated because its deleted text-point trace is an implementation oracle.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
