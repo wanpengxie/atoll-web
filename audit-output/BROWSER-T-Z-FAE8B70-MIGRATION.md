@@ -3188,3 +3188,78 @@ implicit second row、600×720 卡片不再因占位发生 +75px；然后再独�
 popover viewport/focus oracle。
 
 本轮只交付该独立 RED 与 owner 复现证据；未编辑产品或测试。
+
+## 第四十九轮：UI-VIS-11 Search 的移动触控 successor 与 Feed lease 合同
+
+本轮选择与 Governance 基础布局不冲突的 UI-VIS-11。Governance 的 managed-actor
+隐式换行已交给 Shell owner；本轮只读复验 Search 的用户可见入口、路由和 Feed
+后台兴趣生命周期，未修改产品、CSS、snapshot 或测试。
+
+### 真实 Chromium repeat3 结果
+
+使用当前工作树启动真实 Web/UI/mock，600×720 Chromium，命令为：
+
+```text
+CHOKIDAR_USEPOLLING=true ATOLL_TEST_WEB_PORT=15719 ATOLL_TEST_MOCK_PORT=20019 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r49-vis11 npx playwright test tests/browser/ui-visual.spec.js \
+--grep='UI-VIS-11' --workers=1 --repeat-each=3 --reporter=line \
+--output=test-results-tz-r49-vis11-repeat3
+```
+
+每轮共 4 个 case，repeat3 共 12 次：9 次 Search/Feed 行为断言全部 PASS，3 次
+唯一视觉截图断言 RED。3 次 RED 均是同一个可解释的 600px 高度差（旧 297px、当前
+301px，约 7,868 个 masked screenshot 像素，ratio 0.05）；不是候选结果内容或
+导航失败。行为 case 逐次确认了 `c0.project` 命中、`c0.public` 按权限不可见、点击
+后进入 c0.project，以及 open→close 的 lease cancel、断线重连窗口无 unhandled
+rejection/pending、owner handoff 不重绑旧 activation。真实产物保留在
+`test-results-tz-r49-vis11-repeat3/`。
+
+### 视觉差异的 DOM/源码首断点
+
+同一 `multi-channel` fixture（seed 910）在 fae8b70 与当前 Chromium 中读取同一
+Search dialog 的实际几何：
+
+| 几何 | fae8b70 | 当前 | 差异 |
+| --- | ---: | ---: | ---: |
+| dialog | `0,0–600,297` | `0,0–600,301` | +4px 高 |
+| header bottom | `69` | `73` | +4px |
+| close button | `548,16–584,52`，36×36 | `540,14–584,58`，44×44 | 当前触控目标 +8×8，并使 header +4px |
+| input wrapper | `81–125` | `85–129` | 整体 +4px，仍 44px |
+| results | `137–297`，160px | `141–301`，160px | 整体 +4px，内容区不变 |
+| horizontal overflow | `scrollWidth=600` | `scrollWidth=600` | 无横溢 |
+
+首个结构差异不在 SearchFeature 的结果、焦点或导航，而在 Search 所处的 Shell
+边界：
+
+- fae8b70 的 `App.jsx`（commit source `fae8b70:src/App.jsx:2205-2216`）
+  先关闭 `AppShell`，再把 `GlobalSearch` 作为 shell 外的 sibling 渲染；因此旧
+  600px DOM 没有吃到 `.mobile-shell` 的 Search header 触控规则。
+- 当前 [`WorkspaceApp.jsx:1812-1831`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/app/WorkspaceApp.jsx:1812)
+  组合 `WorkspaceFeatureOverlays`，并在 [`WorkspaceApp.jsx:1850-1897`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/app/WorkspaceApp.jsx:1850)
+  传入 [`WorkspaceLayout.jsx:109-117`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/app/WorkspaceLayout.jsx:109)。
+  Layout 在 [`WorkspaceLayout.jsx:310-369`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/app/WorkspaceLayout.jsx:310)
+  内由同一个 `SurfaceShell` 挂载 `{overlays}`；600px 时 `SurfaceShell` 发布
+  `mobile-shell`，所以当前 Search close button 正确匹配
+  [`responsive.css:106-110`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/styles/responsive.css:106)
+  的 `min-width/min-height:44px`。Search 的基础 `.icon-button` 仍是既有
+  36px 规则；变化来自 shell 祖先的移动触控合同，不是组件内追图调数。
+
+因此唯一布局 owner 是 `SurfaceShell → WorkspaceLayout` 与现有 responsive rule；
+`SearchFeature` 仍只拥有 dialog/content/focus 和公开 search port。不能为恢复旧
+297px 把移动 close target 降回 36px，也不应更新截图阈值掩盖这个可解释 successor。
+
+### 保持严格的公开验收合同
+
+| 面 | 合同 | repeat3 结果 |
+| --- | --- | --- |
+| 移动布局 | 600px Search dialog 无横溢；close target 至少 44×44；input 44px；results 保留 160px 可滚动区 | PASS（截图仅保留旧像素差异） |
+| 结果/权限 | `history 1` 显示 c0.project；c0.public 不可见；点击通过 Shell command 进入 c0.project | 3× PASS |
+| Feed lease | open 只申请一个 c0.project `initial-tail` background demand；close 发对应 cancel；断线窗口视为已取消且无 unhandled rejection/pending | 3× PASS |
+| owner handoff | port 短暂不存在时不调用 stale activation；reopen/切换后 demand 回到 idle/loading=false，只有一个新的 initial-tail | 3× PASS |
+
+### Round49 裁决
+
+UI-VIS-11 行为与后台兴趣合同在真实 Chromium repeat3 全部通过；3 个视觉 RED
+严格收敛为 fae8b70 旧 shell 外挂结构与当前 canonical mobile-shell 触控结构之间的
+合法布局 successor（297→301，close 36→44），不是产品能力缺口。当前不改产品、不改
+snapshot、不删或放宽测试；本轮仅交付该对照与复现报告。
