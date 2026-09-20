@@ -497,6 +497,32 @@ handoff packet is in
 Only the test annotation and A-D audit files changed; no product source,
 private/compatibility API, or duplicate red declaration changed.
 
+## Round 45 — AD-093 Shell port handoff and AD-099 next owner gap
+
+At shared HEAD `d1ae978`, AD-093 carries the smallest proposed current public Shell contract in its
+existing ordinary declaration: `WorkspaceLayout` renders the accessible
+`打开最近阅读` entry when supplied the public
+`navigation.openReadingHistory` port, and one click invokes that port once.
+`WorkspaceApp`/`WorkspaceRightPanel` then own the Reading route while the
+existing ContextHost owns close and opener-focus return. This is a handoff
+contract for Shell, not a test-only product API; no product port was added.
+The focused run remains **1 failed / 19 focused-out skips** because the entry is
+not mounted.
+
+The next independent Workspace case, AD-099, was rechecked through the
+existing public navigation fixture: an invalid `c1` commit leaves the visible
+heading at `选择频道` instead of rolling back to committed `c0` (**1 failed /
+19 focused-out skips**). It remains a separate BLOCKED product-gap packet;
+expected-fail declarations are not counted.
+
+The ledger remains **329 PASS / 0 REGRESSION / 36 BLOCKED**. Case-level packets:
+[`A-D-ROUND45-AD093-SHELL-PORT-HANDOFF-20260920.md`](./A-D-ROUND45-AD093-SHELL-PORT-HANDOFF-20260920.md)
+and
+[`A-D-ROUND45-AD099-INVALID-TARGET-OWNER-GAP-20260920.md`](./A-D-ROUND45-AD099-INVALID-TARGET-OWNER-GAP-20260920.md).
+Only the existing A-D test contract annotation and audit files changed; no
+product source, private/compatibility API, duplicate red declaration, or
+expected-fail semantic changed.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer

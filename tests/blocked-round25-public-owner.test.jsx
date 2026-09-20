@@ -513,8 +513,19 @@ describe('A-D round 25 public-owner evidence', () => {
     // 公开 owner contract：WorkspaceApp panel state → WorkspaceLayout edge
     // entry → WorkspaceRightPanel reading-history route；本fixture落在首个
     // WorkspaceLayout边界，确认该公开入口未被当前组合提供。
-    renderWorkspace(navigation());
-    expect(screen.queryByRole('button', { name: '打开最近阅读' })).toBeTruthy();
+    // Shell handoff contract (proposed public port): the edge control invokes
+    // navigation.openReadingHistory once; the current shell does not expose
+    // this port yet, so the first assertion remains the product-gap evidence.
+    const nav = navigation();
+    nav.openReadingHistory = vi.fn();
+    renderWorkspace(nav);
+    const opener = screen.queryByRole('button', { name: '打开最近阅读' });
+    expect(opener).toBeTruthy();
+    if (opener) {
+      opener.focus();
+      fireEvent.click(opener);
+      expect(nav.openReadingHistory).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('[AD-097] lets a fast reselect of the committed channel cancel the pending target', () => {
