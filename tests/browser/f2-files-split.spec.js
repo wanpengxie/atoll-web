@@ -26,6 +26,36 @@ async function openFilesAtWorkspace(page) {
   return files;
 }
 
+test('UI-VIS-12 Files surface close returns focus to the desktop route trigger', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await reset(request, 224);
+  await login(page);
+  const files = await openFilesAtWorkspace(page);
+
+  const close = files.getByRole('button', { name: '关闭文件', exact: true });
+  await expect(close).toBeVisible();
+  await close.click();
+  await expect(page.getByRole('region', { name: '频道文件' })).toHaveCount(0);
+  await expect(page.locator('#workspace-files-toggle')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#workspace-files-toggle')).toBeFocused();
+});
+
+test('UI-VIS-12 mobile Files surface close returns focus to channel actions', async ({ page, request }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await reset(request, 225);
+  await login(page);
+  await page.getByRole('button', { name: '频道操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '打开文件', exact: true }).click();
+  const files = page.getByRole('region', { name: '频道文件' });
+  await expect(files).toBeVisible();
+  const close = files.getByRole('button', { name: '关闭文件', exact: true });
+  await expect(close).toBeVisible();
+  await close.click();
+  await expect(page.getByRole('region', { name: '频道文件' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '频道操作', exact: true })).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test('F2-FS-02c desktop restores Files after a Tasks excursion', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await reset(request, 222);

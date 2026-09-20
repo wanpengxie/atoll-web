@@ -118,6 +118,8 @@ export function WorkspaceLayout({
   const topology = useSurfaceTopology();
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
+  const channel = navigation.channel;
+  const filesOpen = navigation.activeView === 'files';
   const mobileChannelToggleRef = useRef(null);
   const mobileRailRef = useRef(null);
   const inactiveMobileDialogRef = useRef(null);
@@ -127,14 +129,14 @@ export function WorkspaceLayout({
   const channelHeadingRef = useRef(null);
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
+  const filesToggleRef = useRef(null);
+  const filesOpenRef = useRef(filesOpen);
   const viewTabRefs = useRef([]);
   const pendingChannelSelectionRef = useRef(null);
   // Presentation-only handoff gate. `navigation.activeChannelId` remains the
   // sole committed selection authority; this state only disables controls
   // while that owner commits or explicitly rejects the request.
   const [pendingChannelSelection, setPendingChannelSelection] = useState(null);
-  const channel = navigation.channel;
-  const filesOpen = navigation.activeView === 'files';
   // The responsive CSS hides the message pane when a compact/mobile terminal
   // or file surface takes the only column. Keep that layout fact on the
   // committed shell boundary and pass it to the conversation owner; CSS alone
@@ -222,6 +224,21 @@ export function WorkspaceLayout({
     returnFocusRef: mobileDrawerReturnFocusRef,
     onClose: () => closeMobileChannels('toggle'),
   });
+  useLayoutEffect(() => {
+    const wasOpen = filesOpenRef.current;
+    filesOpenRef.current = filesOpen;
+    if (!wasOpen || filesOpen) return;
+    // The Files surface owns the close button, but the route belongs to the
+    // existing Workspace navigation owner. Once that surface unmounts, return
+    // focus only when the close action removed the active element; an explicit
+    // Dynamic/tab or channel action keeps its own focus target.
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const target = topology === 'mobile' || topology === 'compact'
+      ? channelMenuButtonRef.current
+      : filesToggleRef.current;
+    target?.focus({ preventScroll: true });
+  }, [filesOpen, topology]);
   useEffect(() => {
     if (!channelMenuOpen) return undefined;
     const closeOutside = (event) => {
@@ -347,7 +364,7 @@ export function WorkspaceLayout({
         >{label}</button>)}
       </nav>
       <div className="workspace-quick-actions">
-        <button id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} disabled={!channel} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
+        <button ref={filesToggleRef} id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} disabled={!channel} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
         {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} aria-pressed={navigation.terminalVisible} disabled={!channel || terminalTransitionPending} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端</button>}
       </div>
       <div className="status-stack">

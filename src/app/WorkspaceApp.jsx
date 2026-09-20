@@ -1362,6 +1362,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     attachments: attachments.composerAttachments,
     commands: {
       back: attachments.backArtifactPreview,
+      close: () => {
+        setPanel('');
+        navigation.setActiveView('conversation');
+      },
       open: (channelId = navigation.activeChannelId) => {
         if (channelId !== navigation.activeChannelId) throw new TypeError('文件频道已切换');
         setPanel('');
