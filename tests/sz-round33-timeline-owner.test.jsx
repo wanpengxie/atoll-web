@@ -64,11 +64,22 @@ describe('S-Z current Timeline system-event owner', () => {
       type: 'unknown.internal.event',
       visibility: 'system',
       sender: { id: 'system', kind: 'system' },
-      payload: { body: { actor_id: 'steward', text: '伪造标题', severity: 'critical' } },
+      payload: {
+        body: {
+          actor_id: 'steward',
+          text: '伪造标题',
+          severity: 'critical',
+          token: 'wire-secret',
+          nested: { password: 'nested-secret' },
+        },
+      },
     }} />);
 
     expect(screen.getByText('后台状态已更新')).toBeTruthy();
+    expect(screen.queryByText('unknown.internal.event')).toBeNull();
     expect(screen.queryByText('伪造标题')).toBeNull();
+    expect(screen.queryByText('wire-secret')).toBeNull();
+    expect(screen.queryByText('nested-secret')).toBeNull();
   });
 
   it('maps a valid channel-inbound fact using only its documented fields', () => {
