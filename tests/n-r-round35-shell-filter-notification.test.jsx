@@ -200,7 +200,7 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
       };
       expect(feed.acknowledgeNotifications(lease)).toBe(1);
       feed.enqueue({ ...related('leave-2'), seq: 2 });
-      expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+      expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
 
       expect(feed.acknowledgeNotifications({
         ...lease,
@@ -213,7 +213,7 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
         captured: { ...lease.captured, installedHighSeq: 1 },
       })).toBe(false);
       feed.enqueue({ ...related('leave-3'), seq: 3 });
-      expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, total: 2 });
+      expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, other: 0, pending: false, unknown: false });
     } finally {
       runtime.destroy();
     }

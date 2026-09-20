@@ -1898,7 +1898,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         channel.id,
         canViewChannelContent(channel.access)
           ? feed.unreadFor(channel.id, navigation.selfFor(channel.id))
-          : { related: 0, total: 0 },
+          : { related: 0, other: 0, pending: false, unknown: false },
       ])),
       agentActivity: visibleAgentActivity,
       acknowledgeAgentActivity: feed.acknowledgeAgentActivity,

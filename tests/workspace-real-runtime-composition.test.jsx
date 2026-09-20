@@ -677,7 +677,9 @@ describe('真实 Workspace owner composition', () => {
     });
 
     expect(mocks.layoutProps.conversation.history.status.notificationHighWater).toBe(40);
-    expect(mocks.layoutProps.navigation.unread[mocks.channelId].total).toBe(0);
+    expect(mocks.layoutProps.navigation.unread[mocks.channelId]).toMatchObject({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     localStorage.removeItem(key);
   });
 

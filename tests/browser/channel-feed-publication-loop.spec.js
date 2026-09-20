@@ -20,5 +20,10 @@ test('channel feed publication keeps the authenticated App mounted', async ({ pa
 
   await expect(page.getByRole('navigation', { name: '频道' })).toBeVisible();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
-  expect(errors.filter((message) => message.includes('Maximum update depth'))).toEqual([]);
+  // The bootstrap identity probe is intentionally rejected before login. The
+  // loop oracle starts at the authenticated surface and includes every later
+  // console/page error, not only React's old depth warning.
+  errors.length = 0;
+  await page.waitForTimeout(8_000);
+  expect(errors).toEqual([]);
 });

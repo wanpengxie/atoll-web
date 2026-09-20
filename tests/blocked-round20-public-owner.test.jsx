@@ -227,7 +227,9 @@ describe('A-D round 20 public-owner blocked evidence', () => {
       id: 'cached-final', parent_id: 'cached-request', kind: 'response', type: 'human.ask', visibility: 'public',
       sender: { id: 'agent:worker:1', kind: 'agent' }, audience: ['human:root:1'], payload: { body: { status: 'completed', text: 'answer' } },
     }, 1, 'cache'));
-    expect(snapshot().unreadFor('c1', 'human:root:1')).toEqual({ related: 1, total: 1 });
+    expect(snapshot().unreadFor('c1', 'human:root:1')).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 

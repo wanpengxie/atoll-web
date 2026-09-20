@@ -411,8 +411,10 @@ describe('A-D round 21 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 3, requestEnvelope('sparse-visible-b')));
     const feed = snapshot();
     expect(feed.acknowledgeNotifications(
-      notificationConfirmation(feed, 'c0', 3),
-    )).toBe(3);
+      notificationConfirmation(feed, 'c0', 3, {
+        visibleRowIDs: ['sparse-visible-a', 'sparse-visible-b'],
+      }),
+    )).toBe(1);
     expect(feed.unreadFor('c0', SELF).related).toBe(1);
     runtime.destroy();
   });
@@ -438,7 +440,9 @@ describe('A-D round 21 public-owner regression and cursor evidence', () => {
       generation: status.generation,
       authorityRevision: status.notificationAuthorityRevision,
     })).toBe(2);
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 2, total: 2 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 2, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -543,7 +547,9 @@ describe('A-D round 21 public-owner regression and cursor evidence', () => {
     expect(feed.acknowledgeNotifications(
       notificationConfirmation(feed, 'c0', 1),
     )).toBe(1);
-    expect(feed.unreadFor('c0', SELF)).toEqual({ related: 1, total: 1 });
+    expect(feed.unreadFor('c0', SELF)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -556,7 +562,7 @@ describe('A-D round 21 public-owner regression and cursor evidence', () => {
       audience: ['human:other:1'],
     })));
     expect(snapshot().unreadFor('c0', SELF).related).toBe(0);
-    expect(snapshot().unreadFor('c0', SELF).total).toBeGreaterThan(0);
+    expect(snapshot().unreadFor('c0', SELF).other).toBeGreaterThan(0);
     runtime.destroy();
   });
 
@@ -575,11 +581,15 @@ describe('A-D round 21 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 3, responseEnvelope('peer-processing', 'peer-task', {
       sender: agent, audience: [agent.id], type: 'agent.ask', status: 'processing', text: '',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     snapshot().enqueue(liveRow('c0', 4, responseEnvelope('peer-done', 'peer-task', {
       sender: agent, audience: [agent.id], type: 'agent.ask', text: 'finished work',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 1 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 1, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -596,7 +606,9 @@ describe('A-D round 21 public-owner regression and cursor evidence', () => {
       id: 'system-narration', kind: 'event', type: 'system.member.created', visibility: 'system',
       sender: { id: 'system', kind: 'system' }, audience: [SELF], payload: { body: { text: 'member' } },
     }));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -611,7 +623,9 @@ describe('A-D round 21 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 2, responseEnvelope('mine-processing', 'mine', {
       sender: OTHER, audience: [SELF], type: 'agent.ask', status: 'processing', text: '',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 });

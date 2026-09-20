@@ -785,6 +785,7 @@ function useProjectionReadingOwner({
         presentationRevision: Number(evidence.presentationRevision || 0),
         sourceRevision: Number(evidence.sourceRevision || 0),
         installedHighSeq: Number(evidence.installedHighSeq || 0),
+        visibleRowIDs: Object.freeze([...(evidence.visibleRowIDs || [])]),
       }),
       caughtUp,
       scope,
@@ -796,6 +797,7 @@ function useProjectionReadingOwner({
       sourceRevision: Number(evidence.sourceRevision || 0),
       presentationRevision: Number(evidence.presentationRevision || 0),
       installedHighSeq: Number(evidence.installedHighSeq || 0),
+      visibleRowIDs: Object.freeze([...(evidence.visibleRowIDs || [])]),
       // Tail entry is a frozen backlog observation. The value is captured
       // beside the evidence/head equality above; the callback must not
       // re-read a later mutable head. Continuous arrivals use the DOM

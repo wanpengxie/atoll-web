@@ -53,12 +53,12 @@ test('F7 inactive-channel business and core progress never create rail or new-dy
   expect(dense.ok()).toBe(true);
 
   await expect(project.locator('.unread-related')).toHaveCount(0);
-  await expect(project.locator('.unread-total')).toHaveCount(0);
+  await expect(project.locator('.unread-total:not(.unread-pending)')).toHaveCount(0);
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   await expect(page.getByRole('button', { name: /条新动态/ })).toHaveCount(0);
   await expect(project.locator('.unread-related')).toHaveCount(0);
-  await expect(project.locator('.unread-total')).toHaveCount(0);
+  await expect(project.locator('.unread-total:not(.unread-pending)')).toHaveCount(0);
 });
 
 test('F7 channel rail exposes live Agent timers across channels and clears on completion', async ({ page, request }) => {

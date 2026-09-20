@@ -141,7 +141,9 @@ function sanitizeRailDiagnostic(value) {
       notificationHighWater: Math.max(0, Number(channel?.notificationHighWater || 0)),
       counts: {
         related: Math.max(0, Number(channel?.counts?.related || 0)),
-        total: Math.max(0, Number(channel?.counts?.total || 0)),
+        other: Math.max(0, Number(channel?.counts?.other || 0)),
+        pending: channel?.counts?.pending === true,
+        unknown: channel?.counts?.unknown === true,
       },
       rows: (Array.isArray(channel?.rows) ? channel.rows : []).slice(0, 200).map((row) => ({
         id: String(row?.id || '').slice(0, 256),

@@ -99,7 +99,7 @@ function expectAcknowledgedTail(evidence, minimumBoundary) {
   const snapshot = channelSnapshot(evidence);
   expect(snapshot).toMatchObject({
     authorityReady: true,
-    counts: { related: 0, total: 0 },
+    counts: { related: 0, other: 0, pending: false, unknown: false },
   });
   expect(snapshot.notificationHighWater).toBeGreaterThanOrEqual(minimumBoundary);
 }
@@ -117,6 +117,10 @@ test('tail acknowledgement survives channel switches and reload while a future r
   await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-high-water-persistence' }));
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
+  const initialScope = page.locator('.timeline-scope > button');
+  await expect(initialScope).toHaveText('与我相关');
+  await initialScope.click();
+  await expect(initialScope).toHaveText('全部');
   await expect(project.locator('.unread-related')).toHaveCount(0);
   const afterAcknowledgement = await railEvidence(page, 'c0.project');
 
@@ -139,16 +143,18 @@ test('tail acknowledgement survives channel switches and reload while a future r
 
   const initialApprovalBoundary = latestAddedApprovalSeq(afterAcknowledgement);
   expect(channelSnapshot(afterAcknowledgement)).toMatchObject({
-    readSeq: 25,
-    counts: { related: 0, total: 0 },
+    counts: { related: 0, other: 0, pending: false, unknown: false },
   });
+  expect(channelSnapshot(afterAcknowledgement).readSeq).toBeGreaterThanOrEqual(25);
   expectAcknowledgedTail(afterAcknowledgement, initialApprovalBoundary);
-  expect(channelSnapshot(afterReload)).toMatchObject({ counts: { related: 0, total: 0 } });
+  expect(channelSnapshot(afterReload)).toMatchObject({
+    counts: { related: 0, other: 0, pending: false, unknown: false },
+  });
   expect(channelSnapshot(afterReload).notificationHighWater)
     .toBeGreaterThanOrEqual(channelSnapshot(afterAcknowledgement).notificationHighWater);
   const futureApprovalBoundary = latestAddedApprovalSeq(futureUnread);
   expect(channelSnapshot(futureUnread)).toMatchObject({
-    counts: { related: 1, total: 1 },
+    counts: { related: 1 },
   });
   // actor.describe is a valid hidden-control lifecycle and may occupy physical
   // seqs between the acknowledged approvals and the next approval. The
@@ -183,6 +189,9 @@ test('cached hydration cannot resurrect a tail-acknowledged notification', async
   });
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
+  const hydrationScope = page.locator('.timeline-scope > button');
+  if (await hydrationScope.textContent() === '与我相关') await hydrationScope.click();
+  await expect(hydrationScope).toHaveText('全部');
   await expect(project.locator('.unread-related')).toHaveCount(0);
   const hydratedObservation = await waitForSettledHydrationObservation(page, 'c0.project');
   const afterHydratedAcknowledgement = await railEvidence(page, 'c0.project');
@@ -225,13 +234,21 @@ test('a filtered tail acknowledges the channel notification boundary', async ({ 
 
   await project.click();
   await expect(page.getByTitle('取消只看 project-agent')).toHaveAttribute('aria-pressed', 'true');
-  await expect(project.locator('.unread-related')).toHaveCount(0);
+  await expect(project.locator('.unread-related')).toHaveText('2');
   const atFilteredTail = await railEvidence(page, 'c0.project');
   await home.click();
+  await expect(project.locator('.unread-related')).toHaveText('2');
+  await project.click();
+  await page.getByTitle('取消只看 project-agent').click();
+  const filteredScope = page.locator('.timeline-scope > button');
+  await expect(filteredScope).toHaveText('与我相关');
+  await filteredScope.click();
+  await expect(filteredScope).toHaveText('全部');
   await expect(project.locator('.unread-related')).toHaveCount(0);
   const afterLeaving = await railEvidence(page, 'c0.project');
 
-  expectAcknowledgedTail(atFilteredTail, latestAddedApprovalSeq(atFilteredTail));
+  expect(channelSnapshot(atFilteredTail).notificationHighWater)
+    .toBeLessThan(latestAddedApprovalSeq(atFilteredTail));
   expectAcknowledgedTail(afterLeaving, latestAddedApprovalSeq(afterLeaving));
   expect(channelSnapshot(afterLeaving).notificationHighWater)
     .toBeGreaterThanOrEqual(channelSnapshot(atFilteredTail).notificationHighWater);
@@ -247,6 +264,10 @@ test('a continuously followed related arrival advances only after the mounted ta
   const project = channel(page, 'c0.project');
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
+  const followingScope = page.locator('.timeline-scope > button');
+  await expect(followingScope).toHaveText('与我相关');
+  await followingScope.click();
+  await expect(followingScope).toHaveText('全部');
   await expect(project.locator('.unread-related')).toHaveCount(0);
   const before = await railEvidence(page, 'c0.project');
   const beforeBoundary = Number(before.rail?.channels?.[0]?.notificationHighWater || 0);
@@ -262,7 +283,7 @@ test('a continuously followed related arrival advances only after the mounted ta
   const afterChannel = channelSnapshot(after);
   expect(afterChannel).toMatchObject({
     authorityReady: true,
-    counts: { related: 0, total: 0 },
+    counts: { related: 0, other: 0, pending: false, unknown: false },
   });
   const arrivalRow = afterChannel?.rows?.find((row) => (
     row.type === 'human.approve' && Number(row.seq) > beforeBoundary

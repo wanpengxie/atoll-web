@@ -447,7 +447,9 @@ describe('A-D round 25 public-owner evidence', () => {
     snapshot().enqueue(liveRow('c0', 2, requestEnvelope('unvisited')));
     snapshot().enqueue(liveRow('c0', 3, requestEnvelope('visible-b')));
     const feed = snapshot();
-    expect(feed.acknowledgeNotifications(notificationConfirmation(feed, 'c0', 3))).toBe(3);
+    expect(feed.acknowledgeNotifications(notificationConfirmation(feed, 'c0', 3, {
+      visibleRowIDs: ['visible-a', 'visible-b'],
+    }))).toBe(1);
     expect(feed.unreadFor('c0', SELF).related).toBe(1);
     runtime.destroy();
   });
@@ -458,7 +460,7 @@ describe('A-D round 25 public-owner evidence', () => {
     const { runtime, snapshot } = await readyRuntime({ boot: 'round25-count-boot' });
     snapshot().enqueue(liveRow('c0', 1, requestEnvelope('other-only', { audience: ['human:other:1'] })));
     expect(snapshot().unreadFor('c0', SELF).related).toBe(0);
-    expect(snapshot().unreadFor('c0', SELF).total).toBeGreaterThan(0);
+    expect(snapshot().unreadFor('c0', SELF).other).toBeGreaterThan(0);
     runtime.destroy();
   });
 
@@ -476,11 +478,15 @@ describe('A-D round 25 public-owner evidence', () => {
     snapshot().enqueue(liveRow('c0', 3, responseEnvelope('self-processing', 'self-task', {
       sender: agent, audience: [agent.id], type: 'agent.ask', status: 'processing', text: '',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     snapshot().enqueue(liveRow('c0', 4, responseEnvelope('self-done', 'self-task', {
       sender: agent, audience: [agent.id], type: 'agent.ask', text: 'finished work',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 1 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 1, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 

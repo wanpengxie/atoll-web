@@ -199,6 +199,13 @@ test('tool, timer, and public-event notifications follow independent readable ro
   const project = channel(page, 'c0.project');
   const related = project.locator('.unread-related');
   const other = project.locator('.unread-total:not(.unread-pending)');
+  await project.click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
+  const initialScope = page.locator('.timeline-scope > button');
+  await expect(initialScope).toHaveText('与我相关');
+  await initialScope.click();
+  await expect(initialScope).toHaveText('全部');
+  await home.click();
   const expectQuiet = async () => {
     await expect(related).toHaveCount(0);
     await expect(other).toHaveCount(0);

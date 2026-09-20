@@ -119,7 +119,9 @@ describe('A-D round 30 public cursor fixture recovery', () => {
     enqueue(snapshot(), 2, terminal('round30-done', 'round30-root', '完成'));
     enqueue(snapshot(), 3, terminal('round30-conflict', 'round30-root', '晚到冲突', 'failed'));
 
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 1, total: 1 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
   });
 
   it('[AD-307] keeps a late older history page behind the acknowledged cursor tail', async () => {
@@ -143,6 +145,8 @@ describe('A-D round 30 public cursor fixture recovery', () => {
     expect(snapshot().acknowledgeNotifications(
       notificationConfirmation(snapshot(), 100),
     )).toBe(100);
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 2, total: 2 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 2, other: 0, pending: false, unknown: false,
+    });
   });
 });

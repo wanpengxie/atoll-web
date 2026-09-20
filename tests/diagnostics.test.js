@@ -65,7 +65,7 @@ describe('frontend diagnostics', () => {
         authorityReady: false,
         readSeq: 0,
         notificationHighWater: 0,
-        counts: { related: 0, total: 0 },
+        counts: { related: 0, other: 0, pending: false, unknown: false },
         rows: [{ id: 'root', type: 'agent.ask', kind: 'response', status: 'completed', seq: 9, ackReason: 'counted_related' }],
       }],
     });

@@ -336,13 +336,16 @@ describe('A-D round 24 public-owner evidence', () => {
   });
 
   it('[AD-156] keeps an inactive rail unknown until cached unread context and parent are folded', async () => {
-    // 用户能力：非当前频道的未读在缓存上下文和 parent 完整前保持 unknown。
+    // 用户能力：零 head grant 是明确的空上下文；只有 head ahead of the
+    // materialized window 或物理 gap 才保持 unknown。
     // 不变量：notification 只能由当前 Replica/cache authority 证明。
     // 公开 owner：ChannelFeedRuntime + ChannelReplica。
     const { runtime, snapshot } = await attachedRuntime({ entries: [
       { channel_id: 'c0', head_seq: 0, has_rows: false }, { channel_id: 'c1', head_seq: 0, has_rows: false },
     ] });
-    expect(snapshot().unreadFor('c1', HUMAN.id)).toMatchObject({ unknown: true });
+    expect(snapshot().unreadFor('c1', HUMAN.id)).toMatchObject({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     snapshot().enqueue(liveRow('c1', 1, {
       id: 'cached-request', kind: 'request', type: 'human.ask', visibility: 'public',
       sender: { id: 'human:round24:other', kind: 'human' }, audience: [HUMAN.id], payload: { body: { text: 'question' } },
@@ -351,7 +354,9 @@ describe('A-D round 24 public-owner evidence', () => {
       id: 'cached-final', parent_id: 'cached-request', kind: 'response', type: 'human.ask', visibility: 'public',
       sender: OTHER, audience: [HUMAN.id], payload: { body: { status: 'completed', text: 'answer' } },
     }, 1, 'cache'));
-    expect(snapshot().unreadFor('c1', HUMAN.id)).toEqual({ related: 1, total: 1 });
+    expect(snapshot().unreadFor('c1', HUMAN.id)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
     activeRuntimes.delete(runtime);
   });

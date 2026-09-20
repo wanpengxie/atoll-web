@@ -276,9 +276,28 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 2, requestEnvelope('unvisited')));
     snapshot().enqueue(liveRow('c0', 3, requestEnvelope('visible-b')));
     const feed = snapshot();
-    expect(feed.acknowledgeNotifications(notificationConfirmation(feed, 'c0', 3))).toBe(3);
+    expect(feed.acknowledgeNotifications(notificationConfirmation(feed, 'c0', 3, {
+      visibleRowIDs: ['visible-a', 'visible-b'],
+    }))).toBe(1);
+    expect(feed.historyFor('c0').notificationHighWater).toBe(1);
     expect(feed.unreadFor('c0', SELF).related).toBe(1);
+    const authority = feed.historyFor('c0').authority;
+    const persisted = JSON.parse(localStorage.getItem(
+      `atoll.feed-cursors.v1.${authority.principalId}\u0000${authority.serverBoot}`,
+    ));
+    expect(persisted.notificationIdentities.c0).toEqual({ 'visible-b': 3 });
     runtime.destroy();
+    const resumed = await readyRuntime({
+      boot: 'round22-sparse-boot',
+      principal: authority.principalId,
+      entries: [{ channel_id: 'c0', head_seq: 3, has_rows: true }],
+    });
+    resumed.snapshot().enqueue(liveRow('c0', 1, requestEnvelope('visible-a')));
+    resumed.snapshot().enqueue(liveRow('c0', 2, requestEnvelope('unvisited')));
+    resumed.snapshot().enqueue(liveRow('c0', 3, requestEnvelope('visible-b')));
+    expect(resumed.snapshot().historyFor('c0').notificationHighWater).toBe(1);
+    expect(resumed.snapshot().unreadFor('c0', SELF).related).toBe(1);
+    resumed.runtime.destroy();
   });
 
   it('[AD-288] validates persisted cursor facts against the active authority tuple', async () => {
@@ -315,12 +334,12 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
 
   it('[AD-291] preserves a weak all-message count beside the narrower @me count', async () => {
     // 用户能力：与我相关 unread 和频道内任意新内容分别可见。
-    // 不变量：related 与 total 不能由同一 root set 代替。
+    // 不变量：related 与 other 不能由同一 root set 代替。
     // 公开 owner：ChannelFeedRuntime.unreadFor。
     const { runtime, snapshot } = await readyRuntime({ boot: 'round22-count-boot' });
     snapshot().enqueue(liveRow('c0', 1, requestEnvelope('other-only', { audience: ['human:other:1'] })));
     expect(snapshot().unreadFor('c0', SELF).related).toBe(0);
-    expect(snapshot().unreadFor('c0', SELF).total).toBeGreaterThan(0);
+    expect(snapshot().unreadFor('c0', SELF).other).toBeGreaterThan(0);
     runtime.destroy();
   });
 
@@ -339,11 +358,15 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 3, responseEnvelope('self-processing', 'self-task', {
       sender: agent, audience: [agent.id], type: 'agent.ask', status: 'processing', text: '',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     snapshot().enqueue(liveRow('c0', 4, responseEnvelope('self-done', 'self-task', {
       sender: agent, audience: [agent.id], type: 'agent.ask', text: 'finished work',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 1 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 1, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -359,7 +382,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 1, requestEnvelope('historical-self', {
       sender: { id: historical, kind: 'human' }, audience: [OTHER.id], type: 'human.note',
     })));
-    expect(snapshot().unreadFor('c0', current)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', current)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     expect(state.arrivalReceipts.timeline().events).toEqual([]);
     release();
     runtime.destroy();
@@ -377,7 +402,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
       audience: [SELF], type: 'agent.ask', text: '',
       body: { status: 'completed', replaced_by: 'successor' },
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -398,14 +425,18 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
       body: { status: 'completed' },
     })));
     expect(snapshot().timerFirings.events).toHaveLength(1);
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     snapshot().enqueue(liveRow('c0', 4, requestEnvelope('timer-readable-wake', {
       type: 'agent.timer.wake', audience: [SELF], parentId: 'timer:round22', text: '',
     })));
     snapshot().enqueue(liveRow('c0', 5, responseEnvelope('timer-readable-done', 'timer-readable-wake', {
       type: 'agent.timer.wake', audience: [SELF], text: 'Scheduled work finished',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 1, total: 1 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -426,7 +457,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 7, responseEnvelope('business-progress', 'business-root', { status: 'provider.waiting', text: '' })));
     snapshot().enqueue(liveRow('c0', 8, responseEnvelope('missing-status', 'missing-root', { body: { detail: 'still working' } })));
     snapshot().enqueue(liveRow('c0', 9, responseEnvelope('unknown-status', 'unknown-root', { status: 'streaming', text: '' })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 1, total: 1 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 1, other: 0, pending: false, unknown: true,
+    });
     runtime.destroy();
   });
 
@@ -443,7 +476,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 2, responseEnvelope('answer', 'mine', {
       type: 'agent.ask', audience: [SELF], text: 'answer',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 1, total: 1 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -459,7 +494,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 3, responseEnvelope('conflict', 'root', {
       status: 'failed', text: '',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -477,7 +514,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 3, responseEnvelope('unknown-status', 'unknown-root', {
       status: 'streaming', text: '',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: true,
+    });
     runtime.destroy();
   });
 
@@ -492,7 +531,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 2, responseEnvelope('context-done', 'context', {
       type: 'agent.context', audience: [SELF], text: 'done',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 0, total: 0 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -513,7 +554,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     snapshot().enqueue(liveRow('c0', 4, responseEnvelope('root-done', 'root', {
       audience: [SELF], type: 'agent.ask', text: 'answer',
     })));
-    expect(snapshot().unreadFor('c0', SELF)).toEqual({ related: 1, total: 1 });
+    expect(snapshot().unreadFor('c0', SELF)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
     runtime.destroy();
   });
 
@@ -536,7 +579,9 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
       body: { status: 'completed', text: 'private answer', token: 'secret' },
     })));
     const diagnostic = railDiagnosticSnapshot('c0');
-    expect(diagnostic.channels[0]).toMatchObject({ counts: { related: 1, total: 1 } });
+    expect(diagnostic.channels[0]).toMatchObject({
+      counts: { related: 1, other: 0, pending: false, unknown: false },
+    });
     expect(JSON.stringify(diagnostic)).not.toContain('private');
     expect(JSON.stringify(diagnostic)).not.toContain('secret');
     runtime.destroy();
