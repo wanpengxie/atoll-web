@@ -357,7 +357,10 @@ export function WorkspaceLayout({
       <div className={[
         'dynamic-workspace',
         navigation.terminalVisible && 'terminal-split-open',
-        filesOpen && !navigation.terminalVisible && 'files-split-open',
+        // Files is a committed route and Terminal is an overlay.  Keep both
+        // grid facts when they are open so the existing desktop two-surface
+        // geometry can place files above the terminal without remounting it.
+        filesOpen && 'files-split-open',
         navigation.activeView === 'tasks' && !navigation.terminalVisible && 'tasks-view-open',
       ].filter(Boolean).join(' ')}>
         <div className="dynamic-message-pane" data-surface-visible={String(messageSurfaceVisible)}>{conversationElement}</div>

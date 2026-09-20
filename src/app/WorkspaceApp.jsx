@@ -1762,8 +1762,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       commands: Object.freeze({ open: openWorkspaceSource }),
     });
   }, [feed, navigation.channels, navigation.selfFor, openWorkspaceSource]);
+  // Terminal is a split-surface overlay.  It must not replace the committed
+  // Files route: WorkspaceFeatures uses this view only to decide which
+  // feature surface to materialize, while navigation remains the sole route
+  // owner.  Tasks keep the historical terminal-first presentation.
+  const featureView = navigation.activeView === 'files'
+    ? 'files'
+    : navigation.terminalVisible ? 'conversation' : navigation.activeView;
   const featureElement = <WorkspaceFeatures
-    activeView={navigation.terminalVisible ? 'conversation' : navigation.activeView}
+    activeView={featureView}
     channel={navigation.activeChannel}
     contentVisible={contentVisible}
     files={filesPort}

@@ -1,0 +1,87 @@
+import { expect, test } from '@playwright/test';
+import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
+
+async function reset(request, seed) {
+  const response = await request.post(`${MOCK}/mock/control/reset`, {
+    data: { scenario: 'multi-channel', seed },
+  });
+  expect(response.ok()).toBe(true);
+}
+
+async function login(page) {
+  await page.goto('/');
+  await page.getByRole('textbox', { name: '账号' }).fill('root@atoll.local');
+  await page.getByLabel('密码').fill('root');
+  await page.getByRole('button', { name: '进入 Atoll' }).click();
+  await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(page.locator('main h1')).toHaveText('c0');
+}
+
+async function openFilesAtWorkspace(page) {
+  await page.locator('#workspace-files-toggle').click();
+  const files = page.getByRole('region', { name: '频道文件' });
+  await expect(files).toBeVisible();
+  await files.getByRole('row', { name: /workspace/ }).click();
+  await expect(files.getByRole('row', { name: /README\.md/ })).toBeVisible();
+  return files;
+}
+
+test('F2-FS-03 desktop keeps the selected Files surface beside Terminal', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await reset(request, 220);
+  await login(page);
+  await openFilesAtWorkspace(page);
+
+  await page.locator('#workspace-terminal-toggle').click();
+  await expect(page.locator('.terminal-view')).toBeVisible();
+  await expect(page.getByRole('region', { name: '频道动态' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '频道文件' })).toBeVisible();
+  await expect(page.getByRole('row', { name: /README\.md/ })).toBeVisible();
+
+  const geometry = await page.evaluate(() => {
+    const box = (selector) => document.querySelector(selector)?.getBoundingClientRect().toJSON();
+    return {
+      viewport: window.innerWidth,
+      message: box('.dynamic-message-pane'),
+      files: box('.artifacts-view'),
+      terminal: box('.terminal-view'),
+      filesToggle: document.querySelector('#workspace-files-toggle')?.getAttribute('aria-pressed'),
+    };
+  });
+  expect(geometry.viewport).toBe(1280);
+  expect(geometry.filesToggle).toBe('true');
+  expect(geometry.files.left).toBeGreaterThanOrEqual(geometry.message.right - 1);
+  expect(geometry.terminal.left).toBeGreaterThanOrEqual(geometry.message.right - 1);
+  expect(geometry.terminal.top).toBeGreaterThanOrEqual(geometry.files.bottom - 1);
+  expect(geometry.terminal.bottom).toBeLessThanOrEqual(geometry.message.bottom + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('F2-FS-03 mobile retains the mounted Files state while Terminal is shown', async ({ page, request }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await reset(request, 221);
+  await login(page);
+
+  await page.getByRole('button', { name: '频道操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '打开文件', exact: true }).click();
+  const files = page.getByRole('region', { name: '频道文件' });
+  await expect(files).toBeVisible();
+  await files.getByRole('row', { name: /workspace/ }).click();
+  await expect(files.getByRole('row', { name: /README\.md/ })).toBeVisible();
+
+  await page.getByRole('button', { name: '频道操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '打开终端', exact: true }).click();
+  await expect(page.locator('.terminal-view')).toBeVisible();
+  await expect(page.locator('#workspace-files-toggle')).toHaveAttribute('aria-pressed', 'true');
+  // The compact/mobile CSS hides the file pane while Terminal owns the one
+  // visible surface, but the feature must remain mounted so its directory and
+  // selection survive the overlay.
+  await expect(page.locator('.artifacts-view')).toHaveCount(1);
+  await expect(page.locator('.artifacts-view')).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  await page.getByRole('button', { name: '频道操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '关闭终端', exact: true }).click();
+  await expect(files).toBeVisible();
+  await expect(files.getByRole('row', { name: /README\.md/ })).toBeVisible();
+});
