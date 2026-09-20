@@ -563,6 +563,9 @@ function useProjectionReadingOwner({
         settled: observation.settled === true,
         atTail: observation.atTail === true,
         surfaceVisible: observation.surfaceVisible === true,
+        presentationRevision: Number(observation.presentationRevision || 0),
+        domPresentationRevision: Number(observation.domPresentationRevision || 0),
+        observationIdentity: observation.observationIdentity || null,
         visibleRowIDs: [...new Set((observation.visibleRowIDs || (observation.visibleRows || [])
           .map((row) => typeof row === 'string' ? row : row?.messageID))
           .map((id) => String(id || ''))

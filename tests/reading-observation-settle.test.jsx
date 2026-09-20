@@ -24,7 +24,13 @@ vi.mock('react-virtuoso', async () => {
     }, [props]);
     const List = props.components?.List || 'div';
     return (
-      <div ref={nodeRef} className={props.className} role={props.role} aria-label={props['aria-label']}>
+      <div
+        ref={nodeRef}
+        className={props.className}
+        role={props.role}
+        aria-label={props['aria-label']}
+        data-reading-presentation-revision={props['data-reading-presentation-revision']}
+      >
         <List context={props.context}>
           {props.data.map((value, index) => (
             <div key={props.computeItemKey(index + props.firstItemIndex, value)}>

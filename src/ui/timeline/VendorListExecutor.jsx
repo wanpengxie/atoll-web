@@ -76,8 +76,15 @@ const MessageRow = memo(function MessageRow({ row, revision, renderRow, presenta
   && left.revision === right.revision
   && left.presentationState === right.presentationState);
 
-const List = React.forwardRef(function List({ children, ...props }, ref) {
-  return <div {...props} ref={ref}>{children}</div>;
+const List = React.forwardRef(function List({ children, context, ...props }, ref) {
+  const revision = Number(context?.presentationRevision);
+  return <div
+    {...props}
+    {...(Number.isFinite(revision)
+      ? { 'data-reading-presentation-revision': revision }
+      : {})}
+    ref={ref}
+  >{children}</div>;
 });
 
 function WaitingObstructionFooter() {
@@ -117,6 +124,26 @@ const POSITION_RESTORE_MAX_ATTEMPTS = 8;
 const POSITION_RESTORE_MAX_MOUNT_ATTEMPTS = 120;
 const POSITION_RESTORE_STABLE_FRAMES = 6;
 const POSITION_RESTORE_TOLERANCE_PX = 2;
+
+function observationIdentity(owner, data) {
+  const session = owner?.getSession?.() || {};
+  return Object.freeze({
+    activationID: String(owner?.activationID || session.activationID || ''),
+    inputEpoch: Number(session.inputEpoch || 0),
+    intentRevision: Number(session.intentRevision || 0),
+    presentationRevision: Number(data?.revision || 0),
+    tailID: String(data?.rows?.at(-1)?.id || ''),
+  });
+}
+
+function sameObservationIdentity(left, right) {
+  return Boolean(left && right)
+    && String(left.activationID) === String(right.activationID)
+    && Number(left.inputEpoch) === Number(right.inputEpoch)
+    && Number(left.intentRevision) === Number(right.intentRevision)
+    && Number(left.presentationRevision) === Number(right.presentationRevision)
+    && String(left.tailID) === String(right.tailID);
+}
 
 function contentAnchorIdentity(command) {
   if (!command) return '';
@@ -203,6 +230,7 @@ export function VendorListExecutor({
   const [anchorRetentionExtent, setAnchorRetentionExtent] = useState(0);
   const geometryRevisionRef = useRef(0);
   const observationFrameRef = useRef(0);
+  const observationRequestRef = useRef(null);
   // A delayed content-anchor restore is a typed command transaction, not a
   // bare timer. Keep its identity and frame token together so a stale RAF can
   // never consume or execute a later fold command from the same activation.
@@ -229,19 +257,26 @@ export function VendorListExecutor({
     rootRef.current = node;
     setRootNode((current) => current === node ? current : node);
   }, []);
-  const listContext = useMemo(() => ({ historyStartBoundary }), [historyStartBoundary]);
+  const listContext = useMemo(() => ({
+    historyStartBoundary,
+    presentationRevision: Number(snapshot.revision || 0),
+  }), [historyStartBoundary, snapshot.revision]);
 
   useLayoutEffect(() => {
     readingRef.current = reading;
     snapshotRef.current = snapshot;
   }, [reading, snapshot]);
 
-  const observe = useCallback((source = 'layout', settled = false) => {
+  const observe = useCallback((source = 'layout', request = null) => {
     const root = rootRef.current;
     const owner = readingRef.current;
     const data = snapshotRef.current;
-    if (!root || !surfaceVisible) return;
+    if (!root || !surfaceVisible) return false;
     const currentSession = owner.getSession();
+    const currentIdentity = observationIdentity(owner, data);
+    const fence = request?.fence || null;
+    const fenceCurrent = !fence || sameObservationIdentity(fence, currentIdentity);
+    const requiresTail = request?.requiresTail === true;
     const pendingPosition = positionRestoreRef.current;
     const suppressBookmark = source === 'layout'
       && pendingPosition?.activationID === owner.activationID
@@ -250,6 +285,31 @@ export function VendorListExecutor({
     const visibleRows = visibleRowEvidence(root, data.rows);
     const visibleRowIDs = Object.freeze(visibleRows.map((row) => row.messageID));
     const atTail = root.scrollHeight - root.clientHeight - root.scrollTop <= 24;
+    const currentRowIDs = new Set(data.rows.map((row) => String(row.id)));
+    const currentVisibleRowIDs = visibleRowIDs.filter((id) => currentRowIDs.has(String(id)));
+    const domRevisionNode = root.matches?.('[data-reading-presentation-revision]')
+      ? root
+      : root.querySelector?.('[data-reading-presentation-revision]');
+    const domPresentationRevision = Number(
+      domRevisionNode?.getAttribute?.('data-reading-presentation-revision'),
+    );
+    const presentationAligned = Number.isFinite(domPresentationRevision)
+      && domPresentationRevision === currentIdentity.presentationRevision;
+    // A settled receipt is an actual-paint fence, not a boolean carried over
+    // from an earlier RAF. It is consumable only when the request identity is
+    // still current, the DOM advertises the same Presentation revision, and
+    // at least one current row was hit-tested in the viewport. Following/cold
+    // receipts additionally require the current tail to be present at the
+    // physical tail; stale rows from the previous snapshot never qualify.
+    const tailVisible = !requiresTail
+      || (currentIdentity.tailID && currentVisibleRowIDs.includes(currentIdentity.tailID));
+    const settledReceipt = Boolean(
+      fence
+      && fenceCurrent
+      && presentationAligned
+      && currentVisibleRowIDs.length > 0
+      && (!requiresTail || (atTail && tailVisible)),
+    );
     reportDomEvidence(Object.freeze({
       type: 'reading-observation',
       activationID: owner.activationID,
@@ -260,17 +320,59 @@ export function VendorListExecutor({
       visibleRows,
       visibleRowIDs,
       source,
-      settled,
+      settled: settledReceipt,
       inputEpoch: currentSession.inputEpoch,
+      presentationRevision: currentIdentity.presentationRevision,
+      domPresentationRevision,
+      observationIdentity: fence || currentIdentity,
       geometryRevision: geometryRevisionRef.current,
     }));
+    return !fence || settledReceipt;
   }, [reportDomEvidence, surfaceVisible]);
 
   const scheduleObserve = useCallback((source = 'layout', settled = false) => {
+    const owner = readingRef.current;
+    const data = snapshotRef.current;
+    const currentIdentity = observationIdentity(owner, data);
+    const currentSession = owner?.getSession?.() || {};
+    const pending = observationRequestRef.current;
+    const pendingFence = pending?.fence || null;
+    const requested = settled === true;
+    const requestSource = requested && source === 'layout' ? 'settled' : source;
+    let nextRequest;
+    if (requested) {
+      nextRequest = {
+        source: requestSource,
+        fence: currentIdentity,
+        requiresTail: currentSession.mode === READING_MODE.following,
+      };
+    } else if (pendingFence) {
+      // Ordinary range/mutation samples may coalesce this RAF, but they may
+      // neither consume nor downgrade a pending settled fence. If the owner
+      // advanced, rebind the fence to the current identity before sampling;
+      // the old activation/input/revision can never settle.
+      nextRequest = {
+        source: pending.source,
+        fence: sameObservationIdentity(pendingFence, currentIdentity)
+          ? pendingFence
+          : currentIdentity,
+        requiresTail: currentSession.mode === READING_MODE.following,
+      };
+    } else {
+      nextRequest = { source, fence: null, requiresTail: false };
+    }
+    observationRequestRef.current = nextRequest;
     if (observationFrameRef.current) globalThis.cancelAnimationFrame?.(observationFrameRef.current);
     observationFrameRef.current = globalThis.requestAnimationFrame?.(() => {
       observationFrameRef.current = 0;
-      observe(source, settled);
+      const request = observationRequestRef.current;
+      observationRequestRef.current = null;
+      const accepted = observe(request?.source || source, request);
+      if (request?.fence && accepted === false) {
+        // Retry with a fresh identity. This is a transient paint miss, not a
+        // license to publish the stale request as settled.
+        scheduleObserve(request.source, true);
+      }
     }) || 0;
   }, [observe]);
 
@@ -770,7 +872,12 @@ export function VendorListExecutor({
       // A wheel at an already-clamped tail emits no scroll event. Publish the
       // same physical-tail evidence here so the input cannot transiently demote
       // an otherwise-following session to browsing before a live append lands.
-      if (input.active && input.direction === 'newer' && atTail) observe('user', true);
+      if (input.active && input.direction === 'newer' && atTail) {
+        observe('user', {
+          fence: observationIdentity(readingRef.current, snapshotRef.current),
+          requiresTail: true,
+        });
+      }
     };
     const keydown = (event) => {
       const direction = directionFromKey(event.key);
@@ -958,6 +1065,7 @@ export function VendorListExecutor({
 
   useEffect(() => () => {
     if (observationFrameRef.current) globalThis.cancelAnimationFrame?.(observationFrameRef.current);
+    observationRequestRef.current = null;
     if (contentAnchorFrameRef.current?.frameID) {
       globalThis.cancelAnimationFrame?.(contentAnchorFrameRef.current.frameID);
     }
@@ -1007,6 +1115,7 @@ export function VendorListExecutor({
     aria-label="频道动态"
     data-reading-container="conversation-list"
     data-reading-mode={reading.session.mode}
+    data-reading-presentation-revision={Number(snapshot.revision || 0)}
     tabIndex={0}
     data={snapshot.rows}
     firstItemIndex={Number(snapshot.firstItemIndex || 1)}

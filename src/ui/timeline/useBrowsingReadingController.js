@@ -61,6 +61,14 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
     if (!evidence || evidence.activationID !== current.activationID) return;
 
     if (evidence.type === 'reading-observation') {
+      const presentationRevision = Number(evidence.presentationRevision);
+      const domPresentationRevision = Number(evidence.domPresentationRevision);
+      const currentPresentationRevision = Number(data.revision || 0);
+      const settled = evidence.settled === true
+        && evidence.visibleRowIDs?.length > 0
+        && Number.isFinite(presentationRevision)
+        && presentationRevision === currentPresentationRevision
+        && domPresentationRevision === currentPresentationRevision;
       owner.onReadingObservation?.({
         bookmark: evidence.bookmark,
         atTail: evidence.atTail,
@@ -69,8 +77,11 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
         visibleRows: evidence.visibleRows,
         visibleRowIDs: evidence.visibleRowIDs,
         source: evidence.source,
-        settled: evidence.settled === true,
+        settled,
         inputEpoch: evidence.inputEpoch,
+        presentationRevision,
+        domPresentationRevision,
+        observationIdentity: evidence.observationIdentity,
         geometryRevision: evidence.geometryRevision,
         activationID: evidence.activationID,
       });
