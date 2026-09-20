@@ -452,10 +452,15 @@ describe('A-D round 26 public-owner evidence', () => {
     const { runtime, snapshot } = await attachedRuntime({ options });
     const leases = ['channel-entry', 'reconnect', 'foreground-return']
       .map((intent) => snapshot().requestBackgroundInterest('c0', { intent }));
+    const duplicateReconnectLease = snapshot().requestBackgroundInterest('c0', {
+      intent: 'reconnect',
+    });
     expect(leases.every((lease) => lease.accepted)).toBe(true);
+    expect(duplicateReconnectLease.accepted).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(options.wireRef.current.historyBefore).toHaveBeenCalledTimes(3);
     leases.forEach((lease) => lease.release());
+    duplicateReconnectLease.release();
     runtime.destroy();
   });
 

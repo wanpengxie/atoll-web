@@ -27,7 +27,12 @@ export const HISTORY_RESERVOIR_SIZE = 5_000;
 const MOBILE_REPLICA_MAX_ROWS = 500;
 const MOBILE_REPLICA_TARGET_ROWS = 400;
 
-const BACKGROUND_INTEREST_TYPES = new Set([HISTORY_INTENT.searchContext]);
+const BACKGROUND_INTEREST_TYPES = new Set([
+  HISTORY_INTENT.searchContext,
+  HISTORY_INTENT.channelEntry,
+  HISTORY_INTENT.reconnect,
+  HISTORY_INTENT.foregroundReturn,
+]);
 
 const ACTIVITY_TYPES = new Set([
   TYPES.agentAsk, TYPES.agentQueue, TYPES.agentCompact,
@@ -1115,6 +1120,7 @@ export function createChannelFeedRuntime(options = {}) {
       batch.beforeSeq,
       batch.limit,
       batch.byteLimit,
+      request.backgroundInterestKey || '',
     ].join('\u0000');
   }
 
@@ -1734,6 +1740,7 @@ export function createChannelFeedRuntime(options = {}) {
       record.promise = Promise.resolve(loadHistory(id, {
         intent,
         urgency: HISTORY_URGENCY.anticipatory,
+        backgroundInterestKey: key,
         signal: abortController.signal,
       })).catch(() => ({ kind: 'failed' })).finally(() => {
         if (destroyed) return;
