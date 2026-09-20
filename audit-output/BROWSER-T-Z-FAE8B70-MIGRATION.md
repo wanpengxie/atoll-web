@@ -2043,3 +2043,67 @@ unsupported 误判。当前三 tab 的控件与能力证据如下：
 - **后续可执行 owner gap：** Governance 需要决定并实现模板 list/get → recipe
   create 的闭环（或把模板入口明确标为 unavailable），以及若产品仍要求旧
   `member.restart` 则公开对应控件；本轮不改产品、不改 spec、不更新 snapshot。
+
+## 第三十五轮：Governance 三条严格 public-owner 合同
+
+本轮在 HEAD `5ac836d` 上只增加公开合同测试和本审计；工作树中已有的
+`WorkspaceApp`/`GovernanceFeature` candidate 修改属于其他 owner，本轮没有编辑或
+提交产品文件，也没有恢复旧 store/compat 层。合同沿用 `fae8b70` 的用户结果，拒绝
+用截图或同名目录行替代因果证据。
+
+### fae → 当前 owner 对齐
+
+| 用户结果 | `fae8b70` 证据 | 当前必须保持的公开合同 | 唯一 owner / 本轮裁决 |
+|---|---|---|---|
+| 模板选择真正影响创建 | 旧 `src/ui/ChannelCreateModal.jsx` 的 `submit` 先发 `channelTemplateCommand('get')`，`terminalValue(...).value.body` 就绪后才调用 `create(recipe)`；旧 `ChannelTemplatesPanel` 的“从 Registrar 读取”先发 list | `刷新目录事实`/模板入口必须获得 `system.channel.template.list` receipt；receipt 的 canonical projection 才能产生可选行。选中行后必须发同 ID 的 `system.channel.template.get`，仅在其 receipt body 成功后发 `system.channel.create`。create 必须带 body 的 declarations/profile（并合并本次 purpose/device），不能只传 `templateId` 或把 list 摘要当 recipe | Registrar wire/session projection 是 owner，Governance 只消费 `channel.channelTemplates`；当前浏览器首断点是 list frame **0**，因此这是产品 owner gap，不是环境阻塞 |
+| 本次创建的 child 才能使进度就绪 | 旧 convergence 以本次 request 的 canonical turn、OBS row、成员关系和 serving 事实收敛 | 在 request 前已存在的同名/同 qualified id child 绝不能满足本次 request；ready 需要匹配 `requestId` 的 accepted/ledger/observable/membership/serving projection 和 authoritative channel row | Workspace creation projection owner；本轮 unit 合同已在当前 candidate 上通过 |
+| 成功后进入新频道 | 旧 `App.jsx` 通过 `onEnterChannel` 回调关闭 modal 并调用 `selectWorkspaceChannel(channel.id)` | ready 后只能调用现有 Shell navigation port `enterChannel({ channelId, view: 'conversation' })`；Shell port 未连接时按钮不可用/不得猜成功；不得由 Governance 直接写 `location.hash` | Shell/Workspace navigation owner；本轮 unit 合同已在当前 candidate 上通过 |
+
+模板链不能因为当前 `channel` port 已暴露 `listTemplates`/`getTemplate` 方法就算完成：
+`useWireSession.loadSpaceDirectory` 仍把 `channelTemplates` 置为 `null`，而当前概览的
+刷新仍只调用 directory refresh，未消费 Registrar list receipt。Mock Registrar 已有
+`mock:team`（body 含 `mock:steward` 与 `local-device`），所以严格测试能够把真实缺口
+与“没有 fixture”区分开。
+
+### 严格测试与结果
+
+新增 [blocked-round35-governance-public-owner.test.jsx](../tests/blocked-round35-governance-public-owner.test.jsx)
+覆盖两个不可绕过的公开行为：
+
+1. 旧的同名 `c0.research` child 在 request 前存在时，提交后仍必须停在“正在收敛”，
+   不得出现“进入新频道”；
+2. 全部 convergence facts 就绪后，点击“进入新频道”必须调用
+   `enterChannel({ channelId: 'c0.research', view: 'conversation' })`，且原有
+   `location.hash` 保持不变。
+
+```text
+npx vitest run tests/blocked-round35-governance-public-owner.test.jsx --reporter=verbose
+2 passed (Canvas getContext warning only; no test failure)
+```
+
+新增 [governance-template-wire-contract.spec.js](../tests/browser/governance-template-wire-contract.spec.js)
+覆盖真实 Chromium 的 Registrar list → canonical option → matching get → recipe create
+链，并断言 recipe 中 `mock:steward`、`default_storage_device_id: local-device`、本次
+purpose 均存在且 create payload 没有偷渡 `templateId`。执行结果：
+
+```text
+npx playwright test tests/browser/governance-template-wire-contract.spec.js --reporter=line
+1 failed
+首断点：expect(system.channel.template.list).toHaveLength(1)
+实际 Received length: 0；登录、canonical Governance/概览 panel 和刷新按钮均已到达。
+```
+
+由于 list receipt 首断，后续 get/create 断言有意不执行；这不是把后端模板 fixture
+删掉，也不是 selector/viewport 环境阻塞。产品修复必须让 list receipt 先进入现有
+Workspace/Registrar projection，再继续 get/body 与 recipe create；不得通过预置
+`channelTemplates`、跳过 list/get 或放宽 recipe 断言让测试变绿。
+
+### Round35 裁决
+
+- **PASS（candidate owner）：** 同名旧 child 不冒充本次 request；Shell navigation
+  通过 typed port 且不写 hash；unit 2/2。
+- **RED（真实产品缺口）：** Governance 尚未把 Registrar list receipt 接入 canonical
+  channel template projection；因此 list/get → recipe create 浏览器合同在 list 首断。
+- **未判断：** get receipt body、recipe create 不能在 list 首断后伪报 PASS；修复后必须
+  重新跑完整 Chromium 链并保留 declarations/profile/purpose/device wire 证据。
+- 本轮未删 skip、未调截图阈值、未修改 vendor/package/src 产品文件。
