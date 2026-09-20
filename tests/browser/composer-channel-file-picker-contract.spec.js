@@ -61,7 +61,7 @@ test('Escape and backdrop cancellation leave the draft and attachment set unchan
   await expect(page.getByLabel('待发送附件')).toHaveCount(0);
 
   dialog = await openPicker(page);
-  await dialog.locator('..').click({ position: { x: 1, y: 1 } });
+  await page.locator('.attachment-picker-backdrop').click({ position: { x: 1, y: 1 } });
   await expect(dialog).toHaveCount(0);
   await expect(input).toHaveText(before);
   await expect(page.getByLabel('待发送附件')).toHaveCount(0);
@@ -74,12 +74,22 @@ test('switching channel cancels the old picker request without attaching to eith
   await input.fill('draft owned by c0');
   const dialog = await openPicker(page);
 
-  await page.getByRole('button', { name: '# c0.project', exact: true }).click();
+  // The modal backdrop intentionally owns pointer events, so a click on the
+  // obscured rail must not masquerade as an external channel switch. Drive
+  // the public canonical route instead: this is the same hash/popstate path
+  // used by browser history/deep links and must cancel the old request.
+  await page.evaluate(() => {
+    window.history.pushState(window.history.state, '', '#/channels/c0.project/conversation');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
   await expect(dialog).toHaveCount(0);
   await expect(page.locator('main h1')).toHaveText('c0.project');
   await expect(page.getByLabel('待发送附件')).toHaveCount(0);
 
-  await page.getByRole('button', { name: '# c0', exact: true }).click();
+  await page.evaluate(() => {
+    window.history.pushState(window.history.state, '', '#/channels/c0/conversation');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
   await expect(page.locator('main h1')).toHaveText('c0');
   await expect(page.getByLabel('消息')).toHaveText('draft owned by c0');
   await expect(page.getByLabel('待发送附件')).toHaveCount(0);
