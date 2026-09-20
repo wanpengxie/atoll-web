@@ -408,6 +408,23 @@ so the current ledger is **326 PASS / 0 REGRESSION / 39 BLOCKED**. No capability
 was declared obsolete, no expected-fail was counted, and no baseline was
 deleted or skipped.
 
+## Round 40 — public-owner recovery batch
+
+Round 40 re-runs the next ten still-BLOCKED public-owner contracts: AD-170,
+AD-182, AD-284, AD-291, AD-292, AD-316, AD-331, AD-334, AD-363, and AD-364.
+The focused existing assertions report **1 passed / 9 ordinary red / 30
+focused-out skips** across the two source files. AD-316 now passes through the
+current public `SpaceAdministrationPanel → SpaceDevices` command port: terminal
+`create_device` calls the injected `refresh('devices')` exactly once. The nine
+other rows remain ordinary-red Feed/notification, ConversationPresentation, or
+Composer capability-gap evidence; none is counted as expected-fail completion.
+
+The current ledger is therefore **327 PASS / 0 REGRESSION / 38 BLOCKED**. The
+case-level records are in
+[`A-D-ROUND40-PUBLIC-OWNER-RECOVERY-20260920.md`](./A-D-ROUND40-PUBLIC-OWNER-RECOVERY-20260920.md).
+No product source, private export, compatibility API, baseline declaration,
+skip, or expected-fail semantic changed in this round.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
