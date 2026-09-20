@@ -1779,3 +1779,75 @@ ATOLL_TEST_WEB_PORT=15624 ATOLL_TEST_MOCK_PORT=19924 \
 两组均为真实 Chromium，未修改 `src/` 产品 owner。当前工作树中已有的
 `VendorListExecutor.jsx`、`useBrowsingReadingController.js` 及
 `tests/reading-observation-settle.test.jsx` 脏改继续归其原 owner，本轮未触碰。
+
+## 第三十轮：d965 独立复验、SZ self-send 旧证据裁决与下一组五条
+
+### d965 Reading strict / self-send 复验
+
+当前 HEAD 为 `d965b57`（`fix(reading): preserve wheel burst anchor through
+scrollend`）。严格 Reading 合同没有改回 retained-anchor fallback，仍要求
+`afterSwitch.firstVisible.id === beforeSwitch.firstVisible.id`。真实 Chromium
+repeat5 的首断点稳定为该严格用户合同本身：五次均为
+`expected c0-history-request-112, received c0-history-request-111`，发生在
+`tests/browser/reading-position-session.spec.js:154`，而不是环境启动、跳转按钮或
+storage hydrate。结论是 **Reading 产品/owner RED，合同保持严格，不放宽**。
+
+```text
+ATOLL_TEST_WEB_PORT=15625 ATOLL_TEST_MOCK_PORT=19925 \
+  ATOLL_READING_OUT=/tmp/tz-r30-reading-d965-repeat5 \
+  npx playwright test tests/browser/reading-position-session.spec.js \
+  --workers=1 --repeat-each=5 --reporter=line \
+  --output=test-results-tz-r30-reading-d965-repeat5
+5 failed (all at line 154: 112 -> 111)
+```
+
+SZ-ROUND29 报告中的 `browsing self-send handoff` `mode=browsing, gap=324`
+是 `d965b57` 落地前的历史结果（该报告提交为 `99f614b`，其父提交早于 d965），
+不是当前 fixture-only 红。当前正式 self-send 合同来自
+`fae8b70:src/ui/Timeline.jsx:1957-1967` → `fae8b70:src/model/reading-session.js:168-186`：
+本人显式 send 安装一次 `requestBottom`/`requestLatest`，用户状态转 Following，
+并以真实目标 row 的可见尾部几何收敛；旧 `LegendMessageList` 也明确记录
+“Send-start itself changes browsing to following”。当前 E 黑盒进一步要求精确
+目标 row painted/intersectsViewport、Following、gap `≤24`、真实 timeline writer，
+不是输入框文本命中。
+
+```text
+ATOLL_TEST_WEB_PORT=15626 ATOLL_TEST_MOCK_PORT=19926 \
+  ATOLL_E_OUT=/tmp/tz-r30-self-send-repeat5 \
+  npx playwright test tests/browser/e-send-scroll-writers.spec.js \
+  --grep 'browsing send hands off' --workers=1 --repeat-each=5 \
+  --reporter=line --output=test-results-tz-r30-self-send-repeat5
+5 passed (51.4s)
+```
+
+本轮最后一次真实报告的公开结果为：发送前 `mode=browsing`、`gap=901`、
+`scrollTop=3064`；发送后目标 request id
+`6a04a840-e549-4171-bf91-839a41e972a5` 在 DOM 中唯一、`painted=true`、
+`intersectsViewport=true`，`mode=following`、`gap=0`，并观测到 3 个真实
+timeline writer displacement / 3 个 timeline writes。故 SZ 的旧 gap324 是被 d965
+后的当前 Reading 行为关闭的历史产品回归，不应迁移为 browsing 保持合同，也不需要
+改 fixture 或 E 断言。
+
+这里的 `docs/PHASE-E.md` E-12 是“ticket 过期重取且登记等待不重复 PUT”的文件
+上传合同，与 Reading self-send 无关；本裁决采用的是正式 `fae8b70` self-send
+路径和当前 E 浏览器 owner，不把两个编号混为同一能力。
+
+### 下一组五条 T–Z UI baseline
+
+用独立真实 Chromium（web/mock `15627/19927`，无 `--update-snapshots`）运行
+`UI-VIS-02` 三个 tab、`UI-VIS-03`、`UI-VIS-04`，五条均到达公开 production
+surface 后失败；没有 selector skip、截图阈值放宽或产品修改：
+
+| case | 首断点 | 归类 |
+|---|---|---|
+| UI-VIS-02 概览 | `channel-overview.png` 与 Linux baseline 差 23,436 px（0.10） | 视觉回归包，保留原 oracle |
+| UI-VIS-02 成员 | `channel-members.png` 差 27,183 px（0.11） | 视觉回归包，保留原 oracle |
+| UI-VIS-02 危险操作 | `channel-danger.png` 差 1,024 px（0.01） | 视觉回归包，保留原 oracle |
+| UI-VIS-03 新建频道 | 点击公开“新建频道”后 panel 仍选中“成员”，没有 `heading=创建子频道`；当前 DOM 首断在 `ui-visual.spec.js:84` | **产品/公开入口缺口**：`WorkspaceLayout` 只调用 `openChannelAdministration()`，没有把 create-child 能力交给当前治理 tab；不改产品、不伪造 heading |
+| UI-VIS-04 空间管理 | `space-administration.png` 差 12,139 px（0.05） | 视觉回归包，保留原 oracle |
+
+五条命令结果为 **5 failed / 5 executed**；UI-VIS-03 的 DOM 同时证明治理 panel
+本身可打开，失败不是登录或 mock reset 阻塞，而是入口能力没有抵达当前
+`GovernanceFeature` 的 `ChannelOverview`。其余四条均是已到达正确公开 panel 后的
+截图差异。下一步 owner 分别是治理入口/ChannelOverview 与各自 shell/panel 视觉
+owner；T–Z 不跨 owner 修改。
