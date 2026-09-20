@@ -88,3 +88,48 @@ test('Registrar list/get receipts hydrate canonical templates before channel rec
   }));
   expect(create.payload.templateId).toBeUndefined();
 });
+
+test('ChannelCreateModal reads a template body before sending the public recipe', async ({ page, request }) => {
+  const frames = [];
+  page.on('websocket', (socket) => socket.on('framesent', (frame) => frames.push(frame)));
+  await reset(request);
+  await login(page);
+
+  await page.getByRole('button', { name: '新建频道' }).click();
+  const modal = page.getByRole('dialog', { name: '新建频道' });
+  await expect(modal).toBeVisible();
+  await expect.poll(() => submitPayloads(frames)
+    .filter((payload) => payload.msg_type === 'system.channel.template.list')).toHaveLength(1);
+
+  await modal.getByRole('combobox', { name: '频道模板' }).click();
+  await expect(modal.getByRole('option', { name: /Team channel/ })).toBeVisible();
+  await modal.getByRole('option', { name: /Team channel/ }).click();
+  await modal.getByLabel('新频道名称').fill('modal-templated-room');
+  await modal.getByLabel('频道用途').fill('from modal Registrar recipe');
+  await modal.getByRole('button', { name: '创建频道' }).click();
+
+  await expect.poll(() => submitPayloads(frames)
+    .filter((payload) => payload.msg_type === 'system.channel.template.get'
+      && payload.payload?.id === 'mock:team')).toHaveLength(1);
+  await expect.poll(() => submitPayloads(frames)
+    .filter((payload) => payload.msg_type === 'system.channel.create'
+      && payload.payload?.name === 'modal-templated-room')).toHaveLength(1);
+
+  const sequence = submitPayloads(frames);
+  const getIndex = sequence.findIndex((payload) => payload.msg_type === 'system.channel.template.get'
+    && payload.payload?.id === 'mock:team');
+  const createIndex = sequence.findIndex((payload) => payload.msg_type === 'system.channel.create'
+    && payload.payload?.name === 'modal-templated-room');
+  expect(getIndex).toBeGreaterThanOrEqual(0);
+  expect(getIndex).toBeLessThan(createIndex);
+  const create = sequence[createIndex];
+  expect(create.channel_id).toBe('c0');
+  expect(create.payload.recipe).toEqual(expect.objectContaining({
+    declarations: [{ decl_id: 'mock:steward' }],
+    profile: expect.objectContaining({
+      default_storage_device_id: 'local-device',
+      description: 'from modal Registrar recipe',
+    }),
+  }));
+  expect(create.payload.templateId).toBeUndefined();
+});

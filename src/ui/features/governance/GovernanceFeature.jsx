@@ -323,6 +323,20 @@ function createdChildFor(channel, children, name) {
   )) || null;
 }
 
+function templateRecipeBody(value) {
+  const body = value?.body;
+  return body && typeof body === 'object' && !Array.isArray(body) ? body : null;
+}
+
+function isUnavailableTemplateDetail(error) {
+  const code = String(error?.code || '');
+  return code === 'template_body_invalid'
+    || code === 'governance_terminal_unavailable'
+    || code === 'terminal_result_unavailable'
+    || error?.resultPhase === 'unavailable'
+    || error?.resultUnavailable === true;
+}
+
 // The Shell must provide one read-only, typed creation projection for the
 // request returned by `commands.submit`.  A submission id is only a locator;
 // it is not proof of acceptance or a ledger terminal.  The projection is
@@ -367,14 +381,18 @@ function creationConvergence(channel, children, request, creation = null) {
 export function ChannelCreateModal({ channel, port = {}, onClose }) {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
+  const [templateId, setTemplateId] = useState('');
   const [initialAgentIds, setInitialAgentIds] = useState([]);
   const [createRequest, setCreateRequest] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const templateListRequestedRef = useRef(false);
   const dialogRef = useRef(null);
   const nameRef = useRef(null);
   const commands = port.commands || {};
   const children = Array.isArray(port.children) ? port.children : [];
+  const templatesKnown = Array.isArray(port.channelTemplates);
+  const templates = templatesKnown ? port.channelTemplates : [];
   const validation = validateChannelName(name);
   const convergence = creationConvergence(channel, children, createRequest, port.creation);
   const tracking = Boolean(createRequest && !convergence?.ready && !convergence?.failed);
@@ -384,6 +402,16 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
   const initialAgents = (Array.isArray(port.roster) ? port.roster : [])
     .filter((row) => row?.kind === 'agent' && row.id && isVisibleActor(row));
   const selectedInitialAgentIds = initialAgentIds.filter((id) => initialAgents.some((row) => row.id === id));
+
+  // Registrar templates are not part of the OBS directory.  Ask the existing
+  // command owner for the list when this public create owner opens, then use
+  // the typed projection it publishes; never read a space port or invent rows.
+  useEffect(() => {
+    if (templatesKnown || templateListRequestedRef.current || typeof commands.listTemplates !== 'function') return undefined;
+    templateListRequestedRef.current = true;
+    Promise.resolve(commands.listTemplates()).catch(() => {});
+    return undefined;
+  }, [commands.listTemplates, templatesKnown]);
 
   function retryCreate() {
     setCreateRequest(null);
@@ -412,6 +440,15 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
     setError('');
     setSubmitting(true);
     try {
+      let body = null;
+      if (templateId) {
+        if (typeof commands.getTemplate !== 'function') {
+          throw Object.assign(new Error(TERMINAL_RESULT_UNAVAILABLE), { code: 'template_body_invalid' });
+        }
+        const template = await commands.getTemplate(templateId);
+        body = templateRecipeBody(template);
+        if (!body) throw Object.assign(new Error(TERMINAL_RESULT_UNAVAILABLE), { code: 'template_body_invalid' });
+      }
       const messageId = await commands.submit({
         scope: 'channel',
         action: 'create_child',
@@ -419,13 +456,14 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
           name: normalized,
           purpose: String(purpose || '').trim(),
           parentId: channel?.id,
+          ...(templateId ? { templateId, templateBody: body } : {}),
           ...(selectedInitialAgentIds.length ? { initialActorIds: selectedInitialAgentIds } : {}),
         },
       });
       if (!messageId) throw new Error('创建命令没有返回可追踪的请求编号');
       setCreateRequest({ id: String(messageId), name: normalized });
     } catch (failure) {
-      setError(errorMessage(failure));
+      setError(isUnavailableTemplateDetail(failure) ? TERMINAL_RESULT_UNAVAILABLE : errorMessage(failure));
     } finally {
       setSubmitting(false);
     }
@@ -464,6 +502,15 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
         <label><span>频道名称</span><input ref={nameRef} aria-label="新频道名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 backend" disabled={locked} aria-invalid={Boolean(name && validation)} required /></label>
         {name && validation && <small className="field-error">{validation}</small>}
         <label><span>用途</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>
+        <label><span>频道模板</span><SelectMenu
+          ariaLabel="频道模板"
+          value={templateId}
+          options={templates.map((row) => ({ value: row.id, label: row.name || row.id }))}
+          onChange={setTemplateId}
+          disabled={locked || !templatesKnown}
+        /></label>
+        {!templatesKnown && <small className="field-hint">正在读取频道模板…</small>}
+        {templatesKnown && !templates.length && <small className="field-hint">当前没有可用的频道模板；创建仍可使用空配方。</small>}
         <section className="channel-create-members" aria-labelledby="channel-create-members-title">
           <header><strong id="channel-create-members-title">初始成员</strong><small>你会自动加入，也可以带入当前频道的 Agent</small></header>
           {port.selfId && <div className="channel-create-member pinned"><span>✓</span><div><strong>我</strong><small>{port.selfId}</small></div></div>}

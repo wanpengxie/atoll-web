@@ -1554,7 +1554,17 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       const initialActorIds = [...new Set([selfId, ...selectedAgentIds].filter(Boolean))];
       let template = null;
       return (async () => {
-        if (templateId) template = await requestChannelTemplate(channelId, templateId);
+        // ChannelCreateModal performs the public get receipt before calling
+        // this command. Consume that validated body so the Shell does not
+        // issue a duplicate Registrar read; legacy callers that provide only
+        // the stable id still use the existing request owner below.
+        if (templateId && payload.templateBody !== undefined) {
+          const suppliedBody = payload.templateBody;
+          if (!suppliedBody || typeof suppliedBody !== 'object' || Array.isArray(suppliedBody)) {
+            throw unavailableError('governance.channel.template.body');
+          }
+          template = { id: templateId, body: suppliedBody };
+        } else if (templateId) template = await requestChannelTemplate(channelId, templateId);
         if (templateId && (!template?.body || typeof template.body !== 'object' || Array.isArray(template.body))) {
           throw unavailableError('governance.channel.template.body');
         }

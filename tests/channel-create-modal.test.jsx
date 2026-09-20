@@ -39,6 +39,64 @@ describe('创建子频道（GovernanceFeature public owner）', () => {
     expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
   });
 
+  it('[AD-151] reads the selected template body before submitting the recipe', async () => {
+    const getTemplate = vi.fn().mockResolvedValue({
+      id: 'team',
+      body: { declarations: [{ decl_id: 'mock:steward' }], profile: { serving: 1 } },
+    });
+    const submit = vi.fn().mockResolvedValue('request-ad151');
+    render(<WorkspaceRightPanel
+      panel={{ kind: 'channel-administration', initialTab: 'overview' }}
+      channel={{ id: 'c0', qualified_name: 'c0' }}
+      governance={{ channel: {
+        channelTemplates: [{ id: 'team', name: 'Team' }],
+        commands: { getTemplate, submit },
+        children: [],
+      } }}
+      onClose={vi.fn()}
+    />);
+
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'templated-room' } });
+    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Team' }));
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+
+    await waitFor(() => expect(getTemplate).toHaveBeenCalledWith('team'));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'channel', action: 'create_child',
+      payload: expect.objectContaining({
+        name: 'templated-room', parentId: 'c0', templateId: 'team',
+        templateBody: { declarations: [{ decl_id: 'mock:steward' }], profile: { serving: 1 } },
+      }),
+    })));
+    expect(getTemplate.mock.invocationCallOrder[0]).toBeLessThan(submit.mock.invocationCallOrder[0]);
+  });
+
+  it('[AD-152] shows unavailable detail and does not submit when the template body is missing', async () => {
+    const getTemplate = vi.fn().mockResolvedValue({ id: 'team', name: 'Team' });
+    const submit = vi.fn().mockResolvedValue('should-not-submit');
+    render(<WorkspaceRightPanel
+      panel={{ kind: 'channel-administration', initialTab: 'overview' }}
+      channel={{ id: 'c0', qualified_name: 'c0' }}
+      governance={{ channel: {
+        channelTemplates: [{ id: 'team', name: 'Team' }],
+        commands: { getTemplate, submit },
+        children: [],
+      } }}
+      onClose={vi.fn()}
+    />);
+
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'templated-room' } });
+    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Team' }));
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('终态详情不可用，请刷新或重新进入频道'));
+    expect(getTemplate).toHaveBeenCalledWith('team');
+    expect(submit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('新频道名称').value).toBe('templated-room');
+  });
+
   it('[AD-153] renders typed convergence and enters only after every fact is ready', async () => {
     const submit = vi.fn().mockResolvedValue('request-ad153');
     const enterChannel = vi.fn().mockResolvedValue(true);
