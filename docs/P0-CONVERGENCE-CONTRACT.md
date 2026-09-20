@@ -119,8 +119,10 @@ internal arrangement must not force a product-state change.
 Parallelism is organized by stage, not by assigning many writers to the same
 problem. At any time:
 
-- at most four product changes may be in implementation, with at most one per
-  authoritative owner and disjoint changed-file boundaries;
+- product changes are limited by authoritative-owner conflicts, not by a
+  fixed global count. Independent worktrees may implement candidates that
+  touch the same files; they enter the integration train sequentially and the
+  later candidate rebases and re-verifies against the accepted owner state;
 - each product change has exactly one implementer, one architecture reviewer,
   and one independent public-contract verifier;
 - architecture decides a bounded state/interface contract before the writer
@@ -138,12 +140,13 @@ problem. At any time:
   that exact main commit. A rejected candidate leaves the train and does not
   block unrelated owners.
 
-The queue is pulled in this order: an accepted design with an idle owner,
-review of a submitted commit, exact-commit verification, then discovery of new
-cases. No worker may open a second product change while its first change is
-awaiting review. Conflicting Reading/Vendor, Feed/notification, or
-Workspace/Shell changes are serialized; unrelated evidence and verification
-continue in parallel.
+The queue is dynamic. An idle worker pulls the highest-value ready item it can
+own: implementation with an accepted contract, review of a submitted commit,
+exact-commit verification, then discovery of a new case. People are not bound
+to permanent lanes. No owner opens a second change while its first change is
+unfinished, but separate worktrees may prepare later Reading/Vendor,
+Feed/notification, or Workspace/Shell candidates concurrently. Serialization
+occurs at integration, not during isolated implementation.
 
 Evidence is not an open-ended workstream. The central ledger assigns every
 case ID to one active lane before work starts. A verifier may not choose an
