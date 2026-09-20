@@ -549,7 +549,11 @@ describe('A-D round 25 public-owner evidence', () => {
     renderWorkspace(nav);
     fireEvent.click(screen.getByText('c1'));
     fireEvent.click(within(screen.getByRole('navigation', { name: '频道' })).getByRole('button', { name: /c0/ }));
-    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
+    // c0 is already committed: the public handoff owner cancels the stale
+    // presentation gate without replaying c0's canonical navigation effect.
+    // The enabled terminal entry is the observable no-stale-pending result.
+    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1']);
+    expect(document.getElementById('workspace-terminal-toggle')?.disabled).toBe(false);
   });
 
   it('[AD-106] retains a channel terminal split when leaving and returning', () => {

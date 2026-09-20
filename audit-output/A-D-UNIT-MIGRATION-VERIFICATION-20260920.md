@@ -441,6 +441,23 @@ REGRESSION / 37 BLOCKED**. The case-level record is in
 Only the A-D test fixture and audit files changed; no product source or
 private/compatibility API was touched.
 
+## Round 42 — AD-105 public-owner fixture recovery
+
+At latest clean product HEAD `ff6efd2`, the existing public `WorkspaceLayout`
+contract for AD-105 is green in both its Round18 owner declaration and the
+migrated Round25 fixture (**2/2 passed; 38 focused-out skips**). Rapid A→B→A
+selection now has one canonical `c1` navigation call: reselecting the already
+committed `c0` cancels the stale presentation gate, does not replay c0's
+canonical navigation side effect, and re-enables the public terminal entry.
+The former Round25 `['c1', 'c0']` expectation was a stale fixture side-effect
+oracle, matching the already-green AD-097 public contract.
+
+AD-105 is promoted to PASS, so the current ledger is **329 PASS / 0
+REGRESSION / 36 BLOCKED**. The case-level record is in
+[`A-D-ROUND42-AD105-FIXTURE-RECOVERY-20260920.md`](./A-D-ROUND42-AD105-FIXTURE-RECOVERY-20260920.md).
+Only the A-D test fixture and audit files changed; no product source,
+private/compatibility API, or cross-owner behavior was touched.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
