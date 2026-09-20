@@ -912,6 +912,33 @@ artifacts changed; no product/compatibility/second owner was added. The prior
 109-test aggregate was an undercount: the two live-arrival owner files contain
 three passing tests each.
 
+## Round 33 exact-path recovery: public reading layout and resource contracts
+
+The next ten unique declarations cover six real reading/layout behaviors and
+four stateful resource/timer protocol behaviors. They do not repeat the 95
+prior bridge IDs. The layout cases drive the public `VendorListExecutor` with a
+minimal test-only `react-virtuoso` adapter; no removed MessageList/List module,
+private production helper, or second owner is imported.
+
+| baseline case | user capability and invariant | current public owner | executable evidence and result |
+|---|---|---|---|
+| TC-0964 | A fresh following activation does not restore an old browsing position and still exposes an addressable conversation region. | VendorListExecutor following/empty-surface branch | tests/i-m-exact-path-contracts.test.jsx:1974-1986 — no restore status and the public region is present; **PASS** |
+| TC-0965 | One row measurement revision is attached to the row subtree and the same presentation revision reaches the formal materialization certificate. | VendorListExecutor rowRevision + rangeChanged/public materialization | tests/i-m-exact-path-contracts.test.jsx:1988-2014 — absolute row index 99, render revision, and range certificate all agree; **PASS** |
+| TC-0966 | Exhaustion is rendered as one history-start boundary inside the ordinary list immediately before its oldest row. | VendorListExecutor HistoryStartBoundary/List context | tests/i-m-exact-path-contracts.test.jsx:2016-2036 — one status slot precedes the oldest presentation row; **PASS** |
+| TC-0967 | An open-frontier prepend keeps one boundary role and preserves the retained oldest row identity. | VendorListExecutor keyed presentation rows + history boundary | tests/i-m-exact-path-contracts.test.jsx:2038-2067 — one boundary, stable retained node, firstItemIndex 10→9; **PASS** |
+| TC-0968 | The first materialized row remains the semantic anchor across an open prepend without fabricating an exhausted boundary. | VendorListExecutor keyed rows/firstItemIndex | tests/i-m-exact-path-contracts.test.jsx:2069-2104 — retained row identity survives empty→materialized→prepend; boundary count stays zero; **PASS** |
+| TC-0969 | If the retained front row is removed, the history-start role transfers to the replacement frontier rather than leaving a stale row. | VendorListExecutor keyed row shell + HistoryStartBoundary | tests/i-m-exact-path-contracts.test.jsx:2106-2136 — old node disconnects and replacement occupies the boundary slot; **PASS** |
+| TC-1042 | Template/channel/overlay/device governance converges through structured results, while minted device keys stay out of public projections. | mock phase-E wire, `/obs/space/daemons`, and control-state projection | tests/i-m-exact-path-contracts.test.jsx:2138-2173 — template/config/device operations complete and secret key is absent; **PASS** |
+| TC-1043 | Resource listing does not require an id, and a file ticket round-trips written content. | mock resource wire + authenticated file ticket endpoints | tests/i-m-exact-path-contracts.test.jsx:2175-2192 — KV list and file PUT/GET both succeed; **PASS** |
+| TC-1044 | An expired file ticket is rejected; a newly minted ticket succeeds once and cannot be replayed. | mock resource ticket owner | tests/i-m-exact-path-contracts.test.jsx:2194-2214 — old PUT 403, fresh PUT 200, repeated PUT 403; **PASS** |
+| TC-1045 | A due timer enters the original ledger while cancellation prevents a sibling timer from firing. | mock timer wire + virtual clock/ledger | tests/i-m-exact-path-contracts.test.jsx:2216-2231 — due id arrives and cancelled id never appears; **PASS** |
+
+Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
+-t 'TC-0964|TC-0965|TC-0966|TC-0967|TC-0968|TC-0969|TC-1042|TC-1043|TC-1044|TC-1045'
+→ **10/10 GREEN**. The full exact bridge is now **105/105 GREEN**, and the
+current-owner rerun remains **17 files, 110/110 GREEN**. These ten additions
+leave the 159-case baseline unchanged and touch only tests/audit.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -965,6 +992,10 @@ three passing tests each.
   These additions do not change the 159-case baseline. The complete current
   owner rerun is 17 files, 110/110 GREEN; this corrects the earlier 109-test
   aggregate without adding a baseline case.
+- Round 33 adds ten independent reading-layout/resource contracts
+  (TC-0964–0969 and TC-1042–1045); the exact bridge is now 105/105 GREEN.
+  The current-owner rerun remains 17 files, 110/110 GREEN and the baseline
+  remains 159.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

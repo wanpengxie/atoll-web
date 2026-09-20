@@ -68,11 +68,52 @@ import {
 } from '../src/ui/timeline/MessageLayoutState.jsx';
 import { createViewSessionStore } from '../src/model/view-session.js';
 import { MermaidBlock } from '../src/ui/MermaidBlock.jsx';
+import { VendorListExecutor } from '../src/ui/timeline/VendorListExecutor.jsx';
 
 const mermaidMock = vi.hoisted(() => ({
   initialize: vi.fn(),
   render: vi.fn(),
 }));
+
+const vendorHarness = vi.hoisted(() => ({ props: null }));
+
+vi.mock('react-virtuoso', async () => {
+  const ReactModule = await import('react');
+  const Virtuoso = ReactModule.forwardRef(function ExactContractVirtuoso(props, ref) {
+    const nodeRef = ReactModule.useRef(null);
+    ReactModule.useImperativeHandle(ref, () => ({ scrollToIndex: vi.fn() }), []);
+    ReactModule.useLayoutEffect(() => {
+      vendorHarness.props = props;
+      props.scrollerRef?.(nodeRef.current);
+      props.rangeChanged?.({
+        startIndex: props.firstItemIndex,
+        endIndex: props.firstItemIndex + props.data.length - 1,
+      });
+      return () => props.scrollerRef?.(null);
+    }, [props]);
+    const List = props.components?.List || 'div';
+    const Header = props.components?.Header || (() => null);
+    return (
+      <div
+        ref={nodeRef}
+        className={props.className}
+        role={props.role}
+        aria-label={props['aria-label']}
+        tabIndex={props.tabIndex}
+      >
+        <List context={props.context}>
+          <Header context={props.context} />
+          {props.data.map((value, index) => (
+            <div key={props.computeItemKey(index + props.firstItemIndex, value)}>
+              {props.itemContent(index + props.firstItemIndex, value)}
+            </div>
+          ))}
+        </List>
+      </div>
+    );
+  });
+  return { Virtuoso };
+});
 
 vi.mock('mermaid', () => ({ default: mermaidMock }));
 
@@ -166,6 +207,7 @@ afterEach(async () => {
   clearMermaidDiagramCache();
   mermaidMock.initialize.mockReset();
   mermaidMock.render.mockReset();
+  vendorHarness.props = null;
   for (const wire of mockWires) wire.close();
   mockWires.clear();
   await Promise.all([...mockServers].map(closeMockServer));
@@ -353,6 +395,56 @@ function presentationEntry(id, seq, text = id) {
 
 function readingSession(saved = {}, activationID = 'activation:round-13') {
   return createReadingSession({ key: `${CHANNEL}:all`, activationID, saved });
+}
+
+function round33Reading(overrides = {}) {
+  const session = {
+    activationID: 'activation:round-33',
+    inputEpoch: 0,
+    geometryRevision: 0,
+    mode: READING_MODE.following,
+    bottomIntent: { id: '', inputEpoch: 0 },
+    bookmark: null,
+  };
+  const owner = {
+    activationID: session.activationID,
+    session,
+    initializing: false,
+    restorePending: false,
+    bottomReady: true,
+    status: {},
+    getSession: () => owner.session,
+    onAtTop: vi.fn(),
+    onNearTop: vi.fn(),
+    onUnderfill: vi.fn(() => null),
+    onPresentationMaterialized: vi.fn(),
+    onReadingObservation: vi.fn(),
+    onSurfaceVisibilityChange: vi.fn(),
+    onUserControl: vi.fn(),
+    consumeBottomIntent: vi.fn(() => false),
+    beginNavigation: vi.fn(() => ({ inputGeneration: owner.session.inputEpoch })),
+    updateNavigation: vi.fn(),
+    finishNavigation: vi.fn(),
+    cancelNavigation: vi.fn(),
+    ...overrides,
+  };
+  return owner;
+}
+
+function round33Row(id, seq) {
+  return {
+    id,
+    seqLow: seq,
+    seqHigh: seq,
+    contentRevision: 1,
+    visualSlotID: id,
+    layoutClass: 'message',
+    body: { kind: 'standalone', envelope: { id, kind: 'event', type: 'human.note' } },
+  };
+}
+
+function round33Snapshot(rows, { firstItemIndex = 1, revision = 7 } = {}) {
+  return { rows, firstItemIndex, revision, roleRevision: 1 };
 }
 
 function liveCheckpointOptions() {
@@ -1875,5 +1967,266 @@ describe('I-M exact-path public-owner recovery (round 32 rendering and access co
       status: 'completed', value: { preempted_by: 'round32-steer-good' },
     });
     h.wire.close();
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 33 layout and resource contracts)', () => {
+  it('message-list-lifecycle TC-0964: a fresh following activation does not restore an old position', () => {
+    const reading = round33Reading();
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([])}
+        reading={reading}
+        renderRow={() => null}
+      />,
+    );
+
+    expect(view.queryByRole('status')).toBeNull();
+    expect(view.getByRole('region', { name: '频道动态' })).toBeTruthy();
+  });
+
+  it('message-list-lifecycle TC-0965: one row revision feeds both subtree metadata and the range certificate', () => {
+    const reading = round33Reading();
+    const measured = round33Row('measured', 1);
+    const rowRevision = vi.fn((index, row) => (
+      `${index}:${row.id}:layout-7:history-start-role:${reading.activationID}:${row.id}`
+    ));
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([measured], { firstItemIndex: 99, revision: 7 })}
+        reading={reading}
+        surfaceVisible
+        rowRevision={rowRevision}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(rowRevision).toHaveBeenCalledWith(99, measured);
+    expect(view.container.querySelector('[data-presentation-row-id="measured"] [data-render-revision]')
+      .getAttribute('data-render-revision'))
+      .toBe('99:measured:layout-7:history-start-role:activation:round-33:measured');
+    expect(reading.onPresentationMaterialized).toHaveBeenCalledWith({
+      activationID: reading.activationID,
+      presentationRevision: 7,
+      startIndex: 99,
+      endIndex: 99,
+    });
+  });
+
+  it('message-list-lifecycle TC-0966: the exhausted boundary is inside the ordinary list before its oldest row', () => {
+    const reading = round33Reading();
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('oldest', 1), round33Row('newer', 2)])}
+        reading={reading}
+        surfaceVisible
+        historyStartBoundary={{ generation: 4, label: '已到频道最早一条动态' }}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const boundary = view.getByText('已到频道最早一条动态');
+    const slot = boundary.closest('.timeline-history-boundary-slot');
+    const list = slot.parentElement;
+    const firstRow = view.container.querySelector('[data-presentation-row-id="oldest"]');
+
+    expect(slot).toBeTruthy();
+    expect(list.contains(firstRow)).toBe(true);
+    expect(list.firstElementChild).toBe(slot);
+    expect(slot.nextElementSibling.contains(firstRow)).toBe(true);
+  });
+
+  it('message-list-lifecycle TC-0967: one boundary role survives an open-frontier prepend', () => {
+    const reading = round33Reading();
+    const oldest = round33Row('oldest-a', 10);
+    const anchor = round33Row('anchor', 11);
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([oldest, anchor], { firstItemIndex: 10 })}
+        reading={reading}
+        surfaceVisible
+        historyStartBoundary={{ generation: 4, label: '历史起点' }}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const retained = view.container.querySelector('[data-presentation-row-id="oldest-a"]');
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('head', 9), oldest, anchor], { firstItemIndex: 9 })}
+        reading={reading}
+        surfaceVisible
+        historyStartBoundary={{ generation: 4, label: '历史起点' }}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(view.container.querySelectorAll('.timeline-history-boundary')).toHaveLength(1);
+    expect(view.getByText('历史起点')).toBeTruthy();
+    expect(view.container.querySelector('[data-presentation-row-id="oldest-a"]')).toBe(retained);
+    expect(vendorHarness.props.firstItemIndex).toBe(9);
+  });
+
+  it('message-list-lifecycle TC-0968: the first materialized row remains the anchor across an open prepend', () => {
+    const reading = round33Reading();
+    const first = round33Row('first', 10);
+    const anchor = round33Row('anchor', 11);
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([], { firstItemIndex: 10 })}
+        reading={reading}
+        renderRow={() => null}
+      />,
+    );
+    expect(view.container.querySelectorAll('.timeline-history-boundary')).toHaveLength(0);
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, anchor], { firstItemIndex: 10 })}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const retained = view.container.querySelector('[data-presentation-row-id="first"]');
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('head', 9), first, anchor], { firstItemIndex: 9 })}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(view.container.querySelector('[data-presentation-row-id="first"]')).toBe(retained);
+    expect(view.container.querySelectorAll('.timeline-history-boundary')).toHaveLength(0);
+    expect(vendorHarness.props.firstItemIndex).toBe(9);
+  });
+
+  it('message-list-lifecycle TC-0969: removing the retained front row transfers the boundary to its replacement', () => {
+    const reading = round33Reading();
+    const removed = round33Row('removed-owner', 10);
+    const survivor = round33Row('survivor', 11);
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([removed, survivor], { firstItemIndex: 10 })}
+        reading={reading}
+        surfaceVisible
+        historyStartBoundary={{ generation: 4, label: '历史起点' }}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const oldNode = view.container.querySelector('[data-presentation-row-id="removed-owner"]');
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('replacement-frontier', 12), survivor], { firstItemIndex: 10 })}
+        reading={reading}
+        surfaceVisible
+        historyStartBoundary={{ generation: 4, label: '历史起点' }}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const boundary = view.getByText('历史起点');
+    const replacement = view.container.querySelector('[data-presentation-row-id="replacement-frontier"]');
+
+    expect(oldNode.isConnected).toBe(false);
+    expect(boundary.closest('.timeline-history-boundary-slot').nextElementSibling.contains(replacement)).toBe(true);
+    expect(view.container.querySelectorAll('.timeline-history-boundary')).toHaveLength(1);
+  });
+
+  it('mock-phase-e TC-1042: template, channel, overlay, device and secret-safe projections converge', async () => {
+    const h = await connectMockScenario('space-administration');
+    const submit = async (id, msgType, payload) => {
+      const receipt = await h.wire.submit({
+        ...mockRequest(id, msgType, payload),
+        audience: ['system'],
+      });
+      return waitForMock(() => mockTerminal(h.feeds, receipt.message_id), `${msgType} terminal`);
+    };
+
+    expect((await submit('round33-template', 'system.actor.template.create', {
+      id: 'demo:assistant', name: 'Demo', class: 'codex', config: { model: 'mock' }, visibility: 'private',
+    })).payload.body.status).toBe('completed');
+    expect((await submit('round33-template-list', 'system.actor.template.list', {})).payload.body.value
+      .map((row) => row.id)).toContain('demo:assistant');
+    expect((await submit('round33-channel-template', 'system.channel.template.create', {
+      id: 'demo:channel', name: 'Demo channel', visibility: 'private',
+      body: { declarations: [{ decl_id: 'demo:assistant' }] },
+    })).payload.body.status).toBe('completed');
+    expect((await submit('round33-overlay', 'system.actor.overlay.set', {
+      channel_id: CHANNEL, decl_id: 'demo:assistant', config: { model: 'overlay' },
+    })).payload.body.value.applied).toBe(true);
+    expect((await submit('round33-channel-set', 'system.channel.set', {
+      channel_id: CHANNEL, description: 'Configured', serving: 1,
+    })).payload.body.status).toBe('completed');
+    expect((await submit('round33-device-list', 'system.channel.device.list', {})).payload.body.value)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ channel_id: CHANNEL, device_id: 'local-device' })]));
+    const minted = await submit('round33-device-create', 'system.device.create', { name: 'Laptop' });
+    const key = minted.payload.body.value.key;
+    expect(key).toMatch(/^mock-key-/);
+    const daemons = await h.fetchSession('/obs/space/daemons').then((response) => response.json());
+    expect(daemons.items.map((row) => row.declared.id)).toContain(minted.payload.body.value.device_id);
+    expect(JSON.stringify(daemons)).not.toContain(key);
+    const state = await h.fetchSession('/mock/control/state').then((response) => response.json());
+    expect(JSON.stringify(state)).not.toContain(key);
+  });
+
+  it('mock-phase-e TC-1043: resource list omits the id requirement while file tickets round-trip content', async () => {
+    const h = await connectMockScenario('resource-workflow');
+    await expect(h.wire.resource({ channel_id: CHANNEL, op: 'create', resource_id: 'kv:round33', args: { value: 1 } }))
+      .resolves.toMatchObject({ status: 'ok', resource_id: 'kv:round33' });
+    await expect(h.wire.resource({ channel_id: CHANNEL, op: 'write', resource_id: 'kv:round33', args: { value: 2 } }))
+      .resolves.toMatchObject({ value: { value: 2 } });
+    expect((await h.wire.resource({ channel_id: CHANNEL, op: 'list' })).items.map((row) => row.id))
+      .toContain('kv:round33');
+    const address = 'daemon://local-device/c0/round33.txt';
+    const created = await h.wire.resource({ channel_id: CHANNEL, op: 'create', address, with_content: true });
+    const put = await h.fetchSession(`/files?channel_id=${CHANNEL}&t=${encodeURIComponent(created.ticket)}`, {
+      method: 'PUT', body: 'round33', headers: { 'Content-Type': 'text/plain' },
+    });
+    expect(put.status).toBe(200);
+    const read = await h.wire.resource({ channel_id: CHANNEL, op: 'read', resource_id: created.resource_id, with_content: true });
+    const get = await h.fetchSession(`/files?channel_id=${CHANNEL}&t=${encodeURIComponent(read.ticket)}`);
+    expect(await get.text()).toBe('round33');
+  });
+
+  it('mock-phase-e TC-1044: expired file tickets fail and a fresh ticket is single-use', async () => {
+    const h = await connectMockScenario('resource-ticket-expired');
+    const address = 'daemon://local-device/c0/round33-expired.txt';
+    const first = await h.wire.resource({ channel_id: CHANNEL, op: 'create', address, with_content: true });
+    await h.fetchSession('/mock/control/advance', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms: 60_000 }),
+    });
+    const expired = await h.fetchSession(`/files?channel_id=${CHANNEL}&t=${encodeURIComponent(first.ticket)}`, {
+      method: 'PUT', body: 'old',
+    });
+    expect(expired.status).toBe(403);
+    const fresh = await h.wire.resource({ channel_id: CHANNEL, op: 'create', address, with_content: true });
+    const uploaded = await h.fetchSession(`/files?channel_id=${CHANNEL}&t=${encodeURIComponent(fresh.ticket)}`, {
+      method: 'PUT', body: 'fresh',
+    });
+    expect(uploaded.status).toBe(200);
+    const repeated = await h.fetchSession(`/files?channel_id=${CHANNEL}&t=${encodeURIComponent(fresh.ticket)}`, {
+      method: 'PUT', body: 'duplicate',
+    });
+    expect(repeated.status).toBe(403);
+  });
+
+  it('mock-phase-e TC-1045: due timers enter the original ledger while cancelled timers never fire', async () => {
+    const h = await connectMockScenario('scheduled-action');
+    const scheduled = await h.wire.after({
+      channel_id: CHANNEL, duration_ms: 1_000, msg_type: 'mock.timer.notice', payload: { text: 'due' },
+    });
+    const cancelled = await h.wire.after({
+      channel_id: CHANNEL, duration_ms: 1_000, msg_type: 'mock.timer.cancelled', payload: { text: 'never' },
+    });
+    await expect(h.wire.cancelTimer({ channel_id: CHANNEL, timer_id: cancelled.timer_id }))
+      .resolves.toMatchObject({ timer_id: cancelled.timer_id });
+    await h.fetchSession('/mock/control/advance', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms: 1_000 }),
+    });
+    await waitForMock(() => h.feeds.find((row) => row.envelope.id === scheduled.timer_id), 'scheduled timer');
+    expect(h.feeds.some((row) => row.envelope.id === cancelled.timer_id)).toBe(false);
   });
 });
