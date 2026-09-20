@@ -21,6 +21,33 @@ It has three ordered obligations:
 Ephemeral work may be discarded. Durable facts may not be guessed. A local,
 understandable fail-stop is preferable to a larger recovery state machine.
 
+## User-experience parity
+
+Internal simplification does not authorize a visible product regression. The
+current implementation must preserve the previous product's user-observable
+contract unless the difference is either demonstrably better or imperceptible.
+
+The parity boundary includes:
+
+- visible content and message count;
+- layout, stable geometry, and scroll position;
+- controls, navigation paths, keyboard behavior, and focus return;
+- loading, success, failure, unread, and unavailable feedback;
+- draft, selection, panel, and route continuity across ordinary navigation;
+- accessibility semantics and usable mobile/desktop behavior.
+
+A changed DOM structure, internal timing, implementation owner, or diagnostic
+event is allowed when the observable contract is unchanged. A visible change
+is accepted only with explicit evidence that it is an improvement (for
+example, a larger touch target or a clearer honest failure state) or that a
+user cannot perceive it. Missing controls, fewer messages, lost state,
+unexpected jumps, silent waiting, or a pressed control whose surface is absent
+are regressions even if the new architecture is internally cleaner.
+
+For every P0 candidate, the verifier compares the normal scenario with the
+last accepted product behavior. Any intentional difference must be named and
+classified as improvement, imperceptible implementation change, or regression.
+
 ## Classify before changing code
 
 Every proposed P0 change must classify the observed condition as exactly one
@@ -103,4 +130,3 @@ internal arrangement must not force a product-state change.
 - **Reading anchor:** Vendor is the only scroll writer. An accepted position
   lease preserves the same hit-tested visible content position; first user
   input revokes old restoration work.
-
