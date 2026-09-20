@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
+import { createChannelReplicaCache } from '../src/model/channel-replica.js';
 import { TYPES } from '../src/protocol/vocab.js';
 
 function runtimeOptions() {
@@ -18,6 +19,24 @@ function runtimeOptions() {
     onAccessChanged: vi.fn(),
     onAgentActivity: vi.fn(),
   };
+}
+
+function historyRow(seq) {
+  return {
+    channel_id: 'c0', seq,
+    envelope: {
+      id: `history-row-${seq}`, kind: 'event', type: 'human.note',
+      payload: { body: { text: `history ${seq}` } },
+    },
+  };
+}
+
+async function seedPartialReplicaCache(principal, boot) {
+  const cache = createChannelReplicaCache({ indexedDB: null });
+  await cache.ensureOwner(principal, { world: boot });
+  await cache.clear();
+  await cache.saveRows(Array.from({ length: 7 }, (_, index) => historyRow(index + 8)));
+  await cache.destroy();
 }
 
 describe('ChannelFeedRuntime ownership', () => {
@@ -299,6 +318,83 @@ describe('ChannelFeedRuntime ownership', () => {
       generation: 1, channel_id: 'c0', scan_low_seq: 1, scanned_seq: 3,
     })).toBe(false);
     expect(runtime.getSnapshot().historyFor('c0').controlCurrent).toBe(false);
+    runtime.destroy();
+  });
+
+  it('merges a partial cache page, then continues one network page without duplicate rows', async () => {
+    const principal = `partial-source-${Date.now()}-${Math.random()}`;
+    const boot = `partial-source-boot-${Date.now()}-${Math.random()}`;
+    await seedPartialReplicaCache(principal, boot);
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, limit) => {
+        const ref = `partial-source-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, limit, ref });
+        const accepted = Promise.resolve({ accepted: true, generation: 1, channel_id: channelId });
+        accepted.ref = ref;
+        return accepted;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const options = { ...runtimeOptions(), activeChannelRef: { current: '' }, wireRef };
+    const runtime = createChannelFeedRuntime(options);
+    runtime.mount();
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 14, has_rows: true },
+    ], { generation: 1, boot, focus: '' });
+    await runtime.getSnapshot().prepareLocalReplica(principal, { focus: '' });
+
+    const pending = runtime.getSnapshot().loadHistory('c0', { beforeSeq: 9, limit: 20 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ channelId: 'c0', beforeSeq: 8, limit: 20 });
+    for (let seq = 1; seq <= 7; seq += 1) {
+      expect(runtime.getSnapshot().enqueue({
+        ref: requests[0].ref, channel_id: 'c0', seq, envelope: historyRow(seq).envelope,
+      })).toBe(true);
+    }
+    expect(runtime.getSnapshot().pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 7, scan_low_seq: 1, scan_high_seq: 7, next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'satisfied', released: 8 });
+    expect(requests).toHaveLength(1);
+    expect([...runtime.getSnapshot().stateFor('c0').rows.keys()].sort((left, right) => left - right))
+      .toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      lastSource: 'network', beforeSeq: 1, hasOlder: false,
+    });
+    await runtime.getSnapshot().resetPersistent();
+    runtime.destroy();
+  });
+
+  it('keeps the partial cache visible but reports network failure instead of local exhaustion', async () => {
+    const principal = `partial-offline-${Date.now()}-${Math.random()}`;
+    const boot = `partial-offline-boot-${Date.now()}-${Math.random()}`;
+    await seedPartialReplicaCache(principal, boot);
+    const onError = vi.fn();
+    const options = {
+      ...runtimeOptions(),
+      activeChannelRef: { current: '' },
+      wireRef: { current: { cancelHistory: vi.fn(async () => undefined) } },
+      onError,
+    };
+    const runtime = createChannelFeedRuntime(options);
+    runtime.mount();
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 14, has_rows: true },
+    ], { generation: 1, boot, focus: '' });
+    await runtime.getSnapshot().prepareLocalReplica(principal, { focus: '' });
+
+    await expect(runtime.getSnapshot().loadHistory('c0', { beforeSeq: 9, limit: 20 }))
+      .resolves.toMatchObject({ kind: 'failed' });
+    expect([...runtime.getSnapshot().stateFor('c0').rows.keys()].sort((left, right) => left - right)).toEqual([8]);
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      hasOlder: true,
+      historyDemand: { phase: 'error' },
+    });
+    expect(onError).toHaveBeenCalledOnce();
+    await runtime.getSnapshot().resetPersistent();
     runtime.destroy();
   });
 

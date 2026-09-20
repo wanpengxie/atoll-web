@@ -841,12 +841,57 @@ export function createChannelFeedRuntime(options = {}) {
     request.onOperation?.(Object.freeze({ release() {} }));
     let batch = batchFor(channelId, request);
     let outcome = await executeBatch(batch, request.signal);
+    let released = 0;
+    let cacheContinuation = 0;
+    const staleBatch = () => batch.generation !== generation
+      || batch.attachEpoch !== attachEpoch
+      || status.generation !== generation
+      || !status.attached;
+
+    // A non-empty cache page can still be only the retained physical tail.
+    // Merge/publish that page immediately, then keep walking the cache while
+    // the requested page is still underfilled and its physical coverage
+    // reaches the next cursor. Once the cursor leaves local coverage, continue
+    // the same demand against network; treating any non-empty IndexedDB result
+    // as completion would strand older history.
+    while (outcome.kind === 'page' && batch.source === 'indexeddb'
+      && !outcome.result.exhausted && outcome.rows.length < batch.limit) {
+      if (staleBatch()) {
+        if (revealToken) admission.cancel(channelId, revealToken.operationID);
+        if (clearOwnedDemand()) publish();
+        return { kind: 'cancelled', reason: 'stale-generation' };
+      }
+      const cachedAccepted = applyRows(outcome.rows, {
+        source: 'cache', persist: false, publishChange: false,
+      });
+      released += cachedAccepted.length;
+      status.beforeSeq = historyNumeric(outcome.result.next_before_seq
+        ?? outcome.result.nextBeforeSeq ?? batch.beforeSeq);
+      status.hasOlder = true;
+      status.lastSource = 'indexeddb';
+      status.coverage = replica.record(channelId)?.materializedCoverage || [];
+      if (cachedAccepted.length) publish({ index: true });
+      if (staleBatch()) {
+        if (revealToken) admission.cancel(channelId, revealToken.operationID);
+        if (clearOwnedDemand()) publish();
+        return { kind: 'cancelled', reason: 'stale-generation' };
+      }
+      const nextBefore = status.beforeSeq;
+      const nextSource = historySourceFor(cache.metaSnapshot().get(channelId), nextBefore);
+      cacheContinuation += 1;
+      batch = {
+        ...batch,
+        id: `${batch.id}:continue:${cacheContinuation}`,
+        beforeSeq: nextBefore,
+        source: nextSource,
+      };
+      outcome = await executeBatch(batch, request.signal);
+    }
     if (outcome.kind === 'cache-miss') {
       batch = { ...batch, id: `${batch.id}:network`, source: 'network' };
       outcome = await executeBatch(batch, request.signal);
     }
-    if (batch.generation !== generation || batch.attachEpoch !== attachEpoch
-      || status.generation !== generation || !status.attached) {
+    if (staleBatch()) {
       if (revealToken) admission.cancel(channelId, revealToken.operationID);
       if (clearOwnedDemand()) publish();
       return { kind: 'cancelled', reason: 'stale-generation' };
@@ -855,6 +900,7 @@ export function createChannelFeedRuntime(options = {}) {
       const accepted = applyRows(outcome.rows, {
         source: batch.source === 'network' ? 'history' : 'cache', persist: false, publishChange: false,
       });
+      released += accepted.length;
       if (batch.source === 'network') void cache.saveRows(outcome.rows).catch(cacheError);
       const result = outcome.result;
       status.completedPages += 1;
@@ -881,8 +927,8 @@ export function createChannelFeedRuntime(options = {}) {
       status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
       Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
       publish({ index: accepted.length > 0 });
-      return { kind: accepted.length || observed?.fulfilled ? 'satisfied' : status.hasOlder ? 'segment' : 'exhausted',
-        released: accepted.length, firstVisibleSeq: projection.firstVisibleSeq, projection };
+      return { kind: released || observed?.fulfilled ? 'satisfied' : status.hasOlder ? 'segment' : 'exhausted',
+        released, firstVisibleSeq: projection.firstVisibleSeq, projection };
     }
     if (revealToken) admission.cancel(channelId, revealToken.operationID);
     Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });

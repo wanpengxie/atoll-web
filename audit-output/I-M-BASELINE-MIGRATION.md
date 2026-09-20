@@ -626,6 +626,23 @@ I–M baseline count or duplicate the existing merge-coverage assertion. The
 historical FEED-CACHE wording in the E–H and global ledgers now points to this
 current Replica contract; notification owners were not changed.
 
+## Round 22 Feed source continuation
+
+`ChannelFeedRuntime.loadHistory` now treats a non-empty, underfilled IndexedDB
+page as a physical segment: it merges/publishes the cache rows first, then
+continues from the next cursor while local coverage still owns that cursor or
+switches the same demand to network when the retained tail ends. A network
+page is requested once per partial-tail demand, duplicate rows are absorbed by
+the existing Replica owner, and a detached/error network path leaves the
+partial cache visible while reporting the correct cancellation/error state.
+
+Focused evidence: `tests/channel-feed-runtime.test.jsx` → **13/13 GREEN**;
+the partial-tail case proves `beforeSeq=9` cache row 8 is presented before the
+single network page (rows 1–7), with no duplicate rows; the offline case proves
+row 8 remains visible while `historyDemand.phase=error` and the request is not
+misclassified as local exhaustion. No Replica or notification owner was
+changed in this round.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

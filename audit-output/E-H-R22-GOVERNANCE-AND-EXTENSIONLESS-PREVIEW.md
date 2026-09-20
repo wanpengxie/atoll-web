@@ -1,34 +1,31 @@
 # E–H round 22 — governance recheck and extensionless preview proof
 
-审计快照：HEAD `4c566c4`。本轮先等待并复核治理 owner；没有发现新的治理
-owner 修复，因此 EH03-01/02 不能从 REGRESSION 回填 PASS。随后把右栏无扩展名
-文本预览拆成真实网络 `Response/blob()` 合同，只增加测试证据，不修改产品、旧
-expected-fail witness 或 E–H 256 条总账。
+审计快照：HEAD `6f673cb`。本轮先等待并复核治理 owner；并行 owner 修复
+`4a7e623` 已在复核期间落地，故 EH03-01/02 经过完整旧动作重跑后从
+REGRESSION 回填 PASS。随后把右栏无扩展名文本预览拆成真实网络
+`Response/blob()` 合同，只增加测试证据，不修改产品、旧 expected-fail witness。
 
-## EH03-01/02：当前仍是产品回归
+## EH03-01/02：治理 owner 修复后严格 PASS
 
-当前治理 source history 在 `GovernanceFeature.jsx` 仍停在既有 owner commits；公开
-owner 的 `ChannelAdministrationPanel` 仍以 `useState('overview')` 初始化。完整旧动作
-测试保持 raw roster/candidate fixtures，没有预清洗或点击后替代：
+`4a7e623` 将现有 `ChannelAdministrationPanel` 的初始 tab 恢复为 `members`，并在
+现有 `ChannelMembers` owner 内恢复参与者类型 label、selected-candidate id 和
+principal 配置提示；没有创建第二 owner 或恢复旧 API。完整旧动作测试保持 raw
+roster/candidate fixtures，没有预清洗或点击后替代：
 
 ```text
-npx vitest run tests/f5-management.test.jsx -t 'Channel Context 默认成员优先并隐藏标准 Actor|添加流程的候选人不包含 genesis 铸出的系统声明' --reporter=verbose
+npx vitest run tests/f5-management.test.jsx --reporter=verbose
 
-Test Files  1 failed (1)
-Tests       2 failed | 1 skipped (3)
-
-Both failures: tests/f5-management.test.jsx:35:83 and :60:83
-Expected: 'true'
-Received: 'false'
+Test Files  1 passed (1)
+Tests       3 passed (3)
 ```
 
 | case | 旧动作与 observable | 当前公开 owner / 首断点 | 裁决 |
 |---|---|---|---|
-| EH03-01 | 渲染 governance 后不做 tab 操作；`成员[aria-selected]` 必须为 `true`，随后 Root 可见且 system/registrar/svcactor 不可见。 | `ChannelAdministrationPanel` → `SidePanel`/`ChannelMembers`；`GovernanceFeature.jsx:97-98` 仍先选 `overview`，所以首个断言即收到 `false`。后续手动点击成员虽能观察过滤结果，但不是旧动作。 | **REGRESSION — 保持未闭合**。当前 owner 存在，不能以 post-click 过滤证据冒充默认入口 PASS。 |
-| EH03-02 | 不导航，打开旧 `选择参与者`；排除 genesis `svcactor`；选择 `Analyst · Agent` 后显示 `demo:agent` 与 principal 说明。 | 同一 `ChannelAdministrationPanel`/`ChannelMembers`/`isManageableDeclaration`；初始 tab 仍在同一首断点失败。即使手动进入成员 tab，当前公开 label/selected-candidate configuration 也不同（`待引入成员`、`Analyst · 声明`），不是完整旧 observable。 | **REGRESSION — 保持未闭合**。`WorkspaceApp.submitGovernance` 的 `{ decl_id }` 路由正确，但 command payload 不能替代缺失的用户可见 action/result。 |
+| EH03-01 | 渲染 governance 后不做 tab 操作；`成员[aria-selected]` 必须为 `true`，随后 Root 可见且 system/registrar/svcactor 不可见。 | `ChannelAdministrationPanel` → `SidePanel`/`ChannelMembers`；`GovernanceFeature.jsx:127-130` 初始 tab 为 `members`，raw roster 经 `isVisibleActor` 过滤。完整 f5 case 无导航即断言 `true`，再观察 Root 与三种标准 actor 的可见性。 | **PASS / PROVEN-DIRECT**。旧默认入口和 roster observable 均在现有 owner 内复现。 |
+| EH03-02 | 不导航，打开旧 `选择参与者`；排除 genesis `svcactor`；选择 `Analyst · Agent` 后显示 `demo:agent` 与 principal 说明。 | 同一 `ChannelAdministrationPanel`/`ChannelMembers`/`isManageableDeclaration`；`4a7e623` 恢复 `选择参与者`、按声明 kind 显示 `Analyst · Agent`、选择后显示 `demo:agent` 与 principal 提示；`WorkspaceApp.submitGovernance` 仍把 declaration candidate 映射为 `{ decl_id }`。完整 f5 case 逐动作通过。 | **PASS / PROVEN-DIRECT**。genesis exclusion、普通候选 selection 和 type-specific configuration observable 均已证明。 |
 
-这两条不得计入严格 PASS，除非治理 owner 先落地并通过完整旧动作；本轮没有
-修改 `src/`，也没有删除、skip、私有 export 或兼容 owner。
+治理修复由并行治理 owner 提交；本轮只读复核，没有修改 `src/`，也没有删除、skip、
+私有 export 或兼容 owner。
 
 ## 下一合同：真实 Response/blob 下的无扩展名文本预览
 
@@ -73,5 +70,6 @@ EH09 或 256 条严格总账。当前产品最终用户能力在完整 Response 
 ## 本轮边界
 
 - 没有改动任何 `src/`、vendor、package 或 lockfile。
-- 没有修改 EH03 ledger 的 254/256 严格计数；EH03-01/02 仍是两条 REGRESSION。
+- EH03-01/02 已按完整旧动作从 REGRESSION 回填 PASS；ledger 严格证明总账应为
+  256/256（79 direct + 177 merged），无 E–H regression。
 - 现有共享工作树中的其他 owner dirty files 未纳入本轮提交。
