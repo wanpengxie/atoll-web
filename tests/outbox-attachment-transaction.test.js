@@ -98,6 +98,9 @@ describe('durable attachment association', () => {
     expect(stale).toMatchObject({ conflict: true, reason: 'draft_consumed', current: { draft: null } });
     expect((await store.restoreDrafts('p'))[0]).toMatchObject({ revision: accepted.record.revision, draft: null });
 
+    const sameRevision = await store.writeDraft('p', 'c', { text: 'late picker', editorRevision: 1 }, accepted.record.revision);
+    expect(sameRevision).toMatchObject({ conflict: true, reason: 'draft_consumed', current: { draft: null } });
+
     const fresh = await store.writeDraft('p', 'c', { text: 'new draft', editorRevision: 2 }, accepted.record.revision);
     expect(fresh).toMatchObject({ conflict: false, record: { revision: accepted.record.revision + 1, draft: { text: 'new draft' } } });
     store.close();

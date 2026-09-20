@@ -210,13 +210,20 @@ export function createOutboxStore({
         const current = await db.drafts.get(key);
         assertCurrent();
         const revision = Number(current?.revision || 0);
-        if (Number.isFinite(expectedRevision) && Number(expectedRevision) !== revision) {
+        const hasExpectedRevision = Number.isFinite(expectedRevision);
+        const expected = Number(expectedRevision);
+        const consumed = current?.draft == null && hasExpectedRevision
+          && (revision > expected
+            || (revision === expected
+              && Number(draft?.editorRevision || 0) <= Number(current?.editorRevision || 0)));
+        if (hasExpectedRevision && expected !== revision) {
           return {
             conflict: true,
             current,
-            ...(current?.draft == null && revision > Number(expectedRevision) ? { reason: 'draft_consumed' } : {}),
+            ...(consumed ? { reason: 'draft_consumed' } : {}),
           };
         }
+        if (consumed) return { conflict: true, current, reason: 'draft_consumed' };
         const next = {
           principalId,
           channelId,
