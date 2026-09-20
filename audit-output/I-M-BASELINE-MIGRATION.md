@@ -1378,6 +1378,37 @@ not counted as an I-M red. No product source, exact test, private API,
 compatibility parser, notification/arrival owner, vendor/package, lockfile,
 or concurrent dirty file was staged or changed in Round44.
 
+## Round 45 latest-45b Reading regression recheck
+
+At latest shared `HEAD` `45b0fcb` (the `45b` document-visibility re-entry
+fence), the seven strict Reading contracts show no semantic drift. Canonical
+body is already closed by Shell and is deliberately not rerun here. This is a
+black-box-only recheck: assertions observe the mounted physical root's
+`scrollTo`, the public height delivery, and the public Reading typed intent;
+they do not inspect timers, RAF order, private helpers, vendor initial-index
+props, or callback call shapes.
+
+| case | user capability / invariant | current public owner | latest-45b result |
+|---|---|---|---|
+| TC-1010 | A send target cannot move the viewport at the intermediate row commit; it waits for committed destination measurement. | `VendorListExecutor` typed send intent + mounted physical root. | **RED**: `{top:1000, behavior:'auto'}` is written early; intent remains pending. |
+| TC-1011 | Pending send join fences early and later same-revision height writes; only the legal ordinary-follow boundary may move the root. | `VendorListExecutor` public height owner + physical root. | **RED**: `{top:1000}` and `{top:1132}` are both written before the boundary. |
+| TC-1012 | Equal-height target acknowledgement is a non-writing baseline; later resize is the first visible follow. | `VendorListExecutor` target fence + physical root. | **RED**: `{top:1000}` is written at the equal-height baseline. |
+| TC-1014 | Public revoke cannot retroactively authorize an earlier same-revision height. | `VendorListExecutor` intent fence + public height. | **RED**: `{top:1132}` is written before revoke. |
+| TC-1015 | Revoking a send-owned baseline releases ordinary following only at the public boundary, once. | `VendorListExecutor` Reading intent + physical-root writer. | **RED**: `{top:1132}` is written before revoke. |
+| TC-1018 | An unrelated committed tail may follow while a newer send target remains pending; the target stays pending. | `VendorListExecutor` ordinary-follow writer + target fence. | **RED**: the allowed ordinary `{top:1132}` write is missing. |
+| TC-1019 | Moving a target into Waiting cannot bypass destination-ready presentation. | `VendorListExecutor` typed target presence + public height/Reading owner. | **RED**: `{top:1000}` is written before destination readiness. |
+
+Latest evidence:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2`
+→ **7/7 stable RED**, with each case reproducing the same user-visible
+failure on all retry attempts.
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx --retry=0`
+→ **154/161 GREEN**, with exactly these seven failures. No test/audit change
+was made to turn a red into green, and no product file was staged in this
+round. Existing unrelated dirty work, if present, is not included.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
