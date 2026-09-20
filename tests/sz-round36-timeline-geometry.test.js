@@ -46,4 +46,3 @@ describe('S-Z current Timeline geometry owner', () => {
     expect(owner.current.rowRenderRevision(null, row('2:0'))).toBe(base);
   });
 });
-

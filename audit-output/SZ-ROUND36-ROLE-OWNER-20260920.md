@@ -1,7 +1,7 @@
 # S-Z Round 36 — role/geometry owner split
 
-Date: 2026-09-20  
-Owner: S-Z unit-test / current Timeline owner  
+Date: 2026-09-20
+Owner: S-Z unit-test / current Timeline owner
 Base: `acac6c8` typed renderer contract; current source after this round
 
 ## Per-case owner decision
@@ -32,4 +32,3 @@ Result: **5 test files passed, 25 tests passed**. Adding the SZ-143 owner case g
 ## Non-closure boundary
 
 SZ-144/146/148 remain explicit OPENs because the current code has no public role owner for those exact contracts. The current authority tuple and projection receipt are documented as evidence, not silently treated as a role API. No compatibility parsing, private export, old role finalizer, Workspace/Reading/Composer change, or StructuredResult change was made.
-
