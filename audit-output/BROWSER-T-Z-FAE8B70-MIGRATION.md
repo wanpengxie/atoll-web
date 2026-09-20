@@ -1327,3 +1327,68 @@ ATOLL_TEST_WEB_PORT=15528 ATOLL_TEST_MOCK_PORT=19958 \
 open→disconnect→close→reconnect 黑盒均 **PASS**；UI-VIS-11 的旧 `600×297` vs 当前
 `600×301` screenshot 合同仍是前轮已证明的视觉版本差异，不在本轮改阈值；其余工作树
 dirty 文件归属他人，本轮只保留 T-Z browser spec、Feed owner、测试 owner probe 与本报告。
+
+## 第二十三轮：Search owner handoff 延迟 lease 与 activation fence（真实 Chromium）
+
+首断点是 `AuthenticatedWorkspace` 的 Search effect：旧实现直接通过
+`feedCommands.requestBackgroundInterest()` 调用 `callFeed`。Feed owner 在 React
+layout handoff 的短窗口内没有 committed command port 时，`callFeed` 会抛出
+`owner_unavailable`；effect 没有机会等待 port 回来，造成 unhandled effect error。
+另一个风险是旧 Search activation 的延迟回调在关闭/切频道后重新绑定新 Feed port，留下
+不属于当前 dialog 的 typed lease。
+
+本轮只在已有 Workspace/Feed 组合修复：
+
+- `feedCommands.requestBackgroundInterest` 在 port 暂不可用时返回 transient `null`，不
+  直接抛错；其它 foreground Feed command 的 throwing contract 不变。
+- Search effect 为每次 activation 建立局部的 `active` fence、已获取 channel 集合与
+  可取消 retry timer；port current 后才申请现有 `HISTORY_INTENT.searchContext` typed
+  lease。cleanup 先令 activation inactive、清 timer，再只释放该 activation 已获取的
+  leases；旧 activation 不能重绑新 port。
+- 不新增 Search store、Feed 外部 owner、缓存副本或兼容层；Search 仍只消费 Feed 的
+  lease API。
+
+### 真实 Chromium 合同
+
+`deep-history-delayed` seed `927`、`600×720`：Search 首次真实发送一个
+`c0.project / priority=background / purpose=initial-tail` frame；随后执行
+`drop → state=reconnecting → close Search → mobile rail 快速切换 c0.project → reconnect`。
+切换后的公开 `coldEntry` 证明当前 c0.project scheduler 已回到 `demand.phase=idle`、
+`loading=false`。固定 transport oracle 与 diagnostics 结果：
+
+```text
+background initial-tail c0.project history_before: 1（旧 activation 不重绑）
+window.unhandled_rejection: []
+window.error: []
+current c0.project history demand: idle / loading=false
+```
+
+回归的旧 Search close-cancel 黑盒（seed `920`）仍通过；新的断线释放黑盒也继续通过，
+因此本轮未改变上一轮 detached cancellation owner 合同。
+
+### 定向结果与归类
+
+```text
+npx vitest run tests/feature-search.test.js \
+  tests/workspace-real-runtime-composition.test.jsx tests/hook-order.test.js \
+  --reporter=dot
+3 files / 7 passed
+
+npm run build
+passed (4306 modules transformed)
+
+ATOLL_TEST_WEB_PORT=15530 ATOLL_TEST_MOCK_PORT=19960 \
+  npx playwright test tests/browser/ui-visual.spec.js \
+  -g 'Search lease handoff' --workers=1 --reporter=line
+1 passed (6.8s)
+
+ATOLL_TEST_WEB_PORT=15631 ATOLL_TEST_MOCK_PORT=19991 \
+  npx playwright test tests/browser/ui-visual.spec.js \
+  -g '搜索后台兴趣由 Feed|断线窗口释放 Search lease|UI-VIS-11 600px' \
+  --workers=1 --reporter=line
+2 passed；1 screenshot RED（600×301 vs legacy 600×297）
+```
+
+最终归类：Feed port transient、Search lease 延迟申请、旧 activation fence、快速切频道
+与 reconnect pending 清理均 **PASS**；UI-VIS-11 screenshot 仍为已证明的旧视觉合同差异，
+不改阈值、不更新 snapshot；其它工作树 dirty 文件归属他人。

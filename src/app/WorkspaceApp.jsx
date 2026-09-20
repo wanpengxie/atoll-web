@@ -274,7 +274,16 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     prepareLocalReplica: (...args) => callFeed('prepareLocalReplica', args),
     reconcileIdentity: (...args) => callFeed('reconcileIdentity', args),
     refreshChannel: (...args) => callFeed('refreshChannel', args),
-    requestBackgroundInterest: (...args) => callFeed('requestBackgroundInterest', args),
+    // Search may outlive one committed Feed owner during a React handoff. A
+    // missing port is a transient admission state, not an application error;
+    // the Search effect retries the same activation until this typed command
+    // is available. Do not call through `callFeed` here because that helper's
+    // throwing contract is correct for foreground commands but would turn a
+    // lease handoff into an unhandled effect error.
+    requestBackgroundInterest: (...args) => {
+      const command = feedRef.current?.requestBackgroundInterest;
+      return typeof command === 'function' ? command(...args) : null;
+    },
     resetPersistent: (...args) => callFeed('resetPersistent', args),
     resumeLocalReplica: (...args) => callFeed('resumeLocalReplica', args),
     setHistoryGrants: (...args) => callFeed('setHistoryGrants', args),
@@ -990,13 +999,51 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const searchOpen = panelKind === 'search';
   useEffect(() => {
     if (!searchOpen || wire.state !== 'open') return;
-    const interests = searchableChannelKey.split('\u0000')
-      .filter((channelId) => channelId !== navigation.activeChannelId)
-      .map((channelId) => feedCommands.requestBackgroundInterest(channelId, {
-        intent: HISTORY_INTENT.searchContext,
-      }));
-    return () => interests.forEach((interest) => interest?.release?.());
-  }, [feedCommands, navigation.activeChannelId, searchOpen, searchableChannelKey, wire.state]);
+    let active = true;
+    let retryTimer = null;
+    const interests = [];
+    const acquiredChannels = new Set();
+    const release = () => interests.splice(0).forEach((interest) => interest?.release?.());
+    const retry = () => {
+      if (!active || retryTimer != null) return;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        acquire();
+      }, 16);
+    };
+    const acquire = () => {
+      if (!active) return;
+      const unavailable = [];
+      searchableChannelKey.split('\u0000')
+        .filter((channelId) => channelId
+          && channelId !== navigation.activeChannelId
+          && !acquiredChannels.has(channelId))
+        .forEach((channelId) => {
+          if (!active) return;
+          try {
+            const interest = feedCommands.requestBackgroundInterest(channelId, {
+              intent: HISTORY_INTENT.searchContext,
+            });
+            if (interest) {
+              acquiredChannels.add(channelId);
+              interests.push(interest);
+            }
+            else unavailable.push(channelId);
+          } catch (error) {
+            if (error?.code === 'owner_unavailable') unavailable.push(channelId);
+            else showError(error);
+          }
+        });
+      if (unavailable.length) retry();
+    };
+    acquire();
+    return () => {
+      active = false;
+      if (retryTimer != null) clearTimeout(retryTimer);
+      retryTimer = null;
+      release();
+    };
+  }, [feedCommands, navigation.activeChannelId, searchOpen, searchableChannelKey, showError, wire.state]);
   const openSearchResult = (source) => {
     if (!source?.channelId) return;
     const sourceChannel = navigation.channels.find((row) => row.id === source.channelId);
