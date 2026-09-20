@@ -124,6 +124,36 @@ describe('channel-replica compact terminal closure (successor of waiting-termina
     expect(replica.state(CHANNEL)._unmatchedTerminalClosures.has('response-first-terminal')).toBe(false);
   });
 
+  it('response-first closure suppresses a stale local echo after request re-admission', () => {
+    const replica = createChannelReplicaStore();
+    replica.commit(terminal(2, 'response-first-waiting'));
+    for (let seq = 3; seq <= 10; seq += 1) replica.commit(note(seq));
+    expect(replica.trim(CHANNEL, 4)).toBeGreaterThan(0);
+
+    // The history page can deliver the parent request after the compact
+    // terminal proof. Re-admitting a queued echo must not reopen Waiting.
+    replica.commit(request(1, 'response-first-waiting'));
+    replica.commit(queued(11, 'response-first-waiting'));
+    const state = replica.state(CHANNEL);
+    const turn = state.timeline
+      .find((entry) => entry.turn?.requestId === 'response-first-waiting')?.turn;
+    expect(turn).toMatchObject({ status: 'completed', terminalClosureOnly: true });
+
+    const pending = [{
+      messageId: 'response-first-waiting', state: 'uncertain', text: 'response-first-waiting',
+      createdAt: 1,
+      frame: {
+        kind: 'request', msg_type: 'agent.ask', audience: [AGENT.id],
+        payload: { text: 'response-first-waiting' }, visibility: 'public',
+      },
+    }];
+    const { result } = renderHook(() => useWaitingEditingController({
+      state, pending, capabilityIndex: { get: () => undefined }, onRequestCapability: vi.fn(),
+      onTaskControl: vi.fn(), onComposerEditChange: vi.fn(),
+    }));
+    expect(result.current.queuedTurns.map((queuedTurn) => queuedTurn.requestId)).toEqual([]);
+  });
+
   it('an earlier response-first terminal supersedes a newer retained parent proof', () => {
     const replica = createChannelReplicaStore();
     const later = terminal(5, 'history-order');

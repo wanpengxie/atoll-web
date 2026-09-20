@@ -80,7 +80,7 @@ All cases exercise the current exported `MarkdownContent` and
 | 17 | `正文前插和流式续写不改名仍存活的语义块` — stable semantic block IDs survive prefix insertion and streaming growth. | `MarkdownContent` reading block IDs; rerender and compare IDs. **PASS/current**, retained. |
 | 18 | `流式尾块更新时保留已完成块的真实DOM和原生选择` — completed DOM/selection survives tail streaming. | Same block identity/selection path; rerender tail and assert node and selection survive. **PASS/current**, retained. |
 
-## 5. `memory-window.test.js` (baseline 18; current 16, PASS/current plus ORACLE/current)
+## 5. `memory-window.test.js` (baseline 18; current 17, PASS/current plus ORACLE/current)
 
 The former fold/memory store was removed. The migration tests the current
 bounded `ChannelReplica`, cache, coverage, and detached `ConversationPresentation`
@@ -94,7 +94,7 @@ exact terminal closure tests. No deleted map or private export was restored.
 | 19 | `超过水位才动手,一次砍到八成,并且留下的是最近的` — bounded memory trims old rows and rebuilds indexes. | `createChannelReplicaStore().trim`; commit eight rows, trim to four, assert newest rows, timeline, envelope index, and coverage. **PASS/current**, migrated. |
 | 20 | `低水位只决定一次保留多少,不会让每条新消息都触发裁剪` — below limit is a no-op. | Replica trim at/above limit; assert no second removal. **PASS/current**, migrated. |
 | 21 | `还没闭合的 turn 整段留住` — an older open turn remains coherent, including its request and provisional evidence, when newer rows pressure the trim frontier. | `createChannelReplicaStore().trim` now clamps to `openTurnFloor`; seq 1/2 remain a pending turn under seq 3–12 pressure. **ORACLE/current**, executable evidence `tests/memory-window.test.js:106-130` and `src/model/channel-replica-terminal-closure.test.jsx:179-189`. |
-| 22 | `保留先到 terminal 的 compact closure，窗口裁剪后旧 queued 不能复活` — compact terminal evidence prevented stale queued resurrection. | `ChannelReplica` closure + `useWaitingEditingController`; the trimmed completed turn suppresses a stale local echo. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:52-71`. |
+| 22 | `保留先到 terminal 的 compact closure，窗口裁剪后旧 queued 不能复活` — compact terminal evidence prevented stale queued resurrection. | `ChannelReplica` closure + `useWaitingEditingController`; the trimmed completed turn suppresses a stale local echo for both request-first and response-first re-admission. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:52-71,127-155`. |
 | 23 | `多个乱序 unmatched terminal 由 earliest seq 吸收` — unmatched terminal ordering was deterministic. | Parent-keyed closure reconciliation chooses the earlier response-first terminal before re-admission. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:127-149`; no guessed request or second store. |
 | 24 | `已匹配 terminal 被裁剪后仍以 compact closure 阻止旧 queued 复活` — stale queued must not reopen a closed turn after trim. | `ChannelReplica.trim` retains exact terminal provenance and projects terminal state while the request is absent. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:73-87,89-125`. |
 | 25 | `nested steer 关系在 compact owner 归一后仍可驱动 merge/preempt` — nested request relations retain terminal facts. | `compactTerminalClosure` retains the documented `merged_into`/`preempted_by`/`replaced_by` fields and the public turn upgrades on exact full-row return. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:191-211`. |
@@ -710,6 +710,32 @@ tests/memory-window.test.js tests/channel-feed-runtime.test.jsx` → **3 files,
 GREEN** (the pre-round aggregate had undercounted the current memory suite by
 one). The baseline remains 159 cases; the new row-143 assertion is an
 additive current-owner proof, not a duplicate baseline count.
+
+## Round 25 response-first closure / Waiting baseline completion
+
+Round 24's sparse and model-selector evidence is not repeated. The next I–M
+baseline slice is memory-window row 22's response-first ordering: the current
+owner already proved a response-first compact closure and exact full-row
+upgrade, while the request-first variant proved stale local-echo suppression;
+the missing cross-product was whether a late parent plus a queued echo could
+reopen Waiting after the response-first terminal had been trimmed.
+
+The additive public-owner test
+`src/model/channel-replica-terminal-closure.test.jsx:127-155` drives only
+`createChannelReplicaStore().commit/trim/state` and the public
+`useWaitingEditingController` result. Its sequence is terminal at seq2,
+unrelated tail through seq10, trim to four, late request at seq1, queued echo
+at seq11, then an uncertain local submission with the same request id. The
+observable contract is a completed, closure-only turn and an empty
+`queuedTurns`; no second closure store, private production helper, or
+notification/arrival owner is involved. The test is distinct from R1's
+request-first echo and the existing response-first full-row-upgrade case.
+
+Evidence: `npx vitest run
+src/model/channel-replica-terminal-closure.test.jsx tests/memory-window.test.js`
+→ **2 files, 26/26 GREEN**. This is an additive successor proof; the 159-case
+baseline count and the 17-file/108-test I–M aggregate are unchanged. Reading
+and all product sources remain untouched.
 
 ## Final disposition and verification
 
