@@ -136,17 +136,31 @@ function isComposerSendIntent(intent) {
   return String(intent?.id || '').startsWith('composer:send-start:');
 }
 
+function isWaitingComposerTarget(row) {
+  const localState = String(row?.localState || '').toLowerCase();
+  const bodyState = String(row?.body?.state || '').toLowerCase();
+  const bodyLocalState = String(row?.body?.local_submission_state || '').toLowerCase();
+  return localState === 'waiting' || bodyState === 'waiting' || bodyLocalState === 'waiting';
+}
+
 // A send-start intent is a join between the explicit user action and the
 // committed destination rows. A role-only height callback must not stand in
 // for that join, and an unaccepted intent (with no durable target IDs yet)
-// must not consume itself against the old tail.
-function composerSendTargetsCommitted(intent, rows = []) {
+// must not consume itself against the old tail. A stale presentation revision
+// is equally unmeasured for this intent and remains pending until a current
+// public Presentation delivery arrives.
+function composerSendTargetsCommitted(intent, rows = [], presentationRevision = 0) {
   if (!isComposerSendIntent(intent)) return true;
   const targets = Array.isArray(intent.targetMessageIDs)
     ? intent.targetMessageIDs.map(String).filter(Boolean)
     : [];
+  const requiredRevision = Math.max(0, Number(intent.afterPresentationRevision) || 0);
+  const currentRevision = Number(presentationRevision);
+  if (!Number.isFinite(currentRevision) || currentRevision < requiredRevision) return false;
   return targets.length > 0
-    && targets.every((targetID) => rows.some((row) => String(row?.id || '') === targetID));
+    && targets.every((targetID) => rows.some((row) => (
+      String(row?.id || '') === targetID && !isWaitingComposerTarget(row)
+    )));
 }
 
 function observationIdentity(owner, data, rootIdentity = 0) {
@@ -597,7 +611,7 @@ export function VendorListExecutor({
     const current = owner?.getSession?.();
     const intent = currentBottomIntent(current);
     if (!root || !current || current.mode !== READING_MODE.following || !data?.rows?.length || !intent
-      || (isComposerSendIntent(intent) && !composerSendTargetsCommitted(intent, data.rows))
+      || (isComposerSendIntent(intent) && !composerSendTargetsCommitted(intent, data.rows, data.revision))
       || Number(root.clientHeight) <= 0 || Number(root.scrollHeight) <= 0) return false;
     const key = `tail:${current.activationID}:${intent.id}`;
     if (consumedCommandRef.current === key) return false;

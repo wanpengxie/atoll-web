@@ -3879,9 +3879,15 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       targetMessageIDs: ['round37-removable-target'],
     };
     const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
+    const consumeBottomIntent = reading.consumeBottomIntent;
+    reading.consumeBottomIntent = vi.fn((candidate) => consumeBottomIntent(candidate));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-waiting-first', 1);
-    const target = { ...round33Row('round37-removable-target', 2), localState: 'queued', body: { local: true } };
+    const target = {
+      ...round33Row('round37-removable-target', 2),
+      localState: 'waiting',
+      body: { local: true, state: 'waiting' },
+    };
     const view = render(
       <VendorListExecutor
         snapshot={round33Snapshot([first], { revision: 1 })}
@@ -3903,10 +3909,29 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
+    // The only retry signals exercised here are public Presentation/range/
+    // height deliveries. No timer, private callback, or detached state may
+    // grant the old tail writer a new lease.
     act(() => vendorHarness.props.totalListHeightChanged());
-    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
-    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+    act(() => vendorHarness.props.rangeChanged({ startIndex: 1, endIndex: 2 }));
+    expect({
+      scrollWrites: vendorHarness.scrollTo.mock.calls,
+      intentReceipts: reading.consumeBottomIntent.mock.calls,
+      scrollTop: scroller.scrollTop,
+      pendingIntent: reading.getSession().bottomIntent.id,
+    }).toEqual({
+      scrollWrites: [],
+      intentReceipts: [],
+      scrollTop: 200,
+      pendingIntent: intent.id,
+    });
 
+    // Re-arm the same public owner tuple only to isolate the second branch of
+    // this one contract. The first branch is the Waiting target; this branch
+    // is the target's committed absence after removal.
+    reading.session = { ...reading.session, mode: READING_MODE.following, bottomIntent: intent };
+    reading.consumeBottomIntent.mockClear();
+    vendorHarness.scrollTo.mockClear();
     view.rerender(
       <VendorListExecutor
         snapshot={{
@@ -3918,8 +3943,193 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       />,
     );
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_000, scrollTop: 200 });
+    act(() => vendorHarness.props.rangeChanged({ startIndex: 1, endIndex: 1 }));
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+    expect(scroller.scrollTop).toBe(200);
+  });
+
+  it('message-list-lifecycle TC-1019: a stale presentation revision is not a measured send target', () => {
+    const intent = {
+      id: 'composer:send-start:round37-unmeasured',
+      inputEpoch: 0,
+      afterPresentationRevision: 3,
+      targetMessageIDs: ['round37-unmeasured-target'],
+    };
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
+    const consumeBottomIntent = reading.consumeBottomIntent;
+    reading.consumeBottomIntent = vi.fn((candidate) => consumeBottomIntent(candidate));
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const first = round33Row('round37-unmeasured-first', 1);
+    const target = { ...round33Row('round37-unmeasured-target', 2), body: { local: false } };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    vendorHarness.scrollTo.mockClear();
+    act(() => vendorHarness.props.rangeChanged({ startIndex: 1, endIndex: 2 }));
+    act(() => vendorHarness.props.totalListHeightChanged());
+
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(200);
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+
+    // The normal Presentation delivery is the only retry source. Once its
+    // revision reaches the intent's public floor, the existing Vendor writer
+    // may perform the one send join and receipt.
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 3 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
+  });
+
+  it('message-list-lifecycle TC-1019: native takeover revokes a pending tail join before public retries', () => {
+    const intent = {
+      id: 'composer:send-start:round37-native-revoke',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-native-target'],
+    };
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
+    const consumeBottomIntent = reading.consumeBottomIntent;
+    reading.consumeBottomIntent = vi.fn((candidate) => consumeBottomIntent(candidate));
+    reading.session = { ...reading.session, bottomIntent: intent };
+    reading.beginNavigation = vi.fn(({ direction, gestureID, geometryRevision }) => {
+      reading.session = takeReadingControl(reading.session, {
+        direction,
+        gestureID,
+        geometryRevision,
+      });
+      return { inputGeneration: reading.session.inputEpoch };
+    });
+    const first = round33Row('round37-native-first', 1);
+    const target = {
+      ...round33Row('round37-native-target', 2),
+      localState: 'waiting',
+      body: { local: true, state: 'waiting' },
+    };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    // A real public native gesture revokes the old Reading intent first. The
+    // later target/presentation and range/height callbacks must not resurrect
+    // the old tail writer or receipt.
+    act(() => fireEvent.wheel(scroller, { deltaY: -120 }));
+    expect(reading.beginNavigation).toHaveBeenCalled();
+    expect(reading.getSession().mode).toBe(READING_MODE.browsing);
+    expect(reading.getSession().bottomIntent.id).toBe('');
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_000, scrollTop: 200 });
+    act(() => vendorHarness.props.rangeChanged({ startIndex: 1, endIndex: 2 }));
+    act(() => vendorHarness.props.totalListHeightChanged());
+
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(200);
+  });
+
+  it('message-list-lifecycle TC-1019: replacement root revokes an old height/range writer and receipt', () => {
+    const intent = {
+      id: 'composer:send-start:round37-root-revoke',
+      inputEpoch: 0,
+      afterPresentationRevision: 1,
+      targetMessageIDs: ['round37-root-target'],
+    };
+    // Mount in browsing so arming the explicit following intent below is a
+    // test-owned public state transition, not an initial layout write.
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.browsing }));
+    const consumeBottomIntent = reading.consumeBottomIntent;
+    reading.consumeBottomIntent = vi.fn((candidate) => consumeBottomIntent(candidate));
+    const first = round33Row('round37-root-first', 1);
+    const target = {
+      ...round33Row('round37-root-target', 2),
+      localState: 'waiting',
+      body: { local: true, state: 'waiting' },
+    };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, target], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const firstRoot = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    const staleHeightCallback = vendorHarness.props.totalListHeightChanged;
+    const staleRangeCallback = vendorHarness.props.rangeChanged;
+    vendorHarness.scrollTo.mockClear();
+
+    // A keyed remount is the public physical-root replacement. It gives the
+    // successor its own DOM node and retires the old callback/root tuple.
+    view.rerender(
+      <VendorListExecutor
+        key="round37-root-successor"
+        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const replacementRoot = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 200,
+    });
+    vendorHarness.scrollTo.mockClear();
+    // Arm the old intent only after the physical replacement. This prevents
+    // the successor's own layout effect from being part of the stale-callback
+    // proof; the callbacks below are still the pre-replacement public props.
+    reading.session = {
+      ...reading.session,
+      mode: READING_MODE.following,
+      bottomIntent: intent,
+    };
+    act(() => {
+      staleRangeCallback({ startIndex: 1, endIndex: 2 });
+      staleHeightCallback();
+    });
+
+    expect(firstRoot).not.toBe(replacementRoot);
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(replacementRoot.scrollTo).not.toHaveBeenCalled();
+    expect(replacementRoot.scrollTop).toBe(200);
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
     expect(reading.getSession().bottomIntent.id).toBe(intent.id);
   });
 
