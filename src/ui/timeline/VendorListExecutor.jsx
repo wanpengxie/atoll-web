@@ -378,6 +378,12 @@ export function VendorListExecutor({
 
   const coordinator = useMemo(() => createReadingNavigationCoordinator({
     activationID: reading.activationID,
+    // Chromium emits one native scrollend per discrete wheel tick, while a
+    // real wheel burst can take a couple of frames to deliver its next tick
+    // through React/Virtuoso. Keep the semantic transaction alive across
+    // that delivery gap; a longer genuinely quiet interval still ends it
+    // through the coordinator's bounded deadline.
+    quietMs: { wheel: 300 },
     onBegin(transaction) {
       const result = readingRef.current.beginNavigation({
         direction: transaction.direction,
@@ -946,7 +952,33 @@ export function VendorListExecutor({
     root.addEventListener('touchend', touchend, { passive: true });
     root.addEventListener('touchcancel', touchend, { passive: true });
     root.addEventListener('scroll', scroll, { passive: true });
-    const scrollend = () => coordinator.recordScrollEnd(host);
+    const scrollend = () => {
+      const transaction = coordinator.getSnapshot().transaction;
+      // Chromium emits `scrollend` after each discrete wheel tick, even while
+      // the user is still producing one physical wheel burst. Ending the
+      // coordinator here would mint a new gesture on the next tick and make
+      // the accepted history lease recapture the already-clamped +35px row
+      // instead of the -394px anchor the burst started from. Wheel input is
+      // already bounded by the coordinator's quiet deadline; native scrollend
+      // remains an early completion signal for touch/other contacts only.
+      if (transaction?.source === 'wheel') {
+        // Keep the actual-paint receipt even though this native event is not
+        // allowed to terminate the physical wheel transaction.
+        const current = readingRef.current.getSession?.();
+        const source = Number(transaction.inputGeneration) === Number(current?.inputEpoch)
+          ? 'user' : 'settled';
+        scheduleObserve(source, true);
+        return;
+      }
+      if (!transaction) {
+        // A layout-driven scroll can still emit a native scrollend after the
+        // coordinator has no user transaction. Publish only its paint fence;
+        // it must not manufacture user authority.
+        scheduleObserve('settled', true);
+        return;
+      }
+      coordinator.recordScrollEnd(host);
+    };
     root.addEventListener('scrollend', scrollend);
     return () => {
       root.removeEventListener('wheel', wheel);

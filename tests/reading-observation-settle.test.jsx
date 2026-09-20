@@ -11,6 +11,7 @@ import {
 import { VendorListExecutor } from '../src/ui/timeline/VendorListExecutor.jsx';
 
 const harness = vi.hoisted(() => ({ props: null }));
+const defaultElementFromPoint = document.elementFromPoint;
 
 vi.mock('react-virtuoso', async () => {
   const ReactModule = await import('react');
@@ -46,6 +47,7 @@ vi.mock('react-virtuoso', async () => {
 
 afterEach(() => {
   cleanup();
+  document.elementFromPoint = defaultElementFromPoint;
   harness.props = null;
 });
 
@@ -154,6 +156,12 @@ async function mount(owner) {
   block.getBoundingClientRect = () => ({
     top: 8, bottom: 40, left: 8, right: 400, width: 392, height: 32,
   });
+  // The production receipt requires a real hit-tested row. jsdom's shared
+  // setup fallback returns document.body for every point, which intentionally
+  // models "no painted row" and would make this fixture test the rejection
+  // path in every case. Keep the production predicate intact and model the
+  // one mounted row's hit-test here instead.
+  document.elementFromPoint = () => rowNode;
   await act(async () => {
     scroller.dispatchEvent(new Event('scroll'));
     await Promise.resolve();

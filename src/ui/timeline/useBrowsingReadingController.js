@@ -46,7 +46,13 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
     const current = owner.getSession();
     if (handoffPendingRef.current || evidence.activationID !== current.activationID) return;
     const first = snapshotRef.current.rows[0];
-    const key = `${current.activationID}:${current.inputEpoch}:${first?.id || ''}:${first?.seqLow || 0}`;
+    // Runway is an anticipatory obligation; once the same physical wheel
+    // burst reaches scrollTop=0 it must be promoted to the interactive top
+    // obligation even though the coordinator intentionally keeps one input
+    // epoch across Chromium's per-tick `scrollend` events.  Keep each reason
+    // independently deduped so a top request is not swallowed by the earlier
+    // runway sample, while repeated samples of the same reason remain quiet.
+    const key = `${current.activationID}:${current.inputEpoch}:${reason}:${first?.id || ''}:${first?.seqLow || 0}`;
     if (frontierDemandKeyRef.current === key) return;
     frontierDemandKeyRef.current = key;
     const detail = { demandUnits: evidence.demandUnits };
