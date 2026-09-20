@@ -4,6 +4,7 @@ import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import { selectTimelineItems } from '../src/model/conversation-presentation.js';
 import { notificationDisposition } from '../src/model/notification-policy.js';
+import { railDiagnosticSnapshot } from '../src/model/diagnostics.js';
 
 afterEach(() => globalThis.localStorage?.clear());
 
@@ -347,6 +348,66 @@ describe('notification confirmation contract', () => {
       inputEpoch: 0,
     }))).toBe(1);
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+  });
+
+  it('retires a following lease and detached revoke at a same-generation regrant', async () => {
+    const { runtime, channelId, selfId, boot } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'regrant-approval-1', selfId), seq: 1 });
+    const firstStatus = feed.historyFor(channelId);
+    const first = confirmationFor(channelId, firstStatus, 1, { inputEpoch: 0 });
+    expect(feed.acknowledgeNotifications(first)).toBe(1);
+
+    // The active lease absorbs the second accepted row before the attach is
+    // replaced.  Regranting the same generation must nevertheless invalidate
+    // that observation by its authority revision; otherwise reload/reconnect
+    // can hide the retained row as `following_presented`.
+    feed.enqueue({ ...relatedRequest(channelId, 'regrant-approval-2', selfId), seq: 2 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+    const oldRevision = first.authorityRevision;
+
+    await feed.setHistoryGrants(
+      [{ channel_id: channelId, head_seq: 2 }],
+      { generation: 1, boot },
+    );
+    const regrantStatus = feed.historyFor(channelId);
+    expect(regrantStatus.notificationAuthorityRevision).toBeGreaterThan(oldRevision);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+    expect(railDiagnosticSnapshot(channelId).channels[0].rows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ seq: 2, ackReason: 'counted_related' })]),
+    );
+
+    // A typed revoke cannot install a fence after the authority is detached,
+    // even if a caller reuses the old owner/generation tuple and current
+    // status revision while a stale cleanup is being delivered.
+    expect(feed.disconnectHistory()).toBe(true);
+    const detachedStatus = feed.historyFor(channelId);
+    expect(feed.acknowledgeNotifications({
+      ...first,
+      kind: 'notification-lease-revoke',
+      reason: 'physical-leave',
+      authorityRevision: detachedStatus.notificationAuthorityRevision,
+      inputEpoch: 9,
+      caughtUp: false,
+      following: false,
+      atTail: false,
+      surfaceVisible: false,
+      cause: '',
+      boundary: 0,
+      captured: { ...first.captured, installedHighSeq: 1 },
+    })).toBe(false);
+
+    const reattachedFeed = runtime.getSnapshot();
+    await reattachedFeed.setHistoryGrants(
+      [{ channel_id: channelId, head_seq: 2 }],
+      { generation: 1, boot },
+    );
+    reattachedFeed.enqueue({ ...relatedRequest(channelId, 'regrant-approval-3', selfId), seq: 3 });
+    const freshStatus = reattachedFeed.historyFor(channelId);
+    expect(reattachedFeed.acknowledgeNotifications(confirmationFor(channelId, freshStatus, 3, {
+      inputEpoch: 0,
+    }))).toBe(3);
+    expect(reattachedFeed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
   });
 
   it('restores channel high-water without allowing cache/grant hydration to resurrect it', async () => {
