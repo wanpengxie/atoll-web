@@ -107,13 +107,19 @@ test('TC0224 minimal public black-box: channel return keeps one semantic anchor 
   const visibleFrames = frames.filter((frame) => frame.visible && Number.isFinite(frame.top));
   const tops = visibleFrames.map((frame) => frame.top);
   const spread = tops.length ? Math.max(...tops) - Math.min(...tops) : null;
+  const settledTop = visibleFrames.at(-1)?.top ?? null;
+  const settledDelta = Number.isFinite(settledTop) && Number.isFinite(before.top)
+    ? Math.abs(settledTop - before.top)
+    : null;
   const evidence = {
-    contract: 'same public row ID remains visible at the same screen top after channel return',
+    contract: 'same public row ID returns to its pre-leave screen top and stays there',
     baseline: 'old reading baseline: stable semantic anchor, <=1px target; current F7 gate uses <=2px over return frames',
     before,
     frames,
     visibleFrameCount: visibleFrames.length,
     spread,
+    settledTop,
+    settledDelta,
   };
   await testInfo.attach('tc0224-public-blackbox.json', {
     body: JSON.stringify(evidence, null, 2),
@@ -122,5 +128,6 @@ test('TC0224 minimal public black-box: channel return keeps one semantic anchor 
 
   expect(visibleFrames.length, JSON.stringify(evidence)).toBeGreaterThanOrEqual(8);
   expect(visibleFrames.every((frame) => frame.rowID === before.id), JSON.stringify(evidence)).toBe(true);
+  expect(settledDelta, JSON.stringify(evidence)).toBeLessThanOrEqual(2);
   expect(spread, JSON.stringify(evidence)).toBeLessThanOrEqual(2);
 });
