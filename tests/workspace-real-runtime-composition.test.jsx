@@ -147,7 +147,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('../src/app/WorkspaceLayout.jsx', () => ({
   WorkspaceLayout: (props) => {
     mocks.layoutProps = props;
-    return null;
+    return props.overlays || null;
   },
 }));
 vi.mock('../src/app/hooks/useWireSession.js', () => ({
@@ -215,11 +215,14 @@ vi.mock('../src/ui/features/tasks/TasksFeature.jsx', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, TaskCreationDialog: () => null };
 });
-vi.mock('../src/ui/features/index.js', () => ({
-  WorkspaceFeatures: () => null,
-  WorkspaceFeatureOverlays: () => null,
-  WorkspaceRightPanel: () => null,
-}));
+vi.mock('../src/ui/features/index.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    WorkspaceFeatures: () => null,
+    WorkspaceRightPanel: () => null,
+  };
+});
 
 const { WorkspaceApp } = await import('../src/app/WorkspaceApp.jsx');
 
@@ -582,6 +585,36 @@ describe('真实 Workspace owner composition', () => {
       await waitFor(() => expect(mocks.probeResult.composerAgent).toMatchObject({ actorId: mocks.agentId }));
     } finally {
       mocks.obs.channelActors.mockImplementation(previousActors);
+    }
+  });
+
+  it('settles an invalid Files row through the public Composer picker owner without closing the dialog', async () => {
+    const previousDeviceId = mocks.attachments.deviceId;
+    const previousDevices = mocks.attachments.devices;
+    const previousEntries = mocks.attachments.entries;
+    const invalidEntry = {
+      key: 'invalid-file-row',
+      kind: 'file',
+      name: 'missing-resource.txt',
+      resourceId: '',
+      mediaType: 'text/plain',
+      size: 1,
+    };
+    mocks.attachments.deviceId = 'local-device';
+    mocks.attachments.devices = [{ id: 'local-device', name: 'local-device' }];
+    mocks.attachments.entries = [invalidEntry];
+    try {
+      render(<WorkspaceApp />);
+      await waitFor(() => expect(mocks.composerResult?.commands?.pickChannelFile).toBeTypeOf('function'));
+      const pick = mocks.composerResult.commands.pickChannelFile();
+      await waitFor(() => expect(screen.getByRole('dialog', { name: '从频道文件选择' })).toBeTruthy());
+      await userEvent.setup().click(screen.getByRole('button', { name: /missing-resource\.txt/ }));
+      await expect(pick).resolves.toBeNull();
+      expect(screen.getByRole('dialog', { name: '从频道文件选择' })).toBeTruthy();
+    } finally {
+      mocks.attachments.deviceId = previousDeviceId;
+      mocks.attachments.devices = previousDevices;
+      mocks.attachments.entries = previousEntries;
     }
   });
 });
