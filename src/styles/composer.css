@@ -103,15 +103,16 @@ textarea.composer-editor { display: block; resize: none; }
 .composer-disabled-reason { color: var(--text-muted); }
 /* 收件人贴在输入框上沿，但由 Composer 用 fixed 定位承载在自身 DOM 里：
    conversation-input-slot 有 overflow 裁剪，普通绝对层会导致芯片可见却无法接收 × 的指针事件。
+   固定层本身不抢占邻近 Waiting/Timeline 控件，只有芯片上的移除按钮恢复命中。
    mention 现在只住在这条上（正文里恒不再留收件人），所以它恒是全强度的：不透明底、正色字、无描边。
    "没有收件人"和失联的收件人换成警告色，因为那一格按回车会被拒。 */
-.composer-target { position: fixed; z-index: 70; left: 0; pointer-events: auto; }
+.composer-target { position: fixed; z-index: 70; left: 0; pointer-events: none; }
 .composer-target-pill { display: inline-flex; max-width: 100%; overflow: hidden; align-items: center; padding: 2px 9px 3px; border-radius: 7px 7px 0 0; background: var(--recipient-bg); color: var(--recipient-text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .composer-target.is-none .composer-target-pill, .composer-target.is-lost .composer-target-pill, .composer-target-pill.is-lost { background: var(--recipient-warn-bg); color: var(--recipient-warn-text); }
 /* @ 亲手放上去的人是芯片：能逐个看见，也能逐个摘掉（× 或正文最前面按退格）。
    派生出来的默认目标只有名字，没有 × ——它不是被"放上去"的，摘不掉也不该摘。 */
 .composer-target-pill.is-picked { padding-right: 3px; gap: 3px; }
-.composer-target-remove { display: inline-flex; padding: 1px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.composer-target-remove { display: inline-flex; padding: 1px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; pointer-events: auto; }
 .composer-target-remove:hover:not(:disabled) { background: var(--recipient-remove-hover); }
 .composer-target-remove:disabled { cursor: default; opacity: .35; }
 /* 发不出去时只压暗，恒不卸载——恒不进出，就恒不闪。 */
