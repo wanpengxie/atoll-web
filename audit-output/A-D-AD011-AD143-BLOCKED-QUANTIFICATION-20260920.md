@@ -384,6 +384,30 @@ BLOCKED, not expected-fail completion. The ledger is **319 PASS / 0 REGRESSION /
 `CAPABILITY_GAP` falls from 14 to 10. Existing owner fixes `fc7f692`, `5c46b7c`,
 and `ef67eaf` were verified without product edits.
 
+## Round 26 evidence packet
+
+Round 26 explicitly de-duplicates the closed AD-157/158/167/288/289 rows and
+selects the next twenty current `BLOCKED` rows: AD-027/037,
+AD-150–153/155, AD-156/159–161, AD-165/166/178, and AD-192–197. The
+independent ordinary-red fixture is
+[`tests/blocked-round26-public-owner.test.jsx`](../tests/blocked-round26-public-owner.test.jsx).
+Each case records the user capability, invariant, current public owner, setup,
+and observed result; no `it.fails`, skip, private export, or product change is
+used.
+
+```text
+npx vitest run tests/blocked-round26-public-owner.test.jsx --reporter=dot
+
+Test Files  1 failed (1)
+Tests       20 failed (20)
+```
+
+All twenty rows remain ordinary red `BLOCKED` evidence. There is no status or
+category delta: the ledger remains **319 PASS / 0 REGRESSION / 46 BLOCKED**;
+`OWNER_MISSING` remains 12, `FIXTURE_MISSING` remains 24, and
+`CAPABILITY_GAP` remains 10. The five closed rows are not counted again, and
+no ordinary red result is treated as completion or judged obsolete.
+
 ## Boundary audit
 
 This packet changes A–D unit tests and audit-output reports only. It does not
@@ -418,3 +442,8 @@ report only. It promotes AD-157/158/288/289, re-verifies AD-167, and keeps
 fifteen ordinary red rows BLOCKED. The existing Feed/cursor fixes are only
 verified; no Feed, Workspace, Reading, Outbox, vendor, package, lockfile, or
 private export changed, and no baseline declaration was deleted or skipped.
+Round 26 adds `tests/blocked-round26-public-owner.test.jsx` and its case-level
+report only. It de-duplicates AD-157/158/167/288/289 and records twenty
+ordinary red rows at their current Waiting/Feed/Governance public owners or
+fixture boundaries. No product source, vendor, package, lockfile, private
+export, compatibility API, or baseline declaration changed.
