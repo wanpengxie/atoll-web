@@ -344,9 +344,24 @@ export function requestLatest(session, id, {
   afterPresentationRevision = 0,
   baselineTailID = '',
   targetMessageIDs = [],
+  // A public return-to-tail is a new authority transaction when the reader
+  // is browsing. The caller supplies this only for an explicit user intent;
+  // passive append/paint paths must keep using the current epoch.
+  mintSuccessorEpoch = false,
 } = {}) {
   if (!id) throw new TypeError('latest intent requires id');
-  return next(session, {
+  const authority = mintSuccessorEpoch === true && session.mode === READING_MODE.browsing
+    ? Object.freeze({
+      ...session,
+      inputEpoch: session.inputEpoch + 1,
+      bottomIntent: idleBottomIntent(),
+      contentAnchor: idleContentAnchor(),
+      positionRowLease: null,
+      historyAnchor: null,
+      tailEvidence: null,
+    })
+    : session;
+  return next(authority, {
     intentRevision: session.intentRevision + 1,
     mode: READING_MODE.following,
     bookmark: null,
@@ -356,7 +371,7 @@ export function requestLatest(session, id, {
     tailEvidence: null,
     bottomIntent: Object.freeze({
       id: String(id),
-      inputEpoch: session.inputEpoch,
+      inputEpoch: authority.inputEpoch,
       afterPresentationRevision: Math.max(0, Number(afterPresentationRevision) || 0),
       baselineTailID: String(baselineTailID || ''),
       targetMessageIDs: Object.freeze([...new Set((targetMessageIDs || []).map(String).filter(Boolean))]),

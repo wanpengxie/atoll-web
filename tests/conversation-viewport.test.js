@@ -61,6 +61,29 @@ describe('reading session authority', () => {
     expect(consumeLatestIntent(browsing, { ...intent, activationID: 'a1' })).toBe(browsing);
   });
 
+  it('mints a successor authority epoch for an explicit return from browsing', () => {
+    const browsing = takeReadingControl(session(), {
+      direction: 'older',
+      gestureID: 'leave:one',
+    });
+    const returned = requestLatest(browsing, 'latest:successor', {
+      mintSuccessorEpoch: true,
+      baselineTailID: 'tail:old',
+    });
+
+    expect(returned.mode).toBe(READING_MODE.following);
+    expect(returned.inputEpoch).toBe(browsing.inputEpoch + 1);
+    expect(returned.intentRevision).toBe(browsing.intentRevision + 1);
+    expect(returned.revision).toBe(browsing.revision + 1);
+    expect(returned.bottomIntent.inputEpoch).toBe(returned.inputEpoch);
+    expect(returned.bottomIntent.baselineTailID).toBe('tail:old');
+    expect(consumeLatestIntent(returned, {
+      ...returned.bottomIntent,
+      inputEpoch: browsing.inputEpoch,
+      activationID: returned.activationID,
+    })).toBe(returned);
+  });
+
   it('captures a browsing content anchor and emits one typed restore command', () => {
     let current = takeReadingControl(session(), { direction: 'older', gestureID: 'fold' });
     current = captureContentAnchor(current, {

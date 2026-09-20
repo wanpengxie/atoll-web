@@ -244,6 +244,10 @@ function useProjectionReadingOwner({
     documentVisible: pageIsVisible(),
     surfaceVisible: surfaceVisible === true,
   });
+  // A physical list root is part of Reading authority. The first root merely
+  // establishes the mounted identity; a replacement root is a successor
+  // transaction, so no receipt from the old root can authorize the new one.
+  const rootActivationRef = useRef({ node: null, identity: 0, activationID: '' });
   // Keep the last positive tail receipt available to the synchronous native
   // takeover path. A later layout/settled sample may already have replaced the
   // public observation with a transient `following: false` frame while the
@@ -446,7 +450,10 @@ function useProjectionReadingOwner({
       || Number(expected.intentRevision) !== current.intentRevision
       || expected.mode !== current.mode
     ))) return false;
-    controller.update((active) => requestLatest(active, `${reason}:${newId()}`, target || undefined));
+    controller.update((active) => requestLatest(active, `${reason}:${newId()}`, {
+      ...(target || {}),
+      mintSuccessorEpoch: active.mode === READING_MODE.browsing,
+    }));
     return true;
   }, [controller]);
   const beginNavigation = useCallback((input = {}) => {
@@ -702,6 +709,63 @@ function useProjectionReadingOwner({
     }
   }, [controller.activationID, tailCaughtUp]);
 
+  const onReadingRootActivation = useCallback((root = {}) => {
+    const rootNode = root.rootNode;
+    const rootIdentity = Number(root.rootIdentity);
+    if (!rootNode || !Number.isSafeInteger(rootIdentity) || rootIdentity <= 0) return false;
+    const previous = rootActivationRef.current;
+    if (previous.activationID !== controller.activationID) {
+      rootActivationRef.current = { node: rootNode, identity: rootIdentity, activationID: controller.activationID };
+      return false;
+    }
+    if (previous.node === rootNode && Number(previous.identity) === rootIdentity) return false;
+    rootActivationRef.current = { node: rootNode, identity: rootIdentity, activationID: controller.activationID };
+    // Ref callbacks can run before the session's layout effect starts the
+    // controller on the first mount. Recording the root above is enough;
+    // there is no predecessor authority to revoke in that case.
+    if (!previous.node || !controller.isStarted()) return false;
+    const before = controller.getSnapshot().session;
+    const leasedTail = tailLeaseRef.current;
+    const nextSession = controller.update((active) => advanceReadingInputEpoch(active));
+    const nextEpoch = Number(nextSession.inputEpoch);
+    if (leasedTail?.caughtUp === true
+      && leasedTail.activationID === controller.activationID
+      && Number(leasedTail.inputEpoch) === Number(before.inputEpoch)) {
+      tailLeaseRef.current = null;
+      onTailLeaseRevoke?.(Object.freeze({
+        ...typedTailLeaseRevoke(leasedTail, 'root-replacement', nextEpoch),
+        cause: 'physical-root-replacement',
+        previousInputEpoch: Number(before.inputEpoch),
+      }));
+    }
+    // Do not let the old settled observation survive the physical root
+    // replacement. The next root must publish a fresh hit-tested paint.
+    observationRef.current = Object.freeze({
+      activationID: controller.activationID,
+      inputEpoch: nextEpoch,
+      rootIdentity: 0,
+      rootNode: null,
+      atTail: false,
+      settled: false,
+      surfaceVisible: visibilityBoundaryRef.current.surfaceVisible === true,
+      installedHighSeq: 0,
+      generation: 0,
+      headSeq: 0,
+      presentationRevision: 0,
+      domPresentationRevision: 0,
+      observationPresentationRevision: 0,
+      observationIdentity: null,
+      visibleRowIDs: Object.freeze([]),
+      tailID: '',
+      authorityVerified: false,
+      sourceRevision: 0,
+      authorityRevision: 0,
+      geometryRevision: 0,
+    });
+    setObservationRevision((value) => value + 1);
+    return nextEpoch > Number(before.inputEpoch);
+  }, [controller, onTailLeaseRevoke]);
+
   return useMemo(() => Object.freeze({
     activationID: controller.activationID,
     session,
@@ -930,6 +994,7 @@ function useProjectionReadingOwner({
         && committedSession.activationID === controller.activationID
         && Number(committedSession.inputEpoch) === inputEpoch;
     },
+    onReadingRootActivation,
     onPresentationMaterialized(observation = {}) {
       return observation.activationID === controller.activationID
         && Number(observation.presentationRevision) === Number(snapshotRef.current.revision || 0);
@@ -1031,6 +1096,7 @@ function useProjectionReadingOwner({
     history, historyBoundary, historyConsumer, historyStatus,
     presentationAuthority, presentationInitializing, requestBottom, requestHistory,
     restorePending, session, syncObservationCurrent, syncStatus.error, tailCaughtUp,
+    onReadingRootActivation,
   ]);
 }
 export function useConversationProjection({

@@ -334,6 +334,14 @@ export function VendorListExecutor({
         generation,
       };
       setRootIdentity(node ? generation : 0);
+      // Semantic authority stays in Reading. This is only a typed physical
+      // root handoff; the Vendor adapter remains the sole DOM writer. The
+      // first root is recorded without minting an epoch; later roots are
+      // successor transactions in the Reading owner.
+      readingRef.current.onReadingRootActivation?.({
+        rootNode: node,
+        rootIdentity: generation,
+      });
     }
     rootRef.current = node;
     setRootNode((current) => current === node ? current : node);
