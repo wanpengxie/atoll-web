@@ -1344,6 +1344,40 @@ source, Shell owner file, notification/arrival owner, private API,
 compatibility parser, vendor/package, lockfile, or second source of truth was
 modified in Round43.
 
+## Round 44 latest regression recheck
+
+At current shared `HEAD` `9896328`, the Shell owner has landed
+`b7155ec` (`TimelineRowRenderer` canonical-body precedence). This round
+rechecks the latest black-box result without touching the concurrent dirty
+Reading/cache files (`VendorListExecutor.jsx`,
+`useBrowsingReadingController.js`, `reading-observation-settle.test.jsx`, or
+the browser reading spec). The I-M exact test remains clean and the earlier
+Round-42 correction remains isolated in `a3a9239`.
+
+| case | latest black-box contract | public owner | latest result |
+|---|---|---|---|
+| canonical body label | Canonical user prose wins over a known system-operation label; the reader sees `用户正文`, not `添加参与者：demo:agent`. | Shell `useTimelineRowRenderer`/`TimelineRowRenderer` → rendered `EnvelopeBody` DOM. | **GREEN** after `b7155ec`; the strict DOM assertion is unchanged. |
+| TC-1010 | Intermediate send-target presentation cannot move the physical viewport before committed destination measurement. | Reading `VendorListExecutor` typed send intent + mounted root. | **RED**: `{top:1000}` is written early. |
+| TC-1011 | Pending send join fences both early and later same-revision height writes; only the legal ordinary-follow boundary may write. | Reading `VendorListExecutor` public height owner + root. | **RED**: `{top:1000}` and `{top:1132}` are written before the boundary. |
+| TC-1012 | Equal-height target acknowledgement is a non-writing baseline; a later resize is the first visible follow. | Reading `VendorListExecutor` target fence + root. | **RED**: `{top:1000}` is written at the equal-height baseline. |
+| TC-1014 | Same-revision height cannot write before public send revoke. | Reading `VendorListExecutor` intent fence + public height. | **RED**: `{top:1132}` is written before revoke. |
+| TC-1015 | Revoking a send-owned baseline releases ordinary following only at the public boundary, once. | Reading `VendorListExecutor` session intent + root writer. | **RED**: `{top:1132}` is written before revoke. |
+| TC-1018 | An unrelated committed tail may follow while a newer send target remains pending; the newer target is not consumed. | Reading `VendorListExecutor` ordinary-follow writer + target fence. | **RED**: allowed `{top:1132}` ordinary-follow write is missing. |
+| TC-1019 | Moving a target to Waiting cannot bypass destination-ready presentation. | Reading `VendorListExecutor` target presence + public height/Reading owner. | **RED**: `{top:1000}` is written before destination readiness. |
+
+Evidence:
+
+* `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'canonical body text wins' --retry=0` → **1/1 GREEN** against the Shell fix; no assertion was weakened.
+* `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'canonical body text wins|TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2` → **1 GREEN + 7 stable RED**.
+* `npx vitest run tests/i-m-exact-path-contracts.test.jsx --retry=0` → **154/161 GREEN**; the only seven reds are TC-1010/1011/1012/1014/1015/1018/1019.
+
+The seven red checks remain strict black-box regression packages: their only
+observations are public root writes, public height delivery, and typed Reading
+session state. The Shell canonical-body case is now closed by its owner and is
+not counted as an I-M red. No product source, exact test, private API,
+compatibility parser, notification/arrival owner, vendor/package, lockfile,
+or concurrent dirty file was staged or changed in Round44.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
