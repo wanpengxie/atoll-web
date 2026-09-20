@@ -2228,3 +2228,91 @@ received ... 正在收敛 ... 名称已存在
   重跑本合同。
 - 本轮仅新增失败 terminal 测试和审计；其他代理的
   `tests/browser/f5-governance-baseline-0191-0195.spec.js` 脏改未触碰。
+
+## 第三十九轮：clean `15e4470` Governance / Shell 全量回归
+
+本轮测试启动时工作树为指定 clean HEAD `15e4470`；该基线已包含
+`34f286b fix(governance): fence world resets and terminal identity`。执行过程中其他分区
+提交了 `90f2e8d`，其不涉及本轮 Governance/Shell 文件；当前工作树的 outbox/reading
+脏改也未作为证据或提交来源。
+
+### Unit contracts（repeat3）
+
+以下 6 个公开测试文件连续执行 3 次，每次 **6 files / 20 passed**，合计 **60/60**：
+
+```text
+npx vitest run \
+  tests/blocked-round35-governance-public-owner.test.jsx \
+  tests/world-change-reset.test.js \
+  tests/n-r-round34-picker-governance.test.jsx \
+  tests/activity-center-accessibility.test.jsx \
+  tests/f5-management.test.jsx \
+  tests/n-r-round35-shell-filter-notification.test.jsx --reporter=dot
+```
+
+证据覆盖：
+
+- **AD154 failure terminal：** matched `requestId` + `creation.failed/error` 后显示“创建失败”，
+  保留名称输入、显示可用“重新创建”，不出现进入新频道；
+- **world reset waiter：** old-world template projection 在 world boundary 同步清空，旧
+  waiter 不得向新 world 安装事实，history grants 等 reset waiter 完成后才安装；
+- **template identity：** stable template ID 与 canonical parent ID 进入 create payload，
+  display name/parent name 不会冒充 identity；
+- **Activity/Search：** public source router 保持唯一入口；
+- **mobile drawer：** inert、焦点环回、Escape close 与 opener restore 均通过。
+
+仅有既有 jsdom `HTMLCanvasElement.getContext()` warning，无测试失败。
+
+### Real Chromium（repeat3）
+
+Registrar template chain：
+
+```text
+ATOLL_TEST_WEB_PORT=17050 ATOLL_TEST_MOCK_PORT=19050 \
+npx playwright test tests/browser/governance-template-wire-contract.spec.js \
+  --repeat-each=3 --workers=1 --reporter=line \
+  --output=test-results-tz-round39-template-repeat3
+3 passed (43.0s)
+```
+
+三次均通过 list receipt → canonical option → matching `get(mock:team)` → create recipe；
+并通过 list/get/create 顺序、`channel_id: c0`、child name 与 declarations/profile/purpose
+recipe assertions，create frame 无 raw `templateId`。
+
+Activity/Search 与 TC0193/0194/0195：
+
+```text
+ATOLL_TEST_WEB_PORT=17051 ATOLL_TEST_MOCK_PORT=19051 \
+npx playwright test tests/browser/workspace-activity-center.spec.js \
+  tests/browser/f5-governance-baseline-0191-0195.spec.js \
+  --grep 'Activity Center|TC-0193|TC-0194|TC-0195' \
+  --repeat-each=3 --workers=1 --reporter=line \
+  --output=test-results-tz-round39-activity-search-tc0193-195
+15 passed (1.1m)
+```
+
+三次均证明 Activity source 返回唯一 canonical WorkItem/turn route，TC0194 operation
+source 回到原频道回合，TC0195 Search 恢复 channel/view/focus 且权限撤销后不泄漏缓存。
+
+Mobile drawer focus：
+
+```text
+ATOLL_TEST_WEB_PORT=17052 ATOLL_TEST_MOCK_PORT=19052 \
+npx playwright test tests/browser/f6-accessibility-responsive.spec.js \
+  --grep 'F6-003' --repeat-each=3 --workers=1 --reporter=line \
+  --output=test-results-tz-round39-mobile-drawer-repeat3
+3 passed (14.4s)
+```
+
+三次均通过 320px 无横向溢出、drawer open/close、focus restore 及 touch target 合同。
+Chromium 期间的 wire reconnect warning 是测试服务器连接生命周期噪音；没有
+`pageerror`、unhandled rejection 或合同失败。
+
+### Round39 裁决
+
+- **PASS（60/60 unit）：** AD154 failed terminal + retry、world reset waiter、template
+  stable ID/parent/name、Activity/Search source router、mobile drawer focus。
+- **PASS（21/21 browser repeat runs）：** template chain 3/3、Activity/Search/TC0193–195
+  15/15、mobile drawer 3/3。
+- 本轮未修改产品、未放宽断言、未删 skip；仅追加本审计。当前共享树后来出现的
+  outbox/reading 脏改及 `90f2e8d` 不在本轮证据范围。
