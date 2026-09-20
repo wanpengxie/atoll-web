@@ -1259,6 +1259,34 @@ describe('I-M exact-path public-owner recovery (round 14)', () => {
     expect(screen.queryByRole('menu')).toBeNull();
     expect(commands.openAgentSelector).not.toHaveBeenCalled();
   });
+
+  it('model-selector baseline 159: expanded selector exposes provider client upgrade status', async () => {
+    const user = userEvent.setup();
+    const selection = currentAgentSelectionWithUsage();
+    const agentSelection = {
+      ...selection,
+      view: {
+        ...selection.view,
+        client: {
+          name: 'codex',
+          current: '0.153.4',
+          latest: '0.154.0',
+          update_status: 'available',
+        },
+      },
+    };
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [selection.target.agent],
+      access: 'member_active',
+      agentSelection,
+    });
+    render(<Composer model={model} commands={{ openAgentSelector: vi.fn() }} />);
+
+    await user.click(screen.getByRole('button', { name: /Steward，模型 5.6 Sol/ }));
+    expect(screen.getByText('0.153.4 · 可升级至 0.154.0')).toBeTruthy();
+  });
 });
 
 describe('I-M exact-path public-owner recovery (round 38 model contracts)', () => {

@@ -1593,6 +1593,25 @@ This is a read-only acceptance artifact for the Reading owner.  No product or
 test file was changed in Round 47, and no private API, compatibility path, or
 second lifecycle is implied.
 
+## Round 48 exact-path recovery: baseline 159 provider client status
+
+Round 48 restores the next I-M baseline that does not touch the frozen
+Vendor/Reading/Feed owners.  The baseline case is the existing
+`model-selector.test.jsx` case “展开时显示 provider 私有的客户端升级信号”.
+Its capability is user-visible: after opening the Composer's model panel, a
+provider client status must tell the user the current client version and the
+available upgrade target.  The invariant is that this status is rendered from
+the current public selector view, alongside the model controls, without a
+private selector export or a second client-status owner.
+
+| baseline case | current public owner and entry point | baseline setup → action → observable | current result / evidence |
+|---|---|---|---|
+| row 159, `model-selector.test.jsx`: “展开时显示 provider 私有的客户端升级信号” | `Composer`'s public `ModelSelector` path, entered through the rendered selector button; `view.client` is the public projection input. | Supply a canonical options/context view plus `{ name: 'codex', current: '0.153.4', latest: '0.154.0', update_status: 'available' }`; open the visible `Steward，模型 5.6 Sol` button; observe `0.153.4 · 可升级至 0.154.0` in the expanded panel. | **PASS/current**. The exact-path bridge is `tests/i-m-exact-path-contracts.test.jsx` (`model-selector baseline 159`); focused command `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'baseline 159' --retry=2` → **1 passed, 161 skipped**. Existing owner evidence remains in `tests/model-selector.test.jsx`. |
+
+This is one independent baseline capability, not a send-join or viewport
+mechanism assertion.  Round 48 changed only the exact-path test and this audit
+record; the three concurrent dirty product files were not touched.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
