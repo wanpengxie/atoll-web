@@ -68,6 +68,9 @@ test('TC0217 F7 local Claude filter paints installed rows without foreground his
 });
 
 test('TC0218 F7 Claude filter silently scans nonmatching physical pages until semantic supply', async ({ page, request }, testInfo) => {
+  // Sole public owner contract: channel-feed-runtime's physical page loop
+  // must publish one history.batch_complete per completed page. The consumer
+  // may start projection-underfill, but cannot impersonate completion.
   test.setTimeout(60_000);
   await reset(request, 'deep-history-delayed', 1738);
   const dense = await request.post('/mock/control/action', {
@@ -100,13 +103,30 @@ test('TC0218 F7 Claude filter silently scans nonmatching physical pages until se
 });
 
 test('TC0219 F7 empty local Claude filter stays partial while warm history remains silent', async ({ page, request }, testInfo) => {
+  // Sole public owner contract: ConversationSurface owns the exact partial
+  // and definitive empty-state observables; a demand spinner is not a partial
+  // empty-state substitute.
   await reset(request, 'deep-history-delayed', 1737);
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true }), { timeout: 15_000 }).toBeVisible();
   const list = page.locator('.timeline-message-list');
   const before = await list.boundingBox();
   await page.getByTitle('只看我与 Claude 的往来').click();
-  await expect(page.getByText('当前已加载的动态里没有符合筛选的往来', { exact: true })).toBeVisible();
+  const partialLocator = page.getByText('当前已加载的动态里没有符合筛选的往来', { exact: true });
+  try {
+    await expect(partialLocator).toBeVisible();
+  } finally {
+    await testInfo.attach('filter-claude-partial-owner.json', {
+      body: JSON.stringify({
+        partialVisible: await partialLocator.isVisible().catch(() => false),
+        partialText: '当前已加载的动态里没有符合筛选的往来',
+        currentText: await page.locator('.empty-ledger').allTextContents(),
+        statusText: await page.locator('.timeline-history-status').allTextContents(),
+        diagnostics: await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event.startsWith('history.'))),
+      }, null, 2),
+      contentType: 'application/json',
+    });
+  }
   await expect(page.getByText('已扫描到频道开头，没有符合当前成员筛选的往来', { exact: true })).toBeVisible({ timeout: 30_000 });
   const samples = [];
   for (let index = 0; index < 12; index += 1) {
@@ -132,10 +152,35 @@ test('TC0219 F7 empty local Claude filter stays partial while warm history remai
   expect(samples.every((sample) => sample.rect && Math.abs(sample.rect.width - before.width) <= 1 && Math.abs(sample.rect.height - before.height) <= 1)).toBe(true);
 });
 
-test('TC0220 F7 a committed under-filled viewport establishes history demand without trusting the initial edge callback', async ({ page, request }) => {
+test('TC0220 F7 a committed under-filled viewport establishes history demand without trusting the initial edge callback', async ({ page, request }, testInfo) => {
+  // Sole public owner contract: the committed viewport-coverage branch in
+  // useBrowsingReadingController publishes history.viewport_underfilled only
+  // after rows, boundaries, attachment, older supply, and bottom readiness.
   await page.setViewportSize({ width: 1280, height: 5_000 });
   await reset(request, 'deep-history', 1720);
   await login(page);
+  const preconditionEvidence = await page.evaluate(() => ({
+    viewport: (() => {
+      const node = document.querySelector('.timeline-message-list');
+      return node ? {
+        scrollHeight: node.scrollHeight,
+        clientHeight: node.clientHeight,
+        scrollTop: node.scrollTop,
+        rowCount: node.querySelectorAll('[data-presentation-row-id]').length,
+      } : null;
+    })(),
+    relevantDiagnostics: window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => [
+      'history.viewport_underfilled',
+      'history.intent_started',
+      'cold_entry.snapshot',
+    ].includes(entry.event)),
+  }));
+  // Keep the first owner boundary observable even when the strict event is
+  // absent; the assertion below remains the unmodified contract.
+  await testInfo.attach('viewport-coverage-owner.json', {
+    body: JSON.stringify(preconditionEvidence, null, 2),
+    contentType: 'application/json',
+  });
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
     .find((entry) => entry.event === 'history.viewport_underfilled')?.detail || null)).not.toBeNull();
   const detail = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()

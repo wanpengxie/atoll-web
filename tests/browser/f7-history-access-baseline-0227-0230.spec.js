@@ -15,6 +15,8 @@ async function login(page) {
 }
 
 test('TC0227 F7 revoked active channel sends no freshness request and a later grant resumes exactly once', async ({ page, request }, testInfo) => {
+  // Sole public owner contract: access/grant lifecycle owns the successor
+  // channel_meta frame. A visible timeline alone cannot stand in for it.
   await reset(request, 'deep-history', 1717);
   let accessPhase = 'initial';
   const sockets = [];
@@ -50,15 +52,22 @@ test('TC0227 F7 revoked active channel sends no freshness request and a later gr
   const granted = await request.post('/mock/control/action', { data: { type: 'grant_membership', channel_id: 'c0.project' } });
   expect(granted.ok()).toBe(true);
   await expect(page.locator('.timeline-message-list')).toBeVisible({ timeout: 10_000 });
-  await expect.poll(() => metaFrames.filter((frame) => (
-    frame.phase === 'granted' && frame.channelId === 'c0.project'
-  )).length).toBe(1);
+  try {
+    await expect.poll(() => metaFrames.filter((frame) => (
+      frame.phase === 'granted' && frame.channelId === 'c0.project'
+    )).length).toBe(1);
+  } finally {
+    await testInfo.attach('access-interest-lifecycle.json', {
+      body: JSON.stringify({
+        sockets,
+        metaFrames,
+        revokedFrameCount: metaFrames.filter((frame) => frame.phase === 'revoked' && frame.channelId === 'c0.project').length,
+        grantedFrameCount: metaFrames.filter((frame) => frame.phase === 'granted' && frame.channelId === 'c0.project').length,
+      }, null, 2),
+      contentType: 'application/json',
+    });
+  }
   expect(sockets).toHaveLength(socketsBeforeRevoke + 2);
-
-  await testInfo.attach('access-interest-lifecycle.json', {
-    body: JSON.stringify({ sockets, metaFrames }, null, 2),
-    contentType: 'application/json',
-  });
 });
 
 for (const seed of [1722, 1723, 1724]) {
