@@ -504,6 +504,25 @@ function round34Reading({
   return owner;
 }
 
+// Model the Reading owner's public receipt semantics without asserting the
+// adapter's callback name or call shape. A valid typed intent is consumed by
+// the current activation/epoch exactly once; stale or duplicate receipts are
+// observable only as an unchanged session.
+function installSemanticBottomIntentConsumer(reading) {
+  reading.consumeBottomIntent = (intent) => {
+    const current = reading.getSession();
+    const next = consumeLatestIntent(current, {
+      id: intent?.id,
+      inputEpoch: intent?.inputEpoch,
+      activationID: current.activationID,
+    });
+    if (next === current) return false;
+    reading.session = next;
+    return true;
+  };
+  return reading;
+}
+
 function setRound35Geometry(node, {
   clientHeight = 600,
   scrollHeight = 1_000,
@@ -2810,7 +2829,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
   });
 
   it('message-list-lifecycle TC-0985: the following owner, not vendor followOutput, performs one bottom write', () => {
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = {
       ...reading.session,
       bottomIntent: { id: 'bottom:round35', inputEpoch: 0 },
@@ -2825,7 +2844,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     );
 
     expect(vendorHarness.props.followOutput).toBe(false);
-    expect(reading.consumeBottomIntent).toHaveBeenCalledWith(reading.session.bottomIntent);
+    expect(reading.getSession().bottomIntent.id).toBe('');
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
   });
 
@@ -2890,7 +2909,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['send-target-round35'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     render(
       <VendorListExecutor
@@ -2905,7 +2924,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
 
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
   });
 
   it('message-list-lifecycle TC-0989: an optional diagnostic sink cannot take down the sole bottom writer', () => {
@@ -3202,7 +3221,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
   });
 
   it('message-list-lifecycle TC-1003: explicit latest writes against current geometry without waiting for readiness', () => {
-    const reading = round34Reading({ mode: READING_MODE.following, initializing: true });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following, initializing: true }));
     reading.bottomReady = false;
     const current = round33Snapshot([round33Row('direct-latest', 1)], { revision: 1 });
     const view = render(
@@ -3231,12 +3250,12 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
 
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
-    expect(reading.consumeBottomIntent).toHaveBeenCalledWith(intent);
+    expect(reading.getSession().bottomIntent.id).toBe('');
     expect(scroller.scrollTop).toBe(1_200);
   });
 
   it('message-list-lifecycle TC-1004: explicit latest at the physical tail consumes without a redundant DOM write', () => {
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     const current = round33Snapshot([round33Row('already-tail', 1)], { revision: 1 });
     const view = render(
       <VendorListExecutor
@@ -3263,7 +3282,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     );
 
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
-    expect(reading.consumeBottomIntent).toHaveBeenCalledWith(intent);
+    expect(reading.getSession().bottomIntent.id).toBe('');
   });
 
   it('message-list-lifecycle TC-1006: ordinary following waits for the physical root to reach public height', () => {
@@ -3300,7 +3319,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
   });
 
   it('message-list-lifecycle TC-1007: browsing send stays at the user viewport without synthetic following height', () => {
-    const reading = round34Reading({ mode: READING_MODE.browsing });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.browsing }));
     const intent = {
       id: 'composer:send-start:round36-browsing',
       inputEpoch: 0,
@@ -3333,7 +3352,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
 
     expect(scroller.scrollTop).toBe(100);
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
   });
 
   it('message-list-lifecycle TC-1008: a pending send join cannot displace the real viewport before readiness', () => {
@@ -3343,7 +3362,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 6,
       targetMessageIDs: [],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     render(
       <VendorListExecutor
@@ -3362,7 +3381,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
 
     expect(scroller.scrollTop).toBe(500);
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
   });
 
   it('message-list-lifecycle TC-1010: readiness before public item measurement writes only after the committed height', () => {
@@ -3372,7 +3391,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round36-target'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('ready-first', 1);
     const target = { ...round33Row('round36-target', 2), body: { local: false } };
@@ -3398,11 +3417,16 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       />,
     );
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_132, scrollTop: 400 });
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_132, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
   });
 
   it('message-list-lifecycle TC-1011: a later same-revision height remains ordinary follow while the join is pending', () => {
@@ -3412,7 +3436,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round36-target-later'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('later-height-first', 1);
     const view = render(
@@ -3439,11 +3463,16 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_132, scrollTop: 400 });
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
   });
 
   it('message-list-lifecycle TC-1012: an equal-height target baseline precedes a later same-revision resize', () => {
@@ -3453,7 +3482,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-target'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-first', 1);
     const target = { ...round33Row('round37-target', 2), body: { local: false } };
@@ -3472,6 +3501,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     vendorHarness.scrollTo.mockClear();
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     view.rerender(
       <VendorListExecutor
@@ -3482,11 +3512,16 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     );
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_100, scrollTop: 400 });
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_100, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
   });
 
   it('message-list-lifecycle TC-1013: the first child-first target ack is the baseline and a later ack is ordinary layout', () => {
@@ -3496,7 +3531,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-child-target'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-child-first', 1);
     const target = { ...round33Row('round37-child-target', 2), body: { local: false } };
@@ -3524,6 +3559,10 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
 
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
     expect(scroller.scrollTop).toBe(1_200);
   });
 
@@ -3534,7 +3573,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-revoke-target'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-revoke-first', 1);
     const target = { ...round33Row('round37-revoke-target', 2), body: { local: false } };
@@ -3562,6 +3601,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: 0 } };
     view.rerender(
@@ -3575,6 +3615,10 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
   });
 
   it('message-list-lifecycle TC-1015: revoking an owned send baseline releases ordinary following', () => {
@@ -3584,7 +3628,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-revoked-target'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-revoked-first', 1);
     const target = { ...round33Row('round37-revoked-target', 2), body: { local: false } };
@@ -3611,6 +3655,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     );
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: 0 } };
     view.rerender(
@@ -3622,6 +3667,10 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     );
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_132, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
     expect(scroller.scrollTop).toBe(1_132);
   });
 
@@ -3632,7 +3681,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-mixed-target'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const previousTail = round33Row('round37-unrelated-tail', 1);
     const target = { ...round33Row('round37-mixed-target', 2), body: { local: false } };
@@ -3669,6 +3718,10 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
 
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_100, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
     expect(scroller.scrollTop).toBe(1_100);
   });
 
@@ -3679,7 +3732,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-target-b'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-pending-first', 1);
     const unrelated = round33Row('round37-waiting-a', 2);
@@ -3709,6 +3762,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_132, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     view.rerender(
       <VendorListExecutor
@@ -3717,6 +3771,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
   });
 
   it('message-list-lifecycle TC-1019: removing a send target into Waiting cannot bypass destination readiness', () => {
@@ -3726,7 +3781,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-removable-target'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-waiting-first', 1);
     const target = { ...round33Row('round37-removable-target', 2), localState: 'queued', body: { local: true } };
@@ -3753,6 +3808,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     );
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     view.rerender(
       <VendorListExecutor
@@ -3767,6 +3823,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_000, scrollTop: 200 });
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
   });
 
   it('message-list-lifecycle TC-1020: committed Waiting-to-timeline growth continues ordinary following after one send join', () => {
@@ -3776,14 +3833,8 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-queued-request'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
-    reading.consumeBottomIntent = vi.fn((value) => {
-      if (reading.session.bottomIntent === value) {
-        reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: reading.session.inputEpoch } };
-      }
-      return true;
-    });
     const first = round33Row('round37-waiting-root', 1);
     const queued = { ...round33Row('round37-queued-request', 2), localState: 'queued', body: { local: true } };
     const humanNext = { ...round33Row('round37-human-next', 3), body: { local: false } };
@@ -3810,7 +3861,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       />,
     );
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
-
+    expect(reading.getSession().bottomIntent.id).toBe('');
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_100, scrollTop: 400 });
     view.rerender(
       <VendorListExecutor
@@ -3841,14 +3892,8 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-child-waiting'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
-    reading.consumeBottomIntent = vi.fn((value) => {
-      if (reading.session.bottomIntent === value) {
-        reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: reading.session.inputEpoch } };
-      }
-      return true;
-    });
     const first = round33Row('round37-child-root', 1);
     const queued = { ...round33Row('round37-child-waiting', 2), localState: 'queued', body: { local: true } };
     const view = render(
@@ -3873,6 +3918,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       />,
     );
     expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
+    expect(reading.getSession().bottomIntent.id).toBe('');
 
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 400 });
     view.rerender(
@@ -3915,14 +3961,8 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       afterPresentationRevision: 1,
       targetMessageIDs: ['round37-takeover-target'],
     };
-    const reading = round34Reading({ mode: READING_MODE.following });
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
-    reading.consumeBottomIntent = vi.fn((value) => {
-      if (reading.session.bottomIntent === value) {
-        reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: reading.session.inputEpoch } };
-      }
-      return true;
-    });
     reading.onUserControl = vi.fn(() => {
       reading.session = { ...reading.session, mode: READING_MODE.browsing, inputEpoch: 1 };
     });
@@ -3950,6 +3990,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       />,
     );
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(reading.getSession().bottomIntent.id).toBe('');
     reading.onUserControl();
 
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 400 });

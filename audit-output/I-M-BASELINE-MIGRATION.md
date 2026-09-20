@@ -1068,24 +1068,26 @@ Targeted Round-37 evidence:
 ## Round 38 exact-path recovery: public-contract classification and lifecycle/model tail
 
 Round 38 rechecked TC-1010/1011 and the seven Round-37 red cases against the
-current public owners. The direct `consumeBottomIntent` spy assertions were
-removed from these new cases: invocation timing is an implementation oracle,
-not a user-visible contract. The cases now assert only public root geometry,
-scroll writes, Reading mode/session transitions, rendered rows, and the public
-model selector surface. The `consumeBottomIntent` function remains only as a
-public-owner fixture transition where later observable behavior depends on the
-session becoming empty; no call-count/argument assertion remains in the new
-Round-37 cases.
+current public owners. The old callback-name/call-shape spies are not the
+contract, but their semantic obligation is: a legal Reading consumer must
+consume a matching typed bottom intent exactly once at the authorized public
+tail write, while stale, pending, revoked, or duplicate receipts leave the
+session unchanged. The tests therefore use a public-owner fixture that applies
+the exported Reading session transition and assert the observable
+`bottomIntent.id` pending→empty transition plus the one-write fence. They do
+not require the historical `consumeBottomIntent` name, a `ready` field, or a
+private invocation count. The model selector cases continue to assert only the
+public selector surface.
 
 | baseline case | classification and user/architecture invariant | current public owner | fae8b70 old operation | current executable evidence and result |
 |---|---|---|---|---|
 | TC-1010 | **Current user invariant**: readiness before public measurement must not move the viewport to the pre-measurement tail. | `VendorListExecutor` typed send intent + physical root | `MessageList` held the ready-first join until the committed public height | tests/i-m-exact-path-contracts.test.jsx:3368-3405 — **RED**: `{top:1000}` is written on the intermediate target-row commit. Product regression package; no test weakening. |
 | TC-1011 | **Current user invariant**: a later same-revision height remains ordinary follow while the send join is pending; the earlier baseline cannot move the viewport. | `VendorListExecutor` typed intent + public height callback | `MessageList` separated the pending send baseline from the later ordinary layout | tests/i-m-exact-path-contracts.test.jsx:3408-3446 — **RED**: `{top:1000}` is written before the later `{top:1200}` boundary. Product regression package; no product change. |
 | TC-1012 | **Current user invariant**: an equal-height target establishes no visible move; only a later resize may follow. | `VendorListExecutor` typed send intent + physical root | `MessageList` recorded the equal-height baseline without a DOM write | tests/i-m-exact-path-contracts.test.jsx:3449-3489 — **RED**: current owner writes `{top:1000}` at the equal-height target. Product regression package. |
-| TC-1013 | **Old implementation oracle removed**: exact `consumeBottomIntent` timing is not user-visible; the public child-first tail write itself is the contract. | `VendorListExecutor` public DOM writer | `MessageList` paired child-first/latest acknowledgements internally | tests/i-m-exact-path-contracts.test.jsx:3492-3527 — **PASS**: one public `{top:1200}` write and matching scrollTop; no direct consume assertion. |
+| TC-1013 | **Current public semantic contract**: the child-first target write consumes the matching typed intent exactly once; duplicate height delivery is a no-op and leaves the session idle. The old callback name/argument shape is not required. | `VendorListExecutor` public DOM writer + Reading session | `MessageList` paired child-first/latest acknowledgements internally | tests/i-m-exact-path-contracts.test.jsx:3527-3567 — **PASS**: one public `{top:1200}` write, `bottomIntent.id` becomes empty, and a duplicate public height callback adds no write. |
 | TC-1014 | **Current user invariant**: revoking a send cannot authorize the earlier same-revision height callback. | `VendorListExecutor` intent fence + public height callback | `MessageList` retained the later token through send revocation | tests/i-m-exact-path-contracts.test.jsx:3530-3577 — **RED**: `{top:1132}` is written before revoke. Product regression package. |
 | TC-1015 | **Current user invariant**: a send-owned baseline is released only at the public revoke boundary, then ordinary following occurs once. | `VendorListExecutor` Reading intent + physical-root writer | `MessageList` withheld the baseline until revoke | tests/i-m-exact-path-contracts.test.jsx:3580-3625 — **RED**: `{top:1132}` is written before revoke. Product regression package. |
-| TC-1016 | **Old implementation oracle removed**: internal consume timing is not observable; the mixed commit's public tail write is the contract. | `VendorListExecutor` mixed snapshot + physical-root writer | `MessageList` kept parent-first ordinary tail separate from target acknowledgement | tests/i-m-exact-path-contracts.test.jsx:3628-3672 — **PASS**: one public `{top:1100}` write and matching scrollTop; no direct consume assertion. |
+| TC-1016 | **Current public semantic contract**: the mixed parent-first target write consumes the matching typed intent exactly once; duplicate height delivery cannot add another write. The old callback name/argument shape is not required. | `VendorListExecutor` mixed snapshot + physical-root writer + Reading session | `MessageList` kept parent-first ordinary tail separate from target acknowledgement | tests/i-m-exact-path-contracts.test.jsx:3677-3726 — **PASS**: one public `{top:1100}` write, `bottomIntent.id` becomes empty, and duplicate delivery remains one write. |
 | TC-1018 | **Current user invariant**: an unrelated committed tail can follow while a newer send target remains pending. | `VendorListExecutor` following writer + send-target fence | `MessageList` followed the unrelated Waiting tail while retaining the newer join | tests/i-m-exact-path-contracts.test.jsx:3675-3719 — **RED**: no `{top:1132}` ordinary-follow write is emitted while the newer target is pending. Product regression package. |
 | TC-1019 | **Current user/architecture invariant**: moving a target into Waiting cannot bypass destination readiness. | `VendorListExecutor` typed target-row presence + public height callback | `MessageList` withheld the join until destination-ready Waiting presentation | tests/i-m-exact-path-contracts.test.jsx:3722-3766 — **RED**: `{top:1000}` is written when the queued row first appears. Product regression package. |
 
@@ -1113,6 +1115,34 @@ Round-38 targeted evidence:
 * Exact-file count after this round is **155 tests**; the shared Timeline canonical-body regression remains outside this round. The 159-case baseline is unchanged: these are one-for-one bridge proofs, not new baseline declarations.
 * Current-owner rerun: the existing 17-file command → **110/110 GREEN** (including `tests/model-selector.test.jsx`), with no changes to those owner suites.
 * Only `tests/i-m-exact-path-contracts.test.jsx` and this audit report are changed. No product, compatibility, private API, vendor/package/lockfile, or notification file was edited.
+
+## Round 39 corrective verification: typed-intent receipt semantics and successor callback fence
+
+The Round-38 migration correctly removed assertions on the historical
+`consumeBottomIntent` callback name, but its first wording was too broad: a
+public contract still requires a legal Reading consumer to consume a matching
+typed intent exactly once. This corrective pass restores that observable
+contract without reviving `bottomIntentPresentation.ready`, a private helper,
+or any old call-name/argument oracle. The fixture uses the exported Reading
+session transition, and each valid target case now asserts pending
+`bottomIntent.id` → empty exactly once plus no additional DOM write on a
+duplicate height delivery. Pending, stale, revoked, and browsing-owned cases
+assert that the intent remains pending until the public owner changes it.
+
+| baseline case group | public owner contract | current evidence at HEAD `cc221b3` |
+|---|---|---|
+| TC-1013, TC-1016 | A legal target commit writes the public tail once, consumes the matching typed intent into the Reading session exactly once, and ignores duplicate height delivery. | `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1013|TC-1016|TC-1020|TC-1021|TC-1022'` → **5/5 GREEN**. |
+| TC-1010, TC-1011, TC-1012 | Readiness/equal-height/later-height fences are current user invariants; the pending typed intent must not be consumed by the premature callback. | Included in the strict command below; **stable RED** on the premature `{top:1000}`/`{top:1132}` writes. |
+| TC-1014, TC-1015 | Public revoke, not an earlier same-revision callback, is the only boundary that releases the send-owned baseline. | Included in the strict command below; **stable RED** on the pre-revoke `{top:1132}` write. |
+| TC-1018, TC-1019 | An unrelated tail may follow while the newer target stays pending; moving a target to Waiting cannot bypass destination readiness. | Included in the strict command below; **stable RED** (missing ordinary follow / premature `{top:1000}`). |
+| TC-1024 | A callback captured by the old Reading activation cannot write into the successor owner. | `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1024' --retry=2` → **GREEN** against the current activation fence in `cc221b3`; the successor regression remains executable and was not removed or weakened. |
+
+Round-39 evidence:
+
+* Strict public-owner command: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019|TC-1024' --retry=2` → **7 stable product regressions + TC-1024 GREEN** (each red repeated across three attempts).
+* Exact-file run: `npx vitest run tests/i-m-exact-path-contracts.test.jsx` → **147/155 GREEN**. The eight reds are the shared Timeline canonical-body case plus the seven current send-join/height product gaps above; TC-1024 is green under the current owner fence.
+* Current-owner rerun: the existing 17-file command → **110/110 GREEN**.
+* The correction changes only `tests/i-m-exact-path-contracts.test.jsx` and this audit report. No product source, notification/arrival owner, old API, private production function, compatibility parser, vendor/package/lockfile, or test skip was introduced.
 
 ## Final disposition and verification
 
@@ -1191,16 +1221,20 @@ Round-38 targeted evidence:
   without inflating the 159-case baseline.
 - Round 37 adds ten independent send-join/Waiting-growth contracts
   (TC-1012–1016 and TC-1018–1022). Its initial strict run reported three
-  green and seven red because two cases still asserted internal consume timing;
-  Round 38 reclassifies TC-1013 and TC-1016 as old implementation oracles and
-  removes those assertions. The public Round-37 result is therefore five green
-  (TC-1013/1016/1020–1022) and five current-invariant product regressions
-  (TC-1012/1014/1015/1018/1019). TC-0995/1004 remain green and TC-1010/1011
-  remain red under the current owner.
+  green and seven red because two cases still asserted internal consume timing.
+  Round 38 removed only the callback-name/call-shape oracle; Round 39 restores
+  the public semantic receipt proof (pending typed intent becomes empty exactly
+  once after the legal target write, with duplicate delivery fenced). The
+  public Round-37 result remains five green (TC-1013/1016/1020–1022) and five
+  current-invariant product regressions (TC-1012/1014/1015/1018/1019).
+  TC-0995/1004 remain green and TC-1010/1011 remain red under the current
+  owner.
 - Round 38 adds ten independent bridge proofs (TC-1023/1024/1025/1027,
-  TC-1059/1061, and TC-1070/1071/1073/1074). Nine are green; TC-1024 is a
-  strict activation-fence product regression. The exact bridge now contains
-  155 executable tests while the source baseline remains 159.
+  TC-1059/1061, and TC-1070/1071/1073/1074). The original Round-38 evidence
+  recorded TC-1024 as the activation-fence regression; the current owner at
+  HEAD `cc221b3` now fences that callback, while Round 39 keeps TC-1024 as an
+  executable successor regression rather than deleting it. The exact bridge
+  contains 155 executable tests while the source baseline remains 159.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
