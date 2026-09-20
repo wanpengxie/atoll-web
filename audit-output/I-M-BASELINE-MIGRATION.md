@@ -1612,6 +1612,27 @@ This is one independent baseline capability, not a send-join or viewport
 mechanism assertion.  Round 48 changed only the exact-path test and this audit
 record; the three concurrent dirty product files were not touched.
 
+## Round 49 exact-path recovery: baseline 26 terminal identity fence
+
+The next unproven exact-path case is memory-window baseline row 26, outside the
+frozen Vendor/Reading/Feed owners.  Its user-visible contract is that a
+completed turn does not change meaning when a later, conflicting terminal
+arrives after trim.  The invariant is first-ledger-terminal authority: the
+public Replica may retain compact lifecycle proof, may upgrade it only when the
+same terminal row is re-admitted, and must not let a different terminal replace
+the canonical status or identity.  The bridge uses only the public
+`createChannelReplicaStore().commit/trim/state` surface; it does not inspect a
+closure map or add a second store.
+
+| baseline case | current public owner and entry point | baseline setup → action → observable | current result / evidence |
+|---|---|---|---|
+| row 26, `memory-window.test.js`: “compact closure 只接受同一 ledger terminal 的 full envelope 升级” | `createChannelReplicaStore` (`ChannelReplica`) public commit/trim/state projection. | Commit response-first terminal `compact-conflict` at seq 2, trim after unrelated seq 3–10, re-admit request seq 1, then commit a different failed terminal at seq 11; observe completed closure and original terminal id. Re-admit the exact seq-2 terminal and observe one full-row upgrade with the same completed identity. | **PASS/current**. Exact-path bridge `tests/i-m-exact-path-contracts.test.jsx` (`memory-window baseline 26`); focused command `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'baseline 26' --retry=2` → **1 passed, 162 skipped**. Existing owner evidence remains in `src/model/channel-replica-terminal-closure.test.jsx`. |
+
+This is one independent Replica baseline proof and does not alter the 159-case
+source count.  Round 49 changed only the exact-path test and this audit record;
+no product, send-join, Vendor, Reading, Feed, or concurrent dirty file was
+modified.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

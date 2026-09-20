@@ -995,6 +995,33 @@ describe('I-M exact-path public-owner recovery (round 14)', () => {
     expect(turn.provisional.map((item) => item.envelope.id)).toContain('closed-request-progress-2');
   });
 
+  it('memory-window baseline 26: a conflicting terminal cannot replace the first compact closure', () => {
+    const store = createChannelReplicaStore();
+    const requestID = 'compact-conflict';
+    store.commit(terminal(2, requestID), SELF);
+    for (let seq = 3; seq <= 10; seq += 1) store.commit(note(seq), SELF);
+    expect(store.trim(CHANNEL, 4)).toBeGreaterThan(0);
+
+    store.commit(request(1, requestID), SELF);
+    let turn = store.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === requestID)?.turn;
+    expect(turn).toMatchObject({ status: 'completed', terminalClosureOnly: true });
+
+    const conflict = terminal(11, requestID, 'failed', 'conflicting terminal');
+    conflict.envelope.id = `${requestID}-conflict`;
+    store.commit(conflict, SELF);
+    turn = store.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === requestID)?.turn;
+    expect(turn).toMatchObject({ status: 'completed', terminalClosureOnly: true });
+    expect(turn.terminal.id).toBe(`${requestID}-terminal-2`);
+
+    store.commit(terminal(2, requestID), SELF);
+    turn = store.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === requestID)?.turn;
+    expect(turn).toMatchObject({ status: 'completed', terminalClosureOnly: false });
+    expect(turn.terminal.id).toBe(`${requestID}-terminal-2`);
+  });
+
   it('memory-window TC-0946: unmatched provisional progress is evicted without creating a turn', () => {
     const store = createChannelReplicaStore();
     store.commit(progress(1, 'missing-request'), SELF);
