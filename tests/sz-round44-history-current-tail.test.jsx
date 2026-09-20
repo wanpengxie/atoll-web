@@ -126,4 +126,56 @@ describe('S-Z SZ152 current history authority', () => {
       actorFiltered: true,
     }));
   });
+
+  it('accepts the same public authority only after a fresh exact tail observation', () => {
+    const { result, rerender, onTailCaughtUp } = renderProjection();
+    const activationID = result.current.viewport.activationID;
+
+    act(() => {
+      result.current.viewport.onReadingObservation({
+        activationID,
+        atTail: true,
+        surfaceVisible: true,
+        installedHighSeq: 2,
+      });
+    });
+    rerender({ history: historyFor(2, { revision: 1, phase: 'idle', error: '' }) });
+    onTailCaughtUp.mockClear();
+    expect(result.current.viewport.status).toMatchObject({
+      attached: true,
+      generation: 1,
+      messageCurrent: true,
+      headSeq: 2,
+      presentationRevision: 2,
+      historyDemand: { revision: 1, phase: 'idle' },
+    });
+
+    act(() => {
+      result.current.viewport.onReadingObservation({
+        activationID,
+        atTail: true,
+        surfaceVisible: true,
+        installedHighSeq: 2,
+      });
+    });
+
+    expect(result.current.viewport.tailCaughtUp).toEqual(expect.objectContaining({
+      caughtUp: true,
+      activationID,
+      generation: 1,
+      actorFiltered: true,
+      physicalSeq: 0,
+      boundary: 2,
+      presentationRevision: 2,
+      sourceRevision: 2,
+      cause: 'presented-follow',
+    }));
+    expect(onTailCaughtUp).toHaveBeenCalledWith(expect.objectContaining({
+      activationID,
+      generation: 1,
+      boundary: 2,
+      physicalSeq: 0,
+      actorFiltered: true,
+    }));
+  });
 });
