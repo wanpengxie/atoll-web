@@ -13,11 +13,19 @@ import { createHistorySourceAdapters } from './history-source-adapters.js';
 import { HISTORY_INTENT, HISTORY_URGENCY } from './history-demand.js';
 import { isRailNotifiableDisposition, notificationDisposition } from './notification-policy.js';
 import { diagnostic, registerRailDiagnosticProvider } from './diagnostics.js';
+import { isMobileProfile } from './device-profile.js';
 
 export const HISTORY_PAGE_SIZE = 128;
 export const HISTORY_BATCH_BYTES = 1024 * 1024;
 export const HISTORY_BATCH_TIMEOUT_MS = 30_000;
 export const HISTORY_RESERVOIR_SIZE = 5_000;
+
+// Mobile keeps a bounded Replica suffix.  Trim only after crossing the high
+// water mark, then leave hysteresis so a live row does not trigger a delete on
+// every frame.  The Replica remains the sole owner of closure retention and
+// history re-admission; this is only Feed's admission threshold.
+const MOBILE_REPLICA_MAX_ROWS = 500;
+const MOBILE_REPLICA_TARGET_ROWS = 400;
 
 const BACKGROUND_INTEREST_TYPES = new Set([HISTORY_INTENT.searchContext]);
 
@@ -131,6 +139,13 @@ function historySourceFor(localMeta, beforeSeq) {
   return frontier > 0 && localMeta?.coverage?.some((range) => (
     historyNumeric(range?.lowSeq) <= frontier && historyNumeric(range?.highSeq) >= frontier
   )) ? 'indexeddb' : 'network';
+}
+
+function trimMobileReplica(replica, channelId) {
+  if (!isMobileProfile()) return 0;
+  const state = replica.state(channelId);
+  if (!state || state.rows.size <= MOBILE_REPLICA_MAX_ROWS) return 0;
+  return replica.trim(channelId, MOBILE_REPLICA_TARGET_ROWS);
 }
 
 function humanPrincipal(actorID) {
@@ -825,6 +840,10 @@ export function createChannelFeedRuntime(options = {}) {
       observeAgentActivity(result.row, source);
       observeTimerFiring(result.row, source);
     }
+    // Admit the whole batch before applying the bounded mobile suffix.  The
+    // Replica must see terminal/request pairs together so its existing
+    // compact-closure reconciliation remains the only closure owner.
+    for (const channelId of discoveredChannels) trimMobileReplica(replica, channelId);
     for (const channelId of discoveredChannels) {
       const status = histories.get(channelId);
       if (status) refreshControlCurrent(channelId, status);

@@ -9,6 +9,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
+import { setDeviceProfile } from '../src/model/device-profile.js';
 import { selectFeatureSearchIndex, searchFeatureIndex } from '../src/model/feature-search.js';
 import { WorkspaceLayout } from '../src/app/WorkspaceLayout.jsx';
 import { WorkspaceFeatures } from '../src/ui/features/WorkspaceFeatures.jsx';
@@ -249,6 +250,7 @@ afterEach(() => {
   for (const runtime of activeRuntimes) runtime.destroy();
   activeRuntimes.clear();
   globalThis.localStorage?.clear();
+  setDeviceProfile('desktop');
 });
 
 describe('A-D round 25 public-owner evidence', () => {
@@ -365,6 +367,7 @@ describe('A-D round 25 public-owner evidence', () => {
   it('[AD-182] carries terminal closure across bounded suffix pressure and older refill', async () => {
     // 用户能力：terminal-first 回页后仍显示已完成，而不是重新进入 Waiting。
     // 不变量：Replica trim 保留 compact terminal closure；公开 owner：loadHistory/pageEnd + Replica。
+    setDeviceProfile('mobile');
     const calls = [];
     const options = runtimeOptions('c0');
     options.wireRef.current = {
@@ -420,12 +423,19 @@ describe('A-D round 25 public-owner evidence', () => {
     });
     snapshot().pageEnd({
       source: 'history', ref: olderCall.ref, generation: 1, channel_id: 'c0', purpose: olderCall.purpose,
-      head_seq: 960, oldest_seq: 100, scan_low_seq: 100, scan_high_seq: 428,
+      head_seq: 960, oldest_seq: 100, scan_low_seq: 100, scan_high_seq: 529,
       next_before_seq: 100, rows: 2, bytes: 512, has_older: false,
     });
     await older;
+    // Older refill may re-admit the request, but must not re-materialize the
+    // terminal result row.  The visible turn is reconstructed from Replica's
+    // compact closure only.
+    expect(state.rows.has(460)).toBe(false);
+    expect(state.rows.has(100)).toBe(true);
+    expect(state.rows.has(101)).toBe(true);
     const oldTurn = state.timeline.find((entry) => entry.kind === 'turn' && entry.turn?.requestId === 'old-request')?.turn;
     expect(oldTurn).toMatchObject({ terminalSeq: 460, terminalClosureOnly: true });
+    expect(oldTurn.terminal?.payload?.body?.text).toBeUndefined();
     runtime.destroy();
   });
 
