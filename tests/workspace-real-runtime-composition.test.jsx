@@ -543,4 +543,45 @@ describe('真实 Workspace owner composition', () => {
     expect(mocks.transportSubmissions.filter((frame) => frame.id === optionsFrame.id)).toHaveLength(1);
     expect(mocks.probeProps.handleControl).toBeTypeOf('function');
   });
+
+  it('keeps a manual Composer target when ConversationSurface reports a filter fallback', async () => {
+    const previousActors = mocks.obs.channelActors.getMockImplementation();
+    mocks.obs.channelActors.mockImplementation(async () => ({
+      complete: true,
+      items: [
+        {
+          declared: { id: mocks.humanId, kind: 'human', name: 'Root', principal: mocks.principalId },
+          actual: { measures: [{ name: 'bound', value: true }, { name: 'device_online', value: true }] },
+        },
+        {
+          declared: { id: mocks.agentId, kind: 'agent', name: 'worker', principal: '' },
+          actual: { measures: [{ name: 'bound', value: false }, { name: 'device_online', value: false }] },
+        },
+        {
+          declared: { id: 'agent:filter:1', kind: 'agent', name: 'filtered', principal: '' },
+          actual: { measures: [{ name: 'bound', value: false }, { name: 'device_online', value: false }] },
+        },
+      ],
+    }));
+    try {
+      render(<WorkspaceApp />);
+      await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+      await waitFor(() => expect(mocks.layoutProps?.conversation?.roster).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'agent:filter:1', kind: 'agent' }),
+      ])));
+
+      act(() => {
+        mocks.probeResult.pickAgent(mocks.agentId);
+        mocks.probeResult.targetChanged(mocks.agentId);
+      });
+      await waitFor(() => expect(mocks.probeResult.composerAgent).toMatchObject({ actorId: mocks.agentId }));
+
+      act(() => {
+        mocks.layoutProps.conversation.onFocusAgentChange('agent:filter:1', 'filter');
+      });
+      await waitFor(() => expect(mocks.probeResult.composerAgent).toMatchObject({ actorId: mocks.agentId }));
+    } finally {
+      mocks.obs.channelActors.mockImplementation(previousActors);
+    }
+  });
 });
