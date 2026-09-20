@@ -280,6 +280,20 @@ total)**. No row is promoted, deleted, skipped, or converted to expected-fail
 semantics; the ledger remains **319 PASS / 0 REGRESSION / 46 BLOCKED**, with
 OWNER_MISSING 12, FIXTURE_MISSING 24, and CAPABILITY_GAP 10.
 
+Round 27 adds [`tests/blocked-round27-fixture-recovery.test.jsx`](../tests/blocked-round27-fixture-recovery.test.jsx)
+and its case-level report [`A-D-BLOCKED-EVIDENCE-ROUND27-20260920.md`](./A-D-BLOCKED-EVIDENCE-ROUND27-20260920.md).
+It rechecks all twenty Round 26 rows without adding another ordinary-red
+declaration. AD-027, AD-178, and AD-196 now have faithful current public
+fixtures: the Waiting/Reading handoff uses the matching queued+resumed fact,
+the Feed cache fixture names the same boot on both attaches, and the Governance
+failure fixture selects the public 概览 tab before submitting. The focused
+result is **1 file passed / 3 passed / 0 failed**. The remaining ten rows with
+named owners are classified as direct capability gaps (AD-037, AD-156,
+AD-159–161, AD-192–195, AD-197); AD-150–153, AD-155, AD-165, and AD-166 remain
+without a current public owner. The ledger is now **322 PASS / 0 REGRESSION /
+43 BLOCKED**, with OWNER_MISSING 12, FIXTURE_MISSING 11, and CAPABILITY_GAP 20.
+No product source or baseline declaration changed.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -338,6 +352,7 @@ The focused slices were run with Vitest against current public owners:
 | `tests/blocked-round24-public-owner.test.jsx` | 1 passed, 19 ordinary red, 20 total | AD-167 re-verifies the fixed Feed refresh admission owner; AD-027/037, AD-156/159–161, AD-165/166, AD-178, AD-197, AD-202/203, AD-256/257, AD-316, AD-331/334, and AD-363/364 retain precise public Waiting/Feed/Governance/Workspace/Composer/Devices evidence |
 | `tests/blocked-round25-public-owner.test.jsx` | 5 passed, 15 ordinary red, 20 total | AD-157/158/167 reverify Feed grant/boot/probe admission; AD-288/289 verify the existing cursor clamp owner; AD-170/182/284/291/292 and AD-002/003/004/093/097/099/105/106/108/149 retain precise ordinary-red public owner evidence |
 | `tests/blocked-round26-public-owner.test.jsx` | 20 ordinary red, 20 total | AD-027/037, AD-150–153/155, AD-156/159–161, AD-165/166/178, and AD-192–197 retain precise Waiting/Feed/Governance owner or fixture evidence; closed AD-157/158/167/288/289 are explicitly de-duplicated |
+| `tests/blocked-round27-fixture-recovery.test.jsx` | 3 passed, 3 total | AD-027/178/196 are recovered through current public Waiting/Reading, Feed cache, and Governance command owners; the separate Round 26 ordinary-red packet remains the evidence source for the 17 unresolved rows |
 | Round 15–20 blocked packets combined | 42 passed, 59 expected fail, 101 total | seven packet files remain green as suites; expected-fail rows are unresolved evidence and are not counted as completion |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; no registered regression case red | AD-011 and AD-143 are closed through their existing public owners; no AD-123 `it.fails` case remains |
 
@@ -404,6 +419,13 @@ scope), not to the 42-suite A–D baseline ledger.
   Waiting/Feed/Governance owner or fixture gaps. No product source, vendor,
   package, lockfile, private export, compatibility API, or baseline
   declaration changed.
+- Round 27 changes only `tests/blocked-round27-fixture-recovery.test.jsx` and
+  the A–D evidence/ledger reports. It promotes only AD-027/178/196 after
+  correcting their stale public fixtures, reclassifies ten directly observed
+  non-equivalent owner results as capability gaps, and leaves seven no-owner
+  rows BLOCKED. It does not modify Waiting, Reading, Feed, Replica, Governance,
+  Workspace, vendor, package, lockfile, private exports, compatibility APIs,
+  or baseline declarations.
 - No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
