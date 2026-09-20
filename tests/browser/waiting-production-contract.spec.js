@@ -45,6 +45,29 @@ async function presentationRowIDs(page) {
   );
 }
 
+async function waitingRequestIDs(page) {
+  return page.locator('.agent-wait-item').evaluateAll(
+    (nodes) => nodes.map((node) => node.dataset.requestId).filter(Boolean),
+  );
+}
+
+async function waitForNewWaitingIdentity(page, text, beforeRequestIDs) {
+  const items = page.locator('.agent-wait-item');
+  let requestID = '';
+  await expect.poll(async () => {
+    requestID = await items.evaluateAll((nodes, { needle, existing }) => {
+      const known = new Set(existing);
+      const candidates = nodes.filter((node) => {
+        const id = node.dataset.requestId || '';
+        return id && !known.has(id) && node.textContent?.includes(needle);
+      });
+      return candidates.length === 1 ? candidates[0].dataset.requestId || '' : '';
+    }, { needle: text, existing: beforeRequestIDs });
+    return requestID;
+  }, { timeout: 15_000 }).not.toBe('');
+  return { requestID };
+}
+
 async function waitForNewMessageIdentity(page, text, beforeRowIDs) {
   const rows = page.locator('.timeline-message-list [data-presentation-row-id]');
   let identity = '';
@@ -337,11 +360,31 @@ async function runSendTrajectory({ page, request, testInfo, mode }) {
   if (mode === 'existing-waiting') await establishQueued(page, 'send-existing-owner', 'send-existing-target');
   const messageText = mode === 'multiline' ? 'send line one' : `send ${mode}`;
   const beforeRowIDs = await presentationRowIDs(page);
+  const beforeWaitingIDs = mode === 'existing-waiting' ? await waitingRequestIDs(page) : [];
   await send(page, mode === 'multiline' ? 'send line one\nsend line two\nsend line three' : `send ${mode}`);
-  const identity = await waitForNewMessageIdentity(page, messageText, beforeRowIDs);
+  let identity;
+  let queuedWaitingIdentity = null;
+  if (mode === 'existing-waiting') {
+    // fae8b70 keeps a queued request solely in Waiting. The canonical row is
+    // admitted only after the existing owner advances the queue.
+    queuedWaitingIdentity = await waitForNewWaitingIdentity(page, messageText, beforeWaitingIDs);
+    expect(new Set(await presentationRowIDs(page))).toEqual(new Set(beforeRowIDs));
+    await advance(request);
+    await expect.poll(() => page.locator('.agent-wait-item').evaluateAll(
+      (nodes, requestID) => nodes.some((node) => node.dataset.requestId === requestID),
+      queuedWaitingIdentity.requestID,
+    )).toBe(false);
+    identity = await waitForNewMessageIdentity(page, messageText, beforeRowIDs);
+  } else {
+    identity = await waitForNewMessageIdentity(page, messageText, beforeRowIDs);
+  }
   await waitForCanonicalMessage(page, identity);
   const after = await geometry(page);
-  await attach(testInfo, `waiting-send-${mode}.json`, { before, after });
+  await attach(testInfo, `waiting-send-${mode}.json`, {
+    before,
+    after,
+    queuedWaitingRequestID: queuedWaitingIdentity?.requestID || '',
+  });
   expectStable(before, after, ['reading']);
   expect(after.pageWidth).toBeLessThanOrEqual((mode === 'mobile' ? 390 : 1120) + 1);
   if (mode === 'browsing') {

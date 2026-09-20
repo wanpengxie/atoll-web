@@ -1617,3 +1617,46 @@ Waiting 后发送第三条请求，立即调用 `waitForNewMessageIdentity()`，
 不 skip、不改产品。若后续修正迁移，应先以精确 Waiting request identity 验证 queued
 事实，再显式推进 queue，最后在 Waiting 消失后的 handoff 阶段验证 canonical row；不能
 通过放宽匹配把 queued item 冒充 row。
+
+## 第二十七轮：按旧时序恢复 `following-existing-waiting` 迁移 oracle
+
+本轮仅修改 `tests/browser/waiting-production-contract.spec.js` 与本审计。迁移路径现在
+明确分成两个公开阶段：
+
+1. 发送后记录精确新增 `.agent-wait-item[data-request-id]`，并断言此时
+   `presentationRowIDs` 未新增；
+2. 调用既有 `advance(request)` 三次，让 owner 完成并让 queued tail 进入
+   processing/terminal handoff；
+3. 等待该 Waiting request id 消失，再用既有 `waitForNewMessageIdentity()` 与
+   `waitForCanonicalMessage()` 验证唯一 row identity 和无本地 submission marker 的
+   durable canonical row。
+
+这保持最终 canonical assertion 的严格 request/row identity，不用宽泛正文匹配、skip、
+额外时间等待或 fixture 控制来制造绿灯。新增 helper
+`waitForNewWaitingIdentity()` 只接受“相对发送前 Waiting id 集合恰好新增一项、正文匹配、
+request id 非空”的公开 Waiting 事实。
+
+### 真实 Chromium 结果
+
+```text
+ATOLL_TEST_WEB_PORT=15614 ATOLL_TEST_MOCK_PORT=19914 \
+  npx playwright test tests/browser/waiting-production-contract.spec.js \
+  --grep 'following-existing-waiting' --workers=1 --repeat-each=3 \
+  --reporter=line --output=test-results-tz-r27-existing-waiting-repeat3-current
+3 passed (25.2s)
+```
+
+每轮均先观察 queued Waiting、无新增 timeline row，随后 `advance×3` 后完成 canonical
+row handoff；没有再出现 line 341 的首断点。完整 Waiting spec 同轮为 **11 passed / 3
+unrelated RED**：唯一 case 本身及其相邻发送轨迹均通过；三条 RED 都是其它几何合同在
+`expectStable()` 观察到 `stack.top` 偏移 `3px`（期望 `≤1px`），分别是固定 reading/
+Composer allocation、queued→terminal geometry、以及 following reserve mount。它们不在
+本轮修改路径，且工作树同时存在他人 `src/styles/composer.css`、`src/ui/composer/Composer.jsx`
+脏修改（Composer target portal）；不把这些视觉 owner RED 混入 Waiting row oracle，未改
+阈值或产品。
+
+### 迁移归类
+
+`following-existing-waiting` 现已与 `fae8b70` 的可观察时序一致：queued 阶段只呈现
+Waiting，队列推进后才呈现 canonical Timeline row。该项由原 **迁移 oracle RED** 修正为
+**PASS**；产品 Waiting owner、Feed/fixture 和最终 durable row 合同均未放宽或修改。
