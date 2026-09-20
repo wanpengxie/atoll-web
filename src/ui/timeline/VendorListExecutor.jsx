@@ -112,6 +112,7 @@ function directionFromKey(key) {
 }
 
 const CONTENT_ANCHOR_MAX_ATTEMPTS = 4;
+const FOLLOWING_TAIL_GAP_TOLERANCE_PX = 1;
 const POSITION_RESTORE_MAX_ATTEMPTS = 8;
 const POSITION_RESTORE_MAX_MOUNT_ATTEMPTS = 120;
 const POSITION_RESTORE_STABLE_FRAMES = 6;
@@ -323,7 +324,13 @@ export function VendorListExecutor({
       // an append lands before the coordinator's quiet deadline; older input
       // still revokes the writer immediately.
       || (input.active && input.direction !== 'newer')
-      || root.scrollHeight - root.clientHeight - root.scrollTop <= 24) return false;
+      // The 24px gesture threshold is only semantic at-tail evidence.  A
+      // committed size change can leave a following list 22px short while no
+      // native input is active; treating that as settled strands the list
+      // until a later append and moves visible rows down.  The writer owns
+      // only the residual post-layout gap, so leave sub-pixel rounding alone
+      // but close every real extent delta here.
+      || root.scrollHeight - root.clientHeight - root.scrollTop <= FOLLOWING_TAIL_GAP_TOLERANCE_PX) return false;
     const executed = executeReadingDOMCommand(
       Object.freeze({ type: 'scroll-tail' }),
       { virtuoso: virtuosoRef.current, root },
