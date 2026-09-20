@@ -232,6 +232,69 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     runtime.destroy();
   });
 
+  it('retires every waiter of a replaced reveal demand before accepting its late page', async () => {
+    const { requests, wireRef, runtime, snapshot } = await attachedRuntime();
+    const reveal = (operationID, activationID) => ({
+      operationID, activationID, viewID: 'c0:timeline', epoch: 'c0:1',
+      inputEpoch: 1, intentRevision: 1, durableBaselineIDs: [], uiBaselineIDs: [], demandUnits: 1,
+    });
+    const old = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 1, urgency: 'blocking', intent: 'scroll-history',
+      historyRevealIntent: reveal('history:replace:old', 'activation-old'),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const replacement = snapshot.loadHistory('c0', {
+      beforeSeq: 6, limit: 1, urgency: 'blocking', intent: 'scroll-history',
+      historyRevealIntent: reveal('history:replace:new', 'activation-new'),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    await expect(old).resolves.toMatchObject({ kind: 'cancelled', reason: 'stale-authority' });
+    await vi.waitFor(() => expect(wireRef.current.cancelHistory).toHaveBeenCalledTimes(1));
+    expect(snapshot.enqueue({ ...row(2), ref: requests[0].ref, generation: 1 })).toBe(false);
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: true,
+    })).toBe(false);
+
+    expect(snapshot.enqueue({ ...row(5), ref: requests[1].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[1].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 4, scan_high_seq: 5, next_before_seq: 4, has_older: true,
+    })).toBe(true);
+    await expect(replacement).resolves.toMatchObject({ kind: 'satisfied' });
+    runtime.destroy();
+  });
+
+  it('keeps aggregate demand pending across failure plus success and clears prior error on success', async () => {
+    const { requests, runtime, snapshot } = await attachedRuntime();
+    const failed = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 1, urgency: 'blocking', intent: 'scroll-history',
+    });
+    const successful = snapshot.loadHistory('c0', {
+      beforeSeq: 6, limit: 1, urgency: 'blocking', intent: 'scroll-history',
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      error_code: 'offline', error_detail: 'temporary offline',
+    })).toBe(true);
+    await expect(failed).resolves.toMatchObject({ kind: 'failed' });
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      loading: true, historyDemand: { phase: 'pending' },
+    });
+
+    expect(snapshot.enqueue({ ...row(5), ref: requests[1].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[1].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 4, scan_high_seq: 5, next_before_seq: 4, has_older: true,
+    })).toBe(true);
+    await expect(successful).resolves.toMatchObject({ kind: 'satisfied' });
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      loading: false, historyDemand: { phase: 'idle', error: '' },
+    });
+    runtime.destroy();
+  });
+
   it('detaches only the aborted caller and keeps the physical operation for its joiner', async () => {
     const { requests, wireRef, runtime, snapshot } = await attachedRuntime();
     const firstController = new AbortController();
@@ -333,4 +396,5 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     expect(snapshot.stateFor('c0')?.rows.size).toBe(0);
     runtime.destroy();
   });
+
 });

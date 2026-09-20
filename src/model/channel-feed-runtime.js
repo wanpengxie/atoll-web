@@ -481,6 +481,7 @@ export function createChannelFeedRuntime(options = {}) {
   // visible again.
   const followingObservations = new Map();
   let generation = 0;
+  let semanticAuthorityRevision = 0;
   let principalEpoch = 0;
   let worldEpoch = 0;
   let attachEpoch = 0;
@@ -1128,43 +1129,69 @@ export function createChannelFeedRuntime(options = {}) {
     recomputePhysicalStatus(operation.channelId);
   }
 
-  function finishSemanticDemand(demand, phase = 'idle', error = '') {
+  function finishSemanticDemand(demand) {
     if (!demand || demand.retired || demand.operations.size || demand.waiters.size) return false;
-    demand.phase = phase;
-    demand.error = error;
     const status = histories.get(demand.channelId);
     if (semanticDemands.get(demand.channelId) !== demand
       || status?.historyDemand?.revision !== demand.revision) return false;
+    // A semantic demand may span several physical ranges.  A failed range is
+    // only terminal when every range/waiter has settled; a later successful
+    // range then clears that transient error.  Never publish `idle` together
+    // with a stale status.error from an earlier physical failure.
+    const phase = !demand.satisfied && demand.error ? 'error' : 'idle';
+    const error = phase === 'error' ? demand.error : '';
+    demand.phase = phase;
+    demand.error = error;
     status.historyDemand = Object.freeze({ revision: demand.revision, phase, error });
     if (phase === 'error') {
       status.error = error;
       status.errorCode = 'history_failed';
+    } else {
+      status.error = '';
+      status.errorCode = '';
     }
     semanticDemands.delete(demand.channelId);
     recomputePhysicalStatus(demand.channelId);
     return true;
   }
 
-  function retireSemanticDemand(demand, reason = 'stale-authority') {
+  function retireSemanticDemand(
+    demand,
+    reason = 'stale-authority',
+    replacementAuthorityRevision = null,
+  ) {
     if (!demand || demand.retired) return false;
+    // Advance the semantic fence before detaching any waiter.  A replacement
+    // caller may synchronously observe its own lease while old callbacks are
+    // still unwinding, so the old demand must already be terminal/stale.
+    const retiredAuthorityRevision = replacementAuthorityRevision
+      || ++semanticAuthorityRevision;
     demand.retired = true;
     demand.phase = 'stale';
-    if (demand.revealToken && !demand.revealSettled) {
-      admission.cancel(demand.channelId, demand.revealToken.operationID);
-      demand.revealSettled = true;
-    }
-    for (const waiter of [...demand.waiters]) {
+    demand.retiredAuthorityRevision = retiredAuthorityRevision;
+    const operations = new Set(demand.operations);
+    for (const [waiter, operation] of [...demand.waiters.entries()]) {
+      operations.add(operation);
       waiter.semanticStale = true;
       settleWaiter(waiter, { kind: 'cancelled', reason });
     }
-    for (const operation of [...demand.operations]) {
+    // Detach all semantic waiters first.  Only then may a physical operation
+    // be aborted; a replacement demand can already own another waiter on the
+    // same raw range and must keep that operation alive.
+    for (const operation of operations) {
       if (!operation.waiters.size) retireOrphanedOperation(operation, reason);
+    }
+    if (demand.revealToken && !demand.revealSettled) {
+      admission.cancel(demand.channelId, demand.revealToken.operationID);
+      demand.revealSettled = true;
     }
     const status = histories.get(demand.channelId);
     if (semanticDemands.get(demand.channelId) === demand) {
       semanticDemands.delete(demand.channelId);
       if (status?.historyDemand?.revision === demand.revision) {
         status.historyDemand = Object.freeze({ revision: demand.revision, phase: 'idle', error: '' });
+        status.error = '';
+        status.errorCode = '';
       }
     }
     recomputePhysicalStatus(demand.channelId);
@@ -1181,20 +1208,25 @@ export function createChannelFeedRuntime(options = {}) {
       ensureSemanticReveal(current);
       return current;
     }
-    if (current && !current.retired) retireSemanticDemand(current, 'stale-authority');
+    const authorityRevision = ++semanticAuthorityRevision;
+    if (current && !current.retired) {
+      retireSemanticDemand(current, 'stale-authority', authorityRevision);
+    }
     const status = historyState(channelId);
     const revision = status.historyDemand.revision + 1;
     const demand = {
       channelId,
       key,
+      authorityRevision,
       revision,
       phase: 'pending',
       error: '',
+      satisfied: false,
       foreground: historySchedulerPriority(request.urgency || HISTORY_URGENCY.interactive) > 0,
       revealIntent: request.historyRevealIntent || null,
       revealToken: null,
       revealSettled: false,
-      waiters: new Set(),
+      waiters: new Map(),
       operations: new Set(),
       retired: false,
     };
@@ -1219,19 +1251,14 @@ export function createChannelFeedRuntime(options = {}) {
     let changed = false;
     for (const demand of operation.semanticDemands) {
       demand.operations.delete(operation);
-      if (demand.retired) continue;
+      if (demand.retired || semanticDemands.get(demand.channelId) !== demand) continue;
       if (outcome.kind === 'failed' && !demand.error) {
         demand.error = outcome.error?.message || '历史加载失败';
-        if (demand.revealToken && !demand.revealSettled) {
-          admission.cancel(demand.channelId, demand.revealToken.operationID);
-          demand.revealSettled = true;
-        }
+      } else if (outcome.kind === 'page'
+        && (!demand.revealIntent || demand.lastObservation?.fulfilled)) {
+        demand.satisfied = true;
       }
-      changed = finishSemanticDemand(
-        demand,
-        outcome.kind === 'failed' ? 'error' : 'idle',
-        demand.error || '',
-      ) || changed;
+      changed = finishSemanticDemand(demand) || changed;
     }
     operation.semanticDemands.clear();
     return changed;
@@ -1450,6 +1477,18 @@ export function createChannelFeedRuntime(options = {}) {
   function settleWaiterFromPhysical(waiter, outcome) {
     if (waiter.settled) return;
     const operation = waiter.operation;
+    const demand = waiter.semanticDemand;
+    if (demand && (
+      demand.retired
+      || waiter.authorityRevision !== demand.authorityRevision
+      || semanticDemands.get(demand.channelId) !== demand
+    )) {
+      // A physical completion may race semantic navigation replacement.  It
+      // is never allowed to settle an old waiter or project its result through
+      // the replacement authority.
+      settleWaiter(waiter, { kind: 'cancelled', reason: 'stale-authority' });
+      return;
+    }
     if (outcome.kind !== 'page') {
       settleWaiter(waiter, outcome);
       return;
@@ -1457,7 +1496,6 @@ export function createChannelFeedRuntime(options = {}) {
     const projection = selectTimelineItems(
       replica.state(operation.channelId), waiter.viewSpec || {},
     );
-    const demand = waiter.semanticDemand;
     let observed = demand?.lastObservation || null;
     const revealToken = demand?.revealToken || null;
     if (revealToken && !demand.revealSettled && !demand.retired) {
@@ -1565,9 +1603,16 @@ export function createChannelFeedRuntime(options = {}) {
       onAbort: null,
       resolve,
       settled: false,
+      authorityRevision: semanticDemand?.authorityRevision || 0,
     };
     waiter.onAbort = () => releaseWaiter(waiter, 'aborted');
     operation.waiters.add(waiter);
+    if (semanticDemand && !semanticDemand.retired) {
+      // Keep the operation and semantic demand registries in lockstep before
+      // invoking any caller callback.  Replacement can therefore retire and
+      // settle every old waiter synchronously, including callback re-entry.
+      semanticDemand.waiters.set(waiter, operation);
+    }
     request.signal?.addEventListener?.('abort', waiter.onAbort, { once: true });
     try {
       request.onOperation?.(waiterLease(waiter));
