@@ -12,7 +12,11 @@ import {
   createChannelReplicaCache,
   createChannelReplicaStore,
 } from '../src/model/channel-replica.js';
-import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
+import {
+  createChannelFeedRuntime,
+  HISTORY_BATCH_BYTES,
+  HISTORY_PAGE_SIZE,
+} from '../src/model/channel-feed-runtime.js';
 import {
   CONVERSATION_SCOPE,
   createConversationPresentation,
@@ -68,6 +72,7 @@ import {
   useMessageLayoutState,
 } from '../src/ui/timeline/MessageLayoutState.jsx';
 import { createViewSessionStore } from '../src/model/view-session.js';
+import { detectProfile, PROFILE_DESKTOP, PROFILE_MOBILE } from '../src/model/device-profile.js';
 import { MermaidBlock } from '../src/ui/MermaidBlock.jsx';
 import { VendorListExecutor } from '../src/ui/timeline/VendorListExecutor.jsx';
 import { ReadingContainerHandoff } from '../src/ui/timeline/ReadingContainerHandoff.jsx';
@@ -4317,6 +4322,55 @@ describe('I-M exact-path public-owner recovery (round 41 data and presentation c
     } finally {
       await cache.clear();
     }
+  });
+
+  it('memory-window baseline 35: a byte-bounded page preserves opaque nested row data', async () => {
+    const cache = createChannelReplicaCache({ indexedDB: null });
+    await cache.ensureOwner('root', { world: 'round52-byte-shape' });
+    await cache.clear();
+    const rows = [1, 2].map((seq) => envelope(seq, {
+      id: `round52-cache-${seq}`,
+      body: { text: `row-${seq}`, result: { nested: 'x'.repeat(3_200) } },
+    }));
+    try {
+      expect(await cache.saveRows(rows)).toBe(2);
+      const page = await cache.readBefore(CHANNEL, 99, 10, 5_000);
+      expect(page.rows.map((row) => row.seq)).toEqual([2]);
+      expect(page.rows[0].envelope.payload.body.result.nested).toHaveLength(3_200);
+      expect(page.bytes).toBeLessThanOrEqual(5_000);
+    } finally {
+      await cache.clear();
+    }
+  });
+
+  it('memory-window baseline 36: mobile history policy remains bounded by public defaults', () => {
+    const storage = (() => {
+      const values = new Map();
+      return {
+        getItem: (key) => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, value),
+      };
+    })();
+    const mobile = detectProfile({
+      matchMedia: (query) => ({ matches: query === '(pointer: coarse)' || query === '(max-width: 900px)' }),
+      search: '',
+      storage,
+    });
+    const desktop = detectProfile({
+      matchMedia: () => ({ matches: false }),
+      search: '?perf=desktop',
+      storage,
+    });
+
+    expect(mobile).toBe(PROFILE_MOBILE);
+    expect(desktop).toBe(PROFILE_DESKTOP);
+    // The deleted MOBILE_WINDOW export was an implementation detail. The
+    // current public history policy remains finite and bounded; preserving
+    // the old maxima is the user invariant, not the old numeric constant.
+    expect(HISTORY_PAGE_SIZE).toBeGreaterThan(0);
+    expect(HISTORY_PAGE_SIZE).toBeLessThanOrEqual(500);
+    expect(HISTORY_BATCH_BYTES).toBeGreaterThan(0);
+    expect(HISTORY_BATCH_BYTES).toBeLessThanOrEqual(8 * 1024 * 1024);
   });
 
   it('memory-window TC-0951: a reload derives coverage from physical rows and keeps a gap unknown', async () => {

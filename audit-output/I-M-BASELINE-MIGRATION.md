@@ -1782,3 +1782,28 @@ operation equivalent to the retired fixture, and the final two rows are
 already exact/owner-covered. No source, vendor/package/lockfile,
 notification/arrival owner, private export, compatibility parser, test skip,
 or production file changed in Round 51.
+
+## Round 52 exact d9050df: public user evidence for memory rows 35–36
+
+Round 51's rejection of the deleted `estimateRowBytes` formula and
+`MOBILE_WINDOW` constant remains in force.  A second pass identified the
+separate user contracts behind those two declarations: a bounded cache page
+must preserve opaque business data, and the current mobile history path must
+remain finite and bounded.  These contracts have public owners and are now
+bridged without asserting the old helper, exact numeric constant, or a second
+configuration owner.
+
+| baseline | user capability and invariant | old operation | current public owner / setup → observable | d9050df result |
+|---|---|---|---|---|
+| TC-0952 / row 35, `memory-window.test.js:338` | A byte-bounded history page returns usable newest data without dropping an opaque nested result, and reported bytes never exceed the caller's bound. | Direct `estimateRowBytes` export and its top-level-string/serialization formula. | `createChannelReplicaCache.saveRows/readBefore`: save two canonical rows with a large nested `result`, read with a 5,000-byte bound, observe only newest seq 2, nested body length 3,200, and `bytes ≤ 5,000`. | **PASS/current** — `tests/i-m-exact-path-contracts.test.jsx` baseline 35. The assertion observes only public rows/body/bytes; no estimator or private state. |
+| TC-0953 / row 36, `memory-window.test.js:343` | Mobile history selects the mobile profile and uses finite current page/byte defaults no larger than the user-facing bounded-memory maxima; desktop override remains separate. | Deleted `MOBILE_WINDOW === { maxRows: 500, maxBytes: 8MB }` export. | Public `detectProfile` plus exported current `HISTORY_PAGE_SIZE/HISTORY_BATCH_BYTES`: coarse+narrow media yields `PROFILE_MOBILE`; `?perf=desktop` yields `PROFILE_DESKTOP`; current policy is positive, finite, and bounded by 500/8MB. | **PASS/current replacement** — `tests/i-m-exact-path-contracts.test.jsx` baseline 36. The exact old `MOBILE_WINDOW` export/numeric equality is not restored. |
+
+Focused evidence:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'baseline 35|baseline 36|TC-0950|TC-0951' --retry=2`
+→ **4 passed, 162 skipped**.
+
+The new cases are independent of TC-0950 (ordinary long-text byte page) and
+TC-0951 (physical sparse coverage).  No product, notification/arrival owner,
+vendor/package/lockfile, private export, old compatibility path, skip, or
+weakened assertion was changed.
