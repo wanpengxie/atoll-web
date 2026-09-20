@@ -70,7 +70,15 @@ test('Registrar list/get receipts hydrate canonical templates before channel rec
   await expect.poll(() => submitPayloads(frames)
     .filter((payload) => payload.msg_type === 'system.channel.create'
       && payload.payload?.name === 'templated-room')).toHaveLength(1);
-  const create = submitPayloads(frames).find((payload) => payload.msg_type === 'system.channel.create' && payload.payload?.name === 'templated-room');
+  const sequence = submitPayloads(frames);
+  const listIndex = sequence.findIndex((payload) => payload.msg_type === 'system.channel.template.list');
+  const getIndex = sequence.findIndex((payload) => payload.msg_type === 'system.channel.template.get' && payload.payload?.id === 'mock:team');
+  const createIndex = sequence.findIndex((payload) => payload.msg_type === 'system.channel.create' && payload.payload?.name === 'templated-room');
+  expect(listIndex).toBeLessThan(getIndex);
+  expect(getIndex).toBeLessThan(createIndex);
+  const create = sequence[createIndex];
+  expect(create.channel_id).toBe('c0');
+  expect(create.payload.name).toBe('templated-room');
   expect(create.payload.recipe).toEqual(expect.objectContaining({
     declarations: [{ decl_id: 'mock:steward' }],
     profile: expect.objectContaining({
