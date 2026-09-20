@@ -441,15 +441,24 @@ describe('A-D round 26 public-owner evidence', () => {
     expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
   });
 
-  it('[AD-194] keeps member ledger terminal and roster convergence as separate facts', () => {
+  it('[AD-194] keeps member ledger terminal and roster convergence as separate facts', async () => {
     // 用户能力：成员操作只有账本和 roster 都收敛才 ready。
-    // 不变量：terminal receipt 不能伪造 roster；公开 owner：GovernanceFeature。
+    // 不变量：terminal receipt 不能伪造 roster；公开 owner：ChannelAdministrationPanel → ChannelMembers（GovernanceFeature）。
+    const submit = vi.fn().mockResolvedValue('member-request');
     const refresh = vi.fn();
     governance({
-      commands: { submit: vi.fn().mockResolvedValue('member-request'), refresh },
-      roster: [{ id: 'agent:worker:1', kind: 'agent', name: 'Worker' }],
+      commands: { submit, refresh },
+      declarations: [{ id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker' }],
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
+    fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Worker · Agent' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加到频道' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith({
+      scope: 'channel',
+      action: 'introduce_actor',
+      payload: { channelId: 'c0', candidateType: 'declaration', candidateId: 'agent:worker:1' },
+    }));
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     expect(screen.getByText('成员已就绪')).toBeTruthy();
   });

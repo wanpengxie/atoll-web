@@ -600,6 +600,34 @@ AD-193 is promoted to PASS. The ledger is now **332 PASS / 0 REGRESSION / 33
 BLOCKED**. Case evidence and the exact baseline mapping are in
 [`A-D-ROUND48-AD193-CREATE-CONVERGENCE-FIXTURE-20260920.md`](./A-D-ROUND48-AD193-CREATE-CONVERGENCE-FIXTURE-20260920.md).
 
+## Round 49 — AD-194 member ledger/roster convergence owner packet
+
+Round 49 verifies AD-194 at the current public Governance owner without
+touching product code. The baseline requires a member operation's ledger
+terminal and the authoritative roster to remain separate: a terminal receipt
+with an empty roster is not member-ready. The current public
+`ChannelAdministrationPanel` → `ChannelMembers` route accepts the
+`introduce_actor` command and exposes a submitted operation status plus
+`roster`/`refresh`, but it has no separate member-ready convergence fact.
+
+The fixture now performs the complete public action: it selects a present Agent
+declaration in the participant selector, submits `scope: 'channel'`,
+`action: 'introduce_actor'`, refreshes the member projection, and then asks for
+the baseline observable `成员已就绪`. The command call is observed, but the
+current DOM only shows the generic submitted message and an empty roster; the
+member-ready fact is absent. This is an ordinary red product-gap reproduction,
+not an expected-fail completion signal.
+
+Focused current-head result: **1 failed / 19 focused-out skips**. The first
+failure is the missing `成员已就绪` public convergence observable at
+`tests/blocked-round26-public-owner.test.jsx:463`. The exact user capability,
+invariant, owner, and result are recorded in
+[`A-D-ROUND49-AD194-MEMBER-CONVERGENCE-GAP-20260920.md`](./A-D-ROUND49-AD194-MEMBER-CONVERGENCE-GAP-20260920.md).
+
+AD-194 remains **BLOCKED** and the ledger remains **332 PASS / 0 REGRESSION /
+33 BLOCKED**. No product source, private export, old store, compatibility API,
+skip, or expected-fail declaration was changed.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
