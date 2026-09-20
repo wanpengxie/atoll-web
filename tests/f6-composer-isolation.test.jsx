@@ -191,6 +191,30 @@ describe('AD-346 slash command selection contract', () => {
   });
 });
 
+describe('AD-347 describe-gated slash candidate contract', () => {
+  it('shows only request control words declared by the target Agent', async () => {
+    const user = userEvent.setup();
+    const capabilityIndex = new Map([[CLAUDE.id, {
+      describe: { types: new Map([['agent.compact', { inputSchema: { type: 'object' } }]]) },
+    }]]);
+    const config = commandsHarness({ capabilityIndex });
+    let latest;
+
+    function Harness() {
+      latest = useComposerCommands(config);
+      return <Composer model={latest.model} commands={latest.commands} />;
+    }
+
+    render(<Harness />);
+    await user.type(screen.getByRole('textbox', { name: '消息' }), '/');
+    expect(await screen.findByRole('option', { name: /\/compact/ })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /\/new/ })).toBeNull();
+    expect(latest.model.commandMenu.rows
+      .filter((row) => row.scope === 'agent')
+      .map((row) => row.command)).toEqual(['compact']);
+  });
+});
+
 describe('上传未完成时不能提交纯文本快照（呼应旧 F6 附件同批断言）', () => {
   it('does not send a text-only snapshot while a selected attachment is still uploading', async () => {
     const user = userEvent.setup();
