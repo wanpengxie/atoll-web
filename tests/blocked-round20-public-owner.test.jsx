@@ -231,7 +231,7 @@ describe('A-D round 20 public-owner blocked evidence', () => {
     runtime.destroy();
   });
 
-  it.fails('[AD-157] rejects cached notification completion after boot replacement revokes its Replica epoch', async () => {
+  it('[AD-157] rejects cached notification completion after boot replacement revokes its Replica epoch', async () => {
     // 用户能力：旧 boot 的缓存完成不能在新世界重现成通知。
     // 不变量：boot/Replica epoch 是缓存 hydration 的 admission fence；公开 owner：ChannelFeedRuntime + ChannelReplica。
     const { runtime, snapshot } = await attachedRuntime({ boot: 'round20-old-boot' });
