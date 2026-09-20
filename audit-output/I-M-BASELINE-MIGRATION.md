@@ -1185,6 +1185,80 @@ Round-40 evidence:
 * Seven-red command: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2` → **7/7 stable product regressions**, each repeated across three attempts.
 * Full exact bridge remains **147/155 GREEN**; current-owner rerun remains **110/110 GREEN**. This pass changes only this test file and audit report; no product source is modified.
 
+## Round 41 re-verification and next exact public-owner bridge
+
+This round was rerun against the shared current worktree (`HEAD` `9a66264`,
+which contains the requested `e8bb1d9` Replica/Reading changes). The physical
+root contract remains observable through the mounted root and the public
+Reading owner; no vendor callback, private production helper, or internal
+timing sequence is asserted.
+
+| case | user capability / invariant | public owner and old operation | current result |
+|---|---|---|---|
+| TC-0985 | Following writes to the mounted physical root exactly once; vendor `followOutput` is disabled and the typed intent becomes idle. | `VendorListExecutor` physical-root `scrollTo` + Reading session (historically the vendor follow port). | **GREEN** in the physical-root command below. |
+| TC-0986 | A role-only public height commit reaches the same mounted root exactly once after geometry is committed. | `VendorListExecutor.totalListHeightChanged` + physical root (historically a list callback/geometry path). | **GREEN** in the physical-root command below. |
+| TC-1024 / 1024b | A callback from a prior activation or prior root cannot write into the successor owner; the live callback remains authorized. | `VendorListExecutor` activation fence + mounted physical root (historically callback identity/activation state). | **GREEN**; both successor counterexamples remain executable. |
+| TC-0942 | Nested terminal control relations survive public closure reconciliation; a completed turn is not reduced to a closure-only placeholder after re-admission. | `createChannelReplicaStore().commit/trim/state` (historically closure metadata/turn maps). | **GREEN**; exact `merged_into`, `preempted_by`, and `replaced_by` values survive. |
+| TC-0950 | A public byte budget narrows a returned page without turning a non-empty page into an exhausted result. | `createChannelReplicaCache().saveRows/readBefore` (historically byte estimator policy). | **GREEN**; a non-empty bounded page is returned and its bytes stay within 420. |
+| TC-0951 | Reload/reconcile derives physical coverage from rows; a sparse gap remains unknown and therefore is not exhausted. | `createChannelReplicaCache().saveRows/ensureOwner/metaSnapshot/readBefore` (historically persisted coverage metadata). | **GREEN**; rows 1 and 3 remain visible, coverage is split, and `exhausted` is false. |
+| TC-1028 | A typed system operation renders product language through the public message-row owner, without exposing its wire type. | `MessageHarness` / `messageRow` presentation owner (historically operation-label dispatch). | **GREEN**; `创建子频道：round41-room` is visible and the raw type is absent. |
+| TC-1029 | An unknown structured payload is safely rendered without exposing nested sensitive hints. | `MessageHarness` / canonical redaction boundary (historically unknown-payload fallback). | **GREEN**; the secret token is absent and the user sees `已隐藏`. |
+
+The five new exact-path tests above are public-owner bridges, not additional
+baseline declarations and not mechanism-unit credit. They were run with:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-0942|TC-0950|TC-0951|TC-1028|TC-1029' --retry=2`
+→ **5/5 GREEN** (161 total declarations in the file, 156 skipped by the
+selector).
+
+The physical-root/successor command was:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-0985|TC-0986|TC-1024' --retry=2`
+→ **4/4 GREEN** (TC-1024 has the two public successor counterexamples).
+
+The seven existing strict current-invariant contracts remain independent
+product regression packages. They are not weakened or converted into timing
+oracles:
+
+| case | user-visible contract | current failure / owner |
+|---|---|---|
+| TC-1010 | A premature target-row commit must not write before committed measurement. | **RED**: `{top:1000}` is written; `VendorListExecutor` typed send intent + physical root. |
+| TC-1011 | Pending join fences both early and later same-revision height writes. | **RED**: `{top:1000}` and `{top:1132}` are written; same public owner. |
+| TC-1012 | Equal-height target baseline waits for the later authorized resize. | **RED**: `{top:1000}` is written; same public owner. |
+| TC-1014 | A same-revision height cannot write before public revoke. | **RED**: `{top:1132}` is written before revoke; same public owner. |
+| TC-1015 | Revoking a send-owned baseline releases ordinary following only at the public boundary. | **RED**: `{top:1132}` is written before the boundary; same public owner. |
+| TC-1018 | An unrelated committed tail receives its allowed ordinary-follow write while a newer target remains pending. | **RED**: the required write is missing; same public owner. |
+| TC-1019 | Moving a target to Waiting cannot bypass destination readiness. | **RED**: `{top:1000}` is written early; same public owner. |
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2`
+→ **7/7 stable RED**, with each case reproduced across the retry attempts.
+These are returned to the `VendorListExecutor`/Reading owner rather than
+patched in tests.
+
+The exact-file verification is:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx --retry=0`
+→ **150/161 GREEN**. The 11 reds are the shared canonical-body presentation
+case, the existing TC-0977/0978/0979 bookmark/initial-location owner gap, and
+the seven independent contracts above. TC-0977/0978/0979 each stably receive
+`initialTopMostItemIndex=0` where their public bookmark contract requires 1;
+they remain regression packages and were neither duplicated nor weakened here.
+
+The current-owner rerun remains:
+
+`npx vitest run tests/live-checkpoint-ordering.test.js tests/live-presentation-arrivals.test.js tests/management-actors.test.js tests/markdown-content.test.jsx tests/memory-window.test.js tests/mermaid-block.test.jsx tests/message-layout-state.test.jsx tests/message-list-lifecycle.test.jsx tests/message-presentation.test.js tests/message-time.test.js tests/mock-governance.test.js tests/mock-phase-b.test.js tests/mock-phase-c.test.js tests/mock-phase-e.test.js tests/mock-protocol.test.js tests/mock-scenarios.test.js tests/model-selector.test.jsx --retry=0`
+→ **17 files, 109/109 GREEN**.
+
+Static candidates intentionally not bridged this round remain explicit: TC-0952
+and TC-0953 are historical estimator/device-limit implementation policies;
+TC-0982 and TC-0990 require deleted target/paint or text-point traces rather
+than a current public user capability; TC-1030 is the already represented,
+currently red canonical-body-vs-system-label contract; and TC-1075 is already
+covered by the current model-selector owner suite. Earlier TC-0938/0939/0943–
+0945 closure contracts are already covered and were not duplicated. No source,
+notification/arrival owner, private API, compatibility parser, vendor/package,
+lockfile, or test skip was changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

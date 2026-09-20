@@ -9,6 +9,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import { WebSocket } from 'ws';
 import {
+  createChannelReplicaCache,
   createChannelReplicaStore,
 } from '../src/model/channel-replica.js';
 import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
@@ -4169,5 +4170,115 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(presentation.commitCandidate(resumed)).toBe(true);
     expect(presentation.current()).toBe(committed);
     expect(presentation.current().orderedIDs).toEqual(['round38-committed']);
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 41 data and presentation contracts)', () => {
+  it('memory-window TC-0942: nested terminal control facts survive public closure reconciliation', () => {
+    const store = createChannelReplicaStore();
+    const steer = envelope(1, {
+      id: 'round41-steer',
+      kind: 'request',
+      type: 'agent.steer',
+      audience: [AGENT],
+      body: { text: '改道' },
+    });
+    const terminalRow = terminal(2, 'round41-steer');
+    terminalRow.envelope.type = 'agent.steer';
+    terminalRow.envelope.payload.body.value = {
+      merged_into: 'turn-7',
+      preempted_by: 'replacement-8',
+      replaced_by: 'turn-9',
+    };
+    store.commit(steer, SELF);
+    store.commit(terminalRow, SELF);
+    for (let seq = 3; seq <= 8; seq += 1) store.commit(note(seq), SELF);
+
+    expect(store.trim(CHANNEL, 4)).toBeGreaterThan(0);
+    // Re-admit the exact public request and terminal rows after the closure
+    // was compacted. The user-visible turn must retain all three control
+    // relations; no closure-specific map is inspected here.
+    store.commit(steer, SELF);
+    store.commit(terminalRow, SELF);
+    const turn = store.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === 'round41-steer')?.turn;
+    expect(turn).toMatchObject({
+      requestId: 'round41-steer', status: 'completed', terminalClosureOnly: false,
+    });
+    expect(turn.terminal.payload.body.value).toEqual({
+      merged_into: 'turn-7',
+      preempted_by: 'replacement-8',
+      replaced_by: 'turn-9',
+    });
+  });
+
+  it('memory-window TC-0950: the public cache byte budget only narrows a page', async () => {
+    const cache = createChannelReplicaCache({ indexedDB: null });
+    await cache.ensureOwner('root', { world: 'round41-byte-budget' });
+    await cache.clear();
+    const rows = [1, 2, 3].map((seq) => envelope(seq, {
+      id: `round41-cache-${seq}`,
+      body: { text: `${seq}`.repeat(160) },
+    }));
+    try {
+      expect(await cache.saveRows(rows)).toBe(3);
+      const page = await cache.readBefore(CHANNEL, 99, 10, 420);
+      expect(page.rows.length).toBeGreaterThan(0);
+      expect(page.rows.length).toBeLessThan(rows.length);
+      expect(page.bytes).toBeLessThanOrEqual(420);
+      expect(page.rows.map((row) => row.seq)).toEqual([3]);
+    } finally {
+      await cache.clear();
+    }
+  });
+
+  it('memory-window TC-0951: a reload derives coverage from physical rows and keeps a gap unknown', async () => {
+    const cache = createChannelReplicaCache({ indexedDB: null });
+    await cache.ensureOwner('root', { world: 'round41-physical-gap' });
+    await cache.clear();
+    try {
+      await cache.saveRows([envelope(1, { id: 'round41-gap-1' }), envelope(3, { id: 'round41-gap-3' })], {
+        coverage: { channelId: CHANNEL, lowSeq: 1, highSeq: 3 },
+      });
+      expect((await cache.readBefore(CHANNEL, 4, 10, 10_000)).rows.map((row) => row.seq))
+        .toEqual([1, 3]);
+
+      await cache.ensureOwner('root', { world: 'round41-physical-gap' });
+      expect(cache.metaSnapshot().get(CHANNEL)).toMatchObject({
+        rowCount: 2,
+        oldestSeq: 1,
+        newestSeq: 3,
+        coverage: [{ lowSeq: 1, highSeq: 1 }, { lowSeq: 3, highSeq: 3 }],
+      });
+      const page = await cache.readBefore(CHANNEL, 4, 10, 10_000);
+      expect(page.rows.map((row) => row.seq)).toEqual([1, 3]);
+      expect(page.exhausted).toBe(false);
+    } finally {
+      await cache.clear();
+    }
+  });
+
+  it('message-presentation TC-1028: typed system operations render product language through the public row owner', () => {
+    const row = messageRow(TYPES.channel.create, {
+      name: 'round41-room',
+      recipe: { declarations: [] },
+    });
+    row.body.envelope.visibility = 'system';
+    render(<MessageHarness row={row} />);
+    expect(screen.getByText('创建子频道：round41-room')).toBeTruthy();
+    expect(screen.queryByText(TYPES.channel.create)).toBeNull();
+  });
+
+  it('message-presentation TC-1029: unknown structured payloads never expose sensitive hints', () => {
+    const row = messageRow('vendor.round41.custom', {
+      status: 'completed',
+      result: { nested: { value: 1 }, token: 'round41-secret' },
+    });
+    row.body.envelope.kind = 'response';
+    row.body.envelope.sender = { id: AGENT, kind: 'agent' };
+    row.body.envelope.audience = [SELF];
+    render(<MessageHarness row={row} />);
+    expect(screen.queryByText('round41-secret')).toBeNull();
+    expect(document.querySelector('.message-body')?.textContent).toContain('已隐藏');
   });
 });
