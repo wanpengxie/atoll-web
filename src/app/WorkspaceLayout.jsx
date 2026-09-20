@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
+import { useModalFocus } from '../ui/primitives/useModalFocus.js';
 
 const VIEW_LABELS = Object.freeze({ conversation: '动态', tasks: '任务' });
 const VIEW_ENTRIES = Object.freeze(Object.entries(VIEW_LABELS));
@@ -31,7 +32,7 @@ function accessLabel(access) {
   })[access] || '';
 }
 
-function WorkspaceRail({ session, navigation, onClose, closeButtonRef, onSelect }) {
+function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, onSelect }) {
   const memberChannels = navigation.channels.filter((channel) => String(channel.access || '').startsWith('member_'));
   const otherChannels = navigation.channels.filter((channel) => !String(channel.access || '').startsWith('member_'));
   const activeCount = Object.values(navigation.agentActivity?.byChannel || {})
@@ -78,7 +79,7 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, onSelect 
     })}
     {!rows.length && <p className="rail-empty">{empty}</p>}
   </div>;
-  return <aside className="channel-rail">
+  return <aside ref={railRef} className="channel-rail" data-modal-layer={onClose ? '' : undefined}>
     <header className="rail-header">
       <div className="brand-lockup"><span className="brand-dot" />ATOLL</div>
       <div className={`connection-state state-${session.wireState}`}><span aria-hidden="true" />{connectionLabel(session.wireState)}</div>
@@ -118,7 +119,11 @@ export function WorkspaceLayout({
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   const mobileChannelToggleRef = useRef(null);
+  const mobileRailRef = useRef(null);
+  const inactiveMobileDialogRef = useRef(null);
   const mobileRailCloseRef = useRef(null);
+  const mobileDrawerReturnFocusRef = useRef(null);
+  const mobileDrawerNoFocusRef = useRef({ isConnected: false });
   const channelHeadingRef = useRef(null);
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
@@ -200,25 +205,23 @@ export function WorkspaceLayout({
     // this request. Do not let the stale selection focus the later channel.
     if (activeChannelId !== pending.origin) clearPendingChannelSelection(pending);
   }, [clearPendingChannelSelection, navigation.activeChannelId]);
-  const closeMobileChannels = (focus = 'toggle') => {
-    setMobileChannelsOpen(false);
-    if (focus === 'none') return;
-    globalThis.requestAnimationFrame(() => (focus === 'heading' ? channelHeadingRef.current : mobileChannelToggleRef.current)?.focus({ preventScroll: true }));
+  const openMobileChannels = () => {
+    mobileDrawerReturnFocusRef.current = mobileChannelToggleRef.current;
+    setMobileChannelsOpen(true);
   };
-  useEffect(() => {
-    if (!mobileChannelsOpen) return undefined;
-    const frame = globalThis.requestAnimationFrame(() => mobileRailCloseRef.current?.focus({ preventScroll: true }));
-    const escape = (event) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      closeMobileChannels('toggle');
-    };
-    document.addEventListener('keydown', escape);
-    return () => {
-      globalThis.cancelAnimationFrame(frame);
-      document.removeEventListener('keydown', escape);
-    };
-  }, [mobileChannelsOpen]);
+  const closeMobileChannels = (focus = 'toggle') => {
+    mobileDrawerReturnFocusRef.current = focus === 'none'
+      ? mobileDrawerNoFocusRef.current
+      : focus === 'heading' ? channelHeadingRef.current : mobileChannelToggleRef.current;
+    setMobileChannelsOpen(false);
+  };
+  const mobileDialogRef = mobileChannelsOpen ? mobileRailRef : inactiveMobileDialogRef;
+  useModalFocus({
+    dialogRef: mobileDialogRef,
+    initialFocusRef: mobileRailCloseRef,
+    returnFocusRef: mobileDrawerReturnFocusRef,
+    onClose: () => closeMobileChannels('toggle'),
+  });
   useEffect(() => {
     if (!channelMenuOpen) return undefined;
     const closeOutside = (event) => {
@@ -309,11 +312,11 @@ export function WorkspaceLayout({
     className={['shell', mobileChannelsOpen && 'mobile-channels-open', rightPanel && 'has-context'].filter(Boolean).join(' ')}
     data-workspace-view={navigation.activeView}
   >
-    <WorkspaceRail session={session} navigation={navigation} onSelect={selectChannel} onClose={mobileChannelsOpen ? closeMobileChannels : null} closeButtonRef={mobileRailCloseRef} />
+    <WorkspaceRail session={session} navigation={navigation} onSelect={selectChannel} onClose={mobileChannelsOpen ? closeMobileChannels : null} closeButtonRef={mobileRailCloseRef} railRef={mobileRailRef} />
     <main className="workspace">
       <header className="channel-header">
         <div className="channel-identity">
-          <button ref={mobileChannelToggleRef} type="button" className="mobile-channel-toggle" onClick={() => setMobileChannelsOpen(true)} aria-label="打开频道列表">‹</button>
+          <button ref={mobileChannelToggleRef} type="button" className="mobile-channel-toggle" onClick={openMobileChannels} aria-label="打开频道列表">‹</button>
           <div><p className="eyebrow">频道</p><h1 ref={channelHeadingRef} tabIndex={-1}>{channel?.qualified_name || channel?.name || '选择频道'}</h1></div>
         </div>
         <div className="channel-header-actions">

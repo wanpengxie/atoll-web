@@ -52,7 +52,10 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
     const close = screen.getByRole('button', { name: '关闭频道列表' });
     expect(document.activeElement).toBe(close);
     const rail = screen.getByRole('navigation', { name: '频道' });
-    const focusable = [...rail.querySelectorAll(
+    const drawer = rail.closest('.channel-rail');
+    expect(drawer?.getAttribute('data-modal-layer')).not.toBeNull();
+    expect(document.querySelector('main')?.inert).toBe(true);
+    const focusable = [...drawer.querySelectorAll(
       'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
     )];
     expect(focusable.length).toBeGreaterThan(2);
@@ -82,6 +85,7 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('button', { name: '关闭频道列表' })).toBeNull();
     expect(document.activeElement).toBe(opener);
+    expect(document.querySelector('main')?.inert).toBe(false);
   });
 
   it('keeps an explicit manual Agent ahead of a filter fallback in the public Composer selection model', () => {
