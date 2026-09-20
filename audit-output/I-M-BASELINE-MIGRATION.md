@@ -1633,6 +1633,25 @@ source count.  Round 49 changed only the exact-path test and this audit record;
 no product, send-join, Vendor, Reading, Feed, or concurrent dirty file was
 modified.
 
+## Round 50 exact-path recovery: baseline 27 ledger-order canonical terminal
+
+The next unique I-M baseline is memory-window row 27.  It is deliberately
+separate from Round 49's compact-closure upgrade rule: this case checks the
+canonical turn projection when two terminal responses for one request are both
+present, rather than checking whether a trimmed closure accepts a matching full
+row.  The user-visible invariant is that the first terminal by ledger sequence
+defines the completed outcome; a later conflicting terminal cannot silently
+rewrite the turn's status or terminal identity.
+
+| baseline case | current public owner and entry point | baseline setup → action → observable | current result / evidence |
+|---|---|---|---|
+| row 27, `memory-window.test.js`: “compact closure 已吸收后仍由更早 ledger terminal 取得 canonical 位置” | `createChannelReplicaStore` (`ChannelReplica`) public commit/state timeline projection and its canonical turn builder. | Commit request `ledger-order-terminal` at seq 1, completed terminal at seq 2, then a distinct failed terminal for the same parent at seq 3; observe the public turn remains `status: completed`, `terminalSeq: 2`, and the seq-2 terminal id. | **PASS/current**. Exact-path bridge `tests/i-m-exact-path-contracts.test.jsx` (`memory-window baseline 27`); focused command `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'baseline 27' --retry=2` → **1 passed, 163 skipped**. The current public implementation sorts terminal rows by ledger sequence and keeps the first; no private state is asserted. |
+
+This is one independent Replica baseline proof and does not alter the 159-case
+source count.  Round 50 changed only the exact-path test and this audit record;
+send-join and the Feed/Reading/Composer/Governance owner surfaces were not
+touched.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

@@ -1022,6 +1022,22 @@ describe('I-M exact-path public-owner recovery (round 14)', () => {
     expect(turn.terminal.id).toBe(`${requestID}-terminal-2`);
   });
 
+  it('memory-window baseline 27: the earliest ledger terminal stays canonical', () => {
+    const store = createChannelReplicaStore();
+    const requestID = 'ledger-order-terminal';
+    store.commit(request(1, requestID), SELF);
+    store.commit(terminal(2, requestID, 'completed', 'first terminal'), SELF);
+
+    const later = terminal(3, requestID, 'failed', 'later conflict');
+    later.envelope.id = `${requestID}-later-conflict`;
+    store.commit(later, SELF);
+
+    const turn = store.state(CHANNEL).timeline
+      .find((entry) => entry.turn?.requestId === requestID)?.turn;
+    expect(turn).toMatchObject({ status: 'completed', terminalSeq: 2 });
+    expect(turn.terminal.id).toBe(`${requestID}-terminal-2`);
+  });
+
   it('memory-window TC-0946: unmatched provisional progress is evicted without creating a turn', () => {
     const store = createChannelReplicaStore();
     store.commit(progress(1, 'missing-request'), SELF);
