@@ -344,20 +344,27 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     const place = () => placeTarget(targetRef.current, inputAreaRef.current);
     place();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : null;
-    observer?.observe(targetRef.current);
     observer?.observe(inputAreaRef.current);
+    // `placeTarget` owns the fixed node's width/top. Observing that same node
+    // feeds its own style write back into ResizeObserver and can produce a
+    // Chromium loop warning. Child mutations are the only target-side size
+    // changes we need to re-place (a new/removing chip); viewport/anchor size
+    // remains covered by the anchor observer and viewport listeners.
+    const targetMutations = typeof MutationObserver === 'function' ? new MutationObserver(place) : null;
+    targetMutations?.observe(targetRef.current, { childList: true, subtree: true, characterData: true });
     globalThis.addEventListener?.('resize', place);
     globalThis.visualViewport?.addEventListener?.('resize', place);
     globalThis.visualViewport?.addEventListener?.('scroll', place);
     document.addEventListener('scroll', place, true);
     return () => {
       observer?.disconnect();
+      targetMutations?.disconnect();
       globalThis.removeEventListener?.('resize', place);
       globalThis.visualViewport?.removeEventListener?.('resize', place);
       globalThis.visualViewport?.removeEventListener?.('scroll', place);
       document.removeEventListener('scroll', place, true);
     };
-  });
+  }, [editMode]);
   useEffect(() => {
     if (!model.draft.replyTarget || editMode || !editor) return undefined;
     const frame = requestAnimationFrame(() => {
