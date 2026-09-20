@@ -39,6 +39,22 @@ async function waitForVisibleAnchor(viewport, anchorID) {
   }, anchorID)).toBe(true);
 }
 
+async function captureSettledAnchor(viewport, anchorID) {
+  return viewport.evaluate((node, id) => {
+    const root = node.getBoundingClientRect();
+    const row = [...node.querySelectorAll('[data-presentation-row-id]')]
+      .find((candidate) => candidate.dataset.presentationRowId === id);
+    if (!row) return null;
+    const rect = row.getBoundingClientRect();
+    return {
+      id: row.dataset.presentationRowId || '',
+      top: rect.top - root.top,
+      bottom: rect.bottom - root.top,
+      visible: rect.bottom > 0 && rect.top < node.clientHeight,
+    };
+  }, anchorID);
+}
+
 async function installPublicFrameSampler(page, anchorID) {
   await page.evaluate((id) => {
     const state = { id, frames: [], started: false, raf: 0 };
@@ -104,10 +120,11 @@ test('TC0224 minimal public black-box: channel return keeps one semantic anchor 
   const returnEvidence = await page.evaluate(() => window.__NR41_PUBLIC_FRAME_SAMPLER__?.stop?.() || ({ started: false, frames: [] }));
   const frames = returnEvidence.frames;
   await waitForVisibleAnchor(viewport, before.id);
+  const settled = await captureSettledAnchor(viewport, before.id);
   const visibleFrames = frames.filter((frame) => frame.visible && Number.isFinite(frame.top));
   const tops = visibleFrames.map((frame) => frame.top);
   const spread = tops.length ? Math.max(...tops) - Math.min(...tops) : null;
-  const settledTop = visibleFrames.at(-1)?.top ?? null;
+  const settledTop = settled?.top ?? null;
   const settledDelta = Number.isFinite(settledTop) && Number.isFinite(before.top)
     ? Math.abs(settledTop - before.top)
     : null;
@@ -116,6 +133,7 @@ test('TC0224 minimal public black-box: channel return keeps one semantic anchor 
     baseline: 'old reading baseline: stable semantic anchor, <=1px target; current F7 gate uses <=2px over return frames',
     before,
     frames,
+    settled,
     visibleFrameCount: visibleFrames.length,
     spread,
     settledTop,
@@ -128,6 +146,8 @@ test('TC0224 minimal public black-box: channel return keeps one semantic anchor 
 
   expect(visibleFrames.length, JSON.stringify(evidence)).toBeGreaterThanOrEqual(8);
   expect(visibleFrames.every((frame) => frame.rowID === before.id), JSON.stringify(evidence)).toBe(true);
+  expect(settled?.id, JSON.stringify(evidence)).toBe(before.id);
+  expect(settled?.visible, JSON.stringify(evidence)).toBe(true);
   expect(settledDelta, JSON.stringify(evidence)).toBeLessThanOrEqual(2);
   expect(spread, JSON.stringify(evidence)).toBeLessThanOrEqual(2);
 });
