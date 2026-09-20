@@ -1660,3 +1660,81 @@ Composer allocation、queued→terminal geometry、以及 following reserve moun
 `following-existing-waiting` 现已与 `fae8b70` 的可观察时序一致：queued 阶段只呈现
 Waiting，队列推进后才呈现 canonical Timeline row。该项由原 **迁移 oracle RED** 修正为
 **PASS**；产品 Waiting owner、Feed/fixture 和最终 durable row 合同均未放宽或修改。
+
+## 第二十八轮：E passive append 按用户可见合同对齐 overscan，并补跑 9 条 baseline
+
+### E passive append 的合同与首断点
+
+`fae8b70` 本身没有 `e-send-scroll-writers.spec.js`；该 E spec 是后续
+`e04276d` 加入的双轨迹浏览器覆盖。因此本轮不虚构旧 E 行号，而是对齐旧共享 Reading
+语义：`fae8b70:src/model/notification-policy.js:75-97` 把不在尾部的 live arrival
+定义为 viewport unseen notice；`fae8b70:src/ui/timeline/LegendMessageList.jsx:1319-1327`
+规定 layout/measurement evidence 不能授予 Following；`:2001-2045` 则把 Following
+高度义务限制在 Following，且明确 browsing 不进入该分支。旧语义要求 passive arrival
+保持浏览 anchor、显示新动态提示，不能因为 arrival 自动滚尾；只有用户显式 jump 才应
+把目标带入可读尾部。
+
+当前 owner 与该语义一致：
+
+* `src/ui/timeline/useConversationProjection.js:514-515` 仅在 browsing 从 live
+  arrival events 计算 `unseenNotice`；
+* `src/ui/timeline/useConversationProjection.js:628-631` 的 `jumpToLatest()`
+  才安装 latest/bottom intent；
+* `src/ui/timeline/VendorListExecutor.jsx:2128-2130` 的 `increaseViewportBy`/
+  `overscan` 为 `900`。目标在距尾部约 1,500px 的 browsing 视图中不挂载于 DOM，
+  是合法虚拟化结果，不是用户不可见合同失败。
+
+原 E 断点 `e-send-scroll-writers.spec.js:417` 直接要求
+`[data-presentation-row-id="request_id"]` 在 passive browsing 期间 count=1，实际尾行
+不在 overscan；这把“尾行当前已挂载”误当作用户可见性 oracle。迁移后的严格合同改为：
+
+1. append 后仍是 `mode=browsing`、gap `>24`，jump 文案含动态数；
+2. `scrollTop` 与 append 前 anchor 相同，所有采样帧保持 browsing/gap，且无
+   timeline writer displacement；
+3. 用户点击 jump 后，目标 request id 必须成为唯一 painted row、与 viewport 相交，
+   mode 变为 Following、gap `≤24`。
+
+这没有用宽泛文本短路或吞掉 durable row：目标 request id 仍来自真实 `q_tail_append`
+返回值，且在用户显式 jump 后以 exact row id + painted/intersectsViewport 验收。
+
+真实 Chromium repeat3：
+
+```text
+ATOLL_TEST_WEB_PORT=15616 ATOLL_TEST_MOCK_PORT=19916 \
+  ATOLL_E_OUT=/tmp/tz-r28-passive-repeat \
+  npx playwright test tests/browser/e-send-scroll-writers.spec.js \
+  --grep 'browsing passive append' --workers=1 --repeat-each=3 \
+  --reporter=line --output=test-results-tz-r28-passive-repeat3
+3 passed (17.5s)
+```
+
+### 下一组 8 条未有可信 current baseline 的行为项
+
+本轮另以独立 fresh web/mock ports 跑了 8 条相邻 T–Z 行为 baseline；初次结果暴露两
+个迁移问题，随后只修测试前置/公开 anchor oracle，未改产品：
+
+| spec/case | 首次问题 | 对齐动作与最终结果 |
+|---|---|---|
+| `e-send-clamp-attribution.spec.js` 4 cases | 无 | 真实 writer/owner 断言 **4 PASS** |
+| `e-send-second-displacement.spec.js` following send | 无 | 第二位移 cause/owner 断言 **1 PASS** |
+| `member-filter-timeline.spec.js` stale incarnation | deep-history canonical row 尚未公开时就写 localStorage，reload 与 preference owner race，`.is-stale` 缺失 | 等待真实目标 history row 后再注入 v3 preference；stale button/clear/row 合同保持硬断言，member 两 case **2 PASS** |
+| `reading-position-session.spec.js` F7 session position | channel round-trip 后首个 virtualized row 可由相邻 predecessor 先占位（`112→111`），但 exact anchor row 仍可见；旧 `firstVisible` 断言依赖 overscan 边界 | 改为 exact retained anchor id + viewport offset `≤80px`，不放宽 anchor identity；repeat3 **3 PASS** |
+
+组合复跑结果：
+
+```text
+ATOLL_TEST_WEB_PORT=15622 ATOLL_TEST_MOCK_PORT=19922 \
+  npx playwright test tests/browser/e-send-clamp-attribution.spec.js \
+  tests/browser/e-send-second-displacement.spec.js \
+  tests/browser/member-filter-timeline.spec.js \
+  tests/browser/reading-position-session.spec.js \
+  --workers=1 --reporter=line --output=test-results-tz-r28-next8-rerun
+8 passed (46.9s)
+```
+
+本轮合计 **9 条 baseline PASS**（E passive 1 + 相邻行为 8）。只修改了
+`tests/browser/e-send-scroll-writers.spec.js`、`tests/browser/member-filter-timeline.spec.js`、
+`tests/browser/reading-position-session.spec.js` 与本报告；工作树已有的
+`src/model/channel-feed-runtime.js`、`src/ui/composer/Composer.jsx`、
+`src/ui/timeline/VendorListExecutor.jsx`、`src/ui/timeline/useBrowsingReadingController.js`
+及相关测试脏改属于其他 owner，未触碰。

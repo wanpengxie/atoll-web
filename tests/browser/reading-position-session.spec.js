@@ -149,8 +149,13 @@ test('F7 reading position is document-session memory: cold and cached page start
   ), beforeSwitch.firstVisible.id);
   const afterSwitch = await viewportState(page);
   expect(afterSwitch.mode).toBe('browsing');
-  expect(afterSwitch.firstVisible?.id).toBe(beforeSwitch.firstVisible.id);
-  expect(Math.abs(afterSwitch.firstVisible.top - beforeSwitch.firstVisible.top)).toBeLessThanOrEqual(80);
+  // The semantic anchor is the exact row that survived the channel round
+  // trip, not whichever virtualized row happens to be first after a paint.
+  // A one-row overscan boundary can expose an adjacent predecessor while the
+  // anchored row remains visibly hit-owned at the same position.
+  const retainedAnchor = afterSwitch.visible.find((row) => row.id === beforeSwitch.firstVisible.id);
+  expect(retainedAnchor?.id).toBe(beforeSwitch.firstVisible.id);
+  expect(Math.abs(retainedAnchor.top - beforeSwitch.firstVisible.top)).toBeLessThanOrEqual(80);
   expect(await cachedRows(page, 'c0')).toBeGreaterThan(0);
 
   // Re-inject an old-position payload to prove the read boundary, rather than

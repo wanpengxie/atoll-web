@@ -20,6 +20,11 @@ test('opaque member filter keeps a whole historical turn across roster and human
   await reset(request, 'deep-history', 29_210);
   await login(page);
   await expect(page.locator('main h1')).toHaveText('c0');
+  // Deep-history admits its canonical rows asynchronously. Seed the
+  // persisted filter only after the public history owner has exposed the
+  // target turn; otherwise the initial preferences write can race the test's
+  // localStorage replacement during the reload boundary.
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
   await page.evaluate(() => {
     const key = 'atoll.view-session.v3.root';
     const value = JSON.parse(localStorage.getItem(key) || '{"schema":3,"preferences":{},"readings":{}}');

@@ -413,8 +413,6 @@ test.describe('E send scroll writers', () => {
     });
     expect(appended.ok()).toBe(true);
     const appendedBody = await appended.json();
-    const appendedRow = page.locator(`[data-presentation-row-id="${appendedBody.request_id}"]`);
-    await expect(appendedRow).toHaveCount(1);
     await expect(page.locator('.timeline-jump-latest')).toBeVisible();
     await page.waitForTimeout(1_000);
 
@@ -444,15 +442,27 @@ test.describe('E send scroll writers', () => {
     await testInfo.attach('browsing-passive-append-frames.json', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
     await dump('browsing-passive-append-frames.json', report);
 
+    // The appended tail row is intentionally allowed to remain outside the
+    // virtualizer's overscan while the reader is browsing. The user-visible
+    // passive contract is the preserved anchor plus the new-activity notice;
+    // explicit jump-to-latest is the point at which the row must be painted.
     expect(afterPaint.mode, JSON.stringify(afterPaint)).toBe('browsing');
     expect(afterPaint.gap, JSON.stringify(afterPaint)).toBeGreaterThan(24);
     expect(afterPaint.jumpText, JSON.stringify(afterPaint)).toContain('条新动态');
-    expect(afterPaint.target?.rowID, JSON.stringify(afterPaint)).toBe(appendedBody.request_id);
-    expect(afterPaint.target?.painted, JSON.stringify(afterPaint)).toBe(true);
     expect(afterPaint.scrollTop, JSON.stringify({ beforePaint, afterPaint })).toBe(beforePaint.scrollTop);
     expect(frames.every((frame) => frame.mode === 'browsing'), JSON.stringify(frames)).toBe(true);
     expect(frames.every((frame) => frame.gap > 24), JSON.stringify(frames)).toBe(true);
     expect(runs, JSON.stringify({ runs, frames })).toEqual([]);
     expect(timelineWrites, JSON.stringify(timelineWrites)).toEqual([]);
+
+    await page.locator('.timeline-jump-latest').click();
+    const jumpedRow = page.locator('.timeline-message-list [data-presentation-row-id]').filter({ hasText: marker });
+    await expect(jumpedRow).toHaveCount(1);
+    const afterJump = await paintSnapshot(page, marker);
+    expect(afterJump.mode, JSON.stringify(afterJump)).toBe('following');
+    expect(afterJump.gap, JSON.stringify(afterJump)).toBeLessThanOrEqual(24);
+    expect(afterJump.target?.rowID, JSON.stringify(afterJump)).toBe(appendedBody.request_id);
+    expect(afterJump.target?.painted, JSON.stringify(afterJump)).toBe(true);
+    expect(afterJump.target?.intersectsViewport, JSON.stringify(afterJump)).toBe(true);
   });
 });
