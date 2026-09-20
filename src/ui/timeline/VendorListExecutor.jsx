@@ -492,6 +492,16 @@ export function VendorListExecutor({
       || Number(root.clientHeight) <= 0 || Number(root.scrollHeight) <= 0) return false;
     const key = `tail:${current.activationID}:${intent.id}`;
     if (consumedCommandRef.current === key) return false;
+    const atTail = Number(root.scrollHeight) - Number(root.clientHeight) - Number(root.scrollTop) <= FOLLOWING_TAIL_GAP_TOLERANCE_PX;
+    // A send-start join still needs its committed target-height fence even if
+    // the old root happens to be at the physical tail. Explicit latest has no
+    // destination join and can be consumed as a no-op here.
+    if (atTail && !isComposerSendIntent(intent)) {
+      consumedCommandRef.current = key;
+      owner.consumeBottomIntent(intent);
+      scheduleObserve('layout', true);
+      return true;
+    }
     const executed = executeReadingDOMCommand(
       Object.freeze({ type: 'scroll-tail' }),
       { virtuoso: virtuosoRef.current, root },
