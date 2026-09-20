@@ -2,6 +2,7 @@
 @media (max-width: 1050px) {
   .shell { grid-template-columns: var(--rail-width, 220px) minmax(0, 1fr); }
   .shell.has-context { grid-template-columns: var(--rail-width, 220px) minmax(0, 1fr); }
+  .pane-resizer-rail { left: calc(var(--rail-width, 220px) - 3px); }
   .timeline-inner { padding: 16px; }
 	.timeline-virtual-item { padding-right: 16px; padding-left: 16px; }
   .agent-wait-dock { width: calc(100% - 56px); }

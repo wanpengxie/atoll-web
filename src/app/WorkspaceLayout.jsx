@@ -4,6 +4,36 @@ import { useModalFocus } from '../ui/primitives/useModalFocus.js';
 
 const VIEW_LABELS = Object.freeze({ conversation: '动态', tasks: '任务' });
 const VIEW_ENTRIES = Object.freeze(Object.entries(VIEW_LABELS));
+const RAIL_WIDTH_DEFAULT = 264;
+const RAIL_WIDTH_MIN = 200;
+const RAIL_WIDTH_MAX = 520;
+const RAIL_WIDTH_STEP = 16;
+const RAIL_WIDTH_STORAGE_KEY = 'atoll.web.pane.rail';
+
+function clampRailWidth(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.round(Math.min(RAIL_WIDTH_MAX, Math.max(RAIL_WIDTH_MIN, number)));
+}
+
+function readRailWidth() {
+  try {
+    const raw = globalThis.localStorage?.getItem(RAIL_WIDTH_STORAGE_KEY);
+    if (raw === null || raw === undefined || raw === '') return null;
+    return clampRailWidth(raw);
+  } catch {
+    return null;
+  }
+}
+
+function writeRailWidth(value) {
+  try {
+    if (value === null || value === undefined) globalThis.localStorage?.removeItem(RAIL_WIDTH_STORAGE_KEY);
+    else globalThis.localStorage?.setItem(RAIL_WIDTH_STORAGE_KEY, String(Math.round(value)));
+  } catch {
+    // A disabled/full convenience store must not break the active shell.
+  }
+}
 
 function connectionLabel(state) {
   return ({ open: 'OPEN', connecting: 'CONNECTING', reconnecting: 'RECONNECTING', closed: 'CLOSED' })[state]
@@ -40,6 +70,82 @@ function canReadChannel(channel) {
 function nodeUpdateCurrentVersion(update) {
   const value = update?.currentVersion;
   return value == null || value === '' ? '未提供' : String(value);
+}
+
+function RailResizeHandle({ width, measure, onResize, onCommit, onReset }) {
+  const dragRef = useRef(null);
+  const [dragging, setDragging] = useState(false);
+  const startWidth = useCallback(() => {
+    const measured = Number(measure?.());
+    return clampRailWidth(width ?? (Number.isFinite(measured) && measured > 0 ? measured : RAIL_WIDTH_DEFAULT))
+      ?? RAIL_WIDTH_DEFAULT;
+  }, [measure, width]);
+
+  const onPointerDown = useCallback((event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originWidth: startWidth(),
+      last: null,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDragging(true);
+  }, [startWidth]);
+
+  const onPointerMove = useCallback((event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const next = clampRailWidth(drag.originWidth + (event.clientX - drag.originX));
+    if (next === null || next === drag.last) return;
+    drag.last = next;
+    onResize?.(next);
+  }, [onResize]);
+
+  const finish = useCallback((event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    setDragging(false);
+    if (drag.last !== null) onCommit?.(drag.last);
+  }, [onCommit]);
+
+  const onKeyDown = useCallback((event) => {
+    let delta = 0;
+    if (event.key === 'ArrowLeft') delta = -RAIL_WIDTH_STEP;
+    else if (event.key === 'ArrowRight') delta = RAIL_WIDTH_STEP;
+    else if (event.key === 'Home' || event.key === 'End') delta = 0;
+    else return;
+    event.preventDefault();
+    if (event.key === 'Home') {
+      onReset?.();
+      return;
+    }
+    const next = clampRailWidth(startWidth() + delta);
+    if (next !== null) {
+      onResize?.(next);
+      onCommit?.(next);
+    }
+  }, [onCommit, onResize, onReset, startWidth]);
+
+  return <div
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="调整频道栏宽度"
+    aria-valuemin={RAIL_WIDTH_MIN}
+    aria-valuenow={width ?? undefined}
+    tabIndex={0}
+    className={`pane-resizer pane-resizer-rail grows-right${dragging ? ' is-dragging' : ''}`}
+    title="拖动调整宽度，双击复原"
+    onPointerDown={onPointerDown}
+    onPointerMove={onPointerMove}
+    onPointerUp={finish}
+    onPointerCancel={finish}
+    onDoubleClick={() => onReset?.()}
+    onKeyDown={onKeyDown}
+  />;
 }
 
 function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, onSelect }) {
@@ -151,6 +257,25 @@ export function WorkspaceLayout({
   const filesToggleRef = useRef(null);
   const filesOpenRef = useRef(filesOpen);
   const viewTabRefs = useRef([]);
+  const [railWidth, setRailWidth] = useState(readRailWidth);
+  const previewRailWidth = useCallback((value) => {
+    const next = clampRailWidth(value);
+    if (next !== null) setRailWidth(next);
+  }, []);
+  const commitRailWidth = useCallback((value) => {
+    const next = clampRailWidth(value);
+    if (next === null) return;
+    setRailWidth(next);
+    writeRailWidth(next);
+  }, []);
+  const resetRailWidth = useCallback(() => {
+    setRailWidth(null);
+    writeRailWidth(null);
+  }, []);
+  const measureRailWidth = useCallback(() => {
+    const measured = Number(mobileRailRef.current?.getBoundingClientRect?.().width);
+    return Number.isFinite(measured) && measured > 0 ? measured : RAIL_WIDTH_DEFAULT;
+  }, []);
   const pendingChannelSelectionRef = useRef(null);
   // Presentation-only handoff gate. `navigation.activeChannelId` remains the
   // sole committed selection authority; this state only disables controls
@@ -347,8 +472,10 @@ export function WorkspaceLayout({
     topology={topology}
     className={['shell', mobileChannelsOpen && 'mobile-channels-open', rightPanel && 'has-context'].filter(Boolean).join(' ')}
     data-workspace-view={navigation.activeView}
+    style={railWidth === null ? undefined : { '--rail-width': `${railWidth}px` }}
   >
     <WorkspaceRail session={session} navigation={navigation} onSelect={selectChannel} onClose={mobileChannelsOpen ? closeMobileChannels : null} closeButtonRef={mobileRailCloseRef} railRef={mobileRailRef} />
+    <RailResizeHandle width={railWidth} measure={measureRailWidth} onResize={previewRailWidth} onCommit={commitRailWidth} onReset={resetRailWidth} />
     <main className="workspace">
       <header className="channel-header">
         <div className="channel-identity">
