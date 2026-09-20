@@ -26,6 +26,30 @@ async function openFilesAtWorkspace(page) {
   return files;
 }
 
+test('F2-FS-01 Files surface opens beside the conversation without replacing its public composer', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await reset(request, 226);
+  await login(page);
+
+  await expect(page.getByRole('region', { name: '频道动态' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '频道文件' })).toHaveCount(0);
+
+  await page.locator('#workspace-files-toggle').click();
+  await expect(page.getByRole('region', { name: '频道文件' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '频道动态' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeVisible();
+  await expect(page.locator('#workspace-files-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page).toHaveURL(/#\/channels\/c0\/files$/);
+
+  await page.locator('#workspace-files-toggle').click();
+  await expect(page.getByRole('region', { name: '频道文件' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '频道动态' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '消息', exact: true })).toBeVisible();
+  await expect(page.locator('#workspace-files-toggle')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page).toHaveURL(/#\/channels\/c0\/conversation$/);
+});
+
 test('UI-VIS-12 Files surface close returns focus to the desktop route trigger', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 224);
