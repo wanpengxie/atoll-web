@@ -407,13 +407,25 @@ function readInitialRoute() {
   };
 }
 
-function writeRoute(channelId, view, replace = false, focus = null) {
+function writeRoute(channelId, view, replace = false, focus = null, contextEntry = false) {
   if (!channelId || !globalThis.history) return;
   const suffix = focus?.type && focus?.key
     ? `?focus=${encodeURIComponent(`${focus.type}:${focus.key}`)}`
     : '';
+  const currentState = globalThis.history.state;
+  const routeState = currentState && typeof currentState === 'object' ? currentState : {};
   globalThis.history[replace ? 'replaceState' : 'pushState'](
-    globalThis.history.state,
+    {
+      ...routeState,
+      atollContextEntry: contextEntry === true,
+      atollRoute: {
+        channelId: String(channelId),
+        view: String(view),
+        focus: focus?.type && focus?.key
+          ? { type: String(focus.type), key: String(focus.key) }
+          : null,
+      },
+    },
     '',
     `#/channels/${encodeURIComponent(channelId)}/${encodeURIComponent(view)}${suffix}`,
   );
@@ -574,7 +586,7 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     commitActiveChannel(channelId);
     commitFocus(null);
     onSelect(channelId);
-    writeRoute(channelId, activeViewRef.current);
+    writeRoute(channelId, activeViewRef.current, true, null, false);
     return true;
   }, [commitActiveChannel, commitFocus, onSelect]);
   const setActiveView = useCallback((view) => {
@@ -595,14 +607,23 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     }
     commitActiveView(nextView);
     commitFocus(null);
-    writeRoute(channelId, nextView);
+    writeRoute(channelId, nextView, true, null, false);
   }, [commitActiveView, commitFocus]);
   const setFocus = useCallback((nextFocus) => {
     const normalized = nextFocus?.type && nextFocus?.key
       ? parseRouteFocus(`${nextFocus.type}:${nextFocus.key}`)
       : null;
     commitFocus(normalized);
-    writeRoute(activeChannelRef.current, activeViewRef.current, false, normalized);
+    // A focused Context is the only user navigation that opens a new browser
+    // entry. Clearing focus is an ordinary route projection and replaces the
+    // current Context entry, so Back never reopens a panel the user closed.
+    writeRoute(
+      activeChannelRef.current,
+      activeViewRef.current,
+      normalized == null,
+      normalized,
+      normalized != null,
+    );
   }, [commitFocus]);
   const setTerminalVisible = useCallback((nextValue) => {
     const channelId = activeChannelRef.current;

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { useChannelNavigation } from '../src/app/hooks/useWireSession.js';
 
@@ -20,6 +20,49 @@ function navigation(rowsRef = { current: [
 }
 
 describe('useChannelNavigation Files/Tasks temporary return owner', () => {
+  it('SZ-331 writes ordinary routes once and restores a focused Context on Back/Forward', async () => {
+    const { result } = navigation();
+    const historyStart = window.history.length;
+
+    // Ordinary view navigation replaces the current route. It carries a
+    // typed non-Context state and does not consume a browser history slot.
+    act(() => result.current.setActiveView('tasks'));
+    expect(window.history.length).toBe(historyStart);
+    expect(window.location.hash).toBe('#/channels/c0/tasks');
+    expect(window.history.state).toMatchObject({
+      atollContextEntry: false,
+      atollRoute: { channelId: 'c0', view: 'tasks', focus: null },
+    });
+
+    // A focused Context is the one new browser entry for the openTaskItem
+    // sequence (setActiveView('tasks') followed by setFocus(...)).
+    act(() => result.current.setFocus({ type: 'work_item', key: 'task-1' }));
+    expect(window.history.length).toBe(historyStart + 1);
+    expect(window.location.hash).toBe('#/channels/c0/tasks?focus=work_item%3Atask-1');
+    expect(window.history.state).toMatchObject({
+      atollContextEntry: true,
+      atollRoute: {
+        channelId: 'c0',
+        view: 'tasks',
+        focus: { type: 'work_item', key: 'task-1' },
+      },
+    });
+
+    window.history.back();
+    await waitFor(() => {
+      expect(result.current.activeView).toBe('tasks');
+      expect(result.current.focus).toBeNull();
+      expect(window.location.hash).toBe('#/channels/c0/tasks');
+    });
+
+    window.history.forward();
+    await waitFor(() => {
+      expect(result.current.activeView).toBe('tasks');
+      expect(result.current.focus).toEqual({ type: 'work_item', key: 'task-1' });
+      expect(window.location.hash).toBe('#/channels/c0/tasks?focus=work_item%3Atask-1');
+    });
+  });
+
   it('restores Files when Dynamic closes a Tasks excursion', () => {
     const { result } = navigation();
 
