@@ -202,7 +202,7 @@ test('F7 reading position is document-session memory: cold and cached page start
   // The exact row the user was reading must still be visibly painted. Do not
   // redefine that anchor as DOM's first row or as an adjacent top-edge sliver.
   expect(restoredAnchor?.id).toBe(beforeSwitch.firstVisible.id);
-  expect(Math.abs(restoredAnchor.top - beforeSwitch.firstVisible.top)).toBeLessThanOrEqual(80);
+  expect(Math.abs(restoredAnchor.top - beforeSwitch.firstVisible.top)).toBeLessThanOrEqual(1);
   expect(await cachedRows(page, 'c0')).toBeGreaterThan(0);
 
   // Re-inject an old-position payload to prove the read boundary, rather than
