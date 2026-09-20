@@ -50,10 +50,14 @@ async function login(page) {
 // pulse 是 not_presented，两者都不产生任何计数，不能用来验证这条契约——这是
 // 实测结论，见 ztmp 诊断记录。
 async function arrive(request, channelId, count = 1) {
+  const ids = [];
   for (let index = 0; index < count; index += 1) {
     const response = await request.post('/mock/control/action', { data: { type: 'approval', channel_id: channelId } });
     expect(response.ok()).toBe(true);
+    const body = await response.json();
+    if (body?.id) ids.push(String(body.id));
   }
+  return ids;
 }
 
 async function fillTail(request, channelId, count) {
@@ -144,9 +148,133 @@ async function reachBottom(page) {
   await atBottom(page);
 }
 
-test('N1 有积压跳到最新即同时清零，且停在底部连续到达 20 条时两处计数恒为 0', async ({ page, request }, testInfo) => {
+// Reading's settled observation is the public test fence for this contract.
+// It carries the current activation, presentation revision, hit-tested rows,
+// and tail identity.  A DOM assertion before this fence is only an eventual
+// paint sample and can legitimately see the previous unread projection.
+async function settledTailObservation(page, channelId = 'c0') {
+  return page.evaluate(({ channelId, selector }) => {
+    const owner = document.querySelector(selector);
+    const stack = owner?.closest('.timeline-reading-stack');
+    const activationID = String(stack?.dataset.readingActivation || '');
+    const presentationRevision = Number(owner?.dataset.readingPresentationRevision || 0);
+    const mountedRowIDs = owner
+      ? [...owner.querySelectorAll('[data-presentation-row-id]')]
+        .map((row) => String(row.dataset.presentationRowId || ''))
+        .filter(Boolean)
+      : [];
+    const entries = window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.().entries || [];
+    const observation = [...entries].reverse().find((entry) => {
+      const detail = entry.event === 'reading.observation' ? entry.detail : null;
+      return detail?.activationID === activationID
+        && detail?.settled === true
+        && detail?.atTail === true
+        && detail?.surfaceVisible === true
+        && detail?.authorityVerified === true
+        && Number(detail.presentationRevision) === presentationRevision
+        && Number(detail.domPresentationRevision) === presentationRevision
+        && Array.isArray(detail.visibleRowIDs)
+        && detail.visibleRowIDs.length > 0
+        && detail.visibleRowIDs.includes(detail.tailID)
+        && mountedRowIDs.includes(String(detail.tailID || ''));
+    });
+    const rail = window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.(channelId) || null;
+    const channel = (rail?.channels || []).find((entry) => entry.channelId === channelId) || null;
+    if (!observation || channel?.authorityReady !== true) return null;
+    return {
+      activationID,
+      presentationRevision,
+      observation: observation.detail,
+      rail: {
+        authorityReady: channel.authorityReady === true,
+        notificationHighWater: Number(channel.notificationHighWater || 0),
+        counts: channel.counts || {},
+      },
+    };
+  }, { channelId, selector: ACTIVE_READING_SELECTOR });
+}
+
+async function waitForSettledTail(page, channelId = 'c0') {
+  await expect.poll(
+    () => settledTailObservation(page, channelId),
+    { timeout: 15_000 },
+  ).not.toBeNull();
+  return settledTailObservation(page, channelId);
+}
+
+// The browser has no public command that delivers an already-issued tail
+// receipt after its Reading activation has been retired.  Capture and replay
+// the actual ConversationSurface callback payload only to exercise that
+// transport edge; no product state, owner, or compatibility path is installed
+// by the test.  Failure to find the current callback is a hard oracle failure,
+// never a skip.
+async function captureTailReceipt(page) {
+  return page.evaluate(() => {
+    const node = document.querySelector('.conversation-surface');
+    const fiberKey = Object.keys(node || {}).find((key) => key.startsWith('__reactFiber$'));
+    let fiber = fiberKey ? node[fiberKey] : null;
+    let surface = null;
+    for (let index = 0; fiber && index < 80; index += 1, fiber = fiber.return) {
+      const type = fiber.type;
+      const name = typeof type === 'function' ? (type.displayName || type.name || '') : '';
+      if (name === 'ConversationSurface') {
+        surface = fiber;
+        break;
+      }
+    }
+    let hook = surface?.memoizedState || null;
+    let receipt = null;
+    for (let index = 0; hook && index < 200; index += 1, hook = hook.next) {
+      const state = hook.memoizedState;
+      const candidate = Array.isArray(state) ? state[0] : null;
+      if (candidate?.tailCaughtUp?.caughtUp === true && candidate.session) {
+        receipt = candidate.tailCaughtUp;
+        break;
+      }
+    }
+    if (!receipt) return { captured: false };
+    const copy = JSON.parse(JSON.stringify(receipt));
+    window.__N_READ_FALLBACK_OLD_TAIL_RECEIPT__ = copy;
+    return {
+      captured: true,
+      activationID: String(copy.activationID || ''),
+      inputEpoch: Number(copy.inputEpoch || 0),
+      boundary: Number(copy.boundary || 0),
+    };
+  });
+}
+
+async function replayCapturedTailReceipt(page) {
+  return page.evaluate(() => {
+    const receipt = window.__N_READ_FALLBACK_OLD_TAIL_RECEIPT__;
+    const node = document.querySelector('.conversation-surface');
+    const fiberKey = Object.keys(node || {}).find((key) => key.startsWith('__reactFiber$'));
+    let fiber = fiberKey ? node[fiberKey] : null;
+    let surface = null;
+    for (let index = 0; fiber && index < 80; index += 1, fiber = fiber.return) {
+      const type = fiber.type;
+      const name = typeof type === 'function' ? (type.displayName || type.name || '') : '';
+      if (name === 'ConversationSurface') {
+        surface = fiber;
+        break;
+      }
+    }
+    const callback = surface?.memoizedProps?.onTailCaughtUp;
+    if (!receipt || typeof callback !== 'function') return { invoked: false };
+    callback(receipt);
+    return {
+      invoked: true,
+      activationID: String(receipt.activationID || ''),
+      inputEpoch: Number(receipt.inputEpoch || 0),
+      boundary: Number(receipt.boundary || 0),
+    };
+  });
+}
+
+test('N1 有积压显式回尾清零，fresh arrival 正常显示且 stale receipt 不复活', async ({ page, request }, testInfo) => {
   await reset(request, 0x4e_01);
   await login(page);
+  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'N1-semantic-oracle' }));
   await reachBottom(page);
   await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'following');
   // 先把频道撑到可滚动，否则"离开底部"这个状态在这条夹具里根本不存在。
@@ -185,74 +313,110 @@ test('N1 有积压跳到最新即同时清零，且停在底部连续到达 20 �
   expect(backlog.jump).toBeGreaterThan(0);
   expect(backlog.related).toBeGreaterThan(0);
 
-  // (3) 回到底部：徽标与视窗计数同时清零。
-  await startCapture(page, 'c0');
+  // (3) 回到底部：先等当前 activation 的 settled DOM receipt，再断言用户可见
+  // 的徽标与 jump 同时清零。固定 RAF/frame 数不是这个合同的一部分。
   await jump.click();
   // 当前虚拟列表另有 owner 在修 append/回底几何；通知契约只在“真实到底”成立。
   // 用真实用户手势把根节点送到物理尾部，避免把 93px 的列表残差误判成通知失败。
   await reachBottom(page);
+  const returnedTail = await waitForSettledTail(page, 'c0');
+  const afterExplicitReturn = await readCounts(page, 'c0');
   await expect(jump).toHaveCount(0);
   await expect(home.locator('.unread-related')).toHaveCount(0);
   await expect(home.locator('.unread-total')).toHaveCount(0);
-  const jumpFrames = await stopCapture(page);
-  const lastNoticeFrame = jumpFrames.filter((frame) => frame.jump > 0 || frame.badgeRelated > 0 || frame.badgeOther > 0).at(-1);
-  const divergent = jumpFrames.filter((frame) => (
-    lastNoticeFrame && frame.elapsedMs > lastNoticeFrame.elapsedMs
-    && (frame.jump > 0 || frame.badgeRelated > 0 || frame.badgeOther > 0 || frame.badgePending)
-  ));
-  // "同时"是可核对的：从任一处最后一次非零起，两处都不再有非零帧；两处各自
-  // 最后一次非零的时间差就是它们分开的那段窗口。
-  const lastJumpFrame = jumpFrames.filter((frame) => frame.jump > 0).at(-1);
-  const lastBadgeFrame = jumpFrames.filter((frame) => frame.badgeRelated > 0 || frame.badgeOther > 0).at(-1);
-  const clearGapMs = Math.abs(Number(lastJumpFrame?.elapsedMs || 0) - Number(lastBadgeFrame?.elapsedMs || 0));
 
-  // (1) 在底部且页面可见：连续到达 20 条，两处计数每一帧都必须是 0。
-  await startCapture(page, 'c0');
-  for (let index = 0; index < 20; index += 1) {
-    await arrive(request, 'c0', 1);
-  }
-  await page.waitForTimeout(800);
-  const arrivalFrames = await stopCapture(page);
-  const noticeFrames = arrivalFrames.filter((frame) => frame.gap !== null && frame.gap <= 2 && (
-    frame.jumpShown || frame.badgeRelated > 0 || frame.badgeOther > 0 || frame.badgePending
-  ));
-  const offTailFrames = arrivalFrames.filter((frame) => frame.gap !== null && frame.gap > 2);
-  const tailFrames = arrivalFrames.filter((frame) => frame.gap !== null && frame.gap <= 2).length;
+  // Capture a positive tail receipt before the later fresh arrival and
+  // physical leave. Replaying this exact old receipt must not acknowledge the
+  // later arrival after that leave.
+  const oldTailReceipt = await captureTailReceipt(page);
+  expect(oldTailReceipt.captured).toBe(true);
+  expect(oldTailReceipt.boundary).toBeGreaterThan(0);
 
-  // 回执真的落地了（不只是投影）：离开底部后计数仍然是 0，因为这 20 条在到达
-  // 时就已经被确认，不是被兜底盖住的。
-  await viewport.hover();
-  await page.mouse.wheel(0, -900);
-  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(200);
-  await page.waitForTimeout(700);
-  const afterLeaving = await readCounts(page, 'c0');
+  // (1) 在底部且页面可见：一条 fresh arrival 落到当前尾部；只在它已被当前
+  // settled receipt hit-test 后检查公开用户状态，不用固定帧阈值。
+  const freshIDs = await arrive(request, 'c0', 1);
+  expect(freshIDs).toHaveLength(1);
+  const latestFreshID = freshIDs.at(-1);
+  await expect(page.locator(`[data-presentation-row-id="${latestFreshID}"]`)).toBeVisible();
+  const freshTail = await waitForSettledTail(page, 'c0');
+  const afterFreshArrivals = await readCounts(page, 'c0');
+  expect(afterFreshArrivals.mode).toBe('following');
+  expect(afterFreshArrivals.gap).toBeLessThanOrEqual(2);
+  expect(afterFreshArrivals.jump).toBe(0);
+  expect(afterFreshArrivals.related).toBe(0);
+  expect(afterFreshArrivals.other).toBe(0);
+  expect(afterFreshArrivals.pending).toBe(false);
+
+  // (2) 真实离尾：fresh arrival 不能被旧 following lease 吞掉。
+  await atBottom(page);
+  // Use a real browser keyboard gesture on the focused reading owner. Unlike a
+  // raw scrollTop write, this enters Reading's typed older-input boundary.
+  await viewport.focus();
+  await viewport.press('PageUp');
+  await expect.poll(() => page.evaluate((selector) => {
+    const owner = document.querySelector(selector);
+    const timelineMode = document.querySelector('.timeline')?.dataset.viewportMode || '';
+    const readingMode = owner?.dataset.readingMode || '';
+    const gap = owner ? Number(owner.scrollHeight || 0) - Number(owner.clientHeight || 0) - Number(owner.scrollTop || 0) : 0;
+    return timelineMode === 'browsing' && readingMode === 'browsing' && gap > 200;
+  }, ACTIVE_READING_SELECTOR), { timeout: 15_000 }).toBe(true);
+  const awayIDs = await arrive(request, 'c0', 1);
+  expect(awayIDs).toHaveLength(1);
+  await expect(jump).toBeVisible();
+  await expect(home.locator('.unread-related')).toBeVisible();
+  await expect.poll(() => readCounts(page, 'c0').then((counts) => counts.related)).toBeGreaterThan(0);
+  const afterAwayArrival = await readCounts(page, 'c0');
+
+  // (3) Late old positive receipt: the retired tail receipt is delivered to
+  // the real surface callback, and the new unread state must remain intact.
+  const staleReplay = await replayCapturedTailReceipt(page);
+  expect(staleReplay.invoked).toBe(true);
+  await expect.poll(() => readCounts(page, 'c0').then((counts) => ({
+    related: counts.related,
+    other: counts.other,
+    pending: counts.pending,
+    jump: counts.jump,
+    mode: counts.mode,
+  }))).toEqual({
+    related: afterAwayArrival.related,
+    other: afterAwayArrival.other,
+    pending: afterAwayArrival.pending,
+    jump: afterAwayArrival.jump,
+    mode: 'browsing',
+  });
+  const afterStaleReceipt = await readCounts(page, 'c0');
 
   await attachJSON(testInfo, 'N1-following-tail.json', {
     mountedRows,
     backlog,
-    lastNoticeFrame,
-    lastJumpFrame,
-    lastBadgeFrame,
-    clearGapMs,
-    divergentAfterJump: divergent.slice(0, 20),
-    arrivalFrameCount: arrivalFrames.length,
-    tailFrames,
-    offTailFrames: offTailFrames.slice(0, 20),
-    noticeFrames: noticeFrames.slice(0, 20),
-    afterLeaving,
+    returnedTail,
+    afterExplicitReturn,
+    freshIDs,
+    freshTail,
+    afterFreshArrivals,
+    oldTailReceipt,
+    awayIDs,
+    afterAwayArrival,
+    staleReplay,
+    afterStaleReceipt,
   });
 
-  expect(divergent).toEqual([]);
-  expect(clearGapMs).toBeLessThanOrEqual(1_000);
-  expect(arrivalFrames.length).toBeGreaterThan(30);
-  expect(noticeFrames).toEqual([]);
-  // Q's following container must keep the physical tail structurally. There
-  // is deliberately no wheel/reachBottom inside the append loop above.
-  expect(offTailFrames).toEqual([]);
-  expect(afterLeaving.jump).toBe(0);
-  expect(afterLeaving.related).toBe(0);
-  expect(afterLeaving.other).toBe(0);
-  expect(afterLeaving.pending).toBe(false);
+  expect(afterExplicitReturn.mode).toBe('following');
+  expect(afterExplicitReturn.gap).toBeLessThanOrEqual(2);
+  expect(afterExplicitReturn.jump).toBe(0);
+  expect(afterExplicitReturn.related).toBe(0);
+  expect(afterExplicitReturn.other).toBe(0);
+  expect(afterExplicitReturn.pending).toBe(false);
+  expect(afterAwayArrival.mode).toBe('browsing');
+  expect(afterAwayArrival.jump).toBeGreaterThan(0);
+  expect(afterAwayArrival.related).toBeGreaterThan(0);
+  expect(afterStaleReceipt).toMatchObject({
+    mode: 'browsing',
+    jump: afterAwayArrival.jump,
+    related: afterAwayArrival.related,
+    other: afterAwayArrival.other,
+    pending: afterAwayArrival.pending,
+  });
 });
 
 test('N2 别的频道到达计入未读，切回并到底后一次清零', async ({ page, request }, testInfo) => {
