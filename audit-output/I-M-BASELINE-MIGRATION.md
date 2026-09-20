@@ -1004,6 +1004,37 @@ The 17-file current-owner rerun remains **110/110 GREEN**. No product,
 compatibility, old-store, private API, vendor/package/lockfile, notification,
 or second owner was changed.
 
+## Round 36 exact-path recovery: live gesture and committed-tail contracts
+
+This round first rechecked the repository fact that the I-M exact bridge is
+still present after `a577aa8` was split from unrelated A-D work by `8afd3ce`;
+the current test commit is based on the I-M artifacts in that history. The
+ten cases below are the next unique `message-list-lifecycle` declarations:
+TC-0996–0999, TC-1002, TC-1005, TC-1009, and TC-1017 are already represented
+and are not duplicated. The tests use only the public `VendorListExecutor`
+adapter and the public Reading session object.
+
+| baseline case | user capability and invariant | current public owner | fae8b70 old operation | current executable evidence and result |
+|---|---|---|---|---|
+| TC-0995 | A real upward gesture crossing the runway issues one bounded history demand; native `scrollend` and a later prepend do not reopen the same gesture. | `VendorListExecutor` navigation coordinator + `useBrowsingReadingController` | `MessageList` live scroll/scrollend attribution and `reading.onNearTop` lease | tests/i-m-exact-path-contracts.test.jsx:2948-2985 — **RED**: current owner calls `onNearTop` twice after the post-`scrollend` prepend/scroll sample; strict contract expects one. Regression package; no product change. |
+| TC-1000 | A mixed presentation revision with a forward tail extension follows the exact committed physical tail once. | `VendorListExecutor` `totalListHeightChanged` + `enforceFollowingTail` | `MessageList` mixed `changes` tail extension and one following write | tests/i-m-exact-path-contracts.test.jsx:2987-3030 — one `{top:1132, behavior:'auto'}` write; **PASS** |
+| TC-1001 | Following readiness can finish at the current physical tail, exactly once. | `VendorListExecutor` following layout writer | `MessageList` `bottomReady=false→true` readiness commit | tests/i-m-exact-path-contracts.test.jsx:3032-3062 — one `{top:1218, behavior:'auto'}` write after the readiness rerender; **PASS** |
+| TC-1003 | Explicit latest is executable against current geometry even while ordinary following readiness is unavailable. | `VendorListExecutor` typed `bottomIntent` → `scroll-tail` command | `MessageList` explicit-latest branch bypassed `bottomReady` | tests/i-m-exact-path-contracts.test.jsx:3064-3095 — current root is written to 1200 and the exact intent is consumed; **PASS** |
+| TC-1004 | Explicit latest at the physical tail is consumed without a redundant DOM write. | `VendorListExecutor` typed `bottomIntent` branch | `MessageList` checked the physical tail before issuing `scrollTo` | tests/i-m-exact-path-contracts.test.jsx:3097-3122 — **RED**: current owner emits `{top:1200}` even with zero tail gap; strict expected no write. Regression package; no product change. |
+| TC-1006 | Ordinary following waits until the committed root actually reaches the public list height, then writes the tail once. | `VendorListExecutor` `totalListHeightChanged` + physical-root gap check | `MessageList` withheld follow while the root remained at the old height, then followed after the commit | tests/i-m-exact-path-contracts.test.jsx:3124-3160 — no write at old root height, then one `{top:1200}` write; **PASS** |
+| TC-1007 | A browsing send join does not synthesize a following-height write or consume the pending join while the user owns the viewport. | `VendorListExecutor` browsing-mode public root and Reading session intent | `MessageList` `bottomIntentPresentation`/takeover variants preserved the browsing offset | tests/i-m-exact-path-contracts.test.jsx:3162-3199 — scrollTop remains 100, no writer or intent consumption; **PASS** |
+| TC-1008 | A pending send join does not displace the real viewport when the public root reports a height change before readiness. | `VendorListExecutor` public height callback and physical root | `MessageList` ResizeObserver/public-height obligations while the follower waited | tests/i-m-exact-path-contracts.test.jsx:3201-3233 — scrollTop remains 500 and no writer/consumption occurs; **PASS** |
+| TC-1010 | Readiness arriving before public item measurement defers the one tail write until the committed public height. | `VendorListExecutor` typed intent and `totalListHeightChanged` | `MessageList` ready-first presentation gate withheld the command until the target was measured | tests/i-m-exact-path-contracts.test.jsx:3235-3270 — **RED**: current owner writes `{top:1000}` on the intermediate presentation rerender before the 1132 height commit. Regression package; no product change. |
+| TC-1011 | A later same-revision public height is ordinary follow while the send join remains pending; the join must not be consumed by the earlier baseline. | `VendorListExecutor` typed intent + `enforceFollowingTail` | `MessageList` equal/send baseline distinguished pending join from later ordinary layout | tests/i-m-exact-path-contracts.test.jsx:3272-3312 — **RED**: current owner writes `{top:1000}` at the first pending height instead of waiting for the later ordinary-follow boundary. Regression package; no product change. |
+
+Targeted Round-36 evidence:
+
+* Green command: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1000|TC-1001|TC-1003|TC-1006|TC-1007|TC-1008'` → **6/6 GREEN**.
+* Strict regression command: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-0995|TC-1004|TC-1010|TC-1011'` → **4/4 expected product regressions** (the four strict assertions fail; tests are not weakened or skipped).
+* Independent TC-0988/TC-0993 owner validation with `--retry=2` is **2/2 GREEN** after the separate product commit `165a876`: the sole current DOM writer in `src/ui/timeline/VendorListExecutor.jsx` gates the active send join and performs the late-geometry microtask recheck. That product commit is outside this test/audit commit; the Round-35 red results remain the historical pre-fix evidence.
+* Whole-file exact run: `npx vitest run tests/i-m-exact-path-contracts.test.jsx` → **130/135 GREEN**. The five reds are the pre-existing shared `message-presentation` canonical-body case plus the four strict Round-36 product regressions above; `165a876` makes TC-0988/0993 green.
+* The current-owner rerun remains the existing 17-file suite; the pre-existing shared TimelineRowRenderer canonical-body red is outside this I-M round. This round changes no product, compatibility, private API, vendor/package/lockfile, or notification file; the separate `165a876` product change was not edited or staged here.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -1072,6 +1103,13 @@ or second owner was changed.
   and TC-0988/0993 are recorded as product regression packages. The current
   owner rerun remains 17 files, 110/110 GREEN; TC-0990 is intentionally not
   duplicated because its deleted text-point trace is an implementation oracle.
+- Round 36 adds ten independent live-gesture/committed-tail contracts
+  (TC-0995, TC-1000/1001/1003/1004/1006/1007/1008, and TC-1010/1011).
+  Six are GREEN; TC-0995/1004/1010/1011 remain strict product regression
+  packages. TC-0988/0993 were independently rerun with retry and are now
+  2/2 GREEN against the current owner worktree (the product fix is not in
+  this commit). The exact bridge therefore has six additional passing cases
+  without inflating the 159-case baseline.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
