@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
+import { isStandardActorIdentity } from '../../model/actor-visibility.js';
 import { redactSensitive, terminalContentEnvelope, terminalResultState } from '../../model/terminal-result.js';
-import { argsOf } from '../../protocol/envelope.js';
+import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
@@ -123,6 +124,44 @@ const SYSTEM_OPERATION_DETAIL_KEYS = Object.freeze({
   [TYPES.device.detach]: 'device_id',
 });
 
+function textFact(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function memberEvent(envelope, kind) {
+  const body = argsOf(envelope);
+  const memberId = textFact(body.member);
+  if (!memberId) return null;
+  return {
+    kind,
+    memberId,
+    declarationId: textFact(body.decl_id),
+    principalId: textFact(body.principal),
+    reason: kind === 'member_left' ? textFact(body.reason) : '',
+  };
+}
+
+const SYSTEM_EVENT_DECODERS = new Map([
+  [TYPES.narration.memberCreated, (envelope) => memberEvent(envelope, 'member_joined')],
+  [TYPES.narration.memberDeleted, (envelope) => memberEvent(envelope, 'member_left')],
+  [TYPES.narration.channelInbound, (envelope) => {
+    const body = argsOf(envelope);
+    const fromChannel = textFact(body.from);
+    const requestType = textFact(body.type);
+    const localRequestId = textFact(body.local_request_id);
+    if (!fromChannel || !requestType || !localRequestId) return null;
+    return { kind: 'channel_inbound', fromChannel, requestType, localRequestId };
+  }],
+]);
+
+function decodeSystemEvent(envelope) {
+  const type = textFact(envelope?.type);
+  const decoder = SYSTEM_EVENT_DECODERS.get(type);
+  if (!decoder) return { kind: 'unknown', type, valid: false };
+  const decoded = decoder(envelope);
+  return decoded ? { ...decoded, type, valid: true } : { kind: 'invalid', type, valid: false };
+}
+
 function systemOperationStatus(body) {
   if (body?.status === 'failed') return '失败';
   if (body?.status === 'completed') return '已完成';
@@ -143,12 +182,62 @@ function systemOperationText(envelope, body) {
   return `${label}${status ? `（${status}）` : ''}${detail ? `：${detail}` : ''}`;
 }
 
-function textOf(envelope) {
+function isTimelineSystemEvent(envelope) {
+  return envelope?.visibility === 'system' || SYSTEM_EVENT_DECODERS.has(envelope?.type);
+}
+
+function systemEventPresentation(envelope, names) {
+  if (!isTimelineSystemEvent(envelope)) return null;
+  // Flat historical payloads are intentionally ignored by argsOf(); do not
+  // let a renderer-only fallback turn them back into business facts.
+  if (!hasCanonicalBody(envelope)) return { handled: true, hidden: true, text: '' };
+
+  const event = decodeSystemEvent(envelope);
+  if (event.kind === 'member_joined' || event.kind === 'member_left') {
+    const hidden = isStandardActorIdentity({ id: event.memberId, declarationId: event.declarationId });
+    if (hidden) return { handled: true, hidden: true, text: '', standalone: true, event };
+    const name = nameOf(event.memberId, names);
+    const title = event.kind === 'member_joined' ? `${name} 已加入频道` : `${name} 已离开频道`;
+    const detail = event.kind === 'member_left' && event.reason ? `（原因：${event.reason}）` : '';
+    return { handled: true, hidden: false, standalone: true, text: `${title}${detail}`, event };
+  }
+  if (event.kind === 'channel_inbound') {
+    return {
+      handled: true,
+      hidden: false,
+      standalone: true,
+      text: `收到来自 ${event.fromChannel} 的频道请求：${event.requestType}`,
+      event,
+    };
+  }
+
+  // A known system operation still uses its existing closed label table. An
+  // unknown/invalid narration never reads arbitrary JSON keys as prose.
+  const type = String(envelope?.type || '');
+  if (SYSTEM_EVENT_DECODERS.has(type)) {
+    return { handled: true, hidden: false, standalone: true, text: '无法识别的频道活动', event };
+  }
+  if (SYSTEM_OPERATION_LABELS[type]) {
+    return { handled: true, hidden: false, standalone: false, text: systemOperationText(envelope, argsOf(envelope)), event };
+  }
+  return {
+    handled: true,
+    hidden: false,
+    standalone: true,
+    text: event.kind === 'invalid' ? '无法识别的频道活动' : '后台状态已更新',
+    event,
+  };
+}
+
+function textOf(envelope, names) {
+  if (!hasCanonicalBody(envelope)) return '';
+  const system = systemEventPresentation(envelope, names);
+  if (system?.handled) return system.text;
   const body = argsOf(envelope);
-  const text = textContent(body);
-  if (text) return text;
   const systemText = systemOperationText(envelope, body);
   if (systemText) return systemText;
+  const text = textContent(body);
+  if (text) return text;
   const result = body.result ?? body.output;
   if (result == null) return '';
   if (typeof result === 'string') return result;
@@ -474,7 +563,16 @@ function Standalone({ envelope, names, selfId, continuation, fold, onDownload, o
     {!continuation && <header><strong>{senderName}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(envelope.ts)}</time></header>}<EnvelopeBody envelope={envelope} fold={fold} onDownload={onDownload} onPreview={onPreview} />
   </ReplyableMessageFrame>;
 }
-function Narration({ rows, names }) { return <div className="timeline-narration">{(rows || []).map(({ seq, envelope }) => <p key={envelope.id || seq}><strong>{nameOf(envelope.sender?.id, names)}</strong> {textOf(envelope) || envelope.type}</p>)}</div>; }
+function Narration({ rows, names }) {
+  return <div className="timeline-narration">{(rows || []).map(({ seq, envelope }) => {
+    const presentation = systemEventPresentation(envelope, names);
+    if (presentation?.hidden) return null;
+    const text = presentation?.handled ? presentation.text : textOf(envelope, names);
+    if (!text) return null;
+    if (presentation?.standalone) return <p key={envelope.id || seq}>{text}</p>;
+    return <p key={envelope.id || seq}><strong>{nameOf(envelope.sender?.id, names)}</strong> {text}</p>;
+  })}</div>;
+}
 
 export function useTimelineRowRenderer({ state, names, selfId, access = '', targetAuthority = null, presentationEditing, browsingExpandedSlots, effectiveFoldOverrides, approvalStates, latestRowID = '', onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, startEditing, toggleFold }) {
   const currentActions = { state, onResolve, onCancel, onTaskControl, onDownloadResource, onPreviewResource, onOpenTurn, onCreateTask, onReply, startEditing };
