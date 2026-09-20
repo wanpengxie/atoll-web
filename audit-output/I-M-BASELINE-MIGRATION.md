@@ -1409,6 +1409,57 @@ failure on all retry attempts.
 was made to turn a red into green, and no product file was staged in this
 round. Existing unrelated dirty work, if present, is not included.
 
+## Round 45 duplicate reduction: seven Reading reds → two semantic batches
+
+This is a read-only owner analysis at latest `45b0fcb`. The seven failures all
+land at the same product owner (`VendorListExecutor`'s physical-root tail
+writer), but they are not one interchangeable assertion. The minimum safe
+repair plan is one owner with two independently reviewable semantic batches;
+the existing Reading session ports already carry the required typed intent,
+target IDs, and public revoke boundary.
+
+| repair batch | cases | shared root cause | public acceptance contract |
+|---|---|---|---|
+| A — send-join geometry/baseline fence | TC-1010, TC-1011, TC-1012, TC-1014, TC-1015, TC-1019 | `issueBottomIntent` treats committed target IDs and a height callback as sufficient, without preserving the first post-send physical-height observation as a baseline or fencing it to the public revoke/next-height boundary. | A target-row commit alone never writes. The first equal/target height is a non-writing baseline; only the later authorized destination height may issue exactly one root tail write and consume the typed intent. Revoke invalidates the send-owned baseline; no pre-revoke callback may write, and ordinary following can resume once at the public boundary. |
+| B — unrelated ordinary-follow coexistence | TC-1018 | `enforceFollowingTail` blanket-blocks every ordinary tail while any composer send intent exists, even when the pending target is not part of the newly committed tail. | An unrelated committed tail may follow once through the physical root while the newer target intent remains pending and unconsumed. The send join and ordinary-follow obligation must remain separate. |
+
+Batch A has two observable subfamilies but one owner/state transition:
+
+* TC-1010/1012/1019 are the early-write family: the target appears while the
+  root is still at its old/equal height, and the current owner writes
+  `{top:1000}`. The invariant is “row presence is necessary, not sufficient”; a
+  later physical height commit is required.
+* TC-1011/1014/1015 are the baseline/revoke family: the current owner writes
+  `{top:1000}` or `{top:1132}` at the first same-revision/pre-revoke boundary.
+  The invariant is “retain the height token and send ownership until the next
+  authorized boundary”; revoke must not retroactively bless the earlier token.
+
+The minimal product ownership is therefore:
+
+1. `VendorListExecutor` owns Batch A's typed send-join gate, physical geometry
+   baseline, one-shot DOM writer, and intent receipt. `requestLatest`,
+   `bindLatestIntentTargets`, and the existing public revoke/consume ports in
+   Reading remain the model contract; no second store, Composer-side timing
+   flag, or notification owner is needed.
+2. The same `VendorListExecutor` owns Batch B's ordinary-follow branch, but it
+   must distinguish an unrelated tail obligation from the pending target join.
+   It must not be “fixed” by consuming or clearing the newer intent.
+
+This grouping prevents an over-broad fix: making every pending-send callback
+silent would satisfy the early-write cases but would violate TC-1018's user
+ability to remain at the live tail for unrelated arrivals. Conversely, allowing
+every later height to follow would reintroduce TC-1011/1014/1015's pre-boundary
+viewport jump.
+
+Latest evidence remains:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2`
+→ **7/7 stable RED**. The public black-box signals are root `scrollTo`,
+`totalListHeightChanged`, rendered target/Waiting rows, and typed Reading intent
+state; no internal timer/order/callback-name oracle is involved. No product or
+test file was modified for this analysis, and concurrent dirty files were not
+staged.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
