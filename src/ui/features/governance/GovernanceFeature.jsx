@@ -98,7 +98,10 @@ function ChannelOverview({ channel, port }) {
   const action = useCommand(port.commands, 'channel');
   useEffect(() => setDescription(channel?.description || ''), [channel?.description, channel?.id]);
   const children = port.children || [];
-  const templates = port.channelTemplates || port.space?.channelTemplates || [];
+  // Channel governance consumes only its canonical Workspace projection. The
+  // space port is a separate owner and must never be read as a compatibility
+  // fallback for a channel creation decision.
+  const templates = port.channelTemplates || [];
   const refreshDirectory = typeof port.commands?.refresh === 'function'
     ? () => port.commands.refresh('directory')
     : undefined;

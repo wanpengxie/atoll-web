@@ -99,6 +99,10 @@ function createSessionAccess({ principalId }) {
     principals: Object.freeze([]),
     declarations: Object.freeze([]),
     devices: Object.freeze([]),
+    // Channel templates are registrar facts, not OBS rows. Keep the typed
+    // projection slot explicit so Workspace can consume a future session
+    // owner without making the governance feature read a space store.
+    channelTemplates: null,
     support: Object.freeze({ principals: false, declarations: false, devices: false }),
   });
   let connected = false;
@@ -211,6 +215,7 @@ function createSessionAccess({ principalId }) {
       states.clear(); connected = false; authorityEpoch += 1;
       spaceDirectory = Object.freeze({
         principals: Object.freeze([]), declarations: Object.freeze([]), devices: Object.freeze([]),
+        channelTemplates: null,
         support: Object.freeze({ principals: false, declarations: false, devices: false }),
       });
     },
@@ -270,6 +275,9 @@ async function loadSpaceDirectory(obs) {
     principals: principals.rows,
     declarations: declarations.rows,
     devices: devices.rows,
+    // No OBS endpoint exists for templates; a registrar command owner may
+    // later publish rows through this same projection slot.
+    channelTemplates: null,
     support: Object.freeze({
       principals: principals.supported,
       declarations: declarations.supported,

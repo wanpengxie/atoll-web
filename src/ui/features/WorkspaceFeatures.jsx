@@ -31,6 +31,70 @@ function InaccessibleFeature({ label }) {
   return <section className="workspace-view channel-private-empty" role="region" aria-label={label}><strong>{label}不可访问</strong><p>恢复频道访问后才能查看。</p></section>;
 }
 
+// The picker is a presentation of the existing Files owner. It never keeps a
+// directory/device/resource store of its own: navigation, refresh and the
+// resource rows all come from the typed Files port, while the Workspace owner
+// resolves the one-shot selection back to Composer.
+function ChannelFilePickerModal({ channel, files = {}, onChoose, onClose }) {
+  const closeRef = useRef(null);
+  const openerRef = useRef(null);
+  const commands = files.commands || {};
+  const entries = files.entries || [];
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    openerRef.current = active && active !== document.body && active.isConnected ? active : null;
+    closeRef.current?.focus({ preventScroll: true });
+    return () => openerRef.current?.isConnected && openerRef.current.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => {
+    const escape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onClose?.();
+    };
+    document.addEventListener('keydown', escape);
+    return () => document.removeEventListener('keydown', escape);
+  }, [onClose]);
+  useEffect(() => {
+    if (!channel?.id || !files.deviceId || typeof commands.refresh !== 'function') return;
+    void Promise.resolve(commands.refresh()).catch(() => {});
+    // The Files owner changes its directory/device state; the picker only
+    // asks for the initial authoritative page when its channel/device changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel?.id, files.deviceId]);
+  return <div
+    className="modal-backdrop attachment-picker-backdrop"
+    data-modal-layer
+    role="presentation"
+    onMouseDown={(event) => { if (event.target === event.currentTarget) onClose?.(); }}
+  >
+    <section className="attachment-picker-modal" role="dialog" aria-modal="true" aria-labelledby="attachment-picker-title" aria-describedby="attachment-picker-description">
+      <header>
+        <div><h2 id="attachment-picker-title">从频道文件选择</h2><p id="attachment-picker-description">选择当前频道挂载目录中 Agent 可以读取的文件。</p></div>
+        <button ref={closeRef} type="button" aria-label="关闭频道文件选择" onClick={onClose}>×</button>
+      </header>
+      <div className="attachment-picker-toolbar">
+        <button type="button" className="picker-back" aria-label="返回上一级目录" disabled={!files.directory} onClick={() => commands.navigate?.(String(files.directory || '').replace(/[^/]+\/$/, ''))}>‹</button>
+        <nav className="file-breadcrumbs" aria-label="选择文件路径"><button type="button" aria-current={!files.directory ? 'page' : undefined} onClick={() => commands.navigate?.('')}>{channel?.qualified_name || channel?.name || channel?.id}</button>{files.directory && <span>{files.directory}</span>}</nav>
+        {files.devices?.length > 1
+          ? <select aria-label="选择文件设备" value={files.deviceId || ''} onChange={(event) => commands.selectDevice?.(event.target.value)}>{files.devices.map((device) => <option value={device.id} key={device.id}>{device.name || device.id}</option>)}</select>
+          : files.devices?.[0] && <span className="picker-daemon">{files.devices[0].name || files.devices[0].id}</span>}
+      </div>
+      <div className="attachment-picker-list" aria-busy={files.busy || undefined}>
+        {files.error && <p className="governance-error" role="alert">{files.error}</p>}
+        {!files.deviceId && <div className="attachment-picker-empty"><strong>当前频道没有可用的 daemon 挂载</strong></div>}
+        {files.deviceId && files.busy && !entries.length && <div className="attachment-picker-empty"><strong>正在读取频道目录…</strong></div>}
+        {files.deviceId && !files.busy && !entries.length && <div className="attachment-picker-empty"><strong>当前目录为空</strong></div>}
+        {entries.map((entry) => entry.kind === 'directory'
+          ? <button type="button" className="attachment-picker-row directory" key={entry.key} onClick={() => commands.navigate?.(entry.directory || entry.path || `${entry.name}/`)}><span className="file-kind-icon folder-icon" aria-hidden="true" /><strong>{entry.name}</strong><small>文件夹</small><span aria-hidden="true">›</span></button>
+          : entry.kind === 'file' && <button type="button" className="attachment-picker-row file" key={entry.key} onClick={() => onChoose?.(entry)}><span className="file-kind-icon" aria-hidden="true">FILE</span><strong>{entry.name}</strong><small>{Number(entry.size || 0)} B</small><span>选择</span></button>)}
+        {files.next && <button type="button" className="bounded-list-control" disabled={files.busy} onClick={() => commands.loadMore?.(files.next)}>载入更多</button>}
+      </div>
+      <footer><button type="button" onClick={onClose}>取消</button></footer>
+    </section>
+  </div>;
+}
+
 function ActivityRows({ rows = [], empty, unavailable = '', onOpen }) {
   if (unavailable) {
     return <div className="activity-list">
@@ -202,8 +266,16 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   return <ContextHost key={focusKey} type={kind === WORKSPACE_FEATURE_PANEL.artifact ? 'artifact' : kind} focusKey={focusKey} onClose={dismiss}>{wrappedContent}</ContextHost>;
 }
 
-export function WorkspaceFeatureOverlays({ search = {} }) {
-  return search.open ? <SearchFeature port={search} /> : null;
+export function WorkspaceFeatureOverlays({ search = {}, filePicker = null }) {
+  return <>
+    {search.open && <SearchFeature port={search} />}
+    {filePicker?.open && <ChannelFilePickerModal
+      channel={filePicker.channel}
+      files={filePicker.files}
+      onChoose={filePicker.onChoose}
+      onClose={filePicker.onClose}
+    />}
+  </>;
 }
 
 export function workspaceFeatureChannelListProps(commands = {}) {

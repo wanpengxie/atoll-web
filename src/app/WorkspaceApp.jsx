@@ -92,12 +92,13 @@ function isMemberAccess(access) {
   return MEMBER_ACCESS.has(access);
 }
 
-function ChannelAccessPlaceholder({ access, label = '频道内容' }) {
+function ChannelAccessPlaceholder({ access, label = '频道内容', composer = null }) {
   const loading = access === 'loading';
   const detail = ACCESS_NOTICE[access] || '当前频道不可访问。';
   return <section className="channel-private-empty dynamic-private-empty" role={loading ? 'status' : 'region'} aria-label={label}>
     <strong>{loading ? `正在准备${label}…` : `${label}不可访问`}</strong>
     <p>{detail}{!loading && access !== 'retired' ? '当前页面不会展示或搜索此前缓存的消息、产物、任务和成员。' : ''}</p>
+    {composer && <div className="conversation-input-slot channel-access-composer">{composer}</div>}
   </section>;
 }
 
@@ -165,6 +166,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const [serverWorld, setServerWorld] = useState(readServerWorld);
   const [panel, setPanel] = useState('');
   const [composerEditPort, setComposerEditPort] = useState(null);
+  // The filter is a fallback-selection fact, not a second Agent-selection
+  // owner. Keep its channel identity beside the selected id so a stale
+  // ConversationSurface cannot lend its provenance to the next channel.
+  const [filterAgentSelection, setFilterAgentSelection] = useState({ channelId: '', actorId: '' });
   const [taskCreateSource, setTaskCreateSource] = useState(undefined);
   const [automationRecords, setAutomationRecords] = useState(EMPTY_ARRAY);
   const showError = useCallback((error) => setTopError(errorText(error)), []);
@@ -180,6 +185,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const probePortRef = useRef(null);
   const attachmentPortRef = useRef(null);
   const submissionPortRef = useRef(null);
+  const filePickerRef = useRef(null);
+  const filePickerIDRef = useRef(0);
+  const [filePickerRequest, setFilePickerRequest] = useState(null);
 
   const submissionProxy = useMemo(() => {
     const submissionCorrelationPort = Object.freeze({
@@ -370,7 +378,14 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       reason: memberVisible ? '' : ACCESS_NOTICE[activeAccess] || '当前频道不可写',
       transportOpen: wire.state === 'open',
     } : access,
-    agentSelection: { selectedAgentId: probes.composerAgent?.actorId || '' },
+    agentSelection: {
+      selectedAgentId: probes.composerAgent?.actorId || '',
+      ...(filterAgentSelection.channelId === navigation.activeChannelId
+        && filterAgentSelection.actorId
+        && filterAgentSelection.actorId === probes.composerAgent?.actorId
+        ? { fallbackSource: 'filter' }
+        : {}),
+    },
     capabilityIndex: capabilities,
     onRequestCapability: probes.requestCapability,
     edit: composerEditPort,
@@ -434,17 +449,70 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     size: Number(resource?.size || 0),
     ...(Number.isSafeInteger(Number(resource?.line)) ? { line: Number(resource.line) } : {}),
   }), []);
+  const cancelFilePicker = useCallback(() => {
+    const request = filePickerRef.current;
+    if (!request) return false;
+    filePickerRef.current = null;
+    setFilePickerRequest(null);
+    // Closing the picker is a user cancellation, not a Composer failure. A
+    // null result lets its typed caller leave the draft untouched without
+    // turning an ordinary Escape/backdrop close into a red error rail.
+    request.resolve(null);
+    return true;
+  }, []);
+  const pickChannelFile = useCallback((channelId = navigation.activeChannelId) => {
+    const requestedChannelId = String(channelId || '');
+    if (!requestedChannelId || requestedChannelId !== navigation.activeChannelId) {
+      return Promise.reject(new TypeError('Composer 频道已切换'));
+    }
+    if (activeAccess !== 'member_active' || wire.state !== 'open') {
+      return Promise.reject(new TypeError(ACCESS_NOTICE[activeAccess] || '当前频道不可附加文件'));
+    }
+    cancelFilePicker();
+    return new Promise((resolve) => {
+      const request = {
+        id: ++filePickerIDRef.current,
+        channelId: requestedChannelId,
+        resolve,
+      };
+      filePickerRef.current = request;
+      setFilePickerRequest({ id: request.id, channelId: requestedChannelId });
+    });
+  }, [activeAccess, cancelFilePicker, navigation.activeChannelId, wire.state]);
+  const chooseChannelFile = useCallback((entry) => {
+    const request = filePickerRef.current;
+    if (!request || request.channelId !== navigation.activeChannelId) {
+      cancelFilePicker();
+      return false;
+    }
+    const resourceId = String(entry?.resourceId || entry?.resource_id || '');
+    if (!resourceId || entry?.kind !== 'file') return false;
+    filePickerRef.current = null;
+    setFilePickerRequest(null);
+    request.resolve({
+      resource_id: resourceId,
+      address: resourceId,
+      name: String(entry.name || resourceId),
+      media_type: String(entry.mediaType || entry.media_type || 'application/octet-stream'),
+      size: Number(entry.size || 0),
+    });
+    return true;
+  }, [cancelFilePicker, navigation.activeChannelId]);
+  useEffect(() => {
+    const request = filePickerRef.current;
+    if (request && request.channelId !== navigation.activeChannelId) cancelFilePicker();
+  }, [cancelFilePicker, navigation.activeChannelId]);
+  useEffect(() => () => {
+    const request = filePickerRef.current;
+    filePickerRef.current = null;
+    request?.resolve(null);
+  }, []);
   const composerAttachmentPort = useMemo(() => Object.freeze({
     attach: attachments.attach,
     clear: attachments.clear,
     downloadFile: attachments.downloadFile,
     mutate: attachments.mutate,
-    openFiles: (channelId) => {
-      if (channelId !== navigation.activeChannelId) throw new TypeError('Composer 频道已切换');
-      setPanel('');
-      navigation.setActiveView('files');
-      return attachments.refreshDirectory();
-    },
+    pickChannelFile,
     preview: (resource, channelId) => {
       const artifact = resourceEntry(channelId, resource);
       if (!artifact.resourceId) throw new TypeError('文件资源标识为空');
@@ -461,12 +529,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     attachments.downloadFile,
     attachments.mutate,
     attachments.previewArtifact,
-    attachments.refreshDirectory,
     attachments.reset,
     attachments.setSelectedArtifact,
     attachments.uploadComposerAttachments,
-    navigation.activeChannelId,
-    navigation.setActiveView,
+    pickChannelFile,
     resourceEntry,
   ]);
   useLayoutEffect(() => {
@@ -826,8 +892,21 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     onReply: composer.model.editSession ? undefined : beginReply,
     onCreateTask: canWrite && taskProviders.length ? beginTaskCreation : undefined,
     onOpenTurn: openTurnDetail,
-    onFocusAgentChange: (actorId) => {
-      if (actorId && actorId !== composer.model.targetAgent?.id) {
+    onFocusAgentChange: (actorId, source = '') => {
+      const channelId = navigation.activeChannelId;
+      const filterActorId = source === 'filter' ? actorId : '';
+      setFilterAgentSelection((current) => (
+        current.channelId === channelId && current.actorId === filterActorId
+          ? current
+          : { channelId, actorId: filterActorId }
+      ));
+      // A filter target is only a fallback. Once the draft has an explicit
+      // @ recipient (or reply target), do not feed the fallback back through
+      // the probe owner on every render; doing so would overwrite the draft
+      // handoff and repeatedly re-authorize the same target.
+      const explicitDraftTarget = composer.model.delivery?.source === 'mention'
+        || composer.model.delivery?.source === 'reply';
+      if (actorId && !explicitDraftTarget && actorId !== composer.model.targetAgent?.id) {
         void composer.commands.selectAgent(actorId).catch(showError);
       }
     },
@@ -837,7 +916,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   conversationPort.element = contentVisible && state && history
     ? <ConversationSurface {...conversationPort} />
     : !contentVisible && navigation.activeChannel
-      ? <ChannelAccessPlaceholder access={activeAccess} />
+      ? <ChannelAccessPlaceholder access={activeAccess} composer={conversationPort.composer} />
       : <div className="boot-screen"><span className="brand-dot" />正在同步频道…</div>;
   const searchableChannels = useMemo(
     () => navigation.channels.filter((channel) => canViewChannelContent(channel.access)),
@@ -874,6 +953,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     principals: EMPTY_ARRAY,
     declarations: EMPTY_ARRAY,
     devices: EMPTY_ARRAY,
+    channelTemplates: null,
     support: {},
   };
   const filesPort = {
@@ -899,6 +979,12 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     attachments: attachments.composerAttachments,
     commands: {
       back: attachments.backArtifactPreview,
+      open: (channelId = navigation.activeChannelId) => {
+        if (channelId !== navigation.activeChannelId) throw new TypeError('文件频道已切换');
+        setPanel('');
+        navigation.setActiveView('files');
+        return attachments.refreshDirectory();
+      },
       upload: async ({ files, directory, deviceId }) => {
         await attachments.uploadChannelFiles(files, { directory, deviceId });
         await attachments.refreshDirectory({ targetDirectory: directory, targetDeviceId: deviceId });
@@ -1029,17 +1115,31 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       channel_id: channelId,
       description: String(payload.description || ''),
     });
-    if (action === 'create_child') return sendGovernanceCommand(channelId, TYPES.channel.create, {
-      name: String(payload.name || '').trim(),
-      recipe: {
-        declarations: [],
-        profile: {
-          ...(attachments.deviceId ? { default_storage_device_id: attachments.deviceId } : {}),
-          description: String(payload.purpose || ''),
+    if (action === 'create_child') {
+      const templateId = String(payload.templateId || '').trim();
+      const template = templateId
+        ? (Array.isArray(directory.channelTemplates)
+          ? directory.channelTemplates.find((row) => String(row?.id || '') === templateId)
+          : null)
+        : null;
+      if (templateId && (!template?.body || typeof template.body !== 'object' || Array.isArray(template.body))) {
+        return Promise.reject(unavailableError('governance.channel.template.body'));
+      }
+      const body = template?.body || {};
+      return sendGovernanceCommand(channelId, TYPES.channel.create, {
+        name: String(payload.name || '').trim(),
+        recipe: {
+          ...body,
+          declarations: Array.isArray(body.declarations) ? body.declarations : [],
+          profile: {
+            ...(body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile) ? body.profile : {}),
+            ...(attachments.deviceId ? { default_storage_device_id: attachments.deviceId } : {}),
+            ...(String(payload.purpose || '').trim() ? { description: String(payload.purpose).trim() } : {}),
+          },
         },
-      },
-      initial_actor_ids: [selfId].filter(Boolean),
-    });
+        initial_actor_ids: [selfId].filter(Boolean),
+      });
+    }
     if (action === 'introduce_actor') {
       const human = payload.candidateType === 'principal';
       return sendGovernanceCommand(channelId, human ? TYPES.member.admit : TYPES.member.create, human
@@ -1054,6 +1154,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     channel: {
       disabled: !canWrite,
       children: navigation.channels.filter((channel) => channel.parent_id === navigation.activeChannelId),
+      // Templates are a directory projection only when the session owner has
+      // actually supplied them. `null` keeps the unavailable distinction; the
+      // governance feature must not read the space owner or invent rows.
+      channelTemplates: Array.isArray(directory.channelTemplates) ? directory.channelTemplates : null,
       principals: directory.support?.principals
         ? directory.principals.filter((row) => row.id !== principalId && row.kind === 'human')
         : EMPTY_ARRAY,
@@ -1071,6 +1175,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           return refresh();
         },
         selectActor: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
+        listTemplates: () => sendGovernanceCommand(navigation.activeChannelId, TYPES.channelTemplate.list, {}),
+        getTemplate: (templateId) => sendGovernanceCommand(navigation.activeChannelId, TYPES.channelTemplate.get, {
+          id: String(templateId || ''),
+        }),
         submit: submitGovernance,
       },
     },
@@ -1305,6 +1413,12 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         },
         open: openSearchResult,
       },
+    }} filePicker={{
+      open: Boolean(filePickerRequest),
+      channel: navigation.activeChannel,
+      files: filesPort,
+      onChoose: chooseChannelFile,
+      onClose: () => cancelFilePicker(),
     }} />
     {taskCreateSource && canWrite && <TaskCreationDialog
       port={tasksPort}

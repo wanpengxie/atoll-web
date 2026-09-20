@@ -149,7 +149,16 @@ export function ConversationSurface({
     const [only] = [...actorFilter];
     return rosterActorIDs.has(only) ? only : '';
   }, [actorFilter, actorFilterApplies, rosterActorIDs]);
-  useEffect(() => { onFocusAgentChange?.(focusAgentId); }, [focusAgentId, onFocusAgentChange]);
+  const focusAgentChangeRef = useRef(onFocusAgentChange);
+  useLayoutEffect(() => {
+    focusAgentChangeRef.current = onFocusAgentChange;
+  }, [onFocusAgentChange]);
+  // This is a fallback target handoff only. The source travels as a typed
+  // value so Composer can keep an explicit mention/manual choice ahead of the
+  // timeline filter without inferring provenance from a repeated actor id.
+  useEffect(() => {
+    focusAgentChangeRef.current?.(focusAgentId, focusAgentId ? 'filter' : '');
+  }, [focusAgentId]);
 
   const waitingHandoff = useWaitingHandoff(
     state.channelId,
