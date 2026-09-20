@@ -338,6 +338,23 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     applyingRef.current = false;
     setHasText(Boolean(model.draft.text.trim()));
   }, [editor, model.draft.doc, model.draft.editorRevision, model.draft.text, presentationKey]);
+  const previousEditTargetRef = useRef('');
+  useEffect(() => {
+    const targetId = model.editSession?.targetId || '';
+    const previousTargetId = previousEditTargetRef.current;
+    previousEditTargetRef.current = targetId;
+    if (!editor || editor.isDestroyed || targetId === previousTargetId) return undefined;
+    // Editing is a Composer-local handoff.  Focus follows the text handoff
+    // after the presentation effect has installed the matching document; it
+    // does not ask Reading/viewport owners to move or re-anchor anything.
+    const frame = requestAnimationFrame(() => {
+      const current = latestRef.current.model;
+      if (editor.isDestroyed || editor.isEditorContentInitialized !== true
+        || (current.editSession?.targetId || '') !== targetId) return;
+      editor.commands.focus('end');
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editor, model.editSession?.targetId]);
   useEffect(() => { setActiveMention(0); }, [model.mentionQuery?.query]);
   useEffect(() => { setActiveCommand(0); }, [model.commandMenu?.query]);
   useLayoutEffect(() => {

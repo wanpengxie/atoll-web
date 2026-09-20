@@ -314,6 +314,16 @@ function text(value) {
   return typeof value === 'string' ? value : '';
 }
 
+function editorDocument(value = '') {
+  return {
+    type: 'doc',
+    content: text(value).split('\n').map((line) => ({
+      type: 'paragraph',
+      ...(line ? { content: [{ type: 'text', text: line }] } : {}),
+    })),
+  };
+}
+
 function actorName(actor) {
   return text(actor?.name) || text(actor?.label) || text(actor?.id) || '未知成员';
 }
@@ -621,6 +631,10 @@ export function buildComposerModel({
   const normalizedDraft = editSession ? normalizeComposerDraft({
     ...baseDraft,
     text: editText ?? editSession.text ?? '',
+    // The ordinary draft's ProseMirror document is not the edit session's
+    // document.  Keeping it here would make Composer's EditorView effect
+    // write the ordinary draft back immediately after entering edit mode.
+    doc: editorDocument(editText ?? editSession.text ?? ''),
     attachments: editSession.attachments || [],
   }) : baseDraft;
   const permissions = composerPermissions(access);

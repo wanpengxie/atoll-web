@@ -1366,7 +1366,7 @@ export function createMockServer({
           if (targetPosition === 'processing') {
             // 只发 Resumed 帧：消息回队列头，不打终态（活动判定本就从账推，最新帧
             // 变 queued 即不再是活动 turn）。
-            later(25, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-resumed`, parentId: holdTarget, correlationId: holdTarget, kind: 'response', type: targetRequest.type, payload: { status: 'queued', resumed: true, controls: QUEUED_CONTROLS } })));
+            later(25, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-target-resumed`, parentId: holdTarget, correlationId: holdTarget, kind: 'response', type: targetRequest.type, payload: { status: 'queued', resumed: true, held_by: messageId, controls: QUEUED_CONTROLS } })));
           }
         }
         return;

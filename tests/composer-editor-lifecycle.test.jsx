@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Composer } from '../src/ui/composer/Composer.jsx';
 import { buildComposerModel } from '../src/ui/composer/composer-model.js';
@@ -45,5 +45,39 @@ describe('Composer EditorView handoff', () => {
     } finally {
       window.removeEventListener('error', onError);
     }
+  });
+
+  it('installs the edit session text instead of the ordinary draft document', async () => {
+    const commands = { changeDraft: vi.fn(), cancelEdit: vi.fn(), edit: vi.fn() };
+    const ordinary = buildComposerModel({
+      activeChannelId: 'c0',
+      draft: { text: 'ordinary draft survives processing edit', recipients: [] },
+      roster: ROSTER,
+      access: 'member_active',
+      agentSelection: { selectedAgentId: 'agent:claude:1' },
+    });
+    const editing = buildComposerModel({
+      activeChannelId: 'c0',
+      draft: ordinary.draft,
+      edit: {
+        session: {
+          channelId: 'c0', sessionId: 'edit-1', targetId: 'work',
+          text: 'processing task text', attachments: [], phase: 'editing',
+        },
+        onSave: vi.fn(), onAbandon: vi.fn(),
+      },
+      roster: ROSTER,
+      access: 'member_active',
+      agentSelection: { selectedAgentId: 'agent:claude:1' },
+    });
+    const view = render(<Composer model={ordinary} commands={commands} />);
+    const editor = () => document.querySelector('[data-testid="composer-input"]');
+    await waitFor(() => expect(editor()?.textContent).toContain('ordinary draft survives processing edit'));
+
+    view.rerender(<Composer model={editing} commands={commands} />);
+    await waitFor(() => expect(editor()?.textContent).toContain('processing task text'));
+
+    view.rerender(<Composer model={ordinary} commands={commands} />);
+    await waitFor(() => expect(editor()?.textContent).toContain('ordinary draft survives processing edit'));
   });
 });
