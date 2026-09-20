@@ -884,6 +884,34 @@ Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
 current-owner run remains **17 files, 109/109 GREEN**. No product source,
 compatibility behavior, or second owner was changed.
 
+## Round 32 exact-path recovery: rendering, layout, protocol, and access-terminal contracts
+
+The next ten unique declarations cover MessageLayout rendering/interaction and
+real mock protocol/access/error-terminal behavior. They do not repeat the 85
+prior bridge cases; no memory/model/Reading case is introduced. Each baseline
+maps to one independently executable public-owner contract.
+
+| baseline case | user capability and invariant | current public owner | executable evidence and result |
+|---|---|---|---|
+| TC-0960 | Recycled rows retain their own geometry choices and do not leak another row's state. | createMessageLayoutStore + MessageLayoutProvider/Scope | tests/i-m-exact-path-contracts.test.jsx:1682-1696 — a→b→a preserves only a choice; **PASS** |
+| TC-0961 | Durable layout choices survive a following session without carrying viewport snapshots or another conversation's choices. | createMessageLayoutStore + createViewSessionStore | tests/i-m-exact-path-contracts.test.jsx:1698-1710 — choice persists, viewport absent, other empty, restore returns child-a; **PASS** |
+| TC-0962 | Mermaid source geometry survives row recycle. | MessageLayoutProvider/Scope + MermaidBlock | tests/i-m-exact-path-contracts.test.jsx:1712-1730 — source toggle then unmount/remount returns chart; **PASS** |
+| TC-0963 | Standalone layout subscriptions notify only the affected row. | createMessageLayoutStore subscriptions | tests/i-m-exact-path-contracts.test.jsx:1732-1752 — first callback only; **PASS** |
+| TC-1036 | Structured governance results converge public channel and actor projections; lobby absent. | public mock wire + `/obs/channel/c0/actors` | tests/i-m-exact-path-contracts.test.jsx:1754-1771 — channel list and created member appear; **PASS** |
+| TC-1037 | Membership is delivered by attach, not retired OBS endpoint; actor projection omits mock-only principal. | mock attach detail + authenticated actor OBS | tests/i-m-exact-path-contracts.test.jsx:1773-1782 — endpoint 404, memberships complete, principal absent; **PASS** |
+| TC-1038 | Same client id/same semantics retries once; conflict does not duplicate and returns idempotency error. | mock wire submit/idempotency owner | tests/i-m-exact-path-contracts.test.jsx:1784-1794 — one feed and `idempotency_conflict`; **PASS** |
+| TC-1039 | Describe exposes typed capabilities and structured order result. | mock actor.describe/order public wire | tests/i-m-exact-path-contracts.test.jsx:1796-1816 — class/interfaces/schema and structured value; **PASS** |
+| TC-1040 | Cancel receipt is separate from failed cancelled terminal; repeat/missing cancels use stable errors. | mock wire cancel/terminal owner | tests/i-m-exact-path-contracts.test.jsx:1818-1839 — cancelled terminal plus `already_closed`/`request_not_found`; **PASS** |
+| TC-1041 | Steer uses turn CAS and emits independent control terminal while preempting original. | mock wire agent.steer public owner | tests/i-m-exact-path-contracts.test.jsx:1841-1878 — stale CAS failed, good steer completed, root preempted; **PASS** |
+
+Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
+-t 'TC-0960|TC-0961|TC-0962|TC-0963|TC-1036|TC-1037|TC-1038|TC-1039|TC-1040|TC-1041'
+→ **10/10 GREEN**. The full exact bridge is now **95/95 GREEN**, and the
+current-owner rerun is **17 files, 110/110 GREEN**. Only the test and audit
+artifacts changed; no product/compatibility/second owner was added. The prior
+109-test aggregate was an undercount: the two live-arrival owner files contain
+three passing tests each.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -932,6 +960,11 @@ compatibility behavior, or second owner was changed.
 - Round 31 adds ten independent Mermaid/scenario-state contracts
   (TC-0954–TC-0959 and TC-1054/1056/1057/1058); the exact bridge is now
   85/85 GREEN. These additions do not change the 159-case baseline.
+- Round 32 adds ten independent layout/rendering/access-terminal contracts
+  (TC-0960–0963 and TC-1036–1041); the exact bridge is now 95/95 GREEN.
+  These additions do not change the 159-case baseline. The complete current
+  owner rerun is 17 files, 110/110 GREEN; this corrects the earlier 109-test
+  aggregate without adding a baseline case.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

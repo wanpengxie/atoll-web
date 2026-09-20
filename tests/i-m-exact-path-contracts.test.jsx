@@ -5,8 +5,9 @@
 // production state map is imported.
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { WebSocket } from 'ws';
 import {
   createChannelReplicaStore,
 } from '../src/model/channel-replica.js';
@@ -56,6 +57,17 @@ import {
 } from '../mock/protocol.mjs';
 import { createMockDomain } from '../mock/domain.mjs';
 import { loadScenario, scenarioIds } from '../mock/scenarios.mjs';
+import { createMockServer } from '../mock/server.mjs';
+import { createIdentityClient } from '../src/net/identity.js';
+import { createWire } from '../src/net/wire.js';
+import {
+  createMessageLayoutStore,
+  MessageLayoutProvider,
+  MessageLayoutScope,
+  useMessageLayoutState,
+} from '../src/ui/timeline/MessageLayoutState.jsx';
+import { createViewSessionStore } from '../src/model/view-session.js';
+import { MermaidBlock } from '../src/ui/MermaidBlock.jsx';
 
 const mermaidMock = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -64,12 +76,99 @@ const mermaidMock = vi.hoisted(() => ({
 
 vi.mock('mermaid', () => ({ default: mermaidMock }));
 
-afterEach(() => {
+const mockServers = new Set();
+const mockWires = new Set();
+
+async function listenMockServer(server) {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  mockServers.add(server);
+  return 'http://127.0.0.1:' + server.address().port;
+}
+
+async function closeMockServer(server) {
+  if (!mockServers.delete(server)) return;
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+
+function waitForMock(predicate, detail, timeoutMs = 5_000) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      const value = predicate();
+      if (value) resolve(value);
+      else if (Date.now() - started >= timeoutMs) reject(new Error('timed out waiting for ' + detail));
+      else setTimeout(poll, 10);
+    };
+    poll();
+  });
+}
+
+async function connectMockScenario(scenario) {
+  const server = createMockServer({ rootPassword: 'test-root', scenario });
+  const baseURL = await listenMockServer(server);
+  let cookie = '';
+  const fetchSession = async (path, options = {}) => {
+    const headers = new Headers(options.headers);
+    if (cookie) headers.set('Cookie', cookie);
+    const response = await fetch(baseURL + path, { ...options, headers });
+    const next = response.headers.get('set-cookie');
+    if (next) cookie = next.split(';', 1)[0];
+    return response;
+  };
+  await createIdentityClient(fetchSession).login('root@atoll.local', 'test-root');
+  class SessionWebSocket extends WebSocket {
+    constructor(url) { super(url, { headers: { Cookie: cookie } }); }
+  }
+  const feeds = [];
+  let attachDetail = null;
+  const wire = createWire({
+    url: baseURL.replace('http', 'ws') + '/ws',
+    WebSocketImpl: SessionWebSocket,
+    onState: (state, detail) => { if (state === 'attached') attachDetail = detail; },
+    onFeed: (channelId, seq, envelope) => feeds.push({ channelId, seq, envelope }),
+  });
+  mockWires.add(wire);
+  await waitForMock(() => attachDetail, 'mock attach');
+  return { server, fetchSession, wire, feeds, attachDetail };
+}
+
+function mockRequest(id, type, payload = {}, parentId = '') {
+  return {
+    channel_id: CHANNEL,
+    id,
+    msg_type: type,
+    kind: 'request',
+    payload,
+    audience: ['steward'],
+    visibility: 'public',
+    ...(parentId ? { parent_id: parentId } : {}),
+  };
+}
+
+function mockTerminal(feeds, requestId) {
+  return feeds.find((row) => row.envelope.kind === 'response'
+    && row.envelope.parent_id === requestId
+    && ['completed', 'failed'].includes(row.envelope.payload?.body?.status))?.envelope;
+}
+
+function LayoutChoice() {
+  const [open, setOpen] = useMessageLayoutState('details', false);
+  return <button aria-expanded={open} onClick={() => setOpen((value) => !value)}>details</button>;
+}
+
+afterEach(async () => {
   cleanup();
   vi.useRealTimers();
   clearMermaidDiagramCache();
   mermaidMock.initialize.mockReset();
   mermaidMock.render.mockReset();
+  for (const wire of mockWires) wire.close();
+  mockWires.clear();
+  await Promise.all([...mockServers].map(closeMockServer));
 });
 
 const CHANNEL = 'c0';
@@ -1576,5 +1675,205 @@ describe('I-M exact-path public-owner recovery (round 31 media and scenario cont
     expect(domain.channel('c0.project').status).toBe('present');
     domain.advance(1);
     expect(domain.channel('c0.project')).toMatchObject({ status: 'retired', open: false });
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 32 rendering and access contracts)', () => {
+  it('message-layout-state TC-0960: recycled rows retain their own geometry choices', () => {
+    const store = createMessageLayoutStore();
+    const ui = (id, shown = true) => (
+      <MessageLayoutProvider store={store}>
+        <MessageLayoutScope rowID={id}>{shown && <LayoutChoice key={id} />}</MessageLayoutScope>
+      </MessageLayoutProvider>
+    );
+    const view = render(ui('a'));
+    fireEvent.click(view.getByRole('button'));
+    view.rerender(ui('a', false));
+    view.rerender(ui('b'));
+    expect(view.getByRole('button').getAttribute('aria-expanded')).toBe('false');
+    view.rerender(ui('a'));
+    expect(view.getByRole('button').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('message-layout-state TC-0961: durable layout choices survive sessions without viewport leakage', () => {
+    const sessions = createViewSessionStore();
+    const store = createMessageLayoutStore([], (layoutChoices) => sessions.writeConversation('round32', { layoutChoices }));
+    store.set('expanded', ['child-a'], []);
+    const copy = sessions.read('round32');
+    copy.layoutChoices[0][1].push('not-persisted');
+
+    expect(sessions.read('round32').layoutChoices).toEqual([['expanded', ['child-a']]]);
+    expect(sessions.read('round32')).not.toHaveProperty('viewportSnapshot');
+    expect(sessions.read('other').layoutChoices).toEqual([]);
+    expect(createMessageLayoutStore(sessions.read('round32').layoutChoices).get('expanded', []))
+      .toEqual(['child-a']);
+  });
+
+  it('message-layout-state TC-0962: Mermaid source geometry survives row recycle', async () => {
+    vi.useRealTimers();
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-diagram="layout-round32" />' });
+    const store = createMessageLayoutStore();
+    const ui = (shown) => (
+      <MessageLayoutProvider store={store}>
+        <MessageLayoutScope rowID="round32-message">
+          {shown && <MermaidBlock code="graph TD; A-->B" layoutKey="body:round32" />}
+        </MessageLayoutScope>
+      </MessageLayoutProvider>
+    );
+    let view;
+    await act(async () => { view = render(ui(true)); });
+    await waitFor(() => expect(view.container.querySelector('svg[data-diagram="layout-round32"]')).toBeTruthy());
+    fireEvent.click(view.getByRole('button', { name: '查看源码' }));
+    view.rerender(ui(false));
+    await act(async () => view.rerender(ui(true)));
+    expect(view.getByRole('button', { name: '查看图表' }).isConnected).toBe(true);
+  });
+
+  it('message-layout-state TC-0963: standalone subscriptions notify only the affected row', () => {
+    const store = createMessageLayoutStore();
+    const first = vi.fn();
+    const second = vi.fn();
+    const unsubscribe = store.subscribe('round32-a', first);
+    store.subscribe('round32-b', second);
+
+    store.set('round32-a', true, false);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).not.toHaveBeenCalled();
+    unsubscribe();
+    store.set('round32-a', false, true);
+    expect(first).toHaveBeenCalledTimes(1);
+    const view = render(
+      <MessageLayoutProvider store={store}>
+        <MessageLayoutScope rowID="round32-a"><LayoutChoice /></MessageLayoutScope>
+      </MessageLayoutProvider>,
+    );
+    fireEvent.click(view.getByRole('button'));
+    expect(view.getByRole('button').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('mock-governance TC-1036: structured governance results converge public channel and actor projections', async () => {
+    const h = await connectMockScenario('multi-channel');
+    const listRequest = { ...mockRequest('round32-channel-list', 'system.channel.list'), audience: ['system'] };
+    const listReceipt = await h.wire.submit(listRequest);
+    const list = await waitForMock(() => mockTerminal(h.feeds, listReceipt.message_id), 'channel list terminal');
+    expect(list.payload.body.status).toBe('completed');
+    expect(list.payload.body.value.map((channel) => channel.id))
+      .toEqual(expect.arrayContaining(['c0', 'c0.project', 'c0.public']));
+    expect(list.payload.body.value.some((channel) => channel.id === 'c0.lobby')).toBe(false);
+
+    const createRequest = { ...mockRequest('round32-member-create', 'system.member.create', { decl_id: 'mock:analyst' }), audience: ['system'] };
+    const createReceipt = await h.wire.submit(createRequest);
+    const created = await waitForMock(() => mockTerminal(h.feeds, createReceipt.message_id), 'member create terminal');
+    const memberId = created.payload.body.member;
+    const actors = await h.fetchSession('/obs/channel/c0/actors').then((response) => response.json());
+    expect(actors.items.map((entry) => entry.declared.id)).toContain(memberId);
+    h.wire.close();
+  });
+
+  it('mock-phase-b TC-1037: membership arrives through attach and actor projections omit mock principals', async () => {
+    const h = await connectMockScenario('real-backend-shape');
+    expect((await h.fetchSession('/obs/space/memberships')).status).toBe(404);
+    expect(h.attachDetail.memberships_complete).toBe(true);
+    expect(h.attachDetail.memberships.map((entry) => entry.channel_id)).toContain(CHANNEL);
+    h.wire.close();
+    const actors = await h.fetchSession('/obs/channel/c0/actors').then((response) => response.json());
+    expect(actors.items.find((item) => item.declared.kind === 'human').declared)
+      .not.toHaveProperty('principal');
+  });
+
+  it('mock-phase-b TC-1038: same client retries are idempotent while conflicting payloads fail', async () => {
+    const h = await connectMockScenario('message-flow');
+    const frame = mockRequest('round32-stable-id', 'agent.ask', { text: 'same' });
+    await expect(h.wire.submit(frame)).resolves.toMatchObject({ message_id: 'round32-stable-id' });
+    await waitForMock(() => h.feeds.some((row) => row.envelope.id === 'round32-stable-id'), 'first feed');
+    await expect(h.wire.submit(frame)).resolves.toMatchObject({ message_id: 'round32-stable-id' });
+    expect(h.feeds.filter((row) => row.envelope.id === 'round32-stable-id')).toHaveLength(1);
+    await expect(h.wire.submit({ ...frame, payload: { text: 'changed' } }))
+      .rejects.toMatchObject({ code: 'idempotency_conflict' });
+    h.wire.close();
+  });
+
+  it('mock-phase-c TC-1039: Describe exposes typed capabilities and a structured result', async () => {
+    const h = await connectMockScenario('actor-capability');
+    const describeReceipt = await h.wire.submit(mockRequest('round32-describe', 'actor.describe'));
+    const describe = await waitForMock(
+      () => mockTerminal(h.feeds, describeReceipt.message_id),
+      'actor describe terminal',
+    );
+    expect(describe.payload.body).toMatchObject({ class: 'codex', interfaces: ['actor', 'agent'] });
+    expect(describe.payload.body.words['mock.order.create']).toMatchObject({
+      input_schema: { type: 'object', required: ['name', 'count'] },
+    });
+    const orderReceipt = await h.wire.submit(mockRequest(
+      'round32-order', 'mock.order.create', { name: 'round32', count: 4, priority: 'urgent', notify: true },
+    ));
+    const order = await waitForMock(() => mockTerminal(h.feeds, orderReceipt.message_id), 'order terminal');
+    expect(order.payload.body).toMatchObject({
+      status: 'completed',
+      value: { accepted: true, name: 'round32', count: 4, priority: 'urgent', notify: true },
+    });
+    h.wire.close();
+  });
+
+  it('mock-phase-c TC-1040: cancel receipt is distinct from cancelled terminal and errors remain stable', async () => {
+    const h = await connectMockScenario('long-running');
+    await h.wire.submit(mockRequest('round32-cancel', 'agent.ask', { text: '持续运行' }));
+    await waitForMock(
+      () => h.feeds.some((row) => row.envelope.parent_id === 'round32-cancel'
+        && row.envelope.payload?.body?.turn_id),
+      'processing turn',
+    );
+    await expect(h.wire.cancel({ channel_id: CHANNEL, req_id: 'round32-cancel' }))
+      .resolves.toEqual({ req_id: 'round32-cancel' });
+    expect(mockTerminal(h.feeds, 'round32-cancel')).toBeUndefined();
+    const cancelled = await waitForMock(
+      () => mockTerminal(h.feeds, 'round32-cancel'),
+      'cancelled terminal',
+    );
+    expect(cancelled.payload.body).toMatchObject({ status: 'failed', cancelled: true });
+    await expect(h.wire.cancel({ channel_id: CHANNEL, req_id: 'round32-cancel' }))
+      .rejects.toMatchObject({ code: 'already_closed' });
+    await expect(h.wire.cancel({ channel_id: CHANNEL, req_id: 'missing-round32' }))
+      .rejects.toMatchObject({ code: 'request_not_found' });
+    h.wire.close();
+  });
+
+  it('mock-phase-c TC-1041: steer uses turn CAS and emits independent control terminals', async () => {
+    const h = await connectMockScenario('long-running');
+    const rootRequest = mockRequest('round32-steer-root', 'agent.ask', { text: '原任务' });
+    await h.wire.submit(rootRequest);
+    const processing = await waitForMock(
+      () => h.feeds.find((row) => row.envelope.parent_id === 'round32-steer-root'
+        && row.envelope.payload?.body?.turn_id)?.envelope,
+      'steerable processing',
+    );
+    const turnId = processing.payload.body.turn_id;
+    await h.wire.submit(mockRequest(
+      'round32-steer-bad', 'agent.steer',
+      { text: '错误 CAS', expected_turn_id: 'stale-turn' }, 'round32-steer-root',
+    ));
+    expect((await waitForMock(
+      () => mockTerminal(h.feeds, 'round32-steer-bad'),
+      'CAS failure',
+    )).payload.body).toMatchObject({ status: 'failed', reason: 'cas_mismatch' });
+
+    await h.wire.submit(mockRequest(
+      'round32-steer-good', 'agent.steer',
+      { text: '新的方向', expected_turn_id: turnId }, 'round32-steer-root',
+    ));
+    const control = await waitForMock(
+      () => mockTerminal(h.feeds, 'round32-steer-good'),
+      'steer terminal',
+    );
+    expect(control.payload.body).toMatchObject({
+      status: 'completed', value: { merged_into: turnId, direction: '新的方向' },
+    });
+    expect((await waitForMock(
+      () => mockTerminal(h.feeds, 'round32-steer-root'),
+      'preempted root',
+    )).payload.body).toMatchObject({
+      status: 'completed', value: { preempted_by: 'round32-steer-good' },
+    });
+    h.wire.close();
   });
 });
