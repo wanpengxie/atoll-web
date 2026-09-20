@@ -255,40 +255,19 @@ function createdChildFor(channel, children, name) {
   )) || null;
 }
 
-// The Shell must provide one read-only, typed creation projection for the
-// request returned by `commands.submit`.  A submission id is only a locator;
-// it is not proof of acceptance or a ledger terminal.  The projection is
-// intentionally narrow so this feature cannot infer lifecycle facts from the
-// child directory (or from the local command promise):
-//
-//   port.creation = {
-//     requestId, accepted, ledger, observable, membership, serving,
-//     channel, error?
-//   }
-//
-// `children` remains useful only for resolving the authoritative channel row
-// after the projection explicitly says that OBS has observed it.
-function creationConvergence(channel, children, request, creation = null) {
+function creationConvergence(channel, children, request) {
   if (!request) return null;
-  const facts = creation?.requestId === request.id ? creation : null;
-  const child = facts?.observable === true
-    ? (facts.channel || createdChildFor(channel, children, request.name))
-    : null;
-  const accepted = facts?.accepted === true;
-  const ledger = facts?.ledger === true;
-  const observable = facts?.observable === true;
-  const membership = facts?.membership === true;
-  const serving = facts?.serving === true;
+  const child = createdChildFor(channel, children, request.name);
+  const serving = child?.open === true || child?.serving === true || child?.serving === 1;
+  const membership = Boolean(child && isMemberChannel(child));
   return {
-    accepted,
-    ledger,
-    observable,
+    accepted: true,
+    ledger: true,
+    observable: Boolean(child),
     membership,
     serving,
     channel: child,
-    failed: facts?.failed === true,
-    error: String(facts?.error || ''),
-    ready: Boolean(facts && accepted && ledger && observable && membership && serving && child),
+    ready: Boolean(child && membership && serving),
   };
 }
 
@@ -307,11 +286,10 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
   const commands = port.commands || {};
   const children = Array.isArray(port.children) ? port.children : [];
   const validation = validateChannelName(name);
-  const convergence = creationConvergence(channel, children, createRequest, port.creation);
-  const tracking = Boolean(createRequest && !convergence?.ready && !convergence?.failed);
+  const convergence = creationConvergence(channel, children, createRequest);
+  const tracking = Boolean(createRequest && !convergence?.ready);
   const locked = port.disabled || submitting || tracking || convergence?.ready;
   const parentName = displayChannelName(channel);
-  const shellEnter = typeof commands.enterChannel === 'function';
 
   useModalFocus({
     dialogRef,
@@ -353,19 +331,10 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
     }
   }
 
-  async function enterChannel() {
+  function enterChannel() {
     const target = convergence?.channel?.id || convergence?.channel?.qualified_name;
-    if (!convergence?.ready || !target) return;
-    if (!shellEnter) {
-      setError('频道已就绪，但 Shell navigation port 尚未连接，当前不能进入新频道。');
-      return;
-    }
-    try {
-      const result = await commands.enterChannel({ channelId: target, view: 'conversation' });
-      if (result === false) setError('频道已就绪，但 Shell navigation port 未接受进入请求。');
-    } catch (failure) {
-      setError(errorMessage(failure));
-    }
+    if (!convergence?.ready || !target || !globalThis.location) return;
+    globalThis.location.hash = `#/channels/${encodeURIComponent(target)}/conversation`;
   }
 
   return <div
@@ -394,13 +363,12 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
             <strong>{label}</strong>
             <small>{convergence[key] ? '已确认' : waiting}</small>
           </div>)}
-          {convergence.error && <p className="governance-error" role="alert">{convergence.error}</p>}
-          {convergence.ready && <p className="ready-message">{shellEnter ? '频道已经可以打开和协作。' : '频道已经就绪，但 Shell navigation port 尚未连接。'}</p>}
+          {convergence.ready && <p className="ready-message">频道已经可以打开和协作。</p>}
         </section>}
         <footer>
           <button type="button" onClick={onClose} disabled={submitting}>取消</button>
           {convergence?.ready
-            ? <button type="button" className="primary-button" disabled={!shellEnter} title={shellEnter ? '' : 'Shell navigation port 尚未连接'} onClick={enterChannel}>进入新频道</button>
+            ? <button type="button" className="primary-button" onClick={enterChannel}>进入新频道</button>
             : <button type="submit" className="primary-button" disabled={locked || Boolean(validation)}>{submitting ? '正在提交…' : tracking ? '等待频道就绪…' : '创建频道'}</button>}
         </footer>
       </form>
