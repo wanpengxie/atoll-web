@@ -151,6 +151,45 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 1, total: 1 });
   });
 
+  it('retains the following lease through a browsing promotion at the physical tail', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'promotion-approval-1', selfId), seq: 1 });
+    const status = feed.historyFor(channelId);
+    const receipt = confirmationFor(channelId, status, 1);
+    expect(feed.acknowledgeNotifications(receipt)).toBe(1);
+
+    // Reading briefly reports browsing while its committed surface remains at
+    // the physical tail. This is a lifecycle transition, not a user leave.
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      caughtUp: false,
+      following: false,
+      atTail: true,
+      surfaceVisible: true,
+      boundary: 0,
+      cause: '',
+      captured: { ...receipt.captured, installedHighSeq: 1 },
+    })).toBe(false);
+    feed.enqueue({ ...relatedRequest(channelId, 'promotion-approval-2', selfId), seq: 2 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+
+    // A physical-tail loss is the actual revocation boundary; later arrivals
+    // must be counted from the durable high-water again.
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      caughtUp: false,
+      following: false,
+      atTail: false,
+      surfaceVisible: true,
+      boundary: 0,
+      cause: '',
+      captured: { ...receipt.captured, installedHighSeq: 1 },
+    })).toBe(false);
+    feed.enqueue({ ...relatedRequest(channelId, 'promotion-approval-3', selfId), seq: 3 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, total: 2 });
+  });
+
   it('restores channel high-water without allowing cache/grant hydration to resurrect it', async () => {
     const channelId = 'c0.project';
     const selfId = 'human:notification-persist:1';

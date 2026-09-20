@@ -1583,6 +1583,15 @@ export function createChannelFeedRuntime(options = {}) {
       if (observation && observationKey === ownerKey
         && observation.authority?.principalId === authority.principalId
         && observation.authority?.serverBoot === authority.serverBoot) {
+        // During browsing -> following promotion the reading surface can
+        // publish one intermediate receipt with `following: false` while
+        // the committed DOM is still at the physical tail. That receipt is
+        // not evidence that the user left the tail: dropping the lease here
+        // would make every live arrival re-count from the mutable head and
+        // flash a rail badge until the next positive observation. A real
+        // leave changes the physical-tail or surface-visible fact, so only
+        // that boundary may revoke the existing observation.
+        if (event.atTail === true && event.surfaceVisible === true) return false;
         followingObservations.delete(channelId);
         publish();
       }
