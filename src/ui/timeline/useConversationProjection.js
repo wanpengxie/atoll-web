@@ -50,6 +50,10 @@ const HISTORY_RUNWAY_REVEAL_RECORDS = 8;
 const HISTORY_RUNWAY_REVEAL_BYTES = 256 * 1024;
 const pageIsVisible = () => globalThis.document?.visibilityState !== 'hidden';
 
+function scopeHandoffOperationID(handoff) {
+  return `scope-handoff:${handoff.channel}:${handoff.sourceActivationID}:${handoff.sourceInputEpoch}:${handoff.sourceRevision}:${handoff.generation}:${handoff.rowID}`;
+}
+
 function typedTailLeaseRevoke(
   receipt,
   reason,
@@ -225,6 +229,7 @@ function useProjectionReadingOwner({
   surfaceVisible,
   arrivals,
   onTailLeaseRevoke,
+  onScopeHandoffCancel,
 }) {
   const historyStatus = history.status;
   const requestPort = history.request;
@@ -488,6 +493,10 @@ function useProjectionReadingOwner({
     });
   }, [controller]);
   const requestBottom = useCallback((reason = 'explicit', expected = null, target = null) => {
+    // Explicit latest intent supersedes a pending scope/filter successor in
+    // the same event stack. The handoff is ephemeral and must not revive an
+    // old browsing row after a user has chosen the tail.
+    onScopeHandoffCancel?.(reason === 'scope-handoff-cancelled' ? 'consume-latest-handoff' : 'latest-intent');
     const current = controller.getSnapshot().session;
     if (!controller.isStarted() || (expected && (
       expected.activationID !== current.activationID
@@ -500,8 +509,12 @@ function useProjectionReadingOwner({
       mintSuccessorEpoch: active.mode === READING_MODE.browsing,
     }));
     return true;
-  }, [controller]);
+  }, [controller, onScopeHandoffCancel]);
   const beginNavigation = useCallback((input = {}) => {
+    // A real native takeover supersedes a pending scope/filter successor. The
+    // handoff is intentionally ephemeral; it must never survive a new user
+    // browsing gesture and cannot become a durable bookmark.
+    onScopeHandoffCancel?.('native-input');
     const previous = controller.getSnapshot().session;
     const leasedTail = tailLeaseRef.current;
     const currentGeneration = Number(historyStatusRef.current.generation || historyStatus.generation || 0);
@@ -556,7 +569,7 @@ function useProjectionReadingOwner({
       }
     }
     return Object.freeze({ inputGeneration: next.inputEpoch });
-  }, [channelID, controller, historyStatus.generation, historyStatus.presentationAdmission, onTailLeaseRevoke]);
+  }, [channelID, controller, historyConsumer, historyStatus.generation, historyStatus.presentationAdmission, onScopeHandoffCancel, onTailLeaseRevoke]);
   const captureContentAnchorForReading = useCallback((detail = {}) => {
     const before = controller.getSnapshot().session;
     const after = controller.update((current) => captureContentAnchor(current, detail));
@@ -690,15 +703,74 @@ function useProjectionReadingOwner({
   const acceptHistoryPositionLease = useCallback((lease) => {
     const current = controller.getSnapshot().session;
     const currentEpoch = `${channelID}:${Number(historyStatusRef.current.generation || 0)}`;
-    if (!lease || lease.viewID !== viewKey || lease.epoch !== currentEpoch) return false;
+    if (!lease || lease.viewID !== viewKey || lease.epoch !== currentEpoch) {
+      onScopeHandoffCancel?.('position-lease-rejected');
+      return false;
+    }
     const after = controller.update((active) => acceptPositionRowLease(active, lease));
     if (after !== current) return true;
     const existing = positionRowLeaseCommand(after);
-    return Boolean(existing
+    const accepted = Boolean(existing
       && existing.operationID === lease.operationID
       && Number(existing.presentationRevision) === Number(lease.presentationRevision)
       && existing.messageID === lease.messageID);
-  }, [channelID, controller, viewKey]);
+    if (!accepted) onScopeHandoffCancel?.('position-lease-rejected');
+    return accepted;
+  }, [channelID, controller, onScopeHandoffCancel, viewKey]);
+  const acceptScopeHandoff = useCallback((handoff = null) => {
+    if (!handoff
+      || String(handoff.channel || '') !== String(channelID)
+      || String(handoff.returnView || '') !== String(viewKey)
+      || !handoff.fromView
+      || !handoff.throughView
+      || !handoff.sourceActivationID
+      || !Number.isFinite(Number(handoff.sourceRevision))
+      || !Number.isSafeInteger(Number(handoff.sourceInputEpoch))
+      || !handoff.rowID
+      || !Number.isFinite(Number(handoff.viewportOffset))) return false;
+    const status = historyStatusRef.current;
+    const generation = Number(status.generation || 0);
+    if (!Number.isSafeInteger(generation) || generation !== Number(handoff.generation)) return false;
+    const committedSnapshot = snapshotRef.current;
+    const rowID = String(handoff.rowID);
+    // A filtered presentation that does not contain the source identity has
+    // no legal target. Do not manufacture a row or a bookmark for that view;
+    // the lease is issued only after returning to the source presentation and
+    // seeing that same row in the committed projection.
+    if (!committedSnapshot.rows?.some((row) => String(row?.id || '') === rowID)) return false;
+    // Layout-effect ordering can expose the successor viewport to the parent
+    // handoff effect before this controller's own start effect runs. Start the
+    // same owner idempotently here; no second store or writer is introduced.
+    if (!controller.isStarted()) controller.start();
+    if (!controller.isStarted()) return false;
+    const operationID = scopeHandoffOperationID(handoff);
+    let current = controller.getSnapshot().session;
+    if (current.mode !== READING_MODE.browsing) {
+      current = controller.update((active) => takeReadingControl(active, {
+        direction: 'browse',
+        gestureID: operationID,
+        channelID,
+        viewKey,
+        generation,
+      }));
+    }
+    current = controller.getSnapshot().session;
+    const lease = Object.freeze({
+      type: 'position-row',
+      activationID: current.activationID,
+      inputEpoch: current.inputEpoch,
+      intentRevision: current.intentRevision,
+      operationID,
+      viewID: String(viewKey),
+      epoch: `${channelID}:${generation}`,
+      presentationRevision: Number(committedSnapshot.revision || 0),
+      messageID: rowID,
+      viewportOffset: Number(handoff.viewportOffset),
+    });
+    // Reuse the existing Reading lease and the sole Vendor writer. This call
+    // is semantic only; it never performs a DOM scroll itself.
+    return acceptHistoryPositionLease(lease);
+  }, [acceptHistoryPositionLease, channelID, controller, viewKey]);
   const consumeHistoryPositionLease = useCallback((command, nextAnchor = null) => {
     const before = controller.getSnapshot().session;
     const after = controller.update((active) => {
@@ -848,6 +920,7 @@ function useProjectionReadingOwner({
     // controller on the first mount. Recording the root above is enough;
     // there is no predecessor authority to revoke in that case.
     if (!previous.node || !controller.isStarted()) return false;
+    onScopeHandoffCancel?.('root-replacement');
     const before = controller.getSnapshot().session;
     const leasedTail = tailLeaseRef.current;
     const nextSession = controller.update((active) => advanceReadingInputEpoch(active));
@@ -888,7 +961,7 @@ function useProjectionReadingOwner({
     });
     setObservationRevision((value) => value + 1);
     return nextEpoch > Number(before.inputEpoch);
-  }, [controller, onTailLeaseRevoke]);
+  }, [controller, onScopeHandoffCancel, onTailLeaseRevoke]);
 
   return useMemo(() => Object.freeze({
     activationID: controller.activationID,
@@ -916,6 +989,7 @@ function useProjectionReadingOwner({
     currentAdmissionAuthority,
     historyPositionLeaseCommand,
     acceptHistoryPositionLease,
+    acceptScopeHandoff,
     consumeHistoryPositionLease,
     revokeHistoryPositionLease,
     acknowledgeHistoryReveal(commitID) { return historyStatus.presentationAdmission?.acknowledge?.(channelID, commitID) === true; },
@@ -1201,8 +1275,13 @@ function useProjectionReadingOwner({
       return controller.update((current) => consumeLatestIntent(current, { ...intent, activationID: controller.activationID })) !== before;
     },
     jumpToLatest() {
+      onScopeHandoffCancel?.('latest-button');
       requestBottom('latest');
       void Promise.resolve(history.refreshLatest?.()).catch((error) => diagnostic('warn', 'history.latest_refresh_failed', { channelId: channelID, error }));
+    },
+    cancelScopeHandoff(reason = 'explicit-latest') {
+      onScopeHandoffCancel?.(reason);
+      return true;
     },
     requestBottom,
     captureBottomIntent,
@@ -1221,12 +1300,13 @@ function useProjectionReadingOwner({
     advanceVisibilityEpoch, arrivals?.events?.length, authoritativeEmpty, availability, availabilityError, beginNavigation,
     bottomReady, cancelHistoryStart, cancelNavigation, captureBottomIntent, captureContentAnchorForReading, channelID, controller,
     acceptHistoryPositionLease, consumeContentAnchorCommand, consumeHistoryPositionLease,
+    acceptScopeHandoff,
     currentAdmissionAuthority, getContentAnchorCommand, historyPositionLeaseCommand,
     revokeHistoryPositionLease,
     history, historyBoundary, historyConsumer, historyStatus,
     failHistoryStart, historyStartCommand, onHistoryStartEvidence, presentationAuthority, presentationInitializing, requestBottom, requestHistory,
     restorePending, session, syncObservationCurrent, syncStatus.error, tailCaughtUp,
-    onReadingRootActivation,
+    onReadingRootActivation, onScopeHandoffCancel,
   ]);
 }
 export function useConversationProjection({
@@ -1242,6 +1322,27 @@ export function useConversationProjection({
 }) {
   const presentationRef = useRef(null);
   const tailReceiptRef = useRef(null);
+  // Cross-messageListKey reading continuity is a one-document successor
+  // handoff. It is deliberately not stored in viewSessions and is never
+  // represented as a durable bookmark.
+  const scopeHandoffRef = useRef(null);
+  const previousScopeRef = useRef(null);
+  const cancelScopeHandoff = useCallback((reason = 'cancelled') => {
+    const handoff = scopeHandoffRef.current;
+    const latestTakeover = ['latest-intent', 'latest-button', 'composer-send-start'].includes(reason);
+    if (latestTakeover && handoff?.returnView) {
+      // Keep only an ephemeral terminal marker until the source view is back.
+      // The source owner then consumes the existing bottom command, so a
+      // reused physical root cannot leave the old browsing row visible.
+      scopeHandoffRef.current = Object.freeze({
+        ...handoff,
+        cancelledLatest: true,
+        cancelReason: String(reason),
+      });
+      return;
+    }
+    scopeHandoffRef.current = null;
+  }, []);
   const tailCallbackRef = useRef(onTailCaughtUp);
   useLayoutEffect(() => {
     tailCallbackRef.current = onTailCaughtUp;
@@ -1306,7 +1407,84 @@ export function useConversationProjection({
     surfaceVisible,
     arrivals,
     onTailLeaseRevoke: revokeTailLease,
+    onScopeHandoffCancel: cancelScopeHandoff,
   });
+  useLayoutEffect(() => {
+    const previous = previousScopeRef.current;
+    if (previous?.channelID !== state.channelId) {
+      scopeHandoffRef.current = null;
+    } else if (previous && previous.viewKey !== messageListKey) {
+      const existing = scopeHandoffRef.current;
+      if (existing) {
+        // Keep the original source/return identity. `throughView` records the
+        // latest intermediate presentation but never grants it a lease.
+        if (messageListKey !== existing.returnView) {
+          scopeHandoffRef.current = Object.freeze({
+            ...existing,
+            throughView: String(messageListKey),
+          });
+        }
+      } else {
+        const sourceSession = previous.viewport?.getSession?.() || previous.viewport?.session;
+        const bookmark = sourceSession?.bookmark;
+        const sourceRowID = String(bookmark?.messageID || '');
+        const viewportOffset = Number(bookmark?.rowViewportOffset ?? bookmark?.viewportOffset);
+        const sourceRows = previous.snapshot?.rows || [];
+        const sourceRowExists = sourceRows.some((row) => String(row?.id || '') === sourceRowID);
+        const sourceGeneration = Number(previous.generation || 0);
+        const sourceRevision = Number(previous.snapshot?.sourceRevision || 0);
+        const sourceActivationID = String(previous.viewport?.activationID || sourceSession?.activationID || '');
+        const sourceInputEpoch = Number(sourceSession?.inputEpoch);
+        if (sourceSession?.mode === READING_MODE.browsing
+          && sourceRowID
+          && sourceRowExists
+          && Number.isFinite(viewportOffset)
+          && sourceActivationID
+          && Number.isSafeInteger(sourceInputEpoch)
+          && Number.isSafeInteger(sourceGeneration)) {
+          scopeHandoffRef.current = Object.freeze({
+            channel: String(state.channelId),
+            fromView: String(previous.viewKey),
+            throughView: String(messageListKey),
+            returnView: String(previous.viewKey),
+            rowID: sourceRowID,
+            viewportOffset,
+            sourceRevision,
+            sourceActivationID,
+            sourceInputEpoch,
+            generation: sourceGeneration,
+          });
+        }
+      }
+    }
+    previousScopeRef.current = Object.freeze({
+      channelID: String(state.channelId),
+      viewKey: String(messageListKey),
+      viewport,
+      snapshot: projection.presentation,
+      generation: Number(history.status?.generation || 0),
+    });
+  }, [history.status?.generation, messageListKey, projection.presentation, state.channelId, viewport]);
+  useLayoutEffect(() => {
+    const handoff = scopeHandoffRef.current;
+    if (!handoff) return;
+    const generation = Number(history.status?.generation || 0);
+    if (String(handoff.channel || '') !== String(state.channelId)
+      || Number(handoff.generation) !== generation) {
+      scopeHandoffRef.current = null;
+      return;
+    }
+    if (String(handoff.returnView || '') !== String(messageListKey)) return;
+    if (handoff.cancelledLatest === true) {
+      // The explicit latest/send takeover happened in the intermediate view.
+      // Reuse the current owner and its sole Vendor writer to settle the
+      // source view at the tail; do not replay the old position lease.
+      viewport.requestBottom?.('scope-handoff-cancelled');
+      return;
+    }
+    const accepted = viewport.acceptScopeHandoff?.(handoff) === true;
+    if (accepted) scopeHandoffRef.current = null;
+  }, [history.status?.generation, messageListKey, projection.presentation, state.channelId, viewport.acceptScopeHandoff, viewport.activationID, viewport.requestBottom, viewport.session.inputEpoch]);
   useLayoutEffect(() => {
     const admission = history.status?.presentationAdmission;
     const admissionState = admission?.snapshot?.(state.channelId);

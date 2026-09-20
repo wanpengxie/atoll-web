@@ -25,9 +25,12 @@ async function captureVisibleAnchor(page) {
 
 async function persistedBookmark(page, channelID, viewKeyPrefix) {
   return page.evaluate(({ channelID: channel, prefix }) => {
-    const readings = JSON.parse(localStorage.getItem('atoll.view-session.v2.root') || 'null')?.readings || {};
-    const key = Object.keys(readings).find((candidate) => candidate.startsWith(`${channel}\u0000${prefix}`));
-    return key ? readings[key]?.bookmark || null : null;
+    for (const storageKey of ['atoll.view-session.v3.root', 'atoll.view-session.v2.root']) {
+      const readings = JSON.parse(localStorage.getItem(storageKey) || 'null')?.readings || {};
+      const key = Object.keys(readings).find((candidate) => candidate.startsWith(`${channel}\u0000${prefix}`));
+      if (key && readings[key]?.bookmark) return readings[key].bookmark;
+    }
+    return null;
   }, { channelID, prefix: viewKeyPrefix });
 }
 
@@ -56,6 +59,36 @@ async function expectAnchorRestored(page, anchor) {
   expect(samples.every(Number.isFinite), JSON.stringify(samples)).toBe(true);
   expect(Math.abs(samples.at(-1) - anchor.top), JSON.stringify({ anchor, samples })).toBeLessThanOrEqual(32);
   expect(Math.max(...samples) - Math.min(...samples), JSON.stringify(samples)).toBeLessThanOrEqual(2);
+}
+
+async function expectAnchorNotRestored(page, anchor) {
+  const viewport = page.locator('.timeline-message-list');
+  await page.waitForTimeout(500);
+  const samples = await viewport.evaluate((node, expected) => new Promise((resolve) => {
+    const values = [];
+    const collect = () => {
+      const row = [...node.querySelectorAll('[data-presentation-row-id]')]
+        .find((candidate) => candidate.dataset.presentationRowId === expected.id);
+      const root = node.getBoundingClientRect();
+      const rect = row?.getBoundingClientRect();
+      values.push(Boolean(rect && rect.bottom > root.top && rect.top < root.bottom));
+      if (values.length >= 8) resolve(values);
+      else requestAnimationFrame(collect);
+    };
+    requestAnimationFrame(collect);
+  }), anchor);
+  expect(samples, JSON.stringify({ anchor, samples })).toEqual(samples.map(() => false));
+}
+
+async function chooseSteward(page) {
+  const existing = page.locator('.model-selector-trigger').filter({ hasText: 'steward' });
+  if (await existing.isVisible().catch(() => false)) return;
+  const choose = page.getByRole('button', { name: '选择 Agent' });
+  if (!await choose.isVisible().catch(() => false)) return;
+  await choose.click();
+  await page.getByRole('menu', { name: '选择目标 Agent' })
+    .getByRole('menuitem', { name: 'steward' }).click();
+  await expect(existing).toBeVisible();
 }
 
 test('TC0222 F7 reader can reverse direction immediately after a history prepend', async ({ page, request }) => {
@@ -233,6 +266,7 @@ test('TC0224 F7 switching channels restores the saved semantic reading anchor', 
 });
 
 test('TC0225 F7 scope and participant-filter activation exits save and restore through the single list lifecycle', async ({ page, request }) => {
+  test.setTimeout(60_000);
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1715 } });
   expect(reset.ok()).toBe(true);
   await login(page);
@@ -244,7 +278,7 @@ test('TC0225 F7 scope and participant-filter activation exits save and restore t
 
   const mineAnchor = await captureVisibleAnchor(page);
   expect(mineAnchor?.id).toBeTruthy();
-  await page.getByRole('group', { name: '动态范围' }).getByRole('button', { name: '@我' }).click();
+  await page.getByRole('group', { name: '动态范围' }).getByRole('button', { name: '与我相关' }).click();
   await expect(page.getByRole('group', { name: '动态范围' }).getByRole('button', { name: '全部' })).toBeVisible();
   expect(await persistedBookmark(page, 'c0', 'c0:mine:')).toBeNull();
   await page.getByRole('group', { name: '动态范围' }).getByRole('button', { name: '全部' }).click();
@@ -258,6 +292,36 @@ test('TC0225 F7 scope and participant-filter activation exits save and restore t
   await steward.click();
   await expect(steward).toHaveAttribute('aria-pressed', 'false');
   await expectAnchorRestored(page, unfilteredAnchor);
+});
+
+test('TC0225 F7 Composer send-start cancels a filtered successor and never restores the old browsing row', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1725 } });
+  expect(reset.ok()).toBe(true);
+  await login(page);
+  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
+
+  const viewport = page.locator('.timeline-message-list');
+  await viewport.hover();
+  await page.mouse.wheel(0, -2_400);
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
+  const oldAnchor = await captureVisibleAnchor(page);
+  expect(oldAnchor?.id).toBeTruthy();
+
+  const steward = page.getByRole('group', { name: '按成员过滤' }).getByRole('button', { name: 'steward' });
+  await steward.click();
+  await expect(steward).toHaveAttribute('aria-pressed', 'true');
+  await chooseSteward(page);
+  const marker = 'TC0225 send-start cancels scope successor';
+  await page.getByRole('textbox', { name: '消息', exact: true }).fill(marker);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.getByText(marker, { exact: true })).toBeVisible();
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(1);
+
+  await steward.click();
+  await expect(steward).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(1);
+  await expectAnchorNotRestored(page, oldAnchor);
 });
 
 test('TC0226 F7 access loss saves the old activation and a later membership grant restores it', async ({ page, request }, testInfo) => {
