@@ -2158,3 +2158,73 @@ Registrar list submit；因此 get receipt、canonical template option 和 recip
 - **RED（Registrar owner）：** template list receipt 仍为 0，list → projection →
   get → recipe create 未接通。
 - 未删 skip、未放宽断言、未碰 vendor/package；本轮只追加本审计。
+
+## 第三十七轮：`19745da` / `ab3bcde` clean candidate 独立验收
+
+本轮在指定 clean HEAD `19745da`（父提交含 `ab3bcde` Governance/Shell owner）上执行；
+没有修改 `src/`、vendor、package 或截图阈值。template browser case 使用独立端口、
+真实 Chromium、`--repeat-each=5`；TC0192 使用 `--repeat-each=3`。
+
+### 结果
+
+```text
+ATOLL_TEST_WEB_PORT=17045 ATOLL_TEST_MOCK_PORT=19045 \
+npx playwright test tests/browser/governance-template-wire-contract.spec.js \
+  --repeat-each=5 --workers=1 --reporter=line \
+  --output=test-results-tz-round37-governance-repeat5
+5 passed (40.3s)
+```
+
+五次均证明真实 wire 顺序和用户结果闭环：Registrar `list` receipt 到达后出现
+`Team channel` canonical option；选择后发 matching `get(mock:team)`；create frame
+只带 canonical `recipe`（`mock:steward`、`local-device`、本次 purpose），不带
+`templateId`。期间有既有 wire reconnect/server resource warning，但没有测试失败，且
+每次 list/get/create 合同均通过。
+
+```text
+ATOLL_TEST_WEB_PORT=17046 ATOLL_TEST_MOCK_PORT=19046 \
+npx playwright test tests/browser/f5-governance-baseline-0191-0195.spec.js \
+  --grep 'TC-0192' --repeat-each=3 --workers=1 --reporter=line \
+  --output=test-results-tz-round37-tc0192-repeat3
+3 passed (18.3s)
+```
+
+TC0192 三次均完成独立 Modal、四步收敛、真实 Shell 进入 `c0.f5-room`。同样出现 mock
+重连及测试后资源请求 warning，但没有 unhandled failure；这些 warning 不改变用户合同。
+
+旧同名 child 与 typed Shell navigation 仍通过现有 unit contract：
+
+```text
+npx vitest run tests/blocked-round35-governance-public-owner.test.jsx --reporter=verbose
+旧同名 child：PASS；enterChannel-only/no-hash：PASS。
+新增失败 terminal 合同：RED（见下）。
+```
+
+### 失败 terminal 精确首断点
+
+本轮在 [blocked-round35-governance-public-owner.test.jsx](../tests/blocked-round35-governance-public-owner.test.jsx)
+新增严格公开合同：匹配 `requestId` 的 `creation.failed=true,error='名称已存在'` 到达后，
+进度必须显示“创建失败”，输入保持可编辑，按钮必须是可重试的“重新创建”，并且不得
+出现“进入新频道”。当前结果为 **1 failed / 2 passed**，首断点：
+
+```text
+expected progress text to contain 创建失败
+received ... 正在收敛 ... 名称已存在
+```
+
+这不是迁移选择器或环境问题：相同 DOM 已显示精确 terminal error，只有失败态标题/重试
+语义缺失。`fae8b70` 的旧 `ChannelCreateModal` 在 failed convergence 中显示失败态、
+保留输入并提供 retry；当前 GovernanceFeature 只把 error 文案显示出来，仍渲染“正在收敛”
+和“创建频道”。归类为公开产品 owner gap，不能用 `it.fails`、删断言或把 terminal error
+降级成普通 operation 文案来掩盖。
+
+### Round37 裁决
+
+- **PASS（repeat5）：** Registrar list → canonical projection → matching get/body →
+  canonical recipe create。
+- **PASS（repeat3）：** TC0192 Modal、四步 convergence、Shell 唯一进入路径。
+- **PASS：** 旧同名 child 不满足新 request；typed `enterChannel` 不写 hash。
+- **RED：** 失败 terminal 的用户可观察失败态/可重试语义缺失；产品 owner 需修复后再
+  重跑本合同。
+- 本轮仅新增失败 terminal 测试和审计；其他代理的
+  `tests/browser/f5-governance-baseline-0191-0195.spec.js` 脏改未触碰。
