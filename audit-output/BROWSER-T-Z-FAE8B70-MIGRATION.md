@@ -3112,3 +3112,79 @@ owner 预留空间或滚动，再由通用 SelectMenu 实现该约束；不能�
 并成为本提交 `67c8bd3` 的祖先；因此上文“dirty candidate、未提交”的描述只对应测试启动时的共享
 工作树状态，不再是当前交付状态。排序实现仍不属于本 agent 的提交，但 canonical sort 现在已进入
 可审计 HEAD；VIS08 的旧 screenshot/Popover overlap RED 仍然独立存在，未被排序提交掩盖。
+
+## 第四十八轮：关闭 popover 后的基础 managed-actor 布局 RED 复核
+
+本轮把菜单完全关闭后再量 DOM，避免用 Round47 的“前景覆盖可合法”结论掩盖基础卡片
+排版问题。只读比较 `fae8b70` 与当前治理入口，未修改产品、CSS、snapshot 或测试。
+
+### 真实 600×720 DOM 对照
+
+同一 `actor-governance` fixture（seed `906`）分别加载 `fae8b70` 与当前候选，并在菜单
+尚未打开时从真实 Chromium 读取 `getBoundingClientRect()`/computed grid：
+
+| 实现 | roster card | managed row 1/2/3 | note 区域 |
+| --- | --- | --- | --- |
+| `fae8b70` | `top=115, bottom=327, height=212` | `39 / 39 / 39px`；每行 `gridTemplateRows=22px` | 一个 protected note，`280–304`（24px） |
+| 当前治理候选 | `top=115, bottom=436, height=321` | `65 / 65 / 62px`；前两行 `22px 21px`，末行 `22px 18px` | 两个 note：`355–379`、`389–413`（各 24px） |
+
+当前添加卡仍为 `446–647`（201px），旧添加卡为 `337–538`（201px）；因此差异完全
+来自前一张成员卡，不是 popover 的 absolute box 进入文档流。Round47 的打开态
+`roster 115–436` 只是重复观察到这个已存在的关闭态高度。
+
+### 首个结构差异：disabled 绑定占位让“移除”隐式换行
+
+旧 `ChannelMembersPanel` 每个 `.managed-actor` 只有 5 个 grid child：资料 div、runtime
+span、`查看`、`重启`、`移除`；旧 CSS 也固定为
+`grid-template-columns: minmax(0, 1fr) auto auto auto auto`，所以三行均为单行。
+
+当前 `GovernanceFeature.ChannelMembers` 在同一既有 5-track CSS 下恒渲染 6 个 child：
+资料 div、runtime span、`查看`、`绑定`、`重启`、`移除`。在当前 fixture 的公开
+governance port 没有 bind/restart command，因此 line
+[`GovernanceFeature.jsx:204-213`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/ui/features/governance/GovernanceFeature.jsx:204)
+走 disabled `绑定` 和 disabled `重启` 分支；随后 `移除` 被 CSS grid 自动放入第二行：
+
+```text
+row 1 current: grid columns = 425px 24px 28px 28px 28px
+              资料 166–188, runtime 171.5–182.5,
+              查看/绑定/重启 166.5–187.5,
+              移除 193–214, left=24..449  ← implicit second row
+row 2:        同样 65px，移除 258–279  ← implicit second row
+row 3:        62px，Owner 323–341      ← implicit second row
+```
+
+对应的唯一结构边界是当前
+[`GovernanceFeature.jsx:207-213`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/ui/features/governance/GovernanceFeature.jsx:207)
+与既有
+[`primitives.css:68-75`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/styles/primitives.css:68)
+的 child-count/grid-track 不一致，而非 SelectMenu placement。旧对照分别是
+`fae8b70:src/ui/channel/ChannelMembersPanel.jsx:61-67` 与
+`fae8b70:src/styles/primitives.css:68-75`。
+
+### 109px 不是一个可整体接受的“popover successor”
+
+当前 card 比 fae 多 `321 - 212 = 109px`，可精确拆解为：
+
+- **75px accidental row expansion**：两行各 `+26px`，末行 `+23px`，均由第六个 child
+  `移除` 的 implicit row 产生。这是基础布局/用户能力呈现 RED：移除动作从对应 actor
+  行脱离，落到左侧空白位置，造成行归属不清且在 600px 触控布局中直接增加卡片高度。
+- **34px intentional unsupported copy**：当前 card 另有第二个 protected-note（24px 文本
+  + 10px gap），用于说明治理端口没有绑定/重启命令。这段文案本身是公开 unsupported
+  事实，不能为了恢复旧高度而删除、隐藏或改成 enabled 假能力；它可作为合法 successor
+  内容单独保留。
+
+所以本轮独立裁决为：**popover 覆盖仍可合法；但关闭态 managed-actor 隐式换行是独立
+真实视觉/布局 RED（75px 首断点），当前卡片总高差 109px 不能用 Round47 overlay 合同
+吸收。** 旧 screenshot 的向下菜单只是进一步放大了这个高度差，不是首断点。
+
+### 产品 owner 与严格修复边界（本 agent 不施工）
+
+唯一 owner 是 `GovernanceFeature.ChannelMembers` 与其 managed-actor layout 边界。正确
+修复必须保留无端口时 disabled `绑定`/`重启` 的用户可理解 unsupported 能力，再让现有
+响应式 grid 对 6 个 child 有显式、同一行的布局（或由该 owner 提供等价的公开行结构）；
+不能简单删除 disabled 控件、CSS 隐藏 `移除`，也不能把旧 snapshot 调高阈值。修复后
+验收应在菜单关闭态先断言：每个 row 的 `移除/Owner` 与该 row 资料同一 grid row、没有
+implicit second row、600×720 卡片不再因占位发生 +75px；然后再独立运行 Round47 的
+popover viewport/focus oracle。
+
+本轮只交付该独立 RED 与 owner 复现证据；未编辑产品或测试。
