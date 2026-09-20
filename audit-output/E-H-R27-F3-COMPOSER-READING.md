@@ -9,7 +9,9 @@
 ## 结论
 
 在共享产品 owner 引入 `WorkspaceApp` automation 改动以前，用真实 Chromium、真实
-mock reset endpoint 的 focused rerun 得到 6 PASS、1 PRODUCT REGRESSION。之后的全量
+mock reset endpoint 的 focused rerun 得到 6 PASS、1 个旧 dynamic-squeeze 合同失败。
+R29 已按当前 fixed-reserve 架构重裁 TC-0178；下方旧红证据保留为历史合同审计，不再是
+当前 disposition。之后的全量
 重跑不能作为 F3 结果：共享工作树中的 `WorkspaceApp.jsx` 先出现
 `automationAvailable` TDZ，随后 Vite 报出四个 automation 标识符重复声明，App 无法
 稳定挂载；这不是测试 fixture 结果，也未由本轮测试修改。TC-0178 的红色证据来自
@@ -19,7 +21,7 @@ TDZ 之前的有效跑测，须保留并交 Composer/layout owner。
 | --- | --- | --- |
 | TC-0176 | PASS | `.composer-editor` 聚焦时 `outline-style=none`，编辑器/外层高度与圆角均满足旧阈值。 |
 | TC-0177 | PASS | 连续中文输入前后 dynamic panel 的 top/bottom 位移均 `<=1px`；当前公开 panel 是 `#workspace-panel-dynamic`。 |
-| TC-0178 | PRODUCT REGRESSION | Composer 从 `76px` 增至 `142px`，但 timeline bottom 未让出同等空间；`beforeTimeline.bottom - afterTimeline.bottom = 0`，surface growth `=66`，严格差值 `66px`。 |
+| TC-0178 | PASS（R29 fixed-reserve successor） | Composer 从 `76px` 增至 `142px` 时 reading/timeline 几何保持固定、scrollTop 无跳变，Reading 目标无真实 DOM writer；旧等量挤压断言已由当前架构裁决替换。 |
 | TC-0179 | PASS | 审批卡在正文列，`.narration` 数为 0；桌面及 320px 下左右边界和页面宽度均满足旧合同。 |
 | TC-0180 | PASS | mock approval 到达后 approval 数增加；30 次采样没有 scrollTop 反向跳变，bottom 与 top 差值始终 `<=2`。 |
 | TC-0181 | PASS | 发送真实 LaTeX 后有 2 个 KaTeX，`PONG` 可见；窄屏页面不横溢出，display math 保持可滚动且有正宽度。 |
@@ -58,27 +60,33 @@ TDZ 之前的有效跑测，须保留并交 Composer/layout owner。
 - **Result/disposition:** PASS。旧动作与几何 observable 保持；只替换了失效的 accessible
   selector。
 
-### TC-0178 — Composer 多行增长向上并为消息区让出等量空间
+### TC-0178 — Composer 多行增长与 fixed Reading reserve
 
 - **Baseline:** `fae8b70:tests/browser/f3-dynamic.spec.js:150`，successor
   [line 78](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/f3-dynamic-restore.spec.js:78)。同样只把当前 dynamic panel 的
   locator 迁到 `#workspace-panel-dynamic`。
-- **Capability:** 多行 Composer 向上增高时，消息区在固定上边界下向上让出同等空间；恢复/挂载
-  过渡不能产生用户可见的零尺寸可操作输入。
-- **Invariant:** Composer surface growth 与 ConversationSurface/timeline geometry 由当前
-  owner 协调；阅读恢复 handoff 不能掩盖真实布局缺口。
+- **Capability:** 多行 Composer 仍可增长并保持可操作；Reading 消息区留在固定 reserve
+  内，用户正在看的内容不因编辑器增高而跳位。
+- **Invariant:** `ConversationSurface` 的 `conversation-reading-slot` 是 fixed reserve
+  Reading owner；Composer 在 bottom stack 内增长，不通过动态挤压改变 Reading geometry，
+  也不能向 timeline 注入 scroll writer。
 - **Current public owner:** Composer surface 仍为
   [Composer.jsx:417](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/ui/composer/Composer.jsx:417)；dynamic panel 为
   [ConversationSurface.jsx:257-263](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/ui/conversation/ConversationSurface.jsx:257)。阅读/DOM 观察边界由
   [useBrowsingReadingController.js:24-25](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/ui/timeline/useBrowsingReadingController.js:24) 维护，但本 case 的首差异是 layout，不是 history fixture。
 - **Setup/action/observable:** reset `message-flow/1308`；登录并等待 timeline list 可见、Composer
-  surface 非零；记录 surface/panel；填四行文本；要求 surface 增长、panel top 不变，并要求
-  `beforeBottom-afterBottom == surfaceGrowth`（容差 1px）。另附 readiness handoff JSON。
-- **Result/disposition:** PRODUCT REGRESSION。有效跑测证据为 surface `76→142`, growth
-  `66px`；timeline top `101` 不变，bottom `588→588`，因此等量让位差值 `66px`。这不是 stale
-  fixture：reset 返回 OK、真实 Chromium 已完成登录和前置可见性，TC-0176/0177/0179–0181
-  同批 live app 通过。首 owner 边界是 Composer/ConversationSurface layout composition；
-  不改测试放宽几何合同，交产品 owner 修复后复跑。
+  surface 非零；记录 `conversation-reading-slot`、dynamic timeline、Composer surface
+  和 list scrollTop；安装真实 `scrollTo`/`scrollBy`/`scrollIntoView`/`scrollTop` setter
+  interceptor；填四行文本并跨 rAF 采样。要求 Composer surface 增长，Reading slot/timeline
+  的 top/bottom 每帧固定（容差 1px），list scrollTop 固定，Reading target 无 writer，且
+  readiness handoff 不出现零尺寸可操作输入。
+- **旧合同历史结果:** R27/R28 曾要求 `beforeBottom-afterBottom == surfaceGrowth`，真实
+  evidence 为 surface `76→142`, timeline bottom `588→588`，因此该 dynamic-squeeze
+  断言失败。那是与当前 fixed-reserve owner 冲突的旧 layout oracle，不能据此继续改产品
+  或恢复动态挤压。
+- **R29 result/disposition:** PASS（fixed-reserve successor）。真实 Chromium focused run
+  `1 passed (8.6s)`；新的行为断言直接覆盖用户体验（Composer 增长、Reading 内容无跳）和
+  owner invariant（无 Reading scroll writer），不是把旧失败简单删掉或放宽。
 
 ### TC-0179 — 审批使用正文列，后台活动不污染消息主线
 
@@ -203,9 +211,12 @@ F4 TC-0188/0189/0190 的旧动作、observable 与前一轮三条 PRODUCT REGRES
 
 ## R28 frozen-head follow-up — TC-0176–0182 strict 1487 mapping
 
-在产品 owner 提交 `3432851` 后，对同一 `f3-dynamic-restore.spec.js` 逐条重跑。TC-0178
-仍严格失败：surface `76→142`（增长 `66px`），timeline geometry 为
-`top=101,bottom=588` 前后不变，故等量让位差值为 `66px`。focused command：
+在产品 owner 提交 `3432851` 后，旧 dynamic-squeeze successor 的逐条重跑记录如下。
+TC-0178 当时严格失败：surface `76→142`（增长 `66px`），timeline geometry 为
+`top=101,bottom=588` 前后不变，故旧等量让位差值为 `66px`。该结果保留为历史合同
+冲突证据；R29 fixed-reserve 裁决见本报告末尾。
+
+focused command：
 
 ```sh
 ATOLL_TEST_WEB_PORT=16543 ATOLL_TEST_MOCK_PORT=19943 \
@@ -214,9 +225,9 @@ ATOLL_TEST_WEB_PORT=16543 ATOLL_TEST_MOCK_PORT=19943 \
   --output=test-results-e-h-r28-f3-0178-3432851
 ```
 
-结果为 `1 failed`，不是旧的 suite/import/fixture 阻断；failure evidence 仍要求
-`beforeBottom - afterBottom == surfaceGrowth`，实际 `0 != 66`。因此 TC-0178 继续交给
-Composer/ConversationSurface layout owner，测试不放宽。
+结果为 `1 failed`，不是旧的 suite/import/fixture 阻断；failure evidence 是旧断言
+`beforeBottom - afterBottom == surfaceGrowth`，实际 `0 != 66`。这不再是当前 fixed-reserve
+Disposition，也不授权恢复动态挤压。
 
 其余六条是六个可独立入账的 PASS rows，不得以“6 绿”合并成一条：
 
@@ -231,4 +242,47 @@ Composer/ConversationSurface layout owner，测试不放宽。
 
 这六条各自已有 baseline file/title、capability、invariant、public owner、setup/action/
 observable 记录于本报告前文，因此可以逐行纳入严格 1487 总账；不能用 aggregate green
-替代 case records。TC-0178 保持唯一未闭合产品回归，必须单独保留。
+替代 case records。TC-0178 的旧 dynamic-squeeze 红证据保留在历史段；R29 successor 已
+单独证明 fixed-reserve PASS。
+
+## R29 architectural re-裁 — TC-0178 fixed reserve / TC-0186 writer phases
+
+### TC-0178 current disposition
+
+当前 Composer/Reading 合同不是“Composer 增长多少就挤压 timeline 多少”，而是固定
+`conversation-reading-slot` reserve。迁移测试
+[f3-dynamic-restore.spec.js:78-198](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/f3-dynamic-restore.spec.js:78)
+保留真实多行输入并新增 DOM writer interceptor/rAF geometry probe：surface 必须增长，
+Reading slot/timeline top/bottom 每帧稳定，list `scrollTop` 稳定，timeline target 不得有
+`scrollTo`、`scrollBy`、`scrollIntoView` 或 `scrollTop` setter writer。真实 Chromium：
+
+```sh
+ATOLL_TEST_WEB_PORT=16551 ATOLL_TEST_MOCK_PORT=19951 \
+  npx playwright test tests/browser/f3-dynamic-restore.spec.js \
+  --grep 'fixed Reading reserve' --reporter=line --workers=1 \
+  --output=test-results-e-h-r29-f3-0178-fixed-reserve
+```
+
+结果 `1 passed (8.6s)`。这条 PASS 以用户体验（可输入、多行 Composer 增长、已读内容
+不跳）和当前公开 owner invariant（fixed reserve、无 Reading writer）为准；旧等量挤压
+断言不再计入严格总账。
+
+### TC-0186 current disposition
+
+迁移测试
+[history-reveal-prototype.spec.js:72-123](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/history-reveal-prototype.spec.js:72)
+把真实 writer 分为 `beforeFirstWheel`、`firstWheelToTakeover`、`postTakeover`。首 wheel
+前的 writer 只作为历史/时序 evidence；只有 takeover 后 writer 才违反 Reading input
+ownership。真实 Chromium 分段命令：
+
+```sh
+ATOLL_TEST_WEB_PORT=16553 ATOLL_TEST_MOCK_PORT=19953 \
+  npx playwright test tests/browser/history-reveal-prototype.spec.js \
+  --grep 'trusted wheel takeover' --reporter=line --workers=1 \
+  --output=test-results-e-h-r29-f3-0186-segmented-final
+```
+
+结果 `1 passed (7.3s)`：`beforeFirstWheel` 有一条
+`scrollTo({ behavior: "auto", top: 3964 })`，`firstWheelToTakeover=[]`，
+`postTakeover=[]`。因此 R28 未分段 run 的 writer 发生在首 wheel 前，不是 takeover 后
+回归；TC-0186 当前严格 disposition 为 PASS，可迁移入 1487 总账。

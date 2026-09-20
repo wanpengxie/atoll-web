@@ -75,10 +75,9 @@ test('连续中文输入不改变 Composer 与消息区的布局尺寸', async (
   expect(Math.abs(after.timelineBottom - before.timelineBottom)).toBeLessThanOrEqual(1);
 });
 
-test('Composer 随多行内容向上增高，并稳定地为消息区让出同等空间', async ({ page, request }, testInfo) => {
+test('Composer 多行增长保持 fixed Reading reserve，不跳位且不写 Reading scroll', async ({ page, request }, testInfo) => {
   await reset(request, 'message-flow', 1308); await login(page);
   const editor = page.getByLabel('消息');
-  const timeline = page.locator('#workspace-panel-dynamic');
   const composer = page.locator('.composer-surface');
   const handoff = await page.evaluate(() => {
     const surface = document.querySelector('.composer-surface');
@@ -99,15 +98,123 @@ test('Composer 随多行内容向上增高，并稳定地为消息区让出同�
   expect(handoff.inputVisible && handoff.surfaceHeight === 0, JSON.stringify(handoff)).toBe(false);
   await expect(page.locator('.timeline-message-list')).toBeVisible();
   await expect.poll(() => composer.evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThan(0);
-  const beforeSurface = await composer.evaluate((node) => node.getBoundingClientRect().height);
-  const beforeTimeline = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
+  await page.evaluate(() => {
+    const writes = [];
+    const describe = (node) => node?.className ? `${node.tagName.toLowerCase()}.${String(node.className).split(/\s+/).filter(Boolean).join('.')}` : String(node);
+    const record = (kind, node, args) => writes.push({
+      kind,
+      node: describe(node),
+      isReading: Boolean(node?.closest?.('.timeline-message-list') || node?.classList?.contains?.('timeline-message-list')),
+      args,
+    });
+    const scrollTo = Element.prototype.scrollTo;
+    const scrollBy = Element.prototype.scrollBy;
+    const scrollIntoView = Element.prototype.scrollIntoView;
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    Element.prototype.scrollTo = function patchedScrollTo(...args) {
+      record('scrollTo', this, args);
+      return scrollTo.apply(this, args);
+    };
+    Element.prototype.scrollBy = function patchedScrollBy(...args) {
+      record('scrollBy', this, args);
+      return scrollBy.apply(this, args);
+    };
+    Element.prototype.scrollIntoView = function patchedScrollIntoView(...args) {
+      record('scrollIntoView', this, args);
+      return scrollIntoView.apply(this, args);
+    };
+    if (descriptor?.get && descriptor?.set) {
+      Object.defineProperty(Element.prototype, 'scrollTop', {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get() { return descriptor.get.call(this); },
+        set(value) {
+          record('scrollTop-set', this, [value]);
+          return descriptor.set.call(this, value);
+        },
+      });
+    }
+    window.__tc0178ScrollWrites = {
+      writes,
+      restore() {
+        Element.prototype.scrollTo = scrollTo;
+        Element.prototype.scrollBy = scrollBy;
+        Element.prototype.scrollIntoView = scrollIntoView;
+        if (descriptor?.get && descriptor?.set) Object.defineProperty(Element.prototype, 'scrollTop', descriptor);
+      },
+    };
+  });
+  const geometry = () => page.evaluate(() => {
+    const rect = (node) => {
+      const value = node?.getBoundingClientRect?.();
+      return value ? { top: value.top, bottom: value.bottom, height: value.height } : null;
+    };
+    const slot = document.querySelector('.conversation-reading-slot');
+    const currentTimeline = document.querySelector('#workspace-panel-dynamic');
+    const list = document.querySelector('.timeline-message-list');
+    const surface = document.querySelector('.composer-surface');
+    return {
+      readingSlot: rect(slot),
+      timeline: rect(currentTimeline),
+      surface: rect(surface),
+      list: list ? {
+        scrollTop: list.scrollTop,
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight,
+      } : null,
+    };
+  });
+  const before = await geometry();
+  await page.evaluate(() => {
+    window.__tc0178Frames = [];
+    window.__tc0178Sampling = true;
+    const sample = () => {
+      if (!window.__tc0178Sampling) return;
+      const slot = document.querySelector('.conversation-reading-slot')?.getBoundingClientRect();
+      const currentTimeline = document.querySelector('#workspace-panel-dynamic')?.getBoundingClientRect();
+      const list = document.querySelector('.timeline-message-list');
+      window.__tc0178Frames.push({
+        readingTop: slot?.top ?? null,
+        readingBottom: slot?.bottom ?? null,
+        timelineTop: currentTimeline?.top ?? null,
+        timelineBottom: currentTimeline?.bottom ?? null,
+        scrollTop: list?.scrollTop ?? null,
+      });
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
   await editor.fill('第一行\n第二行\n第三行\n第四行');
-  const afterSurface = await composer.evaluate((node) => node.getBoundingClientRect().height);
-  const afterTimeline = await timeline.evaluate((node) => node.getBoundingClientRect().toJSON());
-  const evidence = JSON.stringify({ beforeSurface, afterSurface, beforeTimeline, afterTimeline });
-  expect(afterSurface).toBeGreaterThan(beforeSurface);
-  expect(Math.abs(afterTimeline.top - beforeTimeline.top)).toBeLessThanOrEqual(1);
-  expect(Math.abs((beforeTimeline.bottom - afterTimeline.bottom) - (afterSurface - beforeSurface)), evidence).toBeLessThanOrEqual(1);
+  await expect.poll(() => composer.evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThan(before.surface.height);
+  await page.waitForTimeout(250);
+  const after = await geometry();
+  const evidence = await page.evaluate(() => {
+    window.__tc0178Sampling = false;
+    window.__tc0178ScrollWrites?.restore();
+    const writes = window.__tc0178ScrollWrites?.writes || [];
+    return { frames: window.__tc0178Frames, writes, timelineWrites: writes.filter((entry) => entry.isReading) };
+  });
+  const context = JSON.stringify({ before, after, evidence });
+  await testInfo.attach('composer-fixed-reading-reserve.json', {
+    body: Buffer.from(JSON.stringify({ before, after, ...evidence }, null, 2)),
+    contentType: 'application/json',
+  });
+  expect(after.surface.height, context).toBeGreaterThan(before.surface.height);
+  // Reading is an absolute fixed-reserve slot. Composer growth is allowed to
+  // paint in its own bottom stack, but may not resize or move the message
+  // surface as the deleted dynamic-squeeze contract used to require.
+  expect(Math.abs(after.readingSlot.top - before.readingSlot.top), context).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.readingSlot.bottom - before.readingSlot.bottom), context).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.timeline.top - before.timeline.top), context).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.timeline.bottom - before.timeline.bottom), context).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.list.scrollTop - before.list.scrollTop), context).toBeLessThanOrEqual(1);
+  expect(evidence.timelineWrites, context).toEqual([]);
+  expect(evidence.frames.length, context).toBeGreaterThan(1);
+  expect(evidence.frames.every((frame) => Math.abs(frame.readingTop - before.readingSlot.top) <= 1
+    && Math.abs(frame.readingBottom - before.readingSlot.bottom) <= 1
+    && Math.abs(frame.timelineTop - before.timeline.top) <= 1
+    && Math.abs(frame.timelineBottom - before.timeline.bottom) <= 1
+    && Math.abs(frame.scrollTop - before.list.scrollTop) <= 1), context).toBe(true);
 });
 
 test('审批使用正文列，后台活动不污染消息主线', async ({ page, request }) => {

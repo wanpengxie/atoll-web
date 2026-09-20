@@ -12,7 +12,7 @@ observable，分别指向当前公开 owner；旧 `fold-authority.html` / `windo
 | TC-0183 | PASS | 当前 App 的 channel roundtrip + append focused browser：`1 passed (8.7s)`。 |
 | TC-0184 | PASS（公开语义 successor） | 当前 admission/lease/fold policy 单测共 `49 passed`；中间 candidate withholding、semantic tail release、prepend/filter authority、latest/historical fold policy 均有独立断言。 |
 | TC-0185 | PASS（行为 successor；旧私有 trace 为 obsolete oracle） | 真实 App 的 latest-role transfer/browser anchor：`1 passed (16.6s)`；另有 fold policy/lease 单测。 |
-| TC-0186 | PRODUCT REGRESSION | 真实 App trusted-wheel focused run 失败：wheel 后仍出现一次 native `scrollTo({ behavior: "auto", top: 3964 })`；不能用单测绿覆盖浏览器回归。 |
+| TC-0186 | PASS（R29 分段 successor） | 真实 App 分段 trusted-wheel run：首 wheel 前有一条 writer；首 wheel→takeover 与 takeover 后均无 writer，`1 passed (7.3s)`。 |
 | TC-0187 | PASS | 当前真实虚拟列表的中部和靠顶两种合法 clamp 放置均通过：`2 passed (32.8s)`。 |
 
 ## TC-0183 — 用户显式收起 current entry 后，切频道返回与后续 append 都保留 override
@@ -137,26 +137,25 @@ observable，分别指向当前公开 owner；旧 `fold-authority.html` / `windo
   当前 browser successor 是
   [history-reveal-prototype.spec.js:72-105](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/history-reveal-prototype.spec.js:72)。
 - **Setup/action/observable:** reset `deep-history-delayed/0x92_41_22`；真实 Chromium 登录；
-  在 live `.timeline-message-list` 上 wheel `-2000`，等待 100ms 后 wheel `+520`；要求
-  list 仍 connected、mode=`browsing`、且从 takeover 后 `Element.prototype.scrollTo`
-  /`scrollBy` 的 writes 为空。测试没有 fixture、私有 export 或 mock success。
+  在 live `.timeline-message-list` 上 wheel `-2000`，等待 100ms 后 wheel `+520`。DOM
+  interceptor 把 writer 分成 `beforeFirstWheel`、`firstWheelToTakeover` 和
+  `postTakeover`；测试要求 list 仍 connected、mode=`browsing`，且仅最后一个阶段
+  `postTakeover` 为空。首 wheel 前的既有 writer 作为证据保留，不被误归因给 takeover。
+  测试没有 fixture、私有 export 或 mock success。
 - **Evidence/disposition:**
 
   ```sh
-  ATOLL_TEST_WEB_PORT=16548 ATOLL_TEST_MOCK_PORT=19948 \
+  ATOLL_TEST_WEB_PORT=16553 ATOLL_TEST_MOCK_PORT=19953 \
     npx playwright test tests/browser/history-reveal-prototype.spec.js \
-    --grep 'trusted wheel' --reporter=line --workers=1 \
-    --output=test-results-e-h-r28-f3-0186-wheel-3432851-rerun
+    --grep 'trusted wheel takeover' --reporter=line --workers=1 \
+    --output=test-results-e-h-r29-f3-0186-segmented-final
   ```
 
-  结果为 `1 failed`：mode/list 前置断言通过，但 `writes` 实际为
-  `[{ method: "scrollTo", args: [{ behavior: "auto", top: 3964 }] }]`，期望 `[]`。
-  单测中的同步 revoke/lease 断言通过，不能抵销 live browser 的迟到 writer。因此是
-  **PRODUCT REGRESSION**，不是 stale fixture。最小产品回归包：首次差异在
-  `VendorListExecutor` 的 pending position-restore/paint fence 与 native input takeover
-  边界；能力和 invariant 如上；reset、真实 Chromium、真实 DOM 与非空 writer evidence
-  证明不是 mock/隐藏 UI。产品 owner 应在现有 owner 内修复并用原断言重跑；本轮不改产品、
-  不放宽 `writes === []`。
+  结果 `1 passed (7.3s)`。分段 evidence 为：`beforeFirstWheel` 一条
+  `scrollTo({ behavior: "auto", top: 3964 })`，`firstWheelToTakeover=[]`，
+  `postTakeover=[]`；因此旧 R28 未分段 run 中看到的同一 writer 实际发生在首 wheel
+  之前，不能当作 takeover 后回归。同步 revoke/lease 单测和真实 browser 的 post-
+  takeover writer 结论一致，TC-0186 按公开 successor PASS 迁移。
 
 ## TC-0187 — F7 收起虚拟列表里的长消息时，合法 clamp 后控件仍可用且没有第二次位移
 
@@ -197,13 +196,12 @@ observable，分别指向当前公开 owner；旧 `fold-authority.html` / `windo
 
 TC-0183–0187 仍是五个独立 baseline rows；本报告没有把旧 fixture 的多个 phase 合并成
 一个 suite case。可纳入严格 1487 总账的逐案结果为：0183 PASS、0184 PASS（公开
-semantic successor）、0185 PASS（公开 behavior successor）、0186 PRODUCT REGRESSION、
-0187 PASS。0186 必须保留为未闭合产品回归，不能因 49 个 unit 或其他 browser case
-通过而改写为 PASS。
+semantic successor）、0185 PASS（公开 behavior successor）、0186 PASS（R29 分段公开
+successor）、0187 PASS。0186 的旧未分段 `writes` 红证据保留为审计历史，但不再作为
+当前 disposition；只有 `postTakeover=[]` 才被迁移为 PASS。
 
 ## Verification boundary
 
 本轮结果基于各命令输出目录中的 focused evidence。shared worktree 在跑测后仍可能有
-其他 owner 的未提交源码/测试变更；本报告未 stage 或修改它们。尤其 0186 的失败证据
-保持原始 `writes` assertion，不采信后续未提交产品 patch；产品 owner 提交后应在同一
-公开测试上独立复验。
+其他 owner 的未提交源码/测试变更；本报告未 stage 或修改它们。0186 的旧 aggregate
+failure 与 R29 分段 evidence 均保留，最终判定只采信 takeover 后阶段；未改产品来追绿。

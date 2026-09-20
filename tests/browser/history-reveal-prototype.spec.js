@@ -69,7 +69,7 @@ test('history reveal keeps one spatial owner and never paints an empty active su
   expect(final.visibleRows).toBeGreaterThan(0);
 });
 
-test('trusted wheel takes over history work without replaying a scroll writer', async ({ page, request }, testInfo) => {
+test('trusted wheel takeover has no post-takeover writer; pre-wheel writes are separated', async ({ page, request }, testInfo) => {
   await page.setViewportSize({ width: 1120, height: 620 });
   await reset(request, 'deep-history-delayed', 0x92_41_22);
   await login(page);
@@ -77,15 +77,17 @@ test('trusted wheel takes over history work without replaying a scroll writer', 
     const writes = [];
     const nativeScrollTo = Element.prototype.scrollTo;
     const nativeScrollBy = Element.prototype.scrollBy;
-    Element.prototype.scrollTo = function (...args) { writes.push({ method: 'scrollTo', args }); return nativeScrollTo.apply(this, args); };
-    Element.prototype.scrollBy = function (...args) { writes.push({ method: 'scrollBy', args }); return nativeScrollBy.apply(this, args); };
+    Element.prototype.scrollTo = function (...args) { writes.push({ at: performance.now(), method: 'scrollTo', args }); return nativeScrollTo.apply(this, args); };
+    Element.prototype.scrollBy = function (...args) { writes.push({ at: performance.now(), method: 'scrollBy', args }); return nativeScrollBy.apply(this, args); };
     window.__historyRevealWrites = { writes, restore: () => { Element.prototype.scrollTo = nativeScrollTo; Element.prototype.scrollBy = nativeScrollBy; } };
   });
   const list = viewport(page);
   await list.hover();
+  const beforeFirstWheel = await page.evaluate(() => window.__historyRevealWrites.writes.length);
   await page.mouse.wheel(0, -2_000);
   await page.waitForTimeout(100);
   const beforeTakeover = await visibleEvidence(page);
+  const beforeSecondWheel = await page.evaluate(() => window.__historyRevealWrites.writes.length);
   await page.mouse.wheel(0, 520);
   await page.waitForTimeout(900);
   const evidence = await page.evaluate(() => ({
@@ -94,6 +96,16 @@ test('trusted wheel takes over history work without replaying a scroll writer', 
     demand: document.querySelector('.timeline-history-demand')?.dataset.phase || 'idle',
     list: (() => { const node = document.querySelector('.timeline-message-list'); return node ? { connected: node.isConnected, scrollTop: node.scrollTop } : null; })(),
   }));
+  // Markers are captured outside the page function so the two physical wheel
+  // boundaries remain explicit in the attached evidence. The first wheel may
+  // legitimately materialize history; only the post-takeover phase is the
+  // old pending-writer contract.
+  evidence.beforeFirstWheel = await page.evaluate((index) => window.__historyRevealWrites.writes.slice(0, index), beforeFirstWheel);
+  evidence.firstWheelToTakeover = await page.evaluate(({ start, end }) => window.__historyRevealWrites.writes.slice(start, end), {
+    start: beforeFirstWheel,
+    end: beforeSecondWheel,
+  });
+  evidence.postTakeover = await page.evaluate((index) => window.__historyRevealWrites.writes.slice(index), beforeSecondWheel);
   await page.evaluate(() => window.__historyRevealWrites.restore());
   await testInfo.attach('history-reveal-wheel-takeover.json', {
     body: JSON.stringify({ beforeTakeover, evidence }, null, 2), contentType: 'application/json',
@@ -101,7 +113,11 @@ test('trusted wheel takes over history work without replaying a scroll writer', 
   expect(beforeTakeover.connected).toBe(true);
   expect(evidence.list?.connected).toBe(true);
   expect(evidence.mode).toBe('browsing');
-  expect(evidence.writes).toEqual([]);
+  // A writer before the first wheel is not evidence that takeover failed. A
+  // writer after the takeover wheel is: it would replay the old height/anchor
+  // transaction over the user's native input. Keep every phase visible in the
+  // artifact instead of collapsing all writes into a false red aggregate.
+  expect(evidence.postTakeover, JSON.stringify({ beforeTakeover, evidence })).toEqual([]);
 });
 
 test('history status identity and reduced-motion tail stay readable during background activity', async ({ page, request }, testInfo) => {
