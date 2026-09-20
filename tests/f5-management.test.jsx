@@ -66,6 +66,43 @@ describe('F5 成员与全局表面', () => {
     expect(screen.getByText(/归属 principal 由声明本身决定/)).toBeTruthy();
   });
 
+  it('候选目录按显示名排序，并用稳定 ID 打破同名而不依赖到达顺序', async () => {
+    const user = userEvent.setup();
+    render(<ChannelAdministrationPanel
+      channel={{ id: 'c0' }}
+      port={{
+        principals: [
+          { id: 'principal-z', display_name: 'Same' },
+          { id: 'alice', display_name: 'Alice' },
+          { id: 'principal-a', display_name: 'Same' },
+        ],
+        declarations: [
+          { id: 'decl-z', name: 'Same', kind: 'tool' },
+          { id: 'decl-a', name: 'Same', kind: 'tool' },
+        ],
+        commands: {},
+      }}
+      onClose={vi.fn()}
+    />);
+
+    const select = screen.getByRole('combobox', { name: '选择参与者' });
+    await user.click(select);
+    const options = screen.getAllByRole('option');
+    expect(options.map((option) => option.textContent.trim())).toEqual([
+      '搜索用户、Agent 或工具',
+      'Alice · 用户',
+      'Same · 用户',
+      'Same · 用户',
+      'Same · 工具',
+      'Same · 工具',
+    ]);
+    await user.click(options[2]);
+    expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('principal-a');
+    await user.click(select);
+    await user.click(screen.getAllByRole('option')[4]);
+    expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('decl-a');
+  });
+
   it('全局搜索返回规范 SourceRef 并可用其打开结果', async () => {
     const user = userEvent.setup();
     const onOpen = vi.fn();

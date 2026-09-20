@@ -2994,3 +2994,10 @@ npx playwright test tests/browser/ui-visual.spec.js \
   真实 overlap 已量化，旧视觉 3/3 RED。
 - VIS09：**用户合同 repeat3 PASS**。
 - 本轮共享脏文件（含 Governance sort candidate）均未纳入提交。
+
+### Round46 post-run source-state correction
+
+测试完成后 Governance owner 已独立提交 `3d3edb5 fix(governance): sort participant candidates by display name`，
+并成为本提交 `67c8bd3` 的祖先；因此上文“dirty candidate、未提交”的描述只对应测试启动时的共享
+工作树状态，不再是当前交付状态。排序实现仍不属于本 agent 的提交，但 canonical sort 现在已进入
+可审计 HEAD；VIS08 的旧 screenshot/Popover overlap RED 仍然独立存在，未被排序提交掩盖。
