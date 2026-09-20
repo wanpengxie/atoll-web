@@ -114,7 +114,10 @@ const mocks = vi.hoisted(() => {
     artifactPreview: null, filesBusy: false, filesUploading: false, filesError: '', recentFiles: [],
     filesNext: null, filesScrollTop: 0, canGoBack: false, composerAttachments: [],
     attach: noOp, clear: noOp, downloadFile: vi.fn(() => Promise.resolve()), mutate: noOp,
-    refreshDirectory: vi.fn(() => Promise.resolve()), previewArtifact: vi.fn(() => Promise.resolve()),
+    directoryReceipt: { epoch: 0, channelId: '', deviceId: '', directory: '', phase: 'idle', error: '' },
+    refreshDirectory: vi.fn(() => Promise.resolve()),
+    refreshDirectoryReceipt: vi.fn(() => Promise.resolve({ epoch: 0, rows: [] })),
+    previewArtifact: vi.fn(() => Promise.resolve()),
     reset: noOp, setSelectedArtifact: noOp, uploadComposerAttachments: vi.fn(() => Promise.resolve()),
     uploadChannelFiles: vi.fn(() => Promise.resolve()), backArtifactPreview: noOp,
     createDirectory: vi.fn(() => Promise.resolve()), navigateFiles: noOp, loadMoreDirectory: noOp,
@@ -615,6 +618,96 @@ describe('真实 Workspace owner composition', () => {
       mocks.attachments.deviceId = previousDeviceId;
       mocks.attachments.devices = previousDevices;
       mocks.attachments.entries = previousEntries;
+    }
+  });
+
+  it('does not let a stale Files error settle a new picker request before its own refresh fails', async () => {
+    const previousDeviceId = mocks.attachments.deviceId;
+    const previousDevices = mocks.attachments.devices;
+    const previousEntries = mocks.attachments.entries;
+    const previousError = mocks.attachments.filesError;
+    const previousReceipt = mocks.attachments.directoryReceipt;
+    const previousRefresh = mocks.attachments.refreshDirectoryReceipt;
+    const refreshRejectors = [];
+    const refreshDirectory = vi.fn(() => new Promise((resolve, reject) => {
+      refreshRejectors.push(reject);
+    }));
+    mocks.attachments.deviceId = 'local-device';
+    mocks.attachments.devices = [{ id: 'local-device', name: 'local-device' }];
+    mocks.attachments.entries = [];
+    // This error belongs to the first request and remains in the shared Files
+    // projection while the Composer opens a second request.
+    mocks.attachments.filesError = '旧请求失败';
+    mocks.attachments.directoryReceipt = {
+      epoch: 4, channelId: 'c0', deviceId: 'local-device', directory: '', phase: 'settled', error: '旧请求失败',
+    };
+    mocks.attachments.refreshDirectoryReceipt = refreshDirectory;
+    try {
+      render(<WorkspaceApp />);
+      await waitFor(() => expect(mocks.composerResult?.commands?.pickChannelFile).toBeTypeOf('function'));
+
+      const first = mocks.composerResult.commands.pickChannelFile();
+      await waitFor(() => expect(refreshDirectory).toHaveBeenCalledTimes(1));
+      refreshRejectors[0](new Error('首个请求刷新失败'));
+      await expect(first).resolves.toBeNull();
+      expect(screen.getByRole('dialog', { name: '从频道文件选择' })).toBeTruthy();
+
+      // Close the first public picker before issuing the next command. This
+      // gives the next request a distinct modal mount and keeps the sequence
+      // independent of React's same-turn state batching.
+      await userEvent.setup().click(screen.getByRole('button', { name: '取消' }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: '从频道文件选择' })).toBeNull());
+
+      let secondSettled = false;
+      const second = mocks.composerResult.commands.pickChannelFile().then((value) => {
+        secondSettled = true;
+        return value;
+      });
+      await waitFor(() => expect(refreshDirectory).toHaveBeenCalledTimes(2));
+      // A global error from request 1 must not settle request 2. Its refresh
+      // rejection below is the only legal completion for this request.
+      await Promise.resolve();
+      expect(secondSettled).toBe(false);
+
+      refreshRejectors[1](new Error('本次刷新失败'));
+      await expect(second).resolves.toBeNull();
+      expect(screen.getByRole('dialog', { name: '从频道文件选择' })).toBeTruthy();
+    } finally {
+      for (const reject of refreshRejectors) reject(new Error('picker test cleanup'));
+      mocks.attachments.deviceId = previousDeviceId;
+      mocks.attachments.devices = previousDevices;
+      mocks.attachments.entries = previousEntries;
+      mocks.attachments.filesError = previousError;
+      mocks.attachments.directoryReceipt = previousReceipt;
+      mocks.attachments.refreshDirectoryReceipt = previousRefresh;
+    }
+  });
+
+  it('settles the current public picker when its own directory refresh rejects', async () => {
+    const previousDeviceId = mocks.attachments.deviceId;
+    const previousDevices = mocks.attachments.devices;
+    const previousEntries = mocks.attachments.entries;
+    const previousError = mocks.attachments.filesError;
+    const previousRefresh = mocks.attachments.refreshDirectoryReceipt;
+    const refreshDirectory = vi.fn().mockRejectedValue(new Error('本次刷新失败'));
+    mocks.attachments.deviceId = 'local-device';
+    mocks.attachments.devices = [{ id: 'local-device', name: 'local-device' }];
+    mocks.attachments.entries = [];
+    mocks.attachments.filesError = '';
+    mocks.attachments.refreshDirectoryReceipt = refreshDirectory;
+    try {
+      render(<WorkspaceApp />);
+      await waitFor(() => expect(mocks.composerResult?.commands?.pickChannelFile).toBeTypeOf('function'));
+      const pick = mocks.composerResult.commands.pickChannelFile();
+      await waitFor(() => expect(refreshDirectory).toHaveBeenCalledTimes(1));
+      await expect(pick).resolves.toBeNull();
+      expect(screen.getByRole('dialog', { name: '从频道文件选择' })).toBeTruthy();
+    } finally {
+      mocks.attachments.deviceId = previousDeviceId;
+      mocks.attachments.devices = previousDevices;
+      mocks.attachments.entries = previousEntries;
+      mocks.attachments.filesError = previousError;
+      mocks.attachments.refreshDirectoryReceipt = previousRefresh;
     }
   });
 });

@@ -48,12 +48,38 @@ describe('Workspace Files → Composer picker port', () => {
     expect(dialog).toBeTruthy();
   });
 
-  it('settles the caller when Files reports an error while keeping the error dialog visible', async () => {
+  it('settles the caller when the current refresh receipt reports an error while keeping the error dialog visible', async () => {
     const onRequestSettled = vi.fn();
-    render(<WorkspaceFeatureOverlays filePicker={{
+    const refresh = vi.fn(() => Promise.resolve());
+    const baseFiles = {
+      deviceId: 'local-device',
+      refreshReceipt: {
+        epoch: 3, channelId: 'c0', deviceId: 'local-device', directory: '', phase: 'pending', error: '',
+      },
+      // An older global error is still present, but must not settle this
+      // request before its own receipt arrives.
+      error: '旧请求失败',
+      commands: { refresh },
+    };
+    const { rerender } = render(<WorkspaceFeatureOverlays filePicker={{
       open: true,
       channel: { id: 'c0', qualified_name: 'c0' },
-      files: { error: '目录读取失败', commands: {} },
+      files: baseFiles,
+      onRequestSettled,
+      onClose: vi.fn(),
+    }} />);
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(onRequestSettled).not.toHaveBeenCalled();
+    rerender(<WorkspaceFeatureOverlays filePicker={{
+      open: true,
+      channel: { id: 'c0', qualified_name: 'c0' },
+      files: {
+        ...baseFiles,
+        refreshReceipt: {
+          epoch: 4, channelId: 'c0', deviceId: 'local-device', directory: '', phase: 'settled', error: '目录读取失败',
+        },
+      },
       onRequestSettled,
       onClose: vi.fn(),
     }} />);
