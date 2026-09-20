@@ -805,6 +805,31 @@ full current-owner run remains **17 files, 109/109 GREEN**; the baseline stays
 159 cases. No product source, memory/model-selector case, notification owner,
 vendor/package/lockfile, or compatibility API changed.
 
+## Round 29 exact-path recovery: user protocol, projection, and validation contracts
+
+The next nine unique declarations are split across explicit Markdown link/math
+projection, message-time projection, and protocol validation. None repeats
+TC-0923, TC-0925–0928, TC-1047, or the earlier live/memory/model cases. Each
+baseline declaration has one separately auditable public-owner test.
+
+| baseline case | user capability and invariant | current public owner | executable evidence and result |
+|---|---|---|---|
+| TC-0929 | Unsafe URL schemes are refused at the rendered-link boundary. | MarkdownContent | tests/i-m-exact-path-contracts.test.jsx:1196-1199 — javascript URL href is empty; **PASS** |
+| TC-0930 | An explicit absolute file reference opens in-app while a normal web link remains external. | MarkdownFileReferenceProvider + MarkdownContent | tests/i-m-exact-path-contracts.test.jsx:1201-1216 — callback receives normalized path/line and web target is _blank; **PASS** |
+| TC-0931 | Prepared content follows the current provider after context replacement, not a stale callback. | MarkdownFileReferenceProvider + MarkdownContent | tests/i-m-exact-path-contracts.test.jsx:1218-1236 — only nextOpen is called; **PASS** |
+| TC-0932 | Plain text, inline code, relative links, and protocol-relative links are never guessed as file references. | MarkdownFileReferenceProvider + MarkdownContent | tests/i-m-exact-path-contracts.test.jsx:1238-1250 — no file-reference class or callback; **PASS** |
+| TC-1032 | A same-day message exposes only its local clock. | messageTimeLabel | tests/i-m-exact-path-contracts.test.jsx:1252-1256 — 00:05 and 23:59 remain clock-only; **PASS** |
+| TC-1035 | Missing timestamps produce no misleading date/time text. | messageTimeLabel | tests/i-m-exact-path-contracts.test.jsx:1258-1262 — zero/undefined both return empty labels; **PASS** |
+| TC-1048 | Every minimal closed-set upstream payload is accepted by the wire protocol. | validatePayload | tests/i-m-exact-path-contracts.test.jsx:1264-1285 — all 12 public frame payloads validate; **PASS** |
+| TC-1050 | Resource validation follows operation-specific requirements instead of a global resource_id rule. | validatePayload | tests/i-m-exact-path-contracts.test.jsx:1287-1298 — list/create/read/unknown-op branches assert their public outcomes; **PASS** |
+| TC-1051 | A non-positive timer duration is rejected with an explicit validation error. | validatePayload | tests/i-m-exact-path-contracts.test.jsx:1300-1304 — zero duration reports positive-duration error; **PASS** |
+
+Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
+-t 'TC-0929|TC-0930|TC-0931|TC-0932|TC-1032|TC-1035|TC-1048|TC-1050|TC-1051'
+→ **9/9 GREEN**. The full exact bridge is now **65/65 GREEN**, and the
+current-owner run remains **17 files, 109/109 GREEN**. No product source or
+compatibility behavior was changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -843,6 +868,9 @@ vendor/package/lockfile, or compatibility API changed.
   56/56 GREEN.
   TC-0924 remains represented by its earlier Round 14 contract and is not
   duplicated.
+- Round 29 adds nine independent protocol/projection/validation contracts
+  (TC-0929–TC-0932, TC-1032, TC-1035, and TC-1048/1050/1051); the exact bridge
+  is now 65/65 GREEN. These additions do not change the 159-case baseline.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

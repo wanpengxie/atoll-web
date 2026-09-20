@@ -35,7 +35,7 @@ import {
   TYPES,
 } from '../src/protocol/vocab.js';
 import { createReadingNavigationCoordinator } from '../src/ui/timeline/reading-navigation-coordinator.js';
-import { MarkdownContent } from '../src/ui/MarkdownContent.jsx';
+import { MarkdownContent, MarkdownFileReferenceProvider } from '../src/ui/MarkdownContent.jsx';
 import {
   buildComposerModel,
   createComposerCommandRequest,
@@ -45,6 +45,7 @@ import { Composer } from '../src/ui/composer/Composer.jsx';
 import { useTimelineRowRenderer } from '../src/ui/timeline/TimelineRowRenderer.jsx';
 import { projectAgentParameters } from '../src/ui/composer/agent-parameters.js';
 import { normalizeMathMarkdown } from '../src/model/math-markdown.js';
+import { messageTimeLabel } from '../src/util/time.js';
 import { validatePayload } from '../mock/protocol.mjs';
 
 afterEach(cleanup);
@@ -1188,5 +1189,115 @@ describe('I-M exact-path public-owner recovery (round 28 projection contracts)',
       channel_id: CHANNEL, msg_type: TYPES.agentAsk, extra: true,
     })).toContain('unknown field: extra');
     expect(validatePayload('missing', {})).toContain('unknown upstream frame_type');
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 29 protocol contracts)', () => {
+  it('markdown-content TC-0929: unsafe URL protocols are filtered at the public renderer boundary', () => {
+    const { container } = render(<MarkdownContent text="[危险](javascript:alert%281%29)" />);
+    expect(container.querySelector('a').getAttribute('href')).toBe('');
+  });
+
+  it('markdown-content TC-0930: explicit file links stay in-app while web links stay external', () => {
+    const onOpen = vi.fn();
+    render(
+      <MarkdownFileReferenceProvider onOpen={onOpen}>
+        <MarkdownContent text={'[代码](/srv/atoll/work/main.go:42) [网页](https://example.com)'} />
+      </MarkdownFileReferenceProvider>,
+    );
+
+    const file = screen.getByRole('link', { name: '代码' });
+    expect(file.getAttribute('target')).toBeNull();
+    expect(file.classList.contains('markdown-file-reference')).toBe(true);
+    fireEvent.click(file);
+    expect(onOpen).toHaveBeenCalledWith({ path: '/srv/atoll/work/main.go', line: 42 });
+    expect(screen.getByRole('link', { name: '网页' }).getAttribute('target')).toBe('_blank');
+  });
+
+  it('markdown-content TC-0931: prepared content resolves the current file-open provider', () => {
+    const firstOpen = vi.fn();
+    const nextOpen = vi.fn();
+    const view = render(
+      <MarkdownFileReferenceProvider onOpen={firstOpen}>
+        <MarkdownContent contentKey="message:round29:context" text={'[代码](/srv/atoll/work/main.go:42)'} />
+      </MarkdownFileReferenceProvider>,
+    );
+    view.rerender(
+      <MarkdownFileReferenceProvider onOpen={nextOpen}>
+        <MarkdownContent contentKey="message:round29:context" text={'[代码](/srv/atoll/work/main.go:42)'} />
+      </MarkdownFileReferenceProvider>,
+    );
+
+    fireEvent.click(view.container.querySelector('a.markdown-file-reference'));
+    expect(firstOpen).not.toHaveBeenCalled();
+    expect(nextOpen).toHaveBeenCalledWith({ path: '/srv/atoll/work/main.go', line: 42 });
+  });
+
+  it('markdown-content TC-0932: ordinary text and non-absolute links are never guessed as file references', () => {
+    const onOpen = vi.fn();
+    const tick = String.fromCharCode(96);
+    const text = '/srv/a.go:2 ' + tick + '/srv/b.go:3' + tick
+      + ' [相对](docs/a.md) [站点](//example.com/a)';
+    const { container } = render(
+      <MarkdownFileReferenceProvider onOpen={onOpen}>
+        <MarkdownContent text={text} />
+      </MarkdownFileReferenceProvider>,
+    );
+    expect(container.querySelectorAll('.markdown-file-reference')).toHaveLength(0);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('message-time TC-1032: a same-day message projects only its local clock', () => {
+    const now = new Date(2026, 7, 27, 9, 30).getTime();
+    expect(messageTimeLabel(new Date(2026, 7, 27, 0, 5).getTime(), now)).toBe('00:05');
+    expect(messageTimeLabel(new Date(2026, 7, 27, 23, 59).getTime(), now)).toBe('23:59');
+  });
+
+  it('message-time TC-1035: absent timestamps project to an empty label', () => {
+    const now = new Date(2026, 7, 27, 9, 30).getTime();
+    expect(messageTimeLabel(0, now)).toBe('');
+    expect(messageTimeLabel(undefined, now)).toBe('');
+  });
+
+  it('mock-protocol TC-1048: every minimal closed-set upstream payload validates', () => {
+    const values = {
+      attach: { focus: '', history_protocol: 5, generation: 1 },
+      submit: { channel_id: CHANNEL, msg_type: TYPES.agentAsk },
+      resolve: { channel_id: CHANNEL, req_id: 'r', decision: 'approved' },
+      cancel: { channel_id: CHANNEL, req_id: 'r' },
+      after: { channel_id: CHANNEL, duration_ms: 1, msg_type: TYPES.agentAsk },
+      cancel_timer: { channel_id: CHANNEL, timer_id: 't' },
+      resource: { channel_id: CHANNEL, op: 'list' },
+      observe: { channel_id: 'c1' },
+      unobserve: { channel_id: 'c1' },
+      channel_meta: { channel_id: 'c1', generation: 1 },
+      history_before: {
+        channel_id: 'c1', before_seq: 10, limit: 50, generation: 1,
+        purpose: 'hydrate', priority: 'background',
+      },
+      history_cancel: { channel_id: 'c1', target_ref: 'history-before-1', generation: 1 },
+    };
+    for (const [type, payload] of Object.entries(values)) {
+      expect(validatePayload(type, payload)).toBe('');
+    }
+  });
+
+  it('mock-protocol TC-1050: resource validation follows the operation-specific field contract', () => {
+    expect(validatePayload('resource', { channel_id: CHANNEL, op: 'list' })).toBe('');
+    expect(validatePayload('resource', {
+      channel_id: CHANNEL, op: 'create', address: 'daemon://d/c0/file.txt', with_content: true,
+    })).toBe('');
+    expect(validatePayload('resource', { channel_id: CHANNEL, op: 'create' }))
+      .toContain('resource_id or address');
+    expect(validatePayload('resource', { channel_id: CHANNEL, op: 'read' }))
+      .toContain('requires resource_id');
+    expect(validatePayload('resource', { channel_id: CHANNEL, op: 'explode' }))
+      .toContain('op must be one of');
+  });
+
+  it('mock-protocol TC-1051: a non-positive timer duration returns a validation error', () => {
+    expect(validatePayload('after', {
+      channel_id: CHANNEL, duration_ms: 0, msg_type: TYPES.agentAsk,
+    })).toContain('positive');
   });
 });
