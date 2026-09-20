@@ -64,23 +64,53 @@ async function viewportState(page) {
     const owner = window.__ATOLL_TEST_READING_OWNER__;
     const viewport = owner.current();
     const bounds = viewport.getBoundingClientRect();
-    const rows = [...viewport.querySelectorAll('[data-presentation-row-id]')]
-      .map((row) => {
-        const rect = row.getBoundingClientRect();
+    const rowEvidence = [...viewport.querySelectorAll('[data-presentation-row-id]')]
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
         return {
-          id: row.dataset.presentationRowId,
+          node,
+          id: node.dataset.presentationRowId,
           top: rect.top - bounds.top,
           bottom: rect.bottom - bounds.top,
-          text: row.textContent || '',
+          text: node.textContent || '',
         };
       });
+    const visible = rowEvidence.filter((row) => row.bottom > 0 && row.top < bounds.height);
+    // Virtuoso keeps overscan rows in DOM order.  The first DOM row is not
+    // necessarily the row the reader can see: it may be fully above the
+    // viewport, occluded, or only contribute an invisible sliver.  Match the
+    // production observation contract by requiring a hit-tested painted point
+    // inside the row before calling it the user-visible anchor.
+    const userVisible = visible.filter((row) => {
+      const node = row.node;
+      const rect = node.getBoundingClientRect();
+      const left = Math.max(bounds.left, rect.left);
+      const right = Math.min(bounds.right, rect.right);
+      const top = Math.max(bounds.top, rect.top);
+      const bottom = Math.min(bounds.bottom, rect.bottom);
+      if (right - left <= 1 || bottom - top <= 1) return false;
+      const x = (left + right) / 2;
+      return [top + 1, (top + bottom) / 2, bottom - 1].some((y) => {
+        const hit = document.elementFromPoint(x, y);
+        return Boolean(hit && (hit === node || node.contains(hit)));
+      });
+    }).sort((left, right) => left.top - right.top);
+    const serialize = (row) => {
+      if (!row) return null;
+      const { node, ...evidence } = row;
+      return evidence;
+    };
+    const firstVisible = serialize(userVisible[0] || null);
     return {
       mode: timeline?.dataset.viewportMode || '',
       hasInitialAnchor: timeline?.dataset.hasInitialAnchor || '',
       tailDistance: owner.tailDistance(viewport),
-      visible: rows.filter((row) => row.bottom > 0 && row.top < bounds.height),
-      firstVisible: rows.find((row) => row.bottom > 0 && row.top < bounds.height) || null,
-      lastVisible: rows.findLast((row) => row.bottom > 0 && row.top < bounds.height) || null,
+      visible: visible.map(serialize),
+      userVisible: userVisible.map(serialize),
+      domFirst: serialize(rowEvidence[0] || null),
+      firstVisible,
+      userAnchor: firstVisible,
+      lastVisible: serialize(userVisible.at(-1) || null),
       storage: JSON.parse(localStorage.getItem('atoll.view-session.v3.root') || 'null'),
     };
   });
@@ -149,8 +179,30 @@ test('F7 reading position is document-session memory: cold and cached page start
   ), beforeSwitch.firstVisible.id);
   const afterSwitch = await viewportState(page);
   expect(afterSwitch.mode).toBe('browsing');
-  // The first visible row is the user-visible reading anchor. Do not accept a
-  // retained anchor hidden behind an adjacent overscan row as equivalent.
+  const restoredAnchor = afterSwitch.visible.find((row) => row.id === beforeSwitch.firstVisible.id);
+  const anchorEvidence = {
+    before: {
+      domFirst: beforeSwitch.domFirst,
+      firstHitTested: beforeSwitch.firstVisible,
+      exactAnchor: beforeSwitch.visible.find((row) => row.id === beforeSwitch.firstVisible.id),
+    },
+    after: {
+      domFirst: afterSwitch.domFirst,
+      firstHitTested: afterSwitch.firstVisible,
+      exactAnchor: restoredAnchor,
+    },
+    contract: 'preserve the hit-tested painted first user anchor; exact row is diagnostic only',
+  };
+  const anchorEvidencePath = testInfo.outputPath('reading-user-anchor-position.json');
+  await writeFile(anchorEvidencePath, `${JSON.stringify(anchorEvidence, null, 2)}\n`, 'utf8');
+  await testInfo.attach('reading-user-anchor-position.json', {
+    path: anchorEvidencePath,
+    contentType: 'application/json',
+  });
+  // `firstHitTested` is the first painted row the user can see. The exact
+  // retained row may still exist in the overscan DOM after a one-row shift;
+  // accepting that would hide a user-visible 112 -> 111 jump. Keep the strict
+  // painted-anchor contract separate from the diagnostic exact-row evidence.
   expect(afterSwitch.firstVisible?.id).toBe(beforeSwitch.firstVisible.id);
   expect(Math.abs(afterSwitch.firstVisible.top - beforeSwitch.firstVisible.top)).toBeLessThanOrEqual(80);
   expect(await cachedRows(page, 'c0')).toBeGreaterThan(0);

@@ -113,6 +113,11 @@ test('trusted wheel takeover has no post-takeover writer; pre-wheel writes are s
   expect(beforeTakeover.connected).toBe(true);
   expect(evidence.list?.connected).toBe(true);
   expect(evidence.mode).toBe('browsing');
+  // The first wheel starts the one physical burst and the second wheel is the
+  // user's takeover.  No programmatic writer may run in that interval either:
+  // otherwise the first half of the burst can already replay a stale anchor
+  // before the final takeover assertion gets a chance to observe it.
+  expect(evidence.firstWheelToTakeover, JSON.stringify({ beforeTakeover, evidence })).toEqual([]);
   // A writer before the first wheel is not evidence that takeover failed. A
   // writer after the takeover wheel is: it would replay the old height/anchor
   // transaction over the user's native input. Keep every phase visible in the

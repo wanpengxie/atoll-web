@@ -197,6 +197,59 @@ describe('public channel roster owner', () => {
     expect(result.current.rosters.get('c0')).toEqual([]);
   });
 
+  it('refreshes the public roster after a completed governance terminal', async () => {
+    vi.useFakeTimers();
+    const { result, obsRef, rosterRef } = setup();
+    const refreshedRows = [
+      ...actors,
+      {
+        id: 'agent:governed:1', kind: 'agent', name: 'Governed', decl_id: '', description: '',
+        principal: '', bound: false, deviceOnline: false,
+      },
+    ];
+    obsRef.current.channelActors.mockResolvedValueOnce(observation(refreshedRows));
+
+    act(() => rosterRef.current.handleEnvelope('c0', {
+      kind: 'response',
+      type: TYPES.member.admit,
+      payload: { body: { status: 'completed' } },
+    }));
+    expect(obsRef.current.channelActors).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(obsRef.current.channelActors).toHaveBeenCalledTimes(1);
+    expect(result.current.rosters.get('c0')).toEqual(refreshedRows);
+    expect(result.current.authorities.get('c0')?.current).toBe(true);
+  });
+
+  it('coalesces completed governance terminals into one debounced observation', async () => {
+    vi.useFakeTimers();
+    const { obsRef, rosterRef } = setup();
+    obsRef.current.channelActors.mockResolvedValue(observation(actors));
+
+    act(() => {
+      rosterRef.current.handleEnvelope('c0', { type: TYPES.narration.memberCreated });
+      rosterRef.current.handleEnvelope('c0', {
+        kind: 'response', type: TYPES.member.create,
+        payload: { body: { status: 'completed' } },
+      });
+      rosterRef.current.handleEnvelope('c0', { type: TYPES.narration.memberCreated });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(299);
+      await Promise.resolve();
+    });
+    expect(obsRef.current.channelActors).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(obsRef.current.channelActors).toHaveBeenCalledTimes(1);
+  });
+
   it('fences a late OBS result so a cleared channel cannot be resurrected', async () => {
     let resolveObservation;
     const { result, obsRef } = setup();
