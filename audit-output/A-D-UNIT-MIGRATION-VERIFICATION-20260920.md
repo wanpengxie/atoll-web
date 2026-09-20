@@ -458,6 +458,24 @@ REGRESSION / 36 BLOCKED**. The case-level record is in
 Only the A-D test fixture and audit files changed; no product source,
 private/compatibility API, or cross-owner behavior was touched.
 
+## Round 43 — AD-093 public Reading-entry gap
+
+At latest `0ba7fa7`, the ordinary public `WorkspaceLayout` reproduction for
+AD-093 still returns no accessible `打开最近阅读` button (**1 failed; 19
+focused-out skips**). The first public divergence is the shell/Reading-entry
+composition: the conversation's current Reading owner is mounted, but no
+Workspace right-edge drawer entry is exposed. This preserves an explicit user
+capability and focus-return invariant; it is not a stale selector or an
+obsolete implementation oracle. The existing Round15 owner-gap assertion
+records the same public absence.
+
+AD-093 remains BLOCKED pending its explicitly assigned Reading/Workspace
+product owner. The ledger therefore remains **329 PASS / 0 REGRESSION / 36
+BLOCKED**. The case-level packet is in
+[`A-D-ROUND43-AD093-READING-ENTRY-GAP-20260920.md`](./A-D-ROUND43-AD093-READING-ENTRY-GAP-20260920.md).
+No duplicate red declaration, expected-fail completion, product source, or
+private/compatibility API was added or changed.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
