@@ -104,14 +104,54 @@ async function installWriteInterceptor(page) {
   });
 }
 
-async function startFrameProbe(page) {
-  await page.evaluate(() => {
+async function paintSnapshot(page, targetMarker = '') {
+  return page.evaluate((targetMarker) => {
+    const root = document.querySelector('.timeline-message-list');
+    const viewport = root?.getBoundingClientRect?.() || null;
+    const rows = [...(root?.querySelectorAll('[data-presentation-row-id]') || [])];
+    const target = targetMarker
+      ? rows.find((node) => String(node.textContent || '').includes(targetMarker)) || null
+      : null;
+    const targetRect = target?.getBoundingClientRect?.() || null;
+    const scrollTop = Number(root?.scrollTop || 0);
+    const scrollHeight = Number(root?.scrollHeight || 0);
+    const clientHeight = Number(root?.clientHeight || 0);
+    return {
+      at: performance.now(),
+      mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
+      scrollTop,
+      scrollHeight,
+      clientHeight,
+      gap: scrollHeight - clientHeight - scrollTop,
+      jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
+      mountedRowIDs: rows.map((node) => node.getAttribute('data-presentation-row-id') || ''),
+      target: target ? {
+        rowID: target.getAttribute('data-presentation-row-id') || '',
+        painted: Boolean(target.getClientRects().length),
+        top: targetRect?.top ?? null,
+        bottom: targetRect?.bottom ?? null,
+        intersectsViewport: Boolean(targetRect && viewport
+          && targetRect.bottom > viewport.top + 0.5
+          && targetRect.top < viewport.bottom - 0.5),
+      } : null,
+    };
+  }, targetMarker);
+}
+
+async function startFrameProbe(page, targetMarker = '') {
+  await page.evaluate((targetMarker) => {
     const frames = [];
     let running = true;
     const sample = () => {
       if (!running) return;
       const root = document.querySelector('.timeline-message-list');
       const reading = window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.() || { entries: [] };
+      const viewport = root?.getBoundingClientRect?.() || null;
+      const rows = [...(root?.querySelectorAll('[data-presentation-row-id]') || [])];
+      const target = targetMarker
+        ? rows.find((node) => String(node.textContent || '').includes(targetMarker)) || null
+        : null;
+      const targetRect = target?.getBoundingClientRect?.() || null;
       frames.push({
         frame: frames.length,
         at: performance.now(),
@@ -121,6 +161,17 @@ async function startFrameProbe(page) {
         clientHeight: Number(root?.clientHeight || 0),
         gap: Number((root?.scrollHeight || 0) - (root?.clientHeight || 0) - (root?.scrollTop || 0)),
         rowCount: root?.querySelectorAll('[data-presentation-row-id]').length || 0,
+        mountedRowIDs: rows.map((node) => node.getAttribute('data-presentation-row-id') || ''),
+        jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
+        target: target ? {
+          rowID: target.getAttribute('data-presentation-row-id') || '',
+          painted: Boolean(target.getClientRects().length),
+          top: targetRect?.top ?? null,
+          bottom: targetRect?.bottom ?? null,
+          intersectsViewport: Boolean(targetRect && viewport
+            && targetRect.bottom > viewport.top + 0.5
+            && targetRect.top < viewport.bottom - 0.5),
+        } : null,
         waitingItems: document.querySelectorAll('.agent-wait-item').length,
         writeCount: window.__eWrites?.count?.() || 0,
         readingTail: reading.entries.slice(-6).map((entry) => ({
@@ -138,7 +189,7 @@ async function startFrameProbe(page) {
     };
     requestAnimationFrame(sample);
     window.__eFrameProbe = { stop() { running = false; return frames; } };
-  });
+  }, targetMarker);
 }
 
 // A displacement is a maximal run of consecutive frames whose scrollTop keeps
@@ -285,17 +336,22 @@ test.describe('E send scroll writers', () => {
     await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
 
     await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.enable({ case: 'E-browsing-send' }));
+    const marker = 'E-20260918 browsing send probe';
+    const beforePaint = await paintSnapshot(page);
     const editor = page.getByTestId('composer-input');
-    await editor.fill('E-20260918 browsing send probe');
+    await editor.fill(marker);
     await expect(page.getByRole('button', { name: /发送/ })).toBeEnabled();
 
     const writeBaseline = await page.evaluate(() => window.__eWrites.count());
-    await startFrameProbe(page);
+    await startFrameProbe(page, marker);
     await page.evaluate(() => new Promise((done) => requestAnimationFrame(done)));
     await page.getByRole('button', { name: /发送/ }).click();
+    const paintedRow = page.locator('[data-presentation-row-id]').filter({ hasText: marker }).first();
+    await expect(paintedRow).toHaveCount(1);
     await page.waitForTimeout(1_200);
 
     const frames = await page.evaluate(() => window.__eFrameProbe.stop());
+    const afterPaint = await paintSnapshot(page, marker);
     const writes = await page.evaluate((from) => window.__eWrites.since(from), writeBaseline);
     const trace = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.snapshot());
     const timelineWrites = writes.filter((entry) => entry.isTimelineList);
@@ -310,6 +366,15 @@ test.describe('E send scroll writers', () => {
 
     const report = {
       geometry,
+      oracle: {
+        contract: 'explicit-composer-send-from-browsing',
+        authorization: 'one composerSendStarted/requestBottom; composerAccepted binds returned target IDs only',
+        beforePaint,
+        afterPaint,
+        targetPainted: Boolean(afterPaint.target?.painted),
+        targetAtPhysicalTail: Boolean(afterPaint.target?.intersectsViewport && afterPaint.gap <= 24),
+        continuousWriterRunCount: runs.length,
+      },
       frameCount: frames.length,
       displacements: runs,
       intents: intents.map((entry) => ({ sequence: entry.sequence, detail: entry.detail })),
@@ -325,5 +390,69 @@ test.describe('E send scroll writers', () => {
     expect(timelineWrites.length, JSON.stringify({ intents, runs, timelineWrites }, null, 2)).toBeGreaterThanOrEqual(1);
     expect(runs.length, JSON.stringify(runs)).toBeGreaterThanOrEqual(1);
     expect(frames.at(-1).gap, JSON.stringify(frames.at(-1))).toBeLessThanOrEqual(24);
+    expect(afterPaint.target?.rowID, JSON.stringify(afterPaint)).toBeTruthy();
+    expect(afterPaint.target?.painted, JSON.stringify(afterPaint)).toBe(true);
+  });
+
+  test('browsing passive append paints a jump without taking the reader to the tail', async ({ page, request }, testInfo) => {
+    await reset(request, 0xe0_09_20, 'long-running-history');
+    await login(page);
+    const viewport = page.locator('.timeline-message-list');
+    await viewport.hover();
+    await page.mouse.wheel(0, -1_500);
+    await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
+
+    const marker = 'E-20260920 passive append probe';
+    const beforePaint = await paintSnapshot(page);
+    const writeBaseline = await page.evaluate(() => window.__eWrites.count());
+    await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.enable({ case: 'E-browsing-passive-append' }));
+    await startFrameProbe(page, marker);
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(done)));
+    const appended = await request.post(`${MOCK}/mock/control/action`, {
+      data: { type: 'q_tail_append', channel_id: 'c0', ask: 'passive append oracle', text: marker },
+    });
+    expect(appended.ok()).toBe(true);
+    const appendedBody = await appended.json();
+    const appendedRow = page.locator(`[data-presentation-row-id="${appendedBody.request_id}"]`);
+    await expect(appendedRow).toHaveCount(1);
+    await expect(page.locator('.timeline-jump-latest')).toBeVisible();
+    await page.waitForTimeout(1_000);
+
+    const frames = await page.evaluate(() => window.__eFrameProbe.stop());
+    const afterPaint = await paintSnapshot(page, marker);
+    const writes = await page.evaluate((from) => window.__eWrites.since(from), writeBaseline);
+    const trace = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.snapshot());
+    const timelineWrites = writes.filter((entry) => entry.isTimelineList);
+    const runs = displacements(frames);
+    const report = {
+      oracle: {
+        contract: 'passive-nonself-append-while-browsing',
+        authorization: 'no composerSendStarted/composerAccepted; no bottom intent',
+        beforePaint,
+        afterPaint,
+        anchorScrollDelta: afterPaint.scrollTop - beforePaint.scrollTop,
+        jumpVisible: Boolean(afterPaint.jumpText),
+        targetPainted: Boolean(afterPaint.target?.painted),
+      },
+      appended: appendedBody,
+      frameCount: frames.length,
+      displacements: runs,
+      timelineWrites: timelineWrites.map((entry) => ({ index: entry.index, frame: entry.frame, kind: entry.kind, detail: entry.detail, stack: entry.stack })),
+      trace: trace.entries,
+      frames,
+    };
+    await testInfo.attach('browsing-passive-append-frames.json', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
+    await dump('browsing-passive-append-frames.json', report);
+
+    expect(afterPaint.mode, JSON.stringify(afterPaint)).toBe('browsing');
+    expect(afterPaint.gap, JSON.stringify(afterPaint)).toBeGreaterThan(24);
+    expect(afterPaint.jumpText, JSON.stringify(afterPaint)).toContain('条新动态');
+    expect(afterPaint.target?.rowID, JSON.stringify(afterPaint)).toBe(appendedBody.request_id);
+    expect(afterPaint.target?.painted, JSON.stringify(afterPaint)).toBe(true);
+    expect(afterPaint.scrollTop, JSON.stringify({ beforePaint, afterPaint })).toBe(beforePaint.scrollTop);
+    expect(frames.every((frame) => frame.mode === 'browsing'), JSON.stringify(frames)).toBe(true);
+    expect(frames.every((frame) => frame.gap > 24), JSON.stringify(frames)).toBe(true);
+    expect(runs, JSON.stringify({ runs, frames })).toEqual([]);
+    expect(timelineWrites, JSON.stringify(timelineWrites)).toEqual([]);
   });
 });

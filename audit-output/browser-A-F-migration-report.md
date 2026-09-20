@@ -636,6 +636,23 @@ owner（`READ`），不是 Composer submission、notification 或 Workspace hand
 该边界与当前实现显式保留 browsing anchor 的策略冲突，应交由 Reading owner 做产品
 裁决/修复。本分区不改产品、不改断言、不改 `23/8` 冻结 aggregate。
 
+### 第二十三轮准备：#12 双 actual-paint oracle（等待Reading owner clean commit）
+
+为owner提交后的正式复验，E send spec新增了测试侧 trace 字段但没有改变原有#12
+行为/几何断言：每个 rAF frame 记录 `mode`、`scrollTop`、`scrollHeight`、`gap`、
+mounted row IDs、jump 文案、目标 row 的 `rowID/painted/intersectsViewport`；
+发送路径另附 `beforePaint`、`afterPaint`、连续 writer run 数和
+`authorization = one composerSendStarted/requestBottom; composerAccepted binds returned
+target IDs only`。这让“composerAccepted不再发第二次bottom intent”由单一连续
+writer/target actual paint和完整trace对照，而不是实现selector断言。
+
+同一spec新增被动append对照：浏览中通过真实 `q_tail_append` 注入非本人动态，只允许
+新row实际paint并显示 `timeline-jump-latest`；所有采样帧必须保持 `browsing`，
+`scrollTop`不变、`gap>24`、无displacement和无timeline writer。该路径不调用
+`composerSendStarted/composerAccepted`，因此不会获得bottom intent。发送失败/取消
+仍保留reading trace与writer evidence字段；只有真实提交owner在clean snapshot闭环后
+才能决定是否产生/撤销intent，不用mock success替代。
+
 ## Boundary audit
 
 - No `src/` file, vendor package, package manifest, lockfile, or compatibility API changed in this partition.
