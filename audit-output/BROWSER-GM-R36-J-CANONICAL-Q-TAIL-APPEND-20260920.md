@@ -47,6 +47,11 @@ ATOLL_TEST_WEB_PORT=15438 ATOLL_TEST_MOCK_PORT=19138 npx playwright test \
 
 结果：**5/5 PASS（32.6s）**。
 
+随后在最新 clean HEAD `7fe66c4`（包含并行 owner 的 round36 evidence-normalization，
+J 相关产品路径未变）以独立端口 `15442/19142` 重跑同一 browsing case：
+**5/5 PASS（27.2s）**；该 HEAD 的整份 jump spec 另以 `15443/19143` 跑得
+**3/3 PASS（14.9s）**。
+
 追加复验：tail-following canonical append **5/5 PASS（26.9s）**；整份 jump spec
 （三个 case）**3/3 PASS（18.6s）**。没有改 product/mock，临时 clean worktree 与服务已
 清理。共享树其他 dirty 文件不属于本轮。
