@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import { useConversationProjection } from '../src/ui/timeline/useConversationProjection.js';
@@ -85,6 +85,64 @@ function renderProjection(history) {
 }
 
 describe('S-Z canonical Presentation authority receipt', () => {
+  it('emits a typed surface-hidden revoke at a newer input epoch', () => {
+    const initialHistory = historyFor();
+    const { result, rerender, args } = renderProjection(initialHistory);
+    const receiptSink = args.onTailCaughtUp;
+    const activationID = result.current.viewport.activationID;
+
+    act(() => {
+      result.current.viewport.onReadingObservation({
+        activationID,
+        atTail: true,
+        surfaceVisible: true,
+        installedHighSeq: 2,
+      });
+    });
+    expect(receiptSink).toHaveBeenCalledWith(expect.objectContaining({ caughtUp: true }));
+    const positive = receiptSink.mock.calls.at(-1)[0];
+    expect(positive.inputEpoch).toBe(0);
+
+    args.surfaceVisible = false;
+    act(() => {
+      result.current.viewport.onSurfaceVisibilityChange(false);
+      rerender();
+    });
+
+    expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'notification-lease-revoke',
+      reason: 'surface-hidden',
+      inputEpoch: 1,
+      caughtUp: false,
+      surfaceVisible: false,
+    }));
+  });
+
+  it('emits a typed activation-cleanup revoke at a newer input epoch', () => {
+    const { result, unmount, args } = renderProjection(historyFor());
+    const receiptSink = args.onTailCaughtUp;
+    const activationID = result.current.viewport.activationID;
+
+    act(() => {
+      result.current.viewport.onReadingObservation({
+        activationID,
+        atTail: true,
+        surfaceVisible: true,
+        installedHighSeq: 2,
+      });
+    });
+    expect(receiptSink).toHaveBeenCalledWith(expect.objectContaining({ caughtUp: true }));
+
+    act(() => unmount());
+    expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'notification-lease-revoke',
+      reason: 'activation-cleanup',
+      inputEpoch: 1,
+      caughtUp: false,
+      surfaceVisible: false,
+    }));
+  });
+
   it('publishes the frozen four-field authority receipt to current Timeline consumers', () => {
     const { result } = renderProjection(historyFor());
     const authority = result.current.viewport.presentationAuthority;

@@ -46,7 +46,20 @@ const HISTORY_RUNWAY_REVEAL_RECORDS = 8;
 const HISTORY_RUNWAY_REVEAL_BYTES = 256 * 1024;
 const pageIsVisible = () => globalThis.document?.visibilityState !== 'hidden';
 
-function typedTailLeaseRevoke(receipt, reason, inputEpoch = receipt?.inputEpoch) {
+function typedTailLeaseRevoke(
+  receipt,
+  reason,
+  inputEpoch = receipt?.inputEpoch,
+  { advanceEpoch = false } = {},
+) {
+  const receiptEpoch = Number(receipt?.inputEpoch);
+  const requestedEpoch = Number(inputEpoch);
+  const baseEpoch = Number.isSafeInteger(requestedEpoch) && requestedEpoch >= 0
+    ? requestedEpoch
+    : (Number.isSafeInteger(receiptEpoch) && receiptEpoch >= 0 ? receiptEpoch : 0);
+  const revokeEpoch = advanceEpoch
+    ? Math.max(baseEpoch, Number.isSafeInteger(receiptEpoch) ? receiptEpoch + 1 : 0)
+    : baseEpoch;
   return Object.freeze({
     ...receipt,
     caughtUp: false,
@@ -57,7 +70,7 @@ function typedTailLeaseRevoke(receipt, reason, inputEpoch = receipt?.inputEpoch)
     boundary: 0,
     kind: 'notification-lease-revoke',
     reason,
-    inputEpoch: Number(inputEpoch || 0),
+    inputEpoch: revokeEpoch,
     cause: '',
   });
 }
@@ -951,6 +964,7 @@ export function useConversationProjection({
         previous,
         next.surfaceVisible === true ? 'physical-leave' : 'surface-hidden',
         next.inputEpoch,
+        { advanceEpoch: next.surfaceVisible !== true },
       ));
     }
     return undefined;
@@ -958,7 +972,12 @@ export function useConversationProjection({
   useLayoutEffect(() => () => {
     const receipt = tailReceiptRef.current;
     if (receipt?.caughtUp !== true || typeof tailCallbackRef.current !== 'function') return;
-    tailCallbackRef.current(typedTailLeaseRevoke(receipt, 'activation-cleanup'));
+    tailCallbackRef.current(typedTailLeaseRevoke(
+      receipt,
+      'activation-cleanup',
+      undefined,
+      { advanceEpoch: true },
+    ));
   }, [state.channelId, viewport.activationID, messageListKey]);
   const latestRowID = viewport.presentationAuthority?.candidateID || '';
   useColdEntryDiagnostics({
