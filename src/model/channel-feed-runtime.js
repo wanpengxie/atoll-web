@@ -453,6 +453,7 @@ export function createChannelFeedRuntime(options = {}) {
   const backgroundInterests = new Map();
   const executor = createHistoryBoundedExecutor({ concurrency: 2, timeoutMs: HISTORY_BATCH_TIMEOUT_MS });
   const networkBatches = new Map();
+  const historyInFlight = new Map();
   const activityEntries = new Map();
   const timerEvents = [];
   // A committed following observation suppresses only the short interval
@@ -915,6 +916,33 @@ export function createChannelFeedRuntime(options = {}) {
     };
   }
 
+  // Physical history ownership is keyed by the admitted range, not by the
+  // caller's semantic intent. A projection-underfill and a replayed top
+  // demand may arrive in the same turn before the first page increments
+  // completedPages; letting both reach the wire would install the same scan
+  // range twice and publish duplicate completion identities. Feed owns this
+  // short-lived join table; it is cleared by lifecycle fences below and never
+  // becomes a second cursor or notification store.
+  function historyOperationKey(channelId, request = {}) {
+    if (destroyed || incompatible || request.signal?.aborted) return '';
+    const status = historyState(channelId);
+    const admitted = generation > 0
+      && grants.has(channelId)
+      && status.attached === true
+      && status.generation === generation
+      && status.messageCurrent === true;
+    if (!admitted) return '';
+    const batch = batchFor(channelId, request);
+    return [
+      batch.generation,
+      batch.attachEpoch,
+      batch.channelId,
+      batch.beforeSeq,
+      batch.limit,
+      batch.byteLimit,
+    ].join('\u0000');
+  }
+
   async function executeBatch(batch, signal) {
     if (signal?.aborted) return { kind: 'cancelled' };
     adapters.prepare(batch);
@@ -990,7 +1018,7 @@ export function createChannelFeedRuntime(options = {}) {
     }
   }
 
-  async function loadHistory(channelId, request = {}) {
+  async function loadHistoryOnce(channelId, request = {}) {
     if (destroyed) return { kind: 'cancelled', reason: 'runtime-destroyed' };
     if (incompatible) return { kind: 'cancelled', reason: 'version-incompatible' };
     if (request.signal?.aborted) return { kind: 'cancelled', reason: 'aborted' };
@@ -1146,6 +1174,21 @@ export function createChannelFeedRuntime(options = {}) {
     } else status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
     publish();
     return outcome;
+  }
+
+  function loadHistory(channelId, request = {}) {
+    const key = historyOperationKey(channelId, request);
+    if (key) {
+      const existing = historyInFlight.get(key);
+      if (existing) return existing;
+    }
+    const operation = loadHistoryOnce(channelId, request);
+    if (!key) return operation;
+    const shared = operation.finally(() => {
+      if (historyInFlight.get(key) === shared) historyInFlight.delete(key);
+    });
+    historyInFlight.set(key, shared);
+    return shared;
   }
 
   // Search and other non-reading consumers may need a cold channel's rows,
@@ -1324,6 +1367,7 @@ export function createChannelFeedRuntime(options = {}) {
     const epoch = ++attachEpoch;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history attach recalibrated');
     networkBatches.clear();
+    historyInFlight.clear();
     const nextWorld = String(detail.boot || world);
     const worldChanged = Boolean(world) && nextWorld !== world;
     world = nextWorld;
@@ -1532,6 +1576,7 @@ export function createChannelFeedRuntime(options = {}) {
     executor.clear('replica cleared');
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'replica cleared');
     networkBatches.clear();
+    historyInFlight.clear();
     for (const channelId of histories.keys()) admission.reset(channelId);
     clearDeferredHistoryRequests();
     histories.clear(); grants.clear();
@@ -1594,7 +1639,9 @@ export function createChannelFeedRuntime(options = {}) {
     if (activityConnected) { activityConnected = false; activityRevision += 1; }
     generation = 0;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history disconnected');
-    networkBatches.clear(); publish(); return true;
+    networkBatches.clear();
+    historyInFlight.clear();
+    publish(); return true;
   }
   function stopIncompatible(requestGeneration = generation) {
     if (destroyed) return false;
@@ -1916,7 +1963,9 @@ export function createChannelFeedRuntime(options = {}) {
     releaseRailDiagnostic?.();
     releaseRailDiagnostic = null;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'feed runtime destroyed');
-    networkBatches.clear(); executor.clear('feed runtime destroyed');
+    networkBatches.clear();
+    historyInFlight.clear();
+    executor.clear('feed runtime destroyed');
     clearDeferredHistoryRequests();
     for (const channelId of histories.keys()) admission.reset(channelId);
     histories.clear(); grants.clear();

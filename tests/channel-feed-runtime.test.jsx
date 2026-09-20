@@ -121,6 +121,51 @@ describe('ChannelFeedRuntime ownership', () => {
     runtime.destroy();
   });
 
+  it('shares one in-flight physical page for concurrent identical ranges', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, limit, detail) => {
+        const ref = `concurrent-history-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, limit, ref, ...detail });
+        const accepted = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        accepted.ref = ref;
+        return accepted;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 4, has_rows: true },
+    ], { generation: 1, boot: 'concurrent-history-boot', focus: 'c0' });
+
+    const first = snapshot.loadHistory('c0', { beforeSeq: 5, limit: 4 });
+    const second = snapshot.loadHistory('c0', { beforeSeq: 5, limit: 4 });
+    expect(second).toBe(first);
+    await nextTick();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      channelId: 'c0', beforeSeq: 5, limit: 4, generation: 1,
+    });
+
+    for (let seq = 1; seq <= 4; seq += 1) {
+      expect(snapshot.enqueue({
+        ref: requests[0].ref, channel_id: 'c0', seq,
+        envelope: historyRow(seq).envelope,
+      })).toBe(true);
+    }
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 4, scan_low_seq: 1, scan_high_seq: 4,
+      next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(first).resolves.toMatchObject({ kind: 'satisfied', released: 4 });
+    expect(snapshot.historyFor('c0')).toMatchObject({ completedPages: 1, beforeSeq: 1 });
+    expect(snapshot.stateFor('c0')?.rows.size).toBe(4);
+    runtime.destroy();
+  });
+
   it('retires an unfinished history demand after disconnect and regrant', async () => {
     const requests = [];
     const wireRef = { current: {
