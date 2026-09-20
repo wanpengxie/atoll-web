@@ -158,6 +158,36 @@ describe('current submission owner: outbox-store + composer runtime', () => {
     harness.store.close();
   });
 
+  it('keeps an unavailable refusal queued and reuses its stable id after service recovery', async () => {
+    const submit = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('service unavailable'), { code: 'unavailable' }))
+      .mockResolvedValue({ message_id: 'm-recover' });
+    const harness = runtimeHarness({ wireState: 'open', submit });
+    const { result, rerender, unmount } = renderHook(({ wireState }) => useComposerSubmissionRuntime({ ...harness, wireState }), {
+      initialProps: { wireState: 'open' },
+    });
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    await act(async () => {
+      await result.current.send({ messageId: 'm-recover', text: 'recover me', msgType: 'agent.ask', audience: ['agent:worker:1'] });
+    });
+    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
+      messageId: 'm-recover', state: 'queued', error: { code: 'unavailable' },
+    }));
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit.mock.calls[0][0].id).toBe('m-recover');
+
+    rerender({ wireState: 'reconnecting' });
+    rerender({ wireState: 'open' });
+    await waitFor(() => expect(result.current.pending[0]?.state).toBe('accepted'));
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(submit.mock.calls[1][0].id).toBe('m-recover');
+    expect(result.current.pending[0].messageId).toBe('m-recover');
+
+    unmount();
+    harness.store.close();
+  });
+
   it('keeps retryable transport failure queued and exposes definitive rejection without self-retrying', async () => {
     const submit = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error('closed'), { code: 'closed' }))
