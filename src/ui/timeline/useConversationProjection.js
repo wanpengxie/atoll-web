@@ -143,6 +143,31 @@ function sameTailEvidence(left, right) {
     && leftVisibleRowIDs.every((id, index) => id === rightVisibleRowIDs[index]);
 }
 
+function traceReadingOwnerCommit({ channelID, viewKey, viewport, snapshot }) {
+  const changes = snapshot?.changes || {};
+  const ids = (value) => [...new Set((Array.isArray(value) ? value : [])
+    .map((id) => String(id || ''))
+    .filter(Boolean))];
+  const insertedIDs = ids(changes.inserted);
+  const updatedIDs = ids(changes.updated);
+  const removedIDs = ids(changes.removed);
+  if (!insertedIDs.length && !updatedIDs.length && !removedIDs.length) return;
+  readingTrace('reading.owner-commit', {
+    channelId: String(channelID || ''),
+    viewKey: String(viewKey || ''),
+    activationID: String(viewport?.activationID || ''),
+    inputEpoch: Number(viewport?.session?.inputEpoch || 0),
+    presentationRevision: Number(snapshot?.revision || 0),
+    sourceRevision: Number(snapshot?.sourceRevision || 0),
+    kind: String(changes.kind || ''),
+    insertedIDs,
+    frontInsertedIDs: ids(changes.frontInsertedIDs),
+    backInsertedIDs: ids(changes.backInsertedIDs),
+    updatedIDs,
+    removedIDs,
+  });
+}
+
 function createSessionController({ channelID, viewKey, viewSessions }) {
   const activationID = newId();
   const saved = viewSessions?.readView?.(channelID, viewKey) || {};
@@ -1277,6 +1302,12 @@ export function useConversationProjection({
           viewportOffset: positionLease.viewportOffset,
         } : null,
       });
+      traceReadingOwnerCommit({
+        channelID: state.channelId,
+        viewKey: messageListKey,
+        viewport,
+        snapshot: projection.presentationCandidate?.snapshot,
+      });
       return;
     }
     const admissionCommitted = admission?.commitCandidate?.(state.channelId, projection.admissionCandidate);
@@ -1288,6 +1319,12 @@ export function useConversationProjection({
       && admission.snapshot?.(state.channelId)?.phase === 'pending-baseline-commit') {
       admission.prepareCommit?.(state.channelId, presentationRef.current.current());
     }
+    traceReadingOwnerCommit({
+      channelID: state.channelId,
+      viewKey: messageListKey,
+      viewport,
+      snapshot: projection.presentationCandidate?.snapshot,
+    });
   }, [
     history.status?.presentationAdmission,
     projection.admissionCandidate,
