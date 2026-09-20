@@ -3263,3 +3263,78 @@ UI-VIS-11 行为与后台兴趣合同在真实 Chromium repeat3 全部通过；3
 严格收敛为 fae8b70 旧 shell 外挂结构与当前 canonical mobile-shell 触控结构之间的
 合法布局 successor（297→301，close 36→44），不是产品能力缺口。当前不改产品、不改
 snapshot、不删或放宽测试；本轮仅交付该对照与复现报告。
+
+## 第五十轮：UI-VIS-12 频道文件主页面首断点（exact `97c7938`）
+
+本轮转到 UI-VIS-12；UI-VIS-11 的 4px mobile-shell successor 不重复计分。工作树
+在测试前为 exact `97c7938cae79a13f7d998e551ea02c7fc1334169`，本轮未修改产品或
+测试，仅追加此审计。
+
+### 真实 Chromium repeat3
+
+```text
+CHOKIDAR_USEPOLLING=true ATOLL_TEST_WEB_PORT=15720 ATOLL_TEST_MOCK_PORT=20020 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r50-vis12 npx playwright test tests/browser/ui-visual.spec.js \
+--grep='UI-VIS-12' --workers=1 --repeat-each=3 --reporter=line \
+--output=test-results-tz-r50-vis12-repeat3
+```
+
+三轮均执行了真实 `resource-workflow` reset（seed 911）、登录、文件上传和
+`频道文件` DOM 可见性；行为前置全部通过。截图 case 3/3 RED，均为同一 508×619
+surface、2,612 个 Playwright diff 像素（ratio 0.01）。产物在
+`test-results-tz-r50-vis12-repeat3/`，没有 timeout、upload 失败或 mock/server 阻塞。
+
+### 首个结构差异：文件工具栏缺少旧有关闭能力
+
+旧截图与当前截图都为 508×619；逐像素差异的第一个连续区域从 surface 内
+`x=307,y=8` 开始，属于 toolbar 右侧控件，而不是文件行内容。当前真实 DOM
+repeat3 读数一致：
+
+| 项 | fae8b70 旧截图/行为 | exact 97c7938 当前 |
+| --- | --- | --- |
+| toolbar | 文件返回、c0、Folder、Refresh、Upload、Close | 文件返回、c0、Folder、Refresh、Upload |
+| `.finder-tools` 相对 surface | 约 `x=307`，宽约 `189px`（包含 Close） | `x=347`，宽 `149px` |
+| Close button | `关闭文件` 存在（34px 工具按钮） | `querySelectorAll('[aria-label="关闭文件"]') = 0` |
+| Shell toggle | 旧 `ArtifactsView` 由 `AppShell` 传 `onClose={toggleFiles}` | 当前 `#workspace-files-toggle` 仍可把 `aria-pressed=true` 变为 `false`、`activeView=conversation` |
+
+旧 owner 在 `fae8b70:src/app/AppShell.jsx:472-476` 把 `toggleFiles` 传给
+`ArtifactsView.onClose`；旧 view 在 `fae8b70:src/ui/ArtifactsView.jsx:130-145`
+因此实际渲染 Close。当前 [`WorkspaceApp.jsx:1341-1396`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/app/WorkspaceApp.jsx:1341)
+的 `filesPort.commands` 没有 `close`，而 [`WorkspaceFeatures.jsx:217-220`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/ui/features/WorkspaceFeatures.jsx:217)
+只把 `files.commands?.close` 作为可选 `onClose` 传下去；因此
+[`FilesFeature.jsx:152-165`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/ui/features/files/FilesFeature.jsx:152)
+的条件 Close 分支被稳定短路。当前 canonical Shell 仍有
+[`WorkspaceLayout.jsx:243-245`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/app/WorkspaceLayout.jsx:243)
+的文件路由 toggle，所以这是工具栏 affordance 丢失，不是文件上传/目录 projection
+或关闭主路由不可用。
+
+这不是合法像素演进：旧用户可在文件 surface 内直接关闭，当前必须离开 surface
+去找 Shell 的“文件”开关。唯一产品 owner 是 `WorkspaceApp.filesPort.commands`
+与 `WorkspaceLayout` 的既有文件路由组合；不能在 `FilesFeature` 内新建 store、
+兼容回调或用 CSS 补出按钮。本轮不施工，交给该 owner。
+
+### 第二个独立差异：Shell-level “最近阅读”与旧测试隔离
+
+旧 `fae8b70:src/app/AppShell.jsx:486` 还挂载 `.reading-history-edge-tab`；若节点参与
+截图，它会在旧文件 surface 边缘形成 `x=446..507,y=206..337` 的差异区域。当前
+[`WorkspaceLayout.jsx:357-369`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/app/WorkspaceLayout.jsx:357)
+没有对应节点；当前 DOM repeat3 没有 `.reading-history-edge-tab`，但页面仍保留该
+class 的 CSS 规则。
+
+这里不能把截图 RED 直接判成应恢复产品按钮：旧 FAE 测试在
+`fae8b70:tests/browser/ui-visual.spec.js:221-222` 明确把这个 shell-level tab 设为
+`hidden`，把 UI-VIS-12 oracle 限定为文件 surface；但当前提供的 Linux baseline
+仍带有该可见 tab，说明 baseline 本身与旧测试隔离步骤并不一致。`afe6c76` 的迁移
+又删除了这一步，当前 [`ui-visual.spec.js:567-568`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/ui-visual.spec.js:567)
+于是把 shell pixel 纳入了文件截图，而当前产品又没有对应节点。这一层首先是**测试
+迁移/oracle 漂移**，不能靠更新 snapshot 或在 FilesFeature 伪造 reading-history 按钮
+修绿。若 Reading/Shell owner 仍承诺“最近阅读”入口，应另立公开用户合同后由其恢复
+唯一入口；本轮不将它与文件工具栏 gap 合并。
+
+### Round50 裁决
+
+UI-VIS-12 当前 exact HEAD 的第一真实产品差异是文件 surface 内 Close affordance
+缺失（工具栏 `189→149px`，`closeCount=0`），而 Shell toggle 关闭路径 repeat3
+仍 PASS；第二差异是迁移时移除旧测试隔离造成的 shell-level reading pixel drift。
+结论为：**1 个产品 owner gap + 1 个测试迁移 oracle gap，均不是环境阻塞**。不改
+产品、不改测试、不改 snapshot；交付真实 Chromium 3/3 红证据与首断点。
