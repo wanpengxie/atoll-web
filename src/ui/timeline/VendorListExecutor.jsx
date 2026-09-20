@@ -257,6 +257,7 @@ export function VendorListExecutor({
 }) {
   const virtuosoRef = useRef(null);
   const rootRef = useRef(null);
+  const rootMountedRef = useRef(false);
   const rootIdentityRef = useRef({ node: null, generation: 0 });
   const [rootNode, setRootNode] = useState(null);
   const [rootIdentity, setRootIdentity] = useState(0);
@@ -295,7 +296,13 @@ export function VendorListExecutor({
   const coverageEvidenceRef = useRef(null);
   const coverageSourceKeyRef = useRef('');
   const coveragePublishedKeyRef = useRef('');
-  const readingController = useBrowsingReadingController({ reading, snapshot, rootNode, rootIdentity });
+  const readingController = useBrowsingReadingController({
+    reading,
+    snapshot,
+    rootNode,
+    rootIdentity,
+    rootMountedRef,
+  });
   const { navigationPolicy, reportDomEvidence } = readingController;
   const readingRef = useRef(reading);
   const snapshotRef = useRef(snapshot);
@@ -315,9 +322,11 @@ export function VendorListExecutor({
     // state toggle: the next concrete root callback is the replacement fence,
     // while the existing RAF/event cleanup already retires the old root.
     if (!node) {
+      rootMountedRef.current = false;
       rootRef.current = null;
       return;
     }
+    rootMountedRef.current = true;
     if (rootIdentityRef.current.node !== node) {
       const generation = rootIdentityRef.current.generation + 1;
       rootIdentityRef.current = {

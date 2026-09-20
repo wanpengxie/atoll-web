@@ -27,6 +27,7 @@ export function useBrowsingReadingController({
   snapshot,
   rootNode = null,
   rootIdentity = 0,
+  rootMountedRef = null,
   handoffPending = false,
 }) {
   const readingRef = useRef(reading);
@@ -45,7 +46,7 @@ export function useBrowsingReadingController({
       frontierDemandKeyRef.current = '';
       coverageDemandKeyRef.current = '';
     }
-  }, [handoffPending, reading, reading.activationID, reading.session.inputEpoch, rootIdentity, rootNode, snapshot]);
+  }, [handoffPending, reading, reading.activationID, reading.session.inputEpoch, rootIdentity, rootMountedRef, rootNode, snapshot]);
 
   const requestHistory = useCallback((evidence, reason) => {
     const owner = readingRef.current;
@@ -106,7 +107,9 @@ export function useBrowsingReadingController({
         && String(identity.tailID || '') === currentTailID
         && Number(identity.rootIdentity) === Number(rootIdentity)
         && Number(rootIdentity) > 0
+        && rootMountedRef?.current !== false
         && Number(evidence.rootIdentity) === Number(identity.rootIdentity)
+        && String(evidence.tailID || '') === currentTailID
         && evidence.rootNode === rootNode;
       const evidenceComplete = typeof evidence.surfaceVisible === 'boolean'
         && typeof evidence.atTail === 'boolean'
@@ -219,7 +222,7 @@ export function useBrowsingReadingController({
       evidence.onWake?.();
     });
     return true;
-  }, [requestHistory, rootIdentity, rootNode]);
+  }, [requestHistory, rootIdentity, rootMountedRef, rootNode]);
 
   const navigationPolicy = useMemo(() => Object.freeze({
     onNavigationUpdate(transaction) {
