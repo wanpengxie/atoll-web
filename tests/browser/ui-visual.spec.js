@@ -111,7 +111,25 @@ test('UI-VIS-07 850px 频道管理抽屉视觉基线', async ({ page, request })
   await page.setViewportSize({ width: 850, height: 720 });
   await reset(request, 'actor-governance', 905);
   await login(page);
-  await openChannelPanel(page, '成员');
+  const panel = await openChannelPanel(page, '成员');
+  // Keep the responsive case a user contract in addition to its preserved
+  // screenshot: at 850px the governance panel must retain the member route,
+  // public roster controls, participant picker, and viewport containment even
+  // when the current successor wraps row actions differently from fae8b70.
+  await expect(panel.getByRole('tab', { name: '成员', exact: true })).toHaveAttribute('aria-selected', 'true');
+  for (const name of ['system', 'registrar', 'svcactor']) {
+    await expect(panel.getByText(name, { exact: true })).toHaveCount(0);
+  }
+  await expect(panel.getByRole('button', { name: '刷新', exact: true })).toBeVisible();
+  await expect(panel.getByRole('combobox', { name: '选择参与者' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: '添加到频道', exact: true })).toBeVisible();
+  const geometry = await page.evaluate(() => ({
+    viewport: window.innerWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+    panel: document.querySelector('[aria-label="频道治理"]')?.getBoundingClientRect().toJSON(),
+  }));
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.viewport);
+  expect(geometry.panel?.right).toBeLessThanOrEqual(geometry.viewport);
   await expect(page).toHaveScreenshot('channel-members-850.png', SCREENSHOT_OPTIONS);
 });
 

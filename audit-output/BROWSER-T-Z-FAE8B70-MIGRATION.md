@@ -2424,3 +2424,102 @@ automation 能力没有缺失，视觉差异应归为 successor/oracle migration
   17,077px/7%；保留旧 oracle，暂不计为新产品能力回归。
 - 本轮未修改产品、未删 skip、未放宽断言或更新快照；仅追加本审计。运行期间共享树已有
   的 `src/app/WorkspaceApp.jsx` 脏改不属于本轮，未触碰或暂存。
+
+## 第四十二轮：UI-VIS-06 逐项差异与 UI-VIS-07 850px 用户合同
+
+本轮继续下一条用户可见 baseline `UI-VIS-07`，并把上一轮 `UI-VIS-06` 的截图差异拆到
+具体结构、文案和动作，不以“截图不同”直接判旧。所有结论来自真实 Chromium 生产
+surface；没有更新任何截图 oracle。
+
+### UI-VIS-06 差异逐项对照（最新 HEAD，repeat3）
+
+最新 HEAD 重跑原视觉合同仍是稳定的 3/3 screenshot RED：
+
+```text
+ATOLL_TEST_WEB_PORT=15671 ATOLL_TEST_MOCK_PORT=19971 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r42-vis06 \
+npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-06' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r42-vis06-repeat3
+3 failed (17,077 pixels / ratio 0.07；均只失败于 panel screenshot)
+```
+
+旧 `fae8b70` oracle 与当前 360×715 panel 的差异不是单一颜色/间距问题，而是以下
+逐项 successor 变化：
+
+1. **事实边界卡片标题与正文：** 旧标题为“本设备记录”，正文是“这里只保存本浏览器收到的
+   `timer_id`，不代表跨设备完整清单”；当前标题为“可观测边界”，正文明确只展示当前
+   浏览器会话 owner 收到的 `after/cancel` 回执，并明确服务端没有 `timer list/OBS`。
+   这是事实来源语义变化，不是字体像素漂移。
+2. **安排表单默认值：** 旧 payload 默认 `{"text":"定时消息"}`；当前 owner 默认
+   `{"text":"定时提醒"}`。延迟 `5000`、消息类型 `agent.ask` 和“创建定时动作”
+   仍在，上一轮 F4-006 已验证真实填写/创建动作。
+3. **取消能力：** 旧 panel 在空记录状态只有“当前浏览器保存的动作”卡；当前 panel
+   公开独立的“取消已知动作”卡，提供 `timer_id` 输入和“取消定时动作”按钮，空值时
+   按钮保持 disabled。这是新增的显式用户能力，不应被旧截图裁掉。
+4. **记录卡标题与空态：** 旧标题“当前浏览器保存的动作”、空态“本设备尚未保存定时
+   动作”；当前标题“本浏览器会话的动作”、空态“当前浏览器会话还没有可追踪的定时
+   动作”，并将每行状态/取消入口绑定到当前 channel 的会话回执集合。
+5. **纵向布局：** 当前新增取消卡使原本位于表单后的记录区域整体下移；截图仍是相同
+   360×715 panel，差异集中在事实卡正文换行、取消卡和记录空态区域。故该 RED 是
+   successor 结构/文案 oracle mismatch；不能通过更新快照、mask 或压缩 panel 高度
+   伪造旧能力。
+
+F4-006 用户黑盒在同一最新 HEAD 再跑三次：
+
+```text
+ATOLL_TEST_WEB_PORT=15672 ATOLL_TEST_MOCK_PORT=19972 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r42-f4-006 \
+npx playwright test tests/browser/f4-tasks-restore.spec.js --grep 'F4-006' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r42-f4-006-repeat3
+3 passed (14.8s)
+```
+
+三次均证明创建、任务投影、详情中的本设备事实边界、取消入口及 320px 无横向溢出；
+因此 UI-VIS-06 当前是**能力 PASS、旧视觉 oracle RED**，不是未处理的定时动作产品缺口。
+
+### UI-VIS-07 850px 用户黑盒（repeat3）
+
+为防止 850px screenshot RED 掩盖真实能力，本轮在原 `UI-VIS-07` spec 中增加了严格
+用户断言（仍保留原截图断言）：成员 tab 必须选中；标准 `system`/`registrar`/
+`svcactor` 不得泄漏；刷新、参与者 combobox、添加到频道控件必须可见；页面不能横向
+溢出，治理 panel 右边界不能超出 viewport。没有替换既有 locator、添加兼容选择器或
+删除截图断言。
+
+```text
+ATOLL_TEST_WEB_PORT=15670 ATOLL_TEST_MOCK_PORT=19970 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r42-vis07-contract \
+npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-07' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r42-vis07-contract-repeat3
+3 failed (截图断言，三次均 46,389 pixels / ratio 0.08)
+```
+
+新增的用户合同三次均先通过；三次红点都在 `channel-members-850.png` screenshot，
+没有 timeout、page error、unhandled rejection 或 selector fallback。当前与旧 850×720
+oracle 的可见差异逐项为：
+
+- **左侧 rail 布局：** 当前 850px 将“搜索”“活动”按钮纵向堆叠，旧 oracle 为同一行
+  并列；因此当前 rail 的底部升级入口在 viewport 外，旧图中仍可见。这是 responsive
+  纵向分配变化，不影响治理 panel 的入口或频道切换。
+- **tab 文案/结构：** 成员与危险操作仍在，当前中间 tab 为“概览”，旧图为“信息”；
+  当前 canonical governance owner 的 tab 语义不是旧 read-only 信息卡的像素别名。
+- **成员 row controls：** 当前窄宽度下部分“移除”动作换到 row 下方，并保留“刷新”、
+  `选择参与者`、`添加到频道`；旧 oracle 把已绑定/查看/重启/移除全部排在 row 同一
+  行。新增黑盒断言验证控件仍可见且 panel/right edge 不越界，故这是 action wrapping，
+  不是能力丢失。
+- **member card 纵向层次：** 当前 roster card 增加了治理端口能力说明，导致添加参与者
+  card 整体下移；其控件/disabled 状态仍可达。截图差异因此集中在卡片高度和后续空白
+  分布，不能用压缩高度恢复旧的已退役重启能力。
+
+### Round42 裁决
+
+- **UI-VIS-06：** 用户能力 3/3 PASS；视觉 3/3 RED，逐项证实为当前 canonical
+  automation surface 的事实边界、默认文案、取消能力、记录空态与纵向结构变化。
+- **UI-VIS-07：** 新增严格用户可见断言 3/3 PASS；保留 screenshot 3/3 RED（8%），
+  归类为 responsive successor layout/oracle mismatch，不计为治理能力回归。
+- 本轮只修改 `tests/browser/ui-visual.spec.js` 的严格黑盒断言与本审计；未改产品、未删
+  skip、未放宽截图合同、未更新快照。共享树已有的
+  `tests/browser/f7-history-water-baseline-0217-0221.spec.js` 与
+  `tests/i-m-exact-path-contracts.test.jsx` 脏改未触碰或暂存。
