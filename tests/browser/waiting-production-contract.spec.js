@@ -123,6 +123,7 @@ async function geometry(page) {
     };
     const list = document.querySelector('.timeline-message-list');
     return {
+      mode: document.querySelector('.timeline')?.getAttribute('data-viewport-mode') || '',
       reading: rect('.conversation-reading-slot'),
       stack: rect('.conversation-bottom-stack'),
       input: rect('.conversation-input-slot'),
@@ -343,8 +344,14 @@ async function runSendTrajectory({ page, request, testInfo, mode }) {
   await attach(testInfo, `waiting-send-${mode}.json`, { before, after });
   expectStable(before, after, ['reading']);
   expect(after.pageWidth).toBeLessThanOrEqual((mode === 'mobile' ? 390 : 1120) + 1);
-  if (mode === 'browsing') expect(after.list.gap).toBeGreaterThan(1);
-  else expect(after.list.gap).toBeLessThanOrEqual(24);
+  if (mode === 'browsing') {
+    // This legacy case name describes the wheel setup, not a passive append.
+    // A send is an explicit user intent: fae8b70's requestLatest() promoted a
+    // browsing session to Following before the durable row arrived. Keep that
+    // public handoff and physical-tail result as the migration oracle.
+    expect(after.mode).toBe('following');
+    expect(after.list.gap).toBeLessThanOrEqual(24);
+  } else expect(after.list.gap).toBeLessThanOrEqual(24);
 }
 
 test('real App send transaction keeps queued WaitingLayer out of following-at-bottom geometry', async ({ page, request }, testInfo) => {
@@ -359,6 +366,6 @@ test('real App send transaction keeps queued WaitingLayer out of following-exist
   await runSendTrajectory({ page, request, testInfo, mode: 'existing-waiting' });
 });
 
-test('real App send transaction keeps queued WaitingLayer out of wheel-takeover-after-send geometry', async ({ page, request }, testInfo) => {
+test('real App send transaction keeps queued WaitingLayer out of wheel-takeover-after-send geometry (browsing send follows explicit tail intent)', async ({ page, request }, testInfo) => {
   await runSendTrajectory({ page, request, testInfo, mode: 'browsing' });
 });

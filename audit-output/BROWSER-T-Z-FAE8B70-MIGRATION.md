@@ -1392,3 +1392,87 @@ ATOLL_TEST_WEB_PORT=15631 ATOLL_TEST_MOCK_PORT=19991 \
 最终归类：Feed port transient、Search lease 延迟申请、旧 activation fence、快速切频道
 与 reconnect pending 清理均 **PASS**；UI-VIS-11 screenshot 仍为已证明的旧视觉合同差异，
 不改阈值、不更新 snapshot；其它工作树 dirty 文件归属他人。
+
+## 第二十四轮：Waiting case38 与 `ee52ee2` 本人发送语义裁决
+
+本轮先核对 `fae8b70` 的用户可观察发送路径，再在当前候选真实 Chromium 复验。
+结论是 **Waiting case38 的 browsing 保持尾外断言是迁移错误；不回退 `ee52ee2` 产品修复**。
+
+### `fae8b70` 的旧行为不是 case38 原断言
+
+旧 `Timeline.jsx` 的公开 Composer bridge 在
+`fae8b70:src/ui/Timeline.jsx:1957-1967` 对每次本人发送调用
+`viewport.requestBottom('composer:send-start', ...)`。该 owner 最终调用
+`fae8b70:src/model/reading-session.js:168-186` 的 `requestLatest()`；函数明确把
+session `mode` 设为 `following`、清除 browsing bookmark/tail evidence，并安装一次
+bottom intent。旧 `LegendMessageList.jsx` 的 committed-layout 注释在
+`fae8b70:src/ui/timeline/LegendMessageList.jsx:2042-2045` 也直接记录
+“Send-start itself changes browsing to following”。这是用户可观察的本人发送语义，
+不是内部 trace 名称。
+
+旧 Waiting browser case 的 `wheel-takeover-after-send` 轨迹（
+`fae8b70:tests/browser/waiting-send-transaction.spec.js:616-625`）先从物理尾发送，
+等待 Waiting，再由**后续可信 wheel** 离开尾部；其断言
+`fae8b70:tests/browser/waiting-send-transaction.spec.js:724-728` 保护的是这个后续
+用户接管的 browsing anchor。它没有把“已在 browsing 时本人发送”定义为保持 browsing。
+因此，当前 case38 的原断言（先 wheel 离尾、再发送、仍要求 `gap > 1`）混合了两条
+不同轨迹，不能要求产品回退。
+
+`ee52ee2` 正是把当前 Composer bridge 从旧的
+`token.mode === following` 限制改为所有有效 token 均可发出显式 tail intent；它恢复了
+上述旧 `requestLatest()` 的用户语义并保留 passive append 的 browsing/jump 语义。
+
+### 当前 Chromium 证据（`c7231ff`，源代码含 `ee52ee2`）
+
+先运行未修 oracle 的 case38，首断点为原
+`tests/browser/waiting-production-contract.spec.js:346`：产品真实发送/渲染完成后
+`gap=0`，旧断言却期望 `>1`。随后仅把 T–Z spec 的结果 oracle 对齐旧体验：browsing
+发送必须公开切到 `following` 且物理尾 `gap <= 24`；没有改产品、阈值或 vendor。
+
+E 本人发送合同（真实 Chromium，目标不是编辑器文本短路）当前通过：
+
+```text
+ATOLL_TEST_WEB_PORT=15583 ATOLL_TEST_MOCK_PORT=19983 ATOLL_E_OUT=/tmp/tz-r24-e-send2 \
+  npx playwright test tests/browser/e-send-scroll-writers.spec.js \
+  --grep 'browsing send hands off' --workers=1 --reporter=line
+1 passed (10.4s)
+```
+
+固定公开证据为：发送前 `mode=browsing, scrollTop=3064, scrollHeight=4352,
+clientHeight=387, gap=901`；发送后真实目标 row
+`97af440f-5606-4d8e-a311-70c0fa5aabf0` 已 painted 且与 viewport 相交，
+`mode=following, scrollTop=4288, scrollHeight=4675, clientHeight=387, gap=0`，
+真实 DOM setter writer 位移 run `2`，timeline writes `3`。这证明目标消息真实
+materialize 并回到尾部，不是输入框命中。
+
+对齐后的 case38 复跑：
+
+```text
+ATOLL_TEST_WEB_PORT=15584 ATOLL_TEST_MOCK_PORT=19984 \
+  npx playwright test tests/browser/waiting-production-contract.spec.js \
+  --grep 'wheel-takeover-after-send' --workers=1 --reporter=line \
+  --output=test-results-tz-r24-case38-migrated-rerun
+1 passed (6.3s)
+```
+
+完整 `waiting-production-contract.spec.js` 回归为 **13 passed / 1 red**。唯一非本轮
+case38 的 RED 是 `following-existing-waiting` 在
+`waitForNewMessageIdentity()`（line 341）等待 canonical timeline row 超时；同一
+case 独立重跑仍在同一 gate 超时。旧 `fae8b70` 的对应轨迹在
+`tests/browser/waiting-send-transaction.spec.js:563-568,607-610` 只要求现有
+Waiting item 可见，直到后续 `advance×3` 才等待 Waiting 消失，并没有在仍排队时要求
+该消息先成为 timeline row。故该 RED 是既有 replacement-oracle/queue timing
+迁移问题，不能拿来否定 case38 或回退产品；本轮保持该严格 canonical gate 不吞红、
+不改 Waiting 产品。
+
+### 归属
+
+| 观测 | 裁决 | owner/action |
+|---|---|---|
+| `ee52ee2` 后本人发送从 browsing 到 `following`, gap `0`，目标 row 可见 | **PASS / 产品无需回退** | Reading owner + Composer bridge，E 黑盒已通过 |
+| Waiting case38 原 `gap > 1` | **迁移测试错误，已恢复旧 `fae8b70` 语义** | T–Z `waiting-production-contract.spec.js`，保留 case grep 名并改为 following/tail oracle |
+| passive non-self append 应保持 browsing/jump | **独立合同，不由本人发送结论覆盖** | E passive case 当前另有 row materialization RED，交其 Feed/Replica owner；本轮未吞错或改断言 |
+
+本轮只编辑 T–Z Waiting spec 与本报告；没有改 `src/`、vendor、package、截图阈值，
+也没有删除/skip case。工作树已有的
+`tests/browser/notification-high-water.spec.js` 脏修改属于他人，未触碰。
