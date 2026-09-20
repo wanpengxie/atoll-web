@@ -163,6 +163,19 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     });
     await snapshot().refreshChannel('c0');
     expect(options.wireRef.current.channelMeta).toHaveBeenCalledTimes(1);
+
+    let releaseProbe;
+    options.wireRef.current.channelMeta.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseProbe = resolve;
+    }));
+    const pendingRefresh = snapshot().refreshChannel('c0');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(options.wireRef.current.channelMeta).toHaveBeenCalledTimes(2);
+    await snapshot().setHistoryGrants([], {
+      generation: 2, boot: 'round22-refresh-next-boot', focus: 'c0',
+    });
+    releaseProbe({ channel_id: 'c0', head_seq: 0, has_rows: false });
+    await expect(pendingRefresh).resolves.toBe(false);
     runtime.destroy();
   });
 

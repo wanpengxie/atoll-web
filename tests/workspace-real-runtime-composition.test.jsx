@@ -53,7 +53,14 @@ const mocks = vi.hoisted(() => {
   };
   const wire = {
     state: 'open',
-    wireRef: { current: { submit, resolve: vi.fn(), cancel: vi.fn() } },
+    wireRef: {
+      current: {
+        submit,
+        resolve: vi.fn(),
+        cancel: vi.fn(),
+        channelMeta: vi.fn(async () => ({ channel_id: channelId, head_seq: 0, has_rows: false })),
+      },
+    },
     rosterRef: { current: null },
     obsRef: { current: obs },
     accessRef: { current: access },
@@ -270,6 +277,33 @@ afterEach(async () => {
 });
 
 describe('真实 Workspace owner composition', () => {
+  it('routes the conversation refresh action through the current Feed grant', async () => {
+    render(<WorkspaceApp />);
+    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+    await act(async () => {
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+        { channel_id: mocks.channelId, head_seq: 0, has_rows: false },
+      ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([], {
+        generation: 1, boot: 'world-real', focus: mocks.channelId,
+      });
+    });
+
+    await act(async () => {
+      await mocks.layoutProps.conversation.history.refreshLatest();
+    });
+    expect(mocks.wire.wireRef.current.channelMeta).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+        { channel_id: mocks.channelId, head_seq: 0, has_rows: false },
+      ], { generation: 2, boot: 'world-real-next', focus: mocks.channelId });
+      await mocks.layoutProps.conversation.history.refreshLatest();
+    });
+    expect(mocks.wire.wireRef.current.channelMeta).toHaveBeenCalledOnce();
+    expect(mocks.wire.wireRef.current.channelMeta).toHaveBeenCalledWith(mocks.channelId, 2);
+  });
+
   it('marks a probe control landed from Feed before its transport receipt, and keeps Waiting/Probe gates authoritative', async () => {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());

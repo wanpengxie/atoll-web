@@ -1047,12 +1047,23 @@ export function createChannelFeedRuntime(options = {}) {
   async function refreshChannel(channelId) {
     const requestGeneration = generation;
     const wire = wireRef.current;
-    if (!channelId || !requestGeneration || incompatible || !wire?.channelMeta) return false;
+    const isAdmitted = () => {
+      const status = histories.get(channelId);
+      return Boolean(
+        channelId
+        && requestGeneration
+        && requestGeneration === generation
+        && grants.has(channelId)
+        && status?.attached === true
+        && status.generation === requestGeneration,
+      );
+    };
+    if (incompatible || !wire?.channelMeta || !isAdmitted()) return false;
     try {
       const result = await wire.channelMeta(channelId, requestGeneration);
-      return requestGeneration === generation && Boolean(result);
+      return isAdmitted() && Boolean(result);
     } catch (error) {
-      if (requestGeneration !== generation) return false;
+      if (!isAdmitted()) return false;
       if (projectAccessFailure(channelId, error, requestGeneration)) return false;
       throw error;
     }
