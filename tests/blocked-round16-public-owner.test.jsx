@@ -380,8 +380,8 @@ describe('Round 16 public-owner evidence: Composer target guards', () => {
     expect(commands.removeMention).toHaveBeenLastCalledWith('agent-2');
   });
 
-  it('[AD-351] a missing recipient remains visible and blocks message construction instead of falling back', () => {
-    // 能力：用户明确看到收件人已离席且不会误发；不变量：missing recipient never silently becomes the default Agent；公开 owner：buildComposerModel/createMessageRequest。
+  it('[AD-351] a missing recipient remains visible with an actionable refusal instead of falling back', async () => {
+    // 能力：用户明确看到收件人已离席、知道消息不可投递且不会误发；不变量：missing recipient never silently becomes the default Agent；公开 owner：Composer/buildComposerModel/createMessageRequest。
     const missing = { id: 'agent:gone:1', kind: 'agent', label: '研究员' };
     const model = buildComposerModel({
       activeChannelId: 'c0', draft: { text: '继续', recipients: [missing] },
@@ -389,6 +389,12 @@ describe('Round 16 public-owner evidence: Composer target guards', () => {
     });
     expect(model.delivery.kind).toBe('lost');
     expect(model.delivery.label).toContain('@研究员');
-    expect(() => createMessageRequest(model)).toThrow('@研究员');
+    expect(model.delivery.label).toContain('已不在频道');
+    expect(model.delivery.label).toContain('不可投递');
+    expect(() => createMessageRequest(model)).toThrow('不可投递');
+
+    const view = render(<Composer model={model} commands={{}} />);
+    await waitFor(() => expect(view.getByRole('alert').textContent).toMatch(/@研究员.*已不在频道.*不可投递/));
+    expect(view.getByRole('textbox', { name: '消息' }).textContent).toContain('继续');
   });
 });

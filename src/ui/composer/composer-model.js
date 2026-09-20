@@ -393,6 +393,11 @@ function deliverySourceLabel(source) {
   return DELIVERY_SOURCE_LABELS[text(source)] || '';
 }
 
+function lostDeliveryLabel(rows, fallback = '收件人') {
+  const names = rows.map((row) => `@${actorName(row)}`).join('、') || fallback;
+  return `${names} 已不在频道，当前不可投递`;
+}
+
 // The current Workspace owner only supplies selectedAgentId. Preserve an
 // explicitly supplied fallback source when a future owner has one, but do not
 // infer filter/manual provenance from the same id: both routes intentionally
@@ -477,7 +482,7 @@ export function resolveComposerDelivery({ draft, roster, agentSelection }) {
         rows: Object.freeze([]),
         missing: Object.freeze([]),
         sourceLabel: deliverySourceLabel('reply'),
-        label: `@${text(reply.senderName) || id || '原发送者'} 已不在频道`,
+        label: lostDeliveryLabel([{ name: text(reply.senderName) || id || '原发送者' }]),
       });
     }
     return Object.freeze({ kind: 'direct', source: 'reply', rows: Object.freeze([actor]), missing: Object.freeze([]), sourceLabel: deliverySourceLabel('reply'), label: `回复 @${actorName(actor)}` });
@@ -491,7 +496,9 @@ export function resolveComposerDelivery({ draft, roster, agentSelection }) {
       rows: mentions,
       missing: Object.freeze(missing),
       sourceLabel: deliverySourceLabel('mention'),
-      label: mentions.map((row) => `@${actorName(row)}`).join('、'),
+      label: missing.length
+        ? lostDeliveryLabel(missing)
+        : mentions.map((row) => `@${actorName(row)}`).join('、'),
     });
   }
 
