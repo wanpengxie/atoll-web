@@ -682,12 +682,24 @@ function useProjectionReadingOwner({
     onSurfaceVisibilityChange(visible) {
       if (visible) {
         const current = controller.getSnapshot().session;
+        const reentering = observationRef.current.surfaceVisible !== true;
+        // ReadingContainerHandoff observes the whole reading object. Mark the
+        // transition before updating the session so the new object cannot
+        // replay this same re-entry boundary on its next effect pass.
+        if (reentering) {
+          observationRef.current = Object.freeze({
+            ...observationRef.current,
+            atTail: false,
+            surfaceVisible: true,
+            installedHighSeq: 0,
+          });
+        }
         // The hidden callback has already published a typed revoke at the
         // successor epoch.  Re-entry is a second semantic boundary: mint one
         // more session epoch before the first visible DOM observation so its
         // positive receipt is strictly newer than that revoke.  Do not mint
         // on the initial visible mount (the initial session is still epoch 0).
-        if (current.mode === READING_MODE.following && current.inputEpoch > 0) {
+        if (reentering && current.mode === READING_MODE.following && current.inputEpoch > 0) {
           controller.update((active) => advanceReadingInputEpoch(active));
         }
         return;
