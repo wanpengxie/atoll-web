@@ -28,6 +28,16 @@ function attachmentID(row) {
   return row?.resource_id || row?.id || '';
 }
 
+function hasDraftMaterial(draft) {
+  return Boolean(
+    draft?.text
+    || draft?.recipients?.length
+    || draft?.attachments?.length
+    || draft?.replyTarget
+    || draft?.doc?.content?.some?.((node) => node?.content?.length || node?.text),
+  );
+}
+
 function commandOwner(config, model) {
   const {
     submission = {},
@@ -258,7 +268,7 @@ function commandOwner(config, model) {
       if (typeof owner.attach !== 'function') throw new TypeError('频道附件 owner 未连接');
       return owner.attach(resource, model.channelId);
     },
-    pickChannelFile() {
+    pickChannelFile({ draft: draftSnapshot = null } = {}) {
       requireDraftEdit();
       if (model.edit) throw new TypeError('编辑已有消息时不能附加频道文件');
       const owner = attachment();
@@ -266,7 +276,13 @@ function commandOwner(config, model) {
       return Promise.resolve(owner.pickChannelFile(model.channelId)).then((resource) => {
         if (!resource) return null;
         if (typeof owner.attach !== 'function') throw new TypeError('频道附件 owner 未连接');
-        return owner.attach(resource, model.channelId);
+        const snapshot = draftSnapshot && typeof draftSnapshot === 'object'
+          ? normalizeComposerDraft({ ...model.draft, ...draftSnapshot })
+          : null;
+        const materialize = snapshot && hasDraftMaterial(snapshot) && typeof submission.updateDraft === 'function'
+          ? submission.updateDraft(model.channelId, snapshot, { preserveEditorRevision: true })
+          : Promise.resolve();
+        return Promise.resolve(materialize).then(() => owner.attach(resource, model.channelId));
       });
     },
     previewAttachment(resource) {

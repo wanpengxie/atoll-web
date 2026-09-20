@@ -109,3 +109,26 @@ test('choosing one public channel file closes the picker and creates exactly one
   await expect(drafts).toContainText(name);
   await expect(drafts.locator('article')).toHaveCount(1);
 });
+
+test('choosing one public channel file preserves a multiline draft without an empty paragraph', async ({ page, request }) => {
+  await reset(request, 14976605);
+  await login(page);
+  const input = page.getByLabel('消息');
+  await input.fill('第一行\n第二行');
+  const before = await input.locator('p').allTextContents();
+  const dialog = await openPicker(page);
+  await dialog.locator('.attachment-picker-row.file').first().click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => input.locator('p').allTextContents()).toEqual(before);
+  await expect(input.locator('p')).toHaveCount(before.length);
+  await expect(page.getByLabel('待发送附件').locator('article')).toHaveCount(1);
+
+  // The attachment must be materialized onto the durable draft, not only the
+  // currently painted editor. Reloading is the public persistence boundary.
+  await page.reload();
+  await expect(page.getByLabel('消息')).toBeVisible();
+  await expect.poll(() => page.getByLabel('消息').locator('p').allTextContents()).toEqual(before);
+  await expect(page.getByLabel('消息').locator('p')).toHaveCount(before.length);
+  await expect(page.getByLabel('待发送附件').locator('article')).toHaveCount(1);
+});

@@ -410,7 +410,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   const pickChannelFile = () => {
     if (channelFileBusy) return;
     setChannelFileBusy(true);
-    void invoke(commands.pickChannelFile).finally(() => setChannelFileBusy(false));
+    void invoke(commands.pickChannelFile, { draft: liveSnapshot() }).finally(() => setChannelFileBusy(false));
   };
   const onDragEnter = (event) => {
     if (editMode || !model.permissions.canTransmit || !containsFiles(event.dataTransfer)) return;

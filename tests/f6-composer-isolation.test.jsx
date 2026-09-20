@@ -192,6 +192,31 @@ describe('编辑已有消息时禁止上传附件（呼应旧 F6 附件隔离断
 });
 
 describe('频道文件选择的公开 Composer 反馈', () => {
+  it('passes the mounted Tiptap doc/text snapshot to the picker command', async () => {
+    const user = userEvent.setup();
+    const pickChannelFile = vi.fn().mockResolvedValue(null);
+    const model = buildComposerModel({
+      activeChannelId: 'c0',
+      draft: { text: '第一行\n第二行', doc: null, recipients: [], attachments: [] },
+      roster: ROSTER,
+      access: 'member_active',
+    });
+    render(<Composer model={model} commands={{ changeDraft: vi.fn(), pickChannelFile }} />);
+    await user.click(screen.getByRole('button', { name: '从频道文件选择' }));
+    await vi.waitFor(() => expect(pickChannelFile).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({
+        text: '第一行\n第二行',
+        doc: expect.objectContaining({
+          type: 'doc',
+          content: [
+            expect.objectContaining({ type: 'paragraph', content: [expect.objectContaining({ text: '第一行' })] }),
+            expect.objectContaining({ type: 'paragraph', content: [expect.objectContaining({ text: '第二行' })] }),
+          ],
+        }),
+      }),
+    })));
+  });
+
   it('disables the picker with the typed access reason when transmission is unavailable', () => {
     const model = buildComposerModel({
       activeChannelId: 'c0', draft: { text: '', recipients: [] }, roster: ROSTER,

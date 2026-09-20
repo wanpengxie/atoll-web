@@ -94,6 +94,53 @@ describe('编辑已有消息时禁止附件操作（useComposerCommands 直接 r
 });
 
 describe('频道文件选择走 typed attachment owner', () => {
+  it('materializes the live Tiptap draft before attaching a selected resource', async () => {
+    const resource = {
+      resource_id: 'file-multiline', address: 'file-multiline', name: 'notes.md',
+      media_type: 'text/markdown', size: 42,
+    };
+    const snapshot = {
+      text: '第一行\n第二行',
+      doc: {
+        type: 'doc',
+        content: [
+          { type: 'paragraph', content: [{ type: 'text', text: '第一行' }] },
+          { type: 'paragraph', content: [{ type: 'text', text: '第二行' }] },
+        ],
+      },
+      recipients: [], attachments: [], replyTarget: null, editorRevision: 4,
+    };
+    const writeDraft = vi.fn(async (principalId, channelId, draft, expectedRevision) => ({
+      conflict: false,
+      record: {
+        principalId, channelId, revision: Number(expectedRevision || 0) + 1,
+        editorRevision: draft.editorRevision, draft,
+      },
+    }));
+    const attachmentPort = {
+      pickChannelFile: vi.fn().mockResolvedValue(resource),
+      attach: vi.fn().mockResolvedValue(resource),
+      upload: vi.fn(), mutate: vi.fn(),
+    };
+    const config = memberHarness({
+      attachmentRef: { current: attachmentPort },
+      outboxFactory: () => ({
+        restore: vi.fn().mockResolvedValue([]),
+        restoreDrafts: vi.fn().mockResolvedValue([]),
+        writeDraft,
+        close: vi.fn(),
+      }),
+    });
+    const { result } = renderHook(() => useComposerCommands(config));
+
+    await expect(result.current.commands.pickChannelFile({ draft: snapshot })).resolves.toEqual(resource);
+    expect(writeDraft).toHaveBeenCalledWith(
+      'root', 'c0', expect.objectContaining({ text: snapshot.text, doc: snapshot.doc }), expect.any(Number),
+    );
+    expect(attachmentPort.attach).toHaveBeenCalledWith(resource, 'c0');
+    expect(writeDraft.mock.invocationCallOrder[0]).toBeLessThan(attachmentPort.attach.mock.invocationCallOrder[0]);
+  });
+
   it('attaches the selected resource exactly once and leaves cancel as a no-op', async () => {
     const resource = {
       resource_id: 'file-1', address: 'file-1', name: 'notes.md',
