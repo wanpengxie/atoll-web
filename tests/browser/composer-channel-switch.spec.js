@@ -78,3 +78,37 @@ test('literal @ text stays in the Tiptap body and submits to the default Agent',
     contentType: 'application/json',
   });
 });
+
+test('@ target leaves the Tiptap body, becomes a recipient chip, and submits to that Agent', async ({ page, request }, testInfo) => {
+  const submits = captureSubmitFrames(page);
+  const text = '请处理';
+  await reset(request);
+  await login(page);
+
+  const input = page.getByLabel('消息');
+  await input.click();
+  await input.pressSequentially('@Cl');
+  const option = page.getByRole('listbox').getByRole('option').filter({ hasText: 'Claude' }).first();
+  await expect(option).toBeVisible();
+  await option.click();
+  await expect(input).toHaveText('');
+  await expect(page.locator('.composer-target-pill.is-picked')).toHaveText('@Claude');
+
+  await input.pressSequentially(text);
+  await input.press('Enter');
+  const submitted = () => submits.find((frame) => frame?.msg_type === 'agent.ask' && frame?.payload?.text === text);
+  await expect.poll(submitted, { timeout: 10_000 }).toMatchObject({
+    channel_id: 'c0',
+    msg_type: 'agent.ask',
+    kind: 'request',
+    payload: { text },
+    audience: ['claude'],
+    visibility: 'public',
+  });
+  await expect(input).toHaveText('');
+  await expect(page.locator('article.request-message .request-text').filter({ hasText: text })).toBeVisible();
+  await testInfo.attach('composer-mention-submit.json', {
+    body: JSON.stringify(submitted(), null, 2),
+    contentType: 'application/json',
+  });
+});
