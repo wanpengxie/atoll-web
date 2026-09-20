@@ -24,9 +24,9 @@ Disposition codes:
   accessible-name observation. The current public trigger now exposes the
   truthful `，模型未知` label; its prior red packet is retained as provenance.
 
-Focused I-M evidence is 108/108 passing after the Round 24 additive contract:
+Focused I-M evidence is 109/109 passing after the Round 26 additive contract:
 live 5, management 4, markdown 11,
-memory 17, Mermaid 6, layout 4, lifecycle 12, message presentation 4, time
+memory 18, Mermaid 6, layout 4, lifecycle 12, message presentation 4, time
 4, mock 23, and model selection 18. The ten remaining implementation-oracle rows
 (memory 21–27 and 29, message 115, and model 146) are each mapped to a
 current public owner and executable replacement below. The difference from the
@@ -80,7 +80,7 @@ All cases exercise the current exported `MarkdownContent` and
 | 17 | `正文前插和流式续写不改名仍存活的语义块` — stable semantic block IDs survive prefix insertion and streaming growth. | `MarkdownContent` reading block IDs; rerender and compare IDs. **PASS/current**, retained. |
 | 18 | `流式尾块更新时保留已完成块的真实DOM和原生选择` — completed DOM/selection survives tail streaming. | Same block identity/selection path; rerender tail and assert node and selection survive. **PASS/current**, retained. |
 
-## 5. `memory-window.test.js` (baseline 18; current 17, PASS/current plus ORACLE/current)
+## 5. `memory-window.test.js` (baseline 18; current 18, PASS/current plus ORACLE/current)
 
 The former fold/memory store was removed. The migration tests the current
 bounded `ChannelReplica`, cache, coverage, and detached `ConversationPresentation`
@@ -93,7 +93,7 @@ exact terminal closure tests. No deleted map or private export was restored.
 |---|---|---|
 | 19 | `超过水位才动手,一次砍到八成,并且留下的是最近的` — bounded memory trims old rows and rebuilds indexes. | `createChannelReplicaStore().trim`; commit eight rows, trim to four, assert newest rows, timeline, envelope index, and coverage. **PASS/current**, migrated. |
 | 20 | `低水位只决定一次保留多少,不会让每条新消息都触发裁剪` — below limit is a no-op. | Replica trim at/above limit; assert no second removal. **PASS/current**, migrated. |
-| 21 | `还没闭合的 turn 整段留住` — an older open turn remains coherent, including its request and provisional evidence, when newer rows pressure the trim frontier. | `createChannelReplicaStore().trim` now clamps to `openTurnFloor`; seq 1/2 remain a pending turn under seq 3–12 pressure. **ORACLE/current**, executable evidence `tests/memory-window.test.js:106-130` and `src/model/channel-replica-terminal-closure.test.jsx:179-189`. |
+| 21 | `还没闭合的 turn 整段留住` — an older open turn remains coherent, including its request and provisional evidence, when newer rows pressure the trim frontier. | `createChannelReplicaStore().trim` now clamps to `openTurnFloor`; seq 1/2 remain a pending turn under seq 3–12 pressure, and a pending child keeps its completed ancestor while unrelated older rows are evicted. **ORACLE/current**, executable evidence `tests/memory-window.test.js:106-130,176-201` and `src/model/channel-replica-terminal-closure.test.jsx:179-189`. |
 | 22 | `保留先到 terminal 的 compact closure，窗口裁剪后旧 queued 不能复活` — compact terminal evidence prevented stale queued resurrection. | `ChannelReplica` closure + `useWaitingEditingController`; the trimmed completed turn suppresses a stale local echo for both request-first and response-first re-admission. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:52-71,127-155`. |
 | 23 | `多个乱序 unmatched terminal 由 earliest seq 吸收` — unmatched terminal ordering was deterministic. | Parent-keyed closure reconciliation chooses the earlier response-first terminal before re-admission. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:127-149`; no guessed request or second store. |
 | 24 | `已匹配 terminal 被裁剪后仍以 compact closure 阻止旧 queued 复活` — stale queued must not reopen a closed turn after trim. | `ChannelReplica.trim` retains exact terminal provenance and projects terminal state while the request is absent. **ORACLE/current**, executable evidence `src/model/channel-replica-terminal-closure.test.jsx:73-87,89-125`. |
@@ -737,12 +737,36 @@ src/model/channel-replica-terminal-closure.test.jsx tests/memory-window.test.js`
 baseline count and the 17-file/108-test I–M aggregate are unchanged. Reading
 and all product sources remain untouched.
 
+## Round 26 open-child ancestor floor under pressure
+
+Rounds 24–25 and the sparse/model-selector evidence are not repeated. The next
+I–M baseline slice is memory-window row 21's ancestor half: the current owner
+already proved that an older top-level open turn keeps its request/provisional
+rows, but the prior nested-child case started at seq1 and therefore could only
+prove a trim no-op. The missing pressure case is that unrelated older rows may
+be evicted while an open child still pins its completed terminal ancestor.
+
+The additive public-owner test
+`tests/memory-window.test.js:176-201` commits unrelated rows 1–4, a root
+request at seq5, child request/progress at seq6/8, the completed root terminal
+at seq7, and tail rows through seq16. `trim(channel, 4)` must remove exactly
+the four unrelated rows and retain seq5–16; the public timeline must still
+show a completed root with its pending child thread. This exercises only
+`createChannelReplicaStore().commit/trim/state` and observable timeline/row
+state; it adds no lifecycle store, private production call, Feed, notification,
+or Reading behavior.
+
+Evidence: `npx vitest run tests/memory-window.test.js` → **18/18 GREEN**;
+the Round 25 closure/cache/feed/model recheck remains **5 files, 69/69
+GREEN**. Re-running all 17 current I–M owner files gives **109/109 GREEN**;
+the baseline remains 159 cases and this is an additive row-21 owner proof.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
   declarations plus both expanded `takeover` variants.
-- Current-owner focused run: 17 files, 108 tests total, all 108 passing after
-  the additive row-143 proof. The
+- Current-owner focused run: 17 files, 109 tests total, all 109 passing after
+  the additive row-21 proof. The
   run includes the four recreated owner suites (`management-actors`,
   `memory-window`, `message-list-lifecycle`, `message-presentation`) and the
   current `model-selector` suite; existing current-owner suites were left

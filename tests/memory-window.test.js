@@ -173,6 +173,33 @@ describe('current bounded Replica ownership (baseline memory-window UX)', () => 
       .toMatchObject({ requestId: 'child-request', terminal: null, status: 'pending' });
   });
 
+  it('trims older rows while pinning an open child and its terminal ancestor', () => {
+    const store = createChannelReplicaStore();
+    for (let seq = 1; seq <= 4; seq += 1) commit(store, row(seq));
+    commit(store, request(5, 'pressured-root'));
+    commit(store, row(6, {
+      id: 'pressured-child', kind: 'request', type: 'tool.exec', sender: AGENT,
+      audience: [SELF], parentId: 'pressured-root', text: 'tool call',
+    }));
+    commit(store, response(7, 'pressured-root-final', 'pressured-root', 'root done'));
+    commit(store, row(8, {
+      id: 'pressured-child-progress', kind: 'response', type: 'tool.exec', sender: AGENT,
+      audience: [SELF], parentId: 'pressured-child', text: 'still working',
+    }));
+    for (let seq = 9; seq <= 16; seq += 1) commit(store, row(seq, { id: `tail-${seq}` }));
+
+    // The ordinary four-row cut would split the open child from its root.
+    // The public trim contract may evict unrelated older rows, but must keep
+    // the complete ancestor chain so the pending child remains renderable.
+    expect(store.trim(CHANNEL, 4)).toBe(4);
+    const state = store.state(CHANNEL);
+    expect([...state.rows.keys()]).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    const root = state.timeline.find((entry) => entry.turn?.requestId === 'pressured-root');
+    expect(root?.turn).toMatchObject({ requestId: 'pressured-root', status: 'completed' });
+    expect(root?.thread.find((entry) => entry.turn?.requestId === 'pressured-child')?.turn)
+      .toMatchObject({ requestId: 'pressured-child', terminal: null, status: 'pending' });
+  });
+
   it('retains a response-first row across trim until its exact request arrives', () => {
     const store = createChannelReplicaStore();
     for (let seq = 1; seq <= 4; seq += 1) commit(store, row(seq));
