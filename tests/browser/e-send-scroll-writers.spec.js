@@ -456,8 +456,11 @@ test.describe('E send scroll writers', () => {
     expect(timelineWrites, JSON.stringify(timelineWrites)).toEqual([]);
 
     await page.locator('.timeline-jump-latest').click();
-    const jumpedRow = page.locator('.timeline-message-list [data-presentation-row-id]').filter({ hasText: marker });
+    const jumpedRow = page.locator(
+      `.timeline-message-list [data-presentation-row-id="${appendedBody.request_id}"]`,
+    );
     await expect(jumpedRow).toHaveCount(1);
+    await expect(jumpedRow).toBeVisible();
     const afterJump = await paintSnapshot(page, marker);
     expect(afterJump.mode, JSON.stringify(afterJump)).toBe('following');
     expect(afterJump.gap, JSON.stringify(afterJump)).toBeLessThanOrEqual(24);

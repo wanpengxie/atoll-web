@@ -1738,3 +1738,44 @@ ATOLL_TEST_WEB_PORT=15622 ATOLL_TEST_MOCK_PORT=19922 \
 `src/model/channel-feed-runtime.js`、`src/ui/composer/Composer.jsx`、
 `src/ui/timeline/VendorListExecutor.jsx`、`src/ui/timeline/useBrowsingReadingController.js`
 及相关测试脏改属于其他 owner，未触碰。
+
+## 第二十九轮：架构纠偏——恢复首可见 anchor 与 jump 后 exact row gate
+
+架构守门拒绝了 `118035d` 中两处把用户可观察合同放宽的 hunk。本轮只修正
+`tests/browser/reading-position-session.spec.js`、`tests/browser/e-send-scroll-writers.spec.js`
+及本报告；不改产品、fixture、截图阈值或 vendor。
+
+### 逐 hunk 对齐
+
+| hunk | 纠偏前的错误 | 本轮合同与结果 |
+|---|---|---|
+| Reading position | 用 `visible.find()` 接受仍可见但不是首行的 retained anchor，并以偏移量代替首可见身份 | 恢复 `afterSwitch.firstVisible.id === beforeSwitch.firstVisible.id`，同时保留 `top` 偏移 `≤80px`；首个可见行必须就是用户原 anchor，不能由相邻 overscan predecessor 代替。 |
+| E passive append（浏览态） | 若在 append 后要求尾部 request row 已挂载，会把 overscan 外部 row mount 错判为用户合同 | 继续只验证 `mode=browsing`、gap、new-activity notice、scroll anchor 与无 writer displacement；append 本身不要求 overscan 外尾行 DOM 存在。 |
+| E passive append（显式 jump） | 仅用含 marker 的宽 locator 验证跳转后的行 | 点击 jump 后改用返回值中的 exact `appendedBody.request_id` locator，要求唯一且 visible；随后 `paintSnapshot` 必须报告同一 request id、`painted=true`、`intersectsViewport=true`，并保持 Following/gap `≤24`。这是用户点击 jump 后的 materialization gate。 |
+| member-filter | 合法的 deep-history readiness 时序迁移 | 保留 `118035d` 的 canonical-row readiness 等待；本轮未改该 spec。 |
+
+这里的 Reading retained-anchor 方案仅作为上一轮历史记录，已被本轮严格首行合同
+取代；没有以 overscan 行为或局部文本匹配替代用户可见 anchor。E 的两阶段合同则明确
+区分“浏览态 append 不抢尾”和“用户点击 jump 后目标行必须精确可见”。
+
+### 真实 Chromium repeat3
+
+```text
+ATOLL_TEST_WEB_PORT=15623 ATOLL_TEST_MOCK_PORT=19923 \
+  ATOLL_READING_OUT=/tmp/tz-r29-reading-repeat \
+  npx playwright test tests/browser/reading-position-session.spec.js \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r29-reading-repeat3
+3 passed (26.8s)
+
+ATOLL_TEST_WEB_PORT=15624 ATOLL_TEST_MOCK_PORT=19924 \
+  ATOLL_E_OUT=/tmp/tz-r29-passive-repeat \
+  npx playwright test tests/browser/e-send-scroll-writers.spec.js \
+  --grep 'browsing passive append' --workers=1 --repeat-each=3 \
+  --reporter=line --output=test-results-tz-r29-passive-repeat3
+3 passed (21.4s)
+```
+
+两组均为真实 Chromium，未修改 `src/` 产品 owner。当前工作树中已有的
+`VendorListExecutor.jsx`、`useBrowsingReadingController.js` 及
+`tests/reading-observation-settle.test.jsx` 脏改继续归其原 owner，本轮未触碰。
