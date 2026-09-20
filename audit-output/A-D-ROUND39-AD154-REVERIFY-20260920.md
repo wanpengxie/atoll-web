@@ -19,4 +19,3 @@ Date: 2026-09-20
   and the same reproduction must be used.
 - No source, vendor, package, lockfile, private export, baseline deletion, or
   expected-fail change was made in this round.
-
