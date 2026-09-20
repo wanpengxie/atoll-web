@@ -69,6 +69,12 @@ import {
 import { createViewSessionStore } from '../src/model/view-session.js';
 import { MermaidBlock } from '../src/ui/MermaidBlock.jsx';
 import { VendorListExecutor } from '../src/ui/timeline/VendorListExecutor.jsx';
+import { ReadingContainerHandoff } from '../src/ui/timeline/ReadingContainerHandoff.jsx';
+import { HISTORY_INTENT } from '../src/model/history-demand.js';
+import {
+  blockingAdmission,
+  historyConsumerObligation,
+} from '../src/ui/timeline/history-consumer-obligation.js';
 
 const mermaidMock = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -445,6 +451,26 @@ function round33Row(id, seq) {
 
 function round33Snapshot(rows, { firstItemIndex = 1, revision = 7 } = {}) {
   return { rows, firstItemIndex, revision, roleRevision: 1 };
+}
+
+function round34Reading({
+  activationID = 'activation:round-34',
+  mode = READING_MODE.browsing,
+  bookmark = null,
+  initializing = false,
+  restorePending = false,
+} = {}) {
+  const owner = round33Reading();
+  owner.activationID = activationID;
+  owner.session = {
+    ...owner.session,
+    activationID,
+    mode,
+    bookmark,
+  };
+  owner.initializing = initializing;
+  owner.restorePending = restorePending;
+  return owner;
 }
 
 function liveCheckpointOptions() {
@@ -2228,5 +2254,316 @@ describe('I-M exact-path public-owner recovery (round 33 layout and resource con
     });
     await waitForMock(() => h.feeds.find((row) => row.envelope.id === scheduled.timer_id), 'scheduled timer');
     expect(h.feeds.some((row) => row.envelope.id === cancelled.timer_id)).toBe(false);
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 34 lifecycle and viewport contracts)', () => {
+  it('message-list-lifecycle TC-0970: a replacement activation cannot inherit a retained history-start role', () => {
+    const abandoned = round34Reading({
+      activationID: 'activation:abandoned-history-role',
+      mode: READING_MODE.browsing,
+    });
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('abandoned-oldest', 10), round33Row('abandoned-tail', 11)])}
+        reading={abandoned}
+        surfaceVisible
+        historyStartBoundary={{ generation: 7, label: 'abandoned history floor' }}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(view.getByText('abandoned history floor')).toBeTruthy();
+
+    const replacement = round34Reading({
+      activationID: 'activation:replacement-history-role',
+      mode: READING_MODE.browsing,
+    });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('replacement-oldest', 20), round33Row('replacement-tail', 21)])}
+        reading={replacement}
+        surfaceVisible
+        historyStartBoundary={null}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(view.queryByText('abandoned history floor')).toBeNull();
+    expect(view.container.querySelector('[data-presentation-row-id="replacement-oldest"]')).toBeTruthy();
+    expect(view.container.querySelectorAll('.timeline-history-boundary')).toHaveLength(0);
+  });
+
+  it('message-list-lifecycle TC-0971: the fixed history-start role appears only after the public owner reports exhaustion', () => {
+    const reading = round34Reading({ mode: READING_MODE.browsing });
+    const rows = [round33Row('boundary-oldest', 30), round33Row('boundary-tail', 31)];
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot(rows)}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(view.container.querySelectorAll('.timeline-history-boundary')).toHaveLength(0);
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot(rows)}
+        reading={reading}
+        surfaceVisible
+        historyStartBoundary={{ generation: 8, label: '已到最早动态' }}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(view.getByText('已到最早动态')).toBeTruthy();
+    expect(view.container.querySelectorAll('.timeline-history-boundary')).toHaveLength(1);
+    expect(view.container.querySelector('.timeline-history-boundary-slot').nextElementSibling
+      .contains(view.container.querySelector('[data-presentation-row-id="boundary-oldest"]'))).toBe(true);
+  });
+
+  it('message-list-lifecycle TC-0972: revoking the boundary before an open prepend leaves rows stable without a stale role', () => {
+    const reading = round34Reading({ mode: READING_MODE.browsing });
+    const anchor = round33Row('open-prepend-anchor', 40);
+    const tail = round33Row('open-prepend-tail', 41);
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([anchor, tail], { firstItemIndex: 40 })}
+        reading={reading}
+        surfaceVisible
+        historyStartBoundary={{ generation: 9, label: '临时历史起点' }}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const retainedAnchor = view.container.querySelector('[data-presentation-row-id="open-prepend-anchor"]');
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([
+          round33Row('open-prepend-head', 39),
+          anchor,
+          tail,
+        ], { firstItemIndex: 39 })}
+        reading={reading}
+        surfaceVisible
+        historyStartBoundary={null}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(view.container.querySelectorAll('.timeline-history-boundary')).toHaveLength(0);
+    expect(view.container.querySelector('[data-presentation-row-id="open-prepend-anchor"]')).toBe(retainedAnchor);
+    expect(vendorHarness.props.firstItemIndex).toBe(39);
+    expect(view.container.querySelector('[data-presentation-row-id="open-prepend-head"]')).toBeTruthy();
+  });
+
+  it('message-list-lifecycle TC-0973: formal history admission is scoped to the exact activation/view/epoch tuple', () => {
+    const status = {
+      generation: 12,
+      attached: true,
+      localReplicaReady: true,
+      sourceLease: 'round34-lease',
+      presentationAdmissionState: {
+        phase: 'pending-baseline-commit',
+        token: { activationID: 'activation:current', viewID: 'c0:all', epoch: 'c0:12' },
+      },
+    };
+    const currentOwner = { channelID: 'c0', activationID: 'activation:current', viewKey: 'c0:all' };
+    const obligation = historyConsumerObligation({
+      intent: HISTORY_INTENT.initialView,
+      targetSeq: 42,
+      requiredVisibleCoverage: { messageID: 'm0973', seq: 42 },
+      firstRow: { id: 'm0975', seqLow: 45 },
+      status,
+    });
+
+    expect(obligation).toMatchObject({
+      key: expect.stringContaining('m0973'),
+      sourceKey: expect.stringContaining('round34-lease'),
+    });
+    expect(blockingAdmission(status, currentOwner)).toBe(status.presentationAdmissionState);
+    expect(blockingAdmission(status, {
+      ...currentOwner,
+      activationID: 'activation:abandoned',
+    })).toBeNull();
+    expect(blockingAdmission(status, {
+      ...currentOwner,
+      viewKey: 'c0:other',
+    })).toBeNull();
+  });
+
+  it('message-list-lifecycle TC-0974: an empty presentation remains a readable region while admission feedback is pending', () => {
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.status = {
+      generation: 13,
+      presentationAdmissionState: {
+        phase: 'committed-awaiting-layout',
+        token: { activationID: reading.activationID, viewID: 'c0:all', epoch: 'c0:13' },
+      },
+    };
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([])}
+        reading={reading}
+        renderRow={() => null}
+      />,
+    );
+
+    const region = view.getByRole('region', { name: '频道动态' });
+    expect(region.getAttribute('data-empty')).toBe('true');
+    expect(view.queryByRole('status')).toBeNull();
+  });
+
+  it('message-list-lifecycle TC-0975: a bookmark restore with no rows exposes explicit restore status', () => {
+    const reading = round34Reading({
+      mode: READING_MODE.browsing,
+      restorePending: true,
+      bookmark: { messageID: 'late-bookmark', rowViewportOffset: -16 },
+    });
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([])}
+        reading={reading}
+        renderRow={() => null}
+      />,
+    );
+
+    expect(view.getByRole('status').textContent).toBe('正在恢复上次阅读位置…');
+    expect(view.queryByRole('region', { name: '频道动态' })).toBeNull();
+  });
+
+  it('message-list-lifecycle TC-0977: an abandoned activation cannot reuse its initial location on replacement', () => {
+    const abandoned = round34Reading({
+      activationID: 'activation:abandoned-location',
+      mode: READING_MODE.browsing,
+      bookmark: { messageID: 'abandoned-target', rowViewportOffset: -20 },
+    });
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([
+          round33Row('abandoned-head', 50),
+          round33Row('abandoned-target', 51),
+        ])}
+        reading={abandoned}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.props.initialTopMostItemIndex).toBe(1);
+
+    const replacement = round34Reading({
+      activationID: 'activation:replacement-location',
+      mode: READING_MODE.browsing,
+      bookmark: null,
+    });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([
+          round33Row('replacement-head', 60),
+          round33Row('replacement-tail', 61),
+        ])}
+        reading={replacement}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(vendorHarness.props.initialTopMostItemIndex).toBe(0);
+    expect(view.container.querySelector('[data-presentation-row-id="replacement-head"]')).toBeTruthy();
+  });
+
+  it('message-list-lifecycle TC-0978: a browsing bookmark resolves to its exact row through the public list owner', () => {
+    const reading = round34Reading({
+      mode: READING_MODE.browsing,
+      bookmark: { messageID: 'bookmark-target', rowViewportOffset: -24 },
+    });
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([
+          round33Row('bookmark-head', 70),
+          round33Row('bookmark-target', 71),
+          round33Row('bookmark-tail', 72),
+        ], { firstItemIndex: 70 })}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(vendorHarness.props.firstItemIndex).toBe(70);
+    expect(vendorHarness.props.initialTopMostItemIndex).toBe(1);
+    expect(view.container.querySelector('[data-presentation-row-id="bookmark-target"]')).toBeTruthy();
+  });
+
+  it('message-list-lifecycle TC-0979: a late exact bookmark supersedes the temporary fallback once its row arrives', () => {
+    const reading = round34Reading({
+      mode: READING_MODE.browsing,
+      bookmark: { messageID: 'late-exact-target', rowViewportOffset: -12 },
+    });
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('temporary-fallback', 80)])}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.props.initialTopMostItemIndex).toBe(0);
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([
+          round33Row('temporary-fallback', 80),
+          round33Row('late-exact-target', 81),
+        ])}
+        reading={reading}
+        surfaceVisible
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(vendorHarness.props.initialTopMostItemIndex).toBe(1);
+    expect(view.container.querySelector('[data-presentation-row-id="late-exact-target"]')).toBeTruthy();
+    expect(view.queryByRole('status')).toBeNull();
+  });
+
+  it('message-list-lifecycle TC-0983: the handoff keeps one active paint layer while an incoming activation is inert', () => {
+    const incoming = round34Reading({
+      activationID: 'activation:incoming-inert',
+      mode: READING_MODE.following,
+      initializing: true,
+    });
+    const view = render(
+      <ReadingContainerHandoff
+        reading={incoming}
+        surfaceVisible
+        snapshot={round33Snapshot([])}
+        focusOnMount={false}
+        renderRow={() => null}
+      />,
+    );
+    const layer = view.container.querySelector('.timeline-reading-layer');
+    expect(view.container.querySelectorAll('.timeline-reading-layer.is-active')).toHaveLength(1);
+    expect(view.queryByRole('region', { name: '频道动态' })).toBeNull();
+
+    const revealed = round34Reading({
+      activationID: 'activation:revealed',
+      mode: READING_MODE.browsing,
+    });
+    view.rerender(
+      <ReadingContainerHandoff
+        reading={revealed}
+        surfaceVisible
+        snapshot={round33Snapshot([round33Row('focus-target', 90)])}
+        focusOnMount
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+
+    expect(view.container.querySelector('.timeline-reading-layer')).toBe(layer);
+    expect(view.container.querySelectorAll('.timeline-reading-layer.is-active')).toHaveLength(1);
+    expect(view.container.querySelector('.timeline-reading-stack').getAttribute('data-reading-activation'))
+      .toBe('activation:revealed');
+    expect(document.activeElement).toBe(view.getByRole('region', { name: '频道动态' }));
   });
 });

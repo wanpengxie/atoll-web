@@ -939,6 +939,40 @@ Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
 current-owner rerun remains **17 files, 110/110 GREEN**. These ten additions
 leave the 159-case baseline unchanged and touch only tests/audit.
 
+## Round 34 exact-path recovery: lifecycle, admission, and bookmark contracts
+
+The next ten unique declarations recover the public lifecycle/viewport cases
+around the former message-list owner. They do not repeat TC-0976, TC-0980, or
+TC-0981, and they do not add memory/model-selector cases. The old
+`computeItemMeasurementKey` and `formalRangeStateChange` handles are not
+reintroduced: where the current owner expresses the same user contract through
+an activation tuple, keyed Presentation, or an explicit status/region, the
+test names that public successor and records the translation.
+
+| baseline case | user capability and invariant | current public owner | fae8b70 old operation | current executable evidence and result |
+|---|---|---|---|---|
+| TC-0970 | A retained history-start role belongs to its activation and cannot leak to a replacement activation; the replacement rows remain readable. | VendorListExecutor keyed Presentation + explicit `historyStartBoundary` context | `MessageList`/Legend list `computeItemMeasurementKey` encoded the old activation in the retained role key, then expected the new activation's frontier key. | tests/i-m-exact-path-contracts.test.jsx:2261-2294 — old boundary disappears, replacement row is present, and no stale boundary remains; **PASS** |
+| TC-0971 | The fixed history-start role appears only after exhaustion and sits before the authoritative oldest row. | VendorListExecutor `HistoryStartBoundary`/List context | The old list moved the role to the authoritative oldest row only after the exhausted boundary became visible during prepend. | tests/i-m-exact-path-contracts.test.jsx:2296-2323 — no marker before exhaustion; one status slot appears before the oldest row after the public boundary is supplied; **PASS** |
+| TC-0972 | Revoking a boundary before an open prepend keeps the authoritative row/position continuity without leaving a stale marker. | VendorListExecutor `firstItemIndex` + keyed row identity; boundary presentation is explicit input | The old operation asserted the ordinary measurement key (`"1"`) remained authoritative after boundary revocation, then checked the next row's key during another prepend. | tests/i-m-exact-path-contracts.test.jsx:2325-2358 — anchor DOM identity survives, `firstItemIndex` advances 40→39, the new head is readable, and the revoked marker is absent; **PASS** (public successor; no private measurement-key API restored) |
+| TC-0973 | Formal history feedback is admitted only for the current activation/view/epoch and does not clear unrelated loading state. | `historyConsumerObligation` + `blockingAdmission` public history-consumer port | The old `formalRangeStateChange` callback carried a pending range update and rejected callbacks from another activation while retaining unrelated loading. | tests/i-m-exact-path-contracts.test.jsx:2360-2393 — obligation/source keys are stable and only the exact current tuple receives the blocking admission; activation/view mismatches return null; **PASS** |
+| TC-0974 | An empty Presentation stays an addressable empty region even while formal admission is pending; it is not replaced by a loading placeholder. | VendorListExecutor empty-surface branch | `FormalRangeSubject` rendered the empty region independently of the old formal-range feedback subject. | tests/i-m-exact-path-contracts.test.jsx:2395-2415 — pending admission still yields `role=region`, `data-empty=true`, and no status node; **PASS** |
+| TC-0975 | Browsing with a saved bookmark and no rows gives explicit restore status rather than an empty/interactive list. | VendorListExecutor `restorePending` branch | The old MessageList exposed `正在恢复上次阅读位置…` while the bookmark target was not installed. | tests/i-m-exact-path-contracts.test.jsx:2417-2433 — exact status text is exposed and no conversation region is published; **PASS** |
+| TC-0977 | A replacement activation cannot reuse the initial location computed by an abandoned activation render. | VendorListExecutor derives `initialTopMostItemIndex` from the current `reading.session.bookmark` | The old Legend list compared the speculative/abandoned render with the committed activation before applying its initial location. | tests/i-m-exact-path-contracts.test.jsx:2435-2473 — abandoned bookmark selects index 1, then the replacement activation with no bookmark selects index 0 and paints replacement rows; **PASS** |
+| TC-0978 | An exact bookmark resolves through the one public list owner when the semantic activation reuses the channel host. | VendorListExecutor `resolveReadingBookmark` → `initialTopMostItemIndex` | The old public list handle received `{ index: 1, offset: 12 }` for the exact target and did not publish restore status. | tests/i-m-exact-path-contracts.test.jsx:2475-2496 — current first-item continuity is 70 and the exact target resolves to relative index 1 with no second owner; **PASS** |
+| TC-0979 | Installed rows stay readable and an exact bookmark moves to its row when that row arrives later. | VendorListExecutor rows + current `resolveReadingBookmark` projection | The old list kept the fallback row mounted, then settled the late exact target without a restore-status flash. | tests/i-m-exact-path-contracts.test.jsx:2498-2528 — fallback paints at index 0, late exact materialization resolves index 1, and no status appears; **PASS** |
+| TC-0983 | Focus transfers only with the materialized reveal commit; an inert incoming activation does not create a second active layer or steal focus. | ReadingContainerHandoff single active layer + VendorListExecutor typed `focusOnMount` | The old handoff kept the outgoing layer focused until the atomic reveal, then focused the committed list region. | tests/i-m-exact-path-contracts.test.jsx:2530-2568 — empty initializing input has no region/focus; materialized replacement keeps one layer and focuses the public region; **PASS** |
+
+Targeted evidence: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t
+'TC-0970|TC-0971|TC-0972|TC-0973|TC-0974|TC-0975|TC-0977|TC-0978|TC-0979|TC-0983'`
+→ **10/10 GREEN**. The round bridge itself is **10/10 GREEN** and the current
+owner rerun remains **17 files, 110/110 GREEN**. A whole-file exact rerun is
+currently **114/115** because the pre-existing/shared-worktree
+`message-presentation: canonical body text wins over a system-operation label`
+case fails in the unrelated TimelineRowRenderer canonical-event change; none
+of the ten Round-34 cases fails. The baseline remains 159. No product file,
+compatibility parser, old store, private helper, vendor/package/lockfile, or
+second source of truth was changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -996,6 +1030,12 @@ leave the 159-case baseline unchanged and touch only tests/audit.
   (TC-0964–0969 and TC-1042–1045); the exact bridge is now 105/105 GREEN.
   The current-owner rerun remains 17 files, 110/110 GREEN and the baseline
   remains 159.
+- Round 34 adds ten independent lifecycle/admission/bookmark contracts
+  (TC-0970–0975, TC-0977–0979, and TC-0983); its targeted bridge is 10/10
+  GREEN and the current-owner rerun remains 17 files, 110/110 GREEN. A
+  whole-file exact rerun is 114/115 only because the shared-worktree
+  TimelineRowRenderer canonical-event change currently breaks the unrelated
+  message-presentation body-text case; no Round-34 case is red.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
