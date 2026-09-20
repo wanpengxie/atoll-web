@@ -782,6 +782,29 @@ independent live contracts). The current-owner focused count remains 109/109;
 the baseline remains 159 cases. No production source, notification owner,
 memory/model selector, vendor/package/lockfile, or compatibility API changed.
 
+## Round 28 exact-path recovery: access and content-projection contracts
+
+The next non-memory/non-model slice covers the business-roster access boundary,
+four independent Markdown projection behaviors, and one protocol error
+boundary. TC-0924 is already proved by the Round 14 bridge and is deliberately
+not repeated; TC-0918–TC-0922 are also excluded. Each selected baseline maps to
+one separately executable public-owner contract.
+
+| baseline case | user capability and invariant | current public owner | executable evidence and result |
+|---|---|---|---|
+| TC-0923 | The system actor is absent from business roster rows, while channel governance remains routed to the stable system actor. | isVisibleActor plus buildComposerModel/createComposerCommandRequest | tests/i-m-exact-path-contracts.test.jsx:1106-1125 — system row is hidden and /members targets SYSTEM_ACTOR_ID; **PASS** |
+| TC-0925 | Inline and bracket math render as math while inline/fenced code remains literal. | MarkdownContent | tests/i-m-exact-path-contracts.test.jsx:1127-1148 — three KaTeX nodes, one display node, and literal code delimiters; **PASS** |
+| TC-0926 | Only paired, unescaped math delimiters outside code are normalized. | normalizeMathMarkdown | tests/i-m-exact-path-contracts.test.jsx:1150-1155 — paired delimiters normalize while code/escaped/unclosed forms remain unchanged; **PASS** |
+| TC-0927 | The public Markdown renderer preserves CommonMark/GFM table, disabled task, deletion, and external-link semantics. | MarkdownContent | tests/i-m-exact-path-contracts.test.jsx:1157-1173 — table/task/del/link assertions pass; **PASS** |
+| TC-0928 | Ledger-supplied raw HTML remains inert and cannot become executable image/script DOM. | MarkdownContent | tests/i-m-exact-path-contracts.test.jsx:1175-1182 — image and script nodes are absent; **PASS** |
+| TC-1047 | Malformed or unknown upstream frames return explicit validation errors rather than being accepted by the wire owner. | validatePayload from the public mock protocol boundary | tests/i-m-exact-path-contracts.test.jsx:1185-1191 — missing required field, unknown field, and unknown frame type each return an error; **PASS** |
+
+Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx →
+**56/56 GREEN** (the Round 27 bridge plus these six new contracts). The
+full current-owner run remains **17 files, 109/109 GREEN**; the baseline stays
+159 cases. No product source, memory/model-selector case, notification owner,
+vendor/package/lockfile, or compatibility API changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -815,6 +838,11 @@ memory/model selector, vendor/package/lockfile, or compatibility API changed.
   through TC-0922); the exact bridge is now 50/50 GREEN. These additions do
   not inflate the 159-case baseline and do not repeat memory/model-selector
   cases.
+- Round 28 adds six independent access/content-projection/error-boundary
+  contracts (TC-0923, TC-0925–TC-0928, and TC-1047); the exact bridge is now
+  56/56 GREEN.
+  TC-0924 remains represented by its earlier Round 14 contract and is not
+  duplicated.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

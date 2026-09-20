@@ -16,7 +16,7 @@ import {
   createConversationPresentation,
   selectTimelineItems,
 } from '../src/model/conversation-presentation.js';
-import { isStandardActorIdentity } from '../src/model/actor-visibility.js';
+import { isStandardActorIdentity, isVisibleActor } from '../src/model/actor-visibility.js';
 import { acknowledgeLivePresentationArrivals } from '../src/model/live-arrivals.js';
 import { isRailNotifiableDisposition, notificationDisposition } from '../src/model/notification-policy.js';
 import {
@@ -35,6 +35,7 @@ import {
   TYPES,
 } from '../src/protocol/vocab.js';
 import { createReadingNavigationCoordinator } from '../src/ui/timeline/reading-navigation-coordinator.js';
+import { MarkdownContent } from '../src/ui/MarkdownContent.jsx';
 import {
   buildComposerModel,
   createComposerCommandRequest,
@@ -43,6 +44,8 @@ import {
 import { Composer } from '../src/ui/composer/Composer.jsx';
 import { useTimelineRowRenderer } from '../src/ui/timeline/TimelineRowRenderer.jsx';
 import { projectAgentParameters } from '../src/ui/composer/agent-parameters.js';
+import { normalizeMathMarkdown } from '../src/model/math-markdown.js';
+import { validatePayload } from '../mock/protocol.mjs';
 
 afterEach(cleanup);
 
@@ -1097,5 +1100,93 @@ describe('I-M exact-path public-owner recovery (round 27 live contracts)', () =>
     expect(state.arrivalReceipts.presentation(2).events).toEqual([
       expect.objectContaining({ rowIDs: ['round27-root', 'round27-root-progress-2'], sourceRevision: 2 }),
     ]);
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 28 projection contracts)', () => {
+  it('management-actors TC-0923: business roster hides the system actor while governance keeps its route', () => {
+    const rows = [
+      { id: SYSTEM_ACTOR_ID, kind: 'system' },
+      { id: AGENT, kind: 'agent', name: 'Steward' },
+    ];
+    expect(rows.filter(isVisibleActor).map((row) => row.id)).toEqual([AGENT]);
+
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '/members', recipients: [] },
+      roster: [rows[1]],
+      access: 'member_active',
+      agentSelection: { target: { kind: 'single', agent: rows[1] } },
+    });
+    expect(createComposerCommandRequest(model, parseComposerCommand('/members'))).toMatchObject({
+      channelId: CHANNEL,
+      msgType: TYPES.member.list,
+      audience: [SYSTEM_ACTOR_ID],
+    });
+  });
+
+  it('markdown-content TC-0925: math renders while fenced and inline code remain literal', () => {
+    const tick = String.fromCharCode(96);
+    const source = [
+      '行内 \\(M_t = \\operatorname{Fold}_R(H_t)\\) 与 $G_t$.',
+      '',
+      '\\[',
+      '\\text{Problem}\\rightarrow\\text{Machine}',
+      '\\]',
+      '',
+      tick + '\\(not math\\)' + tick,
+      '',
+      tick.repeat(3) + 'tex',
+      '\\[not math\\]',
+      tick.repeat(3),
+    ].join('\n');
+    const { container } = render(<MarkdownContent text={source} />);
+
+    expect(container.querySelectorAll('.katex')).toHaveLength(3);
+    expect(container.querySelectorAll('.katex-display')).toHaveLength(1);
+    expect(container.querySelector('code').textContent).toBe('\\(not math\\)');
+    expect(container.querySelector('pre code').textContent).toContain('\\[not math\\]');
+  });
+
+  it('markdown-content TC-0926: delimiter normalization is paired, unescaped, and code-scoped', () => {
+    const tick = String.fromCharCode(96);
+    const source = '\\(x\\) ' + tick + '\\(code\\)' + tick + ' \\\\(literal\\\\) \\[y\\] \\[unclosed';
+    const expected = '$x$ ' + tick + '\\(code\\)' + tick + ' \\\\(literal\\\\) $$y$$ \\[unclosed';
+    expect(normalizeMathMarkdown(source)).toBe(expected);
+  });
+
+  it('markdown-content TC-0927: the public renderer preserves GFM table/task/link semantics', () => {
+    const source = [
+      '| 名称 | 状态 |',
+      '| --- | --- |',
+      '| 报告 | 完成 |',
+      '',
+      '- [x] 已核对',
+      '',
+      '~~旧结论~~ [来源](https://example.com)',
+    ].join('\n');
+    const { container } = render(<MarkdownContent text={source} />);
+
+    expect(container.querySelector('table')).toBeTruthy();
+    expect(container.querySelector('input[type="checkbox"]')?.disabled).toBe(true);
+    expect(container.querySelector('del')?.textContent).toBe('旧结论');
+    expect(screen.getByRole('link', { name: '来源' }).getAttribute('target')).toBe('_blank');
+  });
+
+  it('markdown-content TC-0928: ledger HTML remains inert instead of becoming executable DOM', () => {
+    const { container } = render(
+      <MarkdownContent text={'<img src=x onerror="alert(1)">\n\n<script>alert(2)</script>'} />,
+    );
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('script')).toBeNull();
+  });
+
+  it('mock-protocol TC-1047: malformed or unknown upstream fields return explicit validation errors', () => {
+    expect(validatePayload('submit', { channel_id: CHANNEL })).toContain('msg_type');
+    expect(validatePayload('submit', {
+      channel_id: CHANNEL, msg_type: TYPES.agentAsk, extra: true,
+    })).toContain('unknown field: extra');
+    expect(validatePayload('missing', {})).toContain('unknown upstream frame_type');
   });
 });
