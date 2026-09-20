@@ -270,7 +270,7 @@ export function ConversationSurface({
                 aria-labelledby="workspace-tab-dynamic"
                 data-viewport-mode={viewport.session.mode}
               >
-                <div className={`timeline-inner${emptyFeedbackKind ? '' : ' timeline-controls-overlay'}`}>
+                <div className="timeline-inner timeline-controls-overlay">
                   {selfId && channelEntries.length > 0 && <div className="timeline-scope-bar">
                     <div className="timeline-scope" role="group" aria-label="动态范围">
                       <button
