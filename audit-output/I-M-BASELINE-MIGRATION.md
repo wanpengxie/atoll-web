@@ -1297,6 +1297,53 @@ their respective owners. Only this test file and this audit report changed;
 no private production function, compatibility parser, vendor/package,
 lockfile, notification/arrival owner, or second source of truth was added.
 
+## Round 43 strict black-box handoff
+
+The shared worktree is clean for tracked I-M files at `HEAD` `0ba7fa7`; the
+Round-42 exact test correction is already isolated in `a3a9239`. This round
+does not touch that test or any product file. It only re-runs the strict
+black-box contracts and records the owner handoff.
+
+The seven Reading/viewport reds are all observed through the mounted root's
+public `scrollTo` calls, the public `totalListHeightChanged` delivery, and the
+public Reading session's typed intent. No callback name, private helper,
+timer/RAF ordering, vendor initial-index prop, or `consumeBottomIntent` call
+shape is used as an oracle.
+
+| case | black-box user contract | current public owner | exact observed failure |
+|---|---|---|---|
+| TC-1010 | A send target must not move the user's viewport at the intermediate row commit; it may follow only after committed destination measurement. | `VendorListExecutor` send intent + mounted physical root. | **RED**: root `scrollTo({top:1000, behavior:'auto'})` occurs before the 1132-height boundary; the typed intent remains pending. |
+| TC-1011 | While the send join is pending, an early baseline and later same-revision height must not write; the ordinary follow boundary is distinct. | `VendorListExecutor` public height delivery + physical root. | **RED**: root receives both `{top:1000}` and `{top:1132}` before the legal boundary. |
+| TC-1012 | Equal-height target acknowledgement is not a visible follow; only a later resize may move the viewport. | `VendorListExecutor` target-row contract + physical root. | **RED**: root receives `{top:1000}` at the equal-height baseline. |
+| TC-1014 | Public send revoke cannot retroactively authorize an earlier same-revision height. | `VendorListExecutor` typed intent fence + public height. | **RED**: root receives `{top:1132}` before revoke. |
+| TC-1015 | Revoking a send-owned baseline releases ordinary following at the public boundary, once. | `VendorListExecutor` Reading intent + physical-root writer. | **RED**: root receives `{top:1132}` before revoke. |
+| TC-1018 | An unrelated committed tail may follow while a newer send target remains pending; the newer target must stay pending. | `VendorListExecutor` ordinary-follow writer + target fence. | **RED**: the allowed ordinary `{top:1132}` root write is missing while the target remains pending. |
+| TC-1019 | Moving a target into Waiting cannot bypass destination-ready presentation. | `VendorListExecutor` typed target presence + public height/Reading owner. | **RED**: root receives `{top:1000}` when the queued target first appears, before destination readiness. |
+
+Strict evidence at current HEAD:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2`
+→ **7/7 stable RED**, each repeated through the retry attempts. These remain
+product regression packages for the Reading owner; no test was relaxed.
+
+The canonical-body case is handed to the Shell owner and remains an untouched
+strict black-box check in this partition. Its user contract is: a canonical
+body containing `用户正文` must win over the known operation label
+`添加参与者：demo:agent`, with the wire type and operation detail not replacing
+the user's text. The public owner is
+`useTimelineRowRenderer`/`TimelineRowRenderer` → `EnvelopeBody`, observed only
+through rendered DOM. Current result is **RED**: the DOM contains the operation
+label and no `用户正文`. This is not reclassified as an I-M Reading issue and
+is not changed here.
+
+The combined strict probe was:
+
+`npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'canonical body text wins|TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2`
+→ **8/8 stable RED** (canonical-body plus the seven Reading contracts). No
+source, Shell owner file, notification/arrival owner, private API,
+compatibility parser, vendor/package, lockfile, or second source of truth was
+modified in Round43.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
