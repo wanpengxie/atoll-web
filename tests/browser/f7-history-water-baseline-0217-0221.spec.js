@@ -256,13 +256,24 @@ test('TC0220 F7 an under-filled viewport with older supply makes visible progres
   expect(final.emptyState).toBe(false);
 });
 
-test('TC0221 F7 keyboard Home creates one physical top demand from the focused main scroller', async ({ page, request }) => {
+test('TC0221 F7 keyboard Home walks to authoritative history EOF then performs one typed physical top write', async ({ page, request }) => {
+  test.setTimeout(60_000);
   await reset(request, 'deep-history', 1721);
   await login(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
   const viewport = page.locator('.timeline-message-list');
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
   await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.clear());
+  await page.evaluate(() => {
+    window.__tc0221ScrollCommands = [];
+    const original = Element.prototype.scrollTo;
+    Element.prototype.scrollTo = function tc0221ScrollTo(value) {
+      if (this.classList?.contains('timeline-message-list')) {
+        window.__tc0221ScrollCommands.push({ top: Number(value?.top), behavior: value?.behavior });
+      }
+      return original.call(this, value);
+    };
+  });
   await viewport.focus();
   await viewport.evaluate((node) => {
     window.__homeMinScrollTop = node.scrollTop;
@@ -271,9 +282,25 @@ test('TC0221 F7 keyboard Home creates one physical top demand from the focused m
     }
   });
   await viewport.press('Home');
-  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
-    .filter((entry) => entry.event === 'history.intent_started').length)).toBe(1);
-  expect(await page.evaluate(() => Math.round(window.__homeMinScrollTop))).toBe(0);
-  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
-    .some((entry) => entry.event === 'history.intent_satisfied'))).toBe(true);
+  await expect(page.getByText('c0 history 1: ask steward for PONG', { exact: true }))
+    .toBeVisible({ timeout: 45_000 });
+  await expect.poll(() => viewport.evaluate((node) => Number(node.scrollTop) <= 1), {
+    timeout: 15_000,
+  }).toBe(true);
+  const evidence = await page.evaluate(() => ({
+    focused: document.activeElement?.classList?.contains('timeline-message-list') === true,
+    scrollTop: Number(document.querySelector('.timeline-message-list')?.scrollTop || 0),
+    minScrollTop: Math.round(window.__homeMinScrollTop),
+    scrollCommands: window.__tc0221ScrollCommands,
+    diagnostics: window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event.startsWith('history.')),
+  }));
+  const started = evidence.diagnostics.filter((entry) => entry.event === 'history.intent_started');
+  const homeStarted = started.filter((entry) => entry.detail?.reason === 'history-start');
+  expect(homeStarted.length).toBeGreaterThan(0);
+  expect(evidence.diagnostics.some((entry) => entry.event === 'history.intent_satisfied'
+    && entry.detail?.reason === 'history-start')).toBe(true);
+  expect(evidence.focused).toBe(true);
+  expect(evidence.scrollTop).toBeLessThanOrEqual(1);
+  expect(evidence.minScrollTop).toBeLessThanOrEqual(1);
+  expect(evidence.scrollCommands).toEqual([{ top: 0, behavior: 'auto' }]);
 });

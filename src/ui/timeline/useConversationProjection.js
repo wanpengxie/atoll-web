@@ -19,7 +19,9 @@ import {
   bindLatestIntentTargets,
   captureContentAnchor,
   cancelReadingControl,
+  cancelHistoryStartIntent,
   consumeContentAnchor,
+  consumeHistoryStartIntent,
   consumeLatestIntent,
   contentAnchorCommand,
   createReadingSession,
@@ -32,6 +34,7 @@ import {
   revokePositionRowLease,
   READING_MODE,
   requestLatest,
+  historyStartIntentCommand,
   takeReadingControl,
   updateHistoryAnchor,
   updateReadingControl,
@@ -311,7 +314,7 @@ function useProjectionReadingOwner({
     // boundary must mint a successor only after a real prior input epoch.
     if (!nextEffective) {
       const current = controller.getSnapshot().session;
-      const nextSession = current.mode === READING_MODE.following
+      const nextSession = current.mode === READING_MODE.following || current.historyStartIntent
         ? controller.update((active) => advanceReadingInputEpoch(active))
         : current;
       const cleared = Object.freeze({
@@ -502,7 +505,15 @@ function useProjectionReadingOwner({
     const previous = controller.getSnapshot().session;
     const leasedTail = tailLeaseRef.current;
     const currentGeneration = Number(historyStatusRef.current.generation || historyStatus.generation || 0);
-    const next = controller.update((current) => takeReadingControl(current, input));
+    const control = Object.freeze({
+      ...input,
+      historyStart: input.historyStart === true && input.direction === 'older',
+      channelID,
+      viewKey,
+      generation: currentGeneration,
+      sourceLease: String(historyStatusRef.current.sourceLease || historyStatus.sourceLease || ''),
+    });
+    const next = controller.update((current) => takeReadingControl(current, control));
     // An upward native takeover is the physical leave boundary. Revoke the
     // exact frozen notification lease in this same event stack, carrying the
     // newly minted inputEpoch. Do not wait for a RAF or a settled observation:
@@ -567,6 +578,8 @@ function useProjectionReadingOwner({
       direction: input.direction,
       gestureID: input.gestureID,
       geometryRevision: input.geometryRevision,
+      source: input.source,
+      sourceID: input.sourceID,
     }));
     return after !== before;
   }, [controller]);
@@ -579,6 +592,73 @@ function useProjectionReadingOwner({
     }));
     return after !== before;
   }, [controller, historyConsumer]);
+  const cancelHistoryStart = useCallback((reason = 'native-input') => {
+    const before = controller.getSnapshot().session;
+    historyConsumer.cancel(`history-start:${reason}`);
+    const after = controller.update((current) => cancelHistoryStartIntent(
+      current, current.historyStartIntent,
+    ));
+    return after !== before;
+  }, [controller, historyConsumer]);
+  const historyStartCommand = useCallback(() => {
+    const current = controller.getSnapshot().session;
+    const status = historyStatusRef.current;
+    const intent = historyStartIntentCommand(current, {
+      channelID,
+      viewKey,
+      generation: Number(status.generation || 0),
+      sourceLease: String(status.sourceLease || ''),
+      inputEpoch: Number(current.inputEpoch || 0),
+      intentRevision: Number(current.intentRevision || 0),
+    });
+    if (!intent || !historyConsumer.historyStartReady?.(intent)) return null;
+    return Object.freeze({
+      ...intent,
+      type: 'scroll-tail',
+      reverse: true,
+      historyStart: true,
+    });
+  }, [channelID, controller, historyConsumer, viewKey]);
+  const onHistoryStartEvidence = useCallback((evidence = {}) => {
+    if (evidence.type !== 'history-start-evidence' || evidence.settled !== true) return false;
+    const current = controller.getSnapshot().session;
+    const status = historyStatusRef.current;
+    const snapshotNow = snapshotRef.current;
+    const intent = historyStartIntentCommand(current, {
+      channelID,
+      viewKey,
+      generation: Number(status.generation || 0),
+      sourceLease: String(status.sourceLease || ''),
+      inputEpoch: Number(current.inputEpoch || 0),
+      intentRevision: Number(current.intentRevision || 0),
+    });
+    const mounted = rootActivationRef.current;
+    const visibleRowIDs = [...new Set((evidence.visibleRowIDs || []).map(String).filter(Boolean))];
+    const visibleRows = new Set((evidence.visibleRows || [])
+      .map((row) => String(row?.messageID || row?.id || row || '')).filter(Boolean));
+    const firstID = String(snapshotNow.rows?.[0]?.id || '');
+    const presentationRevision = Number(snapshotNow.revision || 0);
+    const valid = Boolean(intent)
+      && historyConsumer.historyStartReady?.(intent) === true
+      && status.hasOlder === false
+      && mounted.node === evidence.rootNode
+      && Number(mounted.identity) === Number(evidence.rootIdentity)
+      && Number(evidence.inputEpoch) === Number(intent.inputEpoch)
+      && Number(evidence.intentRevision) === Number(intent.intentRevision)
+      && Number(evidence.generation) === Number(intent.generation)
+      && String(evidence.sourceLease || '') === String(intent.sourceLease || '')
+      && Number(evidence.presentationRevision) === presentationRevision
+      && Number(evidence.domPresentationRevision) === presentationRevision
+      && Number(evidence.scrollTop) <= 1
+      && visibleRowIDs.length > 0
+      && visibleRowIDs.every((id) => visibleRows.has(id))
+      && (!firstID || visibleRowIDs.includes(firstID));
+    if (!valid) return false;
+    if (historyConsumer.consumeHistoryStartEvidence?.(intent) !== true) return false;
+    controller.update((active) => consumeHistoryStartIntent(active, intent));
+    return true;
+  }, [channelID, controller, historyConsumer, viewKey]);
+  const failHistoryStart = useCallback((reason) => historyConsumer.failHistoryStart?.(reason) === true, [historyConsumer]);
   const currentAdmissionAuthority = useCallback(() => {
     const owner = committedOwnerRef.current;
     return Object.freeze({
@@ -828,6 +908,7 @@ function useProjectionReadingOwner({
     historyDemand: ['pending', 'error'].includes(historyStatus.historyDemand?.phase)
       ? historyStatus.historyDemand
       : IDLE_HISTORY_DEMAND,
+    historyStartFailure: historyConsumer.historyStartFailure || null,
     historyBoundary,
     historyReveal: historyStatus.historyReveal || null,
     currentAdmissionAuthority,
@@ -838,6 +919,7 @@ function useProjectionReadingOwner({
     acknowledgeHistoryReveal(commitID) { return historyStatus.presentationAdmission?.acknowledge?.(channelID, commitID) === true; },
     requestHistory,
     retryHistoryDemand: historyConsumer.retry,
+    retryHistoryStart: historyConsumer.retryHistoryStart,
     retryAvailability: historyConsumer.retryAvailability,
     onAtTop(detail = {}) { return requestHistory('top', HISTORY_URGENCY.interactive, detail); },
     onNearTop(detail = {}) { return requestHistory('runway', HISTORY_URGENCY.anticipatory, { ...detail, revealRows: HISTORY_RUNWAY_REVEAL_RECORDS, revealBytes: HISTORY_RUNWAY_REVEAL_BYTES }); },
@@ -849,6 +931,10 @@ function useProjectionReadingOwner({
     updateNavigation,
     finishNavigation(input = {}) { return Number(input.inputGeneration) === controller.getSnapshot().session.inputEpoch; },
     cancelNavigation,
+    cancelHistoryStart,
+    historyStartCommand,
+    onHistoryStartEvidence,
+    failHistoryStart,
     onReadingObservation(observation = {}) {
       if (observation.type !== 'reading-authority' || observation.settled !== true) return false;
       const current = controller.getSnapshot().session;
@@ -1131,12 +1217,12 @@ function useProjectionReadingOwner({
     getSession: () => controller.getSnapshot().session,
   }), [
     advanceVisibilityEpoch, arrivals?.events?.length, authoritativeEmpty, availability, availabilityError, beginNavigation,
-    bottomReady, cancelNavigation, captureBottomIntent, captureContentAnchorForReading, channelID, controller,
+    bottomReady, cancelHistoryStart, cancelNavigation, captureBottomIntent, captureContentAnchorForReading, channelID, controller,
     acceptHistoryPositionLease, consumeContentAnchorCommand, consumeHistoryPositionLease,
     currentAdmissionAuthority, getContentAnchorCommand, historyPositionLeaseCommand,
     revokeHistoryPositionLease,
     history, historyBoundary, historyConsumer, historyStatus,
-    presentationAuthority, presentationInitializing, requestBottom, requestHistory,
+    failHistoryStart, historyStartCommand, onHistoryStartEvidence, presentationAuthority, presentationInitializing, requestBottom, requestHistory,
     restorePending, session, syncObservationCurrent, syncStatus.error, tailCaughtUp,
     onReadingRootActivation,
   ]);

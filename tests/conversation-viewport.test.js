@@ -3,17 +3,20 @@ import {
   bindLatestIntentTargets,
   acceptPositionRowLease,
   captureContentAnchor,
+  cancelHistoryStartIntent,
   cancelReadingControl,
   consumeContentAnchor,
   consumePositionRowLease,
   consumeLatestIntent,
   contentAnchorCommand,
+  consumeHistoryStartIntent,
   createReadingSession,
   observeReading,
   positionRowLeaseCommand,
   READING_MODE,
   revokePositionRowLease,
   requestLatest,
+  historyStartIntentCommand,
   takeReadingControl,
   updateHistoryAnchor,
   updateReadingControl,
@@ -24,6 +27,48 @@ function session(saved = {}, activationID = 'a1') {
 }
 
 describe('reading session authority', () => {
+  it('mints an ephemeral, fully fenced Home history-start intent and revokes stale input', () => {
+    const current = takeReadingControl(session(), {
+      direction: 'older',
+      gestureID: 'key:Home',
+      historyStart: true,
+      channelID: 'c0',
+      viewKey: 'all',
+      generation: 4,
+      sourceLease: 'world:4',
+      historyAnchor: { messageID: 'm120', viewportOffset: 200 },
+    });
+    expect(current.historyAnchor).toBeNull();
+    expect(current.historyStartIntent).toMatchObject({
+      type: 'history-start',
+      activationID: 'a1',
+      channelID: 'c0',
+      viewKey: 'all',
+      generation: 4,
+      sourceLease: 'world:4',
+      inputEpoch: current.inputEpoch,
+      intentRevision: current.intentRevision,
+      direction: 'older',
+    });
+    expect(historyStartIntentCommand(current, {
+      channelID: 'c0', viewKey: 'all', generation: 4, sourceLease: 'world:4',
+      inputEpoch: current.inputEpoch, intentRevision: current.intentRevision,
+    })).toEqual(current.historyStartIntent);
+    expect(historyStartIntentCommand(current, {
+      channelID: 'c0', viewKey: 'all', generation: 5, sourceLease: 'world:4',
+      inputEpoch: current.inputEpoch, intentRevision: current.intentRevision,
+    })).toBeNull();
+
+    const reversed = updateReadingControl(current, {
+      inputEpoch: current.inputEpoch, direction: 'newer', gestureID: 'key:Home',
+    });
+    expect(reversed.historyStartIntent).toBeNull();
+    const cancelled = cancelHistoryStartIntent(current, current.historyStartIntent);
+    expect(cancelled.historyStartIntent).toBeNull();
+    expect(cancelled.inputEpoch).toBe(current.inputEpoch + 1);
+    expect(consumeHistoryStartIntent(cancelled, current.historyStartIntent)).toBe(cancelled);
+  });
+
   it('restores saved browsing state without creating an imperative navigation task', () => {
     const bookmark = { messageID: 'm80', viewportOffset: -12, rowViewportOffset: -40 };
     const current = session({ mode: READING_MODE.browsing, bookmark });

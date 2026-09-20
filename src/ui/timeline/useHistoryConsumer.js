@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useInsertionEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { HISTORY_INTENT, HISTORY_URGENCY } from '../../model/history-demand.js';
-import { READING_MODE, revokePositionRowLease } from '../../model/reading-session.js';
+import {
+  READING_MODE,
+  cancelHistoryStartIntent,
+  consumeHistoryStartIntent,
+  revokePositionRowLease,
+} from '../../model/reading-session.js';
 import { diagnostic, readingTrace } from '../../model/diagnostics.js';
 import {
   blockingAdmission,
@@ -12,6 +17,30 @@ import {
   historySourceKey,
   historySupplyKey,
 } from './history-consumer-obligation.js';
+
+const HISTORY_START_TIMEOUT_MS = 30_000;
+
+function sameHistoryStartIntent(left, right) {
+  return Boolean(left && right)
+    && left.type === 'history-start' && right.type === 'history-start'
+    && String(left.id) === String(right.id)
+    && String(left.activationID) === String(right.activationID)
+    && String(left.channelID) === String(right.channelID)
+    && String(left.viewKey) === String(right.viewKey)
+    && Number(left.generation) === Number(right.generation)
+    && String(left.sourceLease) === String(right.sourceLease)
+    && Number(left.inputEpoch) === Number(right.inputEpoch)
+    && Number(left.intentRevision) === Number(right.intentRevision)
+    && left.direction === right.direction;
+}
+
+function clearHistoryStart(ref, reason = 'cancelled') {
+  const pending = ref.current;
+  if (!pending) return null;
+  if (pending.timer) globalThis.clearTimeout?.(pending.timer);
+  ref.current = null;
+  return { ...pending, reason };
+}
 
 function clearTopContinuation(ref) {
   if (ref.current?.timer) globalThis.clearTimeout?.(ref.current.timer);
@@ -144,6 +173,9 @@ export function useHistoryConsumer({
   const topBoundaryRef = useRef(null);
   const positionLeaseWaitRef = useRef(null);
   const epochRef = useRef(0);
+  const historyStartRef = useRef(null);
+  const [historyStartFailure, setHistoryStartFailure] = useState(null);
+  const [historyStartTick, setHistoryStartTick] = useState(0);
   const sourceKey = historySourceKey(historyStatus);
   const supplyKey = historySupplyKey(historyStatus);
 
@@ -171,7 +203,7 @@ export function useHistoryConsumer({
   // effect. Publish it before either reading container may establish a DOM
   // consumer debt in its layout effect. A passive reset here used to erase an
   // operation that the newly committed child had already started.
-  useInsertionEffect(() => {
+  useLayoutEffect(() => {
     activeRef.current?.abortController?.abort();
     activeRef.current = null;
     deferredAdmissionRef.current = null;
@@ -180,6 +212,8 @@ export function useHistoryConsumer({
     cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-owner-replaced', true);
     clearTopContinuation(topContinuationRef);
     topBoundaryRef.current = null;
+    clearHistoryStart(historyStartRef, 'history-start-owner-replaced');
+    setHistoryStartFailure(null);
     failedAnticipatoryRef.current = null;
     terminalRef.current = null;
     return () => {
@@ -199,15 +233,37 @@ export function useHistoryConsumer({
         clearTopContinuation(topContinuationRef);
       }
       if (topBoundaryRef.current?.controller === controller) topBoundaryRef.current = null;
+      clearHistoryStart(historyStartRef, 'history-start-owner-unmounted');
       if (failedAnticipatoryRef.current?.controller === controller) failedAnticipatoryRef.current = null;
     };
   }, [controller]);
+
+  // A Home intent is an ephemeral authority lease. Any channel generation or
+  // source-lease replacement retires it before a late page/evidence callback
+  // can continue the old walk against the new world.
+  useLayoutEffect(() => {
+    const pending = historyStartRef.current;
+    const intent = session.historyStartIntent;
+    if (!pending || !intent) return;
+    const current = controller.getSnapshot().session;
+    const authorityCurrent = intent.activationID === controller.activationID
+      && intent.channelID === channelID
+      && intent.viewKey === viewKey
+      && Number(intent.generation) === Number(historyStatus.generation || 0)
+      && String(intent.sourceLease || '') === String(historyStatus.sourceLease || '')
+      && sameHistoryStartIntent(intent, current.historyStartIntent);
+    if (authorityCurrent) return;
+    pending.abortController?.abort('history-start-authority-replaced');
+    clearHistoryStart(historyStartRef, 'history-start-authority-replaced');
+    controller.update((active) => cancelHistoryStartIntent(active, active.historyStartIntent));
+    setHistoryStartFailure(null);
+  }, [channelID, controller, historyStatus.generation, historyStatus.sourceLease, session.historyStartIntent, viewKey]);
 
   // A continuation is leased to the exact semantic older intent that caused
   // the typed top request. Any newer input, latest intent, direction reversal,
   // or exit from browsing invalidates that lease at the commit boundary before
   // a stale timer can issue another request.
-  useInsertionEffect(() => {
+  useLayoutEffect(() => {
     const continuation = topContinuationRef.current;
     if (!continuation) return;
     const liveLineage = currentContinuationLineage();
@@ -255,7 +311,9 @@ export function useHistoryConsumer({
       requiredVisibleCoverage = null, consumer = '', continuation = false,
       stableTopContinuation = false, continuationAnchorID = '', continuationAnchorSeq = 0,
       continuationFirstVisibleSeq = 0, continuationLease = null,
+      historyStartIntent = null,
     } = options;
+    const historyStart = historyStartIntent?.type === 'history-start';
     if (!continuation && committedOwnerRef.current !== commitOwnerCandidate) {
       return Promise.resolve({ kind: 'stale-owner', deduplicated: true });
     }
@@ -272,7 +330,7 @@ export function useHistoryConsumer({
     // prepended rows before Vendor paints/consumes the exact lease, so the
     // old anchor is necessarily absent from the new snapshot for this brief
     // handoff window.
-    if (currentSession.positionRowLease
+    if (!historyStart && currentSession.positionRowLease
       && (continuation || reason === 'top' || reason === 'runway')) {
       const existing = positionLeaseWaitRef.current;
       if (existing?.controller === controller) return existing.promise;
@@ -326,7 +384,7 @@ export function useHistoryConsumer({
       if (!waiter.timer) check();
       return waiter.promise;
     }
-    if (continuation) {
+    if (continuation && !historyStart) {
       const continuationRecord = continuationLease || topContinuationRef.current;
       const liveLineage = currentContinuationLineage(currentSession);
       const firstID = snapshotRef.current.rows[0]?.id;
@@ -377,7 +435,8 @@ export function useHistoryConsumer({
     const requestOwner = committedOwnerRef.current;
     const first = snapshotRef.current.rows[0];
     const obligation = historyConsumerObligation({
-      intent, targetSeq, requiredVisibleCoverage, firstRow: first, status: historyStatusRef.current,
+      intent, targetSeq, requiredVisibleCoverage, firstRow: first,
+      status: historyStatusRef.current, historyStartIntent,
     });
     const terminal = terminalRef.current;
     if (terminal?.controller === controller && terminal.key === obligation.key
@@ -596,6 +655,7 @@ export function useHistoryConsumer({
       epoch, viewKey, channelID, status: historyStatusRef.current,
       snapshot: snapshotRef.current, demandUnits,
       historyAnchor: activeSession.historyAnchor,
+      historyStart,
     });
     const promise = Promise.resolve(requestPort({
       intent, urgency, signal: abortController.signal,
@@ -835,12 +895,172 @@ export function useHistoryConsumer({
       supplyProgressKey: obligation.supplyKey, promise, abortController,
       controller, epoch, urgency, operation,
       operationID: revealIntent?.operationID || '',
+      historyStartIntent,
     };
     return promise;
   }, [channelID, commitOwnerCandidate, committedOwnerRef, controller, getContinuationLineage,
     historyStatusRef, historyViewSpec, requestPort, snapshotRef,
     continuationLineage?.gestureID, continuationLineage?.rootIdentity,
     continuationLineage?.visibilityEpoch, viewKey]);
+
+  // Home is a semantic walk, not a physical scroll callback. Keep the one
+  // current intent alive while History supplies older pages, then expose one
+  // physical top command only after the feed has published authoritative EOF.
+  useEffect(() => {
+    const intent = session.historyStartIntent;
+    const pending = historyStartRef.current;
+    if (!intent) {
+      if (pending) clearHistoryStart(historyStartRef, 'history-start-cleared');
+      return;
+    }
+    const authorityCurrent = intent.activationID === controller.activationID
+      && intent.channelID === channelID
+      && intent.viewKey === viewKey
+      && Number(intent.generation) === Number(historyStatus.generation || 0)
+      && String(intent.sourceLease || '') === String(historyStatus.sourceLease || '');
+    if (!authorityCurrent) {
+      pending?.abortController?.abort('history-start-authority-replaced');
+      clearHistoryStart(historyStartRef, 'history-start-authority-replaced');
+      controller.update((active) => cancelHistoryStartIntent(active, active.historyStartIntent));
+      return;
+    }
+    let state = pending;
+    if (!state || !sameHistoryStartIntent(state.intent, intent)) {
+      if (state) {
+        state.abortController?.abort('history-start-replaced');
+        clearHistoryStart(historyStartRef, 'history-start-replaced');
+      }
+      state = {
+        controller,
+        intent,
+        phase: 'loading',
+        requesting: false,
+        timer: null,
+        abortController: null,
+      };
+      state.timer = globalThis.setTimeout?.(() => {
+        if (historyStartRef.current !== state) return;
+        const live = controller.getSnapshot().session;
+        if (!sameHistoryStartIntent(live.historyStartIntent, state.intent)) return;
+        state.abortController?.abort('history-start-timeout');
+        if (activeRef.current?.controller === controller
+          && sameHistoryStartIntent(activeRef.current.historyStartIntent, state.intent)) {
+          activeRef.current.abortController?.abort('history-start-timeout');
+          activeRef.current = null;
+        }
+        state.phase = 'error';
+        setHistoryStartFailure(Object.freeze({
+          kind: 'history-start-timeout',
+          activationID: state.intent.activationID,
+          inputEpoch: state.intent.inputEpoch,
+          intentRevision: state.intent.intentRevision,
+        }));
+      }, HISTORY_START_TIMEOUT_MS) || 0;
+      historyStartRef.current = state;
+      setHistoryStartFailure(null);
+    }
+    if (historyStatus.historyDemand?.phase === 'error' || historyStatus.error) {
+      state.phase = 'error';
+      const error = String(historyStatus.historyDemand?.error || historyStatus.error || '历史加载失败');
+      setHistoryStartFailure((previous) => previous?.kind === 'history-start-error'
+        && previous.error === error
+        ? previous
+        : Object.freeze({
+          kind: 'history-start-error',
+          error,
+          activationID: intent.activationID,
+          inputEpoch: intent.inputEpoch,
+          intentRevision: intent.intentRevision,
+        }));
+      return;
+    }
+    const atAuthoritativeEOF = semanticExhausted === true;
+    if (atAuthoritativeEOF) {
+      state.phase = 'awaiting-physical';
+      return;
+    }
+    if (historyStatus.hasOlder !== true || state.phase === 'error' || state.requesting) return;
+    state.phase = 'loading';
+    state.requesting = true;
+    const requestPromise = request('history-start', HISTORY_URGENCY.interactive, {
+      intent: HISTORY_INTENT.scrollHistory,
+      demandUnits: 1,
+      historyStartIntent: intent,
+    });
+    void Promise.resolve(requestPromise).then((result) => {
+      if (historyStartRef.current !== state) return;
+      state.requesting = false;
+      if (result?.kind === 'failed') {
+        state.phase = 'error';
+        setHistoryStartFailure(Object.freeze({
+          kind: 'history-start-error',
+          error: String(result.error?.message || '历史加载失败'),
+          activationID: intent.activationID,
+          inputEpoch: intent.inputEpoch,
+          intentRevision: intent.intentRevision,
+        }));
+      } else if (result?.kind === 'cancelled' && controller.getSnapshot().session.historyStartIntent) {
+        state.phase = 'error';
+        setHistoryStartFailure(Object.freeze({
+          kind: 'history-start-cancelled',
+          reason: String(result.reason || 'cancelled'),
+          activationID: intent.activationID,
+          inputEpoch: intent.inputEpoch,
+          intentRevision: intent.intentRevision,
+        }));
+      }
+      setHistoryStartTick((value) => value + 1);
+    });
+  }, [channelID, controller, historyStatus, historyStatus.completedPages, historyStatus.hasOlder,
+    historyStatus.loading, request, semanticExhausted, session.historyStartIntent,
+    snapshot.revision, snapshot.rows.length, supplyKey, viewKey, historyStartTick]);
+
+  const historyStartReady = useCallback((intent) => {
+    const pending = historyStartRef.current;
+    return Boolean(pending && pending.controller === controller
+      && pending.phase === 'awaiting-physical'
+      && sameHistoryStartIntent(pending.intent, intent)
+      && semanticExhausted === true);
+  }, [controller, semanticExhausted]);
+
+  const consumeHistoryStartEvidence = useCallback((intent) => {
+    const pending = historyStartRef.current;
+    const current = controller.getSnapshot().session;
+    if (!pending || pending.controller !== controller || pending.phase !== 'awaiting-physical'
+      || !sameHistoryStartIntent(pending.intent, intent)
+      || !sameHistoryStartIntent(current.historyStartIntent, intent)
+      || semanticExhausted !== true) return false;
+    clearHistoryStart(historyStartRef, 'history-start-satisfied');
+    setHistoryStartFailure(null);
+    return true;
+  }, [controller, semanticExhausted]);
+
+  const failHistoryStart = useCallback((reason = 'history-start-physical-failed') => {
+    const pending = historyStartRef.current;
+    const current = controller.getSnapshot().session;
+    if (!pending || !sameHistoryStartIntent(pending.intent, current.historyStartIntent)) return false;
+    pending.abortController?.abort(reason);
+    pending.phase = 'error';
+    setHistoryStartFailure(Object.freeze({
+      kind: String(reason),
+      activationID: pending.intent.activationID,
+      inputEpoch: pending.intent.inputEpoch,
+      intentRevision: pending.intent.intentRevision,
+    }));
+    return true;
+  }, [controller]);
+
+  const retryHistoryStart = useCallback(() => {
+    const current = controller.getSnapshot().session;
+    const intent = current.historyStartIntent;
+    const pending = historyStartRef.current;
+    if (!intent || !pending || !sameHistoryStartIntent(pending.intent, intent)) return false;
+    pending.phase = 'loading';
+    pending.requesting = false;
+    setHistoryStartFailure(null);
+    setHistoryStartTick((value) => value + 1);
+    return true;
+  }, [controller]);
 
   useEffect(() => {
     const bookmark = session.bookmark;
@@ -933,6 +1153,11 @@ export function useHistoryConsumer({
     request,
     retry,
     retryAvailability,
+    historyStartReady,
+    consumeHistoryStartEvidence,
+    failHistoryStart,
+    retryHistoryStart,
+    historyStartFailure,
     operationID: () => activeRef.current?.controller === controller
       ? String(activeRef.current.operationID || '') : '',
     cancel(reason) {
@@ -940,6 +1165,7 @@ export function useHistoryConsumer({
       activeRef.current = null;
       clearTopContinuation(topContinuationRef);
       if (topBoundaryRef.current?.controller === controller) topBoundaryRef.current = null;
+      clearHistoryStart(historyStartRef, reason || 'history-cancelled');
     },
   });
 }

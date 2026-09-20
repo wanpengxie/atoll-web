@@ -53,12 +53,23 @@ export function historySupplyKey(status = {}) {
   ]);
 }
 
-export function historyConsumerObligation({ intent, targetSeq, requiredVisibleCoverage, firstRow, status }) {
+export function historyConsumerObligation({
+  intent, targetSeq, requiredVisibleCoverage, firstRow, status, historyStartIntent = null,
+}) {
+  const historyStartKey = historyStartIntent?.type === 'history-start'
+    ? [
+      historyStartIntent.id, historyStartIntent.activationID, historyStartIntent.channelID,
+      historyStartIntent.viewKey, Number(historyStartIntent.generation || 0),
+      String(historyStartIntent.sourceLease || ''), Number(historyStartIntent.inputEpoch || 0),
+      Number(historyStartIntent.intentRevision || 0), historyStartIntent.direction,
+    ].join(':')
+    : '';
   return Object.freeze({
     key: JSON.stringify([
-      intent, Number(targetSeq || 0), String(requiredVisibleCoverage?.messageID || ''),
-      Number(requiredVisibleCoverage?.seq || 0),
-      `${firstRow?.id || ''}:${firstRow?.seqLow || 0}`,
+      historyStartKey || intent, Number(targetSeq || 0), String(requiredVisibleCoverage?.messageID || ''),
+      Number(requiredVisibleCoverage?.seq || 0), historyStartKey
+        ? ''
+        : `${firstRow?.id || ''}:${firstRow?.seqLow || 0}`,
     ]),
     sourceKey: historySourceKey(status),
     supplyKey: historySupplyKey(status),
@@ -78,16 +89,16 @@ export function ownsHistoryOperation(currentOwner, requestOwner, controller, act
 
 export function historyRevealIntent({
   intent, activationID, inputEpoch, intentRevision, epoch, viewKey, channelID,
-  status, snapshot, demandUnits, historyAnchor = null,
+  status, snapshot, demandUnits, historyAnchor = null, historyStart = false,
 }) {
   if (intent !== HISTORY_INTENT.scrollHistory) return null;
   const rows = snapshot.rows || [];
   const first = rows[0];
-  const capturedAnchor = historyAnchor?.messageID
+  const capturedAnchor = !historyStart && historyAnchor?.messageID
     && String(historyAnchor.messageID) === String(first?.id || '')
     && Number.isFinite(Number(historyAnchor.viewportOffset))
     ? historyAnchor : null;
-  const anchorID = String(capturedAnchor?.messageID || first?.id || '');
+  const anchorID = historyStart ? '' : String(capturedAnchor?.messageID || first?.id || '');
   const viewportOffset = Number(capturedAnchor?.viewportOffset);
   return Object.freeze({
     activationID,
@@ -100,13 +111,14 @@ export function historyRevealIntent({
     uiBaselineIDs: Object.freeze(rows.map((row) => row.id)),
     durableBaselineIDs: Object.freeze(rows.filter((row) => !row.localState && row.body?.local !== true).map((row) => row.id)),
     anchorID,
-    anchorSeq: Number(first?.seqLow || 0),
+    anchorSeq: historyStart ? 0 : Number(first?.seqLow || 0),
     // This is captured before the first older gesture, while the baseline is
     // still painted. Admission copies it into the accepted grant so the
     // Vendor adapter can restore the exact row-local viewport position after
     // prepend; a missing geometry sample deliberately yields no lease.
-    messageID: anchorID,
-    viewportOffset: Number.isFinite(viewportOffset) ? viewportOffset : null,
+    messageID: historyStart ? '' : anchorID,
+    viewportOffset: historyStart ? null : Number.isFinite(viewportOffset) ? viewportOffset : null,
+    historyStart: historyStart === true,
     demandUnits: Math.max(1, Math.min(24, Number(demandUnits) || 1)),
   });
 }

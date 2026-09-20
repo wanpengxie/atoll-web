@@ -124,6 +124,7 @@ const POSITION_RESTORE_MAX_ATTEMPTS = 8;
 const POSITION_RESTORE_MAX_MOUNT_ATTEMPTS = 120;
 const POSITION_RESTORE_STABLE_FRAMES = 6;
 const POSITION_RESTORE_TOLERANCE_PX = 2;
+const HISTORY_START_EVIDENCE_MAX_ATTEMPTS = 8;
 
 function currentBottomIntent(session) {
   const intent = session?.bottomIntent;
@@ -294,6 +295,10 @@ export function VendorListExecutor({
   // painted row reaches its semantic offset; otherwise the first layout
   // observation can mistake the preceding one-pixel sliver for the anchor.
   const positionRestoreRef = useRef(null);
+  const historyStartCommandRef = useRef('');
+  const historyStartCommandFrameRef = useRef(null);
+  const historyStartCommandReadyRef = useRef('');
+  const historyStartEvidenceRef = useRef(null);
   const lastScrollTopRef = useRef(0);
   const consumedCommandRef = useRef('');
   // A history lease is terminal after its actual-paint fence succeeds or
@@ -422,6 +427,11 @@ export function VendorListExecutor({
     const data = snapshotRef.current;
     if (!root || !surfaceVisible) return false;
     const currentSession = owner.getSession();
+    // While Home is walking semantic history, the ordinary settled-reading
+    // observer is intentionally quiescent.  Its geometry receipt is not the
+    // Home lease and would feed each Virtuoso extent tick back into Reading;
+    // the Home transaction has its own bounded physical evidence fence below.
+    if (currentSession.historyStartIntent) return true;
     const currentIdentity = observationIdentity(owner, data, currentRootIdentity(root));
     const fence = request?.fence || null;
     const fenceCurrent = !fence || sameObservationIdentity(fence, currentIdentity);
@@ -528,6 +538,159 @@ export function VendorListExecutor({
     }) || 0;
   }, [currentRootIdentity, observe]);
 
+  // Home has one typed physical write after the semantic history walk reaches
+  // EOF. Evidence may wait for a few real paints, but the command identity is
+  // consumed locally so this adapter cannot issue a second writer for the same
+  // intent. A new input/root/authority replaces the identity synchronously.
+  const cancelHistoryStartEvidence = useCallback(() => {
+    const pending = historyStartEvidenceRef.current;
+    if (pending?.frameID) globalThis.cancelAnimationFrame?.(pending.frameID);
+    historyStartEvidenceRef.current = null;
+  }, []);
+  const scheduleHistoryStartEvidence = useCallback((command, key) => {
+    cancelHistoryStartEvidence();
+    const token = {
+      command,
+      key,
+      root: rootRef.current,
+      rootIdentity: currentRootIdentity(rootRef.current),
+      attempts: 0,
+      frameID: 0,
+    };
+    historyStartEvidenceRef.current = token;
+    const sample = () => {
+      token.frameID = 0;
+      if (historyStartEvidenceRef.current !== token) return;
+      const root = rootRef.current;
+      const owner = readingRef.current;
+      const data = snapshotRef.current;
+      const liveCommand = owner?.historyStartCommand?.();
+      if (!root || root !== token.root || !liveCommand
+        || String(liveCommand.id || '') !== String(command.id || '')
+        || currentRootIdentity(root) !== token.rootIdentity) {
+        cancelHistoryStartEvidence();
+        return;
+      }
+      const visibleRows = visibleRowEvidence(root, data.rows);
+      const visibleRowIDs = Object.freeze(visibleRows.map((row) => row.messageID));
+      const domRevisionNode = root.matches?.('[data-reading-presentation-revision]')
+        ? root
+        : root.querySelector?.('[data-reading-presentation-revision]');
+      const domPresentationRevision = Number(
+        domRevisionNode?.getAttribute?.('data-reading-presentation-revision'),
+      );
+      const evidence = Object.freeze({
+        type: 'history-start-evidence',
+        settled: true,
+        activationID: owner.activationID,
+        inputEpoch: Number(command.inputEpoch),
+        intentRevision: Number(command.intentRevision),
+        channelID: String(command.channelID || ''),
+        viewKey: String(command.viewKey || ''),
+        generation: Number(command.generation || 0),
+        sourceLease: String(command.sourceLease || ''),
+        rootNode: root,
+        rootIdentity: token.rootIdentity,
+        presentationRevision: Number(data.revision || 0),
+        domPresentationRevision,
+        visibleRows,
+        visibleRowIDs,
+        scrollTop: Number(root.scrollTop || 0),
+        atTop: Number(root.scrollTop || 0) <= 1,
+        surfaceVisible: isReadingSurfaceVisible(root),
+      });
+      if (owner.onHistoryStartEvidence?.(evidence) === true) {
+        cancelHistoryStartEvidence();
+        scheduleObserve('layout', true);
+        return;
+      }
+      token.attempts += 1;
+      if (token.attempts >= HISTORY_START_EVIDENCE_MAX_ATTEMPTS) {
+        cancelHistoryStartEvidence();
+        owner.failHistoryStart?.('history-start-physical-evidence-timeout');
+        return;
+      }
+      token.frameID = globalThis.requestAnimationFrame?.(sample) || 0;
+      if (!token.frameID) sample();
+    };
+    token.frameID = globalThis.requestAnimationFrame?.(sample) || 0;
+    if (!token.frameID) sample();
+  }, [cancelHistoryStartEvidence, currentRootIdentity, scheduleObserve]);
+  const executeHistoryStartCommand = useCallback(() => {
+    const root = rootRef.current;
+    const owner = readingRef.current;
+    const command = owner?.historyStartCommand?.();
+    if (!root || !command) return false;
+    const data = snapshotRef.current;
+    const key = [command.id, command.activationID, command.inputEpoch,
+      command.intentRevision, currentRootIdentity(root)].join(':');
+    if (historyStartCommandRef.current === key) {
+      return true;
+    }
+    const paintReady = historyStartCommandReadyRef.current === key;
+    if (paintReady) historyStartCommandReadyRef.current = '';
+    if (!paintReady && !historyStartCommandFrameRef.current) {
+      const token = {
+        key, attempts: 0, stableFrames: 0, lastHeight: Number.NaN,
+        lastRevision: 0, frameID: 0,
+      };
+      const retry = () => {
+        token.frameID = 0;
+        if (historyStartCommandFrameRef.current !== token) return;
+        const live = readingRef.current?.historyStartCommand?.();
+        if (!live || String(live.id || '') !== String(command.id || '')) {
+          historyStartCommandFrameRef.current = null;
+          return;
+        }
+        const liveData = snapshotRef.current;
+        const liveRevisionNode = root.matches?.('[data-reading-presentation-revision]')
+          ? root
+          : root.querySelector?.('[data-reading-presentation-revision]');
+        const liveRevision = Number(
+          liveRevisionNode?.getAttribute?.('data-reading-presentation-revision'),
+        );
+        const liveHeight = Number(root.scrollHeight || 0);
+        if (liveRevision === Number(liveData.revision || 0)
+          && liveHeight === token.lastHeight
+          && liveRevision === token.lastRevision) {
+          token.stableFrames += 1;
+        } else {
+          token.stableFrames = 0;
+        }
+        token.lastHeight = liveHeight;
+        token.lastRevision = liveRevision;
+        if (token.stableFrames >= 2) {
+          historyStartCommandReadyRef.current = token.key;
+          historyStartCommandFrameRef.current = null;
+          executeHistoryStartCommand();
+          return;
+        }
+        token.attempts += 1;
+        if (token.attempts >= HISTORY_START_EVIDENCE_MAX_ATTEMPTS) {
+          historyStartCommandFrameRef.current = null;
+          readingRef.current.failHistoryStart?.('history-start-presentation-timeout');
+          return;
+        }
+        token.frameID = globalThis.requestAnimationFrame?.(retry) || 0;
+        if (!token.frameID) retry();
+      };
+      historyStartCommandFrameRef.current = token;
+      token.frameID = globalThis.requestAnimationFrame?.(retry) || 0;
+      if (!token.frameID) retry();
+    }
+    if (!paintReady && historyStartCommandFrameRef.current) return true;
+    const executed = executeReadingDOMCommand(command, {
+      virtuoso: virtuosoRef.current, root,
+    });
+    if (!executed) {
+      owner.failHistoryStart?.('history-start-physical-command-failed');
+      return false;
+    }
+    historyStartCommandRef.current = key;
+    scheduleHistoryStartEvidence(command, key);
+    return true;
+  }, [currentRootIdentity, scheduleHistoryStartEvidence]);
+
   const coordinator = useMemo(() => createReadingNavigationCoordinator({
     activationID: reading.activationID,
     // Chromium emits one native scrollend per discrete wheel tick, while a
@@ -542,6 +705,7 @@ export function VendorListExecutor({
         gestureID: transaction.id,
         geometryRevision: geometryRevisionRef.current,
         historyAnchor: transaction.direction === 'older' ? transaction.startedBookmark : null,
+        historyStart: transaction.source === 'key' && transaction.sourceID === 'Home',
       });
       return result?.inputGeneration || 0;
     },
@@ -551,6 +715,8 @@ export function VendorListExecutor({
         direction: transaction.direction,
         gestureID: transaction.id,
         geometryRevision: geometryRevisionRef.current,
+        source: transaction.source,
+        sourceID: transaction.sourceID,
       });
       navigationPolicy.onNavigationUpdate(transaction, reason);
     },
@@ -1019,14 +1185,21 @@ export function VendorListExecutor({
   // position command may already have a RAF queued in this adapter.  Revoke
   // that queued work before the coordinator mints the new input epoch, so a
   // wheel/key/touch event cannot be followed by the old typed writer.
-  const cancelPendingPositionRestore = useCallback(() => {
+  const cancelPendingPositionRestore = useCallback((reason = 'native-input') => {
     const pending = positionRestoreRef.current;
     if (pending?.frameID) globalThis.cancelAnimationFrame?.(pending.frameID);
     positionRestoreRef.current = null;
+    const commandFrame = historyStartCommandFrameRef.current;
+    if (commandFrame?.frameID) globalThis.cancelAnimationFrame?.(commandFrame.frameID);
+    historyStartCommandFrameRef.current = null;
+    historyStartCommandReadyRef.current = '';
+    cancelHistoryStartEvidence();
+    historyStartCommandRef.current = '';
     const owner = readingRef.current;
     const lease = owner?.getSession?.().positionRowLease;
     if (lease) owner.revokeHistoryPositionLease?.(lease);
-  }, []);
+    owner.cancelHistoryStart?.(reason);
+  }, [cancelHistoryStartEvidence]);
 
   useLayoutEffect(() => {
     if (!rootNode || typeof globalThis.MutationObserver !== 'function') return undefined;
@@ -1122,6 +1295,7 @@ export function VendorListExecutor({
     const keydown = (event) => {
       const direction = directionFromKey(event.key);
       if (!direction) return;
+      if (event.key === 'Home') event.preventDefault();
       cancelPendingPositionRestore();
       coordinator.recordInput({
         ...host,
@@ -1231,6 +1405,7 @@ export function VendorListExecutor({
     const root = rootRef.current;
     const current = reading.getSession();
     if (!root || !snapshot.rows.length) return;
+    if (executeHistoryStartCommand()) return;
     restoreContentAnchor('layout');
     const intent = current.bottomIntent;
     if (intent.id && intent.inputEpoch === current.inputEpoch) {
@@ -1315,7 +1490,7 @@ export function VendorListExecutor({
       consumedCommandRef.current = key;
       scheduleObserve('layout');
     }
-  }, [enforceFollowingTail, issueBottomIntent, navigationPolicy, reading, restoreContentAnchor, restoreReadingPosition, scheduleObserve, snapshot]);
+  }, [enforceFollowingTail, executeHistoryStartCommand, issueBottomIntent, navigationPolicy, reading, restoreContentAnchor, restoreReadingPosition, scheduleObserve, snapshot]);
 
   useLayoutEffect(() => {
     if (focusOnMount && rootNode) executeReadingDOMCommand({ type: 'claim-focus' }, { root: rootNode });
@@ -1332,10 +1507,21 @@ export function VendorListExecutor({
     if (positionRestoreRef.current?.frameID) {
       globalThis.cancelAnimationFrame?.(positionRestoreRef.current.frameID);
     }
+    if (historyStartEvidenceRef.current?.frameID) {
+      globalThis.cancelAnimationFrame?.(historyStartEvidenceRef.current.frameID);
+    }
+    historyStartEvidenceRef.current = null;
+    if (historyStartCommandFrameRef.current?.frameID) {
+      globalThis.cancelAnimationFrame?.(historyStartCommandFrameRef.current.frameID);
+    }
+    historyStartCommandFrameRef.current = null;
+    historyStartCommandReadyRef.current = '';
+    historyStartCommandRef.current = '';
     followingHeightRetryRef.current = null;
     const owner = readingRef.current;
     const lease = owner?.getSession?.().positionRowLease;
     if (lease) owner.revokeHistoryPositionLease?.(lease, { clearHistoryAnchor: true });
+    owner?.cancelHistoryStart?.('host-unmounted');
     positionRestoreRef.current = null;
   }, []);
 

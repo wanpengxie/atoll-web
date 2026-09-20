@@ -39,6 +39,19 @@ describe('ReadingSession pure ports', () => {
       snapshot: { revision: 3, rows: [{ id: 'm12', seqLow: 12 }] },
       demandUnits: 2,
     })).toMatchObject({ operationID: 'history:a:7', inputEpoch: 2, demandUnits: 2 });
+    expect(historyRevealIntent({
+      intent: HISTORY_INTENT.scrollHistory,
+      activationID: 'a',
+      inputEpoch: 3,
+      intentRevision: 5,
+      epoch: 8,
+      viewKey: 'v',
+      channelID: 'c',
+      status,
+      snapshot: { revision: 4, rows: [{ id: 'm12', seqLow: 12 }] },
+      demandUnits: 1,
+      historyStart: true,
+    })).toMatchObject({ historyStart: true, messageID: '', viewportOffset: null, anchorSeq: 0 });
   });
 
   it('addresses and settles history only through the exact current owner tuple', () => {
