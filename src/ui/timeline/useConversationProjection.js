@@ -46,6 +46,22 @@ const HISTORY_RUNWAY_REVEAL_RECORDS = 8;
 const HISTORY_RUNWAY_REVEAL_BYTES = 256 * 1024;
 const pageIsVisible = () => globalThis.document?.visibilityState !== 'hidden';
 
+function typedTailLeaseRevoke(receipt, reason, inputEpoch = receipt?.inputEpoch) {
+  return Object.freeze({
+    ...receipt,
+    caughtUp: false,
+    atTail: false,
+    following: false,
+    surfaceVisible: false,
+    physicalSeq: 0,
+    boundary: 0,
+    kind: 'notification-lease-revoke',
+    reason,
+    inputEpoch: Number(inputEpoch || 0),
+    cause: '',
+  });
+}
+
 function rangeCovers(ranges = [], low, high) {
   const start = Number(low || 0);
   const end = Number(high || 0);
@@ -326,6 +342,7 @@ function useProjectionReadingOwner({
   const beginNavigation = useCallback((input = {}) => {
     const previous = controller.getSnapshot().session;
     const leasedTail = tailLeaseRef.current;
+    const currentGeneration = Number(historyStatusRef.current.generation || historyStatus.generation || 0);
     const next = controller.update((current) => takeReadingControl(current, input));
     // An upward native takeover is the physical leave boundary. Revoke the
     // exact frozen notification lease in this same event stack, carrying the
@@ -336,20 +353,12 @@ function useProjectionReadingOwner({
       && Number(next.inputEpoch) > Number(previous.inputEpoch)
       && leasedTail?.caughtUp === true
       && leasedTail.activationID === controller.activationID
+      && Number(leasedTail.generation) === currentGeneration
       && Number(leasedTail.boundary) > 0
       && Number(leasedTail.inputEpoch) === Number(previous.inputEpoch)) {
       const revoke = Object.freeze({
-        ...leasedTail,
-        caughtUp: false,
-        atTail: false,
-        following: false,
-        surfaceVisible: false,
-        physicalSeq: 0,
-        boundary: 0,
-        kind: 'notification-lease-revoke',
-        reason: 'physical-leave',
+        ...typedTailLeaseRevoke(leasedTail, 'physical-leave', next.inputEpoch),
         cause: 'native-input',
-        inputEpoch: Number(next.inputEpoch),
         previousInputEpoch: Number(previous.inputEpoch),
       });
       tailLeaseRef.current = null;
@@ -377,7 +386,7 @@ function useProjectionReadingOwner({
       }
     }
     return Object.freeze({ inputGeneration: next.inputEpoch });
-  }, [channelID, controller, historyStatus.presentationAdmission, onTailLeaseRevoke]);
+  }, [channelID, controller, historyStatus.generation, historyStatus.presentationAdmission, onTailLeaseRevoke]);
   const captureContentAnchorForReading = useCallback((detail = {}) => {
     const before = controller.getSnapshot().session;
     const after = controller.update((current) => captureContentAnchor(current, detail));
@@ -938,28 +947,18 @@ export function useConversationProjection({
       // A stale status/head render while following keeps the observation
       // lease alive until the next DOM sample. Retract only after the
       // committed reader leaves its physical visible tail.
-      onTailCaughtUp(Object.freeze({
-        ...next,
-        caughtUp: false,
-        physicalSeq: 0,
-        boundary: 0,
-        cause: '',
-      }));
+      onTailCaughtUp(typedTailLeaseRevoke(
+        previous,
+        next.surfaceVisible === true ? 'physical-leave' : 'surface-hidden',
+        next.inputEpoch,
+      ));
     }
     return undefined;
   }, [onTailCaughtUp, viewport.tailCaughtUp]);
   useLayoutEffect(() => () => {
     const receipt = tailReceiptRef.current;
     if (receipt?.caughtUp !== true || typeof tailCallbackRef.current !== 'function') return;
-    tailCallbackRef.current(Object.freeze({
-      ...receipt,
-      caughtUp: false,
-      atTail: false,
-      surfaceVisible: false,
-      physicalSeq: 0,
-      boundary: 0,
-      cause: '',
-    }));
+    tailCallbackRef.current(typedTailLeaseRevoke(receipt, 'activation-cleanup'));
   }, [state.channelId, viewport.activationID, messageListKey]);
   const latestRowID = viewport.presentationAuthority?.candidateID || '';
   useColdEntryDiagnostics({
