@@ -163,7 +163,7 @@ describe('A-D round 20 public-owner blocked evidence', () => {
     expect(document.querySelector('[data-reading-container="following-tail"]')).not.toBeNull();
   });
 
-  it.fails('[AD-037] uses the hold owner on reconnect while reading the latest committed target', async () => {
+  it('[AD-037] uses the hold owner on reconnect while reading the latest committed target', async () => {
     // 用户能力：断线重连后的编辑仍能保存到原 hold owner 的最新目标。
     // 不变量：释放/上下文使用 hold owner，不能被候选 callback 或旧 target 抢走；公开 owner：Timeline/Waiting。
     const state = waitingState('queued', 'reconnect edit');
@@ -193,7 +193,7 @@ describe('A-D round 20 public-owner blocked evidence', () => {
       session: expect.objectContaining({ phase: 'editing' }),
     })));
     rerender({ ...common, onTaskControl: onTaskControlB, state: { ...state, channelId: 'c0' } });
-    const latestState = waitingState('queued', 'reconnect edit');
+    const latestState = waitingState('queued', 'latest committed reconnect target');
     latestState.timeline.push({ kind: 'turn', turn: {
       requestId: 'hold-a', request: { ...request('hold-a', ''), type: 'agent.hold', payload: { body: { target: 'queued' } } },
       requestSeq: 3, terminal: response('hold-a-d', 'hold-a', { status: 'completed' }), terminalSeq: 4,

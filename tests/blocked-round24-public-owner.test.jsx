@@ -321,7 +321,7 @@ describe('A-D round 24 public-owner evidence', () => {
     await waitFor(() => expect(onComposerEditChange).toHaveBeenLastCalledWith(expect.objectContaining({
       session: expect.objectContaining({ phase: 'editing' }),
     })));
-    const latestState = waitingState('queued', 'reconnect edit');
+    const latestState = waitingState('queued', 'latest committed reconnect target');
     latestState.timeline.push({ kind: 'turn', turn: {
       requestId: 'hold-a', request: { ...request('hold-a', ''), type: 'agent.hold', payload: { body: { target: 'queued' } } },
       requestSeq: 3, terminal: response('hold-a-d', 'hold-a', { status: 'completed' }), terminalSeq: 4, provisional: [],

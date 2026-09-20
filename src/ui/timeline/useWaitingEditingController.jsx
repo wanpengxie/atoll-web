@@ -146,6 +146,31 @@ function timelineMaxSeq(state) {
   return max;
 }
 
+function contextTargetKey(turn) {
+  if (!turn) return '';
+  const frame = latestStatusFrame(turn);
+  const terminal = argsOf(turn.terminal);
+  const controls = Array.isArray(frame?.controls)
+    ? frame.controls.map((entry) => String(entry?.word || '')).filter(Boolean).join(',')
+    : '';
+  return [
+    String(turn.requestId || turn.request?.id || ''),
+    String(turn.request?.type || ''),
+    String(turn.requestSeq || ''),
+    String(turn.terminalSeq || ''),
+    String(turn.status || ''),
+    String(turn.latestStatus || ''),
+    String(frame?.seq || ''),
+    String(frame?.status || ''),
+    controls,
+    String(turn.terminal?.id || ''),
+    String(terminal?.status || ''),
+    String(terminal?.error_code || ''),
+    String(terminal?.replaced_by || ''),
+    messageText(turn),
+  ].join('\u001f');
+}
+
 function terminalCompleted(turn) {
   // A compact terminal closure retains status/identity only.  Its business
   // result is intentionally unavailable, so it cannot authoritatively prove
@@ -707,8 +732,36 @@ export function useWaitingEditingController({
   useLayoutEffect(() => {
     const session = editingRef.current;
     if (!session?.sessionId) return;
-    sessionLatestOwnersRef.current.set(session.sessionId, { state, onTaskControl });
-  }, [editing?.sessionId, onTaskControl, state]);
+    const previous = sessionLatestOwnersRef.current.get(session.sessionId);
+    const latestTurn = timelineTurn(state, session.targetId);
+    const latest = {
+      state,
+      onTaskControl,
+      contextOwner: previous?.contextOwner || onTaskControl,
+      contextTargetKey: previous?.contextTargetKey || contextTargetKey(latestTurn),
+    };
+    sessionLatestOwnersRef.current.set(session.sessionId, latest);
+    if (!session.holdId || session.phase !== 'editing' || !latestTurn) return;
+    const committed = sessionOwnersRef.current.get(session.sessionId);
+    if (typeof committed?.onTaskControl !== 'function') return;
+    const targetKey = contextTargetKey(latestTurn);
+    const reconnect = latest.contextOwner !== onTaskControl
+      || latest.contextTargetKey !== targetKey;
+    if (!reconnect) return;
+    latest.contextOwner = onTaskControl;
+    latest.contextTargetKey = targetKey;
+    // A reconnect may replace the render callback, but it must not replace the
+    // callback that acquired the hold.  Context is read-only; its target is
+    // always the latest committed turn and its request goes through that
+    // original owner.  Mark the handoff before invoking the port so a render
+    // caused by the callback cannot issue a duplicate context probe.
+    void Promise.resolve().then(() => committed.onTaskControl({
+      channelId: session.channelId,
+      turn: latestTurn,
+      actorId: session.actorId,
+      type: TYPES.agentContext,
+    })).catch(() => {});
+  }, [editing?.holdId, editing?.phase, editing?.sessionId, onTaskControl, state]);
   useEffect(() => {
     const session = editingRef.current;
     if (!session || session.phase !== 'waiting_for_resume' || !session.holdId) return;
@@ -830,7 +883,11 @@ export function useWaitingEditingController({
     };
     const owner = { state, onTaskControl };
     sessionOwnersRef.current.set(draft.sessionId, owner);
-    sessionLatestOwnersRef.current.set(draft.sessionId, owner);
+    sessionLatestOwnersRef.current.set(draft.sessionId, {
+      ...owner,
+      contextOwner: onTaskControl,
+      contextTargetKey: contextTargetKey(timelineTurn(state, draft.targetId) || turn),
+    });
     sessionStartSeqRef.current.set(draft.sessionId, timelineMaxSeq(state));
     editingRef.current = draft;
     setEditing(draft);
