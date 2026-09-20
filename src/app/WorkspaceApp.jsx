@@ -1093,21 +1093,27 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     return result;
   }, [canWrite, recordTimerReceipt, wire.accessRef, wire.wireRef]);
   const cancelAutomation = useCallback(async ({ channelId, timerId }) => {
-    const channelAccess = wire.accessRef.current?.state?.(channelId);
+    const resolvedChannelId = String(channelId || '');
+    const resolvedTimerId = String(timerId || '');
+    if (!resolvedChannelId || !resolvedTimerId) {
+      throw new TypeError('自动动作缺少可取消的 timer 标识');
+    }
+    const channelAccess = wire.accessRef.current?.state?.(resolvedChannelId);
     const command = wire.wireRef.current?.cancelTimer;
     if (!canWrite || channelAccess?.relationship !== 'member' || typeof command !== 'function') {
       throw unavailableError('timer.cancel');
     }
-    const result = await command({ channel_id: channelId, timer_id: timerId });
+    const result = await command({ channel_id: resolvedChannelId, timer_id: resolvedTimerId });
     setAutomationRecords((current) => current.map((row) => (
-      String(row?.timerId || row?.timer_id || row?.id || '') === String(timerId)
-      && String(row?.channelId || row?.channel_id || '') === String(channelId || '')
+      String(row?.timerId || row?.timer_id || row?.id || '') === resolvedTimerId
+      && String(row?.channelId || row?.channel_id || '') === resolvedChannelId
         ? { ...row, state: 'cancelled', cancelledAt: Date.now() }
         : row
     )));
     return result;
   }, [canWrite, wire.accessRef, wire.wireRef]);
   const automationAvailable = canWrite && typeof wire.wireRef.current?.after === 'function';
+  const automationCancelAvailable = canWrite && typeof wire.wireRef.current?.cancelTimer === 'function';
   useEffect(() => {
     if (!canWrite) setTaskCreateSource(undefined);
   }, [canWrite]);
@@ -1198,12 +1204,21 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           if (control?.state === 'sending') commandState = { state: FEATURE_COMMAND_STATE.submitting };
           else if (control?.state === 'accepted') commandState = { state: FEATURE_COMMAND_STATE.disabled, reason: '取消已提交' };
           else if (control?.error) commandState = { state: FEATURE_COMMAND_STATE.failed, error: errorText(control.error) };
+        } else if (action === FEATURE_TASK_ACTION.cancelAutomation) {
+          if (!automationCancelAvailable) {
+            commandState = {
+              state: canWrite ? FEATURE_COMMAND_STATE.unsupported : FEATURE_COMMAND_STATE.disabled,
+              reason: canWrite ? 'timer.cancel 命令端口尚未连接' : '当前频道不可写',
+            };
+          } else if (item.state !== 'waiting') {
+            commandState = { state: FEATURE_COMMAND_STATE.disabled, reason: '自动动作已结束' };
+          }
         }
         result.set(`${item.key}:${action}`, Object.freeze(commandState));
       }
     }
     return result;
-  }, [canWrite, submission.approvalStates, submission.controlStates, taskItems, waitingItems]);
+  }, [automationCancelAvailable, canWrite, submission.approvalStates, submission.controlStates, taskItems, waitingItems]);
   const beginTaskCreation = useCallback((envelope, turn) => {
     const objectId = String(envelope?.parent_id || envelope?.id || '');
     if (!objectId) {
@@ -1432,6 +1447,16 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         return result;
       },
       openAutomation: () => setPanel('automation'),
+      cancelAutomation: async ({ item, timerId }) => {
+        const itemChannelId = String(item?.channelId || '');
+        if (item?.state !== 'waiting' || !itemChannelId || itemChannelId !== String(navigation.activeChannelId || '')) {
+          throw Object.assign(new Error('自动动作已结束或不再属于当前频道'), { code: 'terminal', port: 'timer.cancel' });
+        }
+        return cancelAutomation({
+          channelId: itemChannelId,
+          timerId: timerId || item?.nativeId || item?.id,
+        });
+      },
       resolveApproval: ({ item, decision }) => submission.resolve(item.channelId, item.id, decision, {}),
       retryRecovery: ({ submission: failedSubmission }) => submission.retry(failedSubmission),
       cancelRequest: ({ item }) => submission.cancel(item.channelId, item.requestId || item.id),
