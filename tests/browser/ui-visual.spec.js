@@ -122,6 +122,9 @@ test('UI-VIS-06 本设备自动动作取消入口保持可执行', async ({ page
   const tasks = page.getByRole('tabpanel', { name: '任务' });
   const task = tasks.getByRole('button', { name: /round43-cancel/ });
   await expect(task).toBeVisible();
+  const scheduledBefore = await (await request.get(`${MOCK}/mock/control/state`)).json();
+  const timerBefore = scheduledBefore.scheduled?.find((row) => row.type === 'timer' && row.channel_id === 'c0');
+  expect(timerBefore?.timer_id).toBeTruthy();
   await task.click();
   const context = page.getByRole('complementary', { name: '工作项详情' });
   await expect(context).toContainText('不代表频道共享或跨设备的完整事实');
@@ -131,6 +134,17 @@ test('UI-VIS-06 本设备自动动作取消入口保持可执行', async ({ page
   await expect(cancel).toBeVisible();
   await expect(cancel).toBeEnabled();
   await cancel.click();
+  // A successful timer.cancel is a terminal user result, not merely a receipt:
+  // the local fact must converge to 已取消 and the waiting-only action must
+  // disappear from the detail owner. This prevents a stale enabled button from
+  // surviving a real cancel receipt.
+  await expect(context.locator('.work-item-context-state')).toContainText('已取消');
+  await expect(context.getByRole('button', { name: '取消本设备自动动作' })).toHaveCount(0);
+  await expect(context).toContainText('当前事实没有声明可用操作。');
+  await expect.poll(async () => {
+    const state = await (await request.get(`${MOCK}/mock/control/state`)).json();
+    return state.scheduled?.some((row) => row.type === 'timer' && row.timer_id === timerBefore.timer_id) || false;
+  }).toBe(false);
 });
 
 test('UI-VIS-07 850px 频道管理抽屉视觉基线', async ({ page, request }) => {
@@ -199,6 +213,56 @@ test('UI-VIS-08 600px 选择用户菜单视觉基线', async ({ page, request })
   await select.click();
   await expect(listbox).toBeVisible();
   await expect(page).toHaveScreenshot('channel-members-select-600.png', SCREENSHOT_OPTIONS);
+});
+
+test('UI-VIS-08 600px 候选 popover fit 与排序分离', async ({ page, request }) => {
+  await page.setViewportSize({ width: 600, height: 720 });
+  await reset(request, 'actor-governance', 906);
+  await login(page);
+  const panel = await openChannelPanel(page, '成员');
+  const select = panel.getByRole('combobox', { name: '选择参与者' });
+  await select.click();
+  const listbox = panel.getByRole('listbox', { name: '选择参与者选项' });
+  await expect(listbox).toBeVisible();
+  const geometry = await page.evaluate(() => {
+    const rectOf = (node) => {
+      const rect = node?.getBoundingClientRect();
+      return rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height } : null;
+    };
+    const overlaps = (a, b) => Boolean(a && b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
+    const listNode = document.querySelector('[role="listbox"][aria-label="选择参与者选项"]');
+    const triggerNode = document.querySelector('[role="combobox"][aria-label="选择参与者"]');
+    const cards = [...document.querySelectorAll('[aria-label="频道治理"] .panel-card')];
+    const card = (heading) => cards.find((node) => node.querySelector('h3')?.textContent?.trim() === heading);
+    const list = rectOf(listNode);
+    const trigger = rectOf(triggerNode);
+    const roster = rectOf(card('当前成员与 Actor'));
+    const add = rectOf(card('添加参与者'));
+    return {
+      placement: listNode?.className || '',
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      list,
+      trigger,
+      roster,
+      add,
+      overlapsRoster: overlaps(list, roster),
+      overlapsAdd: overlaps(list, add),
+      scrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+  // Placement is a separate fit contract: it must keep the menu and trigger
+  // bounded and non-overlapping even while the canonical option-order contract
+  // is allowed to fail independently in the visual/order test above.
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.viewport.width);
+  expect(geometry.list?.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.list?.right).toBeLessThanOrEqual(geometry.viewport.width);
+  expect(geometry.list?.top).toBeGreaterThanOrEqual(0);
+  expect(geometry.list?.bottom).toBeLessThanOrEqual(geometry.viewport.height);
+  if (geometry.placement.includes('placement-top')) expect(geometry.list?.bottom).toBeLessThanOrEqual(geometry.trigger?.top || 0);
+  else expect(geometry.list?.top).toBeGreaterThanOrEqual(geometry.trigger?.bottom || 0);
+  console.log(`[UI-VIS-08 popover geometry] ${JSON.stringify(geometry)}`);
+  await page.keyboard.press('Escape');
+  await expect(listbox).toHaveCount(0);
 });
 
 test('UI-VIS-09 用户消息与 Agent 答案气泡视觉基线', async ({ page, request }) => {

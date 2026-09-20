@@ -2876,3 +2876,121 @@ Search owner、lease 或视觉阈值，继续归档为已证明行为 + 合法 s
 - VIS10：**用户合同 PASS**。
 - VIS11：**行为 PASS，视觉 successor RED**，无新增产品缺口。
 - 本轮只追加本报告；共享树既有他人脏改未触碰、未纳入本提交。
+
+## 第四十六轮：0a5d739 取消终态复验与 VIS08 popover/排序拆分
+
+本轮确认 `0a5d739 fix(tasks): expose timer cancellation through workspace port` 已在
+测试 HEAD 的祖先中；测试期间 `GovernanceFeature.jsx` 另有他人未提交的 canonical sort
+候选改动，本轮未编辑、未暂存、未提交该产品文件。只修改 T-Z spec 与本审计。
+
+### UI-VIS-06：真实 cancel terminal、服务端移除与按钮消失均 PASS
+
+将原有“按钮可执行”合同收紧为真实结果合同：创建后先从 `/mock/control/state` 读取
+唯一 `timer_id`，点击详情取消，再同时等待 UI terminal 和 mock scheduled 移除：
+
+```text
+CHOKIDAR_USEPOLLING=true \
+ATOLL_TEST_WEB_PORT=15693 ATOLL_TEST_MOCK_PORT=19993 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r46-vis06-terminal-server \
+npx playwright test tests/browser/ui-visual.spec.js \
+  --grep 'UI-VIS-06 本设备自动动作取消入口保持可执行' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r46-vis06-terminal-server-repeat3
+3 passed (14.8s)
+```
+
+三次均证明完整用户结果：
+
+- 真实 `cancel_timer` receipt 后 `工作项详情` 状态为 `已取消`；
+- `取消本设备自动动作` 按钮从详情 DOM 消失；
+- 操作区显示 `当前事实没有声明可用操作。`，不保留 stale waiting action；
+- `/mock/control/state` 中同一 `timer_id` 不再存在，故不是只改本地按钮或截图。
+
+严格合同已固化于
+[`tests/browser/ui-visual.spec.js:110-148`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/ui-visual.spec.js:110)，
+复现包目录为 `test-results-tz-r46-vis06-terminal-server-repeat3/`。
+
+**unsupported 边界：** `WorkspaceApp.jsx:1207-1215` 对
+`automationCancelAvailable === false && canWrite === true` 显式产生
+`FEATURE_COMMAND_STATE.unsupported` / `timer.cancel 命令端口尚未连接`；
+`TaskDetailPanel.jsx:50-55` 会将该按钮保持 disabled。当前真实 wire owner 在
+`src/net/wire.js:473-475` 始终提供 `cancelTimer()`，因此现有 mock/真实浏览器没有合法的
+“可写但命令方法缺失”入口；人为删方法或替换 wire 会变成协议 mock，不纳入本轮证据。
+本轮把可达的 terminal、button disappearance 与不可伪造的 unsupported 防御分开记录，未把
+terminal 误报为 unsupported PASS，也未改产品补兼容层。
+
+### UI-VIS-08：canonical sort 与 popover coverage 已分成两个独立合同
+
+新增独立 popover fit test（不依赖排序 gate）后，在 600×720 真实 Chromium repeat3：
+
+```text
+CHOKIDAR_USEPOLLING=true \
+ATOLL_TEST_WEB_PORT=15691 ATOLL_TEST_MOCK_PORT=19991 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r46-vis08 \
+npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-08 600px' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r46-vis08-repeat3
+3 failed（仅旧 screenshot gate，31,139 px / ratio 0.08）
+3 passed（独立 popover fit/viewport/Escape gate）
+```
+
+在测试使用的共享 Governance dirty candidate 上，原有 strict option-order gate 三次均
+通过并进入 screenshot gate；候选顺序已回到：
+
+```text
+搜索用户、Agent 或工具 → Alice · 用户 → Bob · 用户 →
+Analyst Agent · Agent → Claude · Agent → Search Tool · 工具 → Steward · Agent
+```
+
+这只能证明 dirty candidate 的用户结果，不能算本提交交付；排序产品 diff 属于
+`GovernanceFeature.jsx` 的其他 owner，本轮未暂存。测试仍保留 exact order，不更新旧截图。
+
+独立 popover test 三次输出相同几何：
+
+```text
+viewport 600×720
+listbox  (24,371)–(577,551), placement-top
+trigger  (24,555)–(577,591)
+roster   (11,115)–(590,436)
+add-card (11,446)–(590,647)
+scrollWidth=600, overlapsRoster=true, overlapsAdd=true
+```
+
+因此裁决拆开：
+
+- **排序：** canonical directory candidate projection 的用户发现合同；当前 dirty candidate
+  可通过，旧提交仍保留严格 gate，责任交 Governance owner，不在测试侧排序或弱化。
+- **popover 覆盖：** 通用 fit 合同本身通过（viewport 内、与 trigger 不相交、Escape 关闭），
+  但 DOM 几何明确覆盖 roster/add card。其直接 placement owner 是
+  `SelectMenu.jsx:46-50`，覆盖来源是当前治理卡片高度与 trigger 空间；若产品要求不遮挡
+  前一卡片可读内容，应由治理布局 owner 先定义滚动/空间合同，再由 SelectMenu owner 实现，
+  不以截图阈值或强制向下溢出解决。
+
+独立测试位于
+[`tests/browser/ui-visual.spec.js:218-266`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/ui-visual.spec.js:218)，
+复现包目录为 `test-results-tz-r46-vis08-repeat3/`。
+
+### 下一条 baseline：UI-VIS-09 继续 PASS
+
+```text
+CHOKIDAR_USEPOLLING=true \
+ATOLL_TEST_WEB_PORT=15692 ATOLL_TEST_MOCK_PORT=19992 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r46-vis09 \
+npx playwright test tests/browser/ui-visual.spec.js \
+  --grep 'UI-VIS-09 用户消息与 Agent 答案气泡视觉基线' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r46-vis09-repeat3
+3 passed (13.9s)
+```
+
+请求/答案文本、历史回合横向 containment、viewport scrollWidth 与操作控件非零宽度均
+通过；VIS09 无新增产品或迁移缺口。复现包目录为 `test-results-tz-r46-vis09-repeat3/`。
+
+### Round46 交付状态
+
+- VIS06：**真实 cancel terminal PASS**；服务端 timer 移除、按钮消失、无操作声明均已断言。
+- VIS06 unsupported：**源代码防御已复核，当前 wire 下无合法可达入口**；不伪造协议测试。
+- VIS08：**sort 与 popover 分离**；dirty candidate sort 3/3 PASS，popover fit 3/3 PASS但
+  真实 overlap 已量化，旧视觉 3/3 RED。
+- VIS09：**用户合同 repeat3 PASS**。
+- 本轮共享脏文件（含 Governance sort candidate）均未纳入提交。
