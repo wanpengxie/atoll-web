@@ -143,6 +143,7 @@ function useProjectionReadingOwner({
   historyViewSpec,
   surfaceVisible,
   arrivals,
+  onTailLeaseRevoke,
 }) {
   const historyStatus = history.status;
   const requestPort = history.request;
@@ -171,6 +172,11 @@ function useProjectionReadingOwner({
   }));
   const [observationRevision, setObservationRevision] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(pageIsVisible);
+  // Keep the last positive tail receipt available to the synchronous native
+  // takeover path. A later layout/settled sample may already have replaced the
+  // public observation with a transient `following: false` frame while the
+  // Feed still owns the old notification lease.
+  const tailLeaseRef = useRef(null);
   const commitOwnerCandidate = useMemo(() => Object.freeze({
     controller,
     activationID: controller.activationID,
@@ -318,7 +324,37 @@ function useProjectionReadingOwner({
     return true;
   }, [controller]);
   const beginNavigation = useCallback((input = {}) => {
+    const previous = controller.getSnapshot().session;
+    const leasedTail = tailLeaseRef.current;
     const next = controller.update((current) => takeReadingControl(current, input));
+    // An upward native takeover is the physical leave boundary. Revoke the
+    // exact frozen notification lease in this same event stack, carrying the
+    // newly minted inputEpoch. Do not wait for a RAF or a settled observation:
+    // the following owner must not acknowledge a live arrival after the user
+    // has already taken the viewport.
+    if (input.direction === 'older'
+      && Number(next.inputEpoch) > Number(previous.inputEpoch)
+      && leasedTail?.caughtUp === true
+      && leasedTail.activationID === controller.activationID
+      && Number(leasedTail.boundary) > 0
+      && Number(leasedTail.inputEpoch) === Number(previous.inputEpoch)) {
+      const revoke = Object.freeze({
+        ...leasedTail,
+        caughtUp: false,
+        atTail: false,
+        following: false,
+        surfaceVisible: false,
+        physicalSeq: 0,
+        boundary: 0,
+        kind: 'notification-lease-revoke',
+        reason: 'physical-leave',
+        cause: 'native-input',
+        inputEpoch: Number(next.inputEpoch),
+        previousInputEpoch: Number(previous.inputEpoch),
+      });
+      tailLeaseRef.current = null;
+      onTailLeaseRevoke?.(revoke);
+    }
     // A delayed older page may already have staged an Admission token when a
     // subsequent wheel callback crosses the coordinator quiet deadline.  The
     // new older epoch is the same semantic intent, so hand that exact token
@@ -341,7 +377,7 @@ function useProjectionReadingOwner({
       }
     }
     return Object.freeze({ inputGeneration: next.inputEpoch });
-  }, [channelID, controller, historyStatus.presentationAdmission]);
+  }, [channelID, controller, historyStatus.presentationAdmission, onTailLeaseRevoke]);
   const captureContentAnchorForReading = useCallback((detail = {}) => {
     const before = controller.getSnapshot().session;
     const after = controller.update((current) => captureContentAnchor(current, detail));
@@ -469,6 +505,7 @@ function useProjectionReadingOwner({
         activationID: controller.activationID,
         generation,
       }),
+      inputEpoch: Number(session.inputEpoch || 0),
       captured: Object.freeze({
         presentationRevision: Number(evidence.presentationRevision || 0),
         sourceRevision: Number(evidence.sourceRevision || 0),
@@ -505,8 +542,18 @@ function useProjectionReadingOwner({
     channelID, controller, documentVisible, historyStatus.attached, historyStatus.generation,
     historyStatus.headSeq, historyStatus.messageCurrent, historyStatus.presentationRevision,
     historyStatus.notificationAuthorityRevision, historyViewSpec, observationRevision,
-    session.mode, snapshot.sourceRevision, viewKey,
+    session.inputEpoch, session.mode, snapshot.sourceRevision, viewKey,
   ]);
+
+  useLayoutEffect(() => {
+    if (tailCaughtUp.caughtUp === true && Number(tailCaughtUp.boundary) > 0) {
+      tailLeaseRef.current = tailCaughtUp;
+    } else if (tailCaughtUp.activationID !== controller.activationID
+      || tailCaughtUp.atTail !== true
+      || tailCaughtUp.surfaceVisible !== true) {
+      tailLeaseRef.current = null;
+    }
+  }, [controller.activationID, tailCaughtUp]);
 
   return useMemo(() => Object.freeze({
     activationID: controller.activationID,
@@ -665,6 +712,15 @@ export function useConversationProjection({
   onTailCaughtUp,
 }) {
   const presentationRef = useRef(null);
+  const tailReceiptRef = useRef(null);
+  const tailCallbackRef = useRef(onTailCaughtUp);
+  useLayoutEffect(() => {
+    tailCallbackRef.current = onTailCaughtUp;
+  }, [onTailCaughtUp]);
+  const revokeTailLease = useCallback((receipt) => {
+    tailReceiptRef.current = receipt;
+    tailCallbackRef.current?.(receipt);
+  }, []);
   if (!presentationRef.current) presentationRef.current = createConversationPresentation();
   const [commitVersion, setCommitVersion] = useState(0);
   const projectionVersion = state._timelineProjectionVersion ?? state.lastSeq;
@@ -720,6 +776,7 @@ export function useConversationProjection({
     historyViewSpec,
     surfaceVisible,
     arrivals,
+    onTailLeaseRevoke: revokeTailLease,
   });
   useLayoutEffect(() => {
     const admission = history.status?.presentationAdmission;
@@ -857,11 +914,6 @@ export function useConversationProjection({
     presentation: projection.presentation,
     presentationOwner: presentationRef.current,
   });
-  const tailReceiptRef = useRef(viewport.tailCaughtUp);
-  const tailCallbackRef = useRef(onTailCaughtUp);
-  useLayoutEffect(() => {
-    tailCallbackRef.current = onTailCaughtUp;
-  }, [onTailCaughtUp]);
   useLayoutEffect(() => {
     if (typeof onTailCaughtUp !== 'function') return undefined;
     const previous = tailReceiptRef.current;
