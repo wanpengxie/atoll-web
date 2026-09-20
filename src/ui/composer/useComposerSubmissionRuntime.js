@@ -17,6 +17,8 @@ import { createSubmissionCorrelationPort } from './submission-correlation-port.j
 
 const ACTIVE_STATES = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain', 'rejected']);
 const RETRY_STATES = new Set(['uncertain', 'rejected']);
+const ACTIVE_CONTROL_STATES = new Set(['sending', 'accepted', 'uncertain', 'error']);
+const CONTROL_RECORD_PREFIX = 'control:';
 const NOOP = () => {};
 const ZERO_GENERATION = () => 0;
 
@@ -41,12 +43,59 @@ function wireFailureState(error) {
   return 'rejected';
 }
 
+function controlFailureState(error) {
+  return error?.code === 'timeout' || error?.code === 'closed' ? 'uncertain' : 'error';
+}
+
 function serializedError(error) {
   return error ? {
     code: error.code || 'unknown',
     detail: error.detail || error.message || String(error),
     message: error.message || error.detail || String(error),
   } : null;
+}
+
+function serializedControlError(error) {
+  if (!error) return null;
+  return {
+    code: error.code || 'unknown',
+    detail: error.detail || error.message || String(error),
+  };
+}
+
+function controlRecordId(controlKey) {
+  return `${CONTROL_RECORD_PREFIX}${controlKey}`;
+}
+
+function controlRecord(principalId, controlKey, value) {
+  const updatedAt = Number(value?.updatedAt || Date.now());
+  return {
+    key: controlRecordId(controlKey),
+    messageId: controlRecordId(controlKey),
+    kind: 'control',
+    controlKey,
+    principalId,
+    channelId: value.channelId,
+    requestId: value.requestId,
+    action: value.action || 'cancel',
+    state: value.state,
+    error: serializedControlError(value.error),
+    createdAt: updatedAt,
+    updatedAt,
+  };
+}
+
+function restoredControlState(row, principalId) {
+  if (!row || row.kind !== 'control' || !row.controlKey
+    || row.principalId !== principalId
+    || !row.channelId || !row.requestId || !ACTIVE_CONTROL_STATES.has(row.state)) return null;
+  return {
+    channelId: row.channelId,
+    requestId: row.requestId,
+    action: row.action || 'cancel',
+    state: row.state === 'sending' ? 'uncertain' : row.state,
+    error: serializedControlError(row.error),
+  };
 }
 
 function feedIDs(value) {
@@ -98,6 +147,7 @@ export function useComposerSubmissionRuntime({
   const authorityRef = useRef(null);
   const pendingRef = useRef([]);
   const draftsRef = useRef(new Map());
+  const controlStatesRef = useRef({});
   const [pending, setPending] = useState([]);
   const [drafts, setDrafts] = useState(() => new Map());
   const [approvalStates, setApprovalStates] = useState({});
@@ -131,6 +181,34 @@ export function useComposerSubmissionRuntime({
     setDrafts(value);
     return value;
   }, []);
+
+  const publishControlStates = useCallback((next) => {
+    const value = typeof next === 'function' ? next(controlStatesRef.current) : next;
+    controlStatesRef.current = value;
+    setControlStates(value);
+    return value;
+  }, []);
+
+  const persistControlState = useCallback((controlKey, value, lifecycleGeneration = null) => {
+    if (!principalId || !value || !ACTIVE_CONTROL_STATES.has(value.state)) return Promise.resolve(false);
+    return fenceRef.current.run(async () => {
+      if (lifecycleGeneration !== null && !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) return false;
+      const row = controlRecord(principalId, controlKey, value);
+      await outboxRef.current.putMany(principalId, [row], {
+        authorize: () => lifecycleGeneration === null
+          || isLiveLifecycle(lifecycleRef.current, lifecycleGeneration),
+      });
+      return true;
+    });
+  }, [principalId]);
+
+  const removePersistedControl = useCallback((controlKey, lifecycleGeneration = null) => {
+    if (!principalId || !controlKey) return Promise.resolve(false);
+    return fenceRef.current.run(async () => {
+      if (lifecycleGeneration !== null && !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) return false;
+      return outboxRef.current.remove(principalId, controlRecordId(controlKey));
+    });
+  }, [principalId]);
 
   const accessState = useCallback((channelId) => accessRef?.current?.state?.(channelId) || null, [accessRef]);
 
@@ -198,6 +276,7 @@ export function useComposerSubmissionRuntime({
     }
     setAcceptingChannels(new Set());
     setApprovalStates({});
+    controlStatesRef.current = {};
     setControlStates({});
     if (!principalId) {
       submissionCorrelationPortRef.current.reset();
@@ -221,6 +300,10 @@ export function useComposerSubmissionRuntime({
       if (!alive || !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)
         || generation !== hydrationRef.current || authorityRef.current?.principalId !== principalId) return;
       const restoredRows = submissionRows.map(restoredSubmission).filter(Boolean);
+      const restoredControls = Object.fromEntries(submissionRows
+        .map((row) => restoredControlState(row, principalId))
+        .filter(Boolean)
+        .map((state) => [`${state.channelId}:${state.requestId}:${state.action}`, state]));
       for (const row of restoredRows) {
         const identity = { channelId: row.channelId, messageId: row.messageId };
         if (landedRef.current.has(row.messageId)) {
@@ -243,8 +326,10 @@ export function useComposerSubmissionRuntime({
       persistedDraftRevisionRef.current = new Map(draftRows
         .filter((row) => row?.channelId)
         .map((row) => [row.channelId, Number(row.revision || 0)]));
+      controlStatesRef.current = restoredControls;
       publishPending(restored);
       publishDrafts(new Map(draftRows.filter((row) => row?.channelId).map((row) => [row.channelId, row])));
+      setControlStates(restoredControls);
       if (authorityRef.current?.wireState === 'open' && wireRef?.current) {
         for (const row of restored) {
           if (row.state === 'queued' || row.state === 'uncertain') void transmitRef.current?.(row);
@@ -639,10 +724,16 @@ export function useComposerSubmissionRuntime({
       }
     }
     if (closed.size) {
-      setControlStates((current) => Object.fromEntries(Object.entries(current).filter(([, state]) => !closed.has(state?.requestId))));
+      const removedKeys = Object.entries(controlStatesRef.current)
+        .filter(([, state]) => closed.has(state?.requestId))
+        .map(([key]) => key);
+      publishControlStates((current) => Object.fromEntries(
+        Object.entries(current).filter(([, state]) => !closed.has(state?.requestId)),
+      ));
+      for (const key of removedKeys) void removePersistedControl(key).catch(onError);
     }
     return true;
-  }, [onError, principalId, publishPending]);
+  }, [onError, principalId, publishControlStates, publishPending, removePersistedControl]);
 
   const ownedWireCommand = useCallback(async (kind, channelId, reqId, decision, payload) => {
     const owner = captureOwner(channelId);
@@ -677,22 +768,43 @@ export function useComposerSubmissionRuntime({
 
   const cancel = useCallback(async (channelId, reqId) => {
     const key = `${channelId}:${reqId}:cancel`;
-    const identity = { channelId, requestId: reqId };
-    setControlStates((current) => ({ ...current, [key]: { ...identity, state: 'sending' } }));
+    const lifecycleGeneration = lifecycleRef.current.generation;
+    const identity = { channelId, requestId: reqId, action: 'cancel' };
+    const sending = { ...identity, state: 'sending', error: null, updatedAt: Date.now() };
+    publishControlStates((current) => ({ ...current, [key]: sending }));
+    // The in-flight marker is durable before the external cancel crosses the
+    // wire. A real remount can therefore downgrade it to `uncertain` instead
+    // of presenting a lost action as though it never existed.
+    await persistControlState(key, sending, lifecycleGeneration);
     try {
       const value = await ownedWireCommand('cancel', channelId, reqId);
-      setControlStates((current) => ({ ...current, [key]: { ...identity, state: 'accepted' } }));
+      if (isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) {
+        const accepted = { ...identity, state: 'accepted', error: null, updatedAt: Date.now() };
+        publishControlStates((current) => ({ ...current, [key]: accepted }));
+        await persistControlState(key, accepted, lifecycleGeneration).catch(onError);
+      }
       return value;
     } catch (error) {
-      setControlStates((current) => ({ ...current, [key]: { ...identity, state: wireFailureState(error), error } }));
+      if (isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) {
+        const failed = {
+          ...identity,
+          state: controlFailureState(error),
+          error: serializedControlError(error),
+          updatedAt: Date.now(),
+        };
+        publishControlStates((current) => ({ ...current, [key]: failed }));
+        await persistControlState(key, failed, lifecycleGeneration).catch(onError);
+      }
       throw error;
     }
-  }, [ownedWireCommand]);
+  }, [onError, ownedWireCommand, persistControlState, publishControlStates]);
 
   const clear = useCallback(() => {
     setApprovalStates({});
-    setControlStates({});
-  }, []);
+    const controlKeys = Object.keys(controlStatesRef.current);
+    publishControlStates({});
+    for (const key of controlKeys) void removePersistedControl(key).catch(onError);
+  }, [onError, publishControlStates, removePersistedControl]);
 
   const resetWorld = useCallback(() => {
     attemptEpochRef.current += 1;
@@ -724,8 +836,10 @@ export function useComposerSubmissionRuntime({
       }).catch(onError);
     }
     setApprovalStates({});
-    setControlStates({});
-  }, [onError, principalId, publishDrafts, publishPending]);
+    const controlKeys = Object.keys(controlStatesRef.current);
+    publishControlStates({});
+    for (const key of controlKeys) void removePersistedControl(key).catch(onError);
+  }, [onError, principalId, publishControlStates, publishDrafts, publishPending, removePersistedControl]);
 
   const submissionCorrelationPort = submissionCorrelationPortRef.current;
   return useMemo(() => Object.freeze({

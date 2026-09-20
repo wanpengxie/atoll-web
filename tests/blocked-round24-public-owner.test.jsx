@@ -203,9 +203,16 @@ function governance({ commands = {}, ...rest } = {}) {
 }
 
 function controlHarness({ principalId = HUMAN.id, cancel = vi.fn().mockResolvedValue({ ok: true }) } = {}) {
+  const controls = new Map();
   const store = {
-    restore: vi.fn().mockResolvedValue([]),
+    restore: vi.fn().mockImplementation(async (principalId) => [...controls.values()]
+      .filter((row) => row.principalId === principalId)),
     restoreDrafts: vi.fn().mockResolvedValue([]),
+    putMany: vi.fn(async (owner, rows) => {
+      for (const row of rows) controls.set(row.messageId, { ...row, principalId: owner });
+      return rows.map((row) => ({ ...row, principalId: owner }));
+    }),
+    remove: vi.fn(async (_owner, messageId) => controls.delete(messageId)),
     close: vi.fn(),
   };
   return {
@@ -506,15 +513,28 @@ describe('A-D round 24 public-owner evidence', () => {
     // 用户能力：刷新后只恢复本 principal 的控制状态，sending 变 uncertain。
     // 不变量：控制恢复必须按 principal 隔离且 durable。
     // 公开 owner：useComposerSubmissionRuntime。
-    const harness = controlHarness();
+    let releaseCancel;
+    const cancel = vi.fn(() => new Promise((resolve) => { releaseCancel = resolve; }));
+    const harness = controlHarness({ cancel });
     const first = renderHook(() => useComposerSubmissionRuntime(harness));
     await waitFor(() => expect(first.result.current.controlStates).toEqual({}));
-    await act(async () => { await first.result.current.cancel('c0', 'request-1'); });
-    expect(first.result.current.controlStates['c0:request-1:cancel']).toMatchObject({ state: 'accepted' });
+    let cancelPromise;
+    act(() => { cancelPromise = first.result.current.cancel('c0', 'request-1'); });
+    await waitFor(() => expect(first.result.current.controlStates['c0:request-1:cancel']).toMatchObject({ state: 'sending' }));
     first.unmount();
+    releaseCancel({ ok: true });
+    await expect(cancelPromise).rejects.toThrow();
     const restored = renderHook(() => useComposerSubmissionRuntime(harness));
     await waitFor(() => expect(restored.result.current.controlStates['c0:request-1:cancel']).toMatchObject({ state: 'uncertain' }));
     restored.unmount();
+
+    const otherPrincipal = renderHook(() => useComposerSubmissionRuntime({
+      ...harness,
+      principalId: 'human:round24:other',
+      producerOwnerToken: 'owner:human:round24:other',
+    }));
+    await waitFor(() => expect(otherPrincipal.result.current.controlStates).toEqual({}));
+    otherPrincipal.unmount();
     harness.store.close();
   });
 
@@ -530,8 +550,26 @@ describe('A-D round 24 public-owner evidence', () => {
     expect(first.result.current.controlStates['c0:request-2:cancel'].error).toEqual({ code: 'closed', detail: '连接关闭' });
     first.unmount();
     const restored = renderHook(() => useComposerSubmissionRuntime(harness));
-    await waitFor(() => expect(restored.result.current.controlStates['c0:request-2:cancel']).toBeTruthy());
+    await waitFor(() => expect(restored.result.current.controlStates['c0:request-2:cancel']).toMatchObject({
+      state: 'uncertain',
+      error: { code: 'closed', detail: '连接关闭' },
+    }));
+    await harness.store.putMany(HUMAN.id, [{
+      key: 'control:c0:terminal:cancel',
+      messageId: 'control:c0:terminal:cancel',
+      kind: 'control',
+      controlKey: 'c0:terminal:cancel',
+      channelId: 'c0',
+      requestId: 'terminal',
+      action: 'cancel',
+      state: 'resolved',
+      error: null,
+    }]);
     restored.unmount();
+    const terminalFiltered = renderHook(() => useComposerSubmissionRuntime(harness));
+    await waitFor(() => expect(terminalFiltered.result.current.controlStates['c0:request-2:cancel']).toBeTruthy());
+    expect(terminalFiltered.result.current.controlStates['c0:terminal:cancel']).toBeUndefined();
+    terminalFiltered.unmount();
     harness.store.close();
   });
 
