@@ -134,4 +134,21 @@ describe('MarkdownContent', () => {
     expect(getSelection().toString()).toBe('已完成');
   });
 
+  it('后台正文更新时保留宽表格的原生横向阅读位置', () => {
+    const table = [
+      '| marker | alpha | beta | gamma |',
+      '| --- | --- | --- | --- |',
+      '| marker-111111111111111111111111 | alpha-222222222222222222222222 | beta-333333333333333333333333 | gamma-444444444444444444444444 |',
+    ].join('\n');
+    const view = render(<MarkdownContent contentKey="message:wide-table:body" text={`${table}\n\n后台初始进度`} />);
+    const before = view.container.querySelector('.markdown-table-scroll');
+    before.scrollLeft = 137;
+
+    view.rerender(<MarkdownContent contentKey="message:wide-table:body" text={`${table}\n\n后台更新进度`} />);
+
+    const after = view.container.querySelector('.markdown-table-scroll');
+    expect(after.isSameNode(before)).toBe(true);
+    expect(after.scrollLeft).toBe(137);
+  });
+
 });
