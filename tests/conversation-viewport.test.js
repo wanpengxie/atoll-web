@@ -143,6 +143,24 @@ describe('reading session authority', () => {
     });
   });
 
+  it('starts an independent older gesture from its newly captured anchor', () => {
+    let current = takeReadingControl(session(), {
+      direction: 'older',
+      gestureID: 'wheel:one',
+      historyAnchor: { messageID: 'm80', viewportOffset: -394 },
+    });
+    const nextGesture = takeReadingControl(current, {
+      direction: 'older',
+      gestureID: 'wheel:two',
+      historyAnchor: { messageID: 'm72', viewportOffset: -120 },
+    });
+    expect(nextGesture.historyAnchor).toMatchObject({
+      gestureID: 'wheel:two', messageID: 'm72', viewportOffset: -120,
+      inputEpoch: current.inputEpoch + 1,
+      intentRevision: current.intentRevision + 1,
+    });
+  });
+
   it('consumes a position lease only after every identity field matches', () => {
     let current = takeReadingControl(session(), {
       direction: 'older',

@@ -118,6 +118,7 @@ function normalizedHistoryAnchor(session, value) {
     activationID: session.activationID,
     inputEpoch: session.inputEpoch,
     intentRevision: session.intentRevision,
+    gestureID: String(value.gestureID || session.historyAnchor?.gestureID || ''),
     messageID: String(value.messageID),
     viewportOffset: Number(value.viewportOffset),
   });
@@ -199,10 +200,19 @@ export function takeReadingControl(session, {
   // only rebind its identity to the new input epoch/revision.  Re-capturing
   // the row after it has moved to the top would turn the later grant into a
   // different viewport offset, so the prepend would be visibly displaced.
-  const olderAnchor = direction === 'older' && session.historyAnchor?.messageID
+  const existingAnchor = direction === 'older' && session.historyAnchor?.messageID
     && Number.isFinite(Number(session.historyAnchor.viewportOffset))
     ? session.historyAnchor
     : historyAnchor;
+  // The coordinator's transaction id is the boundary between one physical
+  // older gesture and the next.  A later gesture must use its newly captured
+  // baseline; blindly carrying the previous first-row lease replays an old
+  // viewport after a pause.  Within one transaction (or a model caller that
+  // omits the optional id), retain the original physical anchor while the
+  // input epoch is rebased.
+  const sameOlderGesture = existingAnchor && direction === 'older'
+    && (!gestureID || String(existingAnchor.gestureID || '') === String(gestureID));
+  const olderAnchor = sameOlderGesture ? existingAnchor : historyAnchor;
   return next(session, {
     inputEpoch,
     intentRevision,
@@ -216,6 +226,7 @@ export function takeReadingControl(session, {
         activationID: session.activationID,
         inputEpoch,
         intentRevision,
+        gestureID: String(gestureID || olderAnchor.gestureID || ''),
         messageID: String(olderAnchor.messageID),
         viewportOffset: Number(olderAnchor.viewportOffset),
       })
