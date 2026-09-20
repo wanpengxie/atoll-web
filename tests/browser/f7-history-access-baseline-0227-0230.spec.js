@@ -56,6 +56,12 @@ test('TC0227 F7 revoked active channel sends no freshness request and a later gr
     await expect.poll(() => metaFrames.filter((frame) => (
       frame.phase === 'granted' && frame.channelId === 'c0.project'
     )).length).toBe(1);
+    // One observed frame is not sufficient: keep the public socket quiet for
+    // a bounded settling window, then require the exact grant-side count.
+    await page.waitForTimeout(750);
+    expect(metaFrames.filter((frame) => (
+      frame.phase === 'granted' && frame.channelId === 'c0.project'
+    ))).toHaveLength(1);
   } finally {
     await testInfo.attach('access-interest-lifecycle.json', {
       body: JSON.stringify({

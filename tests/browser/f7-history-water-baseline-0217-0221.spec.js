@@ -144,7 +144,11 @@ test('TC0219 F7 empty local Claude filter stays partial while warm history remai
     })));
     await page.waitForTimeout(50);
   }
-  const evidence = { samples, diagnostics: await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event.startsWith('history.'))) };
+  const evidence = {
+    beforeRect: before,
+    samples,
+    diagnostics: await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event.startsWith('history.'))),
+  };
   await testInfo.attach('filter-claude-empty-eof.json', {
     body: JSON.stringify(evidence, null, 2), contentType: 'application/json',
   });
