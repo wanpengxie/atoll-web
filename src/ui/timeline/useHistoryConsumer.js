@@ -172,13 +172,21 @@ export function useHistoryConsumer({
   useInsertionEffect(() => {
     const continuation = topContinuationRef.current;
     if (!continuation) return;
+    const stableTopIntent = continuation.stableTopContinuation === true
+      && String(snapshotRef.current.rows?.[0]?.id || '')
+        === String(continuation.continuationAnchorID || '')
+      && Number(snapshotRef.current.rows?.[0]?.seqLow || 0)
+        === Number(continuation.continuationAnchorSeq || 0)
+      && Number(session.inputEpoch) >= Number(continuation.inputEpoch || 0)
+      && Number(session.intentRevision) >= Number(continuation.intentRevision || 0);
     const sameIntent = continuation.controller === controller
       && continuation.activationID === controller.activationID
       && continuation.channelID === channelID
       && continuation.viewKey === viewKey
       && session.mode === READING_MODE.browsing
-      && Number(session.inputEpoch) === Number(continuation.inputEpoch)
-      && Number(session.intentRevision) === Number(continuation.intentRevision)
+      && (stableTopIntent
+        || (Number(session.inputEpoch) === Number(continuation.inputEpoch)
+          && Number(session.intentRevision) === Number(continuation.intentRevision)))
       && session.tailEvidence?.direction !== 'newer';
     if (!sameIntent) {
       if (positionLeaseWaitRef.current?.controller === controller) {
@@ -194,6 +202,7 @@ export function useHistoryConsumer({
       revealRows, revealBytes, demandUnits = 1,
       intent = HISTORY_INTENT.scrollHistory, targetSeq = 0,
       requiredVisibleCoverage = null, consumer = '', continuation = false,
+      stableTopContinuation = false, continuationAnchorID = '', continuationAnchorSeq = 0,
     } = options;
     if (!continuation && committedOwnerRef.current !== commitOwnerCandidate) {
       return Promise.resolve({ kind: 'stale-owner', deduplicated: true });
@@ -267,8 +276,11 @@ export function useHistoryConsumer({
     if (continuation) {
       const firstID = snapshotRef.current.rows[0]?.id;
       const anchor = currentSession.historyAnchor;
-      if (!anchor || String(anchor.messageID) !== String(firstID || '')
-        || !Number.isFinite(Number(anchor.viewportOffset))) {
+      const stableTop = stableTopContinuation === true
+        && String(firstID || '') === String(continuationAnchorID || '')
+        && Number(snapshotRef.current.rows[0]?.seqLow || 0) === Number(continuationAnchorSeq || 0);
+      if ((!anchor || String(anchor.messageID) !== String(firstID || '')
+        || !Number.isFinite(Number(anchor.viewportOffset))) && !stableTop) {
         return Promise.resolve({ kind: 'position-anchor-missing', deduplicated: true });
       }
     }
@@ -380,7 +392,7 @@ export function useHistoryConsumer({
         // active filtered Presentation; the same top intent must issue the
         // next acquisition until Admission can stage a real prepend or EOF.
         if (!active.topContinuationPromise) {
-          active.topContinuationPromise = active.promise.then(() => {
+          active.topContinuationPromise = active.promise.then((result) => {
             const owner = committedOwnerRef.current;
             if (owner?.controller !== controller
               || owner.activationID !== controller.activationID
@@ -393,7 +405,16 @@ export function useHistoryConsumer({
             // this same older operation from failing the ordinary stale-owner
             // guard, while the anchor/mode fence below still rejects a newer
             // direction or activation.
-            return request(reason, urgency, { ...options, continuation: true });
+            const first = snapshotRef.current.rows[0];
+            const stableTopContinuation = Boolean(first?.id)
+              && Number(result?.firstVisibleSeq || 0) === Number(first.seqLow || 0);
+            return request(reason, urgency, {
+              ...options,
+              continuation: true,
+              stableTopContinuation,
+              continuationAnchorID: first?.id || '',
+              continuationAnchorSeq: Number(first?.seqLow || 0),
+            });
           });
         }
         return active.topContinuationPromise;
@@ -512,33 +533,70 @@ export function useHistoryConsumer({
       const settledSession = current ? currentOwner.controller.getSnapshot().session : null;
       const frontierSeq = Number(currentStatus.oldestSeq
         || currentOwner.snapshot?.rows?.[0]?.seqLow || 0);
+      // A sparse filtered page can advance the physical frontier without
+      // changing the semantic first row.  In that case there is no prepend
+      // lease to carry, and a later wheel tick may have rebased the same
+      // browsing intent to a newer input epoch while it was in flight.  The
+      // exact first-row/sequence proof below lets this owner continue that
+      // still-older intent; a direction reversal remains fenced by
+      // tailEvidence.
+      const stableTopContinuation = Boolean(first?.id)
+        && String(currentOwner.snapshot?.rows?.[0]?.id || '') === String(first.id)
+        && Number(currentOwner.snapshot?.rows?.[0]?.seqLow || 0) === Number(first.seqLow || 0)
+        && Number(result?.firstVisibleSeq || 0) === Number(first.seqLow || 0);
+      const sameOlderInput = Number(settledSession?.inputEpoch || activeSession.inputEpoch)
+          === Number(activeSession.inputEpoch || 0)
+        || (stableTopContinuation
+          && settledSession?.mode === READING_MODE.browsing
+          && settledSession?.tailEvidence?.direction !== 'newer'
+          && Number(settledSession?.inputEpoch || 0) >= Number(activeSession.inputEpoch || 0)
+          && Number(settledSession?.intentRevision || 0) >= Number(activeSession.intentRevision || 0));
       const continueTop = current && reason === 'top' && result?.kind === 'satisfied'
         && currentStatus.hasOlder === true && frontierSeq > 1
         && settledSession?.mode === READING_MODE.browsing
         && Number(settledSession?.inputEpoch || activeSession.inputEpoch) > 0
         && settledSession?.tailEvidence?.direction !== 'newer'
-        && Number(settledSession?.intentRevision || activeSession.intentRevision)
-          === Number(activeSession.intentRevision || 0)
+        && sameOlderInput
         && topBoundaryRef.current?.controller === controller
         && topBoundaryRef.current.activationID === controller.activationID
         && topBoundaryRef.current.channelID === channelID
         && topBoundaryRef.current.viewKey === viewKey
-        && Number(topBoundaryRef.current.inputEpoch || 0)
-          === Number(settledSession?.inputEpoch || activeSession.inputEpoch)
-        && Number(topBoundaryRef.current.intentRevision || 0)
-          === Number(settledSession?.intentRevision || activeSession.intentRevision);
-        const continuationAnchorReady = positionLeaseHandoffReady(settledSession)
+        && (stableTopContinuation
+          ? Number(topBoundaryRef.current.inputEpoch || 0)
+              <= Number(settledSession?.inputEpoch || activeSession.inputEpoch)
+          : Number(topBoundaryRef.current.inputEpoch || 0)
+              === Number(settledSession?.inputEpoch || activeSession.inputEpoch))
+        && (stableTopContinuation
+          ? Number(topBoundaryRef.current.intentRevision || 0)
+              <= Number(settledSession?.intentRevision || activeSession.intentRevision)
+          : Number(topBoundaryRef.current.intentRevision || 0)
+              === Number(settledSession?.intentRevision || activeSession.intentRevision));
+      const continuationAnchorReady = positionLeaseHandoffReady(settledSession)
           || (settledSession?.historyAnchor?.messageID
           && String(settledSession.historyAnchor.messageID)
             === String(currentOwner.snapshot?.rows?.[0]?.id || '')
-          && Number.isFinite(Number(settledSession.historyAnchor.viewportOffset)));
+          && Number.isFinite(Number(settledSession.historyAnchor.viewportOffset)))
+          || stableTopContinuation;
       if (continueTop && continuationAnchorReady) {
+        const continuationBoundary = stableTopContinuation && topBoundaryRef.current
+          ? Object.freeze({
+            ...topBoundaryRef.current,
+            inputEpoch: Number(settledSession?.inputEpoch || activeSession.inputEpoch),
+            intentRevision: Number(settledSession?.intentRevision || activeSession.intentRevision),
+          })
+          : topBoundaryRef.current;
+        if (continuationBoundary && continuationBoundary !== topBoundaryRef.current) {
+          topBoundaryRef.current = continuationBoundary;
+        }
         const continuation = {
           controller, activationID: controller.activationID, channelID, viewKey,
           inputEpoch: Number(settledSession?.inputEpoch || activeSession.inputEpoch),
           intentRevision: Number(settledSession?.intentRevision || activeSession.intentRevision),
           reason, urgency, options,
-          topBoundary: topBoundaryRef.current,
+          stableTopContinuation,
+          continuationAnchorID: first?.id || '',
+          continuationAnchorSeq: Number(first?.seqLow || 0),
+          topBoundary: continuationBoundary,
           timer: null,
         };
         topContinuationRef.current?.timer
@@ -557,20 +615,34 @@ export function useHistoryConsumer({
           const ownerInputEpoch = Number(ownerSession?.inputEpoch || 0);
           const sameOlderIntent = ownerSession?.mode === READING_MODE.browsing
             && ownerDirection === 'older'
-            && ownerInputEpoch === Number(continuation.inputEpoch || 0)
-            && Number(ownerSession?.intentRevision || 0) === Number(continuation.intentRevision || 0)
+            && (continuation.stableTopContinuation === true
+              ? ownerInputEpoch >= Number(continuation.inputEpoch || 0)
+                && Number(ownerSession?.intentRevision || 0)
+                  >= Number(continuation.intentRevision || 0)
+              : ownerInputEpoch === Number(continuation.inputEpoch || 0)
+                && Number(ownerSession?.intentRevision || 0)
+                  === Number(continuation.intentRevision || 0))
             && continuation.topBoundary?.controller === controller
             && continuation.topBoundary.activationID === controller.activationID
             && continuation.topBoundary.channelID === channelID
             && continuation.topBoundary.viewKey === viewKey
-            && ownerInputEpoch === Number(continuation.topBoundary.inputEpoch || 0)
-            && Number(ownerSession?.intentRevision || 0)
-              === Number(continuation.topBoundary.intentRevision || 0);
+            && (continuation.stableTopContinuation === true
+              ? ownerInputEpoch >= Number(continuation.topBoundary.inputEpoch || 0)
+                && Number(ownerSession?.intentRevision || 0)
+                  >= Number(continuation.topBoundary.intentRevision || 0)
+              : ownerInputEpoch === Number(continuation.topBoundary.inputEpoch || 0)
+                && Number(ownerSession?.intentRevision || 0)
+                  === Number(continuation.topBoundary.intentRevision || 0));
           const ownerAnchorReady = positionLeaseHandoffReady(ownerSession)
             || (ownerSession?.historyAnchor?.messageID
             && String(ownerSession.historyAnchor.messageID)
               === String(owner?.snapshot?.rows?.[0]?.id || '')
-            && Number.isFinite(Number(ownerSession.historyAnchor.viewportOffset)));
+            && Number.isFinite(Number(ownerSession.historyAnchor.viewportOffset)))
+            || (continuation.stableTopContinuation === true
+              && String(owner?.snapshot?.rows?.[0]?.id || '')
+                === String(continuation.continuationAnchorID || '')
+              && Number(owner?.snapshot?.rows?.[0]?.seqLow || 0)
+                === Number(continuation.continuationAnchorSeq || 0));
           if (owner?.controller !== controller || owner.channelID !== channelID
             || owner.viewKey !== viewKey || !sameOlderIntent
             || !ownerAnchorReady
@@ -594,6 +666,9 @@ export function useHistoryConsumer({
           void request(continuation.reason, continuation.urgency, {
             ...continuation.options,
             continuation: true,
+            stableTopContinuation: continuation.stableTopContinuation,
+            continuationAnchorID: continuation.continuationAnchorID,
+            continuationAnchorSeq: continuation.continuationAnchorSeq,
           });
         }, 100);
       }
