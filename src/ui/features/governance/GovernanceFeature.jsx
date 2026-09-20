@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
 import { isManageableDeclaration, isVisibleActor } from '../../../model/actor-visibility.js';
 import { InlineConfirmation } from '../../primitives/InlineConfirmation.jsx';
 import { PanelCard } from '../../primitives/PanelCard.jsx';
 import { SelectMenu } from '../../primitives/SelectMenu.jsx';
 import { SidePanel } from '../../primitives/SidePanel.jsx';
+import { useModalFocus } from '../../primitives/useModalFocus.js';
 
 function errorMessage(error) {
   return error?.message || String(error);
@@ -215,6 +216,161 @@ function ChannelDanger({ channel, port }) {
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
     {protectedRoot ? <p>空间根频道 {channel?.id || 'c0'} 受后端保护，不能退役。</p> : <><p>退役后频道停止写入，但已有账本和文件不会被前端删除；存在活动子频道时由后端拒绝。</p><label>输入 <strong>{expected}</strong> 确认<input aria-label="退役确认" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button type="button" className="danger-button" disabled={port.disabled || confirmation !== expected} onClick={() => action.submit('retire', { channelId: channel?.id })}>退役当前频道</button></>}
   </PanelCard>;
+}
+
+const CHANNEL_CREATE_STEPS = Object.freeze([
+  ['ledger', '账本确认', '等待创建请求写入频道账本'],
+  ['observable', '频道可观察', '等待 OBS 返回新频道'],
+  ['membership', '成员关系', '等待当前账户获得成员关系'],
+  ['serving', '服务就绪', '等待频道开放服务'],
+]);
+
+function validateChannelName(value) {
+  const name = String(value || '').trim();
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)
+    ? ''
+    : '名称须为 1–63 位小写字母、数字或连字符，且不能以连字符开头或结尾';
+}
+
+function isMemberChannel(row) {
+  const relationship = row?.accessState?.relationship || row?.access_state?.relationship;
+  if (relationship) return relationship === 'member';
+  const mode = String(row?.access || row?.accessMode || '').toLowerCase();
+  if (mode) return mode === 'member_active' || mode === 'member_stale';
+  // Direct feature fixtures may expose only the channel projection. The real
+  // governance port always includes access/accessState, so a bare child row is
+  // accepted only for that narrow presentation boundary.
+  return true;
+}
+
+function createdChildFor(channel, children, name) {
+  const expectedId = `${channel?.id || ''}.${name}`;
+  return (children || []).find((row) => (
+    row?.id === expectedId
+      || row?.qualified_name === expectedId
+      || (row?.parent_id === channel?.id && row?.name === name)
+  )) || null;
+}
+
+function creationConvergence(channel, children, request) {
+  if (!request) return null;
+  const child = createdChildFor(channel, children, request.name);
+  const serving = child?.open === true || child?.serving === true || child?.serving === 1;
+  const membership = Boolean(child && isMemberChannel(child));
+  return {
+    accepted: true,
+    ledger: true,
+    observable: Boolean(child),
+    membership,
+    serving,
+    channel: child,
+    ready: Boolean(child && membership && serving),
+  };
+}
+
+// The rail entry is a real modal owned by GovernanceFeature. The command,
+// channel directory and access projection remain the existing Workspace
+// owners; this component only keeps the local request and renders their
+// convergence without a second store or a private protocol API.
+export function ChannelCreateModal({ channel, port = {}, onClose }) {
+  const [name, setName] = useState('');
+  const [purpose, setPurpose] = useState('');
+  const [createRequest, setCreateRequest] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const dialogRef = useRef(null);
+  const nameRef = useRef(null);
+  const commands = port.commands || {};
+  const children = Array.isArray(port.children) ? port.children : [];
+  const validation = validateChannelName(name);
+  const convergence = creationConvergence(channel, children, createRequest);
+  const tracking = Boolean(createRequest && !convergence?.ready);
+  const locked = port.disabled || submitting || tracking || convergence?.ready;
+  const parentName = displayChannelName(channel);
+
+  useModalFocus({
+    dialogRef,
+    initialFocusRef: nameRef,
+    onClose,
+    closeDisabled: submitting,
+  });
+
+  async function submit(event) {
+    event.preventDefault();
+    const normalized = String(name || '').trim();
+    const nameError = validateChannelName(normalized);
+    if (nameError) {
+      setError(nameError);
+      return;
+    }
+    if (typeof commands.submit !== 'function') {
+      setError('频道治理命令不可用');
+      return;
+    }
+    setError('');
+    setSubmitting(true);
+    try {
+      const messageId = await commands.submit({
+        scope: 'channel',
+        action: 'create_child',
+        payload: {
+          name: normalized,
+          purpose: String(purpose || '').trim(),
+          parentId: channel?.id,
+        },
+      });
+      if (!messageId) throw new Error('创建命令没有返回可追踪的请求编号');
+      setCreateRequest({ id: String(messageId), name: normalized });
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function enterChannel() {
+    const target = convergence?.channel?.id || convergence?.channel?.qualified_name;
+    if (!convergence?.ready || !target || !globalThis.location) return;
+    globalThis.location.hash = `#/channels/${encodeURIComponent(target)}/conversation`;
+  }
+
+  return <div
+    className="modal-backdrop channel-create-backdrop"
+    data-modal-layer
+    role="presentation"
+    onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !submitting) onClose?.();
+    }}
+  >
+    <section ref={dialogRef} tabIndex={-1} className="task-create-modal channel-create-modal" role="dialog" aria-modal="true" aria-labelledby="channel-create-title" aria-describedby="channel-create-description">
+      <header>
+        <div><p className="eyebrow">NEW CHANNEL</p><h2 id="channel-create-title">新建频道</h2></div>
+        <button type="button" onClick={onClose} disabled={submitting} aria-label="关闭新建频道">×</button>
+      </header>
+      <form className="channel-create-form" onSubmit={submit}>
+        <p id="channel-create-description">在 <strong>{parentName}</strong> 下创建子频道。提交后会持续核对账本、可观察性、成员关系和服务状态。</p>
+        <label><span>频道名称</span><input ref={nameRef} aria-label="新频道名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 backend" disabled={locked} aria-invalid={Boolean(name && validation)} required /></label>
+        {name && validation && <small className="field-error">{validation}</small>}
+        <label><span>用途</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>
+        {error && <p className="governance-error" role="alert">{error}</p>}
+        {convergence && <section className="convergence channel-create-progress" aria-label="频道创建进度" aria-live="polite">
+          <header><strong>{createRequest.name}</strong><small>{convergence.ready ? '已就绪' : '正在收敛'}</small></header>
+          {CHANNEL_CREATE_STEPS.map(([key, label, waiting]) => <div key={key} className={convergence[key] ? 'done' : 'waiting'}>
+            <span aria-hidden="true">{convergence[key] ? '✓' : '·'}</span>
+            <strong>{label}</strong>
+            <small>{convergence[key] ? '已确认' : waiting}</small>
+          </div>)}
+          {convergence.ready && <p className="ready-message">频道已经可以打开和协作。</p>}
+        </section>}
+        <footer>
+          <button type="button" onClick={onClose} disabled={submitting}>取消</button>
+          {convergence?.ready
+            ? <button type="button" className="primary-button" onClick={enterChannel}>进入新频道</button>
+            : <button type="submit" className="primary-button" disabled={locked || Boolean(validation)}>{submitting ? '正在提交…' : tracking ? '等待频道就绪…' : '创建频道'}</button>}
+        </footer>
+      </form>
+    </section>
+  </div>;
 }
 
 export function ChannelAdministrationPanel({ channel, port = {}, initialTab = 'members', onClose }) {

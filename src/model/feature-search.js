@@ -139,6 +139,10 @@ function turnSearchRow(entry, channel, rowID) {
   const requestId = string(turn.requestId || request.id);
   const source = entryLocation(entry, channel.id, rowID);
   if (!requestId || !source) return null;
+  const workItemKey = request.type === 'agent.ask'
+    ? `agent_run:${channel.id}:${requestId}`
+    : '';
+  const resultSource = workItemKey ? Object.freeze({ ...source, workItemKey }) : source;
   const terminal = terminalResultPayload(turn);
   const responseText = string(terminal?.text || terminal?.detail);
   return Object.freeze({
@@ -158,7 +162,7 @@ function turnSearchRow(entry, channel, rowID) {
     updatedAt: timestamp(turn.terminal?.ts || request.ts, turn.lastSeq),
     channelId: channel.id,
     channelName: channelName(channel),
-    source,
+    source: resultSource,
   });
 }
 

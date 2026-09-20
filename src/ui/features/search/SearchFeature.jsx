@@ -7,6 +7,16 @@ const KIND_LABELS = {
   work_item: '任务', participant: '成员', operation: '操作',
 };
 
+function openSearchResult(item, commands) {
+  const source = item?.source || item;
+  if (source?.workItemKey && source.channelId && globalThis.location) {
+    commands.close?.();
+    globalThis.location.hash = `#/channels/${encodeURIComponent(source.channelId)}/tasks?focus=${encodeURIComponent(`work_item:${source.workItemKey}`)}`;
+    return;
+  }
+  commands.open?.(source);
+}
+
 export function SearchFeature({ port = {} }) {
   const [query, setQuery] = useState('');
   const inputRef = useRef(null);
@@ -19,7 +29,7 @@ export function SearchFeature({ port = {} }) {
       <header><div><p className="eyebrow">SEARCH</p><h2>搜索可见内容</h2></div><button type="button" className="icon-button" onClick={() => commands.close?.()} aria-label="关闭全局搜索">×</button></header>
       <label className="global-search-input"><span aria-hidden="true">⌕</span><input ref={inputRef} aria-label="搜索频道、消息、文件、任务或成员" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词…" /></label>
       <div className="global-search-results" aria-live="polite">
-        {query.trim() && results.map((item, index) => <button type="button" className="global-search-result" key={item.key || `${item.kind}:${item.id || index}`} onClick={() => commands.open?.(item.source || item)}><span>{KIND_LABELS[item.objectType || item.kind] || '结果'}</span><strong>{item.title || item.name || '未命名结果'}</strong><small>{item.channelName || item.channelId || ''}{item.subtitle ? ` · ${item.subtitle}` : ''}</small></button>)}
+        {query.trim() && results.map((item, index) => <button type="button" className="global-search-result" key={item.key || `${item.kind}:${item.id || index}`} onClick={() => openSearchResult(item, commands)}><span>{KIND_LABELS[item.objectType || item.kind] || '结果'}</span><strong>{item.title || item.name || '未命名结果'}</strong><small>{item.channelName || item.channelId || ''}{item.subtitle ? ` · ${item.subtitle}` : ''}</small></button>)}
         {!query.trim() && <p className="global-search-hint">搜索范围仅包含当前账户可以看到的频道与对象；不会从不可访问频道读取缓存。</p>}
         {query.trim() && !results.length && <p className="global-search-hint">没有匹配的可见结果。</p>}
       </div>

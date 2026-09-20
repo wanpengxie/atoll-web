@@ -3,7 +3,7 @@ import { attachmentFromFileReference } from '../../model/file-references.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from './files/FilesFeature.jsx';
-import { ChannelAdministrationPanel, ChannelAutomationPanel, SpaceAdministrationPanel } from './governance/GovernanceFeature.jsx';
+import { ChannelAdministrationPanel, ChannelAutomationPanel, ChannelCreateModal, SpaceAdministrationPanel } from './governance/GovernanceFeature.jsx';
 import { ActorDetailPanel, RosterFeature } from './roster/RosterFeature.jsx';
 import { SearchFeature } from './search/SearchFeature.jsx';
 import { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
@@ -184,11 +184,18 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   else if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) {
     const initialTab = typeof panel === 'object' ? panel.initialTab : undefined;
     focusKey = `${kind}:${initialTab || 'members'}`;
-    content = <ChannelAdministrationPanel channel={channel} port={governance.channel || governance} initialTab={initialTab} onClose={onClose} />;
+    const governancePort = governance.channel || governance;
+    content = initialTab === 'overview'
+      ? <ChannelCreateModal channel={channel} port={governancePort} onClose={onClose} />
+      : <ChannelAdministrationPanel channel={channel} port={governancePort} initialTab={initialTab} onClose={onClose} />;
   }
   else if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) content = <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.activity) content = <ActivityFeature port={activity} onClose={onClose} />;
   if (!content) return null;
+  // A new-channel request is an app-level modal, not a context side panel.
+  // Keep this feature-owned branch outside ContextHost so the public rail
+  // contract has one dialog and no hidden governance panel behind it.
+  if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration && typeof panel === 'object' && panel.initialTab === 'overview') return content;
   const wrappedContent = kind === WORKSPACE_FEATURE_PANEL.artifact
     ? <ArtifactReferenceBoundary channel={channel} files={files}>{content}</ArtifactReferenceBoundary>
     : content;
