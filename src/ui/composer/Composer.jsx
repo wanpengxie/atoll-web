@@ -51,6 +51,20 @@ function placePopover(node, trigger, matchWidth) {
   node.style.visibility = 'visible';
 }
 
+function placeTarget(node, anchor) {
+  if (!node || !anchor?.isConnected) return;
+  const frame = viewportFrame();
+  const anchorRect = anchor.getBoundingClientRect();
+  const width = Math.max(0, Math.min(anchorRect.width - 24, frame.right - frame.left - 24));
+  node.style.visibility = 'hidden';
+  node.style.left = `${Math.max(frame.left + 12, Math.min(anchorRect.left + 12, frame.right - frame.left - width - 12))}px`;
+  node.style.top = '0px';
+  node.style.width = `${width}px`;
+  const height = node.getBoundingClientRect().height;
+  node.style.top = `${Math.max(frame.top + 8, anchorRect.top - 7 - height)}px`;
+  node.style.visibility = 'visible';
+}
+
 function FloatingPortal({ anchorRef, className, matchWidth = false, children }) {
   const popoverRef = useRef(null);
   useLayoutEffect(() => {
@@ -186,6 +200,8 @@ const containsFiles = (transfer) => [...(transfer?.types || [])].includes('Files
 export const Composer = memo(function Composer({ model, commands, className = '' }) {
   const readingIntent = useReadingIntent();
   const inputAreaRef = useRef(null);
+  const targetRef = useRef(null);
+  const editorRef = useRef(null);
   const latestRef = useRef({ model, commands, readingIntent });
   const applyingRef = useRef(false);
   const composingRef = useRef(false);
@@ -227,6 +243,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       attributes: { 'aria-label': '消息', 'aria-multiline': 'true', 'data-testid': 'composer-input', class: 'composer-editor', role: 'textbox' },
       handleKeyDown: (view, event) => {
         const { model: current, commands: owner, readingIntent: intent } = latestRef.current;
+        const currentEditor = editorRef.current;
         if (event.isComposing) return false;
         if (event.key === 'Backspace' && view.state.selection.empty && view.state.selection.from <= 1 && current.draft.recipients.length) {
           const last = current.draft.recipients.at(-1);
@@ -245,18 +262,18 @@ export const Composer = memo(function Composer({ model, commands, className = ''
         event.preventDefault(); event.stopPropagation();
         if (mention?.rows?.length) {
           invoke(owner.pickMention, mention.rows[activeMention % mention.rows.length] || mention.rows[0]).then((next) => {
-            if (!next || !editor) return;
-            applyingRef.current = true; editor.commands.setContent(next.doc?.type === 'doc' ? next.doc : editorDocument(next.text), { emitUpdate: false }); applyingRef.current = false;
-            pendingTextRef.current = null; setHasText(Boolean(next.text?.trim())); editor.commands.focus('end');
+            if (!next || !currentEditor || currentEditor.isDestroyed) return;
+            applyingRef.current = true; currentEditor.commands.setContent(next.doc?.type === 'doc' ? next.doc : editorDocument(next.text), { emitUpdate: false }); applyingRef.current = false;
+            pendingTextRef.current = null; setHasText(Boolean(next.text?.trim())); currentEditor.commands.focus('end');
           });
           return true;
         }
         if (command?.rows?.length) {
           const text = `/${(command.rows[activeCommand % command.rows.length] || command.rows[0]).command} `;
           invoke(owner.changeDraft, { text }).then(() => {
-            if (!editor) return;
-            applyingRef.current = true; editor.commands.setContent(editorDocument(text), { emitUpdate: false }); applyingRef.current = false;
-            pendingTextRef.current = null; setHasText(true); editor.commands.focus('end');
+            if (!currentEditor || currentEditor.isDestroyed) return;
+            applyingRef.current = true; currentEditor.commands.setContent(editorDocument(text), { emitUpdate: false }); applyingRef.current = false;
+            pendingTextRef.current = null; setHasText(true); currentEditor.commands.focus('end');
           });
           return true;
         }
@@ -264,7 +281,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
         const snapshot = { ...current.draft, text, doc: view.state.doc.toJSON(), editorRevision: current.draft.editorRevision + (text === current.draft.text ? 0 : 1) };
         invoke(current.edit ? owner.edit : owner.send, current.edit ? { newText: text } : { readingIntent: intent, draft: snapshot }).then((result) => {
           if (!result) return;
-          applyingRef.current = true; editor?.commands.clearContent(false); applyingRef.current = false;
+          applyingRef.current = true; editorRef.current?.commands.clearContent(false); applyingRef.current = false;
           pendingTextRef.current = null; setHasText(false);
         });
         return true;
@@ -279,6 +296,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       invoke(latestRef.current.commands.changeDraft, { text: value, doc: current.getJSON() });
     },
   }, [model.channelId]);
+  editorRef.current = editor;
   latestRef.current = { model, commands, readingIntent };
 
   useEffect(() => {
@@ -321,6 +339,25 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   }, [editor, model.draft.doc, model.draft.editorRevision, model.draft.text, presentationKey]);
   useEffect(() => { setActiveMention(0); }, [model.mentionQuery?.query]);
   useEffect(() => { setActiveCommand(0); }, [model.commandMenu?.query]);
+  useLayoutEffect(() => {
+    if (editMode || !targetRef.current || !inputAreaRef.current) return undefined;
+    const place = () => placeTarget(targetRef.current, inputAreaRef.current);
+    place();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : null;
+    observer?.observe(targetRef.current);
+    observer?.observe(inputAreaRef.current);
+    globalThis.addEventListener?.('resize', place);
+    globalThis.visualViewport?.addEventListener?.('resize', place);
+    globalThis.visualViewport?.addEventListener?.('scroll', place);
+    document.addEventListener('scroll', place, true);
+    return () => {
+      observer?.disconnect();
+      globalThis.removeEventListener?.('resize', place);
+      globalThis.visualViewport?.removeEventListener?.('resize', place);
+      globalThis.visualViewport?.removeEventListener?.('scroll', place);
+      document.removeEventListener('scroll', place, true);
+    };
+  });
   useEffect(() => {
     if (!model.draft.replyTarget || editMode || !editor) return undefined;
     const frame = requestAnimationFrame(() => {
@@ -381,7 +418,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
 
   return <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}${className ? ` ${className}` : ''}`} data-composer-channel={model.channelId} data-composer-owner="current">
     <form className={`composer-surface${fileDragActive ? ' is-file-dragging' : ''}${editMode ? ' is-editing-message' : ''}`} onSubmit={submit} onDragEnter={onDragEnter} onDragOver={(event) => { if (containsFiles(event.dataTransfer)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragLeave={onDragLeave} onDrop={(event) => { if (!containsFiles(event.dataTransfer)) return; event.preventDefault(); dragDepthRef.current = 0; setFileDragActive(false); void uploadFiles([...(event.dataTransfer.files || [])]); }}>
-      {!editMode && <div className={`composer-target is-${model.delivery.kind}${disabled ? ' is-muted' : ''}`} role="status" aria-label="收件人" title={deliveryTitle}>{removableRows.length ? removableRows.map((row) => <span key={row.id} className={`composer-target-pill is-picked${row.missing ? ' is-lost' : ''}`}>@{actorName(row)}<button type="button" className="composer-target-remove" aria-label={`移除收件人 @${actorName(row)}`} disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={() => invoke(commands.removeMention, row.id)}><X size={11} /></button></span>) : <span className="composer-target-pill">{deliveryText}</span>}</div>}
+      {!editMode && <div ref={targetRef} className={`composer-target is-${model.delivery.kind}${disabled ? ' is-muted' : ''}`} role="status" aria-label="收件人" title={deliveryTitle}>{removableRows.length ? removableRows.map((row) => <span key={row.id} className={`composer-target-pill is-picked${row.missing ? ' is-lost' : ''}`}>@{actorName(row)}<button type="button" className="composer-target-remove" aria-label={`移除收件人 @${actorName(row)}`} disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={() => invoke(commands.removeMention, row.id)}><X size={11} /></button></span>) : <span className="composer-target-pill">{deliveryText}</span>}</div>}
       {fileDragActive && <div className="composer-drop-hint" role="status"><Upload size={18} /><strong>松开以上传到当前频道</strong></div>}
       {!editMode && model.draft.replyTarget && <div className="composer-reply" role="status"><span aria-hidden="true">↩</span><div><strong>回复 @{model.draft.replyTarget.senderName || model.draft.replyTarget.senderId}</strong><small>{model.draft.replyTarget.excerpt || ''}</small></div><button type="button" aria-label="取消回复" onClick={() => invoke(commands.clearReply)}>×</button></div>}
       {!editMode && model.draft.attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{model.draft.attachments.map((row) => { const id = row.resource_id || row.id; return <article key={id}><div className="attachment-draft-preview" title="已附加到当前草稿"><span aria-hidden="true">◇</span><span><strong>{row.name || id}</strong><small>{formatSize(Number(row.size || 0))}</small></span></div><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name || id}`} onClick={() => invoke(commands.removeAttachment, id)}>×</button></article>; })}</div>}

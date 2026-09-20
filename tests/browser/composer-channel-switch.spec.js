@@ -196,3 +196,40 @@ test('recipient chips remove one-by-one and with Backspace before the remaining 
     contentType: 'application/json',
   });
 });
+
+test('Enter selects an @ suggestion before the later body sends to that Agent', async ({ page, request }, testInfo) => {
+  const submits = captureSubmitFrames(page);
+  const text = '键盘选中后发送';
+  await reset(request);
+  await login(page);
+
+  const input = page.getByTestId('composer-input');
+  await input.click();
+  await input.pressSequentially('@Cl');
+  await expect(page.getByRole('listbox').getByRole('option').filter({ hasText: 'Claude' }).first()).toBeVisible();
+  const agentAsks = () => submits.filter((frame) => frame?.msg_type === 'agent.ask');
+  const beforePick = agentAsks().length;
+  await input.press('Enter');
+  await expect(page.getByRole('listbox')).toHaveCount(0);
+  await expect(input).toHaveText('');
+  await expect(page.locator('.composer-target-pill.is-picked')).toHaveText('@Claude');
+  expect(agentAsks()).toHaveLength(beforePick);
+
+  await input.pressSequentially(text);
+  await input.press('Enter');
+  const submitted = () => submits.find((frame) => frame?.msg_type === 'agent.ask' && frame?.payload?.text === text);
+  await expect.poll(submitted, { timeout: 10_000 }).toMatchObject({
+    channel_id: 'c0',
+    msg_type: 'agent.ask',
+    kind: 'request',
+    payload: { text },
+    audience: ['claude'],
+    visibility: 'public',
+  });
+  await expect(input).toHaveText('');
+  await expect(page.locator('article.request-message .request-text').filter({ hasText: text })).toBeVisible();
+  await testInfo.attach('composer-mention-enter-submit.json', {
+    body: JSON.stringify(submitted(), null, 2),
+    contentType: 'application/json',
+  });
+});

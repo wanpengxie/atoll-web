@@ -101,11 +101,11 @@ textarea.composer-editor { display: block; resize: none; }
 .composer-status.state-delayed, .composer-status.state-uncertain { color: var(--warning); }
 .composer-retry { margin-left: 8px; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-decoration: underline; }
 .composer-disabled-reason { color: var(--text-muted); }
-/* 收件人是输入框内的真实交互行：不能悬在 conversation-input-slot 的 overflow 裁剪区外，
-   否则芯片虽被画出来，× 却无法接收指针事件。mention 现在只住在这条上（正文里恒不再留
-   收件人），所以它恒是全强度的：不透明底、正色字、无描边——它是"这条发给谁"的唯一答案。
+/* 收件人贴在输入框上沿，但由 Composer 用 fixed 定位承载在自身 DOM 里：
+   conversation-input-slot 有 overflow 裁剪，普通绝对层会导致芯片可见却无法接收 × 的指针事件。
+   mention 现在只住在这条上（正文里恒不再留收件人），所以它恒是全强度的：不透明底、正色字、无描边。
    "没有收件人"和失联的收件人换成警告色，因为那一格按回车会被拒。 */
-.composer-target { position: relative; z-index: 2; left: 12px; display: flex; max-width: calc(100% - 24px); flex-wrap: wrap; align-items: flex-end; gap: 2px; margin-bottom: 2px; }
+.composer-target { position: fixed; z-index: 70; left: 0; pointer-events: auto; }
 .composer-target-pill { display: inline-flex; max-width: 100%; overflow: hidden; align-items: center; padding: 2px 9px 3px; border-radius: 7px 7px 0 0; background: var(--recipient-bg); color: var(--recipient-text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .composer-target.is-none .composer-target-pill, .composer-target.is-lost .composer-target-pill, .composer-target-pill.is-lost { background: var(--recipient-warn-bg); color: var(--recipient-warn-text); }
 /* @ 亲手放上去的人是芯片：能逐个看见，也能逐个摘掉（× 或正文最前面按退格）。
