@@ -961,10 +961,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
 
   useEffect(() => {
     if (!navigation.activeChannelId || !contentVisible || wire.state !== 'open') return;
-    void feedCommands.loadHistory(navigation.activeChannelId, {
-      intent: 'initial-view',
-      urgency: 'blocking',
+    const interest = feedCommands.requestBackgroundInterest(navigation.activeChannelId, {
+      intent: HISTORY_INTENT.channelEntry,
     });
+    return () => interest?.release?.();
   }, [contentVisible, feedCommands, navigation.activeChannelId, wire.state]);
 
   useEffect(() => {

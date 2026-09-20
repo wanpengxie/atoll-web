@@ -27,6 +27,13 @@ export const HISTORY_RESERVOIR_SIZE = 5_000;
 const MOBILE_REPLICA_MAX_ROWS = 500;
 const MOBILE_REPLICA_TARGET_ROWS = 400;
 
+// Channel entry warms one useful physical page target, not the whole ledger.
+// Four pages is deliberately finite: the mock's root-safe pages are smaller
+// than HISTORY_PAGE_SIZE, while the bound keeps a pathological source below
+// the browser contract's 1,000-row ceiling.
+const WARM_CACHE_TARGET_ROWS = HISTORY_PAGE_SIZE;
+const WARM_CACHE_MAX_PAGES = 4;
+
 const BACKGROUND_INTEREST_TYPES = new Set([
   HISTORY_INTENT.searchContext,
   HISTORY_INTENT.channelEntry,
@@ -81,7 +88,7 @@ function historyRangeNumber(value, fallback = 0) {
   return Number.isSafeInteger(result) && result >= 0 ? result : fallback;
 }
 
-function historyBatchCompletionDetail(batch, result, rows, status, acceptedRows) {
+function historyBatchCompletionDetail(batch, result, rows, status, acceptedRows, operation) {
   const requestedBeforeSeq = historyRangeNumber(batch?.beforeSeq);
   const nextBeforeSeq = historyRangeNumber(
     result?.next_before_seq ?? result?.nextBeforeSeq,
@@ -101,6 +108,7 @@ function historyBatchCompletionDetail(batch, result, rows, status, acceptedRows)
     authority: batch?.authority || null,
     channelId: batch?.channelId || '',
     source: batch?.source || '',
+    priority: operation?.physicalPriority || '',
     generation: historyNumeric(batch?.authority?.generation),
     attachEpoch: historyNumeric(batch?.authority?.attachEpoch),
     ref: String(batch?.ref || ''),
@@ -1120,14 +1128,18 @@ export function createChannelFeedRuntime(options = {}) {
       && authorityTupleCurrent(operation.channelId, authority));
   }
 
+  function historyAdmitted(channelId) {
+    const status = historyState(channelId);
+    return generation > 0
+      && grants.has(channelId)
+      && status.attached === true
+      && status.generation === generation;
+  }
+
   function physicalOperationKey(channelId, request = {}) {
     if (destroyed || incompatible || request.signal?.aborted) return '';
     const status = historyState(channelId);
-    const admitted = generation > 0
-      && grants.has(channelId)
-      && status.attached === true
-      && status.generation === generation
-      && status.messageCurrent === true;
+    const admitted = historyAdmitted(channelId) && status.messageCurrent === true;
     if (!admitted) return '';
     const batch = batchFor(channelId, request);
     return [
@@ -1423,6 +1435,7 @@ export function createChannelFeedRuntime(options = {}) {
       rows,
       histories.get(operation.channelId),
       acceptedRows,
+      operation,
     ));
     return true;
   }
@@ -1526,7 +1539,24 @@ export function createChannelFeedRuntime(options = {}) {
       coverageRows,
     });
     const status = histories.get(operation.channelId);
-    if (networkRows.length) void cache.saveRows(networkRows).catch(cacheError);
+    let persistenceError = null;
+    if (networkRows.length) {
+      const persistence = cache.saveRows(networkRows);
+      if (operation.warm) {
+        try {
+          // Warm continuation must not count a page until its canonical
+          // durable owner has accepted the rows.  Foreground callers retain
+          // the existing asynchronous cache write boundary.
+          await persistence;
+        } catch (error) {
+          persistenceError = error;
+          cacheError(error);
+        }
+      } else void persistence.catch(cacheError);
+    }
+    if (!physicalAuthorityCurrent(operation)) {
+      return { kind: 'cancelled', reason: 'stale-generation' };
+    }
     status.completedPages += 1;
     status.lastSource = batch.source;
     status.beforeSeq = historyNumeric(result.next_before_seq ?? result.nextBeforeSeq ?? batch.beforeSeq);
@@ -1544,6 +1574,7 @@ export function createChannelFeedRuntime(options = {}) {
     operation.rawResult = Object.freeze({
       kind: 'page', result, rows: Object.freeze([...rows]),
       acceptedRows: accepted.length,
+      persistenceError,
       receipt: physicalReceipt(batch, result, rows, accepted.length),
     });
     operation.committed = true;
@@ -1598,6 +1629,7 @@ export function createChannelFeedRuntime(options = {}) {
       kind: outcome.acceptedRows || observed?.fulfilled
         ? 'satisfied' : status?.hasOlder ? 'segment' : 'exhausted',
       released: outcome.acceptedRows,
+      persistenceError: outcome.persistenceError || null,
       firstVisibleSeq: projection.firstVisibleSeq,
       projection,
     });
@@ -1648,6 +1680,7 @@ export function createChannelFeedRuntime(options = {}) {
       settled: false,
       retired: false,
       lastBatch: batch,
+      warm: request.warm === true,
     };
     attachSemanticDemand(operation, semanticDemand);
     physicalOperations.set(key, operation);
@@ -1710,10 +1743,7 @@ export function createChannelFeedRuntime(options = {}) {
     if (request.signal?.aborted) return Promise.resolve({ kind: 'cancelled', reason: 'aborted' });
     const status = historyState(channelId);
     const semanticDemand = semanticDemandFor(channelId, request);
-    const admitted = generation > 0
-      && grants.has(channelId)
-      && status.attached === true
-      && status.generation === generation;
+    const admitted = historyAdmitted(channelId);
     if (!admitted) {
       deferHistoryRequest(channelId, { ...request, semanticDemand }, semanticDemand?.revision || status.historyDemand.revision);
       recomputePhysicalStatus(channelId);
@@ -1725,9 +1755,145 @@ export function createChannelFeedRuntime(options = {}) {
     if (!key) return Promise.resolve({ kind: 'cancelled', reason: 'history-not-admitted' });
     let operation = physicalOperations.get(key);
     if (!operation || operation.retired) operation = createPhysicalOperation(channelId, request, key, semanticDemand);
+    if (request.warm === true) operation.warm = true;
     const promise = attachHistoryWaiter(operation, request, semanticDemand);
     publish();
     return promise;
+  }
+
+  async function durableWarmRows(channelId) {
+    // `saveRows` is the Replica cache's single write queue.  A warm waiter can
+    // join a physical operation that was created by another anticipatory
+    // caller, so fence this read behind any already-started durable write.
+    await cache.saveRows([]);
+    const result = await cache.readBefore(
+      channelId,
+      Number.MAX_SAFE_INTEGER,
+      WARM_CACHE_TARGET_ROWS,
+      HISTORY_BATCH_BYTES,
+    );
+    return result.rows.length;
+  }
+
+  function backgroundInterestCurrent(record) {
+    return Boolean(record
+      && !record.cancelled
+      && !destroyed
+      && !incompatible
+      && !record.abortController.signal.aborted
+      && historyAdmitted(record.channelId));
+  }
+
+  async function runChannelEntryWarm(record) {
+    let previousBefore = 0;
+    for (let page = 0; page < WARM_CACHE_MAX_PAGES; page += 1) {
+      if (!backgroundInterestCurrent(record)) {
+        return { kind: 'cancelled', reason: 'background-interest-stale' };
+      }
+      const statusBefore = historyState(record.channelId);
+      const beforeSeq = historyNumeric(statusBefore.beforeSeq)
+        || historyNumeric(statusBefore.headSeq) + 1;
+      if (!beforeSeq) return { kind: 'unavailable', reason: 'history-cursor-unavailable' };
+      const outcome = await loadHistory(record.channelId, {
+        intent: record.intent,
+        urgency: HISTORY_URGENCY.anticipatory,
+        // Channel-entry warm pages share the canonical physical range key
+        // with a foreground request so promotion/join remains exact-once.
+        beforeSeq,
+        warm: true,
+        signal: record.abortController.signal,
+      });
+      if (!backgroundInterestCurrent(record)) {
+        return { kind: 'cancelled', reason: 'background-interest-stale' };
+      }
+      if (outcome.kind === 'cancelled') return outcome;
+      if (outcome.kind === 'failed') {
+        return { kind: 'unavailable', reason: 'history-page-failed', error: outcome.error };
+      }
+      if (outcome.kind === 'waiting') {
+        return { kind: 'unavailable', reason: 'history-grant-lost' };
+      }
+      const durableRows = await durableWarmRows(record.channelId);
+      if (!backgroundInterestCurrent(record)) {
+        return { kind: 'cancelled', reason: 'background-interest-stale' };
+      }
+      if (outcome.persistenceError) {
+        return {
+          kind: 'unavailable', reason: 'cache-persist-failed',
+          error: outcome.persistenceError, durableRows,
+        };
+      }
+      const status = historyState(record.channelId);
+      if (durableRows >= WARM_CACHE_TARGET_ROWS) {
+        return { kind: 'warm', durableRows, pages: page + 1 };
+      }
+      if (!status.hasOlder) {
+        return { kind: 'exhausted', durableRows, pages: page + 1 };
+      }
+      const nextBefore = historyNumeric(status.beforeSeq);
+      // A page that accepted no new physical rows, or failed to move its
+      // cursor strictly older, is a bounded terminal—not an EOF and not a
+      // reason to retry the same range forever.
+      if (!historyNumeric(outcome.released)
+        || !nextBefore
+        || nextBefore >= beforeSeq
+        || (previousBefore && nextBefore >= previousBefore)) {
+        return { kind: 'no-progress', durableRows, pages: page + 1 };
+      }
+      previousBefore = beforeSeq;
+    }
+    let durableRows = 0;
+    try { durableRows = await durableWarmRows(record.channelId); } catch { /* fenced owner */ }
+    return { kind: 'budget', durableRows, pages: WARM_CACHE_MAX_PAGES };
+  }
+
+  async function runBackgroundInterest(record) {
+    if (record.intent === HISTORY_INTENT.channelEntry) return runChannelEntryWarm(record);
+    return loadHistory(record.channelId, {
+      intent: record.intent,
+      urgency: HISTORY_URGENCY.anticipatory,
+      backgroundInterestKey: record.key,
+      signal: record.abortController.signal,
+    });
+  }
+
+  function startBackgroundInterest(record) {
+    if (!record || record.started || record.cancelled || destroyed || incompatible) return false;
+    if (!historyAdmitted(record.channelId)) {
+      record.awaitingAdmission = true;
+      return false;
+    }
+    record.started = true;
+    record.awaitingAdmission = false;
+    record.promise = Promise.resolve()
+      .then(() => runBackgroundInterest(record))
+      .catch((error) => ({ kind: 'unavailable', reason: 'background-interest-failed', error }))
+      .then((outcome) => {
+        record.outcome = outcome;
+        if (record.intent === HISTORY_INTENT.channelEntry && outcome.kind !== 'cancelled') {
+          diagnostic('info', 'history.background_terminal', {
+            channelId: record.channelId,
+            intent: record.intent,
+            kind: outcome.kind,
+            reason: outcome.reason || outcome.kind,
+            durableRows: historyNumeric(outcome.durableRows),
+            pages: historyNumeric(outcome.pages),
+          });
+        }
+        return outcome;
+      })
+      .finally(() => {
+        if (destroyed) return;
+        record.settled = true;
+        if (backgroundInterests.get(record.key) === record) backgroundInterests.delete(record.key);
+      });
+    return true;
+  }
+
+  function startAdmittedBackgroundInterests() {
+    for (const record of backgroundInterests.values()) {
+      if (record.awaitingAdmission) startBackgroundInterest(record);
+    }
   }
 
   // Search and other non-reading consumers may need a cold channel's rows,
@@ -1753,19 +1919,12 @@ export function createChannelFeedRuntime(options = {}) {
         abortController,
         leases: 0,
         cancelled: false,
+        started: false,
+        awaitingAdmission: false,
         settled: false,
       };
       backgroundInterests.set(key, record);
-      record.promise = Promise.resolve(loadHistory(id, {
-        intent,
-        urgency: HISTORY_URGENCY.anticipatory,
-        backgroundInterestKey: key,
-        signal: abortController.signal,
-      })).catch(() => ({ kind: 'failed' })).finally(() => {
-        if (destroyed) return;
-        record.settled = true;
-        if (backgroundInterests.get(key) === record) backgroundInterests.delete(key);
-      });
+      startBackgroundInterest(record);
     }
     record.leases += 1;
     let released = false;
@@ -2057,6 +2216,10 @@ export function createChannelFeedRuntime(options = {}) {
     localReplicaReady = true;
     for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
     publish({ index: true });
+    // A channel-entry lease may have been acquired while the wire was open
+    // but before its history grant arrived.  Start it only after this attach
+    // has selected the current cache owner and authority.
+    startAdmittedBackgroundInterests();
     if (focusHydration) {
       queueMicrotask(() => {
         void hydrateCacheRows(
