@@ -290,7 +290,15 @@ export function useChannelRoster({
 
   const authority = useCallback((channelId) => storeRef.current.authorities.get(channelId) || null, []);
   const get = useCallback((channelId) => storeRef.current.cache.get(channelId)?.rows || [], []);
-  const self = useCallback((channelId) => storeRef.current.selves.get(channelId) || '', []);
+  const self = useCallback((channelId) => {
+    const store = storeRef.current;
+    // Self is an attach-scoped fact, not a durable cache row. Read callers
+    // can race the React render that publishes a reconnecting state; the
+    // revoked token must therefore fail closed synchronously at this owner
+    // boundary instead of lending the previous self to that render.
+    if (!store.attachAuthority || store.retiredChannels.has(channelId)) return '';
+    return store.selves.get(channelId) || '';
+  }, []);
   const candidates = useCallback((channelId) => {
     const selfId = self(channelId);
     return get(channelId).filter((row) => row.id !== selfId);
@@ -359,11 +367,15 @@ export function useChannelRoster({
     store.attachEpoch += 1;
     store.attachAuthority = null;
     store.retiredChannels.clear();
-    const hadAuthority = store.authorities.size > 0;
-    const hadSelf = store.selves.size > 0;
     store.authorities.clear();
     store.selves.clear();
-    if (hadAuthority || hadSelf) publish();
+    // A lifecycle close is itself a visible authority transition. Always
+    // publish the revoked projection: a prior close may already have emptied
+    // the mutable self map while React still holds the last rendered marker,
+    // and a same-state reconnect notification would otherwise bail out before
+    // the UI observes the revoke. The mutation and its publication stay in
+    // this owner boundary before useWireConnection publishes wire state.
+    publish();
   }, [clearTimers, fenceAllRefreshes, owner, publish]);
 
   const port = useMemo(() => Object.freeze({

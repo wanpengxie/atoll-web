@@ -296,8 +296,53 @@ describe('wire client', () => {
       frame_type: 'attach',
       payload: { since: { c0: 9 }, focus: 'c0', generation: 2 },
     });
-    expect(states).toContainEqual(['reconnecting', { delay: 0, reason: 'visible' }]);
+    expect(states).toContainEqual(['reconnecting', { delay: 0, reason: 'visible', generation: 1 }]);
     wire.close();
+  });
+
+  it('ignores a late callback from an obsolete socket after a new generation opens', () => {
+    const states = [];
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      onState: (state, detail) => states.push([state, detail]),
+    });
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    receipt(first, first.sent[0]);
+    first.close();
+    vi.advanceTimersByTime(500);
+    const successor = FakeWebSocket.instances[1];
+    successor.open();
+
+    // A real browser can deliver an old socket's error/close callback after
+    // the reconnect timer has installed the successor. It must not close the
+    // successor or publish another detached lifecycle state.
+    first.emit('error');
+    first.emit('close');
+
+    expect(successor.readyState).toBe(FakeWebSocket.OPEN);
+    expect(states.filter(([state]) => state === 'disconnected')).toHaveLength(1);
+    expect(states.filter(([state]) => state === 'reconnecting')).toHaveLength(1);
+    expect(states.at(-1)).toEqual(['open', { generation: 2 }]);
+    wire.close();
+  });
+
+  it('registers reconnect timer before a synchronous lifecycle owner close', () => {
+    const states = [];
+    let wire;
+    wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      onState: (state) => {
+        states.push(state);
+        if (state === 'reconnecting') wire.close();
+      },
+    });
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.close();
+
+    expect(states).toEqual(['open', 'disconnected', 'reconnecting', 'closed']);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('rejects every pending request on close', async () => {

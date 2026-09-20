@@ -313,11 +313,15 @@ export function createWire({
     const delay = Math.min(maxReconnectDelayMs, 500 * 2 ** Math.min(reconnectAttempt, 6));
     reconnectAttempt += 1;
     diagnostic('warn', 'wire.reconnect_scheduled', { generation, attempt: reconnectAttempt, delay });
-    onState('reconnecting', { delay });
     reconnectTimer = setTimeoutImpl(() => {
       reconnectTimer = null;
       connect();
     }, delay);
+    // Register the timer before publishing the state. The state callback is
+    // allowed to flush synchronously; if that publication tears down this
+    // owner, wire.close() must be able to cancel the timer instead of having
+    // this stack frame write a dead timer back after cleanup.
+    onState('reconnecting', { delay, generation });
   }
 
   // 被叫醒:退避表上还剩多久已经不重要了——刚才那段等待的前提(网络还是坏的、
@@ -352,18 +356,22 @@ export function createWire({
     attachRef = '';
     generation += 1;
     diagnostic('info', 'wire.connecting', { generation, url: websocketURL(url) });
+    let currentSocket;
+    const socketGeneration = generation;
     try {
-      socket = new WebSocketImpl(websocketURL(url));
+      currentSocket = new WebSocketImpl(websocketURL(url));
+      socket = currentSocket;
     } catch (error) {
       diagnostic('error', 'wire.construct_failed', { generation, error });
       onError(error);
       scheduleReconnect();
       return;
     }
-    socket.addEventListener('open', () => {
-      if (stopped) return;
-      onState('open');
-      diagnostic('info', 'wire.open', { generation });
+    currentSocket.addEventListener('open', () => {
+      if (stopped || socket !== currentSocket || generation !== socketGeneration) return;
+      onState('open', { generation: socketGeneration });
+      if (stopped || socket !== currentSocket || generation !== socketGeneration) return;
+      diagnostic('info', 'wire.open', { generation: socketGeneration });
       let attachSince = {};
       let attachFocus = '';
       try {
@@ -372,7 +380,7 @@ export function createWire({
       } catch (error) {
         // Local Meta is an optimization. A damaged/unavailable snapshot must
         // degrade to an empty resume, never prevent the Meta attach itself.
-        diagnostic('warn', 'wire.resume_snapshot_failed', { generation, error });
+        diagnostic('warn', 'wire.resume_snapshot_failed', { generation: socketGeneration, error });
         onError(error);
       }
       // Attach is the first control-plane operation and never waits for local
@@ -380,16 +388,17 @@ export function createWire({
       // heads into history metadata and starts live strictly after that seam.
       sessionID = '';
       sessionLabel = '';
-      const attachPayload = { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation };
+      const attachPayload = { since: attachSince, focus: attachFocus, history_protocol: FRAME_VERSION, generation: socketGeneration };
       if (label) attachPayload.label = label;
       const attachPromise = transmit(UP.attach, attachPayload, { allowBeforeAttach: true });
       attachRef = `${UP.attach}-${counter}`;
-      diagnostic('info', 'wire.attach_sent', { generation, ref: attachRef, focus: attachFocus, cursorChannels: Object.keys(attachSince).length });
+      diagnostic('info', 'wire.attach_sent', { generation: socketGeneration, ref: attachRef, focus: attachFocus, cursorChannels: Object.keys(attachSince).length });
       attachPromise.catch((error) => {
         if (!stopped) onError(error);
       });
     });
-    socket.addEventListener('message', (event) => {
+    currentSocket.addEventListener('message', (event) => {
+      if (stopped || socket !== currentSocket || generation !== socketGeneration) return;
       try {
         handleMessage(event);
       } catch (error) {
@@ -398,11 +407,13 @@ export function createWire({
         socket?.close(1002, 'message handler failed');
       }
     });
-    socket.addEventListener('error', () => {
-      diagnostic('error', 'wire.socket_error', { generation, readyState: socket?.readyState });
-      if (socket?.readyState !== WebSocketImpl.CLOSED) socket.close();
+    currentSocket.addEventListener('error', () => {
+      if (stopped || socket !== currentSocket || generation !== socketGeneration) return;
+      diagnostic('error', 'wire.socket_error', { generation: socketGeneration, readyState: currentSocket.readyState });
+      if (currentSocket.readyState !== WebSocketImpl.CLOSED) currentSocket.close();
     });
-    socket.addEventListener('close', () => {
+    currentSocket.addEventListener('close', () => {
+      if (socket !== currentSocket || generation !== socketGeneration) return;
       if (incompatibility) {
         diagnostic('info', 'wire.closed_incompatible', incompatibility);
         return;
@@ -411,13 +422,13 @@ export function createWire({
       foregroundResyncReason = '';
       attached = false;
       rejectPending('closed', 'connection closed');
-      onState('disconnected', { generation });
-      diagnostic(stopped ? 'info' : 'warn', 'wire.closed', { generation, stopped, pending: pending.size });
+      onState('disconnected', { generation: socketGeneration });
+      diagnostic(stopped ? 'info' : 'warn', 'wire.closed', { generation: socketGeneration, stopped, pending: pending.size });
       if (stopped) {
-        onState('closed');
+        onState('closed', { generation: socketGeneration });
       } else if (resyncReason) {
         reconnectAttempt = 0;
-        onState('reconnecting', { delay: 0, reason: resyncReason });
+        onState('reconnecting', { delay: 0, reason: resyncReason, generation: socketGeneration });
         connect();
       } else {
         scheduleReconnect();

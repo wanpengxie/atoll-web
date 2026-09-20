@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { describeClient } from '../../model/client-label.js';
 import { isMobileProfile } from '../../model/device-profile.js';
 import { diagnostic } from '../../model/diagnostics.js';
@@ -996,7 +997,19 @@ export function useWireConnection({
     let wire = null;
     let attachedGeneration = 0;
     let rosterAuthority = null;
+    // A lifecycle callback belongs to the transport generation that emitted
+    // it.  The wire normally serializes these callbacks, but a browser can
+    // deliver a late close/error from an obsolete socket after its successor
+    // is already open.  Such a callback must not revoke the successor token.
+    let lifecycleGeneration = 0;
     let versionBlocked = false;
+    const acceptsLifecycle = (detail) => {
+      const nextGeneration = Number(detail?.generation);
+      if (!Number.isSafeInteger(nextGeneration) || nextGeneration <= 0) return true;
+      if (lifecycleGeneration > 0 && nextGeneration < lifecycleGeneration) return false;
+      lifecycleGeneration = Math.max(lifecycleGeneration, nextGeneration);
+      return true;
+    };
     const scheduleAccessRefresh = () => {
       if (!alive || versionBlocked || refreshTimer != null) return;
       refreshTimer = setTimeout(() => {
@@ -1047,6 +1060,7 @@ export function useWireConnection({
       focus: () => activeChannelRef.current,
       onAttach: (detail) => {
         const nextGeneration = Number(detail?.generation);
+        if (!acceptsLifecycle(detail)) return undefined;
         attachedGeneration = Number.isSafeInteger(nextGeneration) && nextGeneration > 0
           ? nextGeneration
           : 0;
@@ -1106,6 +1120,7 @@ export function useWireConnection({
         bumpAccess();
       },
       onState: (state, detail) => {
+        if (!acceptsLifecycle(detail)) return;
         if (state === 'incompatible') {
           if (incompatibleRef.current) return;
           versionBlocked = true;
@@ -1119,7 +1134,7 @@ export function useWireConnection({
           rosterAuthority = null;
           access.wire('disconnected');
           stopIncompatibleFeed(detail?.generation);
-          setState('incompatible');
+          flushSync(() => setState('incompatible'));
           setIncompatible((current) => current || detail || {});
         } else if (state === 'attached') {
           if (!rosterAuthority || rosterAuthority.generation !== Number(detail?.generation)) {
@@ -1146,7 +1161,7 @@ export function useWireConnection({
               }
             }
           }
-          setState('open');
+          flushSync(() => setState('open'));
           if (attachedOnce) scheduleAccessRefresh();
           attachedOnce = true;
         } else if (state === 'disconnected') {
@@ -1159,19 +1174,19 @@ export function useWireConnection({
           roster?.close();
           rosterAuthority = null;
           access.wire('disconnected');
-          setState('reconnecting');
+          flushSync(() => setState('reconnecting'));
         } else if (state === 'closed') {
           agentActivityRef.current.disconnect();
           roster?.close();
           rosterAuthority = null;
           access.wire('disconnected');
-          setState('closed');
+          flushSync(() => setState('closed'));
         } else if (state === 'open') {
           // OPEN precedes the next attach receipt. It is not an authority
           // seam, so retained self must remain hidden until attach restores it.
           roster?.close();
           rosterAuthority = null;
-          setState((current) => current === 'open' ? current : 'connecting');
+          flushSync(() => setState((current) => current === 'open' ? current : 'connecting'));
         }
         bumpAccess();
       },
