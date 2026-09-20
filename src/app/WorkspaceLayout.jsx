@@ -117,6 +117,19 @@ function canReadChannel(channel) {
     .includes(String(channel?.access || ''));
 }
 
+function unreadProjection(value) {
+  const count = (candidate) => {
+    const number = Number(candidate);
+    return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+  };
+  return {
+    related: count(value?.related),
+    other: count(value?.other),
+    pending: value?.pending === true,
+    unknown: value?.unknown === true,
+  };
+}
+
 function nodeUpdateCurrentVersion(update) {
   const value = update?.current_version ?? update?.currentVersion;
   return value == null || value === '' ? '未提供' : String(value);
@@ -241,7 +254,8 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, 
       const activity = navigation.agentActivity?.byChannel?.[channel.id] || {};
       const active = activity.active || [];
       const settled = Object.entries(activity.agents || {}).filter(([, value]) => value.state === 'settled');
-      const unread = navigation.unread?.[channel.id] || {};
+      const unread = unreadProjection(navigation.unread?.[channel.id]);
+      const unreadPending = unread.pending || unread.unknown;
       const label = accessLabel(channel.access);
       return <button
         type="button"
@@ -264,8 +278,9 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, 
         </span>
         <span className="channel-trailing">
           {label && <span className={`channel-access-label label-${channel.access}`}>{label}</span>}
-          {unread.related > 0 && <span className="unread-badge unread-related" aria-label={`${unread.related} 条与我相关的未读消息`} title="与我相关的未读消息">{unread.related > 99 ? '99+' : unread.related}</span>}
-          {(unread.pending || unread.unknown) && <span className="unread-total unread-pending" aria-label={unread.unknown ? '未读状态待同步' : '正在恢复未读状态'} title={unread.unknown ? '未读状态待同步' : '正在恢复未读状态'}>{unread.unknown ? '?' : '…'}</span>}
+          {!unreadPending && unread.related > 0 && <span className="unread-badge unread-related" aria-label={`${unread.related} 条与我相关的未读消息`} title="与我相关的未读消息">{unread.related > 99 ? '99+' : unread.related}</span>}
+          {!unreadPending && unread.other > 0 && <span className="unread-badge unread-total" aria-label={`${unread.other} 条其他未读消息`} title="其他未读消息">{unread.other > 99 ? '99+' : unread.other}</span>}
+          {unreadPending && <span className="unread-total unread-pending" aria-label={unread.unknown ? '未读状态待同步' : '正在恢复未读状态'} title={unread.unknown ? '未读状态待同步' : '正在恢复未读状态'}>{unread.unknown ? '?' : '…'}</span>}
         </span>
       </button>;
     })}

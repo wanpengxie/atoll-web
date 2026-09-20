@@ -38,6 +38,40 @@ function channelNavigation(activeChannelId = 'c0') {
 }
 
 describe('N-R round 35 public shell/composer/notification contracts', () => {
+  it('projects related and other unread badges only from settled shell facts', () => {
+    const nav = channelNavigation();
+    nav.unread = {
+      c0: { related: 2, other: 3, pending: false, unknown: false },
+      c1: { related: 4, other: 5, pending: true, unknown: false },
+    };
+    const view = render(<WorkspaceLayout
+      session={session()}
+      navigation={nav}
+      conversation={{ element: <div>消息</div> }}
+    />);
+
+    const channelItems = [...view.container.querySelectorAll('.channel-item')];
+    const c0 = channelItems.find((item) => item.querySelector('.channel-name')?.textContent === 'c0');
+    const c1 = channelItems.find((item) => item.querySelector('.channel-name')?.textContent === 'c1');
+    expect(c0?.querySelector('.unread-related')?.textContent).toBe('2');
+    expect(c0?.querySelector('.unread-total:not(.unread-pending)')?.textContent).toBe('3');
+    expect(c1?.querySelector('.unread-related')).toBeNull();
+    expect(c1?.querySelector('.unread-total:not(.unread-pending)')).toBeNull();
+    expect(c1?.querySelector('.unread-pending')?.textContent).toBe('…');
+
+    nav.unread.c0 = { related: 2, other: 3, pending: false, unknown: true };
+    view.rerender(<WorkspaceLayout
+      session={session()}
+      navigation={nav}
+      conversation={{ element: <div>消息</div> }}
+    />);
+    const updatedC0 = [...view.container.querySelectorAll('.channel-item')]
+      .find((item) => item.querySelector('.channel-name')?.textContent === 'c0');
+    expect(updatedC0?.querySelector('.unread-related')).toBeNull();
+    expect(updatedC0?.querySelector('.unread-total:not(.unread-pending)')).toBeNull();
+    expect(updatedC0?.querySelector('.unread-pending')?.textContent).toBe('?');
+  });
+
   it('keeps the mobile channel drawer focus inside its public shell surface while open', () => {
     vi.stubGlobal('requestAnimationFrame', (callback) => { callback(); return 1; });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());

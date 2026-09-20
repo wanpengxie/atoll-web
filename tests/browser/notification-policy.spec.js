@@ -75,7 +75,7 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   const home = channel(page, 'c0');
   const project = channel(page, 'c0.project');
   const related = project.locator('.unread-related');
-  const other = project.locator('.unread-total');
+  const other = project.locator('.unread-total:not(.unread-pending)');
   await expect(related).toHaveCount(0);
   await expect(other).toHaveCount(0);
 
@@ -198,7 +198,7 @@ test('tool, timer, and public-event notifications follow independent readable ro
   const home = channel(page, 'c0');
   const project = channel(page, 'c0.project');
   const related = project.locator('.unread-related');
-  const other = project.locator('.unread-total');
+  const other = project.locator('.unread-total:not(.unread-pending)');
   const expectQuiet = async () => {
     await expect(related).toHaveCount(0);
     await expect(other).toHaveCount(0);
