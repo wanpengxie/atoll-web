@@ -205,13 +205,14 @@ export function takeReadingControl(session, {
     ? session.historyAnchor
     : historyAnchor;
   // The coordinator's transaction id is the boundary between one physical
-  // older gesture and the next.  A later gesture must use its newly captured
+  // older gesture and the next. A later gesture must use its newly captured
   // baseline; blindly carrying the previous first-row lease replays an old
-  // viewport after a pause.  Within one transaction (or a model caller that
-  // omits the optional id), retain the original physical anchor while the
-  // input epoch is rebased.
+  // viewport after a pause. The id is mandatory for rebasing: a production
+  // caller that omits it cannot prove that this is the same physical gesture,
+  // so its old anchor is never reused.
   const sameOlderGesture = existingAnchor && direction === 'older'
-    && (!gestureID || String(existingAnchor.gestureID || '') === String(gestureID));
+    && Boolean(gestureID)
+    && String(existingAnchor.gestureID || '') === String(gestureID);
   const olderAnchor = sameOlderGesture ? existingAnchor : historyAnchor;
   return next(session, {
     inputEpoch,

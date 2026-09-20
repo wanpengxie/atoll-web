@@ -161,6 +161,22 @@ describe('reading session authority', () => {
     });
   });
 
+  it('does not reuse an older anchor when the production input has no gesture id', () => {
+    let current = takeReadingControl(session(), {
+      direction: 'older',
+      gestureID: 'wheel:one',
+      historyAnchor: { messageID: 'm80', viewportOffset: -394 },
+    });
+    const next = takeReadingControl(current, {
+      direction: 'older',
+      historyAnchor: { messageID: 'm72', viewportOffset: -120 },
+    });
+    expect(next.historyAnchor).toMatchObject({
+      messageID: 'm72', viewportOffset: -120, gestureID: '',
+    });
+    expect(next.historyAnchor.messageID).not.toBe(current.historyAnchor.messageID);
+  });
+
   it('consumes a position lease only after every identity field matches', () => {
     let current = takeReadingControl(session(), {
       direction: 'older',
