@@ -119,8 +119,8 @@ internal arrangement must not force a product-state change.
 Parallelism is organized by stage, not by assigning many writers to the same
 problem. At any time:
 
-- at most two product changes may be in implementation, and they must have
-  disjoint authoritative owners and changed-file boundaries;
+- at most four product changes may be in implementation, with at most one per
+  authoritative owner and disjoint changed-file boundaries;
 - each product change has exactly one implementer, one architecture reviewer,
   and one independent public-contract verifier;
 - architecture decides a bounded state/interface contract before the writer
@@ -144,6 +144,14 @@ cases. No worker may open a second product change while its first change is
 awaiting review. Conflicting Reading/Vendor, Feed/notification, or
 Workspace/Shell changes are serialized; unrelated evidence and verification
 continue in parallel.
+
+Evidence is not an open-ended workstream. The central ledger assigns every
+case ID to one active lane before work starts. A verifier may not choose an
+arbitrary next case, and a repeated green result has zero delivery credit once
+that unique contract is already proven. Evidence work ends when the assigned
+commit is accepted or rejected; idle verification capacity is left idle or
+used by an explicitly assigned implementation lane rather than manufacturing
+more reports.
 
 ## Current P0 decisions
 
