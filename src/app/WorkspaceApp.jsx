@@ -108,6 +108,10 @@ function unavailableError(port) {
   return Object.assign(new Error(`${port} owner 尚未连接`), { code: 'owner_unavailable', port });
 }
 
+function governanceWorldResetError() {
+  return Object.assign(new Error('服务端 world 已切换，治理请求已取消'), { code: 'governance_world_changed' });
+}
+
 function useFeedOwner({ refs, ownerToken, bindings }) {
   const runtimeRef = useRef(null);
   const bindingsRef = useRef(null);
@@ -315,8 +319,20 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const governanceRequestsRef = useRef(new Map());
   const templateListRequestRef = useRef('');
   const templateGetRequestRef = useRef(new Map());
+  const governanceEpochRef = useRef(0);
   const [governanceRequestRevision, setGovernanceRequestRevision] = useState(0);
   const [channelCreationRequest, setChannelCreationRequest] = useState(null);
+
+  const resetGovernanceRequests = useCallback(() => {
+    governanceEpochRef.current += 1;
+    const failure = governanceWorldResetError();
+    for (const record of governanceRequestsRef.current.values()) record.reject?.(failure);
+    governanceRequestsRef.current.clear();
+    templateListRequestRef.current = '';
+    templateGetRequestRef.current.clear();
+    setChannelCreationRequest(null);
+    setGovernanceRequestRevision((current) => current + 1);
+  }, []);
 
   const submissionProxy = useMemo(() => {
     const submissionCorrelationPort = Object.freeze({
@@ -574,10 +590,12 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     setGovernanceRequestRevision((current) => current + 1);
   }, []);
   const waitForGovernanceTerminal = useCallback((record) => new Promise((resolve, reject) => {
-    trackGovernanceRequest({ ...record, resolve, reject });
+    trackGovernanceRequest({ ...record, epoch: governanceEpochRef.current, resolve, reject });
   }), [trackGovernanceRequest]);
   const requestChannelTemplateList = useCallback(async (channelId = navigation.activeChannelId) => {
+    const epoch = governanceEpochRef.current;
     const requestId = governanceRequestId(await sendSystemCommand(channelId, TYPES.channelTemplate.list, {}));
+    if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
     if (!requestId) throw new TypeError('频道模板列表请求没有返回可追踪的请求编号');
     templateListRequestRef.current = requestId;
     return waitForGovernanceTerminal({
@@ -585,12 +603,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       requestId,
       msgType: TYPES.channelTemplate.list,
       kind: 'template-list',
+      epoch,
     });
   }, [navigation.activeChannelId, sendSystemCommand, waitForGovernanceTerminal]);
   const requestChannelTemplate = useCallback(async (channelId, templateId) => {
     const id = String(templateId || '').trim();
     if (!id) throw new TypeError('频道模板缺少稳定编号');
+    const epoch = governanceEpochRef.current;
     const requestId = governanceRequestId(await sendSystemCommand(channelId, TYPES.channelTemplate.get, { id }));
+    if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
     if (!requestId) throw new TypeError('频道模板详情请求没有返回可追踪的请求编号');
     templateGetRequestRef.current.set(id, requestId);
     return waitForGovernanceTerminal({
@@ -599,10 +620,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       msgType: TYPES.channelTemplate.get,
       kind: 'template-get',
       templateId: id,
+      epoch,
     });
   }, [sendSystemCommand, waitForGovernanceTerminal]);
   const sendGovernanceCommand = useCallback(async (channelId, msgType, payload) => {
+    const epoch = governanceEpochRef.current;
     const result = await sendSystemCommand(channelId, msgType, payload);
+    if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
     const requestId = governanceRequestId(result);
     if (msgType === TYPES.channel.create) {
       if (!requestId) throw new TypeError('创建命令没有返回可追踪的请求编号');
@@ -616,9 +640,18 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         failed: false,
         error: '',
       });
-      trackGovernanceRequest({ channelId, requestId, msgType, kind: 'channel-create' });
+      trackGovernanceRequest({
+        channelId,
+        requestId,
+        msgType,
+        kind: 'channel-create',
+        epoch,
+        parentId: channelId,
+        name: String(payload?.name || '').trim(),
+      });
     }
     await refreshDirectoryFacts();
+    if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
     return result;
   }, [refreshDirectoryFacts, sendSystemCommand, trackGovernanceRequest]);
   const refreshGovernanceDirectory = useCallback(async () => {
@@ -674,6 +707,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       }
       if (record.kind === 'template-get') {
         const templateId = String(record.templateId || '');
+        const returnedId = String(value?.id || '').trim();
+        if (returnedId !== templateId) {
+          finishFailure(Object.assign(new TypeError('Registrar 模板详情返回了错误的模板编号'), { code: 'template_id_mismatch' }));
+          continue;
+        }
         const validBody = value && typeof value === 'object' && !Array.isArray(value.body)
           && value.body && typeof value.body === 'object';
         if (!validBody) {
@@ -698,6 +736,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           finishFailure(Object.assign(new TypeError('频道创建终态缺少 channel_id'), { code: 'channel_create_target_missing' }));
           continue;
         }
+        const returnedParent = String(value?.parent_id || value?.parentId || '').trim();
+        const returnedName = String(value?.name || '').trim();
+        if ((returnedParent && returnedParent !== String(record.parentId || record.channelId))
+          || (returnedName && returnedName !== String(record.name || ''))) {
+          finishFailure(Object.assign(new TypeError('频道创建终态与原始父频道或名称不匹配'), { code: 'channel_create_target_mismatch' }));
+          continue;
+        }
         governanceRequestsRef.current.delete(requestId);
         setChannelCreationRequest((current) => current?.requestId === requestId
           ? { ...current, ledger: true, targetId, error: '', failed: false }
@@ -705,12 +750,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       }
     }
   }, [feed, governanceRequestRevision, navigation, wire]);
-  useEffect(() => () => {
-    for (const record of governanceRequestsRef.current.values()) {
-      record.reject?.(Object.assign(new Error('工作区已关闭'), { code: 'workspace_closed' }));
-    }
-    governanceRequestsRef.current.clear();
-  }, []);
+  useEffect(() => () => resetGovernanceRequests(), [resetGovernanceRequests]);
   const attachments = useAttachmentTransactions({
     activeChannel: navigation.activeChannel,
     activeChannelId: navigation.activeChannelId,
@@ -862,6 +902,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   }, [composerAttachmentPort, probes, submission]);
 
   const resetWorldOwners = useCallback(async () => {
+    resetGovernanceRequests();
     const resetAttachments = attachmentPortRef.current?.reset;
     const resetProbes = probePortRef.current?.reset;
     if (typeof resetAttachments !== 'function') throw unavailableError('resources.reset');
@@ -870,7 +911,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     resetProbes();
     setAutomationRecords(EMPTY_ARRAY);
     await feedCommands.resetPersistent();
-  }, [feedCommands.resetPersistent]);
+  }, [feedCommands.resetPersistent, resetGovernanceRequests]);
 
   useWireConnection({
     accessActionsRef,
@@ -1423,11 +1464,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     if (!request) return null;
     const targetId = String(request.targetId || '');
     const channel = targetId
-      ? navigation.channels.find((row) => String(row?.id || '') === targetId) || null
+      ? navigation.channels.find((row) => String(row?.id || '') === targetId
+        && String(row?.parent_id || row?.parentId || '') === String(request.parentId || '')
+        && String(row?.name || '').trim() === String(request.name || '').trim()) || null
       : null;
     const accessState = targetId ? wire.accessRef.current?.state?.(targetId) : null;
     return Object.freeze({
       requestId: request.requestId,
+      parentId: request.parentId,
+      name: request.name,
       accepted: request.accepted === true,
       ledger: request.ledger === true,
       observable: Boolean(channel),

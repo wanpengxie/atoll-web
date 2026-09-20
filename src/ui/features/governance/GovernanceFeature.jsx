@@ -313,6 +313,11 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
   const parentName = displayChannelName(channel);
   const shellEnter = typeof commands.enterChannel === 'function';
 
+  function retryCreate() {
+    setCreateRequest(null);
+    setError('');
+  }
+
   useModalFocus({
     dialogRef,
     initialFocusRef: nameRef,
@@ -388,7 +393,7 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
         <label><span>用途</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>
         {error && <p className="governance-error" role="alert">{error}</p>}
         {convergence && <section className="convergence channel-create-progress" aria-label="频道创建进度" aria-live="polite">
-          <header><strong>{createRequest.name}</strong><small>{convergence.ready ? '已就绪' : '正在收敛'}</small></header>
+          <header><strong>{createRequest.name}</strong><small>{convergence.failed ? '创建失败' : convergence.ready ? '已就绪' : '正在收敛'}</small></header>
           {CHANNEL_CREATE_STEPS.map(([key, label, waiting]) => <div key={key} className={convergence[key] ? 'done' : 'waiting'}>
             <span aria-hidden="true">{convergence[key] ? '✓' : '·'}</span>
             <strong>{label}</strong>
@@ -401,6 +406,8 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
           <button type="button" onClick={onClose} disabled={submitting}>取消</button>
           {convergence?.ready
             ? <button type="button" className="primary-button" disabled={!shellEnter} title={shellEnter ? '' : 'Shell navigation port 尚未连接'} onClick={enterChannel}>进入新频道</button>
+            : convergence?.failed
+              ? <button type="button" className="primary-button" onClick={retryCreate}>重新创建</button>
             : <button type="submit" className="primary-button" disabled={locked || Boolean(validation)}>{submitting ? '正在提交…' : tracking ? '等待频道就绪…' : '创建频道'}</button>}
         </footer>
       </form>

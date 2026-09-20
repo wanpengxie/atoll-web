@@ -302,6 +302,125 @@ afterEach(async () => {
 });
 
 describe('真实 Workspace owner composition', () => {
+  it('rejects governance waiters and clears channel creation on a world reset', async () => {
+    render(<WorkspaceApp />);
+    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+    mocks.connectionProps.accessActionsRef.current = {
+      refresh: vi.fn().mockResolvedValue(undefined),
+    };
+    act(() => mocks.layoutProps.navigation.openChannelAdministration('overview'));
+    await waitFor(() => expect(mocks.layoutProps?.rightPanel?.props?.governance?.channel).toBeTruthy());
+
+    const governance = mocks.layoutProps.rightPanel.props.governance.channel;
+    const pendingTemplates = governance.commands.listTemplates();
+    const pendingTemplatesRejection = expect(pendingTemplates).rejects.toMatchObject({ code: 'governance_world_changed' });
+    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => frame.msg_type === TYPES.channelTemplate.list)).toBe(true));
+
+    await act(async () => {
+      await governance.commands.submit({
+        scope: 'channel',
+        action: 'create_child',
+        payload: { name: 'reset-room', purpose: '', parentId: mocks.channelId },
+      });
+    });
+    await waitFor(() => expect(mocks.layoutProps.rightPanel.props.governance.channel.creation).toMatchObject({
+      accepted: true,
+      parentId: mocks.channelId,
+      name: 'reset-room',
+    }));
+
+    await act(async () => { await mocks.connectionProps.onWorldChanged(); });
+    await pendingTemplatesRejection;
+    await waitFor(() => expect(mocks.layoutProps.rightPanel.props.governance.channel.creation).toBeNull());
+  });
+
+  it('rejects a Registrar template receipt whose returned id is not the requested id', async () => {
+    render(<WorkspaceApp />);
+    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+    act(() => mocks.layoutProps.navigation.openChannelAdministration('overview'));
+    await waitFor(() => expect(mocks.layoutProps?.rightPanel?.props?.governance?.channel).toBeTruthy());
+
+    const governance = mocks.layoutProps.rightPanel.props.governance.channel;
+    const pendingTemplate = governance.commands.getTemplate('mock:team');
+    const pendingTemplateRejection = expect(pendingTemplate).rejects.toMatchObject({ code: 'template_id_mismatch' });
+    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => (
+      frame.msg_type === TYPES.channelTemplate.get && frame.payload?.id === 'mock:team'
+    ))).toBe(true));
+    const request = mocks.transportSubmissions.find((frame) => (
+      frame.msg_type === TYPES.channelTemplate.get && frame.payload?.id === 'mock:team'
+    ));
+
+    await act(async () => {
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+        { channel_id: mocks.channelId, head_seq: 2, has_rows: true },
+      ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+      enqueue(1, requestEnvelope(request.id, TYPES.channelTemplate.get));
+      enqueue(2, responseEnvelope(`${request.id}-done`, request.id, TYPES.channelTemplate.get, {
+        status: 'completed',
+        value: { id: 'mock:other', body: { declarations: [] } },
+      }));
+    });
+    await pendingTemplateRejection;
+  });
+
+  it('does not bind a create result to a child with a different parent', async () => {
+    const previousChannels = mocks.navigation.channels;
+    mocks.navigation.channels = [...previousChannels, {
+      id: 'c0.other', name: 'requested', qualified_name: 'c0.other.requested',
+      parent_id: 'c0.other', access: 'member_active', open: true,
+    }];
+    try {
+      render(<WorkspaceApp />);
+      await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+      mocks.connectionProps.accessActionsRef.current = {
+        refresh: vi.fn().mockResolvedValue(undefined),
+        schedule: vi.fn(),
+      };
+      act(() => mocks.layoutProps.navigation.openChannelAdministration('overview'));
+      await waitFor(() => expect(mocks.layoutProps?.rightPanel?.props?.governance?.channel).toBeTruthy());
+
+      const governance = mocks.layoutProps.rightPanel.props.governance.channel;
+      await act(async () => {
+        await governance.commands.submit({
+          scope: 'channel',
+          action: 'create_child',
+          payload: { name: 'requested', purpose: '', parentId: mocks.channelId },
+        });
+      });
+      await waitFor(() => expect(mocks.layoutProps.rightPanel.props.governance.channel.creation).toMatchObject({
+        accepted: true,
+        parentId: mocks.channelId,
+        name: 'requested',
+      }));
+      await waitFor(() => expect(mocks.transportSubmissions.some((frame) => (
+        frame.msg_type === TYPES.channel.create && frame.payload?.name === 'requested'
+      ))).toBe(true));
+      const request = mocks.transportSubmissions.find((frame) => (
+        frame.msg_type === TYPES.channel.create && frame.payload?.name === 'requested'
+      ));
+      expect(request).toBeTruthy();
+
+      await act(async () => {
+        await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+          { channel_id: mocks.channelId, head_seq: 2, has_rows: true },
+        ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+        enqueue(1, requestEnvelope(request.id, TYPES.channel.create));
+        enqueue(2, responseEnvelope(`${request.id}-done`, request.id, TYPES.channel.create, {
+          status: 'completed',
+          value: { channel_id: 'c0.other', parent_id: mocks.channelId, name: 'requested' },
+        }));
+      });
+      await waitFor(() => expect(mocks.layoutProps.rightPanel.props.governance.channel.creation).toMatchObject({
+        ledger: true,
+        observable: false,
+        parentId: mocks.channelId,
+        name: 'requested',
+      }));
+    } finally {
+      mocks.navigation.channels = previousChannels;
+    }
+  });
+
   it('treats an unconnected or stale wire cleanup as an idempotent no-op', async () => {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
