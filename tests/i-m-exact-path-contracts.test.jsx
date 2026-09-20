@@ -5,7 +5,7 @@
 // production state map is imported.
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   createChannelReplicaStore,
@@ -36,6 +36,7 @@ import {
 } from '../src/protocol/vocab.js';
 import { createReadingNavigationCoordinator } from '../src/ui/timeline/reading-navigation-coordinator.js';
 import { MarkdownContent, MarkdownFileReferenceProvider } from '../src/ui/MarkdownContent.jsx';
+import { clearMermaidDiagramCache } from '../src/ui/MermaidBlock.jsx';
 import {
   buildComposerModel,
   createComposerCommandRequest,
@@ -56,7 +57,20 @@ import {
 import { createMockDomain } from '../mock/domain.mjs';
 import { loadScenario, scenarioIds } from '../mock/scenarios.mjs';
 
-afterEach(cleanup);
+const mermaidMock = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  render: vi.fn(),
+}));
+
+vi.mock('mermaid', () => ({ default: mermaidMock }));
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  clearMermaidDiagramCache();
+  mermaidMock.initialize.mockReset();
+  mermaidMock.render.mockReset();
+});
 
 const CHANNEL = 'c0';
 const SELF = 'human:root:1';
@@ -1423,5 +1437,144 @@ describe('I-M exact-path public-owner recovery (round 30 projection and wire con
     expect(domain.attachMemberships('root').map((entry) => entry.channel_id)).toEqual(['c0', 'c0.project']);
     expect(domain.canRead('root', 'c0.public')).toBe(false);
     expect(domain.canWrite('root', 'c0.project')).toBe(true);
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 31 media and scenario contracts)', () => {
+  it('mermaid-block TC-0954: a diagram renders and its source toggle preserves focus', async () => {
+    vi.useRealTimers();
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-diagram="round31"><text>A</text></svg>' });
+    const tick = String.fromCharCode(96);
+    const source = tick.repeat(3) + 'mermaid\n' + 'graph LR\n  A --> B\n' + tick.repeat(3);
+    const { container } = render(<MarkdownContent text={source} />);
+
+    await waitFor(() => expect(container.querySelector('svg[data-diagram="round31"]')).toBeTruthy());
+    expect(mermaidMock.render).toHaveBeenCalledWith(expect.stringMatching(/^mermaid-/), 'graph LR\n  A --> B');
+    const toggle = screen.getByRole('button', { name: '查看源码' });
+    toggle.focus();
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: '查看图表' })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
+    expect(container.querySelector('pre code').textContent).toContain('graph LR');
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: '查看源码' })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it('mermaid-block TC-0955: syntax errors stay local while source and sibling text remain visible', async () => {
+    vi.useRealTimers();
+    mermaidMock.render.mockRejectedValue(new Error('Parse error on line 2'));
+    const tick = String.fromCharCode(96);
+    const source = '前文\n\n' + tick.repeat(3) + 'mermaid\nbroken\n' + tick.repeat(3) + '\n\n后文';
+    const { container } = render(<MarkdownContent text={source} />);
+
+    await screen.findByRole('alert');
+    expect(screen.getByText('图表语法有误')).toBeTruthy();
+    expect(container.querySelector('pre code').textContent).toContain('broken');
+    expect(container.textContent).toContain('前文');
+    expect(container.textContent).toContain('后文');
+  });
+
+  it('mermaid-block TC-0956: parent rerenders do not redraw an unchanged diagram', async () => {
+    vi.useRealTimers();
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-diagram="stable"><text>A</text></svg>' });
+    const tick = String.fromCharCode(96);
+    const source = tick.repeat(3) + 'mermaid\ngraph LR\n  A --> B\n' + tick.repeat(3);
+    const view = render(<MarkdownContent text={source} />);
+    await waitFor(() => expect(view.container.querySelector('svg[data-diagram="stable"]')).toBeTruthy());
+
+    view.rerender(<MarkdownContent text={source} className="parent-refreshed" />);
+    await Promise.resolve();
+    expect(mermaidMock.render).toHaveBeenCalledTimes(1);
+    view.rerender(<MarkdownContent text={source + '\n\n后续流式文本'} className="parent-refreshed" />);
+    await Promise.resolve();
+    expect(mermaidMock.render).toHaveBeenCalledTimes(1);
+  });
+
+  it('mermaid-block TC-0957: StrictMode effect probing does not issue a duplicate render', async () => {
+    vi.useRealTimers();
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-diagram="strict" />' });
+    const tick = String.fromCharCode(96);
+    const source = tick.repeat(3) + 'mermaid\ngraph TD\nA-->B\n' + tick.repeat(3);
+    const { container } = render(<React.StrictMode><MarkdownContent text={source} /></React.StrictMode>);
+
+    await waitFor(() => expect(container.querySelector('svg[data-diagram="strict"]')).toBeTruthy());
+    expect(mermaidMock.render).toHaveBeenCalledTimes(1);
+  });
+
+  it('mermaid-block TC-0958: remounting a recycled diagram reuses its SVG cache', async () => {
+    vi.useRealTimers();
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-diagram="cached" />' });
+    const tick = String.fromCharCode(96);
+    const source = tick.repeat(3) + 'mermaid\ngraph LR\ncache-->stable\n' + tick.repeat(3);
+    const first = render(<MarkdownContent text={source} />);
+    await waitFor(() => expect(first.container.querySelector('svg[data-diagram="cached"]')).toBeTruthy());
+    first.unmount();
+
+    const second = render(<MarkdownContent text={source} />);
+    expect(second.container.querySelector('svg[data-diagram="cached"]')).toBeTruthy();
+    expect(mermaidMock.render).toHaveBeenCalledTimes(1);
+  });
+
+  it('mermaid-block TC-0959: shared render work gives each mounted SVG a unique reference id', async () => {
+    vi.useRealTimers();
+    mermaidMock.render.mockResolvedValue({
+      svg: '<svg id="canonical"><defs><marker id="arrow"><path /></marker></defs><path class="edge" marker-end="url(#arrow)" /></svg>',
+    });
+    const tick = String.fromCharCode(96);
+    const diagram = tick.repeat(3) + 'mermaid\ngraph LR\nA-->B\n' + tick.repeat(3);
+    const { container } = render(<MarkdownContent text={diagram + '\n\n' + diagram} />);
+
+    await waitFor(() => expect(container.querySelectorAll('.mermaid-diagram svg')).toHaveLength(2));
+    const markerIds = [...container.querySelectorAll('.mermaid-diagram marker')].map((node) => node.id);
+    expect(mermaidMock.render).toHaveBeenCalledTimes(1);
+    expect(new Set(markerIds).size).toBe(2);
+  });
+
+  it('mock-scenarios TC-1054: an authenticated principal never gains lobby membership', () => {
+    for (const id of scenarioIds()) {
+      const domain = createMockDomain(loadScenario(id));
+      expect(domain.activeMembership('root', 'c0.lobby')).toBeNull();
+      expect(domain.canRead('root', 'c0.lobby')).toBe(false);
+    }
+  });
+
+  it('mock-scenarios TC-1056: daemon file projections stay isolated by channel prefix', () => {
+    const domain = createMockDomain(loadScenario('multi-channel'));
+    const projectPrefix = 'daemon://local-device/c0.project/';
+    const projectFiles = domain.resource('c0.project', { op: 'list', query: { prefix: projectPrefix } }).items
+      .map((row) => row.id);
+    const projectDoc = projectPrefix + encodeURIComponent('项目说明.md');
+    const docsPrefix = projectPrefix + 'docs/';
+    const designDoc = projectPrefix + 'docs/' + encodeURIComponent('交互设计.md');
+
+    expect(projectFiles).toEqual(expect.arrayContaining([
+      projectDoc, projectPrefix + 'docs', projectPrefix + 'reports', projectPrefix + 'data',
+    ]));
+    expect(domain.resource('c0.project', {
+      op: 'list', query: { prefix: docsPrefix },
+    }).items.map((row) => row.id)).toContain(designDoc);
+    expect(projectFiles.every((address) => address.startsWith(projectPrefix))).toBe(true);
+    expect(domain.resource('c0', {
+      op: 'list', query: { prefix: 'daemon://local-device/c0/' },
+    }).items.map((row) => row.id)).not.toContain(projectFiles[0]);
+  });
+
+  it('mock-scenarios TC-1057: the same scenario seed and clock actions are deterministic', () => {
+    const left = createMockDomain(loadScenario('permission-revoked', 9));
+    const right = createMockDomain(loadScenario('permission-revoked', 9));
+    expect(left.nextId('request')).toBe(right.nextId('request'));
+    left.advance(5_000);
+    right.advance(5_000);
+    expect(left.snapshot()).toEqual(right.snapshot());
+    expect(left.canWrite('root', 'c0.project')).toBe(false);
+  });
+
+  it('mock-scenarios TC-1058: scheduled retirement closes a channel at its public deadline', () => {
+    const domain = createMockDomain(loadScenario('channel-retired'));
+    domain.advance(4_999);
+    expect(domain.channel('c0.project').status).toBe('present');
+    domain.advance(1);
+    expect(domain.channel('c0.project')).toMatchObject({ status: 'retired', open: false });
   });
 });

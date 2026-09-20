@@ -857,6 +857,33 @@ Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
 current-owner run remains **17 files, 109/109 GREEN**. No product source or
 compatibility behavior was changed.
 
+## Round 31 exact-path recovery: Mermaid media and scenario-state contracts
+
+The next ten unique declarations cover Mermaid media projection and four
+scenario-state user contracts. They do not repeat the 75 prior bridge cases,
+including earlier Markdown/time/wire/scenario rows. Mermaid tests use the
+public Markdown owner with a test-only renderer seam; no renderer production
+behavior is altered.
+
+| baseline case | user capability and invariant | current public owner | executable evidence and result |
+|---|---|---|---|
+| TC-0954 | Mermaid diagrams render and the source/chart toggle preserves keyboard focus. | MarkdownContent → MermaidBlock | tests/i-m-exact-path-contracts.test.jsx:1444-1462 — SVG, source toggle, focus, and return-to-chart assertions; **PASS** |
+| TC-0955 | Diagram syntax errors fail locally while source and sibling message text remain available. | MarkdownContent → MermaidBlock | tests/i-m-exact-path-contracts.test.jsx:1464-1476 — alert/source/前文/后文 assertions; **PASS** |
+| TC-0956 | Parent rerenders and streaming tail growth do not redraw unchanged Mermaid work. | MermaidBlock cache | tests/i-m-exact-path-contracts.test.jsx:1478-1492 — one render call across unchanged and tail rerenders; **PASS** |
+| TC-0957 | React StrictMode effect probing is idempotent for Mermaid rendering. | MermaidBlock effect/cache owner | tests/i-m-exact-path-contracts.test.jsx:1494-1503 — one render call under StrictMode; **PASS** |
+| TC-0958 | Recycled/unmounted Mermaid rows reuse cached SVG on remount. | MermaidBlock diagram cache | tests/i-m-exact-path-contracts.test.jsx:1505-1517 — remount has SVG with one render call; **PASS** |
+| TC-0959 | Shared diagram work still gives each mounted SVG independent reference IDs. | MermaidBlock SVG reference projection | tests/i-m-exact-path-contracts.test.jsx:1519-1532 — one render and two distinct marker IDs; **PASS** |
+| TC-1054 | An authenticated principal never receives lobby membership or read access. | createMockDomain activeMembership/canRead | tests/i-m-exact-path-contracts.test.jsx:1534-1540 — invariant holds across every scenario; **PASS** |
+| TC-1056 | Daemon files are projected under the owning channel prefix and do not leak across channels. | createMockDomain resource projection | tests/i-m-exact-path-contracts.test.jsx:1542-1561 — nested project paths resolve and c0 excludes project files; **PASS** |
+| TC-1057 | Same scenario seed plus clock actions produce deterministic IDs/state/access. | createMockDomain snapshot/clock owner | tests/i-m-exact-path-contracts.test.jsx:1563-1571 — paired domains remain equal after advance; **PASS** |
+| TC-1058 | Scheduled channel retirement becomes a closed retired state exactly at its deadline. | createMockDomain scheduled state owner | tests/i-m-exact-path-contracts.test.jsx:1573-1579 — 4,999ms remains present; +1ms is retired/open=false; **PASS** |
+
+Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
+-t 'TC-0954|TC-0955|TC-0956|TC-0957|TC-0958|TC-0959|TC-1054|TC-1056|TC-1057|TC-1058'
+→ **10/10 GREEN**. The full exact bridge is now **85/85 GREEN**, and the
+current-owner run remains **17 files, 109/109 GREEN**. No product source,
+compatibility behavior, or second owner was changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -902,6 +929,9 @@ compatibility behavior was changed.
   (TC-0933–TC-0935, TC-1033/1034, TC-1046/1049, and TC-1052/1053/1055);
   the exact bridge is now 75/75 GREEN. These additions do not change the
   159-case baseline.
+- Round 31 adds ten independent Mermaid/scenario-state contracts
+  (TC-0954–TC-0959 and TC-1054/1056/1057/1058); the exact bridge is now
+  85/85 GREEN. These additions do not change the 159-case baseline.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
