@@ -312,21 +312,46 @@ async function loadChannelTree(obs) {
   return { channels: found, complete };
 }
 
-function readInitialRoute() {
-  const match = String(globalThis.location?.hash || '').match(/^#\/channels\/([^/]+)\/([^?]+)/);
-  if (!match) return { channelId: '', view: 'conversation' };
-  let channelId = '';
-  let rawView = '';
-  try { channelId = decodeURIComponent(match[1]); rawView = decodeURIComponent(match[2]); } catch { return { channelId: '', view: 'conversation' }; }
-  return { channelId, view: ['conversation', 'files', 'tasks'].includes(rawView) ? rawView : 'conversation' };
+const ROUTE_FOCUS_TYPES = new Set(['turn', 'artifact', 'work_item', 'participant', 'channel']);
+
+function parseRouteFocus(value) {
+  const raw = String(value || '');
+  const separator = raw.indexOf(':');
+  if (separator <= 0) return null;
+  const type = raw.slice(0, separator);
+  const key = raw.slice(separator + 1);
+  if (!ROUTE_FOCUS_TYPES.has(type) || !key) return null;
+  return Object.freeze({ type, key });
 }
 
-function writeRoute(channelId, view, replace = false) {
+function readInitialRoute() {
+  const hash = String(globalThis.location?.hash || '');
+  const match = hash.match(/^#\/channels\/([^/]+)\/([^?]+)/);
+  if (!match) return { channelId: '', view: 'conversation', focus: null };
+  let channelId = '';
+  let rawView = '';
+  try { channelId = decodeURIComponent(match[1]); rawView = decodeURIComponent(match[2]); } catch { return { channelId: '', view: 'conversation', focus: null }; }
+  let rawFocus = '';
+  const queryStart = hash.indexOf('?');
+  if (queryStart >= 0) {
+    try { rawFocus = new URLSearchParams(hash.slice(queryStart + 1)).get('focus') || ''; } catch { rawFocus = ''; }
+  }
+  return {
+    channelId,
+    view: ['conversation', 'files', 'tasks'].includes(rawView) ? rawView : 'conversation',
+    focus: parseRouteFocus(rawFocus),
+  };
+}
+
+function writeRoute(channelId, view, replace = false, focus = null) {
   if (!channelId || !globalThis.history) return;
+  const suffix = focus?.type && focus?.key
+    ? `?focus=${encodeURIComponent(`${focus.type}:${focus.key}`)}`
+    : '';
   globalThis.history[replace ? 'replaceState' : 'pushState'](
     globalThis.history.state,
     '',
-    `#/channels/${encodeURIComponent(channelId)}/${encodeURIComponent(view)}`,
+    `#/channels/${encodeURIComponent(channelId)}/${encodeURIComponent(view)}${suffix}`,
   );
 }
 
@@ -396,11 +421,24 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   // active channel until its own directory/access owner validates that id.
   const [activeChannelId, setActiveChannelId] = useState('');
   const [activeView, setActiveViewState] = useState(initialRef.current.view);
+  const [focus, setFocusState] = useState(initialRef.current.focus);
   const activeChannelRef = useRef(activeChannelId);
+  const activeViewRef = useRef(activeView);
+  const focusRef = useRef(focus);
   useLayoutEffect(() => { activeChannelRef.current = activeChannelId; }, [activeChannelId]);
+  useLayoutEffect(() => { activeViewRef.current = activeView; }, [activeView]);
+  useLayoutEffect(() => { focusRef.current = focus; }, [focus]);
   const commitActiveChannel = useCallback((channelId) => {
     activeChannelRef.current = channelId;
     setActiveChannelId(channelId);
+  }, []);
+  const commitActiveView = useCallback((view) => {
+    activeViewRef.current = view;
+    setActiveViewState(view);
+  }, []);
+  const commitFocus = useCallback((nextFocus) => {
+    focusRef.current = nextFocus;
+    setFocusState(nextFocus);
   }, []);
   const channels = useMemo(() => {
     const authoritative = accessRef.current?.rows?.() || [];
@@ -418,17 +456,22 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       if (activeChannelId && accessRef.current?.state?.(activeChannelId)?.existence === 'retired') onNotice(`${activeChannelId} 已退役，已切换到其他可用频道。`);
       const requested = channels.find((row) => row.id === initialRef.current.channelId);
       const next = requested || channels.find((row) => row.access === 'member_active') || channels[0];
+      const nextFocus = requested?.id === next.id ? initialRef.current.focus : null;
       commitActiveChannel(next.id);
-      writeRoute(next.id, activeView, true);
+      commitFocus(nextFocus);
+      writeRoute(next.id, activeViewRef.current, true, nextFocus);
     }
-  }, [accessRef, activeChannelId, activeView, channels, commitActiveChannel, onNotice]);
+  }, [accessRef, activeChannelId, channels, commitActiveChannel, commitFocus, onNotice]);
 
   useEffect(() => {
     const receiveRoute = () => {
       const route = readInitialRoute();
       if (route.channelId && channels.some((row) => row.id === route.channelId)) {
+        const changedChannel = route.channelId !== activeChannelRef.current;
         commitActiveChannel(route.channelId);
-        setActiveViewState(route.view);
+        commitActiveView(route.view);
+        commitFocus(route.focus);
+        if (changedChannel) onSelect(route.channelId);
       }
     };
     globalThis.addEventListener?.('hashchange', receiveRoute);
@@ -437,22 +480,31 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       globalThis.removeEventListener?.('hashchange', receiveRoute);
       globalThis.removeEventListener?.('popstate', receiveRoute);
     };
-  }, [channels, commitActiveChannel]);
+  }, [channels, commitActiveChannel, commitActiveView, commitFocus, onSelect]);
 
   const select = useCallback((channelId) => {
     // The boolean is only an acceptance signal for shell handoff gates;
     // activeChannelRef/state remains the sole selection authority.
     if (!channelId || channelId === activeChannelRef.current) return false;
     commitActiveChannel(channelId);
+    commitFocus(null);
     onSelect(channelId);
-    writeRoute(channelId, activeView);
+    writeRoute(channelId, activeViewRef.current);
     return true;
-  }, [activeView, commitActiveChannel, onSelect]);
+  }, [commitActiveChannel, commitFocus, onSelect]);
   const setActiveView = useCallback((view) => {
     if (!['conversation', 'files', 'tasks'].includes(view)) return;
-    setActiveViewState(view);
+    commitActiveView(view);
+    commitFocus(null);
     writeRoute(activeChannelRef.current, view);
-  }, []);
+  }, [commitActiveView, commitFocus]);
+  const setFocus = useCallback((nextFocus) => {
+    const normalized = nextFocus?.type && nextFocus?.key
+      ? parseRouteFocus(`${nextFocus.type}:${nextFocus.key}`)
+      : null;
+    commitFocus(normalized);
+    writeRoute(activeChannelRef.current, activeViewRef.current, false, normalized);
+  }, [commitFocus]);
   const setTerminalVisible = useCallback((nextValue) => {
     const channelId = activeChannelRef.current;
     if (!channelId) return false;
@@ -472,14 +524,16 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     setProfiles(new Map());
     setTerminalChannels(new Set());
     commitActiveChannel('');
+    commitFocus(null);
     setRevision((value) => value + 1);
-  }, [commitActiveChannel]);
+  }, [commitActiveChannel, commitFocus]);
 
   return {
     activeChannel: channels.find((row) => row.id === activeChannelId) || null,
     activeChannelId,
     activeChannelRef,
     activeView,
+    focus,
     bump,
     channels,
     clear,
@@ -489,6 +543,7 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     selfFor: (channelId) => rosterRef.current?.self?.(channelId) || '',
     setActiveChannelId: commitActiveChannel,
     setActiveView,
+    setFocus,
     setChannels: setProfiles,
     terminalVisible: terminalChannels.has(activeChannelId),
   };

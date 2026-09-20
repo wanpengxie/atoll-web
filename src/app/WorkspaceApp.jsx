@@ -166,6 +166,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const [panel, setPanel] = useState('');
   const [composerEditPort, setComposerEditPort] = useState(null);
   const [taskCreateSource, setTaskCreateSource] = useState(undefined);
+  const [automationRecords, setAutomationRecords] = useState(EMPTY_ARRAY);
   const showError = useCallback((error) => setTopError(errorText(error)), []);
   const wire = useWireSessionPort();
   const navigation = useChannelNavigation({
@@ -463,6 +464,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     if (typeof resetProbes !== 'function') throw unavailableError('probes.reset');
     resetAttachments();
     resetProbes();
+    setAutomationRecords(EMPTY_ARRAY);
     await feedCommands.resetPersistent();
   }, [feedCommands.resetPersistent]);
 
@@ -606,6 +608,51 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     });
   }, [channelRoster, composer.commands, selfId]);
   const canWrite = activeAccess === 'member_active' && wire.state === 'open';
+  const recordTimerReceipt = useCallback(({ channelId, durationMs, msgType, payload }, receipt) => {
+    const timerId = String(receipt?.timer_id || receipt?.timerId || '');
+    if (!timerId) return;
+    const record = Object.freeze({
+      timerId,
+      channelId: String(channelId || ''),
+      durationMs: Number(durationMs || 0),
+      msgType: String(msgType || ''),
+      payload: Object.freeze(payload && typeof payload === 'object' ? { ...payload } : {}),
+      createdAt: Date.now(),
+      state: 'scheduled',
+      provenance: 'after_receipt',
+    });
+    setAutomationRecords((current) => Object.freeze([
+      ...current.filter((row) => String(row?.timerId || row?.timer_id || row?.id || '') !== timerId
+        || String(row?.channelId || row?.channel_id || '') !== String(channelId || '')),
+      record,
+    ]));
+  }, []);
+  const afterAutomation = useCallback(async ({ channelId, durationMs, msgType, payload }) => {
+    const channelAccess = wire.accessRef.current?.state?.(channelId);
+    const command = wire.wireRef.current?.after;
+    if (!canWrite || channelAccess?.relationship !== 'member' || typeof command !== 'function') {
+      throw unavailableError('timer.after');
+    }
+    const result = await command({ channel_id: channelId, duration_ms: durationMs, msg_type: msgType, payload });
+    recordTimerReceipt({ channelId, durationMs, msgType, payload }, result);
+    return result;
+  }, [canWrite, recordTimerReceipt, wire.accessRef, wire.wireRef]);
+  const cancelAutomation = useCallback(async ({ channelId, timerId }) => {
+    const channelAccess = wire.accessRef.current?.state?.(channelId);
+    const command = wire.wireRef.current?.cancelTimer;
+    if (!canWrite || channelAccess?.relationship !== 'member' || typeof command !== 'function') {
+      throw unavailableError('timer.cancel');
+    }
+    const result = await command({ channel_id: channelId, timer_id: timerId });
+    setAutomationRecords((current) => current.map((row) => (
+      String(row?.timerId || row?.timer_id || row?.id || '') === String(timerId)
+      && String(row?.channelId || row?.channel_id || '') === String(channelId || '')
+        ? { ...row, state: 'cancelled', cancelledAt: Date.now() }
+        : row
+    )));
+    return result;
+  }, [canWrite, wire.accessRef, wire.wireRef]);
+  const automationAvailable = canWrite && typeof wire.wireRef.current?.after === 'function';
   useEffect(() => {
     if (!canWrite) setTaskCreateSource(undefined);
   }, [canWrite]);
@@ -642,7 +689,33 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     selfId,
     now: Date.now(),
     actionFacts: taskActionFacts,
-  }), [feed.version, selfId, state, submission.pending, taskActionFacts]);
+    automationRecords,
+  }), [automationRecords, feed.version, selfId, state, submission.pending, taskActionFacts]);
+  const openTaskItem = useCallback((item) => {
+    const key = String(item?.key || item?.id || '');
+    if (!key) return null;
+    navigation.setActiveView('tasks');
+    setPanel({ kind: 'task', key });
+    if (typeof navigation.setFocus === 'function') navigation.setFocus({ type: 'work_item', key });
+    return item;
+  }, [navigation.setActiveView, navigation.setFocus]);
+  useEffect(() => {
+    const routeFocus = navigation.activeView === 'tasks'
+      && navigation.focus?.type === 'work_item'
+      && navigation.focus.key
+      ? String(navigation.focus.key)
+      : '';
+    setPanel((current) => {
+      const currentKind = typeof current === 'string' ? current : current?.kind || '';
+      if (routeFocus) {
+        const currentKey = typeof current === 'object' ? String(current.key || current.item?.key || '') : '';
+        return currentKind === 'task' && currentKey === routeFocus
+          ? current
+          : { kind: 'task', key: routeFocus };
+      }
+      return currentKind === 'task' ? '' : current;
+    });
+  }, [navigation.activeView, navigation.focus]);
   const waitingItems = useMemo(() => selectFeatureWaitingFacts({
     state,
     pending: submission.pending,
@@ -701,9 +774,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       setChannelNotice('该回合已不在当前任务事实中。');
       return null;
     }
-    setPanel({ kind: 'task', key: item.key || item.id });
-    return item;
-  }, [taskItems]);
+    return openTaskItem(item);
+  }, [openTaskItem, taskItems]);
   const conversationPort = {
     state: contentVisible ? state : null,
     history: contentVisible ? history : null,
@@ -850,21 +922,37 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         providers: taskProviders,
       },
     automation: {
-      state: FEATURE_COMMAND_STATE.unsupported,
-      reason: '当前 submission owner 未提供可靠的自动动作生命周期',
+      state: automationAvailable ? FEATURE_COMMAND_STATE.ready : FEATURE_COMMAND_STATE.disabled,
+      reason: automationAvailable ? '' : canWrite ? 'timer.after 命令端口尚未连接' : '当前频道不可写',
     },
     commandStates: taskCommandStates,
     commands: {
-      open: (item) => { setPanel({ kind: 'task', key: item.key || item.id }); },
-      createTask: (input) => {
+      open: openTaskItem,
+      openSource: ({ source }) => {
+        const channelId = String(source?.channelId || '');
+        if (!channelId) return false;
+        const sourceChannel = navigation.channels.find((channel) => channel.id === channelId);
+        if (!sourceChannel || !canViewChannelContent(sourceChannel.access)) {
+          setChannelNotice('来源频道当前不可访问，未打开缓存内容。');
+          return false;
+        }
+        navigation.select(channelId);
+        navigation.setActiveView(source?.view === 'tasks' ? 'tasks' : 'conversation');
+        if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
+        setPanel('');
+        return true;
+      },
+      createTask: async (input) => {
         const provider = taskProviders.find((row) => row.actorId === input.providerId);
-        if (!provider) return Promise.reject(new TypeError('任务执行者没有当前 task.create 能力事实'));
-        return submission.send(createFeatureTaskSubmission({
+        if (!provider) throw new TypeError('任务执行者没有当前 task.create 能力事实');
+        const result = await submission.send(createFeatureTaskSubmission({
           ...input,
           channelId: navigation.activeChannelId,
           providerId: provider.actorId,
           providerName: provider.name,
         }));
+        navigation.setActiveView('tasks');
+        return result;
       },
       openAutomation: () => setPanel('automation'),
       resolveApproval: ({ item, decision }) => submission.resolve(item.channelId, item.id, decision, {}),
@@ -977,23 +1065,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   };
   const automationPort = {
     disabled: !canWrite,
+    records: automationRecords,
     commands: {
-      after: ({ channelId, durationMs, msgType, payload }) => {
-        const channelAccess = wire.accessRef.current?.state?.(channelId);
-        const command = wire.wireRef.current?.after;
-        if (!canWrite || channelAccess?.relationship !== 'member' || typeof command !== 'function') {
-          return Promise.reject(unavailableError('timer.after'));
-        }
-        return command({ channel_id: channelId, duration_ms: durationMs, msg_type: msgType, payload });
-      },
-      cancel: ({ channelId, timerId }) => {
-        const channelAccess = wire.accessRef.current?.state?.(channelId);
-        const command = wire.wireRef.current?.cancelTimer;
-        if (!canWrite || channelAccess?.relationship !== 'member' || typeof command !== 'function') {
-          return Promise.reject(unavailableError('timer.cancel'));
-        }
-        return command({ channel_id: channelId, timer_id: timerId });
-      },
+      after: afterAutomation,
+      cancel: cancelAutomation,
     },
   };
   const searchOpen = panelKind === 'search';
@@ -1064,8 +1139,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       const item = taskItems.find((row) => (row.key || row.id) === source.taskId);
       if (!item) { setChannelNotice('该任务已不在当前任务事实中。'); return; }
       navigation.select(source.channelId);
-      navigation.setActiveView('tasks');
-      setPanel({ kind: 'task', key: item.key || item.id });
+      openTaskItem(item);
       return;
     }
     if (source.kind === 'file') {
@@ -1081,6 +1155,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     }
     navigation.select(source.channelId);
     navigation.setActiveView('conversation');
+    if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
     setPanel('');
   };
   const openActivitySource = useCallback((source) => {
@@ -1093,8 +1168,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     }
     navigation.select(source.channelId);
     navigation.setActiveView(source.view === 'tasks' ? 'tasks' : 'conversation');
+    if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
     setPanel('');
-  }, [navigation.channels, navigation.select, navigation.setActiveView]);
+  }, [navigation.channels, navigation.select, navigation.setActiveView, navigation.setFocus]);
   const activityPort = useMemo(() => {
     const visibleChannels = navigation.channels.filter((channel) => canViewChannelContent(channel.access));
     const channelById = new Map(visibleChannels.map((channel) => [channel.id, channel]));
@@ -1190,13 +1266,22 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     governance={governancePort}
     automation={automationPort}
     activity={activityPort}
-    onClose={() => setPanel('')}
+    onClose={() => {
+      setPanel('');
+      if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
+    }}
   /> : null;
   const overlays = <>
     <WorkspaceFeatureOverlays search={{
       open: searchOpen,
       index: searchIndex,
-      commands: { close: () => setPanel(''), open: openSearchResult },
+      commands: {
+        close: () => {
+          setPanel('');
+          if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
+        },
+        open: openSearchResult,
+      },
     }} />
     {taskCreateSource && canWrite && <TaskCreationDialog
       port={tasksPort}
