@@ -35,7 +35,7 @@ import {
 import { selectFeatureSearchIndex } from '../model/feature-search.js';
 import { terminalResultPayload, terminalResultState } from '../model/terminal-result.js';
 import { argsOf } from '../protocol/envelope.js';
-import { isManageableDeclaration } from '../model/actor-visibility.js';
+import { isManageableDeclaration, isVisibleActor } from '../model/actor-visibility.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
 import { VersionIncompatible } from '../ui/VersionIncompatible.jsx';
@@ -1539,6 +1539,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     });
     if (action === 'create_child') {
       const templateId = String(payload.templateId || '').trim();
+      const manageableAgentIds = new Set(channelRoster
+        .filter((row) => row?.kind === 'agent' && row.id && isVisibleActor(row))
+        .map((row) => row.id));
+      const selectedAgentIds = Array.isArray(payload.initialActorIds)
+        ? payload.initialActorIds
+          .map((id) => String(id || '').trim())
+          .filter((id) => manageableAgentIds.has(id))
+        : [];
+      const initialActorIds = [...new Set([selfId, ...selectedAgentIds].filter(Boolean))];
       let template = null;
       return (async () => {
         if (templateId) template = await requestChannelTemplate(channelId, templateId);
@@ -1557,7 +1566,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
               ...(String(payload.purpose || '').trim() ? { description: String(payload.purpose).trim() } : {}),
             },
           },
-          initial_actor_ids: [selfId].filter(Boolean),
+          initial_actor_ids: initialActorIds,
         });
       })();
     }

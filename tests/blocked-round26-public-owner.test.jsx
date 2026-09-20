@@ -129,11 +129,11 @@ function governance({ commands = {}, ...rest } = {}) {
   />);
 }
 
-function createChannelModal({ commands = {}, children = [], creation = null } = {}) {
+function createChannelModal({ commands = {}, children = [], creation = null, roster = [], selfId = '' } = {}) {
   return render(<WorkspaceRightPanel
     panel={{ kind: 'channel-administration', initialTab: 'overview' }}
     channel={{ id: 'c0', qualified_name: 'c0' }}
-    governance={{ channel: { commands, children, creation } }}
+    governance={{ channel: { commands, children, creation, roster, selfId } }}
     onClose={vi.fn()}
   />);
 }
@@ -218,11 +218,20 @@ describe('A-D round 26 public-owner evidence', () => {
   it('[AD-150] includes a selected current-channel Agent as an initial seat', () => {
     // 用户能力：创建时带入当前频道 Agent actor seat。
     // 不变量：seat 只能来自公开 roster；公开 owner：GovernanceFeature。
-    governance({
-      commands: { submit: vi.fn() },
+    const submit = vi.fn().mockResolvedValue('request-ad150');
+    createChannelModal({
+      commands: { submit },
       roster: [{ id: 'agent:worker:1', kind: 'agent', name: 'Worker' }],
     });
-    expect(screen.getByRole('checkbox', { name: /Worker/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Worker/ }));
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'agent-room' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    return waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'channel', action: 'create_child',
+      payload: expect.objectContaining({
+        name: 'agent-room', parentId: 'c0', initialActorIds: ['agent:worker:1'],
+      }),
+    })));
   });
 
   it('[AD-151] reads template body before submitting a public recipe', () => {

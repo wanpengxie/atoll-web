@@ -302,6 +302,36 @@ afterEach(async () => {
 });
 
 describe('真实 Workspace owner composition', () => {
+  it('maps the selected current-channel Agent to the existing initial actor seat field', async () => {
+    render(<WorkspaceApp />);
+    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+    await makeCurrentFeed();
+    mocks.connectionProps.accessActionsRef.current = {
+      refresh: vi.fn().mockResolvedValue(undefined),
+    };
+    act(() => mocks.layoutProps.navigation.openChannelAdministration('overview'));
+    await waitFor(() => expect(mocks.layoutProps?.rightPanel?.props?.governance?.channel).toBeTruthy());
+
+    const governance = mocks.layoutProps.rightPanel.props.governance.channel;
+    await act(async () => {
+      await governance.commands.submit({
+        scope: 'channel', action: 'create_child',
+        payload: {
+          name: 'agent-room', purpose: '', parentId: mocks.channelId,
+          initialActorIds: [mocks.agentId],
+        },
+      });
+    });
+
+    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => (
+      frame.msg_type === TYPES.channel.create && frame.payload?.name === 'agent-room'
+    ))).toBe(true));
+    const create = mocks.transportSubmissions.find((frame) => (
+      frame.msg_type === TYPES.channel.create && frame.payload?.name === 'agent-room'
+    ));
+    expect(create?.payload?.initial_actor_ids).toEqual([mocks.humanId, mocks.agentId]);
+  });
+
   it('rejects governance waiters and clears channel creation on a world reset', async () => {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());

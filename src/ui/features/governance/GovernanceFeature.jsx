@@ -345,6 +345,7 @@ function creationConvergence(channel, children, request, creation = null) {
 export function ChannelCreateModal({ channel, port = {}, onClose }) {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
+  const [initialAgentIds, setInitialAgentIds] = useState([]);
   const [createRequest, setCreateRequest] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -358,6 +359,9 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
   const locked = port.disabled || submitting || tracking || convergence?.ready;
   const parentName = displayChannelName(channel);
   const shellEnter = typeof commands.enterChannel === 'function';
+  const initialAgents = (Array.isArray(port.roster) ? port.roster : [])
+    .filter((row) => row?.kind === 'agent' && row.id && isVisibleActor(row));
+  const selectedInitialAgentIds = initialAgentIds.filter((id) => initialAgents.some((row) => row.id === id));
 
   function retryCreate() {
     setCreateRequest(null);
@@ -393,6 +397,7 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
           name: normalized,
           purpose: String(purpose || '').trim(),
           parentId: channel?.id,
+          ...(selectedInitialAgentIds.length ? { initialActorIds: selectedInitialAgentIds } : {}),
         },
       });
       if (!messageId) throw new Error('创建命令没有返回可追踪的请求编号');
@@ -437,6 +442,25 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
         <label><span>频道名称</span><input ref={nameRef} aria-label="新频道名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 backend" disabled={locked} aria-invalid={Boolean(name && validation)} required /></label>
         {name && validation && <small className="field-error">{validation}</small>}
         <label><span>用途</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>
+        <section className="channel-create-members" aria-labelledby="channel-create-members-title">
+          <header><strong id="channel-create-members-title">初始成员</strong><small>你会自动加入，也可以带入当前频道的 Agent</small></header>
+          {port.selfId && <div className="channel-create-member pinned"><span>✓</span><div><strong>我</strong><small>{port.selfId}</small></div></div>}
+          {initialAgents.map((row) => <label className="channel-create-member" key={row.id}>
+            <input
+              type="checkbox"
+              aria-label={`初始 Agent ${actorDisplayName(row)}`}
+              checked={selectedInitialAgentIds.includes(row.id)}
+              disabled={locked}
+              onChange={(event) => setInitialAgentIds((current) => (
+                event.target.checked
+                  ? [...new Set([...current, row.id])]
+                  : current.filter((id) => id !== row.id)
+              ))}
+            />
+            <div><strong>{actorDisplayName(row)}</strong><small>Agent · {row.id}</small></div>
+          </label>)}
+          {!initialAgents.length && <small className="field-hint">当前没有可管理的 Agent。</small>}
+        </section>
         {error && <p className="governance-error" role="alert">{error}</p>}
         {convergence && <section className="convergence channel-create-progress" aria-label="频道创建进度" aria-live="polite">
           <header><strong>{createRequest.name}</strong><small>{convergence.failed ? '创建失败' : convergence.ready ? '已就绪' : '正在收敛'}</small></header>
