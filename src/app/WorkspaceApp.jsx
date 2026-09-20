@@ -1601,6 +1601,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         : EMPTY_ARRAY,
       candidatesUnavailable: !directory.support?.principals || !directory.support?.declarations,
       roster: channelRoster,
+      // Governance receives the canonical roster owner's independent
+      // authority.  This must stay separate from waitingRosterAuthority:
+      // history control freshness is not evidence that member convergence
+      // has completed.
+      rosterAuthority,
       selfId,
       commands: {
         refresh: (kind) => {

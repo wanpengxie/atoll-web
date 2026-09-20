@@ -171,9 +171,29 @@ function ChannelMembers({ channel, port }) {
   const [candidate, setCandidate] = useState('');
   const [confirm, setConfirm] = useState(null);
   const [directOperation, setDirectOperation] = useState(null);
+  const [submittedMember, setSubmittedMember] = useState(null);
   const action = useCommand(port.commands, 'channel');
   const commandPort = port.commands || {};
   const roster = (port.roster || []).filter(isVisibleActor);
+  // A submitted command is only a ledger-side receipt.  Readiness is a
+  // separate projection: the canonical roster owner must report a complete
+  // authority for this channel and the requested actor must be present in
+  // that projection.  In particular, do not infer readiness from the
+  // command promise or from the combined waiting authority (which also
+  // depends on history control).
+  const rosterCurrent = port.rosterAuthority?.current === true
+    && port.rosterAuthority?.channelId === channel?.id;
+  const submittedMemberPresent = Boolean(submittedMember && roster.some((row) => (
+    row.id === submittedMember.id
+      || (submittedMember.kind === 'principal' && row.principal === submittedMember.id)
+      || (submittedMember.kind === 'declaration' && row.decl_id === submittedMember.id)
+  )));
+  const memberReady = Boolean(
+    submittedMember
+      && action.operation?.state === 'submitted'
+      && rosterCurrent
+      && submittedMemberPresent,
+  );
   const currentPrincipals = new Set(roster.map((row) => row.principal).filter(Boolean));
   const principalCandidates = (port.principals || []).map((entry) => entry?.declared || entry)
     .filter((row) => eligiblePrincipal(row) && !currentPrincipals.has(row.id))
@@ -209,6 +229,7 @@ function ChannelMembers({ channel, port }) {
   const introduce = (event) => {
     event.preventDefault();
     if (!selected) return;
+    setSubmittedMember({ id: selected.row.id, kind: selected.kind });
     action.submit('introduce_actor', { channelId: channel?.id, candidateType: selected.kind, candidateId: selected.row.id });
   };
   const confirmActor = () => {
@@ -242,6 +263,7 @@ function ChannelMembers({ channel, port }) {
       })}
       {!roster.length && <p className="governance-empty">暂无可管理的业务 Actor</p>}
       {port.identityPending && <p className="roster-identity-pending" role="status">正在确认你在本频道中的 Actor 身份</p>}
+      {memberReady && <p className="roster-ready" role="status">成员已就绪</p>}
       <p className="protected-note">标准系统 Actor 与维持频道关系的 foundation Actor 已隐藏并受后端保护。</p>
       {!hasLifecycleCommands && <p className="protected-note">当前治理端口未提供绑定或重启命令；这里仅展示目录事实、查看与已有移除入口。</p>}
     </PanelCard>

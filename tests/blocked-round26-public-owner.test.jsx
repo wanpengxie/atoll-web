@@ -455,9 +455,12 @@ describe('A-D round 26 public-owner evidence', () => {
     // 不变量：terminal receipt 不能伪造 roster；公开 owner：ChannelAdministrationPanel → ChannelMembers（GovernanceFeature）。
     const submit = vi.fn().mockResolvedValue('member-request');
     const refresh = vi.fn();
-    governance({
+    const worker = { id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker' };
+    const view = governance({
       commands: { submit, refresh },
       declarations: [{ id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker' }],
+      roster: [],
+      rosterAuthority: { principalId: 'human:root:1', channelId: 'c0', generation: 1, current: false },
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
     fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
@@ -468,7 +471,21 @@ describe('A-D round 26 public-owner evidence', () => {
       action: 'introduce_actor',
       payload: { channelId: 'c0', candidateType: 'declaration', candidateId: 'agent:worker:1' },
     }));
+    expect(screen.getByText('命令已进入提交队列；最终状态以账本与目录投影为准。')).toBeTruthy();
+    expect(screen.queryByText('成员已就绪')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    expect(refresh).toHaveBeenCalledWith('members');
+    view.rerender(<ChannelAdministrationPanel
+      channel={{ id: 'c0', qualified_name: 'c0' }}
+      port={{
+        commands: { submit, refresh },
+        children: [],
+        declarations: [{ id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker' }],
+        roster: [worker],
+        rosterAuthority: { principalId: 'human:root:1', channelId: 'c0', generation: 1, current: true },
+      }}
+      onClose={vi.fn()}
+    />);
     expect(screen.getByText('成员已就绪')).toBeTruthy();
   });
 
