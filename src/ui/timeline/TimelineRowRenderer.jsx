@@ -584,8 +584,10 @@ export function useTimelineRowRenderer({ state, names, selfId, access = '', targ
     | (typeof onCreateTask === 'function' ? 2 : 0)
     | (typeof onOpenTurn === 'function' ? 4 : 0);
   const rowRenderRevision = useCallback((_index, row) => {
-    const foldID = row.body?.kind === 'turn' ? `${row.body.turn.requestId}:body` : `${row.body?.envelope?.id || row.id}:body`;
-    return [row.contentRevision, row.layoutClass || '', row.id === latestRowID ? 1 : 0, browsingExpandedSlots.has(row.visualSlotID || row.id) ? 1 : 0, effectiveFoldOverrides.get(foldID), presentationEditing?.targetId === row.id ? presentationEditing.phase : '', approvalStates?.[row.id] || '', messageActionRevision].join('\u0001');
+    const foldIDs = row.body?.kind === 'turn'
+      ? [`${row.body.turn.requestId}:body`, `${row.body.turn.requestId}:response`]
+      : [`${row.body?.envelope?.id || row.id}:body`];
+    return [row.contentRevision, row.layoutClass || '', row.id === latestRowID ? 1 : 0, browsingExpandedSlots.has(row.visualSlotID || row.id) ? 1 : 0, ...foldIDs.map((foldID) => effectiveFoldOverrides.get(foldID)), presentationEditing?.targetId === row.id ? presentationEditing.phase : '', approvalStates?.[row.id] || '', messageActionRevision].join('\u0001');
   }, [approvalStates, browsingExpandedSlots, effectiveFoldOverrides, latestRowID, messageActionRevision, presentationEditing]);
   const fold = useMemo(() => ({ latest: false, automaticExpanded: false, overrides: effectiveFoldOverrides, onToggle: toggleFold }), [effectiveFoldOverrides, toggleFold]);
   const renderRow = useCallback((row) => {
