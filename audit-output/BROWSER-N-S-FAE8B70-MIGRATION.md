@@ -708,3 +708,18 @@ ATOLL_TEST_WEB_PORT=16435 ATOLL_TEST_MOCK_PORT=20735 npx playwright test tests/b
 - 因此 raw rail 行不是 durable 数据缺失；原 line160 的确可能早于该次 Presentation/DOM 观察，但当前产品没有在 cold hydration 完成 paint 后发布 `settled=true` 或等价 typed fence。10 秒轮询没有新 settled entry；固定 sleep/probe 不能成为正式合同。
 
 结论不是把正式断言删掉或改成 probe：当前第一分歧为 **Reading hydration owner 没有公开 settled/paint-fence observation，导致测试无法在合法 typed contract 上等待后再读 rail**。该缺口交现有 Reading owner：cold hydration 在 approval rows 已 mounted/可命中后，必须发布现行 `reading.observation` 的 settled typed receipt（含非空 exact `visibleRowIDs`、atTail/surfaceVisible 与 activation/inputEpoch）；notification owner 不承担补发第二状态源。正式 spec/断言本轮保持原样，直到 owner 提供该公开信号后再最小化改为等待它。
+
+## 第二十四轮：`ee52ee2` cold-hydration settled 合同验收
+
+`ee52ee2` 的祖先 `fa1cf86` 已加入 cold following 的 layout paint fence：首个 following Presentation mounted 后调用 `scheduleObserve('layout', true)`。本轮没有修改产品；正式 spec 只增加测试侧等待合同：清空 opt-in Reading trace，选中 `c0.project`，等待当前 channel activation 的 `reading.observation` 同时满足 `settled=true`, `atTail=true`, `surfaceVisible=true`，且 visible IDs 必须是当前 `c0.project-*` 前缀（这些 ID 来自 hit-tested DOM sampler），之后才采 rail/Feed receipt。旧 c0 activation 的 `c0-*` observation 会被拒绝；没有固定 sleep 或提前 raw 读取。
+
+```text
+ATOLL_TEST_WEB_PORT=16440 ATOLL_TEST_MOCK_PORT=20740 npx playwright test tests/browser/notification-high-water.spec.js --grep='cached hydration' --workers=1 --repeat-each=5 --reporter=line --output=test-results-browser-ns-round24-hydration-contract-repeat5-16440-20260920
+# 3 passed, 2 failed；两失败均在 typed settled wait，非 line160 raw rail 读取
+```
+
+通过的三次（含二次 reload hydration）均满足同 activation 的非空 project visible IDs；同一轮随后采到的 Feed rail 为 `authorityReady=true`, `readSeq=25`, 首次 high-water=`27`、二次=`29`，counts=`0/0`，approval seq26/27 全 `ackReason=high_water`，DOM badge/jump=`0/0`。证据 JSON 位于 `test-results-browser-ns-round24-hydration-contract-repeat5-16440-20260920/**/notification-high-water-hydration.json`。
+
+两次失败的 pre-settle 证据（`...repeat1/...pre-settle-contract.json`、`...repeat4/...pre-settle-contract.json`）显示：heading 与 DOM Presentation 已为 `c0.project`，DOM 已有 `c0.project-approval-19974-1/2`，rail 已 authority/high-water=`true/27`、counts=`0/0`；但该 project activation 后续所有 `settled=true` observation 的 `visibleRowIDs=[]`，10 秒内没有非空 `c0.project-*` hit-tested receipt。旧 c0 activation 的 settled `c0-*` IDs 被严格过滤，不能冒充 project hydration 完成。
+
+因此 `fa1cf86` 关闭了“完全没有 settled 信号”的缺口，但仍未满足本轮完整合同：它以 snapshot rows/revision 触发 settled，不能保证同一 activation 的 DOM hit-test rows 已被 Reading 采样；失败归 **Reading owner 的 Presentation→Reading paint fence**。Feed/notification rail 在同一时点已有 authority/high-water/ack 证据，不交 notification owner。保留严格测试等待门，不降级为旧 raw line160、固定 sleep、空 diagnostics 或旧 activation。

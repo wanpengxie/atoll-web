@@ -50,6 +50,35 @@ async function railEvidence(page, channelID) {
   }), channelID);
 }
 
+async function waitForSettledHydrationObservation(page, channelID) {
+  // `visibleRowIDs` is produced by Reading's hit-tested DOM sampler. The
+  // channel prefix rejects a settled observation from the previous c0
+  // activation while the project Presentation is still hydrating.
+  await expect.poll(async () => page.evaluate((id) => {
+    const heading = document.querySelector('main h1')?.textContent?.trim() || '';
+    const entries = window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.().entries || [];
+    return heading === id && entries.some((entry) => (
+      entry.event === 'reading.observation'
+      && entry.detail?.settled === true
+      && entry.detail?.atTail === true
+      && entry.detail?.surfaceVisible === true
+      && Array.isArray(entry.detail?.visibleRowIDs)
+      && entry.detail.visibleRowIDs.some((rowID) => String(rowID).startsWith(`${id}-`))
+    ));
+  }, channelID)).toBe(true);
+  return page.evaluate((id) => {
+    const entries = window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.().entries || [];
+    return entries.filter((entry) => (
+      entry.event === 'reading.observation'
+      && entry.detail?.settled === true
+      && entry.detail?.atTail === true
+      && entry.detail?.surfaceVisible === true
+      && Array.isArray(entry.detail?.visibleRowIDs)
+      && entry.detail.visibleRowIDs.some((rowID) => String(rowID).startsWith(`${id}-`))
+    )).at(-1) || null;
+  }, channelID);
+}
+
 function channelSnapshot(evidence) {
   return evidence.rail?.channels?.[0];
 }
@@ -148,18 +177,34 @@ test('cached hydration cannot resurrect a tail-acknowledged notification', async
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(project.locator('.unread-related')).toHaveText('2');
+  await page.evaluate(() => {
+    window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-high-water-hydration' });
+    window.__ATOLL_DIAGNOSTICS__?.reading?.clear?.();
+  });
   await project.click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
   await expect(project.locator('.unread-related')).toHaveCount(0);
+  const hydratedObservation = await waitForSettledHydrationObservation(page, 'c0.project');
   const afterHydratedAcknowledgement = await railEvidence(page, 'c0.project');
 
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(project.locator('.unread-related')).toHaveCount(0);
+  await page.evaluate(() => {
+    window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-high-water-second-hydration' });
+    window.__ATOLL_DIAGNOSTICS__?.reading?.clear?.();
+  });
+  await project.click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
+  await expect(project.locator('.unread-related')).toHaveCount(0);
+  const secondHydratedObservation = await waitForSettledHydrationObservation(page, 'c0.project');
   const afterSecondHydration = await railEvidence(page, 'c0.project');
   expectAcknowledgedTail(afterHydratedAcknowledgement, latestAddedApprovalSeq(afterHydratedAcknowledgement));
   expectAcknowledgedTail(afterSecondHydration, latestAddedApprovalSeq(afterSecondHydration));
   await attachEvidence(testInfo, 'notification-high-water-hydration.json', {
+    hydratedObservation,
     afterHydratedAcknowledgement,
+    secondHydratedObservation,
     afterSecondHydration,
   });
 });

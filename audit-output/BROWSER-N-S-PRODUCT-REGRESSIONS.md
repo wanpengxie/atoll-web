@@ -515,3 +515,16 @@ A/B 本轮不重复计分。当前 HEAD=`4c566c4` 的正式 hydration repeat5 �
 2. **当前产品没有可等待的公开 settle 信号**：不是把 `waitForTimeout` 或 observation-only probe 写进正式测试即可解决。现行 Reading owner 需要在 cold hydration 的 approval rows 已 painted/可命中后发布 typed settled receipt（含 exact visible IDs、activation/inputEpoch、atTail/surfaceVisible）。
 
 本轮首个公开 owner 分歧交 **Reading owner**，不交 notification owner；正式 spec、fixture、断言及 skip 均不改，避免用 probe 将产品/合同缺口伪装成 GREEN。Owner 提供 typed settle 后，再把 line160 最小改为等待该公开合同并复验。
+
+## 第二十四轮：strict cold-hydration settle gate（`ee52ee2`）
+
+`fa1cf86`（`ee52ee2` 祖先）已经让 cold following 路径产生 `settled=true` observation，但本轮把正式测试门收紧为：当前 `c0.project` activation、`atTail/surfaceVisible=true`、非空且 channel-prefixed 的 hit-tested `visibleRowIDs`，之后才读取 rail。正式 hydration repeat5：
+
+```text
+ATOLL_TEST_WEB_PORT=16440 ATOLL_TEST_MOCK_PORT=20740 npx playwright test tests/browser/notification-high-water.spec.js --grep='cached hydration' --workers=1 --repeat-each=5 --reporter=line --output=test-results-browser-ns-round24-hydration-contract-repeat5-16440-20260920
+# 3 passed, 2 failed（失败在 settled observation gate）
+```
+
+GREEN 样本的同轮 Feed/rail 证据为：authorityReady=true、readSeq=25、首轮 high-water=27、二次 reload 后=29、approval seq26/27 均 high_water、counts related/total=0/0；typed observation 的 activation 与 visible IDs 为当前 `c0.project-approval-*`，不是旧 c0 activation。
+
+RED 样本不是 notification rail 丢数据：失败前 DOM 已有两个 `c0.project-approval-*`，rail 也已 authorityReady/high-water= true/27、counts=0/0；但当前 project activation 的所有 settled observations 仍 `visibleRowIDs=[]`，没有可等待的非空 hit-tested receipt。旧 c0 activation 的 settled event 被合同过滤。故当前 owner handoff 是 **Reading Presentation→DOM hit-test→typed settled fence**；`fa1cf86` 的 snapshot-row fence仍可能早于实际 visible-row sampler。保留正式 strict gate，不恢复 line160 raw 早读、不用固定 sleep/probe、不把 rail/Feed 误报为产品红。
