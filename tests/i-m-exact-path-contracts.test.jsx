@@ -4090,6 +4090,42 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(physicalRoot.scrollTop).toBe(1_200);
   });
 
+  it('message-list-lifecycle TC-1024b: a same-activation callback cannot write into a replacement root', () => {
+    const reading = round34Reading({ mode: READING_MODE.following, activationID: 'activation:round40-root' });
+    render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('round40-root-first', 1)], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const firstRoot = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 400,
+    });
+    const staleHeightCallback = vendorHarness.props.totalListHeightChanged;
+    const replacementRoot = setRound35Geometry(document.createElement('div'), {
+      clientHeight: 600,
+      scrollHeight: 1_200,
+      scrollTop: 400,
+    });
+    replacementRoot.scrollTo = vi.fn((options) => {
+      replacementRoot.scrollTop = Number(options?.top || 0);
+    });
+
+    // Replace only the mounted physical root. Activation and generation stay
+    // equal, so the physical-root fence is the deciding owner boundary.
+    act(() => {
+      vendorHarness.props.scrollerRef?.(replacementRoot);
+      staleHeightCallback();
+    });
+
+    expect(firstRoot).not.toBe(replacementRoot);
+    expect(replacementRoot.scrollTo).not.toHaveBeenCalled();
+    expect(replacementRoot.scrollTop).toBe(400);
+  });
+
   it('message-list-lifecycle TC-1025: a late public height callback after unmount is a no-op', () => {
     const reading = round34Reading({ mode: READING_MODE.following });
     const view = render(

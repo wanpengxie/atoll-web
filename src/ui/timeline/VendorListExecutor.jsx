@@ -285,9 +285,13 @@ export function VendorListExecutor({
   // Virtuoso retains the callback from the render that installed it. A late
   // height notification must not resolve through readingRef into a successor
   // activation or history generation; that would let an old owner write a
-  // new viewport. The callback fence below captures this owner tuple.
+  // new viewport. The callback fence below captures this owner tuple and the
+  // physical root that was mounted for that render. A same-activation
+  // remount must not let the old callback resolve through rootRef.current into
+  // its successor root.
   const callbackActivationID = String(reading.activationID || reading.session?.activationID || '');
   const callbackGeneration = Number(reading.status?.generation || 0);
+  const callbackRoot = rootNode;
   const bindScroller = useCallback((node) => {
     rootRef.current = node;
     setRootNode((current) => current === node ? current : node);
@@ -1285,7 +1289,8 @@ export function VendorListExecutor({
     totalListHeightChanged={() => {
       const liveOwner = readingRef.current;
       const liveSession = liveOwner?.getSession?.();
-      if (String(liveOwner?.activationID || liveSession?.activationID || '') !== callbackActivationID
+      if (!callbackRoot || rootRef.current !== callbackRoot
+        || String(liveOwner?.activationID || liveSession?.activationID || '') !== callbackActivationID
         || Number(liveOwner?.status?.generation || 0) !== callbackGeneration) return;
       geometryRevisionRef.current += 1;
       restoreContentAnchor('layout');
