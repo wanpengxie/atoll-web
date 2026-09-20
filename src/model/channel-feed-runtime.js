@@ -47,6 +47,12 @@ const AGENT_ACTIVITY_LIMIT = 512;
 const TIMER_FIRING_LIMIT = 256;
 const ACCESS_UNAVAILABLE_CODES = new Set(['unavailable', 'channel_unavailable']);
 const CURSOR_STORAGE_PREFIX = 'atoll.feed-cursors.v1.';
+const NOTIFICATION_LEASE_REVOKE = 'notification-lease-revoke';
+const NOTIFICATION_LEASE_REVOKE_REASONS = new Set([
+  'physical-leave',
+  'surface-hidden',
+  'activation-cleanup',
+]);
 
 function invalidatesChannelDirectory(envelope) {
   return DIRECTORY_INVALIDATION_TYPES.has(envelope?.type || '');
@@ -55,6 +61,15 @@ function invalidatesChannelDirectory(envelope) {
 function historyNumeric(value) {
   const result = Number(value);
   return Number.isSafeInteger(result) && result >= 0 ? result : 0;
+}
+
+function notificationInputEpoch(value) {
+  const result = Number(value);
+  return Number.isSafeInteger(result) && result >= 0 ? result : null;
+}
+
+function notificationOwnerKey(owner) {
+  return `${owner?.viewKey || ''}\u0000${owner?.activationID || ''}\u0000${historyNumeric(owner?.generation)}`;
 }
 
 function historySourceFor(localMeta, beforeSeq) {
@@ -646,6 +661,7 @@ export function createChannelFeedRuntime(options = {}) {
         }
         const following = followingObservations.get(row.channel_id);
         if (following
+          && following.active !== false
           && following.authority?.principalId === principal
           && following.authority?.serverBoot === world
           && following.owner?.generation === status.generation
@@ -739,7 +755,8 @@ export function createChannelFeedRuntime(options = {}) {
       // owner, rather than flashing a rail badge that the already-following
       // reader cannot act on. The durable high-water still moves only when
       // the frozen observation arrives.
-      if (following?.authority?.principalId === principal
+      if (following?.active !== false
+        && following?.authority?.principalId === principal
         && following.authority.serverBoot === world
         && following.owner?.generation === histories.get(channelId)?.generation
         && seq <= following.headSeq) continue;
@@ -780,7 +797,8 @@ export function createChannelFeedRuntime(options = {}) {
           const disposition = notificationDisposition(state, envelope, selfID);
           if (!isRailNotifiableDisposition(disposition)) ackReason = disposition;
           else if (!notificationRelatesTo(state, envelope, selfID)) ackReason = 'outside_scope';
-          else if (following?.authority?.principalId === principal
+          else if (following?.active !== false
+            && following?.authority?.principalId === principal
             && following.authority.serverBoot === world
             && following.owner?.generation === status?.generation
             && seq <= following.headSeq) ackReason = 'following_presented';
@@ -1540,10 +1558,18 @@ export function createChannelFeedRuntime(options = {}) {
     const authorityRevisionValue = historyNumeric(event?.authorityRevision);
     const boundary = historyNumeric(event?.boundary);
     const cause = event?.cause;
-    const retracting = event?.caughtUp !== true
+    const typedRevoke = event?.kind === NOTIFICATION_LEASE_REVOKE;
+    const hasInputEpoch = Boolean(event && Object.prototype.hasOwnProperty.call(event, 'inputEpoch'));
+    const inputEpoch = hasInputEpoch ? notificationInputEpoch(event.inputEpoch) : null;
+    const receiptInputEpoch = inputEpoch === null ? 0 : inputEpoch;
+    const retracting = typedRevoke || event?.caughtUp !== true
       || event?.atTail !== true
       || event?.following !== true
       || event?.surfaceVisible !== true;
+
+    if ((hasInputEpoch && inputEpoch === null)
+      || (typedRevoke && (inputEpoch === null
+        || !NOTIFICATION_LEASE_REVOKE_REASONS.has(String(event.reason || ''))))) return false;
 
     // A notification confirmation is an immutable cross-owner event. Do not
     // accept the former flat channel/generation shape: without the exact
@@ -1571,18 +1597,37 @@ export function createChannelFeedRuntime(options = {}) {
         : boundary !== historyNumeric(captured.installedHighSeq))) return false;
 
     const observation = followingObservations.get(channelId);
-    const ownerKey = `${owner.viewKey}\u0000${owner.activationID}`;
-    const observationKey = observation
-      ? `${observation.owner?.viewKey || ''}\u0000${observation.owner?.activationID || ''}`
-      : '';
+    const ownerKey = notificationOwnerKey(owner);
+    const observationKey = observation ? notificationOwnerKey(observation.owner) : '';
+    const authorityMatches = Boolean(observation
+      && observation.authority?.principalId === authority.principalId
+      && observation.authority?.serverBoot === authority.serverBoot);
+    const sameOwner = Boolean(observation && observationKey === ownerKey && authorityMatches);
+    const retiredOwnerKeys = Array.isArray(observation?.retiredOwnerKeys)
+      ? observation.retiredOwnerKeys : [];
     // A receipt that explicitly reports the committed owner no longer being
     // at a visible tail revokes only that same owner. A stale cleanup from a
     // replaced activation cannot revoke the new owner’s short observation
     // lease. This is a retraction, not a notification confirmation.
     if (retracting) {
-      if (observation && observationKey === ownerKey
-        && observation.authority?.principalId === authority.principalId
-        && observation.authority?.serverBoot === authority.serverBoot) {
+      if (typedRevoke && !observation) {
+        // Keep the revoke epoch even when no active lease is visible. A
+        // positive receipt issued before this input may still be queued and
+        // must not recreate the lease after the synchronous revoke.
+        followingObservations.set(channelId, Object.freeze({
+          authority: Object.freeze({ ...authority }),
+          owner: Object.freeze({ ...owner }),
+          authorityRevision: authorityRevisionValue,
+          active: false,
+          inputEpoch,
+          revokeInputEpoch: inputEpoch,
+          retiredOwnerKeys: Object.freeze([]),
+          headSeq: cursors.notificationHighWater(channelId),
+        }));
+        publish();
+        return false;
+      }
+      if (sameOwner) {
         // During browsing -> following promotion the reading surface can
         // publish one intermediate receipt with `following: false` while
         // the committed DOM is still at the physical tail. That receipt is
@@ -1592,7 +1637,20 @@ export function createChannelFeedRuntime(options = {}) {
         // leave changes the physical-tail or surface-visible fact, so only
         // that boundary may revoke the existing observation.
         if (event.atTail === true && event.surfaceVisible === true) return false;
-        followingObservations.delete(channelId);
+        if (!typedRevoke) {
+          followingObservations.delete(channelId);
+          publish();
+          return false;
+        }
+        const observationEpoch = notificationInputEpoch(observation.inputEpoch) ?? 0;
+        const previousFence = notificationInputEpoch(observation.revokeInputEpoch) ?? -1;
+        if (inputEpoch < observationEpoch || inputEpoch < previousFence) return false;
+        followingObservations.set(channelId, Object.freeze({
+          ...observation,
+          active: false,
+          inputEpoch: Math.max(observationEpoch, inputEpoch),
+          revokeInputEpoch: Math.max(previousFence, inputEpoch),
+        }));
         publish();
       }
       return false;
@@ -1612,12 +1670,40 @@ export function createChannelFeedRuntime(options = {}) {
     const acknowledgedBoundary = closedNotificationBoundary(
       replica.state(channelId), boundary, previous,
     );
+    if (observation && sameOwner) {
+      const previousFence = notificationInputEpoch(observation.revokeInputEpoch) ?? -1;
+      if (previousFence >= 0 && (!hasInputEpoch || receiptInputEpoch < previousFence)) return false;
+    } else if (observation && retiredOwnerKeys.includes(ownerKey)) {
+      return false;
+    }
+    const nextRetiredOwnerKeys = observation && !sameOwner
+      ? Object.freeze([...new Set([...retiredOwnerKeys, observationKey].filter(Boolean))].slice(-8))
+      : Object.freeze(retiredOwnerKeys);
+    if (acknowledgedBoundary > 0 && acknowledgedBoundary <= previous) {
+      followingObservations.set(channelId, Object.freeze({
+        authority: Object.freeze({ ...authority }),
+        owner: Object.freeze({ ...owner }),
+        authorityRevision: authorityRevisionValue,
+        active: true,
+        inputEpoch: receiptInputEpoch,
+        revokeInputEpoch: -1,
+        retiredOwnerKeys: nextRetiredOwnerKeys,
+        // A positive receipt at an already-confirmed boundary still installs
+        // the short following lease for future live ingress.
+        headSeq: Math.max(previous, historyNumeric(observation?.headSeq)),
+      }));
+      return previous || false;
+    }
     if (acknowledgedBoundary <= previous) return previous || false;
     const acknowledged = cursors.acknowledgeNotifications(channelId, acknowledgedBoundary);
     followingObservations.set(channelId, Object.freeze({
       authority: Object.freeze({ ...authority }),
       owner: Object.freeze({ ...owner }),
       authorityRevision: authorityRevisionValue,
+      active: true,
+      inputEpoch: receiptInputEpoch,
+      revokeInputEpoch: -1,
+      retiredOwnerKeys: nextRetiredOwnerKeys,
       // Only facts at or below the frozen DOM boundary are confirmed. A
       // lower backlog receipt must leave later already-committed rows
       // visible; subsequent live ingress advances this lease incrementally.

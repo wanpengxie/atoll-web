@@ -190,6 +190,165 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, total: 2 });
   });
 
+  it('fences a physical-leave revoke against a late positive from an older input epoch', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'revoke-approval-1', selfId), seq: 1 });
+    const status = feed.historyFor(channelId);
+    const receipt = confirmationFor(channelId, status, 1, { inputEpoch: 0 });
+    expect(feed.acknowledgeNotifications(receipt)).toBe(1);
+
+    // The input epoch is the synchronous physical-leave boundary. The
+    // receipt still has the same owner, but it is a typed revoke rather than
+    // a DOM-only retraction, so the Feed retains an epoch fence after
+    // clearing the ephemeral lease.
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      kind: 'notification-lease-revoke',
+      reason: 'physical-leave',
+      inputEpoch: 1,
+      caughtUp: false,
+      following: false,
+      atTail: false,
+      surfaceVisible: true,
+      cause: '',
+      boundary: 0,
+      captured: { ...receipt.captured, installedHighSeq: 1 },
+    })).toBe(false);
+
+    feed.enqueue({ ...relatedRequest(channelId, 'revoke-approval-2', selfId), seq: 2 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    // A positive receipt issued before the input must not re-install the
+    // lease and hide the row that arrived after the user took control.
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      inputEpoch: 0,
+      captured: { ...receipt.captured, installedHighSeq: 2 },
+      boundary: 2,
+    })).toBe(false);
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(1);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    // Reaching the tail again in the same input epoch is current evidence and
+    // may re-install the lease; only lower epochs are stale.
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      inputEpoch: 1,
+      captured: { ...receipt.captured, installedHighSeq: 2 },
+      boundary: 2,
+    })).toBe(2);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+  });
+
+  it('does not let hidden cleanup or an old owner revive/revoke a reselected lease', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'reselect-approval-1', selfId), seq: 1 });
+    const firstStatus = feed.historyFor(channelId);
+    const first = confirmationFor(channelId, firstStatus, 1, { inputEpoch: 0 });
+    expect(feed.acknowledgeNotifications(first)).toBe(1);
+
+    const hidden = {
+      ...first,
+      kind: 'notification-lease-revoke',
+      reason: 'surface-hidden',
+      inputEpoch: 1,
+      caughtUp: false,
+      following: false,
+      atTail: true,
+      surfaceVisible: false,
+      cause: '',
+      boundary: 0,
+      captured: { ...first.captured, installedHighSeq: 1 },
+    };
+    expect(feed.acknowledgeNotifications(hidden)).toBe(false);
+    feed.enqueue({ ...relatedRequest(channelId, 'reselect-approval-2', selfId), seq: 2 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    const secondStatus = feed.historyFor(channelId);
+    const second = confirmationFor(channelId, secondStatus, 2, {
+      inputEpoch: 0,
+      owner: { ...first.owner, activationID: 'activation-2' },
+    });
+    expect(feed.acknowledgeNotifications(second)).toBe(2);
+
+    // The old activation may be cleaned up after the new one is installed,
+    // but it cannot revoke the replacement owner.
+    expect(feed.acknowledgeNotifications(hidden)).toBe(false);
+
+    // Move the replacement owner out of the tail so the following assertions
+    // can distinguish its lease from a stale old-owner receipt.
+    expect(feed.acknowledgeNotifications({
+      ...second,
+      kind: 'notification-lease-revoke',
+      reason: 'physical-leave',
+      inputEpoch: 1,
+      caughtUp: false,
+      following: false,
+      atTail: false,
+      surfaceVisible: true,
+      cause: '',
+      boundary: 0,
+      captured: { ...second.captured, installedHighSeq: 2 },
+    })).toBe(false);
+    feed.enqueue({ ...relatedRequest(channelId, 'reselect-approval-3', selfId), seq: 3 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    // Nor may a delayed positive from the retired activation re-install the
+    // old lease and consume the new row.
+    expect(feed.acknowledgeNotifications({
+      ...first,
+      inputEpoch: 0,
+      captured: { ...first.captured, installedHighSeq: 3 },
+      boundary: 3,
+    })).toBe(false);
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    const current = {
+      ...second,
+      inputEpoch: 1,
+      captured: { ...second.captured, installedHighSeq: 3 },
+      boundary: 3,
+    };
+    expect(feed.acknowledgeNotifications(current)).toBe(3);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+  });
+
+  it('drops a typed revoke fence when the notification authority world resets', async () => {
+    const { runtime, channelId, selfId, boot } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'world-fence-1', selfId), seq: 1 });
+    const oldStatus = feed.historyFor(channelId);
+    const old = confirmationFor(channelId, oldStatus, 1, { inputEpoch: 0 });
+    expect(feed.acknowledgeNotifications(old)).toBe(1);
+    expect(feed.acknowledgeNotifications({
+      ...old,
+      kind: 'notification-lease-revoke',
+      reason: 'physical-leave',
+      inputEpoch: 9,
+      caughtUp: false,
+      following: false,
+      atTail: false,
+      surfaceVisible: true,
+      cause: '',
+      boundary: 0,
+      captured: { ...old.captured, installedHighSeq: 1 },
+    })).toBe(false);
+
+    await feed.setHistoryGrants(
+      [{ channel_id: channelId, head_seq: 0 }],
+      { generation: 1, boot: `${boot}-replacement` },
+    );
+    feed.enqueue({ ...relatedRequest(channelId, 'world-fence-1', selfId), seq: 1 });
+    const freshStatus = feed.historyFor(channelId);
+    expect(feed.acknowledgeNotifications(confirmationFor(channelId, freshStatus, 1, {
+      inputEpoch: 0,
+    }))).toBe(1);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+  });
+
   it('restores channel high-water without allowing cache/grant hydration to resurrect it', async () => {
     const channelId = 'c0.project';
     const selfId = 'human:notification-persist:1';
