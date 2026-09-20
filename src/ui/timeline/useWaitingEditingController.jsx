@@ -333,9 +333,27 @@ function isWaitingSubmission(row, channelId) {
 function pendingWaitingTurns(state, pending, editingTargetId) {
   const turns = [];
   for (const row of pending || []) {
-    if (!isWaitingSubmission(row, state?.channelId)
-      || row.messageId === editingTargetId
-      || state?._envelopesById?.has?.(row.messageId)) continue;
+    if (!isWaitingSubmission(row, state?.channelId) || row.messageId === editingTargetId) continue;
+    const canonical = timelineTurn(state, row.messageId);
+    // A local submission may be visible in Replica before its first lifecycle
+    // provisional arrives. Keep that same canonical request visible through
+    // the landing edge; only an explicit queued/received/deferred or terminal
+    // fact may replace/release the local Waiting continuity. The pending
+    // identity is the authority for this bridge, so an unrelated remote open
+    // request still stays excluded by latestStage/queuedTurnsOf.
+    if (canonical
+      && !canonical.terminal
+      && (!canonical.provisional || canonical.provisional.length === 0)
+      && latestStage(canonical) === '') {
+      turns.push({
+        ...canonical,
+        waitingPresentation: row.state === 'transmitting'
+          ? 'transmitting'
+          : ['accepted', 'uncertain'].includes(row.state) ? 'confirming' : 'stored-local',
+      });
+      continue;
+    }
+    if (state?._envelopesById?.has?.(row.messageId)) continue;
     const frame = row.frame || {};
     const body = Object.prototype.hasOwnProperty.call(frame.payload || {}, 'body')
       ? frame.payload
