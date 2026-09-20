@@ -531,6 +531,25 @@ export function createChannelFeedRuntime(options = {}) {
     if (!destroyed && error?.code !== 'cache_owner_changed') callback('onError', error);
   };
 
+  function cacheHydrationCurrent(channelId, authority) {
+    return authorityTupleCurrent(channelId, authority);
+  }
+
+  async function hydrateCacheRows(channelId, beforeSeq, authority) {
+    try {
+      const cached = await cache.readBefore(channelId, beforeSeq, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
+      if (!cacheHydrationCurrent(channelId, authority)) return false;
+      const accepted = applyRows(cached.rows, {
+        source: 'cache', persist: false, publishChange: false,
+      });
+      if (accepted.length) publish({ index: true });
+      return true;
+    } catch (error) {
+      if (cacheHydrationCurrent(channelId, authority)) cacheError(error);
+      return false;
+    }
+  }
+
   function observeAgentActivity(row, source) {
     const envelope = row?.envelope;
     const channelId = String(row?.channel_id || envelope?.channel_id || '');
@@ -1990,11 +2009,10 @@ export function createChannelFeedRuntime(options = {}) {
       }
     }
     const focus = String(detail.focus || activeChannelRef.current || '');
+    let focusHydration = null;
     if (focus && selectedMeta.has(focus) && replica.visibleNewest(focus) === 0) {
       const head = historyNumeric(selectedMeta.get(focus)?.headSeq || selectedMeta.get(focus)?.newestSeq);
-      const cached = await cache.readBefore(focus, head + 1, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
-      if (destroyed || epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
-      applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
+      focusHydration = { channelId: focus, beforeSeq: head + 1 };
     }
     // A persisted notification obligation is a cache admission demand even
     // when its channel is not the active focus. Reuse the existing Replica
@@ -2039,6 +2057,20 @@ export function createChannelFeedRuntime(options = {}) {
     localReplicaReady = true;
     for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
     publish({ index: true });
+    if (focusHydration) {
+      queueMicrotask(() => {
+        void hydrateCacheRows(
+          focusHydration.channelId,
+          focusHydration.beforeSeq,
+          {
+            principalEpoch,
+            worldEpoch,
+            generation: nextGeneration,
+            attachEpoch: epoch,
+          },
+        );
+      });
+    }
     for (const [channelId, deferred] of replayAfterAttach) {
       const request = deferred?.request || deferred;
       const semanticDemand = deferred?.semanticDemand || null;

@@ -463,17 +463,25 @@ describe('A-D round 24 public-owner evidence', () => {
     // 不变量：Meta/readiness 与 body hydration 是两个可并行 owner。
     // 公开 owner：ChannelFeedRuntime.prepareLocalReplica + ChannelReplica cache.
     const principal = `round24-body-principal-${++serial}`;
-    const seed = await attachedRuntime({ principal, entries: [{ channel_id: 'c0', head_seq: 100, has_rows: true }] });
+    // A changed server boot is an intentional cache-owner replacement, not a
+    // selected-body latency case. Keep the current authority stable here;
+    // the Feed unit owns the delayed-body proof.
+    const boot = `round24-body-boot-${serial}`;
+    const seed = await attachedRuntime({ principal, boot, entries: [{ channel_id: 'c0', head_seq: 100, has_rows: true }] });
     seed.snapshot().enqueue(liveRow('c0', 100, {
       id: 'cached-body', kind: 'event', type: 'human.note', visibility: 'public', sender: OTHER, audience: [HUMAN.id], payload: { body: { text: 'cached body' } },
     }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     seed.runtime.destroy();
     activeRuntimes.delete(seed.runtime);
-    const next = await attachedRuntime({ principal, entries: [{ channel_id: 'c0', head_seq: 100, has_rows: true }] });
+    const next = await attachedRuntime({ principal, boot, entries: [{ channel_id: 'c0', head_seq: 100, has_rows: true }] });
     const prepared = next.snapshot().resumeLocalReplica();
     expect(prepared).toMatchObject({ c0: 100 });
-    expect(next.snapshot().stateFor('c0')?.rows.has(100)).toBe(false);
+    expect(next.snapshot().historyFor('c0')).toMatchObject({
+      attached: true, messageCurrent: true, headSeq: 100,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(next.snapshot().stateFor('c0')?.rows.has(100)).toBe(true);
     next.runtime.destroy();
     activeRuntimes.delete(next.runtime);
   });

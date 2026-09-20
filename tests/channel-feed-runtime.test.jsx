@@ -1,5 +1,31 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
+
+const ad178CacheControl = vi.hoisted(() => ({
+  holdRead: false,
+  pending: [],
+}));
+
+vi.mock('../src/model/channel-replica.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createChannelReplicaCache: (...args) => {
+      const cache = actual.createChannelReplicaCache(...args);
+      const readBefore = cache.readBefore.bind(cache);
+      return Object.freeze({
+        ...cache,
+        readBefore: (...readArgs) => {
+          if (!ad178CacheControl.holdRead) return readBefore(...readArgs);
+          return new Promise((resolve, reject) => {
+            ad178CacheControl.pending.push({ resolve, reject, readBefore, readArgs });
+          });
+        },
+      });
+    },
+  };
+});
+
 import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
 import { createChannelReplicaCache } from '../src/model/channel-replica.js';
 import { TYPES } from '../src/protocol/vocab.js';
@@ -44,6 +70,51 @@ function nextTick() {
 }
 
 describe('ChannelFeedRuntime ownership', () => {
+  it('publishes attach Meta before hydrating the selected cache body', async () => {
+    const principal = `ad178-body-principal-${Date.now()}-${Math.random()}`;
+    const boot = `ad178-body-boot-${Date.now()}-${Math.random()}`;
+    const grant = [{ channel_id: 'c0', head_seq: 100, has_rows: true }];
+    const seed = createChannelFeedRuntime(runtimeOptions());
+    seed.mount();
+    await seed.getSnapshot().setHistoryGrants(grant, { generation: 1, boot, focus: '' });
+    await seed.getSnapshot().prepareLocalReplica(principal, { focus: '' });
+    expect(seed.getSnapshot().enqueue({
+      channel_id: 'c0', seq: 100, generation: 1, source: 'live',
+      envelope: historyRow(100).envelope,
+    })).toBe(true);
+    await nextTick();
+    seed.destroy();
+
+    const restored = createChannelFeedRuntime(runtimeOptions());
+    restored.mount();
+    try {
+      await restored.getSnapshot().prepareLocalReplica(principal, { focus: '' });
+      ad178CacheControl.pending.length = 0;
+      ad178CacheControl.holdRead = true;
+      const attached = restored.getSnapshot().setHistoryGrants(grant, {
+        generation: 1, boot, focus: 'c0',
+      });
+      await expect(attached).resolves.toMatchObject({ changed: true });
+      expect(ad178CacheControl.pending).toHaveLength(1);
+      expect(restored.getSnapshot().historyFor('c0')).toMatchObject({
+        attached: true, messageCurrent: true, headSeq: 100,
+      });
+      expect(restored.getSnapshot().resumeLocalReplica()).toMatchObject({ c0: 100 });
+      expect(restored.getSnapshot().stateFor('c0')?.rows.has(100)).toBe(false);
+
+      ad178CacheControl.holdRead = false;
+      ad178CacheControl.pending.shift().resolve({
+        rows: [historyRow(100)], nextBeforeSeq: 1, exhausted: true, bytes: 0,
+      });
+      await nextTick();
+      expect(restored.getSnapshot().stateFor('c0')?.rows.has(100)).toBe(true);
+    } finally {
+      ad178CacheControl.holdRead = false;
+      for (const pending of ad178CacheControl.pending.splice(0)) pending.reject(new Error('test cleanup'));
+      restored.destroy();
+    }
+  });
+
   it('waits for the current history grant before cold loading and replays at the granted head', async () => {
     const requests = [];
     const wireRef = { current: {
