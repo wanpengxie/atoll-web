@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { projectAgentParameters } from '../src/ui/composer/agent-parameters.js';
 import { buildComposerModel } from '../src/ui/composer/composer-model.js';
 import { Composer } from '../src/ui/composer/Composer.jsx';
+import { TYPES } from '../src/protocol/vocab.js';
 
 afterEach(cleanup);
 
@@ -98,6 +99,48 @@ describe('agent-parameters 协议投影（承接旧 agent-selection 协议适配
       state, actorId: 'steward', requestKeys: { options: 'wrong-options' },
     });
     expect(view).toBeNull();
+  });
+
+  it('公开 capability fallback 保留 oneOf 合法组合标题并按 model 去重', () => {
+    const capability = {
+      describe: {
+        types: new Map([[TYPES.agentSelect, {
+          inputSchema: {
+            oneOf: [
+              { properties: {
+                model: { const: 'gpt-5.6-sol', title: '5.6 Sol' },
+                effort: { const: 'medium', title: '中等' },
+              } },
+              { properties: {
+                model: { const: 'gpt-5.6-sol', title: '5.6 Sol' },
+                effort: { const: 'high', title: '高' },
+              } },
+              { properties: {
+                model: { const: 'gpt-5.4', title: '5.4' },
+                effort: { const: 'light', title: '轻量' },
+              } },
+            ],
+          },
+        }]]),
+      },
+    };
+
+    const { view } = projectAgentParameters({
+      state: { timeline: [] }, actorId: 'steward', requestKeys: {}, capability,
+    });
+
+    expect(view.source).toBe('describe');
+    expect(view.models).toEqual([
+      { id: 'gpt-5.6-sol', label: '5.6 Sol', description: '' },
+      { id: 'gpt-5.4', label: '5.4', description: '' },
+    ]);
+    expect(view.selections).toEqual([
+      { model: 'gpt-5.6-sol', effort: 'medium', modelLabel: '5.6 Sol', effortLabel: '中等' },
+      { model: 'gpt-5.6-sol', effort: 'high', modelLabel: '5.6 Sol', effortLabel: '高' },
+      { model: 'gpt-5.4', effort: 'light', modelLabel: '5.4', effortLabel: '轻量' },
+    ]);
+    expect(view.current).toBeNull();
+    expect(view.configurable).toBe(true);
   });
 });
 

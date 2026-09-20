@@ -24,10 +24,11 @@ Disposition codes:
   accessible-name observation. The current public trigger now exposes the
   truthful `，模型未知` label; its prior red packet is retained as provenance.
 
-Focused I-M evidence is 106/106 passing: live 5, management 4, markdown 11,
-memory 16, Mermaid 6, layout 4, lifecycle 12, message presentation 4, time
-4, mock 23, and model selection 17. The eleven implementation-oracle rows
-(memory 21–27 and 29, message 115, model 143 and 146) are each mapped to a
+Focused I-M evidence is 108/108 passing after the Round 24 additive contract:
+live 5, management 4, markdown 11,
+memory 17, Mermaid 6, layout 4, lifecycle 12, message presentation 4, time
+4, mock 23, and model selection 18. The ten remaining implementation-oracle rows
+(memory 21–27 and 29, message 115, and model 146) are each mapped to a
 current public owner and executable replacement below. The difference from the
 baseline is accounted for case by case. No product source, vendor, package
 manifest/lockfile, old store, compatibility API, or second owner was changed
@@ -320,7 +321,7 @@ exported or recreated.
 | 141 | `is deterministic for the same scenario, seed and clock actions` — deterministic fixture replay. | Scenario runner; same seed/actions → same output. **PASS/current**, retained. |
 | 142 | `retires a channel when virtual time reaches its scheduled action` — scheduled retirement fires at the correct virtual time. | Scenario clock/scheduler; advance to action. **PASS/current**, retained. |
 
-## 17. `model-selector.test.jsx` (17/17, PASS/current)
+## 17. `model-selector.test.jsx` (18/18, PASS/current)
 
 The old cases called the deleted `agent-selection` adapter and standalone
 selector. The current public owner is `projectAgentParameters` plus the
@@ -329,7 +330,7 @@ replace old Describe `oneOf`; no compatibility parser was added.
 
 | # | Baseline case; capability and invariant | Current public owner; setup → observable; disposition/evidence |
 |---|---|---|
-| 143 | `从 describe 的 oneOf 提取组合对与 title` — old Describe schema projected legal model/effort pairs and labels. | Current protocol uses canonical `agent.options` terminal; `projectAgentParameters` projects the same legal pair/value-domain behavior. **ORACLE/current**, replacement assertion is current options projection case. |
+| 143 | `从 describe 的 oneOf 提取组合对与 title` — old Describe schema projected legal model/effort pairs and labels. | `projectAgentParameters`' current public capability fallback projects the legal pair titles and deduplicated model list; canonical `agent.options` remains preferred. **PASS/current**, direct evidence `tests/model-selector.test.jsx:104-143`; no deleted adapter or normalization API restored. |
 | 144 | `两级菜单是组合对投影：模型去重；当前值恒来自账本真值` — menu deduplicates models and never guesses current value. | `projectAgentParameters` + Composer selector; canonical options/context turns → deduplicated models/current truth. **PASS/current**, migrated. |
 | 145 | `无账本真值时 current 为 null——恒不拿 selections[0] 冒充（default 可以不是第一条）` — no ledger truth means no invented selection. | Current options-only projection → `view.current === null`. **PASS/current**, migrated. |
 | 146 | `兼容 capabilities.js 归一形（types Map + inputSchema）` — old capability normalization accepted a second shape. | Current protocol is closed canonical `agent.options`; closed sender/audience/type/parent matching is asserted instead. **ORACLE/current**, no compatibility API restored. |
@@ -669,20 +670,62 @@ Evidence: `tests/channel-replica-cache-redaction.test.js` → **12/12 GREEN**;
 limited to `readBefore` and its public cache test; no notification, arrival,
 vendor, package, or lockfile owner changed.
 
+## Round 24 sparse-coverage review and model-selector baseline completion
+
+The independent review of `15d7b4f` remains **ACCEPT** for the product
+mechanism. `git diff 15d7b4f..HEAD` is empty for
+`src/model/channel-replica.js` and
+`tests/channel-replica-cache-redaction.test.js`; the sparse public case still
+uses physical rows `[1, 3]`, coverage `{1,1},{3,3}`, and `readBefore('c0', 4,
+...)` returns `rows=[1,3], exhausted=false`. The guard only publishes local
+exhaustion when the physical prefix below the cursor is contiguous, so the
+known seq1 lower bound cannot hide seq2. The existing partial tail
+`[8..14]`/`beforeSeq=9` contract remains `exhausted=false`.
+
+The independent review of `50918ae` remains **REJECT** for exclusive commit
+integrity. Its Feed continuation source/test hunks stay within their owner
+surface, but the same commit also carries the unrelated E–H governance ledger
+and governance-preview documents. No Replica, notification, arrival, vendor,
+package, or lockfile change is attributed to the Feed commit; it must not be
+cited as a Feed-only changeset.
+
+The next unproven I–M baseline slice is model-selector row 143's full
+user-visible projection, not another canonical-options case. Existing TC-1062
+proved that the public capability shape is accepted with two legal pairs, but
+did not prove the baseline's repeated-model/title behavior. The additive public
+test `tests/model-selector.test.jsx:104-143` supplies three current
+`describe.types`/`inputSchema.oneOf` branches and asserts all three legal
+model/effort labels, the two-item deduplicated model list, `current=null` in the
+absence of ledger truth, and configurability. It calls only the exported
+`projectAgentParameters` owner; no private helper, deleted adapter, old
+normalization shape, compatibility parser, or production source is restored.
+This is distinct from TC-1062's two-pair acceptance assertion and leaves
+Reading untouched.
+
+Evidence: `npx vitest run tests/model-selector.test.jsx` → **18/18 GREEN**;
+the sparse/Feed/Memory recheck
+`npx vitest run tests/channel-replica-cache-redaction.test.js
+tests/memory-window.test.js tests/channel-feed-runtime.test.jsx` → **3 files,
+42/42 GREEN**. Re-running all 17 current I–M owner files gives **108/108
+GREEN** (the pre-round aggregate had undercounted the current memory suite by
+one). The baseline remains 159 cases; the new row-143 assertion is an
+additive current-owner proof, not a duplicate baseline count.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
   declarations plus both expanded `takeover` variants.
-- Current-owner focused run: 17 files, 106 tests total, all 106 passing. The
+- Current-owner focused run: 17 files, 108 tests total, all 108 passing after
+  the additive row-143 proof. The
   run includes the four recreated owner suites (`management-actors`,
   `memory-window`, `message-list-lifecycle`, `message-presentation`) and the
   current `model-selector` suite; existing current-owner suites were left
   intact. The former GAP-01/02/03 packets are all resolved by their existing
   public owners and are not counted as current red cases.
-- The eleven ORACLE/current rows are not silently dropped: memory 21–27 and
-  29, message 115, and model 143/146 each name the current owner, executable
+- The ten remaining ORACLE/current rows are not silently dropped: memory 21–27
+  and 29, message 115, and model 146 each name the current owner, executable
   replacement assertion, and the reason the deleted implementation detail is
-  not revived. Any unrelated red successor (for example Replica root
+  not revived. Model 143 now has direct public fallback evidence. Any unrelated red successor (for example Replica root
   stability or projection-version efficiency tests) remains outside this I–M
   focused accounting and is not relabeled as green here.
 - Round 13 adds 16 independent exact-path public-owner cases from the absent
