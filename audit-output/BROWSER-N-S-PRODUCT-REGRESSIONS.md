@@ -502,3 +502,16 @@ ATOLL_TEST_WEB_PORT=16433 ATOLL_TEST_MOCK_PORT=20733 npx playwright test tests/b
 在 `67167ee` 同 HEAD，正式 cached-hydration 单例 repeat3 为 `2 passed, 1 failed`，失败仍是 `notification-high-water.spec.js:160` 立即调用 `latestAddedApprovalSeq(afterHydratedAcknowledgement)` 时 raw `rail.rows` 暂为空；通过样本在相同操作后保留 approval seq26/27、high-water27、counts0/0，二次 reload 同样稳定。owner 前的独立 repeat3 为 `1 passed, 2 failed`，说明该门具有时序不稳定性；公开 DOM badge/清除/reload 语义没有对应红。该现象继续归测试 observation contract/等待边界，保留正式行为门，不删断言、不用 probe 替正式测试，也不新增产品 owner handoff。
 
 本轮最终 disposition：A/B 交错 notification lifecycle **GREEN**；`67167ee` 后无公开用户可见 notification 产品回归；formal hydration 唯一红维持测试侧 raw snapshot race。
+
+## 第二十二轮：hydration raw-row 与 Reading settled contract 缺口分层
+
+A/B 本轮不重复计分。当前 HEAD=`4c566c4` 的正式 hydration repeat5 为 `2 passed, 3 failed`；全部失败仍集中于 `notification-high-water.spec.js:160`：`latestAddedApprovalSeq(afterHydratedAcknowledgement)` 立即从 raw rail snapshot 取不到注入 approval。
+
+对同一正式 spec 做过一次 trace-only、随后已复原的诊断：在第一次 project click 后等待公开 typed `reading.observation` 的 `settled=true`，10 秒内没有该 entry。失败前 snapshot 已显示 rail `authorityReady=true`, high-water=`27`, approval seq26/27=`high_water`, counts=`0/0`；截图同时显示两个 approval card 已在用户 viewport。Reading trace 只有三条 observation，均 `settled=false`；project activation 的两条 `visibleRowIDs=[]`。证据目录：`test-results-browser-ns-round22-hydration-observe-16437-20260920/`。
+
+因此要分开两件事：
+
+1. **raw assertion 时点确实偏早**：它可能在 Presentation/DOM 观察完成前执行，解释了 2/5 通过、3/5 失败。
+2. **当前产品没有可等待的公开 settle 信号**：不是把 `waitForTimeout` 或 observation-only probe 写进正式测试即可解决。现行 Reading owner 需要在 cold hydration 的 approval rows 已 painted/可命中后发布 typed settled receipt（含 exact visible IDs、activation/inputEpoch、atTail/surfaceVisible）。
+
+本轮首个公开 owner 分歧交 **Reading owner**，不交 notification owner；正式 spec、fixture、断言及 skip 均不改，避免用 probe 将产品/合同缺口伪装成 GREEN。Owner 提供 typed settle 后，再把 line160 最小改为等待该公开合同并复验。

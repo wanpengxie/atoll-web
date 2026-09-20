@@ -691,3 +691,20 @@ ATOLL_TEST_WEB_PORT=16434 ATOLL_TEST_MOCK_PORT=20734 npx playwright test tests/b
 owner 前同一正式门为 `1 passed, 2 failed`（`test-results-browser-ns-round21-hydration-formal-16432-20260920/`）；通过样本与 owner 后通过样本均保留 approval seq=`26/27`、high-water=`27`、counts=`0/0`，二次 hydration 仍为 high-water=`27`、counts=`0/0`。失败样本只是在第一次 project click 后立即 raw `rail.rows` 为空，DOM 用户链未出现 badge；故仍是测试侧 raw-diagnostics 读取竞态，不是 owner 产品回归，不用 probe 替代正式门，不删/放宽断言。
 
 本轮结论：`67167ee` 后 A/B 交错用户可见链、rail authority、cursor/high-water、Presentation→Reading tail receipt 与 reload persistence 均 **GREEN**；唯一正式红继续归测试观测时序合同。
+
+## 第二十二轮：formal hydration raw-row 首断点与缺失的 Reading settled fence
+
+本轮不重复计分 A/B。当前共享 HEAD=`4c566c4`，正式 hydration 原 spec 保持不改；真实 Chromium repeat5：
+
+```text
+ATOLL_TEST_WEB_PORT=16435 ATOLL_TEST_MOCK_PORT=20735 npx playwright test tests/browser/notification-high-water.spec.js --grep='cached hydration' --workers=1 --repeat-each=5 --reporter=line --output=test-results-browser-ns-round22-hydration-baseline-16435-20260920
+# 2 passed, 3 failed；3 个失败均为 line160 latestAddedApprovalSeq(afterHydratedAcknowledgement)
+```
+
+为判定是否应把 raw rail 读取改成 typed settle 等待，曾对**同一正式 spec**做 trace-only instrumentation（启用现行公开 `reading.observation` recorder、在原断言前附证据、等待 `settled=true`），随即复原，未用它替换正式门。一次真实失败的附证据为 `test-results-browser-ns-round22-hydration-observe-16437-20260920/**/notification-high-water-hydration-pre-settle.json` 及同目录 screenshot：
+
+- project 激活后 10 秒内仅有 3 条公开 `reading.observation`：首条旧 c0 activation，后两条为 project activation；三条都是 `atTail=true`, `surfaceVisible=true`, `settled=false`，project 两条的 `visibleRowIDs=[]`。
+- 同一时点 rail 已有 `authorityReady=true`, `readSeq=25`, `notificationHighWater=27`, counts=`0/0`，approval seq=`26/27` 均 `ackReason=high_water`；失败截图中两个 approval card 已实际出现在用户可见 viewport。
+- 因此 raw rail 行不是 durable 数据缺失；原 line160 的确可能早于该次 Presentation/DOM 观察，但当前产品没有在 cold hydration 完成 paint 后发布 `settled=true` 或等价 typed fence。10 秒轮询没有新 settled entry；固定 sleep/probe 不能成为正式合同。
+
+结论不是把正式断言删掉或改成 probe：当前第一分歧为 **Reading hydration owner 没有公开 settled/paint-fence observation，导致测试无法在合法 typed contract 上等待后再读 rail**。该缺口交现有 Reading owner：cold hydration 在 approval rows 已 mounted/可命中后，必须发布现行 `reading.observation` 的 settled typed receipt（含非空 exact `visibleRowIDs`、atTail/surfaceVisible 与 activation/inputEpoch）；notification owner 不承担补发第二状态源。正式 spec/断言本轮保持原样，直到 owner 提供该公开信号后再最小化改为等待它。
