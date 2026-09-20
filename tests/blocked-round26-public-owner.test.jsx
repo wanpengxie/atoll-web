@@ -138,6 +138,26 @@ function createChannelModal({ commands = {}, children = [], creation = null, ros
   />);
 }
 
+function publicChannelCreate({ commands = {}, onClose = vi.fn() } = {}) {
+  function Harness() {
+    const [open, setOpen] = React.useState(false);
+    const close = () => {
+      onClose();
+      setOpen(false);
+    };
+    return <>
+      <button type="button" onClick={() => setOpen(true)}>打开新建频道</button>
+      {open && <WorkspaceRightPanel
+        panel={{ kind: 'channel-administration', initialTab: 'overview' }}
+        channel={{ id: 'c0', qualified_name: 'c0' }}
+        governance={{ channel: { commands, children: [] } }}
+        onClose={close}
+      />}
+    </>;
+  }
+  return render(<Harness />);
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -273,12 +293,45 @@ describe('A-D round 26 public-owner evidence', () => {
     expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
   });
 
-  it('[AD-155] provides dialog Escape/backdrop/focus-trap and returns focus after close', () => {
-    // 用户能力：Escape/遮罩关闭、焦点闭环、关闭后 focus return。
-    // 不变量：独立 dialog owner 承担完整生命周期；公开 owner：GovernanceFeature/SidePanel。
-    governance({ commands: { submit: vi.fn() } });
-    expect(screen.getByRole('dialog', { name: '新建频道' })).toBeTruthy();
+  it('[AD-155] provides dialog Escape/backdrop/focus-trap and returns focus after close', async () => {
+    // 用户能力：Escape/遮罩关闭、焦点闭环、关闭后 focus return；不变量：独立 dialog owner 承担完整生命周期；公开 owner：WorkspaceRightPanel → GovernanceFeature.ChannelCreateModal。
+    const onClose = vi.fn();
+    publicChannelCreate({ commands: { submit: vi.fn() }, onClose });
+    const opener = screen.getByRole('button', { name: '打开新建频道' });
+
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole('dialog', { name: '新建频道' });
     expect(document.querySelector('.channel-create-backdrop')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText('新频道名称'));
+    expect(opener.inert).toBe(true);
+
+    fireEvent.mouseDown(document.querySelector('.channel-create-backdrop'));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建频道' })).toBeNull());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(opener.inert).toBe(false);
+    expect(document.activeElement).toBe(opener);
+
+    fireEvent.click(opener);
+    const reopened = await screen.findByRole('dialog', { name: '新建频道' });
+    const focusable = [...reopened.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    )];
+    expect(focusable.length).toBeGreaterThan(2);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    last.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+    first.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建频道' })).toBeNull());
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(opener.inert).toBe(false);
+    expect(document.activeElement).toBe(opener);
   });
 
   it('[AD-156] keeps an inactive rail unknown until cached unread context and parent are folded', async () => {

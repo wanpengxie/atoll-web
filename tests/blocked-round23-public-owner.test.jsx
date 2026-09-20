@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import { searchFeatureIndex, selectFeatureSearchIndex } from '../src/model/feature-search.js';
 import { WorkspaceLayout } from '../src/app/WorkspaceLayout.jsx';
-import { WorkspaceFeatures } from '../src/ui/features/WorkspaceFeatures.jsx';
+import { WorkspaceFeatures, WorkspaceRightPanel } from '../src/ui/features/WorkspaceFeatures.jsx';
 import { ChannelAdministrationPanel } from '../src/ui/features/governance/GovernanceFeature.jsx';
 
 afterEach(() => {
@@ -145,6 +145,26 @@ function governance({ commands = {}, ...rest } = {}) {
     port={{ commands, children: [], ...rest }}
     onClose={vi.fn()}
   />);
+}
+
+function publicChannelCreate({ commands = {}, onClose = vi.fn() } = {}) {
+  function Harness() {
+    const [open, setOpen] = React.useState(false);
+    const close = () => {
+      onClose();
+      setOpen(false);
+    };
+    return <>
+      <button type="button" onClick={() => setOpen(true)}>打开新建频道</button>
+      {open && <WorkspaceRightPanel
+        panel={{ kind: 'channel-administration', initialTab: 'overview' }}
+        channel={{ id: 'c0', qualified_name: 'c0' }}
+        governance={{ channel: { commands, children: [] } }}
+        onClose={close}
+      />}
+    </>;
+  }
+  return render(<Harness />);
 }
 
 describe('A-D round 23 ordinary public-owner product-gap evidence', () => {
@@ -311,19 +331,64 @@ describe('A-D round 23 ordinary public-owner product-gap evidence', () => {
     expect(screen.getByRole('alert').textContent).toContain('终态详情不可用，请刷新或重新进入频道');
   });
 
-  it('[AD-153] exposes four-step convergence and enters only after ready', () => {
-    // 用户能力：分别看到 ledger/OBS/membership/serving，ready 后才进入；不变量：receipt 不能宣告 serving ready；公开 owner：GovernanceFeature。
-    governance({ commands: { submit: vi.fn().mockResolvedValue('request-1') } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'research' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
-    expect(screen.getByRole('region', { name: '频道创建进度' })).toBeTruthy();
+  it('[AD-153] exposes four-step convergence and enters only after ready', async () => {
+    // 用户能力：分别看到 ledger/OBS/membership/serving，ready 后才进入；不变量：receipt 不能宣告 serving ready；公开 owner：WorkspaceRightPanel → GovernanceFeature.ChannelCreateModal。
+    const submit = vi.fn().mockResolvedValue('request-1');
+    publicChannelCreate({ commands: { submit } });
+    fireEvent.click(screen.getByRole('button', { name: '打开新建频道' }));
+    fireEvent.change(await screen.findByLabelText('新频道名称'), { target: { value: 'research' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'channel', action: 'create_child',
+      payload: expect.objectContaining({ name: 'research', parentId: 'c0' }),
+    })));
+    const progress = screen.getByRole('region', { name: '频道创建进度' });
+    expect(progress.textContent).toContain('账本确认');
+    expect(progress.textContent).toContain('频道可观察');
+    expect(progress.textContent).toContain('成员关系');
+    expect(progress.textContent).toContain('服务就绪');
+    expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
   });
 
-  it('[AD-155] provides dialog Escape/backdrop/focus-trap and returns focus after close', () => {
-    // 用户能力：Escape/遮罩关闭、焦点闭环、关闭后 focus return；不变量：独立 dialog owner 承担完整生命周期；公开 owner：GovernanceFeature/SidePanel。
-    governance({ commands: { submit: vi.fn() } });
-    expect(screen.getByRole('dialog', { name: '新建频道' })).toBeTruthy();
+  it('[AD-155] provides dialog Escape/backdrop/focus-trap and returns focus after close', async () => {
+    // 用户能力：Escape/遮罩关闭、焦点闭环、关闭后 focus return；不变量：独立 dialog owner 承担完整生命周期；公开 owner：WorkspaceRightPanel → GovernanceFeature.ChannelCreateModal。
+    const onClose = vi.fn();
+    publicChannelCreate({ commands: { submit: vi.fn() }, onClose });
+    const opener = screen.getByRole('button', { name: '打开新建频道' });
+
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole('dialog', { name: '新建频道' });
     expect(document.querySelector('.channel-create-backdrop')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText('新频道名称'));
+    expect(opener.inert).toBe(true);
+
+    fireEvent.mouseDown(document.querySelector('.channel-create-backdrop'));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建频道' })).toBeNull());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(opener.inert).toBe(false);
+    expect(document.activeElement).toBe(opener);
+
+    fireEvent.click(opener);
+    const reopened = await screen.findByRole('dialog', { name: '新建频道' });
+    const focusable = [...reopened.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    )];
+    expect(focusable.length).toBeGreaterThan(2);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    last.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+    first.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建频道' })).toBeNull());
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(opener.inert).toBe(false);
+    expect(document.activeElement).toBe(opener);
   });
 
   it('[AD-192] accepts only real human principals in the user selector', () => {
