@@ -864,12 +864,29 @@ export function createChannelFeedRuntime(options = {}) {
     return accepted;
   }
 
+  function notificationContextUnknown(channelId, state, boundary) {
+    const status = histories.get(channelId);
+    const rows = state?.rows;
+    const hasRows = rows instanceof Map && rows.size > 0;
+    const active = String(activeChannelRef.current || '') === String(channelId);
+    const target = Math.max(
+      historyNumeric(status?.headSeq),
+      replica.visibleNewest(channelId),
+    );
+    // An inactive grant with no materialized Replica rows has not proved an
+    // empty notification context.  Keep the rail unknown until the cached
+    // rows (including any exact parent) are folded by the canonical Replica;
+    // never turn that absence of evidence into a known zero.
+    return !hasRows && (!active || target > boundary);
+  }
+
   function unreadFor(channelId, selfID = '') {
     if (!cursors.isReadAuthorityReady() || !selfID) {
       return Object.freeze({ related: 0, total: 0, pending: true });
     }
     const boundary = cursors.notificationHighWater(channelId);
     const state = replica.state(channelId);
+    const unknown = notificationContextUnknown(channelId, state, boundary);
     const following = followingObservations.get(channelId);
     const unreadRoots = new Set();
     for (const [seq, envelope] of state?.rows || []) {
@@ -889,7 +906,9 @@ export function createChannelFeedRuntime(options = {}) {
       if (rootID) unreadRoots.add(rootID);
     }
     const unread = unreadRoots.size;
-    return Object.freeze({ related: unread, total: unread });
+    return Object.freeze(unknown
+      ? { related: unread, total: unread, unknown: true }
+      : { related: unread, total: unread });
   }
 
   // Diagnostics is an observation port for the existing rail, not another

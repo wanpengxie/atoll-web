@@ -344,7 +344,7 @@ describe('A-D round 24 public-owner evidence', () => {
     expect(snapshot().unreadFor('c1', HUMAN.id)).toMatchObject({ unknown: true });
     snapshot().enqueue(liveRow('c1', 1, {
       id: 'cached-request', kind: 'request', type: 'human.ask', visibility: 'public',
-      sender: { id: 'human:round24:other', kind: 'human' }, audience: [HUMAN.id], payload: { text: 'question' },
+      sender: { id: 'human:round24:other', kind: 'human' }, audience: [HUMAN.id], payload: { body: { text: 'question' } },
     }, 1, 'cache'));
     snapshot().enqueue(liveRow('c1', 3, {
       id: 'cached-final', parent_id: 'cached-request', kind: 'response', type: 'human.ask', visibility: 'public',
